@@ -1,0 +1,35 @@
+syntax = "proto3";
+
+package zenquant.execution;
+
+enum OrderType {
+  MARKET = 0;
+  LIMIT = 1;
+  POST_ONLY = 2;
+  FOK = 3;
+  IOC = 4;
+}
+
+message SubmitOrder {
+  string client_order_id = 1;
+  string symbol = 2;
+  OrderType type = 3;
+  double limit_price = 4;
+  double quantity = 5;
+  int32 side = 6;
+  bool reduce_only = 7;
+  double max_slippage_tolerance = 8;
+  bool enable_synthetic_arb = 9;
+}
+
+message ExecutionReport {
+  string client_order_id = 1;
+  string exchange_order_id = 2;
+  string status = 3;
+  double cumulative_filled_qty = 4;
+  double volume_weighted_avg_price = 5;
+  double commission = 6;
+  string commission_asset = 7;
+  uint64 transaction_time = 8;
+}
+

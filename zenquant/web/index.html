@@ -1,0 +1,88 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>ZenQuant Console</title>
+    <link rel="stylesheet" href="/static/styles.css" />
+  </head>
+  <body>
+    <div class="frame">
+      <aside class="rail">
+        <div class="rail-logo">ZQ</div>
+        <button class="rail-btn" aria-label="Dashboard">D</button>
+        <button class="rail-btn" aria-label="Market">M</button>
+        <button class="rail-btn" aria-label="Execution">E</button>
+        <button class="rail-btn" aria-label="Risk">R</button>
+        <button class="rail-btn" aria-label="Settings">S</button>
+      </aside>
+
+      <div class="workspace">
+        <header class="topbar">
+          <div class="pair-block">
+            <div class="pair-exch" id="exchangeLabel">BINANCE.F</div>
+            <div class="pair-symbol" id="symbolLabel">BTC_USDT</div>
+          </div>
+          <div class="timeframe-group">
+            <button class="tf-btn">1m</button>
+            <button class="tf-btn">15m</button>
+            <button class="tf-btn active">1h</button>
+            <button class="tf-btn">4h</button>
+          </div>
+          <div class="kpis">
+            <div class="kpi">
+              <span>Last</span>
+              <strong id="lastPrice">-</strong>
+            </div>
+            <div class="kpi">
+              <span>Spread</span>
+              <strong id="spreadValue">-</strong>
+            </div>
+            <div class="kpi">
+              <span>Position</span>
+              <strong id="positionValue">-</strong>
+            </div>
+            <div class="kpi">
+              <span>Kill Switch</span>
+              <strong id="killSwitchValue" class="status-safe">SAFE</strong>
+            </div>
+          </div>
+        </header>
+
+        <main class="grid">
+          <section class="panel chart-panel">
+            <div class="panel-title">Price Stream</div>
+            <canvas id="priceCanvas" width="1400" height="420"></canvas>
+          </section>
+
+          <section class="panel orderbook-panel">
+            <div class="panel-title">Order Book</div>
+            <div class="book-head">
+              <span>Bid Qty</span>
+              <span>Price</span>
+              <span>Ask Qty</span>
+            </div>
+            <div id="orderBookRows" class="book-rows"></div>
+          </section>
+
+          <section class="panel signal-panel">
+            <div class="panel-title">Latest Signals</div>
+            <div id="signalList" class="card-list"></div>
+          </section>
+
+          <section class="panel execution-panel">
+            <div class="panel-title">Execution Reports</div>
+            <div id="reportList" class="card-list"></div>
+          </section>
+
+          <section class="panel factor-panel">
+            <div class="panel-title">Factor Weights</div>
+            <div id="weightList" class="card-list"></div>
+          </section>
+        </main>
+      </div>
+    </div>
+    <script src="/static/app.js"></script>
+  </body>
+</html>
+

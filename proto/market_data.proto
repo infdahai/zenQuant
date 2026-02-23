@@ -1,0 +1,29 @@
+syntax = "proto3";
+
+package zenquant.marketdata;
+
+message OrderBookLevel {
+  double price = 1;
+  double quantity = 2;
+}
+
+message OrderBookSnapshot {
+  string symbol = 1;
+  string exchange = 2;
+  uint64 exchange_timestamp = 3;
+  uint64 local_timestamp = 4;
+  bool is_snapshot = 5;
+  repeated OrderBookLevel bids = 6;
+  repeated OrderBookLevel asks = 7;
+}
+
+message TradeTick {
+  string symbol = 1;
+  string exchange = 2;
+  double price = 3;
+  double size = 4;
+  uint64 trade_id = 5;
+  bool is_buyer_maker = 6;
+  uint64 exchange_timestamp = 7;
+  uint64 local_timestamp = 8;
+}
