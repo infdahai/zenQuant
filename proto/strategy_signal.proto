@@ -2,25 +2,28 @@ syntax = "proto3";
 
 package zenquant.strategy;
 
-enum SignalType {
-  CONTINUOUS = 0;
-  DISCRETE_BOOL = 1;
+enum Timeframe {
+  TF_4H = 0;
+  TF_1D = 1;
 }
 
-enum PA_Pattern {
-  NONE = 0;
-  H1_PULLBACK = 1;
-  H2_RESUMPTION = 2;
-  MAJOR_TREND_REVERSAL = 3;
-}
-
-message AlphaSignal {
-  string factor_id = 1;
+message TargetPosition {
+  string portfolio = 1;
   string symbol = 2;
-  SignalType type = 3;
-  double continuous_value = 4;
-  PA_Pattern pattern_event = 5;
-  double confidence_ic = 6;
-  uint64 timestamp = 7;
+  Timeframe timeframe = 3;
+  uint64 cutoff_time_ns = 4;
+  double target_qty = 5;
+  double target_leverage = 6;
+  bool reduce_only = 7;
+  string regime = 8;
+  double regime_confidence = 9;
+  repeated string reason_codes = 10;
 }
 
+message IntentReason {
+  string portfolio = 1;
+  string symbol = 2;
+  uint64 cutoff_time_ns = 3;
+  string summary = 4;
+  repeated string reason_codes = 5;
+}

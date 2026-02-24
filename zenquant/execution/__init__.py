@@ -1,5 +1,9 @@
 from .gateway import ExecutionGateway, ExecutionGatewayConfig
-from .router import ExecutionRouter, ExecutionRouterConfig
+from .router import ExecutionKernel, ExecutionKernelConfig
 
-__all__ = ["ExecutionGateway", "ExecutionGatewayConfig", "ExecutionRouter", "ExecutionRouterConfig"]
-
+__all__ = [
+    "ExecutionGateway",
+    "ExecutionGatewayConfig",
+    "ExecutionKernel",
+    "ExecutionKernelConfig",
+]

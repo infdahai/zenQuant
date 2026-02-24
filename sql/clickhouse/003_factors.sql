@@ -1,29 +1,43 @@
-CREATE TABLE IF NOT EXISTS factors.signals (
+CREATE TABLE IF NOT EXISTS indicators.pack_v1 (
     symbol LowCardinality(String),
-    factor_id LowCardinality(String),
-    timestamp DateTime64(3, 'UTC'),
-    factor_value Float64 CODEC(Gorilla, ZSTD(3)),
-    forward_return_1m Float64,
-    forward_return_5m Float64
+    tf LowCardinality(String),
+    ts DateTime64(3, 'UTC'),
+    cutoff_time DateTime64(3, 'UTC'),
+    indicator_version LowCardinality(String),
+    formula_hash String,
+    quality_flags Array(String),
+    coverage_venue_count UInt8,
+    coverage_oi_coverage Float64,
+    coverage_staleness_ms UInt64,
+    values_json String,
+    components_json String
 ) ENGINE = MergeTree()
-PARTITION BY toYYYYMM(timestamp)
-ORDER BY (factor_id, symbol, timestamp);
+PARTITION BY toYYYYMM(ts)
+ORDER BY (symbol, tf, ts);
 
-CREATE OR REPLACE VIEW factors.correlation_matrix AS
-SELECT
-    symbol,
-    arrayMap(x -> round(x, 4), arrayJoin(corrMatrix(factor_pa, factor_mom, factor_cvd, factor_fr))) AS correlation_row
-FROM (
-    SELECT
-        symbol,
-        timestamp,
-        maxIf(factor_value, factor_id = 'PA_MTR') AS factor_pa,
-        maxIf(factor_value, factor_id = 'MOM_15M') AS factor_mom,
-        maxIf(factor_value, factor_id = 'CVD_SPOT') AS factor_cvd,
-        maxIf(factor_value, factor_id = 'FUNDING_RATE') AS factor_fr
-    FROM factors.signals
-    WHERE timestamp >= now() - INTERVAL 7 DAY
-    GROUP BY symbol, timestamp
-)
-GROUP BY symbol;
+CREATE TABLE IF NOT EXISTS strategy.intents (
+    portfolio LowCardinality(String),
+    symbol LowCardinality(String),
+    tf LowCardinality(String),
+    cutoff_time DateTime64(3, 'UTC'),
+    target_qty Float64,
+    target_leverage Float64,
+    reduce_only UInt8,
+    regime LowCardinality(String),
+    regime_confidence Float64,
+    reason_codes Array(String)
+) ENGINE = MergeTree()
+PARTITION BY toYYYYMM(cutoff_time)
+ORDER BY (portfolio, symbol, cutoff_time);
 
+CREATE TABLE IF NOT EXISTS risk.snapshots (
+    ts DateTime64(3, 'UTC'),
+    equity Float64,
+    high_water_mark Float64,
+    drawdown Float64,
+    lev_cap Float64,
+    reduce_only_mode UInt8,
+    flags Array(String)
+) ENGINE = MergeTree()
+PARTITION BY toYYYYMM(ts)
+ORDER BY ts;

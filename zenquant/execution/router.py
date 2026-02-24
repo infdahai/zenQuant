@@ -3,102 +3,79 @@ from __future__ import annotations
 import itertools
 from dataclasses import dataclass
 
-from zenquant.domain.models import (
-    AlphaSignal,
-    OrderType,
-    PAPattern,
-    SignalType,
-    SubmitOrder,
-    TradeTick,
-)
+from zenquant.domain import ExecutionOrder, TargetPosition, TradeTick
 from zenquant.execution.gateway import ExecutionGateway
-from zenquant.infra.event_bus import InMemoryJetStream
-from zenquant.infra.ring_buffer import RingBuffer
+from zenquant.infra import InMemoryJetStream
+from zenquant.risk import RiskOverlay
 
 
 @dataclass(slots=True)
-class ExecutionRouterConfig:
-    base_quantity: float = 0.2
-    continuous_trigger: float = 0.70
-    max_slippage_tolerance: float = 0.0005
-    order_queue_capacity: int = 2048
+class ExecutionKernelConfig:
+    min_trade_qty: float = 0.0001
+    max_trade_qty_per_bar: float = 1.0
+    max_slippage_bps: float = 8.0
 
 
-class ExecutionRouter:
+class ExecutionKernel:
     def __init__(
         self,
         bus: InMemoryJetStream,
         gateway: ExecutionGateway,
-        config: ExecutionRouterConfig | None = None,
+        risk_overlay: RiskOverlay,
+        config: ExecutionKernelConfig | None = None,
     ) -> None:
         self._bus = bus
         self._gateway = gateway
-        self._config = config or ExecutionRouterConfig()
+        self._risk_overlay = risk_overlay
+        self._config = config or ExecutionKernelConfig()
+
+        self._order_seq = itertools.count(1)
         self._last_price: dict[str, float] = {}
-        self._client_seq = itertools.count(1)
-        self._submit_queue: RingBuffer[SubmitOrder] = RingBuffer(self._config.order_queue_capacity)
+        self._positions: dict[str, float] = {}
 
         self._bus.subscribe("md.trade.>", self._on_trade)
-        self._bus.subscribe("signal.alpha.>", self._on_signal)
+        self._bus.subscribe("intent.target_position.final.>", self._on_target)
 
     def _on_trade(self, _: str, payload: object) -> None:
         if not isinstance(payload, TradeTick):
             return
-        self._last_price[payload.symbol] = payload.price
-        self._drain_submit_queue()
+        self._last_price[payload.meta.symbol] = payload.price
 
-    def _on_signal(self, _: str, payload: object) -> None:
-        if not isinstance(payload, AlphaSignal):
+    def _on_target(self, _: str, payload: object) -> None:
+        if not isinstance(payload, TargetPosition):
             return
-        order = self._signal_to_order(payload)
-        if order is None:
+
+        symbol = payload.symbol
+        mark_price = self._last_price.get(symbol)
+        if mark_price is None or mark_price <= 0:
             return
-        if not self._submit_queue.push(order):
+
+        current_position = self._positions.get(symbol, 0.0)
+        delta_qty = payload.target_qty - current_position
+        if abs(delta_qty) < self._config.min_trade_qty:
             return
-        self._drain_submit_queue()
 
-    def _drain_submit_queue(self) -> None:
-        while True:
-            order = self._submit_queue.pop()
-            if order is None:
-                return
-            mark_price = self._last_price.get(order.symbol)
-            if mark_price is None:
-                continue
-            self._bus.publish("exec.order.submit", order)
-            report = self._gateway.submit_order(order, mark_price=mark_price)
-            self._bus.publish("exec.order.report", report)
+        side = 1 if delta_qty > 0 else -1
+        trade_qty = min(abs(delta_qty), self._config.max_trade_qty_per_bar)
+        if payload.reduce_only and abs(current_position + (side * trade_qty)) > abs(current_position):
+            return
 
-    def _signal_to_order(self, signal: AlphaSignal) -> SubmitOrder | None:
-        side = 0
-        quantity = 0.0
-
-        if signal.type == SignalType.CONTINUOUS:
-            if abs(signal.continuous_value) < self._config.continuous_trigger:
-                return None
-            side = 1 if signal.continuous_value > 0 else -1
-            quantity = self._config.base_quantity * max(1.0, abs(signal.continuous_value))
-        elif signal.type == SignalType.DISCRETE_BOOL:
-            if signal.pattern_event == PAPattern.H2_RESUMPTION:
-                side = 1
-                quantity = self._config.base_quantity * max(1.0, signal.confidence_ic)
-            elif signal.pattern_event == PAPattern.MAJOR_TREND_REVERSAL:
-                side = -1
-                quantity = self._config.base_quantity * max(1.0, signal.confidence_ic)
-            else:
-                return None
-        else:
-            return None
-
-        client_order_id = f"{signal.symbol}-{signal.timestamp_ns}-{next(self._client_seq)}"
-        return SubmitOrder(
-            client_order_id=client_order_id,
-            symbol=signal.symbol,
-            type=OrderType.MARKET,
-            limit_price=0.0,
-            quantity=round(quantity, 6),
+        order = ExecutionOrder(
+            client_order_id=f"{symbol}-{payload.cutoff_time_ns}-{next(self._order_seq)}",
+            symbol=symbol,
             side=side,
-            reduce_only=False,
-            max_slippage_tolerance=self._config.max_slippage_tolerance,
-            enable_synthetic_arb=False,
+            quantity=round(trade_qty, 6),
+            reduce_only=payload.reduce_only,
+            max_slippage_bps=self._config.max_slippage_bps,
         )
+        self._bus.publish("exec.order.submit", order)
+
+        report = self._gateway.submit_order(order, mark_price=mark_price, now_ns=payload.cutoff_time_ns)
+        self._bus.publish("exec.order.report", report)
+        if report.status == "FILLED" and report.filled_qty > 0:
+            self._positions[symbol] = current_position + (side * report.filled_qty)
+            self._risk_overlay.apply_fee(report.fee)
+
+    @property
+    def positions(self) -> dict[str, float]:
+        return dict(self._positions)

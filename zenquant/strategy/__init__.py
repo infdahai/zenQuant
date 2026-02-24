@@ -1,4 +1,3 @@
-from .engine import StrategyEngine, StrategyEngineConfig
+from .engine import ARCStrategyConfig, ARCStrategyEngine
 
-__all__ = ["StrategyEngine", "StrategyEngineConfig"]
-
+__all__ = ["ARCStrategyConfig", "ARCStrategyEngine"]

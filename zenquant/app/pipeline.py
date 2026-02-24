@@ -2,75 +2,107 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from zenquant.domain.models import AlphaSignal, ExecutionReport, OrderStatus
-from zenquant.execution import ExecutionGateway, ExecutionRouter
-from zenquant.factor_lab import FactorLabRuntime, FactorWeight
+from zenquant.domain import IndicatorPack, TargetPosition
+from zenquant.execution import ExecutionGateway, ExecutionKernel
+from zenquant.indicator import IndicatorEngine, IndicatorStore
 from zenquant.ingestor import SyntheticIngestor, SyntheticIngestorConfig
 from zenquant.infra import InMemoryJetStream, StreamConfig
-from zenquant.risk import RiskGuard
-from zenquant.strategy import StrategyEngine
+from zenquant.market import BarClockService, SnapshotBuilder
+from zenquant.risk import RiskOverlay
+from zenquant.strategy import ARCStrategyEngine
 
 
 @dataclass(slots=True)
 class PipelineResult:
-    total_signals: int
+    total_indicator_packs: int
+    total_targets: int
     total_reports: int
     filled_reports: int
-    rejected_reports: int
-    total_factor_weights: int
-    final_position: float
-    kill_switch_active: bool
+    latest_zen_pulse: float
+    latest_regime: str
+    final_position_btc: float
 
 
 class ZenQuantPipeline:
-    def __init__(self, symbol: str = "BTC_USDT", exchange: str = "BINANCE", seed: int = 7) -> None:
+    def __init__(self, seed: int = 7) -> None:
         self.bus = InMemoryJetStream()
-        self.bus.add_stream(StreamConfig(name="STREAM_MARKET_DATA", subjects=["md.>"], retention="limits"))
-        self.bus.add_stream(StreamConfig(name="STREAM_SIGNALS", subjects=["signal.>"], retention="interest"))
-        self.bus.add_stream(StreamConfig(name="STREAM_ORDERS", subjects=["exec.order.>"], retention="workqueue"))
-        self.bus.add_stream(StreamConfig(name="STREAM_FACTORS", subjects=["factor.>"], retention="limits"))
+        self.bus.add_stream(StreamConfig(name="STREAM_MARKET_DATA", subjects=["md.>"]))
+        self.bus.add_stream(StreamConfig(name="STREAM_CLOCK", subjects=["clock.>"]))
+        self.bus.add_stream(StreamConfig(name="STREAM_INDICATORS", subjects=["indicator.>"]))
+        self.bus.add_stream(StreamConfig(name="STREAM_INTENTS", subjects=["intent.>"]))
+        self.bus.add_stream(StreamConfig(name="STREAM_EXEC", subjects=["exec.>"]))
 
-        self.risk_guard = RiskGuard()
-        self.execution_gateway = ExecutionGateway(risk_guard=self.risk_guard)
-        self.strategy_engine = StrategyEngine(bus=self.bus)
-        self.factor_runtime = FactorLabRuntime(bus=self.bus)
-        self.execution_router = ExecutionRouter(bus=self.bus, gateway=self.execution_gateway)
-        self.ingestor = SyntheticIngestor(
+        self.indicator_store = IndicatorStore()
+        self.snapshot_builder = SnapshotBuilder(bus=self.bus)
+        self.bar_clock = BarClockService(bus=self.bus)
+        self.indicator_engine = IndicatorEngine(bus=self.bus, store=self.indicator_store)
+        self.strategy_engine = ARCStrategyEngine(bus=self.bus)
+        self.risk_overlay = RiskOverlay(bus=self.bus)
+        self.execution_gateway = ExecutionGateway()
+        self.execution_kernel = ExecutionKernel(
             bus=self.bus,
-            config=SyntheticIngestorConfig(symbol=symbol, exchange=exchange, seed=seed),
+            gateway=self.execution_gateway,
+            risk_overlay=self.risk_overlay,
         )
+        self.ingestor = SyntheticIngestor(bus=self.bus, config=SyntheticIngestorConfig(seed=seed))
 
-        self._signals: list[AlphaSignal] = []
-        self._reports: list[ExecutionReport] = []
-        self._weights: list[FactorWeight] = []
-        self.bus.subscribe("signal.alpha.>", self._collect_signal)
+        self._indicators: list[IndicatorPack] = []
+        self._targets: list[TargetPosition] = []
+        self._reports: list[dict] = []
+        self.bus.subscribe("indicator.pack.v1.>", self._collect_indicator)
+        self.bus.subscribe("intent.target_position.final.>", self._collect_target)
         self.bus.subscribe("exec.order.report", self._collect_report)
-        self.bus.subscribe("factor.weight.>", self._collect_weight)
 
-    def run(self, steps: int = 240, start_price: float = 40_000.0) -> PipelineResult:
-        self.ingestor.run(steps=steps, start_price=start_price)
-        filled_reports = sum(
-            1 for report in self._reports if report.status in (OrderStatus.FILLED, OrderStatus.PARTIALLY_FILLED)
-        )
-        rejected_reports = sum(1 for report in self._reports if report.status == OrderStatus.REJECTED)
+    def run(self, steps: int = 320) -> PipelineResult:
+        self.ingestor.run(steps=steps)
+
+        latest_pack = None
+        latest_zen_pulse = 0.0
+        latest_regime = "UNKNOWN"
+        if self._indicators:
+            candidate = [item for item in self._indicators if item.symbol == "BTCUSDT_PERP" and item.timeframe.value == "4h"]
+            if candidate:
+                latest_pack = candidate[-1]
+            else:
+                latest_pack = self._indicators[-1]
+        if latest_pack is not None:
+            latest_zen_pulse = float(latest_pack.values.get("zen_pulse", 0.0) or 0.0)
+        if self._targets:
+            latest_regime = self._targets[-1].regime
+
+        filled_reports = sum(1 for report in self._reports if report.get("status") == "FILLED")
+        final_position_btc = self.execution_kernel.positions.get("BTCUSDT_PERP", 0.0)
         return PipelineResult(
-            total_signals=len(self._signals),
+            total_indicator_packs=len(self._indicators),
+            total_targets=len(self._targets),
             total_reports=len(self._reports),
             filled_reports=filled_reports,
-            rejected_reports=rejected_reports,
-            total_factor_weights=len(self._weights),
-            final_position=self.risk_guard.positions.get(self.ingestor.symbol, 0.0),
-            kill_switch_active=self.risk_guard.kill_switch_active,
+            latest_zen_pulse=latest_zen_pulse,
+            latest_regime=latest_regime,
+            final_position_btc=final_position_btc,
         )
 
-    def _collect_signal(self, _: str, payload: object) -> None:
-        if isinstance(payload, AlphaSignal):
-            self._signals.append(payload)
+    def _collect_indicator(self, _: str, payload: object) -> None:
+        if isinstance(payload, IndicatorPack):
+            self._indicators.append(payload)
+
+    def _collect_target(self, _: str, payload: object) -> None:
+        if isinstance(payload, TargetPosition):
+            self._targets.append(payload)
 
     def _collect_report(self, _: str, payload: object) -> None:
-        if isinstance(payload, ExecutionReport):
-            self._reports.append(payload)
+        from zenquant.domain import ExecutionReport
 
-    def _collect_weight(self, _: str, payload: object) -> None:
-        if isinstance(payload, FactorWeight):
-            self._weights.append(payload)
+        if isinstance(payload, ExecutionReport):
+            self._reports.append(
+                {
+                    "client_order_id": payload.client_order_id,
+                    "symbol": payload.symbol,
+                    "status": payload.status,
+                    "filled_qty": payload.filled_qty,
+                    "avg_price": payload.avg_price,
+                    "fee": payload.fee,
+                    "transaction_time_ns": payload.transaction_time_ns,
+                    "reject_reason": payload.reject_reason,
+                }
+            )
