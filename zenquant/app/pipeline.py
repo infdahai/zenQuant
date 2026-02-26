@@ -33,11 +33,15 @@ class ZenQuantPipeline:
         self.bus.add_stream(StreamConfig(name="STREAM_EXEC", subjects=["exec.>"]))
 
         self.indicator_store = IndicatorStore()
+        # ORDERING INVARIANT: SnapshotBuilder must be instantiated before
+        # BarClockService so bar-close CVD is finalized before clock events.
         self.snapshot_builder = SnapshotBuilder(bus=self.bus)
         self.bar_clock = BarClockService(bus=self.bus)
         self.indicator_engine = IndicatorEngine(bus=self.bus, store=self.indicator_store)
-        self.strategy_engine = ARCStrategyEngine(bus=self.bus)
+        # ORDERING INVARIANT: RiskOverlay must subscribe before ARCStrategyEngine
+        # so indicator state is fresh when intents are evaluated.
         self.risk_overlay = RiskOverlay(bus=self.bus)
+        self.strategy_engine = ARCStrategyEngine(bus=self.bus)
         self.execution_gateway = ExecutionGateway()
         self.execution_kernel = ExecutionKernel(
             bus=self.bus,
@@ -49,7 +53,7 @@ class ZenQuantPipeline:
         self._indicators: list[IndicatorPack] = []
         self._targets: list[TargetPosition] = []
         self._reports: list[dict] = []
-        self.bus.subscribe("indicator.pack.v1.>", self._collect_indicator)
+        self.bus.subscribe("indicator.>", self._collect_indicator)
         self.bus.subscribe("intent.target_position.final.>", self._collect_target)
         self.bus.subscribe("exec.order.report", self._collect_report)
 
@@ -98,6 +102,7 @@ class ZenQuantPipeline:
                 {
                     "client_order_id": payload.client_order_id,
                     "symbol": payload.symbol,
+                    "side": payload.side,
                     "status": payload.status,
                     "filled_qty": payload.filled_qty,
                     "avg_price": payload.avg_price,

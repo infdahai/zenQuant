@@ -37,7 +37,7 @@ class TradeTick:
     meta: EventMeta
     price: float
     size: float
-    is_buyer_aggressor: bool
+    is_buyer_aggressor: bool | None
 
 
 @dataclass(slots=True)
@@ -122,6 +122,7 @@ class IndicatorPack:
 
 @dataclass(slots=True)
 class TargetPosition:
+    intent_id: str
     portfolio: str
     symbol: str
     timeframe: Timeframe
@@ -156,6 +157,7 @@ class RiskOverlayDecision:
 
 @dataclass(slots=True)
 class RiskSnapshot:
+    portfolio: str
     ts_ns: int
     equity: float
     high_water_mark: float
@@ -179,6 +181,7 @@ class ExecutionOrder:
 class ExecutionReport:
     client_order_id: str
     symbol: str
+    side: int
     status: str
     filled_qty: float
     avg_price: float

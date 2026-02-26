@@ -1,13 +1,15 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
+from datetime import UTC, datetime
 
-from zenquant.domain import IndicatorPack, RiskOverlayDecision, RiskSnapshot, TargetPosition
+from zenquant.domain import ExecutionReport, IndicatorPack, RiskOverlayDecision, RiskSnapshot, TargetPosition
 from zenquant.infra import InMemoryJetStream
 
 
 @dataclass(slots=True)
 class RiskOverlayConfig:
+    portfolio: str = "arc"
     starting_equity: float = 100_000.0
     max_leverage: float = 2.5
     dd_step_1: float = 0.05
@@ -16,6 +18,9 @@ class RiskOverlayConfig:
     vol_shock_threshold: float = 0.95
     crowding_threshold: float = 2.2
     severe_crowding_threshold: float = 3.0
+    daily_loss_limit: float = 0.06
+    daily_safe_lev_cap: float = 0.35
+    kill_switch_drawdown: float = 0.22
 
 
 class RiskOverlay:
@@ -23,14 +28,17 @@ class RiskOverlay:
         self._bus = bus
         self._config = config or RiskOverlayConfig()
 
+        self._cash = self._config.starting_equity
         self._equity = self._config.starting_equity
         self._high_water_mark = self._config.starting_equity
         self._last_price: dict[str, float] = {}
-        self._position_proxy: dict[str, float] = {}
+        self._actual_positions: dict[str, float] = {}
         self._latest_indicator: dict[str, IndicatorPack] = {}
+        self._day_anchor: tuple[int, float] | None = None
 
-        self._bus.subscribe("indicator.pack.v1.>", self._on_indicator)
+        self._bus.subscribe("indicator.>", self._on_indicator)
         self._bus.subscribe("intent.target_position.>", self._on_target_position)
+        self._bus.subscribe("exec.order.report", self._on_execution_report)
 
     @property
     def equity(self) -> float:
@@ -47,6 +55,21 @@ class RiskOverlay:
         last_price = float(payload.values.get("last_price", 0.0) or 0.0)
         if last_price > 0:
             self._last_price[payload.symbol] = last_price
+            self._revalue_equity()
+
+    def _on_execution_report(self, _: str, payload: object) -> None:
+        if not isinstance(payload, ExecutionReport):
+            return
+        if payload.status != "FILLED" or payload.filled_qty <= 0:
+            return
+
+        current = self._actual_positions.get(payload.symbol, 0.0)
+        self._actual_positions[payload.symbol] = current + (payload.side * payload.filled_qty)
+        if payload.avg_price > 0:
+            self._last_price[payload.symbol] = payload.avg_price
+
+        self._cash -= payload.side * payload.filled_qty * payload.avg_price
+        self._revalue_equity()
 
     def _on_target_position(self, subject: str, payload: object) -> None:
         if not isinstance(payload, TargetPosition):
@@ -55,16 +78,17 @@ class RiskOverlay:
             return
 
         revised, decision, snapshot = self._apply_overlay(payload)
-        self._position_proxy[revised.symbol] = revised.target_qty
 
         self._bus.publish("risk.overlay.decision", decision)
         self._bus.publish("risk.snapshot", snapshot)
         self._bus.publish(f"intent.target_position.final.{revised.symbol}", revised)
 
     def _apply_overlay(self, target: TargetPosition) -> tuple[TargetPosition, RiskOverlayDecision, RiskSnapshot]:
+        self._revalue_equity()
+
         indicator = self._latest_indicator.get(target.symbol)
         price = max(1e-9, self._last_price.get(target.symbol, 0.0))
-        current_position = self._position_proxy.get(target.symbol, 0.0)
+        current_position = self._actual_positions.get(target.symbol, 0.0)
 
         flags: list[str] = []
         drawdown = self._drawdown()
@@ -79,7 +103,15 @@ class RiskOverlay:
             lev_cap *= 0.65
             flags.append("DD_STEP_1")
 
-        reduce_only = target.reduce_only
+        if drawdown >= self._config.kill_switch_drawdown:
+            flags.append("KILL_SWITCH")
+
+        daily_loss = self._daily_loss(target.cutoff_time_ns)
+        if daily_loss >= self._config.daily_loss_limit:
+            lev_cap = min(lev_cap, self._config.daily_safe_lev_cap)
+            flags.append("DAILY_LOSS_LIMIT")
+
+        reduce_only = target.reduce_only or ("KILL_SWITCH" in flags)
 
         if indicator is not None:
             realized_vol = float(indicator.values.get("realized_vol", 0.0) or 0.0)
@@ -93,7 +125,7 @@ class RiskOverlay:
             if abs(funding_oi_z) >= self._config.severe_crowding_threshold:
                 reduce_only = True
                 flags.append("SEVERE_CROWDING")
-            if any(flag in {"BOOK_STALE", "VENUE_DOWN", "DATA_STALE"} for flag in indicator.quality_flags):
+            if any(flag in {"BOOK_STALE", "VENUE_DOWN", "DATA_STALE", "DATA_FUTURE"} for flag in indicator.quality_flags):
                 reduce_only = True
                 lev_cap = min(lev_cap, 0.45)
                 flags.append("LIQUIDITY_STRESS")
@@ -126,6 +158,7 @@ class RiskOverlay:
         )
 
         snapshot = RiskSnapshot(
+            portfolio=self._config.portfolio,
             ts_ns=target.cutoff_time_ns,
             equity=round(self._equity, 2),
             high_water_mark=round(self._high_water_mark, 2),
@@ -139,7 +172,17 @@ class RiskOverlay:
     def apply_fee(self, fee: float) -> None:
         if fee <= 0:
             return
-        self._equity = max(0.0, self._equity - fee)
+        self._cash = max(0.0, self._cash - fee)
+        self._revalue_equity()
+
+    def _revalue_equity(self) -> None:
+        equity = self._cash
+        for symbol, qty in self._actual_positions.items():
+            price = self._last_price.get(symbol)
+            if price is None:
+                continue
+            equity += qty * price
+        self._equity = equity
         if self._equity > self._high_water_mark:
             self._high_water_mark = self._equity
 
@@ -147,3 +190,15 @@ class RiskOverlay:
         if self._high_water_mark <= 0:
             return 0.0
         return max(0.0, (self._high_water_mark - self._equity) / self._high_water_mark)
+
+    def _daily_loss(self, cutoff_time_ns: int) -> float:
+        # NOTE (MVP): This resets on process restart because anchor is in-memory.
+        day_id = datetime.fromtimestamp(cutoff_time_ns / 1_000_000_000, tz=UTC).toordinal()
+        if self._day_anchor is None or self._day_anchor[0] != day_id:
+            self._day_anchor = (day_id, self._equity)
+            return 0.0
+
+        start_equity = self._day_anchor[1]
+        if start_equity <= 0:
+            return 0.0
+        return max(0.0, (start_equity - self._equity) / start_equity)

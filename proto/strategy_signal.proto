@@ -18,6 +18,7 @@ message TargetPosition {
   string regime = 8;
   double regime_confidence = 9;
   repeated string reason_codes = 10;
+  string intent_id = 11;
 }
 
 message IntentReason {

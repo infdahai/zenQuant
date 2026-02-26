@@ -2,7 +2,7 @@ import unittest
 
 try:
     from fastapi.testclient import TestClient
-except ModuleNotFoundError:  # pragma: no cover - optional dependency in CI
+except Exception:  # pragma: no cover - optional dependency in CI
     TestClient = None
 
 from zenquant.app.server import create_app

@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+import uuid
 from dataclasses import dataclass
 
-from zenquant.domain import IndicatorPack, IntentReason, TargetPosition, Timeframe
+from zenquant.domain import IndicatorPack, IntentReason, RiskSnapshot, TargetPosition, Timeframe
 from zenquant.infra import InMemoryJetStream
 
 
@@ -20,7 +21,15 @@ class ARCStrategyEngine:
     def __init__(self, bus: InMemoryJetStream, config: ARCStrategyConfig | None = None) -> None:
         self._bus = bus
         self._config = config or ARCStrategyConfig()
-        self._bus.subscribe("indicator.pack.v1.>", self._on_indicator)
+        self._equity = self._config.account_equity
+        self._last_regime: dict[tuple[str, Timeframe], str] = {}
+
+        self._bus.subscribe("indicator.>", self._on_indicator)
+        self._bus.subscribe("risk.snapshot", self._on_risk_snapshot)
+
+    def _on_risk_snapshot(self, _: str, payload: object) -> None:
+        if isinstance(payload, RiskSnapshot):
+            self._equity = max(0.0, payload.equity)
 
     def _on_indicator(self, _: str, payload: object) -> None:
         if not isinstance(payload, IndicatorPack):
@@ -41,12 +50,17 @@ class ARCStrategyEngine:
         zen_pulse = float(values.get("zen_pulse", 50.0) or 50.0)
         price = max(1e-9, float(values.get("last_price", 0.0) or 0.0))
 
+        regime_key = (pack.symbol, pack.timeframe)
+        last_regime = self._last_regime.get(regime_key, "RANGE")
         regime, regime_confidence = self._classify_regime(
+            last_regime=last_regime,
             quality_flags=pack.quality_flags,
             realized_vol=realized_vol,
             cvd_slope=cvd_slope,
             zen_pulse=zen_pulse,
         )
+        self._last_regime[regime_key] = regime
+
         direction = self._direction(regime=regime, cvd_slope=cvd_slope, ob_liq_z=ob_liq_z)
 
         target_vol = self._config.target_vol_4h if pack.timeframe is Timeframe.TF_4H else self._config.target_vol_1d
@@ -59,7 +73,7 @@ class ARCStrategyEngine:
             target_leverage = min(target_leverage, 0.35)
             reduce_only = True
 
-        target_notional = self._config.account_equity * target_leverage * direction
+        target_notional = self._equity * target_leverage * direction
         target_qty = target_notional / price
         if abs(target_qty) < self._config.min_trade_qty:
             target_qty = 0.0
@@ -77,6 +91,7 @@ class ARCStrategyEngine:
             reason_codes.append("QUALITY_DEGRADED")
 
         return TargetPosition(
+            intent_id=self._intent_id(pack),
             portfolio=self._config.portfolio,
             symbol=pack.symbol,
             timeframe=pack.timeframe,
@@ -89,20 +104,34 @@ class ARCStrategyEngine:
             reason_codes=reason_codes,
         )
 
+    def _intent_id(self, pack: IndicatorPack) -> str:
+        name = (
+            f"{self._config.portfolio}:{pack.symbol}:{pack.timeframe.value}:"
+            f"{pack.cutoff_time_ns}:{pack.indicator_version}:{pack.formula_hash}"
+        )
+        return str(uuid.uuid5(uuid.NAMESPACE_URL, name))
+
     @staticmethod
     def _classify_regime(
+        last_regime: str,
         quality_flags: list[str],
         realized_vol: float,
         cvd_slope: float,
         zen_pulse: float,
     ) -> tuple[str, float]:
-        degraded = any(flag in {"BOOK_STALE", "VENUE_DOWN", "DATA_STALE"} for flag in quality_flags)
+        degraded = any(flag in {"BOOK_STALE", "VENUE_DOWN", "DATA_STALE", "DATA_FUTURE"} for flag in quality_flags)
         if degraded or realized_vol > 2.8:
             return "STRESS", 0.9
 
         trend_strength = min(1.0, abs(cvd_slope) * 10.0)
         pulse_strength = min(1.0, max(0.0, (zen_pulse - 50.0) / 50.0))
-        if trend_strength > 0.18 and zen_pulse >= 55.0:
+
+        if last_regime == "TREND":
+            trend_gate = trend_strength > 0.12 and zen_pulse >= 50.0
+        else:
+            trend_gate = trend_strength > 0.22 and zen_pulse >= 58.0
+
+        if trend_gate:
             confidence = min(1.0, 0.45 + (trend_strength * 0.4) + (pulse_strength * 0.15))
             return "TREND", confidence
 
@@ -126,7 +155,7 @@ class ARCStrategyEngine:
     @staticmethod
     def _build_reason(target: TargetPosition) -> IntentReason:
         summary = (
-            f"regime={target.regime} conf={target.regime_confidence:.2f} "
+            f"intent={target.intent_id[:8]} regime={target.regime} conf={target.regime_confidence:.2f} "
             f"lev={target.target_leverage:.2f} qty={target.target_qty:.6f}"
         )
         return IntentReason(

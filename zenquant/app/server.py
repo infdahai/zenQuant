@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -70,11 +71,15 @@ class ZenQuantWebRuntime:
         self.state = DashboardStateStore()
         self.indicator_store = IndicatorStore()
 
+        # ORDERING INVARIANT: SnapshotBuilder must subscribe before BarClockService
+        # so CVD is finalized before bar_close events are emitted.
         self.snapshot_builder = SnapshotBuilder(bus=self.bus)
         self.bar_clock = BarClockService(bus=self.bus)
         self.indicator_engine = IndicatorEngine(bus=self.bus, store=self.indicator_store)
-        self.strategy_engine = ARCStrategyEngine(bus=self.bus)
+        # ORDERING INVARIANT: RiskOverlay must subscribe before ARCStrategyEngine
+        # so indicator state is fresh when intents are evaluated.
         self.risk_overlay = RiskOverlay(bus=self.bus)
+        self.strategy_engine = ARCStrategyEngine(bus=self.bus)
         self.execution_gateway = ExecutionGateway()
         self.execution_kernel = ExecutionKernel(
             bus=self.bus,
@@ -84,14 +89,13 @@ class ZenQuantWebRuntime:
         self.ingestor = SyntheticIngestor(bus=self.bus, config=SyntheticIngestorConfig(seed=11))
 
         self.bus.subscribe("md.candle.>", self._on_candle)
-        self.bus.subscribe("indicator.pack.v1.>", self._on_indicator)
+        self.bus.subscribe("indicator.>", self._on_indicator)
         self.bus.subscribe("risk.snapshot", self._on_risk_snapshot)
         self.bus.subscribe("risk.overlay.decision", self._on_risk_decision)
         self.bus.subscribe("intent.reason.>", self._on_reason)
         self.bus.subscribe("intent.target_position.final.>", self._on_target)
         self.bus.subscribe("exec.order.report", self._on_report)
 
-        self._prime_history()
         self._event_iterator = self.ingestor.iter_events(steps=None, start_step=self._warmup_steps)
 
     async def start(self) -> None:
@@ -110,6 +114,12 @@ class ZenQuantWebRuntime:
         except asyncio.CancelledError:
             pass
         self._tick_task = None
+
+    def prime_history(self) -> None:
+        if self._warmup_steps <= 0:
+            return
+        for subject, payload in self.ingestor.iter_events(steps=self._warmup_steps, start_step=0):
+            self.bus.publish(subject, payload)
 
     def snapshot(self, symbol: str = "BTCUSDT_PERP", tf: str = "4h") -> dict[str, Any]:
         return self.state.snapshot(symbol=symbol, timeframe=tf)
@@ -139,12 +149,6 @@ class ZenQuantWebRuntime:
             self.bus.publish(subject, payload)
             await asyncio.sleep(self._tick_interval_s)
 
-    def _prime_history(self) -> None:
-        if self._warmup_steps <= 0:
-            return
-        for subject, payload in self.ingestor.iter_events(steps=self._warmup_steps, start_step=0):
-            self.bus.publish(subject, payload)
-
     async def _broadcast_state(self) -> None:
         if not self._state_connections:
             return
@@ -173,6 +177,14 @@ class ZenQuantWebRuntime:
         for websocket in stale:
             self.disconnect_indicators(websocket)
 
+    def _schedule_broadcasts(self, pack: IndicatorPack) -> None:
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return
+        loop.create_task(self._broadcast_indicator(pack))
+        loop.create_task(self._broadcast_state())
+
     def _on_candle(self, _: str, payload: object) -> None:
         if isinstance(payload, Candle):
             self.state.on_candle(payload)
@@ -181,8 +193,7 @@ class ZenQuantWebRuntime:
         if not isinstance(payload, IndicatorPack):
             return
         self.state.on_indicator(payload)
-        asyncio.create_task(self._broadcast_indicator(payload))
-        asyncio.create_task(self._broadcast_state())
+        self._schedule_broadcasts(payload)
 
     def _on_risk_snapshot(self, _: str, payload: object) -> None:
         if isinstance(payload, RiskSnapshot):
@@ -214,8 +225,18 @@ def create_app() -> FastAPI:
             "`python3 -m pip install -e .` and retry."
         ) from _FASTAPI_IMPORT_ERROR
 
-    app = FastAPI(title="ZenQuant 4.0 Phase 1", version="0.2.0")
     runtime = ZenQuantWebRuntime()
+
+    @asynccontextmanager
+    async def lifespan(_: FastAPI):
+        runtime.prime_history()
+        await runtime.start()
+        try:
+            yield
+        finally:
+            await runtime.stop()
+
+    app = FastAPI(title="ZenQuant 4.0 Phase 1", version="0.2.0", lifespan=lifespan)
     web_root = Path(__file__).resolve().parents[1] / "web"
 
     app.mount("/static", StaticFiles(directory=str(web_root)), name="static")
@@ -275,14 +296,6 @@ def create_app() -> FastAPI:
             runtime.disconnect_indicators(websocket)
         except Exception:
             runtime.disconnect_indicators(websocket)
-
-    @app.on_event("startup")
-    async def startup_event() -> None:
-        await runtime.start()
-
-    @app.on_event("shutdown")
-    async def shutdown_event() -> None:
-        await runtime.stop()
 
     return app
 

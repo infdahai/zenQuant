@@ -20,6 +20,7 @@ class ExecutionGateway:
             return ExecutionReport(
                 client_order_id=order.client_order_id,
                 symbol=order.symbol,
+                side=order.side,
                 status="REJECTED",
                 filled_qty=0.0,
                 avg_price=0.0,
@@ -32,6 +33,7 @@ class ExecutionGateway:
         return ExecutionReport(
             client_order_id=order.client_order_id,
             symbol=order.symbol,
+            side=order.side,
             status="FILLED",
             filled_qty=order.quantity,
             avg_price=mark_price,

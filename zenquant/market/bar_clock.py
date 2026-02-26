@@ -57,6 +57,8 @@ class BarClockService:
             return
 
         if bar_start_ns < state.bar_start_ns:
+            # Late tick for an already closed bar. Drop deterministically.
+            # TODO: expose late_tick_count metric/flag for replay parity monitoring.
             return
 
         if bar_start_ns > state.bar_start_ns:

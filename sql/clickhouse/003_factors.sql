@@ -16,6 +16,7 @@ PARTITION BY toYYYYMM(ts)
 ORDER BY (symbol, tf, ts);
 
 CREATE TABLE IF NOT EXISTS strategy.intents (
+    intent_id UUID,
     portfolio LowCardinality(String),
     symbol LowCardinality(String),
     tf LowCardinality(String),
@@ -28,9 +29,10 @@ CREATE TABLE IF NOT EXISTS strategy.intents (
     reason_codes Array(String)
 ) ENGINE = MergeTree()
 PARTITION BY toYYYYMM(cutoff_time)
-ORDER BY (portfolio, symbol, cutoff_time);
+ORDER BY (portfolio, symbol, cutoff_time, intent_id);
 
 CREATE TABLE IF NOT EXISTS risk.snapshots (
+    portfolio LowCardinality(String),
     ts DateTime64(3, 'UTC'),
     equity Float64,
     high_water_mark Float64,
@@ -40,4 +42,4 @@ CREATE TABLE IF NOT EXISTS risk.snapshots (
     flags Array(String)
 ) ENGINE = MergeTree()
 PARTITION BY toYYYYMM(ts)
-ORDER BY ts;
+ORDER BY (portfolio, ts);

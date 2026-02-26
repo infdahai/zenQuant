@@ -25,4 +25,5 @@ message ExecutionReport {
   double fee = 6;
   uint64 transaction_time_ns = 7;
   string reject_reason = 8;
+  int32 side = 9;
 }

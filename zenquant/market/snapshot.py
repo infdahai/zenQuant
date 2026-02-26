@@ -51,6 +51,7 @@ class SnapshotBuilder:
         self._config = config or SnapshotBuilderConfig()
 
         self._last_price: dict[str, float] = {}
+        self._last_trade_price: dict[str, float] = {}
         self._books: dict[str, dict[str, _BookState]] = defaultdict(dict)
         self._funding_oi: dict[str, dict[str, _FundingOIState]] = defaultdict(dict)
         self._cvd_state: dict[tuple[str, Timeframe], _CVDState] = {}
@@ -69,7 +70,16 @@ class SnapshotBuilder:
         symbol = payload.meta.symbol
         self._last_price[symbol] = payload.price
 
-        signed_size = payload.size if payload.is_buyer_aggressor else -payload.size
+        aggressor = payload.is_buyer_aggressor
+        if aggressor is None:
+            prev = self._last_trade_price.get(symbol)
+            if prev is None:
+                aggressor = True
+            else:
+                aggressor = payload.price >= prev
+        self._last_trade_price[symbol] = payload.price
+
+        signed_size = payload.size if aggressor else -payload.size
         for timeframe in self._config.timeframes:
             interval_ns = timeframe.seconds * 1_000_000_000
             bar_start_ns = (payload.meta.event_time_ns // interval_ns) * interval_ns
@@ -124,7 +134,7 @@ class SnapshotBuilder:
             return
 
         snapshot = self._build_snapshot(payload)
-        self._bus.publish(f"md.snapshot.{payload.timeframe.value}", snapshot)
+        self._bus.publish(f"md.snapshot.{payload.timeframe.value}.{payload.symbol}", snapshot)
 
     def _build_snapshot(self, event: BarCloseEvent) -> MarketSnapshot:
         symbol = event.symbol
@@ -135,11 +145,18 @@ class SnapshotBuilder:
         book_states = self._books.get(symbol, {})
         valid_book_states: list[_BookState] = []
         book_ages: list[int] = []
+        future_book = False
         for state in book_states.values():
+            if state.ts_ns > now_ns:
+                future_book = True
+                continue
             age_ms = int(max(0, (now_ns - state.ts_ns) / 1_000_000))
             if age_ms <= self._config.book_stale_ms:
                 valid_book_states.append(state)
                 book_ages.append(age_ms)
+
+        if future_book:
+            quality_flags.append("DATA_FUTURE")
 
         venue_count = len(valid_book_states)
         if venue_count == 0:
@@ -160,6 +177,10 @@ class SnapshotBuilder:
         oi_valid_count = 0
 
         for state in venue_states.values():
+            if state.funding_ts_ns > now_ns or state.oi_ts_ns > now_ns:
+                quality_flags.append("DATA_FUTURE")
+                continue
+
             funding_age_ms = int(max(0, (now_ns - state.funding_ts_ns) / 1_000_000)) if state.funding_ts_ns else 0
             oi_age_ms = int(max(0, (now_ns - state.oi_ts_ns) / 1_000_000)) if state.oi_ts_ns else 0
             max_data_age_ms = max(max_data_age_ms, funding_age_ms, oi_age_ms)
