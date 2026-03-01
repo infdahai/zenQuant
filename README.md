@@ -250,23 +250,87 @@ python3 -m unittest discover -s tests -v
 
 ---
 
-## 12. Current Status vs Future Work
+## 12. Phase 2 Unified Roadmap
 
-### In current PR scope
+This branch unifies the two prior README roadmap directions into one execution-oriented plan.
+
+### Phase 2 mission
+Move from "deterministic Phase 1 kernel" to "production-grade decision and risk quality" while preserving replay determinism.
+
+### Workstream A: Regime intelligence
+- Add `SwingStructure` and `Momentum_ROC` as first-class indicators for structure + momentum confirmation.
+- Introduce a stricter regime contract:
+  - `TREND` requires structure confirmation plus flow confirmation,
+  - `RANGE` requires low trend pressure and mean-reversion preconditions,
+  - `STRESS` is triggered by volatility, liquidity, or data quality degradation.
+- Add explicit regime transition guards to avoid state chattering.
+
+### Workstream B: Strategy state and exits
+- Add position memory in strategy state:
+  - `entry_price`,
+  - `entry_bar`,
+  - `trailing_stop`,
+  - `pyramid_count`.
+- Add deterministic exits:
+  - trailing ATR stop,
+  - structure-break exit,
+  - regime-flip forced reduction,
+  - max-hold decay logic.
+- Keep output contract unchanged: strategy still emits `TargetPosition` only.
+
+### Workstream C: Risk and cost realism
+- Keep risk overlay as the final authority to rewrite intent.
+- Extend risk controls:
+  - correlation-aware cap for BTC/ETH concentration,
+  - intrabar emergency reduce trigger,
+  - funding-cost integration in equity accounting.
+- Upgrade execution realism for research parity:
+  - slippage estimator,
+  - participation-rate cap,
+  - deterministic partial-fill carry-over across bars.
+
+### Workstream D: Evaluation and release gate
+- Add replay-driven backtest CLI for historical windows.
+- Enforce walk-forward evaluation and parameter sensitivity checks.
+- Require release gates before production enablement:
+  - deterministic replay parity,
+  - cost-aware performance metrics,
+  - drawdown and stress-case pass criteria.
+
+### Milestones (recommended sequencing)
+1. M1: indicator and regime contract hardening.
+2. M2: stateful strategy exits and risk throttles.
+3. M3: slippage/funding/capacity modeling.
+4. M4: walk-forward harness and release checklist.
+
+### Acceptance criteria for Phase 2 completion
+- Same event stream reproduces the same indicator values, intents, and execution reports.
+- Strategy behavior is explainable at bar close with stable reason codes.
+- Backtest includes funding and slippage costs and matches replay assumptions.
+- Risk overlay can cap or reduce exposure deterministically under stress.
+
+### Explicit non-goals for Phase 2
+- New asset-class expansion beyond current BTC/ETH perp focus.
+- Full multi-portfolio allocator.
+- Exchange-specific ultra-low-latency optimization.
+
+---
+
+## 13. Current Status
+
+### In current branch scope
 - Deterministic Phase 1 vertical slice is implemented.
 - Core contracts are versioned and auditable.
 - Replay parity tests exist for indicators/intents/execution.
 
-### Deliberately deferred (later phases)
-- HMM/change-point regime engine,
-- options/stablecoin macro features,
-- advanced execution slicing,
-- multi-portfolio allocator,
-- full production persistence adapters.
+### Deferred after Phase 2
+- HMM/change-point regime engine as default classifier.
+- Options/stablecoin macro features as mandatory dependencies.
+- Full production persistence adapters on every path.
 
 ---
 
-## 13. Practical Notes for Reviewers
+## 14. Practical Notes for Reviewers
 
 If you are reviewing this project for correctness, start here:
 1. Event ordering around bar close and snapshot cutoff.
@@ -279,7 +343,7 @@ If these pass, the core kernel is behaving as designed.
 
 ---
 
-## 14. Disclaimer
+## 15. Disclaimer
 
 This repository is infrastructure/research code for quantitative trading.
 It is not investment advice. Crypto markets are highly volatile, and misuse can lead to large losses.
