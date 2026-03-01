@@ -245,101 +245,104 @@ zenquant-web
 
 ### Run tests
 ```bash
+# pytest (recommended)
+pip install -e ".[test]"
+pytest
+
+# or legacy unittest
 python3 -m unittest discover -s tests -v
 ```
 
 ---
 
-## 12. Phase 2 Unified Roadmap
+## 12. Critical Gaps (code audit → 4H+ profitability)
 
-This branch unifies the two prior README roadmap directions into one execution-oriented plan.
+Phase 1 proved determinism and wiring. But several gaps must be closed before any backtest result is meaningful or the strategy can profit on real 4H+ data.
 
-### Phase 2 mission
-Move from "deterministic Phase 1 kernel" to "production-grade decision and risk quality" while preserving replay determinism.
+### P0 — Without these, backtest results are not trustworthy
 
-### Workstream A: Regime intelligence
-- Add `SwingStructure` and `Momentum_ROC` as first-class indicators for structure + momentum confirmation.
-- Introduce a stricter regime contract:
-  - `TREND` requires structure confirmation plus flow confirmation,
-  - `RANGE` requires low trend pressure and mean-reversion preconditions,
-  - `STRESS` is triggered by volatility, liquidity, or data quality degradation.
-- Add explicit regime transition guards to avoid state chattering.
+| # | Gap | Where | Why it matters |
+|---|---|---|---|
+| 1 | **No exit logic** | `strategy/engine.py` recomputes `target_qty` from scratch every bar with no memory of entry price | Destroys trend-following edge; whipsaws on every bar close instead of riding winners |
+| 2 | **No position state** | `ARCStrategyEngine` has no `entry_price`, `trailing_stop`, or `pyramid_count` | Cannot implement trailing stops, pyramiding, or time-decay exits |
+| 3 | **Regime is CVD-only** | `_classify_regime` uses `abs(cvd_slope) * 10` and `zen_pulse` thresholds only | Cannot distinguish a genuine breakout from a single large market order; no price-structure input |
+| 4 | **Vol unit ambiguity** | `target_vol_4h = 0.025` vs `realized_vol` annualized by `sqrt(2190)` | If `0.025` is per-bar and `realized_vol` is annualized, leverage is ~47x too small. Must clarify units |
+| 5 | **No backtest pipeline** | No historical data loader, no walk-forward harness, no metrics calculator | Cannot evaluate or iterate on strategy parameters before going live |
 
-### Workstream B: Strategy state and exits
-- Add position memory in strategy state:
-  - `entry_price`,
-  - `entry_bar`,
-  - `trailing_stop`,
-  - `pyramid_count`.
-- Add deterministic exits:
-  - trailing ATR stop,
-  - structure-break exit,
-  - regime-flip forced reduction,
-  - max-hold decay logic.
-- Keep output contract unchanged: strategy still emits `TargetPosition` only.
+### P1 — Without these, live performance will significantly lag backtest
 
-### Workstream C: Risk and cost realism
-- Keep risk overlay as the final authority to rewrite intent.
-- Extend risk controls:
-  - correlation-aware cap for BTC/ETH concentration,
-  - intrabar emergency reduce trigger,
-  - funding-cost integration in equity accounting.
-- Upgrade execution realism for research parity:
-  - slippage estimator,
-  - participation-rate cap,
-  - deterministic partial-fill carry-over across bars.
+| # | Gap | Where | Why it matters |
+|---|---|---|---|
+| 6 | **No multi-timeframe confluence** | 4H and 1D are independent signal paths | 4H TREND-LONG can fire while 1D is bearish — whipsaw against dominant structure |
+| 7 | **No slippage model** | `gateway.py` fills at `mark_price` with zero impact | Backtest Sharpe inflated, especially when strategy "sizes up in big-vol regimes" |
+| 8 | **No funding cost** | Holding perp positions across funding intervals costs real money, not modeled | Edge can be entirely eaten by funding in crowded trending markets |
+| 9 | **ZenPulse degraded handling** | Degraded components get a flat penalty, weights not redistributed | Composite score biased when components are missing |
 
-### Workstream D: Evaluation and release gate
-- Add replay-driven backtest CLI for historical windows.
-- Enforce walk-forward evaluation and parameter sensitivity checks.
-- Require release gates before production enablement:
-  - deterministic replay parity,
-  - cost-aware performance metrics,
-  - drawdown and stress-case pass criteria.
+### P2 — Important for robustness, can follow P0/P1
 
-### Milestones (recommended sequencing)
-1. M1: indicator and regime contract hardening.
-2. M2: stateful strategy exits and risk throttles.
-3. M3: slippage/funding/capacity modeling.
-4. M4: walk-forward harness and release checklist.
-
-### Acceptance criteria for Phase 2 completion
-- Same event stream reproduces the same indicator values, intents, and execution reports.
-- Strategy behavior is explainable at bar close with stable reason codes.
-- Backtest includes funding and slippage costs and matches replay assumptions.
-- Risk overlay can cap or reduce exposure deterministically under stress.
-
-### Explicit non-goals for Phase 2
-- New asset-class expansion beyond current BTC/ETH perp focus.
-- Full multi-portfolio allocator.
-- Exchange-specific ultra-low-latency optimization.
+| # | Gap | Where | Why it matters |
+|---|---|---|---|
+| 10 | **BTC/ETH correlation** | No portfolio-level leverage cap | Effective 2x concentration when both trend same direction |
+| 11 | **No intra-bar risk trigger** | Risk only evaluates at bar close | Flash crash can wipe position before next 4H close |
+| 12 | **Range module unguarded** | Mean-reversion fires without structure detection | Loses money in trending markets |
 
 ---
 
-## 13. Current Status
+## 13. Phase 2 Roadmap (priority-ordered)
 
-### In current branch scope
-- Deterministic Phase 1 vertical slice is implemented.
-- Core contracts are versioned and auditable.
-- Replay parity tests exist for indicators/intents/execution.
+### Phase 2A — Fix foundations (before any strategy tuning)
 
-### Deferred after Phase 2
-- HMM/change-point regime engine as default classifier.
-- Options/stablecoin macro features as mandatory dependencies.
-- Full production persistence adapters on every path.
+- [ ] **[P0-1] `SwingStructure` indicator** — N-bar pivot detection, HH/HL/LH/LL tracking, `structure_break` flag
+- [ ] **[P0-2] `Momentum_ROC` indicator** — rate-of-change z-score for trend confirmation
+- [ ] **[P0-3] Vol unit fix** — document and enforce annualized units everywhere; adjust `target_vol` defaults
+- [ ] **[P0-4] Backtest pipeline** — historical data loader (Binance klines → parquet), replay-based runner, metrics (Sharpe, max DD, win rate, profit factor, regime-conditional)
+- [ ] **[P0-5] Walk-forward harness** — 12-18mo train / 3mo test, roll forward, flag OOS Sharpe < 0
+
+### Phase 2B — Strategy with real edge
+
+- [ ] **[P0-6] Stateful position tracking** — add `_open_positions: dict[str, OpenPositionState]` with `entry_price`, `entry_bar`, `trailing_stop`, `pyramid_count`, `direction`
+- [ ] **[P0-7] Exit logic** — trailing ATR stop (2.5x initial, 2.0x trail), structure-break exit, regime-flip exit, time-decay exit (30 bars)
+- [ ] **[P0-8] Regime upgrade** — require `SwingStructure` confirms (HH for uptrend) AND CVD confirms; not CVD-only
+- [ ] **[P1-1] Multi-timeframe confluence** — 1D directional bias gates 4H entries; 1D STRESS forces 4H reduce-only
+- [ ] **[P1-2] Pyramiding** — add to winners with decaying size (`base * 0.5^n`), max 3 layers
+- [ ] **[P1-3] Disable range module** until SwingStructure is proven in walk-forward backtest
+
+### Phase 2C — Cost realism + risk hardening
+
+- [ ] **[P1-4] Slippage estimator** — `base_spread_bps + (notional / bar_volume) * impact_coeff`; fill at adjusted price
+- [ ] **[P1-5] Participation rate cap** — `max_participation = 0.05`; carry unfilled to next bar
+- [ ] **[P1-6] Funding cost model** — deduct `position_notional * funding_rate` from equity each funding interval
+- [ ] **[P2-1] Correlation-aware portfolio cap** — if `corr(BTC,ETH) > 0.8`, treat as single-asset leverage
+- [ ] **[P2-2] Intra-bar emergency trigger** — subscribe `md.trade.>` in RiskOverlay; if price moves > 3x ATR within bar, force reduce-only
+
+### Phase 2D — Validation gate
+
+- [ ] Walk-forward: out-of-sample Sharpe > 0.8 on 2+ years BTC/ETH
+- [ ] Parameter sensitivity: Sharpe drop < 40% on any single param ±20% perturbation
+- [ ] Paper trading: 4+ weeks matching backtest expectations
+- [ ] Real exchange adapters (Binance/OKX) for live deployment
+
+### Acceptance criteria
+- Same event stream → same outputs (replay parity preserved).
+- Strategy behavior explainable at bar close with stable reason codes.
+- Backtest includes funding + slippage costs.
+- Risk overlay caps exposure deterministically under stress.
+
+### Non-goals for Phase 2
+- Asset expansion beyond BTC/ETH perp.
+- Multi-portfolio allocator.
+- Ultra-low-latency exchange optimization.
 
 ---
 
 ## 14. Practical Notes for Reviewers
 
-If you are reviewing this project for correctness, start here:
+Start here for correctness review:
 1. Event ordering around bar close and snapshot cutoff.
 2. Indicator point-in-time metadata and quality flags.
 3. Intent rewrite path (`target_position -> final`).
 4. Execution delta logic and fee/equity interactions.
 5. Replay test parity.
-
-If these pass, the core kernel is behaving as designed.
 
 ---
 
