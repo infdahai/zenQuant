@@ -1,4 +1,3 @@
-from .guard import RiskDecision, RiskGuard, RiskGuardConfig
+from .guard import RiskOverlay, RiskOverlayConfig
 
-__all__ = ["RiskDecision", "RiskGuard", "RiskGuardConfig"]
-
+__all__ = ["RiskOverlay", "RiskOverlayConfig"]

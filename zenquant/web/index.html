@@ -3,86 +3,82 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>ZenQuant Console</title>
+    <title>ZenQuant Phase 1 Console</title>
     <link rel="stylesheet" href="/static/styles.css" />
   </head>
   <body>
-    <div class="frame">
-      <aside class="rail">
-        <div class="rail-logo">ZQ</div>
-        <button class="rail-btn" aria-label="Dashboard">D</button>
-        <button class="rail-btn" aria-label="Market">M</button>
-        <button class="rail-btn" aria-label="Execution">E</button>
-        <button class="rail-btn" aria-label="Risk">R</button>
-        <button class="rail-btn" aria-label="Settings">S</button>
-      </aside>
+    <div class="app-shell">
+      <header class="topbar">
+        <div class="brand">ZenQuant 4.0</div>
+        <div class="controls">
+          <label>
+            Symbol
+            <select id="symbolSelect">
+              <option value="BTCUSDT_PERP">BTCUSDT_PERP</option>
+              <option value="ETHUSDT_PERP">ETHUSDT_PERP</option>
+            </select>
+          </label>
+          <label>
+            Timeframe
+            <select id="tfSelect">
+              <option value="4h">4H</option>
+              <option value="1d">1D</option>
+            </select>
+          </label>
+        </div>
+        <div class="last-price">Last: <strong id="lastPrice">-</strong></div>
+      </header>
 
-      <div class="workspace">
-        <header class="topbar">
-          <div class="pair-block">
-            <div class="pair-exch" id="exchangeLabel">BINANCE.F</div>
-            <div class="pair-symbol" id="symbolLabel">BTC_USDT</div>
+      <main class="layout">
+        <section class="panel chart-panel">
+          <div class="panel-title">Candle Trend</div>
+          <canvas id="priceCanvas"></canvas>
+        </section>
+
+        <section class="panel metrics-panel">
+          <div class="panel-title">Regime & Risk Budget</div>
+          <div class="metrics-grid">
+            <article class="metric">
+              <span>ZenPulse</span>
+              <strong id="zenPulse">-</strong>
+            </article>
+            <article class="metric">
+              <span>Regime</span>
+              <strong id="regime">-</strong>
+            </article>
+            <article class="metric">
+              <span>Lev Cap</span>
+              <strong id="levCap">-</strong>
+            </article>
+            <article class="metric">
+              <span>Target Qty</span>
+              <strong id="targetQty">-</strong>
+            </article>
           </div>
-          <div class="timeframe-group">
-            <button class="tf-btn">1m</button>
-            <button class="tf-btn">15m</button>
-            <button class="tf-btn active">1h</button>
-            <button class="tf-btn">4h</button>
-          </div>
-          <div class="kpis">
-            <div class="kpi">
-              <span>Last</span>
-              <strong id="lastPrice">-</strong>
-            </div>
-            <div class="kpi">
-              <span>Spread</span>
-              <strong id="spreadValue">-</strong>
-            </div>
-            <div class="kpi">
-              <span>Position</span>
-              <strong id="positionValue">-</strong>
-            </div>
-            <div class="kpi">
-              <span>Kill Switch</span>
-              <strong id="killSwitchValue" class="status-safe">SAFE</strong>
-            </div>
-          </div>
-        </header>
+        </section>
 
-        <main class="grid">
-          <section class="panel chart-panel">
-            <div class="panel-title">Price Stream</div>
-            <canvas id="priceCanvas" width="1400" height="420"></canvas>
-          </section>
+        <section class="panel indicators-panel">
+          <div class="panel-title">Indicator Pack v1</div>
+          <div class="table" id="indicatorTable"></div>
+        </section>
 
-          <section class="panel orderbook-panel">
-            <div class="panel-title">Order Book</div>
-            <div class="book-head">
-              <span>Bid Qty</span>
-              <span>Price</span>
-              <span>Ask Qty</span>
-            </div>
-            <div id="orderBookRows" class="book-rows"></div>
-          </section>
+        <section class="panel alerts-panel">
+          <div class="panel-title">Alerts Timeline</div>
+          <div class="list" id="alertsList"></div>
+        </section>
 
-          <section class="panel signal-panel">
-            <div class="panel-title">Latest Signals</div>
-            <div id="signalList" class="card-list"></div>
-          </section>
+        <section class="panel why-panel">
+          <div class="panel-title">Why Card</div>
+          <div id="whyCard" class="why"></div>
+        </section>
 
-          <section class="panel execution-panel">
-            <div class="panel-title">Execution Reports</div>
-            <div id="reportList" class="card-list"></div>
-          </section>
-
-          <section class="panel factor-panel">
-            <div class="panel-title">Factor Weights</div>
-            <div id="weightList" class="card-list"></div>
-          </section>
-        </main>
-      </div>
+        <section class="panel reports-panel">
+          <div class="panel-title">Execution Reports</div>
+          <div class="list" id="reportsList"></div>
+        </section>
+      </main>
     </div>
+
     <script src="/static/app.js"></script>
   </body>
 </html>
-

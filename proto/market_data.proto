@@ -2,28 +2,40 @@ syntax = "proto3";
 
 package zenquant.marketdata;
 
+message EventMeta {
+  uint64 event_time_ns = 1;
+  uint64 ingest_time_ns = 2;
+  string venue = 3;
+  string symbol = 4;
+  uint64 stream_seq = 5;
+  string schema_version = 6;
+}
+
 message OrderBookLevel {
   double price = 1;
   double quantity = 2;
 }
 
-message OrderBookSnapshot {
-  string symbol = 1;
-  string exchange = 2;
-  uint64 exchange_timestamp = 3;
-  uint64 local_timestamp = 4;
-  bool is_snapshot = 5;
-  repeated OrderBookLevel bids = 6;
-  repeated OrderBookLevel asks = 7;
+message TradeTick {
+  EventMeta meta = 1;
+  double price = 2;
+  double size = 3;
+  bool is_buyer_aggressor = 4;
 }
 
-message TradeTick {
-  string symbol = 1;
-  string exchange = 2;
-  double price = 3;
-  double size = 4;
-  uint64 trade_id = 5;
-  bool is_buyer_maker = 6;
-  uint64 exchange_timestamp = 7;
-  uint64 local_timestamp = 8;
+message OrderBookSnapshot {
+  EventMeta meta = 1;
+  repeated OrderBookLevel bids = 2;
+  repeated OrderBookLevel asks = 3;
+  bool is_snapshot = 4;
+}
+
+message FundingUpdate {
+  EventMeta meta = 1;
+  double funding_rate = 2;
+}
+
+message OpenInterestUpdate {
+  EventMeta meta = 1;
+  double open_interest = 2;
 }

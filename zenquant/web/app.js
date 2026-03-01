@@ -1,154 +1,219 @@
 (function () {
   const state = {
-    prices: [],
-    bids: [],
-    asks: [],
-    signals: [],
-    reports: [],
-    weights: [],
-    symbol: "BTC_USDT",
-    exchange: "BINANCE",
-    last_price: 0,
-    spread: 0,
-    position: 0,
-    kill_switch_active: false,
+    symbol: "BTCUSDT_PERP",
+    tf: "4h",
+    snapshot: null,
+    latestIndicator: null,
+    indicatorSocket: null,
   };
 
   const el = {
-    symbolLabel: document.getElementById("symbolLabel"),
-    exchangeLabel: document.getElementById("exchangeLabel"),
+    symbolSelect: document.getElementById("symbolSelect"),
+    tfSelect: document.getElementById("tfSelect"),
     lastPrice: document.getElementById("lastPrice"),
-    spreadValue: document.getElementById("spreadValue"),
-    positionValue: document.getElementById("positionValue"),
-    killSwitchValue: document.getElementById("killSwitchValue"),
-    orderBookRows: document.getElementById("orderBookRows"),
-    signalList: document.getElementById("signalList"),
-    reportList: document.getElementById("reportList"),
-    weightList: document.getElementById("weightList"),
+    zenPulse: document.getElementById("zenPulse"),
+    regime: document.getElementById("regime"),
+    levCap: document.getElementById("levCap"),
+    targetQty: document.getElementById("targetQty"),
+    indicatorTable: document.getElementById("indicatorTable"),
+    alertsList: document.getElementById("alertsList"),
+    whyCard: document.getElementById("whyCard"),
+    reportsList: document.getElementById("reportsList"),
     priceCanvas: document.getElementById("priceCanvas"),
   };
 
   function init() {
-    fetch("/api/state")
-      .then((r) => r.json())
+    el.symbolSelect.value = state.symbol;
+    el.tfSelect.value = state.tf;
+
+    el.symbolSelect.addEventListener("change", onSelectionChange);
+    el.tfSelect.addEventListener("change", onSelectionChange);
+    window.addEventListener("resize", drawChart);
+
+    refreshState();
+    connectIndicatorSocket();
+    setInterval(refreshState, 2400);
+  }
+
+  function onSelectionChange() {
+    state.symbol = el.symbolSelect.value;
+    state.tf = el.tfSelect.value;
+    refreshState();
+    connectIndicatorSocket();
+  }
+
+  function refreshState() {
+    const query = new URLSearchParams({ symbol: state.symbol, tf: state.tf });
+    fetch(`/api/state?${query.toString()}`)
+      .then((response) => response.json())
       .then((payload) => {
-        applySnapshot(payload);
+        state.snapshot = payload;
+        if (payload.latest_indicator) {
+          state.latestIndicator = payload.latest_indicator;
+        }
         render();
       })
       .catch(() => undefined);
-
-    connectWebSocket();
-    window.addEventListener("resize", () => renderChart());
   }
 
-  function connectWebSocket() {
+  function connectIndicatorSocket() {
+    if (state.indicatorSocket) {
+      state.indicatorSocket.close();
+    }
     const protocol = window.location.protocol === "https:" ? "wss" : "ws";
-    const ws = new WebSocket(`${protocol}://${window.location.host}/ws`);
+    const query = new URLSearchParams({ symbol: state.symbol, tf: state.tf });
+    const socket = new WebSocket(`${protocol}://${window.location.host}/ws/indicators?${query.toString()}`);
+    state.indicatorSocket = socket;
 
-    ws.onmessage = (event) => {
-      const payload = JSON.parse(event.data);
-      applySnapshot(payload);
+    socket.onmessage = (event) => {
+      state.latestIndicator = JSON.parse(event.data);
       render();
     };
-    ws.onopen = () => {
+
+    socket.onopen = () => {
       const heartbeat = setInterval(() => {
-        if (ws.readyState !== WebSocket.OPEN) {
+        if (socket.readyState !== WebSocket.OPEN) {
           clearInterval(heartbeat);
           return;
         }
-        ws.send("ping");
+        socket.send("ping");
       }, 15000);
     };
-    ws.onclose = () => {
-      setTimeout(connectWebSocket, 1200);
-    };
-  }
 
-  function applySnapshot(payload) {
-    Object.assign(state, payload);
+    socket.onclose = () => {
+      if (state.indicatorSocket === socket) {
+        setTimeout(connectIndicatorSocket, 1200);
+      }
+    };
   }
 
   function render() {
-    renderHeader();
-    renderChart();
-    renderOrderBook();
-    renderSignals();
-    renderReports();
-    renderWeights();
-  }
+    const snapshot = state.snapshot || {};
+    const indicator = state.latestIndicator || snapshot.latest_indicator || null;
 
-  function renderHeader() {
-    el.symbolLabel.textContent = state.symbol || "-";
-    el.exchangeLabel.textContent = state.exchange || "-";
-    el.lastPrice.textContent = formatNum(state.last_price, 2);
-    el.spreadValue.textContent = formatNum(state.spread, 3);
-    el.positionValue.textContent = formatNum(state.position, 4);
-    el.killSwitchValue.textContent = state.kill_switch_active ? "TRIGGERED" : "SAFE";
-    el.killSwitchValue.className = state.kill_switch_active ? "status-danger" : "status-safe";
-  }
+    el.lastPrice.textContent = formatNum(snapshot.last_price, 2);
+    el.targetQty.textContent = formatNum(snapshot.target_position, 5);
 
-  function renderOrderBook() {
-    const rows = [];
-    const depth = Math.min(state.bids.length, state.asks.length, 16);
-    for (let i = 0; i < depth; i += 1) {
-      const bid = state.bids[i];
-      const ask = state.asks[i];
-      rows.push(`
-        <div class="book-row">
-          <span class="bid">${formatNum(bid.qty, 4)}</span>
-          <span>${formatNum((bid.price + ask.price) / 2, 2)}</span>
-          <span class="ask">${formatNum(ask.qty, 4)}</span>
-        </div>
-      `);
+    const riskDecision = snapshot.risk_decision || null;
+    el.levCap.textContent = riskDecision ? formatNum(riskDecision.lev_cap, 3) : "-";
+
+    const reason = (snapshot.reasons || [])[0] || null;
+    const regime = reason ? extractRegime(reason.reason_codes || []) : "-";
+    el.regime.textContent = regime;
+
+    if (indicator && indicator.values) {
+      el.zenPulse.textContent = formatNum(indicator.values.zen_pulse, 1);
+    } else {
+      el.zenPulse.textContent = "-";
     }
-    el.orderBookRows.innerHTML = rows.join("");
+
+    renderIndicatorTable(indicator);
+    renderAlerts(snapshot.alerts || []);
+    renderWhyCard(reason, riskDecision);
+    renderReports(snapshot.reports || []);
+    drawChart();
   }
 
-  function renderSignals() {
-    const cards = state.signals.slice(0, 8).map((item) => {
-      const rawVal = item.type === 0 ? item.continuous_value : item.pattern_event;
-      return cardHtml(item.factor_id, `Type ${item.type}`, `v=${formatNum(rawVal, 4)} ic=${formatNum(item.confidence_ic, 3)}`);
-    });
-    el.signalList.innerHTML = cards.join("");
+  function extractRegime(reasonCodes) {
+    const tag = reasonCodes.find((code) => String(code).startsWith("REGIME_"));
+    if (!tag) {
+      return "-";
+    }
+    return tag.replace("REGIME_", "");
   }
 
-  function renderReports() {
-    const cards = state.reports.slice(0, 8).map((item) => {
-      const status = reportStatusText(item.status);
-      const value = `status=${status} qty=${formatNum(item.filled_qty, 4)} vwap=${formatNum(item.vwap, 2)}`;
-      return cardHtml(item.client_order_id, item.exchange_order_id, value);
-    });
-    el.reportList.innerHTML = cards.join("");
+  function renderIndicatorTable(indicator) {
+    if (!indicator || !indicator.values) {
+      el.indicatorTable.innerHTML = `<div class="row"><span>waiting</span><span>-</span></div>`;
+      return;
+    }
+    const quality = (indicator.quality_flags || []).join(", ");
+    const rows = [
+      ["funding_oi_weighted", indicator.values.funding_oi_weighted],
+      ["funding_oi_z", indicator.values.funding_oi_z],
+      ["cvd_slope", indicator.values.cvd_slope],
+      ["ob_liq_z", indicator.values.ob_liq_z],
+      ["overall_ob_liq_z", indicator.values.overall_ob_liq_z],
+      ["realized_vol", indicator.values.realized_vol],
+      ["atr", indicator.values.atr],
+      ["book_age_ms", indicator.values.book_age_ms],
+      ["oi_coverage", indicator.values.oi_coverage],
+      ["quality_flags", quality],
+    ];
+
+    el.indicatorTable.innerHTML = rows
+      .map(([name, value]) => `<div class="row"><span>${escapeHtml(name)}</span><span>${escapeHtml(formatValue(value))}</span></div>`)
+      .join("");
   }
 
-  function renderWeights() {
-    const cards = state.weights.slice(0, 8).map((item) => {
-      const value = `w=${formatNum(item.weight, 4)} ic=${formatNum(item.ic_mean, 4)} p=${formatNum(item.orthogonal_penalty, 3)}`;
-      return cardHtml(item.factor_id, item.symbol, value);
-    });
-    el.weightList.innerHTML = cards.join("");
+  function renderAlerts(alerts) {
+    if (!alerts.length) {
+      el.alertsList.innerHTML = `<article class="card"><strong>OK</strong> no active alerts</article>`;
+      return;
+    }
+
+    el.alertsList.innerHTML = alerts
+      .slice(0, 8)
+      .map((item) => {
+        const flags = (item.flags || []).join(", ");
+        return `
+          <article class="card">
+            <div><strong>${escapeHtml(item.type || "ALERT")}</strong> - ${escapeHtml(item.symbol || "-")}</div>
+            <div>${escapeHtml(flags)}</div>
+          </article>
+        `;
+      })
+      .join("");
   }
 
-  function cardHtml(id, meta, value) {
-    return `
-      <article class="card">
-        <div class="card-top">
-          <span class="card-id">${escapeHtml(id)}</span>
-          <span class="card-meta">${escapeHtml(meta)}</span>
-        </div>
-        <div class="card-value">${escapeHtml(value)}</div>
-      </article>
+  function renderWhyCard(reason, riskDecision) {
+    if (!reason) {
+      el.whyCard.innerHTML = "Waiting for first bar close intent...";
+      return;
+    }
+
+    const reasonCodes = (reason.reason_codes || []).join(", ");
+    const riskFlags = riskDecision ? (riskDecision.flags || []).join(", ") : "OK";
+    el.whyCard.innerHTML = `
+      <div>${escapeHtml(reason.summary || "-")}</div>
+      <div style="margin-top:8px;color:#8fb0ca;">reason_codes: ${escapeHtml(reasonCodes || "-")}</div>
+      <div style="margin-top:8px;color:#8fb0ca;">risk_flags: ${escapeHtml(riskFlags || "-")}</div>
     `;
   }
 
-  function renderChart() {
+  function renderReports(reports) {
+    if (!reports.length) {
+      el.reportsList.innerHTML = `<article class="card">No fills yet.</article>`;
+      return;
+    }
+
+    el.reportsList.innerHTML = reports
+      .slice(0, 10)
+      .map((report) => {
+        const cls = report.status === "FILLED" ? "status-ok" : "status-bad";
+        return `
+          <article class="card">
+            <div><span class="${cls}">${escapeHtml(report.status || "-")}</span> ${escapeHtml(report.symbol || "-")}</div>
+            <div>qty=${escapeHtml(formatNum(report.filled_qty, 5))} price=${escapeHtml(formatNum(report.avg_price, 2))}</div>
+          </article>
+        `;
+      })
+      .join("");
+  }
+
+  function drawChart() {
     const canvas = el.priceCanvas;
+    if (!canvas) {
+      return;
+    }
+
+    const candles = ((state.snapshot || {}).candles || []).slice(-120);
     const rect = canvas.getBoundingClientRect();
-    const dpr = window.devicePixelRatio || 1;
     const width = Math.max(320, Math.floor(rect.width));
     const height = Math.max(220, Math.floor(rect.height));
-    canvas.width = Math.floor(width * dpr);
-    canvas.height = Math.floor(height * dpr);
+    const dpr = window.devicePixelRatio || 1;
+    canvas.width = width * dpr;
+    canvas.height = height * dpr;
 
     const ctx = canvas.getContext("2d");
     if (!ctx) {
@@ -157,68 +222,61 @@
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     ctx.clearRect(0, 0, width, height);
 
-    const data = state.prices || [];
-    if (data.length < 2) {
-      drawGrid(ctx, width, height);
+    drawGrid(ctx, width, height);
+
+    if (candles.length < 2) {
       return;
     }
 
-    const values = data.map((d) => d.p);
-    const minP = Math.min(...values);
-    const maxP = Math.max(...values);
+    const closes = candles.map((c) => Number(c.close));
+    const minP = Math.min(...closes);
+    const maxP = Math.max(...closes);
     const range = Math.max(1e-9, maxP - minP);
-    const left = 16;
-    const right = width - 16;
-    const top = 18;
-    const bottom = height - 20;
-    const plotWidth = right - left;
-    const plotHeight = bottom - top;
 
-    drawGrid(ctx, width, height);
+    const left = 12;
+    const top = 14;
+    const right = width - 12;
+    const bottom = height - 16;
+    const plotW = right - left;
+    const plotH = bottom - top;
 
-    const points = values.map((p, i) => {
-      const x = left + (i / (values.length - 1)) * plotWidth;
-      const y = top + ((maxP - p) / range) * plotHeight;
+    const points = closes.map((price, index) => {
+      const x = left + (index / (closes.length - 1)) * plotW;
+      const y = top + ((maxP - price) / range) * plotH;
       return { x, y };
     });
 
-    const gradient = ctx.createLinearGradient(0, top, 0, bottom);
-    gradient.addColorStop(0, "rgba(19, 198, 167, 0.28)");
-    gradient.addColorStop(1, "rgba(19, 198, 167, 0.02)");
+    const fill = ctx.createLinearGradient(0, top, 0, bottom);
+    fill.addColorStop(0, "rgba(21, 216, 181, 0.3)");
+    fill.addColorStop(1, "rgba(21, 216, 181, 0.03)");
 
     ctx.beginPath();
     ctx.moveTo(points[0].x, bottom);
-    for (const pt of points) {
-      ctx.lineTo(pt.x, pt.y);
-    }
+    points.forEach((point) => ctx.lineTo(point.x, point.y));
     ctx.lineTo(points[points.length - 1].x, bottom);
     ctx.closePath();
-    ctx.fillStyle = gradient;
+    ctx.fillStyle = fill;
     ctx.fill();
 
     ctx.beginPath();
     ctx.moveTo(points[0].x, points[0].y);
-    for (const pt of points) {
-      ctx.lineTo(pt.x, pt.y);
-    }
-    ctx.strokeStyle = "#25d7b3";
-    ctx.lineWidth = 2.2;
+    points.forEach((point) => ctx.lineTo(point.x, point.y));
+    ctx.strokeStyle = "#15d8b5";
+    ctx.lineWidth = 2.1;
     ctx.stroke();
 
-    ctx.fillStyle = "#ffd9c1";
+    ctx.fillStyle = "#bfe6ff";
     ctx.font = "600 12px JetBrains Mono, monospace";
-    ctx.fillText(`High ${formatNum(maxP, 2)}`, left, 14);
-    ctx.fillText(`Low ${formatNum(minP, 2)}`, width - 110, 14);
+    ctx.fillText(`H ${formatNum(maxP, 2)}  L ${formatNum(minP, 2)}`, left, 12);
   }
 
   function drawGrid(ctx, width, height) {
-    ctx.fillStyle = "rgba(8, 14, 26, 0.65)";
+    ctx.fillStyle = "rgba(10, 18, 28, 0.8)";
     ctx.fillRect(0, 0, width, height);
-    ctx.strokeStyle = "rgba(65, 88, 133, 0.35)";
+    ctx.strokeStyle = "rgba(58, 92, 120, 0.35)";
     ctx.lineWidth = 1;
-    const lines = 6;
-    for (let i = 1; i < lines; i += 1) {
-      const y = (height / lines) * i;
+    for (let i = 1; i < 6; i += 1) {
+      const y = (height / 6) * i;
       ctx.beginPath();
       ctx.moveTo(0, y);
       ctx.lineTo(width, y);
@@ -226,20 +284,28 @@
     }
   }
 
-  function reportStatusText(code) {
-    if (code === 0) return "NEW";
-    if (code === 1) return "PARTIAL";
-    if (code === 2) return "FILLED";
-    if (code === 3) return "REJECTED";
-    return "UNKNOWN";
-  }
-
   function formatNum(value, digits) {
-    const num = Number(value);
-    if (!Number.isFinite(num)) {
+    const n = Number(value);
+    if (!Number.isFinite(n)) {
       return "-";
     }
-    return num.toFixed(digits);
+    return n.toFixed(digits);
+  }
+
+  function formatValue(value) {
+    if (typeof value === "number") {
+      if (!Number.isFinite(value)) {
+        return "-";
+      }
+      if (Math.abs(value) >= 1000) {
+        return value.toFixed(2);
+      }
+      return value.toFixed(4);
+    }
+    if (value === null || value === undefined) {
+      return "-";
+    }
+    return String(value);
   }
 
   function escapeHtml(value) {
@@ -251,4 +317,3 @@
 
   init();
 })();
-

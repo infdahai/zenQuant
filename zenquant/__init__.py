@@ -1,2 +1,1 @@
-"""ZenQuant 3.0 reference implementation."""
-
+"""ZenQuant 4.0 Phase 1 deterministic indicator-first kernel."""

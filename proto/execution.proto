@@ -2,34 +2,28 @@ syntax = "proto3";
 
 package zenquant.execution;
 
-enum OrderType {
-  MARKET = 0;
-  LIMIT = 1;
-  POST_ONLY = 2;
-  FOK = 3;
-  IOC = 4;
+enum ExecStatus {
+  EXEC_STATUS_FILLED = 0;
+  EXEC_STATUS_REJECTED = 1;
 }
 
-message SubmitOrder {
+message ExecutionOrder {
   string client_order_id = 1;
   string symbol = 2;
-  OrderType type = 3;
-  double limit_price = 4;
-  double quantity = 5;
-  int32 side = 6;
-  bool reduce_only = 7;
-  double max_slippage_tolerance = 8;
-  bool enable_synthetic_arb = 9;
+  int32 side = 3;
+  double quantity = 4;
+  bool reduce_only = 5;
+  double max_slippage_bps = 6;
 }
 
 message ExecutionReport {
   string client_order_id = 1;
-  string exchange_order_id = 2;
-  string status = 3;
-  double cumulative_filled_qty = 4;
-  double volume_weighted_avg_price = 5;
-  double commission = 6;
-  string commission_asset = 7;
-  uint64 transaction_time = 8;
+  string symbol = 2;
+  ExecStatus status = 3;
+  double filled_qty = 4;
+  double avg_price = 5;
+  double fee = 6;
+  uint64 transaction_time_ns = 7;
+  string reject_reason = 8;
+  int32 side = 9;
 }
-

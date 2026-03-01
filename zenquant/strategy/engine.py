@@ -1,100 +1,167 @@
 from __future__ import annotations
 
-from collections import deque
+import uuid
 from dataclasses import dataclass
 
-from zenquant.domain.models import AlphaSignal, Candle, PAPattern, SignalType, TradeTick
-from zenquant.infra.event_bus import InMemoryJetStream
-from zenquant.pa_analyzer import PAAnalyzer
+from zenquant.domain import IndicatorPack, IntentReason, RiskSnapshot, TargetPosition, Timeframe
+from zenquant.infra import InMemoryJetStream
 
 
 @dataclass(slots=True)
-class StrategyEngineConfig:
-    trade_window: int = 32
-    bar_size: int = 8
-    continuous_scale: float = 24.0
+class ARCStrategyConfig:
+    portfolio: str = "arc"
+    account_equity: float = 100_000.0
+    max_leverage: float = 3.0
+    target_vol_4h: float = 0.025
+    target_vol_1d: float = 0.04
+    min_trade_qty: float = 0.0001
 
 
-@dataclass(slots=True)
-class _SymbolState:
-    prices: deque[float]
-    ticks: list[TradeTick]
-    analyzer: PAAnalyzer
-
-
-class StrategyEngine:
-    def __init__(self, bus: InMemoryJetStream, config: StrategyEngineConfig | None = None) -> None:
+class ARCStrategyEngine:
+    def __init__(self, bus: InMemoryJetStream, config: ARCStrategyConfig | None = None) -> None:
         self._bus = bus
-        self._config = config or StrategyEngineConfig()
-        self._states: dict[str, _SymbolState] = {}
-        self._bus.subscribe("md.trade.>", self._on_trade)
+        self._config = config or ARCStrategyConfig()
+        self._equity = self._config.account_equity
+        self._last_regime: dict[tuple[str, Timeframe], str] = {}
 
-    def _on_trade(self, _: str, payload: object) -> None:
-        if not isinstance(payload, TradeTick):
+        self._bus.subscribe("indicator.>", self._on_indicator)
+        self._bus.subscribe("risk.snapshot", self._on_risk_snapshot)
+
+    def _on_risk_snapshot(self, _: str, payload: object) -> None:
+        if isinstance(payload, RiskSnapshot):
+            self._equity = max(0.0, payload.equity)
+
+    def _on_indicator(self, _: str, payload: object) -> None:
+        if not isinstance(payload, IndicatorPack):
             return
-        state = self._states.get(payload.symbol)
-        if state is None:
-            state = _SymbolState(
-                prices=deque(maxlen=self._config.trade_window),
-                ticks=[],
-                analyzer=PAAnalyzer(),
-            )
-            self._states[payload.symbol] = state
 
-        state.prices.append(payload.price)
-        state.ticks.append(payload)
+        target = self._build_target(payload)
+        reason = self._build_reason(target)
+        self._bus.publish(f"strategy.regime.{self._config.portfolio}", {"symbol": target.symbol, "regime": target.regime})
+        self._bus.publish(f"intent.target_position.{self._config.portfolio}.{target.symbol}", target)
+        self._bus.publish(f"intent.reason.{self._config.portfolio}", reason)
 
-        self._emit_continuous_signal(payload, state)
-        if len(state.ticks) >= self._config.bar_size:
-            self._emit_pa_signal(payload.symbol, state)
-            state.ticks.clear()
+    def _build_target(self, pack: IndicatorPack) -> TargetPosition:
+        values = pack.values
+        realized_vol = float(values.get("realized_vol", 0.0) or 0.0)
+        cvd_slope = float(values.get("cvd_slope", 0.0) or 0.0)
+        funding_oi_z = float(values.get("funding_oi_z", 0.0) or 0.0)
+        ob_liq_z = float(values.get("ob_liq_z", 0.0) or 0.0)
+        zen_pulse = float(values.get("zen_pulse", 50.0) or 50.0)
+        price = max(1e-9, float(values.get("last_price", 0.0) or 0.0))
 
-    def _emit_continuous_signal(self, tick: TradeTick, state: _SymbolState) -> None:
-        if len(state.prices) < 2:
-            return
-        mean_price = sum(state.prices) / len(state.prices)
-        if mean_price <= 0:
-            return
-        raw_momentum = (tick.price - mean_price) / mean_price
-        continuous_value = max(-1.0, min(1.0, raw_momentum * self._config.continuous_scale))
-        confidence = min(abs(continuous_value), 1.0)
-        signal = AlphaSignal(
-            factor_id="MOMENTUM_TICK",
-            symbol=tick.symbol,
-            type=SignalType.CONTINUOUS,
-            continuous_value=continuous_value,
-            pattern_event=PAPattern.NONE,
-            confidence_ic=confidence,
-            timestamp_ns=tick.local_timestamp_ns,
+        regime_key = (pack.symbol, pack.timeframe)
+        last_regime = self._last_regime.get(regime_key, "RANGE")
+        regime, regime_confidence = self._classify_regime(
+            last_regime=last_regime,
+            quality_flags=pack.quality_flags,
+            realized_vol=realized_vol,
+            cvd_slope=cvd_slope,
+            zen_pulse=zen_pulse,
         )
-        self._bus.publish(f"signal.alpha.{tick.symbol}", signal)
+        self._last_regime[regime_key] = regime
 
-    def _emit_pa_signal(self, symbol: str, state: _SymbolState) -> None:
-        candle = _ticks_to_candle(symbol, state.ticks)
-        pattern = state.analyzer.update(candle)
-        if pattern == PAPattern.NONE:
-            return
-        signal = AlphaSignal(
-            factor_id="PA_PATTERN",
-            symbol=symbol,
-            type=SignalType.DISCRETE_BOOL,
-            continuous_value=0.0,
-            pattern_event=pattern,
-            confidence_ic=0.9 if pattern == PAPattern.H2_RESUMPTION else 1.0,
-            timestamp_ns=candle.timestamp_ns,
+        direction = self._direction(regime=regime, cvd_slope=cvd_slope, ob_liq_z=ob_liq_z)
+
+        target_vol = self._config.target_vol_4h if pack.timeframe is Timeframe.TF_4H else self._config.target_vol_1d
+        vol_budget = target_vol / max(realized_vol, target_vol * 0.25)
+        crowding_discount = max(0.35, 1.0 - min(0.65, abs(funding_oi_z) / 4.0))
+
+        target_leverage = min(self._config.max_leverage, vol_budget * regime_confidence * crowding_discount)
+        reduce_only = False
+        if regime == "STRESS":
+            target_leverage = min(target_leverage, 0.35)
+            reduce_only = True
+
+        target_notional = self._equity * target_leverage * direction
+        target_qty = target_notional / price
+        if abs(target_qty) < self._config.min_trade_qty:
+            target_qty = 0.0
+
+        reason_codes = [f"REGIME_{regime}"]
+        if direction > 0:
+            reason_codes.append("TREND_LONG")
+        elif direction < 0:
+            reason_codes.append("TREND_SHORT")
+        else:
+            reason_codes.append("NO_DIRECTION")
+        if abs(funding_oi_z) > 1.8:
+            reason_codes.append("CROWDING_DISCOUNT")
+        if pack.quality_flags != ["OK"]:
+            reason_codes.append("QUALITY_DEGRADED")
+
+        return TargetPosition(
+            intent_id=self._intent_id(pack),
+            portfolio=self._config.portfolio,
+            symbol=pack.symbol,
+            timeframe=pack.timeframe,
+            cutoff_time_ns=pack.cutoff_time_ns,
+            target_qty=round(target_qty, 6),
+            target_leverage=round(target_leverage, 4),
+            reduce_only=reduce_only,
+            regime=regime,
+            regime_confidence=round(regime_confidence, 4),
+            reason_codes=reason_codes,
         )
-        self._bus.publish(f"signal.alpha.{symbol}", signal)
 
+    def _intent_id(self, pack: IndicatorPack) -> str:
+        name = (
+            f"{self._config.portfolio}:{pack.symbol}:{pack.timeframe.value}:"
+            f"{pack.cutoff_time_ns}:{pack.indicator_version}:{pack.formula_hash}"
+        )
+        return str(uuid.uuid5(uuid.NAMESPACE_URL, name))
 
-def _ticks_to_candle(symbol: str, ticks: list[TradeTick]) -> Candle:
-    prices = [tick.price for tick in ticks]
-    volumes = [tick.size for tick in ticks]
-    return Candle(
-        symbol=symbol,
-        timestamp_ns=ticks[-1].local_timestamp_ns,
-        open=prices[0],
-        high=max(prices),
-        low=min(prices),
-        close=prices[-1],
-        volume=sum(volumes),
-    )
+    @staticmethod
+    def _classify_regime(
+        last_regime: str,
+        quality_flags: list[str],
+        realized_vol: float,
+        cvd_slope: float,
+        zen_pulse: float,
+    ) -> tuple[str, float]:
+        degraded = any(flag in {"BOOK_STALE", "VENUE_DOWN", "DATA_STALE", "DATA_FUTURE"} for flag in quality_flags)
+        if degraded or realized_vol > 2.8:
+            return "STRESS", 0.9
+
+        trend_strength = min(1.0, abs(cvd_slope) * 10.0)
+        pulse_strength = min(1.0, max(0.0, (zen_pulse - 50.0) / 50.0))
+
+        if last_regime == "TREND":
+            trend_gate = trend_strength > 0.12 and zen_pulse >= 50.0
+        else:
+            trend_gate = trend_strength > 0.22 and zen_pulse >= 58.0
+
+        if trend_gate:
+            confidence = min(1.0, 0.45 + (trend_strength * 0.4) + (pulse_strength * 0.15))
+            return "TREND", confidence
+
+        confidence = max(0.35, 1.0 - min(0.6, abs(cvd_slope) * 5.0))
+        return "RANGE", confidence
+
+    @staticmethod
+    def _direction(regime: str, cvd_slope: float, ob_liq_z: float) -> float:
+        if regime == "STRESS":
+            return 0.0
+        if regime == "TREND":
+            if cvd_slope > 0:
+                return 1.0
+            if cvd_slope < 0:
+                return -1.0
+            return 0.0
+        if abs(cvd_slope) < 0.03 and abs(ob_liq_z) > 1.2:
+            return -1.0 if ob_liq_z > 0 else 1.0
+        return 0.0
+
+    @staticmethod
+    def _build_reason(target: TargetPosition) -> IntentReason:
+        summary = (
+            f"intent={target.intent_id[:8]} regime={target.regime} conf={target.regime_confidence:.2f} "
+            f"lev={target.target_leverage:.2f} qty={target.target_qty:.6f}"
+        )
+        return IntentReason(
+            portfolio=target.portfolio,
+            symbol=target.symbol,
+            cutoff_time_ns=target.cutoff_time_ns,
+            summary=summary,
+            reason_codes=target.reason_codes,
+        )
