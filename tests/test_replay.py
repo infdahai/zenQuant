@@ -1,5 +1,6 @@
 import unittest
 
+from zenquant.domain import IndicatorPack
 from zenquant.execution import ExecutionGateway, ExecutionKernel
 from zenquant.indicator import IndicatorEngine, IndicatorStore
 from zenquant.ingestor import SyntheticIngestor, SyntheticIngestorConfig
@@ -50,17 +51,21 @@ class ReplayTests(unittest.TestCase):
         src_indicators = []
         src_intents = []
         src_reports = []
-        source_bus.subscribe(
-            "indicator.>",
-            lambda _subject, payload: src_indicators.append(
+
+        def _on_indicator(_subject: str, payload: object) -> None:
+            # Phase 2: filter out non-IndicatorPack messages (e.g., SwingStructure)
+            if not isinstance(payload, IndicatorPack):
+                return
+            src_indicators.append(
                 (
                     payload.symbol,
                     payload.timeframe.value,
                     payload.cutoff_time_ns,
                     round(float(payload.values.get("zen_pulse", 0.0)), 6),
                 )
-            ),
-        )
+            )
+
+        source_bus.subscribe("indicator.>", _on_indicator)
         source_bus.subscribe(
             "intent.target_position.final.>",
             lambda _subject, payload: src_intents.append(
@@ -104,17 +109,21 @@ class ReplayTests(unittest.TestCase):
         dst_indicators = []
         dst_intents = []
         dst_reports = []
-        target_bus.subscribe(
-            "indicator.>",
-            lambda _subject, payload: dst_indicators.append(
+
+        def _on_replay_indicator(_subject: str, payload: object) -> None:
+            # Phase 2: filter out non-IndicatorPack messages
+            if not isinstance(payload, IndicatorPack):
+                return
+            dst_indicators.append(
                 (
                     payload.symbol,
                     payload.timeframe.value,
                     payload.cutoff_time_ns,
                     round(float(payload.values.get("zen_pulse", 0.0)), 6),
                 )
-            ),
-        )
+            )
+
+        target_bus.subscribe("indicator.>", _on_replay_indicator)
         target_bus.subscribe(
             "intent.target_position.final.>",
             lambda _subject, payload: dst_intents.append(

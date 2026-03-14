@@ -92,6 +92,62 @@ class Phase1RiskOverlayTests(unittest.TestCase):
         self.assertTrue(decisions)
         self.assertIn("DD_STEP_1", decisions[-1].flags)
 
+    def test_overlay_uses_indicator_from_target_timeframe(self) -> None:
+        bus = InMemoryJetStream()
+        overlay = RiskOverlay(bus=bus)
+        decisions = []
+        bus.subscribe("risk.overlay.decision", lambda _subject, payload: decisions.append(payload))
+
+        bus.publish(
+            "indicator.pack.v1.1d.BTCUSDT_PERP",
+            IndicatorPack(
+                ts_ns=1,
+                symbol="BTCUSDT_PERP",
+                timeframe=Timeframe.TF_1D,
+                cutoff_time_ns=1,
+                indicator_version="pack.v1",
+                formula_hash="sha256:test",
+                quality_flags=["OK"],
+                coverage=IndicatorCoverage(venue_count=2, oi_coverage=1.0, staleness_ms=0),
+                values={"last_price": 40000.0, "realized_vol": 1.2, "funding_oi_z": 0.1},
+                components={},
+            ),
+        )
+        bus.publish(
+            "indicator.pack.v1.4h.BTCUSDT_PERP",
+            IndicatorPack(
+                ts_ns=2,
+                symbol="BTCUSDT_PERP",
+                timeframe=Timeframe.TF_4H,
+                cutoff_time_ns=2,
+                indicator_version="pack.v1",
+                formula_hash="sha256:test",
+                quality_flags=["OK"],
+                coverage=IndicatorCoverage(venue_count=2, oi_coverage=1.0, staleness_ms=0),
+                values={"last_price": 40000.0, "realized_vol": 0.1, "funding_oi_z": 0.1},
+                components={},
+            ),
+        )
+        bus.publish(
+            "intent.target_position.arc.BTCUSDT_PERP",
+            TargetPosition(
+                intent_id="intent-3",
+                portfolio="arc",
+                symbol="BTCUSDT_PERP",
+                timeframe=Timeframe.TF_4H,
+                cutoff_time_ns=3,
+                target_qty=1.0,
+                target_leverage=2.0,
+                reduce_only=False,
+                regime="TREND",
+                regime_confidence=0.9,
+                reason_codes=["REGIME_TREND"],
+            ),
+        )
+
+        self.assertTrue(decisions)
+        self.assertNotIn("VOL_SHOCK", decisions[-1].flags)
+
 
 if __name__ == "__main__":
     unittest.main()

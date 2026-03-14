@@ -45,6 +45,10 @@ class Phase1APITests(unittest.TestCase):
             state = state_resp.json()
             self.assertEqual(state["symbol"], "BTCUSDT_PERP")
             self.assertIn("latest_indicator", state)
+            self.assertIn("directional_bias", state)
+            self.assertIn("directional_bias_meta", state)
+            self.assertIn("position_state", state)
+            self.assertIn("latest_target", state)
 
 
 if __name__ == "__main__":
