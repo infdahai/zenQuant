@@ -58,8 +58,9 @@ export const AppShell = defineComponent({
     <div class="app-shell">
       <header class="topbar">
         <div class="brand-block">
+          <div class="brand-kicker">ZenQuant Phase 2</div>
           <h1>ZenQuant Indicators</h1>
-          <p>Vue architecture · indicator-per-page routing</p>
+          <p>Explainable regime dashboard for live bias, risk, and execution state.</p>
         </div>
         <div class="top-controls">
           <label>
@@ -76,8 +77,14 @@ export const AppShell = defineComponent({
               <option value="1d">1D</option>
             </select>
           </label>
+        </div>
+        <div class="status-panel">
           <div class="status-pill" :class="store.state.lastError ? 'danger' : 'ok'">
             {{ store.state.lastError ? 'DEGRADED' : 'LIVE' }}
+          </div>
+          <div class="status-copy">
+            <strong>{{ store.state.symbol }}</strong>
+            <span>{{ store.state.tf.toUpperCase() }} decision surface</span>
           </div>
         </div>
       </header>
