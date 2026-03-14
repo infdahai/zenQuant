@@ -1,0 +1,38 @@
+export async function fetchState(symbol, tf) {
+  const query = new URLSearchParams({ symbol, tf });
+  const response = await fetch(`/api/state?${query.toString()}`);
+  if (!response.ok) {
+    throw new Error(`state request failed: ${response.status}`);
+  }
+  return response.json();
+}
+
+export async function fetchIndicatorHistory(symbol, tf) {
+  const query = new URLSearchParams({ symbol, tf });
+  const response = await fetch(`/api/indicators/history?${query.toString()}`);
+  if (!response.ok) {
+    throw new Error(`history request failed: ${response.status}`);
+  }
+  return response.json();
+}
+
+export function connectIndicatorSocket(symbol, tf, onMessage, onClose) {
+  const protocol = window.location.protocol === "https:" ? "wss" : "ws";
+  const query = new URLSearchParams({ symbol, tf });
+  const socket = new WebSocket(`${protocol}://${window.location.host}/ws/indicators?${query.toString()}`);
+
+  socket.onmessage = (event) => {
+    try {
+      const payload = JSON.parse(event.data);
+      onMessage(payload);
+    } catch (_err) {
+      // Ignore malformed payload and keep stream alive.
+    }
+  };
+
+  socket.onclose = () => {
+    onClose();
+  };
+
+  return socket;
+}

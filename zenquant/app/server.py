@@ -236,7 +236,7 @@ def create_app() -> FastAPI:
         finally:
             await runtime.stop()
 
-    app = FastAPI(title="ZenQuant 4.0 Phase 1", version="0.2.0", lifespan=lifespan)
+    app = FastAPI(title="ZenQuant 4.0 Phase 2", version="0.2.0", lifespan=lifespan)
     web_root = Path(__file__).resolve().parents[1] / "web"
 
     app.mount("/static", StaticFiles(directory=str(web_root)), name="static")

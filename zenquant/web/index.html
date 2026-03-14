@@ -3,82 +3,11 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>ZenQuant Phase 1 Console</title>
+    <title>ZenQuant Phase 2 Console</title>
     <link rel="stylesheet" href="/static/styles.css" />
   </head>
   <body>
-    <div class="app-shell">
-      <header class="topbar">
-        <div class="brand">ZenQuant 4.0</div>
-        <div class="controls">
-          <label>
-            Symbol
-            <select id="symbolSelect">
-              <option value="BTCUSDT_PERP">BTCUSDT_PERP</option>
-              <option value="ETHUSDT_PERP">ETHUSDT_PERP</option>
-            </select>
-          </label>
-          <label>
-            Timeframe
-            <select id="tfSelect">
-              <option value="4h">4H</option>
-              <option value="1d">1D</option>
-            </select>
-          </label>
-        </div>
-        <div class="last-price">Last: <strong id="lastPrice">-</strong></div>
-      </header>
-
-      <main class="layout">
-        <section class="panel chart-panel">
-          <div class="panel-title">Candle Trend</div>
-          <canvas id="priceCanvas"></canvas>
-        </section>
-
-        <section class="panel metrics-panel">
-          <div class="panel-title">Regime & Risk Budget</div>
-          <div class="metrics-grid">
-            <article class="metric">
-              <span>ZenPulse</span>
-              <strong id="zenPulse">-</strong>
-            </article>
-            <article class="metric">
-              <span>Regime</span>
-              <strong id="regime">-</strong>
-            </article>
-            <article class="metric">
-              <span>Lev Cap</span>
-              <strong id="levCap">-</strong>
-            </article>
-            <article class="metric">
-              <span>Target Qty</span>
-              <strong id="targetQty">-</strong>
-            </article>
-          </div>
-        </section>
-
-        <section class="panel indicators-panel">
-          <div class="panel-title">Indicator Pack v1</div>
-          <div class="table" id="indicatorTable"></div>
-        </section>
-
-        <section class="panel alerts-panel">
-          <div class="panel-title">Alerts Timeline</div>
-          <div class="list" id="alertsList"></div>
-        </section>
-
-        <section class="panel why-panel">
-          <div class="panel-title">Why Card</div>
-          <div id="whyCard" class="why"></div>
-        </section>
-
-        <section class="panel reports-panel">
-          <div class="panel-title">Execution Reports</div>
-          <div class="list" id="reportsList"></div>
-        </section>
-      </main>
-    </div>
-
-    <script src="/static/app.js"></script>
+    <div id="app"></div>
+    <script type="module" src="/static/app.js"></script>
   </body>
 </html>

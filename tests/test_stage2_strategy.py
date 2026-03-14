@@ -1,0 +1,193 @@
+import unittest
+
+from zenquant.domain import ExecutionReport, IndicatorCoverage, IndicatorPack, Timeframe
+from zenquant.infra import InMemoryJetStream
+from zenquant.strategy import ARCStrategyEngine
+
+
+def _pack(
+    *,
+    timeframe: Timeframe,
+    cutoff_time_ns: int,
+    last_price: float,
+    cvd_slope: float,
+    swing_structure: str,
+    momentum_roc_z: float,
+    atr: float = 2.0,
+) -> IndicatorPack:
+    return IndicatorPack(
+        ts_ns=cutoff_time_ns,
+        symbol="BTCUSDT_PERP",
+        timeframe=timeframe,
+        cutoff_time_ns=cutoff_time_ns,
+        indicator_version="pack.v1",
+        formula_hash="sha256:test",
+        quality_flags=["OK"],
+        coverage=IndicatorCoverage(venue_count=2, oi_coverage=1.0, staleness_ms=0),
+        values={
+            "realized_vol": 0.2,
+            "cvd_slope": cvd_slope,
+            "funding_oi_z": 0.1,
+            "ob_liq_z": 0.0,
+            "zen_pulse": 70.0,
+            "last_price": last_price,
+            "atr": atr,
+            "swing_structure": swing_structure,
+            "momentum_roc_z": momentum_roc_z,
+            "structure_break": False,
+        },
+        components={},
+    )
+
+
+class Stage2StrategyTests(unittest.TestCase):
+    def test_1d_bias_blocks_conflicting_4h_direction_without_emitting_1d_target(self) -> None:
+        bus = InMemoryJetStream()
+        ARCStrategyEngine(bus)
+
+        targets = []
+        bus.subscribe(
+            "intent.target_position.arc.BTCUSDT_PERP",
+            lambda _subject, payload: targets.append(payload),
+        )
+
+        bus.publish(
+            "indicator.pack.v1.1d.BTCUSDT_PERP",
+            _pack(
+                timeframe=Timeframe.TF_1D,
+                cutoff_time_ns=1,
+                last_price=100.0,
+                cvd_slope=-0.5,
+                swing_structure="DOWNTREND",
+                momentum_roc_z=-1.2,
+            ),
+        )
+        bus.publish(
+            "indicator.pack.v1.4h.BTCUSDT_PERP",
+            _pack(
+                timeframe=Timeframe.TF_4H,
+                cutoff_time_ns=2,
+                last_price=101.0,
+                cvd_slope=0.6,
+                swing_structure="UPTREND",
+                momentum_roc_z=1.3,
+            ),
+        )
+
+        self.assertEqual(len(targets), 1)
+        self.assertEqual(targets[0].timeframe, Timeframe.TF_4H)
+        self.assertAlmostEqual(targets[0].target_qty, 0.0)
+        self.assertIn("BIAS_DIRECTION_BLOCK", targets[0].reason_codes)
+
+    def test_trailing_stop_emits_reduce_only_exit(self) -> None:
+        bus = InMemoryJetStream()
+        ARCStrategyEngine(bus)
+
+        targets = []
+        bus.subscribe(
+            "intent.target_position.arc.BTCUSDT_PERP",
+            lambda _subject, payload: targets.append(payload),
+        )
+
+        bus.publish(
+            "exec.order.report",
+            ExecutionReport(
+                client_order_id="oid-1",
+                symbol="BTCUSDT_PERP",
+                side=1,
+                status="FILLED",
+                filled_qty=1.0,
+                avg_price=100.0,
+                fee=0.0,
+                transaction_time_ns=1,
+            ),
+        )
+        bus.publish(
+            "indicator.pack.v1.4h.BTCUSDT_PERP",
+            _pack(
+                timeframe=Timeframe.TF_4H,
+                cutoff_time_ns=2,
+                last_price=100.0,
+                cvd_slope=0.5,
+                swing_structure="UPTREND",
+                momentum_roc_z=1.0,
+                atr=2.0,
+            ),
+        )
+        bus.publish(
+            "indicator.pack.v1.4h.BTCUSDT_PERP",
+            _pack(
+                timeframe=Timeframe.TF_4H,
+                cutoff_time_ns=3,
+                last_price=94.0,
+                cvd_slope=0.2,
+                swing_structure="UPTREND",
+                momentum_roc_z=0.6,
+                atr=2.0,
+            ),
+        )
+
+        self.assertGreaterEqual(len(targets), 2)
+        latest = targets[-1]
+        self.assertEqual(latest.timeframe, Timeframe.TF_4H)
+        self.assertTrue(latest.reduce_only)
+        self.assertAlmostEqual(latest.target_qty, 0.0)
+        self.assertIn("EXIT_TRAILING_STOP", latest.reason_codes)
+
+    def test_short_position_tracking_handles_add_and_cover(self) -> None:
+        bus = InMemoryJetStream()
+        engine = ARCStrategyEngine(bus)
+
+        bus.publish(
+            "exec.order.report",
+            ExecutionReport(
+                client_order_id="oid-1",
+                symbol="BTCUSDT_PERP",
+                side=-1,
+                status="FILLED",
+                filled_qty=1.0,
+                avg_price=100.0,
+                fee=0.0,
+                transaction_time_ns=1,
+            ),
+        )
+        position = engine._positions[("BTCUSDT_PERP", Timeframe.TF_4H)]
+        self.assertEqual(position.direction, -1.0)
+        self.assertAlmostEqual(position.current_qty, 1.0)
+
+        bus.publish(
+            "exec.order.report",
+            ExecutionReport(
+                client_order_id="oid-2",
+                symbol="BTCUSDT_PERP",
+                side=-1,
+                status="FILLED",
+                filled_qty=0.5,
+                avg_price=99.0,
+                fee=0.0,
+                transaction_time_ns=2,
+            ),
+        )
+        position = engine._positions[("BTCUSDT_PERP", Timeframe.TF_4H)]
+        self.assertEqual(position.direction, -1.0)
+        self.assertAlmostEqual(position.current_qty, 1.5)
+        self.assertEqual(position.pyramid_count, 1)
+
+        bus.publish(
+            "exec.order.report",
+            ExecutionReport(
+                client_order_id="oid-3",
+                symbol="BTCUSDT_PERP",
+                side=1,
+                status="FILLED",
+                filled_qty=1.5,
+                avg_price=98.0,
+                fee=0.0,
+                transaction_time_ns=3,
+            ),
+        )
+        self.assertNotIn(("BTCUSDT_PERP", Timeframe.TF_4H), engine._positions)
+
+
+if __name__ == "__main__":
+    unittest.main()

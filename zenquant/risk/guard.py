@@ -3,7 +3,14 @@ from __future__ import annotations
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 
-from zenquant.domain import ExecutionReport, IndicatorPack, RiskOverlayDecision, RiskSnapshot, TargetPosition
+from zenquant.domain import (
+    ExecutionReport,
+    IndicatorPack,
+    RiskOverlayDecision,
+    RiskSnapshot,
+    TargetPosition,
+    Timeframe,
+)
 from zenquant.infra import InMemoryJetStream
 
 
@@ -33,7 +40,7 @@ class RiskOverlay:
         self._high_water_mark = self._config.starting_equity
         self._last_price: dict[str, float] = {}
         self._actual_positions: dict[str, float] = {}
-        self._latest_indicator: dict[str, IndicatorPack] = {}
+        self._latest_indicator: dict[tuple[str, Timeframe], IndicatorPack] = {}
         self._day_anchor: tuple[int, float] | None = None
 
         self._bus.subscribe("indicator.>", self._on_indicator)
@@ -51,7 +58,7 @@ class RiskOverlay:
     def _on_indicator(self, _: str, payload: object) -> None:
         if not isinstance(payload, IndicatorPack):
             return
-        self._latest_indicator[payload.symbol] = payload
+        self._latest_indicator[(payload.symbol, payload.timeframe)] = payload
         last_price = float(payload.values.get("last_price", 0.0) or 0.0)
         if last_price > 0:
             self._last_price[payload.symbol] = last_price
@@ -86,7 +93,7 @@ class RiskOverlay:
     def _apply_overlay(self, target: TargetPosition) -> tuple[TargetPosition, RiskOverlayDecision, RiskSnapshot]:
         self._revalue_equity()
 
-        indicator = self._latest_indicator.get(target.symbol)
+        indicator = self._latest_indicator.get((target.symbol, target.timeframe))
         price = max(1e-9, self._last_price.get(target.symbol, 0.0))
         current_position = self._actual_positions.get(target.symbol, 0.0)
 

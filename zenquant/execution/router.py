@@ -56,7 +56,10 @@ class ExecutionKernel:
             return
 
         side = 1 if delta_qty > 0 else -1
-        trade_qty = min(abs(delta_qty), self._config.max_trade_qty_per_bar)
+        if payload.reduce_only:
+            trade_qty = min(abs(delta_qty), abs(current_position))
+        else:
+            trade_qty = min(abs(delta_qty), self._config.max_trade_qty_per_bar)
         if payload.reduce_only and abs(current_position + (side * trade_qty)) > abs(current_position):
             return
 
