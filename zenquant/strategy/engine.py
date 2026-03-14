@@ -42,6 +42,8 @@ class ARCStrategyConfig:
     target_vol_4h: float = 0.60
     target_vol_1d: float = 0.50
     min_trade_qty: float = 0.0001
+    execution_timeframe: Timeframe = Timeframe.TF_4H
+    bias_max_age_4h_bars: int = 8
     # Phase 2: trailing stop config
     trailing_stop_atr_mult: float = 2.5  # ATR multiplier for trailing stop
     min_bars_before_trail: int = 1  # minimum bars held before activating trail
@@ -77,7 +79,7 @@ class ARCStrategyEngine:
         if payload.status != "FILLED":
             return
 
-        pos_key = (payload.symbol, Timeframe.TF_4H)
+        pos_key = (payload.symbol, self._config.execution_timeframe)
         current_pos = self._positions.get(pos_key)
         filled_delta = payload.side * payload.filled_qty
         if abs(filled_delta) < self._config.min_trade_qty:
@@ -86,33 +88,42 @@ class ARCStrategyEngine:
         if current_pos is None:
             self._positions[pos_key] = self._new_position_state(
                 symbol=payload.symbol,
-                timeframe=Timeframe.TF_4H,
+                timeframe=self._config.execution_timeframe,
                 signed_qty=filled_delta,
                 avg_price=payload.avg_price,
                 transaction_time_ns=payload.transaction_time_ns,
             )
+            self._publish_position_state(payload.symbol, self._config.execution_timeframe)
             return
 
         current_signed_qty = current_pos.direction * current_pos.current_qty
         new_signed_qty = current_signed_qty + filled_delta
         if abs(new_signed_qty) < self._config.min_trade_qty:
             del self._positions[pos_key]
+            self._publish_position_state(payload.symbol, self._config.execution_timeframe)
             return
 
         if current_signed_qty * new_signed_qty < 0:
             self._positions[pos_key] = self._new_position_state(
                 symbol=payload.symbol,
-                timeframe=Timeframe.TF_4H,
+                timeframe=self._config.execution_timeframe,
                 signed_qty=new_signed_qty,
                 avg_price=payload.avg_price,
                 transaction_time_ns=payload.transaction_time_ns,
             )
+            self._publish_position_state(payload.symbol, self._config.execution_timeframe)
             return
 
         if abs(new_signed_qty) > abs(current_signed_qty):
             current_pos.pyramid_count += 1
+            previous_qty = abs(current_signed_qty)
+            added_qty = abs(filled_delta)
+            current_pos.entry_price = (
+                (current_pos.entry_price * previous_qty) + (payload.avg_price * added_qty)
+            ) / max(previous_qty + added_qty, 1e-9)
         current_pos.direction = 1.0 if new_signed_qty > 0 else -1.0
         current_pos.current_qty = abs(new_signed_qty)
+        self._publish_position_state(payload.symbol, self._config.execution_timeframe)
 
     def _on_indicator(self, _: str, payload: object) -> None:
         if not isinstance(payload, IndicatorPack):
@@ -160,7 +171,9 @@ class ARCStrategyEngine:
             direction=direction,
             regime=regime,
             confidence=confidence,
+            quality_flags=list(pack.quality_flags),
         )
+        self._last_regime[regime_key] = regime
         self._directional_bias[pack.symbol] = bias
         self._bus.publish(f"strategy.bias.1d.{pack.symbol}", bias)
 
@@ -215,8 +228,12 @@ class ARCStrategyEngine:
 
         # Phase 2: Multi-timeframe coordination for 4h
         reason_codes = [f"REGIME_{regime}"]
-        if pack.timeframe == Timeframe.TF_4H:
-            bias = self._directional_bias.get(pack.symbol)
+        if pack.timeframe == self._config.execution_timeframe:
+            bias, bias_reason = self._active_directional_bias(
+                pack.symbol, pack.cutoff_time_ns
+            )
+            if bias_reason:
+                reason_codes.append(bias_reason)
             if bias is not None and bias.direction != 0.0:
                 # Block 4h direction if it conflicts with 1d bias
                 if direction != 0.0 and direction * bias.direction < 0:
@@ -275,6 +292,8 @@ class ARCStrategyEngine:
         self, position: OpenPositionState, current_price: float, atr: float
     ) -> tuple[bool, str]:
         """Check if trailing stop is triggered. Returns (triggered, reason_code)."""
+        if atr <= 0:
+            return False, ""
         if position.bars_held < self._config.min_bars_before_trail:
             return False, ""
 
@@ -309,6 +328,32 @@ class ARCStrategyEngine:
                 return True, "EXIT_TRAILING_STOP"
 
         return False, ""
+
+    def _active_directional_bias(
+        self, symbol: str, cutoff_time_ns: int
+    ) -> tuple[DirectionalBias | None, str]:
+        bias = self._directional_bias.get(symbol)
+        if bias is None:
+            return None, ""
+        if any(flag != "OK" for flag in bias.quality_flags):
+            return None, "BIAS_QUALITY_DEGRADED"
+        if cutoff_time_ns < bias.cutoff_time_ns:
+            return None, "BIAS_FUTURE"
+
+        max_age_ns = (
+            self._config.bias_max_age_4h_bars
+            * Timeframe.TF_4H.seconds
+            * 1_000_000_000
+        )
+        if (cutoff_time_ns - bias.cutoff_time_ns) > max_age_ns:
+            return None, "BIAS_STALE"
+        return bias, ""
+
+    def _publish_position_state(self, symbol: str, timeframe: Timeframe) -> None:
+        self._bus.publish(
+            f"strategy.position_state.{timeframe.value}.{symbol}",
+            self._positions.get((symbol, timeframe)),
+        )
 
     @staticmethod
     def _new_position_state(

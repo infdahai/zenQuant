@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import time
 import urllib.error
 import urllib.request
@@ -17,6 +18,8 @@ from zenquant.domain import (
     TradeTick,
 )
 from zenquant.infra import InMemoryJetStream
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(slots=True)
@@ -39,7 +42,10 @@ class RealTimeIngestor:
             tasks.append(asyncio.create_task(self._poll_okx_symbol(symbol)))
         if not tasks:
             return
-        await asyncio.gather(*tasks, return_exceptions=True)
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        for result in results:
+            if isinstance(result, Exception):
+                logger.warning("realtime ingestor polling failed: %s", result)
 
     async def _poll_binance_symbol(self, symbol: str) -> None:
         exch_symbol = _to_binance_symbol(symbol)

@@ -4,7 +4,17 @@ from collections import defaultdict, deque
 from dataclasses import dataclass
 from typing import Any
 
-from zenquant.domain import Candle, IndicatorPack, IntentReason, RiskOverlayDecision, RiskSnapshot, TargetPosition
+from zenquant.domain import (
+    Candle,
+    DirectionalBias,
+    IndicatorPack,
+    IntentReason,
+    OpenPositionState,
+    RiskOverlayDecision,
+    RiskSnapshot,
+    TargetPosition,
+    Timeframe,
+)
 from zenquant.domain.serde import to_jsonable
 
 
@@ -14,6 +24,7 @@ class DashboardStateConfig:
     max_alerts: int = 64
     max_reports: int = 48
     max_reasons: int = 32
+    bias_stale_after_4h_bars: int = 8
 
 
 class DashboardStateStore:
@@ -32,6 +43,9 @@ class DashboardStateStore:
         self._risk_snapshot: RiskSnapshot | None = None
         self._risk_decision: RiskOverlayDecision | None = None
         self._target_positions: dict[str, float] = {}
+        self._latest_target: dict[tuple[str, str], TargetPosition] = {}
+        self._directional_bias: dict[str, DirectionalBias] = {}
+        self._position_state: dict[tuple[str, str], OpenPositionState] = {}
         self._last_price: dict[str, float] = {}
         self._default_symbol = "BTCUSDT_PERP"
         self._default_tf = "4h"
@@ -77,6 +91,7 @@ class DashboardStateStore:
 
     def on_target_position(self, target: TargetPosition) -> None:
         self._target_positions[target.symbol] = target.target_qty
+        self._latest_target[(target.symbol, target.timeframe.value)] = target
 
     def on_reason(self, reason: IntentReason) -> None:
         self._reasons.appendleft(to_jsonable(reason))
@@ -84,11 +99,22 @@ class DashboardStateStore:
     def on_exec_report(self, payload: dict[str, Any]) -> None:
         self._reports.appendleft(payload)
 
+    def on_directional_bias(self, bias: DirectionalBias) -> None:
+        self._directional_bias[bias.symbol] = bias
+
+    def on_position_state(self, symbol: str, timeframe: str, payload: object) -> None:
+        key = (symbol, timeframe)
+        if isinstance(payload, OpenPositionState):
+            self._position_state[key] = payload
+            return
+        self._position_state.pop(key, None)
+
     def snapshot(self, symbol: str | None = None, timeframe: str | None = None) -> dict[str, Any]:
         symbol = symbol or self._default_symbol
         timeframe = timeframe or self._default_tf
         key = (symbol, timeframe)
         latest = self._latest_indicator.get(key)
+        bias = self._directional_bias.get(symbol)
 
         return {
             "symbol": symbol,
@@ -97,6 +123,14 @@ class DashboardStateStore:
             "target_position": self._target_positions.get(symbol, 0.0),
             "candles": [to_jsonable(item) for item in self._candles.get(key, [])],
             "latest_indicator": to_jsonable(latest) if latest is not None else None,
+            "latest_target": to_jsonable(self._latest_target.get(key))
+            if self._latest_target.get(key) is not None
+            else None,
+            "directional_bias": to_jsonable(bias) if bias is not None else None,
+            "directional_bias_meta": self._directional_bias_meta(latest, bias),
+            "position_state": to_jsonable(self._position_state.get(key))
+            if self._position_state.get(key) is not None
+            else None,
             "alerts": list(self._alerts),
             "risk_snapshot": to_jsonable(self._risk_snapshot) if self._risk_snapshot is not None else None,
             "risk_decision": to_jsonable(self._risk_decision) if self._risk_decision is not None else None,
@@ -120,3 +154,20 @@ class DashboardStateStore:
         if to_ns is not None:
             points = [point for point in points if point.cutoff_time_ns <= to_ns]
         return points
+
+    def _directional_bias_meta(
+        self, latest: IndicatorPack | None, bias: DirectionalBias | None
+    ) -> dict[str, Any] | None:
+        if bias is None:
+            return None
+
+        reference_cutoff_ns = latest.cutoff_time_ns if latest is not None else bias.cutoff_time_ns
+        age_ns = max(0, reference_cutoff_ns - bias.cutoff_time_ns)
+        age_4h_bars = age_ns / (Timeframe.TF_4H.seconds * 1_000_000_000)
+        stale_after_bars = float(self._config.bias_stale_after_4h_bars)
+        return {
+            "is_stale": age_4h_bars > stale_after_bars,
+            "age_4h_bars": round(age_4h_bars, 2),
+            "stale_after_4h_bars": stale_after_bars,
+            "quality_flags": list(bias.quality_flags),
+        }

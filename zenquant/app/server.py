@@ -28,8 +28,10 @@ except ModuleNotFoundError as exc:
 from zenquant.app.live_state import DashboardStateStore
 from zenquant.domain import (
     Candle,
+    DirectionalBias,
     IndicatorPack,
     IntentReason,
+    OpenPositionState,
     RiskOverlayDecision,
     RiskSnapshot,
     TargetPosition,
@@ -90,6 +92,8 @@ class ZenQuantWebRuntime:
 
         self.bus.subscribe("md.candle.>", self._on_candle)
         self.bus.subscribe("indicator.>", self._on_indicator)
+        self.bus.subscribe("strategy.bias.1d.>", self._on_directional_bias)
+        self.bus.subscribe("strategy.position_state.>", self._on_position_state)
         self.bus.subscribe("risk.snapshot", self._on_risk_snapshot)
         self.bus.subscribe("risk.overlay.decision", self._on_risk_decision)
         self.bus.subscribe("intent.reason.>", self._on_reason)
@@ -198,6 +202,19 @@ class ZenQuantWebRuntime:
     def _on_risk_snapshot(self, _: str, payload: object) -> None:
         if isinstance(payload, RiskSnapshot):
             self.state.on_risk_snapshot(payload)
+
+    def _on_directional_bias(self, _: str, payload: object) -> None:
+        if isinstance(payload, DirectionalBias):
+            self.state.on_directional_bias(payload)
+
+    def _on_position_state(self, subject: str, payload: object) -> None:
+        parts = subject.split(".")
+        if len(parts) < 4:
+            return
+        timeframe = parts[2]
+        symbol = parts[3]
+        if payload is None or isinstance(payload, OpenPositionState):
+            self.state.on_position_state(symbol=symbol, timeframe=timeframe, payload=payload)
 
     def _on_risk_decision(self, _: str, payload: object) -> None:
         if isinstance(payload, RiskOverlayDecision):

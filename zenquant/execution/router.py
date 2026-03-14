@@ -57,11 +57,13 @@ class ExecutionKernel:
 
         side = 1 if delta_qty > 0 else -1
         if payload.reduce_only:
+            if abs(current_position) < self._config.min_trade_qty:
+                return
+            if current_position * side > 0:
+                return
             trade_qty = min(abs(delta_qty), abs(current_position))
         else:
             trade_qty = min(abs(delta_qty), self._config.max_trade_qty_per_bar)
-        if payload.reduce_only and abs(current_position + (side * trade_qty)) > abs(current_position):
-            return
 
         order = ExecutionOrder(
             client_order_id=f"{symbol}-{payload.cutoff_time_ns}-{next(self._order_seq)}",

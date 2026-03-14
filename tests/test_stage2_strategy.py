@@ -11,7 +11,7 @@ def _pack(
     cutoff_time_ns: int,
     last_price: float,
     cvd_slope: float,
-    swing_structure: str,
+    structure_state: str,
     momentum_roc_z: float,
     atr: float = 2.0,
 ) -> IndicatorPack:
@@ -32,7 +32,7 @@ def _pack(
             "zen_pulse": 70.0,
             "last_price": last_price,
             "atr": atr,
-            "swing_structure": swing_structure,
+            "structure_state": structure_state,
             "momentum_roc_z": momentum_roc_z,
             "structure_break": False,
         },
@@ -58,7 +58,7 @@ class Stage2StrategyTests(unittest.TestCase):
                 cutoff_time_ns=1,
                 last_price=100.0,
                 cvd_slope=-0.5,
-                swing_structure="DOWNTREND",
+                structure_state="DOWNTREND",
                 momentum_roc_z=-1.2,
             ),
         )
@@ -69,7 +69,7 @@ class Stage2StrategyTests(unittest.TestCase):
                 cutoff_time_ns=2,
                 last_price=101.0,
                 cvd_slope=0.6,
-                swing_structure="UPTREND",
+                structure_state="UPTREND",
                 momentum_roc_z=1.3,
             ),
         )
@@ -109,7 +109,7 @@ class Stage2StrategyTests(unittest.TestCase):
                 cutoff_time_ns=2,
                 last_price=100.0,
                 cvd_slope=0.5,
-                swing_structure="UPTREND",
+                structure_state="UPTREND",
                 momentum_roc_z=1.0,
                 atr=2.0,
             ),
@@ -121,7 +121,7 @@ class Stage2StrategyTests(unittest.TestCase):
                 cutoff_time_ns=3,
                 last_price=94.0,
                 cvd_slope=0.2,
-                swing_structure="UPTREND",
+                structure_state="UPTREND",
                 momentum_roc_z=0.6,
                 atr=2.0,
             ),
@@ -187,6 +187,157 @@ class Stage2StrategyTests(unittest.TestCase):
             ),
         )
         self.assertNotIn(("BTCUSDT_PERP", Timeframe.TF_4H), engine._positions)
+
+    def test_stale_1d_bias_is_not_used_for_4h_blocking(self) -> None:
+        bus = InMemoryJetStream()
+        ARCStrategyEngine(bus)
+
+        targets = []
+        bus.subscribe(
+            "intent.target_position.arc.BTCUSDT_PERP",
+            lambda _subject, payload: targets.append(payload),
+        )
+
+        bus.publish(
+            "indicator.pack.v1.1d.BTCUSDT_PERP",
+            _pack(
+                timeframe=Timeframe.TF_1D,
+                cutoff_time_ns=1,
+                last_price=100.0,
+                cvd_slope=-0.5,
+                structure_state="DOWNTREND",
+                momentum_roc_z=-1.2,
+            ),
+        )
+        bus.publish(
+            "indicator.pack.v1.4h.BTCUSDT_PERP",
+            _pack(
+                timeframe=Timeframe.TF_4H,
+                cutoff_time_ns=(9 * Timeframe.TF_4H.seconds * 1_000_000_000),
+                last_price=101.0,
+                cvd_slope=0.6,
+                structure_state="UPTREND",
+                momentum_roc_z=1.3,
+            ),
+        )
+
+        self.assertEqual(len(targets), 1)
+        self.assertGreater(targets[0].target_qty, 0.0)
+        self.assertIn("BIAS_STALE", targets[0].reason_codes)
+        self.assertNotIn("BIAS_DIRECTION_BLOCK", targets[0].reason_codes)
+
+    def test_degraded_1d_bias_is_not_used_for_4h_blocking(self) -> None:
+        bus = InMemoryJetStream()
+        ARCStrategyEngine(bus)
+
+        targets = []
+        bus.subscribe(
+            "intent.target_position.arc.BTCUSDT_PERP",
+            lambda _subject, payload: targets.append(payload),
+        )
+
+        degraded = _pack(
+            timeframe=Timeframe.TF_1D,
+            cutoff_time_ns=1,
+            last_price=100.0,
+            cvd_slope=-0.5,
+            structure_state="DOWNTREND",
+            momentum_roc_z=-1.2,
+        )
+        degraded.quality_flags = ["BOOK_STALE"]
+        bus.publish("indicator.pack.v1.1d.BTCUSDT_PERP", degraded)
+        bus.publish(
+            "indicator.pack.v1.4h.BTCUSDT_PERP",
+            _pack(
+                timeframe=Timeframe.TF_4H,
+                cutoff_time_ns=2,
+                last_price=101.0,
+                cvd_slope=0.6,
+                structure_state="UPTREND",
+                momentum_roc_z=1.3,
+            ),
+        )
+
+        self.assertEqual(len(targets), 1)
+        self.assertGreater(targets[0].target_qty, 0.0)
+        self.assertIn("BIAS_QUALITY_DEGRADED", targets[0].reason_codes)
+
+    def test_invalid_atr_does_not_arm_trailing_stop(self) -> None:
+        bus = InMemoryJetStream()
+        ARCStrategyEngine(bus)
+
+        targets = []
+        bus.subscribe(
+            "intent.target_position.arc.BTCUSDT_PERP",
+            lambda _subject, payload: targets.append(payload),
+        )
+        bus.publish(
+            "exec.order.report",
+            ExecutionReport(
+                client_order_id="oid-atr",
+                symbol="BTCUSDT_PERP",
+                side=1,
+                status="FILLED",
+                filled_qty=1.0,
+                avg_price=100.0,
+                fee=0.0,
+                transaction_time_ns=1,
+            ),
+        )
+        bus.publish(
+            "indicator.pack.v1.4h.BTCUSDT_PERP",
+            _pack(
+                timeframe=Timeframe.TF_4H,
+                cutoff_time_ns=2,
+                last_price=99.0,
+                cvd_slope=0.5,
+                structure_state="UPTREND",
+                momentum_roc_z=0.8,
+                atr=0.0,
+            ),
+        )
+
+        self.assertEqual(len(targets), 1)
+        self.assertNotIn("EXIT_TRAILING_STOP", targets[0].reason_codes)
+
+    def test_position_flip_resets_bars_held(self) -> None:
+        bus = InMemoryJetStream()
+        engine = ARCStrategyEngine(bus)
+
+        bus.publish(
+            "exec.order.report",
+            ExecutionReport(
+                client_order_id="oid-long",
+                symbol="BTCUSDT_PERP",
+                side=1,
+                status="FILLED",
+                filled_qty=1.0,
+                avg_price=100.0,
+                fee=0.0,
+                transaction_time_ns=1,
+            ),
+        )
+        position = engine._positions[("BTCUSDT_PERP", Timeframe.TF_4H)]
+        position.bars_held = 5
+
+        bus.publish(
+            "exec.order.report",
+            ExecutionReport(
+                client_order_id="oid-flip",
+                symbol="BTCUSDT_PERP",
+                side=-1,
+                status="FILLED",
+                filled_qty=2.0,
+                avg_price=98.0,
+                fee=0.0,
+                transaction_time_ns=2,
+            ),
+        )
+
+        flipped = engine._positions[("BTCUSDT_PERP", Timeframe.TF_4H)]
+        self.assertEqual(flipped.direction, -1.0)
+        self.assertEqual(flipped.bars_held, 0)
+        self.assertAlmostEqual(flipped.current_qty, 1.0)
 
 
 if __name__ == "__main__":

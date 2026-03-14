@@ -257,6 +257,7 @@ class DirectionalBias:
     direction: float  # +1.0 LONG | -1.0 SHORT | 0.0 FLAT
     regime: str
     confidence: float
+    quality_flags: list[str] = field(default_factory=list)
 
 
 @dataclass(slots=True)

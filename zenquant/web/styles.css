@@ -91,6 +91,52 @@ select {
   box-shadow: inset 0 0 0 1px rgba(114, 154, 190, 0.06);
 }
 
+.decision-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 10px;
+  padding: 12px;
+}
+
+.decision-item {
+  border: 1px solid #2b4965;
+  border-radius: 10px;
+  padding: 10px;
+  background: #122233;
+}
+
+.decision-item span,
+.decision-item small {
+  display: block;
+}
+
+.decision-item span,
+.decision-item small {
+  color: var(--muted);
+}
+
+.decision-item span {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.decision-item strong {
+  display: block;
+  margin: 6px 0;
+  font-size: 16px;
+  line-height: 1.35;
+}
+
+.decision-item small {
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.decision-item-wide {
+  grid-column: 1 / -1;
+}
+
 .panel-title {
   border-bottom: 1px solid rgba(60, 95, 126, 0.5);
   padding: 11px 13px;

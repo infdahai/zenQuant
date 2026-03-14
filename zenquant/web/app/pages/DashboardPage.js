@@ -25,6 +25,19 @@ export const DashboardPage = defineComponent({
     ];
 
     const indicator = computed(() => store.state.latestIndicator || (store.state.snapshot || {}).latest_indicator || null);
+    const directionalBias = computed(() => (store.state.snapshot || {}).directional_bias || null);
+    const directionalBiasMeta = computed(() => (store.state.snapshot || {}).directional_bias_meta || null);
+    const positionState = computed(() => (store.state.snapshot || {}).position_state || null);
+    const latestTarget = computed(() => (store.state.snapshot || {}).latest_target || null);
+    const latestReason = computed(() => {
+      const reasons = (store.state.snapshot || {}).reasons || [];
+      return reasons[0] || null;
+    });
+    const latestReport = computed(() => {
+      const reports = (store.state.snapshot || {}).reports || [];
+      return reports[0] || null;
+    });
+    const latestRiskDecision = computed(() => (store.state.snapshot || {}).risk_decision || null);
     const candles = computed(() => ((store.state.snapshot || {}).candles || []).slice(-180));
     const priceSeries = computed(() => ((store.state.snapshot || {}).price_series || []).slice(-260));
     const proxyHistory = computed(() => (store.state.snapshot || {}).proxy_indicator_history || {});
@@ -113,9 +126,16 @@ export const DashboardPage = defineComponent({
     return {
       store,
       candles,
+      directionalBias,
+      directionalBiasMeta,
       priceSeries,
       indicator,
       indicatorCards,
+      latestReason,
+      latestReport,
+      latestRiskDecision,
+      latestTarget,
+      positionState,
       displayValue,
       indicatorRoute,
       isExpanded,
@@ -126,6 +146,97 @@ export const DashboardPage = defineComponent({
   },
   template: `
     <section class="indicator-stack">
+      <article class="panel">
+        <div class="panel-title">Decision Path</div>
+        <div class="decision-grid">
+          <div class="decision-item">
+            <span>1D bias</span>
+            <strong>
+              {{ directionalBias ? displayValue(directionalBias.direction) : "-" }}
+            </strong>
+            <small>
+              {{
+                directionalBiasMeta
+                  ? (directionalBiasMeta.is_stale ? "stale" : "fresh")
+                  : "unavailable"
+              }}
+            </small>
+          </div>
+          <div class="decision-item">
+            <span>Bias regime</span>
+            <strong>{{ directionalBias ? directionalBias.regime : "-" }}</strong>
+            <small>
+              {{
+                directionalBiasMeta && directionalBiasMeta.quality_flags
+                  ? directionalBiasMeta.quality_flags.join(", ") || "OK"
+                  : "OK"
+              }}
+            </small>
+          </div>
+          <div class="decision-item">
+            <span>Position qty</span>
+            <strong>{{ positionState ? formatNumber(positionState.current_qty, 4) : "-" }}</strong>
+            <small>
+              {{
+                positionState
+                  ? "trail " + formatNumber(positionState.trailing_stop, 2)
+                  : "flat"
+              }}
+            </small>
+          </div>
+          <div class="decision-item">
+            <span>Latest target</span>
+            <strong>{{ latestTarget ? formatNumber(latestTarget.target_qty, 4) : "-" }}</strong>
+            <small>
+              {{
+                latestTarget && latestTarget.reason_codes
+                  ? latestTarget.reason_codes.join(", ")
+                  : "-"
+              }}
+            </small>
+          </div>
+          <div class="decision-item">
+            <span>Risk flags</span>
+            <strong>
+              {{
+                latestRiskDecision && latestRiskDecision.flags
+                  ? latestRiskDecision.flags.join(", ")
+                  : "OK"
+              }}
+            </strong>
+            <small>
+              {{
+                latestRiskDecision
+                  ? "lev cap " + formatNumber(latestRiskDecision.lev_cap, 2)
+                  : "-"
+              }}
+            </small>
+          </div>
+          <div class="decision-item">
+            <span>Last execution</span>
+            <strong>{{ latestReport ? latestReport.status : "-" }}</strong>
+            <small>
+              {{
+                latestReport
+                  ? ("qty " + formatNumber(latestReport.filled_qty, 4) + " @ " + formatNumber(latestReport.avg_price, 2))
+                  : "-"
+              }}
+            </small>
+          </div>
+          <div class="decision-item decision-item-wide">
+            <span>Latest reason</span>
+            <strong>{{ latestReason ? latestReason.summary : "-" }}</strong>
+            <small>
+              {{
+                latestReason && latestReason.reason_codes
+                  ? latestReason.reason_codes.join(", ")
+                  : "-"
+              }}
+            </small>
+          </div>
+        </div>
+      </article>
+
       <article class="panel">
         <div class="panel-title">Price Curve</div>
         <CandleCanvas :candles="candles" :prices="priceSeries" :height="290" />
