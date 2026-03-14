@@ -11,6 +11,8 @@ export function createMarketStore(apiClient = { fetchState, fetchIndicatorHistor
     indicatorHistory: [],
     categoryMaps: {},
     source: "live",
+    streamStatus: "idle",
+    lastLiveUpdate: "",
     lastError: "",
   });
 

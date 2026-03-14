@@ -11,6 +11,16 @@ test("dashboard renders decision path and key trading state", async ({ page }) =
   await expect(page.getByText("Price Curve")).toBeVisible();
 });
 
+test("dashboard reaches a live websocket stream", async ({ page }) => {
+  await page.goto("/");
+
+  const status = page.getByTestId("stream-status");
+  const update = page.getByTestId("stream-update");
+
+  await expect(status).toHaveText("live");
+  await expect(update).not.toHaveText("awaiting first tick");
+});
+
 test("switching symbol and timeframe keeps the selected context", async ({ page }) => {
   await page.goto("/");
 

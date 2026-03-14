@@ -16,10 +16,16 @@ export async function fetchIndicatorHistory(symbol, tf) {
   return response.json();
 }
 
-export function connectIndicatorSocket(symbol, tf, onMessage, onClose) {
+export function connectIndicatorSocket(symbol, tf, onMessage, onClose, onOpen) {
   const protocol = window.location.protocol === "https:" ? "wss" : "ws";
   const query = new URLSearchParams({ symbol, tf });
   const socket = new WebSocket(`${protocol}://${window.location.host}/ws/indicators?${query.toString()}`);
+
+  socket.onopen = () => {
+    if (typeof onOpen === "function") {
+      onOpen();
+    }
+  };
 
   socket.onmessage = (event) => {
     try {

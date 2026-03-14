@@ -174,6 +174,13 @@ export const DashboardPage = defineComponent({
             </small>
           </div>
           <div class="decision-item">
+            <span>Indicator stream</span>
+            <strong data-testid="stream-status">{{ store.state.streamStatus || "-" }}</strong>
+            <small data-testid="stream-update">
+              {{ store.state.lastLiveUpdate || "awaiting first tick" }}
+            </small>
+          </div>
+          <div class="decision-item">
             <span>Position qty</span>
             <strong>{{ positionState ? formatNumber(positionState.current_qty, 4) : "-" }}</strong>
             <small>

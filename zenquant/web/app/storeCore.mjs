@@ -91,6 +91,7 @@ export function createMarketStoreController(state, api) {
 
   function reconnectSocket(version = requestVersion, selection = currentSelection()) {
     cleanupSocket();
+    state.streamStatus = "connecting";
     socket = api.connectIndicatorSocket(
       selection.symbol,
       selection.tf,
@@ -98,18 +99,29 @@ export function createMarketStoreController(state, api) {
         if (!isCurrent(version, selection)) {
           return;
         }
+        state.streamStatus = "live";
+        state.lastLiveUpdate = String(
+          payload.cutoff_time || payload.ts || new Date().toISOString(),
+        );
         upsertIndicator(payload, selection);
       },
       () => {
         if (!isCurrent(version, selection)) {
           return;
         }
+        state.streamStatus = "reconnecting";
         if (reconnectTimer) {
           clearTimeout(reconnectTimer);
         }
         reconnectTimer = setTimeout(() => {
           void reload();
         }, 1200);
+      },
+      () => {
+        if (!isCurrent(version, selection)) {
+          return;
+        }
+        state.streamStatus = "live";
       },
     );
 
@@ -135,6 +147,7 @@ export function createMarketStoreController(state, api) {
       socket.close();
       socket = null;
     }
+    state.streamStatus = "idle";
   }
 
   function setSelection(symbol, tf) {
@@ -143,6 +156,7 @@ export function createMarketStoreController(state, api) {
     state.snapshot = null;
     state.indicatorHistory = [];
     state.latestIndicator = null;
+    state.lastLiveUpdate = "";
     state.categoryMaps = {};
     void reload();
   }
