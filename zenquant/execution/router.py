@@ -3,7 +3,7 @@ from __future__ import annotations
 import itertools
 from dataclasses import dataclass
 
-from zenquant.domain import ExecutionOrder, TargetPosition, TradeTick
+from zenquant.domain import ExecutionOrder, MarkPriceUpdate, OrderBookSnapshot, TargetPosition, TradeTick
 from zenquant.execution.gateway import ExecutionGateway
 from zenquant.infra import InMemoryJetStream
 from zenquant.risk import RiskOverlay
@@ -31,15 +31,33 @@ class ExecutionKernel:
 
         self._order_seq = itertools.count(1)
         self._last_price: dict[str, float] = {}
+        self._best_bid: dict[str, float] = {}
+        self._best_ask: dict[str, float] = {}
         self._positions: dict[str, float] = {}
 
         self._bus.subscribe("md.trade.>", self._on_trade)
+        self._bus.subscribe("md.mark.>", self._on_mark_price)
+        self._bus.subscribe("md.book.>", self._on_book)
         self._bus.subscribe("intent.target_position.final.>", self._on_target)
 
     def _on_trade(self, _: str, payload: object) -> None:
         if not isinstance(payload, TradeTick):
             return
         self._last_price[payload.meta.symbol] = payload.price
+
+    def _on_mark_price(self, _: str, payload: object) -> None:
+        if not isinstance(payload, MarkPriceUpdate):
+            return
+        if payload.mark_price > 0:
+            self._last_price[payload.meta.symbol] = payload.mark_price
+
+    def _on_book(self, _: str, payload: object) -> None:
+        if not isinstance(payload, OrderBookSnapshot):
+            return
+        if payload.bids:
+            self._best_bid[payload.meta.symbol] = payload.bids[0].price
+        if payload.asks:
+            self._best_ask[payload.meta.symbol] = payload.asks[0].price
 
     def _on_target(self, _: str, payload: object) -> None:
         if not isinstance(payload, TargetPosition):
@@ -75,7 +93,13 @@ class ExecutionKernel:
         )
         self._bus.publish("exec.order.submit", order)
 
-        report = self._gateway.submit_order(order, mark_price=mark_price, now_ns=payload.cutoff_time_ns)
+        report = self._gateway.submit_order(
+            order,
+            mark_price=mark_price,
+            best_bid=self._best_bid.get(symbol),
+            best_ask=self._best_ask.get(symbol),
+            now_ns=payload.cutoff_time_ns,
+        )
         self._bus.publish("exec.order.report", report)
         if report.status == "FILLED" and report.filled_qty > 0:
             self._positions[symbol] = current_position + (side * report.filled_qty)

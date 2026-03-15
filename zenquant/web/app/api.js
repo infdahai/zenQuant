@@ -16,6 +16,33 @@ export async function fetchIndicatorHistory(symbol, tf) {
   return response.json();
 }
 
+export function connectStateSocket(symbol, tf, onMessage, onClose, onOpen) {
+  const protocol = window.location.protocol === "https:" ? "wss" : "ws";
+  const query = new URLSearchParams({ symbol, tf });
+  const socket = new WebSocket(`${protocol}://${window.location.host}/ws?${query.toString()}`);
+
+  socket.onopen = () => {
+    if (typeof onOpen === "function") {
+      onOpen();
+    }
+  };
+
+  socket.onmessage = (event) => {
+    try {
+      const payload = JSON.parse(event.data);
+      onMessage(payload);
+    } catch (_err) {
+      // Ignore malformed payload and keep stream alive.
+    }
+  };
+
+  socket.onclose = () => {
+    onClose();
+  };
+
+  return socket;
+}
+
 export function connectIndicatorSocket(symbol, tf, onMessage, onClose, onOpen) {
   const protocol = window.location.protocol === "https:" ? "wss" : "ws";
   const query = new URLSearchParams({ symbol, tf });

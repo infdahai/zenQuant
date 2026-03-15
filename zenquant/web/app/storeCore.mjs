@@ -1,7 +1,8 @@
 const MAX_HISTORY_POINTS = 400;
 
 export function createMarketStoreController(state, api) {
-  let socket = null;
+  let indicatorSocket = null;
+  let stateSocket = null;
   let reconnectTimer = null;
   let heartbeatTimer = null;
   let requestVersion = 0;
@@ -17,7 +18,7 @@ export function createMarketStoreController(state, api) {
     if (!isCurrent(version, selection)) {
       return;
     }
-    reconnectSocket(version, selection);
+    reconnectSockets(version, selection);
   }
 
   async function refreshState(version = requestVersion, selection = currentSelection()) {
@@ -89,10 +90,48 @@ export function createMarketStoreController(state, api) {
     }
   }
 
-  function reconnectSocket(version = requestVersion, selection = currentSelection()) {
+  function reconnectSockets(version = requestVersion, selection = currentSelection()) {
     cleanupSocket();
     state.streamStatus = "connecting";
-    socket = api.connectIndicatorSocket(
+    stateSocket = api.connectStateSocket(
+      selection.symbol,
+      selection.tf,
+      (payload) => {
+        if (!isCurrent(version, selection)) {
+          return;
+        }
+        state.streamStatus = "live";
+        state.snapshot = payload;
+        const runtime = payload && payload.runtime_status ? payload.runtime_status : {};
+        const lastNs = Number(runtime.last_market_event_ns || 0);
+        if (lastNs > 0) {
+          state.lastLiveUpdate = new Date(lastNs / 1_000_000).toISOString();
+        }
+        if (payload && payload.latest_indicator) {
+          upsertIndicator(payload, selection);
+        }
+      },
+      () => {
+        if (!isCurrent(version, selection)) {
+          return;
+        }
+        state.streamStatus = "reconnecting";
+        if (reconnectTimer) {
+          clearTimeout(reconnectTimer);
+        }
+        reconnectTimer = setTimeout(() => {
+          void reload();
+        }, 1200);
+      },
+      () => {
+        if (!isCurrent(version, selection)) {
+          return;
+        }
+        state.streamStatus = "live";
+      },
+    );
+
+    indicatorSocket = api.connectIndicatorSocket(
       selection.symbol,
       selection.tf,
       (payload) => {
@@ -127,10 +166,12 @@ export function createMarketStoreController(state, api) {
 
     heartbeatTimer = setInterval(() => {
       const openState = globalThis.WebSocket ? globalThis.WebSocket.OPEN : 1;
-      if (!socket || socket.readyState !== openState) {
-        return;
+      if (stateSocket && stateSocket.readyState === openState) {
+        stateSocket.send("ping");
       }
-      socket.send("ping");
+      if (indicatorSocket && indicatorSocket.readyState === openState) {
+        indicatorSocket.send("ping");
+      }
     }, 15000);
   }
 
@@ -143,9 +184,13 @@ export function createMarketStoreController(state, api) {
       clearInterval(heartbeatTimer);
       heartbeatTimer = null;
     }
-    if (socket) {
-      socket.close();
-      socket = null;
+    if (stateSocket) {
+      stateSocket.close();
+      stateSocket = null;
+    }
+    if (indicatorSocket) {
+      indicatorSocket.close();
+      indicatorSocket = null;
     }
     state.streamStatus = "idle";
   }

@@ -22,6 +22,7 @@ from zenquant.domain.serde import to_jsonable
 class DashboardStateConfig:
     max_candles: int = 220
     max_alerts: int = 64
+    max_equity_points: int = 256
     max_reports: int = 48
     max_reasons: int = 32
     bias_stale_after_4h_bars: int = 8
@@ -38,6 +39,7 @@ class DashboardStateStore:
             lambda: deque(maxlen=self._config.max_candles)
         )
         self._alerts: deque[dict[str, Any]] = deque(maxlen=self._config.max_alerts)
+        self._equity_curve: deque[dict[str, Any]] = deque(maxlen=self._config.max_equity_points)
         self._reports: deque[dict[str, Any]] = deque(maxlen=self._config.max_reports)
         self._reasons: deque[dict[str, Any]] = deque(maxlen=self._config.max_reasons)
         self._risk_snapshot: RiskSnapshot | None = None
@@ -47,6 +49,12 @@ class DashboardStateStore:
         self._directional_bias: dict[str, DirectionalBias] = {}
         self._position_state: dict[tuple[str, str], OpenPositionState] = {}
         self._last_price: dict[str, float] = {}
+        self._runtime_status: dict[str, Any] = {
+            "mode": "demo",
+            "market_connected": False,
+            "last_market_event_ns": 0,
+            "database": {"enabled": False, "writes": 0, "dropped": 0, "queue_depth": 0, "last_error": ""},
+        }
         self._default_symbol = "BTCUSDT_PERP"
         self._default_tf = "4h"
 
@@ -75,6 +83,13 @@ class DashboardStateStore:
 
     def on_risk_snapshot(self, snapshot: RiskSnapshot) -> None:
         self._risk_snapshot = snapshot
+        self._equity_curve.append(
+            {
+                "ts_ns": snapshot.ts_ns,
+                "equity": snapshot.equity,
+                "drawdown": snapshot.drawdown,
+            }
+        )
         if snapshot.flags != ["OK"]:
             self._alerts.appendleft(
                 {
@@ -109,6 +124,15 @@ class DashboardStateStore:
             return
         self._position_state.pop(key, None)
 
+    def on_mark_price(self, symbol: str, ts_ns: int, price: float) -> None:
+        if price > 0:
+            self._last_price[symbol] = price
+        self._runtime_status["market_connected"] = True
+        self._runtime_status["last_market_event_ns"] = ts_ns
+
+    def on_runtime_status(self, payload: dict[str, Any]) -> None:
+        self._runtime_status.update(payload)
+
     def snapshot(self, symbol: str | None = None, timeframe: str | None = None) -> dict[str, Any]:
         symbol = symbol or self._default_symbol
         timeframe = timeframe or self._default_tf
@@ -134,6 +158,8 @@ class DashboardStateStore:
             "alerts": list(self._alerts),
             "risk_snapshot": to_jsonable(self._risk_snapshot) if self._risk_snapshot is not None else None,
             "risk_decision": to_jsonable(self._risk_decision) if self._risk_decision is not None else None,
+            "equity_curve": list(self._equity_curve),
+            "runtime_status": dict(self._runtime_status),
             "reasons": list(self._reasons),
             "reports": list(self._reports),
         }

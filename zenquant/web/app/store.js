@@ -1,8 +1,10 @@
 import { reactive } from "/static/vendor/vue.esm-browser.prod.js";
-import { connectIndicatorSocket, fetchIndicatorHistory, fetchState } from "./api.js";
+import { connectIndicatorSocket, connectStateSocket, fetchIndicatorHistory, fetchState } from "./api.js";
 import { createMarketStoreController } from "./storeCore.mjs";
 
-export function createMarketStore(apiClient = { fetchState, fetchIndicatorHistory, connectIndicatorSocket }) {
+export function createMarketStore(
+  apiClient = { fetchState, fetchIndicatorHistory, connectIndicatorSocket, connectStateSocket },
+) {
   const state = reactive({
     symbol: "BTCUSDT_PERP",
     tf: "4h",

@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from zenquant.domain import (
     BarCloseEvent,
     FundingUpdate,
+    MarkPriceUpdate,
     MarketSnapshot,
     OpenInterestUpdate,
     OrderBookSnapshot,
@@ -58,6 +59,7 @@ class SnapshotBuilder:
         self._closed_cvd: dict[tuple[str, Timeframe, int], float] = {}
 
         self._bus.subscribe("md.trade.>", self._on_trade)
+        self._bus.subscribe("md.mark.>", self._on_mark_price)
         self._bus.subscribe("md.book.>", self._on_book)
         self._bus.subscribe("md.funding.>", self._on_funding)
         self._bus.subscribe("md.oi.>", self._on_open_interest)
@@ -100,6 +102,12 @@ class SnapshotBuilder:
 
             state.delta += signed_size
 
+    def _on_mark_price(self, _: str, payload: object) -> None:
+        if not isinstance(payload, MarkPriceUpdate):
+            return
+        if payload.mark_price > 0:
+            self._last_price[payload.meta.symbol] = payload.mark_price
+
     def _on_book(self, _: str, payload: object) -> None:
         if not isinstance(payload, OrderBookSnapshot):
             return
@@ -132,6 +140,19 @@ class SnapshotBuilder:
     def _on_bar_close(self, _: str, payload: object) -> None:
         if not isinstance(payload, BarCloseEvent):
             return
+
+        # Live bar-close events can arrive before the first trade in the next bar.
+        # Roll current CVD forward here so the just-closed bar remains point-in-time correct.
+        cvd_key = (payload.symbol, payload.timeframe)
+        current_cvd = self._cvd_state.get(cvd_key)
+        closed_key = (payload.symbol, payload.timeframe, payload.bar_end_ns)
+        if closed_key not in self._closed_cvd and current_cvd is not None:
+            if current_cvd.bar_start_ns == payload.bar_start_ns:
+                self._closed_cvd[closed_key] = current_cvd.delta
+                self._cvd_state[cvd_key] = _CVDState(
+                    bar_start_ns=payload.bar_end_ns,
+                    delta=0.0,
+                )
 
         snapshot = self._build_snapshot(payload)
         self._bus.publish(f"md.snapshot.{payload.timeframe.value}.{payload.symbol}", snapshot)

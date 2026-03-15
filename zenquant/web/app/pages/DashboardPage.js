@@ -37,7 +37,9 @@ export const DashboardPage = defineComponent({
       const reports = (store.state.snapshot || {}).reports || [];
       return reports[0] || null;
     });
+    const riskSnapshot = computed(() => (store.state.snapshot || {}).risk_snapshot || null);
     const latestRiskDecision = computed(() => (store.state.snapshot || {}).risk_decision || null);
+    const runtimeStatus = computed(() => (store.state.snapshot || {}).runtime_status || {});
     const candles = computed(() => ((store.state.snapshot || {}).candles || []).slice(-180));
     const priceSeries = computed(() => ((store.state.snapshot || {}).price_series || []).slice(-260));
     const proxyHistory = computed(() => (store.state.snapshot || {}).proxy_indicator_history || {});
@@ -133,8 +135,10 @@ export const DashboardPage = defineComponent({
       indicatorCards,
       latestReason,
       latestReport,
+      riskSnapshot,
       latestRiskDecision,
       latestTarget,
+      runtimeStatus,
       positionState,
       displayValue,
       indicatorRoute,
@@ -181,6 +185,17 @@ export const DashboardPage = defineComponent({
             </small>
           </div>
           <div class="decision-item">
+            <span>Runtime mode</span>
+            <strong>{{ runtimeStatus.mode || "-" }}</strong>
+            <small>
+              {{
+                runtimeStatus.database && runtimeStatus.database.enabled
+                  ? ("db writes " + runtimeStatus.database.writes)
+                  : "db disabled"
+              }}
+            </small>
+          </div>
+          <div class="decision-item">
             <span>Position qty</span>
             <strong>{{ positionState ? formatNumber(positionState.current_qty, 4) : "-" }}</strong>
             <small>
@@ -215,6 +230,19 @@ export const DashboardPage = defineComponent({
               {{
                 latestRiskDecision
                   ? "lev cap " + formatNumber(latestRiskDecision.lev_cap, 2)
+                  : "-"
+              }}
+            </small>
+          </div>
+          <div class="decision-item">
+            <span>Equity</span>
+            <strong>
+              {{ riskSnapshot ? formatNumber(riskSnapshot.equity, 2) : "-" }}
+            </strong>
+            <small>
+              {{
+                riskSnapshot
+                  ? ("dd " + formatNumber(riskSnapshot.drawdown * 100, 2) + "%")
                   : "-"
               }}
             </small>

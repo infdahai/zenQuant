@@ -15,7 +15,14 @@ class ExecutionGateway:
     def __init__(self, config: ExecutionGatewayConfig | None = None) -> None:
         self._config = config or ExecutionGatewayConfig()
 
-    def submit_order(self, order: ExecutionOrder, mark_price: float, now_ns: int | None = None) -> ExecutionReport:
+    def submit_order(
+        self,
+        order: ExecutionOrder,
+        mark_price: float,
+        best_bid: float | None = None,
+        best_ask: float | None = None,
+        now_ns: int | None = None,
+    ) -> ExecutionReport:
         if order.quantity <= 0 or mark_price <= 0:
             return ExecutionReport(
                 client_order_id=order.client_order_id,
