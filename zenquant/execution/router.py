@@ -1,3 +1,5 @@
+"""Execution kernel that turns final target positions into orders."""
+
 from __future__ import annotations
 
 import itertools
@@ -11,12 +13,20 @@ from zenquant.risk import RiskOverlay
 
 @dataclass(slots=True)
 class ExecutionKernelConfig:
+    """Execution sizing and slippage limits for one bar-close cycle."""
+
     min_trade_qty: float = 0.0001
     max_trade_qty_per_bar: float = 1.0
     max_slippage_bps: float = 8.0
 
 
 class ExecutionKernel:
+    """Convert final target intents into simulated fills.
+
+    The kernel only listens to ``intent.target_position.final`` subjects so the
+    risk overlay remains the last mutating step before execution.
+    """
+
     def __init__(
         self,
         bus: InMemoryJetStream,
@@ -60,6 +70,7 @@ class ExecutionKernel:
             self._best_ask[payload.meta.symbol] = payload.asks[0].price
 
     def _on_target(self, _: str, payload: object) -> None:
+        """Diff current filled position against the new target and trade the delta."""
         if not isinstance(payload, TargetPosition):
             return
 
@@ -107,4 +118,5 @@ class ExecutionKernel:
 
     @property
     def positions(self) -> dict[str, float]:
+        """Return a copy of filled positions tracked by the kernel."""
         return dict(self._positions)

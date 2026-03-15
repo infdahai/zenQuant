@@ -1,3 +1,5 @@
+// Browser entrypoint for the lightweight Vue dashboard.
+
 import { createApp } from "/static/vendor/vue.esm-browser.prod.js";
 import { createRouter, createWebHashHistory } from "/static/vendor/vue-router.esm-browser.prod.js";
 
@@ -24,6 +26,8 @@ app.use(router);
 app.mount("#app");
 
 store.reload();
+// Periodic refresh complements websocket streaming and helps the page recover
+// if a browser silently drops one of the sockets.
 setInterval(() => {
   store.refreshState();
 }, 2500);

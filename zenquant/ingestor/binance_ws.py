@@ -1,3 +1,10 @@
+"""Realtime Binance futures market-data adapter for live paper trading.
+
+The client normalizes Binance websocket and REST payloads into the repository's
+internal event contracts so the downstream pipeline does not depend on
+exchange-specific message shapes.
+"""
+
 from __future__ import annotations
 
 import asyncio
@@ -33,6 +40,8 @@ BINANCE_FSTREAM_REST = "https://fapi.binance.com"
 
 @dataclass(slots=True)
 class BinancePerpStreamConfig:
+    """Subscription and polling settings for Binance USD-M perpetual feeds."""
+
     symbols: tuple[str, ...] = ("BTCUSDT_PERP",)
     depth_levels: int = 10
     depth_update_ms: int = 1000
@@ -43,6 +52,8 @@ class BinancePerpStreamConfig:
 
 
 class BinancePerpStreamClient:
+    """Publish Binance futures market data onto the internal event bus."""
+
     def __init__(
         self,
         bus: InMemoryJetStream,
@@ -56,6 +67,7 @@ class BinancePerpStreamClient:
         self._ws: ClientConnection | None = None
 
     async def start(self) -> None:
+        """Start websocket streaming and open-interest polling tasks."""
         if self._running:
             return
         self._running = True
@@ -65,6 +77,7 @@ class BinancePerpStreamClient:
         ]
 
     async def stop(self) -> None:
+        """Stop background tasks and close the websocket cleanly."""
         self._running = False
         tasks = list(self._tasks)
         self._tasks.clear()
@@ -77,6 +90,7 @@ class BinancePerpStreamClient:
             await asyncio.gather(*tasks, return_exceptions=True)
 
     async def _run_market_stream(self) -> None:
+        """Maintain the combined websocket stream and reconnect on failure."""
         while self._running:
             try:
                 async with connect(self._stream_url(), ping_interval=20, ping_timeout=20) as websocket:
@@ -96,6 +110,7 @@ class BinancePerpStreamClient:
                 await asyncio.sleep(self._config.reconnect_backoff_s)
 
     async def _run_open_interest_poll(self) -> None:
+        """Poll open interest because Binance does not stream it on the main socket."""
         while self._running:
             try:
                 await self._poll_open_interest_once()
@@ -126,6 +141,7 @@ class BinancePerpStreamClient:
             )
 
     def _handle_market_message(self, message: str) -> None:
+        """Route a normalized Binance payload to the correct event publisher."""
         try:
             payload = json.loads(message)
         except json.JSONDecodeError:
@@ -213,6 +229,7 @@ class BinancePerpStreamClient:
         )
 
     def _publish_kline(self, symbol: str, payload: dict[str, object]) -> None:
+        """Publish only exchange-confirmed bar closes into the decision pipeline."""
         raw_kline = payload.get("k")
         if not isinstance(raw_kline, dict):
             return
@@ -256,6 +273,7 @@ class BinancePerpStreamClient:
         )
 
     def _stream_url(self) -> str:
+        """Build the combined-stream URL for the configured symbols."""
         streams: list[str] = []
         for symbol in self._config.symbols:
             exch_symbol = _to_binance_symbol(symbol)
@@ -275,6 +293,7 @@ class BinancePerpStreamClient:
         return f"{BINANCE_FSTREAM_WS}?streams={joined}"
 
     def _meta(self, symbol: str, event_time_ns: int) -> EventMeta:
+        """Attach deterministic per-symbol stream sequence numbers to events."""
         current = self._seq.get(symbol, 0) + 1
         self._seq[symbol] = current
         return EventMeta(
@@ -287,6 +306,7 @@ class BinancePerpStreamClient:
 
 
 def _timeframe_from_stream(value: str) -> Timeframe | None:
+    """Map Binance kline interval tokens into the domain timeframe enum."""
     token = value.lower()
     if token == "4h":
         return Timeframe.TF_4H
@@ -296,11 +316,13 @@ def _timeframe_from_stream(value: str) -> Timeframe | None:
 
 
 def _symbol_from_stream(stream: str) -> str | None:
+    """Recover the internal symbol from a combined-stream name."""
     token = stream.split("@", 1)[0].upper()
     return _from_binance_symbol(token)
 
 
 def _from_binance_symbol(symbol: str) -> str | None:
+    """Convert exchange symbols into the repo's perpetual-symbol naming."""
     mapping = {
         "BTCUSDT": "BTCUSDT_PERP",
         "ETHUSDT": "ETHUSDT_PERP",
@@ -309,6 +331,7 @@ def _from_binance_symbol(symbol: str) -> str | None:
 
 
 def _to_binance_symbol(symbol: str) -> str | None:
+    """Convert internal perpetual symbols into Binance market symbols."""
     mapping = {
         "BTCUSDT_PERP": "BTCUSDT",
         "ETHUSDT_PERP": "ETHUSDT",
@@ -317,6 +340,7 @@ def _to_binance_symbol(symbol: str) -> str | None:
 
 
 def _parse_depth_side(raw: object, levels: int) -> list[OrderBookLevel]:
+    """Parse one side of a Binance depth payload into typed levels."""
     if not isinstance(raw, list):
         return []
     parsed: list[OrderBookLevel] = []
@@ -332,6 +356,7 @@ def _parse_depth_side(raw: object, levels: int) -> list[OrderBookLevel]:
 
 
 def _to_float(value: object) -> float:
+    """Parse float-like payload values with zero-on-failure semantics."""
     try:
         return float(value)
     except (TypeError, ValueError):
@@ -339,6 +364,7 @@ def _to_float(value: object) -> float:
 
 
 def _fetch_json_sync(url: str, timeout_s: float) -> object | None:
+    """Small sync helper used by the background open-interest poller."""
     req = urllib.request.Request(
         url,
         method="GET",

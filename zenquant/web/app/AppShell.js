@@ -1,9 +1,15 @@
-import { computed, defineComponent, inject } from "/static/vendor/vue.esm-browser.prod.js";
+// Shell layout for the explainability dashboard.
+
+import { computed, defineComponent, inject, onBeforeUnmount, onMounted, ref } from "/static/vendor/vue.esm-browser.prod.js";
+import { formatRelativeTimeFromNs, getMarketHealth } from "./utils.js";
 
 export const AppShell = defineComponent({
   name: "AppShell",
   setup() {
+    // The shell owns global selection and health-state presentation. Page-level
+    // components focus on the current snapshot rather than managing sockets.
     const store = inject("marketStore");
+    const nowMs = ref(Date.now());
     const defaultIndicatorKeys = [
       "last_price",
       "funding_oi_weighted",
@@ -34,6 +40,25 @@ export const AppShell = defineComponent({
       return [...merged].sort();
     });
 
+    let refreshTimer;
+    onMounted(() => {
+      refreshTimer = window.setInterval(() => {
+        nowMs.value = Date.now();
+      }, 1000);
+    });
+    onBeforeUnmount(() => {
+      if (refreshTimer) {
+        window.clearInterval(refreshTimer);
+      }
+    });
+
+    const runtimeStatus = computed(() => (store.state.snapshot || {}).runtime_status || {});
+    const marketHealth = computed(() => getMarketHealth(runtimeStatus.value, nowMs.value));
+    const marketUpdateCopy = computed(() => {
+      const lastNs = Number(runtimeStatus.value.last_market_event_ns || 0);
+      return formatRelativeTimeFromNs(lastNs, nowMs.value);
+    });
+
     function onSymbolChange(event) {
       store.setSelection(event.target.value, store.state.tf);
     }
@@ -46,12 +71,19 @@ export const AppShell = defineComponent({
       return `/indicator/${encodeURIComponent(String(key))}`;
     }
 
+    function retryNow() {
+      void store.reload();
+    }
+
     return {
       store,
       indicatorKeys,
       indicatorRoute,
+      marketHealth,
+      marketUpdateCopy,
       onSymbolChange,
       onTfChange,
+      retryNow,
     };
   },
   template: `
@@ -79,13 +111,26 @@ export const AppShell = defineComponent({
           </label>
         </div>
         <div class="status-panel">
-          <div class="status-pill" :class="store.state.lastError ? 'danger' : 'ok'">
-            {{ store.state.lastError ? 'DEGRADED' : 'LIVE' }}
+          <div class="status-pill" :class="marketHealth.tone">
+            {{ store.state.lastError ? 'ERROR' : marketHealth.label }}
           </div>
           <div class="status-copy">
             <strong>{{ store.state.symbol }}</strong>
             <span>{{ store.state.tf.toUpperCase() }} decision surface</span>
+            <span>
+              {{ store.state.lastError || marketHealth.detail }}
+            </span>
+            <span>
+              Last market update {{ marketUpdateCopy }}
+            </span>
           </div>
+          <button
+            v-if="store.state.lastError || marketHealth.tone !== 'ok'"
+            class="retry-btn"
+            @click="retryNow"
+          >
+            Retry feed
+          </button>
         </div>
       </header>
 

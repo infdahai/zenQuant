@@ -1,3 +1,5 @@
+"""Synthetic market-data source used for deterministic local development."""
+
 from __future__ import annotations
 
 import math
@@ -20,6 +22,8 @@ from zenquant.infra import InMemoryJetStream
 
 @dataclass(slots=True)
 class SyntheticIngestorConfig:
+    """Synthetic feed controls for repeatable demo and test runs."""
+
     symbols: tuple[str, ...] = ("BTCUSDT_PERP", "ETHUSDT_PERP")
     venues: tuple[str, ...] = ("BINANCE", "OKX")
     seed: int = 7
@@ -30,6 +34,13 @@ class SyntheticIngestorConfig:
 
 
 class SyntheticIngestor:
+    """Generate a multi-venue synthetic market stream with stable randomness.
+
+    Example:
+        ingestor = SyntheticIngestor(bus, SyntheticIngestorConfig(seed=7))
+        ingestor.run(steps=320)
+    """
+
     def __init__(self, bus: InMemoryJetStream, config: SyntheticIngestorConfig | None = None) -> None:
         self._bus = bus
         self._config = config or SyntheticIngestorConfig()
@@ -47,10 +58,12 @@ class SyntheticIngestor:
                 self._prices[(venue, symbol)] = base * venue_bias
 
     def run(self, steps: int) -> None:
+        """Publish a fixed number of synthetic steps onto the event bus."""
         for subject, payload in self.iter_events(steps=steps, start_step=0):
             self._bus.publish(subject, payload)
 
     def iter_events(self, steps: int | None = None, start_step: int = 0) -> Iterator[tuple[str, object]]:
+        """Yield the deterministic event sequence used by demo mode and tests."""
         step = start_step
         end_step = None if steps is None else start_step + steps
         while end_step is None or step < end_step:

@@ -1,3 +1,5 @@
+// Focused page for one indicator key across the current selection.
+
 import { computed, defineComponent, inject } from "/static/vendor/vue.esm-browser.prod.js";
 import { useRoute } from "/static/vendor/vue-router.esm-browser.prod.js";
 import { CandleCanvas } from "../components/CandleCanvas.js";
@@ -8,6 +10,8 @@ export const IndicatorPage = defineComponent({
   name: "IndicatorPage",
   components: { CandleCanvas, SeriesCanvas },
   setup() {
+    // This page reuses the shared store rather than fetching its own data so
+    // indicator detail stays in lockstep with the dashboard selection.
     const store = inject("marketStore");
     const route = useRoute();
     const defaultIndicatorKeys = [

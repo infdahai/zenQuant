@@ -4,11 +4,15 @@ test("dashboard renders decision path and key trading state", async ({ page }) =
   await page.goto("/");
 
   await expect(page.getByRole("heading", { name: "ZenQuant Indicators" })).toBeVisible();
+  await expect(page.getByText("Live Overview")).toBeVisible();
+  await expect(page.getByText("Total PnL")).toBeVisible();
   await expect(page.getByText("Decision Path")).toBeVisible();
   await expect(page.getByText("1D bias")).toBeVisible();
   await expect(page.getByText("Latest target")).toBeVisible();
   await expect(page.getByText("Last execution")).toBeVisible();
   await expect(page.getByText("Price Curve")).toBeVisible();
+  await expect(page.getByText("Alert Panel")).toBeVisible();
+  await expect(page.getByText("Execution Log")).toBeVisible();
 });
 
 test("dashboard reaches a live websocket stream", async ({ page }) => {
@@ -17,8 +21,8 @@ test("dashboard reaches a live websocket stream", async ({ page }) => {
   const status = page.getByTestId("stream-status");
   const update = page.getByTestId("stream-update");
 
-  await expect(status).toHaveText("live");
-  await expect(update).not.toHaveText("awaiting first tick");
+  await expect(status).toHaveText("LIVE");
+  await expect(update).toHaveText(/Simulated feed active|Updated/);
 });
 
 test("switching symbol and timeframe keeps the selected context", async ({ page }) => {

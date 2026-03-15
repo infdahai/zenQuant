@@ -1,3 +1,5 @@
+// Lightweight canvas renderer for candles or fallback live tick prices.
+
 import {
   defineComponent,
   nextTick,
@@ -27,6 +29,9 @@ export const CandleCanvas = defineComponent({
     const canvasRef = ref(null);
 
     const draw = () => {
+      // Draw candles when confirmed bars are available. When the live runtime
+      // has only recent ticks, fall back to a simple price line so the page
+      // still shows visible market movement.
       const canvas = canvasRef.value;
       if (!canvas) {
         return;

@@ -1,3 +1,5 @@
+"""Thin realtime-ingestion wrapper around the Binance futures client."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -8,6 +10,7 @@ from .binance_ws import BinancePerpStreamClient, BinancePerpStreamConfig, _parse
 
 
 def _to_okx_inst_id(symbol: str) -> str | None:
+    """Legacy symbol mapper kept for future multi-venue work."""
     mapping = {
         "BTCUSDT_PERP": "BTC-USDT-SWAP",
         "ETHUSDT_PERP": "ETH-USDT-SWAP",
@@ -17,6 +20,8 @@ def _to_okx_inst_id(symbol: str) -> str | None:
 
 @dataclass(slots=True)
 class RealTimeIngestorConfig:
+    """Live market-data settings shared by the realtime ingestor."""
+
     symbols: tuple[str, ...] = ("BTCUSDT_PERP",)
     depth_levels: int = 10
     depth_update_ms: int = 1000
@@ -27,6 +32,8 @@ class RealTimeIngestorConfig:
 
 
 class RealTimeIngestor:
+    """Start and stop the live Binance futures client as one component."""
+
     def __init__(self, bus: InMemoryJetStream, config: RealTimeIngestorConfig | None = None) -> None:
         runtime_config = config or RealTimeIngestorConfig()
         self._client = BinancePerpStreamClient(
@@ -43,9 +50,11 @@ class RealTimeIngestor:
         )
 
     async def start(self) -> None:
+        """Start websocket and polling tasks."""
         await self._client.start()
 
     async def stop(self) -> None:
+        """Stop websocket and polling tasks."""
         await self._client.stop()
 
 

@@ -1,3 +1,10 @@
+"""Minimal end-to-end demo pipeline for local deterministic runs.
+
+The demo pipeline remains useful for sanity checks because it wires the same
+core components as the live runtime, but drives them from the synthetic
+ingestor instead of external market data.
+"""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -14,6 +21,8 @@ from zenquant.strategy import ARCStrategyEngine
 
 @dataclass(slots=True)
 class PipelineResult:
+    """Compact summary returned by ``ZenQuantPipeline.run``."""
+
     total_indicator_packs: int
     total_targets: int
     total_reports: int
@@ -24,6 +33,13 @@ class PipelineResult:
 
 
 class ZenQuantPipeline:
+    """Assemble the core trading pipeline for deterministic local tests.
+
+    Example:
+        result = ZenQuantPipeline(seed=11).run(steps=320)
+        print(result.latest_regime)
+    """
+
     def __init__(self, seed: int = 7) -> None:
         self.bus = InMemoryJetStream()
         self.bus.add_stream(StreamConfig(name="STREAM_MARKET_DATA", subjects=["md.>"]))
@@ -58,6 +74,7 @@ class ZenQuantPipeline:
         self.bus.subscribe("exec.order.report", self._collect_report)
 
     def run(self, steps: int = 320) -> PipelineResult:
+        """Run the synthetic pipeline for a fixed number of event steps."""
         self.ingestor.run(steps=steps)
 
         latest_pack = None
@@ -87,14 +104,17 @@ class ZenQuantPipeline:
         )
 
     def _collect_indicator(self, _: str, payload: object) -> None:
+        """Capture emitted indicator packs for test assertions."""
         if isinstance(payload, IndicatorPack):
             self._indicators.append(payload)
 
     def _collect_target(self, _: str, payload: object) -> None:
+        """Capture final target intents for summary reporting."""
         if isinstance(payload, TargetPosition):
             self._targets.append(payload)
 
     def _collect_report(self, _: str, payload: object) -> None:
+        """Capture execution reports in a JSON-friendly form."""
         from zenquant.domain import ExecutionReport
 
         if isinstance(payload, ExecutionReport):

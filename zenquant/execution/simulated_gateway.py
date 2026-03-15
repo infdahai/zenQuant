@@ -1,3 +1,5 @@
+"""Execution gateway that prices fills from live top-of-book or mark price."""
+
 from __future__ import annotations
 
 import time
@@ -9,10 +11,14 @@ from zenquant.execution.gateway import ExecutionGateway, ExecutionGatewayConfig
 
 @dataclass(slots=True)
 class SimulatedGatewayConfig(ExecutionGatewayConfig):
+    """Extra slippage controls for live paper trading."""
+
     fallback_slippage_bps: float = 1.5
 
 
 class SimulatedGateway(ExecutionGateway):
+    """Paper-trading gateway that prefers best bid/ask over the mark price."""
+
     def __init__(self, config: SimulatedGatewayConfig | None = None) -> None:
         self._config = config or SimulatedGatewayConfig()
         super().__init__(config=self._config)
@@ -25,6 +31,7 @@ class SimulatedGateway(ExecutionGateway):
         best_ask: float | None = None,
         now_ns: int | None = None,
     ) -> ExecutionReport:
+        """Submit an order using top-of-book pricing when available."""
         if order.quantity <= 0 or mark_price <= 0:
             return ExecutionReport(
                 client_order_id=order.client_order_id,
@@ -63,6 +70,7 @@ class SimulatedGateway(ExecutionGateway):
         best_bid: float | None,
         best_ask: float | None,
     ) -> float:
+        """Choose a realistic fill price for the order side."""
         if side > 0 and best_ask is not None and best_ask > 0:
             return best_ask
         if side < 0 and best_bid is not None and best_bid > 0:

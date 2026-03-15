@@ -1,3 +1,5 @@
+"""FastAPI server and runtime wiring for demo and live paper-trading modes."""
+
 from __future__ import annotations
 
 import asyncio
@@ -64,6 +66,13 @@ class _StateConnection:
 
 
 class ZenQuantWebRuntime:
+    """Own the web runtime, event bus, and dashboard-facing subscriptions.
+
+    ``demo`` mode uses the synthetic ingestor and local bar clock. ``live``
+    mode consumes confirmed Binance bar-close events directly and uses the
+    simulated execution gateway for paper trading.
+    """
+
     def __init__(
         self,
         runtime_mode: str = "demo",
@@ -90,6 +99,8 @@ class ZenQuantWebRuntime:
         self.indicator_store = IndicatorStore()
 
         if self._runtime_mode == "live":
+            # Live mode trusts exchange-confirmed bar closes, so it does not
+            # synthesize candles from ticks locally.
             snapshot_config = SnapshotBuilderConfig(expected_venues=1)
             indicator_config = IndicatorEngineConfig(expected_symbols=("BTCUSDT_PERP",))
             self.snapshot_builder = SnapshotBuilder(bus=self.bus, config=snapshot_config)
@@ -106,6 +117,7 @@ class ZenQuantWebRuntime:
             )
             self._event_iterator = None
         else:
+            # Demo mode keeps the original synthetic path for local iteration.
             self.snapshot_builder = SnapshotBuilder(bus=self.bus)
             self.bar_clock = BarClockService(bus=self.bus)
             self.indicator_engine = IndicatorEngine(bus=self.bus, store=self.indicator_store)
@@ -140,6 +152,7 @@ class ZenQuantWebRuntime:
         self.bus.subscribe("exec.order.report", self._on_report)
 
     async def start(self) -> None:
+        """Start background tasks and ingest market data for the selected mode."""
         if self._started:
             return
         self._started = True
@@ -151,6 +164,7 @@ class ZenQuantWebRuntime:
         self._tick_task = asyncio.create_task(self._run_tick_loop())
 
     async def stop(self) -> None:
+        """Stop background tasks and freeze database status for the dashboard."""
         if not self._started:
             return
         self._started = False
@@ -167,6 +181,7 @@ class ZenQuantWebRuntime:
         self.state.on_runtime_status({"database": self.online_state.snapshot()})
 
     def prime_history(self) -> None:
+        """Warm the demo-mode pipeline before the UI starts polling it."""
         if self._runtime_mode != "demo" or self._warmup_steps <= 0:
             return
         assert isinstance(self.ingestor, SyntheticIngestor)
@@ -174,21 +189,32 @@ class ZenQuantWebRuntime:
             self.bus.publish(subject, payload)
 
     def snapshot(self, symbol: str = "BTCUSDT_PERP", tf: str = "4h") -> dict[str, Any]:
+        """Return the latest dashboard snapshot for one symbol/timeframe."""
         self.state.on_runtime_status({"database": self.online_state.snapshot()})
         return self.state.snapshot(symbol=symbol, timeframe=tf)
 
     async def connect_state(self, websocket: WebSocket, symbol: str, tf: str) -> None:
+        """Attach a websocket client to dashboard-state updates."""
         await websocket.accept()
         self._state_connections.append(_StateConnection(websocket=websocket, symbol=symbol, tf=tf))
-        await websocket.send_json(self.snapshot(symbol=symbol, tf=tf))
+        try:
+            await websocket.send_json(self.snapshot(symbol=symbol, tf=tf))
+        except Exception:
+            self.disconnect_state(websocket)
+            return
 
     async def connect_indicators(self, websocket: WebSocket, symbol: str, tf: Timeframe) -> None:
+        """Attach a websocket client to indicator-only updates."""
         await websocket.accept()
         conn = _IndicatorConnection(websocket=websocket, symbol=symbol, timeframe=tf)
         self._indicator_connections.append(conn)
         latest = self.indicator_store.latest(symbol=symbol, timeframe=tf)
         if latest is not None:
-            await websocket.send_json(_indicator_payload(latest))
+            try:
+                await websocket.send_json(_indicator_payload(latest))
+            except Exception:
+                self.disconnect_indicators(websocket)
+                return
 
     def disconnect_state(self, websocket: WebSocket) -> None:
         self._state_connections = [
@@ -201,6 +227,7 @@ class ZenQuantWebRuntime:
         ]
 
     async def _run_tick_loop(self) -> None:
+        """Drive demo-mode synthetic events at a fixed wall-clock cadence."""
         assert self._event_iterator is not None
         while self._started:
             subject, payload = next(self._event_iterator)
@@ -208,6 +235,7 @@ class ZenQuantWebRuntime:
             await asyncio.sleep(self._tick_interval_s)
 
     async def _broadcast_state(self) -> None:
+        """Push the latest dashboard snapshot to all connected state clients."""
         if not self._state_connections:
             return
         stale: list[WebSocket] = []
@@ -222,6 +250,7 @@ class ZenQuantWebRuntime:
             self.disconnect_state(websocket)
 
     async def _broadcast_indicator(self, pack: IndicatorPack) -> None:
+        """Push one new indicator pack to matching indicator clients."""
         if not self._indicator_connections:
             return
         payload = _indicator_payload(pack)
@@ -237,6 +266,7 @@ class ZenQuantWebRuntime:
             self.disconnect_indicators(websocket)
 
     def _schedule_state_broadcast(self) -> None:
+        """Schedule a state push without blocking the event handler thread."""
         try:
             loop = asyncio.get_running_loop()
         except RuntimeError:
@@ -244,6 +274,7 @@ class ZenQuantWebRuntime:
         loop.create_task(self._broadcast_state())
 
     def _schedule_indicator_broadcast(self, pack: IndicatorPack) -> None:
+        """Schedule indicator and state pushes after a new pack is emitted."""
         try:
             loop = asyncio.get_running_loop()
         except RuntimeError:
@@ -316,6 +347,11 @@ class ZenQuantWebRuntime:
 
 
 def create_app(runtime_mode: str = "demo") -> FastAPI:
+    """Create the FastAPI application used by ``zenquant-web``.
+
+    Example:
+        app = create_app(runtime_mode="live")
+    """
     if not _FASTAPI_AVAILABLE:
         raise RuntimeError(
             "fastapi is required for the web console. Install dependencies with "
@@ -416,6 +452,7 @@ def create_app(runtime_mode: str = "demo") -> FastAPI:
 
 
 def _parse_timeframe(value: str) -> Timeframe:
+    """Parse API/websocket timeframe parameters into the domain enum."""
     token = value.lower()
     if token == "4h":
         return Timeframe.TF_4H
@@ -425,6 +462,7 @@ def _parse_timeframe(value: str) -> Timeframe:
 
 
 def _iso_to_ns(value: str) -> int:
+    """Convert an ISO-8601 timestamp string into nanoseconds since epoch."""
     cleaned = value.strip().replace("Z", "+00:00")
     ts = datetime.fromisoformat(cleaned)
     if ts.tzinfo is None:
@@ -433,6 +471,7 @@ def _iso_to_ns(value: str) -> int:
 
 
 def _indicator_payload(pack: IndicatorPack) -> dict[str, Any]:
+    """Serialize an indicator pack into a websocket/API-friendly payload."""
     return {
         "ts": ns_to_iso(pack.ts_ns),
         "ts_ns": pack.ts_ns,
@@ -450,6 +489,7 @@ def _indicator_payload(pack: IndicatorPack) -> dict[str, Any]:
 
 
 def main() -> None:
+    """Run the web server using the runtime mode from environment variables."""
     try:
         import uvicorn
     except ModuleNotFoundError as exc:
