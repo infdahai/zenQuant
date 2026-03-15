@@ -20,6 +20,14 @@ export const CandleCanvas = defineComponent({
       type: Array,
       default: () => [],
     },
+    position: {
+      type: Object,
+      default: null,
+    },
+    trailingStop: {
+      type: Number,
+      default: null,
+    },
     height: {
       type: Number,
       default: 240,
@@ -54,12 +62,49 @@ export const CandleCanvas = defineComponent({
       ctx.fillStyle = "rgba(10, 18, 28, 0.86)";
       ctx.fillRect(0, 0, width, height);
 
+      const overlayPrices = [];
+      if (props.position && Number.isFinite(Number(props.position.entry_price))) {
+        overlayPrices.push(Number(props.position.entry_price));
+      }
+      if (Number.isFinite(Number(props.trailingStop)) && Number(props.trailingStop) > 0) {
+        overlayPrices.push(Number(props.trailingStop));
+      }
+
+      const drawOverlay = ({ minP, maxP, top, plotH, left, right }) => {
+        const span = Math.max(1e-9, maxP - minP);
+        const priceToY = (price) => top + ((maxP - price) / span) * plotH;
+        if (props.position && Number.isFinite(Number(props.position.entry_price))) {
+          drawLevel({
+            ctx,
+            left,
+            right,
+            y: priceToY(Number(props.position.entry_price)),
+            price: Number(props.position.entry_price),
+            color: Number(props.position.direction) >= 0 ? "#19d7b8" : "#f5a524",
+            label: Number(props.position.direction) >= 0 ? "Long entry" : "Short entry",
+            align: "top",
+          });
+        }
+        if (Number.isFinite(Number(props.trailingStop)) && Number(props.trailingStop) > 0) {
+          drawLevel({
+            ctx,
+            left,
+            right,
+            y: priceToY(Number(props.trailingStop)),
+            price: Number(props.trailingStop),
+            color: "#b04444",
+            label: "Trailing stop",
+            align: "bottom",
+          });
+        }
+      };
+
       const candles = props.candles.slice(-140);
       if (candles.length >= 2) {
         const lows = candles.map((item) => Number(item.low));
         const highs = candles.map((item) => Number(item.high));
-        const minP = Math.min(...lows);
-        const maxP = Math.max(...highs);
+        const minP = Math.min(...lows, ...overlayPrices);
+        const maxP = Math.max(...highs, ...overlayPrices);
         const span = Math.max(1e-9, maxP - minP);
 
         const left = 10;
@@ -114,6 +159,7 @@ export const CandleCanvas = defineComponent({
         ctx.fillStyle = "#8fb0ca";
         ctx.font = "600 11px JetBrains Mono, monospace";
         ctx.fillText(`H ${maxP.toFixed(2)}  L ${minP.toFixed(2)}`, left, height - 6);
+        drawOverlay({ minP, maxP, top, plotH, left, right });
         return;
       }
 
@@ -124,8 +170,8 @@ export const CandleCanvas = defineComponent({
       if (prices.length < 2) {
         return;
       }
-      const minP = Math.min(...prices);
-      const maxP = Math.max(...prices);
+      const minP = Math.min(...prices, ...overlayPrices);
+      const maxP = Math.max(...prices, ...overlayPrices);
       const span = Math.max(1e-9, maxP - minP);
 
       const left = 10;
@@ -172,6 +218,7 @@ export const CandleCanvas = defineComponent({
       ctx.fillStyle = "#8fb0ca";
       ctx.font = "600 11px JetBrains Mono, monospace";
       ctx.fillText(`H ${maxP.toFixed(2)}  L ${minP.toFixed(2)} (live ticks)`, left, height - 6);
+      drawOverlay({ minP, maxP, top, plotH, left, right });
     };
 
     let ro;
@@ -192,7 +239,7 @@ export const CandleCanvas = defineComponent({
     });
 
     watch(
-      () => [props.candles, props.prices],
+      () => [props.candles, props.prices, props.position, props.trailingStop],
       () => nextTick(draw),
       { deep: true },
     );
@@ -201,3 +248,29 @@ export const CandleCanvas = defineComponent({
   },
   template: `<canvas ref="canvasRef" class="canvas chart-canvas"></canvas>`,
 });
+
+function drawLevel({ ctx, left, right, y, price, color, label, align }) {
+  if (!Number.isFinite(y)) {
+    return;
+  }
+  ctx.save();
+  ctx.strokeStyle = color;
+  ctx.lineWidth = 1.5;
+  ctx.setLineDash([8, 4]);
+  ctx.beginPath();
+  ctx.moveTo(left, y);
+  ctx.lineTo(right, y);
+  ctx.stroke();
+  ctx.setLineDash([]);
+
+  ctx.font = "600 11px JetBrains Mono, monospace";
+  const text = `${label} ${price.toFixed(2)}`;
+  const textWidth = ctx.measureText(text).width;
+  const boxX = Math.max(left + 6, right - textWidth - 16);
+  const boxY = align === "bottom" ? y + 6 : y - 20;
+  ctx.fillStyle = "rgba(10, 18, 28, 0.88)";
+  ctx.fillRect(boxX - 6, boxY, textWidth + 12, 16);
+  ctx.fillStyle = color;
+  ctx.fillText(text, boxX, boxY + 12);
+  ctx.restore();
+}

@@ -12,12 +12,15 @@ from typing import Any
 from psycopg import connect
 
 from zenquant.domain import (
+    DeribitRiskPack,
+    ExitDecision,
     ExecutionReport,
     IndicatorPack,
     MarketState,
     OpenPositionState,
     PlaybookSelection,
     RiskSnapshot,
+    SizingDecision,
     TargetPosition,
 )
 from zenquant.domain.serde import to_jsonable
@@ -73,6 +76,9 @@ class OnlineStateStore:
         self._bus.subscribe("strategy.position_state.>", self._on_position_state)
         self._bus.subscribe("state.market.>", self._on_market_state)
         self._bus.subscribe("strategy.playbook.>", self._on_playbook)
+        self._bus.subscribe("strategy.sizing.>", self._on_sizing)
+        self._bus.subscribe("strategy.exit.>", self._on_exit)
+        self._bus.subscribe("risk.deribit.>", self._on_deribit)
 
     def start(self) -> None:
         if not self._enabled or self._worker is not None:
@@ -343,5 +349,83 @@ class OnlineStateStore:
                 payload.time_decay_bars,
                 payload.selection_reason,
                 json.dumps(list(payload.reason_codes)),
+            ),
+        )
+
+    def _on_sizing(self, _: str, payload: object) -> None:
+        if not isinstance(payload, SizingDecision):
+            return
+        self._enqueue(
+            """
+            INSERT INTO sizing_decisions (
+                symbol, timeframe, cutoff_time_ns, base_size, confidence_multiplier,
+                stress_discount, execution_haircut, final_leverage, reason_codes
+            ) VALUES (
+                %s, %s, %s, %s, %s,
+                %s, %s, %s, %s::jsonb
+            )
+            """,
+            (
+                payload.symbol,
+                payload.timeframe.value,
+                payload.cutoff_time_ns,
+                payload.base_size,
+                payload.confidence_multiplier,
+                payload.stress_discount,
+                payload.execution_haircut,
+                payload.final_leverage,
+                json.dumps(list(payload.reason_codes)),
+            ),
+        )
+
+    def _on_exit(self, _: str, payload: object) -> None:
+        if not isinstance(payload, ExitDecision):
+            return
+        self._enqueue(
+            """
+            INSERT INTO exit_decisions (
+                symbol, timeframe, cutoff_time_ns, exit_type, exit_urgency,
+                target_reduction_pct, stop_price, reason_code, reason_detail, reason_codes
+            ) VALUES (
+                %s, %s, %s, %s, %s,
+                %s, %s, %s, %s, %s::jsonb
+            )
+            """,
+            (
+                payload.symbol,
+                payload.timeframe.value,
+                payload.cutoff_time_ns,
+                payload.exit_type,
+                payload.exit_urgency,
+                payload.target_reduction_pct,
+                payload.stop_price,
+                payload.reason_code,
+                payload.reason_detail,
+                json.dumps(list(payload.reason_codes)),
+            ),
+        )
+
+    def _on_deribit(self, _: str, payload: object) -> None:
+        if not isinstance(payload, DeribitRiskPack):
+            return
+        self._enqueue(
+            """
+            INSERT INTO deribit_risk_packs (
+                symbol, ts_ns, atm_iv_30d, term_structure_slope, put_call_skew_25d,
+                oi_concentration, block_flow_imbalance, quality_flags
+            ) VALUES (
+                %s, %s, %s, %s, %s,
+                %s, %s, %s::jsonb
+            )
+            """,
+            (
+                payload.symbol,
+                payload.ts_ns,
+                payload.atm_iv_30d,
+                payload.term_structure_slope,
+                payload.put_call_skew_25d,
+                payload.oi_concentration,
+                payload.block_flow_imbalance,
+                json.dumps(list(payload.quality_flags)),
             ),
         )

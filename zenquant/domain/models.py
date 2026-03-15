@@ -395,6 +395,52 @@ class SizingDecision:
 
 
 @dataclass(slots=True)
+class ExitDecision:
+    """Exit logic decision extracted from the strategy engine.
+
+    Phase 6 separates exit logic into an auditable, testable module so the
+    strategy engine no longer hides exits inside target construction.
+    """
+
+    symbol: str
+    timeframe: Timeframe
+    cutoff_time_ns: int
+    exit_type: str
+    exit_urgency: str
+    target_reduction_pct: float
+    stop_price: float | None
+    reason_code: str
+    reason_detail: str
+    reason_codes: list[str] = field(default_factory=list)
+
+    def should_exit(self) -> bool:
+        """Quick check for whether any exit action is requested."""
+        return self.exit_type != "NONE"
+
+    def is_immediate(self) -> bool:
+        """Return whether the exit should flatten immediately."""
+        return self.exit_urgency == "IMMEDIATE"
+
+
+@dataclass(slots=True)
+class DeribitRiskPack:
+    """Deribit options market indicators used as a risk thermometer.
+
+    This pack is observation-first. It is meant to inform operators and future
+    risk-layer enhancements without becoming a primary directional signal.
+    """
+
+    symbol: str
+    ts_ns: int
+    atm_iv_30d: float
+    term_structure_slope: float
+    put_call_skew_25d: float
+    oi_concentration: float
+    block_flow_imbalance: float
+    quality_flags: list[str] = field(default_factory=list)
+
+
+@dataclass(slots=True)
 class BacktestMetrics:
     """Summary metrics from a single backtest window."""
 

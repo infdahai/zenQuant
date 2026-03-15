@@ -33,7 +33,9 @@ except ModuleNotFoundError as exc:
 from zenquant.app.live_state import DashboardStateStore
 from zenquant.domain import (
     Candle,
+    DeribitRiskPack,
     DirectionalBias,
+    ExitDecision,
     EventMeta,
     IndicatorPack,
     IntentReason,
@@ -50,7 +52,14 @@ from zenquant.domain import (
 from zenquant.domain.serde import ns_to_iso, to_jsonable
 from zenquant.execution import ExecutionGateway, ExecutionKernel, SimulatedGateway
 from zenquant.indicator import IndicatorEngine, IndicatorEngineConfig, IndicatorStore
-from zenquant.ingestor import RealTimeIngestor, RealTimeIngestorConfig, SyntheticIngestor, SyntheticIngestorConfig
+from zenquant.ingestor import (
+    DeribitOptionsIngestor,
+    DeribitOptionsIngestorConfig,
+    RealTimeIngestor,
+    RealTimeIngestorConfig,
+    SyntheticIngestor,
+    SyntheticIngestorConfig,
+)
 from zenquant.infra import InMemoryJetStream, OnlineStateStore, OnlineStateStoreConfig, StreamConfig
 from zenquant.market import BarClockService, SnapshotBuilder, SnapshotBuilderConfig
 from zenquant.risk import RiskOverlay
@@ -95,6 +104,7 @@ class ZenQuantWebRuntime:
         self._live_start_task: asyncio.Task[None] | None = None
         self._started = False
         self._live_symbols = ("BTCUSDT_PERP",)
+        self.deribit_ingestor: DeribitOptionsIngestor | None = None
 
         self.bus = InMemoryJetStream()
         self.bus.add_stream(StreamConfig(name="STREAM_MARKET_DATA", subjects=["md.>"]))
@@ -130,6 +140,11 @@ class ZenQuantWebRuntime:
                     not in {"1", "true", "yes"},
                 ),
             )
+            if os.getenv("ZENQUANT_DERIBIT_ENABLED", "").lower() in {"1", "true", "yes"}:
+                self.deribit_ingestor = DeribitOptionsIngestor(
+                    bus=self.bus,
+                    config=DeribitOptionsIngestorConfig(),
+                )
             self._event_iterator = None
         else:
             # Demo mode keeps the original synthetic path for local iteration.
@@ -157,6 +172,8 @@ class ZenQuantWebRuntime:
         self.bus.subscribe("state.market.>", self._on_market_state)
         self.bus.subscribe("strategy.playbook.>", self._on_playbook)
         self.bus.subscribe("strategy.sizing.>", self._on_sizing)
+        self.bus.subscribe("strategy.exit.>", self._on_exit)
+        self.bus.subscribe("risk.deribit.>", self._on_deribit_risk)
         self.bus.subscribe("strategy.position_state.>", self._on_position_state)
         self.bus.subscribe("risk.snapshot", self._on_risk_snapshot)
         self.bus.subscribe("risk.overlay.decision", self._on_risk_decision)
@@ -172,6 +189,7 @@ class ZenQuantWebRuntime:
         if self._runtime_mode == "live":
             self._initialize_trading_chain()
             self._start_online_state()
+            await self._start_deribit()
             self._live_start_task = asyncio.create_task(self._start_live_runtime())
             return
         self._start_online_state()
@@ -191,6 +209,8 @@ class ZenQuantWebRuntime:
                     pass
                 self._live_start_task = None
             await self.ingestor.stop()
+            if self.deribit_ingestor is not None:
+                await self.deribit_ingestor.stop()
         if self._tick_task is not None:
             self._tick_task.cancel()
             try:
@@ -212,7 +232,12 @@ class ZenQuantWebRuntime:
 
     def snapshot(self, symbol: str = "BTCUSDT_PERP", tf: str = "4h") -> dict[str, Any]:
         """Return the latest dashboard snapshot for one symbol/timeframe."""
-        self.state.on_runtime_status({"database": self._online_state_snapshot()})
+        self.state.on_runtime_status(
+            {
+                "database": self._online_state_snapshot(),
+                "deribit": self._deribit_snapshot(),
+            }
+        )
         return self.state.snapshot(symbol=symbol, timeframe=tf)
 
     async def connect_state(self, websocket: WebSocket, symbol: str, tf: str) -> None:
@@ -327,6 +352,15 @@ class ZenQuantWebRuntime:
             self.online_state.start()
         self.state.on_runtime_status({"database": self._online_state_snapshot()})
 
+    async def _start_deribit(self) -> None:
+        """Start the optional Deribit observation loop for live mode."""
+        if self.deribit_ingestor is None:
+            self.state.on_runtime_status({"deribit": self._deribit_snapshot()})
+            return
+        await self.deribit_ingestor.start()
+        self.state.on_runtime_status({"deribit": self._deribit_snapshot()})
+        self._schedule_state_broadcast()
+
     async def _start_live_runtime(self) -> None:
         """Warm live context in the background so the UI can report startup state."""
         bootstrap_history = getattr(self.ingestor, "bootstrap_history", None)
@@ -354,13 +388,26 @@ class ZenQuantWebRuntime:
                     }
                 )
             else:
-                self.state.on_runtime_status(
-                    {
-                        "bootstrap_phase": "ready",
-                        "bootstrap_detail": "Historical context warmed",
-                        "bootstrap_error": "",
-                    }
-                )
+                missing = self._missing_bootstrap_context()
+                if missing:
+                    self.state.on_runtime_status(
+                        {
+                            "bootstrap_phase": "failed",
+                            "bootstrap_detail": (
+                                "Bootstrap incomplete; continuing with partial live context "
+                                f"(missing {', '.join(missing)})"
+                            ),
+                            "bootstrap_error": ",".join(missing),
+                        }
+                    )
+                else:
+                    self.state.on_runtime_status(
+                        {
+                            "bootstrap_phase": "ready",
+                            "bootstrap_detail": "Historical context warmed",
+                            "bootstrap_error": "",
+                        }
+                    )
         else:
             self.state.on_runtime_status(
                 {
@@ -376,6 +423,16 @@ class ZenQuantWebRuntime:
         self.state.on_runtime_status({"bootstrap_live_started": True})
         self._schedule_state_broadcast()
 
+    def _missing_bootstrap_context(self) -> list[str]:
+        """Return required symbol/timeframe warmup slices that are still missing."""
+        missing: list[str] = []
+        for symbol in self._live_symbols:
+            if self.indicator_store.latest(symbol=symbol, timeframe=Timeframe.TF_1D) is None:
+                missing.append(f"{symbol}:1d")
+            if self.indicator_store.latest(symbol=symbol, timeframe=Timeframe.TF_4H) is None:
+                missing.append(f"{symbol}:4h")
+        return missing
+
     def _online_state_snapshot(self) -> dict[str, Any]:
         """Return database status even before the writer is initialized."""
         if self.online_state is None:
@@ -388,6 +445,18 @@ class ZenQuantWebRuntime:
                 "last_error": "",
             }
         return self.online_state.snapshot()
+
+    def _deribit_snapshot(self) -> dict[str, Any]:
+        """Return Deribit observation health even when the adapter is disabled."""
+        if self.deribit_ingestor is None:
+            return {
+                "enabled": False,
+                "last_success_ns": 0,
+                "polls": 0,
+                "published": 0,
+                "last_error": "",
+            }
+        return self.deribit_ingestor.snapshot()
 
     def _prime_live_signal(self) -> None:
         """Turn warm indicator history into one current live decision state.
@@ -480,6 +549,17 @@ class ZenQuantWebRuntime:
             self.state.on_sizing(payload)
             self._schedule_state_broadcast()
 
+    def _on_exit(self, _: str, payload: object) -> None:
+        if isinstance(payload, ExitDecision):
+            self.state.on_exit(payload)
+            self._schedule_state_broadcast()
+
+    def _on_deribit_risk(self, _: str, payload: object) -> None:
+        if isinstance(payload, DeribitRiskPack):
+            self.state.on_deribit_risk(payload)
+            self.state.on_runtime_status({"deribit": self._deribit_snapshot()})
+            self._schedule_state_broadcast()
+
     def _on_position_state(self, subject: str, payload: object) -> None:
         parts = subject.split(".")
         if len(parts) < 4:
@@ -548,6 +628,7 @@ def create_app(runtime_mode: str = "demo") -> FastAPI:
             "status": "ok",
             "mode": runtime_mode,
             "database": runtime._online_state_snapshot(),
+            "deribit": runtime._deribit_snapshot(),
         }
 
     @app.get("/api/state")

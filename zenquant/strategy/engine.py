@@ -8,6 +8,7 @@ from typing import Any
 
 from zenquant.domain import (
     DirectionalBias,
+    ExitDecision,
     ExecutionReport,
     IndicatorPack,
     IntentReason,
@@ -20,6 +21,7 @@ from zenquant.domain import (
     Timeframe,
 )
 from zenquant.infra import EventBus
+from .exit_engine import ExitEngine, ExitEngineConfig
 from .playbook_engine import PlaybookEngine
 from .sizing_engine import SizingEngine, SizingEngineConfig
 
@@ -80,6 +82,9 @@ class ARCStrategyEngine:
                 target_vol_4h=self._config.target_vol_4h,
                 target_vol_1d=self._config.target_vol_1d,
             )
+        )
+        self._exit_engine = ExitEngine(
+            ExitEngineConfig(min_bars_before_trail=self._config.min_bars_before_trail)
         )
 
         # Phase 2: multi-timeframe coordination
@@ -215,33 +220,24 @@ class ARCStrategyEngine:
         regime = state.regime
         regime_confidence = state.regime_confidence
 
-        # Phase 2: Check trailing stop first
         pos_key = (pack.symbol, pack.timeframe)
         position = self._positions.get(pos_key)
         if position is not None:
-            # Update bars held
             position.bars_held += 1
-
-            # Check trailing stop
-            stop_triggered, reason_code = self._check_trailing_stop(
+            exit_decision = self._exit_engine.check(
                 position,
-                vals.price,
-                vals.atr,
-                playbook.trailing_stop_atr_mult,
+                state,
+                playbook,
+                indicators={"price": vals.price, "atr": vals.atr},
             )
-            if stop_triggered:
-                return TargetPosition(
-                    intent_id=self._intent_id(pack),
-                    portfolio=self._config.portfolio,
-                    symbol=pack.symbol,
-                    timeframe=pack.timeframe,
-                    cutoff_time_ns=pack.cutoff_time_ns,
-                    target_qty=0.0,
-                    target_leverage=0.0,
-                    reduce_only=True,
-                    regime=regime,
-                    regime_confidence=regime_confidence,
-                    reason_codes=[reason_code],
+            self._publish_exit(exit_decision)
+            if exit_decision.should_exit():
+                return self._build_exit_target(
+                    pack=pack,
+                    position=position,
+                    state=state,
+                    exit_decision=exit_decision,
+                    price=vals.price,
                 )
 
         # Compute base direction from indicators
@@ -317,51 +313,6 @@ class ARCStrategyEngine:
             reason_codes=reason_codes,
         )
 
-    def _check_trailing_stop(
-        self,
-        position: OpenPositionState,
-        current_price: float,
-        atr: float,
-        trailing_stop_atr_mult: float,
-    ) -> tuple[bool, str]:
-        """Check if trailing stop is triggered. Returns (triggered, reason_code)."""
-        if atr <= 0:
-            return False, ""
-        if position.bars_held < self._config.min_bars_before_trail:
-            return False, ""
-
-        # Initialize trailing stop if not set
-        if position.trailing_stop == 0.0:
-            stop_distance = atr * trailing_stop_atr_mult
-            if position.direction > 0:
-                # Long position: stop below entry
-                position.trailing_stop = position.entry_price - stop_distance
-            else:
-                # Short position: stop above entry
-                position.trailing_stop = position.entry_price + stop_distance
-            return False, ""
-
-        # Update trailing stop (only move in favorable direction)
-        stop_distance = atr * trailing_stop_atr_mult
-        if position.direction > 0:
-            # Long: raise stop as price rises
-            new_stop = current_price - stop_distance
-            if new_stop > position.trailing_stop:
-                position.trailing_stop = new_stop
-            # Check if stop hit
-            if current_price <= position.trailing_stop:
-                return True, "EXIT_TRAILING_STOP"
-        else:
-            # Short: lower stop as price falls
-            new_stop = current_price + stop_distance
-            if new_stop < position.trailing_stop:
-                position.trailing_stop = new_stop
-            # Check if stop hit
-            if current_price >= position.trailing_stop:
-                return True, "EXIT_TRAILING_STOP"
-
-        return False, ""
-
     def _active_directional_bias(
         self, symbol: str, cutoff_time_ns: int
     ) -> tuple[DirectionalBias | None, str]:
@@ -395,6 +346,48 @@ class ARCStrategyEngine:
         self._bus.publish(
             f"strategy.sizing.{sizing.timeframe.value}.{sizing.symbol}",
             sizing,
+        )
+
+    def _publish_exit(self, exit_decision: ExitDecision) -> None:
+        """Expose the latest exit decision for one symbol/timeframe."""
+        self._bus.publish(
+            f"strategy.exit.{exit_decision.timeframe.value}.{exit_decision.symbol}",
+            exit_decision,
+        )
+
+    def _build_exit_target(
+        self,
+        *,
+        pack: IndicatorPack,
+        position: OpenPositionState,
+        state: MarketState,
+        exit_decision: ExitDecision,
+        price: float,
+    ) -> TargetPosition:
+        """Translate one exit decision into a reduce-only target position."""
+        remaining_qty = 0.0
+        if not exit_decision.is_immediate():
+            remaining_qty = position.current_qty * max(
+                0.0, 1.0 - exit_decision.target_reduction_pct
+            )
+        signed_qty = position.direction * remaining_qty
+        if abs(signed_qty) < self._config.min_trade_qty:
+            signed_qty = 0.0
+        target_leverage = 0.0
+        if abs(signed_qty) >= self._config.min_trade_qty and price > 0 and self._equity > 0:
+            target_leverage = abs(signed_qty * price) / self._equity
+        return TargetPosition(
+            intent_id=self._intent_id(pack),
+            portfolio=self._config.portfolio,
+            symbol=pack.symbol,
+            timeframe=pack.timeframe,
+            cutoff_time_ns=pack.cutoff_time_ns,
+            target_qty=round(signed_qty, 6),
+            target_leverage=round(target_leverage, 4),
+            reduce_only=True,
+            regime=state.regime,
+            regime_confidence=round(state.regime_confidence, 4),
+            reason_codes=[f"REGIME_{state.regime}", *exit_decision.reason_codes],
         )
 
     @staticmethod

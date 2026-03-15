@@ -10,3 +10,7 @@ build/
 node_modules/
 test-results/
 playwright-report/
+
+# Local runtime artifacts and generated screenshots.
+.artifacts/
+!.artifacts/dashboard-pr2-redesign.png

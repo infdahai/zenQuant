@@ -107,6 +107,44 @@ class _FailingBootstrapIngestor(_FakeLiveIngestor):
         raise RuntimeError("bootstrap offline")
 
 
+class _PartialBootstrapIngestor(_FakeLiveIngestor):
+    async def bootstrap_history(self) -> None:
+        symbol = "BTCUSDT_PERP"
+        self._bus.publish(
+            f"md.candle.4h.{symbol}",
+            Candle(
+                symbol=symbol,
+                timeframe=Timeframe.TF_4H,
+                bar_start_ns=86_400_000_000_000,
+                bar_end_ns=100_800_000_000_000,
+                open=40_500.0,
+                high=40_900.0,
+                low=40_200.0,
+                close=40_700.0,
+                volume=90.0,
+                trade_count=480,
+            ),
+        )
+        self._bus.publish(
+            f"md.snapshot.4h.{symbol}",
+            MarketSnapshot(
+                symbol=symbol,
+                timeframe=Timeframe.TF_4H,
+                cutoff_time_ns=100_800_000_000_000,
+                last_price=40_700.0,
+                bid_depth=90.0,
+                ask_depth=90.0,
+                book_age_ms=0,
+                venue_count=1,
+                cvd_delta=90.0,
+                funding_oi_weighted=0.00012,
+                oi_coverage=1.0,
+                staleness_ms=0,
+                quality_flags=["OK"],
+            ),
+        )
+
+
 class LiveBootstrapTests(unittest.IsolatedAsyncioTestCase):
     async def test_live_runtime_bootstrap_primes_current_signal(self) -> None:
         runtime = ZenQuantWebRuntime(runtime_mode="live")
@@ -139,6 +177,22 @@ class LiveBootstrapTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(fake_ingestor.started)
         self.assertEqual(snapshot["runtime_status"]["bootstrap_phase"], "failed")
         self.assertIn("cold live feed", snapshot["runtime_status"]["bootstrap_detail"])
+
+        await runtime.stop()
+        self.assertTrue(fake_ingestor.stopped)
+
+    async def test_live_runtime_marks_partial_bootstrap_as_failed(self) -> None:
+        runtime = ZenQuantWebRuntime(runtime_mode="live")
+        fake_ingestor = _PartialBootstrapIngestor(runtime.bus)
+        runtime.ingestor = fake_ingestor
+
+        await runtime.start()
+        await runtime._live_start_task
+        snapshot = runtime.snapshot(symbol="BTCUSDT_PERP", tf="4h")
+
+        self.assertTrue(fake_ingestor.started)
+        self.assertEqual(snapshot["runtime_status"]["bootstrap_phase"], "failed")
+        self.assertIn("BTCUSDT_PERP:1d", snapshot["runtime_status"]["bootstrap_error"])
 
         await runtime.stop()
         self.assertTrue(fake_ingestor.stopped)

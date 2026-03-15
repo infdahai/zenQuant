@@ -62,7 +62,7 @@ class HistoricalPipelineTests(unittest.TestCase):
             self.assertAlmostEqual(first.metrics.net_pnl, second.metrics.net_pnl, places=6)
             self.assertAlmostEqual(first.metrics.max_drawdown, second.metrics.max_drawdown, places=6)
 
-    def test_historical_backtest_matches_phase3_baseline_metrics(self) -> None:
+    def test_historical_backtest_matches_phase6_baseline_metrics(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             layout = HistoricalDatasetLayout(root_dir=root)
@@ -78,12 +78,12 @@ class HistoricalPipelineTests(unittest.TestCase):
                 HistoricalBacktestConfig(root_dir=root, symbol="BTCUSDT")
             ).run()
 
-            self.assertAlmostEqual(result.metrics.net_pnl, 236412.8, places=6)
-            self.assertAlmostEqual(result.final_equity, 336412.80249300046, places=6)
-            self.assertAlmostEqual(result.metrics.max_drawdown, 0.008591, places=6)
-            self.assertAlmostEqual(result.metrics.sharpe, 4.7556, places=4)
-            self.assertAlmostEqual(result.metrics.profit_factor, 4.719191, places=6)
-            self.assertEqual(result.metrics.trade_count, 420)
+            self.assertAlmostEqual(result.metrics.net_pnl, 236863.54, places=6)
+            self.assertAlmostEqual(result.final_equity, 336863.5367195884, places=6)
+            self.assertAlmostEqual(result.metrics.max_drawdown, 0.007263, places=6)
+            self.assertAlmostEqual(result.metrics.sharpe, 4.7603, places=4)
+            self.assertAlmostEqual(result.metrics.profit_factor, 5.701303, places=6)
+            self.assertEqual(result.metrics.trade_count, 422)
 
 
 def _daily_rows(days: int = 90) -> list[HistoricalKlineRow]:

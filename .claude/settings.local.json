@@ -18,7 +18,8 @@
       "Bash(git pull:*)",
       "Bash(find zenquant:*)",
       "Bash(ls:*)",
-      "Bash(cd docs:*)"
+      "Bash(cd docs:*)",
+      "Bash(grep:*)"
     ]
   }
 }

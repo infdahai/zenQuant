@@ -788,6 +788,7 @@ uv run zenquant-backtest --root data/raw/binance --symbol BTCUSDT
 3. Start the live paper-trading runtime:
 
 ```bash
+export ZENQUANT_DERIBIT_ENABLED=1  # optional: enable Deribit options observation layer
 export ZENQUANT_PG_DSN='postgresql://user:pass@host:5432/zenquant'
 uv run zenquant-web --host 127.0.0.1 --port 8090 --mode live
 ```
@@ -797,6 +798,13 @@ uv run zenquant-web --host 127.0.0.1 --port 8090 --mode live
 ```bash
 curl http://127.0.0.1:8090/healthz
 curl "http://127.0.0.1:8090/api/state?symbol=BTCUSDT_PERP&tf=4h"
+```
+
+5. Use the built-in validator for repeatable smoke or soak checks:
+
+```bash
+uv run zenquant-live-validate --base-url http://127.0.0.1:8090
+uv run zenquant-live-validate --base-url http://127.0.0.1:8090 --require-db --watch-seconds 86400 --output .artifacts/live-24h-summary.json
 ```
 
 What you should see:
@@ -811,6 +819,7 @@ Important:
 - The live runtime now bootstraps recent closed `4h` and `1d` bars plus recent funding/open-interest history on startup, so a fresh process does not begin from an empty indicator state.
 - This bootstrap is warm-state only. It does **not** replay historical orders or historical PnL into the current live paper account.
 - Restart recovery for prior simulated positions is still not implemented. A restarted process begins flat, then aligns to the current closed-bar signal.
+- `zenquant-live-validate` tracks observed 4h/1d cutoff turnover during the watch window, so it is the intended tool for confirming real bar-close events and 24h runtime health.
 
 ### Frontend checks
 
@@ -970,6 +979,8 @@ Only pursue after Phase 3 (Funding-OI Intelligence) is validated and shows measu
 #### Stage 1: Observation Only (1 week, minimal risk)
 
 **Objective:** Establish data pipeline and dashboard visibility without any strategy integration.
+
+**Current repo status (2026-03-16):** Implemented as an optional live observation layer behind `ZENQUANT_DERIBIT_ENABLED=1`. It publishes an aggregated `DeribitRiskPack`, stores it in PostgreSQL when configured, and renders an "Options Thermometer" panel on the dashboard. It does **not** change strategy, risk, or execution behavior.
 
 **Implementation:**
 
@@ -2083,15 +2094,23 @@ PostgreSQL Audit Trail
 
 ### Next Development Phases
 
-**Phase 5: Sizing Engine** (in progress)
-- Extract sizing logic into composable function
-- Components: base_size × confidence_multiplier × stress_discount × execution_haircut
-- Transparent sizing breakdown for dashboard
+**Phase 5: Sizing Engine** ✅
+- Explicit `SizingDecision` contract for audit, replay, and UI inspection
+- Deterministic sizing engine: `base_size × confidence_multiplier × stress_discount × execution_haircut`
+- Strategy now publishes sizing events and appends sizing reason codes to targets
+- PostgreSQL persistence and dashboard sizing breakdown included
 
-**Phase 6: Exit Engine** (planned)
-- 4 exit types: invalidation, trailing stop, time decay, regime change
-- Priority-based exit logic
-- Playbook-aware exit parameters
+**Phase 6: Exit Engine** ✅
+- Explicit `ExitDecision` contract for audit and replay
+- Deterministic exit engine with fixed priority: invalidation -> trailing -> time decay -> regime change
+- Strategy now publishes exit decisions and translates them into reduce-only targets
+- PostgreSQL persistence and dashboard exit monitor included
+
+**Optional Observation Layer: Deribit Stage 1** ✅
+- Public Deribit options polling behind `ZENQUANT_DERIBIT_ENABLED=1`
+- Observation-only `DeribitRiskPack` for ATM IV, term structure, skew proxy, OI concentration, and flow proxy
+- Dashboard "Options Thermometer" plus PostgreSQL persistence
+- No strategy, risk, or execution mutation yet
 
 See **[docs/TASK_LIST.md](docs/TASK_LIST.md)** for detailed Phase 5-6 task breakdown.
 
