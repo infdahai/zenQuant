@@ -120,6 +120,8 @@ class ZenQuantWebRuntime:
                 bus=self.bus,
                 config=RealTimeIngestorConfig(
                     symbols=self._live_symbols,
+                    # Local development can skip warmup to shorten restart
+                    # cycles, while production keeps bootstrap enabled.
                     bootstrap_enabled=os.getenv("ZENQUANT_SKIP_BOOTSTRAP", "").lower()
                     not in {"1", "true", "yes"},
                 ),
@@ -322,6 +324,8 @@ class ZenQuantWebRuntime:
         if callable(bootstrap_history):
             self.state.on_runtime_status(
                 {
+                    # ``bootstrap_phase`` is intentionally string-based so the
+                    # frontend can render startup state without decoding enums.
                     "bootstrap_phase": "bootstrapping",
                     "bootstrap_detail": "Warming 4H and 1D context before live feed",
                     "bootstrap_error": "",

@@ -20,7 +20,23 @@ def _to_okx_inst_id(symbol: str) -> str | None:
 
 @dataclass(slots=True)
 class RealTimeIngestorConfig:
-    """Live market-data settings shared by the realtime ingestor."""
+    """Live market-data settings shared by the realtime ingestor.
+
+    Attributes:
+        symbols: Internal symbols to subscribe to.
+        depth_levels: Number of order-book levels retained per depth snapshot.
+        depth_update_ms: Binance depth stream cadence in milliseconds.
+        mark_price_update_s: Binance mark-price update cadence in seconds.
+        open_interest_poll_interval_s: REST polling interval for open interest.
+        request_timeout_s: Timeout for bootstrap/polling REST requests.
+        reconnect_backoff_s: Delay before reconnecting after stream failure.
+        bootstrap_enabled: Whether startup should warm indicator context first.
+        bootstrap_4h_bars: Closed 4h bars fetched for live warmup.
+        bootstrap_1d_bars: Closed 1d bars fetched for live warmup.
+        bootstrap_funding_points: Historical funding samples used for warmup.
+        bootstrap_open_interest_points: Historical OI samples used for warmup.
+        bootstrap_required: If true, bootstrap failure aborts startup.
+    """
 
     symbols: tuple[str, ...] = ("BTCUSDT_PERP",)
     depth_levels: int = 10

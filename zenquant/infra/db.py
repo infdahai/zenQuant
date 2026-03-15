@@ -28,6 +28,16 @@ logger = logging.getLogger(__name__)
 
 @dataclass(slots=True)
 class OnlineStateStoreConfig:
+    """Operational settings for the live PostgreSQL audit writer.
+
+    Attributes:
+        dsn: PostgreSQL connection string. When empty, persistence is disabled.
+        max_queue_size: Max buffered writes before new audit events are dropped.
+        apply_migrations: Whether to run the local schema migration on connect.
+        reconnect_backoff_s: Initial retry delay after a connection/write failure.
+        max_reconnect_backoff_s: Upper bound for exponential reconnect backoff.
+    """
+
     dsn: str | None = None
     max_queue_size: int = 10_000
     apply_migrations: bool = True
@@ -76,6 +86,7 @@ class OnlineStateStore:
         self._worker = None
 
     def snapshot(self) -> dict[str, Any]:
+        """Return operator-facing health for the dashboard/runtime endpoints."""
         return {
             "enabled": self._enabled,
             "connected": self._connected,
@@ -87,6 +98,8 @@ class OnlineStateStore:
 
     def _run(self) -> None:
         assert self._config.dsn is not None
+        # Keep retrying so a transient PostgreSQL outage does not permanently
+        # disable audit persistence for a long-running paper/live process.
         backoff_s = max(1.0, float(self._config.reconnect_backoff_s))
         while not self._stop_event.is_set():
             try:

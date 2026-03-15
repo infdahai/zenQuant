@@ -43,7 +43,12 @@ BINANCE_FSTREAM_REST = "https://fapi.binance.com"
 
 @dataclass(slots=True)
 class BinancePerpStreamConfig:
-    """Subscription and polling settings for Binance USD-M perpetual feeds."""
+    """Subscription and polling settings for Binance USD-M perpetual feeds.
+
+    The config mirrors the higher-level realtime ingestor settings, but lives
+    at the exchange adapter boundary where websocket, polling, and bootstrap
+    behavior are implemented.
+    """
 
     symbols: tuple[str, ...] = ("BTCUSDT_PERP",)
     depth_levels: int = 10
@@ -110,6 +115,8 @@ class BinancePerpStreamClient:
             except Exception:
                 if self._config.bootstrap_required:
                     raise
+                # Fail open by default: the live stream is still useful even if
+                # historical warmup is temporarily unavailable.
                 logger.exception("bootstrap warmup failed for %s; continuing with live stream", symbol)
 
     async def _run_market_stream(self) -> None:

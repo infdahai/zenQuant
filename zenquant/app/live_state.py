@@ -27,7 +27,17 @@ from zenquant.domain.serde import to_jsonable
 
 @dataclass(slots=True)
 class DashboardStateConfig:
-    """Capacity limits for dashboard history and alert buffers."""
+    """Capacity limits for dashboard history and alert buffers.
+
+    Attributes:
+        max_candles: Closed candles kept per symbol/timeframe view.
+        max_alerts: Recent alerts shown in the alert panel.
+        max_equity_points: Equity observations kept for the equity curve.
+        max_ticks: Live mark-price points kept for the realtime price curve.
+        max_reports: Recent execution reports kept for the dashboard log.
+        max_reasons: Recent strategy reason objects kept for inspection.
+        bias_stale_after_4h_bars: 1D bias becomes stale after this many 4h bars.
+    """
 
     max_candles: int = 220
     max_alerts: int = 64
@@ -75,6 +85,8 @@ class DashboardStateStore:
             "mode": "demo",
             "market_connected": False,
             "last_market_event_ns": 0,
+            # Database status is merged from the optional OnlineStateStore so
+            # the dashboard can show whether audit persistence is healthy.
             "database": {
                 "enabled": False,
                 "connected": False,

@@ -2047,7 +2047,33 @@ It is trying to be a trading kernel that:
 
 ---
 
-## 24. Disclaimer
+## 24. Additional Documentation
+
+For deeper architectural guidance and future development roadmap, see:
+
+### Strategic Architecture Documents
+
+- **[docs/PLAYBOOK_ARCHITECTURE.md](docs/PLAYBOOK_ARCHITECTURE.md)** - Playbook-driven state architecture design proposal for Phase 3+ evolution. Explains how to evolve from feature-driven strategy to state-based playbook selection for improved medium-term trading edge.
+
+- **[docs/PLAYBOOK_IMPLEMENTATION_GUIDE.md](docs/PLAYBOOK_IMPLEMENTATION_GUIDE.md)** - Concrete implementation guide with code examples, migration path, and testing strategy for the playbook architecture.
+
+### Key Concepts
+
+The playbook architecture addresses a fundamental question for medium-term (4H/1D) trading systems:
+
+**Where does edge come from?**
+
+Not from heavier AI models, but from:
+1. **Correct state identification** - decomposing market regime into orthogonal dimensions (directional, volatility, positioning, quality)
+2. **Disciplined playbook switching** - using the right trading logic for the right market state
+3. **Stress-aware sizing** - reducing exposure in hostile conditions
+4. **Professional exits** - cutting losers fast, letting winners run with playbook-appropriate logic
+
+These documents provide the strategic framework for Phase 3+ development while preserving all existing ZenQuant contracts (determinism, auditability, replay parity, risk veto).
+
+---
+
+## 25. Disclaimer
 
 This repository is infrastructure and research code for quantitative trading.
 
