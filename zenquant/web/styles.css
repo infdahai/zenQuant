@@ -93,6 +93,56 @@ a {
   line-height: 1.5;
 }
 
+.brand-summary-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+  margin-top: 20px;
+}
+
+.brand-summary-card {
+  border: 1px solid rgba(216, 202, 179, 0.75);
+  border-radius: 18px;
+  padding: 14px 16px;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.76) 0%, rgba(248, 243, 235, 0.94) 100%);
+}
+
+.brand-summary-card span,
+.brand-summary-card small {
+  display: block;
+  color: var(--muted);
+}
+
+.brand-summary-card span {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.brand-summary-card strong {
+  display: block;
+  margin: 8px 0 6px;
+  font-size: 22px;
+  line-height: 1.05;
+  letter-spacing: -0.03em;
+}
+
+.brand-summary-card small {
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.brand-summary-card-warning {
+  border-color: rgba(164, 91, 22, 0.28);
+  background: linear-gradient(180deg, rgba(255, 246, 235, 0.95) 0%, rgba(246, 228, 207, 0.9) 100%);
+}
+
+.brand-summary-card-danger {
+  border-color: rgba(176, 68, 68, 0.35);
+  background: linear-gradient(180deg, rgba(255, 237, 237, 0.95) 0%, rgba(248, 223, 223, 0.92) 100%);
+}
+
 .top-controls {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -272,6 +322,166 @@ select {
   padding: 18px;
 }
 
+.thesis-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.5fr) minmax(280px, 0.9fr);
+  gap: 16px;
+  padding: 18px;
+}
+
+.thesis-main,
+.thesis-stat,
+.state-card {
+  border: 1px solid rgba(216, 202, 179, 0.8);
+  border-radius: 18px;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.82) 0%, rgba(248, 243, 235, 0.94) 100%);
+}
+
+.thesis-main {
+  padding: 22px;
+}
+
+.thesis-kicker,
+.thesis-chip span,
+.thesis-stat span,
+.state-card span {
+  display: block;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.thesis-main h2 {
+  margin: 14px 0 10px;
+  font-size: clamp(30px, 4vw, 46px);
+  line-height: 0.98;
+  letter-spacing: -0.05em;
+}
+
+.thesis-main p {
+  max-width: 62ch;
+  margin: 0;
+  color: var(--muted);
+  font-size: 14px;
+  line-height: 1.6;
+}
+
+.thesis-action {
+  margin-top: 12px !important;
+  color: var(--text) !important;
+  font-weight: 600;
+}
+
+.thesis-chip-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 18px;
+}
+
+.thesis-chip {
+  min-width: 132px;
+  padding: 12px 14px;
+  border: 1px solid rgba(216, 202, 179, 0.82);
+  border-radius: 16px;
+  background: rgba(255, 252, 247, 0.8);
+}
+
+.thesis-chip strong,
+.thesis-stat strong,
+.state-card strong {
+  display: block;
+  margin: 8px 0 4px;
+  font-size: 24px;
+  line-height: 1.06;
+  letter-spacing: -0.03em;
+}
+
+.thesis-chip strong {
+  font-size: 17px;
+}
+
+.thesis-side {
+  display: grid;
+  gap: 12px;
+}
+
+.thesis-stat {
+  padding: 18px;
+}
+
+.thesis-stat small,
+.state-card small {
+  display: block;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.thesis-main-warning,
+.thesis-stat-warning,
+.thesis-chip-warning,
+.state-card-warning {
+  border-color: rgba(164, 91, 22, 0.28);
+  background: linear-gradient(180deg, rgba(255, 246, 235, 0.95) 0%, rgba(246, 228, 207, 0.9) 100%);
+}
+
+.thesis-main-danger,
+.thesis-stat-danger,
+.thesis-chip-danger,
+.state-card-danger {
+  border-color: rgba(176, 68, 68, 0.35);
+  background: linear-gradient(180deg, rgba(255, 237, 237, 0.95) 0%, rgba(248, 223, 223, 0.92) 100%);
+}
+
+.state-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 12px;
+  padding: 18px;
+}
+
+.state-card {
+  padding: 18px;
+}
+
+.state-card strong {
+  font-size: 30px;
+}
+
+.state-card-wide {
+  grid-column: 1 / -1;
+}
+
+.confidence-meter {
+  height: 8px;
+  margin: 12px 0 10px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: rgba(17, 59, 104, 0.08);
+}
+
+.confidence-fill {
+  display: block;
+  height: 100%;
+  border-radius: 999px;
+  background: var(--signal);
+}
+
+.confidence-fill-ok {
+  background: var(--accent);
+}
+
+.confidence-fill-warning {
+  background: var(--warn);
+}
+
+.confidence-fill-danger {
+  background: var(--danger);
+}
+
 .hero-card {
   border: 1px solid rgba(216, 202, 179, 0.8);
   border-radius: 18px;
@@ -438,6 +648,13 @@ canvas {
   gap: 10px;
 }
 
+.pane-value {
+  color: var(--text);
+  font-size: 20px;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+}
+
 .toggle-btn {
   width: 30px;
   height: 30px;
@@ -453,6 +670,10 @@ canvas {
   color: var(--signal);
   font-weight: 700;
   text-decoration: none;
+}
+
+.pane-body {
+  padding: 0 18px 18px;
 }
 
 .indicator-controls {
@@ -493,6 +714,15 @@ canvas {
 .header-value strong {
   color: var(--text);
   font-size: 24px;
+}
+
+.stats-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  padding-top: 12px;
+  color: var(--muted);
+  font-size: 12px;
 }
 
 .indicator-page .panel:nth-child(2),
@@ -553,6 +783,11 @@ canvas {
   .two-up-grid {
     grid-template-columns: 1fr;
   }
+
+  .thesis-grid,
+  .brand-summary-grid {
+    grid-template-columns: 1fr;
+  }
 }
 
 @media (max-width: 720px) {
@@ -574,6 +809,11 @@ canvas {
   }
 
   .decision-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .hero-grid,
+  .state-grid {
     grid-template-columns: 1fr;
   }
 
