@@ -17,8 +17,7 @@ from zenquant.domain import (
     TargetPosition,
     Timeframe,
 )
-from zenquant.infra import InMemoryJetStream
-from zenquant.state import StateEngine
+from zenquant.infra import EventBus
 
 
 @dataclass(slots=True)
@@ -63,7 +62,7 @@ class ARCStrategyEngine:
     """
 
     def __init__(
-        self, bus: InMemoryJetStream, config: ARCStrategyConfig | None = None
+        self, bus: EventBus, config: ARCStrategyConfig | None = None
     ) -> None:
         self._bus = bus
         self._config = config or ARCStrategyConfig()
@@ -81,7 +80,6 @@ class ARCStrategyEngine:
         self._bus.subscribe("state.market.>", self._on_market_state)
         self._bus.subscribe("risk.snapshot", self._on_risk_snapshot)
         self._bus.subscribe("exec.order.report", self._on_execution_report)
-        self._state_engine = StateEngine(self._bus)
 
     def _on_risk_snapshot(self, _: str, payload: object) -> None:
         if isinstance(payload, RiskSnapshot):
@@ -152,10 +150,8 @@ class ARCStrategyEngine:
         self.prime_state(payload)
 
     def prime_indicator(self, pack: IndicatorPack) -> None:
-        """Prime startup state when a pack is already available before replay resumes."""
+        """Prime startup indicator context without creating state dependencies."""
         self._latest_packs[(pack.symbol, pack.timeframe)] = pack
-        state = self._state_engine.classify(pack)
-        self.prime_state(state)
 
     def prime_state(self, state: MarketState) -> None:
         """Prime live startup state from an already-classified market state."""

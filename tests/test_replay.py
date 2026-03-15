@@ -7,6 +7,7 @@ from zenquant.ingestor import SyntheticIngestor, SyntheticIngestorConfig
 from zenquant.infra import DeterministicReplayer, InMemoryJetStream, StreamConfig
 from zenquant.market import BarClockService, SnapshotBuilder
 from zenquant.risk import RiskOverlay
+from zenquant.state import StateEngine
 from zenquant.strategy import ARCStrategyEngine
 
 
@@ -46,6 +47,7 @@ class ReplayTests(unittest.TestCase):
         IndicatorEngine(source_bus, source_store)
         source_risk = RiskOverlay(source_bus)
         ARCStrategyEngine(source_bus)
+        StateEngine(source_bus)
         ExecutionKernel(source_bus, ExecutionGateway(), source_risk)
 
         src_indicators = []
@@ -119,6 +121,7 @@ class ReplayTests(unittest.TestCase):
         IndicatorEngine(target_bus, target_store)
         target_risk = RiskOverlay(target_bus)
         ARCStrategyEngine(target_bus)
+        StateEngine(target_bus)
         ExecutionKernel(target_bus, ExecutionGateway(), target_risk)
 
         dst_indicators = []

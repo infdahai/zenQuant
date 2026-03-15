@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from zenquant.domain import IndicatorPack, MarketState, Timeframe
-from zenquant.infra import InMemoryJetStream
+from zenquant.infra import EventBus
 
 
 @dataclass(slots=True)
@@ -26,7 +26,7 @@ class StateEngine:
     risk to warn when state is about to change.
     """
 
-    def __init__(self, bus: InMemoryJetStream) -> None:
+    def __init__(self, bus: EventBus) -> None:
         self._bus = bus
         self._last_regime: dict[tuple[str, Timeframe], str] = {}
         self._last_directional: dict[tuple[str, Timeframe], str] = {}

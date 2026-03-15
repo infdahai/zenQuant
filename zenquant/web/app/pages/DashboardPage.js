@@ -10,8 +10,10 @@ import {
   ref,
 } from "/static/vendor/vue.esm-browser.prod.js";
 import {
+  collectIndicatorKeys,
   formatBiasLabel,
   formatCurrency,
+  formatDisplayValue,
   formatNumber,
   formatPercent,
   formatRelativeTimeFromNs,
@@ -48,21 +50,6 @@ export const DashboardPage = defineComponent({
         window.clearInterval(timerId);
       }
     });
-
-    const defaultIndicatorKeys = [
-      "last_price",
-      "funding_oi_weighted",
-      "funding_oi_z",
-      "cvd_slope",
-      "ob_liq_z",
-      "overall_ob_liq_z",
-      "realized_vol",
-      "atr",
-      "momentum_roc",
-      "momentum_roc_z",
-      "zen_pulse",
-      "structure_state",
-    ];
 
     const snapshot = computed(() => store.state.snapshot || {});
     const indicator = computed(() => store.state.latestIndicator || snapshot.value.latest_indicator || null);
@@ -126,15 +113,7 @@ export const DashboardPage = defineComponent({
     const stateCards = computed(() => buildStateCards(marketState.value));
 
     const indicatorKeys = computed(() => {
-      const values = indicator.value && indicator.value.values ? indicator.value.values : {};
-      const merged = new Set(defaultIndicatorKeys);
-      for (const key of Object.keys(values)) {
-        merged.add(key);
-      }
-      for (const key of Object.keys(proxyLatest.value)) {
-        merged.add(key);
-      }
-      return [...merged].sort();
+      return collectIndicatorKeys(indicator.value, proxyLatest.value);
     });
 
     const indicatorCards = computed(() => {
@@ -268,16 +247,6 @@ export const DashboardPage = defineComponent({
       return `/indicator/${encodeURIComponent(String(key))}`;
     }
 
-    function displayValue(value) {
-      if (typeof value === "number" && Number.isFinite(value)) {
-        return formatNumber(value, 4);
-      }
-      if (value === null || value === undefined) {
-        return "-";
-      }
-      return `${value}`;
-    }
-
     function formatCodes(values, limit = 3) {
       if (!Array.isArray(values) || !values.length) {
         return "None";
@@ -329,7 +298,7 @@ export const DashboardPage = defineComponent({
       candles,
       databaseStatus,
       directionalBias,
-      displayValue,
+      formatDisplayValue,
       equityCurve,
       formatAlert,
       formatCodes,
@@ -656,7 +625,7 @@ export const DashboardPage = defineComponent({
               {{ item.key }}
             </router-link>
           </div>
-          <div class="pane-value">{{ displayValue(item.value) }}</div>
+          <div class="pane-value">{{ formatDisplayValue(item.value) }}</div>
         </div>
         <div class="pane-body" v-show="isExpanded(item.key)">
           <SeriesCanvas :values="item.series" :height="150" />

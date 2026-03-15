@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from zenquant.infra import InMemoryJetStream
+from zenquant.infra import EventBus
 
 from .binance_ws import BinancePerpStreamClient, BinancePerpStreamConfig, _parse_depth_side, _to_binance_symbol
 
@@ -56,7 +56,7 @@ class RealTimeIngestorConfig:
 class RealTimeIngestor:
     """Start and stop the live Binance futures client as one component."""
 
-    def __init__(self, bus: InMemoryJetStream, config: RealTimeIngestorConfig | None = None) -> None:
+    def __init__(self, bus: EventBus, config: RealTimeIngestorConfig | None = None) -> None:
         runtime_config = config or RealTimeIngestorConfig()
         self._client = BinancePerpStreamClient(
             bus=bus,

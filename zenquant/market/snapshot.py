@@ -20,7 +20,7 @@ from zenquant.domain import (
     Timeframe,
     TradeTick,
 )
-from zenquant.infra import InMemoryJetStream
+from zenquant.infra import EventBus
 
 
 @dataclass(slots=True)
@@ -64,7 +64,7 @@ class SnapshotBuilder:
         # ``md.snapshot.4h.BTCUSDT_PERP``.
     """
 
-    def __init__(self, bus: InMemoryJetStream, config: SnapshotBuilderConfig | None = None) -> None:
+    def __init__(self, bus: EventBus, config: SnapshotBuilderConfig | None = None) -> None:
         self._bus = bus
         self._config = config or SnapshotBuilderConfig()
 

@@ -16,6 +16,7 @@ from zenquant.ingestor import SyntheticIngestor, SyntheticIngestorConfig
 from zenquant.infra import InMemoryJetStream, StreamConfig
 from zenquant.market import BarClockService, SnapshotBuilder
 from zenquant.risk import RiskOverlay
+from zenquant.state import StateEngine
 from zenquant.strategy import ARCStrategyEngine
 
 
@@ -58,6 +59,9 @@ class ZenQuantPipeline:
         # so indicator state is fresh when intents are evaluated.
         self.risk_overlay = RiskOverlay(bus=self.bus)
         self.strategy_engine = ARCStrategyEngine(bus=self.bus)
+        # ORDERING INVARIANT: StateEngine must subscribe after ARCStrategyEngine
+        # so strategy caches the pack before the derived market state arrives.
+        self.state_engine = StateEngine(bus=self.bus)
         self.execution_gateway = ExecutionGateway()
         self.execution_kernel = ExecutionKernel(
             bus=self.bus,

@@ -52,6 +52,7 @@ from zenquant.ingestor import RealTimeIngestor, RealTimeIngestorConfig, Syntheti
 from zenquant.infra import InMemoryJetStream, OnlineStateStore, OnlineStateStoreConfig, StreamConfig
 from zenquant.market import BarClockService, SnapshotBuilder, SnapshotBuilderConfig
 from zenquant.risk import RiskOverlay
+from zenquant.state import StateEngine
 from zenquant.strategy import ARCStrategyEngine
 
 
@@ -140,6 +141,7 @@ class ZenQuantWebRuntime:
                 start_step=self._warmup_steps,
             )
         self.risk_overlay: RiskOverlay | None = None
+        self.state_engine: StateEngine | None = None
         self.strategy_engine: ARCStrategyEngine | None = None
         self.execution_kernel: ExecutionKernel | None = None
         self.online_state: OnlineStateStore | None = None
@@ -304,6 +306,7 @@ class ZenQuantWebRuntime:
             return
         self.risk_overlay = RiskOverlay(bus=self.bus)
         self.strategy_engine = ARCStrategyEngine(bus=self.bus)
+        self.state_engine = StateEngine(bus=self.bus)
         self.execution_kernel = ExecutionKernel(
             bus=self.bus,
             gateway=self.execution_gateway,
@@ -391,6 +394,7 @@ class ZenQuantWebRuntime:
         signal instead of waiting for the next 4h/1d close.
         """
         assert self.risk_overlay is not None
+        assert self.state_engine is not None
         assert self.strategy_engine is not None
 
         for symbol in self._live_symbols:
@@ -417,9 +421,11 @@ class ZenQuantWebRuntime:
             if latest_daily is not None:
                 self.risk_overlay.prime_indicator(latest_daily)
                 self.strategy_engine.prime_indicator(latest_daily)
+                self.strategy_engine.prime_state(self.state_engine.classify(latest_daily))
             if latest_exec is not None:
                 self.risk_overlay.prime_indicator(latest_exec)
                 self.strategy_engine.prime_indicator(latest_exec)
+                self.strategy_engine.prime_state(self.state_engine.classify(latest_exec))
 
     def _on_candle(self, _: str, payload: object) -> None:
         if isinstance(payload, Candle):

@@ -4,11 +4,18 @@ from __future__ import annotations
 
 import itertools
 from dataclasses import dataclass
+from typing import Protocol
 
 from zenquant.domain import ExecutionOrder, MarkPriceUpdate, OrderBookSnapshot, TargetPosition, TradeTick
 from zenquant.execution.gateway import ExecutionGateway
-from zenquant.infra import InMemoryJetStream
-from zenquant.risk import RiskOverlay
+from zenquant.infra import EventBus
+
+
+class FeeApplier(Protocol):
+    """Minimal accounting hook required by execution after fills."""
+
+    def apply_fee(self, fee: float) -> None:
+        ...
 
 
 @dataclass(slots=True)
@@ -29,9 +36,9 @@ class ExecutionKernel:
 
     def __init__(
         self,
-        bus: InMemoryJetStream,
+        bus: EventBus,
         gateway: ExecutionGateway,
-        risk_overlay: RiskOverlay,
+        risk_overlay: FeeApplier,
         config: ExecutionKernelConfig | None = None,
     ) -> None:
         self._bus = bus

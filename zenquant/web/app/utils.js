@@ -1,5 +1,33 @@
 // Presentation helpers shared by the dashboard and indicator pages.
 
+export const INDICATOR_DEFAULT_KEYS = [
+  "last_price",
+  "funding_oi_weighted",
+  "funding_oi_z",
+  "cvd_slope",
+  "ob_liq_z",
+  "overall_ob_liq_z",
+  "realized_vol",
+  "atr",
+  "momentum_roc",
+  "momentum_roc_z",
+  "zen_pulse",
+  "structure_state",
+];
+
+export function collectIndicatorKeys(indicator, proxy = {}) {
+  const merged = new Set(INDICATOR_DEFAULT_KEYS);
+  if (indicator && indicator.values) {
+    for (const key of Object.keys(indicator.values)) {
+      merged.add(key);
+    }
+  }
+  for (const key of Object.keys(proxy || {})) {
+    merged.add(key);
+  }
+  return [...merged].sort();
+}
+
 export function formatNumber(value, digits = 4) {
   const num = Number(value);
   if (!Number.isFinite(num)) {
@@ -45,6 +73,16 @@ export function formatSignedPercent(value, digits = 2) {
   }
   const pct = formatPercent(Math.abs(num), digits);
   return num > 0 ? `+${pct}` : num < 0 ? `-${pct}` : pct;
+}
+
+export function formatDisplayValue(value, digits = 4) {
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return formatNumber(value, digits);
+  }
+  if (value === null || value === undefined) {
+    return "-";
+  }
+  return `${value}`;
 }
 
 export function formatCompact(value) {

@@ -2,6 +2,7 @@
 
 import { computed, defineComponent, inject, onBeforeUnmount, onMounted, ref } from "/static/vendor/vue.esm-browser.prod.js";
 import {
+  collectIndicatorKeys,
   formatNumber,
   formatPercent,
   formatRegimeLabel,
@@ -17,34 +18,10 @@ export const AppShell = defineComponent({
     // components focus on the current snapshot rather than managing sockets.
     const store = inject("marketStore");
     const nowMs = ref(Date.now());
-    const defaultIndicatorKeys = [
-      "last_price",
-      "funding_oi_weighted",
-      "funding_oi_z",
-      "cvd_slope",
-      "ob_liq_z",
-      "overall_ob_liq_z",
-      "realized_vol",
-      "atr",
-      "momentum_roc",
-      "momentum_roc_z",
-      "zen_pulse",
-      "structure_state",
-    ];
-
     const indicatorKeys = computed(() => {
       const indicator = store.state.latestIndicator || (store.state.snapshot || {}).latest_indicator;
       const proxy = (store.state.snapshot || {}).proxy_indicator_latest || {};
-      const merged = new Set(defaultIndicatorKeys);
-      for (const key of Object.keys(proxy)) {
-        merged.add(key);
-      }
-      if (indicator && indicator.values) {
-        for (const key of Object.keys(indicator.values)) {
-          merged.add(key);
-        }
-      }
-      return [...merged].sort();
+      return collectIndicatorKeys(indicator, proxy);
     });
 
     let refreshTimer;

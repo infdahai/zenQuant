@@ -21,7 +21,7 @@ from zenquant.domain import (
 )
 from zenquant.domain.serde import to_jsonable
 
-from .event_bus import InMemoryJetStream
+from .event_bus import EventBus
 
 
 logger = logging.getLogger(__name__)
@@ -49,7 +49,7 @@ class OnlineStateStoreConfig:
 class OnlineStateStore:
     def __init__(
         self,
-        bus: InMemoryJetStream,
+        bus: EventBus,
         config: OnlineStateStoreConfig | None = None,
     ) -> None:
         self._bus = bus
