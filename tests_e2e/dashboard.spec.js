@@ -8,6 +8,7 @@ test("dashboard renders decision path and key trading state", async ({ page }) =
   await expect(page.locator(".hero-card span", { hasText: "Data Stream" }).first()).toBeVisible();
   await expect(page.getByText("Total PnL")).toBeVisible();
   await expect(page.getByText("Decision Path")).toBeVisible();
+  await expect(page.getByText("4D State")).toBeVisible();
   await expect(page.getByText("1D bias")).toBeVisible();
   await expect(page.getByText("Latest target")).toBeVisible();
   await expect(page.getByText("Last execution")).toBeVisible();

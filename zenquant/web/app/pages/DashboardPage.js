@@ -68,6 +68,7 @@ export const DashboardPage = defineComponent({
     const indicator = computed(() => store.state.latestIndicator || snapshot.value.latest_indicator || null);
     const directionalBias = computed(() => snapshot.value.directional_bias || null);
     const directionalBiasMeta = computed(() => snapshot.value.directional_bias_meta || null);
+    const marketState = computed(() => snapshot.value.market_state || null);
     const positionState = computed(() => snapshot.value.position_state || null);
     const latestTarget = computed(() => snapshot.value.latest_target || null);
     const latestReason = computed(() => {
@@ -315,6 +316,7 @@ export const DashboardPage = defineComponent({
       candles,
       databaseStatus,
       directionalBias,
+      marketState,
       displayValue,
       equityCurve,
       formatAlert,
@@ -468,6 +470,56 @@ export const DashboardPage = defineComponent({
                 latestReason && latestReason.reason_codes
                   ? formatCodes(latestReason.reason_codes, 4)
                   : "No strategy reason published yet"
+              }}
+            </small>
+          </div>
+        </div>
+      </article>
+
+      <article class="panel">
+        <div class="panel-title">4D State</div>
+        <div class="decision-grid">
+          <div class="decision-item">
+            <span>Directional</span>
+            <strong>{{ marketState ? humanizeCode(marketState.directional_state) : "Awaiting state" }}</strong>
+            <small>
+              {{
+                marketState
+                  ? ("Confidence " + formatPercent(marketState.directional_confidence, 2))
+                  : "State engine has not classified this bar yet"
+              }}
+            </small>
+          </div>
+          <div class="decision-item">
+            <span>Volatility</span>
+            <strong>{{ marketState ? humanizeCode(marketState.volatility_state) : "-" }}</strong>
+            <small>
+              {{
+                marketState
+                  ? ("Confidence " + formatPercent(marketState.volatility_confidence, 2))
+                  : "No volatility state yet"
+              }}
+            </small>
+          </div>
+          <div class="decision-item">
+            <span>Positioning</span>
+            <strong>{{ marketState ? humanizeCode(marketState.positioning_state) : "-" }}</strong>
+            <small>
+              {{
+                marketState
+                  ? ("Confidence " + formatPercent(marketState.positioning_confidence, 2))
+                  : "No positioning state yet"
+              }}
+            </small>
+          </div>
+          <div class="decision-item">
+            <span>Market quality</span>
+            <strong>{{ marketState ? humanizeCode(marketState.quality_state) : "-" }}</strong>
+            <small>
+              {{
+                marketState
+                  ? ("Confidence " + formatPercent(marketState.quality_confidence, 2))
+                  : "No quality state yet"
               }}
             </small>
           </div>

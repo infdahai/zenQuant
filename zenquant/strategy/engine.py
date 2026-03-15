@@ -11,12 +11,14 @@ from zenquant.domain import (
     ExecutionReport,
     IndicatorPack,
     IntentReason,
+    MarketState,
     OpenPositionState,
     RiskSnapshot,
     TargetPosition,
     Timeframe,
 )
 from zenquant.infra import InMemoryJetStream
+from zenquant.state import StateEngine
 
 
 @dataclass(slots=True)
@@ -66,7 +68,8 @@ class ARCStrategyEngine:
         self._bus = bus
         self._config = config or ARCStrategyConfig()
         self._equity = self._config.account_equity
-        self._last_regime: dict[tuple[str, Timeframe], str] = {}
+        self._latest_packs: dict[tuple[str, Timeframe], IndicatorPack] = {}
+        self._market_states: dict[tuple[str, Timeframe], MarketState] = {}
 
         # Phase 2: multi-timeframe coordination
         self._directional_bias: dict[str, DirectionalBias] = {}  # symbol -> 1d bias
@@ -75,8 +78,10 @@ class ARCStrategyEngine:
         self._positions: dict[tuple[str, Timeframe], OpenPositionState] = {}
 
         self._bus.subscribe("indicator.>", self._on_indicator)
+        self._bus.subscribe("state.market.>", self._on_market_state)
         self._bus.subscribe("risk.snapshot", self._on_risk_snapshot)
         self._bus.subscribe("exec.order.report", self._on_execution_report)
+        self._state_engine = StateEngine(self._bus)
 
     def _on_risk_snapshot(self, _: str, payload: object) -> None:
         if isinstance(payload, RiskSnapshot):
@@ -136,18 +141,32 @@ class ARCStrategyEngine:
         self._publish_position_state(payload.symbol, self._config.execution_timeframe)
 
     def _on_indicator(self, _: str, payload: object) -> None:
-        """Route 1d packs to bias logic and execution-timeframe packs to targeting."""
+        """Cache the latest pack so state events can build targets deterministically."""
         if not isinstance(payload, IndicatorPack):
             return
-        self.prime_indicator(payload)
+        self._latest_packs[(payload.symbol, payload.timeframe)] = payload
+
+    def _on_market_state(self, _: str, payload: object) -> None:
+        if not isinstance(payload, MarketState):
+            return
+        self.prime_state(payload)
 
     def prime_indicator(self, pack: IndicatorPack) -> None:
-        """Prime live startup state from an already-computed indicator pack."""
-        if pack.timeframe == Timeframe.TF_1D:
-            self._update_directional_bias(pack)
-            return
+        """Prime startup state when a pack is already available before replay resumes."""
+        self._latest_packs[(pack.symbol, pack.timeframe)] = pack
+        state = self._state_engine.classify(pack)
+        self.prime_state(state)
 
-        target = self._build_target(pack)
+    def prime_state(self, state: MarketState) -> None:
+        """Prime live startup state from an already-classified market state."""
+        self._market_states[(state.symbol, state.timeframe)] = state
+        if state.timeframe == Timeframe.TF_1D:
+            self._update_directional_bias(state)
+            return
+        pack = self._latest_packs.get((state.symbol, state.timeframe))
+        if pack is None:
+            return
+        target = self._build_target(pack, state)
         reason = self._build_reason(target)
         self._bus.publish(
             f"strategy.regime.{self._config.portfolio}",
@@ -158,53 +177,24 @@ class ARCStrategyEngine:
         )
         self._bus.publish(f"intent.reason.{self._config.portfolio}", reason)
 
-    def _update_directional_bias(self, pack: IndicatorPack) -> None:
+    def _update_directional_bias(self, state: MarketState) -> None:
         """Compute and store 1d directional bias for multi-timeframe coordination."""
-        vals = self._extract_values(pack.values)
-
-        # Determine 1d direction based on structure + momentum
-        direction = 0.0
-        if vals.structure_state == "UPTREND" and vals.momentum_roc_z > 0.5:
-            direction = 1.0
-        elif vals.structure_state == "DOWNTREND" and vals.momentum_roc_z < -0.5:
-            direction = -1.0
-
-        regime_key = (pack.symbol, pack.timeframe)
-        last_regime = self._last_regime.get(regime_key, "RANGE")
-        regime, confidence = self._classify_regime(
-            last_regime=last_regime,
-            quality_flags=pack.quality_flags,
-            realized_vol=vals.realized_vol,
-            cvd_slope=vals.cvd_slope,
-            zen_pulse=vals.zen_pulse,
-        )
-
         bias = DirectionalBias(
-            symbol=pack.symbol,
-            cutoff_time_ns=pack.cutoff_time_ns,
-            direction=direction,
-            regime=regime,
-            confidence=confidence,
-            quality_flags=list(pack.quality_flags),
+            symbol=state.symbol,
+            cutoff_time_ns=state.cutoff_time_ns,
+            direction=state.direction_signal,
+            regime=state.regime,
+            confidence=state.regime_confidence,
+            quality_flags=list(state.quality_flags),
         )
-        self._last_regime[regime_key] = regime
-        self._directional_bias[pack.symbol] = bias
-        self._bus.publish(f"strategy.bias.1d.{pack.symbol}", bias)
+        self._directional_bias[state.symbol] = bias
+        self._bus.publish(f"strategy.bias.1d.{state.symbol}", bias)
 
-    def _build_target(self, pack: IndicatorPack) -> TargetPosition:
+    def _build_target(self, pack: IndicatorPack, state: MarketState) -> TargetPosition:
         """Translate one indicator pack into a target position for its bar close."""
         vals = self._extract_values(pack.values)
-
-        regime_key = (pack.symbol, pack.timeframe)
-        last_regime = self._last_regime.get(regime_key, "RANGE")
-        regime, regime_confidence = self._classify_regime(
-            last_regime=last_regime,
-            quality_flags=pack.quality_flags,
-            realized_vol=vals.realized_vol,
-            cvd_slope=vals.cvd_slope,
-            zen_pulse=vals.zen_pulse,
-        )
-        self._last_regime[regime_key] = regime
+        regime = state.regime
+        regime_confidence = state.regime_confidence
 
         # Phase 2: Check trailing stop first
         pos_key = (pack.symbol, pack.timeframe)

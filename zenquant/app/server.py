@@ -37,6 +37,7 @@ from zenquant.domain import (
     EventMeta,
     IndicatorPack,
     IntentReason,
+    MarketState,
     MarkPriceUpdate,
     OpenPositionState,
     RiskOverlayDecision,
@@ -149,6 +150,7 @@ class ZenQuantWebRuntime:
         self.bus.subscribe("md.mark.>", self._on_mark_price)
         self.bus.subscribe("indicator.>", self._on_indicator)
         self.bus.subscribe("strategy.bias.1d.>", self._on_directional_bias)
+        self.bus.subscribe("state.market.>", self._on_market_state)
         self.bus.subscribe("strategy.position_state.>", self._on_position_state)
         self.bus.subscribe("risk.snapshot", self._on_risk_snapshot)
         self.bus.subscribe("risk.overlay.decision", self._on_risk_decision)
@@ -451,6 +453,11 @@ class ZenQuantWebRuntime:
     def _on_directional_bias(self, _: str, payload: object) -> None:
         if isinstance(payload, DirectionalBias):
             self.state.on_directional_bias(payload)
+            self._schedule_state_broadcast()
+
+    def _on_market_state(self, _: str, payload: object) -> None:
+        if isinstance(payload, MarketState):
+            self.state.on_market_state(payload)
             self._schedule_state_broadcast()
 
     def _on_position_state(self, subject: str, payload: object) -> None:

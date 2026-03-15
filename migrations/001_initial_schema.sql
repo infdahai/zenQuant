@@ -82,6 +82,30 @@ CREATE TABLE IF NOT EXISTS position_states (
 CREATE INDEX IF NOT EXISTS idx_position_states_symbol_tf_time
     ON position_states (symbol, timeframe, snapshot_time_ns DESC);
 
+CREATE TABLE IF NOT EXISTS market_states (
+    id BIGSERIAL PRIMARY KEY,
+    symbol TEXT NOT NULL,
+    timeframe TEXT NOT NULL,
+    cutoff_time_ns BIGINT NOT NULL,
+    directional_state TEXT NOT NULL,
+    directional_confidence DOUBLE PRECISION NOT NULL,
+    volatility_state TEXT NOT NULL,
+    volatility_confidence DOUBLE PRECISION NOT NULL,
+    positioning_state TEXT NOT NULL,
+    positioning_confidence DOUBLE PRECISION NOT NULL,
+    quality_state TEXT NOT NULL,
+    quality_confidence DOUBLE PRECISION NOT NULL,
+    regime TEXT NOT NULL,
+    regime_confidence DOUBLE PRECISION NOT NULL,
+    direction_signal DOUBLE PRECISION NOT NULL,
+    quality_flags JSONB NOT NULL,
+    reason_codes JSONB NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_market_states_symbol_tf_cutoff
+    ON market_states (symbol, timeframe, cutoff_time_ns DESC);
+
 CREATE TABLE IF NOT EXISTS data_quality_log (
     id BIGSERIAL PRIMARY KEY,
     ts_ns BIGINT NOT NULL,
