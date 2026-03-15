@@ -256,6 +256,34 @@ export const DashboardPage = defineComponent({
         qtyCopy: formatNumber(position.current_qty, 4),
       };
     });
+    const priceOverlayItems = computed(() => {
+      const items = [];
+      const position = positionState.value;
+      if (position && Number.isFinite(Number(position.entry_price)) && Number(position.entry_price) > 0) {
+        items.push({
+          label: Number(position.direction) >= 0 ? "Long entry" : "Short entry",
+          value: formatCurrency(position.entry_price, 2),
+          detail: `Position overlay for ${formatNumber(position.current_qty || 0, 4)} BTC`,
+        });
+      }
+      if (position && Number.isFinite(Number(position.trailing_stop)) && Number(position.trailing_stop) > 0) {
+        items.push({
+          label: "Trailing stop",
+          value: formatCurrency(position.trailing_stop, 2),
+          detail: "Red dashed line marks the current invalidation level",
+        });
+      }
+      if (items.length > 0) {
+        return items;
+      }
+      return [
+        {
+          label: "No active overlays",
+          value: "-",
+          detail: "Entry and trailing stop lines appear here once the strategy is carrying a position",
+        },
+      ];
+    });
 
     const biasSummary = computed(() => {
       const bias = directionalBias.value;
@@ -405,6 +433,7 @@ export const DashboardPage = defineComponent({
       pnlSummary,
       positionState,
       positionSummary,
+      priceOverlayItems,
       priceSeries,
       primaryRiskTone,
       reports,
@@ -650,12 +679,12 @@ export const DashboardPage = defineComponent({
         <div class="decision-grid">
           <div class="decision-item decision-item-wide" :class="'decision-item-' + positionSummary.tone">
             <span>Position status</span>
-            <strong>{{ positionSummary.headline }}</strong>
+            <strong data-testid="position-status">{{ positionSummary.headline }}</strong>
             <small>{{ positionSummary.detail }}</small>
           </div>
           <div class="decision-item" :class="'decision-item-' + positionSummary.tone">
             <span>Unrealized PnL</span>
-            <strong>{{ positionSummary.pnl || "-" }}</strong>
+            <strong data-testid="position-pnl">{{ positionSummary.pnl || "-" }}</strong>
             <small>{{ positionSummary.ageCopy }}</small>
           </div>
           <div class="decision-item">
@@ -665,17 +694,17 @@ export const DashboardPage = defineComponent({
           </div>
           <div class="decision-item" :class="'decision-item-' + exitSummary.tone">
             <span>Exit decision</span>
-            <strong>{{ exitSummary.headline }}</strong>
+            <strong data-testid="exit-decision">{{ exitSummary.headline }}</strong>
             <small>{{ exitSummary.detail }}</small>
           </div>
           <div class="decision-item">
             <span>Trailing stop</span>
-            <strong>{{ exitSummary.stopCopy !== "-" ? exitSummary.stopCopy : (positionState && positionState.trailing_stop > 0 ? formatCurrency(positionState.trailing_stop, 2) : "-") }}</strong>
+            <strong data-testid="trailing-stop">{{ exitSummary.stopCopy !== "-" ? exitSummary.stopCopy : (positionState && positionState.trailing_stop > 0 ? formatCurrency(positionState.trailing_stop, 2) : "-") }}</strong>
             <small>{{ positionSummary.stopDistanceCopy }}</small>
           </div>
           <div class="decision-item">
             <span>Target reduction</span>
-            <strong>{{ exitSummary.reductionCopy }}</strong>
+            <strong data-testid="target-reduction">{{ exitSummary.reductionCopy }}</strong>
             <small>{{ exitSummary.reasonCopy }}</small>
           </div>
         </div>
@@ -798,6 +827,17 @@ export const DashboardPage = defineComponent({
             :trailing-stop="positionState && positionState.trailing_stop"
             :height="290"
           />
+          <div class="decision-grid price-overlay-grid" data-testid="price-overlay-legend">
+            <div
+              v-for="item in priceOverlayItems"
+              :key="item.label"
+              class="decision-item"
+            >
+              <span>{{ item.label }}</span>
+              <strong>{{ item.value }}</strong>
+              <small>{{ item.detail }}</small>
+            </div>
+          </div>
         </article>
 
         <article class="panel">

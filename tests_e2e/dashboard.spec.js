@@ -23,6 +23,24 @@ test("dashboard renders decision path and key trading state", async ({ page }) =
   await expect(page.getByRole("button", { name: "Expand All" })).toBeVisible();
 });
 
+test("exit and position panel exposes operator-facing values", async ({ page }) => {
+  await page.goto("/");
+
+  await expect(page.getByTestId("position-status")).toHaveText(/Flat|Long|Short/);
+  await expect(page.getByTestId("position-pnl")).not.toHaveText("");
+  await expect(page.getByTestId("exit-decision")).not.toHaveText("");
+  await expect(page.getByTestId("trailing-stop")).not.toHaveText("");
+  await expect(page.getByTestId("target-reduction")).toHaveText(/%/);
+});
+
+test("price curve explains active overlays to the operator", async ({ page }) => {
+  await page.goto("/");
+
+  const legend = page.getByTestId("price-overlay-legend");
+  await expect(legend).toBeVisible();
+  await expect(legend).toContainText(/No active overlays|Long entry|Short entry/);
+});
+
 test("dashboard reaches a live websocket stream", async ({ page }) => {
   await page.goto("/");
 

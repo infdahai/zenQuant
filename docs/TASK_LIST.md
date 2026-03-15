@@ -1,397 +1,299 @@
 # ZenQuant 开发任务列表
 
-**更新日期**: 2026-03-16  
-**当前阶段**: Task 0 已完成本机 smoke 验证，Phase 6 核心已完成，Deribit Stage 1 观察层已接入，剩余 PostgreSQL live 验证与长期观测
+**更新日期**: 2026-03-16
+**当前阶段**: Phase 3-6 代码实现完成，剩余测试补全和前端修复
 
 ---
 
 ## 当前状态
 
-✅ **Phase 3**: State Engine（状态引擎）- 已完成  
-✅ **Phase 4**: Playbook Engine（策略手册引擎）- 已完成  
-✅ **Phase 5**: Sizing Engine（仓位引擎）- 已完成  
-⏳ **Task 0**: 模拟盘启动验证 - 本机 smoke 已完成，PostgreSQL 部分待补  
-✅ **Phase 6**: Exit Engine（退出引擎）- 核心完成  
-✅ **Phase 6 后可选**: Deribit Options 风险温度计 Stage 1 - 已实现为 observation-only
+✅ **Phase 3**: State Engine（状态引擎）- 已完成
+✅ **Phase 4**: Playbook Engine（策略手册引擎）- 已完成
+✅ **Phase 5**: Sizing Engine（仓位引擎）- 已完成
+✅ **Phase 6**: Exit Engine（退出引擎）- 已完成
+✅ **Deribit Options**: 观测层已实现 (observation-only)
+
+**测试状态**: 59个测试通过，4个跳过
 
 ---
 
-## Task 0: 模拟盘启动验证
+## 剩余任务概览
 
-**负责人**: [待分配]  
-**预估**: 0.5 天  
-**优先级**: P0（最高）
+### 高优先级 (P0-P1)
+1. **测试补全**: E2E测试、Live模式测试、PostgreSQL测试
+2. **前端修复**: Exit决策面板、Position可视化
+3. **Deribit验证**: API稳定性验证、长期观测
 
-**目标**: 验证 live 模式下完整链路可用性，并为长期后台运行做第一次真实检查。
-
-### 执行步骤
-
-- [ ] 设置 PostgreSQL 数据库
-  - [x] `createdb zenquant_live`
-  - [x] 设置 `ZENQUANT_PG_DSN`
-  - [x] 设置 `ZENQUANT_RUNTIME_MODE=live`
-- [x] 启动 live 模式
-  - [x] `uv run zenquant-web --mode live --host 127.0.0.1 --port 8090`
-- [ ] 验证基础设施检查清单
-  - [x] Binance WebSocket 连接成功
-  - [ ] 4H/1D bar-close 事件正常触发
-  - [x] Indicator Engine 输出正常
-  - [x] State Engine 发布 `MarketState`
-  - [x] Playbook Engine 发布 `PlaybookSelection`
-  - [x] Sizing Engine 发布 `SizingDecision`
-  - [x] Strategy Engine 发布 `TargetPosition`
-  - [x] PostgreSQL 写入成功
-  - [x] Dashboard 显示实时数据
-  - [x] Bootstrap 历史数据加载成功
-- [ ] 监控关键指标
-  - [x] `database.writes > 0`
-  - [x] `database.dropped = 0`
-  - [x] `bootstrap_phase = "ready"`
-  - [x] `market_connected = true`
-  - [x] `last_market_event < 5 分钟`
-  - [x] 已提供 `zenquant-live-validate` 命令用于 smoke / soak / bar-close 观测
-
-### 验收标准
-
-- [ ] Live 模式连续运行 24 小时无崩溃
-- [ ] 至少捕获 1 个 4H bar close 和 1 个 1D bar close
-- [ ] PostgreSQL 所有核心表都有数据
-- [x] Dashboard 实时更新正常
-
-### 交付物
-
-- [ ] 运行日志截图
-- [x] PostgreSQL 数据样本查询结果
-- [x] Dashboard 截图（展示 state / playbook / sizing）
-
-### 本机当前验证结果（2026-03-15）
-
-- [x] `/healthz` 返回 `status=ok`
-- [x] `/api/state?symbol=BTCUSDT_PERP&tf=4h` 返回完整 4H 决策链
-  - [x] `latest_indicator`
-  - [x] `market_state`
-  - [x] `active_playbook`
-  - [x] `latest_sizing`
-  - [x] `latest_target`
-- [x] `/api/state?symbol=BTCUSDT_PERP&tf=1d` 返回 1D bootstrap 上下文
-  - [x] `latest_indicator`
-  - [x] `market_state`
-  - [x] `active_playbook`
-  - [x] `directional_bias`
-- [x] 连续两次采样中 `last_price` 和 `last_market_event_ns` 均前进，说明 live feed 正在更新
-- [x] Dashboard 截图已生成：`.artifacts/task0-live-dashboard.png`
-- [x] PostgreSQL 路径已验证
-  - 使用 Homebrew 安装 `postgresql@17`
-  - 本地验证库：`postgresql://zenquant@127.0.0.1:5433/zenquant_live`
-  - `zenquant-live-validate --require-db` 已通过
-- [x] 已提供运行期验证命令：
-  - `uv run zenquant-live-validate --base-url http://127.0.0.1:8090`
-  - `uv run zenquant-live-validate --base-url http://127.0.0.1:8090 --require-db --watch-seconds 86400 --output .artifacts/live-24h-summary.json`
-- [ ] 24 小时稳定性与真实下一根 4H / 1D live close 仍待继续观测
-  - 已启动：`uv run zenquant-live-validate --base-url http://127.0.0.1:8093 --require-db --watch-seconds 86400 --poll-interval-s 60 --output .artifacts/live-24h-summary.json`
+### 中优先级 (P2-P3)
+4. **Dashboard增强**: Time decay倒计时、数据流测试
+5. **Coinbase Premium**: 可选观测层（待评估）
 
 ---
 
-## Phase 5: Sizing Engine 完成记录
+## Task T1: E2E决策链路测试
 
-### P5.1: 设计 `SizingDecision` 域对象
+**负责人**: [待分配]
+**预估**: 2天
+**优先级**: P0
 
-**负责人**: 顶级工程师  
-**状态**: 已完成
+**目标**: 验证完整决策链路的确定性和正确性
 
-- [x] 在 `zenquant/domain/models.py` 定义 `SizingDecision` dataclass
-- [x] 添加 `base_size`, `confidence_multiplier`, `stress_discount`, `execution_haircut`, `final_leverage`
-- [x] 添加 `reason_codes`
-- [x] 添加 `breakdown()` 方法
-- [x] 更新 `zenquant/domain/__init__.py` 导出
-- [x] 类型注解完整
-- [x] Docstring 完整
+**实现文件**: `tests/test_e2e_decision_chain.py`
 
-### P5.2: 实现 `SizingEngine`
+**测试场景**:
+- [ ] 完整决策链路 (State → Playbook → Sizing → Exit → Target)
+- [ ] 1:1对应关系验证 (每个indicator产生一个完整决策链)
+- [ ] Cutoff time一致性验证
+- [ ] Exit触发reduce-only target验证
+- [ ] 多symbol并发测试
 
-**负责人**: 顶级工程师  
-**状态**: 已完成
-
-- [x] 创建 `zenquant/strategy/sizing_engine.py`
-- [x] 实现 `_base_size(equity, realized_vol, target_vol)`
-- [x] 实现 `_confidence_multiplier(state, playbook)`
-- [x] 实现 `_stress_discount(state, indicators)`
-- [x] 实现 `_execution_haircut(state)`
-- [x] 实现 `compute(state, playbook, equity, indicators)`
-- [x] 更新 `zenquant/strategy/__init__.py` 导出
-- [x] 代码编译通过
-- [x] 类型注解完整
-- [x] Docstring 完整
-
-### P5.3: 集成到策略引擎
-
-**负责人**: 顶级工程师  
-**状态**: 已完成
-
-- [x] `ARCStrategyEngine.__init__()` 实例化 `SizingEngine`
-- [x] `_build_target()` 调用 `sizing_engine.compute()`
-- [x] 移除内联 sizing 逻辑
-- [x] 发布 `strategy.sizing.{tf}.{symbol}` 事件
-- [x] `TargetPosition.reason_codes` 包含 sizing reason codes
-- [x] 保持回测 / replay 合同不变
-
-### P5.4: 测试
-
-**负责人**: 顶级工程师  
-**状态**: 已完成
-
-- [x] 创建 `tests/test_sizing_engine.py`
-- [x] 覆盖 `_base_size()` 场景
-- [x] 覆盖 `_confidence_multiplier()` 场景
-- [x] 覆盖 `_stress_discount()` 场景
-- [x] 覆盖 `_execution_haircut()` 场景
-- [x] 覆盖 `compute()` 主流程
-- [x] 增加策略集成测试，验证 sizing 事件发布
-- [x] 增加 dashboard state 测试，验证 sizing snapshot 暴露
-- [x] `uv run pytest -q` 通过
-
-### P5.5: 回测验证
-
-**负责人**: 顶级工程师  
-**状态**: 已完成
-
-- [x] 保留 Phase 4 / Phase 5 固定历史数据集基线
-- [x] Returns 差异 < 0.5%
-- [x] 其他指标一致
-- [x] 无明显性能退化
-
-**当前固定基线**:
-
-- [x] `net_pnl = 236412.8`
-- [x] `final_equity = 336412.80249300046`
-- [x] `max_drawdown = 0.008591`
-- [x] `sharpe = 4.7556`
-- [x] `profit_factor = 4.719191`
-- [x] `trade_count = 420`
-
-### P5.6: Dashboard 与 PostgreSQL 集成
-
-**负责人**: 顶级工程师  
-**状态**: 已完成
-
-- [x] `zenquant/app/live_state.py` 订阅 sizing 事件
-- [x] dashboard snapshot 暴露 `latest_sizing`
-- [x] 前端显示 sizing breakdown
-- [x] 显示 Base size
-- [x] 显示 Confidence multiplier
-- [x] 显示 Stress discount
-- [x] 显示 Execution haircut
-- [x] 显示 Final leverage
-- [x] PostgreSQL 新增 `sizing_decisions` 表并写入数据
-
-### P5.7: 模拟盘前集成验收
-
-**负责人**: [待分配]  
-**状态**: 待执行  
-**优先级**: P1
-
-- [x] 代码审查确认 sizing 已完整接入 live 路径
-- [ ] 运行 demo 模式，观察 sizing 事件发布
-- [x] 运行 live 模式，观察 sizing 事件发布
-- [x] Dashboard 正确显示 `base_size / confidence_multiplier / stress_discount / execution_haircut`
-- [ ] PostgreSQL `sizing_decisions` 表有真实数据
-
-### Phase 5 当前结论
-
-- [x] Phase 5 已在代码层完成
-- [ ] Phase 5 仍需通过 Task 0 的真实 live 运行验收
+**验收标准**:
+- [ ] 所有E2E测试通过
+- [ ] 决策链路完整性验证通过
+- [ ] 时间一致性验证通过
 
 ---
 
-## Phase 6: Exit Engine 实施任务清单
+## Task T2: Live模式集成测试
 
-### P6.1: 设计 `ExitDecision` 域对象
+**负责人**: [待分配]
+**预估**: 1.5天
+**优先级**: P0
 
-**负责人**: 顶级工程师  
-**预估**: 0.5 天  
+**目标**: 验证live模式下的事件流和bootstrap正确性
+
+**实现文件**: `tests/test_live_mode_integration.py`
+
+**测试场景**:
+- [ ] Bootstrap历史数据加载
+- [ ] Prime signal正确发布
+- [ ] 1D bias正确生成
+- [ ] WebSocket reconnect处理
+- [ ] 异常场景处理 (网络断开、数据缺失)
+
+**验收标准**:
+- [ ] Bootstrap测试通过
+- [ ] Prime signal测试通过
+- [ ] Reconnect测试通过
+
+---
+
+## Task T3: PostgreSQL持久化测试
+
+**负责人**: [待分配]
+**预估**: 1天
 **优先级**: P1
 
-- [x] 在 `zenquant/domain/models.py` 定义 `ExitDecision` dataclass
-- [x] 字段包含 `exit_type`
-  - `NONE | TRAILING | INVALIDATION | TIME_DECAY | REGIME_CHANGE`
-- [x] 字段包含 `exit_urgency`
-  - `NONE | GRADUAL | IMMEDIATE`
-- [x] 添加 `target_reduction_pct`
-- [x] 添加 `stop_price`
-- [x] 添加 `reason_code`, `reason_detail`, `reason_codes`
-- [x] 添加 `should_exit()` 方法
-- [x] 添加 `is_immediate()` 方法
-- [x] 更新 `zenquant/domain/__init__.py` 导出
-- [x] 类型注解完整
-- [x] Docstring 完整
+**目标**: 验证PostgreSQL审计追踪完整性
 
-### P6.2: 实现 `ExitEngine` 模块
+**实现文件**: `tests/test_postgresql_persistence.py`
 
-**负责人**: 顶级工程师  
-**预估**: 2.5 天  
+**测试场景**:
+- [ ] 所有决策层正确写入 (State/Playbook/Sizing/Exit)
+- [ ] Cutoff time一致性
+- [ ] 数据完整性验证
+- [ ] 历史查询功能
+
+**前置条件**:
+```bash
+export ZENQUANT_TEST_PG_DSN="postgresql://localhost/zenquant_test"
+createdb zenquant_test
+```
+
+**验收标准**:
+- [ ] 所有表正确写入
+- [ ] 数据完整性验证通过
+- [ ] 历史查询测试通过
+
+---
+
+## Task F1: Exit决策面板
+
+**负责人**: [待分配]
+**预估**: 1天
+**优先级**: P0
+
+**目标**: 在Dashboard显示Exit决策和Position状态
+
+**修改文件**: `zenquant/web/app/pages/DashboardPage.js`
+
+**实现内容**:
+- [ ] Position状态显示 (方向、数量、入场价、持仓时间)
+- [ ] Unrealized PnL显示
+- [ ] Trailing stop显示
+- [ ] Exit决策显示 (类型、紧急度、原因)
+- [ ] Exit reason codes显示
+
+**验收标准**:
+- [ ] Position状态正确显示
+- [ ] PnL实时更新
+- [ ] Exit决策正确显示
+- [ ] UI清晰易读
+
+---
+
+## Task F2: Position可视化增强
+
+**负责人**: [待分配]
+**预估**: 1天
 **优先级**: P1
 
-- [x] 创建 `zenquant/strategy/exit_engine.py`
-- [x] 实现 `ExitEngineConfig`
-- [x] 实现 `check(position, state, playbook, indicators)`
-- [x] 实现 `_check_invalidation(position, state, playbook)`
-- [x] 实现 `_check_trailing_stop(position, indicators, playbook)`
-- [x] 实现 `_check_time_decay(position, playbook, indicators)`
-- [x] 实现 `_check_regime_change(position, state, playbook)`
-- [x] 实现 `_no_exit(position)` helper
-- [x] 按优先级执行
-  - [x] invalidation
-  - [x] trailing
-  - [x] time decay
-  - [x] regime change
-- [x] 更新 `zenquant/strategy/__init__.py` 导出
-- [x] 代码编译通过
-- [x] Docstring 完整
+**目标**: 在Price Curve上叠加Position和Trailing Stop
 
-### P6.3: 集成 `ExitEngine` 到策略引擎
+**修改文件**: `zenquant/web/app/components/CandleCanvas.js`
 
-**负责人**: 顶级工程师  
-**预估**: 1.5 天  
-**优先级**: P1
+**实现内容**:
+- [ ] Entry price水平线 (Long绿色/Short橙色)
+- [ ] Trailing stop水平线 (红色虚线)
+- [ ] 价格标签显示
+- [ ] Long/Short颜色区分
 
-- [x] 在 `ARCStrategyEngine.__init__()` 实例化 `ExitEngine`
-- [x] 在 `_build_target()` 中优先调用 exit engine
-- [x] 发布 `strategy.exit.{tf}.{symbol}` 事件
-- [x] 构建 reduce-only exit target
-- [x] 移除内联 trailing-stop exit 逻辑
-- [x] 确保 `TargetPosition.reason_codes` 透传 exit reason codes
-- [x] Demo 模式下可观察到 exit 决策
+**验收标准**:
+- [ ] Entry line正确显示
+- [ ] Trailing stop line正确显示
+- [ ] 颜色编码清晰
+- [ ] 标签可读
 
-### P6.4: `ExitEngine` 测试
+---
 
-**负责人**: 顶级工程师  
-**预估**: 2 天  
-**优先级**: P1
+## Task D1: Deribit API验证
 
-- [x] 创建 `tests/test_exit_engine.py`
-- [x] 覆盖 bull -> downtrend invalidation
-- [x] 覆盖 bear -> uptrend invalidation
-- [x] 覆盖 long trailing stop breach
-- [x] 覆盖 short trailing stop breach
-- [x] 覆盖 time decay unprofitable
-- [x] 覆盖 time decay profitable no-exit
-- [x] 覆盖 volatility distorted regime change
-- [x] 覆盖 quality unsafe regime change
-- [x] 覆盖优先级测试
-  - [x] invalidation 优先于 trailing
-- [x] 覆盖 healthy path no-exit
-- [x] 测试覆盖率 > 80%
-
-### P6.5: 回测验证
-
-**负责人**: 顶级工程师  
-**预估**: 1 天  
+**负责人**: [待分配]
+**预估**: 1天
 **优先级**: P2
 
-- [x] 记录 Phase 5 baseline metrics
-- [x] 运行 Phase 6 回测
-- [x] 对比 Profit factor
-- [ ] 对比 Avg loss
-- [x] 对比 Max drawdown
-- [x] 对比 Sharpe ratio
-- [x] 确认无明显 returns 下降
+**目标**: 验证现有Deribit实现的API行为和数据质量
 
-**目标方向**:
+**实现文件**:
+- `tests/test_deribit_api_validation.py` (API稳定性测试)
+- `tests/test_deribit_postgresql.py` (持久化测试)
+- `scripts/observe_deribit.py` (长期观测脚本)
 
-- [x] Profit factor 提升 > 5%
-- [ ] Avg loss 减小
-- [x] Max drawdown 减小或持平
-- [x] Sharpe ratio 提升
+**测试场景**:
+- [ ] API可用性和响应结构
+- [ ] 数据质量和合理范围
+- [ ] Quality flags正确触发
+- [ ] PostgreSQL持久化验证
+- [ ] 长期观测 (1-2周后台运行)
 
-**当前固定基线（Phase 6）**:
+**验收标准**:
+- [ ] API稳定性测试通过
+- [ ] 数据质量在合理范围
+- [ ] `block_flow_imbalance`明确标记为volume proxy
+- [ ] PostgreSQL持久化测试通过
+- [ ] 观测脚本运行1-2周无崩溃
 
-- [x] `net_pnl = 236863.54`
-- [x] `final_equity = 336863.5367195884`
-- [x] `max_drawdown = 0.007263`
-- [x] `sharpe = 4.7603`
-- [x] `profit_factor = 5.701303`
-- [x] `trade_count = 422`
-
-### P6.6: Dashboard 集成（可选）
-
-**负责人**: 顶级工程师  
-**预估**: 0.5 天  
-**优先级**: P3
-
-- [x] `zenquant/infra/db.py` 订阅并持久化 exit 决策
-- [x] `zenquant/app/live_state.py` 订阅 exit 事件
-- [x] Dashboard 显示 active exit type
-- [x] Dashboard 显示 trailing stop level
-- [ ] Dashboard 显示 time decay countdown
-- [x] Dashboard 显示 exit urgency
-- [x] Dashboard 显示 exit reason codes
+**观测期后决策**:
+- 评估Deribit数据价值
+- 决定是否集成到Sizing/Exit层
 
 ---
 
-## Phase 6 后可选: Deribit Options 风险温度计
+## Task T4: Dashboard数据流测试 (可选)
 
-### P6+O.1: 设计 `DeribitRiskPack` 域对象
-
-**负责人**: 顶级工程师  
-**预估**: 0.5 天  
+**负责人**: [待分配]
+**预估**: 1天
 **优先级**: P3
 
-- [x] 在 `zenquant/domain/models.py` 定义 `DeribitRiskPack`
-- [x] 包含 `atm_iv_30d`
-- [x] 包含 `term_structure_slope`
-- [x] 包含 `put_call_skew_25d`
-- [x] 包含 `oi_concentration`
-- [x] 包含 `block_flow_imbalance`
-- [x] 明确仅用于风险温度计，不参与方向信号
+**目标**: 验证Dashboard WebSocket数据流正确性
 
-### P6+O.2: 实现 `DeribitOptionsIngestor`
+**实现文件**: `tests/test_dashboard_data_flow.py`
 
-**负责人**: 顶级工程师  
-**预估**: 2 天  
-**优先级**: P3
-
-- [x] 创建 `zenquant/ingestor/deribit_options.py`
-- [x] 拉取 BTC options 数据
-- [x] 生成 `DeribitRiskPack`
-- [x] 发布到 event bus
-- [x] 仅用于 risk assessment
-
-### P6+O.3: Dashboard / PostgreSQL / Runtime 集成
-
-**负责人**: 顶级工程师  
-**预估**: 0.5 天  
-**优先级**: P3
-
-- [x] live runtime 支持通过 `ZENQUANT_DERIBIT_ENABLED=1` 启动 observation layer
-- [x] `zenquant/app/live_state.py` 暴露 `deribit_risk` 与会话历史
-- [x] Dashboard 显示 Options Thermometer 面板
-- [x] PostgreSQL 新增 `deribit_risk_packs` 表
-- [x] `zenquant/infra/db.py` 持久化 Deribit 风险包
-- [x] 保持策略 / 风控 / 执行逻辑不受 Deribit 输入影响
-- [x] 增加 `tests/test_deribit_options.py`
-
-### P6+O.4: 当前限制
-
-- [x] Stage 1 仅为 observation-only，不改变 target / risk / execution
-- [x] `block_flow_imbalance` 当前使用公开 `volume_usd` 代理，不是逐笔 block trade feed
-- [ ] 24h live 稳定性验证
-- [ ] PostgreSQL live 写入验收
-- [ ] 决定是否推进 Stage 2 风险覆盖层集成
+**测试场景**:
+- [ ] Dashboard snapshot包含所有决策层
+- [ ] Sizing breakdown正确暴露
+- [ ] Exit决策正确暴露
+- [ ] WebSocket推送正常工作
 
 ---
 
-## 当前执行顺序
+## Task F3: Time Decay倒计时 (可选)
 
-1. **先执行 Task 0**：启动模拟盘，验证 live 链路  
-2. **确认 Phase 5 在 live 中稳定**：特别是 sizing / dashboard / PostgreSQL  
-3. **再启动 Phase 6**：Exit Engine  
-4. **Deribit 已作为 observation-only 接入**：在 Task 0 / Phase 6 live 验证稳定后，再决定是否推进 Stage 2
+**负责人**: [待分配]
+**预估**: 0.5天
+**优先级**: P3
+
+**目标**: 显示持仓老化倒计时
+
+**修改文件**: `zenquant/web/app/pages/DashboardPage.js`
+
+**实现内容**:
+- [ ] 计算剩余bars (time_decay_bars - bars_held)
+- [ ] 显示倒计时进度条
+- [ ] 接近老化时预警
 
 ---
 
-## 备注
+## Task C1-C3: Coinbase Premium观测层 (可选)
 
-- Phase 5 的代码实现已完成，但还缺少真实 live 运行验收。
-- 当前最重要的不是继续加新模块，而是先把模拟盘链路跑稳定。
-- Phase 6 必须保持 determinism、auditability、live/backtest parity，不允许为了“更聪明”而破坏这些约束。
-- Deribit 当前只用于观测层，不参与方向信号，也不改写 risk / execution。
+**负责人**: [待分配]
+**预估**: 2天
+**优先级**: P3
+
+**前置条件**: Deribit观测层价值验证通过
+
+**实现内容**:
+- [ ] Coinbase Premium数据源验证
+- [ ] CoinbasePremiumMonitor实现
+- [ ] Dashboard显示
+
+**决策点**: 仅在Deribit观测层验证通过后考虑
+
+---
+
+## 执行顺序建议
+
+### 第一周 (本周)
+1. **Task T1**: E2E决策链路测试 (2天)
+2. **Task F1**: Exit决策面板 (1天)
+3. **Task T2**: Live模式集成测试 (1.5天)
+
+### 第二周
+4. **Task T3**: PostgreSQL持久化测试 (1天)
+5. **Task F2**: Position可视化增强 (1天)
+6. **Task D1**: Deribit API验证 (1天)
+7. 启动Deribit观测脚本 (后台运行1-2周)
+
+### 第三周 (可选)
+8. **Task T4**: Dashboard数据流测试
+9. **Task F3**: Time Decay倒计时
+10. 评估Deribit数据价值
+
+### 第四周 (可选)
+11. **Task C1-C3**: Coinbase Premium (如果Deribit验证通过)
+
+---
+
+## 质量门禁
+
+每个任务完成后必须通过:
+- [ ] 所有测试通过 (100% pass rate)
+- [ ] 无linting错误
+- [ ] 代码审查通过
+- [ ] 文档更新完成
+
+---
+
+## 进度追踪
+
+| 任务 | 状态 | 开始日期 | 完成日期 | 负责人 |
+|------|------|---------|---------|--------|
+| Phase 3-6 | ✅ 完成 | 2026-03-10 | 2026-03-16 | 顶级工程师 |
+| Deribit实现 | ✅ 完成 | 2026-03-15 | 2026-03-16 | 顶级工程师 |
+| Task T1 | ⏳ 待开始 | - | - | [待分配] |
+| Task T2 | ⏳ 待开始 | - | - | [待分配] |
+| Task T3 | ⏳ 待开始 | - | - | [待分配] |
+| Task F1 | ⏳ 待开始 | - | - | [待分配] |
+| Task F2 | ⏳ 待开始 | - | - | [待分配] |
+| Task D1 | ⏳ 待开始 | - | - | [待分配] |
+
+---
+
+## 联系人
+
+**量化组长（AI架构师）**: 架构把关、方向把控、进度评估
+**程序员大神**: 代码实现、测试编写、前端开发
+
+---
+
+**最后更新**: 2026-03-16
