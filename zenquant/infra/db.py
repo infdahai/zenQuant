@@ -4,6 +4,7 @@ import json
 import logging
 import queue
 import threading
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -30,6 +31,8 @@ class OnlineStateStoreConfig:
     dsn: str | None = None
     max_queue_size: int = 10_000
     apply_migrations: bool = True
+    reconnect_backoff_s: float = 5.0
+    max_reconnect_backoff_s: float = 30.0
 
 
 class OnlineStateStore:
@@ -46,6 +49,7 @@ class OnlineStateStore:
         self._worker: threading.Thread | None = None
         self._stop_event = threading.Event()
         self._enabled = bool(self._config.dsn)
+        self._connected = False
         self._last_error = ""
         self._writes = 0
         self._dropped = 0
@@ -74,6 +78,7 @@ class OnlineStateStore:
     def snapshot(self) -> dict[str, Any]:
         return {
             "enabled": self._enabled,
+            "connected": self._connected,
             "writes": self._writes,
             "dropped": self._dropped,
             "queue_depth": self._queue.qsize(),
@@ -82,20 +87,35 @@ class OnlineStateStore:
 
     def _run(self) -> None:
         assert self._config.dsn is not None
-        try:
-            with connect(self._config.dsn, autocommit=True) as conn:
-                if self._config.apply_migrations:
-                    self._apply_migrations(conn)
-                with conn.cursor() as cur:
-                    while not self._stop_event.is_set():
-                        sql, params = self._queue.get()
-                        if sql == "__STOP__":
-                            break
-                        cur.execute(sql, params)
-                        self._writes += 1
-        except Exception as exc:
-            self._last_error = str(exc)
-            logger.exception("online state store stopped: %s", exc)
+        backoff_s = max(1.0, float(self._config.reconnect_backoff_s))
+        while not self._stop_event.is_set():
+            try:
+                with connect(self._config.dsn, autocommit=True) as conn:
+                    self._connected = True
+                    self._last_error = ""
+                    backoff_s = max(1.0, float(self._config.reconnect_backoff_s))
+                    if self._config.apply_migrations:
+                        self._apply_migrations(conn)
+                    with conn.cursor() as cur:
+                        while not self._stop_event.is_set():
+                            try:
+                                sql, params = self._queue.get(timeout=1.0)
+                            except queue.Empty:
+                                continue
+                            if sql == "__STOP__":
+                                self._stop_event.set()
+                                break
+                            cur.execute(sql, params)
+                            self._writes += 1
+            except Exception as exc:
+                if self._stop_event.is_set():
+                    break
+                self._connected = False
+                self._last_error = str(exc)
+                logger.exception("online state store error: %s", exc)
+                time.sleep(backoff_s)
+                backoff_s = min(backoff_s * 2.0, float(self._config.max_reconnect_backoff_s))
+        self._connected = False
 
     def _apply_migrations(self, conn: Any) -> None:
         migration_path = Path(__file__).resolve().parents[2] / "migrations" / "001_initial_schema.sql"

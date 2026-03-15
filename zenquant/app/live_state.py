@@ -75,7 +75,14 @@ class DashboardStateStore:
             "mode": "demo",
             "market_connected": False,
             "last_market_event_ns": 0,
-            "database": {"enabled": False, "writes": 0, "dropped": 0, "queue_depth": 0, "last_error": ""},
+            "database": {
+                "enabled": False,
+                "connected": False,
+                "writes": 0,
+                "dropped": 0,
+                "queue_depth": 0,
+                "last_error": "",
+            },
         }
         self._default_symbol = "BTCUSDT_PERP"
         self._default_tf = "4h"

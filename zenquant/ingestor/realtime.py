@@ -34,6 +34,7 @@ class RealTimeIngestorConfig:
     bootstrap_1d_bars: int = 90
     bootstrap_funding_points: int = 500
     bootstrap_open_interest_points: int = 500
+    bootstrap_required: bool = False
 
 
 class RealTimeIngestor:
@@ -56,6 +57,7 @@ class RealTimeIngestor:
                 bootstrap_1d_bars=runtime_config.bootstrap_1d_bars,
                 bootstrap_funding_points=runtime_config.bootstrap_funding_points,
                 bootstrap_open_interest_points=runtime_config.bootstrap_open_interest_points,
+                bootstrap_required=runtime_config.bootstrap_required,
             ),
         )
 

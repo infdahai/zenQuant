@@ -88,6 +88,7 @@ class ZenQuantWebRuntime:
         self._state_connections: list[_StateConnection] = []
         self._indicator_connections: list[_IndicatorConnection] = []
         self._tick_task: asyncio.Task[None] | None = None
+        self._live_start_task: asyncio.Task[None] | None = None
         self._started = False
         self._live_symbols = ("BTCUSDT_PERP",)
 
@@ -117,7 +118,11 @@ class ZenQuantWebRuntime:
             self.execution_gateway = SimulatedGateway()
             self.ingestor = RealTimeIngestor(
                 bus=self.bus,
-                config=RealTimeIngestorConfig(symbols=self._live_symbols),
+                config=RealTimeIngestorConfig(
+                    symbols=self._live_symbols,
+                    bootstrap_enabled=os.getenv("ZENQUANT_SKIP_BOOTSTRAP", "").lower()
+                    not in {"1", "true", "yes"},
+                ),
             )
             self._event_iterator = None
         else:
@@ -155,13 +160,9 @@ class ZenQuantWebRuntime:
             return
         self._started = True
         if self._runtime_mode == "live":
-            bootstrap_history = getattr(self.ingestor, "bootstrap_history", None)
-            if callable(bootstrap_history):
-                await bootstrap_history()
             self._initialize_trading_chain()
             self._start_online_state()
-            self._prime_live_signal()
-            await self.ingestor.start()
+            self._live_start_task = asyncio.create_task(self._start_live_runtime())
             return
         self._start_online_state()
         self._tick_task = asyncio.create_task(self._run_tick_loop())
@@ -172,6 +173,13 @@ class ZenQuantWebRuntime:
             return
         self._started = False
         if self._runtime_mode == "live":
+            if self._live_start_task is not None:
+                self._live_start_task.cancel()
+                try:
+                    await self._live_start_task
+                except asyncio.CancelledError:
+                    pass
+                self._live_start_task = None
             await self.ingestor.stop()
         if self._tick_task is not None:
             self._tick_task.cancel()
@@ -308,11 +316,59 @@ class ZenQuantWebRuntime:
             self.online_state.start()
         self.state.on_runtime_status({"database": self._online_state_snapshot()})
 
+    async def _start_live_runtime(self) -> None:
+        """Warm live context in the background so the UI can report startup state."""
+        bootstrap_history = getattr(self.ingestor, "bootstrap_history", None)
+        if callable(bootstrap_history):
+            self.state.on_runtime_status(
+                {
+                    "bootstrap_phase": "bootstrapping",
+                    "bootstrap_detail": "Warming 4H and 1D context before live feed",
+                    "bootstrap_error": "",
+                }
+            )
+            self._schedule_state_broadcast()
+            try:
+                await bootstrap_history()
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                self.state.on_runtime_status(
+                    {
+                        "bootstrap_phase": "failed",
+                        "bootstrap_detail": "Bootstrap failed; continuing with cold live feed",
+                        "bootstrap_error": str(exc),
+                    }
+                )
+            else:
+                self.state.on_runtime_status(
+                    {
+                        "bootstrap_phase": "ready",
+                        "bootstrap_detail": "Historical context warmed",
+                        "bootstrap_error": "",
+                    }
+                )
+        else:
+            self.state.on_runtime_status(
+                {
+                    "bootstrap_phase": "skipped",
+                    "bootstrap_detail": "No bootstrap adapter configured",
+                    "bootstrap_error": "",
+                }
+            )
+        if not self._started:
+            return
+        self._prime_live_signal()
+        await self.ingestor.start()
+        self.state.on_runtime_status({"bootstrap_live_started": True})
+        self._schedule_state_broadcast()
+
     def _online_state_snapshot(self) -> dict[str, Any]:
         """Return database status even before the writer is initialized."""
         if self.online_state is None:
             return {
                 "enabled": False,
+                "connected": False,
                 "writes": 0,
                 "dropped": 0,
                 "queue_depth": 0,
@@ -372,17 +428,20 @@ class ZenQuantWebRuntime:
             ts_ns=payload.meta.event_time_ns,
             price=payload.mark_price,
         )
+        self.state.on_runtime_status({"database": self._online_state_snapshot()})
         self._schedule_state_broadcast()
 
     def _on_indicator(self, _: str, payload: object) -> None:
         if not isinstance(payload, IndicatorPack):
             return
         self.state.on_indicator(payload)
+        self.state.on_runtime_status({"database": self._online_state_snapshot()})
         self._schedule_indicator_broadcast(payload)
 
     def _on_risk_snapshot(self, _: str, payload: object) -> None:
         if isinstance(payload, RiskSnapshot):
             self.state.on_risk_snapshot(payload)
+            self.state.on_runtime_status({"database": self._online_state_snapshot()})
             self._schedule_state_broadcast()
 
     def _on_directional_bias(self, _: str, payload: object) -> None:

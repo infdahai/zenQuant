@@ -17,6 +17,7 @@ import {
   formatRelativeTimeFromNs,
   formatRegimeLabel,
   formatSignedCurrency,
+  formatSignedPercent,
   getMarketHealth,
   humanizeCode,
   normalizeIndicatorSeries,
@@ -32,6 +33,7 @@ export const DashboardPage = defineComponent({
     // UI can update on every websocket payload without manual state syncing.
     const store = inject("marketStore");
     const expanded = reactive({});
+    const expandMode = ref(loadExpandMode());
     const nowMs = ref(Date.now());
     let timerId = 0;
 
@@ -78,6 +80,28 @@ export const DashboardPage = defineComponent({
     const latestRiskDecision = computed(() => snapshot.value.risk_decision || null);
     const runtimeStatus = computed(() => snapshot.value.runtime_status || {});
     const marketHealth = computed(() => getMarketHealth(runtimeStatus.value, nowMs.value));
+    const databaseStatus = computed(() => {
+      const database = runtimeStatus.value.database || {};
+      if (!database.enabled) {
+        return {
+          label: "Not configured",
+          detail: "PostgreSQL audit store is optional in local mode",
+          tone: "warning",
+        };
+      }
+      if (!database.connected) {
+        return {
+          label: "Offline",
+          detail: database.last_error || "Audit writes are paused until the database reconnects",
+          tone: "danger",
+        };
+      }
+      return {
+        label: "Online",
+        detail: `${formatNumber(database.writes || 0, 0)} writes · queue ${formatNumber(database.queue_depth || 0, 0)}`,
+        tone: "ok",
+      };
+    });
     const candles = computed(() => (snapshot.value.candles || []).slice(-180));
     const priceSeries = computed(() => (snapshot.value.price_series || []).slice(-300));
     const equityCurve = computed(() =>
@@ -136,18 +160,33 @@ export const DashboardPage = defineComponent({
         return {
           headline: "Flat",
           detail: "No open position",
+          pnl: "",
+          tone: "ok",
         };
       }
       const direction = position.direction > 0 ? "Long" : "Short";
+      const entryPrice = Number(position.entry_price || 0);
+      const unrealizedPnlPct =
+        entryPrice > 0 && lastPrice > 0
+          ? ((lastPrice - entryPrice) / entryPrice) * position.direction
+          : null;
       let stopDetail = "Trailing stop not set";
+      let tone = "ok";
       if (Number(position.trailing_stop) > 0 && lastPrice > 0) {
         const distance = Math.abs((lastPrice - position.trailing_stop) / lastPrice);
         const relation = position.direction > 0 ? "below last" : "above last";
+        if (distance < 0.02) {
+          tone = "danger";
+        } else if (distance < 0.05) {
+          tone = "warning";
+        }
         stopDetail = `Trailing stop ${formatCurrency(position.trailing_stop)} (${formatPercent(distance, 2)} ${relation})`;
       }
       return {
         headline: `${direction} ${formatNumber(position.current_qty, 4)} BTC`,
         detail: stopDetail,
+        pnl: unrealizedPnlPct === null ? "" : `Unrealized ${formatSignedPercent(unrealizedPnlPct, 2)}`,
+        tone,
       };
     });
 
@@ -176,11 +215,28 @@ export const DashboardPage = defineComponent({
     });
 
     function toggleExpand(key) {
-      expanded[key] = !expanded[key];
+      expanded[key] = !isExpanded(key);
     }
 
     function isExpanded(key) {
-      return expanded[key] === true;
+      if (expanded[key] !== undefined) {
+        return expanded[key] === true;
+      }
+      if (expandMode.value === "all") {
+        return true;
+      }
+      if (expandMode.value === "none") {
+        return false;
+      }
+      return ["last_price", "realized_vol", "cvd_slope", "zen_pulse", "structure_state"].includes(key);
+    }
+
+    function setExpandMode(mode) {
+      expandMode.value = mode;
+      for (const key of Object.keys(expanded)) {
+        delete expanded[key];
+      }
+      persistExpandMode(mode);
     }
 
     function seriesStats(values) {
@@ -257,6 +313,7 @@ export const DashboardPage = defineComponent({
       alerts,
       biasSummary,
       candles,
+      databaseStatus,
       directionalBias,
       displayValue,
       equityCurve,
@@ -288,6 +345,8 @@ export const DashboardPage = defineComponent({
       snapshot,
       store,
       toggleExpand,
+      setExpandMode,
+      expandMode,
       alertTone,
       humanizeCode,
     };
@@ -297,15 +356,16 @@ export const DashboardPage = defineComponent({
       <article class="panel">
         <div class="panel-title">Live Overview</div>
         <div class="hero-grid">
-          <div class="hero-card">
-            <span>Market health</span>
-            <strong>{{ marketHealth.label }}</strong>
+          <div class="hero-card" :class="'hero-card-' + marketHealth.tone">
+            <span>Data Stream</span>
+            <strong :class="'status-' + marketHealth.tone">{{ marketHealth.label }}</strong>
             <small>{{ marketHealth.detail }}</small>
           </div>
-          <div class="hero-card">
+          <div class="hero-card" :class="'hero-card-' + positionSummary.tone">
             <span>Position</span>
             <strong>{{ positionSummary.headline }}</strong>
             <small>{{ positionSummary.detail }}</small>
+            <small v-if="positionSummary.pnl">{{ positionSummary.pnl }}</small>
           </div>
           <div class="hero-card" :class="'hero-card-' + primaryRiskTone">
             <span>Total PnL</span>
@@ -351,10 +411,15 @@ export const DashboardPage = defineComponent({
               }}
             </small>
           </div>
-          <div class="decision-item">
-            <span>Stream status</span>
+          <div class="decision-item" :class="'decision-item-' + marketHealth.tone">
+            <span>Data stream</span>
             <strong data-testid="stream-status">{{ marketHealth.label }}</strong>
             <small data-testid="stream-update">{{ marketHealth.detail }}</small>
+          </div>
+          <div class="decision-item" :class="'decision-item-' + databaseStatus.tone">
+            <span>Database</span>
+            <strong>{{ databaseStatus.label }}</strong>
+            <small>{{ databaseStatus.detail }}</small>
           </div>
           <div class="decision-item">
             <span>Latest target</span>
@@ -462,6 +527,21 @@ export const DashboardPage = defineComponent({
         </article>
       </div>
 
+      <article class="panel">
+        <div class="panel-title">Indicator Monitor</div>
+        <div class="indicator-controls">
+          <button class="indicator-control" :class="{ active: expandMode === 'all' }" @click="setExpandMode('all')">
+            Expand All
+          </button>
+          <button class="indicator-control" :class="{ active: expandMode === 'key' }" @click="setExpandMode('key')">
+            Key Indicators
+          </button>
+          <button class="indicator-control" :class="{ active: expandMode === 'none' }" @click="setExpandMode('none')">
+            Collapse All
+          </button>
+        </div>
+      </article>
+
       <article class="panel indicator-pane" v-for="item in indicatorCards" :key="item.key">
         <div class="pane-head">
           <div class="pane-title">
@@ -486,3 +566,17 @@ export const DashboardPage = defineComponent({
     </section>
   `,
 });
+
+function loadExpandMode() {
+  if (typeof window === "undefined" || !window.localStorage) {
+    return "key";
+  }
+  return window.localStorage.getItem("zenquant.expandMode") || "key";
+}
+
+function persistExpandMode(mode) {
+  if (typeof window === "undefined" || !window.localStorage) {
+    return;
+  }
+  window.localStorage.setItem("zenquant.expandMode", mode);
+}

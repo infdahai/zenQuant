@@ -5,6 +5,7 @@ test("dashboard renders decision path and key trading state", async ({ page }) =
 
   await expect(page.getByRole("heading", { name: "ZenQuant Indicators" })).toBeVisible();
   await expect(page.getByText("Live Overview")).toBeVisible();
+  await expect(page.locator(".hero-card span", { hasText: "Data Stream" }).first()).toBeVisible();
   await expect(page.getByText("Total PnL")).toBeVisible();
   await expect(page.getByText("Decision Path")).toBeVisible();
   await expect(page.getByText("1D bias")).toBeVisible();
@@ -13,6 +14,7 @@ test("dashboard renders decision path and key trading state", async ({ page }) =
   await expect(page.getByText("Price Curve")).toBeVisible();
   await expect(page.getByText("Alert Panel")).toBeVisible();
   await expect(page.getByText("Execution Log")).toBeVisible();
+  await expect(page.getByRole("button", { name: "Expand All" })).toBeVisible();
 });
 
 test("dashboard reaches a live websocket stream", async ({ page }) => {

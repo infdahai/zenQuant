@@ -38,6 +38,15 @@ export function formatPercent(value, digits = 2) {
   return `${(num * 100).toFixed(digits)}%`;
 }
 
+export function formatSignedPercent(value, digits = 2) {
+  const num = Number(value);
+  if (!Number.isFinite(num)) {
+    return "-";
+  }
+  const pct = formatPercent(Math.abs(num), digits);
+  return num > 0 ? `+${pct}` : num < 0 ? `-${pct}` : pct;
+}
+
 export function formatCompact(value) {
   const num = Number(value);
   if (!Number.isFinite(num)) {
@@ -80,7 +89,24 @@ export function getMarketHealth(runtimeStatus, nowMs = Date.now()) {
   // Treat feed freshness, not socket-open state alone, as the source of truth
   // for whether the market is actually live.
   const status = runtimeStatus || {};
+  const bootstrapPhase = String(status.bootstrap_phase || "").toLowerCase();
+  if (bootstrapPhase === "bootstrapping") {
+    return {
+      label: "BOOTSTRAPPING",
+      tone: "warning",
+      detail: status.bootstrap_detail || "Warming live context before connecting feed",
+      ageMs: Infinity,
+    };
+  }
   const lastNs = Number(status.last_market_event_ns || 0);
+  if (bootstrapPhase === "failed" && (!status.market_connected || lastNs <= 0)) {
+    return {
+      label: "STARTING",
+      tone: "warning",
+      detail: status.bootstrap_detail || "Bootstrap failed; waiting for live feed",
+      ageMs: Infinity,
+    };
+  }
   if (String(status.mode || "").toLowerCase() === "demo" && status.market_connected) {
     return {
       label: "LIVE",

@@ -57,6 +57,7 @@ class BinancePerpStreamConfig:
     bootstrap_1d_bars: int = 90
     bootstrap_funding_points: int = 500
     bootstrap_open_interest_points: int = 500
+    bootstrap_required: bool = False
 
 
 class BinancePerpStreamClient:
@@ -102,7 +103,14 @@ class BinancePerpStreamClient:
         if not self._config.bootstrap_enabled:
             return
         for symbol in self._config.symbols:
-            await asyncio.to_thread(self._bootstrap_symbol, symbol)
+            try:
+                await asyncio.to_thread(self._bootstrap_symbol, symbol)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                if self._config.bootstrap_required:
+                    raise
+                logger.exception("bootstrap warmup failed for %s; continuing with live stream", symbol)
 
     async def _run_market_stream(self) -> None:
         """Maintain the combined websocket stream and reconnect on failure."""

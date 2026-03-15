@@ -102,6 +102,11 @@ class _FakeLiveIngestor:
         self.stopped = True
 
 
+class _FailingBootstrapIngestor(_FakeLiveIngestor):
+    async def bootstrap_history(self) -> None:
+        raise RuntimeError("bootstrap offline")
+
+
 class LiveBootstrapTests(unittest.IsolatedAsyncioTestCase):
     async def test_live_runtime_bootstrap_primes_current_signal(self) -> None:
         runtime = ZenQuantWebRuntime(runtime_mode="live")
@@ -109,6 +114,7 @@ class LiveBootstrapTests(unittest.IsolatedAsyncioTestCase):
         runtime.ingestor = fake_ingestor
 
         await runtime.start()
+        await runtime._live_start_task
         snapshot = runtime.snapshot(symbol="BTCUSDT_PERP", tf="4h")
 
         self.assertTrue(fake_ingestor.started)
@@ -117,6 +123,22 @@ class LiveBootstrapTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNotNone(snapshot["latest_indicator"])
         self.assertIsNotNone(snapshot["latest_target"])
         self.assertTrue(snapshot["runtime_status"]["market_connected"])
+
+        await runtime.stop()
+        self.assertTrue(fake_ingestor.stopped)
+
+    async def test_live_runtime_continues_when_bootstrap_fails(self) -> None:
+        runtime = ZenQuantWebRuntime(runtime_mode="live")
+        fake_ingestor = _FailingBootstrapIngestor(runtime.bus)
+        runtime.ingestor = fake_ingestor
+
+        await runtime.start()
+        await runtime._live_start_task
+        snapshot = runtime.snapshot(symbol="BTCUSDT_PERP", tf="4h")
+
+        self.assertTrue(fake_ingestor.started)
+        self.assertEqual(snapshot["runtime_status"]["bootstrap_phase"], "failed")
+        self.assertIn("cold live feed", snapshot["runtime_status"]["bootstrap_detail"])
 
         await runtime.stop()
         self.assertTrue(fake_ingestor.stopped)

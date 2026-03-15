@@ -303,6 +303,19 @@ select {
   line-height: 1.45;
 }
 
+.status-ok {
+  color: var(--accent);
+}
+
+.status-warning {
+  color: var(--warn);
+}
+
+.status-danger {
+  color: var(--danger);
+  animation: pulse 2s infinite;
+}
+
 .decision-item,
 .quality-item {
   border: 1px solid rgba(216, 202, 179, 0.8);
@@ -442,6 +455,32 @@ canvas {
   text-decoration: none;
 }
 
+.indicator-controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  padding: 18px;
+}
+
+.indicator-control {
+  padding: 10px 14px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--panel-strong);
+  color: var(--signal);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.indicator-control.active,
+.indicator-control:hover {
+  border-color: var(--signal);
+  background: var(--signal);
+  color: #fffaf4;
+}
+
 .pane-stats {
   display: flex;
   align-items: center;
@@ -489,6 +528,16 @@ canvas {
   grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
   gap: 12px;
   padding: 18px;
+}
+
+@keyframes pulse {
+  0%, 100% {
+    opacity: 1;
+  }
+
+  50% {
+    opacity: 0.6;
+  }
 }
 
 @media (max-width: 1100px) {
