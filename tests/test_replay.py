@@ -1,12 +1,13 @@
 import unittest
 
-from zenquant.domain import IndicatorPack
+from zenquant.domain import IndicatorPack, MarketState
 from zenquant.execution import ExecutionGateway, ExecutionKernel
 from zenquant.indicator import IndicatorEngine, IndicatorStore
 from zenquant.ingestor import SyntheticIngestor, SyntheticIngestorConfig
 from zenquant.infra import DeterministicReplayer, InMemoryJetStream, StreamConfig
 from zenquant.market import BarClockService, SnapshotBuilder
 from zenquant.risk import RiskOverlay
+from zenquant.state import StateEngine
 from zenquant.strategy import ARCStrategyEngine
 
 
@@ -46,9 +47,11 @@ class ReplayTests(unittest.TestCase):
         IndicatorEngine(source_bus, source_store)
         source_risk = RiskOverlay(source_bus)
         ARCStrategyEngine(source_bus)
+        StateEngine(source_bus)
         ExecutionKernel(source_bus, ExecutionGateway(), source_risk)
 
         src_indicators = []
+        src_states = []
         src_intents = []
         src_reports = []
 
@@ -66,6 +69,20 @@ class ReplayTests(unittest.TestCase):
             )
 
         source_bus.subscribe("indicator.>", _on_indicator)
+        source_bus.subscribe(
+            "state.market.>",
+            lambda _subject, payload: src_states.append(
+                (
+                    payload.symbol,
+                    payload.timeframe.value,
+                    payload.cutoff_time_ns,
+                    payload.regime,
+                    round(payload.transition_risk, 6),
+                )
+            )
+            if isinstance(payload, MarketState)
+            else None,
+        )
         source_bus.subscribe(
             "intent.target_position.final.>",
             lambda _subject, payload: src_intents.append(
@@ -104,9 +121,11 @@ class ReplayTests(unittest.TestCase):
         IndicatorEngine(target_bus, target_store)
         target_risk = RiskOverlay(target_bus)
         ARCStrategyEngine(target_bus)
+        StateEngine(target_bus)
         ExecutionKernel(target_bus, ExecutionGateway(), target_risk)
 
         dst_indicators = []
+        dst_states = []
         dst_intents = []
         dst_reports = []
 
@@ -124,6 +143,20 @@ class ReplayTests(unittest.TestCase):
             )
 
         target_bus.subscribe("indicator.>", _on_replay_indicator)
+        target_bus.subscribe(
+            "state.market.>",
+            lambda _subject, payload: dst_states.append(
+                (
+                    payload.symbol,
+                    payload.timeframe.value,
+                    payload.cutoff_time_ns,
+                    payload.regime,
+                    round(payload.transition_risk, 6),
+                )
+            )
+            if isinstance(payload, MarketState)
+            else None,
+        )
         target_bus.subscribe(
             "intent.target_position.final.>",
             lambda _subject, payload: dst_intents.append(
@@ -153,6 +186,7 @@ class ReplayTests(unittest.TestCase):
         replayer.replay(target_bus)
 
         self.assertEqual(src_indicators, dst_indicators)
+        self.assertEqual(src_states, dst_states)
         self.assertEqual(src_intents, dst_intents)
         self.assertEqual(src_reports, dst_reports)
 

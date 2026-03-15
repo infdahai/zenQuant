@@ -5,6 +5,7 @@ from zenquant.domain import (
     DirectionalBias,
     IndicatorCoverage,
     IndicatorPack,
+    MarketState,
     OpenPositionState,
     TargetPosition,
     Timeframe,
@@ -36,6 +37,26 @@ class DashboardStateTests(unittest.TestCase):
                 regime="TREND",
                 confidence=0.8,
                 quality_flags=["OK"],
+            )
+        )
+        store.on_market_state(
+            MarketState(
+                symbol="BTCUSDT_PERP",
+                timeframe=Timeframe.TF_4H,
+                cutoff_time_ns=10,
+                directional_state="UPTREND",
+                directional_confidence=0.8,
+                volatility_state="NORMAL",
+                volatility_confidence=0.75,
+                positioning_state="HEALTHY",
+                positioning_confidence=0.7,
+                quality_state="TRADABLE",
+                quality_confidence=0.9,
+                regime="TREND",
+                regime_confidence=0.8,
+                direction_signal=1.0,
+                quality_flags=["OK"],
+                reason_codes=["REGIME_TREND"],
             )
         )
         store.on_position_state(
@@ -73,6 +94,7 @@ class DashboardStateTests(unittest.TestCase):
         snapshot = store.snapshot(symbol="BTCUSDT_PERP", timeframe="4h")
         self.assertIn("directional_bias", snapshot)
         self.assertIn("directional_bias_meta", snapshot)
+        self.assertIn("market_state", snapshot)
         self.assertIn("position_state", snapshot)
         self.assertIn("latest_target", snapshot)
         self.assertFalse(snapshot["directional_bias_meta"]["is_stale"])

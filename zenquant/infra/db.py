@@ -14,13 +14,14 @@ from psycopg import connect
 from zenquant.domain import (
     ExecutionReport,
     IndicatorPack,
+    MarketState,
     OpenPositionState,
     RiskSnapshot,
     TargetPosition,
 )
 from zenquant.domain.serde import to_jsonable
 
-from .event_bus import InMemoryJetStream
+from .event_bus import EventBus
 
 
 logger = logging.getLogger(__name__)
@@ -48,7 +49,7 @@ class OnlineStateStoreConfig:
 class OnlineStateStore:
     def __init__(
         self,
-        bus: InMemoryJetStream,
+        bus: EventBus,
         config: OnlineStateStoreConfig | None = None,
     ) -> None:
         self._bus = bus
@@ -69,6 +70,7 @@ class OnlineStateStore:
         self._bus.subscribe("risk.snapshot", self._on_risk_snapshot)
         self._bus.subscribe("exec.order.report", self._on_execution_report)
         self._bus.subscribe("strategy.position_state.>", self._on_position_state)
+        self._bus.subscribe("state.market.>", self._on_market_state)
 
     def start(self) -> None:
         if not self._enabled or self._worker is not None:
@@ -261,5 +263,49 @@ class OnlineStateStore:
                 payload.current_qty,
                 payload.trailing_stop,
                 payload.bars_held,
+            ),
+        )
+
+    def _on_market_state(self, _: str, payload: object) -> None:
+        if not isinstance(payload, MarketState):
+            return
+        self._enqueue(
+            """
+            INSERT INTO market_states (
+                symbol, timeframe, cutoff_time_ns,
+                directional_state, directional_confidence,
+                volatility_state, volatility_confidence,
+                positioning_state, positioning_confidence,
+                quality_state, quality_confidence,
+                regime, regime_confidence, direction_signal, transition_risk,
+                quality_flags, reason_codes
+            ) VALUES (
+                %s, %s, %s,
+                %s, %s,
+                %s, %s,
+                %s, %s,
+                %s, %s,
+                %s, %s, %s, %s,
+                %s::jsonb, %s::jsonb
+            )
+            """,
+            (
+                payload.symbol,
+                payload.timeframe.value,
+                payload.cutoff_time_ns,
+                payload.directional_state,
+                payload.directional_confidence,
+                payload.volatility_state,
+                payload.volatility_confidence,
+                payload.positioning_state,
+                payload.positioning_confidence,
+                payload.quality_state,
+                payload.quality_confidence,
+                payload.regime,
+                payload.regime_confidence,
+                payload.direction_signal,
+                payload.transition_risk,
+                json.dumps(list(payload.quality_flags)),
+                json.dumps(list(payload.reason_codes)),
             ),
         )

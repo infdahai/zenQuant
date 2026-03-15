@@ -32,7 +32,7 @@ from zenquant.domain import (
     Timeframe,
     TradeTick,
 )
-from zenquant.infra import InMemoryJetStream
+from zenquant.infra import EventBus
 
 
 logger = logging.getLogger(__name__)
@@ -70,7 +70,7 @@ class BinancePerpStreamClient:
 
     def __init__(
         self,
-        bus: InMemoryJetStream,
+        bus: EventBus,
         config: BinancePerpStreamConfig | None = None,
     ) -> None:
         self._bus = bus

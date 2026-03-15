@@ -29,6 +29,7 @@ from zenquant.execution import ExecutionKernel, SimulatedGateway
 from zenquant.indicator import IndicatorEngine, IndicatorEngineConfig, IndicatorStore
 from zenquant.infra import InMemoryJetStream, StreamConfig
 from zenquant.risk import RiskOverlay, RiskOverlayConfig
+from zenquant.state import StateEngine
 from zenquant.strategy import ARCStrategyEngine
 
 from .storage import read_parquet_rows
@@ -88,6 +89,7 @@ class HistoricalBacktest:
             config=RiskOverlayConfig(starting_equity=self._config.starting_equity),
         )
         self.strategy_engine = ARCStrategyEngine(bus=self.bus)
+        self.state_engine = StateEngine(bus=self.bus)
         self.execution_kernel = ExecutionKernel(
             bus=self.bus,
             gateway=SimulatedGateway(),

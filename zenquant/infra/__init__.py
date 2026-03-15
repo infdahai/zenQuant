@@ -1,15 +1,14 @@
 from .db import OnlineStateStore, OnlineStateStoreConfig
-from .event_bus import InMemoryJetStream, MessageEnvelope, StreamConfig
+from .event_bus import EventBus, InMemoryJetStream, MessageEnvelope, StreamConfig
 from .replay import DeterministicReplayer, ReplayConfig
-from .ring_buffer import RingBuffer
 
 __all__ = [
     "DeterministicReplayer",
+    "EventBus",
     "InMemoryJetStream",
     "MessageEnvelope",
     "OnlineStateStore",
     "OnlineStateStoreConfig",
     "ReplayConfig",
-    "RingBuffer",
     "StreamConfig",
 ]

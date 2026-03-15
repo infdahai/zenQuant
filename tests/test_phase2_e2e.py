@@ -4,6 +4,7 @@ from zenquant.domain import IndicatorCoverage, IndicatorPack, Timeframe, TradeTi
 from zenquant.execution import ExecutionGateway, ExecutionKernel
 from zenquant.infra import InMemoryJetStream
 from zenquant.risk import RiskOverlay
+from zenquant.state import StateEngine
 from zenquant.strategy import ARCStrategyEngine
 
 
@@ -61,6 +62,7 @@ class Phase2EndToEndTests(unittest.TestCase):
         bus = InMemoryJetStream()
         risk = RiskOverlay(bus)
         ARCStrategyEngine(bus)
+        StateEngine(bus)
         execution = ExecutionKernel(bus, ExecutionGateway(), risk)
 
         final_targets = []

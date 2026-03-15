@@ -17,7 +17,7 @@ from zenquant.domain import (
     OrderBookSnapshot,
     TradeTick,
 )
-from zenquant.infra import InMemoryJetStream
+from zenquant.infra import EventBus
 
 
 @dataclass(slots=True)
@@ -41,7 +41,7 @@ class SyntheticIngestor:
         ingestor.run(steps=320)
     """
 
-    def __init__(self, bus: InMemoryJetStream, config: SyntheticIngestorConfig | None = None) -> None:
+    def __init__(self, bus: EventBus, config: SyntheticIngestorConfig | None = None) -> None:
         self._bus = bus
         self._config = config or SyntheticIngestorConfig()
         self._rng = random.Random(self._config.seed)

@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from zenquant.domain import BarCloseEvent, Candle, Timeframe, TradeTick
-from zenquant.infra import InMemoryJetStream
+from zenquant.infra import EventBus
 
 
 @dataclass(slots=True)
@@ -34,7 +34,7 @@ class BarClockService:
     the stack aligned to confirmed bar closes.
     """
 
-    def __init__(self, bus: InMemoryJetStream, config: BarClockConfig | None = None) -> None:
+    def __init__(self, bus: EventBus, config: BarClockConfig | None = None) -> None:
         self._bus = bus
         self._config = config or BarClockConfig()
         self._states: dict[tuple[str, Timeframe], _BarState] = {}

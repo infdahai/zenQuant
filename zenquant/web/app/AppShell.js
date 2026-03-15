@@ -1,7 +1,15 @@
-// Shell layout for the explainability dashboard.
+// Shell layout for the Phase 3 state console.
 
 import { computed, defineComponent, inject, onBeforeUnmount, onMounted, ref } from "/static/vendor/vue.esm-browser.prod.js";
-import { formatRelativeTimeFromNs, getMarketHealth } from "./utils.js";
+import {
+  collectIndicatorKeys,
+  formatNumber,
+  formatPercent,
+  formatRegimeLabel,
+  formatRelativeTimeFromNs,
+  getMarketHealth,
+  humanizeCode,
+} from "./utils.js";
 
 export const AppShell = defineComponent({
   name: "AppShell",
@@ -10,34 +18,10 @@ export const AppShell = defineComponent({
     // components focus on the current snapshot rather than managing sockets.
     const store = inject("marketStore");
     const nowMs = ref(Date.now());
-    const defaultIndicatorKeys = [
-      "last_price",
-      "funding_oi_weighted",
-      "funding_oi_z",
-      "cvd_slope",
-      "ob_liq_z",
-      "overall_ob_liq_z",
-      "realized_vol",
-      "atr",
-      "momentum_roc",
-      "momentum_roc_z",
-      "zen_pulse",
-      "structure_state",
-    ];
-
     const indicatorKeys = computed(() => {
       const indicator = store.state.latestIndicator || (store.state.snapshot || {}).latest_indicator;
       const proxy = (store.state.snapshot || {}).proxy_indicator_latest || {};
-      const merged = new Set(defaultIndicatorKeys);
-      for (const key of Object.keys(proxy)) {
-        merged.add(key);
-      }
-      if (indicator && indicator.values) {
-        for (const key of Object.keys(indicator.values)) {
-          merged.add(key);
-        }
-      }
-      return [...merged].sort();
+      return collectIndicatorKeys(indicator, proxy);
     });
 
     let refreshTimer;
@@ -52,11 +36,61 @@ export const AppShell = defineComponent({
       }
     });
 
-    const runtimeStatus = computed(() => (store.state.snapshot || {}).runtime_status || {});
+    const snapshot = computed(() => store.state.snapshot || {});
+    const runtimeStatus = computed(() => snapshot.value.runtime_status || {});
     const marketHealth = computed(() => getMarketHealth(runtimeStatus.value, nowMs.value));
     const marketUpdateCopy = computed(() => {
       const lastNs = Number(runtimeStatus.value.last_market_event_ns || 0);
       return formatRelativeTimeFromNs(lastNs, nowMs.value);
+    });
+    const shellSummary = computed(() => {
+      const state = snapshot.value.market_state || null;
+      const latestTarget = snapshot.value.latest_target || null;
+      const latestRiskDecision = snapshot.value.risk_decision || null;
+      const riskFlags =
+        latestRiskDecision && Array.isArray(latestRiskDecision.flags)
+          ? latestRiskDecision.flags.filter((flag) => flag !== "OK")
+          : [];
+
+      if (!state) {
+        return {
+          tone: "warning",
+          regime: "Warming",
+          regimeDetail: "State publishes on confirmed 4H and 1D bar close",
+          state: marketHealth.value.label,
+          stateDetail: marketHealth.value.detail,
+          posture: "Awaiting first classification",
+          target: "No state-driven target yet",
+          statusLine: "Live feed is up, but the state engine has not emitted a confirmed bar-close state yet.",
+        };
+      }
+
+      const transitionRisk = Number(state.transition_risk || 0);
+      let tone = "ok";
+      if (marketHealth.value.tone === "danger" || String(state.quality_state) === "UNSAFE") {
+        tone = "danger";
+      } else if (
+        marketHealth.value.tone === "warning"
+        || transitionRisk >= 0.45
+        || String(state.quality_state) !== "TRADABLE"
+      ) {
+        tone = "warning";
+      }
+
+      return {
+        tone,
+        regime: formatRegimeLabel(state.regime),
+        regimeDetail: `${humanizeCode(state.volatility_state)} volatility`,
+        state: humanizeCode(state.directional_state),
+        stateDetail: `${humanizeCode(state.positioning_state)} positioning`,
+        posture: humanizeCode(state.quality_state),
+        target: latestTarget
+          ? `${formatNumber(latestTarget.target_qty, 4)} BTC target`
+          : "No target published yet",
+        statusLine: `${formatPercent(transitionRisk, 2)} transition risk · ${
+          riskFlags.length ? riskFlags.slice(0, 2).map(humanizeCode).join(" | ") : "Risk overlay open"
+        }`,
+      };
     });
 
     function onSymbolChange(event) {
@@ -84,15 +118,33 @@ export const AppShell = defineComponent({
       onSymbolChange,
       onTfChange,
       retryNow,
+      shellSummary,
     };
   },
   template: `
     <div class="app-shell">
       <header class="topbar">
         <div class="brand-block">
-          <div class="brand-kicker">ZenQuant Phase 2</div>
-          <h1>ZenQuant Indicators</h1>
-          <p>Explainable regime dashboard for live bias, risk, and execution state.</p>
+          <div class="brand-kicker">ZenQuant Phase 3</div>
+          <h1>ZenQuant State Console</h1>
+          <p>Operator view for live state, bias, risk, and execution on the flagship BTC strategy.</p>
+          <div class="brand-summary-grid">
+            <div class="brand-summary-card">
+              <span>Regime</span>
+              <strong>{{ shellSummary.regime }}</strong>
+              <small>{{ shellSummary.regimeDetail }}</small>
+            </div>
+            <div class="brand-summary-card">
+              <span>State</span>
+              <strong>{{ shellSummary.state }}</strong>
+              <small>{{ shellSummary.stateDetail }}</small>
+            </div>
+            <div class="brand-summary-card" :class="'brand-summary-card-' + shellSummary.tone">
+              <span>Operator Read</span>
+              <strong>{{ shellSummary.posture }}</strong>
+              <small>{{ shellSummary.target }}</small>
+            </div>
+          </div>
         </div>
         <div class="top-controls">
           <label>
@@ -116,9 +168,9 @@ export const AppShell = defineComponent({
           </div>
           <div class="status-copy">
             <strong>{{ store.state.symbol }}</strong>
-            <span>{{ store.state.tf.toUpperCase() }} decision surface</span>
+            <span>{{ store.state.tf.toUpperCase() }} state console</span>
             <span>
-              {{ store.state.lastError || marketHealth.detail }}
+              {{ store.state.lastError || shellSummary.statusLine }}
             </span>
             <span>
               Last market update {{ marketUpdateCopy }}

@@ -21,7 +21,7 @@ from zenquant.domain import (
     SwingStructure,
     Timeframe,
 )
-from zenquant.infra import InMemoryJetStream
+from zenquant.infra import EventBus
 
 
 @dataclass(slots=True)
@@ -108,7 +108,7 @@ class IndicatorEngine:
 
     def __init__(
         self,
-        bus: InMemoryJetStream,
+        bus: EventBus,
         store: IndicatorStore,
         config: IndicatorEngineConfig | None = None,
     ) -> None:

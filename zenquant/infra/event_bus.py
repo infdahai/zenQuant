@@ -10,10 +10,20 @@ from __future__ import annotations
 import time
 from collections import deque
 from dataclasses import dataclass
-from typing import Any, Callable
+from typing import Any, Callable, Protocol
 
 
 SubjectHandler = Callable[[str, Any], None]
+
+
+class EventBus(Protocol):
+    """Minimal publish/subscribe contract shared by runtime services."""
+
+    def subscribe(self, subject_pattern: str, handler: SubjectHandler) -> None:
+        ...
+
+    def publish(self, subject: str, payload: Any) -> None:
+        ...
 
 
 @dataclass(slots=True)

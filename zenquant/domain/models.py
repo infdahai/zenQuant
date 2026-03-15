@@ -269,6 +269,71 @@ class DirectionalBias:
 
 
 @dataclass(slots=True)
+class MarketState:
+    """Four-dimensional market state emitted on confirmed bar close.
+
+    Decomposes single 'regime' into orthogonal state dimensions for clearer
+    playbook selection and risk management. Each dimension has independent
+    confidence score.
+
+    Attributes:
+        symbol: Trading symbol (e.g., "BTCUSDT_PERP")
+        timeframe: Bar timeframe (4h or 1d)
+        cutoff_time_ns: Point-in-time cutoff for this state
+        directional_state: Trend direction (UPTREND | DOWNTREND | NEUTRAL | TRANSITION)
+        directional_confidence: Confidence in directional classification (0.0-1.0)
+        volatility_state: Vol regime (LOW | NORMAL | HIGH | DISTORTED)
+        volatility_confidence: Confidence in volatility classification (0.0-1.0)
+        positioning_state: Crowding assessment (HEALTHY | CROWDED_LONG | CROWDED_SHORT | UNCERTAIN)
+        positioning_confidence: Confidence in positioning classification (0.0-1.0)
+        quality_state: Data quality (TRADABLE | NOISY | DEGRADED | UNSAFE)
+        quality_confidence: Confidence in quality classification (0.0-1.0)
+        regime: Legacy regime field for backward compatibility (TREND | RANGE | STRESS)
+        regime_confidence: Overall regime confidence
+        direction_signal: Numeric direction signal (1.0 = long, -1.0 = short, 0.0 = flat)
+        transition_risk: State instability indicator (0.0 = stable, 1.0 = about to flip)
+        quality_flags: Raw quality flags from indicator pack
+        reason_codes: Human-readable state classification reasons
+    """
+
+    symbol: str
+    timeframe: Timeframe
+    cutoff_time_ns: int
+    directional_state: str
+    directional_confidence: float
+    volatility_state: str
+    volatility_confidence: float
+    positioning_state: str
+    positioning_confidence: float
+    quality_state: str
+    quality_confidence: float
+    regime: str
+    regime_confidence: float
+    direction_signal: float
+    transition_risk: float = 0.0
+    quality_flags: list[str] = field(default_factory=list)
+    reason_codes: list[str] = field(default_factory=list)
+
+    def overall_confidence(self) -> float:
+        """Geometric mean of all dimension confidences."""
+        product = (
+            self.directional_confidence
+            * self.volatility_confidence
+            * self.positioning_confidence
+            * self.quality_confidence
+        )
+        return product ** 0.25
+
+    def is_tradable(self) -> bool:
+        """Quick check if state allows new risk."""
+        return (
+            self.quality_state != "UNSAFE"
+            and self.volatility_state != "DISTORTED"
+            and self.overall_confidence() > 0.3
+        )
+
+
+@dataclass(slots=True)
 class BacktestMetrics:
     """Summary metrics from a single backtest window."""
 

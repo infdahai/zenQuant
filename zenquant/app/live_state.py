@@ -16,6 +16,7 @@ from zenquant.domain import (
     DirectionalBias,
     IndicatorPack,
     IntentReason,
+    MarketState,
     OpenPositionState,
     RiskOverlayDecision,
     RiskSnapshot,
@@ -79,6 +80,7 @@ class DashboardStateStore:
         self._target_positions: dict[str, float] = {}
         self._latest_target: dict[tuple[str, str], TargetPosition] = {}
         self._directional_bias: dict[str, DirectionalBias] = {}
+        self._market_state: dict[tuple[str, str], MarketState] = {}
         self._position_state: dict[tuple[str, str], OpenPositionState] = {}
         self._last_price: dict[str, float] = {}
         self._runtime_status: dict[str, Any] = {
@@ -165,6 +167,9 @@ class DashboardStateStore:
     def on_directional_bias(self, bias: DirectionalBias) -> None:
         self._directional_bias[bias.symbol] = bias
 
+    def on_market_state(self, state: MarketState) -> None:
+        self._market_state[(state.symbol, state.timeframe.value)] = state
+
     def on_position_state(self, symbol: str, timeframe: str, payload: object) -> None:
         key = (symbol, timeframe)
         if isinstance(payload, OpenPositionState):
@@ -205,6 +210,9 @@ class DashboardStateStore:
             else None,
             "directional_bias": to_jsonable(bias) if bias is not None else None,
             "directional_bias_meta": self._directional_bias_meta(latest, bias),
+            "market_state": to_jsonable(self._market_state.get(key))
+            if self._market_state.get(key) is not None
+            else None,
             "position_state": to_jsonable(self._position_state.get(key))
             if self._position_state.get(key) is not None
             else None,

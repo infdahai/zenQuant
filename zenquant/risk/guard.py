@@ -13,7 +13,7 @@ from zenquant.domain import (
     TargetPosition,
     Timeframe,
 )
-from zenquant.infra import InMemoryJetStream
+from zenquant.infra import EventBus
 
 
 @dataclass(slots=True)
@@ -42,7 +42,7 @@ class RiskOverlay:
     state rather than theoretical strategy targets.
     """
 
-    def __init__(self, bus: InMemoryJetStream, config: RiskOverlayConfig | None = None) -> None:
+    def __init__(self, bus: EventBus, config: RiskOverlayConfig | None = None) -> None:
         self._bus = bus
         self._config = config or RiskOverlayConfig()
 

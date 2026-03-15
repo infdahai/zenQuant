@@ -4,7 +4,12 @@ import { computed, defineComponent, inject } from "/static/vendor/vue.esm-browse
 import { useRoute } from "/static/vendor/vue-router.esm-browser.prod.js";
 import { CandleCanvas } from "../components/CandleCanvas.js";
 import { SeriesCanvas } from "../components/SeriesCanvas.js";
-import { formatNumber, normalizeIndicatorSeries } from "../utils.js";
+import {
+  collectIndicatorKeys,
+  formatDisplayValue,
+  formatNumber,
+  normalizeIndicatorSeries,
+} from "../utils.js";
 
 export const IndicatorPage = defineComponent({
   name: "IndicatorPage",
@@ -14,33 +19,10 @@ export const IndicatorPage = defineComponent({
     // indicator detail stays in lockstep with the dashboard selection.
     const store = inject("marketStore");
     const route = useRoute();
-    const defaultIndicatorKeys = [
-      "last_price",
-      "funding_oi_weighted",
-      "funding_oi_z",
-      "cvd_slope",
-      "ob_liq_z",
-      "overall_ob_liq_z",
-      "realized_vol",
-      "atr",
-      "momentum_roc",
-      "momentum_roc_z",
-      "zen_pulse",
-      "structure_state",
-    ];
-
     const indicator = computed(() => store.state.latestIndicator || (store.state.snapshot || {}).latest_indicator || null);
     const keys = computed(() => {
-      const values = indicator.value && indicator.value.values ? indicator.value.values : {};
       const proxy = (store.state.snapshot || {}).proxy_indicator_latest || {};
-      const merged = new Set(defaultIndicatorKeys);
-      for (const key of Object.keys(values)) {
-        merged.add(key);
-      }
-      for (const key of Object.keys(proxy)) {
-        merged.add(key);
-      }
-      return [...merged].sort();
+      return collectIndicatorKeys(indicator.value, proxy);
     });
 
     const selectedKey = computed(() => {
@@ -95,16 +77,6 @@ export const IndicatorPage = defineComponent({
       return `/indicator/${encodeURIComponent(String(key))}`;
     }
 
-    function displayValue(value) {
-      if (typeof value === "number" && Number.isFinite(value)) {
-        return formatNumber(value, 6);
-      }
-      if (value === null || value === undefined) {
-        return "-";
-      }
-      return `${value}`;
-    }
-
     return {
       store,
       keys,
@@ -115,7 +87,7 @@ export const IndicatorPage = defineComponent({
       selectedValue,
       series,
       qualityFlags,
-      displayValue,
+      formatDisplayValue,
       formatNumber,
     };
   },
@@ -130,7 +102,7 @@ export const IndicatorPage = defineComponent({
           </div>
           <div class="header-value">
             <span>Latest</span>
-            <strong>{{ displayValue(selectedValue) }}</strong>
+            <strong>{{ formatDisplayValue(selectedValue, 6) }}</strong>
           </div>
         </div>
         <div class="indicator-tabs">

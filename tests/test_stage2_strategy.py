@@ -2,6 +2,7 @@ import unittest
 
 from zenquant.domain import ExecutionReport, IndicatorCoverage, IndicatorPack, Timeframe
 from zenquant.infra import InMemoryJetStream
+from zenquant.state import StateEngine
 from zenquant.strategy import ARCStrategyEngine
 
 
@@ -44,6 +45,7 @@ class Stage2StrategyTests(unittest.TestCase):
     def test_1d_bias_blocks_conflicting_4h_direction_without_emitting_1d_target(self) -> None:
         bus = InMemoryJetStream()
         ARCStrategyEngine(bus)
+        StateEngine(bus)
 
         targets = []
         bus.subscribe(
@@ -82,6 +84,7 @@ class Stage2StrategyTests(unittest.TestCase):
     def test_trailing_stop_emits_reduce_only_exit(self) -> None:
         bus = InMemoryJetStream()
         ARCStrategyEngine(bus)
+        StateEngine(bus)
 
         targets = []
         bus.subscribe(
@@ -137,6 +140,7 @@ class Stage2StrategyTests(unittest.TestCase):
     def test_short_position_tracking_handles_add_and_cover(self) -> None:
         bus = InMemoryJetStream()
         engine = ARCStrategyEngine(bus)
+        StateEngine(bus)
 
         bus.publish(
             "exec.order.report",
@@ -191,6 +195,7 @@ class Stage2StrategyTests(unittest.TestCase):
     def test_stale_1d_bias_is_not_used_for_4h_blocking(self) -> None:
         bus = InMemoryJetStream()
         ARCStrategyEngine(bus)
+        StateEngine(bus)
 
         targets = []
         bus.subscribe(
@@ -229,6 +234,7 @@ class Stage2StrategyTests(unittest.TestCase):
     def test_degraded_1d_bias_is_not_used_for_4h_blocking(self) -> None:
         bus = InMemoryJetStream()
         ARCStrategyEngine(bus)
+        StateEngine(bus)
 
         targets = []
         bus.subscribe(
@@ -265,6 +271,7 @@ class Stage2StrategyTests(unittest.TestCase):
     def test_invalid_atr_does_not_arm_trailing_stop(self) -> None:
         bus = InMemoryJetStream()
         ARCStrategyEngine(bus)
+        StateEngine(bus)
 
         targets = []
         bus.subscribe(
@@ -303,6 +310,7 @@ class Stage2StrategyTests(unittest.TestCase):
     def test_position_flip_resets_bars_held(self) -> None:
         bus = InMemoryJetStream()
         engine = ARCStrategyEngine(bus)
+        StateEngine(bus)
 
         bus.publish(
             "exec.order.report",

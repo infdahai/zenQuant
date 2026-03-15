@@ -1,4 +1,4 @@
-// Main trader-facing dashboard page.
+// Main operator-facing dashboard page.
 
 import {
   computed,
@@ -10,8 +10,10 @@ import {
   ref,
 } from "/static/vendor/vue.esm-browser.prod.js";
 import {
+  collectIndicatorKeys,
   formatBiasLabel,
   formatCurrency,
+  formatDisplayValue,
   formatNumber,
   formatPercent,
   formatRelativeTimeFromNs,
@@ -49,25 +51,11 @@ export const DashboardPage = defineComponent({
       }
     });
 
-    const defaultIndicatorKeys = [
-      "last_price",
-      "funding_oi_weighted",
-      "funding_oi_z",
-      "cvd_slope",
-      "ob_liq_z",
-      "overall_ob_liq_z",
-      "realized_vol",
-      "atr",
-      "momentum_roc",
-      "momentum_roc_z",
-      "zen_pulse",
-      "structure_state",
-    ];
-
     const snapshot = computed(() => store.state.snapshot || {});
     const indicator = computed(() => store.state.latestIndicator || snapshot.value.latest_indicator || null);
     const directionalBias = computed(() => snapshot.value.directional_bias || null);
     const directionalBiasMeta = computed(() => snapshot.value.directional_bias_meta || null);
+    const marketState = computed(() => snapshot.value.market_state || null);
     const positionState = computed(() => snapshot.value.position_state || null);
     const latestTarget = computed(() => snapshot.value.latest_target || null);
     const latestReason = computed(() => {
@@ -80,6 +68,7 @@ export const DashboardPage = defineComponent({
     const latestRiskDecision = computed(() => snapshot.value.risk_decision || null);
     const runtimeStatus = computed(() => snapshot.value.runtime_status || {});
     const marketHealth = computed(() => getMarketHealth(runtimeStatus.value, nowMs.value));
+    const stateConfidence = computed(() => averageStateConfidence(marketState.value));
     const databaseStatus = computed(() => {
       const database = runtimeStatus.value.database || {};
       if (!database.enabled) {
@@ -111,17 +100,20 @@ export const DashboardPage = defineComponent({
     const alerts = computed(() => (snapshot.value.alerts || []).slice(0, 6));
     const proxyHistory = computed(() => snapshot.value.proxy_indicator_history || {});
     const proxyLatest = computed(() => snapshot.value.proxy_indicator_latest || {});
+    const thesisSummary = computed(() =>
+      buildThesisSummary({
+        state: marketState.value,
+        directionalBias: directionalBias.value,
+        latestTarget: latestTarget.value,
+        latestRiskDecision: latestRiskDecision.value,
+        marketHealth: marketHealth.value,
+        stateConfidence: stateConfidence.value,
+      }),
+    );
+    const stateCards = computed(() => buildStateCards(marketState.value));
 
     const indicatorKeys = computed(() => {
-      const values = indicator.value && indicator.value.values ? indicator.value.values : {};
-      const merged = new Set(defaultIndicatorKeys);
-      for (const key of Object.keys(values)) {
-        merged.add(key);
-      }
-      for (const key of Object.keys(proxyLatest.value)) {
-        merged.add(key);
-      }
-      return [...merged].sort();
+      return collectIndicatorKeys(indicator.value, proxyLatest.value);
     });
 
     const indicatorCards = computed(() => {
@@ -255,16 +247,6 @@ export const DashboardPage = defineComponent({
       return `/indicator/${encodeURIComponent(String(key))}`;
     }
 
-    function displayValue(value) {
-      if (typeof value === "number" && Number.isFinite(value)) {
-        return formatNumber(value, 4);
-      }
-      if (value === null || value === undefined) {
-        return "-";
-      }
-      return `${value}`;
-    }
-
     function formatCodes(values, limit = 3) {
       if (!Array.isArray(values) || !values.length) {
         return "None";
@@ -311,11 +293,12 @@ export const DashboardPage = defineComponent({
 
     return {
       alerts,
+      alertTone,
       biasSummary,
       candles,
       databaseStatus,
       directionalBias,
-      displayValue,
+      formatDisplayValue,
       equityCurve,
       formatAlert,
       formatCodes,
@@ -325,6 +308,7 @@ export const DashboardPage = defineComponent({
       formatRegimeLabel,
       formatRelativeTimeFromNs,
       formatSignedCurrency,
+      humanizeCode,
       indicator,
       indicatorCards,
       indicatorRoute,
@@ -334,6 +318,7 @@ export const DashboardPage = defineComponent({
       latestRiskDecision,
       latestTarget,
       marketHealth,
+      marketState,
       pnlSummary,
       positionSummary,
       priceSeries,
@@ -342,17 +327,60 @@ export const DashboardPage = defineComponent({
       riskSnapshot,
       runtimeStatus,
       seriesStats,
-      snapshot,
-      store,
-      toggleExpand,
       setExpandMode,
+      snapshot,
+      stateCards,
+      stateConfidence,
+      store,
+      thesisSummary,
+      toggleExpand,
       expandMode,
-      alertTone,
-      humanizeCode,
     };
   },
   template: `
     <section class="indicator-stack">
+      <article class="panel">
+        <div class="panel-title">Current Thesis</div>
+        <div class="thesis-grid">
+          <div class="thesis-main" :class="'thesis-main-' + thesisSummary.tone">
+            <span class="thesis-kicker">Operator read</span>
+            <h2>{{ thesisSummary.headline }}</h2>
+            <p>{{ thesisSummary.detail }}</p>
+            <p class="thesis-action">{{ thesisSummary.action }}</p>
+            <div class="thesis-chip-row">
+              <div
+                v-for="chip in thesisSummary.chips"
+                :key="chip.label"
+                class="thesis-chip"
+                :class="'thesis-chip-' + chip.tone"
+              >
+                <span>{{ chip.label }}</span>
+                <strong>{{ chip.value }}</strong>
+              </div>
+            </div>
+          </div>
+          <div class="thesis-side">
+            <div class="thesis-stat">
+              <span>Average state confidence</span>
+              <strong>{{ thesisSummary.confidenceCopy }}</strong>
+              <small>{{ thesisSummary.confidenceDetail }}</small>
+            </div>
+            <div class="thesis-stat" :class="'thesis-stat-' + thesisSummary.tone">
+              <span>Transition risk</span>
+              <strong>{{ thesisSummary.transitionCopy }}</strong>
+              <div class="confidence-meter">
+                <span
+                  class="confidence-fill"
+                  :class="'confidence-fill-' + thesisSummary.tone"
+                  :style="{ width: thesisSummary.transitionWidth }"
+                ></span>
+              </div>
+              <small>{{ thesisSummary.transitionDetail }}</small>
+            </div>
+          </div>
+        </div>
+      </article>
+
       <article class="panel">
         <div class="panel-title">Live Overview</div>
         <div class="hero-grid">
@@ -475,14 +503,59 @@ export const DashboardPage = defineComponent({
       </article>
 
       <article class="panel">
-        <div class="panel-title">Price Curve</div>
-        <CandleCanvas :candles="candles" :prices="priceSeries" :height="290" />
+        <div class="panel-title">4D State</div>
+        <div v-if="marketState" class="state-grid">
+          <div
+            v-for="card in stateCards"
+            :key="card.label"
+            class="state-card"
+            :class="'state-card-' + card.tone"
+          >
+            <span>{{ card.label }}</span>
+            <strong>{{ card.value }}</strong>
+            <div class="confidence-meter">
+              <span
+                class="confidence-fill"
+                :class="'confidence-fill-' + card.tone"
+                :style="{ width: card.confidenceWidth }"
+              ></span>
+            </div>
+            <small>{{ card.confidenceCopy }}</small>
+            <small>{{ card.detail }}</small>
+          </div>
+          <div class="state-card state-card-wide" :class="'state-card-' + thesisSummary.tone">
+            <span>State stability</span>
+            <strong>{{ thesisSummary.transitionCopy }}</strong>
+            <div class="confidence-meter">
+              <span
+                class="confidence-fill"
+                :class="'confidence-fill-' + thesisSummary.tone"
+                :style="{ width: thesisSummary.transitionWidth }"
+              ></span>
+            </div>
+            <small>{{ thesisSummary.transitionDetail }}</small>
+            <small>{{ formatCodes(marketState.reason_codes, 5) }}</small>
+          </div>
+        </div>
+        <div v-else class="event-list">
+          <div class="event-row">
+            <strong>State engine is still warming</strong>
+            <small>The dashboard only publishes 4D state after a confirmed bar-close classification.</small>
+          </div>
+        </div>
       </article>
 
-      <article class="panel">
-        <div class="panel-title">Equity Curve</div>
-        <SeriesCanvas :values="equityCurve" color="#19d7b8" :height="190" />
-      </article>
+      <div class="two-up-grid">
+        <article class="panel">
+          <div class="panel-title">Price Curve</div>
+          <CandleCanvas :candles="candles" :prices="priceSeries" :height="290" />
+        </article>
+
+        <article class="panel">
+          <div class="panel-title">Equity Curve</div>
+          <SeriesCanvas :values="equityCurve" color="#19d7b8" :height="190" />
+        </article>
+      </div>
 
       <div class="two-up-grid">
         <article class="panel">
@@ -528,7 +601,7 @@ export const DashboardPage = defineComponent({
       </div>
 
       <article class="panel">
-        <div class="panel-title">Indicator Monitor</div>
+        <div class="panel-title">Indicator Drilldown</div>
         <div class="indicator-controls">
           <button class="indicator-control" :class="{ active: expandMode === 'all' }" @click="setExpandMode('all')">
             Expand All
@@ -552,7 +625,7 @@ export const DashboardPage = defineComponent({
               {{ item.key }}
             </router-link>
           </div>
-          <div class="pane-value">{{ displayValue(item.value) }}</div>
+          <div class="pane-value">{{ formatDisplayValue(item.value) }}</div>
         </div>
         <div class="pane-body" v-show="isExpanded(item.key)">
           <SeriesCanvas :values="item.series" :height="150" />
@@ -579,4 +652,286 @@ function persistExpandMode(mode) {
     return;
   }
   window.localStorage.setItem("zenquant.expandMode", mode);
+}
+
+function averageStateConfidence(state) {
+  if (!state) {
+    return null;
+  }
+  const scores = [
+    Number(state.directional_confidence || 0),
+    Number(state.volatility_confidence || 0),
+    Number(state.positioning_confidence || 0),
+    Number(state.quality_confidence || 0),
+  ].filter((value) => Number.isFinite(value));
+  if (!scores.length) {
+    return null;
+  }
+  return scores.reduce((sum, value) => sum + value, 0) / scores.length;
+}
+
+function buildThesisSummary({
+  state,
+  directionalBias,
+  latestTarget,
+  latestRiskDecision,
+  marketHealth,
+  stateConfidence,
+}) {
+  if (!state) {
+    return {
+      tone: "warning",
+      headline: "Warming the state engine",
+      detail: "The runtime is live, but Phase 3 state only publishes after a confirmed bar-close classification.",
+      action: "Let the first 4H/1D state settle before judging strategy posture or trusting target changes.",
+      confidenceCopy: "-",
+      confidenceDetail: "No confirmed state confidence yet",
+      transitionCopy: "Transition risk unavailable",
+      transitionDetail: "State stability appears after the first classification",
+      transitionWidth: "0%",
+      chips: [
+        { label: "Feed", value: marketHealth.label, tone: marketHealth.tone },
+        { label: "Bias", value: directionalBias ? formatBiasLabel(directionalBias.direction, true) : "Awaiting bias", tone: "warning" },
+        { label: "Target", value: latestTarget ? `${formatNumber(latestTarget.target_qty, 4)} BTC` : "No target", tone: "warning" },
+      ],
+    };
+  }
+
+  const targetQty = latestTarget ? Number(latestTarget.target_qty || 0) : 0;
+  const transitionRisk = Number(state.transition_risk || 0);
+  const riskFlags =
+    latestRiskDecision && Array.isArray(latestRiskDecision.flags)
+      ? latestRiskDecision.flags.filter((flag) => flag !== "OK")
+      : [];
+
+  let tone = "ok";
+  if (
+    marketHealth.tone === "danger"
+    || String(state.quality_state) === "UNSAFE"
+    || String(state.volatility_state) === "DISTORTED"
+  ) {
+    tone = "danger";
+  } else if (
+    marketHealth.tone === "warning"
+    || transitionRisk >= 0.45
+    || String(state.positioning_state).startsWith("CROWDED")
+    || String(state.quality_state) !== "TRADABLE"
+    || riskFlags.length
+  ) {
+    tone = "warning";
+  }
+
+  let headline = "Strategy is waiting for a cleaner edge";
+  let detail = `${formatRegimeLabel(state.regime)} regime with ${humanizeCode(state.volatility_state).toLowerCase()} volatility, ${humanizeCode(state.positioning_state).toLowerCase()} positioning, and ${humanizeCode(state.quality_state).toLowerCase()} quality.`;
+  let action = "The system is flat until the state improves.";
+
+  if (String(state.directional_state) === "UPTREND") {
+    headline = "Long thesis is active";
+    action = Math.abs(targetQty) > 0 ? `Current intent is ${formatNumber(targetQty, 4)} BTC on the long side.` : "The long thesis exists, but the strategy is not adding exposure yet.";
+  } else if (String(state.directional_state) === "DOWNTREND") {
+    headline = "Short thesis is active";
+    action = Math.abs(targetQty) > 0 ? `Current intent is ${formatNumber(targetQty, 4)} BTC on the short side.` : "The short thesis exists, but the strategy is waiting for execution alignment.";
+  } else if (String(state.directional_state) === "TRANSITION") {
+    headline = "State is rotating between regimes";
+    action = "Keep conviction low until directional structure and momentum agree again.";
+  } else if (String(state.directional_state) === "NEUTRAL") {
+    headline = "Strategy is preserving capital";
+    action = "The engine is explicitly neutral and should only re-risk after cleaner confirmation.";
+  }
+
+  if (riskFlags.length) {
+    action = `Risk overlay is active: ${riskFlags.slice(0, 2).map(humanizeCode).join(" | ")}.`;
+  }
+
+  return {
+    tone,
+    headline,
+    detail,
+    action,
+    confidenceCopy: stateConfidence === null ? "-" : formatPercent(stateConfidence, 2),
+    confidenceDetail: describeConfidence(stateConfidence),
+    transitionCopy: formatPercent(transitionRisk, 2),
+    transitionDetail: describeTransitionRisk(transitionRisk),
+    transitionWidth: toPercentWidth(transitionRisk),
+    chips: [
+      { label: "Regime", value: formatRegimeLabel(state.regime), tone: "ok" },
+      { label: "Direction", value: humanizeCode(state.directional_state), tone: tone },
+      { label: "Quality", value: humanizeCode(state.quality_state), tone: toneFromState("quality", state.quality_state) },
+      { label: "Target", value: latestTarget ? `${formatNumber(targetQty, 4)} BTC` : "No target", tone: Math.abs(targetQty) > 0 ? "ok" : "warning" },
+    ],
+  };
+}
+
+function buildStateCards(state) {
+  if (!state) {
+    return [];
+  }
+  return [
+    buildStateCard(
+      "Directional",
+      state.directional_state,
+      state.directional_confidence,
+      describeDirectionalState(state.directional_state),
+      toneFromState("directional", state.directional_state),
+    ),
+    buildStateCard(
+      "Volatility",
+      state.volatility_state,
+      state.volatility_confidence,
+      describeVolatilityState(state.volatility_state),
+      toneFromState("volatility", state.volatility_state),
+    ),
+    buildStateCard(
+      "Positioning",
+      state.positioning_state,
+      state.positioning_confidence,
+      describePositioningState(state.positioning_state),
+      toneFromState("positioning", state.positioning_state),
+    ),
+    buildStateCard(
+      "Market quality",
+      state.quality_state,
+      state.quality_confidence,
+      describeQualityState(state.quality_state),
+      toneFromState("quality", state.quality_state),
+    ),
+  ];
+}
+
+function buildStateCard(label, token, confidence, detail, tone) {
+  return {
+    label,
+    value: humanizeCode(token),
+    confidenceCopy: `Confidence ${formatPercent(confidence, 2)}`,
+    confidenceWidth: toPercentWidth(confidence),
+    detail,
+    tone,
+  };
+}
+
+function toPercentWidth(value) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) {
+    return "0%";
+  }
+  return `${Math.max(0, Math.min(100, numeric * 100))}%`;
+}
+
+function toneFromState(kind, token) {
+  const value = String(token || "").toUpperCase();
+  if (kind === "quality") {
+    if (value === "UNSAFE" || value === "DEGRADED") {
+      return "danger";
+    }
+    if (value === "NOISY") {
+      return "warning";
+    }
+    return "ok";
+  }
+  if (kind === "volatility") {
+    if (value === "DISTORTED") {
+      return "danger";
+    }
+    if (value === "HIGH") {
+      return "warning";
+    }
+    return "ok";
+  }
+  if (kind === "positioning") {
+    if (value === "CROWDED_LONG" || value === "CROWDED_SHORT" || value === "UNCERTAIN") {
+      return "warning";
+    }
+    return "ok";
+  }
+  if (kind === "directional" && value === "TRANSITION") {
+    return "warning";
+  }
+  return "ok";
+}
+
+function describeDirectionalState(token) {
+  const value = String(token || "").toUpperCase();
+  if (value === "UPTREND") {
+    return "Structure and momentum agree on upside continuation.";
+  }
+  if (value === "DOWNTREND") {
+    return "Structure and momentum agree on downside continuation.";
+  }
+  if (value === "TRANSITION") {
+    return "Trend structure is contested, so conviction should stay low.";
+  }
+  return "Directional edge is weak or intentionally flat.";
+}
+
+function describeVolatilityState(token) {
+  const value = String(token || "").toUpperCase();
+  if (value === "DISTORTED") {
+    return "Market conditions are stressed enough to question normal execution assumptions.";
+  }
+  if (value === "HIGH") {
+    return "Volatility is elevated, so sizing and stops deserve extra caution.";
+  }
+  if (value === "LOW") {
+    return "Compression is building and breakout follow-through matters more than churn.";
+  }
+  return "Volatility is inside normal operating bounds.";
+}
+
+function describePositioningState(token) {
+  const value = String(token || "").toUpperCase();
+  if (value === "CROWDED_LONG") {
+    return "Long positioning is crowded, so upside needs cleaner follow-through.";
+  }
+  if (value === "CROWDED_SHORT") {
+    return "Short positioning is crowded, which raises squeeze risk.";
+  }
+  if (value === "UNCERTAIN") {
+    return "Positioning signals are mixed and should not drive aggressive size.";
+  }
+  return "Positioning looks balanced enough for normal playbook behavior.";
+}
+
+function describeQualityState(token) {
+  const value = String(token || "").toUpperCase();
+  if (value === "UNSAFE") {
+    return "Data quality is not good enough to justify new risk.";
+  }
+  if (value === "DEGRADED") {
+    return "Inputs are degraded, so live signals deserve skepticism.";
+  }
+  if (value === "NOISY") {
+    return "Data is usable, but the system should expect more friction and false moves.";
+  }
+  return "Data quality is clean enough for normal bar-close decisions.";
+}
+
+function describeConfidence(confidence) {
+  const value = Number(confidence);
+  if (!Number.isFinite(value)) {
+    return "No confirmed confidence profile yet";
+  }
+  if (value >= 0.8) {
+    return "Classification is stable across all four dimensions";
+  }
+  if (value >= 0.65) {
+    return "State is usable, but one dimension is softer than the rest";
+  }
+  if (value >= 0.5) {
+    return "Confidence is moderate, so watch for transition before adding risk";
+  }
+  return "Confidence is fragile and the strategy should stay cautious";
+}
+
+function describeTransitionRisk(risk) {
+  const value = Number(risk);
+  if (!Number.isFinite(value)) {
+    return "No transition profile yet";
+  }
+  if (value >= 0.6) {
+    return "The state is unstable and could flip on the next confirmed bar";
+  }
+  if (value >= 0.35) {
+    return "One dimension is soft enough that the current thesis needs monitoring";
+  }
+  return "The current state is behaving consistently across dimensions";
 }
