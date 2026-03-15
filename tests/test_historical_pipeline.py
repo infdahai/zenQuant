@@ -62,6 +62,29 @@ class HistoricalPipelineTests(unittest.TestCase):
             self.assertAlmostEqual(first.metrics.net_pnl, second.metrics.net_pnl, places=6)
             self.assertAlmostEqual(first.metrics.max_drawdown, second.metrics.max_drawdown, places=6)
 
+    def test_historical_backtest_matches_phase3_baseline_metrics(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            layout = HistoricalDatasetLayout(root_dir=root)
+            write_parquet_rows(layout.kline_path("BTCUSDT", "1d", "2024-01"), _daily_rows())
+            write_parquet_rows(layout.kline_path("BTCUSDT", "4h", "2024-01"), _four_hour_rows())
+            write_parquet_rows(layout.funding_path("BTCUSDT", "2024-01"), _funding_rows())
+            write_parquet_rows(
+                layout.open_interest_path("BTCUSDT", "4h", "2024-01"),
+                _open_interest_rows(),
+            )
+
+            result = HistoricalBacktest(
+                HistoricalBacktestConfig(root_dir=root, symbol="BTCUSDT")
+            ).run()
+
+            self.assertAlmostEqual(result.metrics.net_pnl, 236412.8, places=6)
+            self.assertAlmostEqual(result.final_equity, 336412.80249300046, places=6)
+            self.assertAlmostEqual(result.metrics.max_drawdown, 0.008591, places=6)
+            self.assertAlmostEqual(result.metrics.sharpe, 4.7556, places=4)
+            self.assertAlmostEqual(result.metrics.profit_factor, 4.719191, places=6)
+            self.assertEqual(result.metrics.trade_count, 420)
+
 
 def _daily_rows(days: int = 90) -> list[HistoricalKlineRow]:
     base_ns = int(datetime(2024, 1, 1, tzinfo=UTC).timestamp() * 1_000_000_000)

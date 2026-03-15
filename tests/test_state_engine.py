@@ -43,6 +43,8 @@ class StateEngineTests(unittest.TestCase):
         self.assertEqual(state.positioning_state, "CROWDED_LONG")
         self.assertEqual(state.quality_state, "TRADABLE")
         self.assertEqual(state.regime, "TREND")
+        self.assertGreaterEqual(state.transition_risk, 0.0)
+        self.assertLessEqual(state.transition_risk, 1.0)
 
 
 if __name__ == "__main__":

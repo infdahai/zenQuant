@@ -277,7 +277,7 @@ class OnlineStateStore:
                 volatility_state, volatility_confidence,
                 positioning_state, positioning_confidence,
                 quality_state, quality_confidence,
-                regime, regime_confidence, direction_signal,
+                regime, regime_confidence, direction_signal, transition_risk,
                 quality_flags, reason_codes
             ) VALUES (
                 %s, %s, %s,
@@ -285,7 +285,7 @@ class OnlineStateStore:
                 %s, %s,
                 %s, %s,
                 %s, %s,
-                %s, %s, %s,
+                %s, %s, %s, %s,
                 %s::jsonb, %s::jsonb
             )
             """,
@@ -304,6 +304,7 @@ class OnlineStateStore:
                 payload.regime,
                 payload.regime_confidence,
                 payload.direction_signal,
+                payload.transition_risk,
                 json.dumps(list(payload.quality_flags)),
                 json.dumps(list(payload.reason_codes)),
             ),

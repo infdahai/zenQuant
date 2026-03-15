@@ -98,6 +98,7 @@ CREATE TABLE IF NOT EXISTS market_states (
     regime TEXT NOT NULL,
     regime_confidence DOUBLE PRECISION NOT NULL,
     direction_signal DOUBLE PRECISION NOT NULL,
+    transition_risk DOUBLE PRECISION NOT NULL,
     quality_flags JSONB NOT NULL,
     reason_codes JSONB NOT NULL,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()

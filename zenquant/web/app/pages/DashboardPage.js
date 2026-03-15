@@ -523,6 +523,23 @@ export const DashboardPage = defineComponent({
               }}
             </small>
           </div>
+          <div class="decision-item decision-item-wide">
+            <span>State stability</span>
+            <strong>
+              {{
+                marketState
+                  ? ("Transition risk " + formatPercent(marketState.transition_risk, 2))
+                  : "State stability unavailable"
+              }}
+            </strong>
+            <small>
+              {{
+                marketState
+                  ? formatCodes(marketState.reason_codes, 5)
+                  : "Reason codes will appear after state classification"
+              }}
+            </small>
+          </div>
         </div>
       </article>
 
