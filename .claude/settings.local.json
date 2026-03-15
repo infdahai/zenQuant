@@ -19,7 +19,8 @@
       "Bash(find zenquant:*)",
       "Bash(ls:*)",
       "Bash(cd docs:*)",
-      "Bash(grep:*)"
+      "Bash(grep:*)",
+      "Bash(pytest:*)"
     ]
   }
 }
