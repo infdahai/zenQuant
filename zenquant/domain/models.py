@@ -55,6 +55,14 @@ class FundingUpdate:
 
 
 @dataclass(slots=True)
+class MarkPriceUpdate:
+    meta: EventMeta
+    mark_price: float
+    index_price: float | None = None
+    next_funding_time_ns: int | None = None
+
+
+@dataclass(slots=True)
 class OpenInterestUpdate:
     meta: EventMeta
     open_interest: float

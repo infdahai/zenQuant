@@ -1,3 +1,5 @@
+"""Regime-aware strategy engine for the flagship BTC-first trading path."""
+
 from __future__ import annotations
 
 import uuid
@@ -34,6 +36,8 @@ class _IndicatorValues:
 
 @dataclass(slots=True)
 class ARCStrategyConfig:
+    """Sizing and regime settings for the ARC flagship strategy."""
+
     portfolio: str = "arc"
     account_equity: float = 100_000.0
     max_leverage: float = 3.0
@@ -50,6 +54,12 @@ class ARCStrategyConfig:
 
 
 class ARCStrategyEngine:
+    """Convert indicator packs into target positions and reasons.
+
+    The engine keeps to the repository contract: strategy emits target intent,
+    not exchange orders. Risk and execution remain separate downstream stages.
+    """
+
     def __init__(
         self, bus: InMemoryJetStream, config: ARCStrategyConfig | None = None
     ) -> None:
@@ -126,14 +136,18 @@ class ARCStrategyEngine:
         self._publish_position_state(payload.symbol, self._config.execution_timeframe)
 
     def _on_indicator(self, _: str, payload: object) -> None:
+        """Route 1d packs to bias logic and execution-timeframe packs to targeting."""
         if not isinstance(payload, IndicatorPack):
             return
+        self.prime_indicator(payload)
 
-        if payload.timeframe == Timeframe.TF_1D:
-            self._update_directional_bias(payload)
+    def prime_indicator(self, pack: IndicatorPack) -> None:
+        """Prime live startup state from an already-computed indicator pack."""
+        if pack.timeframe == Timeframe.TF_1D:
+            self._update_directional_bias(pack)
             return
 
-        target = self._build_target(payload)
+        target = self._build_target(pack)
         reason = self._build_reason(target)
         self._bus.publish(
             f"strategy.regime.{self._config.portfolio}",
@@ -178,6 +192,7 @@ class ARCStrategyEngine:
         self._bus.publish(f"strategy.bias.1d.{pack.symbol}", bias)
 
     def _build_target(self, pack: IndicatorPack) -> TargetPosition:
+        """Translate one indicator pack into a target position for its bar close."""
         vals = self._extract_values(pack.values)
 
         regime_key = (pack.symbol, pack.timeframe)
@@ -332,6 +347,7 @@ class ARCStrategyEngine:
     def _active_directional_bias(
         self, symbol: str, cutoff_time_ns: int
     ) -> tuple[DirectionalBias | None, str]:
+        """Return the usable 1d bias for a 4h decision, or the reason it is unusable."""
         bias = self._directional_bias.get(symbol)
         if bias is None:
             return None, ""
@@ -350,6 +366,7 @@ class ARCStrategyEngine:
         return bias, ""
 
     def _publish_position_state(self, symbol: str, timeframe: Timeframe) -> None:
+        """Expose open-position state for the dashboard and trailing-stop logic."""
         self._bus.publish(
             f"strategy.position_state.{timeframe.value}.{symbol}",
             self._positions.get((symbol, timeframe)),
@@ -397,6 +414,7 @@ class ARCStrategyEngine:
         )
 
     def _intent_id(self, pack: IndicatorPack) -> str:
+        """Create a stable, content-addressed intent id for auditability."""
         name = (
             f"{self._config.portfolio}:{pack.symbol}:{pack.timeframe.value}:"
             f"{pack.cutoff_time_ns}:{pack.indicator_version}:{pack.formula_hash}"
@@ -411,6 +429,7 @@ class ARCStrategyEngine:
         cvd_slope: float,
         zen_pulse: float,
     ) -> tuple[str, float]:
+        """Classify bar-close context into TREND, RANGE, or STRESS."""
         degraded = any(
             flag in {"BOOK_STALE", "VENUE_DOWN", "DATA_STALE", "DATA_FUTURE"}
             for flag in quality_flags

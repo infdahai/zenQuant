@@ -762,8 +762,63 @@ python3 -m zenquant.app.demo
 ### Run web app
 
 ```bash
-zenquant-web
+uv run zenquant-web --host 127.0.0.1 --port 8090 --mode live
 # open http://127.0.0.1:8090
+```
+
+### Validate live paper strategy
+
+Use this order if you want to run a long-lived background process and verify
+that the strategy is behaving correctly.
+
+1. Run core regression checks first:
+
+```bash
+uv run pytest -q
+npm run test:frontend
+```
+
+2. Optional but recommended: validate replay/backtest contracts before live mode:
+
+```bash
+uv run zenquant-history-sync --year 2024 --month 1 --symbol BTCUSDT
+uv run zenquant-backtest --root data/raw/binance --symbol BTCUSDT
+```
+
+3. Start the live paper-trading runtime:
+
+```bash
+export ZENQUANT_PG_DSN='postgresql://user:pass@host:5432/zenquant'
+uv run zenquant-web --host 127.0.0.1 --port 8090 --mode live
+```
+
+4. Verify runtime health from another shell:
+
+```bash
+curl http://127.0.0.1:8090/healthz
+curl "http://127.0.0.1:8090/api/state?symbol=BTCUSDT_PERP&tf=4h"
+```
+
+What you should see:
+- `mode=live`
+- `runtime_status.market_connected=true`
+- `last_price` updates in real time
+- `latest_indicator` exists
+- `latest_target` exists
+- if PostgreSQL is enabled, `database.writes` increases over time
+
+Important:
+- The live runtime now bootstraps recent closed `4h` and `1d` bars plus recent funding/open-interest history on startup, so a fresh process does not begin from an empty indicator state.
+- This bootstrap is warm-state only. It does **not** replay historical orders or historical PnL into the current live paper account.
+- Restart recovery for prior simulated positions is still not implemented. A restarted process begins flat, then aligns to the current closed-bar signal.
+
+### Frontend checks
+
+```bash
+npm run test:store
+npm run test:e2e
+# or run both:
+npm run test:frontend
 ```
 
 ### Run tests
@@ -1547,8 +1602,423 @@ Each phase must define:
 
 Only validated improvements should survive.
 
+---
 
-## 21. Practical Notes for Reviewers
+## 21. Data Layer Roadmap (Post-Phase 2)
+
+### Context
+
+Phase 2 strategy runtime is complete. The next critical milestone is **real-time monitoring + simulated trading**, not generic data platform buildout.
+
+The first deliverable is a **deterministic BTC live-sim runtime**:
+- live market events enter the existing kernel,
+- indicators update on confirmed bar close,
+- strategy and risk emit inspectable decisions,
+- simulated execution updates position, equity, and PnL,
+- the dashboard shows current system state in near real time.
+
+The data layer must support:
+1. Live market data ingestion and monitoring
+2. Real-time indicator computation and decision tracking
+3. Simulated execution against live market conditions
+4. Operational observability (what is the system doing right now?)
+
+Historical backtest validation is important but should begin only after the live-sim path is stable enough to serve as the reference implementation.
+
+---
+
+### Design Principles
+
+**Separation of concerns:**
+- **Online state database (PostgreSQL)**: Live system state, decisions, positions, equity
+- **Historical research storage (Parquet + DuckDB)**: Bulk historical data for future backtest work
+
+**Canonical market events first:**
+- Use one canonical source for decision bars in live and replay
+- For current V1, prefer exchange-native confirmed klines for `4h` and `1d`
+- Do not make high-frequency trade reconstruction the primary source of strategy bars for V1
+- Additional streams such as trades and deep book data are auxiliary unless a live decision currently depends on them
+
+**One asset, one venue, one execution path:**
+- Start with `BTCUSDT` perpetual on Binance only
+- Use one simulated gateway path that mirrors future live order routing contracts
+- Avoid multi-venue aggregation until the single-venue path is observable and stable
+
+**Audit trail before research scale:**
+- Persist enough live state to explain every decision and PnL transition
+- Do not design a broad historical lake before the live audit path exists
+
+**Incremental rollout:**
+- Start with BTC perpetual only
+- Prove the data flow works end-to-end before expanding symbols
+- Don't build "all possible data" infrastructure upfront
+
+**Point-in-time correctness:**
+Every stored record must answer:
+- What symbol/timeframe/timestamp does this represent?
+- What version/formula produced this data?
+- Was this data valid at decision time?
+
+This ensures future replay and audit capability.
+
+---
+
+### Priority 0: Critical Path (Do Now)
+
+These tasks unblock real-time monitoring and simulated trading.
+
+#### P0.1: Canonical live event source (URGENT)
+
+**Objective:** Replace synthetic input with a deterministic live BTC feed
+
+**Tasks:**
+- [ ] Implement Binance perpetual WebSocket client for `BTCUSDT`
+  - Subscribe to confirmed `kline_4h` and `kline_1d`
+  - Subscribe to `markPrice`, funding rate, open interest, and minimal depth if still needed by current indicators
+  - Publish internal events with proper `EventMeta`
+- [ ] Refactor the live runtime so strategy decisions are driven by confirmed exchange bar closes, not synthetic ticks
+- [ ] Keep the current bar-close invariants explicit:
+  - no intra-bar strategy decisions
+  - no mixed clock sources
+  - no future-dated events
+- [ ] Add data quality monitoring
+  - Detect stale upstream data
+  - Detect venue disconnection
+  - Emit quality flags that already map into indicator and risk logic
+- [ ] Start with Binance-only and BTC-only
+
+**Success criteria:**
+- Live `4h` and `1d` bar closes trigger indicator computation
+- Dashboard shows real-time price and latest decision state
+- System flags stale live data within 30 seconds
+- Synthetic ingestor is no longer on the critical path for the web runtime
+
+**Files to create/modify:**
+- `zenquant/ingestor/binance_ws.py` (new)
+- `zenquant/ingestor/realtime.py` (replace polling scaffold with live adapter boundary)
+- `zenquant/app/server.py` (wire live runtime startup)
+
+---
+
+#### P0.2: Simulated execution and portfolio accounting (URGENT)
+
+**Objective:** Run the real strategy path against live market conditions without real money
+
+**Tasks:**
+- [ ] Implement `SimulatedGateway` that:
+  - uses live mark price as the canonical execution reference
+  - applies configurable slippage and taker fees
+  - updates filled position, cash, equity, and realized/unrealized PnL deterministically
+  - emits `ExecutionReport` through the same contract used by future live trading
+- [ ] Add equity curve and position state tracking
+- [ ] Ensure risk uses actual simulated filled positions, not theoretical target states
+- [ ] Keep all exchange integration read-only in this phase
+
+**Success criteria:**
+- System generates live trading signals from real market data
+- Simulated fills update position and PnL in real time
+- Dashboard shows current position, equity, drawdown, and recent fills
+- No authenticated exchange trading API calls exist in the runtime path
+
+**Files to create/modify:**
+- `zenquant/execution/simulated_gateway.py` (new)
+- `zenquant/execution/router.py`
+- `zenquant/risk/guard.py`
+- `zenquant/app/server.py`
+
+---
+
+#### P0.3: Minimal PostgreSQL online state (URGENT)
+
+**Objective:** Persist enough live system state for monitoring, debugging, and future replay
+
+**Tables to create:**
+
+```sql
+-- Live indicator results
+CREATE TABLE indicator_packs (
+    id BIGSERIAL PRIMARY KEY,
+    ts_ns BIGINT NOT NULL,
+    symbol TEXT NOT NULL,
+    timeframe TEXT NOT NULL,
+    cutoff_time_ns BIGINT NOT NULL,
+    indicator_version TEXT NOT NULL,
+    formula_hash TEXT NOT NULL,
+    quality_flags JSONB NOT NULL,
+    values JSONB NOT NULL,
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    INDEX idx_symbol_tf_cutoff (symbol, timeframe, cutoff_time_ns DESC)
+);
+
+-- Strategy decisions
+CREATE TABLE strategy_intents (
+    id BIGSERIAL PRIMARY KEY,
+    intent_id TEXT UNIQUE NOT NULL,
+    portfolio TEXT NOT NULL,
+    symbol TEXT NOT NULL,
+    timeframe TEXT NOT NULL,
+    cutoff_time_ns BIGINT NOT NULL,
+    target_qty NUMERIC NOT NULL,
+    target_leverage NUMERIC NOT NULL,
+    reduce_only BOOLEAN NOT NULL,
+    regime TEXT NOT NULL,
+    regime_confidence NUMERIC NOT NULL,
+    reason_codes JSONB NOT NULL,
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    INDEX idx_symbol_cutoff (symbol, cutoff_time_ns DESC)
+);
+
+-- Risk overlay decisions
+CREATE TABLE risk_snapshots (
+    id BIGSERIAL PRIMARY KEY,
+    portfolio TEXT NOT NULL,
+    ts_ns BIGINT NOT NULL,
+    equity NUMERIC NOT NULL,
+    high_water_mark NUMERIC NOT NULL,
+    drawdown NUMERIC NOT NULL,
+    lev_cap NUMERIC NOT NULL,
+    reduce_only_mode BOOLEAN NOT NULL,
+    flags JSONB NOT NULL,
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    INDEX idx_ts (ts_ns DESC)
+);
+
+-- Execution reports
+CREATE TABLE execution_reports (
+    id BIGSERIAL PRIMARY KEY,
+    client_order_id TEXT UNIQUE NOT NULL,
+    symbol TEXT NOT NULL,
+    side SMALLINT NOT NULL,
+    status TEXT NOT NULL,
+    filled_qty NUMERIC NOT NULL,
+    avg_price NUMERIC NOT NULL,
+    fee NUMERIC NOT NULL,
+    transaction_time_ns BIGINT NOT NULL,
+    reject_reason TEXT,
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    INDEX idx_symbol_time (symbol, transaction_time_ns DESC)
+);
+
+-- Position state snapshots
+CREATE TABLE position_states (
+    id BIGSERIAL PRIMARY KEY,
+    symbol TEXT NOT NULL,
+    timeframe TEXT NOT NULL,
+    snapshot_time_ns BIGINT NOT NULL,
+    direction NUMERIC NOT NULL,
+    entry_price NUMERIC NOT NULL,
+    current_qty NUMERIC NOT NULL,
+    trailing_stop NUMERIC NOT NULL,
+    bars_held INTEGER NOT NULL,
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    INDEX idx_symbol_tf_time (symbol, timeframe, snapshot_time_ns DESC)
+);
+
+-- System health / data quality log
+CREATE TABLE data_quality_log (
+    id BIGSERIAL PRIMARY KEY,
+    ts_ns BIGINT NOT NULL,
+    venue TEXT NOT NULL,
+    symbol TEXT NOT NULL,
+    event_type TEXT NOT NULL,
+    quality_flag TEXT NOT NULL,
+    details JSONB,
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    INDEX idx_ts (ts_ns DESC)
+);
+```
+
+**Tasks:**
+- [ ] Create migration script: `migrations/001_initial_schema.sql`
+- [ ] Add database connection pool in `zenquant/infra/db.py`
+- [ ] Add async insert helpers for indicators, intents, risk snapshots, execution reports, and position states
+- [ ] Wire persistence as passive subscribers to the event bus
+- [ ] Prefer append-only audit writes over mutable operational state where practical
+
+**Success criteria:**
+- All decision-critical live events are persisted to PostgreSQL
+- Dashboard can query last 24h of decisions
+- No data loss during normal operation
+
+---
+
+#### P0.4: Real-time dashboard enhancements (HIGH)
+
+**Objective:** Monitor live system behavior
+
+**Tasks:**
+- [ ] Add real-time WebSocket endpoint for dashboard updates
+- [ ] Show live indicator values (last 24 bars)
+- [ ] Show current regime and confidence
+- [ ] Show active positions and trailing stops
+- [ ] Show recent intents and reason codes
+- [ ] Show equity curve (simulated)
+- [ ] Add data quality indicators (venue status, staleness)
+
+**Success criteria:**
+- Dashboard updates within 2 seconds of new bar close
+- All Phase 2 decision logic is visible
+- Can observe system behavior without reading logs
+
+**Files to modify:**
+- `zenquant/app/server.py` (add WebSocket endpoint)
+- `zenquant/web/app/pages/DashboardPage.js` (add real-time updates)
+- `zenquant/web/app/api.js` (add WebSocket client)
+
+---
+
+### Priority 1: Operational Stability (Do Next)
+
+These tasks improve reliability and observability.
+
+#### P1.1: Logging and alerting
+
+**Tasks:**
+- [ ] Add structured logging (JSON format)
+- [ ] Log all critical events: bar close, regime change, position entry/exit
+- [ ] Add alert conditions:
+  - Data staleness > 60 seconds
+  - Venue disconnection
+  - Unexpected exception in strategy/risk/execution
+  - Simulated drawdown > 10%
+- [ ] Add Prometheus metrics export (optional)
+
+#### P1.2: Configuration management
+
+**Tasks:**
+- [ ] Move all config to `config/production.yaml`
+- [ ] Support environment-specific configs (dev/staging/prod)
+- [ ] Add config validation on startup
+- [ ] Document all config parameters
+
+#### P1.3: Graceful shutdown and state recovery
+
+**Tasks:**
+- [ ] Implement graceful shutdown (close WebSocket, flush DB writes)
+- [ ] Load last known position state from DB on startup
+- [ ] Reconcile position state with exchange (for future live trading)
+- [ ] Add startup health check
+
+---
+
+### Priority 2: Historical Data (Deferred)
+
+These tasks enable backtesting and research, but they should follow a stable live-sim reference path.
+
+#### P2.1: Historical data download
+
+**Tasks:**
+- [ ] Download Binance historical klines (1h/4h/1d) for BTCUSDT
+  - Use Binance public data API or data.binance.vision
+  - Store as Parquet files: `data/raw/binance/klines/BTCUSDT/1h/2024-01.parquet`
+- [ ] Download historical funding rates
+- [ ] Download historical open interest
+- [ ] Add data validation (no gaps, no duplicates)
+
+#### P2.2: Backtest engine
+
+**Tasks:**
+- [ ] Implement replay engine that:
+  - Reads historical Parquet data
+  - Emits events in chronological order
+  - Runs full strategy/risk/execution pipeline
+  - Uses the same contracts as the live-sim runtime
+  - Compares results to recorded live behavior where overlapping periods exist
+- [ ] Add backtest metrics: Sharpe, max drawdown, win rate, etc.
+- [ ] Add backtest report generation
+
+**Important scope rule:**
+- Do not build ML training infrastructure before replay parity exists
+- First use historical data for deterministic validation, parameter review, and regime split analysis
+- Model training is only justified later if a specific weakness remains after the deterministic strategy/risk stack is proven
+
+#### P2.3: Replay parity validation
+
+**Tasks:**
+- [ ] Run same event stream through backtest and live system
+- [ ] Compare indicator values, intents, and execution reports
+- [ ] Ensure deterministic behavior (same inputs → same outputs)
+- [ ] Document any differences and root causes
+
+---
+
+### Priority 3: Production Readiness (Future)
+
+These tasks prepare for real money trading.
+
+#### P3.1: Live exchange integration
+
+**Tasks:**
+- [ ] Implement Binance perpetual futures REST API client
+- [ ] Implement authenticated WebSocket for user data stream
+- [ ] Add order placement with proper error handling
+- [ ] Add position reconciliation
+- [ ] Add rate limiting and retry logic
+
+#### P3.2: Risk controls for live trading
+
+**Tasks:**
+- [ ] Add max daily loss hard stop
+- [ ] Add max position size limits
+- [ ] Add emergency flatten-all command
+- [ ] Add manual override capability
+- [ ] Add pre-trade risk checks (sufficient margin, valid order params)
+
+#### P3.3: Multi-symbol support
+
+**Tasks:**
+- [ ] Extend to ETHUSDT perpetual
+- [ ] Add symbol-specific config (min trade qty, tick size)
+- [ ] Add cross-symbol risk limits (total portfolio leverage)
+
+---
+
+### Non-Goals (Explicitly Deferred)
+
+These are NOT priorities for the current phase:
+
+- ❌ Full orderbook depth storage and replay
+- ❌ Tick-by-tick trade data storage
+- ❌ Multi-venue aggregation (start with Binance only)
+- ❌ Options data integration
+- ❌ Machine learning model training pipeline before replay parity
+- ❌ Advanced execution algorithms (TWAP, VWAP, etc.)
+- ❌ Portfolio optimization across multiple strategies
+- ❌ Custom data lake infrastructure
+
+---
+
+### Summary: What to Do This Week
+
+**Day 1-2: Canonical live feed**
+- Implement Binance WebSocket client for confirmed `4h` and `1d` bars plus required auxiliary fields
+- Replace synthetic web runtime input with live events
+- Verify live bar closes trigger indicator computation
+
+**Day 3-4: Simulated execution**
+- Implement `SimulatedGateway`
+- Wire live strategy -> risk -> execution path end to end
+- Verify simulated position, equity, and PnL update correctly
+
+**Day 5: Minimal persistence**
+- Create PostgreSQL schema
+- Persist indicators, intents, risk snapshots, fills, and position states
+- Verify the last 24h decision path can be queried
+
+**Day 6-7: Dashboard and monitoring**
+- Add real-time dashboard updates
+- Show live positions, equity, drawdown, regime, and reasons
+- Verify end-to-end flow: market data -> indicators -> strategy -> risk -> execution -> dashboard -> database
+
+**Success criteria for Week 1:**
+- System runs continuously for 24 hours without crashes
+- Dashboard shows live trading decisions
+- Simulated PnL tracks market movements
+- All decisions are logged to database
+
+---
+
+## 22. Practical Notes for Reviewers
 
 If you are reviewing this project for correctness, start here:
 
@@ -1564,7 +2034,7 @@ If these pass, the kernel is behaving close to its intended design.
 
 ---
 
-## 22. Design Philosophy in One Sentence
+## 23. Design Philosophy in One Sentence
 
 ZenQuant is not trying to be the smartest-looking crypto trading repo.
 
@@ -1577,7 +2047,33 @@ It is trying to be a trading kernel that:
 
 ---
 
-## 23. Disclaimer
+## 24. Additional Documentation
+
+For deeper architectural guidance and future development roadmap, see:
+
+### Strategic Architecture Documents
+
+- **[docs/PLAYBOOK_ARCHITECTURE.md](docs/PLAYBOOK_ARCHITECTURE.md)** - Playbook-driven state architecture design proposal for Phase 3+ evolution. Explains how to evolve from feature-driven strategy to state-based playbook selection for improved medium-term trading edge.
+
+- **[docs/PLAYBOOK_IMPLEMENTATION_GUIDE.md](docs/PLAYBOOK_IMPLEMENTATION_GUIDE.md)** - Concrete implementation guide with code examples, migration path, and testing strategy for the playbook architecture.
+
+### Key Concepts
+
+The playbook architecture addresses a fundamental question for medium-term (4H/1D) trading systems:
+
+**Where does edge come from?**
+
+Not from heavier AI models, but from:
+1. **Correct state identification** - decomposing market regime into orthogonal dimensions (directional, volatility, positioning, quality)
+2. **Disciplined playbook switching** - using the right trading logic for the right market state
+3. **Stress-aware sizing** - reducing exposure in hostile conditions
+4. **Professional exits** - cutting losers fast, letting winners run with playbook-appropriate logic
+
+These documents provide the strategic framework for Phase 3+ development while preserving all existing ZenQuant contracts (determinism, auditability, replay parity, risk veto).
+
+---
+
+## 25. Disclaimer
 
 This repository is infrastructure and research code for quantitative trading.
 

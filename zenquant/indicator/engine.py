@@ -1,3 +1,10 @@
+"""Indicator engine that converts bar-close market state into indicator packs.
+
+The engine only emits after it has both the finalized candle and the matching
+market snapshot for the same cutoff time. That guard is a core determinism
+invariant for live, replay, and backtest parity.
+"""
+
 from __future__ import annotations
 
 import hashlib
@@ -19,10 +26,14 @@ from zenquant.infra import InMemoryJetStream
 
 @dataclass(slots=True)
 class IndicatorStoreConfig:
+    """History depth for retained indicator packs."""
+
     max_points: int = 1_500
 
 
 class IndicatorStore:
+    """In-memory store used by the API, dashboard, and tests."""
+
     def __init__(self, config: IndicatorStoreConfig | None = None) -> None:
         self._config = config or IndicatorStoreConfig()
         self._history: dict[tuple[str, Timeframe], deque[IndicatorPack]] = defaultdict(
@@ -30,9 +41,11 @@ class IndicatorStore:
         )
 
     def append(self, pack: IndicatorPack) -> None:
+        """Append one new indicator pack to the retained history."""
         self._history[(pack.symbol, pack.timeframe)].append(pack)
 
     def latest(self, symbol: str, timeframe: Timeframe) -> IndicatorPack | None:
+        """Return the latest indicator pack for a symbol/timeframe."""
         history = self._history.get((symbol, timeframe))
         if not history:
             return None
@@ -45,6 +58,7 @@ class IndicatorStore:
         from_ns: int | None = None,
         to_ns: int | None = None,
     ) -> list[IndicatorPack]:
+        """Return retained history, optionally filtered by cutoff timestamp."""
         history = list(self._history.get((symbol, timeframe), []))
         if from_ns is not None:
             history = [item for item in history if item.cutoff_time_ns >= from_ns]
@@ -55,6 +69,8 @@ class IndicatorStore:
 
 @dataclass(slots=True)
 class IndicatorEngineConfig:
+    """Feature windows and cross-symbol settings for indicator generation."""
+
     indicator_version: str = "pack.v1"
     vol_window: int = 20
     atr_window: int = 14
@@ -83,6 +99,13 @@ class _PendingPoint:
 
 
 class IndicatorEngine:
+    """Build the canonical indicator pack consumed by strategy and dashboard.
+
+    Example:
+        engine = IndicatorEngine(bus=bus, store=IndicatorStore())
+        # after matching candle + snapshot events, ``indicator.pack.v1...`` is published.
+    """
+
     def __init__(
         self,
         bus: InMemoryJetStream,
@@ -154,6 +177,7 @@ class IndicatorEngine:
         self._try_emit(key)
 
     def _try_emit(self, key: tuple[str, Timeframe, int]) -> None:
+        """Emit an indicator pack only when candle and snapshot are both present."""
         pending = self._pending.get(key)
         if pending is None or pending.candle is None or pending.snapshot is None:
             self._gc_pending(key[1], key[2])
@@ -312,6 +336,7 @@ class IndicatorEngine:
         return all(symbol in symbols_for_bar for symbol in expected)
 
     def _flush_overall_if_ready(self, index_key: tuple[Timeframe, int]) -> None:
+        """Publish cross-symbol liquidity context once expected symbols are present."""
         symbols_for_bar = self._ob_index_by_cutoff.get(index_key)
         if not symbols_for_bar:
             return
@@ -320,6 +345,7 @@ class IndicatorEngine:
         self._flush_overall(index_key, symbols_for_bar)
 
     def _flush_stale_overall(self, timeframe: Timeframe, bar_end_ns: int) -> None:
+        """Fail closed when full symbol coverage never arrives within the TTL window."""
         ttl_ns = self._config.pending_ttl_bars * timeframe.seconds * 1_000_000_000
         cutoff_ns = bar_end_ns - ttl_ns
         stale_keys = [
@@ -374,6 +400,7 @@ class IndicatorEngine:
 
 
 def _formula_hash(config: IndicatorEngineConfig) -> str:
+    """Fingerprint the indicator formula so decisions stay auditable across versions."""
     formula = (
         f"rv=std(logret,w={config.vol_window});"
         f"atr=mean(tr,w={config.atr_window});"
@@ -390,6 +417,7 @@ def _formula_hash(config: IndicatorEngineConfig) -> str:
 
 
 def _ob_imbalance(bid_depth: float, ask_depth: float) -> float:
+    """Compute log-depth imbalance so equal ratios stay symmetric around zero."""
     return math.log((bid_depth + 1e-9) / (ask_depth + 1e-9))
 
 
@@ -409,6 +437,7 @@ def _mad(values: list[float], med: float) -> float:
 
 
 def _robust_z(values: list[float], current: float, min_samples: int) -> float:
+    """Robust z-score based on median and MAD instead of mean and standard deviation."""
     reference = values[:-1]
     if len(reference) < min_samples:
         return 0.0
@@ -421,6 +450,7 @@ def _robust_z(values: list[float], current: float, min_samples: int) -> float:
 
 
 def _slope(values: list[float]) -> float:
+    """Return a scale-normalized linear slope for a short indicator series."""
     n = len(values)
     if n < 2:
         return 0.0
@@ -441,6 +471,7 @@ def _slope(values: list[float]) -> float:
 
 
 def _realized_vol(candles: list[Candle], window: int, timeframe: Timeframe) -> float:
+    """Estimate annualized realized volatility from log returns."""
     if len(candles) < 2:
         return 0.0
     closes = [c.close for c in candles[-(window + 1) :]]
@@ -463,6 +494,7 @@ def _realized_vol(candles: list[Candle], window: int, timeframe: Timeframe) -> f
 
 
 def _atr(candles: list[Candle], window: int) -> float:
+    """Average true range over the configured window."""
     if len(candles) < 2:
         return 0.0
     subset = candles[-(window + 1) :]
@@ -497,6 +529,7 @@ def _zen_pulse(
     target_vol: float,
     quality_flags: list[str],
 ) -> tuple[float, dict[str, float], dict[str, float]]:
+    """Blend trend, liquidity, crowding, and volatility into a 0-100 score."""
     trend_component = _clip01(0.5 + (cvd_slope * 3.0))
     liquidity_component = _clip01(0.5 + (ob_liq_z / 6.0))
     crowding_component = _clip01(1.0 - min(1.0, abs(funding_oi_z) / 4.0))

@@ -1,3 +1,5 @@
+"""Aggregate trade ticks into deterministic bar-close and candle events."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -8,6 +10,8 @@ from zenquant.infra import InMemoryJetStream
 
 @dataclass(slots=True)
 class BarClockConfig:
+    """Timeframes that should produce confirmed bar-close events."""
+
     timeframes: tuple[Timeframe, ...] = (Timeframe.TF_4H, Timeframe.TF_1D)
 
 
@@ -24,6 +28,12 @@ class _BarState:
 
 
 class BarClockService:
+    """Turn tick data into bar-close triggers for the decision pipeline.
+
+    The service only emits when a new interval begins, which keeps the rest of
+    the stack aligned to confirmed bar closes.
+    """
+
     def __init__(self, bus: InMemoryJetStream, config: BarClockConfig | None = None) -> None:
         self._bus = bus
         self._config = config or BarClockConfig()
@@ -37,6 +47,7 @@ class BarClockService:
             self._update_bar(payload, timeframe)
 
     def _update_bar(self, tick: TradeTick, timeframe: Timeframe) -> None:
+        """Update the current synthetic bar for one symbol/timeframe pair."""
         interval_ns = timeframe.seconds * 1_000_000_000
         bar_start_ns = (tick.meta.event_time_ns // interval_ns) * interval_ns
         bar_end_ns = bar_start_ns + interval_ns
@@ -82,6 +93,7 @@ class BarClockService:
         state.trade_count += 1
 
     def _emit_closed_bar(self, symbol: str, timeframe: Timeframe, state: _BarState) -> None:
+        """Publish the closed-bar trigger and its finalized candle payload."""
         self._bus.publish(
             f"clock.bar_close.{timeframe.value}",
             BarCloseEvent(

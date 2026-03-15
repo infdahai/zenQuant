@@ -42,6 +42,13 @@ test("store controller ignores stale responses after selection changes", async (
         send() {},
       };
     },
+    connectStateSocket() {
+      return {
+        readyState: 0,
+        close() {},
+        send() {},
+      };
+    },
   };
 
   const controller = createMarketStoreController(state, api);

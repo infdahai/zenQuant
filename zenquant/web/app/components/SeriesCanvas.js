@@ -1,3 +1,5 @@
+// Shared tiny chart component for indicator and equity series.
+
 import {
   defineComponent,
   nextTick,
@@ -35,6 +37,8 @@ export const SeriesCanvas = defineComponent({
     const canvasRef = ref(null);
 
     const draw = () => {
+      // The chart intentionally avoids axes/legends to stay cheap to redraw on
+      // frequent websocket updates.
       const canvas = canvasRef.value;
       if (!canvas) {
         return;
