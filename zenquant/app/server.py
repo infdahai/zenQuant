@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import argparse
 import asyncio
 import os
+import time
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -32,6 +34,7 @@ from zenquant.app.live_state import DashboardStateStore
 from zenquant.domain import (
     Candle,
     DirectionalBias,
+    EventMeta,
     IndicatorPack,
     IntentReason,
     MarkPriceUpdate,
@@ -86,6 +89,7 @@ class ZenQuantWebRuntime:
         self._indicator_connections: list[_IndicatorConnection] = []
         self._tick_task: asyncio.Task[None] | None = None
         self._started = False
+        self._live_symbols = ("BTCUSDT_PERP",)
 
         self.bus = InMemoryJetStream()
         self.bus.add_stream(StreamConfig(name="STREAM_MARKET_DATA", subjects=["md.>"]))
@@ -113,7 +117,7 @@ class ZenQuantWebRuntime:
             self.execution_gateway = SimulatedGateway()
             self.ingestor = RealTimeIngestor(
                 bus=self.bus,
-                config=RealTimeIngestorConfig(symbols=("BTCUSDT_PERP",)),
+                config=RealTimeIngestorConfig(symbols=self._live_symbols),
             )
             self._event_iterator = None
         else:
@@ -127,18 +131,12 @@ class ZenQuantWebRuntime:
                 steps=None,
                 start_step=self._warmup_steps,
             )
-
-        self.risk_overlay = RiskOverlay(bus=self.bus)
-        self.strategy_engine = ARCStrategyEngine(bus=self.bus)
-        self.execution_kernel = ExecutionKernel(
-            bus=self.bus,
-            gateway=self.execution_gateway,
-            risk_overlay=self.risk_overlay,
-        )
-        self.online_state = OnlineStateStore(
-            bus=self.bus,
-            config=OnlineStateStoreConfig(dsn=os.getenv("ZENQUANT_PG_DSN")),
-        )
+        self.risk_overlay: RiskOverlay | None = None
+        self.strategy_engine: ARCStrategyEngine | None = None
+        self.execution_kernel: ExecutionKernel | None = None
+        self.online_state: OnlineStateStore | None = None
+        if self._runtime_mode != "live":
+            self._initialize_trading_chain()
 
         self.bus.subscribe("md.candle.>", self._on_candle)
         self.bus.subscribe("md.mark.>", self._on_mark_price)
@@ -156,11 +154,16 @@ class ZenQuantWebRuntime:
         if self._started:
             return
         self._started = True
-        self.online_state.start()
-        self.state.on_runtime_status({"database": self.online_state.snapshot()})
         if self._runtime_mode == "live":
+            bootstrap_history = getattr(self.ingestor, "bootstrap_history", None)
+            if callable(bootstrap_history):
+                await bootstrap_history()
+            self._initialize_trading_chain()
+            self._start_online_state()
+            self._prime_live_signal()
             await self.ingestor.start()
             return
+        self._start_online_state()
         self._tick_task = asyncio.create_task(self._run_tick_loop())
 
     async def stop(self) -> None:
@@ -177,8 +180,9 @@ class ZenQuantWebRuntime:
             except asyncio.CancelledError:
                 pass
             self._tick_task = None
-        self.online_state.stop()
-        self.state.on_runtime_status({"database": self.online_state.snapshot()})
+        if self.online_state is not None:
+            self.online_state.stop()
+        self.state.on_runtime_status({"database": self._online_state_snapshot()})
 
     def prime_history(self) -> None:
         """Warm the demo-mode pipeline before the UI starts polling it."""
@@ -190,7 +194,7 @@ class ZenQuantWebRuntime:
 
     def snapshot(self, symbol: str = "BTCUSDT_PERP", tf: str = "4h") -> dict[str, Any]:
         """Return the latest dashboard snapshot for one symbol/timeframe."""
-        self.state.on_runtime_status({"database": self.online_state.snapshot()})
+        self.state.on_runtime_status({"database": self._online_state_snapshot()})
         return self.state.snapshot(symbol=symbol, timeframe=tf)
 
     async def connect_state(self, websocket: WebSocket, symbol: str, tf: str) -> None:
@@ -281,6 +285,79 @@ class ZenQuantWebRuntime:
             return
         loop.create_task(self._broadcast_indicator(pack))
         loop.create_task(self._broadcast_state())
+
+    def _initialize_trading_chain(self) -> None:
+        """Attach risk, strategy, execution, and persistence subscribers once."""
+        if self.risk_overlay is not None:
+            return
+        self.risk_overlay = RiskOverlay(bus=self.bus)
+        self.strategy_engine = ARCStrategyEngine(bus=self.bus)
+        self.execution_kernel = ExecutionKernel(
+            bus=self.bus,
+            gateway=self.execution_gateway,
+            risk_overlay=self.risk_overlay,
+        )
+        self.online_state = OnlineStateStore(
+            bus=self.bus,
+            config=OnlineStateStoreConfig(dsn=os.getenv("ZENQUANT_PG_DSN")),
+        )
+
+    def _start_online_state(self) -> None:
+        """Start optional PostgreSQL persistence after the trading chain exists."""
+        if self.online_state is not None:
+            self.online_state.start()
+        self.state.on_runtime_status({"database": self._online_state_snapshot()})
+
+    def _online_state_snapshot(self) -> dict[str, Any]:
+        """Return database status even before the writer is initialized."""
+        if self.online_state is None:
+            return {
+                "enabled": False,
+                "writes": 0,
+                "dropped": 0,
+                "queue_depth": 0,
+                "last_error": "",
+            }
+        return self.online_state.snapshot()
+
+    def _prime_live_signal(self) -> None:
+        """Turn warm indicator history into one current live decision state.
+
+        Startup bootstrap warms indicator context but intentionally does not
+        replay old orders. After the trading chain is attached, publish the
+        latest closed-bar context once so the process begins from the current
+        signal instead of waiting for the next 4h/1d close.
+        """
+        assert self.risk_overlay is not None
+        assert self.strategy_engine is not None
+
+        for symbol in self._live_symbols:
+            latest_daily = self.indicator_store.latest(symbol=symbol, timeframe=Timeframe.TF_1D)
+            latest_exec = self.indicator_store.latest(symbol=symbol, timeframe=Timeframe.TF_4H)
+            latest_pack = latest_exec or latest_daily
+            if latest_pack is None:
+                continue
+
+            last_price = float(latest_pack.values.get("last_price", 0.0) or 0.0)
+            if last_price > 0:
+                meta = EventMeta(
+                    event_time_ns=latest_pack.cutoff_time_ns,
+                    ingest_time_ns=time.time_ns(),
+                    venue="BINANCE",
+                    symbol=symbol,
+                    stream_seq=0,
+                )
+                self.bus.publish(
+                    f"md.mark.BINANCE.{symbol}",
+                    MarkPriceUpdate(meta=meta, mark_price=last_price, index_price=last_price),
+                )
+
+            if latest_daily is not None:
+                self.risk_overlay.prime_indicator(latest_daily)
+                self.strategy_engine.prime_indicator(latest_daily)
+            if latest_exec is not None:
+                self.risk_overlay.prime_indicator(latest_exec)
+                self.strategy_engine.prime_indicator(latest_exec)
 
     def _on_candle(self, _: str, payload: object) -> None:
         if isinstance(payload, Candle):
@@ -380,7 +457,7 @@ def create_app(runtime_mode: str = "demo") -> FastAPI:
         return {
             "status": "ok",
             "mode": runtime_mode,
-            "database": runtime.online_state.snapshot(),
+            "database": runtime._online_state_snapshot(),
         }
 
     @app.get("/api/state")
@@ -498,6 +575,25 @@ def main() -> None:
             "`python3 -m pip install -e .` and retry."
         ) from exc
 
-    runtime_mode = os.getenv("ZENQUANT_RUNTIME_MODE", "live").strip().lower() or "live"
-    app = create_app(runtime_mode=runtime_mode)
-    uvicorn.run(app, host="0.0.0.0", port=8090, reload=False)
+    parser = argparse.ArgumentParser(description="Run the ZenQuant web dashboard.")
+    parser.add_argument(
+        "--mode",
+        default=os.getenv("ZENQUANT_RUNTIME_MODE", "live").strip().lower() or "live",
+        choices=("demo", "live"),
+        help="Runtime mode for the dashboard.",
+    )
+    parser.add_argument(
+        "--host",
+        default=os.getenv("ZENQUANT_WEB_HOST", "0.0.0.0").strip() or "0.0.0.0",
+        help="Host interface to bind.",
+    )
+    parser.add_argument(
+        "--port",
+        type=int,
+        default=int(os.getenv("ZENQUANT_WEB_PORT", "8090")),
+        help="TCP port to bind.",
+    )
+    args = parser.parse_args()
+
+    app = create_app(runtime_mode=args.mode)
+    uvicorn.run(app, host=args.host, port=args.port, reload=False)

@@ -762,8 +762,63 @@ python3 -m zenquant.app.demo
 ### Run web app
 
 ```bash
-zenquant-web
+uv run zenquant-web --host 127.0.0.1 --port 8090 --mode live
 # open http://127.0.0.1:8090
+```
+
+### Validate live paper strategy
+
+Use this order if you want to run a long-lived background process and verify
+that the strategy is behaving correctly.
+
+1. Run core regression checks first:
+
+```bash
+uv run pytest -q
+npm run test:frontend
+```
+
+2. Optional but recommended: validate replay/backtest contracts before live mode:
+
+```bash
+uv run zenquant-history-sync --year 2024 --month 1 --symbol BTCUSDT
+uv run zenquant-backtest --root data/raw/binance --symbol BTCUSDT
+```
+
+3. Start the live paper-trading runtime:
+
+```bash
+export ZENQUANT_PG_DSN='postgresql://user:pass@host:5432/zenquant'
+uv run zenquant-web --host 127.0.0.1 --port 8090 --mode live
+```
+
+4. Verify runtime health from another shell:
+
+```bash
+curl http://127.0.0.1:8090/healthz
+curl "http://127.0.0.1:8090/api/state?symbol=BTCUSDT_PERP&tf=4h"
+```
+
+What you should see:
+- `mode=live`
+- `runtime_status.market_connected=true`
+- `last_price` updates in real time
+- `latest_indicator` exists
+- `latest_target` exists
+- if PostgreSQL is enabled, `database.writes` increases over time
+
+Important:
+- The live runtime now bootstraps recent closed `4h` and `1d` bars plus recent funding/open-interest history on startup, so a fresh process does not begin from an empty indicator state.
+- This bootstrap is warm-state only. It does **not** replay historical orders or historical PnL into the current live paper account.
+- Restart recovery for prior simulated positions is still not implemented. A restarted process begins flat, then aligns to the current closed-bar signal.
+
+### Frontend checks
+
+```bash
+npm run test:store
+npm run test:e2e
+# or run both:
+npm run test:frontend
 ```
 
 ### Run tests

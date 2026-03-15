@@ -71,10 +71,14 @@ class RiskOverlay:
     def _on_indicator(self, _: str, payload: object) -> None:
         if not isinstance(payload, IndicatorPack):
             return
-        self._latest_indicator[(payload.symbol, payload.timeframe)] = payload
-        last_price = float(payload.values.get("last_price", 0.0) or 0.0)
+        self.prime_indicator(payload)
+
+    def prime_indicator(self, pack: IndicatorPack) -> None:
+        """Seed indicator and price context without requiring a bus publish."""
+        self._latest_indicator[(pack.symbol, pack.timeframe)] = pack
+        last_price = float(pack.values.get("last_price", 0.0) or 0.0)
         if last_price > 0:
-            self._last_price[payload.symbol] = last_price
+            self._last_price[pack.symbol] = last_price
             self._revalue_equity()
 
     def _on_execution_report(self, _: str, payload: object) -> None:

@@ -8,8 +8,7 @@ export default defineConfig({
     trace: "on-first-retry",
   },
   webServer: {
-    command:
-      "./.venv/bin/uvicorn zenquant.app.server:create_app --factory --host 127.0.0.1 --port 8091",
+    command: "uv run zenquant-web --host 127.0.0.1 --port 8091 --mode demo",
     url: "http://127.0.0.1:8091/healthz",
     reuseExistingServer: true,
     timeout: 30_000,

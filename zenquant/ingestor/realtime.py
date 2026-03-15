@@ -29,6 +29,11 @@ class RealTimeIngestorConfig:
     open_interest_poll_interval_s: float = 30.0
     request_timeout_s: float = 6.0
     reconnect_backoff_s: float = 3.0
+    bootstrap_enabled: bool = True
+    bootstrap_4h_bars: int = 90
+    bootstrap_1d_bars: int = 90
+    bootstrap_funding_points: int = 500
+    bootstrap_open_interest_points: int = 500
 
 
 class RealTimeIngestor:
@@ -46,8 +51,17 @@ class RealTimeIngestor:
                 open_interest_poll_interval_s=runtime_config.open_interest_poll_interval_s,
                 request_timeout_s=runtime_config.request_timeout_s,
                 reconnect_backoff_s=runtime_config.reconnect_backoff_s,
+                bootstrap_enabled=runtime_config.bootstrap_enabled,
+                bootstrap_4h_bars=runtime_config.bootstrap_4h_bars,
+                bootstrap_1d_bars=runtime_config.bootstrap_1d_bars,
+                bootstrap_funding_points=runtime_config.bootstrap_funding_points,
+                bootstrap_open_interest_points=runtime_config.bootstrap_open_interest_points,
             ),
         )
+
+    async def bootstrap_history(self) -> None:
+        """Warm recent indicator context before the live stream starts."""
+        await self._client.bootstrap_history()
 
     async def start(self) -> None:
         """Start websocket and polling tasks."""

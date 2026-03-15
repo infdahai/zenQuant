@@ -12,8 +12,10 @@ import json
 import logging
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from dataclasses import dataclass
+from typing import Any
 
 from websockets.asyncio.client import ClientConnection, connect
 
@@ -23,6 +25,7 @@ from zenquant.domain import (
     EventMeta,
     FundingUpdate,
     MarkPriceUpdate,
+    MarketSnapshot,
     OpenInterestUpdate,
     OrderBookLevel,
     OrderBookSnapshot,
@@ -49,6 +52,11 @@ class BinancePerpStreamConfig:
     open_interest_poll_interval_s: float = 30.0
     request_timeout_s: float = 6.0
     reconnect_backoff_s: float = 3.0
+    bootstrap_enabled: bool = True
+    bootstrap_4h_bars: int = 90
+    bootstrap_1d_bars: int = 90
+    bootstrap_funding_points: int = 500
+    bootstrap_open_interest_points: int = 500
 
 
 class BinancePerpStreamClient:
@@ -88,6 +96,13 @@ class BinancePerpStreamClient:
             self._ws = None
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
+
+    async def bootstrap_history(self) -> None:
+        """Warm recent 4h/1d indicator context before live streaming starts."""
+        if not self._config.bootstrap_enabled:
+            return
+        for symbol in self._config.symbols:
+            await asyncio.to_thread(self._bootstrap_symbol, symbol)
 
     async def _run_market_stream(self) -> None:
         """Maintain the combined websocket stream and reconnect on failure."""
@@ -139,6 +154,125 @@ class BinancePerpStreamClient:
                 f"md.oi.BINANCE.{symbol}",
                 OpenInterestUpdate(meta=meta, open_interest=oi),
             )
+
+    def _bootstrap_symbol(self, symbol: str) -> None:
+        """Fetch recent closed bars and auxiliary data for live warmup."""
+        exch_symbol = _to_binance_symbol(symbol)
+        if exch_symbol is None:
+            return
+
+        logger.info("bootstrapping live history for %s", symbol)
+        daily_rows = _fetch_recent_klines(
+            exch_symbol,
+            timeframe="1d",
+            limit=self._config.bootstrap_1d_bars,
+            timeout_s=self._config.request_timeout_s,
+        )
+        four_hour_rows = _fetch_recent_klines(
+            exch_symbol,
+            timeframe="4h",
+            limit=self._config.bootstrap_4h_bars,
+            timeout_s=self._config.request_timeout_s,
+        )
+        funding_rows = _fetch_recent_funding(
+            exch_symbol,
+            limit=self._config.bootstrap_funding_points,
+            timeout_s=self._config.request_timeout_s,
+        )
+        open_interest_rows = _fetch_recent_open_interest(
+            exch_symbol,
+            timeframe="4h",
+            limit=self._config.bootstrap_open_interest_points,
+            timeout_s=self._config.request_timeout_s,
+        )
+
+        candles: list[dict[str, Any]] = []
+        for timeframe, rows in (("1d", daily_rows), ("4h", four_hour_rows)):
+            for row in rows:
+                row["event_timeframe"] = timeframe
+                candles.append(row)
+        candles.sort(key=lambda item: (int(item["close_time_ns"]), _bootstrap_timeframe_priority(str(item["event_timeframe"]))))
+
+        funding_index = -1
+        open_interest_index = -1
+        for row in candles:
+            cutoff_ns = int(row["close_time_ns"])
+            while (
+                funding_index + 1 < len(funding_rows)
+                and int(funding_rows[funding_index + 1]["funding_time_ns"]) <= cutoff_ns
+            ):
+                funding_index += 1
+            while (
+                open_interest_index + 1 < len(open_interest_rows)
+                and int(open_interest_rows[open_interest_index + 1]["ts_ns"]) <= cutoff_ns
+            ):
+                open_interest_index += 1
+
+            funding_row = funding_rows[funding_index] if funding_index >= 0 else None
+            oi_row = open_interest_rows[open_interest_index] if open_interest_index >= 0 else None
+            self._publish_bootstrap_bar(symbol=symbol, row=row, funding_row=funding_row, oi_row=oi_row)
+
+        logger.info(
+            "bootstrapped %s with %d historical bars (%d 1d, %d 4h)",
+            symbol,
+            len(candles),
+            len(daily_rows),
+            len(four_hour_rows),
+        )
+
+    def _publish_bootstrap_bar(
+        self,
+        *,
+        symbol: str,
+        row: dict[str, Any],
+        funding_row: dict[str, Any] | None,
+        oi_row: dict[str, Any] | None,
+    ) -> None:
+        """Publish a warmup candle/snapshot pair without replaying old orders."""
+        timeframe = _timeframe_from_stream(str(row["event_timeframe"]))
+        if timeframe is None:
+            return
+
+        cutoff_ns = int(row["close_time_ns"])
+        last_price = float(row["close"])
+        meta = self._meta(symbol=symbol, event_time_ns=cutoff_ns)
+        self._bus.publish(
+            f"md.mark.BINANCE.{symbol}",
+            MarkPriceUpdate(meta=meta, mark_price=last_price, index_price=last_price),
+        )
+        self._bus.publish(
+            f"md.candle.{timeframe.value}.{symbol}",
+            Candle(
+                symbol=symbol,
+                timeframe=timeframe,
+                bar_start_ns=int(row["open_time_ns"]),
+                bar_end_ns=cutoff_ns,
+                open=float(row["open"]),
+                high=float(row["high"]),
+                low=float(row["low"]),
+                close=last_price,
+                volume=float(row["volume"]),
+                trade_count=int(row["trade_count"]),
+            ),
+        )
+        self._bus.publish(
+            f"md.snapshot.{timeframe.value}.{symbol}",
+            MarketSnapshot(
+                symbol=symbol,
+                timeframe=timeframe,
+                cutoff_time_ns=cutoff_ns,
+                last_price=last_price,
+                bid_depth=max(float(row["volume"]), 1.0),
+                ask_depth=max(float(row["volume"]), 1.0),
+                book_age_ms=0,
+                venue_count=1,
+                cvd_delta=_proxy_cvd_delta(row),
+                funding_oi_weighted=float(funding_row["funding_rate"]) if funding_row else None,
+                oi_coverage=1.0 if oi_row else 0.0,
+                staleness_ms=_bootstrap_staleness_ms(cutoff_ns, funding_row, oi_row),
+                quality_flags=["OK"] if oi_row else ["MISSING_OI"],
+            ),
+        )
 
     def _handle_market_message(self, message: str) -> None:
         """Route a normalized Binance payload to the correct event publisher."""
@@ -379,3 +513,127 @@ def _fetch_json_sync(url: str, timeout_s: float) -> object | None:
         return json.loads(payload)
     except json.JSONDecodeError:
         return None
+
+
+def _fetch_recent_klines(symbol: str, *, timeframe: str, limit: int, timeout_s: float) -> list[dict[str, Any]]:
+    """Fetch recent closed REST klines for live warmup."""
+    if limit <= 0:
+        return []
+    query = urllib.parse.urlencode({"symbol": symbol, "interval": timeframe, "limit": str(limit)})
+    payload = _fetch_json_sync(f"{BINANCE_FSTREAM_REST}/fapi/v1/klines?{query}", timeout_s)
+    if not isinstance(payload, list):
+        return []
+
+    now_ms = int(time.time() * 1_000)
+    rows: list[dict[str, Any]] = []
+    for item in payload:
+        if not isinstance(item, list) or len(item) < 9:
+            continue
+        open_ms = int(item[0] or 0)
+        close_ms = int(item[6] or 0)
+        if open_ms <= 0 or close_ms <= 0:
+            continue
+        if close_ms >= now_ms:
+            # Skip the still-forming bar. Live decisions remain bar-close only.
+            continue
+        rows.append(
+            {
+                "open_time_ns": open_ms * 1_000_000,
+                "close_time_ns": (close_ms + 1) * 1_000_000,
+                "open": _to_float(item[1]),
+                "high": _to_float(item[2]),
+                "low": _to_float(item[3]),
+                "close": _to_float(item[4]),
+                "volume": _to_float(item[5]),
+                "trade_count": int(item[8] or 0),
+            }
+        )
+    rows.sort(key=lambda item: int(item["close_time_ns"]))
+    return rows
+
+
+def _fetch_recent_funding(symbol: str, *, limit: int, timeout_s: float) -> list[dict[str, Any]]:
+    """Fetch recent funding history for snapshot warmup."""
+    if limit <= 0:
+        return []
+    query = urllib.parse.urlencode({"symbol": symbol, "limit": str(limit)})
+    payload = _fetch_json_sync(f"{BINANCE_FSTREAM_REST}/fapi/v1/fundingRate?{query}", timeout_s)
+    if not isinstance(payload, list):
+        return []
+    rows: list[dict[str, Any]] = []
+    for item in payload:
+        if not isinstance(item, dict):
+            continue
+        funding_time_ms = int(item.get("fundingTime", 0) or 0)
+        if funding_time_ms <= 0:
+            continue
+        rows.append(
+            {
+                "funding_time_ns": funding_time_ms * 1_000_000,
+                "funding_rate": _to_float(item.get("fundingRate")),
+            }
+        )
+    rows.sort(key=lambda item: int(item["funding_time_ns"]))
+    return rows
+
+
+def _fetch_recent_open_interest(
+    symbol: str,
+    *,
+    timeframe: str,
+    limit: int,
+    timeout_s: float,
+) -> list[dict[str, Any]]:
+    """Fetch recent open-interest history for snapshot warmup."""
+    if limit <= 0:
+        return []
+    query = urllib.parse.urlencode({"symbol": symbol, "period": timeframe, "limit": str(limit)})
+    payload = _fetch_json_sync(f"{BINANCE_FSTREAM_REST}/futures/data/openInterestHist?{query}", timeout_s)
+    if not isinstance(payload, list):
+        return []
+    rows: list[dict[str, Any]] = []
+    for item in payload:
+        if not isinstance(item, dict):
+            continue
+        ts_ms = int(item.get("timestamp", 0) or 0)
+        if ts_ms <= 0:
+            continue
+        rows.append(
+            {
+                "ts_ns": ts_ms * 1_000_000,
+                "open_interest": _to_float(item.get("sumOpenInterest")),
+            }
+        )
+    rows.sort(key=lambda item: int(item["ts_ns"]))
+    return rows
+
+
+def _proxy_cvd_delta(row: dict[str, Any]) -> float:
+    """Approximate bar CVD when warmup only has candle history."""
+    volume = float(row["volume"])
+    open_px = float(row["open"])
+    close_px = float(row["close"])
+    if close_px > open_px:
+        return volume
+    if close_px < open_px:
+        return -volume
+    return 0.0
+
+
+def _bootstrap_staleness_ms(
+    cutoff_ns: int,
+    funding_row: dict[str, Any] | None,
+    oi_row: dict[str, Any] | None,
+) -> int:
+    """Measure auxiliary-data age for warmup snapshots."""
+    ages_ms: list[int] = []
+    if funding_row is not None:
+        ages_ms.append(max(0, int((cutoff_ns - int(funding_row["funding_time_ns"])) / 1_000_000)))
+    if oi_row is not None:
+        ages_ms.append(max(0, int((cutoff_ns - int(oi_row["ts_ns"])) / 1_000_000)))
+    return max(ages_ms) if ages_ms else 0
+
+
+def _bootstrap_timeframe_priority(value: str) -> int:
+    """Keep 1d bootstrap bars ahead of 4h bars sharing the same cutoff."""
+    return 0 if value == Timeframe.TF_1D.value else 1

@@ -139,12 +139,15 @@ class ARCStrategyEngine:
         """Route 1d packs to bias logic and execution-timeframe packs to targeting."""
         if not isinstance(payload, IndicatorPack):
             return
+        self.prime_indicator(payload)
 
-        if payload.timeframe == Timeframe.TF_1D:
-            self._update_directional_bias(payload)
+    def prime_indicator(self, pack: IndicatorPack) -> None:
+        """Prime live startup state from an already-computed indicator pack."""
+        if pack.timeframe == Timeframe.TF_1D:
+            self._update_directional_bias(pack)
             return
 
-        target = self._build_target(payload)
+        target = self._build_target(pack)
         reason = self._build_reason(target)
         self._bus.publish(
             f"strategy.regime.{self._config.portfolio}",
