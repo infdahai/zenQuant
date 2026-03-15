@@ -1,6 +1,6 @@
 import unittest
 
-from zenquant.domain import ExecutionReport, IndicatorCoverage, IndicatorPack, Timeframe
+from zenquant.domain import ExecutionReport, IndicatorCoverage, IndicatorPack, PlaybookSelection, Timeframe
 from zenquant.infra import InMemoryJetStream
 from zenquant.state import StateEngine
 from zenquant.strategy import ARCStrategyEngine
@@ -42,6 +42,34 @@ def _pack(
 
 
 class Stage2StrategyTests(unittest.TestCase):
+    def test_4h_state_publishes_matching_playbook(self) -> None:
+        bus = InMemoryJetStream()
+        ARCStrategyEngine(bus)
+        StateEngine(bus)
+
+        playbooks: list[PlaybookSelection] = []
+        bus.subscribe(
+            "strategy.playbook.>",
+            lambda _subject, payload: playbooks.append(payload)
+            if isinstance(payload, PlaybookSelection)
+            else None,
+        )
+
+        bus.publish(
+            "indicator.pack.v1.4h.BTCUSDT_PERP",
+            _pack(
+                timeframe=Timeframe.TF_4H,
+                cutoff_time_ns=2,
+                last_price=101.0,
+                cvd_slope=0.6,
+                structure_state="UPTREND",
+                momentum_roc_z=1.3,
+            ),
+        )
+
+        self.assertEqual(len(playbooks), 1)
+        self.assertEqual(playbooks[0].playbook_id, "BULL_CONTINUATION")
+
     def test_1d_bias_blocks_conflicting_4h_direction_without_emitting_1d_target(self) -> None:
         bus = InMemoryJetStream()
         ARCStrategyEngine(bus)

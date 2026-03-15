@@ -7,6 +7,7 @@ from zenquant.domain import (
     IndicatorPack,
     MarketState,
     OpenPositionState,
+    PlaybookSelection,
     TargetPosition,
     Timeframe,
 )
@@ -59,6 +60,23 @@ class DashboardStateTests(unittest.TestCase):
                 reason_codes=["REGIME_TREND"],
             )
         )
+        store.on_playbook(
+            PlaybookSelection(
+                symbol="BTCUSDT_PERP",
+                timeframe=Timeframe.TF_4H,
+                cutoff_time_ns=10,
+                playbook_id="BULL_CONTINUATION",
+                playbook_confidence=0.82,
+                allowed_directions=[1.0, 0.0],
+                max_leverage=3.0,
+                trailing_stop_atr_mult=3.0,
+                allow_pyramid=True,
+                max_pyramid_count=2,
+                time_decay_bars=None,
+                selection_reason="Clean uptrend",
+                reason_codes=["PLAYBOOK_BULL_CONTINUATION"],
+            )
+        )
         store.on_position_state(
             symbol="BTCUSDT_PERP",
             timeframe="4h",
@@ -95,6 +113,8 @@ class DashboardStateTests(unittest.TestCase):
         self.assertIn("directional_bias", snapshot)
         self.assertIn("directional_bias_meta", snapshot)
         self.assertIn("market_state", snapshot)
+        self.assertIn("active_playbook", snapshot)
         self.assertIn("position_state", snapshot)
         self.assertIn("latest_target", snapshot)
         self.assertFalse(snapshot["directional_bias_meta"]["is_stale"])
+        self.assertEqual(snapshot["active_playbook"]["playbook_id"], "BULL_CONTINUATION")

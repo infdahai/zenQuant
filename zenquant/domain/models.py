@@ -334,6 +334,67 @@ class MarketState:
 
 
 @dataclass(slots=True)
+class PlaybookSelection:
+    """Active trading playbook selected from the current ``MarketState``.
+
+    This object is the Phase 4 bridge between state classification and target
+    construction. It keeps strategy routing explicit and auditable without
+    embedding playbook rules into the UI or execution layers.
+    """
+
+    symbol: str
+    timeframe: Timeframe
+    cutoff_time_ns: int
+    playbook_id: str
+    playbook_confidence: float
+    allowed_directions: list[float]
+    max_leverage: float
+    trailing_stop_atr_mult: float
+    allow_pyramid: bool
+    max_pyramid_count: int
+    time_decay_bars: int | None
+    selection_reason: str
+    reason_codes: list[str] = field(default_factory=list)
+
+    def allows_direction(self, direction: float) -> bool:
+        """Return whether the playbook permits this directional stance."""
+        return any(abs(allowed - direction) < 1e-9 for allowed in self.allowed_directions)
+
+    def is_reduce_only(self) -> bool:
+        """Capital-preservation playbooks only allow flattening exposure."""
+        return all(abs(direction) < 1e-9 for direction in self.allowed_directions)
+
+
+@dataclass(slots=True)
+class SizingDecision:
+    """Explicit leverage-sizing breakdown used by the strategy engine.
+
+    Phase 5 extracts sizing out of ``ARCStrategyEngine`` so leverage decisions
+    can be tested and audited independently from entry and exit logic.
+    """
+
+    symbol: str
+    timeframe: Timeframe
+    cutoff_time_ns: int
+    base_size: float
+    confidence_multiplier: float
+    stress_discount: float
+    execution_haircut: float
+    final_leverage: float
+    reason_codes: list[str] = field(default_factory=list)
+
+    def breakdown(self) -> dict[str, float]:
+        """Return the multiplicative sizing components for display/audit."""
+        return {
+            "base_size": self.base_size,
+            "confidence_multiplier": self.confidence_multiplier,
+            "stress_discount": self.stress_discount,
+            "execution_haircut": self.execution_haircut,
+            "final_leverage": self.final_leverage,
+        }
+
+
+@dataclass(slots=True)
 class BacktestMetrics:
     """Summary metrics from a single backtest window."""
 

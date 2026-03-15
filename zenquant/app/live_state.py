@@ -18,8 +18,10 @@ from zenquant.domain import (
     IntentReason,
     MarketState,
     OpenPositionState,
+    PlaybookSelection,
     RiskOverlayDecision,
     RiskSnapshot,
+    SizingDecision,
     TargetPosition,
     Timeframe,
 )
@@ -81,6 +83,8 @@ class DashboardStateStore:
         self._latest_target: dict[tuple[str, str], TargetPosition] = {}
         self._directional_bias: dict[str, DirectionalBias] = {}
         self._market_state: dict[tuple[str, str], MarketState] = {}
+        self._playbook: dict[tuple[str, str], PlaybookSelection] = {}
+        self._sizing: dict[tuple[str, str], SizingDecision] = {}
         self._position_state: dict[tuple[str, str], OpenPositionState] = {}
         self._last_price: dict[str, float] = {}
         self._runtime_status: dict[str, Any] = {
@@ -170,6 +174,14 @@ class DashboardStateStore:
     def on_market_state(self, state: MarketState) -> None:
         self._market_state[(state.symbol, state.timeframe.value)] = state
 
+    def on_playbook(self, playbook: PlaybookSelection) -> None:
+        """Store the active playbook published for one symbol/timeframe."""
+        self._playbook[(playbook.symbol, playbook.timeframe.value)] = playbook
+
+    def on_sizing(self, sizing: SizingDecision) -> None:
+        """Store the latest leverage-sizing breakdown for one symbol/timeframe."""
+        self._sizing[(sizing.symbol, sizing.timeframe.value)] = sizing
+
     def on_position_state(self, symbol: str, timeframe: str, payload: object) -> None:
         key = (symbol, timeframe)
         if isinstance(payload, OpenPositionState):
@@ -212,6 +224,12 @@ class DashboardStateStore:
             "directional_bias_meta": self._directional_bias_meta(latest, bias),
             "market_state": to_jsonable(self._market_state.get(key))
             if self._market_state.get(key) is not None
+            else None,
+            "active_playbook": to_jsonable(self._playbook.get(key))
+            if self._playbook.get(key) is not None
+            else None,
+            "latest_sizing": to_jsonable(self._sizing.get(key))
+            if self._sizing.get(key) is not None
             else None,
             "position_state": to_jsonable(self._position_state.get(key))
             if self._position_state.get(key) is not None

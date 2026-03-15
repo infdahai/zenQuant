@@ -56,6 +56,7 @@ export const DashboardPage = defineComponent({
     const directionalBias = computed(() => snapshot.value.directional_bias || null);
     const directionalBiasMeta = computed(() => snapshot.value.directional_bias_meta || null);
     const marketState = computed(() => snapshot.value.market_state || null);
+    const activePlaybook = computed(() => snapshot.value.active_playbook || null);
     const positionState = computed(() => snapshot.value.position_state || null);
     const latestTarget = computed(() => snapshot.value.latest_target || null);
     const latestReason = computed(() => {
@@ -103,6 +104,7 @@ export const DashboardPage = defineComponent({
     const thesisSummary = computed(() =>
       buildThesisSummary({
         state: marketState.value,
+        playbook: activePlaybook.value,
         directionalBias: directionalBias.value,
         latestTarget: latestTarget.value,
         latestRiskDecision: latestRiskDecision.value,
@@ -317,6 +319,7 @@ export const DashboardPage = defineComponent({
       latestReport,
       latestRiskDecision,
       latestTarget,
+      activePlaybook,
       marketHealth,
       marketState,
       pnlSummary,
@@ -448,6 +451,17 @@ export const DashboardPage = defineComponent({
             <span>Database</span>
             <strong>{{ databaseStatus.label }}</strong>
             <small>{{ databaseStatus.detail }}</small>
+          </div>
+          <div class="decision-item">
+            <span>Active playbook</span>
+            <strong>{{ activePlaybook ? humanizeCode(activePlaybook.playbook_id) : "Awaiting playbook" }}</strong>
+            <small>
+              {{
+                activePlaybook
+                  ? ("Confidence " + formatPercent(activePlaybook.playbook_confidence, 2) + " | " + activePlaybook.selection_reason)
+                  : "Playbook selection publishes after state classification"
+              }}
+            </small>
           </div>
           <div class="decision-item">
             <span>Latest target</span>
@@ -672,6 +686,7 @@ function averageStateConfidence(state) {
 
 function buildThesisSummary({
   state,
+  playbook,
   directionalBias,
   latestTarget,
   latestRiskDecision,
@@ -691,6 +706,7 @@ function buildThesisSummary({
       transitionWidth: "0%",
       chips: [
         { label: "Feed", value: marketHealth.label, tone: marketHealth.tone },
+        { label: "Playbook", value: playbook ? humanizeCode(playbook.playbook_id) : "Awaiting playbook", tone: "warning" },
         { label: "Bias", value: directionalBias ? formatBiasLabel(directionalBias.direction, true) : "Awaiting bias", tone: "warning" },
         { label: "Target", value: latestTarget ? `${formatNumber(latestTarget.target_qty, 4)} BTC` : "No target", tone: "warning" },
       ],
@@ -724,6 +740,9 @@ function buildThesisSummary({
   let headline = "Strategy is waiting for a cleaner edge";
   let detail = `${formatRegimeLabel(state.regime)} regime with ${humanizeCode(state.volatility_state).toLowerCase()} volatility, ${humanizeCode(state.positioning_state).toLowerCase()} positioning, and ${humanizeCode(state.quality_state).toLowerCase()} quality.`;
   let action = "The system is flat until the state improves.";
+  if (playbook) {
+    detail = `${detail} Active playbook: ${humanizeCode(playbook.playbook_id).toLowerCase()} (${formatPercent(playbook.playbook_confidence, 2)} confidence).`;
+  }
 
   if (String(state.directional_state) === "UPTREND") {
     headline = "Long thesis is active";
@@ -755,6 +774,7 @@ function buildThesisSummary({
     transitionWidth: toPercentWidth(transitionRisk),
     chips: [
       { label: "Regime", value: formatRegimeLabel(state.regime), tone: "ok" },
+      { label: "Playbook", value: playbook ? humanizeCode(playbook.playbook_id) : "Awaiting playbook", tone: playbook && playbook.playbook_id === "CAPITAL_PRESERVATION" ? "warning" : "ok" },
       { label: "Direction", value: humanizeCode(state.directional_state), tone: tone },
       { label: "Quality", value: humanizeCode(state.quality_state), tone: toneFromState("quality", state.quality_state) },
       { label: "Target", value: latestTarget ? `${formatNumber(targetQty, 4)} BTC` : "No target", tone: Math.abs(targetQty) > 0 ? "ok" : "warning" },

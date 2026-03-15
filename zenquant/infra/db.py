@@ -16,6 +16,7 @@ from zenquant.domain import (
     IndicatorPack,
     MarketState,
     OpenPositionState,
+    PlaybookSelection,
     RiskSnapshot,
     TargetPosition,
 )
@@ -71,6 +72,7 @@ class OnlineStateStore:
         self._bus.subscribe("exec.order.report", self._on_execution_report)
         self._bus.subscribe("strategy.position_state.>", self._on_position_state)
         self._bus.subscribe("state.market.>", self._on_market_state)
+        self._bus.subscribe("strategy.playbook.>", self._on_playbook)
 
     def start(self) -> None:
         if not self._enabled or self._worker is not None:
@@ -306,6 +308,40 @@ class OnlineStateStore:
                 payload.direction_signal,
                 payload.transition_risk,
                 json.dumps(list(payload.quality_flags)),
+                json.dumps(list(payload.reason_codes)),
+            ),
+        )
+
+    def _on_playbook(self, _: str, payload: object) -> None:
+        if not isinstance(payload, PlaybookSelection):
+            return
+        self._enqueue(
+            """
+            INSERT INTO playbook_selections (
+                symbol, timeframe, cutoff_time_ns, playbook_id, playbook_confidence,
+                allowed_directions, max_leverage, trailing_stop_atr_mult,
+                allow_pyramid, max_pyramid_count, time_decay_bars,
+                selection_reason, reason_codes
+            ) VALUES (
+                %s, %s, %s, %s, %s,
+                %s::jsonb, %s, %s,
+                %s, %s, %s,
+                %s, %s::jsonb
+            )
+            """,
+            (
+                payload.symbol,
+                payload.timeframe.value,
+                payload.cutoff_time_ns,
+                payload.playbook_id,
+                payload.playbook_confidence,
+                json.dumps(list(payload.allowed_directions)),
+                payload.max_leverage,
+                payload.trailing_stop_atr_mult,
+                payload.allow_pyramid,
+                payload.max_pyramid_count,
+                payload.time_decay_bars,
+                payload.selection_reason,
                 json.dumps(list(payload.reason_codes)),
             ),
         )

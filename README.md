@@ -2047,29 +2047,64 @@ It is trying to be a trading kernel that:
 
 ---
 
-## 24. Additional Documentation
+## 24. Current Architecture Status
 
-For deeper architectural guidance and future development roadmap, see:
+### Completed Phases
 
-### Strategic Architecture Documents
+**Phase 3: State Engine** ✅
+- 4-dimensional market state classification (directional, volatility, positioning, quality)
+- Independent confidence scores for each dimension
+- Transition risk tracking (0.0 = stable, 1.0 = about to flip)
+- PostgreSQL persistence and dashboard visualization
 
-- **[docs/PLAYBOOK_ARCHITECTURE.md](docs/PLAYBOOK_ARCHITECTURE.md)** - Playbook-driven state architecture design proposal for Phase 3+ evolution. Explains how to evolve from feature-driven strategy to state-based playbook selection for improved medium-term trading edge.
+**Phase 4: Playbook Engine** ✅
+- 4 core playbooks: Bull Continuation, Bear Defense, Range Light, Capital Preservation
+- State-driven playbook selection with explicit allowed directions and risk parameters
+- Playbook-aware trailing stops and position management
+- Full integration with strategy engine
 
-- **[docs/PLAYBOOK_IMPLEMENTATION_GUIDE.md](docs/PLAYBOOK_IMPLEMENTATION_GUIDE.md)** - Concrete implementation guide with code examples, migration path, and testing strategy for the playbook architecture.
+### Architecture Layers
 
-### Key Concepts
+```
+Canonical Data Layer (bar-close events, funding, OI)
+    ↓
+State Engine (4D state classification)
+    ↓
+Playbook Engine (select trading logic based on state)
+    ↓
+Strategy Engine (build target positions)
+    ↓
+Risk Overlay (final veto, drawdown throttle)
+    ↓
+Execution Kernel (delta execution, simulated fills)
+    ↓
+PostgreSQL Audit Trail
+```
 
-The playbook architecture addresses a fundamental question for medium-term (4H/1D) trading systems:
+### Next Development Phases
 
-**Where does edge come from?**
+**Phase 5: Sizing Engine** (in progress)
+- Extract sizing logic into composable function
+- Components: base_size × confidence_multiplier × stress_discount × execution_haircut
+- Transparent sizing breakdown for dashboard
 
-Not from heavier AI models, but from:
-1. **Correct state identification** - decomposing market regime into orthogonal dimensions (directional, volatility, positioning, quality)
-2. **Disciplined playbook switching** - using the right trading logic for the right market state
-3. **Stress-aware sizing** - reducing exposure in hostile conditions
-4. **Professional exits** - cutting losers fast, letting winners run with playbook-appropriate logic
+**Phase 6: Exit Engine** (planned)
+- 4 exit types: invalidation, trailing stop, time decay, regime change
+- Priority-based exit logic
+- Playbook-aware exit parameters
 
-These documents provide the strategic framework for Phase 3+ development while preserving all existing ZenQuant contracts (determinism, auditability, replay parity, risk veto).
+See **[docs/TASK_LIST.md](docs/TASK_LIST.md)** for detailed Phase 5-6 task breakdown.
+
+### Core Architectural Principles
+
+For medium-term (4H/1D) trading systems, edge comes from:
+
+1. **Correct state identification** - orthogonal state dimensions, not single regime
+2. **Disciplined playbook switching** - right logic for right state
+3. **Stress-aware sizing** - smaller in hostile conditions
+4. **Professional exits** - cut losers fast, let winners run
+
+These principles guide all development while preserving ZenQuant's core contracts: determinism, auditability, replay parity, and risk veto.
 
 ---
 

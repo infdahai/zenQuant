@@ -107,6 +107,27 @@ CREATE TABLE IF NOT EXISTS market_states (
 CREATE INDEX IF NOT EXISTS idx_market_states_symbol_tf_cutoff
     ON market_states (symbol, timeframe, cutoff_time_ns DESC);
 
+CREATE TABLE IF NOT EXISTS playbook_selections (
+    id BIGSERIAL PRIMARY KEY,
+    symbol TEXT NOT NULL,
+    timeframe TEXT NOT NULL,
+    cutoff_time_ns BIGINT NOT NULL,
+    playbook_id TEXT NOT NULL,
+    playbook_confidence DOUBLE PRECISION NOT NULL,
+    allowed_directions JSONB NOT NULL,
+    max_leverage DOUBLE PRECISION NOT NULL,
+    trailing_stop_atr_mult DOUBLE PRECISION NOT NULL,
+    allow_pyramid BOOLEAN NOT NULL,
+    max_pyramid_count INTEGER NOT NULL,
+    time_decay_bars INTEGER,
+    selection_reason TEXT NOT NULL,
+    reason_codes JSONB NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_playbook_selections_symbol_tf_cutoff
+    ON playbook_selections (symbol, timeframe, cutoff_time_ns DESC);
+
 CREATE TABLE IF NOT EXISTS data_quality_log (
     id BIGSERIAL PRIMARY KEY,
     ts_ns BIGINT NOT NULL,

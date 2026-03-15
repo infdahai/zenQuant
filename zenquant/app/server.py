@@ -40,8 +40,10 @@ from zenquant.domain import (
     MarketState,
     MarkPriceUpdate,
     OpenPositionState,
+    PlaybookSelection,
     RiskOverlayDecision,
     RiskSnapshot,
+    SizingDecision,
     TargetPosition,
     Timeframe,
 )
@@ -153,6 +155,8 @@ class ZenQuantWebRuntime:
         self.bus.subscribe("indicator.>", self._on_indicator)
         self.bus.subscribe("strategy.bias.1d.>", self._on_directional_bias)
         self.bus.subscribe("state.market.>", self._on_market_state)
+        self.bus.subscribe("strategy.playbook.>", self._on_playbook)
+        self.bus.subscribe("strategy.sizing.>", self._on_sizing)
         self.bus.subscribe("strategy.position_state.>", self._on_position_state)
         self.bus.subscribe("risk.snapshot", self._on_risk_snapshot)
         self.bus.subscribe("risk.overlay.decision", self._on_risk_decision)
@@ -464,6 +468,16 @@ class ZenQuantWebRuntime:
     def _on_market_state(self, _: str, payload: object) -> None:
         if isinstance(payload, MarketState):
             self.state.on_market_state(payload)
+            self._schedule_state_broadcast()
+
+    def _on_playbook(self, _: str, payload: object) -> None:
+        if isinstance(payload, PlaybookSelection):
+            self.state.on_playbook(payload)
+            self._schedule_state_broadcast()
+
+    def _on_sizing(self, _: str, payload: object) -> None:
+        if isinstance(payload, SizingDecision):
+            self.state.on_sizing(payload)
             self._schedule_state_broadcast()
 
     def _on_position_state(self, subject: str, payload: object) -> None:
