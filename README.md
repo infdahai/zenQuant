@@ -23,6 +23,12 @@ uv run zenquant-backtest --root data/raw/binance --symbol BTCUSDT
 export ZENQUANT_PG_DSN='postgresql://user:pass@host:5432/zenquant'
 uv run zenquant-web --host 127.0.0.1 --port 8090 --mode live
 
+# Export a labeled research dataset from historical replay
+uv run python scripts/run_research_pipeline.py --root data/raw/binance --symbol BTCUSDT --label baseline
+
+# Export a labeled research dataset from live/paper PostgreSQL audit logs
+uv run python scripts/export_live_training_data.py --dsn "$ZENQUANT_PG_DSN" --symbol BTCUSDT_PERP --label paper-live
+
 # View dashboard
 open http://127.0.0.1:8090
 ```
@@ -40,6 +46,7 @@ open http://127.0.0.1:8090
 7. [Development Roadmap](#development-roadmap)
 8. [For External Reviewers](#for-external-reviewers)
 9. [For Internal Developers](#for-internal-developers)
+10. [Training Data Pipelines](#training-data-pipelines)
 
 ---
 
@@ -217,6 +224,67 @@ Rule: 4h strategy can only trade in the direction of 1d bias
 - All indicators computed from data available at bar close
 - No lookahead bias, no future data leakage
 - Cutoff timestamps enforced throughout the pipeline
+
+---
+
+## Training Data Pipelines
+
+ZenQuant now supports two deterministic dataset-export paths for tuning and later model training.
+
+### 1. Historical Replay Dataset
+
+Use this when you have Binance Parquet history on disk and want fully reproducible offline research.
+
+```bash
+uv run python scripts/run_research_pipeline.py \
+  --root data/raw/binance \
+  --symbol BTCUSDT \
+  --label baseline
+```
+
+Output directory:
+- `results/research_runs/<run_id>/manifest.json`
+- `results/research_runs/<run_id>/summary.json`
+- `results/research_runs/<run_id>/analysis_rows.jsonl`
+- `results/research_runs/<run_id>/analysis_rows.csv`
+- `results/research_runs/<run_id>/report.md`
+
+Use this path for:
+- backtest-driven parameter research
+- walk-forward splits
+- deterministic regression baselines
+
+### 2. Live / Paper Audit Dataset
+
+Use this when the system is already running with PostgreSQL audit persistence and you want to learn from real monitored behavior.
+
+```bash
+export ZENQUANT_PG_DSN='postgresql://user:pass@host:5432/zenquant'
+uv run python scripts/export_live_training_data.py \
+  --dsn "$ZENQUANT_PG_DSN" \
+  --symbol BTCUSDT_PERP \
+  --label paper-live
+```
+
+This path reads the live audit tables and exports one row per stored `4h` cutoff using:
+- indicator packs
+- market states
+- playbooks
+- sizing decisions
+- exit decisions
+- final target intents
+- latest risk snapshot at or before cutoff
+
+Forward labels are derived from subsequent stored close prices in `indicator_packs`, so the output stays point-in-time safe.
+
+Use this path for:
+- paper-live review
+- live/backtest parity checks
+- training on observed production behavior
+
+### Practical Rule
+
+Use historical replay to search safely. Use live audit exports to verify that the same strategy behavior survives real feeds and real operational noise.
 
 ### 3. Explainable Decisions
 - Every decision has reason codes

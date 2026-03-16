@@ -18,6 +18,7 @@ from zenquant.domain import (
     BacktestMetrics,
     BarCloseEvent,
     Candle,
+    DirectionalBias,
     EventMeta,
     ExitDecision,
     ExecutionReport,
@@ -25,7 +26,10 @@ from zenquant.domain import (
     MarkPriceUpdate,
     MarketSnapshot,
     PlaybookSelection,
+    OpenPositionState,
     RiskSnapshot,
+    MarketState,
+    SizingDecision,
     TargetPosition,
     Timeframe,
 )
@@ -107,11 +111,16 @@ class HistoricalBacktest:
         )
 
         self._indicators: list[IndicatorPack] = []
+        self._market_states: list[MarketState] = []
+        self._biases: list[DirectionalBias] = []
         self._playbooks: list[PlaybookSelection] = []
+        self._sizings: list[SizingDecision] = []
         self._exits: list[ExitDecision] = []
+        self._position_states: list[OpenPositionState] = []
         self._targets: list[TargetPosition] = []
         self._reports: list[ExecutionReport] = []
         self._risk_snapshots: list[RiskSnapshot] = []
+        self._execution_rows: list[dict[str, Any]] = []
         self._trade_ledger = _TradeLedger()
         self._funding_rows: list[dict[str, Any]] = []
         self._open_interest_rows: list[dict[str, Any]] = []
@@ -119,8 +128,12 @@ class HistoricalBacktest:
         self._open_interest_index = -1
 
         self.bus.subscribe("indicator.>", self._collect_indicator)
+        self.bus.subscribe("state.market.>", self._collect_market_state)
+        self.bus.subscribe("strategy.bias.1d.>", self._collect_bias)
         self.bus.subscribe("strategy.playbook.>", self._collect_playbook)
+        self.bus.subscribe("strategy.sizing.>", self._collect_sizing)
         self.bus.subscribe("strategy.exit.>", self._collect_exit)
+        self.bus.subscribe("strategy.position_state.>", self._collect_position_state)
         self.bus.subscribe("intent.target_position.final.>", self._collect_target)
         self.bus.subscribe("exec.order.report", self._collect_report)
         self.bus.subscribe("risk.snapshot", self._collect_risk_snapshot)
@@ -134,6 +147,11 @@ class HistoricalBacktest:
         """
 
         events = self._load_events()
+        if not events:
+            raise RuntimeError(
+                "no historical events available for replay; "
+                f"expected Parquet data under {self._config.root_dir} for symbol {self._config.symbol}"
+            )
         for event in events:
             self._publish_event(event)
 
@@ -247,6 +265,8 @@ class HistoricalBacktest:
                 quality_flags=["OK"] if oi_row else ["MISSING_OI"],
             ),
         )
+        if timeframe == self._config.execution_timeframe:
+            self._execution_rows.append(dict(row))
 
     def _latest_funding(self, cutoff_ns: int) -> dict[str, Any] | None:
         while (
@@ -276,13 +296,29 @@ class HistoricalBacktest:
         if isinstance(payload, TargetPosition):
             self._targets.append(payload)
 
+    def _collect_market_state(self, _: str, payload: object) -> None:
+        if isinstance(payload, MarketState):
+            self._market_states.append(payload)
+
+    def _collect_bias(self, _: str, payload: object) -> None:
+        if isinstance(payload, DirectionalBias):
+            self._biases.append(payload)
+
     def _collect_playbook(self, _: str, payload: object) -> None:
         if isinstance(payload, PlaybookSelection):
             self._playbooks.append(payload)
 
+    def _collect_sizing(self, _: str, payload: object) -> None:
+        if isinstance(payload, SizingDecision):
+            self._sizings.append(payload)
+
     def _collect_exit(self, _: str, payload: object) -> None:
         if isinstance(payload, ExitDecision):
             self._exits.append(payload)
+
+    def _collect_position_state(self, _: str, payload: object) -> None:
+        if isinstance(payload, OpenPositionState):
+            self._position_states.append(payload)
 
     def _collect_report(self, _: str, payload: object) -> None:
         if isinstance(payload, ExecutionReport):
@@ -294,8 +330,6 @@ class HistoricalBacktest:
             self._risk_snapshots.append(payload)
 
     def _build_metrics(self, events: list[dict[str, Any]]) -> BacktestMetrics:
-        if not events:
-            raise RuntimeError("no historical events available for replay")
         returns = _equity_returns(self._risk_snapshots)
         sharpe = _annualized_ratio(returns, periods_per_year=6 * 365)
         sortino = _annualized_ratio(
@@ -358,6 +392,200 @@ class HistoricalBacktest:
             risk_flag_counts=dict(risk_flag_counts),
             top_target_reason_codes=dict(target_reason_counts.most_common(10)),
         )
+
+    def build_analysis_rows(self, *, horizons: tuple[int, ...] = (1, 3, 6)) -> list[dict[str, Any]]:
+        """Build one joined research row per execution-timeframe cutoff."""
+        execution_rows = sorted(
+            self._execution_rows,
+            key=lambda row: int(row["close_time_ns"]),
+        )
+        if not execution_rows:
+            return []
+
+        indicator_map = {
+            payload.cutoff_time_ns: payload
+            for payload in self._indicators
+            if payload.timeframe == self._config.execution_timeframe
+        }
+        state_map = {
+            payload.cutoff_time_ns: payload
+            for payload in self._market_states
+            if payload.timeframe == self._config.execution_timeframe
+        }
+        playbook_map = {
+            payload.cutoff_time_ns: payload
+            for payload in self._playbooks
+            if payload.timeframe == self._config.execution_timeframe
+        }
+        sizing_map = {
+            payload.cutoff_time_ns: payload
+            for payload in self._sizings
+            if payload.timeframe == self._config.execution_timeframe
+        }
+        exit_map = {
+            payload.cutoff_time_ns: payload
+            for payload in self._exits
+            if payload.timeframe == self._config.execution_timeframe
+        }
+        target_map = {
+            payload.cutoff_time_ns: payload
+            for payload in self._targets
+            if payload.timeframe == self._config.execution_timeframe
+        }
+        risk_map = {payload.ts_ns: payload for payload in self._risk_snapshots}
+        bias_points = sorted(self._biases, key=lambda payload: payload.cutoff_time_ns)
+        bias_index = 0
+        latest_bias: DirectionalBias | None = None
+
+        rows: list[dict[str, Any]] = []
+        total = len(execution_rows)
+        for index, event_row in enumerate(execution_rows):
+            cutoff_ns = int(event_row["close_time_ns"])
+            while bias_index < len(bias_points) and bias_points[bias_index].cutoff_time_ns <= cutoff_ns:
+                latest_bias = bias_points[bias_index]
+                bias_index += 1
+
+            indicator = indicator_map.get(cutoff_ns)
+            state = state_map.get(cutoff_ns)
+            playbook = playbook_map.get(cutoff_ns)
+            sizing = sizing_map.get(cutoff_ns)
+            exit_decision = exit_map.get(cutoff_ns)
+            target = target_map.get(cutoff_ns)
+            risk_snapshot = risk_map.get(cutoff_ns)
+            close_price = float(event_row["close"])
+
+            row = {
+                "symbol": self._config.portfolio_symbol,
+                "timeframe": self._config.execution_timeframe.value,
+                "cutoff_time_ns": cutoff_ns,
+                "close_price": close_price,
+                "open_price": float(event_row["open"]),
+                "high_price": float(event_row["high"]),
+                "low_price": float(event_row["low"]),
+                "volume": float(event_row["volume"]),
+                "trade_count": int(event_row["trade_count"]),
+                "bars_to_end": total - index - 1,
+            }
+            for horizon in horizons:
+                row[f"future_return_{horizon}"] = _forward_return(execution_rows, index, horizon)
+            row["mae_3"] = _max_adverse_excursion(execution_rows, index, 3)
+            row["mfe_3"] = _max_favorable_excursion(execution_rows, index, 3)
+
+            if indicator is not None:
+                row.update(
+                    {
+                        "indicator_quality_flags": "|".join(indicator.quality_flags),
+                        "realized_vol": float(indicator.values.get("realized_vol", 0.0) or 0.0),
+                        "cvd_slope": float(indicator.values.get("cvd_slope", 0.0) or 0.0),
+                        "funding_oi_z": float(indicator.values.get("funding_oi_z", 0.0) or 0.0),
+                        "ob_liq_z": float(indicator.values.get("ob_liq_z", 0.0) or 0.0),
+                        "zen_pulse": float(indicator.values.get("zen_pulse", 0.0) or 0.0),
+                        "atr": float(indicator.values.get("atr", 0.0) or 0.0),
+                        "momentum_roc_z": float(indicator.values.get("momentum_roc_z", 0.0) or 0.0),
+                        "structure_state": str(
+                            indicator.values.get("structure_state")
+                            or indicator.values.get("swing_structure")
+                            or "NEUTRAL"
+                        ),
+                    }
+                )
+
+            if state is not None:
+                row.update(
+                    {
+                        "directional_state": state.directional_state,
+                        "directional_confidence": state.directional_confidence,
+                        "volatility_state": state.volatility_state,
+                        "volatility_confidence": state.volatility_confidence,
+                        "positioning_state": state.positioning_state,
+                        "positioning_confidence": state.positioning_confidence,
+                        "quality_state": state.quality_state,
+                        "quality_confidence": state.quality_confidence,
+                        "regime": state.regime,
+                        "regime_confidence": state.regime_confidence,
+                        "direction_signal": state.direction_signal,
+                        "transition_risk": state.transition_risk,
+                        "state_quality_flags": "|".join(state.quality_flags),
+                        "state_reason_codes": "|".join(state.reason_codes),
+                    }
+                )
+
+            if latest_bias is not None:
+                row.update(
+                    {
+                        "bias_cutoff_time_ns": latest_bias.cutoff_time_ns,
+                        "bias_direction": latest_bias.direction,
+                        "bias_regime": latest_bias.regime,
+                        "bias_confidence": latest_bias.confidence,
+                        "bias_quality_flags": "|".join(latest_bias.quality_flags),
+                    }
+                )
+
+            if playbook is not None:
+                row.update(
+                    {
+                        "playbook_id": playbook.playbook_id,
+                        "playbook_confidence": playbook.playbook_confidence,
+                        "playbook_max_leverage": playbook.max_leverage,
+                        "trailing_stop_atr_mult": playbook.trailing_stop_atr_mult,
+                        "allow_pyramid": playbook.allow_pyramid,
+                        "max_pyramid_count": playbook.max_pyramid_count,
+                        "time_decay_bars": playbook.time_decay_bars,
+                        "playbook_reason_codes": "|".join(playbook.reason_codes),
+                    }
+                )
+
+            if sizing is not None:
+                row.update(
+                    {
+                        "base_size": sizing.base_size,
+                        "confidence_multiplier": sizing.confidence_multiplier,
+                        "stress_discount": sizing.stress_discount,
+                        "execution_haircut": sizing.execution_haircut,
+                        "final_leverage": sizing.final_leverage,
+                        "sizing_reason_codes": "|".join(sizing.reason_codes),
+                    }
+                )
+
+            if exit_decision is not None:
+                row.update(
+                    {
+                        "exit_type": exit_decision.exit_type,
+                        "exit_urgency": exit_decision.exit_urgency,
+                        "target_reduction_pct": exit_decision.target_reduction_pct,
+                        "stop_price": exit_decision.stop_price,
+                        "exit_reason_code": exit_decision.reason_code,
+                        "exit_reason_detail": exit_decision.reason_detail,
+                        "exit_reason_codes": "|".join(exit_decision.reason_codes),
+                    }
+                )
+
+            if target is not None:
+                row.update(
+                    {
+                        "target_qty": target.target_qty,
+                        "target_leverage": target.target_leverage,
+                        "reduce_only": target.reduce_only,
+                        "target_regime": target.regime,
+                        "target_regime_confidence": target.regime_confidence,
+                        "target_reason_codes": "|".join(target.reason_codes),
+                        "target_direction": 1.0 if target.target_qty > 0 else -1.0 if target.target_qty < 0 else 0.0,
+                    }
+                )
+
+            if risk_snapshot is not None:
+                row.update(
+                    {
+                        "equity": risk_snapshot.equity,
+                        "drawdown": risk_snapshot.drawdown,
+                        "lev_cap": risk_snapshot.lev_cap,
+                        "reduce_only_mode": risk_snapshot.reduce_only_mode,
+                        "risk_flags": "|".join(risk_snapshot.flags),
+                    }
+                )
+
+            rows.append(row)
+        return rows
 
 
 class _TradeLedger:
@@ -512,3 +740,39 @@ def _max_drawdown(snapshots: list[RiskSnapshot]) -> tuple[float, int]:
         max_drawdown = max(max_drawdown, drawdown)
         max_duration = max(max_duration, current_duration)
     return max_drawdown, max_duration
+
+
+def _forward_return(rows: list[dict[str, Any]], index: int, horizon: int) -> float | None:
+    """Return forward close-to-close return for one horizon, if available."""
+    future_index = index + horizon
+    if future_index >= len(rows):
+        return None
+    current_close = float(rows[index]["close"])
+    future_close = float(rows[future_index]["close"])
+    if current_close <= 0:
+        return None
+    return (future_close - current_close) / current_close
+
+
+def _max_adverse_excursion(rows: list[dict[str, Any]], index: int, horizon: int) -> float | None:
+    """Return the worst low excursion over the next ``horizon`` bars."""
+    end_index = min(len(rows), index + horizon + 1)
+    if end_index <= index + 1:
+        return None
+    current_close = float(rows[index]["close"])
+    if current_close <= 0:
+        return None
+    future_lows = [float(row["low"]) for row in rows[index + 1 : end_index]]
+    return (min(future_lows) - current_close) / current_close
+
+
+def _max_favorable_excursion(rows: list[dict[str, Any]], index: int, horizon: int) -> float | None:
+    """Return the best high excursion over the next ``horizon`` bars."""
+    end_index = min(len(rows), index + horizon + 1)
+    if end_index <= index + 1:
+        return None
+    current_close = float(rows[index]["close"])
+    if current_close <= 0:
+        return None
+    future_highs = [float(row["high"]) for row in rows[index + 1 : end_index]]
+    return (max(future_highs) - current_close) / current_close

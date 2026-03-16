@@ -55,12 +55,12 @@ def load_results(path: Path) -> list[ComparisonResult]:
             ComparisonResult(
                 run_id=item["run_id"],
                 params=item["params"],
-                sharpe=item["metrics"]["sharpe_ratio"],
+                sharpe=item["metrics"]["sharpe"],
                 net_pnl=item["metrics"]["net_pnl"],
                 max_drawdown=item["metrics"]["max_drawdown"],
                 profit_factor=item["metrics"]["profit_factor"],
                 win_rate=item["metrics"]["win_rate"],
-                total_trades=item["metrics"]["total_trades"],
+                total_trades=item["metrics"]["trade_count"],
                 runtime_s=item["runtime_s"],
             )
         )

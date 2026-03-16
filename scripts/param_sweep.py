@@ -6,10 +6,10 @@ and saves results for comparison. It's designed for rapid iteration on
 strategy thresholds before paper-live deployment.
 
 Usage:
-    # Quick sweep (3-5 parameter combinations)
+    # Quick sweep (3 combinations)
     uv run python scripts/param_sweep.py --quick
 
-    # Full sweep (20-50 combinations)
+    # Full sweep (243 combinations)
     uv run python scripts/param_sweep.py --full
 
     # Custom sweep with specific parameters
@@ -39,7 +39,6 @@ from typing import Any
 from zenquant.historical.replay import (
     HistoricalBacktest,
     HistoricalBacktestConfig,
-    HistoricalBacktestResult,
 )
 from zenquant.strategy import (
     ARCStrategyConfig,
@@ -83,7 +82,7 @@ class SweepResult:
 
 
 def quick_sweep() -> SweepConfig:
-    """Predefined quick sweep (3-5 combinations, ~5 minutes)."""
+    """Predefined quick sweep (3 combinations, ~5 minutes)."""
     return SweepConfig(
         preserve_capital_risk=[0.65],  # baseline only
         exit_transition_risk=[0.85],  # baseline only
@@ -94,7 +93,7 @@ def quick_sweep() -> SweepConfig:
 
 
 def full_sweep() -> SweepConfig:
-    """Predefined full sweep (20-50 combinations, ~30 minutes)."""
+    """Predefined full sweep (243 combinations, ~30 minutes+)."""
     return SweepConfig(
         preserve_capital_risk=[0.60, 0.65, 0.70],  # 3 values
         exit_transition_risk=[0.80, 0.85, 0.90],  # 3 values
@@ -159,7 +158,7 @@ def run_sweep(config: SweepConfig) -> list[SweepResult]:
         if config.verbose:
             print(
                 f"[{run_id}/{total_runs}] "
-                f"Sharpe={result.metrics.sharpe_ratio:.2f} "
+                f"Sharpe={result.metrics.sharpe:.2f} "
                 f"PnL={result.metrics.net_pnl:,.0f} "
                 f"MaxDD={result.metrics.max_drawdown:.2%} "
                 f"({runtime_s:.1f}s)"
@@ -174,6 +173,7 @@ def save_results(results: list[SweepResult], output_path: Path) -> None:
     with open(output_path, "w") as f:
         json.dump(
             {
+                "schema_version": "param_sweep.v1",
                 "sweep_timestamp": time.time(),
                 "total_runs": len(results),
                 "results": [asdict(r) for r in results],
@@ -218,8 +218,8 @@ def main() -> None:
     import argparse
 
     parser = argparse.ArgumentParser(description="Run parameter sweep for strategy optimization")
-    parser.add_argument("--quick", action="store_true", help="Run quick sweep (3-5 combinations)")
-    parser.add_argument("--full", action="store_true", help="Run full sweep (20-50 combinations)")
+    parser.add_argument("--quick", action="store_true", help="Run quick sweep (3 combinations)")
+    parser.add_argument("--full", action="store_true", help="Run full sweep (243 combinations)")
     parser.add_argument("--data-root", type=Path, help="Path to Binance data root")
     parser.add_argument("--symbol", default="BTCUSDT", help="Symbol to backtest")
     parser.add_argument("--start", type=int, help="Start timestamp (nanoseconds)")
@@ -291,11 +291,11 @@ def main() -> None:
         print("-" * 60)
         print(f"Sweep complete: {len(results)} runs")
         print(f"Results saved to: {config.output_path}")
-        print("\nTop 3 by Sharpe ratio:")
-        sorted_results = sorted(results, key=lambda r: r.metrics["sharpe_ratio"], reverse=True)
+        print("\nTop 3 by Sharpe:")
+        sorted_results = sorted(results, key=lambda r: r.metrics["sharpe"], reverse=True)
         for i, result in enumerate(sorted_results[:3], start=1):
             print(
-                f"  {i}. Sharpe={result.metrics['sharpe_ratio']:.2f} "
+                f"  {i}. Sharpe={result.metrics['sharpe']:.2f} "
                 f"PnL={result.metrics['net_pnl']:,.0f} "
                 f"MaxDD={result.metrics['max_drawdown']:.2%}"
             )
