@@ -21,7 +21,10 @@
       "Bash(cd docs:*)",
       "Bash(grep:*)",
       "Bash(pytest:*)",
-      "Bash(chmod:*)"
+      "Bash(chmod:*)",
+      "Bash(uv pip:*)",
+      "Bash(cat:*)",
+      "Bash(git fetch:*)"
     ]
   }
 }

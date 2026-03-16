@@ -138,7 +138,7 @@ def download_and_extract(url: str, output_path: Path, extract_dir: Path) -> bool
         return False
 
 if __name__ == "__main__":
-    days = 90
+    days = 540  # Default to 18 months (1.5 BTC cycles)
     if len(sys.argv) > 1:
         days = int(sys.argv[1])
 
@@ -147,8 +147,8 @@ if __name__ == "__main__":
     if successful == 0:
         print("❌ No data downloaded. Please check your internet connection.")
         sys.exit(1)
-    elif successful < 100:
-        print("⚠️  Limited data downloaded. Consider downloading more days.")
+    elif successful < 300:
+        print("⚠️  Limited data downloaded. Consider downloading more days for full cycle coverage.")
         sys.exit(0)
     else:
         print("✅ Sufficient data downloaded. Ready for backtesting!")
