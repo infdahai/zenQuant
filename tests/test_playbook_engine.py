@@ -1,7 +1,7 @@
 import unittest
 
 from zenquant.domain import MarketState, Timeframe
-from zenquant.strategy.playbook_engine import PlaybookEngine
+from zenquant.strategy.playbook_engine import PlaybookEngine, PlaybookEngineConfig
 
 
 def _state(
@@ -56,6 +56,7 @@ class PlaybookEngineTests(unittest.TestCase):
         self.assertEqual(playbook.playbook_id, "BEAR_DEFENSE")
         self.assertFalse(playbook.allow_pyramid)
         self.assertIn(-1.0, playbook.allowed_directions)
+        self.assertEqual(playbook.max_leverage, 2.25)
 
     def test_selects_range_light_for_neutral_tradable_state(self) -> None:
         playbook = PlaybookEngine().select(
@@ -67,6 +68,7 @@ class PlaybookEngineTests(unittest.TestCase):
         )
         self.assertEqual(playbook.playbook_id, "RANGE_LIGHT")
         self.assertEqual(playbook.time_decay_bars, 3)
+        self.assertEqual(playbook.max_leverage, 1.5)
 
     def test_selects_capital_preservation_for_degraded_state(self) -> None:
         playbook = PlaybookEngine().select(
@@ -78,6 +80,52 @@ class PlaybookEngineTests(unittest.TestCase):
         )
         self.assertEqual(playbook.playbook_id, "CAPITAL_PRESERVATION")
         self.assertTrue(playbook.is_reduce_only())
+
+    def test_uptrend_with_crowded_long_falls_back_to_range_light(self) -> None:
+        playbook = PlaybookEngine().select(
+            _state(
+                directional_state="UPTREND",
+                directional_confidence=0.85,
+                positioning_state="CROWDED_LONG",
+            )
+        )
+        self.assertEqual(playbook.playbook_id, "RANGE_LIGHT")
+
+    def test_transition_risk_preservation_handoff_is_explicit(self) -> None:
+        playbook = PlaybookEngine().select(
+            _state(
+                directional_state="UPTREND",
+                directional_confidence=0.85,
+                transition_risk=0.7,
+            )
+        )
+        self.assertEqual(playbook.playbook_id, "CAPITAL_PRESERVATION")
+        self.assertTrue(playbook.is_reduce_only())
+
+    def test_config_can_raise_preserve_capital_transition_threshold(self) -> None:
+        engine = PlaybookEngine(
+            PlaybookEngineConfig(preserve_capital_transition_risk=0.8)
+        )
+        playbook = engine.select(
+            _state(
+                directional_state="UPTREND",
+                directional_confidence=0.85,
+                transition_risk=0.7,
+            )
+        )
+        self.assertEqual(playbook.playbook_id, "BULL_CONTINUATION")
+
+    def test_config_can_override_range_time_decay(self) -> None:
+        engine = PlaybookEngine(PlaybookEngineConfig(range_time_decay_bars=5))
+        playbook = engine.select(
+            _state(
+                directional_state="NEUTRAL",
+                directional_confidence=0.35,
+                volatility_state="LOW",
+            )
+        )
+        self.assertEqual(playbook.playbook_id, "RANGE_LIGHT")
+        self.assertEqual(playbook.time_decay_bars, 5)
 
 
 if __name__ == "__main__":

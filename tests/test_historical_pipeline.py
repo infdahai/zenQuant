@@ -78,11 +78,11 @@ class HistoricalPipelineTests(unittest.TestCase):
                 HistoricalBacktestConfig(root_dir=root, symbol="BTCUSDT")
             ).run()
 
-            self.assertAlmostEqual(result.metrics.net_pnl, 236863.54, places=6)
-            self.assertAlmostEqual(result.final_equity, 336863.5367195884, places=6)
-            self.assertAlmostEqual(result.metrics.max_drawdown, 0.007263, places=6)
-            self.assertAlmostEqual(result.metrics.sharpe, 4.7603, places=4)
-            self.assertAlmostEqual(result.metrics.profit_factor, 5.701303, places=6)
+            self.assertAlmostEqual(result.metrics.net_pnl, 221696.97, places=6)
+            self.assertAlmostEqual(result.final_equity, 321696.96542258776, places=6)
+            self.assertAlmostEqual(result.metrics.max_drawdown, 0.007603, places=6)
+            self.assertAlmostEqual(result.metrics.sharpe, 5.0015, places=4)
+            self.assertAlmostEqual(result.metrics.profit_factor, 5.655152, places=6)
             self.assertEqual(result.metrics.trade_count, 422)
 
 

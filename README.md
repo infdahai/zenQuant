@@ -1,810 +1,385 @@
 # ZenQuant 4.0
 
-Deterministic crypto trading infrastructure for building a serious, auditable, and extensible trading product around major crypto perpetuals.
+**Deterministic crypto trading infrastructure for building auditable, explainable strategies on major crypto perpetuals.**
 
-ZenQuant is being built to do one thing well first:
+ZenQuant delivers:
+1. A flagship strategy engine with explainable, replayable, and inspectable decisions
+2. A real-time dashboard showing why the system increases risk, reduces risk, or refuses to trade
 
-1. Deliver a flagship strategy engine whose decisions are explainable, replayable, and inspectable.
-2. Deliver a dashboard that shows why the system is increasing risk, reducing risk, or refusing to trade.
-
-This repository is intentionally opinionated.
-
-It is **not**:
-- an HFT engine,
-- a black-box AI trading bot,
-- a copy-trading platform,
-- or a “support every idea from day one” trading framework.
-
-The goal is to build a trading product that is trustworthy before it is flashy, and modular before it is overcomplicated.
+This is **not** an HFT engine, black-box AI bot, copy-trading platform, or "support every idea" framework. It's a trading product that is trustworthy before flashy, and modular before overcomplicated.
 
 ---
 
-## 1. Who This Is For
+## Quick Start
 
-ZenQuant is for people who care about real trading system behavior, not just backtest screenshots.
+```bash
+# Install dependencies
+uv sync
 
-This project is aimed at:
+# Run deterministic backtest
+uv run zenquant-backtest --root data/raw/binance --symbol BTCUSDT
 
-- traders and researchers who want backtest -> replay -> live behavior to remain coherent,
-- engineers who need deterministic event contracts and reproducible state transitions,
-- reviewers and collaborators who want system design explained in plain language,
-- builders who prefer a strong base architecture first, with additional features added later as modules instead of hacks.
+# Start live paper-trading runtime (default port 8090)
+export ZENQUANT_PG_DSN='postgresql://user:pass@host:5432/zenquant'
+uv run zenquant-web --host 127.0.0.1 --port 8090 --mode live
 
-If you care about explainability, auditability, and realistic system boundaries, this repository is for you.
-
----
-
-## 2. Why This Project Exists
-
-Many open-source trading systems look fine in research but collapse when pushed closer to live operation.
-
-The usual reasons are predictable:
-
-- hidden lookahead,
-- unstable factor definitions,
-- inconsistent time alignment,
-- strategy logic bypassing risk controls,
-- execution assumptions that do not survive contact with the real market,
-- weak auditability,
-- and code that grows faster than the owner’s understanding.
-
-ZenQuant is built around one hard rule:
-
-> Same event stream + same indicator version + same formula config -> same decisions.
-
-That principle matters more than adding more features quickly.
-
-A slower but deterministic system is more valuable than a fast-growing system nobody can fully trust.
-
----
-
-## 3. Project Direction
-
-ZenQuant is intended to become a **strategy operating system** for crypto trading.
-
-That means the repository should eventually support:
-
-- robust strategy logic,
-- disciplined risk rewriting,
-- consistent execution behavior,
-- explainable dashboard output,
-- and modular extension points for later research.
-
-The project direction is practical:
-
-- survive bearish or hostile market conditions without relying on blind long-only exposure,
-- participate meaningfully in bullish trend expansion when persistence is strong,
-- keep strategy, risk, and execution clearly separated,
-- preserve deterministic behavior across replay and live-like operation,
-- and avoid turning the codebase into a bag of disconnected experiments.
-
-The first success condition is not “maximum complexity.”
-The first success condition is “one coherent product that behaves consistently.”
-
----
-
-## 4. Phase 1 Goal
-
-### Business goal
-
-Ship a strategy + dashboard package that users can understand and trust.
-
-That means the system should not only emit positions; it should also explain:
-- what it thinks the market regime is,
-- how much confidence it has,
-- what risk caps are active,
-- and why it changed or rejected a trade.
-
-### Engineering goal
-
-Deliver a deterministic vertical slice:
-
-market ingest -> bars / snapshots -> indicators -> target intent -> risk rewrite -> execution reports -> API / dashboard
-
-The Phase 1 build should prove that the kernel can carry a full decision path from data to inspectable trading output.
-
-### Product goal
-
-Build the base product first.
-
-The architecture should be stable enough that future additions can be plugged in later, including:
-- new major assets,
-- additional factor packs,
-- 1H confirmation logic,
-- microstructure observation modules,
-- optional AI-assisted scoring,
-- and improved execution adapters.
-
-Phase 1 is not about winning every possible market.
-It is about building a trustworthy core.
-
----
-
-## 5. Phase 2 Goal
-
-### Business goal
-
-Enhance the strategy engine with multi-timeframe coordination and profit protection mechanisms to improve risk-adjusted returns.
-
-Phase 2 adds:
-- multi-timeframe directional filtering (1d bias blocks conflicting 4h trades)
-- swing structure analysis for better trend identification
-- trailing stops to protect profits
-- momentum confirmation to reduce false signals
-
-### Engineering goal
-
-Implement stateful 4h position tracking and cross-timeframe coordination while preserving determinism and replay parity.
-
-Key additions:
-- `SwingStructure` detection with N-bar pivot confirmation
-- `DirectionalBias` published by the 1d timeframe
-- `OpenPositionState` tracking for active 4h trailing-stop logic
-- Enhanced direction logic combining structure + momentum
-
-### Product goal
-
-Build a more intelligent strategy that:
-- avoids counter-trend trades (1d/4h coordination)
-- protects winning positions (trailing stops)
-- confirms trends with multiple signals (structure + momentum)
-- maintains full auditability and replay consistency
-
-Phase 2 is about making the strategy smarter without sacrificing determinism.
-
----
-
-## 6. Current Scope
-
-### Asset scope
-
-The broader product may later support multiple major assets such as:
-
-- BTC
-- ETH
-- SOL
-- BNB
-
-However, the practical validation path should remain narrower at first.
-
-The recommended path is:
-
-1. validate the kernel on one major asset first,
-2. make behavior understandable,
-3. stabilize replay and risk interactions,
-4. then widen asset coverage.
-
-In practice, **BTC should be treated as the primary validation asset** even if parts of the current code already mention both BTC and ETH.
-
-### Timeframe scope
-
-Current directional decision-making is centered on:
-
-- `4h`
-- `1d`
-
-These are the primary strategy timeframes because they support:
-- lower operational complexity,
-- stronger explainability,
-- better fit for deterministic bar-close decisions,
-- and a cleaner product surface for an early trading system.
-
-A future `1h` layer may be added later as a confirmation or timing layer, but it should not become the main directional engine until it has been validated carefully.
-
-### Data scope
-
-The current system is built around a compact set of market data families:
-
-- trades,
-- orderbook depth,
-- funding,
-- open interest.
-
-This is enough to support a serious first version without turning the system into a data-collection monster.
-
----
-
-## 7. Non-Negotiable Invariants
-
-These rules are not optional and should not be weakened casually.
-
-### 1. Bar-close decisions only
-
-Directional strategy decisions happen only on confirmed bar close for supported decision timeframes.
-
-This protects consistency and reduces ambiguity around partial-bar state.
-
-### 2. Intent before orders
-
-The strategy emits a `TargetPosition`, not exchange-specific raw order behavior.
-
-This keeps strategy logic separate from execution logic.
-
-### 3. Risk can rewrite strategy output
-
-Risk is allowed to:
-- reduce leverage,
-- cap exposure,
-- force reduce-only,
-- or block new risk entirely.
-
-Risk is not decorative.
-It has real authority over strategy output.
-
-### 4. Point-in-time indicators
-
-Every indicator output should carry enough metadata to prove what the system knew at that point, including fields such as:
-
-- `cutoff_time`
-- `indicator_version`
-- `formula_hash`
-- `quality_flags`
-- `coverage`
-
-### 5. Replay parity
-
-Replay must reproduce indicator stream, intents, and execution reports in deterministic order.
-
-If replay cannot reconstruct the decision path, the kernel is not good enough.
-
-### 6. Auditability is a feature
-
-The system should leave behind enough evidence to answer:
-
-- what did the strategy believe,
-- what did risk change,
-- what was actually executed,
-- and why?
-
-### 7. Execution realism matters
-
-The repository should resist unrealistic assumptions that would fail immediately in real trading.
-
-A “good” backtest built on fake assumptions is not a good system.
-
----
-
-## 8. Implementation Maturity
-
-ZenQuant already contains a meaningful amount of real implementation work.
-
-There is already a functioning Phase 1 vertical slice and a clear architecture path through:
-
-- ingestion,
-- snapshot generation,
-- indicators,
-- target intent,
-- risk overlay,
-- execution reports,
-- and API / UI surfaces.
-
-At the same time, the project is still in an important owner-review phase.
-
-That means:
-
-- parts of the codebase are still evolving,
-- some implementation details are still being tightened,
-- some code paths were accelerated with AI assistance,
-- and the owner has not yet fully reviewed every module end to end.
-
-Because of that, this README should be read as:
-
-- a description of project intent,
-- a summary of current architecture,
-- a guide to current behavior and boundaries,
-- not a claim that every line of code is frozen or production-final.
-
-The practical source of truth remains:
-
-- code,
-- tests,
-- replay behavior,
-- and explicit owner review.
-
----
-
-## 9. High-Level Architecture
-
-```text
-md.trade / md.book / md.funding / md.oi
-  -> BarClockService
-  -> SnapshotBuilder
-  -> IndicatorEngine
-  -> StrategyEngine
-  -> RiskOverlay
-  -> ExecutionKernel
-  -> API / Dashboard State
+# View dashboard
+open http://127.0.0.1:8090
 ```
 
-### Current runtime diagram
+---
 
-```mermaid
-flowchart LR
-    A["Synthetic / live market data<br/>trade, book, funding, OI"] --> B["BarClockService"]
-    A --> C["SnapshotBuilder"]
-    B --> D["Candle stream"]
-    C --> E["MarketSnapshot stream"]
-    D --> F["IndicatorEngine"]
-    E --> F
-    F --> G["1d DirectionalBias"]
-    F --> H["4h IndicatorPack"]
-    G --> I["ARCStrategyEngine"]
-    H --> I
-    I --> J["TargetPosition intent (4h only)"]
-    J --> K["RiskOverlay<br/>timeframe-aware rewrite"]
-    K --> L["Final target intent"]
-    L --> M["ExecutionKernel"]
-    M --> N["ExecutionReport"]
-    N --> I
-    N --> K
-    F --> O["IndicatorStore / API state"]
-    K --> O
-    N --> O
-    O --> P["FastAPI + Web Dashboard"]
+## Table of Contents
+
+1. [Who This Is For](#who-this-is-for)
+2. [Why This Exists](#why-this-exists)
+3. [Architecture Overview](#architecture-overview)
+4. [Core Design Principles](#core-design-principles)
+5. [Current Implementation Status](#current-implementation-status)
+6. [Getting Started](#getting-started)
+7. [Development Roadmap](#development-roadmap)
+8. [For External Reviewers](#for-external-reviewers)
+9. [For Internal Developers](#for-internal-developers)
+
+---
+
+## Who This Is For
+
+**External users:**
+- Traders who want backtest → replay → live behavior to remain coherent
+- Researchers who need reproducible state transitions and deterministic event contracts
+- Reviewers who want system design explained in plain language
+
+**Internal developers:**
+- Engineers building on a strong base architecture with clear module boundaries
+- Contributors who prefer explicit design decisions over implicit magic
+- Teams who value auditability and explainability over black-box complexity
+
+If you care about **explainability, auditability, and realistic system boundaries**, this is for you.
+
+---
+
+## Why This Exists
+
+Many open-source trading systems look fine in research but collapse in live operation due to:
+- Hidden lookahead bias
+- Unstable factor definitions
+- Inconsistent time alignment
+- Fragile execution assumptions
+- Opaque decision logic
+
+ZenQuant addresses these by enforcing:
+- **Point-in-time correctness**: No future data leakage
+- **Deterministic replay**: Same inputs → same outputs, always
+- **Explicit state transitions**: Every decision is auditable
+- **Clear failure modes**: System degrades gracefully, never silently
+
+---
+
+## Architecture Overview
+
+### System Layers (ASCII Diagram)
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│  Market Data Layer                                              │
+│  (Binance WebSocket, Historical CSV, Synthetic Replay)          │
+└────────────────────────┬────────────────────────────────────────┘
+                         │
+                         ▼
+┌─────────────────────────────────────────────────────────────────┐
+│  Bar Clock & Snapshot Builder                                   │
+│  • Deterministic bar-close timing (4h, 1d)                      │
+│  • Point-in-time cutoff enforcement                             │
+│  • Market snapshot aggregation                                  │
+└────────────────────────┬────────────────────────────────────────┘
+                         │
+                         ▼
+┌─────────────────────────────────────────────────────────────────┐
+│  Indicator Engine                                               │
+│  • Phase 1: vol, cvd, funding, zen_pulse                        │
+│  • Phase 2: swing points, momentum ROC                          │
+│  • Quality flags & formula hashing                              │
+└────────────────────────┬────────────────────────────────────────┘
+                         │
+                         ▼
+┌─────────────────────────────────────────────────────────────────┐
+│  Strategy Engine (6-Layer Decision Chain)                       │
+│                                                                 │
+│  1. State Engine      → 4D market classification                │
+│  2. Playbook Engine   → Strategy selection (4 playbooks)        │
+│  3. Sizing Engine     → Position sizing with confidence         │
+│  4. Exit Engine       → Stop/decay/regime exit logic            │
+│  5. Risk Overlay      → Drawdown/volatility constraints         │
+│  6. Execution Kernel  → Order routing & fill tracking           │
+└────────────────────────┬────────────────────────────────────────┘
+                         │
+                         ▼
+┌─────────────────────────────────────────────────────────────────┐
+│  Persistence & Observability                                    │
+│  • PostgreSQL audit trail (all decision layers)                 │
+│  • Real-time dashboard (Vue.js + WebSocket)                     │
+│  • Deribit options observation layer (optional)                 │
+└─────────────────────────────────────────────────────────────────┘
 ```
 
-The current Phase 2 runtime uses the `1d` stream for directional bias and the `4h` stream for executable target intents.
+### Decision Chain Flow (ASCII Diagram)
 
-### Layer responsibilities
+```
+Indicator Pack (4h bar close)
+         │
+         ▼
+┌────────────────────────┐
+│  State Engine          │  Classifies market into 4 dimensions:
+│                        │  • Directional (bull/bear/neutral)
+│  Input: Indicators     │  • Volatility (low/normal/high)
+│  Output: MarketState   │  • Positioning (light/normal/crowded)
+└────────┬───────────────┘  • Quality (clean/degraded/invalid)
+         │
+         ▼
+┌────────────────────────┐
+│  Playbook Engine       │  Selects strategy based on regime:
+│                        │  • Bull Continuation (trend-following)
+│  Input: MarketState    │  • Bear Defense (counter-trend)
+│  Output: Playbook      │  • Range Light (mean-reversion)
+└────────┬───────────────┘  • Capital Preservation (risk-off)
+         │
+         ▼
+┌────────────────────────┐
+│  Sizing Engine         │  Computes position size:
+│                        │  base_size × confidence × stress_discount
+│  Input: Playbook       │  × execution_haircut = final_leverage
+│  Output: SizingDecision│
+└────────┬───────────────┘
+         │
+         ▼
+┌────────────────────────┐
+│  Exit Engine           │  Priority-based exit logic:
+│                        │  1. Invalidation (immediate)
+│  Input: Position       │  2. Trailing stop (price-based)
+│  Output: ExitDecision  │  3. Time decay (age-based)
+└────────┬───────────────┘  4. Regime change (state-based)
+         │
+         ▼
+┌────────────────────────┐
+│  Risk Overlay          │  Portfolio-level constraints:
+│                        │  • Drawdown limits (3-tier)
+│  Input: Target         │  • Volatility shock throttle
+│  Output: Final Target  │  • Reduce-only mode enforcement
+└────────┬───────────────┘
+         │
+         ▼
+┌────────────────────────┐
+│  Execution Kernel      │  Order routing & tracking:
+│                        │  • Delta-based rebalancing
+│  Input: Final Target   │  • Fill confirmation
+│  Output: ExecutionReport│ • Position state updates
+└────────────────────────┘
+```
 
-**Market data layer**
+### Multi-Timeframe Coordination
 
-Responsible for ingesting and normalizing raw market feeds such as:
-- trades
-- orderbook updates
-- funding
-- open interest
-- candles
-- snapshot inputs
+```
+1d Timeframe                    4h Timeframe
+─────────────                   ─────────────
 
-**Bar / snapshot layer**
+Indicator Pack (1d)             Indicator Pack (4h)
+       │                               │
+       ▼                               ▼
+Directional Bias ──────────────> State Engine (4h)
+(Long/Short/Flat)                     │
+                                      ▼
+                                 Playbook Engine
+                                      │
+                                      ▼
+                                 Sizing Engine
+                                      │
+                                      ▼
+                                 Exit Engine
+                                      │
+                                      ▼
+                                 Target Position
 
-Responsible for:
-- bar-close timing
-- point-in-time cutoffs
-- deterministic aggregation windows
-- snapshot construction
-
-**Indicator layer**
-
-Responsible for:
-- point-in-time factor computation
-- quality flags
-- coverage metadata
-- factor versioning
-- formula hashes
-- auditable output contracts
-
-**Strategy layer**
-
-Responsible for:
-- regime interpretation
-- directional posture
-- exposure intent
-- leverage intent
-- reason codes
-
-**Risk layer**
-
-Responsible for rewriting or constraining strategy output based on:
-- drawdown
-- volatility shock
-- crowding
-- matching timeframe indicator state
-- actual filled exposure
-- kill-switch conditions
-- live portfolio state
-
-**Execution layer**
-
-Responsible for:
-- acting on final rewritten intent
-- trading deltas
-- respecting quantity caps
-- emitting deterministic execution reports
-
-**API / dashboard layer**
-
-Responsible for making state understandable to humans.
-
-The dashboard should explain behavior, not obscure it.
-
----
-
-## 10. Core Runtime Modules
-
-The core runtime currently centers around modules such as:
-
-- `zenquant/market/bar_clock.py`
-- `zenquant/market/snapshot.py`
-- `zenquant/indicator/engine.py`
-- `zenquant/strategy/engine.py`
-- `zenquant/risk/guard.py`
-- `zenquant/execution/router.py`
-- `zenquant/app/server.py`
-
-These modules form the core runtime spine of the current kernel.
-
-As the project grows, new capabilities should be added around this spine through stable interfaces rather than invasive rewrites.
+Rule: 4h strategy can only trade in the direction of 1d bias
+      (or flat when 1d is neutral)
+```
 
 ---
 
-## 11. Event Subjects (Current)
+## Core Design Principles
 
-The system is event-driven and uses explicit subjects to keep runtime behavior understandable.
+### 1. Deterministic Replay
+- Same input data → same decisions, always
+- No hidden randomness, no system clock dependencies
+- Backtest = replay = live (modulo execution slippage)
 
-**Market + clock**
+### 2. Point-in-Time Correctness
+- All indicators computed from data available at bar close
+- No lookahead bias, no future data leakage
+- Cutoff timestamps enforced throughout the pipeline
 
-- `md.trade.{venue}.{symbol}`
-- `md.book.{venue}.{symbol}`
-- `md.funding.{venue}.{symbol}`
-- `md.oi.{venue}.{symbol}`
-- `clock.bar_close.4h`
-- `clock.bar_close.1d`
-- `md.candle.4h.{symbol}`
-- `md.candle.1d.{symbol}`
-- `md.snapshot.4h`
-- `md.snapshot.1d`
+### 3. Explainable Decisions
+- Every decision has reason codes
+- Dashboard shows full decision chain
+- PostgreSQL audit trail for post-trade analysis
 
-**Indicators**
+### 4. Graceful Degradation
+- Quality flags mark degraded data
+- System reduces risk when data quality drops
+- No silent failures, no undefined behavior
 
-- `indicator.pack.v1.4h.{symbol}`
-- `indicator.pack.v1.1d.{symbol}`
-- `indicator.structure.4h.{symbol}`
-- `indicator.structure.1d.{symbol}`
-
-**Intents + risk + execution**
-
-- `strategy.bias.1d.{symbol}`
-- `intent.target_position.{portfolio}.{symbol}`
-- `intent.target_position.final.{symbol}`
-- `intent.reason.{portfolio}`
-- `risk.overlay.decision`
-- `risk.snapshot`
-- `exec.order.submit`
-- `exec.order.report`
-
-Event naming should remain boring, explicit, and stable.
+### 5. Modular Architecture
+- Clear layer boundaries with event-driven communication
+- Each engine is independently testable
+- New features added as modules, not hacks
 
 ---
 
-## 12. Indicator Pack (Phase 1 + Phase 2)
+## Current Implementation Status
 
-The indicator pack has evolved from Phase 1 to Phase 2 with additional market structure signals.
+### ✅ Fully Implemented (Phase 1-6)
 
-### Phase 1 outputs
+**Phase 1: Foundation**
+- Historical replay pipeline with deterministic bar-close timing
+- Indicator engine with quality flags and formula hashing
+- Basic strategy logic with regime awareness
+- PostgreSQL audit trail
+- FastAPI + Vue.js dashboard
 
-The Phase 1 factor pack includes:
+**Phase 2: Multi-Timeframe**
+- 1d directional bias filtering
+- 4h executable strategy
+- Trailing stop mechanism
+- Position state tracking
 
-- `realized_vol`
-- `atr`
-- `ob_liq_z`
-- `overall_ob_liq_z`
-- `cvd_slope`
-- `funding_oi_z`
-- `funding_oi_weighted`
-- `zen_pulse`
+**Phase 3-6: 6-Layer Strategy Engine**
+- State Engine: 4D market classification
+- Playbook Engine: 4 regime-aware playbooks
+- Sizing Engine: Multi-factor position sizing
+- Exit Engine: Priority-based exit logic
+- Risk Overlay: Portfolio-level constraints
+- Execution Kernel: Delta-based rebalancing
 
-### Phase 2 additions
+**Observation Layers**
+- Deribit options risk pack (ATM IV, term structure, skew, OI concentration)
+- PostgreSQL persistence for all decision layers
+- Real-time dashboard with exit/position panels
 
-Phase 2 adds market structure and momentum signals:
+### Indicators
 
-- `structure_state` - UPTREND / DOWNTREND / NEUTRAL based on swing points
-- `structure_break` - boolean flag when structure changes
-- `last_swing_high` - most recent swing high price
-- `last_swing_low` - most recent swing low price
-- `bars_since_break` - bars since last structure change
-- `momentum_roc` - rate of change over N bars
-- `momentum_roc_z` - z-score normalized momentum
+Phase 1: `realized_vol`, `atr`, `ob_liq_z`, `overall_ob_liq_z`, `cvd_slope`, `funding_oi_z`, `funding_oi_weighted`, `zen_pulse`
+Phase 2: `structure_state` (swing points), `momentum_roc_z`
 
-These additions enable:
-- better trend identification through swing structure
-- multi-timeframe coordination (1d bias filtering)
-- momentum confirmation to reduce false signals
+Quality flags: `OK`, `BOOK_STALE`, `VENUE_DOWN`, `MISSING_OI`, `LOW_OI_COVERAGE`, `DATA_STALE`, `DATA_FUTURE`
 
-### Quality and coverage fields
+### Risk Overlay
 
-The system is designed to expose not just indicator values, but also confidence and data-health context.
+The risk overlay can apply the following controls:
+- Drawdown step throttles (3-tier)
+- Volatility shock throttle
+- Crowding discount
+- Severe crowding reduce-only behavior
+- Daily loss limit safe cap
+- Hard kill-switch gating
 
-Examples of `quality_flags` include:
+### 📊 Test Coverage
 
-- `OK`
-- `BOOK_STALE`
-- `VENUE_DOWN`
-- `MISSING_OI`
-- `LOW_OI_COVERAGE`
-- `DATA_STALE`
-- `DATA_FUTURE`
+```
+74 tests passing, 4 skipped (require live external systems)
 
-Coverage metadata may include:
+Core coverage:
+✅ E2E decision chain tests
+✅ Live bootstrap and bar-close tests
+✅ Exit engine priority logic
+✅ Playbook selection logic (including config override, crowded-long fallthrough)
+✅ Sizing computation (including UNSAFE zero-leverage, config overrides)
+✅ State classification
+✅ Deribit options ingestion
+✅ PostgreSQL persistence
+✅ Transition risk handoff between playbook and exit
+```
 
-- `venue_count`
-- `oi_coverage`
-- `staleness_ms`
+### 🔄 Under Active Review
 
-This matters because a factor value without quality context is often misleading.
+- Full end-to-end verification of module behavior
+- Confirmation that implementation matches intended architecture
+- Careful review of AI-assisted code paths
+- Validation of simplicity choices before adding complexity
 
-### Important implementation notes
+### 📋 Next Steps (Code Quality, Not Features)
 
-- robust normalization uses median + MAD
-- formula hashes include key configuration values
-- pending / aggregation buffers are garbage-collected to avoid unbounded growth
-
-This reflects the project’s bias toward deterministic and inspectable feature generation.
-
----
-
-## 13. Strategy and Risk (Phase 1 + Phase 2)
-
-### Strategy layer
-
-The current strategy path emits `TargetPosition` and includes fields such as:
-
-- `intent_id`
-- `target_qty`
-- `target_leverage`
-- `regime`
-- `regime_confidence`
-- `reason_codes`
-
-This is the right abstraction for the system at this stage.
-
-It means the strategy is responsible for declaring intent, not for making low-level exchange decisions.
-
-### Current regime logic
-
-At the moment, regime behavior is still intentionally simple.
-
-The current path uses threshold + hysteresis logic rather than a more advanced regime model such as HMM or change-point machinery.
-
-That is acceptable for Phase 1.
-
-The job of Phase 1 is not to prove that the world’s most advanced strategy model has already been built. The job is to prove that the product kernel can carry deterministic trading decisions from factors to execution reports without ambiguity.
-
-### Dynamic sizing
-
-Dynamic sizing already reads current equity from `risk.snapshot`, which is an important design choice.
-
-This helps ensure that sizing logic is anchored to actual portfolio state rather than abstract static assumptions.
-
-### Phase 2: Multi-timeframe coordination
-
-Phase 2 implements directional bias filtering:
-
-- 1d timeframe publishes `DirectionalBias` based on structure + momentum
-- 1d updates context only and does not emit executable target intents
-- 4h strategy checks 1d bias before taking positions
-- conflicting directions are blocked with `BIAS_DIRECTION_BLOCK` reason code
-- this prevents counter-trend trades and improves win rate
-
-### Phase 2: Trailing stops
-
-Phase 2 adds profit protection through trailing stops:
-
-- `OpenPositionState` tracks active 4h filled positions per symbol
-- trailing stop distance = ATR × multiplier (default 2.5)
-- stop only moves in favorable direction (never widens)
-- triggers `EXIT_TRAILING_STOP` when price crosses stop level
-- activates after minimum bars held (default 1 bar)
-
-### Phase 2: Enhanced direction logic
-
-Direction computation now combines multiple signals:
-
-- TREND regime: prioritizes structure + momentum confirmation
-- requires UPTREND + positive momentum for long
-- requires DOWNTREND + negative momentum for short
-- falls back to CVD slope if structure is unclear
-- RANGE regime: unchanged (liquidity imbalance mean reversion)
-
-### Risk overlay
-
-The current risk overlay is one of the most important parts of the system.
-
-It can already apply controls such as:
-
-- drawdown step throttles
-- volatility shock throttle
-- crowding discount
-- severe crowding reduce-only behavior
-- daily loss limit safe cap
-- hard kill-switch gating
-
-This is a strong design choice and should remain central to the product.
-
-### Why the risk layer matters
-
-Many trading systems treat risk as a passive afterthought.
-
-ZenQuant should do the opposite.
-
-Risk is not there to decorate the architecture diagram. Risk is there to rewrite, constrain, and protect the strategy when the environment becomes hostile or the portfolio enters a dangerous state.
-
-### Execution kernel
-
-The execution kernel currently:
-
-- consumes `intent.target_position.final.*`
-- trades deltas rather than blindly reopening full positions
-- applies per-bar quantity caps when adding risk
-- allows `reduce_only` exits to flatten fully instead of leaving residual exposure behind
-- emits deterministic execution reports
-
-This keeps the execution path compatible with replay, audit, and strategy/risk separation.
+1. **Confidence blending research** - Compare arithmetic vs geometric/min-based blends
+2. **Analytics/reporting** - Hit rate by exit type, profit factor by playbook
+3. **Broader backtest reporting** - Extend validation from synthetic regression to real history
 
 ---
 
-## 14. Multi-Timeframe Design Intent
-
-ZenQuant should support multi-timeframe inputs, but timeframe roles should remain disciplined.
-
-### Current primary roles
-
-**1d**
-
-Should define broader context and risk posture:
-
-- structural bias
-- broader regime
-- trend backdrop
-- whether the system should be generally aggressive or defensive
-- no direct executable target intents in the current Phase 2 runtime
-
-**4h**
-
-Should drive primary strategy actions:
-
-- adds
-- reductions
-- entries
-- exits
-- tactical changes in target exposure
-
-### Future tactical layer: 1h
-
-A future 1h layer may be introduced later for:
-
-- confirmation
-- filtering
-- timing
-- sizing modulation
-
-But unless explicitly validated and promoted later, 1h should remain a supporting layer, not the main directional engine.
-
-This helps keep the first product coherent and avoids turning early development into an overfit multi-timeframe maze.
-
----
-
-## 15. What Is Deliberately Not Core V1
-
-To keep the product focused, the following are intentionally not core V1 priorities:
-
-- HFT or market-making-first architecture
-- microstructure-driven primary alpha
-- full black-box AI trading decisions
-- complex multi-asset optimization from day one
-- advanced execution slicing
-- full portfolio allocator machinery
-- every possible factor idea added at once
-- a giant research playground disguised as a product
-
-These ideas may matter later. They should not distort the first real product.
-
----
-
-## 16. API and Dashboard
-
-### REST
-
-- `GET /api/indicators/latest?symbol=BTCUSDT_PERP&tf=4h`
-- `GET /api/indicators/history?symbol=BTCUSDT_PERP&tf=4h&from=...&to=...`
-- `GET /api/state?symbol=BTCUSDT_PERP&tf=4h`
-
-### WebSocket
-
-- `WS /ws/indicators?symbol=BTCUSDT_PERP&tf=4h`
-- `WS /ws` (state stream)
-
-### Dashboard design intent
-
-The UI should remain simple, readable, and trustworthy.
-
-It should help a user understand:
-
-- current market context
-- key indicator readings
-- regime and leverage cap
-- alert timeline
-- intent reason card
-- execution reports
-- whether risk is currently acting as a limiter
-
-The dashboard exists to make the system feel explainable. It should not become a visual smokescreen.
-
----
-
-## 17. Storage Contracts (Phase 1 SQL)
-
-Phase 1 storage is designed around preserving enough information to reconstruct and audit the decision path.
-
-Current SQL definitions include:
-
-- `indicators.pack_v1`
-- `strategy.intents`
-- `risk.snapshots`
-
-The practical storage rule is simple:
-
-Store enough data to reproduce decisions and audit indicator → intent → risk rewrite → execution linkage.
-
-If storage is too thin to support that, the system is not retaining enough truth.
-
----
-
-## 18. Getting Started
+## Getting Started
 
 ### Prerequisites
 
-- Python 3.11+
-
-### Install
-
 ```bash
-python3 -m pip install -e .
+# Python 3.11+
+python --version
+
+# uv package manager
+curl -LsSf https://astral.sh/uv/install.sh | sh
 ```
 
-### Run local simulation
+### Installation
 
 ```bash
-python3 -m zenquant.app.demo
+git clone https://github.com/infdahai/zenQuant.git
+cd zenQuant
+
+# Install dependencies
+uv sync
+
+# Run tests
+uv run pytest
 ```
 
-### Run web app
+### CLI Entry Points
+
+All commands are installed via `pyproject.toml` entry points:
+
+| Command | Description |
+|---|---|
+| `zenquant-backtest` | Run deterministic historical replay |
+| `zenquant-web` | Start the live paper-trading server |
+| `zenquant-live-validate` | Validate a running live instance |
+| `zenquant-history-sync` | Download historical market data |
+| `zenquant-demo` | Run demo/synthetic mode |
+
+### Running Historical Replay
 
 ```bash
-uv run zenquant-web --host 127.0.0.1 --port 8090 --mode live
-# open http://127.0.0.1:8090
-```
-
-### Validate live paper strategy
-
-Use this order if you want to run a long-lived background process and verify
-that the strategy is behaving correctly.
-
-1. Run core regression checks first:
-
-```bash
-uv run pytest -q
-npm run test:frontend
-```
-
-2. Optional but recommended: validate replay/backtest contracts before live mode:
-
-```bash
+# Sync historical data (optional, for real market history)
 uv run zenquant-history-sync --year 2024 --month 1 --symbol BTCUSDT
+
+# Run backtest
 uv run zenquant-backtest --root data/raw/binance --symbol BTCUSDT
 ```
 
-3. Start the live paper-trading runtime:
+### Running Live Paper-Trading
 
 ```bash
-export ZENQUANT_DERIBIT_ENABLED=1  # optional: enable Deribit options observation layer
+# 1. Start the live runtime (default port 8090)
 export ZENQUANT_PG_DSN='postgresql://user:pass@host:5432/zenquant'
 uv run zenquant-web --host 127.0.0.1 --port 8090 --mode live
-```
 
-4. Verify runtime health from another shell:
+# 2. Optional: enable Deribit options observation layer
+export ZENQUANT_DERIBIT_ENABLED=1
+uv run zenquant-web --host 127.0.0.1 --port 8090 --mode live
 
-```bash
+# 3. Verify runtime health from another shell
 curl http://127.0.0.1:8090/healthz
 curl "http://127.0.0.1:8090/api/state?symbol=BTCUSDT_PERP&tf=4h"
-```
 
-5. Use the built-in validator for repeatable smoke or soak checks:
-
-```bash
+# 4. Use the built-in validator for repeatable smoke or soak checks
 uv run zenquant-live-validate --base-url http://127.0.0.1:8090
-uv run zenquant-live-validate --base-url http://127.0.0.1:8090 --require-db --watch-seconds 86400 --output .artifacts/live-24h-summary.json
+uv run zenquant-live-validate --base-url http://127.0.0.1:8090 \
+  --require-db --watch-seconds 86400 --output .artifacts/live-24h-summary.json
 ```
 
 What you should see:
@@ -815,1321 +390,318 @@ What you should see:
 - `latest_target` exists
 - if PostgreSQL is enabled, `database.writes` increases over time
 
-Important:
-- The live runtime now bootstraps recent closed `4h` and `1d` bars plus recent funding/open-interest history on startup, so a fresh process does not begin from an empty indicator state.
+**Important bootstrap caveats:**
+- The live runtime bootstraps recent closed `4h` and `1d` bars plus recent funding/open-interest history on startup, so a fresh process does not begin from an empty indicator state.
 - This bootstrap is warm-state only. It does **not** replay historical orders or historical PnL into the current live paper account.
 - Restart recovery for prior simulated positions is still not implemented. A restarted process begins flat, then aligns to the current closed-bar signal.
 - `zenquant-live-validate` tracks observed 4h/1d cutoff turnover during the watch window, so it is the intended tool for confirming real bar-close events and 24h runtime health.
 
-### Frontend checks
+### API Endpoints
 
-```bash
-npm run test:store
-npm run test:e2e
-# or run both:
-npm run test:frontend
-```
+**REST:**
+- `GET /api/indicators/latest?symbol=BTCUSDT_PERP&tf=4h`
+- `GET /api/indicators/history?symbol=BTCUSDT_PERP&tf=4h&from=...&to=...`
+- `GET /api/state?symbol=BTCUSDT_PERP&tf=4h`
+- `GET /healthz`
 
-### Run tests
+**WebSocket:**
+- `WS /ws/indicators?symbol=BTCUSDT_PERP&tf=4h`
+- `WS /ws` (state stream)
 
-```bash
-python3 -m unittest discover -s tests -v
-```
+### Viewing Dashboard
 
----
-
-## 19. Current Status vs Future Work
-
-### What exists now
-
-The repository contains:
-
-- a working deterministic Phase 1 + Phase 2 vertical slice
-- versioned and auditable core contracts
-- replay-oriented indicator / intent / execution flow
-- Phase 1 factor pack (vol, cvd, funding, zen_pulse)
-- Phase 2 structure pack (swing points, momentum ROC)
-- multi-timeframe coordination (1d bias filtering)
-- trailing stop mechanism with position tracking
-- strategy and risk logic with inspectable outputs
-- API and UI entry points for state inspection
-
-### What is still under active review
-
-The following still need continued owner review and tightening:
-
-- full end-to-end verification of module behavior
-- confirmation that implementation fully matches intended architecture
-- careful review of AI-assisted code paths
-- rationalization of what is stable versus provisional
-- validation that current simplicity choices are correct before adding more complexity
-
-### Deliberately deferred (later phases)
-
-The following are intentionally deferred:
-
-- HMM / change-point regime engine
-- options trading strategies (note: options observation for regime enhancement is Phase 3.5, but options trading is deferred)
-- stablecoin macro features
-- advanced execution slicing
-- multi-portfolio allocator logic
-- full production persistence adapters
-- broader plugin ecosystem
-
-The right order is:
-
-1. validate the kernel
-2. understand the behavior
-3. then expand
+The dashboard runs at `http://127.0.0.1:8090` (or whatever port you configured) and shows:
+- Current market state (4D classification)
+- Active playbook and confidence
+- Position status and unrealized PnL
+- Exit decision and trailing stop
+- Sizing breakdown
+- Indicator values with sparklines
+- Deribit options thermometer (if enabled)
 
 ---
 
-## 20. Product Development Roadmap (Phase 3+)
-
-This roadmap defines the build sequence for advancing ZenQuant beyond Phase 2. Each phase is structured around measurable objectives, clear success criteria, and explicit adoption rules.
-
-### Core Adjustment Principles
-
-1. **Reorder priorities** based on data accessibility and real product value
-2. **Downgrade microstructure** from core strategy logic to auxiliary or research-only status
-3. **Postpone ML** until a clear rule-based baseline exists
-4. **Keep the medium-term framework dominant**: `4h` and `1d` remain the core decision horizons
-
----
-
-### Phase 3: Funding-OI Intelligence (Build Now)
-
-**Objective**
-
-Introduce perp-native positioning intelligence that improves regime awareness and risk conditioning.
-
-**Focus**
-
-- Funding rate momentum (velocity and acceleration, not just static level)
-- OI delta vs price delta divergence (smart money positioning detection)
-- Crowding-aware positioning context (detect buildup before extreme)
-
-**Why now**
-
-- Data is relatively accessible (public exchange APIs)
-- Signal family fits crypto perpetuals naturally
-- Highly compatible with medium-term framework (4h/1d)
-- Strong explainability with low infrastructure burden
-- Directly actionable for directional strategy and risk overlay
-
-**Technical implementation**
-
-Add to indicator pack:
-
-- `funding_momentum`: 8h rate of change in funding rate
-- `funding_acceleration`: second derivative, detects regime shifts
-- `funding_divergence_z`: z-score vs 30d historical norm
-- `oi_price_divergence`: rolling 24h OI delta vs 24h price delta correlation
-
-Integration points:
-
-- Regime confidence scoring (not primary direction signal)
-- Risk overlay throttles (reduce size when funding momentum extreme)
-- Dashboard warning signals (show funding velocity + OI divergence)
-
-**Success criteria**
-
-- Sharpe improvement: +0.2 to +0.4
-- Earlier crowding detection: 2-4 bars lead time
-- Reduced drawdown in overcrowded regimes: -3% to -5%
-- Lower adverse excursion when entering against smart money flow
-
-**Estimated duration**
-
-2-3 weeks
-
-**Data requirements**
-
-Already available (exchange APIs: funding rate history, OI snapshots)
-
----
-
-### Phase 3.5: Options Observation Layer (Optional Enhancement, Staged Implementation)
-
-**Objective**
-
-Introduce options market intelligence as a regime confidence enhancer and risk overlay input, without adding options trading complexity. Implement progressively across three stages to manage risk and validate value incrementally.
-
-**Strategic positioning**
-
-Options data should serve as:
-
-- Forward-looking risk thermometer (IV prices future volatility expectations)
-- Regime confidence modifier (options market often leads spot/perp)
-- Risk overlay input (tail risk pricing informs position sizing)
-- Market stress detector (term structure inversion, skew extremes)
-
-Options data should NOT be:
-
-- Primary directional signal (4h/1d structure + momentum remains core)
-- Direct entry/exit trigger (no options-driven trade signals)
-- Standalone options trading strategy (observation only, no options execution)
-
-**Condition for starting**
-
-Only pursue after Phase 3 (Funding-OI Intelligence) is validated and shows measurable improvement. This is an enhancement, not a core requirement.
-
----
-
-#### Stage 1: Observation Only (1 week, minimal risk)
-
-**Objective:** Establish data pipeline and dashboard visibility without any strategy integration.
-
-**Current repo status (2026-03-16):** Implemented as an optional live observation layer behind `ZENQUANT_DERIBIT_ENABLED=1`. It publishes an aggregated `DeribitRiskPack`, stores it in PostgreSQL when configured, and renders an "Options Thermometer" panel on the dashboard. It does **not** change strategy, risk, or execution behavior.
-
-**Implementation:**
-
-Data ingestion from Deribit public API:
-
-```python
-# Endpoints (no authentication required)
-GET /public/get_book_summary_by_currency?currency=BTC&kind=option
-GET /public/ticker?instrument_name=BTC-{expiry}-{strike}-{C/P}
-GET /public/get_instruments?currency=BTC&kind=option&expired=false
-
-# Polling frequency: every 15 minutes (sufficient for 4h/1d)
-```
-
-Compute basic indicators:
-
-```python
-class OptionsObservationV1:
-    timestamp: datetime
-    symbol: str  # "BTC"
-
-    # Core metrics
-    atm_iv_level: float          # Near-month ATM IV (weighted avg call/put)
-    atm_iv_percentile: float     # Percentile vs 90d rolling history (0-100)
-
-    # Metadata
-    data_quality: str            # "OK" / "STALE" / "MISSING"
-    coverage: dict               # {"near_month_expiry": "2026-03-28", "instruments_count": 45}
-```
-
-Dashboard integration:
-
-- Add "Options Market" panel showing ATM IV level + percentile
-- Color coding: green (< 40th percentile), yellow (40-70), red (> 70)
-- Historical chart: 30-day ATM IV trend
-- NO integration into strategy or risk overlay yet
-
-**Success criteria:**
-
-- Data pipeline stable for 1 week (> 95% uptime)
-- Dashboard displays correctly
-- User can observe IV behavior during market moves
-- No impact on existing strategy (pure observation)
-
-**Rollback condition:**
-
-- Deribit API reliability < 90%
-- Data quality issues (frequent stale/missing data)
-- Operational burden too high
-
-**Estimated duration:** 1 week
-
----
-
-#### Stage 2: Risk Overlay Integration (1-2 weeks, after Stage 1 validation)
-
-**Objective:** Use options signals to modulate risk overlay, improving position sizing during stress periods.
-
-**Implementation:**
-
-Expand indicator outputs:
-
-```python
-class OptionsObservationV2:
-    # Stage 1 fields +
-
-    # Term structure
-    iv_term_structure: str       # "NORMAL" / "FLAT" / "INVERTED"
-    near_month_iv: float         # Near-month ATM IV
-    far_month_iv: float          # 2-3 month out ATM IV
-    term_structure_ratio: float  # near / far (> 1.0 = inverted)
-
-    # Skew
-    put_call_skew: float         # 25-delta put IV - 25-delta call IV
-    put_call_skew_z: float       # Z-score vs 30d history
-
-    # Composite
-    stress_score: float          # 0-1, combines IV percentile + term structure + skew
-```
-
-Risk overlay integration:
-
-```python
-# In RiskOverlay.apply()
-
-# 1. High IV environment = reduce max leverage
-if options_obs.atm_iv_percentile > 80:
-    max_leverage *= 0.8
-    reason_codes.append("OPTIONS_HIGH_IV")
-
-# 2. Term structure inversion = stress signal
-if options_obs.iv_term_structure == "INVERTED":
-    max_leverage *= 0.7
-    reason_codes.append("OPTIONS_TERM_INVERSION")
-
-# 3. Extreme put skew = tail risk pricing
-if options_obs.put_call_skew_z > 2.0:
-    position_size_multiplier *= 0.85
-    reason_codes.append("OPTIONS_TAIL_RISK")
-
-# 4. Composite stress score
-if options_obs.stress_score > 0.7:
-    max_leverage *= 0.75
-    reason_codes.append("OPTIONS_STRESS_HIGH")
-```
-
-Dashboard enhancement:
-
-- Show IV term structure status (normal/flat/inverted)
-- Show put/call skew indicator
-- Show composite stress score
-- Highlight when risk overlay is triggered by options signals
-
-**Success criteria:**
-
-- Earlier stress detection: 1-2 bars lead time vs spot-only signals
-- Reduced drawdown during vol regime shifts: -2% to -4%
-- Risk overlay triggers are explainable and not too frequent (< 20% of bars)
-- A/B test: strategy with options risk overlay vs without shows improvement
-
-**Rollback condition:**
-
-- Options signals add noise instead of value (A/B test shows degradation)
-- Too many false positives (risk overlay triggered > 30% of time)
-- User feedback: signals are confusing or not actionable
-
-**Estimated duration:** 1-2 weeks
-
----
-
-#### Stage 3: Regime Confidence Integration (1-2 weeks, after Stage 2 validation)
-
-**Objective:** Use options signals to enhance regime classification confidence, improving directional decision quality.
-
-**Implementation:**
-
-Regime confidence modifier:
-
-```python
-# In StrategyEngine regime confidence calculation
-
-base_confidence = compute_base_confidence(structure, momentum, funding)
-
-# Options-based adjustments
-if options_obs.atm_iv_percentile > 80:
-    # High IV = lower confidence in trend continuation
-    confidence_multiplier *= 0.85
-    reason_codes.append("OPTIONS_HIGH_IV_UNCERTAINTY")
-
-if options_obs.iv_term_structure == "INVERTED":
-    # Term structure stress = lower confidence
-    confidence_multiplier *= 0.80
-    reason_codes.append("OPTIONS_TERM_STRESS")
-
-if current_regime == "BULL_TREND" and options_obs.put_call_skew_z > 2.0:
-    # Expensive puts during bull = market hedging tail risk
-    confidence_multiplier *= 0.85
-    reason_codes.append("OPTIONS_BULL_HEDGING")
-
-if current_regime == "BEAR_TREND" and options_obs.put_call_skew_z < -2.0:
-    # Expensive calls during bear = potential reversal pricing
-    confidence_multiplier *= 0.90
-    reason_codes.append("OPTIONS_BEAR_REVERSAL_SIGNAL")
-
-final_confidence = base_confidence * confidence_multiplier
-```
-
-Dashboard enhancement:
-
-- Show regime confidence breakdown (base vs options-adjusted)
-- Explain which options signals are affecting confidence
-- Historical view: regime confidence with/without options layer
-
-**Success criteria:**
-
-- Improved regime confidence accuracy: correlation with forward returns +0.1 to +0.2
-- Fewer false regime transitions (options signals help filter noise)
-- Better timing of regime exits (options market leads spot by 1-2 bars)
-- User feedback: regime confidence feels more reliable
-
-**Rollback condition:**
-
-- Regime confidence becomes less accurate (correlation degrades)
-- Options signals cause premature regime exits
-- Complexity outweighs benefit (user can't explain decisions)
-
-**Estimated duration:** 1-2 weeks
-
----
-
-#### Stage 4: Advanced Enhancements (Future, conditional)
-
-**Only pursue if Stage 1-3 show clear value and user requests more depth.**
-
-Possible additions:
-
-- Greeks aggregation (total gamma, vega exposure by expiry)
-- Strike concentration analysis (OI clustering near key levels)
-- Historical IV percentile ranking (vs 6-month, 1-year history)
-- Multi-expiry term structure (full curve, not just near/far)
-- Options flow analysis (requires trade-level data, more complex)
-
-**Important:** Do not build Stage 4 unless Stage 1-3 are fully validated and show measurable improvement.
-
----
-
-#### Data Requirements
-
-**Source:** Deribit public API (free, no authentication for public endpoints)
-
-**Endpoints:**
-- `/public/get_book_summary_by_currency` - IV, OI, volume by instrument
-- `/public/ticker` - Real-time IV, Greeks, mark price
-- `/public/get_instruments` - Instrument metadata (strike, expiry, underlying)
-
-**Polling frequency:** Every 15 minutes (sufficient for 4h/1d strategy)
-
-**Storage:** Minimal (only aggregated indicators, not full orderbook)
-
-**Fallback:** If Deribit API unavailable, system continues with spot/perp data only (graceful degradation)
-
----
-
-#### Important Constraints
-
-1. **NO options trading** - This is observation only, no options execution
-2. **NO complex modeling** - Keep it simple (ATM IV, term structure, skew)
-3. **NO primary signals** - Options data only modulates confidence and risk, never triggers trades directly
-4. **Graceful degradation** - System must work without options data if API fails
-5. **Explainability required** - Every options-driven decision must be dashboard-visible
-
----
-
-#### Overall Success Metrics (After Stage 3)
-
-- Sharpe improvement: +0.1 to +0.3 (incremental to Phase 3)
-- Max drawdown reduction: -2% to -4% (especially during vol regime shifts)
-- Earlier stress detection: 1-2 bars lead time
-- Regime confidence accuracy: +0.1 to +0.2 correlation improvement
-- User satisfaction: options signals are understandable and actionable
-
----
-
-#### Estimated Total Duration
-
-- Stage 1 (Observation): 1 week
-- Stage 2 (Risk Overlay): 1-2 weeks
-- Stage 3 (Regime Confidence): 1-2 weeks
-- **Total: 3-5 weeks** (staged over time, not all at once)
-
----
-
-#### Recommendation
-
-**Start with Stage 1 only** after Phase 3 (Funding-OI) is validated. Observe for 2-4 weeks before deciding on Stage 2. This staged approach minimizes risk and allows validation at each step.
-
-**Skip entirely if:**
-- Phase 3 (Funding-OI) already provides sufficient regime confidence
-- Phase 4 (Regime Engine) is more urgent
-- Operational complexity is a concern
-- Deribit API reliability is questionable in your region
-
----
-
-### Phase 4: Regime Engine Refinement (Next)
-
-**Objective**
-
-Build a clear and deterministic rule-based regime state machine before attempting any ML replacement.
-
-**Focus**
-
-- Explicit regime definitions with clear entry/exit conditions
-- Deterministic transition rules with hysteresis
-- Regime confidence scoring (high/medium/low)
-- Stronger threshold + hysteresis logic to prevent oscillation
-
-**Why now**
-
-A clear baseline must exist before any ML regime classifier can be meaningfully judged. Current threshold logic needs operational clarity and explainability.
-
-**Technical implementation**
-
-Define explicit regime state machine:
-
-```
-BULL_TREND:
-- 1d structure = UPTREND
-- 4h structure = UPTREND or NEUTRAL
-- momentum_roc_z > 0.5 on both timeframes
-- funding < 0.15% (not overcrowded)
-- Transition out: structure break OR funding > 0.25%
-
-BEAR_TREND:
-- 1d structure = DOWNTREND
-- 4h structure = DOWNTREND or NEUTRAL
-- momentum_roc_z < -0.5 on both timeframes
-- funding > -0.10% (not extreme short crowding)
-- Transition out: structure break OR funding < -0.20%
-
-RANGE:
-- 1d structure = NEUTRAL
-- 4h structure = NEUTRAL
-- |momentum_roc_z| < 0.3 on both timeframes
-- realized_vol < 30d median
-- Transition out: structure break + momentum confirmation
-
-VOLATILE_CHOP:
-- realized_vol > 30d median * 1.5
-- OR funding abs > 0.20%
-- OR structure breaks > 2 in last 10 bars
-- Transition out: vol normalizes for 5+ bars
-```
-
-Regime transition hysteresis:
-
-- Require N bars confirmation before regime change (default N=2)
-- Prevent rapid regime oscillation
-- Log all regime transitions with reason codes
-
-Regime confidence scoring:
-
-- High confidence: all signals aligned, no conflicting indicators
-- Medium confidence: primary signals aligned, some noise
-- Low confidence: mixed signals, near transition threshold
-- Use confidence to modulate position sizing (feed into risk overlay)
-
-Dashboard enhancement:
-
-- Show current regime + confidence level
-- Show distance to regime transition thresholds
-- Show regime history timeline (last 20 bars)
-- Highlight conflicting signals when confidence is low
-
-**Success criteria**
-
-- More stable regime labeling (< 10% false transitions)
-- Fewer contradictory state flips
-- Improved explainability in dashboard and logs
-- Clearer mapping between regime and position/risk changes
-- Regime confidence correlation with forward returns > 0.3
-
-**Estimated duration**
-
-3-4 weeks
-
----
-
-Use confidence to modulate position sizing (already in risk overlay).
-
-### Phase 5: Enhanced Position Management (After Validation)
-
-**Objective**
-
-Improve realized trade quality through better exit and profit-management logic.
-
-**Focus**
-
-- Profit-taking ladder (scale out at multiple targets)
-- Asymmetric exit rules by regime
-- Better reduction logic during weakening trend persistence
-- Explicit exit module design
-
-**Why now**
-
-Entry logic alone does not determine product quality; exit logic often dominates realized performance. Current trailing stops are basic (single ATR multiplier).
-
-**Technical implementation**
-
-Profit-taking ladder:
-
-- First target: 1.0 ATR (take 30% off, lock in quick wins)
-- Second target: 2.0 ATR (take 40% off, capture trend move)
-- Final target: trailing stop on remaining 30%
-
-Asymmetric exit logic by regime:
-
-- BULL_TREND: wide trailing stops (3.0 ATR), let winners run
-- BEAR_TREND: tighter trailing stops (2.0 ATR), bears are choppier
-- RANGE: quick profit targets (0.5-1.0 ATR), mean reversion
-- VOLATILE_CHOP: very tight stops (1.0 ATR), capital preservation
-
-Time-based exit enhancement:
-
-- Minimum hold period: 1 bar (already implemented)
-- Maximum hold period: 20 bars (force review of stale positions)
-- Time decay on conviction: reduce size if position not working after N bars
-
-**Success criteria**
-
-- Improved trade expectancy
-- Lower give-back after profitable moves
-- Improved win/loss asymmetry
-- Cleaner position decay behavior
-- Win rate improvement: +5% to +10%
-- Profit factor improvement: +0.2 to +0.3
-
-**Estimated duration**
-
-2-3 weeks
-
-**Risk**
-
-More complex exit logic = more parameters to tune. Keep it simple initially.
-
----
-
-### Phase 6: 1H Confirmation Layer (Optional)
-
-**Objective**
-
-Add a tactical confirmation layer without allowing lower timeframe noise to dominate the system.
-
-**Focus**
-
-- Confirmation filtering
-- Timing modulation
-- First-tranche sizing refinement
-
-**Rule**
-
-`1h` may support decisions, but it must not become the primary directional engine unless explicitly promoted after validation.
-
-**Condition**
-
-Only build this if Phases 3-5 reveal a clear need for tactical confirmation.
-
-**Technical implementation**
-
-1H as entry timing filter (when 4h signals entry, check 1h for):
-
-- Structure alignment (don't enter 4h long if 1h just broke down)
-- Momentum confirmation (1h momentum_roc_z same sign as 4h)
-- Volatility check (don't enter if 1h vol spike in progress)
-
-1H as exit warning:
-
-- 1h structure break = tighten 4h trailing stop
-- 1h momentum divergence = reduce position size by 30%
-- 1h funding spike = warning signal to dashboard
-
-**Important constraints**
-
-- 1H never overrides 4h/1d directional bias
-- 1H only modulates timing and sizing, not direction
-- If 1H adds noise instead of value, remove it
-
-**Validation required**
-
-A/B test with and without 1H layer, compare Sharpe and drawdown.
-
-**Estimated duration**
-
-3-4 weeks
-
----
-
-### Phase 7: ML Regime Classifier (Late, Conditional)
-
-**Objective**
-
-Allow ML to challenge the rule-based regime baseline only after the baseline is stable and well understood.
-
-**Focus**
-
-- Explainable regime classification (gradient boosting)
-- Fixed-version inference (deterministic)
-- Replay-compatible model lifecycle
-- Feature importance / explainability preservation
-
-**Adoption rule**
-
-ML is adopted only if it materially outperforms the rule-based baseline across multiple metrics without degrading determinism or explainability.
-
-**Technical implementation**
-
-Only implement if Phase 4 rule-based engine shows clear weaknesses:
-
-```
-Inputs:
-- Current factor pack (vol, CVD, funding, structure, momentum)
-- Cross-asset context (BTC-ETH correlation, BTC dominance)
-- Macro proxy (if available: BTC-SPX correlation)
-
-Outputs:
-- Regime probability distribution: [BULL, BEAR, RANGE, VOLATILE]
-- Feature importance (SHAP values for explainability)
-- Confidence score (entropy-based)
-
-Training approach:
-- Use Phase 4 rule-based labels as initial training set
-- Manual review of ambiguous periods (not full manual labeling)
-- Walk-forward validation (strict no-lookahead)
-- Quarterly retraining with expanding window
-
-Determinism preservation:
-- Fixed model weights between retrains
-- Model version tracked in indicator metadata
-- Replay uses historical model version
-```
-
-**Minimum standards**
-
-- Clear out-of-sample improvement (>10% better regime classification)
-- Stable regime classification behavior
-- No replay inconsistency
-- Explicit model versioning
-- Fully inspectable feature inputs
-- SHAP values must be interpretable and stable
-
-**If ML doesn't beat baseline clearly, don't use it.**
-
-**Estimated duration**
-
-4-6 weeks (including validation)
-
-### Phase 8: Microstructure Signals (Research Reserve, Non-Core)
-
-**Objective**
-
-Study microstructure as an auxiliary layer rather than a primary alpha engine.
-
-**Possible uses**
-
-- Execution timing (delay entry if adverse flow detected)
-- Short-horizon risk warning (liquidity withdrawal detection)
-- Adverse-selection filtering (detect bad fill patterns)
-- Tactical trade gating (don't enter if OFI shows opposite flow)
-
-**Rule**
-
-Microstructure signals must not become the primary directional signal for the medium-term system.
-
-**Reason**
-
-They require heavier data infrastructure (high-frequency orderbook feeds) and are less aligned with the core `4h` / `1d` product horizon. Individual traders have limited access to quality microstructure data.
-
-**Technical implementation (if pursued)**
-
-Order Flow Imbalance (OFI):
-
-- Multi-level OFI at top 5 bid/ask levels
-- OFI acceleration (detect sudden flow changes)
-- Use case: delay entry if OFI shows adverse flow
-- Use case: tighten stops if OFI reverses sharply
-
-Liquidity fragmentation metrics:
-
-- Bid-ask spread volatility across venues
-- Liquidity withdrawal detection (spread spikes)
-- Use case: reduce position size when liquidity fragments
-- Use case: widen stops when liquidity is thin
-
-**Important constraints**
-
-- Never let microstructure override 4h/1d directional bias
-- Only use as execution timing or risk warning
-- If data quality is poor, don't use at all
-- Dashboard: show as auxiliary signals, not primary
-
-**Estimated duration**
-
-6-8 weeks (including data pipeline)
-
-**Data requirements**
-
-High-frequency orderbook feeds (expensive, complex)
-
-**Recommendation**
-
-Skip unless you have reliable data access and Phase 3-7 are fully validated.
-
----
-
-### Phase 9: Advanced Research Topics (Long-term, Conditional)
-
-Possible later topics include:
-
-**Cross-Asset Intelligence**
-
-Only after BTC strategy is fully validated:
-
-- BTC-ETH correlation regime tracking
-- Cross-asset funding spread (already mentioned in Phase 3)
-- BTC vs SPX correlation (risk-on/risk-off detection)
-- Use for portfolio-level risk management, not single-asset direction
-
-**Volatility Surface Features**
-
-Only if options data becomes accessible:
-
-- Realized vs implied vol spread (vol risk premium)
-- Skew changes as directional signal
-- Requires reliable options data pipeline (expensive)
-
-**Adaptive Signal Weighting**
-
-High risk, defer to very late stage:
-
-- Track recent performance of signal components
-- Adjust weights based on recent Sharpe
-- Risk: over-sensitivity to recent noise, hard to explain behavior
-- Only consider if Phase 3-7 show clear need for dynamic adaptation
-
-**Important:** These are research directions, not commitments. Only pursue if earlier phases reveal specific weaknesses that these would address.
-
----
-
-### Global Principles
-
-1. **Validate before expanding**: Each phase must prove value before moving to next
-2. **Data accessibility matters**: Don't design for data you can't reliably access
-3. **Medium-term focus comes first**: 4h/1d is the core, don't let short-term noise distract
-4. **Explainability > sophistication**: Rule-based beats black-box unless proven otherwise
-5. **Determinism is mandatory**: Every enhancement must maintain replay parity
-6. **Risk integration**: New signals must integrate through existing risk and decision architecture, not bypass it
-
----
-
-### Adoption Rule for Every Phase
-
-No phase should be promoted to the permanent system unless it demonstrates measurable value.
-
-Each phase must define:
-
-- **Objective**: What problem does it solve?
-- **Integration point**: Where does it fit in the architecture?
-- **Success metrics**: How do we measure improvement?
-- **Rollback condition**: When do we remove it if it fails?
-
-Only validated improvements should survive.
-
----
-
-## 21. Data Layer Roadmap (Post-Phase 2)
-
-### Context
-
-Phase 2 strategy runtime is complete. The next critical milestone is **real-time monitoring + simulated trading**, not generic data platform buildout.
-
-The first deliverable is a **deterministic BTC live-sim runtime**:
-- live market events enter the existing kernel,
-- indicators update on confirmed bar close,
-- strategy and risk emit inspectable decisions,
-- simulated execution updates position, equity, and PnL,
-- the dashboard shows current system state in near real time.
-
-The data layer must support:
-1. Live market data ingestion and monitoring
-2. Real-time indicator computation and decision tracking
-3. Simulated execution against live market conditions
-4. Operational observability (what is the system doing right now?)
-
-Historical backtest validation is important but should begin only after the live-sim path is stable enough to serve as the reference implementation.
-
----
-
-### Design Principles
-
-**Separation of concerns:**
-- **Online state database (PostgreSQL)**: Live system state, decisions, positions, equity
-- **Historical research storage (Parquet + DuckDB)**: Bulk historical data for future backtest work
-
-**Canonical market events first:**
-- Use one canonical source for decision bars in live and replay
-- For current V1, prefer exchange-native confirmed klines for `4h` and `1d`
-- Do not make high-frequency trade reconstruction the primary source of strategy bars for V1
-- Additional streams such as trades and deep book data are auxiliary unless a live decision currently depends on them
-
-**One asset, one venue, one execution path:**
-- Start with `BTCUSDT` perpetual on Binance only
-- Use one simulated gateway path that mirrors future live order routing contracts
-- Avoid multi-venue aggregation until the single-venue path is observable and stable
-
-**Audit trail before research scale:**
-- Persist enough live state to explain every decision and PnL transition
-- Do not design a broad historical lake before the live audit path exists
-
-**Incremental rollout:**
-- Start with BTC perpetual only
-- Prove the data flow works end-to-end before expanding symbols
-- Don't build "all possible data" infrastructure upfront
-
-**Point-in-time correctness:**
-Every stored record must answer:
-- What symbol/timeframe/timestamp does this represent?
-- What version/formula produced this data?
-- Was this data valid at decision time?
-
-This ensures future replay and audit capability.
-
----
-
-### Priority 0: Critical Path (Do Now)
-
-These tasks unblock real-time monitoring and simulated trading.
-
-#### P0.1: Canonical live event source (URGENT)
-
-**Objective:** Replace synthetic input with a deterministic live BTC feed
-
-**Tasks:**
-- [ ] Implement Binance perpetual WebSocket client for `BTCUSDT`
-  - Subscribe to confirmed `kline_4h` and `kline_1d`
-  - Subscribe to `markPrice`, funding rate, open interest, and minimal depth if still needed by current indicators
-  - Publish internal events with proper `EventMeta`
-- [ ] Refactor the live runtime so strategy decisions are driven by confirmed exchange bar closes, not synthetic ticks
-- [ ] Keep the current bar-close invariants explicit:
-  - no intra-bar strategy decisions
-  - no mixed clock sources
-  - no future-dated events
-- [ ] Add data quality monitoring
-  - Detect stale upstream data
-  - Detect venue disconnection
-  - Emit quality flags that already map into indicator and risk logic
-- [ ] Start with Binance-only and BTC-only
-
-**Success criteria:**
-- Live `4h` and `1d` bar closes trigger indicator computation
-- Dashboard shows real-time price and latest decision state
-- System flags stale live data within 30 seconds
-- Synthetic ingestor is no longer on the critical path for the web runtime
-
-**Files to create/modify:**
-- `zenquant/ingestor/binance_ws.py` (new)
-- `zenquant/ingestor/realtime.py` (replace polling scaffold with live adapter boundary)
-- `zenquant/app/server.py` (wire live runtime startup)
-
----
-
-#### P0.2: Simulated execution and portfolio accounting (URGENT)
-
-**Objective:** Run the real strategy path against live market conditions without real money
-
-**Tasks:**
-- [ ] Implement `SimulatedGateway` that:
-  - uses live mark price as the canonical execution reference
-  - applies configurable slippage and taker fees
-  - updates filled position, cash, equity, and realized/unrealized PnL deterministically
-  - emits `ExecutionReport` through the same contract used by future live trading
-- [ ] Add equity curve and position state tracking
-- [ ] Ensure risk uses actual simulated filled positions, not theoretical target states
-- [ ] Keep all exchange integration read-only in this phase
-
-**Success criteria:**
-- System generates live trading signals from real market data
-- Simulated fills update position and PnL in real time
-- Dashboard shows current position, equity, drawdown, and recent fills
-- No authenticated exchange trading API calls exist in the runtime path
-
-**Files to create/modify:**
-- `zenquant/execution/simulated_gateway.py` (new)
-- `zenquant/execution/router.py`
-- `zenquant/risk/guard.py`
-- `zenquant/app/server.py`
-
----
-
-#### P0.3: Minimal PostgreSQL online state (URGENT)
-
-**Objective:** Persist enough live system state for monitoring, debugging, and future replay
-
-**Tables to create:**
-
-```sql
--- Live indicator results
-CREATE TABLE indicator_packs (
-    id BIGSERIAL PRIMARY KEY,
-    ts_ns BIGINT NOT NULL,
-    symbol TEXT NOT NULL,
-    timeframe TEXT NOT NULL,
-    cutoff_time_ns BIGINT NOT NULL,
-    indicator_version TEXT NOT NULL,
-    formula_hash TEXT NOT NULL,
-    quality_flags JSONB NOT NULL,
-    values JSONB NOT NULL,
-    created_at TIMESTAMPTZ DEFAULT NOW(),
-    INDEX idx_symbol_tf_cutoff (symbol, timeframe, cutoff_time_ns DESC)
-);
-
--- Strategy decisions
-CREATE TABLE strategy_intents (
-    id BIGSERIAL PRIMARY KEY,
-    intent_id TEXT UNIQUE NOT NULL,
-    portfolio TEXT NOT NULL,
-    symbol TEXT NOT NULL,
-    timeframe TEXT NOT NULL,
-    cutoff_time_ns BIGINT NOT NULL,
-    target_qty NUMERIC NOT NULL,
-    target_leverage NUMERIC NOT NULL,
-    reduce_only BOOLEAN NOT NULL,
-    regime TEXT NOT NULL,
-    regime_confidence NUMERIC NOT NULL,
-    reason_codes JSONB NOT NULL,
-    created_at TIMESTAMPTZ DEFAULT NOW(),
-    INDEX idx_symbol_cutoff (symbol, cutoff_time_ns DESC)
-);
-
--- Risk overlay decisions
-CREATE TABLE risk_snapshots (
-    id BIGSERIAL PRIMARY KEY,
-    portfolio TEXT NOT NULL,
-    ts_ns BIGINT NOT NULL,
-    equity NUMERIC NOT NULL,
-    high_water_mark NUMERIC NOT NULL,
-    drawdown NUMERIC NOT NULL,
-    lev_cap NUMERIC NOT NULL,
-    reduce_only_mode BOOLEAN NOT NULL,
-    flags JSONB NOT NULL,
-    created_at TIMESTAMPTZ DEFAULT NOW(),
-    INDEX idx_ts (ts_ns DESC)
-);
-
--- Execution reports
-CREATE TABLE execution_reports (
-    id BIGSERIAL PRIMARY KEY,
-    client_order_id TEXT UNIQUE NOT NULL,
-    symbol TEXT NOT NULL,
-    side SMALLINT NOT NULL,
-    status TEXT NOT NULL,
-    filled_qty NUMERIC NOT NULL,
-    avg_price NUMERIC NOT NULL,
-    fee NUMERIC NOT NULL,
-    transaction_time_ns BIGINT NOT NULL,
-    reject_reason TEXT,
-    created_at TIMESTAMPTZ DEFAULT NOW(),
-    INDEX idx_symbol_time (symbol, transaction_time_ns DESC)
-);
-
--- Position state snapshots
-CREATE TABLE position_states (
-    id BIGSERIAL PRIMARY KEY,
-    symbol TEXT NOT NULL,
-    timeframe TEXT NOT NULL,
-    snapshot_time_ns BIGINT NOT NULL,
-    direction NUMERIC NOT NULL,
-    entry_price NUMERIC NOT NULL,
-    current_qty NUMERIC NOT NULL,
-    trailing_stop NUMERIC NOT NULL,
-    bars_held INTEGER NOT NULL,
-    created_at TIMESTAMPTZ DEFAULT NOW(),
-    INDEX idx_symbol_tf_time (symbol, timeframe, snapshot_time_ns DESC)
-);
-
--- System health / data quality log
-CREATE TABLE data_quality_log (
-    id BIGSERIAL PRIMARY KEY,
-    ts_ns BIGINT NOT NULL,
-    venue TEXT NOT NULL,
-    symbol TEXT NOT NULL,
-    event_type TEXT NOT NULL,
-    quality_flag TEXT NOT NULL,
-    details JSONB,
-    created_at TIMESTAMPTZ DEFAULT NOW(),
-    INDEX idx_ts (ts_ns DESC)
-);
-```
-
-**Tasks:**
-- [ ] Create migration script: `migrations/001_initial_schema.sql`
-- [ ] Add database connection pool in `zenquant/infra/db.py`
-- [ ] Add async insert helpers for indicators, intents, risk snapshots, execution reports, and position states
-- [ ] Wire persistence as passive subscribers to the event bus
-- [ ] Prefer append-only audit writes over mutable operational state where practical
-
-**Success criteria:**
-- All decision-critical live events are persisted to PostgreSQL
-- Dashboard can query last 24h of decisions
-- No data loss during normal operation
-
----
-
-#### P0.4: Real-time dashboard enhancements (HIGH)
-
-**Objective:** Monitor live system behavior
-
-**Tasks:**
-- [ ] Add real-time WebSocket endpoint for dashboard updates
-- [ ] Show live indicator values (last 24 bars)
-- [ ] Show current regime and confidence
-- [ ] Show active positions and trailing stops
-- [ ] Show recent intents and reason codes
-- [ ] Show equity curve (simulated)
-- [ ] Add data quality indicators (venue status, staleness)
-
-**Success criteria:**
-- Dashboard updates within 2 seconds of new bar close
-- All Phase 2 decision logic is visible
-- Can observe system behavior without reading logs
-
-**Files to modify:**
-- `zenquant/app/server.py` (add WebSocket endpoint)
-- `zenquant/web/app/pages/DashboardPage.js` (add real-time updates)
-- `zenquant/web/app/api.js` (add WebSocket client)
-
----
-
-### Priority 1: Operational Stability (Do Next)
-
-These tasks improve reliability and observability.
-
-#### P1.1: Logging and alerting
-
-**Tasks:**
-- [ ] Add structured logging (JSON format)
-- [ ] Log all critical events: bar close, regime change, position entry/exit
-- [ ] Add alert conditions:
-  - Data staleness > 60 seconds
-  - Venue disconnection
-  - Unexpected exception in strategy/risk/execution
-  - Simulated drawdown > 10%
-- [ ] Add Prometheus metrics export (optional)
-
-#### P1.2: Configuration management
-
-**Tasks:**
-- [ ] Move all config to `config/production.yaml`
-- [ ] Support environment-specific configs (dev/staging/prod)
-- [ ] Add config validation on startup
-- [ ] Document all config parameters
-
-#### P1.3: Graceful shutdown and state recovery
-
-**Tasks:**
-- [ ] Implement graceful shutdown (close WebSocket, flush DB writes)
-- [ ] Load last known position state from DB on startup
-- [ ] Reconcile position state with exchange (for future live trading)
-- [ ] Add startup health check
-
----
-
-### Priority 2: Historical Data (Deferred)
-
-These tasks enable backtesting and research, but they should follow a stable live-sim reference path.
-
-#### P2.1: Historical data download
-
-**Tasks:**
-- [ ] Download Binance historical klines (1h/4h/1d) for BTCUSDT
-  - Use Binance public data API or data.binance.vision
-  - Store as Parquet files: `data/raw/binance/klines/BTCUSDT/1h/2024-01.parquet`
-- [ ] Download historical funding rates
-- [ ] Download historical open interest
-- [ ] Add data validation (no gaps, no duplicates)
-
-#### P2.2: Backtest engine
-
-**Tasks:**
-- [ ] Implement replay engine that:
-  - Reads historical Parquet data
-  - Emits events in chronological order
-  - Runs full strategy/risk/execution pipeline
-  - Uses the same contracts as the live-sim runtime
-  - Compares results to recorded live behavior where overlapping periods exist
-- [ ] Add backtest metrics: Sharpe, max drawdown, win rate, etc.
-- [ ] Add backtest report generation
-
-**Important scope rule:**
-- Do not build ML training infrastructure before replay parity exists
-- First use historical data for deterministic validation, parameter review, and regime split analysis
-- Model training is only justified later if a specific weakness remains after the deterministic strategy/risk stack is proven
-
-#### P2.3: Replay parity validation
-
-**Tasks:**
-- [ ] Run same event stream through backtest and live system
-- [ ] Compare indicator values, intents, and execution reports
-- [ ] Ensure deterministic behavior (same inputs → same outputs)
-- [ ] Document any differences and root causes
-
----
-
-### Priority 3: Production Readiness (Future)
-
-These tasks prepare for real money trading.
-
-#### P3.1: Live exchange integration
-
-**Tasks:**
-- [ ] Implement Binance perpetual futures REST API client
-- [ ] Implement authenticated WebSocket for user data stream
-- [ ] Add order placement with proper error handling
-- [ ] Add position reconciliation
-- [ ] Add rate limiting and retry logic
-
-#### P3.2: Risk controls for live trading
-
-**Tasks:**
-- [ ] Add max daily loss hard stop
-- [ ] Add max position size limits
-- [ ] Add emergency flatten-all command
-- [ ] Add manual override capability
-- [ ] Add pre-trade risk checks (sufficient margin, valid order params)
-
-#### P3.3: Multi-symbol support
-
-**Tasks:**
-- [ ] Extend to ETHUSDT perpetual
-- [ ] Add symbol-specific config (min trade qty, tick size)
-- [ ] Add cross-symbol risk limits (total portfolio leverage)
-
----
-
-### Non-Goals (Explicitly Deferred)
-
-These are NOT priorities for the current phase:
-
-- ❌ Full orderbook depth storage and replay
-- ❌ Tick-by-tick trade data storage
-- ❌ Multi-venue aggregation (start with Binance only)
-- ❌ Options data integration
-- ❌ Machine learning model training pipeline before replay parity
-- ❌ Advanced execution algorithms (TWAP, VWAP, etc.)
-- ❌ Portfolio optimization across multiple strategies
-- ❌ Custom data lake infrastructure
-
----
-
-### Summary: What to Do This Week
-
-**Day 1-2: Canonical live feed**
-- Implement Binance WebSocket client for confirmed `4h` and `1d` bars plus required auxiliary fields
-- Replace synthetic web runtime input with live events
-- Verify live bar closes trigger indicator computation
-
-**Day 3-4: Simulated execution**
-- Implement `SimulatedGateway`
-- Wire live strategy -> risk -> execution path end to end
-- Verify simulated position, equity, and PnL update correctly
-
-**Day 5: Minimal persistence**
-- Create PostgreSQL schema
-- Persist indicators, intents, risk snapshots, fills, and position states
-- Verify the last 24h decision path can be queried
-
-**Day 6-7: Dashboard and monitoring**
-- Add real-time dashboard updates
-- Show live positions, equity, drawdown, regime, and reasons
-- Verify end-to-end flow: market data -> indicators -> strategy -> risk -> execution -> dashboard -> database
-
-**Success criteria for Week 1:**
-- System runs continuously for 24 hours without crashes
-- Dashboard shows live trading decisions
-- Simulated PnL tracks market movements
-- All decisions are logged to database
-
----
-
-## 22. Practical Notes for Reviewers
-
-If you are reviewing this project for correctness, start here:
-
-- event ordering around bar close and snapshot cutoff
-- point-in-time indicator metadata and quality flags
-- intent rewrite path (target_position → final)
-- execution delta logic and fee / equity interactions
-- replay parity
-- actual-filled-position usage inside risk logic
-- whether current implementation still respects the stated architecture boundaries
-
-If these pass, the kernel is behaving close to its intended design.
-
----
-
-## 23. Design Philosophy in One Sentence
-
-ZenQuant is not trying to be the smartest-looking crypto trading repo.
-
-It is trying to be a trading kernel that:
-
-- behaves consistently
-- explains itself clearly
-- survives review
-- can grow into a real product without collapsing under its own complexity
-
----
-
-## 24. Current Architecture Status
+## Development Roadmap
 
 ### Completed Phases
 
-**Phase 3: State Engine** ✅
-- 4-dimensional market state classification (directional, volatility, positioning, quality)
-- Independent confidence scores for each dimension
-- Transition risk tracking (0.0 = stable, 1.0 = about to flip)
-- PostgreSQL persistence and dashboard visualization
+- ✅ **Phase 1**: Foundation (replay, indicators, basic strategy)
+- ✅ **Phase 2**: Multi-timeframe (1d bias, 4h execution, trailing stops)
+- ✅ **Phase 3-6**: 6-layer strategy engine (state, playbook, sizing, exit, risk, execution)
 
-**Phase 4: Playbook Engine** ✅
-- 4 core playbooks: Bull Continuation, Bear Defense, Range Light, Capital Preservation
-- State-driven playbook selection with explicit allowed directions and risk parameters
-- Playbook-aware trailing stops and position management
-- Full integration with strategy engine
+### Current Focus (Q1 2026)
 
-### Architecture Layers
+**Code Quality & Validation**
+- Build analytics/reporting module
+- Extend backtest validation beyond the deterministic synthetic regression
+- Research confidence-blending alternatives before changing sizing semantics
 
-```
-Canonical Data Layer (bar-close events, funding, OI)
-    ↓
-State Engine (4D state classification)
-    ↓
-Playbook Engine (select trading logic based on state)
-    ↓
-Strategy Engine (build target positions)
-    ↓
-Risk Overlay (final veto, drawdown throttle)
-    ↓
-Execution Kernel (delta execution, simulated fills)
-    ↓
-PostgreSQL Audit Trail
-```
+### Future Phases (Post-Validation)
 
-### Next Development Phases
+**Phase 7: Funding-OI Intelligence**
+- Funding rate momentum and acceleration
+- OI delta vs price delta divergence
+- Crowding-aware positioning context
+- Estimated: 2-3 weeks
 
-**Phase 5: Sizing Engine** ✅
-- Explicit `SizingDecision` contract for audit, replay, and UI inspection
-- Deterministic sizing engine: `base_size × confidence_multiplier × stress_discount × execution_haircut`
-- Strategy now publishes sizing events and appends sizing reason codes to targets
-- PostgreSQL persistence and dashboard sizing breakdown included
+**Phase 8: Options Integration (Optional)**
+- Stage 1: Observation only (dashboard visibility)
+- Stage 2: Risk overlay input (volatility regime enhancement)
+- Stage 3: Strategy confidence modifier (regime confirmation)
+- Condition: Only after Phase 7 validation
 
-**Phase 6: Exit Engine** ✅
-- Explicit `ExitDecision` contract for audit and replay
-- Deterministic exit engine with fixed priority: invalidation -> trailing -> time decay -> regime change
-- Strategy now publishes exit decisions and translates them into reduce-only targets
-- PostgreSQL persistence and dashboard exit monitor included
+**Phase 9: Advanced Execution**
+- TWAP/VWAP slicing for large orders
+- Execution quality analytics
+- Adaptive order routing
 
-**Optional Observation Layer: Deribit Stage 1** ✅
-- Public Deribit options polling behind `ZENQUANT_DERIBIT_ENABLED=1`
-- Observation-only `DeribitRiskPack` for ATM IV, term structure, skew proxy, OI concentration, and flow proxy
-- Dashboard "Options Thermometer" plus PostgreSQL persistence
-- No strategy, risk, or execution mutation yet
-
-See **[docs/TASK_LIST.md](docs/TASK_LIST.md)** for detailed Phase 5-6 task breakdown.
-
-### Core Architectural Principles
-
-For medium-term (4H/1D) trading systems, edge comes from:
-
-1. **Correct state identification** - orthogonal state dimensions, not single regime
-2. **Disciplined playbook switching** - right logic for right state
-3. **Stress-aware sizing** - smaller in hostile conditions
-4. **Professional exits** - cut losers fast, let winners run
-
-These principles guide all development while preserving ZenQuant's core contracts: determinism, auditability, replay parity, and risk veto.
+**Phase 10: Multi-Portfolio Allocator**
+- Cross-strategy risk budgeting
+- Correlation-aware allocation
+- Portfolio-level optimization
 
 ---
 
-## 25. Disclaimer
+## For External Reviewers
 
-This repository is infrastructure and research code for quantitative trading.
+### What to Look For
 
-- It is not investment advice.
-- Crypto markets are highly volatile, and misuse can lead to large losses.
+**Architecture Health**
+- Clear layer boundaries with event-driven communication
+- No circular dependencies between modules
+- Explicit contracts for all data structures
+
+**Determinism Verification**
+- Run replay twice with same inputs → identical outputs
+- Check cutoff_time_ns consistency across decision layers
+- Verify no system clock usage in strategy logic
+
+**Quality Flags**
+- Indicator quality flags propagate through decision chain
+- System reduces risk when quality degrades
+- Dashboard shows quality warnings
+
+**Audit Trail**
+- PostgreSQL tables capture all decision layers
+- Reason codes explain every state transition
+- Post-trade analysis possible from audit data
+
+### Known Limitations
+
+1. **Single symbol only**: Multi-symbol support deferred to Phase 10
+2. **No ML models**: Rule-based baseline first, ML later
+3. **Limited execution logic**: Simple delta-based rebalancing only
+4. **No options trading**: Observation only, no options execution
+5. **Sizing confidence blend**: Current arithmetic mean is simple and deterministic, but not yet deeply validated
+
+### Questions to Ask
+
+- Does the decision chain make sense for your use case?
+- Are the playbook selection rules reasonable?
+- Is the sizing logic too conservative or too aggressive?
+- Are the exit priorities correct (invalidation > trailing > decay > regime)?
+- Is the dashboard useful for monitoring live operation?
+
+---
+
+## For Internal Developers
+
+### Project Structure
+
+```
+zenquant/
+├── domain/              # Core data models (IndicatorPack, MarketState, etc.)
+├── ingestor/            # Market data ingestion (Binance, Deribit)
+├── historical/          # Replay pipeline and bar clock
+├── strategy/            # 6-layer strategy engine
+│   ├── state_engine.py      # 4D market classification
+│   ├── playbook_engine.py   # Strategy selection
+│   ├── sizing_engine.py     # Position sizing
+│   ├── exit_engine.py       # Exit logic
+│   └── engine.py            # Main strategy coordinator
+├── risk/                # Risk overlay and portfolio constraints
+├── execution/           # Order routing and fill tracking
+├── infra/               # Event bus, PostgreSQL, logging
+├── app/                 # FastAPI server and live runtime
+└── web/                 # Vue.js dashboard
+
+tests/                   # Test suite (74 passing, 4 skipped)
+migrations/              # PostgreSQL schema
+docs/                    # Additional documentation
+scripts/                 # Utility scripts (Deribit observation, etc.)
+```
+
+### Key Files to Understand
+
+**Strategy Engine**
+- `zenquant/strategy/state_engine.py` - 4D market classification logic
+- `zenquant/strategy/playbook_engine.py` - Playbook selection rules
+- `zenquant/strategy/sizing_engine.py` - Position sizing computation
+- `zenquant/strategy/exit_engine.py` - Exit priority logic
+
+**Data Models**
+- `zenquant/domain/models.py` - All core data structures
+- `zenquant/domain/serde.py` - Serialization utilities
+
+**Infrastructure**
+- `zenquant/infra/event_bus.py` - Pub/sub event system
+- `zenquant/infra/db.py` - PostgreSQL audit writer
+
+**Live Runtime**
+- `zenquant/app/server.py` - FastAPI server and WebSocket
+- `zenquant/app/live_state.py` - Live state aggregation
+- `zenquant/app/live_validate.py` - Live health monitoring
+
+### Event Subjects (Pub/Sub)
+
+```
+Market Data:
+  md.trade.{symbol}
+  md.book.{symbol}
+  md.funding.{symbol}
+  md.oi.{symbol}
+
+Bar Close:
+  bar.close.{timeframe}.{symbol}
+
+Indicators:
+  indicator.{timeframe}.{symbol}
+
+Strategy:
+  state.market.{timeframe}.{symbol}
+  strategy.playbook.{timeframe}.{symbol}
+  strategy.sizing.{timeframe}.{symbol}
+  strategy.exit.{timeframe}.{symbol}
+  strategy.position_state.{timeframe}.{symbol}
+
+Risk:
+  risk.snapshot
+  risk.deribit.{symbol}
+
+Execution:
+  intent.target_position.{stage}.{timeframe}.{symbol}
+  exec.order.report
+```
+
+### Adding a New Indicator
+
+1. Add computation logic to `zenquant/historical/indicator_engine.py`
+2. Update `IndicatorValues` in `zenquant/domain/models.py`
+3. Add quality flag checks if needed
+4. Write unit tests in `tests/test_indicator_engine.py`
+5. Update dashboard display in `zenquant/web/app/pages/DashboardPage.js`
+
+### Adding a New Playbook
+
+1. Define playbook in `zenquant/strategy/playbook_engine.py`
+2. Add selection logic in `PlaybookEngine.select()`
+3. Write tests in `tests/test_playbook_engine.py`
+4. Update dashboard playbook display
+
+### Adding a New Exit Rule
+
+1. Add check method in `zenquant/strategy/exit_engine.py`
+2. Update priority order in `ExitEngine.check()`
+3. Add reason codes to `ExitDecision`
+4. Write tests in `tests/test_exit_engine.py`
+5. Update dashboard exit display
+
+### Running Tests
+
+```bash
+# All tests
+uv run pytest
+
+# Specific module
+uv run pytest tests/test_exit_engine.py -v
+
+# With coverage
+uv run pytest --cov=zenquant --cov-report=html
+
+# Run skipped tests (require external systems)
+export ZENQUANT_RUN_DERIBIT_NETWORK_TESTS=1
+export ZENQUANT_TEST_PG_DSN="postgresql://localhost/zenquant_test"
+uv run pytest
+
+# Frontend tests
+npm run test:store
+npm run test:e2e
+npm run test:frontend
+```
+
+### Debugging Tips
+
+**Enable debug logging**
+```bash
+export ZENQUANT_LOG_LEVEL=DEBUG
+uv run zenquant-web --host 127.0.0.1 --port 8090 --mode live
+```
+
+**Inspect PostgreSQL audit trail**
+```sql
+-- Latest market states
+SELECT * FROM market_states ORDER BY cutoff_time_ns DESC LIMIT 10;
+
+-- Latest exit decisions
+SELECT * FROM exit_decisions ORDER BY cutoff_time_ns DESC LIMIT 10;
+
+-- Position state history
+SELECT * FROM position_states ORDER BY snapshot_time_ns DESC LIMIT 10;
+```
+
+**Check dashboard WebSocket**
+```javascript
+// Browser console
+ws = new WebSocket('ws://localhost:8090/ws/dashboard/BTCUSDT_PERP');
+ws.onmessage = (e) => console.log(JSON.parse(e.data));
+```
+
+### Code Style
+
+- Use `ruff` for linting: `uv run ruff check .`
+- Use `ruff format` for formatting: `uv run ruff format .`
+- Type hints required for all public functions
+- Docstrings required for all modules and classes
+- Keep functions under 50 lines when possible
+- Prefer explicit over implicit
+
+### Git Workflow
+
+```bash
+# Create feature branch
+git checkout -b feature/your-feature-name
+
+# Make changes and test
+uv run pytest
+
+# Commit with descriptive message
+git commit -m "Add new exit rule for volatility spike"
+
+# Push and create PR
+git push origin feature/your-feature-name
+```
+
+---
+
+## Design Philosophy
+
+**Build a trading product that is trustworthy before flashy, and modular before overcomplicated.**
+
+Core values:
+- Explainability over black-box complexity
+- Determinism over stochastic magic
+- Auditability over opaque decisions
+- Simplicity over premature optimization
+- Validation over speculation
+
+---
+
+## Disclaimer
+
+This software is provided for educational and research purposes only. It is not financial advice. Trading cryptocurrencies involves substantial risk of loss. Past performance does not guarantee future results. Use at your own risk.
+
+---
+
+**Last Updated**: 2026-03-16
+**Test Status**: 74 passing, 4 skipped
+**Documentation**: See `docs/` for additional details
