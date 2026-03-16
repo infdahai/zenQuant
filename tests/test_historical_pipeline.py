@@ -37,6 +37,9 @@ class HistoricalPipelineTests(unittest.TestCase):
             self.assertGreater(result.total_reports, 0)
             self.assertEqual(result.metrics.symbol, "BTCUSDT_PERP")
             self.assertGreater(result.metrics.total_bars, 0)
+            self.assertIn("BULL_CONTINUATION", result.diagnostics.playbook_counts)
+            self.assertIn("OK", result.diagnostics.risk_flag_counts)
+            self.assertGreater(len(result.diagnostics.top_target_reason_codes), 0)
 
     def test_historical_backtest_is_deterministic_for_same_dataset(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -61,6 +64,8 @@ class HistoricalPipelineTests(unittest.TestCase):
             self.assertAlmostEqual(first.final_equity, second.final_equity, places=6)
             self.assertAlmostEqual(first.metrics.net_pnl, second.metrics.net_pnl, places=6)
             self.assertAlmostEqual(first.metrics.max_drawdown, second.metrics.max_drawdown, places=6)
+            self.assertEqual(first.diagnostics.playbook_counts, second.diagnostics.playbook_counts)
+            self.assertEqual(first.diagnostics.actionable_exit_counts, second.diagnostics.actionable_exit_counts)
 
     def test_historical_backtest_matches_phase6_baseline_metrics(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -84,6 +89,8 @@ class HistoricalPipelineTests(unittest.TestCase):
             self.assertAlmostEqual(result.metrics.sharpe, 5.0015, places=4)
             self.assertAlmostEqual(result.metrics.profit_factor, 5.655152, places=6)
             self.assertEqual(result.metrics.trade_count, 422)
+            self.assertIn("BULL_CONTINUATION", result.diagnostics.playbook_counts)
+            self.assertIn("TRAILING", result.diagnostics.actionable_exit_counts)
 
 
 def _daily_rows(days: int = 90) -> list[HistoricalKlineRow]:

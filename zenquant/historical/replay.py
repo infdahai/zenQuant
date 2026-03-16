@@ -8,19 +8,23 @@ risk, and execution behavior stays auditable across modes.
 from __future__ import annotations
 
 import math
+from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 from zenquant.domain import (
+    BacktestDiagnostics,
     BacktestMetrics,
     BarCloseEvent,
     Candle,
     EventMeta,
+    ExitDecision,
     ExecutionReport,
     IndicatorPack,
     MarkPriceUpdate,
     MarketSnapshot,
+    PlaybookSelection,
     RiskSnapshot,
     TargetPosition,
     Timeframe,
@@ -30,7 +34,7 @@ from zenquant.indicator import IndicatorEngine, IndicatorEngineConfig, Indicator
 from zenquant.infra import InMemoryJetStream, StreamConfig
 from zenquant.risk import RiskOverlay, RiskOverlayConfig
 from zenquant.state import StateEngine
-from zenquant.strategy import ARCStrategyEngine
+from zenquant.strategy import ARCStrategyEngine, ARCStrategyConfig
 
 from .storage import read_parquet_rows
 
@@ -48,6 +52,8 @@ class HistoricalBacktestConfig:
     execution_timeframe: Timeframe = Timeframe.TF_4H
     bias_timeframe: Timeframe = Timeframe.TF_1D
     open_interest_timeframe: str = "4h"
+    # Strategy config override (for parameter sweeps)
+    strategy_config: ARCStrategyConfig | None = None
 
 
 @dataclass(slots=True)
@@ -55,6 +61,7 @@ class HistoricalBacktestResult:
     """Compact result returned by the backtest runner."""
 
     metrics: BacktestMetrics
+    diagnostics: BacktestDiagnostics
     total_indicator_packs: int
     total_targets: int
     total_reports: int
@@ -88,7 +95,10 @@ class HistoricalBacktest:
             bus=self.bus,
             config=RiskOverlayConfig(starting_equity=self._config.starting_equity),
         )
-        self.strategy_engine = ARCStrategyEngine(bus=self.bus)
+        self.strategy_engine = ARCStrategyEngine(
+            bus=self.bus,
+            config=self._config.strategy_config,
+        )
         self.state_engine = StateEngine(bus=self.bus)
         self.execution_kernel = ExecutionKernel(
             bus=self.bus,
@@ -97,6 +107,8 @@ class HistoricalBacktest:
         )
 
         self._indicators: list[IndicatorPack] = []
+        self._playbooks: list[PlaybookSelection] = []
+        self._exits: list[ExitDecision] = []
         self._targets: list[TargetPosition] = []
         self._reports: list[ExecutionReport] = []
         self._risk_snapshots: list[RiskSnapshot] = []
@@ -107,6 +119,8 @@ class HistoricalBacktest:
         self._open_interest_index = -1
 
         self.bus.subscribe("indicator.>", self._collect_indicator)
+        self.bus.subscribe("strategy.playbook.>", self._collect_playbook)
+        self.bus.subscribe("strategy.exit.>", self._collect_exit)
         self.bus.subscribe("intent.target_position.final.>", self._collect_target)
         self.bus.subscribe("exec.order.report", self._collect_report)
         self.bus.subscribe("risk.snapshot", self._collect_risk_snapshot)
@@ -124,8 +138,10 @@ class HistoricalBacktest:
             self._publish_event(event)
 
         metrics = self._build_metrics(events)
+        diagnostics = self._build_diagnostics()
         return HistoricalBacktestResult(
             metrics=metrics,
+            diagnostics=diagnostics,
             total_indicator_packs=len(self._indicators),
             total_targets=len(self._targets),
             total_reports=len(self._reports),
@@ -260,6 +276,14 @@ class HistoricalBacktest:
         if isinstance(payload, TargetPosition):
             self._targets.append(payload)
 
+    def _collect_playbook(self, _: str, payload: object) -> None:
+        if isinstance(payload, PlaybookSelection):
+            self._playbooks.append(payload)
+
+    def _collect_exit(self, _: str, payload: object) -> None:
+        if isinstance(payload, ExitDecision):
+            self._exits.append(payload)
+
     def _collect_report(self, _: str, payload: object) -> None:
         if isinstance(payload, ExecutionReport):
             self._reports.append(payload)
@@ -312,6 +336,27 @@ class HistoricalBacktest:
             trade_count=len(self._reports),
             turnover_per_day=round(self._trade_ledger.turnover_notional / elapsed_days, 2),
             fee_drag_pct=round((self._trade_ledger.total_fees / gross_pnl) if gross_pnl > 0 else 0.0, 6),
+        )
+
+    def _build_diagnostics(self) -> BacktestDiagnostics:
+        playbook_counts = Counter(payload.playbook_id for payload in self._playbooks)
+        actionable_exit_counts = Counter(
+            payload.exit_type for payload in self._exits if payload.should_exit()
+        )
+        risk_flag_counts = Counter()
+        for snapshot in self._risk_snapshots:
+            for flag in snapshot.flags:
+                risk_flag_counts[flag] += 1
+        target_reason_counts = Counter()
+        for target in self._targets:
+            for code in target.reason_codes:
+                target_reason_counts[code] += 1
+
+        return BacktestDiagnostics(
+            playbook_counts=dict(playbook_counts),
+            actionable_exit_counts=dict(actionable_exit_counts),
+            risk_flag_counts=dict(risk_flag_counts),
+            top_target_reason_codes=dict(target_reason_counts.most_common(10)),
         )
 
 

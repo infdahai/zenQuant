@@ -463,3 +463,13 @@ class BacktestMetrics:
     trade_count: int
     turnover_per_day: float
     fee_drag_pct: float  # fees / gross_pnl
+
+
+@dataclass(slots=True)
+class BacktestDiagnostics:
+    """Compact attribution and audit counts from one replay run."""
+
+    playbook_counts: dict[str, int]
+    actionable_exit_counts: dict[str, int]
+    risk_flag_counts: dict[str, int]
+    top_target_reason_codes: dict[str, int]

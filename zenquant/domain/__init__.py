@@ -1,4 +1,5 @@
 from .models import (
+    BacktestDiagnostics,
     BacktestMetrics,
     BarCloseEvent,
     Candle,
@@ -31,6 +32,7 @@ from .models import (
 )
 
 __all__ = [
+    "BacktestDiagnostics",
     "BacktestMetrics",
     "BarCloseEvent",
     "Candle",
