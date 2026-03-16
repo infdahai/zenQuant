@@ -1,6 +1,14 @@
 import unittest
 
-from zenquant.domain import ExecutionReport, IndicatorCoverage, IndicatorPack, Timeframe
+from zenquant.domain import (
+    ExitDecision,
+    ExecutionReport,
+    IndicatorCoverage,
+    IndicatorPack,
+    PlaybookSelection,
+    SizingDecision,
+    Timeframe,
+)
 from zenquant.infra import InMemoryJetStream
 from zenquant.state import StateEngine
 from zenquant.strategy import ARCStrategyEngine
@@ -42,6 +50,63 @@ def _pack(
 
 
 class Stage2StrategyTests(unittest.TestCase):
+    def test_4h_state_publishes_matching_playbook(self) -> None:
+        bus = InMemoryJetStream()
+        ARCStrategyEngine(bus)
+        StateEngine(bus)
+
+        playbooks: list[PlaybookSelection] = []
+        bus.subscribe(
+            "strategy.playbook.>",
+            lambda _subject, payload: playbooks.append(payload)
+            if isinstance(payload, PlaybookSelection)
+            else None,
+        )
+
+        bus.publish(
+            "indicator.pack.v1.4h.BTCUSDT_PERP",
+            _pack(
+                timeframe=Timeframe.TF_4H,
+                cutoff_time_ns=2,
+                last_price=101.0,
+                cvd_slope=0.6,
+                structure_state="UPTREND",
+                momentum_roc_z=1.3,
+            ),
+        )
+
+        self.assertEqual(len(playbooks), 1)
+        self.assertEqual(playbooks[0].playbook_id, "BULL_CONTINUATION")
+
+    def test_4h_state_publishes_sizing_breakdown(self) -> None:
+        bus = InMemoryJetStream()
+        ARCStrategyEngine(bus)
+        StateEngine(bus)
+
+        sizing_events: list[SizingDecision] = []
+        bus.subscribe(
+            "strategy.sizing.>",
+            lambda _subject, payload: sizing_events.append(payload)
+            if isinstance(payload, SizingDecision)
+            else None,
+        )
+
+        bus.publish(
+            "indicator.pack.v1.4h.BTCUSDT_PERP",
+            _pack(
+                timeframe=Timeframe.TF_4H,
+                cutoff_time_ns=2,
+                last_price=101.0,
+                cvd_slope=0.6,
+                structure_state="UPTREND",
+                momentum_roc_z=1.3,
+            ),
+        )
+
+        self.assertEqual(len(sizing_events), 1)
+        self.assertGreater(sizing_events[0].final_leverage, 0.0)
+        self.assertIn("SIZE_BASE_VOL_TARGET", sizing_events[0].reason_codes)
+
     def test_1d_bias_blocks_conflicting_4h_direction_without_emitting_1d_target(self) -> None:
         bus = InMemoryJetStream()
         ARCStrategyEngine(bus)
@@ -87,9 +152,16 @@ class Stage2StrategyTests(unittest.TestCase):
         StateEngine(bus)
 
         targets = []
+        exits = []
         bus.subscribe(
             "intent.target_position.arc.BTCUSDT_PERP",
             lambda _subject, payload: targets.append(payload),
+        )
+        bus.subscribe(
+            "strategy.exit.>",
+            lambda _subject, payload: exits.append(payload)
+            if isinstance(payload, ExitDecision)
+            else None,
         )
 
         bus.publish(
@@ -136,6 +208,8 @@ class Stage2StrategyTests(unittest.TestCase):
         self.assertTrue(latest.reduce_only)
         self.assertAlmostEqual(latest.target_qty, 0.0)
         self.assertIn("EXIT_TRAILING_STOP", latest.reason_codes)
+        self.assertGreaterEqual(len(exits), 2)
+        self.assertEqual(exits[-1].exit_type, "TRAILING")
 
     def test_short_position_tracking_handles_add_and_cover(self) -> None:
         bus = InMemoryJetStream()

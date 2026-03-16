@@ -13,13 +13,17 @@ from typing import Any
 
 from zenquant.domain import (
     Candle,
+    DeribitRiskPack,
     DirectionalBias,
     IndicatorPack,
     IntentReason,
     MarketState,
     OpenPositionState,
+    PlaybookSelection,
     RiskOverlayDecision,
     RiskSnapshot,
+    SizingDecision,
+    ExitDecision,
     TargetPosition,
     Timeframe,
 )
@@ -37,6 +41,7 @@ class DashboardStateConfig:
         max_ticks: Live mark-price points kept for the realtime price curve.
         max_reports: Recent execution reports kept for the dashboard log.
         max_reasons: Recent strategy reason objects kept for inspection.
+        max_deribit_points: Recent Deribit observation points kept per asset.
         bias_stale_after_4h_bars: 1D bias becomes stale after this many 4h bars.
     """
 
@@ -46,6 +51,7 @@ class DashboardStateConfig:
     max_ticks: int = 480
     max_reports: int = 48
     max_reasons: int = 32
+    max_deribit_points: int = 128
     bias_stale_after_4h_bars: int = 8
 
 
@@ -74,6 +80,10 @@ class DashboardStateStore:
         self._equity_curve: deque[dict[str, Any]] = deque(maxlen=self._config.max_equity_points)
         self._reports: deque[dict[str, Any]] = deque(maxlen=self._config.max_reports)
         self._reasons: deque[dict[str, Any]] = deque(maxlen=self._config.max_reasons)
+        self._deribit_risk: dict[str, DeribitRiskPack] = {}
+        self._deribit_history: dict[str, deque[DeribitRiskPack]] = defaultdict(
+            lambda: deque(maxlen=self._config.max_deribit_points)
+        )
         self._risk_snapshot: RiskSnapshot | None = None
         self._starting_equity: float | None = None
         self._risk_decision: RiskOverlayDecision | None = None
@@ -81,6 +91,9 @@ class DashboardStateStore:
         self._latest_target: dict[tuple[str, str], TargetPosition] = {}
         self._directional_bias: dict[str, DirectionalBias] = {}
         self._market_state: dict[tuple[str, str], MarketState] = {}
+        self._playbook: dict[tuple[str, str], PlaybookSelection] = {}
+        self._sizing: dict[tuple[str, str], SizingDecision] = {}
+        self._exit_decision: dict[tuple[str, str], ExitDecision] = {}
         self._position_state: dict[tuple[str, str], OpenPositionState] = {}
         self._last_price: dict[str, float] = {}
         self._runtime_status: dict[str, Any] = {
@@ -170,12 +183,29 @@ class DashboardStateStore:
     def on_market_state(self, state: MarketState) -> None:
         self._market_state[(state.symbol, state.timeframe.value)] = state
 
+    def on_playbook(self, playbook: PlaybookSelection) -> None:
+        """Store the active playbook published for one symbol/timeframe."""
+        self._playbook[(playbook.symbol, playbook.timeframe.value)] = playbook
+
+    def on_sizing(self, sizing: SizingDecision) -> None:
+        """Store the latest leverage-sizing breakdown for one symbol/timeframe."""
+        self._sizing[(sizing.symbol, sizing.timeframe.value)] = sizing
+
+    def on_exit(self, decision: ExitDecision) -> None:
+        """Store the latest exit decision for one symbol/timeframe."""
+        self._exit_decision[(decision.symbol, decision.timeframe.value)] = decision
+
     def on_position_state(self, symbol: str, timeframe: str, payload: object) -> None:
         key = (symbol, timeframe)
         if isinstance(payload, OpenPositionState):
             self._position_state[key] = payload
             return
         self._position_state.pop(key, None)
+
+    def on_deribit_risk(self, pack: DeribitRiskPack) -> None:
+        """Store the latest options risk thermometer and short session history."""
+        self._deribit_risk[pack.symbol] = pack
+        self._deribit_history[pack.symbol].append(pack)
 
     def on_mark_price(self, symbol: str, ts_ns: int, price: float) -> None:
         """Track live ticks so the dashboard moves even before the next bar closes."""
@@ -194,6 +224,7 @@ class DashboardStateStore:
         symbol = symbol or self._default_symbol
         timeframe = timeframe or self._default_tf
         key = (symbol, timeframe)
+        underlying = _underlying_symbol(symbol)
         latest = self._latest_indicator.get(key)
         bias = self._directional_bias.get(symbol)
 
@@ -213,9 +244,24 @@ class DashboardStateStore:
             "market_state": to_jsonable(self._market_state.get(key))
             if self._market_state.get(key) is not None
             else None,
+            "active_playbook": to_jsonable(self._playbook.get(key))
+            if self._playbook.get(key) is not None
+            else None,
+            "latest_sizing": to_jsonable(self._sizing.get(key))
+            if self._sizing.get(key) is not None
+            else None,
+            "latest_exit": to_jsonable(self._exit_decision.get(key))
+            if self._exit_decision.get(key) is not None
+            else None,
             "position_state": to_jsonable(self._position_state.get(key))
             if self._position_state.get(key) is not None
             else None,
+            "deribit_risk": to_jsonable(self._deribit_risk.get(underlying))
+            if self._deribit_risk.get(underlying) is not None
+            else None,
+            "deribit_history": [
+                to_jsonable(item) for item in self._deribit_history.get(underlying, [])
+            ],
             "alerts": list(self._alerts),
             "risk_snapshot": to_jsonable(self._risk_snapshot) if self._risk_snapshot is not None else None,
             "risk_decision": to_jsonable(self._risk_decision) if self._risk_decision is not None else None,
@@ -274,3 +320,13 @@ class DashboardStateStore:
             "pnl_abs": round(pnl_abs, 2),
             "pnl_pct": round(pnl_pct, 6),
         }
+
+
+def _underlying_symbol(symbol: str) -> str:
+    """Map runtime symbols like ``BTCUSDT_PERP`` to the underlying asset token."""
+    token = str(symbol or "").upper()
+    if token.endswith("USDT_PERP"):
+        return token.removesuffix("USDT_PERP")
+    if token.endswith("USDT"):
+        return token.removesuffix("USDT")
+    return token

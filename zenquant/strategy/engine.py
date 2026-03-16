@@ -8,16 +8,22 @@ from typing import Any
 
 from zenquant.domain import (
     DirectionalBias,
+    ExitDecision,
     ExecutionReport,
     IndicatorPack,
     IntentReason,
     MarketState,
     OpenPositionState,
+    PlaybookSelection,
     RiskSnapshot,
+    SizingDecision,
     TargetPosition,
     Timeframe,
 )
 from zenquant.infra import EventBus
+from .exit_engine import ExitEngine, ExitEngineConfig
+from .playbook_engine import PlaybookEngine
+from .sizing_engine import SizingEngine, SizingEngineConfig
 
 
 @dataclass(slots=True)
@@ -69,6 +75,17 @@ class ARCStrategyEngine:
         self._equity = self._config.account_equity
         self._latest_packs: dict[tuple[str, Timeframe], IndicatorPack] = {}
         self._market_states: dict[tuple[str, Timeframe], MarketState] = {}
+        self._playbooks: dict[tuple[str, Timeframe], PlaybookSelection] = {}
+        self._playbook_engine = PlaybookEngine()
+        self._sizing_engine = SizingEngine(
+            SizingEngineConfig(
+                target_vol_4h=self._config.target_vol_4h,
+                target_vol_1d=self._config.target_vol_1d,
+            )
+        )
+        self._exit_engine = ExitEngine(
+            ExitEngineConfig(min_bars_before_trail=self._config.min_bars_before_trail)
+        )
 
         # Phase 2: multi-timeframe coordination
         self._directional_bias: dict[str, DirectionalBias] = {}  # symbol -> 1d bias
@@ -156,13 +173,19 @@ class ARCStrategyEngine:
     def prime_state(self, state: MarketState) -> None:
         """Prime live startup state from an already-classified market state."""
         self._market_states[(state.symbol, state.timeframe)] = state
+        playbook = self._playbook_engine.select(state)
+        self._playbooks[(state.symbol, state.timeframe)] = playbook
+        self._bus.publish(
+            f"strategy.playbook.{state.timeframe.value}.{state.symbol}",
+            playbook,
+        )
         if state.timeframe == Timeframe.TF_1D:
             self._update_directional_bias(state)
             return
         pack = self._latest_packs.get((state.symbol, state.timeframe))
         if pack is None:
             return
-        target = self._build_target(pack, state)
+        target = self._build_target(pack, state, playbook)
         reason = self._build_reason(target)
         self._bus.publish(
             f"strategy.regime.{self._config.portfolio}",
@@ -186,36 +209,35 @@ class ARCStrategyEngine:
         self._directional_bias[state.symbol] = bias
         self._bus.publish(f"strategy.bias.1d.{state.symbol}", bias)
 
-    def _build_target(self, pack: IndicatorPack, state: MarketState) -> TargetPosition:
+    def _build_target(
+        self,
+        pack: IndicatorPack,
+        state: MarketState,
+        playbook: PlaybookSelection,
+    ) -> TargetPosition:
         """Translate one indicator pack into a target position for its bar close."""
         vals = self._extract_values(pack.values)
         regime = state.regime
         regime_confidence = state.regime_confidence
 
-        # Phase 2: Check trailing stop first
         pos_key = (pack.symbol, pack.timeframe)
         position = self._positions.get(pos_key)
         if position is not None:
-            # Update bars held
             position.bars_held += 1
-
-            # Check trailing stop
-            stop_triggered, reason_code = self._check_trailing_stop(
-                position, vals.price, vals.atr
+            exit_decision = self._exit_engine.check(
+                position,
+                state,
+                playbook,
+                indicators={"price": vals.price, "atr": vals.atr},
             )
-            if stop_triggered:
-                return TargetPosition(
-                    intent_id=self._intent_id(pack),
-                    portfolio=self._config.portfolio,
-                    symbol=pack.symbol,
-                    timeframe=pack.timeframe,
-                    cutoff_time_ns=pack.cutoff_time_ns,
-                    target_qty=0.0,
-                    target_leverage=0.0,
-                    reduce_only=True,
-                    regime=regime,
-                    regime_confidence=regime_confidence,
-                    reason_codes=[reason_code],
+            self._publish_exit(exit_decision)
+            if exit_decision.should_exit():
+                return self._build_exit_target(
+                    pack=pack,
+                    position=position,
+                    state=state,
+                    exit_decision=exit_decision,
+                    price=vals.price,
                 )
 
         # Compute base direction from indicators
@@ -228,7 +250,7 @@ class ARCStrategyEngine:
         )
 
         # Phase 2: Multi-timeframe coordination for 4h
-        reason_codes = [f"REGIME_{regime}"]
+        reason_codes = [f"REGIME_{regime}", *playbook.reason_codes]
         if pack.timeframe == self._config.execution_timeframe:
             bias, bias_reason = self._active_directional_bias(
                 pack.symbol, pack.cutoff_time_ns
@@ -242,21 +264,26 @@ class ARCStrategyEngine:
                     direction = 0.0
                     reason_codes.append("BIAS_DIRECTION_BLOCK")
 
-        target_vol = (
-            self._config.target_vol_4h
-            if pack.timeframe is Timeframe.TF_4H
-            else self._config.target_vol_1d
-        )
-        vol_budget = target_vol / max(vals.realized_vol, target_vol * 0.25)
-        crowding_discount = max(0.35, 1.0 - min(0.65, abs(vals.funding_oi_z) / 4.0))
+        if playbook.is_reduce_only() and direction != 0.0:
+            if direction != 0.0:
+                reason_codes.append("PLAYBOOK_DIRECTION_BLOCK")
+            direction = 0.0
 
-        target_leverage = min(
-            self._config.max_leverage,
-            vol_budget * regime_confidence * crowding_discount,
+        sizing = self._sizing_engine.compute(
+            state=state,
+            playbook=playbook,
+            equity=self._equity,
+            indicators={
+                "realized_vol": vals.realized_vol,
+                "funding_oi_z": vals.funding_oi_z,
+            },
         )
-        reduce_only = False
+        self._publish_sizing(sizing)
+
+        target_leverage = sizing.final_leverage
+        reduce_only = playbook.is_reduce_only()
         if regime == "STRESS":
-            target_leverage = min(target_leverage, 0.35)
+            target_leverage = min(target_leverage, playbook.max_leverage)
             reduce_only = True
 
         target_notional = self._equity * target_leverage * direction
@@ -270,10 +297,7 @@ class ARCStrategyEngine:
             reason_codes.append("TREND_SHORT")
         else:
             reason_codes.append("NO_DIRECTION")
-        if abs(vals.funding_oi_z) > 1.8:
-            reason_codes.append("CROWDING_DISCOUNT")
-        if pack.quality_flags != ["OK"]:
-            reason_codes.append("QUALITY_DEGRADED")
+        reason_codes.extend(sizing.reason_codes)
 
         return TargetPosition(
             intent_id=self._intent_id(pack),
@@ -288,47 +312,6 @@ class ARCStrategyEngine:
             regime_confidence=round(regime_confidence, 4),
             reason_codes=reason_codes,
         )
-
-    def _check_trailing_stop(
-        self, position: OpenPositionState, current_price: float, atr: float
-    ) -> tuple[bool, str]:
-        """Check if trailing stop is triggered. Returns (triggered, reason_code)."""
-        if atr <= 0:
-            return False, ""
-        if position.bars_held < self._config.min_bars_before_trail:
-            return False, ""
-
-        # Initialize trailing stop if not set
-        if position.trailing_stop == 0.0:
-            stop_distance = atr * self._config.trailing_stop_atr_mult
-            if position.direction > 0:
-                # Long position: stop below entry
-                position.trailing_stop = position.entry_price - stop_distance
-            else:
-                # Short position: stop above entry
-                position.trailing_stop = position.entry_price + stop_distance
-            return False, ""
-
-        # Update trailing stop (only move in favorable direction)
-        stop_distance = atr * self._config.trailing_stop_atr_mult
-        if position.direction > 0:
-            # Long: raise stop as price rises
-            new_stop = current_price - stop_distance
-            if new_stop > position.trailing_stop:
-                position.trailing_stop = new_stop
-            # Check if stop hit
-            if current_price <= position.trailing_stop:
-                return True, "EXIT_TRAILING_STOP"
-        else:
-            # Short: lower stop as price falls
-            new_stop = current_price + stop_distance
-            if new_stop < position.trailing_stop:
-                position.trailing_stop = new_stop
-            # Check if stop hit
-            if current_price >= position.trailing_stop:
-                return True, "EXIT_TRAILING_STOP"
-
-        return False, ""
 
     def _active_directional_bias(
         self, symbol: str, cutoff_time_ns: int
@@ -356,6 +339,55 @@ class ARCStrategyEngine:
         self._bus.publish(
             f"strategy.position_state.{timeframe.value}.{symbol}",
             self._positions.get((symbol, timeframe)),
+        )
+
+    def _publish_sizing(self, sizing: SizingDecision) -> None:
+        """Expose the latest sizing breakdown for audit and dashboard display."""
+        self._bus.publish(
+            f"strategy.sizing.{sizing.timeframe.value}.{sizing.symbol}",
+            sizing,
+        )
+
+    def _publish_exit(self, exit_decision: ExitDecision) -> None:
+        """Expose the latest exit decision for one symbol/timeframe."""
+        self._bus.publish(
+            f"strategy.exit.{exit_decision.timeframe.value}.{exit_decision.symbol}",
+            exit_decision,
+        )
+
+    def _build_exit_target(
+        self,
+        *,
+        pack: IndicatorPack,
+        position: OpenPositionState,
+        state: MarketState,
+        exit_decision: ExitDecision,
+        price: float,
+    ) -> TargetPosition:
+        """Translate one exit decision into a reduce-only target position."""
+        remaining_qty = 0.0
+        if not exit_decision.is_immediate():
+            remaining_qty = position.current_qty * max(
+                0.0, 1.0 - exit_decision.target_reduction_pct
+            )
+        signed_qty = position.direction * remaining_qty
+        if abs(signed_qty) < self._config.min_trade_qty:
+            signed_qty = 0.0
+        target_leverage = 0.0
+        if abs(signed_qty) >= self._config.min_trade_qty and price > 0 and self._equity > 0:
+            target_leverage = abs(signed_qty * price) / self._equity
+        return TargetPosition(
+            intent_id=self._intent_id(pack),
+            portfolio=self._config.portfolio,
+            symbol=pack.symbol,
+            timeframe=pack.timeframe,
+            cutoff_time_ns=pack.cutoff_time_ns,
+            target_qty=round(signed_qty, 6),
+            target_leverage=round(target_leverage, 4),
+            reduce_only=True,
+            regime=state.regime,
+            regime_confidence=round(state.regime_confidence, 4),
+            reason_codes=[f"REGIME_{state.regime}", *exit_decision.reason_codes],
         )
 
     @staticmethod
@@ -448,7 +480,7 @@ class ARCStrategyEngine:
         structure_state: str,
         momentum_roc_z: float,
     ) -> float:
-        """Phase 2: Enhanced direction logic with structure + momentum."""
+        """Phase 2 direction logic preserved while Phase 4 playbooks mature."""
         if regime == "STRESS":
             return 0.0
 

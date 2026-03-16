@@ -56,6 +56,11 @@ export const DashboardPage = defineComponent({
     const directionalBias = computed(() => snapshot.value.directional_bias || null);
     const directionalBiasMeta = computed(() => snapshot.value.directional_bias_meta || null);
     const marketState = computed(() => snapshot.value.market_state || null);
+    const activePlaybook = computed(() => snapshot.value.active_playbook || null);
+    const latestSizing = computed(() => snapshot.value.latest_sizing || null);
+    const latestExit = computed(() => snapshot.value.latest_exit || null);
+    const deribitRisk = computed(() => snapshot.value.deribit_risk || null);
+    const deribitHistory = computed(() => (snapshot.value.deribit_history || []).slice(-96));
     const positionState = computed(() => snapshot.value.position_state || null);
     const latestTarget = computed(() => snapshot.value.latest_target || null);
     const latestReason = computed(() => {
@@ -68,6 +73,13 @@ export const DashboardPage = defineComponent({
     const latestRiskDecision = computed(() => snapshot.value.risk_decision || null);
     const runtimeStatus = computed(() => snapshot.value.runtime_status || {});
     const marketHealth = computed(() => getMarketHealth(runtimeStatus.value, nowMs.value));
+    const deribitStatus = computed(() =>
+      buildDeribitStatus({
+        deribitRisk: deribitRisk.value,
+        runtimeStatus: runtimeStatus.value,
+        nowMs: nowMs.value,
+      }),
+    );
     const stateConfidence = computed(() => averageStateConfidence(marketState.value));
     const databaseStatus = computed(() => {
       const database = runtimeStatus.value.database || {};
@@ -103,6 +115,7 @@ export const DashboardPage = defineComponent({
     const thesisSummary = computed(() =>
       buildThesisSummary({
         state: marketState.value,
+        playbook: activePlaybook.value,
         directionalBias: directionalBias.value,
         latestTarget: latestTarget.value,
         latestRiskDecision: latestRiskDecision.value,
@@ -111,6 +124,56 @@ export const DashboardPage = defineComponent({
       }),
     );
     const stateCards = computed(() => buildStateCards(marketState.value));
+    const sizingSummary = computed(() => {
+      const sizing = latestSizing.value;
+      if (!sizing) {
+        return {
+          headline: "Awaiting sizing",
+          detail: "Sizing publishes with each target calculation",
+          formula: "-",
+          reasons: "No sizing reason codes yet",
+        };
+      }
+      return {
+        headline: `${formatNumber(sizing.final_leverage, 2)}x leverage`,
+        detail: `${formatNumber(sizing.base_size, 2)} × ${formatNumber(sizing.confidence_multiplier, 2)} × ${formatNumber(sizing.stress_discount, 2)} × ${formatNumber(sizing.execution_haircut, 2)}`,
+        formula: `${formatNumber(sizing.base_size, 2)} × ${formatNumber(sizing.confidence_multiplier, 2)} × ${formatNumber(sizing.stress_discount, 2)} × ${formatNumber(sizing.execution_haircut, 2)} = ${formatNumber(sizing.final_leverage, 2)}`,
+        reasons: formatCodes(sizing.reason_codes, 4),
+      };
+    });
+    const exitSummary = computed(() => {
+      const exit = latestExit.value;
+      if (!exit || exit.exit_type === "NONE") {
+        return {
+          headline: "No active exit",
+          detail: "Position remains valid under the current exit rules",
+          tone: "ok",
+          reductionCopy: "0%",
+          stopCopy: "-",
+          reasonCopy: "No active exit reasons",
+        };
+      }
+      const detail = [];
+      if (Number.isFinite(Number(exit.stop_price)) && Number(exit.stop_price) > 0) {
+        detail.push(`Stop ${formatCurrency(exit.stop_price, 2)}`);
+      }
+      detail.push(humanizeCode(exit.reason_code));
+      return {
+        headline: `${humanizeCode(exit.exit_type)} · ${humanizeCode(exit.exit_urgency)}`,
+        detail: detail.join(" | "),
+        tone: exit.exit_urgency === "IMMEDIATE" ? "danger" : "warning",
+        reductionCopy: formatPercent(exit.target_reduction_pct, 0),
+        stopCopy:
+          Number.isFinite(Number(exit.stop_price)) && Number(exit.stop_price) > 0
+            ? formatCurrency(exit.stop_price, 2)
+            : "-",
+        reasonCopy: formatCodes(exit.reason_codes, 5),
+      };
+    });
+    const deribitSummary = computed(() => buildDeribitSummary(deribitRisk.value));
+    const deribitIvSeries = computed(() =>
+      deribitHistory.value.map((item) => Number(item.atm_iv_30d || 0)),
+    );
 
     const indicatorKeys = computed(() => {
       return collectIndicatorKeys(indicator.value, proxyLatest.value);
@@ -150,10 +213,15 @@ export const DashboardPage = defineComponent({
       const lastPrice = Number(snapshot.value.last_price || 0);
       if (!position) {
         return {
+          hasPosition: false,
           headline: "Flat",
           detail: "No open position",
           pnl: "",
           tone: "ok",
+          ageCopy: "Awaiting entry",
+          stopDistanceCopy: "No trailing stop",
+          entryCopy: "-",
+          qtyCopy: "-",
         };
       }
       const direction = position.direction > 0 ? "Long" : "Short";
@@ -164,6 +232,7 @@ export const DashboardPage = defineComponent({
           : null;
       let stopDetail = "Trailing stop not set";
       let tone = "ok";
+      let stopDistanceCopy = "Trailing stop not set";
       if (Number(position.trailing_stop) > 0 && lastPrice > 0) {
         const distance = Math.abs((lastPrice - position.trailing_stop) / lastPrice);
         const relation = position.direction > 0 ? "below last" : "above last";
@@ -173,13 +242,47 @@ export const DashboardPage = defineComponent({
           tone = "warning";
         }
         stopDetail = `Trailing stop ${formatCurrency(position.trailing_stop)} (${formatPercent(distance, 2)} ${relation})`;
+        stopDistanceCopy = `${formatPercent(distance, 2)} ${relation}`;
       }
       return {
+        hasPosition: true,
         headline: `${direction} ${formatNumber(position.current_qty, 4)} BTC`,
         detail: stopDetail,
         pnl: unrealizedPnlPct === null ? "" : `Unrealized ${formatSignedPercent(unrealizedPnlPct, 2)}`,
         tone,
+        ageCopy: `${formatNumber(position.bars_held || 0, 0)} bars held`,
+        stopDistanceCopy,
+        entryCopy: formatCurrency(entryPrice, 2),
+        qtyCopy: formatNumber(position.current_qty, 4),
       };
+    });
+    const priceOverlayItems = computed(() => {
+      const items = [];
+      const position = positionState.value;
+      if (position && Number.isFinite(Number(position.entry_price)) && Number(position.entry_price) > 0) {
+        items.push({
+          label: Number(position.direction) >= 0 ? "Long entry" : "Short entry",
+          value: formatCurrency(position.entry_price, 2),
+          detail: `Position overlay for ${formatNumber(position.current_qty || 0, 4)} BTC`,
+        });
+      }
+      if (position && Number.isFinite(Number(position.trailing_stop)) && Number(position.trailing_stop) > 0) {
+        items.push({
+          label: "Trailing stop",
+          value: formatCurrency(position.trailing_stop, 2),
+          detail: "Red dashed line marks the current invalidation level",
+        });
+      }
+      if (items.length > 0) {
+        return items;
+      }
+      return [
+        {
+          label: "No active overlays",
+          value: "-",
+          detail: "Entry and trailing stop lines appear here once the strategy is carrying a position",
+        },
+      ];
     });
 
     const biasSummary = computed(() => {
@@ -298,6 +401,11 @@ export const DashboardPage = defineComponent({
       candles,
       databaseStatus,
       directionalBias,
+      deribitHistory,
+      deribitIvSeries,
+      deribitRisk,
+      deribitStatus,
+      deribitSummary,
       formatDisplayValue,
       equityCurve,
       formatAlert,
@@ -316,11 +424,16 @@ export const DashboardPage = defineComponent({
       latestReason,
       latestReport,
       latestRiskDecision,
+      latestSizing,
+      latestExit,
       latestTarget,
+      activePlaybook,
       marketHealth,
       marketState,
       pnlSummary,
+      positionState,
       positionSummary,
+      priceOverlayItems,
       priceSeries,
       primaryRiskTone,
       reports,
@@ -335,6 +448,8 @@ export const DashboardPage = defineComponent({
       thesisSummary,
       toggleExpand,
       expandMode,
+      sizingSummary,
+      exitSummary,
     };
   },
   template: `
@@ -450,6 +565,17 @@ export const DashboardPage = defineComponent({
             <small>{{ databaseStatus.detail }}</small>
           </div>
           <div class="decision-item">
+            <span>Active playbook</span>
+            <strong>{{ activePlaybook ? humanizeCode(activePlaybook.playbook_id) : "Awaiting playbook" }}</strong>
+            <small>
+              {{
+                activePlaybook
+                  ? ("Confidence " + formatPercent(activePlaybook.playbook_confidence, 2) + " | " + activePlaybook.selection_reason)
+                  : "Playbook selection publishes after state classification"
+              }}
+            </small>
+          </div>
+          <div class="decision-item">
             <span>Latest target</span>
             <strong>{{ latestTarget ? formatNumber(latestTarget.target_qty, 4) : "-" }}</strong>
             <small>
@@ -459,6 +585,16 @@ export const DashboardPage = defineComponent({
                   : "No target yet"
               }}
             </small>
+          </div>
+          <div class="decision-item">
+            <span>Sizing engine</span>
+            <strong>{{ sizingSummary.headline }}</strong>
+            <small>{{ sizingSummary.reasons }}</small>
+          </div>
+          <div class="decision-item" :class="'decision-item-' + exitSummary.tone">
+            <span>Exit monitor</span>
+            <strong>{{ exitSummary.headline }}</strong>
+            <small>{{ exitSummary.detail }}</small>
           </div>
           <div class="decision-item" :class="'decision-item-' + primaryRiskTone">
             <span>Risk flags</span>
@@ -498,6 +634,78 @@ export const DashboardPage = defineComponent({
                   : "No strategy reason published yet"
               }}
             </small>
+          </div>
+        </div>
+      </article>
+
+      <article class="panel">
+        <div class="panel-title">Sizing Breakdown</div>
+        <div class="decision-grid">
+          <div class="decision-item">
+            <span>Final leverage</span>
+            <strong>{{ latestSizing ? formatNumber(latestSizing.final_leverage, 2) + "x" : "-" }}</strong>
+            <small>{{ sizingSummary.reasons }}</small>
+          </div>
+          <div class="decision-item">
+            <span>Base size</span>
+            <strong>{{ latestSizing ? formatNumber(latestSizing.base_size, 3) : "-" }}</strong>
+            <small>Vol-targeted leverage budget before filters</small>
+          </div>
+          <div class="decision-item">
+            <span>Confidence multiplier</span>
+            <strong>{{ latestSizing ? formatNumber(latestSizing.confidence_multiplier, 3) : "-" }}</strong>
+            <small>Average of state and playbook confidence</small>
+          </div>
+          <div class="decision-item">
+            <span>Stress discount</span>
+            <strong>{{ latestSizing ? formatNumber(latestSizing.stress_discount, 3) : "-" }}</strong>
+            <small>Positioning, volatility, and quality stress filter</small>
+          </div>
+          <div class="decision-item">
+            <span>Execution haircut</span>
+            <strong>{{ latestSizing ? formatNumber(latestSizing.execution_haircut, 3) : "-" }}</strong>
+            <small>Tradability haircut from quality state</small>
+          </div>
+          <div class="decision-item decision-item-wide">
+            <span>Formula</span>
+            <strong>{{ sizingSummary.formula }}</strong>
+            <small>{{ sizingSummary.detail }}</small>
+          </div>
+        </div>
+      </article>
+
+      <article class="panel">
+        <div class="panel-title">Exit & Position</div>
+        <div class="decision-grid">
+          <div class="decision-item decision-item-wide" :class="'decision-item-' + positionSummary.tone">
+            <span>Position status</span>
+            <strong data-testid="position-status">{{ positionSummary.headline }}</strong>
+            <small>{{ positionSummary.detail }}</small>
+          </div>
+          <div class="decision-item" :class="'decision-item-' + positionSummary.tone">
+            <span>Unrealized PnL</span>
+            <strong data-testid="position-pnl">{{ positionSummary.pnl || "-" }}</strong>
+            <small>{{ positionSummary.ageCopy }}</small>
+          </div>
+          <div class="decision-item">
+            <span>Entry price</span>
+            <strong>{{ positionSummary.entryCopy }}</strong>
+            <small>{{ positionSummary.hasPosition ? ("Qty " + positionSummary.qtyCopy + " BTC") : "No filled position" }}</small>
+          </div>
+          <div class="decision-item" :class="'decision-item-' + exitSummary.tone">
+            <span>Exit decision</span>
+            <strong data-testid="exit-decision">{{ exitSummary.headline }}</strong>
+            <small>{{ exitSummary.detail }}</small>
+          </div>
+          <div class="decision-item">
+            <span>Trailing stop</span>
+            <strong data-testid="trailing-stop">{{ exitSummary.stopCopy !== "-" ? exitSummary.stopCopy : (positionState && positionState.trailing_stop > 0 ? formatCurrency(positionState.trailing_stop, 2) : "-") }}</strong>
+            <small>{{ positionSummary.stopDistanceCopy }}</small>
+          </div>
+          <div class="decision-item">
+            <span>Target reduction</span>
+            <strong data-testid="target-reduction">{{ exitSummary.reductionCopy }}</strong>
+            <small>{{ exitSummary.reasonCopy }}</small>
           </div>
         </div>
       </article>
@@ -545,10 +753,91 @@ export const DashboardPage = defineComponent({
         </div>
       </article>
 
+      <article class="panel">
+        <div class="panel-title">Options Thermometer</div>
+        <div class="decision-grid">
+          <div class="decision-item" :class="'decision-item-' + deribitStatus.tone">
+            <span>Deribit feed</span>
+            <strong>{{ deribitStatus.label }}</strong>
+            <small>{{ deribitStatus.detail }}</small>
+          </div>
+          <div class="decision-item">
+            <span>30D ATM IV</span>
+            <strong>{{ deribitRisk ? formatNumber(deribitRisk.atm_iv_30d, 2) + "%" : "-" }}</strong>
+            <small>{{ deribitSummary.atmDetail }}</small>
+          </div>
+          <div class="decision-item" :class="'decision-item-' + deribitSummary.termTone">
+            <span>Term structure</span>
+            <strong>{{ deribitRisk ? formatSignedPercent(deribitRisk.term_structure_slope, 2) : "-" }}</strong>
+            <small>{{ deribitSummary.termDetail }}</small>
+          </div>
+          <div class="decision-item" :class="'decision-item-' + deribitSummary.skewTone">
+            <span>Put/Call skew</span>
+            <strong>{{ deribitRisk ? formatNumber(deribitRisk.put_call_skew_25d, 2) : "-" }}</strong>
+            <small>{{ deribitSummary.skewDetail }}</small>
+          </div>
+          <div class="decision-item">
+            <span>OI concentration</span>
+            <strong>{{ deribitRisk ? formatPercent(deribitRisk.oi_concentration, 2) : "-" }}</strong>
+            <small>{{ deribitSummary.oiDetail }}</small>
+          </div>
+          <div class="decision-item" :class="'decision-item-' + deribitSummary.flowTone">
+            <span>Flow proxy</span>
+            <strong>{{ deribitRisk ? formatSignedPercent(deribitRisk.block_flow_imbalance, 2) : "-" }}</strong>
+            <small>{{ deribitSummary.flowDetail }}</small>
+          </div>
+          <div class="decision-item decision-item-wide">
+            <span>Quality flags</span>
+            <strong>{{ deribitRisk ? formatCodes(deribitRisk.quality_flags, 4) : "Awaiting Deribit pack" }}</strong>
+            <small>{{ deribitSummary.qualityDetail }}</small>
+          </div>
+        </div>
+        <div class="two-up-grid">
+          <div class="panel panel-nested">
+            <div class="panel-title panel-title-sub">ATM IV Session Trend</div>
+            <SeriesCanvas :values="deribitIvSeries" color="#f5a524" :height="140" />
+          </div>
+          <div class="panel panel-nested">
+            <div class="panel-title panel-title-sub">Observation Notes</div>
+            <div class="event-list">
+              <div class="event-row">
+                <strong>Observation only</strong>
+                <small>Deribit currently informs operators only. Strategy, risk, and execution remain unchanged.</small>
+              </div>
+              <div class="event-row">
+                <strong>Flow is a proxy</strong>
+                <small>Volume imbalance is used as a public proxy for block flow until a deeper feed is justified.</small>
+              </div>
+              <div class="event-row">
+                <strong>Update cadence</strong>
+                <small>{{ deribitStatus.schedule }}</small>
+              </div>
+            </div>
+          </div>
+        </div>
+      </article>
+
       <div class="two-up-grid">
         <article class="panel">
           <div class="panel-title">Price Curve</div>
-          <CandleCanvas :candles="candles" :prices="priceSeries" :height="290" />
+          <CandleCanvas
+            :candles="candles"
+            :prices="priceSeries"
+            :position="positionState"
+            :trailing-stop="positionState && positionState.trailing_stop"
+            :height="290"
+          />
+          <div class="decision-grid price-overlay-grid" data-testid="price-overlay-legend">
+            <div
+              v-for="item in priceOverlayItems"
+              :key="item.label"
+              class="decision-item"
+            >
+              <span>{{ item.label }}</span>
+              <strong>{{ item.value }}</strong>
+              <small>{{ item.detail }}</small>
+            </div>
+          </div>
         </article>
 
         <article class="panel">
@@ -672,6 +961,7 @@ function averageStateConfidence(state) {
 
 function buildThesisSummary({
   state,
+  playbook,
   directionalBias,
   latestTarget,
   latestRiskDecision,
@@ -691,6 +981,7 @@ function buildThesisSummary({
       transitionWidth: "0%",
       chips: [
         { label: "Feed", value: marketHealth.label, tone: marketHealth.tone },
+        { label: "Playbook", value: playbook ? humanizeCode(playbook.playbook_id) : "Awaiting playbook", tone: "warning" },
         { label: "Bias", value: directionalBias ? formatBiasLabel(directionalBias.direction, true) : "Awaiting bias", tone: "warning" },
         { label: "Target", value: latestTarget ? `${formatNumber(latestTarget.target_qty, 4)} BTC` : "No target", tone: "warning" },
       ],
@@ -724,6 +1015,9 @@ function buildThesisSummary({
   let headline = "Strategy is waiting for a cleaner edge";
   let detail = `${formatRegimeLabel(state.regime)} regime with ${humanizeCode(state.volatility_state).toLowerCase()} volatility, ${humanizeCode(state.positioning_state).toLowerCase()} positioning, and ${humanizeCode(state.quality_state).toLowerCase()} quality.`;
   let action = "The system is flat until the state improves.";
+  if (playbook) {
+    detail = `${detail} Active playbook: ${humanizeCode(playbook.playbook_id).toLowerCase()} (${formatPercent(playbook.playbook_confidence, 2)} confidence).`;
+  }
 
   if (String(state.directional_state) === "UPTREND") {
     headline = "Long thesis is active";
@@ -755,6 +1049,7 @@ function buildThesisSummary({
     transitionWidth: toPercentWidth(transitionRisk),
     chips: [
       { label: "Regime", value: formatRegimeLabel(state.regime), tone: "ok" },
+      { label: "Playbook", value: playbook ? humanizeCode(playbook.playbook_id) : "Awaiting playbook", tone: playbook && playbook.playbook_id === "CAPITAL_PRESERVATION" ? "warning" : "ok" },
       { label: "Direction", value: humanizeCode(state.directional_state), tone: tone },
       { label: "Quality", value: humanizeCode(state.quality_state), tone: toneFromState("quality", state.quality_state) },
       { label: "Target", value: latestTarget ? `${formatNumber(targetQty, 4)} BTC` : "No target", tone: Math.abs(targetQty) > 0 ? "ok" : "warning" },
@@ -806,6 +1101,74 @@ function buildStateCard(label, token, confidence, detail, tone) {
     confidenceWidth: toPercentWidth(confidence),
     detail,
     tone,
+  };
+}
+
+function buildDeribitStatus({ deribitRisk, runtimeStatus, nowMs }) {
+  const status = runtimeStatus && runtimeStatus.deribit ? runtimeStatus.deribit : {};
+  if (!status.enabled) {
+    return {
+      label: "Disabled",
+      tone: "warning",
+      detail: "Set ZENQUANT_DERIBIT_ENABLED=1 to enable the observation layer",
+      schedule: "Deribit polling is disabled for this runtime",
+    };
+  }
+  if (!deribitRisk) {
+    return {
+      label: "Starting",
+      tone: "warning",
+      detail: status.last_error || "Waiting for the first Deribit observation pack",
+      schedule: "Polls every 15 minutes without affecting strategy logic",
+    };
+  }
+  const ageMs = Math.max(0, nowMs - Number(deribitRisk.ts_ns || 0) / 1_000_000);
+  if (ageMs <= 30 * 60 * 1000) {
+    return {
+      label: "Live",
+      tone: "ok",
+      detail: `Updated ${formatRelativeTimeFromNs(deribitRisk.ts_ns, nowMs)}`,
+      schedule: "Polls every 15 minutes from Deribit public endpoints",
+    };
+  }
+  return {
+    label: "Stale",
+    tone: "warning",
+    detail: status.last_error || `Last update ${formatRelativeTimeFromNs(deribitRisk.ts_ns, nowMs)}`,
+    schedule: "Polls every 15 minutes from Deribit public endpoints",
+  };
+}
+
+function buildDeribitSummary(pack) {
+  if (!pack) {
+    return {
+      atmDetail: "30D ATM IV will appear after the first options snapshot",
+      termDetail: "Waiting for near/far expiry pairs",
+      termTone: "warning",
+      skewDetail: "Waiting for skew proxy",
+      skewTone: "warning",
+      oiDetail: "Open-interest concentration unavailable",
+      flowDetail: "Flow proxy unavailable",
+      flowTone: "warning",
+      qualityDetail: "Observation layer has not published yet",
+    };
+  }
+  const term = Number(pack.term_structure_slope || 0);
+  const skew = Number(pack.put_call_skew_25d || 0);
+  const concentration = Number(pack.oi_concentration || 0);
+  const flow = Number(pack.block_flow_imbalance || 0);
+  return {
+    atmDetail: term < 0 ? "Front IV is richer than far IV, which usually signals stress." : "Front-to-back IV is inside a normal contango shape.",
+    termDetail: term < 0 ? "Inversion: near-dated IV is richer than far-dated IV." : "Positive slope: longer-dated IV remains richer than front expiry.",
+    termTone: term < 0 ? "danger" : term < 0.05 ? "warning" : "ok",
+    skewDetail: skew > 0 ? "Puts are richer than calls, so tail-risk demand is elevated." : "Calls are as rich as or richer than puts.",
+    skewTone: skew > 5 ? "danger" : skew > 0 ? "warning" : "ok",
+    oiDetail: concentration >= 0.45 ? "Open interest is concentrated in a small number of strikes." : "Open interest is reasonably distributed across strikes.",
+    flowDetail: flow > 0 ? "Call-side volume proxy dominates put volume." : flow < 0 ? "Put-side volume proxy dominates call volume." : "Call and put volume proxies are balanced.",
+    flowTone: Math.abs(flow) > 0.35 ? "warning" : "ok",
+    qualityDetail: Array.isArray(pack.quality_flags) && pack.quality_flags.length
+      ? "Quality flags describe aggregation caveats, not strategy vetoes."
+      : "No Deribit quality flags reported.",
   };
 }
 

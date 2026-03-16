@@ -2,11 +2,15 @@ import unittest
 
 from zenquant.app.live_state import DashboardStateStore
 from zenquant.domain import (
+    DeribitRiskPack,
     DirectionalBias,
+    ExitDecision,
     IndicatorCoverage,
     IndicatorPack,
     MarketState,
     OpenPositionState,
+    PlaybookSelection,
+    SizingDecision,
     TargetPosition,
     Timeframe,
 )
@@ -59,6 +63,50 @@ class DashboardStateTests(unittest.TestCase):
                 reason_codes=["REGIME_TREND"],
             )
         )
+        store.on_playbook(
+            PlaybookSelection(
+                symbol="BTCUSDT_PERP",
+                timeframe=Timeframe.TF_4H,
+                cutoff_time_ns=10,
+                playbook_id="BULL_CONTINUATION",
+                playbook_confidence=0.82,
+                allowed_directions=[1.0, 0.0],
+                max_leverage=3.0,
+                trailing_stop_atr_mult=3.0,
+                allow_pyramid=True,
+                max_pyramid_count=2,
+                time_decay_bars=None,
+                selection_reason="Clean uptrend",
+                reason_codes=["PLAYBOOK_BULL_CONTINUATION"],
+            )
+        )
+        store.on_sizing(
+            SizingDecision(
+                symbol="BTCUSDT_PERP",
+                timeframe=Timeframe.TF_4H,
+                cutoff_time_ns=10,
+                base_size=1.5,
+                confidence_multiplier=0.8,
+                stress_discount=0.95,
+                execution_haircut=1.0,
+                final_leverage=1.14,
+                reason_codes=["SIZE_BASE_VOL_TARGET"],
+            )
+        )
+        store.on_exit(
+            ExitDecision(
+                symbol="BTCUSDT_PERP",
+                timeframe=Timeframe.TF_4H,
+                cutoff_time_ns=10,
+                exit_type="TRAILING",
+                exit_urgency="IMMEDIATE",
+                target_reduction_pct=1.0,
+                stop_price=95.0,
+                reason_code="TRAILING_STOP_BREACH",
+                reason_detail="Price breached trailing stop",
+                reason_codes=["EXIT_TRAILING_STOP"],
+            )
+        )
         store.on_position_state(
             symbol="BTCUSDT_PERP",
             timeframe="4h",
@@ -74,6 +122,18 @@ class DashboardStateTests(unittest.TestCase):
                 pyramid_count=0,
                 bars_held=2,
             ),
+        )
+        store.on_deribit_risk(
+            DeribitRiskPack(
+                symbol="BTC",
+                ts_ns=12,
+                atm_iv_30d=62.5,
+                term_structure_slope=0.08,
+                put_call_skew_25d=4.2,
+                oi_concentration=0.41,
+                block_flow_imbalance=0.18,
+                quality_flags=["OK"],
+            )
         )
         store.on_target_position(
             TargetPosition(
@@ -95,6 +155,16 @@ class DashboardStateTests(unittest.TestCase):
         self.assertIn("directional_bias", snapshot)
         self.assertIn("directional_bias_meta", snapshot)
         self.assertIn("market_state", snapshot)
+        self.assertIn("active_playbook", snapshot)
+        self.assertIn("latest_sizing", snapshot)
+        self.assertIn("latest_exit", snapshot)
         self.assertIn("position_state", snapshot)
         self.assertIn("latest_target", snapshot)
+        self.assertIn("deribit_risk", snapshot)
+        self.assertIn("deribit_history", snapshot)
         self.assertFalse(snapshot["directional_bias_meta"]["is_stale"])
+        self.assertEqual(snapshot["active_playbook"]["playbook_id"], "BULL_CONTINUATION")
+        self.assertAlmostEqual(snapshot["latest_sizing"]["final_leverage"], 1.14)
+        self.assertEqual(snapshot["latest_exit"]["exit_type"], "TRAILING")
+        self.assertAlmostEqual(snapshot["deribit_risk"]["atm_iv_30d"], 62.5)
+        self.assertEqual(len(snapshot["deribit_history"]), 1)

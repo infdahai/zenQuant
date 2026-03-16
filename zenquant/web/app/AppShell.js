@@ -45,6 +45,7 @@ export const AppShell = defineComponent({
     });
     const shellSummary = computed(() => {
       const state = snapshot.value.market_state || null;
+      const playbook = snapshot.value.active_playbook || null;
       const latestTarget = snapshot.value.latest_target || null;
       const latestRiskDecision = snapshot.value.risk_decision || null;
       const riskFlags =
@@ -61,6 +62,7 @@ export const AppShell = defineComponent({
           stateDetail: marketHealth.value.detail,
           posture: "Awaiting first classification",
           target: "No state-driven target yet",
+          playbook: "No playbook selected yet",
           statusLine: "Live feed is up, but the state engine has not emitted a confirmed bar-close state yet.",
         };
       }
@@ -87,6 +89,7 @@ export const AppShell = defineComponent({
         target: latestTarget
           ? `${formatNumber(latestTarget.target_qty, 4)} BTC target`
           : "No target published yet",
+        playbook: playbook ? humanizeCode(playbook.playbook_id) : "Awaiting playbook",
         statusLine: `${formatPercent(transitionRisk, 2)} transition risk · ${
           riskFlags.length ? riskFlags.slice(0, 2).map(humanizeCode).join(" | ") : "Risk overlay open"
         }`,
@@ -125,9 +128,9 @@ export const AppShell = defineComponent({
     <div class="app-shell">
       <header class="topbar">
         <div class="brand-block">
-          <div class="brand-kicker">ZenQuant Phase 3</div>
+          <div class="brand-kicker">ZenQuant Phase 4</div>
           <h1>ZenQuant State Console</h1>
-          <p>Operator view for live state, bias, risk, and execution on the flagship BTC strategy.</p>
+          <p>Operator view for live state, playbook, risk, and execution on the flagship BTC strategy.</p>
           <div class="brand-summary-grid">
             <div class="brand-summary-card">
               <span>Regime</span>
@@ -143,6 +146,11 @@ export const AppShell = defineComponent({
               <span>Operator Read</span>
               <strong>{{ shellSummary.posture }}</strong>
               <small>{{ shellSummary.target }}</small>
+            </div>
+            <div class="brand-summary-card">
+              <span>Playbook</span>
+              <strong>{{ shellSummary.playbook }}</strong>
+              <small>State-selected trading posture</small>
             </div>
           </div>
         </div>

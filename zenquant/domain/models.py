@@ -334,6 +334,113 @@ class MarketState:
 
 
 @dataclass(slots=True)
+class PlaybookSelection:
+    """Active trading playbook selected from the current ``MarketState``.
+
+    This object is the Phase 4 bridge between state classification and target
+    construction. It keeps strategy routing explicit and auditable without
+    embedding playbook rules into the UI or execution layers.
+    """
+
+    symbol: str
+    timeframe: Timeframe
+    cutoff_time_ns: int
+    playbook_id: str
+    playbook_confidence: float
+    allowed_directions: list[float]
+    max_leverage: float
+    trailing_stop_atr_mult: float
+    allow_pyramid: bool
+    max_pyramid_count: int
+    time_decay_bars: int | None
+    selection_reason: str
+    reason_codes: list[str] = field(default_factory=list)
+
+    def allows_direction(self, direction: float) -> bool:
+        """Return whether the playbook permits this directional stance."""
+        return any(abs(allowed - direction) < 1e-9 for allowed in self.allowed_directions)
+
+    def is_reduce_only(self) -> bool:
+        """Capital-preservation playbooks only allow flattening exposure."""
+        return all(abs(direction) < 1e-9 for direction in self.allowed_directions)
+
+
+@dataclass(slots=True)
+class SizingDecision:
+    """Explicit leverage-sizing breakdown used by the strategy engine.
+
+    Phase 5 extracts sizing out of ``ARCStrategyEngine`` so leverage decisions
+    can be tested and audited independently from entry and exit logic.
+    """
+
+    symbol: str
+    timeframe: Timeframe
+    cutoff_time_ns: int
+    base_size: float
+    confidence_multiplier: float
+    stress_discount: float
+    execution_haircut: float
+    final_leverage: float
+    reason_codes: list[str] = field(default_factory=list)
+
+    def breakdown(self) -> dict[str, float]:
+        """Return the multiplicative sizing components for display/audit."""
+        return {
+            "base_size": self.base_size,
+            "confidence_multiplier": self.confidence_multiplier,
+            "stress_discount": self.stress_discount,
+            "execution_haircut": self.execution_haircut,
+            "final_leverage": self.final_leverage,
+        }
+
+
+@dataclass(slots=True)
+class ExitDecision:
+    """Exit logic decision extracted from the strategy engine.
+
+    Phase 6 separates exit logic into an auditable, testable module so the
+    strategy engine no longer hides exits inside target construction.
+    """
+
+    symbol: str
+    timeframe: Timeframe
+    cutoff_time_ns: int
+    exit_type: str
+    exit_urgency: str
+    target_reduction_pct: float
+    stop_price: float | None
+    reason_code: str
+    reason_detail: str
+    reason_codes: list[str] = field(default_factory=list)
+
+    def should_exit(self) -> bool:
+        """Quick check for whether any exit action is requested."""
+        return self.exit_type != "NONE"
+
+    def is_immediate(self) -> bool:
+        """Return whether the exit should flatten immediately."""
+        return self.exit_urgency == "IMMEDIATE"
+
+
+@dataclass(slots=True)
+class DeribitRiskPack:
+    """Deribit options market indicators used as a risk thermometer.
+
+    This pack is observation-first. It is meant to inform operators and future
+    risk-layer enhancements without becoming a primary directional signal.
+    """
+
+    symbol: str
+    ts_ns: int
+    atm_iv_30d: float
+    term_structure_slope: float
+    put_call_skew_25d: float
+    oi_concentration: float
+    block_flow_imbalance: float
+    quality_flags: list[str] = field(default_factory=list)
+
+
+@dataclass(slots=True)
 class BacktestMetrics:
     """Summary metrics from a single backtest window."""
 

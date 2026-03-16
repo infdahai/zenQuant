@@ -17,7 +17,10 @@
       "Bash(git checkout:*)",
       "Bash(git pull:*)",
       "Bash(find zenquant:*)",
-      "Bash(ls:*)"
+      "Bash(ls:*)",
+      "Bash(cd docs:*)",
+      "Bash(grep:*)",
+      "Bash(pytest:*)"
     ]
   }
 }

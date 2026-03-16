@@ -788,6 +788,7 @@ uv run zenquant-backtest --root data/raw/binance --symbol BTCUSDT
 3. Start the live paper-trading runtime:
 
 ```bash
+export ZENQUANT_DERIBIT_ENABLED=1  # optional: enable Deribit options observation layer
 export ZENQUANT_PG_DSN='postgresql://user:pass@host:5432/zenquant'
 uv run zenquant-web --host 127.0.0.1 --port 8090 --mode live
 ```
@@ -797,6 +798,13 @@ uv run zenquant-web --host 127.0.0.1 --port 8090 --mode live
 ```bash
 curl http://127.0.0.1:8090/healthz
 curl "http://127.0.0.1:8090/api/state?symbol=BTCUSDT_PERP&tf=4h"
+```
+
+5. Use the built-in validator for repeatable smoke or soak checks:
+
+```bash
+uv run zenquant-live-validate --base-url http://127.0.0.1:8090
+uv run zenquant-live-validate --base-url http://127.0.0.1:8090 --require-db --watch-seconds 86400 --output .artifacts/live-24h-summary.json
 ```
 
 What you should see:
@@ -811,6 +819,7 @@ Important:
 - The live runtime now bootstraps recent closed `4h` and `1d` bars plus recent funding/open-interest history on startup, so a fresh process does not begin from an empty indicator state.
 - This bootstrap is warm-state only. It does **not** replay historical orders or historical PnL into the current live paper account.
 - Restart recovery for prior simulated positions is still not implemented. A restarted process begins flat, then aligns to the current closed-bar signal.
+- `zenquant-live-validate` tracks observed 4h/1d cutoff turnover during the watch window, so it is the intended tool for confirming real bar-close events and 24h runtime health.
 
 ### Frontend checks
 
@@ -970,6 +979,8 @@ Only pursue after Phase 3 (Funding-OI Intelligence) is validated and shows measu
 #### Stage 1: Observation Only (1 week, minimal risk)
 
 **Objective:** Establish data pipeline and dashboard visibility without any strategy integration.
+
+**Current repo status (2026-03-16):** Implemented as an optional live observation layer behind `ZENQUANT_DERIBIT_ENABLED=1`. It publishes an aggregated `DeribitRiskPack`, stores it in PostgreSQL when configured, and renders an "Options Thermometer" panel on the dashboard. It does **not** change strategy, risk, or execution behavior.
 
 **Implementation:**
 
@@ -2047,29 +2058,72 @@ It is trying to be a trading kernel that:
 
 ---
 
-## 24. Additional Documentation
+## 24. Current Architecture Status
 
-For deeper architectural guidance and future development roadmap, see:
+### Completed Phases
 
-### Strategic Architecture Documents
+**Phase 3: State Engine** ✅
+- 4-dimensional market state classification (directional, volatility, positioning, quality)
+- Independent confidence scores for each dimension
+- Transition risk tracking (0.0 = stable, 1.0 = about to flip)
+- PostgreSQL persistence and dashboard visualization
 
-- **[docs/PLAYBOOK_ARCHITECTURE.md](docs/PLAYBOOK_ARCHITECTURE.md)** - Playbook-driven state architecture design proposal for Phase 3+ evolution. Explains how to evolve from feature-driven strategy to state-based playbook selection for improved medium-term trading edge.
+**Phase 4: Playbook Engine** ✅
+- 4 core playbooks: Bull Continuation, Bear Defense, Range Light, Capital Preservation
+- State-driven playbook selection with explicit allowed directions and risk parameters
+- Playbook-aware trailing stops and position management
+- Full integration with strategy engine
 
-- **[docs/PLAYBOOK_IMPLEMENTATION_GUIDE.md](docs/PLAYBOOK_IMPLEMENTATION_GUIDE.md)** - Concrete implementation guide with code examples, migration path, and testing strategy for the playbook architecture.
+### Architecture Layers
 
-### Key Concepts
+```
+Canonical Data Layer (bar-close events, funding, OI)
+    ↓
+State Engine (4D state classification)
+    ↓
+Playbook Engine (select trading logic based on state)
+    ↓
+Strategy Engine (build target positions)
+    ↓
+Risk Overlay (final veto, drawdown throttle)
+    ↓
+Execution Kernel (delta execution, simulated fills)
+    ↓
+PostgreSQL Audit Trail
+```
 
-The playbook architecture addresses a fundamental question for medium-term (4H/1D) trading systems:
+### Next Development Phases
 
-**Where does edge come from?**
+**Phase 5: Sizing Engine** ✅
+- Explicit `SizingDecision` contract for audit, replay, and UI inspection
+- Deterministic sizing engine: `base_size × confidence_multiplier × stress_discount × execution_haircut`
+- Strategy now publishes sizing events and appends sizing reason codes to targets
+- PostgreSQL persistence and dashboard sizing breakdown included
 
-Not from heavier AI models, but from:
-1. **Correct state identification** - decomposing market regime into orthogonal dimensions (directional, volatility, positioning, quality)
-2. **Disciplined playbook switching** - using the right trading logic for the right market state
-3. **Stress-aware sizing** - reducing exposure in hostile conditions
-4. **Professional exits** - cutting losers fast, letting winners run with playbook-appropriate logic
+**Phase 6: Exit Engine** ✅
+- Explicit `ExitDecision` contract for audit and replay
+- Deterministic exit engine with fixed priority: invalidation -> trailing -> time decay -> regime change
+- Strategy now publishes exit decisions and translates them into reduce-only targets
+- PostgreSQL persistence and dashboard exit monitor included
 
-These documents provide the strategic framework for Phase 3+ development while preserving all existing ZenQuant contracts (determinism, auditability, replay parity, risk veto).
+**Optional Observation Layer: Deribit Stage 1** ✅
+- Public Deribit options polling behind `ZENQUANT_DERIBIT_ENABLED=1`
+- Observation-only `DeribitRiskPack` for ATM IV, term structure, skew proxy, OI concentration, and flow proxy
+- Dashboard "Options Thermometer" plus PostgreSQL persistence
+- No strategy, risk, or execution mutation yet
+
+See **[docs/TASK_LIST.md](docs/TASK_LIST.md)** for detailed Phase 5-6 task breakdown.
+
+### Core Architectural Principles
+
+For medium-term (4H/1D) trading systems, edge comes from:
+
+1. **Correct state identification** - orthogonal state dimensions, not single regime
+2. **Disciplined playbook switching** - right logic for right state
+3. **Stress-aware sizing** - smaller in hostile conditions
+4. **Professional exits** - cut losers fast, let winners run
+
+These principles guide all development while preserving ZenQuant's core contracts: determinism, auditability, replay parity, and risk veto.
 
 ---
 
