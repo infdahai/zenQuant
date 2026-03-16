@@ -1,7 +1,7 @@
 import unittest
 
 from zenquant.domain import MarketState, PlaybookSelection, Timeframe
-from zenquant.strategy import SizingEngine
+from zenquant.strategy import SizingEngine, SizingEngineConfig
 
 
 def _state(
@@ -120,6 +120,39 @@ class SizingEngineTests(unittest.TestCase):
         self.assertLess(decision.execution_haircut, 1.0)
         self.assertIn("CROWDING_DISCOUNT", decision.reason_codes)
         self.assertIn("QUALITY_DEGRADED", decision.reason_codes)
+
+    def test_unsafe_quality_produces_zero_leverage(self) -> None:
+        decision = self.engine.compute(
+            state=_state(quality_state="UNSAFE"),
+            playbook=_playbook(),
+            equity=100_000.0,
+            indicators={"realized_vol": 0.4, "funding_oi_z": 0.1},
+        )
+        self.assertEqual(decision.execution_haircut, 0.0)
+        self.assertEqual(decision.final_leverage, 0.0)
+
+    def test_config_can_raise_crowding_reason_threshold(self) -> None:
+        engine = SizingEngine(SizingEngineConfig(crowding_reason_threshold=3.0))
+        decision = engine.compute(
+            state=_state(quality_state="NOISY"),
+            playbook=_playbook(),
+            equity=100_000.0,
+            indicators={"realized_vol": 0.4, "funding_oi_z": 2.1},
+        )
+        self.assertNotIn("CROWDING_DISCOUNT", decision.reason_codes)
+
+    def test_config_can_tighten_volatility_discount(self) -> None:
+        engine = SizingEngine(
+            SizingEngineConfig(
+                volatility_high_multiple=1.1,
+                volatility_high_discount=0.8,
+            )
+        )
+        discount = engine._stress_discount(
+            state=_state(volatility_state="NORMAL"),
+            indicators={"realized_vol": 0.8, "funding_oi_z": 0.0, "target_vol": 0.6},
+        )
+        self.assertEqual(discount, 0.8)
 
 
 if __name__ == "__main__":

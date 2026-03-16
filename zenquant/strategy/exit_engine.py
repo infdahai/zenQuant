@@ -14,6 +14,7 @@ class ExitEngineConfig:
     time_decay_enabled: bool = True
     regime_change_enabled: bool = True
     min_bars_before_trail: int = 1
+    transition_risk_exit_threshold: float = 0.85
 
 
 class ExitEngine:
@@ -177,6 +178,11 @@ class ExitEngine:
         playbook: PlaybookSelection,
     ) -> ExitDecision:
         """Respond to softer state deterioration that does not fully invalidate the playbook."""
+        # Handoff rule: once transition risk is high enough to switch the
+        # playbook into capital-preservation mode, the strategy should stop
+        # adding risk but does not automatically flatten existing exposure.
+        # ExitEngine only forces a regime-change reduction at the higher
+        # ``transition_risk_exit_threshold``.
         if state.quality_state == "UNSAFE":
             return ExitDecision(
                 symbol=position.symbol,
@@ -203,7 +209,10 @@ class ExitEngine:
                 reason_detail="Volatility regime distorted; de-risk position",
                 reason_codes=["EXIT_REGIME_CHANGE", "VOLATILITY_STRESS"],
             )
-        if playbook.playbook_id != "CAPITAL_PRESERVATION" and state.transition_risk >= 0.85:
+        if (
+            playbook.playbook_id != "CAPITAL_PRESERVATION"
+            and state.transition_risk >= self._config.transition_risk_exit_threshold
+        ):
             return ExitDecision(
                 symbol=position.symbol,
                 timeframe=position.timeframe,

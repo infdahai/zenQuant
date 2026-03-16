@@ -22,7 +22,7 @@ from zenquant.domain import (
 )
 from zenquant.infra import EventBus
 from .exit_engine import ExitEngine, ExitEngineConfig
-from .playbook_engine import PlaybookEngine
+from .playbook_engine import PlaybookEngine, PlaybookEngineConfig
 from .sizing_engine import SizingEngine, SizingEngineConfig
 
 
@@ -58,6 +58,10 @@ class ARCStrategyConfig:
     # Phase 2: trailing stop config
     trailing_stop_atr_mult: float = 2.5  # ATR multiplier for trailing stop
     min_bars_before_trail: int = 1  # minimum bars held before activating trail
+    # Phase 4-6: engine-specific configs (can be overridden)
+    playbook_config: PlaybookEngineConfig | None = None
+    sizing_config: SizingEngineConfig | None = None
+    exit_config: ExitEngineConfig | None = None
 
 
 class ARCStrategyEngine:
@@ -76,15 +80,21 @@ class ARCStrategyEngine:
         self._latest_packs: dict[tuple[str, Timeframe], IndicatorPack] = {}
         self._market_states: dict[tuple[str, Timeframe], MarketState] = {}
         self._playbooks: dict[tuple[str, Timeframe], PlaybookSelection] = {}
-        self._playbook_engine = PlaybookEngine()
+
+        # Initialize engines with config from top-level ARCStrategyConfig
+        self._playbook_engine = PlaybookEngine(
+            config=self._config.playbook_config
+        )
         self._sizing_engine = SizingEngine(
-            SizingEngineConfig(
+            config=self._config.sizing_config or SizingEngineConfig(
                 target_vol_4h=self._config.target_vol_4h,
                 target_vol_1d=self._config.target_vol_1d,
             )
         )
         self._exit_engine = ExitEngine(
-            ExitEngineConfig(min_bars_before_trail=self._config.min_bars_before_trail)
+            config=self._config.exit_config or ExitEngineConfig(
+                min_bars_before_trail=self._config.min_bars_before_trail
+            )
         )
 
         # Phase 2: multi-timeframe coordination

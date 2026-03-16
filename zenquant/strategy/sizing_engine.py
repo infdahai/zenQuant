@@ -15,6 +15,13 @@ class SizingEngineConfig:
     target_vol_4h: float = 0.60
     target_vol_1d: float = 0.50
     min_realized_vol_ratio: float = 0.25
+    crowding_reason_threshold: float = 1.8
+    positioning_discount_max: float = 0.65
+    positioning_discount_floor: float = 0.35
+    volatility_distorted_multiple: float = 2.8
+    volatility_high_multiple: float = 1.5
+    volatility_distorted_discount: float = 0.75
+    volatility_high_discount: float = 0.9
 
 
 class SizingEngine:
@@ -51,7 +58,7 @@ class SizingEngine:
         final_leverage = min(playbook.max_leverage, unclamped)
 
         reason_codes = ["SIZE_BASE_VOL_TARGET", "SIZE_CONFIDENCE_BLEND"]
-        if abs(funding_oi_z) > 1.8:
+        if abs(funding_oi_z) > self._config.crowding_reason_threshold:
             reason_codes.append("CROWDING_DISCOUNT")
         if state.volatility_state == "DISTORTED":
             reason_codes.append("SIZE_VOLATILITY_STRESS")
@@ -102,11 +109,14 @@ class SizingEngine:
         realized_vol = float(indicators.get("realized_vol", 0.0) or 0.0)
         target_vol = max(float(indicators.get("target_vol", self._target_vol(state.timeframe)) or 0.0), 1e-9)
 
-        positioning_discount = max(0.35, 1.0 - min(0.65, funding_oi_z / 4.0))
-        if realized_vol > target_vol * 2.8 or state.volatility_state == "DISTORTED":
-            volatility_discount = 0.75
-        elif realized_vol > target_vol * 1.5 or state.volatility_state == "HIGH":
-            volatility_discount = 0.9
+        positioning_discount = max(
+            self._config.positioning_discount_floor,
+            1.0 - min(self._config.positioning_discount_max, funding_oi_z / 4.0),
+        )
+        if realized_vol > target_vol * self._config.volatility_distorted_multiple or state.volatility_state == "DISTORTED":
+            volatility_discount = self._config.volatility_distorted_discount
+        elif realized_vol > target_vol * self._config.volatility_high_multiple or state.volatility_state == "HIGH":
+            volatility_discount = self._config.volatility_high_discount
         else:
             volatility_discount = 1.0
 

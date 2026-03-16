@@ -1,7 +1,7 @@
 import unittest
 
 from zenquant.domain import MarketState, OpenPositionState, PlaybookSelection, Timeframe
-from zenquant.strategy import ExitEngine
+from zenquant.strategy import ExitEngine, ExitEngineConfig
 
 
 def _position(**kwargs) -> OpenPositionState:
@@ -130,6 +130,16 @@ class ExitEngineTests(unittest.TestCase):
         )
         self.assertEqual(decision.exit_type, "NONE")
 
+    def test_time_decay_none_never_triggers(self) -> None:
+        engine = ExitEngine()
+        decision = engine.check(
+            _position(direction=1.0, entry_price=100.0, bars_held=25),
+            _state(),
+            _playbook(time_decay_bars=None),
+            {"price": 99.0, "atr": 2.0},
+        )
+        self.assertEqual(decision.exit_type, "NONE")
+
     def test_regime_change_volatility_distorted(self) -> None:
         engine = ExitEngine()
         decision = engine.check(
@@ -169,6 +179,27 @@ class ExitEngineTests(unittest.TestCase):
             _position(direction=1.0, entry_price=100.0, trailing_stop=95.0),
             _state(directional_state="UPTREND"),
             _playbook(playbook_id="BULL_CONTINUATION"),
+            {"price": 105.0, "atr": 2.0},
+        )
+        self.assertEqual(decision.exit_type, "NONE")
+
+    def test_config_can_lower_transition_risk_exit_threshold(self) -> None:
+        engine = ExitEngine(ExitEngineConfig(transition_risk_exit_threshold=0.7))
+        decision = engine.check(
+            _position(direction=1.0, trailing_stop=95.0),
+            _state(transition_risk=0.75),
+            _playbook(playbook_id="BULL_CONTINUATION"),
+            {"price": 105.0, "atr": 2.0},
+        )
+        self.assertEqual(decision.exit_type, "REGIME_CHANGE")
+        self.assertEqual(decision.reason_code, "STATE_TRANSITION_RISK")
+
+    def test_transition_risk_below_exit_threshold_does_not_force_exit(self) -> None:
+        engine = ExitEngine()
+        decision = engine.check(
+            _position(direction=1.0, trailing_stop=95.0),
+            _state(transition_risk=0.7),
+            _playbook(playbook_id="CAPITAL_PRESERVATION", allowed_directions=[0.0]),
             {"price": 105.0, "atr": 2.0},
         )
         self.assertEqual(decision.exit_type, "NONE")
