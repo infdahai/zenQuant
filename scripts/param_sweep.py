@@ -55,6 +55,7 @@ class SweepConfig:
     # Data range
     data_root: Path = Path("data/raw/binance")
     symbol: str = "BTCUSDT"
+    exchange: str = "binance"  # "binance", "deribit", "okx"
     start_ns: int | None = None
     end_ns: int | None = None
 

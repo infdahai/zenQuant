@@ -19,21 +19,77 @@ Training on a single exchange (Binance) has limitations:
 
 ## Data Sources
 
-### Primary: Binance (BTCUSDT Perpetual)
+### Tier 1: Core Sources (Recommended)
+
+#### Primary: Binance (BTCUSDT Perpetual) ✅
 - **Coverage**: 540 days (18 months) - covers full BTC cycle
 - **Data**: 4h/1d klines, funding rates, open interest
-- **Advantages**: High liquidity, reliable data, well-tested
-- **Limitations**: Centralized exchange, potential for manipulation
+- **Advantages**:
+  - Highest liquidity globally
+  - Most reliable data quality
+  - Well-tested infrastructure
+  - 24/7 uptime
+- **Limitations**:
+  - Centralized exchange
+  - Potential for manipulation during low liquidity
+- **Status**: Implemented, downloading in progress
 
-### Secondary: Deribit (BTC-PERPETUAL)
+#### Secondary: Deribit (BTC-PERPETUAL) ✅
 - **Coverage**: 540 days (18 months)
 - **Data**: 1h klines, funding rates, options chain snapshots
-- **Advantages**: Options data for volatility regime detection, different market microstructure
-- **Limitations**: Lower liquidity than Binance, options-focused user base
+- **Advantages**:
+  - Options data for volatility regime detection
+  - Different market microstructure (options-focused)
+  - European user base (different trading patterns)
+  - Institutional-grade derivatives
+- **Limitations**:
+  - Lower spot liquidity than Binance
+  - Options-focused user base may behave differently
+- **Status**: Downloader implemented, ready to use
 
-### Future: Coinbase, Kraken, Bybit
-- **Purpose**: Further diversification, cross-exchange arbitrage detection
-- **Timeline**: Phase 2 (after initial validation)
+### Tier 2: Optional Sources (Consider Later)
+
+#### OKX (BTC-USDT-SWAP)
+- **Why consider**:
+  - Strong Asian market presence
+  - High derivatives volume
+  - Complements Binance with different user demographics
+- **Why not now**:
+  - Marginal benefit over Binance+Deribit
+  - Adds complexity without clear ROI
+- **Decision**: Skip for Phase 1, revisit if Tier 1 shows promise
+
+#### Bybit (BTCUSDT)
+- **Why skip**:
+  - User base heavily overlaps with Binance
+  - Similar market microstructure
+  - Low marginal information gain
+- **Decision**: Not recommended
+
+### Tier 3: Not Recommended
+
+- **Coinbase**: Low liquidity, US-only, limited derivatives
+- **Kraken**: Inconsistent data quality, lower volume
+- **Bitfinex**: Declining liquidity, historical issues
+
+---
+
+## Recommended Approach
+
+**Phase 1 (Current)**: Binance + Deribit
+- Start with 2 exchanges to validate multi-source strategy
+- Binance provides baseline (high liquidity, reliable)
+- Deribit provides diversification (options, different users)
+- If ensemble shows >10% Sharpe improvement, proceed to Phase 2
+
+**Phase 2 (Optional)**: Add OKX if needed
+- Only if Phase 1 shows clear benefit from multi-exchange
+- OKX adds Asian market perspective
+- Requires cost/benefit analysis
+
+**Phase 3 (Future)**: Cross-exchange arbitrage
+- If multiple sources work well, explore arbitrage opportunities
+- Requires real-time execution infrastructure
 
 ---
 
