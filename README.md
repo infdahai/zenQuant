@@ -514,11 +514,10 @@ zenquant/
 ├── ingestor/            # Market data ingestion (Binance, Deribit)
 ├── historical/          # Replay pipeline and bar clock
 ├── strategy/            # 6-layer strategy engine
-│   ├── state_engine.py      # 4D market classification
 │   ├── playbook_engine.py   # Strategy selection
 │   ├── sizing_engine.py     # Position sizing
 │   ├── exit_engine.py       # Exit logic
-│   └── engine.py            # Main strategy coordinator
+│   └── engine.py            # Main coordinator with state classification
 ├── risk/                # Risk overlay and portfolio constraints
 ├── execution/           # Order routing and fill tracking
 ├── infra/               # Event bus, PostgreSQL, logging
@@ -534,7 +533,7 @@ scripts/                 # Utility scripts (Deribit observation, etc.)
 ### Key Files to Understand
 
 **Strategy Engine**
-- `zenquant/strategy/state_engine.py` - 4D market classification logic
+- `zenquant/strategy/engine.py` - Main coordinator with 4D state classification
 - `zenquant/strategy/playbook_engine.py` - Playbook selection rules
 - `zenquant/strategy/sizing_engine.py` - Position sizing computation
 - `zenquant/strategy/exit_engine.py` - Exit priority logic
@@ -652,7 +651,7 @@ SELECT * FROM position_states ORDER BY snapshot_time_ns DESC LIMIT 10;
 **Check dashboard WebSocket**
 ```javascript
 // Browser console
-ws = new WebSocket('ws://localhost:8090/ws/dashboard/BTCUSDT_PERP');
+ws = new WebSocket('ws://localhost:8765/ws');
 ws.onmessage = (e) => console.log(JSON.parse(e.data));
 ```
 
