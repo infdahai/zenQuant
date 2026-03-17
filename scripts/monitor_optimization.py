@@ -13,7 +13,11 @@ from datetime import datetime
 
 def check_param_sweep_progress():
     """Check parameter sweep progress."""
-    result_file = Path("results/binance_full_sweep_540d.json")
+    candidates = [
+        Path("results/binance_full_sweep_540d.json"),
+        Path("results/deribit_param_sweep.json"),
+    ]
+    result_file = next((path for path in candidates if path.exists()), candidates[0])
 
     if not result_file.exists():
         return "Not started", 0, 243
@@ -23,7 +27,8 @@ def check_param_sweep_progress():
             data = json.load(f)
             completed = len(data.get("results", []))
             total = 243  # Full sweep
-            return "Running", completed, total
+            status = "Complete" if completed >= total else "Running"
+            return status, completed, total
     except Exception:
         return "Error reading results", 0, 243
 
@@ -66,7 +71,7 @@ def main():
         # Check parameter sweep
         status, completed, total = check_param_sweep_progress()
         pct = (completed / total * 100) if total > 0 else 0
-        print(f"Parameter Sweep (Binance 540d):")
+        print(f"Parameter Sweep:")
         print(f"  Status: {status}")
         print(f"  Progress: {completed}/{total} ({pct:.1f}%)")
 
@@ -85,14 +90,23 @@ def main():
         print(f"  Status: {deribit_status}")
         print()
 
+        tuning_file = Path("results/deribit_walk_forward_tuning.json")
+        if tuning_file.exists():
+            print("Walk-Forward Tuning:")
+            print(f"  Status: Complete ({tuning_file})")
+        else:
+            print("Walk-Forward Tuning:")
+            print("  Status: Not started")
+        print()
+
         # Check if all tasks complete
         if completed >= total and "Not started" not in deribit_status:
             print("✅ All tasks complete!")
             print()
             print("Next steps:")
             print("  1. Convert Deribit data: uv run python scripts/convert_deribit_to_parquet.py")
-            print("  2. Compare results: uv run python scripts/compare_results.py results/binance_full_sweep_540d.json")
-            print("  3. Run walk-forward validation: uv run python scripts/walk_forward_tune.py --full")
+            print("  2. Compare results: uv run python scripts/compare_results.py results/deribit_param_sweep.json")
+            print("  3. Run walk-forward validation: uv run python scripts/walk_forward_tune.py --quick --data-root data/raw/deribit_replay --symbol BTCUSDT --output results/deribit_walk_forward_tuning.json")
             break
 
         print("Press Ctrl+C to exit")

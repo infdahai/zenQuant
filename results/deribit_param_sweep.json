@@ -1,0 +1,202 @@
+{
+  "schema_version": "param_sweep.v1",
+  "sweep_timestamp": 1773720667.36665,
+  "total_runs": 3,
+  "results": [
+    {
+      "run_id": 1,
+      "params": {
+        "preserve_capital_risk": 0.65,
+        "exit_transition_risk": 0.85,
+        "bull_leverage": 2.5,
+        "bear_leverage": 2.25,
+        "range_leverage": 1.5
+      },
+      "metrics": {
+        "symbol": "BTCUSDT_PERP",
+        "start_ns": 1727064000000000000,
+        "end_ns": 1773792000000000000,
+        "total_bars": 3241,
+        "net_pnl": 492085.58,
+        "gross_pnl": 555505.71,
+        "total_fees": 63420.13,
+        "total_funding": 0.0,
+        "sharpe": 2.5278,
+        "sortino": 12.3622,
+        "max_drawdown": 0.197812,
+        "max_dd_duration_bars": 2145,
+        "win_rate": 0.361047,
+        "profit_factor": 0.974726,
+        "avg_win": 911.56,
+        "avg_loss": -528.44,
+        "trade_count": 2080,
+        "turnover_per_day": 293159.33,
+        "fee_drag_pct": 0.114166
+      },
+      "diagnostics": {
+        "playbook_counts": {
+          "RANGE_LIGHT": 3291,
+          "BEAR_DEFENSE": 260,
+          "BULL_CONTINUATION": 231
+        },
+        "actionable_exit_counts": {
+          "TIME_DECAY": 517,
+          "TRAILING": 43
+        },
+        "risk_flag_counts": {
+          "OK": 1149,
+          "CROWDING_EXTREME": 599,
+          "SEVERE_CROWDING": 451,
+          "REDUCE_ONLY_BLOCK_ADD": 56,
+          "VOL_SHOCK": 99,
+          "DD_STEP_1": 821,
+          "DD_STEP_2": 320,
+          "DD_STEP_3": 679
+        },
+        "top_target_reason_codes": {
+          "QUALITY_DEGRADED": 2681,
+          "SIZE_BASE_VOL_TARGET": 2681,
+          "SIZE_CONFIDENCE_BLEND": 2681,
+          "SIZE_EXECUTION_HAIRCUT": 2681,
+          "BIAS_QUALITY_DEGRADED": 2677,
+          "PLAYBOOK_ALLOW_BOTH": 2264,
+          "PLAYBOOK_RANGE_LIGHT": 2264,
+          "REGIME_RANGE": 1900,
+          "NO_DIRECTION": 1543,
+          "REGIME_TREND": 1341
+        }
+      },
+      "runtime_s": 0.8191969394683838
+    },
+    {
+      "run_id": 2,
+      "params": {
+        "preserve_capital_risk": 0.65,
+        "exit_transition_risk": 0.85,
+        "bull_leverage": 3.0,
+        "bear_leverage": 2.25,
+        "range_leverage": 1.5
+      },
+      "metrics": {
+        "symbol": "BTCUSDT_PERP",
+        "start_ns": 1727064000000000000,
+        "end_ns": 1773792000000000000,
+        "total_bars": 3241,
+        "net_pnl": 492085.58,
+        "gross_pnl": 555505.71,
+        "total_fees": 63420.13,
+        "total_funding": 0.0,
+        "sharpe": 2.5278,
+        "sortino": 12.3622,
+        "max_drawdown": 0.197812,
+        "max_dd_duration_bars": 2145,
+        "win_rate": 0.361047,
+        "profit_factor": 0.974726,
+        "avg_win": 911.56,
+        "avg_loss": -528.44,
+        "trade_count": 2080,
+        "turnover_per_day": 293159.33,
+        "fee_drag_pct": 0.114166
+      },
+      "diagnostics": {
+        "playbook_counts": {
+          "RANGE_LIGHT": 3291,
+          "BEAR_DEFENSE": 260,
+          "BULL_CONTINUATION": 231
+        },
+        "actionable_exit_counts": {
+          "TIME_DECAY": 517,
+          "TRAILING": 43
+        },
+        "risk_flag_counts": {
+          "OK": 1149,
+          "CROWDING_EXTREME": 599,
+          "SEVERE_CROWDING": 451,
+          "REDUCE_ONLY_BLOCK_ADD": 56,
+          "VOL_SHOCK": 99,
+          "DD_STEP_1": 821,
+          "DD_STEP_2": 320,
+          "DD_STEP_3": 679
+        },
+        "top_target_reason_codes": {
+          "QUALITY_DEGRADED": 2681,
+          "SIZE_BASE_VOL_TARGET": 2681,
+          "SIZE_CONFIDENCE_BLEND": 2681,
+          "SIZE_EXECUTION_HAIRCUT": 2681,
+          "BIAS_QUALITY_DEGRADED": 2677,
+          "PLAYBOOK_ALLOW_BOTH": 2264,
+          "PLAYBOOK_RANGE_LIGHT": 2264,
+          "REGIME_RANGE": 1900,
+          "NO_DIRECTION": 1543,
+          "REGIME_TREND": 1341
+        }
+      },
+      "runtime_s": 0.7178606986999512
+    },
+    {
+      "run_id": 3,
+      "params": {
+        "preserve_capital_risk": 0.65,
+        "exit_transition_risk": 0.85,
+        "bull_leverage": 3.5,
+        "bear_leverage": 2.25,
+        "range_leverage": 1.5
+      },
+      "metrics": {
+        "symbol": "BTCUSDT_PERP",
+        "start_ns": 1727064000000000000,
+        "end_ns": 1773792000000000000,
+        "total_bars": 3241,
+        "net_pnl": 492085.58,
+        "gross_pnl": 555505.71,
+        "total_fees": 63420.13,
+        "total_funding": 0.0,
+        "sharpe": 2.5278,
+        "sortino": 12.3622,
+        "max_drawdown": 0.197812,
+        "max_dd_duration_bars": 2145,
+        "win_rate": 0.361047,
+        "profit_factor": 0.974726,
+        "avg_win": 911.56,
+        "avg_loss": -528.44,
+        "trade_count": 2080,
+        "turnover_per_day": 293159.33,
+        "fee_drag_pct": 0.114166
+      },
+      "diagnostics": {
+        "playbook_counts": {
+          "RANGE_LIGHT": 3291,
+          "BEAR_DEFENSE": 260,
+          "BULL_CONTINUATION": 231
+        },
+        "actionable_exit_counts": {
+          "TIME_DECAY": 517,
+          "TRAILING": 43
+        },
+        "risk_flag_counts": {
+          "OK": 1149,
+          "CROWDING_EXTREME": 599,
+          "SEVERE_CROWDING": 451,
+          "REDUCE_ONLY_BLOCK_ADD": 56,
+          "VOL_SHOCK": 99,
+          "DD_STEP_1": 821,
+          "DD_STEP_2": 320,
+          "DD_STEP_3": 679
+        },
+        "top_target_reason_codes": {
+          "QUALITY_DEGRADED": 2681,
+          "SIZE_BASE_VOL_TARGET": 2681,
+          "SIZE_CONFIDENCE_BLEND": 2681,
+          "SIZE_EXECUTION_HAIRCUT": 2681,
+          "BIAS_QUALITY_DEGRADED": 2677,
+          "PLAYBOOK_ALLOW_BOTH": 2264,
+          "PLAYBOOK_RANGE_LIGHT": 2264,
+          "REGIME_RANGE": 1900,
+          "NO_DIRECTION": 1543,
+          "REGIME_TREND": 1341
+        }
+      },
+      "runtime_s": 0.7296609878540039
+    }
+  ]
+}
