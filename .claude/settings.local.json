@@ -24,7 +24,8 @@
       "Bash(chmod:*)",
       "Bash(uv pip:*)",
       "Bash(cat:*)",
-      "Bash(git fetch:*)"
+      "Bash(git fetch:*)",
+      "Bash(psql:*)"
     ]
   }
 }
