@@ -13,6 +13,9 @@ playwright-report/
 
 data/
 logs/
+results/
+
+*.log
 
 # Local runtime artifacts and generated screenshots.
 .artifacts/
