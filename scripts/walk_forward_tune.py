@@ -196,8 +196,8 @@ def run_walk_forward_tuning(config: WalkForwardConfig) -> TuningResult:
             backtest = HistoricalBacktest(backtest_config)
             result = backtest.run()
 
-            if result.metrics.sharpe_ratio > best_train_sharpe:
-                best_train_sharpe = result.metrics.sharpe_ratio
+            if result.metrics.sharpe > best_train_sharpe:
+                best_train_sharpe = result.metrics.sharpe
                 best_params = params
 
         if best_params is None:
@@ -225,7 +225,7 @@ def run_walk_forward_tuning(config: WalkForwardConfig) -> TuningResult:
             val_end_ns=val_end,
             best_params=best_params,
             train_sharpe=best_train_sharpe,
-            val_sharpe=val_result.metrics.sharpe_ratio,
+            val_sharpe=val_result.metrics.sharpe,
             val_pnl=val_result.metrics.net_pnl,
             val_drawdown=val_result.metrics.max_drawdown,
             val_trade_count=val_result.metrics.trade_count,
@@ -236,7 +236,7 @@ def run_walk_forward_tuning(config: WalkForwardConfig) -> TuningResult:
         if config.verbose:
             print(f"  Best params: {best_params}")
             print(f"  Train Sharpe: {best_train_sharpe:.2f}")
-            print(f"  Val Sharpe: {val_result.metrics.sharpe_ratio:.2f}")
+            print(f"  Val Sharpe: {val_result.metrics.sharpe:.2f}")
             print(f"  Val PnL: {val_result.metrics.net_pnl:,.0f}")
             print(f"  Val MaxDD: {val_result.metrics.max_drawdown:.2%}")
             print(f"  Runtime: {runtime_s:.1f}s")
@@ -337,8 +337,18 @@ def _format_timestamp(ts_ns: int) -> str:
 def save_results(result: TuningResult, output_path: Path) -> None:
     """Save tuning results to JSON."""
     output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    # Convert to dict and handle Path objects
+    result_dict = asdict(result)
+
+    # Convert Path objects to strings
+    if "config" in result_dict and "data_root" in result_dict["config"]:
+        result_dict["config"]["data_root"] = str(result_dict["config"]["data_root"])
+    if "config" in result_dict and "output_path" in result_dict["config"]:
+        result_dict["config"]["output_path"] = str(result_dict["config"]["output_path"])
+
     with open(output_path, "w") as f:
-        json.dump(asdict(result), f, indent=2)
+        json.dump(result_dict, f, indent=2)
 
 
 def main() -> None:
