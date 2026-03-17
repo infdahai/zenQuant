@@ -47,11 +47,11 @@ class ARCStrategyConfig:
 
     portfolio: str = "arc"
     account_equity: float = 100_000.0
-    max_leverage: float = 3.0
+    max_leverage: float = 3.5
     # NOTE: ANNUALIZED vol targets — must match indicator engine units.
     # realized_vol is scaled by sqrt(365 * bars_per_day).
-    target_vol_4h: float = 0.60
-    target_vol_1d: float = 0.50
+    target_vol_4h: float = 0.65
+    target_vol_1d: float = 0.85
     min_trade_qty: float = 0.0001
     execution_timeframe: Timeframe = Timeframe.TF_4H
     bias_max_age_4h_bars: int = 8
