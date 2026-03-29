@@ -350,21 +350,45 @@ The risk overlay can apply the following controls:
 - Daily loss limit safe cap
 - Hard kill-switch gating
 
-### 📊 Test Coverage
+### Plugin Architecture
+
+Strategy decisions can be composed from modular plugins loaded via TOML profiles:
 
 ```
-74 tests passing, 4 skipped (require live external systems)
+zenquant/plugins/
+  signals/    → weighted sum → direction [-1, 1]
+  filters/    → AND chain → pass/block
+  sizers/     → multiplicative → leverage factor
+  exits/      → priority-ordered → first match wins
+```
+
+Each plugin is one `.py` file with a `meta` descriptor and a `compute()` pure function.
+Configuration in `config/profiles/default.toml`. See `zenquant/plugins/protocols.py`
+for the interface contract.
+
+### Validation Infrastructure
+
+- **Parallel walk-forward**: `ProcessPoolExecutor` (6-8x speedup on M4 Pro)
+- **Domain randomization**: Price/volume noise + bar dropout for robustness testing
+- **Funding accumulation**: Perpetual contract funding costs tracked in backtest PnL
+
+### Test Coverage
+
+```
+119 tests passing, 4 skipped (require live external systems)
 
 Core coverage:
 ✅ E2E decision chain tests
 ✅ Live bootstrap and bar-close tests
 ✅ Exit engine priority logic
-✅ Playbook selection logic (including config override, crowded-long fallthrough)
-✅ Sizing computation (including UNSAFE zero-leverage, config overrides)
+✅ Playbook selection (config override, crowded-long fallthrough)
+✅ Sizing computation (UNSAFE zero-leverage, config overrides)
 ✅ State classification
-✅ Deribit options ingestion
+✅ Plugin infrastructure (registry, orchestrator, composition)
+✅ Plugin integration (real plugin loading, engine dual-path)
+✅ Domain randomization (perturbation determinism, OHLC consistency)
 ✅ PostgreSQL persistence
-✅ Transition risk handoff between playbook and exit
+✅ Deribit options ingestion
 ```
 
 ### 🔄 Under Active Review
@@ -585,14 +609,22 @@ zenquant/
 │   ├── playbook_engine.py   # Strategy selection
 │   ├── sizing_engine.py     # Position sizing
 │   ├── exit_engine.py       # Exit logic
-│   └── engine.py            # Main coordinator with state classification
+│   └── engine.py            # Main coordinator (legacy + plugin dual-path)
+├── plugins/             # Modular strategy plugins
+│   ├── protocols.py         # Plugin interface contracts
+│   ├── registry.py          # Discovery, loading, config merge
+│   ├── orchestrator.py      # Composition (weighted sum, AND, multiply, priority)
+│   ├── signals/             # Directional signal plugins
+│   ├── filters/             # Trade gate plugins
+│   ├── sizers/              # Position sizing plugins
+│   └── exits/               # Exit decision plugins
 ├── risk/                # Risk overlay and portfolio constraints
 ├── execution/           # Order routing and fill tracking
 ├── infra/               # Event bus, PostgreSQL, logging
 ├── app/                 # FastAPI server and live runtime
 └── web/                 # Vue.js dashboard
 
-tests/                   # Test suite (74 passing, 4 skipped)
+tests/                   # Test suite (119 passing, 4 skipped)
 migrations/              # PostgreSQL schema
 docs/                    # Additional documentation
 scripts/                 # Utility scripts (Deribit observation, etc.)
@@ -769,6 +801,6 @@ This software is provided for educational and research purposes only. It is not 
 
 ---
 
-**Last Updated**: 2026-03-16
-**Test Status**: 74 passing, 4 skipped
-**Documentation**: See `docs/` for additional details
+**Last Updated**: 2026-03-28
+**Test Status**: 119 passing, 4 skipped
+**Documentation**: `docs/OPERATIONS.md` (deployment & monitoring), `docs/VALIDATION.md` (results & baselines)
