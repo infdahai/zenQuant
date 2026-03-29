@@ -22,6 +22,56 @@ zenquant-demo = "zenquant.app.demo:main"
 zenquant-history-sync = "zenquant.app.history_sync:main"
 zenquant-live-validate = "zenquant.app.live_validate:main"
 zenquant-web = "zenquant.app.server:main"
+zenquant-check = "zenquant.app.check:main"
 
 [tool.setuptools.packages.find]
 include = ["zenquant*"]
+
+# ── Harness Engineering: Gate A (ruff) ──────────────────────
+
+[tool.ruff]
+target-version = "py311"
+line-length = 120
+src = ["zenquant", "tests", "scripts"]
+
+[tool.ruff.lint]
+select = [
+    "E",     # pycodestyle errors
+    "F",     # pyflakes
+    "I",     # isort
+    "UP",    # pyupgrade
+    "B",     # flake8-bugbear
+    "SIM",   # flake8-simplify
+    "RUF",   # ruff-specific
+]
+ignore = [
+    "E501",   # line length (handled by formatter)
+    "SIM108", # ternary operator
+    "B008",   # function call in default arg (needed for dataclass fields)
+    "UP007",  # use X | Y for union (need __future__ annotations)
+    # Pre-existing patterns — progressively fix via entropy management
+    "RUF059", # unused unpacked variable
+    "RUF003", # ambiguous unicode in comments (Chinese)
+    "RUF001", # ambiguous unicode in string
+    "RUF002", # ambiguous unicode in docstring
+    "RUF005", # collection literal concatenation
+    "RUF006", # asyncio dangling task
+    "RUF034", # useless if-else
+    "B905",   # zip without strict
+    "B007",   # unused loop control variable
+    "SIM102", # collapsible if
+    "SIM105", # suppressible exception
+    "SIM118", # in-dict-keys
+    "F841",   # unused variable (pre-existing)
+]
+
+[tool.ruff.lint.isort]
+known-first-party = ["zenquant"]
+
+[tool.ruff.format]
+quote-style = "double"
+
+[dependency-groups]
+dev = [
+    "ruff>=0.15.8",
+]
