@@ -1,0 +1,173 @@
+# Operations Guide
+
+How to optimize, deploy, monitor, and iterate on the strategy.
+
+---
+
+## 1. Historical Optimization
+
+### Quick Sweep (~5 minutes)
+
+```bash
+# Download data (540 days default)
+uv run python scripts/download_binance_data.py
+
+# Convert to Parquet
+uv run python scripts/convert_csv_to_parquet.py
+
+# Quick parameter sweep (3 param combos, 1 split)
+uv run python scripts/walk_forward_tune.py --quick
+```
+
+### Full Walk-Forward Validation (~10 minutes, parallelized)
+
+```bash
+# 27 param combos × 3 splits, uses ProcessPoolExecutor
+uv run python scripts/walk_forward_tune.py --full
+
+# Results saved to results/walk_forward_tuning.json
+```
+
+### Domain Randomization (Robustness Test)
+
+```python
+from zenquant.historical import HistoricalBacktest, HistoricalBacktestConfig, PerturbationConfig
+
+config = HistoricalBacktestConfig(
+    perturbation=PerturbationConfig(
+        seed=42,
+        price_noise_pct=0.001,   # ±0.1% price noise
+        volume_noise_pct=0.05,   # ±5% volume noise
+        bar_dropout_pct=0.02,    # 2% bars dropped
+    )
+)
+result = HistoricalBacktest(config).run()
+```
+
+Strategy must pass validation on **5 different seeds** to be considered robust.
+
+---
+
+## 2. Paper-Live Deployment
+
+### Setup
+
+```bash
+# Create database
+createdb zenquant_live
+
+# Start paper trading
+export ZENQUANT_PG_DSN="postgresql://localhost/zenquant_live"
+uv run zenquant-web --host 127.0.0.1 --port 8090 --mode live
+
+# Verify health
+curl http://127.0.0.1:8090/healthz
+uv run zenquant-live-validate --base-url http://127.0.0.1:8090
+```
+
+### Dashboard
+
+Open `http://127.0.0.1:8090`. Key panels:
+- **Market State**: 4D classification (directional, volatility, positioning, quality)
+- **Playbook**: Active strategy and confidence level
+- **Position**: Direction, leverage, trailing stop
+- **Exit Decision**: Current exit type and urgency
+
+### Daily Monitoring Checklist
+
+| Check | How | Healthy |
+|-------|-----|---------|
+| System running | `curl /healthz` | `status: ok` |
+| Data fresh | Dashboard last_price timestamp | < 5 min old |
+| Bar close firing | Check indicator timestamp | Updates every 4h |
+| PostgreSQL writing | `SELECT count(*) FROM market_states` | Grows each 4h |
+| No quality degradation | Dashboard quality flags | Shows `OK` |
+
+### Weekly Review
+
+```sql
+-- Decision quality: playbook distribution
+SELECT playbook_id, count(*) FROM playbook_selections
+WHERE cutoff_time_ns > extract(epoch from now() - interval '7 days') * 1e9
+GROUP BY playbook_id;
+
+-- Exit effectiveness
+SELECT exit_type, count(*) FROM exit_decisions
+WHERE exit_type != 'NONE'
+AND cutoff_time_ns > extract(epoch from now() - interval '7 days') * 1e9
+GROUP BY exit_type;
+
+-- Risk events
+SELECT flags, count(*) FROM risk_snapshots
+WHERE ts_ns > extract(epoch from now() - interval '7 days') * 1e9
+AND array_length(flags, 1) > 0
+GROUP BY flags;
+```
+
+---
+
+## 3. Weekly Optimization Cycle
+
+```
+Monday:    Export live audit data → research dataset
+Tuesday:   Run walk-forward on expanded dataset
+Wednesday: Compare live vs backtest performance
+Thursday:  If improved → update TOML profile (config/profiles/)
+Friday:    Deploy updated profile, monitor first bar close
+```
+
+### Export Live Data for Research
+
+```bash
+uv run python scripts/export_live_training_data.py \
+  --dsn "$ZENQUANT_PG_DSN" \
+  --symbol BTCUSDT_PERP \
+  --label weekly-review
+```
+
+---
+
+## 4. Plugin Profile Management
+
+Strategy behavior is controlled via TOML profiles in `config/profiles/`:
+
+```bash
+# Default balanced strategy
+config/profiles/default.toml
+
+# Switch to aggressive (higher momentum weight, wider stops)
+# by modifying the TOML or creating a new profile
+```
+
+Key tunable parameters in the TOML:
+- `signals.*.weight` — signal combination weights
+- `sizers.*.boost_max` — conviction boost ceiling
+- `exits.trailing_stop_exit.atr_mult` — stop distance
+- `exits.regime_change_exit.transition_risk_threshold` — exit sensitivity
+
+---
+
+## 5. Rollback Procedure
+
+If live performance degrades:
+
+1. **Immediate**: Switch to conservative profile or disable plugin path
+2. **Investigate**: Compare live audit trail vs historical backtest
+3. **Revert**: `git checkout` previous known-good TOML profile
+4. **Re-validate**: Run walk-forward on latest data before re-deploying
+
+Trigger conditions for rollback:
+- Max drawdown > 15% in any 7-day window
+- Sharpe drops below 1.0 over 30 days
+- Quality flags consistently non-OK for > 24 hours
+
+---
+
+## 6. Scaling to Real Capital
+
+| Phase | Capital | Duration | Gate |
+|-------|---------|----------|------|
+| Paper | $0 | 2 weeks | Stable operation, no crashes |
+| Micro | $1,000 | 2 weeks | Live Sharpe > 2.0 |
+| Small | $5,000 | 4 weeks | Live drawdown < 10% |
+| Standard | $25,000 | Ongoing | Consistent positive PnL |
