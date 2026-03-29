@@ -122,6 +122,7 @@ class HistoricalBacktest:
         self._risk_snapshots: list[RiskSnapshot] = []
         self._execution_rows: list[dict[str, Any]] = []
         self._trade_ledger = _TradeLedger()
+        self._funding_accumulator = _FundingAccumulator()
         self._funding_rows: list[dict[str, Any]] = []
         self._open_interest_rows: list[dict[str, Any]] = []
         self._funding_index = -1
@@ -267,6 +268,15 @@ class HistoricalBacktest:
         )
         if timeframe == self._config.execution_timeframe:
             self._execution_rows.append(dict(row))
+            # Accumulate funding costs on open positions
+            if funding_row is not None:
+                self._funding_accumulator.accrue(
+                    funding_rate=float(funding_row.get("funding_rate", 0.0)),
+                    position_qty=self._trade_ledger.position_qty,
+                    mark_price=last_price,
+                    funding_time_ns=int(funding_row.get("funding_time_ns", cutoff_ns)),
+                    cutoff_ns=cutoff_ns,
+                )
 
     def _latest_funding(self, cutoff_ns: int) -> dict[str, Any] | None:
         while (
@@ -338,6 +348,7 @@ class HistoricalBacktest:
             baseline_returns=returns,
         )
         max_drawdown, max_dd_duration = _max_drawdown(self._risk_snapshots)
+        total_funding = self._funding_accumulator.total_funding_cost
         gross_pnl = self.risk_overlay.equity - self._config.starting_equity + self._trade_ledger.total_fees
         elapsed_days = max(
             1.0,
@@ -355,7 +366,7 @@ class HistoricalBacktest:
             net_pnl=round(self.risk_overlay.equity - self._config.starting_equity, 2),
             gross_pnl=round(gross_pnl, 2),
             total_fees=round(self._trade_ledger.total_fees, 2),
-            total_funding=0.0,
+            total_funding=round(total_funding, 2),
             sharpe=round(sharpe, 4),
             sortino=round(sortino, 4),
             max_drawdown=round(max_drawdown, 6),
@@ -628,6 +639,45 @@ class _TradeLedger:
             self.avg_entry = report.avg_price
             return
         self.position_qty = remaining_qty
+
+
+class _FundingAccumulator:
+    """Track cumulative funding costs on open positions.
+
+    Binance perpetual contracts settle funding every 8 hours.  This accumulator
+    applies the funding rate to the open position notional whenever a new
+    funding event is observed at bar close.
+
+    Convention: positive funding rate means longs pay shorts.
+    A long position with positive funding_rate incurs a *cost* (negative PnL).
+    """
+
+    def __init__(self) -> None:
+        self.total_funding_cost = 0.0
+        self._last_funding_time_ns = 0
+
+    def accrue(
+        self,
+        funding_rate: float,
+        position_qty: float,
+        mark_price: float,
+        funding_time_ns: int,
+        cutoff_ns: int,
+    ) -> None:
+        """Accrue funding cost if this is a new funding settlement."""
+        if funding_time_ns <= self._last_funding_time_ns:
+            return  # Already processed this funding event
+        if position_qty == 0.0 or mark_price <= 0:
+            self._last_funding_time_ns = funding_time_ns
+            return
+
+        # funding_cost = position_notional × funding_rate
+        # positive position_qty = long; positive funding_rate = longs pay
+        # so cost = position_qty × mark_price × funding_rate (positive = cost to holder)
+        notional = position_qty * mark_price
+        cost = notional * funding_rate
+        self.total_funding_cost += cost
+        self._last_funding_time_ns = funding_time_ns
 
 
 def _time_filter_sql(start_ns: int | None, end_ns: int | None, *, column: str) -> str:
