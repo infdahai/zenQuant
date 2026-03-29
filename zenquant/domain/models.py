@@ -251,6 +251,7 @@ class OpenPositionState:
     trailing_stop: float  # current stop price (absolute)
     pyramid_count: int  # how many adds have been made (0 = initial only)
     bars_held: int  # bars since entry
+    peak_pnl_pct: float = 0.0  # peak unrealized PnL as fraction of entry notional
 
 
 @dataclass(slots=True)

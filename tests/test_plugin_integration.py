@@ -130,13 +130,13 @@ class TestRegistryLoadsRealPlugins(unittest.TestCase):
 
         self.assertEqual(len(registry.signals), 4)
         self.assertEqual(len(registry.filters), 2)
-        self.assertEqual(len(registry.sizers), 3)
-        self.assertEqual(len(registry.exits), 4)
+        self.assertEqual(len(registry.sizers), 4)
+        self.assertEqual(len(registry.exits), 5)
 
         # Verify exit priority ordering
         exit_names = [p.meta.name for p in registry.exits]
         self.assertEqual(exit_names[0], "invalidation_exit")  # priority 1
-        self.assertEqual(exit_names[-1], "regime_change_exit")  # priority 4
+        self.assertEqual(exit_names[-1], "regime_change_exit")  # priority 5
 
     def test_all_signal_plugins_compute(self):
         if not PROFILE_PATH.exists():

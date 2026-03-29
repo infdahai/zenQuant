@@ -90,6 +90,8 @@ class IndicatorEngineConfig:
     # Momentum ROC: lookback period in bars and z-score window
     roc_lookback: int = 12
     roc_z_window: int = 40
+    # Multi-horizon momentum: horizons in bars (4H bars → 1d,2d,4d,8d)
+    roc_horizons: tuple[int, ...] = (6, 12, 24, 48)
 
 
 @dataclass(slots=True)
@@ -123,6 +125,7 @@ class IndicatorEngine:
             max(
                 self._config.vol_window,
                 self._config.atr_window,
+                max(self._config.roc_horizons) + self._config.roc_z_window,
                 self._config.roc_lookback + self._config.roc_z_window,
                 2 * self._config.pivot_lookback + 4,
             )
@@ -138,6 +141,10 @@ class IndicatorEngine:
         self._last_swing_structure: dict[tuple[str, Timeframe], SwingStructure] = {}
         # Phase 2: momentum ROC z-score history
         self._roc_values: dict[tuple[str, Timeframe], deque[float]] = defaultdict(
+            lambda: deque(maxlen=self._config.roc_z_window)
+        )
+        # Multi-horizon ROC history (one deque per horizon)
+        self._roc_horizon_values: dict[tuple[str, Timeframe, int], deque[float]] = defaultdict(
             lambda: deque(maxlen=self._config.roc_z_window)
         )
         self._cvd_values: dict[tuple[str, Timeframe], deque[float]] = defaultdict(
@@ -247,6 +254,21 @@ class IndicatorEngine:
             list(roc_series), roc_raw, min_samples=self._config.robust_z_min_samples
         )
 
+        # --- Multi-horizon momentum z-score ---
+        horizon_zscores: list[float] = []
+        for h in self._config.roc_horizons:
+            h_roc = _rate_of_change(candles, lookback=h)
+            h_key = (history_key[0], history_key[1], h)
+            h_series = self._roc_horizon_values[h_key]
+            h_series.append(h_roc)
+            h_z = _robust_z(
+                list(h_series), h_roc, min_samples=self._config.robust_z_min_samples
+            )
+            horizon_zscores.append(h_z)
+        multi_momentum_z = (
+            sum(horizon_zscores) / len(horizon_zscores) if horizon_zscores else 0.0
+        )
+
         index_key = (candle.timeframe, candle.bar_end_ns)
         self._ob_index_by_cutoff[index_key][candle.symbol] = ob_liq_z
 
@@ -302,6 +324,7 @@ class IndicatorEngine:
                 "bars_since_break": swing_struct.bars_since_break,
                 "momentum_roc": roc_raw,
                 "momentum_roc_z": momentum_roc_z,
+                "multi_momentum_z": multi_momentum_z,
             },
             components=components,
         )
@@ -411,6 +434,7 @@ def _formula_hash(config: IndicatorEngineConfig) -> str:
         f"pivot_lookback={config.pivot_lookback};"
         f"roc_lookback={config.roc_lookback};"
         f"roc_z_window={config.roc_z_window};"
+        f"roc_horizons={','.join(str(h) for h in config.roc_horizons)};"
         f"expected_symbols={','.join(config.expected_symbols)}"
     )
     return f"sha256:{hashlib.sha256(formula.encode('utf-8')).hexdigest()}"

@@ -6,20 +6,26 @@
 
 [profile]
 name = "default"
-version = "1.0.0"
-description = "Balanced regime-aware strategy"
+version = "1.1.0"
+description = "Balanced regime-aware strategy with profitability enhancements"
 
 # ─── Signal Plugins ─────────────────────────────────────────
 # Composition: weighted sum → direction in [-1, 1]
 
-[signals.momentum_signal]
+[signals.multi_momentum_signal]
 enabled = true
+weight = 0.45
+momentum_threshold = 0.3
+use_single_fallback = true
+
+[signals.momentum_signal]
+enabled = false
 weight = 0.40
 momentum_threshold = 0.3
 
 [signals.cvd_signal]
 enabled = true
-weight = 0.30
+weight = 0.25
 
 [signals.liquidity_signal]
 enabled = true
@@ -62,6 +68,12 @@ positioning_discount_floor = 0.35
 volatility_distorted_discount = 0.75
 volatility_high_discount = 0.90
 
+[sizers.conviction_boost_sizer]
+enabled = true
+confidence_threshold = 0.75
+transition_risk_max = 0.30
+boost_max = 1.30
+
 # ─── Exit Plugins ───────────────────────────────────────────
 # Composition: priority-ordered → first match wins
 
@@ -75,13 +87,19 @@ priority = 2
 atr_mult = 2.5
 min_bars_before_trail = 1
 
-[exits.time_decay_exit]
+[exits.profit_lock_exit]
 enabled = true
 priority = 3
+threshold = 0.05
+lock_ratio = 0.40
+
+[exits.time_decay_exit]
+enabled = true
+priority = 4
 
 [exits.regime_change_exit]
 enabled = true
-priority = 4
+priority = 5
 transition_risk_threshold = 0.85
 
 # ─── Engine Overrides ───────────────────────────────────────
