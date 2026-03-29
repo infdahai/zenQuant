@@ -58,9 +58,7 @@ class Stage2StrategyTests(unittest.TestCase):
         playbooks: list[PlaybookSelection] = []
         bus.subscribe(
             "strategy.playbook.>",
-            lambda _subject, payload: playbooks.append(payload)
-            if isinstance(payload, PlaybookSelection)
-            else None,
+            lambda _subject, payload: playbooks.append(payload) if isinstance(payload, PlaybookSelection) else None,
         )
 
         bus.publish(
@@ -86,9 +84,7 @@ class Stage2StrategyTests(unittest.TestCase):
         sizing_events: list[SizingDecision] = []
         bus.subscribe(
             "strategy.sizing.>",
-            lambda _subject, payload: sizing_events.append(payload)
-            if isinstance(payload, SizingDecision)
-            else None,
+            lambda _subject, payload: sizing_events.append(payload) if isinstance(payload, SizingDecision) else None,
         )
 
         bus.publish(
@@ -159,9 +155,7 @@ class Stage2StrategyTests(unittest.TestCase):
         )
         bus.subscribe(
             "strategy.exit.>",
-            lambda _subject, payload: exits.append(payload)
-            if isinstance(payload, ExitDecision)
-            else None,
+            lambda _subject, payload: exits.append(payload) if isinstance(payload, ExitDecision) else None,
         )
 
         bus.publish(

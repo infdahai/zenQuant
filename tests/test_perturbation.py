@@ -25,7 +25,6 @@ def _sample_events(n: int = 10) -> list[dict]:
 
 
 class TestPerturbation(unittest.TestCase):
-
     def test_noop_returns_same_events(self):
         events = _sample_events()
         config = PerturbationConfig(seed=42)
@@ -39,9 +38,7 @@ class TestPerturbation(unittest.TestCase):
         result = perturb_events(events, config)
         self.assertEqual(len(result), len(events))
         # At least some prices should differ
-        changed = sum(
-            1 for a, b in zip(events, result) if abs(a["close"] - b["close"]) > 0.01
-        )
+        changed = sum(1 for a, b in zip(events, result) if abs(a["close"] - b["close"]) > 0.01)
         self.assertGreater(changed, 0)
 
     def test_price_noise_maintains_ohlc_consistency(self):
@@ -63,9 +60,7 @@ class TestPerturbation(unittest.TestCase):
         events = _sample_events()
         config = PerturbationConfig(seed=42, volume_noise_pct=0.1)
         result = perturb_events(events, config)
-        changed = sum(
-            1 for a, b in zip(events, result) if abs(a["volume"] - b["volume"]) > 0.01
-        )
+        changed = sum(1 for a, b in zip(events, result) if abs(a["volume"] - b["volume"]) > 0.01)
         self.assertGreater(changed, 0)
         # All volumes should remain non-negative
         for row in result:

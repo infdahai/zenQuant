@@ -18,7 +18,7 @@ from zenquant.plugins.protocols import ExitResult, PluginMeta
 
 @dataclass(frozen=True, slots=True)
 class Config:
-    threshold: float = 0.05   # activate when unrealized PnL > 5%
+    threshold: float = 0.05  # activate when unrealized PnL > 5%
     lock_ratio: float = 0.40  # lock at least 40% of peak PnL
 
 
@@ -54,8 +54,7 @@ def compute(
             urgency="GRADUAL",
             reduction_pct=1.0,
             reason=(
-                f"PnL {unrealized_pnl_pct:.1%} fell below "
-                f"locked floor {locked_floor:.1%} (peak {peak_pnl_pct:.1%})"
+                f"PnL {unrealized_pnl_pct:.1%} fell below locked floor {locked_floor:.1%} (peak {peak_pnl_pct:.1%})"
             ),
             reason_codes=("EXIT_PROFIT_LOCK",),
         )

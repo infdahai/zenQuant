@@ -49,7 +49,7 @@ def _get(
             if attempt == retries - 1:
                 print(f"  Failed {url}: {e}")
                 return []
-            time.sleep(2 ** attempt)
+            time.sleep(2**attempt)
     return []
 
 
@@ -102,13 +102,15 @@ def download_long_short_ratio(
         if not data:
             break
         for row in data:
-            all_records.append({
-                "symbol": symbol,
-                "ts_ns": int(row["timestamp"]) * 1_000_000,
-                "long_account_ratio": float(row["longAccount"]),
-                "short_account_ratio": float(row["shortAccount"]),
-                "long_short_ratio": float(row["longShortRatio"]),
-            })
+            all_records.append(
+                {
+                    "symbol": symbol,
+                    "ts_ns": int(row["timestamp"]) * 1_000_000,
+                    "long_account_ratio": float(row["longAccount"]),
+                    "short_account_ratio": float(row["shortAccount"]),
+                    "long_short_ratio": float(row["longShortRatio"]),
+                }
+            )
         last_ts = int(data[-1]["timestamp"])
         cursor = last_ts + 1
         if len(data) < limit:
@@ -147,13 +149,15 @@ def download_taker_ratio(
         if not data:
             break
         for row in data:
-            all_records.append({
-                "symbol": symbol,
-                "ts_ns": int(row["timestamp"]) * 1_000_000,
-                "buy_sell_ratio": float(row["buySellRatio"]),
-                "buy_vol": float(row["buyVol"]),
-                "sell_vol": float(row["sellVol"]),
-            })
+            all_records.append(
+                {
+                    "symbol": symbol,
+                    "ts_ns": int(row["timestamp"]) * 1_000_000,
+                    "buy_sell_ratio": float(row["buySellRatio"]),
+                    "buy_vol": float(row["buyVol"]),
+                    "sell_vol": float(row["sellVol"]),
+                }
+            )
         last_ts = int(data[-1]["timestamp"])
         cursor = last_ts + 1
         if len(data) < limit:
@@ -186,14 +190,16 @@ def download_liquidations(
 
     all_records: list[dict] = []
     for row in data:
-        all_records.append({
-            "symbol": row.get("symbol", symbol),
-            "ts_ns": int(row["time"]) * 1_000_000,
-            "side": row["side"],  # BUY=short liq, SELL=long liq
-            "price": float(row["price"]),
-            "qty": float(row["origQty"]),
-            "notional": float(row["price"]) * float(row["origQty"]),
-        })
+        all_records.append(
+            {
+                "symbol": row.get("symbol", symbol),
+                "ts_ns": int(row["time"]) * 1_000_000,
+                "side": row["side"],  # BUY=short liq, SELL=long liq
+                "price": float(row["price"]),
+                "qty": float(row["origQty"]),
+                "notional": float(row["price"]) * float(row["origQty"]),
+            }
+        )
 
     saved = _save_parquet(all_records, output_path)
     print(f"  Saved {saved} liquidation records to {output_path}")

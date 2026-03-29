@@ -128,10 +128,26 @@ class DecisionChainEndToEndTests(unittest.TestCase):
         )
 
         for cutoff in (3, 5):
-            state = [item for item in collected["state"] if item.timeframe == Timeframe.TF_4H and item.cutoff_time_ns == cutoff]
-            playbook = [item for item in collected["playbook"] if item.timeframe == Timeframe.TF_4H and item.cutoff_time_ns == cutoff]
-            sizing = [item for item in collected["sizing"] if item.timeframe == Timeframe.TF_4H and item.cutoff_time_ns == cutoff]
-            target = [item for item in collected["target"] if item.timeframe == Timeframe.TF_4H and item.cutoff_time_ns == cutoff]
+            state = [
+                item
+                for item in collected["state"]
+                if item.timeframe == Timeframe.TF_4H and item.cutoff_time_ns == cutoff
+            ]
+            playbook = [
+                item
+                for item in collected["playbook"]
+                if item.timeframe == Timeframe.TF_4H and item.cutoff_time_ns == cutoff
+            ]
+            sizing = [
+                item
+                for item in collected["sizing"]
+                if item.timeframe == Timeframe.TF_4H and item.cutoff_time_ns == cutoff
+            ]
+            target = [
+                item
+                for item in collected["target"]
+                if item.timeframe == Timeframe.TF_4H and item.cutoff_time_ns == cutoff
+            ]
 
             self.assertEqual(len(state), 1)
             self.assertEqual(len(playbook), 1)
@@ -156,7 +172,9 @@ class DecisionChainEndToEndTests(unittest.TestCase):
         self.assertEqual(len(forced_exit_playbook), 1)
         self.assertEqual(len(forced_exit_target), 1)
 
-        actionable_exits = [item for item in collected["exit"] if item.timeframe == Timeframe.TF_4H and item.should_exit()]
+        actionable_exits = [
+            item for item in collected["exit"] if item.timeframe == Timeframe.TF_4H and item.should_exit()
+        ]
         self.assertEqual(len(actionable_exits), 1)
         self.assertEqual(actionable_exits[0].cutoff_time_ns, 7)
         self.assertTrue(collected["target"][-1].reduce_only)

@@ -75,7 +75,9 @@ class DeribitValidationContractTests(unittest.IsolatedAsyncioTestCase):
             config=DeribitOptionsIngestorConfig(currency="BTC", poll_interval_s=0.01),
         )
 
-        with patch("zenquant.ingestor.deribit_options._fetch_json", side_effect=RuntimeError("temporary deribit outage")):
+        with patch(
+            "zenquant.ingestor.deribit_options._fetch_json", side_effect=RuntimeError("temporary deribit outage")
+        ):
             await ingestor.start()
             await asyncio.sleep(0.03)
             await ingestor.stop()
@@ -106,9 +108,12 @@ class DeribitValidationContractTests(unittest.IsolatedAsyncioTestCase):
                     return payload
             raise AssertionError(url)
 
-        with patch("zenquant.ingestor.deribit_options._fetch_json", side_effect=fake_fetch_json), patch(
-            "zenquant.ingestor.deribit_options.time.time",
-            return_value=now_ms / 1_000,
+        with (
+            patch("zenquant.ingestor.deribit_options._fetch_json", side_effect=fake_fetch_json),
+            patch(
+                "zenquant.ingestor.deribit_options.time.time",
+                return_value=now_ms / 1_000,
+            ),
         ):
             await ingestor.start()
             await asyncio.sleep(0.05)

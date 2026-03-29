@@ -390,9 +390,7 @@ class HistoricalBacktest:
 
     def _build_diagnostics(self) -> BacktestDiagnostics:
         playbook_counts = Counter(payload.playbook_id for payload in self._playbooks)
-        actionable_exit_counts = Counter(
-            payload.exit_type for payload in self._exits if payload.should_exit()
-        )
+        actionable_exit_counts = Counter(payload.exit_type for payload in self._exits if payload.should_exit())
         risk_flag_counts = Counter()
         for snapshot in self._risk_snapshots:
             for flag in snapshot.flags:

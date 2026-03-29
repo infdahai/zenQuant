@@ -72,12 +72,14 @@ def _build_full_config(args: argparse.Namespace) -> CampaignConfig:
         train_end = train_start + timedelta(days=90)
         val_start = train_end
         val_end = val_start + timedelta(days=90)
-        splits.append(WalkForwardSplit(
-            train_start_ns=int(train_start.timestamp() * 1e9),
-            train_end_ns=int(train_end.timestamp() * 1e9),
-            val_start_ns=int(val_start.timestamp() * 1e9),
-            val_end_ns=int(val_end.timestamp() * 1e9),
-        ))
+        splits.append(
+            WalkForwardSplit(
+                train_start_ns=int(train_start.timestamp() * 1e9),
+                train_end_ns=int(train_end.timestamp() * 1e9),
+                val_start_ns=int(val_start.timestamp() * 1e9),
+                val_end_ns=int(val_end.timestamp() * 1e9),
+            )
+        )
 
     return CampaignConfig(
         data_root=Path(args.data_root),

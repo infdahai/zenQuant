@@ -323,14 +323,12 @@ class MarketState:
             * self.positioning_confidence
             * self.quality_confidence
         )
-        return product ** 0.25
+        return product**0.25
 
     def is_tradable(self) -> bool:
         """Quick check if state allows new risk."""
         return (
-            self.quality_state != "UNSAFE"
-            and self.volatility_state != "DISTORTED"
-            and self.overall_confidence() > 0.3
+            self.quality_state != "UNSAFE" and self.volatility_state != "DISTORTED" and self.overall_confidence() > 0.3
         )
 
 

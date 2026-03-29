@@ -216,7 +216,9 @@ def main():
     print()
     print("Ready for multi-exchange training!")
     print("Replay-compatible root: data/raw/deribit_replay")
-    print("Run: uv run python scripts/walk_forward_tune.py --quick --data-root data/raw/deribit_replay --symbol BTCUSDT")
+    print(
+        "Run: uv run python scripts/walk_forward_tune.py --quick --data-root data/raw/deribit_replay --symbol BTCUSDT"
+    )
 
 
 if __name__ == "__main__":

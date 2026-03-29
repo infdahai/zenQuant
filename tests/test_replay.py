@@ -71,17 +71,19 @@ class ReplayTests(unittest.TestCase):
         source_bus.subscribe("indicator.>", _on_indicator)
         source_bus.subscribe(
             "state.market.>",
-            lambda _subject, payload: src_states.append(
-                (
-                    payload.symbol,
-                    payload.timeframe.value,
-                    payload.cutoff_time_ns,
-                    payload.regime,
-                    round(payload.transition_risk, 6),
+            lambda _subject, payload: (
+                src_states.append(
+                    (
+                        payload.symbol,
+                        payload.timeframe.value,
+                        payload.cutoff_time_ns,
+                        payload.regime,
+                        round(payload.transition_risk, 6),
+                    )
                 )
-            )
-            if isinstance(payload, MarketState)
-            else None,
+                if isinstance(payload, MarketState)
+                else None
+            ),
         )
         source_bus.subscribe(
             "intent.target_position.final.>",
@@ -145,17 +147,19 @@ class ReplayTests(unittest.TestCase):
         target_bus.subscribe("indicator.>", _on_replay_indicator)
         target_bus.subscribe(
             "state.market.>",
-            lambda _subject, payload: dst_states.append(
-                (
-                    payload.symbol,
-                    payload.timeframe.value,
-                    payload.cutoff_time_ns,
-                    payload.regime,
-                    round(payload.transition_risk, 6),
+            lambda _subject, payload: (
+                dst_states.append(
+                    (
+                        payload.symbol,
+                        payload.timeframe.value,
+                        payload.cutoff_time_ns,
+                        payload.regime,
+                        round(payload.transition_risk, 6),
+                    )
                 )
-            )
-            if isinstance(payload, MarketState)
-            else None,
+                if isinstance(payload, MarketState)
+                else None
+            ),
         )
         target_bus.subscribe(
             "intent.target_position.final.>",

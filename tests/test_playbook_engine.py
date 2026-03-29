@@ -39,9 +39,7 @@ def _state(
 
 class PlaybookEngineTests(unittest.TestCase):
     def test_selects_bull_continuation_for_clean_uptrend(self) -> None:
-        playbook = PlaybookEngine().select(
-            _state(directional_state="UPTREND", directional_confidence=0.85)
-        )
+        playbook = PlaybookEngine().select(_state(directional_state="UPTREND", directional_confidence=0.85))
         self.assertEqual(playbook.playbook_id, "BULL_CONTINUATION")
         self.assertTrue(playbook.allow_pyramid)
         self.assertIn(1.0, playbook.allowed_directions)
@@ -103,9 +101,7 @@ class PlaybookEngineTests(unittest.TestCase):
         self.assertTrue(playbook.is_reduce_only())
 
     def test_config_can_raise_preserve_capital_transition_threshold(self) -> None:
-        engine = PlaybookEngine(
-            PlaybookEngineConfig(preserve_capital_transition_risk=0.8)
-        )
+        engine = PlaybookEngine(PlaybookEngineConfig(preserve_capital_transition_risk=0.8))
         playbook = engine.select(
             _state(
                 directional_state="UPTREND",

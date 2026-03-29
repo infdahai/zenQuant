@@ -68,7 +68,8 @@
       "WebFetch(domain:blog.langchain.com)",
       "WebFetch(domain:webcache.googleusercontent.com)",
       "Bash(uv add:*)",
-      "Bash(git:*)"
+      "Bash(git:*)",
+      "Bash(gh run:*)"
     ]
   }
 }

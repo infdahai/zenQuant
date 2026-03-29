@@ -131,10 +131,7 @@ class TestPluginLegacyParity(unittest.TestCase):
         # Direction sign must agree
         legacy_sign = 1.0 if legacy.target_qty > 0 else (-1.0 if legacy.target_qty < 0 else 0.0)
         plugin_sign = 1.0 if plugin.target_qty > 0 else (-1.0 if plugin.target_qty < 0 else 0.0)
-        self.assertEqual(
-            legacy_sign, plugin_sign,
-            f"Direction mismatch: legacy={legacy_sign}, plugin={plugin_sign}"
-        )
+        self.assertEqual(legacy_sign, plugin_sign, f"Direction mismatch: legacy={legacy_sign}, plugin={plugin_sign}")
 
     def test_stress_regime_both_flat(self):
         """In STRESS regime, both paths should produce zero direction."""
@@ -146,11 +143,11 @@ class TestPluginLegacyParity(unittest.TestCase):
         # Both should be flat (reduce_only or zero qty)
         self.assertTrue(
             legacy.reduce_only or abs(legacy.target_qty) < 0.001,
-            f"Legacy should be flat/reduce-only in STRESS, got qty={legacy.target_qty}"
+            f"Legacy should be flat/reduce-only in STRESS, got qty={legacy.target_qty}",
         )
         self.assertTrue(
             plugin.reduce_only or abs(plugin.target_qty) < 0.001,
-            f"Plugin should be flat/reduce-only in STRESS, got qty={plugin.target_qty}"
+            f"Plugin should be flat/reduce-only in STRESS, got qty={plugin.target_qty}",
         )
 
     def test_leverage_within_tolerance(self):
@@ -165,9 +162,10 @@ class TestPluginLegacyParity(unittest.TestCase):
                 min(legacy.target_leverage, plugin.target_leverage), 1e-9
             )
             self.assertLess(
-                ratio, 3.0,
+                ratio,
+                3.0,
                 f"Leverage divergence too large: legacy={legacy.target_leverage:.2f}, "
-                f"plugin={plugin.target_leverage:.2f}, ratio={ratio:.1f}"
+                f"plugin={plugin.target_leverage:.2f}, ratio={ratio:.1f}",
             )
 
 

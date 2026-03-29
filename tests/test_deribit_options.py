@@ -71,9 +71,7 @@ class DeribitOptionsIngestorTests(unittest.IsolatedAsyncioTestCase):
         published: list[DeribitRiskPack] = []
         bus.subscribe(
             "risk.deribit.>",
-            lambda _subject, payload: published.append(payload)
-            if isinstance(payload, DeribitRiskPack)
-            else None,
+            lambda _subject, payload: published.append(payload) if isinstance(payload, DeribitRiskPack) else None,
         )
 
         responses = {
@@ -88,9 +86,12 @@ class DeribitOptionsIngestorTests(unittest.IsolatedAsyncioTestCase):
                     return payload
             raise AssertionError(url)
 
-        with patch("zenquant.ingestor.deribit_options._fetch_json", side_effect=fake_fetch_json), patch(
-            "zenquant.ingestor.deribit_options.time.time",
-            return_value=now_ms / 1_000,
+        with (
+            patch("zenquant.ingestor.deribit_options._fetch_json", side_effect=fake_fetch_json),
+            patch(
+                "zenquant.ingestor.deribit_options.time.time",
+                return_value=now_ms / 1_000,
+            ),
         ):
             pack = await ingestor.poll_once()
 

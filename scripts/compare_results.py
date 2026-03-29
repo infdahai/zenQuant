@@ -88,9 +88,7 @@ def print_ranking(results: list[ComparisonResult], metric: str) -> None:
     """Print ranking table."""
     print(f"\nTop 10 by {metric.upper()}:")
     print("-" * 120)
-    print(
-        f"{'Rank':<6} {'Sharpe':<8} {'PnL':<12} {'MaxDD':<8} {'PF':<6} {'WinRate':<8} {'Trades':<8} {'Params':<50}"
-    )
+    print(f"{'Rank':<6} {'Sharpe':<8} {'PnL':<12} {'MaxDD':<8} {'PF':<6} {'WinRate':<8} {'Trades':<8} {'Params':<50}")
     print("-" * 120)
 
     for i, result in enumerate(results, start=1):
@@ -132,11 +130,7 @@ def analyze_sensitivity(results: list[ComparisonResult]) -> None:
             avg_pnl = sum(r.net_pnl for r in group_results) / len(group_results)
             avg_dd = sum(r.max_drawdown for r in group_results) / len(group_results)
             print(
-                f"  {value:.2f}: "
-                f"Sharpe={avg_sharpe:.2f} "
-                f"PnL={avg_pnl:,.0f} "
-                f"MaxDD={avg_dd:.2%} "
-                f"(n={len(group_results)})"
+                f"  {value:.2f}: Sharpe={avg_sharpe:.2f} PnL={avg_pnl:,.0f} MaxDD={avg_dd:.2%} (n={len(group_results)})"
             )
 
 
@@ -168,15 +162,19 @@ def export_csv(results: list[ComparisonResult], output_path: Path) -> None:
 
         # Data
         for result in results:
-            row = [result.run_id] + [result.params[p] for p in param_names] + [
-                result.sharpe,
-                result.net_pnl,
-                result.max_drawdown,
-                result.profit_factor,
-                result.win_rate,
-                result.total_trades,
-                result.runtime_s,
-            ]
+            row = (
+                [result.run_id]
+                + [result.params[p] for p in param_names]
+                + [
+                    result.sharpe,
+                    result.net_pnl,
+                    result.max_drawdown,
+                    result.profit_factor,
+                    result.win_rate,
+                    result.total_trades,
+                    result.runtime_s,
+                ]
+            )
             writer.writerow(row)
 
     print(f"\nExported to: {output_path}")

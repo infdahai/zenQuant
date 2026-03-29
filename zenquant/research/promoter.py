@@ -145,28 +145,20 @@ class PromotionGate:
         ok = True
 
         if candidate.avg_val_sharpe < c.min_val_sharpe:
-            reasons.append(
-                f"walk_forward: avg Sharpe {candidate.avg_val_sharpe:.2f} < min {c.min_val_sharpe:.2f}"
-            )
+            reasons.append(f"walk_forward: avg Sharpe {candidate.avg_val_sharpe:.2f} < min {c.min_val_sharpe:.2f}")
             ok = False
 
         sharpe_delta = candidate.avg_val_sharpe - self._baseline.sharpe
         if sharpe_delta < c.min_sharpe_vs_baseline:
-            reasons.append(
-                f"walk_forward: Sharpe delta {sharpe_delta:+.2f} < allowed {c.min_sharpe_vs_baseline:+.2f}"
-            )
+            reasons.append(f"walk_forward: Sharpe delta {sharpe_delta:+.2f} < allowed {c.min_sharpe_vs_baseline:+.2f}")
             ok = False
 
         if candidate.avg_val_drawdown > c.max_val_drawdown:
-            reasons.append(
-                f"walk_forward: drawdown {candidate.avg_val_drawdown:.2%} > cap {c.max_val_drawdown:.2%}"
-            )
+            reasons.append(f"walk_forward: drawdown {candidate.avg_val_drawdown:.2%} > cap {c.max_val_drawdown:.2%}")
             ok = False
 
         if candidate.total_trade_count < c.min_trade_count:
-            reasons.append(
-                f"walk_forward: {candidate.total_trade_count} trades < min {c.min_trade_count}"
-            )
+            reasons.append(f"walk_forward: {candidate.total_trade_count} trades < min {c.min_trade_count}")
             ok = False
 
         if ok:
@@ -198,10 +190,7 @@ class PromotionGate:
         if ok:
             reasons.append(f"robustness: PASS ({seeds_passing}/{len(robustness)} seeds)")
         else:
-            reasons.append(
-                f"robustness: FAIL ({seeds_passing}/{len(robustness)} seeds, "
-                f"need {c.min_seeds_passing})"
-            )
+            reasons.append(f"robustness: FAIL ({seeds_passing}/{len(robustness)} seeds, need {c.min_seeds_passing})")
         return ok
 
     def _check_drawdown_regression(
@@ -215,12 +204,10 @@ class PromotionGate:
 
         if ok:
             reasons.append(
-                f"drawdown_regression: PASS (regression {regression:+.2%} "
-                f"<= allowed {c.max_drawdown_regression:+.2%})"
+                f"drawdown_regression: PASS (regression {regression:+.2%} <= allowed {c.max_drawdown_regression:+.2%})"
             )
         else:
             reasons.append(
-                f"drawdown_regression: FAIL (regression {regression:+.2%} "
-                f"> allowed {c.max_drawdown_regression:+.2%})"
+                f"drawdown_regression: FAIL (regression {regression:+.2%} > allowed {c.max_drawdown_regression:+.2%})"
             )
         return ok

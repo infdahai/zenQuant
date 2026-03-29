@@ -81,14 +81,16 @@ def download_deribit_data(days: int = 540):
                     result = data["result"]
                     # Convert to list of dicts
                     for i in range(len(result["ticks"])):
-                        klines_data.append({
-                            "timestamp": result["ticks"][i],
-                            "open": result["open"][i],
-                            "high": result["high"][i],
-                            "low": result["low"][i],
-                            "close": result["close"][i],
-                            "volume": result["volume"][i],
-                        })
+                        klines_data.append(
+                            {
+                                "timestamp": result["ticks"][i],
+                                "open": result["open"][i],
+                                "high": result["high"][i],
+                                "low": result["low"][i],
+                                "close": result["close"][i],
+                                "volume": result["volume"][i],
+                            }
+                        )
                     successful += 1
                 else:
                     failed += 1
@@ -165,6 +167,7 @@ def download_deribit_data(days: int = 540):
     print("Run: uv run python scripts/convert_deribit_to_parquet.py")
 
     return successful, failed
+
 
 if __name__ == "__main__":
     import argparse

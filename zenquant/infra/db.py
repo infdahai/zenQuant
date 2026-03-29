@@ -57,9 +57,7 @@ class OnlineStateStore:
     ) -> None:
         self._bus = bus
         self._config = config or OnlineStateStoreConfig()
-        self._queue: queue.Queue[tuple[str, tuple[Any, ...]]] = queue.Queue(
-            maxsize=self._config.max_queue_size
-        )
+        self._queue: queue.Queue[tuple[str, tuple[Any, ...]]] = queue.Queue(maxsize=self._config.max_queue_size)
         self._worker: threading.Thread | None = None
         self._stop_event = threading.Event()
         self._enabled = bool(self._config.dsn)

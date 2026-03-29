@@ -56,8 +56,9 @@ class OnlineStateStoreTests(unittest.TestCase):
         store._enqueue("SELECT 1", ())
         store._enqueue("__STOP__", ())
 
-        with patch("zenquant.infra.db.connect", side_effect=fake_connect), patch(
-            "zenquant.infra.db.time.sleep", return_value=None
+        with (
+            patch("zenquant.infra.db.connect", side_effect=fake_connect),
+            patch("zenquant.infra.db.time.sleep", return_value=None),
         ):
             store._run()
 

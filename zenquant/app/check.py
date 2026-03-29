@@ -28,9 +28,9 @@ GATES = ["a", "b", "c", "d", "e"]
 
 def _run(cmd: list[str], label: str) -> bool:
     """Run a command and return True if it passed."""
-    print(f"\n{'='*60}")
+    print(f"\n{'=' * 60}")
     print(f"  Gate {label}")
-    print(f"{'='*60}")
+    print(f"{'=' * 60}")
     start = time.time()
     result = subprocess.run(cmd, cwd=_project_root())
     elapsed = time.time() - start
@@ -41,6 +41,7 @@ def _run(cmd: list[str], label: str) -> bool:
 
 def _project_root() -> str:
     from pathlib import Path
+
     return str(Path(__file__).parent.parent.parent)
 
 
@@ -118,9 +119,9 @@ def main() -> None:
         results[gate] = GATE_MAP[gate]()
 
     elapsed = time.time() - start
-    print(f"\n{'='*60}")
+    print(f"\n{'=' * 60}")
     print(f"  HARNESS SUMMARY ({elapsed:.1f}s)")
-    print(f"{'='*60}")
+    print(f"{'=' * 60}")
     for gate, passed in results.items():
         status = "PASS" if passed else "FAIL"
         print(f"  Gate {gate.upper()}: {status}")

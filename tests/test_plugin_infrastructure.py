@@ -54,9 +54,7 @@ def _filter_plugin(name: str, passed: bool) -> LoadedPlugin:
 def _sizer_plugin(name: str, factor: float) -> LoadedPlugin:
     return LoadedPlugin(
         meta=PluginMeta(name=name, version="1.0", plugin_type="sizer", description=name),
-        compute=lambda ind, st, cfg: SizerResult(
-            factor=factor, reason_codes=(f"{name.upper()}",)
-        ),
+        compute=lambda ind, st, cfg: SizerResult(factor=factor, reason_codes=(f"{name.upper()}",)),
         config={},
         weight=1.0,
         source_path=f"<test>/{name}.py",
@@ -109,7 +107,6 @@ class TestProtocols(unittest.TestCase):
 
 
 class TestComposeSignals(unittest.TestCase):
-
     def test_empty_plugins(self):
         result = compose_signals([], {}, {}, {})
         self.assertEqual(result.direction, 0.0)
@@ -150,7 +147,6 @@ class TestComposeSignals(unittest.TestCase):
 
 
 class TestComposeFilters(unittest.TestCase):
-
     def test_all_pass(self):
         plugins = [_filter_plugin("a", True), _filter_plugin("b", True)]
         result = compose_filters(plugins, {}, {})
@@ -169,7 +165,6 @@ class TestComposeFilters(unittest.TestCase):
 
 
 class TestComposeSizers(unittest.TestCase):
-
     def test_multiplicative(self):
         plugins = [_sizer_plugin("a", 0.8), _sizer_plugin("b", 0.5)]
         result = compose_sizers(plugins, {}, {})
@@ -192,7 +187,6 @@ class TestComposeSizers(unittest.TestCase):
 
 
 class TestComposeExits(unittest.TestCase):
-
     def test_first_match_wins(self):
         plugins = [
             _exit_plugin("inval", should_exit=True, priority=1),
@@ -232,7 +226,6 @@ class TestComposeExits(unittest.TestCase):
 
 
 class TestPluginRegistry(unittest.TestCase):
-
     def test_summary(self):
         registry = PluginRegistry(
             signals=[_signal_plugin("a", 0.5)],
@@ -267,7 +260,11 @@ class TestLoadRegistry(unittest.TestCase):
     def test_load_signal_plugin(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             tmp = Path(tmpdir)
-            self._write_plugin(tmp, "signals", "test_sig", """
+            self._write_plugin(
+                tmp,
+                "signals",
+                "test_sig",
+                """
                 from zenquant.plugins.protocols import PluginMeta, SignalResult
 
                 meta = PluginMeta(
@@ -279,7 +276,8 @@ class TestLoadRegistry(unittest.TestCase):
 
                 def compute(indicators, state, config):
                     return SignalResult(value=0.42, confidence=0.9, reason_codes=("TEST",))
-            """)
+            """,
+            )
 
             profile = {"signals": {"test_sig": {"enabled": True, "weight": 0.6}}}
             registry = load_registry(profile, plugin_root=tmp)
@@ -294,12 +292,17 @@ class TestLoadRegistry(unittest.TestCase):
     def test_disabled_plugin_not_loaded(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             tmp = Path(tmpdir)
-            self._write_plugin(tmp, "signals", "disabled_sig", """
+            self._write_plugin(
+                tmp,
+                "signals",
+                "disabled_sig",
+                """
                 from zenquant.plugins.protocols import PluginMeta, SignalResult
                 meta = PluginMeta(name="disabled_sig", version="1.0", plugin_type="signal", description="test")
                 def compute(indicators, state, config):
                     return SignalResult(value=0.0, confidence=0.0)
-            """)
+            """,
+            )
 
             profile = {"signals": {"disabled_sig": {"enabled": False}}}
             registry = load_registry(profile, plugin_root=tmp)
@@ -308,7 +311,11 @@ class TestLoadRegistry(unittest.TestCase):
     def test_config_merge(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             tmp = Path(tmpdir)
-            self._write_plugin(tmp, "signals", "cfg_sig", """
+            self._write_plugin(
+                tmp,
+                "signals",
+                "cfg_sig",
+                """
                 from dataclasses import dataclass
                 from zenquant.plugins.protocols import PluginMeta, SignalResult
 
@@ -327,7 +334,8 @@ class TestLoadRegistry(unittest.TestCase):
                         value=config.get("threshold", 0.0),
                         confidence=0.8,
                     )
-            """)
+            """,
+            )
 
             # Override threshold but not lookback
             profile = {"signals": {"cfg_sig": {"enabled": True, "weight": 1.0, "threshold": 0.8}}}
@@ -350,12 +358,17 @@ class TestLoadRegistry(unittest.TestCase):
     def test_wrong_type_raises(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             tmp = Path(tmpdir)
-            self._write_plugin(tmp, "signals", "wrong_type", """
+            self._write_plugin(
+                tmp,
+                "signals",
+                "wrong_type",
+                """
                 from zenquant.plugins.protocols import PluginMeta, SignalResult
                 meta = PluginMeta(name="wrong_type", version="1.0", plugin_type="filter", description="oops")
                 def compute(indicators, state, config):
                     return SignalResult(value=0.0, confidence=0.0)
-            """)
+            """,
+            )
 
             profile = {"signals": {"wrong_type": {"enabled": True}}}
             with self.assertRaises(ValueError):
@@ -365,12 +378,17 @@ class TestLoadRegistry(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             tmp = Path(tmpdir)
             for name, prio in [("exit_a", 3), ("exit_b", 1), ("exit_c", 2)]:
-                self._write_plugin(tmp, "exits", name, f"""
+                self._write_plugin(
+                    tmp,
+                    "exits",
+                    name,
+                    f"""
                     from zenquant.plugins.protocols import PluginMeta, ExitResult
                     meta = PluginMeta(name="{name}", version="1.0", plugin_type="exit", description="test")
                     def compute(indicators, state, position, config):
                         return ExitResult(should_exit=False)
-                """)
+                """,
+                )
 
             profile = {
                 "exits": {
@@ -390,7 +408,6 @@ class TestLoadRegistry(unittest.TestCase):
 
 
 class TestProfileLoader(unittest.TestCase):
-
     def test_load_toml_profile(self):
         from zenquant.plugins.profile import load_profile
 

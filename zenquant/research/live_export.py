@@ -217,14 +217,18 @@ def _fetch_base_rows(conn: Any, config: LiveExportConfig) -> list[dict[str, Any]
                 "atr": float(indicator_values.get("atr", 0.0) or 0.0),
                 "momentum_roc_z": float(indicator_values.get("momentum_roc_z", 0.0) or 0.0),
                 "structure_state": str(
-                    indicator_values.get("structure_state")
-                    or indicator_values.get("swing_structure")
-                    or "NEUTRAL"
+                    indicator_values.get("structure_state") or indicator_values.get("swing_structure") or "NEUTRAL"
                 ),
                 "indicator_quality_flags": _jsonb_to_pipe(raw.pop("indicator_quality_flags")),
                 "target_direction": 0.0,
             }
-            row.update({key: _normalize_json_value(value) for key, value in raw.items() if key not in {"symbol", "timeframe", "cutoff_time_ns"}})
+            row.update(
+                {
+                    key: _normalize_json_value(value)
+                    for key, value in raw.items()
+                    if key not in {"symbol", "timeframe", "cutoff_time_ns"}
+                }
+            )
             row["state_quality_flags"] = _jsonb_to_pipe(row.get("state_quality_flags"))
             row["state_reason_codes"] = _jsonb_to_pipe(row.get("state_reason_codes"))
             row["playbook_reason_codes"] = _jsonb_to_pipe(row.get("playbook_reason_codes"))
@@ -251,7 +255,9 @@ def _add_forward_labels(rows: list[dict[str, Any]], horizons: tuple[int, ...]) -
                 row[f"future_return_{horizon}"] = (future_close - close_price) / close_price
         window = rows[index + 1 : min(len(rows), index + 4)]
         if close_price > 0 and window:
-            future_prices = [float(item.get("close_price") or 0.0) for item in window if float(item.get("close_price") or 0.0) > 0]
+            future_prices = [
+                float(item.get("close_price") or 0.0) for item in window if float(item.get("close_price") or 0.0) > 0
+            ]
             if future_prices:
                 row["mae_3"] = (min(future_prices) - close_price) / close_price
                 row["mfe_3"] = (max(future_prices) - close_price) / close_price

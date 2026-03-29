@@ -225,27 +225,33 @@ class TestSearchSpace(unittest.TestCase):
         self.assertEqual(grid, [{}])
 
     def test_single_param(self) -> None:
-        grid = _build_param_grid(SearchSpace(
-            strategy_params={"bull_leverage": [2.5, 3.0, 3.5]},
-        ))
+        grid = _build_param_grid(
+            SearchSpace(
+                strategy_params={"bull_leverage": [2.5, 3.0, 3.5]},
+            )
+        )
         self.assertEqual(len(grid), 3)
         self.assertEqual(grid[0], {"bull_leverage": 2.5})
 
     def test_cartesian_product(self) -> None:
-        grid = _build_param_grid(SearchSpace(
-            strategy_params={
-                "bull_leverage": [2.5, 3.0],
-                "preserve_capital_risk": [0.60, 0.65],
-            },
-        ))
+        grid = _build_param_grid(
+            SearchSpace(
+                strategy_params={
+                    "bull_leverage": [2.5, 3.0],
+                    "preserve_capital_risk": [0.60, 0.65],
+                },
+            )
+        )
         self.assertEqual(len(grid), 4)
 
     def test_build_strategy_config(self) -> None:
-        config = _build_strategy_config({
-            "preserve_capital_risk": 0.65,
-            "bull_leverage": 3.0,
-            "exit_transition_risk": 0.85,
-        })
+        config = _build_strategy_config(
+            {
+                "preserve_capital_risk": 0.65,
+                "bull_leverage": 3.0,
+                "exit_transition_risk": 0.85,
+            }
+        )
         self.assertEqual(config.playbook_config.preserve_capital_transition_risk, 0.65)
         self.assertEqual(config.playbook_config.bull_max_leverage, 3.0)
         self.assertEqual(config.exit_config.transition_risk_exit_threshold, 0.85)

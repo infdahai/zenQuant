@@ -178,9 +178,7 @@ def _update_index(output_root: Path, manifest: dict[str, Any], summary: dict[str
         payload = json.loads(index_path.read_text(encoding="utf-8"))
     else:
         payload = {"runs": []}
-    payload["runs"] = [
-        entry for entry in payload.get("runs", []) if entry.get("run_id") != manifest["run_id"]
-    ]
+    payload["runs"] = [entry for entry in payload.get("runs", []) if entry.get("run_id") != manifest["run_id"]]
     payload["runs"].append(
         {
             "run_id": manifest["run_id"],

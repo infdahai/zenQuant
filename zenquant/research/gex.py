@@ -57,8 +57,8 @@ class GexProfile:
 
     # Key levels
     gamma_wall_strike: float | None  # strike with highest net positive GEX
-    flip_strike: float | None        # strike where cumulative GEX crosses zero
-    max_pain_strike: float | None    # strike where total OI loss is minimized
+    flip_strike: float | None  # strike where cumulative GEX crosses zero
+    max_pain_strike: float | None  # strike where total OI loss is minimized
 
     # Aggregate metrics
     total_call_gex: float
@@ -88,8 +88,8 @@ def _black_scholes_gamma(
         sigma_sqrt_t = iv * math.sqrt(time_to_expiry_years)
         if sigma_sqrt_t <= 0:
             return 0.0
-        d1 = (math.log(spot / strike) + (risk_free_rate + 0.5 * iv ** 2) * time_to_expiry_years) / sigma_sqrt_t
-        gamma = math.exp(-0.5 * d1 ** 2) / (spot * sigma_sqrt_t * math.sqrt(2 * math.pi))
+        d1 = (math.log(spot / strike) + (risk_free_rate + 0.5 * iv**2) * time_to_expiry_years) / sigma_sqrt_t
+        gamma = math.exp(-0.5 * d1**2) / (spot * sigma_sqrt_t * math.sqrt(2 * math.pi))
         return max(0.0, gamma)
     except (ValueError, ZeroDivisionError):
         return 0.0
@@ -115,10 +115,17 @@ def compute_gex_profile(
     """
     if not rows or spot <= 0:
         return GexProfile(
-            spot=spot, ts_ns=snapshot_ts_ns, strikes=[],
-            gamma_wall_strike=None, flip_strike=None, max_pain_strike=None,
-            total_call_gex=0.0, total_put_gex=0.0, net_gex=0.0,
-            regime="NEUTRAL", regime_reason="No data",
+            spot=spot,
+            ts_ns=snapshot_ts_ns,
+            strikes=[],
+            gamma_wall_strike=None,
+            flip_strike=None,
+            max_pain_strike=None,
+            total_call_gex=0.0,
+            total_put_gex=0.0,
+            net_gex=0.0,
+            regime="NEUTRAL",
+            regime_reason="No data",
         )
 
     now_ns = snapshot_ts_ns or (rows[0].get("snapshot_ts_ns", 0))
@@ -149,7 +156,7 @@ def compute_gex_profile(
         gamma = _black_scholes_gamma(spot, strike, time_to_expiry_years, mark_iv)
 
         # GEX = gamma * OI * contract_size * spot^2
-        gex = gamma * oi * BTC_CONTRACT_SIZE * (spot ** 2)
+        gex = gamma * oi * BTC_CONTRACT_SIZE * (spot**2)
 
         if strike not in strike_data:
             strike_data[strike] = {"call_gex": 0.0, "put_gex": 0.0, "call_oi": 0.0, "put_oi": 0.0}
@@ -164,15 +171,21 @@ def compute_gex_profile(
 
     if not strike_data:
         return GexProfile(
-            spot=spot, ts_ns=snapshot_ts_ns, strikes=[],
-            gamma_wall_strike=None, flip_strike=None, max_pain_strike=None,
-            total_call_gex=0.0, total_put_gex=0.0, net_gex=0.0,
-            regime="NEUTRAL", regime_reason="No strikes after filtering",
+            spot=spot,
+            ts_ns=snapshot_ts_ns,
+            strikes=[],
+            gamma_wall_strike=None,
+            flip_strike=None,
+            max_pain_strike=None,
+            total_call_gex=0.0,
+            total_put_gex=0.0,
+            net_gex=0.0,
+            regime="NEUTRAL",
+            regime_reason="No strikes after filtering",
         )
 
     strikes = [
-        StrikeGex(strike=s, call_gex=d["call_gex"], put_gex=d["put_gex"])
-        for s, d in sorted(strike_data.items())
+        StrikeGex(strike=s, call_gex=d["call_gex"], put_gex=d["put_gex"]) for s, d in sorted(strike_data.items())
     ]
 
     total_call_gex = sum(s.call_gex for s in strikes)

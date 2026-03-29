@@ -106,7 +106,9 @@ def main():
             print("Next steps:")
             print("  1. Convert Deribit data: uv run python scripts/convert_deribit_to_parquet.py")
             print("  2. Compare results: uv run python scripts/compare_results.py results/deribit_param_sweep.json")
-            print("  3. Run walk-forward validation: uv run python scripts/walk_forward_tune.py --quick --data-root data/raw/deribit_replay --symbol BTCUSDT --output results/deribit_walk_forward_tuning.json")
+            print(
+                "  3. Run walk-forward validation: uv run python scripts/walk_forward_tune.py --quick --data-root data/raw/deribit_replay --symbol BTCUSDT --output results/deribit_walk_forward_tuning.json"
+            )
             break
 
         print("Press Ctrl+C to exit")

@@ -47,7 +47,7 @@ def download_binance_data(days: int = 90):
 
     current = start_date
     while current <= end_date:
-        date_str = current.strftime('%Y-%m-%d')
+        date_str = current.strftime("%Y-%m-%d")
 
         # Download 4h klines
         url = f"{base_url}/klines/{symbol}/4h/{symbol}-4h-{date_str}.zip"
@@ -115,6 +115,7 @@ def download_binance_data(days: int = 90):
 
     return successful, failed
 
+
 def download_and_extract(url: str, output_path: Path, extract_dir: Path) -> bool:
     """Download a zip file and extract it."""
     try:
@@ -127,7 +128,7 @@ def download_and_extract(url: str, output_path: Path, extract_dir: Path) -> bool
         urllib.request.urlretrieve(url, output_path)
 
         # Extract
-        with zipfile.ZipFile(output_path, 'r') as zip_ref:
+        with zipfile.ZipFile(output_path, "r") as zip_ref:
             zip_ref.extractall(extract_dir)
 
         # Remove zip file
@@ -137,6 +138,7 @@ def download_and_extract(url: str, output_path: Path, extract_dir: Path) -> bool
     except Exception:
         # Silently fail for missing files (common for recent dates)
         return False
+
 
 if __name__ == "__main__":
     days = 540  # Default to 18 months (1.5 BTC cycles)

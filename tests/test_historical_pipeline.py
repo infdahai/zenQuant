@@ -28,9 +28,7 @@ class HistoricalPipelineTests(unittest.TestCase):
                 _open_interest_rows(),
             )
 
-            result = HistoricalBacktest(
-                HistoricalBacktestConfig(root_dir=root, symbol="BTCUSDT")
-            ).run()
+            result = HistoricalBacktest(HistoricalBacktestConfig(root_dir=root, symbol="BTCUSDT")).run()
 
             self.assertGreater(result.total_indicator_packs, 0)
             self.assertGreater(result.total_targets, 0)
@@ -53,12 +51,8 @@ class HistoricalPipelineTests(unittest.TestCase):
                 _open_interest_rows(),
             )
 
-            first = HistoricalBacktest(
-                HistoricalBacktestConfig(root_dir=root, symbol="BTCUSDT")
-            ).run()
-            second = HistoricalBacktest(
-                HistoricalBacktestConfig(root_dir=root, symbol="BTCUSDT")
-            ).run()
+            first = HistoricalBacktest(HistoricalBacktestConfig(root_dir=root, symbol="BTCUSDT")).run()
+            second = HistoricalBacktest(HistoricalBacktestConfig(root_dir=root, symbol="BTCUSDT")).run()
 
             self.assertEqual(first.total_reports, second.total_reports)
             self.assertAlmostEqual(first.final_equity, second.final_equity, places=6)
@@ -79,9 +73,7 @@ class HistoricalPipelineTests(unittest.TestCase):
                 _open_interest_rows(),
             )
 
-            result = HistoricalBacktest(
-                HistoricalBacktestConfig(root_dir=root, symbol="BTCUSDT")
-            ).run()
+            result = HistoricalBacktest(HistoricalBacktestConfig(root_dir=root, symbol="BTCUSDT")).run()
 
             self.assertAlmostEqual(result.metrics.net_pnl, 221696.97, places=6)
             self.assertAlmostEqual(result.final_equity, 321696.96542258776, places=6)

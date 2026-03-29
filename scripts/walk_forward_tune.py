@@ -214,8 +214,7 @@ def run_walk_forward_tuning(config: WalkForwardConfig) -> TuningResult:
         best_train_sharpe = -999.0
 
         backtest_args = [
-            (params, str(config.data_root), config.symbol, train_start, train_end)
-            for params in param_grid
+            (params, str(config.data_root), config.symbol, train_start, train_end) for params in param_grid
         ]
 
         if len(backtest_args) > 1 and workers > 1:
@@ -324,8 +323,7 @@ def _compute_baseline_sharpe(config: WalkForwardConfig) -> float:
     }
     try:
         _, sharpe = _run_single_backtest(
-            (baseline_params, str(config.data_root), config.symbol,
-             first_split[2], first_split[3])
+            (baseline_params, str(config.data_root), config.symbol, first_split[2], first_split[3])
         )
         return sharpe
     except Exception:

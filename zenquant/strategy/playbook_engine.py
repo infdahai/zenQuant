@@ -71,9 +71,7 @@ class PlaybookEngine:
     def _bull_continuation(self, state: MarketState) -> PlaybookSelection:
         confidence = min(
             1.0,
-            state.directional_confidence * 0.6
-            + state.volatility_confidence * 0.2
-            + state.positioning_confidence * 0.2,
+            state.directional_confidence * 0.6 + state.volatility_confidence * 0.2 + state.positioning_confidence * 0.2,
         )
         return PlaybookSelection(
             symbol=state.symbol,
@@ -97,9 +95,7 @@ class PlaybookEngine:
     def _bear_defense(self, state: MarketState) -> PlaybookSelection:
         confidence = min(
             1.0,
-            state.directional_confidence * 0.6
-            + state.volatility_confidence * 0.2
-            + state.positioning_confidence * 0.2,
+            state.directional_confidence * 0.6 + state.volatility_confidence * 0.2 + state.positioning_confidence * 0.2,
         )
         return PlaybookSelection(
             symbol=state.symbol,

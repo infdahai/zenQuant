@@ -49,25 +49,46 @@ class TestGoldenOutput(unittest.TestCase):
                 _open_interest_rows(),
             )
 
-            result = HistoricalBacktest(
-                HistoricalBacktestConfig(root_dir=root, symbol="BTCUSDT")
-            ).run()
+            result = HistoricalBacktest(HistoricalBacktestConfig(root_dir=root, symbol="BTCUSDT")).run()
 
         gm = golden["metrics"]
-        self.assertAlmostEqual(result.metrics.net_pnl, gm["net_pnl"], places=2,
-                               msg="net_pnl changed — update golden/backtest.json if intentional")
-        self.assertAlmostEqual(result.metrics.sharpe, gm["sharpe"], places=4,
-                               msg="sharpe changed — update golden/backtest.json if intentional")
-        self.assertAlmostEqual(result.metrics.max_drawdown, gm["max_drawdown"], places=6,
-                               msg="max_drawdown changed — update golden/backtest.json if intentional")
-        self.assertAlmostEqual(result.metrics.profit_factor, gm["profit_factor"], places=6,
-                               msg="profit_factor changed — update golden/backtest.json if intentional")
-        self.assertEqual(result.metrics.trade_count, gm["trade_count"],
-                         "trade_count changed — update golden/backtest.json if intentional")
+        self.assertAlmostEqual(
+            result.metrics.net_pnl,
+            gm["net_pnl"],
+            places=2,
+            msg="net_pnl changed — update golden/backtest.json if intentional",
+        )
+        self.assertAlmostEqual(
+            result.metrics.sharpe,
+            gm["sharpe"],
+            places=4,
+            msg="sharpe changed — update golden/backtest.json if intentional",
+        )
+        self.assertAlmostEqual(
+            result.metrics.max_drawdown,
+            gm["max_drawdown"],
+            places=6,
+            msg="max_drawdown changed — update golden/backtest.json if intentional",
+        )
+        self.assertAlmostEqual(
+            result.metrics.profit_factor,
+            gm["profit_factor"],
+            places=6,
+            msg="profit_factor changed — update golden/backtest.json if intentional",
+        )
+        self.assertEqual(
+            result.metrics.trade_count,
+            gm["trade_count"],
+            "trade_count changed — update golden/backtest.json if intentional",
+        )
 
         ge = golden["equity"]
-        self.assertAlmostEqual(result.final_equity, ge["final"], places=6,
-                               msg="final_equity changed — update golden/backtest.json if intentional")
+        self.assertAlmostEqual(
+            result.final_equity,
+            ge["final"],
+            places=6,
+            msg="final_equity changed — update golden/backtest.json if intentional",
+        )
 
         gc = golden["counts"]
         self.assertEqual(result.total_indicator_packs, gc["indicator_packs"])

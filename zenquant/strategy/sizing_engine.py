@@ -113,7 +113,10 @@ class SizingEngine:
             self._config.positioning_discount_floor,
             1.0 - min(self._config.positioning_discount_max, funding_oi_z / 4.0),
         )
-        if realized_vol > target_vol * self._config.volatility_distorted_multiple or state.volatility_state == "DISTORTED":
+        if (
+            realized_vol > target_vol * self._config.volatility_distorted_multiple
+            or state.volatility_state == "DISTORTED"
+        ):
             volatility_discount = self._config.volatility_distorted_discount
         elif realized_vol > target_vol * self._config.volatility_high_multiple or state.volatility_state == "HIGH":
             volatility_discount = self._config.volatility_high_discount
