@@ -32,7 +32,9 @@ Architecture Note:
 from __future__ import annotations
 
 import json
+import os
 import time
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta
 from itertools import product
@@ -159,14 +161,41 @@ def full_tuning() -> WalkForwardConfig:
     )
 
 
+def _run_single_backtest(args: tuple[dict[str, Any], str, str, int, int]) -> tuple[dict[str, Any], float]:
+    """Run one backtest in a child process. Returns (params, sharpe).
+
+    This is a module-level function so ``ProcessPoolExecutor`` can pickle it.
+    """
+    params, root_dir, symbol, start_ns, end_ns = args
+    strategy_config = _build_strategy_config(params)
+    backtest_config = HistoricalBacktestConfig(
+        root_dir=Path(root_dir),
+        symbol=symbol,
+        start_ns=start_ns,
+        end_ns=end_ns,
+        strategy_config=strategy_config,
+    )
+    backtest = HistoricalBacktest(backtest_config)
+    result = backtest.run()
+    return params, result.metrics.sharpe
+
+
+def _max_workers() -> int:
+    """Determine parallel workers: leave 2 cores free for OS."""
+    cpu_count = os.cpu_count() or 4
+    return max(1, min(cpu_count - 2, 8))
+
+
 def run_walk_forward_tuning(config: WalkForwardConfig) -> TuningResult:
     """Run walk-forward tuning and return results."""
     if not config.splits:
         raise ValueError("No walk-forward splits defined")
 
+    workers = _max_workers()
     if config.verbose:
         print(f"Starting walk-forward tuning: {len(config.splits)} splits")
         print(f"Data: {config.symbol} from {config.data_root}")
+        print(f"Parallel workers: {workers}")
         print("-" * 80)
 
     split_results: list[SplitResult] = []
@@ -179,26 +208,30 @@ def run_walk_forward_tuning(config: WalkForwardConfig) -> TuningResult:
 
         start_time = time.time()
 
-        # Grid search on training period
+        # Grid search on training period — parallel
         param_grid = _build_param_grid(config)
         best_params = None
         best_train_sharpe = -999.0
 
-        for params in param_grid:
-            strategy_config = _build_strategy_config(params)
-            backtest_config = HistoricalBacktestConfig(
-                root_dir=config.data_root,
-                symbol=config.symbol,
-                start_ns=train_start,
-                end_ns=train_end,
-                strategy_config=strategy_config,
-            )
-            backtest = HistoricalBacktest(backtest_config)
-            result = backtest.run()
+        backtest_args = [
+            (params, str(config.data_root), config.symbol, train_start, train_end)
+            for params in param_grid
+        ]
 
-            if result.metrics.sharpe > best_train_sharpe:
-                best_train_sharpe = result.metrics.sharpe
-                best_params = params
+        if len(backtest_args) > 1 and workers > 1:
+            with ProcessPoolExecutor(max_workers=workers) as pool:
+                futures = {pool.submit(_run_single_backtest, args): args for args in backtest_args}
+                for future in as_completed(futures):
+                    params, sharpe = future.result()
+                    if sharpe > best_train_sharpe:
+                        best_train_sharpe = sharpe
+                        best_params = params
+        else:
+            for args in backtest_args:
+                params, sharpe = _run_single_backtest(args)
+                if sharpe > best_train_sharpe:
+                    best_train_sharpe = sharpe
+                    best_params = params
 
         if best_params is None:
             raise RuntimeError(f"No valid parameters found for split {split_id}")
