@@ -9,11 +9,12 @@ This script downloads the last 3 months of:
 Data is saved in Parquet format for efficient replay.
 """
 
+import sys
 import urllib.request
 import zipfile
 from datetime import datetime, timedelta
 from pathlib import Path
-import sys
+
 
 def download_binance_data(days: int = 90):
     """Download last N days of Binance futures data."""
@@ -92,7 +93,7 @@ def download_binance_data(days: int = 90):
 
     print()
     print("=" * 60)
-    print(f"Download complete!")
+    print("Download complete!")
     print(f"Total files: {total_files}")
     print(f"Successful: {successful}")
     print(f"Failed: {failed}")
@@ -133,7 +134,7 @@ def download_and_extract(url: str, output_path: Path, extract_dir: Path) -> bool
         output_path.unlink()
 
         return True
-    except Exception as e:
+    except Exception:
         # Silently fail for missing files (common for recent dates)
         return False
 

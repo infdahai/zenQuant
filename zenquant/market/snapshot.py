@@ -13,8 +13,8 @@ from dataclasses import dataclass
 from zenquant.domain import (
     BarCloseEvent,
     FundingUpdate,
-    MarkPriceUpdate,
     MarketSnapshot,
+    MarkPriceUpdate,
     OpenInterestUpdate,
     OrderBookSnapshot,
     Timeframe,

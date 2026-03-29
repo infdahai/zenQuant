@@ -13,8 +13,8 @@ from psycopg import connect
 
 from zenquant.domain import (
     DeribitRiskPack,
-    ExitDecision,
     ExecutionReport,
+    ExitDecision,
     IndicatorPack,
     MarketState,
     OpenPositionState,
@@ -26,7 +26,6 @@ from zenquant.domain import (
 from zenquant.domain.serde import to_jsonable
 
 from .event_bus import EventBus
-
 
 logger = logging.getLogger(__name__)
 

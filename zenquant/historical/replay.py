@@ -20,15 +20,15 @@ from zenquant.domain import (
     Candle,
     DirectionalBias,
     EventMeta,
-    ExitDecision,
     ExecutionReport,
+    ExitDecision,
     IndicatorPack,
-    MarkPriceUpdate,
     MarketSnapshot,
-    PlaybookSelection,
-    OpenPositionState,
-    RiskSnapshot,
     MarketState,
+    MarkPriceUpdate,
+    OpenPositionState,
+    PlaybookSelection,
+    RiskSnapshot,
     SizingDecision,
     TargetPosition,
     Timeframe,
@@ -38,7 +38,7 @@ from zenquant.indicator import IndicatorEngine, IndicatorEngineConfig, Indicator
 from zenquant.infra import InMemoryJetStream, StreamConfig
 from zenquant.risk import RiskOverlay, RiskOverlayConfig
 from zenquant.state import StateEngine
-from zenquant.strategy import ARCStrategyEngine, ARCStrategyConfig
+from zenquant.strategy import ARCStrategyConfig, ARCStrategyEngine
 
 from .perturbation import PerturbationConfig, perturb_events
 from .storage import read_parquet_rows

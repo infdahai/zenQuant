@@ -233,7 +233,7 @@ def main() -> None:
     print(f"  Profit Factor: {top_results[0].profit_factor:.2f}")
     print(f"  Win Rate: {top_results[0].win_rate:.1%}")
     print(f"  Total Trades: {top_results[0].total_trades}")
-    print(f"\nParameters to use:")
+    print("\nParameters to use:")
     for param, value in top_results[0].params.items():
         print(f"  {param}: {value:.2f}")
 

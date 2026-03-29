@@ -17,11 +17,12 @@ Usage:
 """
 
 import json
+import sys
 import time
 import urllib.request
 from datetime import datetime, timedelta
 from pathlib import Path
-import sys
+
 
 def download_deribit_data(days: int = 540):
     """Download last N days of Deribit data via public API.
@@ -151,7 +152,7 @@ def download_deribit_data(days: int = 540):
 
     print()
     print("=" * 60)
-    print(f"Download complete!")
+    print("Download complete!")
     print(f"Total requests: {total_requests}")
     print(f"Successful: {successful}")
     print(f"Failed: {failed}")

@@ -5,9 +5,9 @@ from __future__ import annotations
 import math
 import random
 from collections import defaultdict
+from collections.abc import Iterator
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import Iterator
 
 from zenquant.domain import (
     EventMeta,

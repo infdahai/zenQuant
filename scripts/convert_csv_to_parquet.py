@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """Convert Binance CSV files to Parquet format for efficient replay."""
 
-import pandas as pd
 from pathlib import Path
-import sys
+
+import pandas as pd
+
 
 def csv_to_parquet(csv_dir: Path, output_dir: Path, data_type: str):
     """Convert all CSV files in directory to Parquet."""

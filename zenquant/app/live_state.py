@@ -15,6 +15,7 @@ from zenquant.domain import (
     Candle,
     DeribitRiskPack,
     DirectionalBias,
+    ExitDecision,
     IndicatorPack,
     IntentReason,
     MarketState,
@@ -23,7 +24,6 @@ from zenquant.domain import (
     RiskOverlayDecision,
     RiskSnapshot,
     SizingDecision,
-    ExitDecision,
     TargetPosition,
     Timeframe,
 )

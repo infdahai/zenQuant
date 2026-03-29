@@ -44,7 +44,6 @@ from zenquant.strategy import (
     ARCStrategyConfig,
     ExitEngineConfig,
     PlaybookEngineConfig,
-    SizingEngineConfig,
 )
 
 

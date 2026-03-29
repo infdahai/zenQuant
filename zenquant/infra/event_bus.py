@@ -9,9 +9,9 @@ from __future__ import annotations
 
 import time
 from collections import deque
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any, Callable, Protocol
-
+from typing import Any, Protocol
 
 SubjectHandler = Callable[[str, Any], None]
 

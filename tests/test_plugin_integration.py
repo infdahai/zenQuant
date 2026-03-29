@@ -14,9 +14,7 @@ from zenquant.domain import (
 )
 from zenquant.infra.event_bus import InMemoryJetStream
 from zenquant.plugins.profile import build_from_profile
-from zenquant.plugins.registry import load_registry
 from zenquant.strategy.engine import ARCStrategyConfig, ARCStrategyEngine
-
 
 PLUGIN_ROOT = Path(__file__).parent.parent / "zenquant" / "plugins"
 PROFILE_PATH = Path(__file__).parent.parent / "config" / "profiles" / "default.toml"

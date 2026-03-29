@@ -27,7 +27,7 @@ Usage:
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any
 
 # Deribit BTC option contract size in BTC
@@ -264,7 +264,7 @@ def _classify_regime(
         return "NEUTRAL", "Net GEX near zero — balanced hedging pressure"
 
     if net_gex > 0:
-        detail = f"Net GEX positive"
+        detail = "Net GEX positive"
         if gamma_wall:
             detail += f", gamma wall at {gamma_wall:,.0f}"
         return "PINNING", detail

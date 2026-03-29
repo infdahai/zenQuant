@@ -2,7 +2,7 @@ import asyncio
 import unittest
 
 from zenquant.app.server import ZenQuantWebRuntime
-from zenquant.domain import Candle, EventMeta, MarkPriceUpdate, MarketSnapshot, Timeframe
+from zenquant.domain import Candle, EventMeta, MarketSnapshot, MarkPriceUpdate, Timeframe
 
 
 class _FakeLiveIngestor:

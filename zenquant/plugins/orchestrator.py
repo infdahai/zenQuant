@@ -16,7 +16,6 @@ from typing import Any
 from zenquant.plugins.protocols import ExitResult, FilterResult, SignalResult, SizerResult
 from zenquant.plugins.registry import LoadedPlugin
 
-
 # ---------------------------------------------------------------------------
 # Composed result types
 # ---------------------------------------------------------------------------

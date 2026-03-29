@@ -21,7 +21,6 @@ from typing import Any
 import pyarrow as pa
 import pyarrow.parquet as pq
 
-
 DERIBIT_PUBLIC_API = "https://www.deribit.com/api/v2/public"
 
 
