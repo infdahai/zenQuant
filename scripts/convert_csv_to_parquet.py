@@ -19,9 +19,18 @@ def csv_to_parquet(csv_dir: Path, output_dir: Path, data_type: str):
     # Define column names based on data type
     if data_type == "klines":
         columns = [
-            "open_time", "open", "high", "low", "close", "volume",
-            "close_time", "quote_volume", "trade_count",
-            "taker_buy_base", "taker_buy_quote", "ignore"
+            "open_time",
+            "open",
+            "high",
+            "low",
+            "close",
+            "volume",
+            "close_time",
+            "quote_volume",
+            "trade_count",
+            "taker_buy_base",
+            "taker_buy_quote",
+            "ignore",
         ]
     elif data_type == "funding":
         columns = ["symbol", "funding_time", "funding_rate", "mark_price"]
@@ -61,6 +70,7 @@ def csv_to_parquet(csv_dir: Path, output_dir: Path, data_type: str):
     print(f"  Saved {len(combined)} rows to {output_file}")
     return len(combined)
 
+
 def main():
     base_dir = Path("data/raw/binance")
     symbol = "BTCUSDT"
@@ -97,6 +107,7 @@ def main():
     print()
     print("Ready for backtesting!")
     print("Run: uv run python scripts/param_sweep.py --quick")
+
 
 if __name__ == "__main__":
     main()

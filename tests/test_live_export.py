@@ -51,7 +51,9 @@ class LiveExportTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             with (
                 patch("zenquant.research.live_export.connect", return_value=DummyConn()),
-                patch("zenquant.research.live_export._fetch_base_rows", return_value=[dict(row) for row in sample_rows]),
+                patch(
+                    "zenquant.research.live_export._fetch_base_rows", return_value=[dict(row) for row in sample_rows]
+                ),
             ):
                 artifact = export_live_training_data(
                     LiveExportConfig(
@@ -70,8 +72,8 @@ class LiveExportTests(unittest.TestCase):
 
             lines = artifact.dataset_jsonl_path.read_text(encoding="utf-8").strip().splitlines()
             self.assertEqual(len(lines), 3)
-            self.assertIn("\"future_return_1\": 0.05", lines[0])
-            self.assertIn("\"mfe_3\": 0.1", lines[0])
+            self.assertIn('"future_return_1": 0.05', lines[0])
+            self.assertIn('"mfe_3": 0.1', lines[0])
 
             report = artifact.report_path.read_text(encoding="utf-8")
             self.assertIn("Research Run", report)

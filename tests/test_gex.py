@@ -36,7 +36,6 @@ def _make_row(
 
 
 class TestBlackScholesGamma(unittest.TestCase):
-
     def test_atm_gamma_positive(self):
         g = _black_scholes_gamma(spot=100, strike=100, time_to_expiry_years=0.1, iv=0.5)
         self.assertGreater(g, 0)
@@ -56,7 +55,6 @@ class TestBlackScholesGamma(unittest.TestCase):
 
 
 class TestComputeGexProfile(unittest.TestCase):
-
     def test_empty_rows_returns_neutral(self):
         profile = compute_gex_profile([], spot=95000.0)
         self.assertEqual(profile.regime, "NEUTRAL")
@@ -113,15 +111,17 @@ class TestComputeGexProfile(unittest.TestCase):
 
     def test_expired_options_excluded(self):
         now_s = time.time()
-        rows = [{
-            "snapshot_ts_ns": int(now_s * 1e9),
-            "strike": 95000,
-            "option_type": "call",
-            "open_interest": 1000,
-            "mark_iv": 60.0,
-            "expiry_ts_ms": int((now_s - 86400) * 1000),  # expired yesterday
-            "underlying_price": 95000,
-        }]
+        rows = [
+            {
+                "snapshot_ts_ns": int(now_s * 1e9),
+                "strike": 95000,
+                "option_type": "call",
+                "open_interest": 1000,
+                "mark_iv": 60.0,
+                "expiry_ts_ms": int((now_s - 86400) * 1000),  # expired yesterday
+                "underlying_price": 95000,
+            }
+        ]
         profile = compute_gex_profile(rows, spot=95000.0)
         self.assertEqual(profile.net_gex, 0.0)
 
@@ -131,34 +131,54 @@ class TestComputeGexProfile(unittest.TestCase):
 
 
 class TestGexToSignal(unittest.TestCase):
-
     def test_pinning_regime_positive_score(self):
         profile = GexProfile(
-            spot=95000, ts_ns=0, strikes=[],
-            gamma_wall_strike=97000, flip_strike=None, max_pain_strike=96000,
-            total_call_gex=1e9, total_put_gex=-2e8, net_gex=8e8,
-            regime="PINNING", regime_reason="test",
+            spot=95000,
+            ts_ns=0,
+            strikes=[],
+            gamma_wall_strike=97000,
+            flip_strike=None,
+            max_pain_strike=96000,
+            total_call_gex=1e9,
+            total_put_gex=-2e8,
+            net_gex=8e8,
+            regime="PINNING",
+            regime_reason="test",
         )
         sig = gex_to_signal(profile, 95000)
         self.assertEqual(sig["gex_regime_score"], 1.0)
-        self.assertAlmostEqual(sig["gamma_wall_distance_pct"], 97000/95000 - 1, places=4)
+        self.assertAlmostEqual(sig["gamma_wall_distance_pct"], 97000 / 95000 - 1, places=4)
 
     def test_amplifying_regime_negative_score(self):
         profile = GexProfile(
-            spot=95000, ts_ns=0, strikes=[],
-            gamma_wall_strike=None, flip_strike=93000, max_pain_strike=94000,
-            total_call_gex=1e8, total_put_gex=-9e8, net_gex=-8e8,
-            regime="AMPLIFYING", regime_reason="test",
+            spot=95000,
+            ts_ns=0,
+            strikes=[],
+            gamma_wall_strike=None,
+            flip_strike=93000,
+            max_pain_strike=94000,
+            total_call_gex=1e8,
+            total_put_gex=-9e8,
+            net_gex=-8e8,
+            regime="AMPLIFYING",
+            regime_reason="test",
         )
         sig = gex_to_signal(profile, 95000)
         self.assertEqual(sig["gex_regime_score"], -1.0)
 
     def test_neutral_regime_zero_score(self):
         profile = GexProfile(
-            spot=95000, ts_ns=0, strikes=[],
-            gamma_wall_strike=None, flip_strike=None, max_pain_strike=None,
-            total_call_gex=0, total_put_gex=0, net_gex=0,
-            regime="NEUTRAL", regime_reason="test",
+            spot=95000,
+            ts_ns=0,
+            strikes=[],
+            gamma_wall_strike=None,
+            flip_strike=None,
+            max_pain_strike=None,
+            total_call_gex=0,
+            total_put_gex=0,
+            net_gex=0,
+            regime="NEUTRAL",
+            regime_reason="test",
         )
         sig = gex_to_signal(profile, 95000)
         self.assertEqual(sig["gex_regime_score"], 0.0)

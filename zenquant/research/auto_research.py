@@ -210,8 +210,12 @@ class Campaign:
 
         # Stage 1: Sweep
         sweep = self._run_sweep()
-        self._log(f"Sweep: {sweep.total_combinations} combos, top Sharpe = "
-                  f"{sweep.top_n[0]['metrics'][self._config.primary_metric]:.2f}" if sweep.top_n else "no results")
+        self._log(
+            f"Sweep: {sweep.total_combinations} combos, top Sharpe = "
+            f"{sweep.top_n[0]['metrics'][self._config.primary_metric]:.2f}"
+            if sweep.top_n
+            else "no results"
+        )
 
         # Stage 2: Walk-forward validation (if splits defined)
         validations: list[ValidationResult] = []
@@ -222,23 +226,24 @@ class Campaign:
             # Skip WF — treat sweep top-N as candidates directly
             for entry in sweep.top_n:
                 m = entry["metrics"]
-                validations.append(ValidationResult(
-                    params=entry["params"],
-                    split_sharpes=[m["sharpe"]],
-                    split_drawdowns=[m["max_drawdown"]],
-                    split_pnls=[m["net_pnl"]],
-                    split_trade_counts=[int(m["trade_count"])],
-                    avg_val_sharpe=m["sharpe"],
-                    avg_val_drawdown=m["max_drawdown"],
-                    total_trade_count=int(m["trade_count"]),
-                ))
+                validations.append(
+                    ValidationResult(
+                        params=entry["params"],
+                        split_sharpes=[m["sharpe"]],
+                        split_drawdowns=[m["max_drawdown"]],
+                        split_pnls=[m["net_pnl"]],
+                        split_trade_counts=[int(m["trade_count"])],
+                        avg_val_sharpe=m["sharpe"],
+                        avg_val_drawdown=m["max_drawdown"],
+                        total_trade_count=int(m["trade_count"]),
+                    )
+                )
 
         # Stage 3: Robustness
         robustness: dict[str, list[RobustnessResult]] = {}
         if self._config.robustness_seeds:
             robustness = self._run_robustness(validations)
-            self._log(f"Robustness: {len(robustness)} candidates tested on "
-                      f"{len(self._config.robustness_seeds)} seeds")
+            self._log(f"Robustness: {len(robustness)} candidates tested on {len(self._config.robustness_seeds)} seeds")
 
         # Stage 4: Promotion
         verdicts = self._run_promotion(validations, robustness)
@@ -368,9 +373,7 @@ class Campaign:
 
     # ── Stage 3: Robustness ────────────────────────────────
 
-    def _run_robustness(
-        self, validations: list[ValidationResult]
-    ) -> dict[str, list[RobustnessResult]]:
+    def _run_robustness(self, validations: list[ValidationResult]) -> dict[str, list[RobustnessResult]]:
         cfg = self._config
         robustness: dict[str, list[RobustnessResult]] = {}
 
@@ -404,13 +407,15 @@ class Campaign:
         for (key, seed, _), (_, metrics) in zip(all_args, results):
             if key not in robustness:
                 robustness[key] = []
-            robustness[key].append(RobustnessResult(
-                seed=seed,
-                sharpe=metrics["sharpe"],
-                max_drawdown=metrics["max_drawdown"],
-                net_pnl=metrics["net_pnl"],
-                trade_count=int(metrics["trade_count"]),
-            ))
+            robustness[key].append(
+                RobustnessResult(
+                    seed=seed,
+                    sharpe=metrics["sharpe"],
+                    max_drawdown=metrics["max_drawdown"],
+                    net_pnl=metrics["net_pnl"],
+                    trade_count=int(metrics["trade_count"]),
+                )
+            )
 
         return robustness
 
@@ -461,10 +466,7 @@ class Campaign:
                 results.append(_run_backtest_worker(args))
         else:
             with ProcessPoolExecutor(max_workers=self._workers) as pool:
-                future_to_idx = {
-                    pool.submit(_run_backtest_worker, args): i
-                    for i, args in enumerate(args_list)
-                }
+                future_to_idx = {pool.submit(_run_backtest_worker, args): i for i, args in enumerate(args_list)}
                 indexed: list[tuple[int, tuple[dict[str, Any], dict[str, float]]]] = []
                 for future in as_completed(future_to_idx):
                     idx = future_to_idx[future]
@@ -491,14 +493,8 @@ class Campaign:
                 "top_n": report.sweep.top_n,
             },
             "validations": [asdict(v) for v in report.validations],
-            "robustness": {
-                k: [asdict(r) for r in rs]
-                for k, rs in report.robustness.items()
-            },
-            "verdicts": [
-                {"params": p, "verdict": asdict(v)}
-                for p, v in report.verdicts
-            ],
+            "robustness": {k: [asdict(r) for r in rs] for k, rs in report.robustness.items()},
+            "verdicts": [{"params": p, "verdict": asdict(v)} for p, v in report.verdicts],
             "best_params": report.best_params,
             "best_verdict": asdict(report.best_verdict) if report.best_verdict else None,
         }

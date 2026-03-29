@@ -127,8 +127,7 @@ def load_registry(
             import warnings
 
             warnings.warn(
-                f"Negative signal weights detected: {negative}. "
-                "This may cause unexpected direction inversion.",
+                f"Negative signal weights detected: {negative}. This may cause unexpected direction inversion.",
                 stacklevel=2,
             )
 
@@ -171,17 +170,14 @@ def _load_one(
     meta: PluginMeta = module.meta
     if meta.plugin_type != plugin_type:
         raise ValueError(
-            f"Plugin '{plugin_name}' declares type '{meta.plugin_type}' "
-            f"but is located in '{plugin_type}s/' directory"
+            f"Plugin '{plugin_name}' declares type '{meta.plugin_type}' but is located in '{plugin_type}s/' directory"
         )
 
     # Build config: schema defaults merged with profile overrides
     config: dict[str, Any] = {}
     if meta.config_schema is not None:
         defaults = meta.config_schema()
-        config = {
-            k: getattr(defaults, k) for k in defaults.__dataclass_fields__
-        }
+        config = {k: getattr(defaults, k) for k in defaults.__dataclass_fields__}
     for k, v in config_overrides.items():
         if k not in _RESERVED_KEYS:
             config[k] = v

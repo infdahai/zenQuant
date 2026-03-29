@@ -87,7 +87,9 @@ class SyntheticIngestor:
                     yield f"md.book.{venue}.{symbol}", book
 
                     if step % self._config.funding_interval_steps == 0:
-                        funding = self._build_funding(symbol=symbol, venue=venue, event_time_ns=event_time_ns, step=step)
+                        funding = self._build_funding(
+                            symbol=symbol, venue=venue, event_time_ns=event_time_ns, step=step
+                        )
                         yield f"md.funding.{venue}.{symbol}", funding
 
                     oi = self._build_open_interest(symbol=symbol, venue=venue, event_time_ns=event_time_ns, step=step)

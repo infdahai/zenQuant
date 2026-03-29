@@ -19,7 +19,9 @@ class DeribitPostgreSQLTests(unittest.IsolatedAsyncioTestCase):
         if not dsn:
             raise unittest.SkipTest("ZENQUANT_TEST_PG_DSN not set")
         if not _network_tests_enabled():
-            raise unittest.SkipTest("Set ZENQUANT_RUN_DERIBIT_NETWORK_TESTS=1 to run live Deribit persistence validation")
+            raise unittest.SkipTest(
+                "Set ZENQUANT_RUN_DERIBIT_NETWORK_TESTS=1 to run live Deribit persistence validation"
+            )
         cls.dsn = dsn
         with connect(dsn) as conn, conn.cursor() as cur:
             cur.execute("TRUNCATE deribit_risk_packs")

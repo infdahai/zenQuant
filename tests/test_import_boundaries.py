@@ -78,9 +78,7 @@ def _check_boundary(
                 for forbidden in forbidden_prefixes:
                     if imp == forbidden or imp.startswith(forbidden + "."):
                         rel = py_file.relative_to(PROJECT_ROOT)
-                        violations.append(
-                            f"{label}: {rel} imports '{imp}' (forbidden: {forbidden})"
-                        )
+                        violations.append(f"{label}: {rel} imports '{imp}' (forbidden: {forbidden})")
     return violations
 
 

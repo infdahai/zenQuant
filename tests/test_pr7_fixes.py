@@ -385,6 +385,7 @@ class TestM3ExecutionHaircut(unittest.TestCase):
         # (The haircut is applied in _build_target, not _plugin_sizing)
         # Check by looking at the SizingEngine._execution_haircut
         from zenquant.strategy.sizing_engine import SizingEngine
+
         haircut = SizingEngine._execution_haircut(state_degraded)
         self.assertLess(haircut, 1.0)
         self.assertEqual(haircut, 0.7)

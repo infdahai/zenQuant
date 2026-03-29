@@ -21,9 +21,7 @@ def main() -> None:
     parser.add_argument("--month", type=int, required=True, help="Calendar month, 1-12.")
     args = parser.parse_args()
 
-    downloader = BinanceHistoricalDownloader(
-        BinanceHistoricalSyncConfig(root_dir=Path(args.root))
-    )
+    downloader = BinanceHistoricalDownloader(BinanceHistoricalSyncConfig(root_dir=Path(args.root)))
     outputs = downloader.sync_month(symbol=args.symbol, year=args.year, month=args.month)
     for key, path in sorted(outputs.items()):
         print(f"{key}={path}")

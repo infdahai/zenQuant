@@ -85,7 +85,9 @@ class ZenQuantPipeline:
         latest_zen_pulse = 0.0
         latest_regime = "UNKNOWN"
         if self._indicators:
-            candidate = [item for item in self._indicators if item.symbol == "BTCUSDT_PERP" and item.timeframe.value == "4h"]
+            candidate = [
+                item for item in self._indicators if item.symbol == "BTCUSDT_PERP" and item.timeframe.value == "4h"
+            ]
             if candidate:
                 latest_pack = candidate[-1]
             else:

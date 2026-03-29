@@ -244,12 +244,8 @@ class DashboardStateStore:
             "market_state": to_jsonable(self._market_state.get(key))
             if self._market_state.get(key) is not None
             else None,
-            "active_playbook": to_jsonable(self._playbook.get(key))
-            if self._playbook.get(key) is not None
-            else None,
-            "latest_sizing": to_jsonable(self._sizing.get(key))
-            if self._sizing.get(key) is not None
-            else None,
+            "active_playbook": to_jsonable(self._playbook.get(key)) if self._playbook.get(key) is not None else None,
+            "latest_sizing": to_jsonable(self._sizing.get(key)) if self._sizing.get(key) is not None else None,
             "latest_exit": to_jsonable(self._exit_decision.get(key))
             if self._exit_decision.get(key) is not None
             else None,
@@ -259,9 +255,7 @@ class DashboardStateStore:
             "deribit_risk": to_jsonable(self._deribit_risk.get(underlying))
             if self._deribit_risk.get(underlying) is not None
             else None,
-            "deribit_history": [
-                to_jsonable(item) for item in self._deribit_history.get(underlying, [])
-            ],
+            "deribit_history": [to_jsonable(item) for item in self._deribit_history.get(underlying, [])],
             "alerts": list(self._alerts),
             "risk_snapshot": to_jsonable(self._risk_snapshot) if self._risk_snapshot is not None else None,
             "risk_decision": to_jsonable(self._risk_decision) if self._risk_decision is not None else None,

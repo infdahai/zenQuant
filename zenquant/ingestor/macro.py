@@ -37,6 +37,7 @@ def _save_parquet(records: list[dict], output_path: Path) -> int:
     if not records:
         return 0
     import pandas as pd
+
     df_new = pd.DataFrame(records)
     if output_path.exists():
         df_existing = pd.read_parquet(output_path)
@@ -65,11 +66,13 @@ def fetch_fear_greed(output_dir: Path, limit: int = 365) -> int:
     records = []
     for row in data["data"]:
         ts_s = int(row["timestamp"])
-        records.append({
-            "ts_ns": ts_s * 1_000_000_000,
-            "value": int(row["value"]),
-            "classification": row["value_classification"],
-        })
+        records.append(
+            {
+                "ts_ns": ts_s * 1_000_000_000,
+                "value": int(row["value"]),
+                "classification": row["value_classification"],
+            }
+        )
 
     output_path = output_dir / "fear_greed" / "data.parquet"
     saved = _save_parquet(records, output_path)
@@ -92,15 +95,17 @@ def fetch_btc_dominance(output_dir: Path) -> int:
     d = data["data"]
     ts_ns = int(datetime.now(UTC).timestamp() * 1_000_000_000)
 
-    records = [{
-        "ts_ns": ts_ns,
-        "btc_dominance_pct": float(d.get("market_cap_percentage", {}).get("btc", 0.0)),
-        "eth_dominance_pct": float(d.get("market_cap_percentage", {}).get("eth", 0.0)),
-        "total_market_cap_usd": float(d.get("total_market_cap", {}).get("usd", 0.0)),
-        "total_volume_24h_usd": float(d.get("total_volume", {}).get("usd", 0.0)),
-        "stablecoin_market_cap_usd": float(d.get("total_market_cap", {}).get("usdt", 0.0)),
-        "active_cryptocurrencies": int(d.get("active_cryptocurrencies", 0)),
-    }]
+    records = [
+        {
+            "ts_ns": ts_ns,
+            "btc_dominance_pct": float(d.get("market_cap_percentage", {}).get("btc", 0.0)),
+            "eth_dominance_pct": float(d.get("market_cap_percentage", {}).get("eth", 0.0)),
+            "total_market_cap_usd": float(d.get("total_market_cap", {}).get("usd", 0.0)),
+            "total_volume_24h_usd": float(d.get("total_volume", {}).get("usd", 0.0)),
+            "stablecoin_market_cap_usd": float(d.get("total_market_cap", {}).get("usdt", 0.0)),
+            "active_cryptocurrencies": int(d.get("active_cryptocurrencies", 0)),
+        }
+    ]
 
     output_path = output_dir / "btc_dominance" / "data.parquet"
     saved = _save_parquet(records, output_path)
@@ -125,10 +130,12 @@ def fetch_active_addresses(output_dir: Path, days: int = 365) -> int:
 
     records = []
     for row in data["values"]:
-        records.append({
-            "ts_ns": int(row["x"]) * 1_000_000_000,
-            "active_addresses": int(row["y"]),
-        })
+        records.append(
+            {
+                "ts_ns": int(row["x"]) * 1_000_000_000,
+                "active_addresses": int(row["y"]),
+            }
+        )
 
     output_path = output_dir / "active_addresses" / "data.parquet"
     saved = _save_parquet(records, output_path)
@@ -149,10 +156,12 @@ def fetch_transaction_count(output_dir: Path, days: int = 365) -> int:
 
     records = []
     for row in data["values"]:
-        records.append({
-            "ts_ns": int(row["x"]) * 1_000_000_000,
-            "tx_count": int(row["y"]),
-        })
+        records.append(
+            {
+                "ts_ns": int(row["x"]) * 1_000_000_000,
+                "tx_count": int(row["y"]),
+            }
+        )
 
     output_path = output_dir / "tx_count" / "data.parquet"
     saved = _save_parquet(records, output_path)
@@ -183,6 +192,7 @@ def run_all(output_dir: Path = Path("data/raw/macro"), days: int = 365) -> None:
 
 if __name__ == "__main__":
     import argparse
+
     parser = argparse.ArgumentParser(description="Fetch macro signals")
     parser.add_argument("--output", type=Path, default=Path("data/raw/macro"))
     parser.add_argument("--days", type=int, default=365)

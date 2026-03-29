@@ -114,9 +114,7 @@ def _extract_values(values: dict[str, Any]) -> _IndicatorValues:
         cvd_slope=float(values.get("cvd_slope", 0.0) or 0.0),
         funding_oi_z=float(values.get("funding_oi_z", 0.0) or 0.0),
         zen_pulse=float(values.get("zen_pulse", 50.0) or 50.0),
-        structure_state=str(
-            values.get("structure_state") or values.get("swing_structure") or "NEUTRAL"
-        ),
+        structure_state=str(values.get("structure_state") or values.get("swing_structure") or "NEUTRAL"),
         momentum_roc_z=float(values.get("momentum_roc_z", 0.0) or 0.0),
     )
 
@@ -162,10 +160,7 @@ def _classify_volatility_state(
     quality_flags: list[str],
     realized_vol: float,
 ) -> tuple[str, float]:
-    degraded = any(
-        flag in {"BOOK_STALE", "VENUE_DOWN", "DATA_STALE", "DATA_FUTURE"}
-        for flag in quality_flags
-    )
+    degraded = any(flag in {"BOOK_STALE", "VENUE_DOWN", "DATA_STALE", "DATA_FUTURE"} for flag in quality_flags)
     if degraded or realized_vol > 2.8:
         return "DISTORTED", 0.9
     if realized_vol > 1.5:
@@ -204,10 +199,7 @@ def _classify_regime(
     cvd_slope: float,
     zen_pulse: float,
 ) -> tuple[str, float]:
-    degraded = any(
-        flag in {"BOOK_STALE", "VENUE_DOWN", "DATA_STALE", "DATA_FUTURE"}
-        for flag in quality_flags
-    )
+    degraded = any(flag in {"BOOK_STALE", "VENUE_DOWN", "DATA_STALE", "DATA_FUTURE"} for flag in quality_flags)
     if degraded or realized_vol > 2.8:
         return "STRESS", 0.9
 

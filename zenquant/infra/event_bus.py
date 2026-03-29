@@ -19,11 +19,9 @@ SubjectHandler = Callable[[str, Any], None]
 class EventBus(Protocol):
     """Minimal publish/subscribe contract shared by runtime services."""
 
-    def subscribe(self, subject_pattern: str, handler: SubjectHandler) -> None:
-        ...
+    def subscribe(self, subject_pattern: str, handler: SubjectHandler) -> None: ...
 
-    def publish(self, subject: str, payload: Any) -> None:
-        ...
+    def publish(self, subject: str, payload: Any) -> None: ...
 
 
 @dataclass(slots=True)

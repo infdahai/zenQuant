@@ -131,12 +131,10 @@ class IndicatorEngine:
             )
             + 8
         )
-        self._candles: dict[tuple[str, Timeframe], deque[Candle]] = defaultdict(
-            lambda: deque(maxlen=_buf)
-        )
+        self._candles: dict[tuple[str, Timeframe], deque[Candle]] = defaultdict(lambda: deque(maxlen=_buf))
         # Phase 2: swing point history per (symbol, timeframe)
-        self._swing_points: dict[tuple[str, Timeframe], deque[SwingPoint]] = (
-            defaultdict(lambda: deque(maxlen=self._config.max_swing_points))
+        self._swing_points: dict[tuple[str, Timeframe], deque[SwingPoint]] = defaultdict(
+            lambda: deque(maxlen=self._config.max_swing_points)
         )
         self._last_swing_structure: dict[tuple[str, Timeframe], SwingStructure] = {}
         # Phase 2: momentum ROC z-score history
@@ -156,12 +154,8 @@ class IndicatorEngine:
         self._funding_values: dict[tuple[str, Timeframe], deque[float]] = defaultdict(
             lambda: deque(maxlen=self._config.z_window)
         )
-        self._ob_index_by_cutoff: dict[tuple[Timeframe, int], dict[str, float]] = (
-            defaultdict(dict)
-        )
-        self._pending_overall: dict[tuple[Timeframe, int], list[IndicatorPack]] = (
-            defaultdict(list)
-        )
+        self._ob_index_by_cutoff: dict[tuple[Timeframe, int], dict[str, float]] = defaultdict(dict)
+        self._pending_overall: dict[tuple[Timeframe, int], list[IndicatorPack]] = defaultdict(list)
         self._overall_by_cutoff: dict[tuple[Timeframe, int], float] = {}
 
         self._bus.subscribe("md.candle.>", self._on_candle)
@@ -198,15 +192,9 @@ class IndicatorEngine:
         ob_raw = _ob_imbalance(snapshot.bid_depth, snapshot.ask_depth)
         ob_series = self._ob_values[history_key]
         ob_series.append(ob_raw)
-        ob_liq_z = _robust_z(
-            list(ob_series), ob_raw, min_samples=self._config.robust_z_min_samples
-        )
+        ob_liq_z = _robust_z(list(ob_series), ob_raw, min_samples=self._config.robust_z_min_samples)
 
-        funding_value = (
-            snapshot.funding_oi_weighted
-            if snapshot.funding_oi_weighted is not None
-            else 0.0
-        )
+        funding_value = snapshot.funding_oi_weighted if snapshot.funding_oi_weighted is not None else 0.0
         funding_series = self._funding_values[history_key]
         funding_series.append(funding_value)
         funding_oi_z = _robust_z(
@@ -220,9 +208,7 @@ class IndicatorEngine:
         cvd_slope = _slope(list(cvd_series))
 
         candles = list(self._candles[history_key])
-        realized_vol = _realized_vol(
-            candles, window=self._config.vol_window, timeframe=candle.timeframe
-        )
+        realized_vol = _realized_vol(candles, window=self._config.vol_window, timeframe=candle.timeframe)
         atr = _atr(candles, window=self._config.atr_window)
 
         # --- Phase 2: Swing structure detection ---
@@ -231,8 +217,7 @@ class IndicatorEngine:
         for sp in new_pivots:
             # Avoid duplicates (same bar_end_ns + is_high)
             if not swing_points or (
-                sp.bar_end_ns != swing_points[-1].bar_end_ns
-                or sp.is_high != swing_points[-1].is_high
+                sp.bar_end_ns != swing_points[-1].bar_end_ns or sp.is_high != swing_points[-1].is_high
             ):
                 swing_points.append(sp)
         prev_structure = self._last_swing_structure.get(history_key)
@@ -250,9 +235,7 @@ class IndicatorEngine:
         roc_raw = _rate_of_change(candles, lookback=self._config.roc_lookback)
         roc_series = self._roc_values[history_key]
         roc_series.append(roc_raw)
-        momentum_roc_z = _robust_z(
-            list(roc_series), roc_raw, min_samples=self._config.robust_z_min_samples
-        )
+        momentum_roc_z = _robust_z(list(roc_series), roc_raw, min_samples=self._config.robust_z_min_samples)
 
         # --- Multi-horizon momentum z-score ---
         horizon_zscores: list[float] = []
@@ -261,22 +244,14 @@ class IndicatorEngine:
             h_key = (history_key[0], history_key[1], h)
             h_series = self._roc_horizon_values[h_key]
             h_series.append(h_roc)
-            h_z = _robust_z(
-                list(h_series), h_roc, min_samples=self._config.robust_z_min_samples
-            )
+            h_z = _robust_z(list(h_series), h_roc, min_samples=self._config.robust_z_min_samples)
             horizon_zscores.append(h_z)
-        multi_momentum_z = (
-            sum(horizon_zscores) / len(horizon_zscores) if horizon_zscores else 0.0
-        )
+        multi_momentum_z = sum(horizon_zscores) / len(horizon_zscores) if horizon_zscores else 0.0
 
         index_key = (candle.timeframe, candle.bar_end_ns)
         self._ob_index_by_cutoff[index_key][candle.symbol] = ob_liq_z
 
-        target_vol = (
-            self._config.target_vol_4h
-            if candle.timeframe is Timeframe.TF_4H
-            else self._config.target_vol_1d
-        )
+        target_vol = self._config.target_vol_4h if candle.timeframe is Timeframe.TF_4H else self._config.target_vol_1d
         zen_pulse, components, weights = _zen_pulse(
             ob_liq_z=ob_liq_z,
             cvd_slope=cvd_slope,
@@ -286,9 +261,7 @@ class IndicatorEngine:
             quality_flags=snapshot.quality_flags,
         )
 
-        quality_flags = (
-            sorted(set(snapshot.quality_flags)) if snapshot.quality_flags else ["OK"]
-        )
+        quality_flags = sorted(set(snapshot.quality_flags)) if snapshot.quality_flags else ["OK"]
         pack = IndicatorPack(
             ts_ns=candle.bar_end_ns,
             symbol=candle.symbol,
@@ -371,18 +344,12 @@ class IndicatorEngine:
         """Fail closed when full symbol coverage never arrives within the TTL window."""
         ttl_ns = self._config.pending_ttl_bars * timeframe.seconds * 1_000_000_000
         cutoff_ns = bar_end_ns - ttl_ns
-        stale_keys = [
-            key
-            for key in self._pending_overall
-            if key[0] is timeframe and key[1] < cutoff_ns
-        ]
+        stale_keys = [key for key in self._pending_overall if key[0] is timeframe and key[1] < cutoff_ns]
         for key in stale_keys:
             symbols_for_bar = self._ob_index_by_cutoff.get(key, {})
             self._flush_overall(key, symbols_for_bar)
 
-    def _flush_overall(
-        self, index_key: tuple[Timeframe, int], symbols_for_bar: dict[str, float]
-    ) -> None:
+    def _flush_overall(self, index_key: tuple[Timeframe, int], symbols_for_bar: dict[str, float]) -> None:
         packs = self._pending_overall.pop(index_key, [])
         if not packs:
             return
@@ -403,19 +370,13 @@ class IndicatorEngine:
     def _gc_pending(self, timeframe: Timeframe, bar_end_ns: int) -> None:
         ttl_ns = self._config.pending_ttl_bars * timeframe.seconds * 1_000_000_000
         cutoff_ns = bar_end_ns - ttl_ns
-        stale = [
-            key for key in self._pending if key[1] is timeframe and key[2] < cutoff_ns
-        ]
+        stale = [key for key in self._pending if key[1] is timeframe and key[2] < cutoff_ns]
         for key in stale:
             self._pending.pop(key, None)
 
     def _gc_ob_index(self, timeframe: Timeframe, bar_end_ns: int) -> None:
         cutoff_to_keep = bar_end_ns - (4 * timeframe.seconds * 1_000_000_000)
-        stale = [
-            key
-            for key in self._ob_index_by_cutoff
-            if key[0] is timeframe and key[1] < cutoff_to_keep
-        ]
+        stale = [key for key in self._ob_index_by_cutoff if key[0] is timeframe and key[1] < cutoff_to_keep]
         for key in stale:
             self._ob_index_by_cutoff.pop(key, None)
             self._pending_overall.pop(key, None)
@@ -557,9 +518,7 @@ def _zen_pulse(
     trend_component = _clip01(0.5 + (cvd_slope * 3.0))
     liquidity_component = _clip01(0.5 + (ob_liq_z / 6.0))
     crowding_component = _clip01(1.0 - min(1.0, abs(funding_oi_z) / 4.0))
-    vol_component = _clip01(
-        1.0 - max(0.0, realized_vol - target_vol) / max(target_vol, 1e-6)
-    )
+    vol_component = _clip01(1.0 - max(0.0, realized_vol - target_vol) / max(target_vol, 1e-6))
 
     quality_penalty = min(0.35, 0.12 * sum(1 for flag in quality_flags if flag != "OK"))
     raw = (

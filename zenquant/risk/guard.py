@@ -150,7 +150,9 @@ class RiskOverlay:
             if abs(funding_oi_z) >= self._config.severe_crowding_threshold:
                 reduce_only = True
                 flags.append("SEVERE_CROWDING")
-            if any(flag in {"BOOK_STALE", "VENUE_DOWN", "DATA_STALE", "DATA_FUTURE"} for flag in indicator.quality_flags):
+            if any(
+                flag in {"BOOK_STALE", "VENUE_DOWN", "DATA_STALE", "DATA_FUTURE"} for flag in indicator.quality_flags
+            ):
                 reduce_only = True
                 lev_cap = min(lev_cap, 0.45)
                 flags.append("LIQUIDITY_STRESS")

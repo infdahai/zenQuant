@@ -40,9 +40,12 @@ class LiveValidateTests(unittest.TestCase):
                     return payload
             raise AssertionError(url)
 
-        with patch("zenquant.app.live_validate._fetch_json", side_effect=fake_fetch), patch(
-            "zenquant.app.live_validate.time.time_ns",
-            return_value=1_000_000_000,
+        with (
+            patch("zenquant.app.live_validate._fetch_json", side_effect=fake_fetch),
+            patch(
+                "zenquant.app.live_validate.time.time_ns",
+                return_value=1_000_000_000,
+            ),
         ):
             summary = run_validation(LiveValidationConfig(require_db=True))
 
@@ -62,9 +65,12 @@ class LiveValidateTests(unittest.TestCase):
                     return payload
             raise AssertionError(url)
 
-        with patch("zenquant.app.live_validate._fetch_json", side_effect=fake_fetch), patch(
-            "zenquant.app.live_validate.time.time_ns",
-            return_value=1_000_000_000,
+        with (
+            patch("zenquant.app.live_validate._fetch_json", side_effect=fake_fetch),
+            patch(
+                "zenquant.app.live_validate.time.time_ns",
+                return_value=1_000_000_000,
+            ),
         ):
             summary = run_validation(LiveValidationConfig(require_db=True))
 

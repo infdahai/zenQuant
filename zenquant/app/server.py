@@ -136,8 +136,7 @@ class ZenQuantWebRuntime:
                     symbols=self._live_symbols,
                     # Local development can skip warmup to shorten restart
                     # cycles, while production keeps bootstrap enabled.
-                    bootstrap_enabled=os.getenv("ZENQUANT_SKIP_BOOTSTRAP", "").lower()
-                    not in {"1", "true", "yes"},
+                    bootstrap_enabled=os.getenv("ZENQUANT_SKIP_BOOTSTRAP", "").lower() not in {"1", "true", "yes"},
                 ),
             )
             if os.getenv("ZENQUANT_DERIBIT_ENABLED", "").lower() in {"1", "true", "yes"}:
@@ -264,14 +263,10 @@ class ZenQuantWebRuntime:
                 return
 
     def disconnect_state(self, websocket: WebSocket) -> None:
-        self._state_connections = [
-            item for item in self._state_connections if item.websocket is not websocket
-        ]
+        self._state_connections = [item for item in self._state_connections if item.websocket is not websocket]
 
     def disconnect_indicators(self, websocket: WebSocket) -> None:
-        self._indicator_connections = [
-            item for item in self._indicator_connections if item.websocket is not websocket
-        ]
+        self._indicator_connections = [item for item in self._indicator_connections if item.websocket is not websocket]
 
     async def _run_tick_loop(self) -> None:
         """Drive demo-mode synthetic events at a fixed wall-clock cadence."""
@@ -288,9 +283,7 @@ class ZenQuantWebRuntime:
         stale: list[WebSocket] = []
         for connection in self._state_connections:
             try:
-                await connection.websocket.send_json(
-                    self.snapshot(symbol=connection.symbol, tf=connection.tf)
-                )
+                await connection.websocket.send_json(self.snapshot(symbol=connection.symbol, tf=connection.tf))
             except Exception:
                 stale.append(connection.websocket)
         for websocket in stale:

@@ -14,8 +14,7 @@ from zenquant.infra import EventBus
 class FeeApplier(Protocol):
     """Minimal accounting hook required by execution after fills."""
 
-    def apply_fee(self, fee: float) -> None:
-        ...
+    def apply_fee(self, fee: float) -> None: ...
 
 
 @dataclass(slots=True)

@@ -205,7 +205,9 @@ class BinancePerpStreamClient:
             for row in rows:
                 row["event_timeframe"] = timeframe
                 candles.append(row)
-        candles.sort(key=lambda item: (int(item["close_time_ns"]), _bootstrap_timeframe_priority(str(item["event_timeframe"]))))
+        candles.sort(
+            key=lambda item: (int(item["close_time_ns"]), _bootstrap_timeframe_priority(str(item["event_timeframe"])))
+        )
 
         funding_index = -1
         open_interest_index = -1

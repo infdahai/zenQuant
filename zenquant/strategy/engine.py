@@ -94,19 +94,17 @@ class ARCStrategyEngine:
         self._playbooks: dict[tuple[str, Timeframe], PlaybookSelection] = {}
 
         # Initialize engines with config from top-level ARCStrategyConfig
-        self._playbook_engine = PlaybookEngine(
-            config=self._config.playbook_config
-        )
+        self._playbook_engine = PlaybookEngine(config=self._config.playbook_config)
         self._sizing_engine = SizingEngine(
-            config=self._config.sizing_config or SizingEngineConfig(
+            config=self._config.sizing_config
+            or SizingEngineConfig(
                 target_vol_4h=self._config.target_vol_4h,
                 target_vol_1d=self._config.target_vol_1d,
             )
         )
         self._exit_engine = ExitEngine(
-            config=self._config.exit_config or ExitEngineConfig(
-                min_bars_before_trail=self._config.min_bars_before_trail
-            )
+            config=self._config.exit_config
+            or ExitEngineConfig(min_bars_before_trail=self._config.min_bars_before_trail)
         )
 
         # Phase 2: multi-timeframe coordination
@@ -213,9 +211,7 @@ class ARCStrategyEngine:
             f"strategy.regime.{self._config.portfolio}",
             {"symbol": target.symbol, "regime": target.regime},
         )
-        self._bus.publish(
-            f"intent.target_position.{self._config.portfolio}.{target.symbol}", target
-        )
+        self._bus.publish(f"intent.target_position.{self._config.portfolio}.{target.symbol}", target)
         self._bus.publish(f"intent.reason.{self._config.portfolio}", reason)
 
     def _update_directional_bias(self, state: MarketState) -> None:
@@ -251,11 +247,7 @@ class ARCStrategyEngine:
             # Track peak unrealized PnL for profit_lock_exit
             last_price = float(pack.values.get("last_price", 0.0) or 0.0)
             if last_price > 0 and position.entry_price > 0:
-                unrealized_pnl_pct = (
-                    (last_price - position.entry_price)
-                    / position.entry_price
-                    * position.direction
-                )
+                unrealized_pnl_pct = (last_price - position.entry_price) / position.entry_price * position.direction
                 if unrealized_pnl_pct > position.peak_pnl_pct:
                     position.peak_pnl_pct = unrealized_pnl_pct
 
@@ -317,7 +309,9 @@ class ARCStrategyEngine:
                 )
             else:
                 sizing = self._sizing_engine.compute(
-                    state=state, playbook=playbook, equity=self._equity,
+                    state=state,
+                    playbook=playbook,
+                    equity=self._equity,
                     indicators={"realized_vol": vals.realized_vol, "funding_oi_z": vals.funding_oi_z},
                 )
                 target_leverage = sizing.final_leverage
@@ -339,9 +333,7 @@ class ARCStrategyEngine:
 
             reason_codes = [f"REGIME_{regime}", *playbook.reason_codes]
             if pack.timeframe == self._config.execution_timeframe:
-                bias, bias_reason = self._active_directional_bias(
-                    pack.symbol, pack.cutoff_time_ns
-                )
+                bias, bias_reason = self._active_directional_bias(pack.symbol, pack.cutoff_time_ns)
                 if bias_reason:
                     reason_codes.append(bias_reason)
                 if bias is not None and bias.direction != 0.0:
@@ -400,9 +392,7 @@ class ARCStrategyEngine:
             reason_codes=reason_codes,
         )
 
-    def _active_directional_bias(
-        self, symbol: str, cutoff_time_ns: int
-    ) -> tuple[DirectionalBias | None, str]:
+    def _active_directional_bias(self, symbol: str, cutoff_time_ns: int) -> tuple[DirectionalBias | None, str]:
         """Return the usable 1d bias for a 4h decision, or the reason it is unusable."""
         bias = self._directional_bias.get(symbol)
         if bias is None:
@@ -412,11 +402,7 @@ class ARCStrategyEngine:
         if cutoff_time_ns < bias.cutoff_time_ns:
             return None, "BIAS_FUTURE"
 
-        max_age_ns = (
-            self._config.bias_max_age_4h_bars
-            * Timeframe.TF_4H.seconds
-            * 1_000_000_000
-        )
+        max_age_ns = self._config.bias_max_age_4h_bars * Timeframe.TF_4H.seconds * 1_000_000_000
         if (cutoff_time_ns - bias.cutoff_time_ns) > max_age_ns:
             return None, "BIAS_STALE"
         return bias, ""
@@ -454,9 +440,7 @@ class ARCStrategyEngine:
         """Translate one exit decision into a reduce-only target position."""
         remaining_qty = 0.0
         if not exit_decision.is_immediate():
-            remaining_qty = position.current_qty * max(
-                0.0, 1.0 - exit_decision.target_reduction_pct
-            )
+            remaining_qty = position.current_qty * max(0.0, 1.0 - exit_decision.target_reduction_pct)
         signed_qty = position.direction * remaining_qty
         if abs(signed_qty) < self._config.min_trade_qty:
             signed_qty = 0.0
@@ -510,11 +494,7 @@ class ARCStrategyEngine:
             price=max(1e-9, float(values.get("last_price", 0.0) or 0.0)),
             atr=float(values.get("atr", 0.0) or 0.0),
             # Support both field names for compatibility
-            structure_state=str(
-                values.get("structure_state")
-                or values.get("swing_structure")
-                or "NEUTRAL"
-            ),
+            structure_state=str(values.get("structure_state") or values.get("swing_structure") or "NEUTRAL"),
             momentum_roc_z=float(values.get("momentum_roc_z", 0.0) or 0.0),
         )
 
@@ -535,10 +515,7 @@ class ARCStrategyEngine:
         zen_pulse: float,
     ) -> tuple[str, float]:
         """Classify bar-close context into TREND, RANGE, or STRESS."""
-        degraded = any(
-            flag in {"BOOK_STALE", "VENUE_DOWN", "DATA_STALE", "DATA_FUTURE"}
-            for flag in quality_flags
-        )
+        degraded = any(flag in {"BOOK_STALE", "VENUE_DOWN", "DATA_STALE", "DATA_FUTURE"} for flag in quality_flags)
         if degraded or realized_vol > 2.8:
             return "STRESS", 0.9
 
@@ -551,9 +528,7 @@ class ARCStrategyEngine:
             trend_gate = trend_strength > 0.22 and zen_pulse >= 58.0
 
         if trend_gate:
-            confidence = min(
-                1.0, 0.45 + (trend_strength * 0.4) + (pulse_strength * 0.15)
-            )
+            confidence = min(1.0, 0.45 + (trend_strength * 0.4) + (pulse_strength * 0.15))
             return "TREND", confidence
 
         confidence = max(0.35, 1.0 - min(0.6, abs(cvd_slope) * 5.0))
@@ -619,9 +594,7 @@ class ARCStrategyEngine:
 
         # Apply 1D bias with quality/staleness checks (same as legacy path)
         if pack.timeframe == self._config.execution_timeframe:
-            bias, bias_reason = self._active_directional_bias(
-                pack.symbol, pack.cutoff_time_ns
-            )
+            bias, bias_reason = self._active_directional_bias(pack.symbol, pack.cutoff_time_ns)
             if bias_reason:
                 reason_codes.append(bias_reason)
             if bias is not None and bias.direction != 0.0:
@@ -634,9 +607,7 @@ class ARCStrategyEngine:
             # Inject signal direction into state for trend_filter
             state_dict["signal_direction"] = direction
             bias = self._directional_bias.get(pack.symbol)
-            bias_usable, _ = self._active_directional_bias(
-                pack.symbol, pack.cutoff_time_ns
-            )
+            bias_usable, _ = self._active_directional_bias(pack.symbol, pack.cutoff_time_ns)
             state_dict["bias_direction"] = bias_usable.direction if bias_usable else 0.0
 
             verdict = compose_filters(self._plugins.filters, ind_dict, state_dict)
@@ -711,10 +682,9 @@ class ARCStrategyEngine:
             "pyramid_count": position.pyramid_count,
             "peak_pnl_pct": position.peak_pnl_pct,
             "unrealized_pnl_pct": (
-                (price - position.entry_price)
-                / max(position.entry_price, 1e-9)
-                * position.direction
-                if position.entry_price > 0 else 0.0
+                (price - position.entry_price) / max(position.entry_price, 1e-9) * position.direction
+                if position.entry_price > 0
+                else 0.0
             ),
         }
 

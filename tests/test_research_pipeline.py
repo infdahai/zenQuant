@@ -47,9 +47,9 @@ class ResearchPipelineTests(unittest.TestCase):
             lines = artifact.dataset_jsonl_path.read_text(encoding="utf-8").strip().splitlines()
             self.assertEqual(len(lines), artifact.row_count)
             first_row = lines[0]
-            self.assertIn("\"future_return_1\":", first_row)
-            self.assertIn("\"playbook_id\":", first_row)
-            self.assertIn("\"regime\":", first_row)
+            self.assertIn('"future_return_1":', first_row)
+            self.assertIn('"playbook_id":', first_row)
+            self.assertIn('"regime":', first_row)
 
             report = artifact.report_path.read_text(encoding="utf-8")
             self.assertIn("Research Run", report)

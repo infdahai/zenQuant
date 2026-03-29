@@ -166,9 +166,7 @@ class DeribitOptionsIngestor:
             # Fall back to the median underlying price visible in the option
             # summaries when the dedicated index endpoint is unavailable.
             underlying_prices = [
-                float(item.get("underlying_price", 0.0) or 0.0)
-                for item in summaries
-                if isinstance(item, dict)
+                float(item.get("underlying_price", 0.0) or 0.0) for item in summaries if isinstance(item, dict)
             ]
             spot = next((price for price in underlying_prices if price > 0), 0.0)
         if spot <= 0:
@@ -270,13 +268,7 @@ def _pick_expiry(
     target_days: float,
 ) -> int:
     """Return the listed expiry closest to the requested horizon."""
-    expiries = sorted(
-        {
-            point.expiry_ms
-            for point in points
-            if point.expiry_ms > now_ms + _DAY_MS
-        }
-    )
+    expiries = sorted({point.expiry_ms for point in points if point.expiry_ms > now_ms + _DAY_MS})
     if not expiries:
         raise RuntimeError("Deribit returned no future option expiries")
     return min(expiries, key=lambda expiry_ms: abs(((expiry_ms - now_ms) / _DAY_MS) - target_days))
