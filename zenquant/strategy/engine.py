@@ -288,13 +288,13 @@ class ARCStrategyEngine:
 
             if self._plugins.sizers:
                 target_leverage, sizer_codes = self._plugin_sizing(pack, state, playbook)
-                reason_codes.extend(sizer_codes)
                 # Apply execution haircut based on data quality (parity with legacy path)
                 execution_haircut = SizingEngine._execution_haircut(state)
                 base_leverage = target_leverage
                 target_leverage *= execution_haircut
                 if execution_haircut < 1.0:
                     sizer_codes.append("SIZE_EXECUTION_HAIRCUT")
+                reason_codes.extend(sizer_codes)
                 # Publish a sizing decision for audit compatibility
                 sizing = SizingDecision(
                     symbol=state.symbol,

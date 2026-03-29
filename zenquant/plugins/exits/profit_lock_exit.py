@@ -51,7 +51,7 @@ def compute(
         return ExitResult(
             should_exit=True,
             exit_type="PROFIT_LOCK",
-            urgency="GRADUAL",
+            urgency="IMMEDIATE",
             reduction_pct=1.0,
             reason=(
                 f"PnL {unrealized_pnl_pct:.1%} fell below locked floor {locked_floor:.1%} (peak {peak_pnl_pct:.1%})"
