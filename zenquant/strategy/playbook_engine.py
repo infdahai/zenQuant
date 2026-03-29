@@ -11,10 +11,10 @@ from zenquant.domain import MarketState, PlaybookSelection
 class PlaybookEngineConfig:
     """Static thresholds and defaults for state-to-playbook routing."""
 
-    preserve_capital_transition_risk: float = 0.65
+    preserve_capital_transition_risk: float = 0.60
     preserve_capital_min_overall_confidence: float = 0.35
     trade_directional_confidence_floor: float = 0.5
-    bull_max_leverage: float = 3.0
+    bull_max_leverage: float = 2.50
     bear_max_leverage: float = 2.25
     range_max_leverage: float = 1.5
     preserve_capital_max_leverage: float = 0.35
