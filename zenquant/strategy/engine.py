@@ -243,6 +243,16 @@ class ARCStrategyEngine:
         # ── Exit check ──
         if position is not None:
             position.bars_held += 1
+            # Track peak unrealized PnL for profit_lock_exit
+            last_price = float(pack.values.get("last_price", 0.0) or 0.0)
+            if last_price > 0 and position.entry_price > 0:
+                unrealized_pnl_pct = (
+                    (last_price - position.entry_price)
+                    / position.entry_price
+                    * position.direction
+                )
+                if unrealized_pnl_pct > position.peak_pnl_pct:
+                    position.peak_pnl_pct = unrealized_pnl_pct
 
             if self._plugins and self._plugins.exits:
                 exit_decision = self._plugin_exit(pack, state, playbook, position)
@@ -642,6 +652,13 @@ class ARCStrategyEngine:
             "bars_held": position.bars_held,
             "trailing_stop": position.trailing_stop,
             "pyramid_count": position.pyramid_count,
+            "peak_pnl_pct": position.peak_pnl_pct,
+            "unrealized_pnl_pct": (
+                (float(ind_dict.get("last_price", 0.0) or 0.0) - position.entry_price)
+                / max(position.entry_price, 1e-9)
+                * position.direction
+                if position.entry_price > 0 else 0.0
+            ),
         }
 
         result = compose_exits(self._plugins.exits, ind_dict, state_dict, pos_dict)
