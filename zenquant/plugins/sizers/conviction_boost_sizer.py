@@ -46,7 +46,8 @@ def compute(
     volatility = state.get("volatility_state", "NORMAL")
     positioning = state.get("positioning_state", "HEALTHY")
     quality = state.get("quality_state", "TRADABLE")
-    transition_risk = float(state.get("transition_risk", 1.0) or 1.0)
+    transition_risk_raw = state.get("transition_risk")
+    transition_risk = float(transition_risk_raw) if transition_risk_raw is not None else 1.0
     overall_confidence = float(state.get("overall_confidence", 0.0) or 0.0)
 
     conf_threshold = config.get("confidence_threshold", 0.75)
