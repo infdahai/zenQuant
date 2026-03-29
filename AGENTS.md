@@ -483,6 +483,54 @@ Every important strategy or risk change should leave behind:
 
 ---
 
+## Plugin Architecture Policy
+
+Strategy logic is split into two paths:
+
+1. **Legacy path** (`plugin_registry=None`): Hardcoded engines (PlaybookEngine, SizingEngine, ExitEngine). Still the default for production. Do not modify without explicit approval.
+
+2. **Plugin path** (`plugin_registry` provided): Composable plugins loaded from TOML profiles. Used for research, AutoResearch, and experimentation.
+
+When working with plugins:
+
+- Each plugin is one `.py` file with module-level `meta` and `compute()`
+- `compute()` must be a pure function: same inputs always produce same outputs
+- Plugins receive `dict[str, Any]`, never domain types directly
+- Plugin changes must not break the legacy path (119 existing tests must pass)
+- New plugins go in `zenquant/plugins/{signals,filters,sizers,exits}/`
+- Plugin parameters go in `config/profiles/*.toml`, not in Python code
+- The four composition rules are fixed: weighted sum (signals), AND chain (filters), multiplicative (sizers), priority-ordered (exits)
+
+---
+
+## Validation Philosophy
+
+Historical backtest alone cannot prove a strategy works. It can only prove it doesn't obviously fail.
+
+The validation stack has three layers:
+
+1. **Historical validation** (fast, necessary, insufficient): Walk-forward OOS testing. Catches obvious failures. Run on every parameter change.
+
+2. **Robustness testing** (medium, critical): Domain randomization (price noise, bar dropout). Catches strategies that overfit the exact historical path. Must pass on 4/5 random seeds.
+
+3. **Live incremental validation** (slow, authoritative): Real OOS data from paper-live operation. The only proof that matters. Requires time and server deployment.
+
+Do not promote a strategy change that only passes Layer 1. Always run Layer 2 before deploying to live. Layer 3 requires the product owner's judgment.
+
+---
+
+## Infrastructure Guidelines
+
+The backtest runs in ~3 seconds per 539-day replay. This speed enables high-throughput experimentation. Protect it:
+
+- Do not add heavy computations to the indicator engine without benchmarking
+- Do not add I/O (disk, network) to the backtest hot path
+- Walk-forward tuning uses `ProcessPoolExecutor` — each backtest must be fully independent with no shared mutable state
+- Funding cost accumulation is integrated but requires funding data download
+- Domain randomization uses deterministic seeds — always specify a seed for reproducibility
+
+---
+
 ## Final Standard
 
 This repository is meant to become a real trading product.
