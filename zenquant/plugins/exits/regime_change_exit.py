@@ -46,7 +46,7 @@ def compute(
             urgency="IMMEDIATE",
             reduction_pct=1.0,
             reason="Data quality unsafe; flatten position",
-            reason_codes=["EXIT_REGIME_CHANGE", "QUALITY_UNSAFE"],
+            reason_codes=("EXIT_REGIME_CHANGE", "QUALITY_UNSAFE"),
         )
 
     if vol_state == "DISTORTED":
@@ -56,7 +56,7 @@ def compute(
             urgency="GRADUAL",
             reduction_pct=0.5,
             reason="Volatility regime distorted; de-risk",
-            reason_codes=["EXIT_REGIME_CHANGE", "VOLATILITY_STRESS"],
+            reason_codes=("EXIT_REGIME_CHANGE", "VOLATILITY_STRESS"),
         )
 
     if playbook_id != "CAPITAL_PRESERVATION" and transition_risk >= threshold:
@@ -66,7 +66,7 @@ def compute(
             urgency="GRADUAL",
             reduction_pct=0.5,
             reason="Elevated transition risk; de-risk",
-            reason_codes=["EXIT_REGIME_CHANGE", "TRANSITION_RISK"],
+            reason_codes=("EXIT_REGIME_CHANGE", "TRANSITION_RISK"),
         )
 
     return ExitResult(should_exit=False)

@@ -44,14 +44,14 @@ def compute(
         return SignalResult(
             value=1.0,
             confidence=confidence,
-            reason_codes=["STRUCTURE_UPTREND", "MOMENTUM_BULL"],
+            reason_codes=("STRUCTURE_UPTREND", "MOMENTUM_BULL"),
         )
     if structure == "DOWNTREND" and roc_z < -threshold:
         confidence = min(1.0, 0.6 + abs(roc_z) / 8.0)
         return SignalResult(
             value=-1.0,
             confidence=confidence,
-            reason_codes=["STRUCTURE_DOWNTREND", "MOMENTUM_BEAR"],
+            reason_codes=("STRUCTURE_DOWNTREND", "MOMENTUM_BEAR"),
         )
 
     return SignalResult(value=0.0, confidence=0.3)

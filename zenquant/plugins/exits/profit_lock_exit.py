@@ -57,6 +57,6 @@ def compute(
                 f"PnL {unrealized_pnl_pct:.1%} fell below "
                 f"locked floor {locked_floor:.1%} (peak {peak_pnl_pct:.1%})"
             ),
-            reason_codes=["EXIT_PROFIT_LOCK"],
+            reason_codes=("EXIT_PROFIT_LOCK",),
         )
     return ExitResult(should_exit=False)

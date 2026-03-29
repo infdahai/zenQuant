@@ -60,14 +60,14 @@ def compute(
             return SignalResult(
                 value=1.0,
                 confidence=confidence,
-                reason_codes=["MULTI_MOM_BULL", "STRUCTURE_UPTREND"],
+                reason_codes=("MULTI_MOM_BULL", "STRUCTURE_UPTREND"),
             )
         if structure == "DOWNTREND" and roc_z < -threshold:
             confidence = min(1.0, 0.6 + abs(roc_z) / 8.0)
             return SignalResult(
                 value=-1.0,
                 confidence=confidence,
-                reason_codes=["MULTI_MOM_BEAR", "STRUCTURE_DOWNTREND"],
+                reason_codes=("MULTI_MOM_BEAR", "STRUCTURE_DOWNTREND"),
             )
         # Momentum only (no structure confirmation)
         if abs(roc_z) > threshold * 2:
@@ -75,7 +75,7 @@ def compute(
             return SignalResult(
                 value=direction * 0.6,
                 confidence=0.4,
-                reason_codes=["MULTI_MOM_WEAK"],
+                reason_codes=("MULTI_MOM_WEAK",),
             )
 
     return SignalResult(value=0.0, confidence=0.2)

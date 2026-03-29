@@ -65,6 +65,6 @@ def compute(
         boost = 1.0 + min(boost_max - 1.0, excess * 1.2)
         return SizerResult(
             factor=round(boost, 4),
-            reason_codes=["CONVICTION_BOOST"],
+            reason_codes=("CONVICTION_BOOST",),
         )
-    return SizerResult(factor=1.0, reason_codes=[])
+    return SizerResult(factor=1.0, reason_codes=())

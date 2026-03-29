@@ -93,7 +93,9 @@ SELECT
     quality_state
 FROM sizing_decisions s
 JOIN exit_decisions e ON s.cutoff_time_ns = e.cutoff_time_ns
+    AND s.symbol = e.symbol AND s.timeframe = e.timeframe
 JOIN market_states m ON s.cutoff_time_ns = m.cutoff_time_ns
+    AND s.symbol = m.symbol AND s.timeframe = m.timeframe
 WHERE s.cutoff_time_ns > EXTRACT(EPOCH FROM NOW() - INTERVAL '24 hours') * 1e9
 ORDER BY s.cutoff_time_ns DESC
 LIMIT 10;

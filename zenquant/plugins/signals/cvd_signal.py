@@ -33,12 +33,12 @@ def compute(
         return SignalResult(
             value=1.0,
             confidence=0.5,
-            reason_codes=["CVD_POSITIVE"],
+            reason_codes=("CVD_POSITIVE",),
         )
     if cvd_slope < 0:
         return SignalResult(
             value=-1.0,
             confidence=0.5,
-            reason_codes=["CVD_NEGATIVE"],
+            reason_codes=("CVD_NEGATIVE",),
         )
     return SignalResult(value=0.0, confidence=0.2)

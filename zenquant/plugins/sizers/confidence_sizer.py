@@ -30,5 +30,5 @@ def compute(
 
     return SizerResult(
         factor=round(factor, 6),
-        reason_codes=["SIZE_CONFIDENCE_BLEND"],
+        reason_codes=("SIZE_CONFIDENCE_BLEND",),
     )

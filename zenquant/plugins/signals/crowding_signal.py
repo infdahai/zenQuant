@@ -32,6 +32,11 @@ def compute(
     state: dict[str, Any],
     config: dict[str, Any],
 ) -> SignalResult:
+    # Suppress in STRESS regime — consistent with legacy path
+    regime = state.get("regime", "RANGE")
+    if regime == "STRESS":
+        return SignalResult(value=0.0, confidence=0.0)
+
     funding_oi_z = float(indicators.get("funding_oi_z", 0.0) or 0.0)
     threshold = config.get("extreme_threshold", 1.8)
 
@@ -46,5 +51,5 @@ def compute(
     return SignalResult(
         value=direction,
         confidence=confidence,
-        reason_codes=[f"CROWDING_{'LONG' if funding_oi_z > 0 else 'SHORT'}"],
+        reason_codes=(f"CROWDING_{'LONG' if funding_oi_z > 0 else 'SHORT'}",),
     )
