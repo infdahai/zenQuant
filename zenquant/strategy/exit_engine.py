@@ -14,7 +14,7 @@ class ExitEngineConfig:
     time_decay_enabled: bool = True
     regime_change_enabled: bool = True
     min_bars_before_trail: int = 1
-    transition_risk_exit_threshold: float = 0.85
+    transition_risk_exit_threshold: float = 0.80
 
 
 class ExitEngine:
