@@ -17,6 +17,7 @@ class Config:
     target_vol_4h: float = 0.60
     target_vol_1d: float = 0.50
     min_realized_vol_ratio: float = 0.25
+    max_factor: float = 3.5  # hard safety cap on the output factor
 
 
 meta = PluginMeta(
@@ -45,7 +46,15 @@ def compute(
     realized_floor = max(realized_vol, target_vol * min_ratio)
     factor = target_vol / max(realized_floor, 1e-9)
 
+    max_factor = config.get("max_factor", 3.5)
+    capped = factor > max_factor
+    factor = min(factor, max_factor)
+
+    reason_codes = ["SIZE_BASE_VOL_TARGET"]
+    if capped:
+        reason_codes.append("SIZE_FACTOR_CAPPED")
+
     return SizerResult(
         factor=round(factor, 6),
-        reason_codes=["SIZE_BASE_VOL_TARGET"],
+        reason_codes=tuple(reason_codes),
     )

@@ -36,7 +36,7 @@ import os
 import time
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from dataclasses import asdict, dataclass
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from itertools import product
 from pathlib import Path
 from typing import Any
@@ -109,7 +109,7 @@ class TuningResult:
 def quick_tuning() -> WalkForwardConfig:
     """Predefined quick tuning (2 splits, 3 params, ~10 minutes)."""
     # Use last 6 months, split into 2 periods
-    now = datetime.now()
+    now = datetime.now(UTC)
     end = now
     start = now - timedelta(days=180)
     mid = start + timedelta(days=90)
@@ -133,7 +133,7 @@ def quick_tuning() -> WalkForwardConfig:
 def full_tuning() -> WalkForwardConfig:
     """Predefined full tuning (4 splits, 27 params, ~60 minutes)."""
     # Use last 12 months, split into 4 periods (3 months each)
-    now = datetime.now()
+    now = datetime.now(UTC)
     end = now
     start = now - timedelta(days=365)
 
@@ -287,8 +287,8 @@ def run_walk_forward_tuning(config: WalkForwardConfig) -> TuningResult:
     most_common_key = max(param_counts, key=param_counts.get)  # type: ignore
     recommended_params = json.loads(most_common_key)
 
-    # Promotion decision
-    baseline_sharpe = 0.0  # TODO: Load from baseline run
+    # Promotion decision: compute baseline Sharpe from default params on first split
+    baseline_sharpe = _compute_baseline_sharpe(config)
     promotion_decision, promotion_reason = _check_promotion_criteria(
         avg_val_sharpe=avg_val_sharpe,
         avg_val_drawdown=avg_val_drawdown,
@@ -305,6 +305,31 @@ def run_walk_forward_tuning(config: WalkForwardConfig) -> TuningResult:
         promotion_decision=promotion_decision,
         promotion_reason=promotion_reason,
     )
+
+
+def _compute_baseline_sharpe(config: WalkForwardConfig) -> float:
+    """Run a single backtest with default parameters across the full data range.
+
+    Returns the baseline Sharpe so tuned parameters are compared against a
+    meaningful reference, not zero.
+    """
+    if not config.splits:
+        return 0.0
+    # Use the validation period of the first split as the baseline window
+    first_split = config.splits[0]
+    baseline_params = {
+        "preserve_capital_risk": 0.60,
+        "exit_transition_risk": 0.80,
+        "bull_leverage": 2.50,
+    }
+    try:
+        _, sharpe = _run_single_backtest(
+            (baseline_params, str(config.data_root), config.symbol,
+             first_split[2], first_split[3])
+        )
+        return sharpe
+    except Exception:
+        return 0.0
 
 
 def _build_param_grid(config: WalkForwardConfig) -> list[dict[str, Any]]:
@@ -363,8 +388,8 @@ def _check_promotion_criteria(
 
 
 def _format_timestamp(ts_ns: int) -> str:
-    """Format nanosecond timestamp as readable date."""
-    return datetime.fromtimestamp(ts_ns / 1e9).strftime("%Y-%m-%d")
+    """Format nanosecond timestamp as readable UTC date."""
+    return datetime.fromtimestamp(ts_ns / 1e9, tz=UTC).strftime("%Y-%m-%d")
 
 
 def save_results(result: TuningResult, output_path: Path) -> None:
@@ -428,7 +453,7 @@ def main() -> None:
         print("=" * 80)
         print(f"Average validation Sharpe: {result.avg_val_sharpe:.2f}")
         print(f"Average validation drawdown: {result.avg_val_drawdown:.2%}")
-        print(f"\nRecommended parameters:")
+        print("\nRecommended parameters:")
         for param, value in result.recommended_params.items():
             print(f"  {param}: {value:.2f}")
         print(f"\nPromotion decision: {result.promotion_decision}")
