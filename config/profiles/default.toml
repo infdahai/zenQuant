@@ -1,0 +1,99 @@
+# Default strategy profile — balanced regime-aware trading.
+#
+# This profile configures the plugin-based strategy path to approximate
+# the behavior of the legacy hardcoded engines.  Switch profiles by
+# pointing ARCStrategyEngine at a different TOML file.
+
+[profile]
+name = "default"
+version = "1.0.0"
+description = "Balanced regime-aware strategy"
+
+# ─── Signal Plugins ─────────────────────────────────────────
+# Composition: weighted sum → direction in [-1, 1]
+
+[signals.momentum_signal]
+enabled = true
+weight = 0.40
+momentum_threshold = 0.3
+
+[signals.cvd_signal]
+enabled = true
+weight = 0.30
+
+[signals.liquidity_signal]
+enabled = true
+weight = 0.20
+cvd_calm_threshold = 0.03
+ob_extreme_threshold = 1.2
+
+[signals.crowding_signal]
+enabled = true
+weight = 0.10
+extreme_threshold = 1.8
+
+# ─── Filter Plugins ─────────────────────────────────────────
+# Composition: AND chain → all must pass
+
+[filters.quality_filter]
+enabled = true
+block_on_degraded = true
+block_on_unsafe = true
+
+[filters.trend_filter]
+enabled = true
+
+# ─── Sizer Plugins ──────────────────────────────────────────
+# Composition: multiplicative chain → final leverage factor
+
+[sizers.vol_target_sizer]
+enabled = true
+target_vol_4h = 0.60
+target_vol_1d = 0.50
+min_realized_vol_ratio = 0.25
+
+[sizers.confidence_sizer]
+enabled = true
+
+[sizers.crowding_discount_sizer]
+enabled = true
+positioning_discount_max = 0.65
+positioning_discount_floor = 0.35
+volatility_distorted_discount = 0.75
+volatility_high_discount = 0.90
+
+# ─── Exit Plugins ───────────────────────────────────────────
+# Composition: priority-ordered → first match wins
+
+[exits.invalidation_exit]
+enabled = true
+priority = 1
+
+[exits.trailing_stop_exit]
+enabled = true
+priority = 2
+atr_mult = 2.5
+min_bars_before_trail = 1
+
+[exits.time_decay_exit]
+enabled = true
+priority = 3
+
+[exits.regime_change_exit]
+enabled = true
+priority = 4
+transition_risk_threshold = 0.85
+
+# ─── Engine Overrides ───────────────────────────────────────
+
+[engine]
+portfolio = "arc"
+account_equity = 100_000
+max_leverage = 3.5
+execution_timeframe = "4h"
+
+[engine.playbook]
+preserve_capital_transition_risk = 0.60
+bull_max_leverage = 2.50
+bear_max_leverage = 2.25
+range_max_leverage = 1.50

@@ -21,6 +21,9 @@ from zenquant.domain import (
     Timeframe,
 )
 from zenquant.infra import EventBus
+from zenquant.plugins.orchestrator import compose_exits, compose_filters, compose_signals, compose_sizers
+from zenquant.plugins.registry import PluginRegistry
+
 from .exit_engine import ExitEngine, ExitEngineConfig
 from .playbook_engine import PlaybookEngine, PlaybookEngineConfig
 from .sizing_engine import SizingEngine, SizingEngineConfig
@@ -72,10 +75,14 @@ class ARCStrategyEngine:
     """
 
     def __init__(
-        self, bus: EventBus, config: ARCStrategyConfig | None = None
+        self,
+        bus: EventBus,
+        config: ARCStrategyConfig | None = None,
+        plugin_registry: PluginRegistry | None = None,
     ) -> None:
         self._bus = bus
         self._config = config or ARCStrategyConfig()
+        self._plugins = plugin_registry
         self._equity = self._config.account_equity
         self._latest_packs: dict[tuple[str, Timeframe], IndicatorPack] = {}
         self._market_states: dict[tuple[str, Timeframe], MarketState] = {}
@@ -232,69 +239,115 @@ class ARCStrategyEngine:
 
         pos_key = (pack.symbol, pack.timeframe)
         position = self._positions.get(pos_key)
+
+        # ── Exit check ──
         if position is not None:
             position.bars_held += 1
-            exit_decision = self._exit_engine.check(
-                position,
-                state,
-                playbook,
-                indicators={"price": vals.price, "atr": vals.atr},
-            )
-            self._publish_exit(exit_decision)
-            if exit_decision.should_exit():
-                return self._build_exit_target(
-                    pack=pack,
-                    position=position,
-                    state=state,
-                    exit_decision=exit_decision,
-                    price=vals.price,
+
+            if self._plugins and self._plugins.exits:
+                exit_decision = self._plugin_exit(pack, state, playbook, position)
+            else:
+                exit_decision = self._exit_engine.check(
+                    position,
+                    state,
+                    playbook,
+                    indicators={"price": vals.price, "atr": vals.atr},
                 )
 
-        # Compute base direction from indicators
-        direction = self._direction(
-            regime=regime,
-            cvd_slope=vals.cvd_slope,
-            ob_liq_z=vals.ob_liq_z,
-            structure_state=vals.structure_state,
-            momentum_roc_z=vals.momentum_roc_z,
-        )
+            if exit_decision is not None:
+                self._publish_exit(exit_decision)
+                if exit_decision.should_exit():
+                    return self._build_exit_target(
+                        pack=pack,
+                        position=position,
+                        state=state,
+                        exit_decision=exit_decision,
+                        price=vals.price,
+                    )
+            else:
+                # Plugin path returned None (no exit) — publish no-op for audit
+                no_exit = self._exit_engine._no_exit(position, cutoff_time_ns=state.cutoff_time_ns)
+                self._publish_exit(no_exit)
 
-        # Phase 2: Multi-timeframe coordination for 4h
-        reason_codes = [f"REGIME_{regime}", *playbook.reason_codes]
-        if pack.timeframe == self._config.execution_timeframe:
-            bias, bias_reason = self._active_directional_bias(
-                pack.symbol, pack.cutoff_time_ns
-            )
-            if bias_reason:
-                reason_codes.append(bias_reason)
-            if bias is not None and bias.direction != 0.0:
-                # Block 4h direction if it conflicts with 1d bias
-                if direction != 0.0 and direction * bias.direction < 0:
-                    # Opposite directions - block
-                    direction = 0.0
-                    reason_codes.append("BIAS_DIRECTION_BLOCK")
+        # ── Direction + Sizing: plugin path vs legacy path ──
+        if self._plugins and self._plugins.signals:
+            # Plugin path
+            direction, plugin_reason_codes = self._plugin_direction(pack, state, playbook)
+            reason_codes = [f"REGIME_{regime}", *playbook.reason_codes, *plugin_reason_codes]
 
-        if playbook.is_reduce_only() and direction != 0.0:
-            if direction != 0.0:
+            if playbook.is_reduce_only() and direction != 0.0:
                 reason_codes.append("PLAYBOOK_DIRECTION_BLOCK")
-            direction = 0.0
+                direction = 0.0
 
-        sizing = self._sizing_engine.compute(
-            state=state,
-            playbook=playbook,
-            equity=self._equity,
-            indicators={
-                "realized_vol": vals.realized_vol,
-                "funding_oi_z": vals.funding_oi_z,
-            },
-        )
-        self._publish_sizing(sizing)
+            if self._plugins.sizers:
+                target_leverage, sizer_codes = self._plugin_sizing(pack, state, playbook)
+                reason_codes.extend(sizer_codes)
+                # Publish a sizing decision for audit compatibility
+                sizing = SizingDecision(
+                    symbol=state.symbol,
+                    timeframe=state.timeframe,
+                    cutoff_time_ns=state.cutoff_time_ns,
+                    base_size=target_leverage,
+                    confidence_multiplier=1.0,
+                    stress_discount=1.0,
+                    execution_haircut=1.0,
+                    final_leverage=target_leverage,
+                    reason_codes=sizer_codes,
+                )
+            else:
+                sizing = self._sizing_engine.compute(
+                    state=state, playbook=playbook, equity=self._equity,
+                    indicators={"realized_vol": vals.realized_vol, "funding_oi_z": vals.funding_oi_z},
+                )
+                target_leverage = sizing.final_leverage
+            self._publish_sizing(sizing)
 
-        target_leverage = sizing.final_leverage
-        reduce_only = playbook.is_reduce_only()
-        if regime == "STRESS":
-            target_leverage = min(target_leverage, playbook.max_leverage)
-            reduce_only = True
+            reduce_only = playbook.is_reduce_only()
+            if regime == "STRESS":
+                target_leverage = min(target_leverage, playbook.max_leverage)
+                reduce_only = True
+        else:
+            # Legacy path — unchanged
+            direction = self._direction(
+                regime=regime,
+                cvd_slope=vals.cvd_slope,
+                ob_liq_z=vals.ob_liq_z,
+                structure_state=vals.structure_state,
+                momentum_roc_z=vals.momentum_roc_z,
+            )
+
+            reason_codes = [f"REGIME_{regime}", *playbook.reason_codes]
+            if pack.timeframe == self._config.execution_timeframe:
+                bias, bias_reason = self._active_directional_bias(
+                    pack.symbol, pack.cutoff_time_ns
+                )
+                if bias_reason:
+                    reason_codes.append(bias_reason)
+                if bias is not None and bias.direction != 0.0:
+                    if direction != 0.0 and direction * bias.direction < 0:
+                        direction = 0.0
+                        reason_codes.append("BIAS_DIRECTION_BLOCK")
+
+            if playbook.is_reduce_only() and direction != 0.0:
+                reason_codes.append("PLAYBOOK_DIRECTION_BLOCK")
+                direction = 0.0
+
+            sizing = self._sizing_engine.compute(
+                state=state,
+                playbook=playbook,
+                equity=self._equity,
+                indicators={
+                    "realized_vol": vals.realized_vol,
+                    "funding_oi_z": vals.funding_oi_z,
+                },
+            )
+            self._publish_sizing(sizing)
+
+            target_leverage = sizing.final_leverage
+            reduce_only = playbook.is_reduce_only()
+            if regime == "STRESS":
+                target_leverage = min(target_leverage, playbook.max_leverage)
+                reduce_only = True
 
         target_notional = self._equity * target_leverage * direction
         target_qty = target_notional / vals.price
@@ -511,6 +564,125 @@ class ARCStrategyEngine:
         if abs(cvd_slope) < 0.03 and abs(ob_liq_z) > 1.2:
             return -1.0 if ob_liq_z > 0 else 1.0
         return 0.0
+
+    def _plugin_direction(
+        self,
+        pack: IndicatorPack,
+        state: MarketState,
+        playbook: PlaybookSelection,
+    ) -> tuple[float, list[str]]:
+        """Compute direction via plugin signal composition + filter chain."""
+        assert self._plugins is not None
+
+        ind_dict = dict(pack.values)
+        state_dict = self._state_dict(state, playbook)
+
+        # Compose signals → weighted direction
+        composed = compose_signals(
+            self._plugins.signals,
+            self._plugins.signal_weights,
+            ind_dict,
+            state_dict,
+        )
+        reason_codes = list(composed.reason_codes)
+
+        # Discretize to {-1, 0, 1} based on direction threshold
+        direction = 0.0
+        if composed.direction > 0.15:
+            direction = 1.0
+        elif composed.direction < -0.15:
+            direction = -1.0
+
+        # Apply filters
+        if direction != 0.0 and self._plugins.filters:
+            # Inject signal direction into state for trend_filter
+            state_dict["signal_direction"] = direction
+            bias = self._directional_bias.get(pack.symbol)
+            state_dict["bias_direction"] = bias.direction if bias else 0.0
+
+            verdict = compose_filters(self._plugins.filters, ind_dict, state_dict)
+            if not verdict.passed:
+                direction = 0.0
+                reason_codes.extend(verdict.reason_codes)
+
+        return direction, reason_codes
+
+    def _plugin_sizing(
+        self,
+        pack: IndicatorPack,
+        state: MarketState,
+        playbook: PlaybookSelection,
+    ) -> tuple[float, list[str]]:
+        """Compute leverage via plugin sizer chain."""
+        assert self._plugins is not None
+
+        ind_dict = dict(pack.values)
+        state_dict = self._state_dict(state, playbook)
+
+        composed = compose_sizers(self._plugins.sizers, ind_dict, state_dict)
+        leverage = min(playbook.max_leverage, composed.factor)
+        return leverage, list(composed.reason_codes)
+
+    def _plugin_exit(
+        self,
+        pack: IndicatorPack,
+        state: MarketState,
+        playbook: PlaybookSelection,
+        position: OpenPositionState,
+    ) -> ExitDecision | None:
+        """Check exits via plugin priority chain."""
+        assert self._plugins is not None
+
+        ind_dict = dict(pack.values)
+        state_dict = self._state_dict(state, playbook)
+        pos_dict = {
+            "direction": position.direction,
+            "entry_price": position.entry_price,
+            "current_qty": position.current_qty,
+            "bars_held": position.bars_held,
+            "trailing_stop": position.trailing_stop,
+            "pyramid_count": position.pyramid_count,
+        }
+
+        result = compose_exits(self._plugins.exits, ind_dict, state_dict, pos_dict)
+        if result is None:
+            return None
+
+        return ExitDecision(
+            symbol=position.symbol,
+            timeframe=position.timeframe,
+            cutoff_time_ns=state.cutoff_time_ns,
+            exit_type=result.exit_type,
+            exit_urgency=result.urgency,
+            target_reduction_pct=result.reduction_pct,
+            stop_price=result.stop_price,
+            reason_code=result.exit_type,
+            reason_detail=result.reason,
+            reason_codes=result.reason_codes,
+        )
+
+    def _state_dict(self, state: MarketState, playbook: PlaybookSelection) -> dict[str, Any]:
+        """Build the flat dict that plugins receive as ``state``."""
+        return {
+            "regime": state.regime,
+            "directional_state": state.directional_state,
+            "volatility_state": state.volatility_state,
+            "positioning_state": state.positioning_state,
+            "quality_state": state.quality_state,
+            "direction_signal": state.direction_signal,
+            "overall_confidence": state.overall_confidence(),
+            "directional_confidence": state.directional_confidence,
+            "volatility_confidence": state.volatility_confidence,
+            "positioning_confidence": state.positioning_confidence,
+            "quality_confidence": state.quality_confidence,
+            "transition_risk": state.transition_risk,
+            "playbook_id": playbook.playbook_id,
+            "playbook_confidence": playbook.playbook_confidence,
+            "max_leverage": playbook.max_leverage,
+            "time_decay_bars": playbook.time_decay_bars,
+            "timeframe": state.timeframe.value,
+            "equity": self._equity,
+        }
 
     @staticmethod
     def _build_reason(target: TargetPosition) -> IntentReason:
