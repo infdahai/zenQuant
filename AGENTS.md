@@ -483,6 +483,86 @@ Every important strategy or risk change should leave behind:
 
 ---
 
+## Commit Conventions
+
+Commits must be **single-purpose and fine-grained**. Each commit should do exactly one thing so that `git log --oneline` reads like a changelog and `git revert` is safe.
+
+### Commit message format
+
+```
+<type>(<scope>): <imperative summary>
+```
+
+Types:
+- `feat` — new feature or capability
+- `fix` — bug fix or review issue resolution
+- `test` — adding or updating tests only
+- `style` — formatting, import sorting (no logic change)
+- `refactor` — restructuring without behavior change
+- `docs` — documentation only
+- `ci` — CI/CD pipeline changes
+- `chore` — tooling, dependencies, configs
+
+### Granularity rules
+
+1. **Never mix features with fixes** in one commit
+2. **Never mix formatting with logic** — run `ruff format` in a separate commit
+3. **Never mix test additions with implementation** when possible
+4. **One conceptual change per commit** — if you need "and" to describe it, split it
+5. **New files get their own commit** when they represent a distinct module
+
+### Examples
+
+```
+feat(research): add AutoResearch campaign orchestrator
+fix(strategy): plugin trailing stop ratchet mechanism [C1]
+test: add PR #7 fix verification tests
+style: auto-fix import sorting via ruff
+ci: add GitHub Actions harness workflow
+docs: add harness architecture diagrams
+```
+
+### Why this matters
+
+- Agents reproduce patterns they see in `git log` — clean history teaches clean commits
+- `git bisect` needs atomic commits to locate regressions
+- Code review is tractable only on small, focused diffs
+- Revert safety: undoing one change must not drag unrelated work with it
+
+---
+
+## Harness Engineering
+
+This repository follows harness engineering principles (OpenAI, Feb 2026):
+
+1. **Repo = system of record** — if it's not in the repo, it doesn't exist for agents
+2. **AGENTS.md = map, not manual** — progressive disclosure, link to deeper docs
+3. **Mechanical enforcement** — documents rot, lint rules and gates don't
+4. **Agent readability** — frozen dataclasses, pure functions, explicit event bus
+5. **Entropy management** — `formula_hash`, golden output, parity tests prevent drift
+
+### Gate chain
+
+All changes must pass `zenquant-check` (or CI) before merge:
+
+| Gate | What | Why |
+|------|------|-----|
+| A | `ruff check` + `ruff format --check` | Style consistency |
+| B | Import boundary tests | Architectural decay prevention |
+| C | Golden output regression | Behavior change detection |
+| D | Plugin/legacy parity | Silent path divergence prevention |
+| E | Full pytest suite | Evidence, not vibes |
+
+### Key files
+
+- `zenquant/app/check.py` — unified gate runner (`zenquant-check`)
+- `tests/golden/backtest.json` — golden baseline (update explicitly when behavior changes)
+- `tests/test_import_boundaries.py` — Gate B rules
+- `tests/test_parity.py` — Gate D rules
+- `.github/workflows/harness.yml` — CI enforcement
+
+---
+
 ## Plugin Architecture Policy
 
 Strategy logic is split into two paths:
