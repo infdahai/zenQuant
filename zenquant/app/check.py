@@ -83,9 +83,18 @@ def gate_d() -> bool:
 
 
 def gate_e() -> bool:
-    """Gate E: full test suite."""
+    """Gate E: full test suite (excluding files already run by gates B/C/D)."""
     return _run(
-        [sys.executable, "-m", "pytest", "--tb=short", "-q"],
+        [
+            sys.executable,
+            "-m",
+            "pytest",
+            "--tb=short",
+            "-q",
+            "--ignore=tests/test_import_boundaries.py",
+            "--ignore=tests/test_golden_output.py",
+            "--ignore=tests/test_parity.py",
+        ],
         "E: full test suite",
     )
 

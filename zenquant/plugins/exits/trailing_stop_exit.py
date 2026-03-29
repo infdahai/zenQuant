@@ -19,6 +19,8 @@ from zenquant.plugins.protocols import ExitResult, PluginMeta
 
 @dataclass(frozen=True, slots=True)
 class Config:
+    # These fields are consumed by the engine's ratchet logic (not by this plugin),
+    # but kept here so TOML profile values merge without "unknown key" warnings.
     atr_mult: float = 2.5
     min_bars_before_trail: int = 1
 

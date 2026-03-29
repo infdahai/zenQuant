@@ -93,14 +93,14 @@ def perturb_events(
 
         result.append(row)
 
-    # Execution delay: shift close prices forward by N bars to simulate latency
+    # Execution delay: shift close prices forward to simulate latency
+    # (the strategy decides on bar N but executes at bar N+delay's close)
     if config.execution_delay_bars > 0 and len(result) > config.execution_delay_bars:
         delayed: list[dict[str, Any]] = []
         delay = config.execution_delay_bars
         for i, row in enumerate(result):
-            row = deepcopy(row)
+            row = dict(row)  # shallow copy — only "close" is overwritten (float)
             if i + delay < len(result):
-                # Decision uses delayed close price (as if we acted N bars late)
                 row["close"] = result[i + delay]["close"]
             delayed.append(row)
         result = delayed

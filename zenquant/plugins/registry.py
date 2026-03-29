@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import importlib.util
 import sys
+import warnings
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -114,8 +115,6 @@ def load_registry(
     if registry.signals:
         weights = [p.weight for p in registry.signals]
         if all(w <= 0 for w in weights):
-            import warnings
-
             warnings.warn(
                 "All signal weights are zero or negative — "
                 "compose_signals will produce no direction. "
@@ -124,8 +123,6 @@ def load_registry(
             )
         negative = [p.meta.name for p in registry.signals if p.weight < 0]
         if negative:
-            import warnings
-
             warnings.warn(
                 f"Negative signal weights detected: {negative}. This may cause unexpected direction inversion.",
                 stacklevel=2,

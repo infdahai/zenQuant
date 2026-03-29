@@ -28,7 +28,7 @@ import os
 import time
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from dataclasses import asdict, dataclass, field
-from datetime import datetime
+from datetime import UTC, datetime
 from itertools import product
 from pathlib import Path
 from typing import Any
@@ -195,7 +195,7 @@ class Campaign:
 
     def __init__(self, config: CampaignConfig | None = None) -> None:
         self._config = config or CampaignConfig()
-        ts = datetime.now().strftime("%Y%m%dT%H%M%SZ")
+        ts = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
         label = self._config.campaign_label or self._config.symbol.lower()
         self._campaign_id = f"{ts}_{label}"
         self._campaign_dir = self._config.output_dir / self._campaign_id
@@ -216,6 +216,8 @@ class Campaign:
             if sweep.top_n
             else "no results"
         )
+
+        self._tracker.flush()
 
         # Stage 2: Walk-forward validation (if splits defined)
         validations: list[ValidationResult] = []
@@ -238,6 +240,8 @@ class Campaign:
                         total_trade_count=int(m["trade_count"]),
                     )
                 )
+
+        self._tracker.flush()
 
         # Stage 3: Robustness
         robustness: dict[str, list[RobustnessResult]] = {}
@@ -315,19 +319,11 @@ class Campaign:
     # ── Stage 2: Walk-Forward ──────────────────────────────
 
     def _run_walk_forward(self, candidates: list[dict[str, Any]]) -> list[ValidationResult]:
-        validations: list[ValidationResult] = []
-
+        # Build all (candidate × split) args for parallel execution
+        all_args: list[tuple[dict[str, Any], tuple[Any, ...]]] = []
         for candidate in candidates:
             params = candidate["params"]
-            split_sharpes: list[float] = []
-            split_drawdowns: list[float] = []
-            split_pnls: list[float] = []
-            split_trade_counts: list[int] = []
-
             for split in self._config.wf_splits:
-                # Train: find best variant on training period
-                # (for WF we use the candidate params directly — the sweep already found them)
-                # Validate on OOS period
                 args = (
                     params,
                     str(self._config.data_root),
@@ -337,11 +333,22 @@ class Campaign:
                     split.val_end_ns,
                     None,
                 )
-                _, val_metrics = _run_backtest_worker(args)
-                split_sharpes.append(val_metrics["sharpe"])
-                split_drawdowns.append(val_metrics["max_drawdown"])
-                split_pnls.append(val_metrics["net_pnl"])
-                split_trade_counts.append(int(val_metrics["trade_count"]))
+                all_args.append((params, args))
+
+        # Run all backtests in parallel
+        worker_args = [a[1] for a in all_args]
+        results = self._run_parallel(worker_args)
+
+        # Reassemble per-candidate
+        n_splits = len(self._config.wf_splits)
+        validations: list[ValidationResult] = []
+        for i, candidate in enumerate(candidates):
+            params = candidate["params"]
+            batch = results[i * n_splits : (i + 1) * n_splits]
+            split_sharpes = [m["sharpe"] for _, m in batch]
+            split_drawdowns = [m["max_drawdown"] for _, m in batch]
+            split_pnls = [m["net_pnl"] for _, m in batch]
+            split_trade_counts = [int(m["trade_count"]) for _, m in batch]
 
             avg_sharpe = sum(split_sharpes) / len(split_sharpes) if split_sharpes else 0
             avg_dd = sum(split_drawdowns) / len(split_drawdowns) if split_drawdowns else 0
@@ -517,18 +524,6 @@ def _build_param_grid(space: SearchSpace) -> list[dict[str, Any]]:
     keys = list(all_params.keys())
     value_lists = [all_params[k] for k in keys]
     return [dict(zip(keys, combo)) for combo in product(*value_lists)]
-
-
-STRATEGY_PARAM_FIELDS = {
-    "preserve_capital_risk",
-    "exit_transition_risk",
-    "bull_leverage",
-    "bear_leverage",
-    "range_leverage",
-    "target_vol_4h",
-    "target_vol_1d",
-    "trailing_stop_atr_mult",
-}
 
 
 def _build_strategy_config(params: dict[str, Any]) -> ARCStrategyConfig:

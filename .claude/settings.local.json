@@ -44,7 +44,9 @@
       "WebFetch(domain:openai.com)",
       "WebFetch(domain:www.anthropic.com)",
       "WebFetch(domain:martinfowler.com)",
-      "WebFetch(domain:blog.langchain.com)"
+      "WebFetch(domain:blog.langchain.com)",
+      "Bash(git stash:*)",
+      "Bash(git:*)"
     ]
   }
 }
