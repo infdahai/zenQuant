@@ -8,8 +8,8 @@ from typing import Any
 
 from zenquant.domain import (
     DirectionalBias,
-    ExitDecision,
     ExecutionReport,
+    ExitDecision,
     IndicatorPack,
     IntentReason,
     MarketState,
@@ -42,6 +42,11 @@ class _IndicatorValues:
     atr: float
     structure_state: str
     momentum_roc_z: float
+
+
+# Minimum absolute signal strength to take a directional position.
+# Below this threshold, the plugin-composed signal is treated as neutral (0.0).
+DIRECTION_THRESHOLD: float = 0.15
 
 
 @dataclass(slots=True)
@@ -292,15 +297,21 @@ class ARCStrategyEngine:
             if self._plugins.sizers:
                 target_leverage, sizer_codes = self._plugin_sizing(pack, state, playbook)
                 reason_codes.extend(sizer_codes)
+                # Apply execution haircut based on data quality (parity with legacy path)
+                execution_haircut = SizingEngine._execution_haircut(state)
+                base_leverage = target_leverage
+                target_leverage *= execution_haircut
+                if execution_haircut < 1.0:
+                    sizer_codes.append("SIZE_EXECUTION_HAIRCUT")
                 # Publish a sizing decision for audit compatibility
                 sizing = SizingDecision(
                     symbol=state.symbol,
                     timeframe=state.timeframe,
                     cutoff_time_ns=state.cutoff_time_ns,
-                    base_size=target_leverage,
+                    base_size=base_leverage,
                     confidence_multiplier=1.0,
                     stress_discount=1.0,
-                    execution_haircut=1.0,
+                    execution_haircut=round(execution_haircut, 6),
                     final_leverage=target_leverage,
                     reason_codes=sizer_codes,
                 )
@@ -370,7 +381,10 @@ class ARCStrategyEngine:
             reason_codes.append("TREND_SHORT")
         else:
             reason_codes.append("NO_DIRECTION")
-        reason_codes.extend(sizing.reason_codes)
+        # Only append sizing reason_codes for the legacy path — the plugin path
+        # already added them at line 294 above to avoid duplication (H4 fix).
+        if not (self._plugins and self._plugins.signals):
+            reason_codes.extend(sizing.reason_codes)
 
         return TargetPosition(
             intent_id=self._intent_id(pack),
@@ -598,17 +612,32 @@ class ARCStrategyEngine:
 
         # Discretize to {-1, 0, 1} based on direction threshold
         direction = 0.0
-        if composed.direction > 0.15:
+        if composed.direction > DIRECTION_THRESHOLD:
             direction = 1.0
-        elif composed.direction < -0.15:
+        elif composed.direction < -DIRECTION_THRESHOLD:
             direction = -1.0
+
+        # Apply 1D bias with quality/staleness checks (same as legacy path)
+        if pack.timeframe == self._config.execution_timeframe:
+            bias, bias_reason = self._active_directional_bias(
+                pack.symbol, pack.cutoff_time_ns
+            )
+            if bias_reason:
+                reason_codes.append(bias_reason)
+            if bias is not None and bias.direction != 0.0:
+                if direction != 0.0 and direction * bias.direction < 0:
+                    direction = 0.0
+                    reason_codes.append("BIAS_DIRECTION_BLOCK")
 
         # Apply filters
         if direction != 0.0 and self._plugins.filters:
             # Inject signal direction into state for trend_filter
             state_dict["signal_direction"] = direction
             bias = self._directional_bias.get(pack.symbol)
-            state_dict["bias_direction"] = bias.direction if bias else 0.0
+            bias_usable, _ = self._active_directional_bias(
+                pack.symbol, pack.cutoff_time_ns
+            )
+            state_dict["bias_direction"] = bias_usable.direction if bias_usable else 0.0
 
             verdict = compose_filters(self._plugins.filters, ind_dict, state_dict)
             if not verdict.passed:
@@ -640,10 +669,38 @@ class ARCStrategyEngine:
         playbook: PlaybookSelection,
         position: OpenPositionState,
     ) -> ExitDecision | None:
-        """Check exits via plugin priority chain."""
+        """Check exits via plugin priority chain.
+
+        The trailing stop ratchet is handled here (not in the plugin) because
+        plugins are pure functions and cannot mutate position state.  This
+        mirrors the legacy ExitEngine._check_trailing_stop() ratchet logic.
+        """
         assert self._plugins is not None
 
         ind_dict = dict(pack.values)
+        price = float(ind_dict.get("last_price", 0.0) or 0.0)
+        atr = float(ind_dict.get("atr", 0.0) or 0.0)
+
+        # ── Trailing stop ratchet (engine responsibility) ──
+        if price > 0 and atr > 0 and position.bars_held >= self._config.min_bars_before_trail:
+            stop_distance = atr * playbook.trailing_stop_atr_mult
+            if position.trailing_stop == 0.0:
+                # Initialize
+                if position.direction > 0:
+                    position.trailing_stop = position.entry_price - stop_distance
+                else:
+                    position.trailing_stop = position.entry_price + stop_distance
+            else:
+                # Advance (ratchet)
+                if position.direction > 0:
+                    new_stop = price - stop_distance
+                    if new_stop > position.trailing_stop:
+                        position.trailing_stop = new_stop
+                else:
+                    new_stop = price + stop_distance
+                    if new_stop < position.trailing_stop:
+                        position.trailing_stop = new_stop
+
         state_dict = self._state_dict(state, playbook)
         pos_dict = {
             "direction": position.direction,
@@ -654,7 +711,7 @@ class ARCStrategyEngine:
             "pyramid_count": position.pyramid_count,
             "peak_pnl_pct": position.peak_pnl_pct,
             "unrealized_pnl_pct": (
-                (float(ind_dict.get("last_price", 0.0) or 0.0) - position.entry_price)
+                (price - position.entry_price)
                 / max(position.entry_price, 1e-9)
                 * position.direction
                 if position.entry_price > 0 else 0.0

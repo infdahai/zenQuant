@@ -1,7 +1,12 @@
 """ATR-based trailing stop exit.
 
 Extracted from ``ExitEngine._check_trailing_stop()``.
-Updates and checks the trailing stop each bar using the ATR multiple.
+Checks whether the trailing stop has been breached.
+
+Note: The trailing stop ratchet (initialization and advancement) is handled
+by the engine in ``_plugin_exit()`` before calling this plugin.  This keeps
+the plugin as a pure function — it only reads the current stop level and
+checks for breach.
 """
 
 from __future__ import annotations
@@ -20,9 +25,9 @@ class Config:
 
 meta = PluginMeta(
     name="trailing_stop_exit",
-    version="1.0.0",
+    version="1.1.0",
     plugin_type="exit",
-    description="ATR-based trailing stop with ratchet logic",
+    description="ATR-based trailing stop breach check",
     config_schema=Config,
 )
 
@@ -34,39 +39,32 @@ def compute(
     config: dict[str, Any],
 ) -> ExitResult:
     price = float(indicators.get("last_price", 0.0) or indicators.get("price", 0.0) or 0.0)
-    atr = float(indicators.get("atr", 0.0) or 0.0)
     direction = float(position.get("direction", 0.0))
-    bars_held = int(position.get("bars_held", 0))
     trailing_stop = float(position.get("trailing_stop", 0.0))
-    min_bars = config.get("min_bars_before_trail", 1)
 
-    if price <= 0 or atr <= 0 or bars_held < min_bars:
+    if price <= 0 or trailing_stop == 0.0:
         return ExitResult(should_exit=False)
 
-    atr_mult = config.get("atr_mult", 2.5)
-    stop_distance = atr * atr_mult
-
     # Check if trailing stop is breached
-    if trailing_stop != 0.0:
-        if direction > 0 and price <= trailing_stop:
-            return ExitResult(
-                should_exit=True,
-                exit_type="TRAILING",
-                urgency="IMMEDIATE",
-                reduction_pct=1.0,
-                stop_price=trailing_stop,
-                reason=f"Price {price:.2f} breached trailing stop {trailing_stop:.2f}",
-                reason_codes=["EXIT_TRAILING_STOP"],
-            )
-        if direction < 0 and price >= trailing_stop:
-            return ExitResult(
-                should_exit=True,
-                exit_type="TRAILING",
-                urgency="IMMEDIATE",
-                reduction_pct=1.0,
-                stop_price=trailing_stop,
-                reason=f"Price {price:.2f} breached trailing stop {trailing_stop:.2f}",
-                reason_codes=["EXIT_TRAILING_STOP"],
-            )
+    if direction > 0 and price <= trailing_stop:
+        return ExitResult(
+            should_exit=True,
+            exit_type="TRAILING",
+            urgency="IMMEDIATE",
+            reduction_pct=1.0,
+            stop_price=trailing_stop,
+            reason=f"Price {price:.2f} breached trailing stop {trailing_stop:.2f}",
+            reason_codes=("EXIT_TRAILING_STOP",),
+        )
+    if direction < 0 and price >= trailing_stop:
+        return ExitResult(
+            should_exit=True,
+            exit_type="TRAILING",
+            urgency="IMMEDIATE",
+            reduction_pct=1.0,
+            stop_price=trailing_stop,
+            reason=f"Price {price:.2f} breached trailing stop {trailing_stop:.2f}",
+            reason_codes=("EXIT_TRAILING_STOP",),
+        )
 
     return ExitResult(should_exit=False)
