@@ -73,5 +73,6 @@ quote-style = "double"
 
 [dependency-groups]
 dev = [
+    "pytest>=9.0",
     "ruff>=0.15.8",
 ]
