@@ -11,7 +11,7 @@ All data is stored as Parquet for deterministic replay.
 from __future__ import annotations
 
 import time
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -90,7 +90,7 @@ def fetch_btc_dominance(output_dir: Path) -> int:
         return 0
 
     d = data["data"]
-    ts_ns = int(datetime.now(timezone.utc).timestamp() * 1_000_000_000)
+    ts_ns = int(datetime.now(UTC).timestamp() * 1_000_000_000)
 
     records = [{
         "ts_ns": ts_ns,

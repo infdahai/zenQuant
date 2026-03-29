@@ -3,8 +3,8 @@ import os
 import unittest
 from unittest.mock import patch
 
-from zenquant.ingestor import DeribitOptionsIngestor, DeribitOptionsIngestorConfig
 from zenquant.infra import InMemoryJetStream
+from zenquant.ingestor import DeribitOptionsIngestor, DeribitOptionsIngestorConfig
 
 
 def _network_tests_enabled() -> bool:
@@ -97,7 +97,7 @@ class DeribitValidationContractTests(unittest.IsolatedAsyncioTestCase):
 
         failed = {"done": False}
 
-        def fake_fetch_json(url: str, *, timeout_s: float, query: dict[str, str]):  # noqa: ARG001
+        def fake_fetch_json(url: str, *, timeout_s: float, query: dict[str, str]):
             if not failed["done"]:
                 failed["done"] = True
                 raise RuntimeError("temporary deribit outage")

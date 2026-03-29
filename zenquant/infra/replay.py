@@ -28,7 +28,7 @@ class DeterministicReplayer:
         self._messages = sorted(messages, key=lambda m: m.timestamp_ns)
 
     @classmethod
-    def from_stream(cls, bus: InMemoryJetStream, stream_name: str) -> "DeterministicReplayer":
+    def from_stream(cls, bus: InMemoryJetStream, stream_name: str) -> DeterministicReplayer:
         """Build a replayer from one retained stream."""
         return cls(messages=bus.get_stream_messages(stream_name))
 

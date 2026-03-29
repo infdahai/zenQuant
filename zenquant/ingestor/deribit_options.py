@@ -18,7 +18,6 @@ from typing import Any
 from zenquant.domain import DeribitRiskPack
 from zenquant.infra import EventBus
 
-
 DERIBIT_API_BASE = "https://www.deribit.com/api/v2/public"
 _DAY_MS = 86_400_000
 
@@ -134,7 +133,7 @@ class DeribitOptionsIngestor:
                 self._last_error = str(exc)
             try:
                 await asyncio.wait_for(self._stop_event.wait(), timeout=self._config.poll_interval_s)
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 continue
 
     def _fetch_pack(self) -> DeribitRiskPack | None:

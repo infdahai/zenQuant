@@ -7,8 +7,8 @@ Usage:
 
 import json
 import time
-from pathlib import Path
 from datetime import datetime
+from pathlib import Path
 
 
 def check_param_sweep_progress():
@@ -71,7 +71,7 @@ def main():
         # Check parameter sweep
         status, completed, total = check_param_sweep_progress()
         pct = (completed / total * 100) if total > 0 else 0
-        print(f"Parameter Sweep:")
+        print("Parameter Sweep:")
         print(f"  Status: {status}")
         print(f"  Progress: {completed}/{total} ({pct:.1f}%)")
 
@@ -86,7 +86,7 @@ def main():
 
         # Check Deribit download
         deribit_status = check_deribit_download()
-        print(f"Deribit Download:")
+        print("Deribit Download:")
         print(f"  Status: {deribit_status}")
         print()
 

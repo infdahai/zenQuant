@@ -82,7 +82,7 @@ class DeribitOptionsIngestorTests(unittest.IsolatedAsyncioTestCase):
             "get_index_price": {"index_price": 100_000.0},
         }
 
-        def fake_fetch_json(url: str, *, timeout_s: float, query: dict[str, str]):  # noqa: ARG001
+        def fake_fetch_json(url: str, *, timeout_s: float, query: dict[str, str]):
             for key, payload in responses.items():
                 if key in url:
                     return payload
@@ -109,7 +109,7 @@ class DeribitOptionsIngestorTests(unittest.IsolatedAsyncioTestCase):
         bus = InMemoryJetStream()
         ingestor = DeribitOptionsIngestor(bus=bus)
 
-        def fake_fetch_json(url: str, *, timeout_s: float, query: dict[str, str]):  # noqa: ARG001
+        def fake_fetch_json(url: str, *, timeout_s: float, query: dict[str, str]):
             if "get_index_price" in url:
                 return {"index_price": 100_000.0}
             return []

@@ -1,6 +1,6 @@
 import unittest
 
-from zenquant.domain import IndicatorCoverage, IndicatorPack, Timeframe, TradeTick, EventMeta
+from zenquant.domain import EventMeta, IndicatorCoverage, IndicatorPack, Timeframe, TradeTick
 from zenquant.execution import ExecutionGateway, ExecutionKernel
 from zenquant.infra import InMemoryJetStream
 from zenquant.risk import RiskOverlay

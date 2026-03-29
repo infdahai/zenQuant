@@ -9,12 +9,11 @@ from __future__ import annotations
 import asyncio
 import os
 import signal
-import sys
 from datetime import datetime
 
 from zenquant.domain import DeribitRiskPack
-from zenquant.ingestor import DeribitOptionsIngestor, DeribitOptionsIngestorConfig
 from zenquant.infra import InMemoryJetStream, OnlineStateStore, OnlineStateStoreConfig
+from zenquant.ingestor import DeribitOptionsIngestor, DeribitOptionsIngestorConfig
 
 
 def _format_pack(pack: DeribitRiskPack) -> str:

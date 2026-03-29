@@ -24,8 +24,8 @@ from zenquant.domain import (
     Candle,
     EventMeta,
     FundingUpdate,
-    MarkPriceUpdate,
     MarketSnapshot,
+    MarkPriceUpdate,
     OpenInterestUpdate,
     OrderBookLevel,
     OrderBookSnapshot,
@@ -33,7 +33,6 @@ from zenquant.domain import (
     TradeTick,
 )
 from zenquant.infra import EventBus
-
 
 logger = logging.getLogger(__name__)
 

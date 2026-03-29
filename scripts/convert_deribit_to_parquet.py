@@ -2,9 +2,9 @@
 """Convert Deribit JSON files to Parquet format for efficient replay."""
 
 import json
-import pandas as pd
 from pathlib import Path
-import sys
+
+import pandas as pd
 
 from zenquant.historical import (
     HistoricalDatasetLayout,

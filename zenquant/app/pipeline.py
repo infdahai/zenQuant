@@ -12,8 +12,8 @@ from dataclasses import dataclass
 from zenquant.domain import IndicatorPack, TargetPosition
 from zenquant.execution import ExecutionGateway, ExecutionKernel
 from zenquant.indicator import IndicatorEngine, IndicatorStore
-from zenquant.ingestor import SyntheticIngestor, SyntheticIngestorConfig
 from zenquant.infra import InMemoryJetStream, StreamConfig
+from zenquant.ingestor import SyntheticIngestor, SyntheticIngestorConfig
 from zenquant.market import BarClockService, SnapshotBuilder
 from zenquant.risk import RiskOverlay
 from zenquant.state import StateEngine

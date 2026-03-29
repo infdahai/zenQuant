@@ -1,8 +1,8 @@
 import unittest
 
 from zenquant.domain import (
-    ExitDecision,
     ExecutionReport,
+    ExitDecision,
     IndicatorCoverage,
     IndicatorPack,
     PlaybookSelection,

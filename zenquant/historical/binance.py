@@ -28,7 +28,6 @@ from .storage import (
     write_parquet_rows,
 )
 
-
 BINANCE_DATA_BASE = "https://data.binance.vision/data/futures/um/monthly"
 BINANCE_REST_BASE = "https://fapi.binance.com"
 

@@ -4,8 +4,8 @@ import unittest
 
 from psycopg import connect
 
-from zenquant.ingestor import DeribitOptionsIngestor
 from zenquant.infra import InMemoryJetStream, OnlineStateStore, OnlineStateStoreConfig
+from zenquant.ingestor import DeribitOptionsIngestor
 
 
 def _network_tests_enabled() -> bool:
@@ -21,9 +21,8 @@ class DeribitPostgreSQLTests(unittest.IsolatedAsyncioTestCase):
         if not _network_tests_enabled():
             raise unittest.SkipTest("Set ZENQUANT_RUN_DERIBIT_NETWORK_TESTS=1 to run live Deribit persistence validation")
         cls.dsn = dsn
-        with connect(dsn) as conn:
-            with conn.cursor() as cur:
-                cur.execute("TRUNCATE deribit_risk_packs")
+        with connect(dsn) as conn, conn.cursor() as cur:
+            cur.execute("TRUNCATE deribit_risk_packs")
 
     async def test_deribit_pack_persists_to_postgresql(self) -> None:
         bus = InMemoryJetStream()
@@ -40,18 +39,17 @@ class DeribitPostgreSQLTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNotNone(pack, "Expected a live Deribit pack before checking persistence")
         time.sleep(1.0)
 
-        with connect(self.dsn) as conn:
-            with conn.cursor() as cur:
-                cur.execute(
-                    """
+        with connect(self.dsn) as conn, conn.cursor() as cur:
+            cur.execute(
+                """
                     SELECT symbol, atm_iv_30d, term_structure_slope, put_call_skew_25d,
                            oi_concentration, block_flow_imbalance, quality_flags
                     FROM deribit_risk_packs
                     ORDER BY ts_ns DESC
                     LIMIT 1
                     """
-                )
-                row = cur.fetchone()
+            )
+            row = cur.fetchone()
 
         self.assertIsNotNone(row, "No Deribit pack was persisted")
         assert row is not None

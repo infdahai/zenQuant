@@ -51,8 +51,8 @@ def run_validation(config: LiveValidationConfig) -> dict[str, Any]:
 
         runtime_status = dict((state_4h or {}).get("runtime_status") or {})
         database = dict(runtime_status.get("database") or {})
-        latest_4h_cutoff = int((((state_4h or {}).get("latest_indicator") or {}).get("cutoff_time_ns") or 0))
-        latest_1d_cutoff = int((((state_1d or {}).get("latest_indicator") or {}).get("cutoff_time_ns") or 0))
+        latest_4h_cutoff = int(((state_4h or {}).get("latest_indicator") or {}).get("cutoff_time_ns") or 0)
+        latest_1d_cutoff = int(((state_1d or {}).get("latest_indicator") or {}).get("cutoff_time_ns") or 0)
 
         if latest_4h_cutoff > 0 and latest_4h_cutoff != seen_cutoffs["4h"]:
             if seen_cutoffs["4h"] > 0:
