@@ -46,6 +46,7 @@ class ExperimentTracker:
         self._dir = campaign_dir
         self._dir.mkdir(parents=True, exist_ok=True)
         self._experiments: dict[str, Experiment] = {}
+        self._dirty = False
         self._load()
 
     # ── public API ────────────────────────────────────────────
@@ -69,7 +70,7 @@ class ExperimentTracker:
             metadata=metadata or {},
         )
         self._experiments[exp_id] = exp
-        self._save()
+        self._dirty = True
         return exp
 
     def rank(
@@ -87,6 +88,12 @@ class ExperimentTracker:
         candidates = [e for e in candidates if metric in e.metrics]
         candidates.sort(key=lambda e: e.metrics[metric], reverse=not ascending)
         return candidates[:top_n]
+
+    def flush(self) -> None:
+        """Write pending changes to disk."""
+        if self._dirty:
+            self._save()
+            self._dirty = False
 
     def get(self, experiment_id: str) -> Experiment | None:
         return self._experiments.get(experiment_id)

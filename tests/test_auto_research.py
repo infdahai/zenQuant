@@ -64,6 +64,7 @@ class TestExperimentTracker(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             tracker1 = ExperimentTracker(Path(tmp))
             tracker1.record({"x": 1}, {"sharpe": 1.5})
+            tracker1.flush()
 
             # Reload from disk
             tracker2 = ExperimentTracker(Path(tmp))

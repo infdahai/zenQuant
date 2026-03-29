@@ -252,7 +252,10 @@ class ARCStrategyEngine:
                     position.peak_pnl_pct = unrealized_pnl_pct
 
             if self._plugins and self._plugins.exits:
-                exit_decision = self._plugin_exit(pack, state, playbook, position)
+                # Build shared dicts once per bar (avoid 3x redundant construction)
+                _ind_dict = dict(pack.values)
+                _state_dict = self._state_dict(state, playbook)
+                exit_decision = self._plugin_exit(pack, state, playbook, position, _ind_dict, _state_dict)
             else:
                 exit_decision = self._exit_engine.check(
                     position,
@@ -278,8 +281,11 @@ class ARCStrategyEngine:
 
         # ── Direction + Sizing: plugin path vs legacy path ──
         if self._plugins and self._plugins.signals:
-            # Plugin path
-            direction, plugin_reason_codes = self._plugin_direction(pack, state, playbook)
+            # Plugin path — reuse shared dicts if already built by exit check
+            if "_ind_dict" not in dir():
+                _ind_dict = dict(pack.values)
+                _state_dict = self._state_dict(state, playbook)
+            direction, plugin_reason_codes = self._plugin_direction(pack, state, playbook, _ind_dict, _state_dict)
             reason_codes = [f"REGIME_{regime}", *playbook.reason_codes, *plugin_reason_codes]
 
             if playbook.is_reduce_only() and direction != 0.0:
@@ -287,7 +293,7 @@ class ARCStrategyEngine:
                 direction = 0.0
 
             if self._plugins.sizers:
-                target_leverage, sizer_codes = self._plugin_sizing(pack, state, playbook)
+                target_leverage, sizer_codes = self._plugin_sizing(pack, state, playbook, _ind_dict, _state_dict)
                 # Apply execution haircut based on data quality (parity with legacy path)
                 execution_haircut = SizingEngine._execution_haircut(state)
                 base_leverage = target_leverage
@@ -569,12 +575,16 @@ class ARCStrategyEngine:
         pack: IndicatorPack,
         state: MarketState,
         playbook: PlaybookSelection,
+        ind_dict: dict[str, Any] | None = None,
+        state_dict: dict[str, Any] | None = None,
     ) -> tuple[float, list[str]]:
         """Compute direction via plugin signal composition + filter chain."""
         assert self._plugins is not None
 
-        ind_dict = dict(pack.values)
-        state_dict = self._state_dict(state, playbook)
+        if ind_dict is None:
+            ind_dict = dict(pack.values)
+        if state_dict is None:
+            state_dict = self._state_dict(state, playbook)
 
         # Compose signals → weighted direction
         composed = compose_signals(
@@ -622,12 +632,16 @@ class ARCStrategyEngine:
         pack: IndicatorPack,
         state: MarketState,
         playbook: PlaybookSelection,
+        ind_dict: dict[str, Any] | None = None,
+        state_dict: dict[str, Any] | None = None,
     ) -> tuple[float, list[str]]:
         """Compute leverage via plugin sizer chain."""
         assert self._plugins is not None
 
-        ind_dict = dict(pack.values)
-        state_dict = self._state_dict(state, playbook)
+        if ind_dict is None:
+            ind_dict = dict(pack.values)
+        if state_dict is None:
+            state_dict = self._state_dict(state, playbook)
 
         composed = compose_sizers(self._plugins.sizers, ind_dict, state_dict)
         leverage = min(playbook.max_leverage, composed.factor)
@@ -639,6 +653,8 @@ class ARCStrategyEngine:
         state: MarketState,
         playbook: PlaybookSelection,
         position: OpenPositionState,
+        ind_dict: dict[str, Any] | None = None,
+        state_dict: dict[str, Any] | None = None,
     ) -> ExitDecision | None:
         """Check exits via plugin priority chain.
 
@@ -648,7 +664,8 @@ class ARCStrategyEngine:
         """
         assert self._plugins is not None
 
-        ind_dict = dict(pack.values)
+        if ind_dict is None:
+            ind_dict = dict(pack.values)
         price = float(ind_dict.get("last_price", 0.0) or 0.0)
         atr = float(ind_dict.get("atr", 0.0) or 0.0)
 
@@ -672,7 +689,8 @@ class ARCStrategyEngine:
                     if new_stop < position.trailing_stop:
                         position.trailing_stop = new_stop
 
-        state_dict = self._state_dict(state, playbook)
+        if state_dict is None:
+            state_dict = self._state_dict(state, playbook)
         pos_dict = {
             "direction": position.direction,
             "entry_price": position.entry_price,
