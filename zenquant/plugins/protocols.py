@@ -12,9 +12,8 @@ Four plugin types map to the four stages of the decision chain:
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any, Protocol, runtime_checkable
-
 
 # ---------------------------------------------------------------------------
 # Plugin metadata
@@ -44,7 +43,7 @@ class SignalResult:
 
     value: float  # -1.0 to +1.0 (directional strength)
     confidence: float  # 0.0 to 1.0
-    reason_codes: list[str] = field(default_factory=list)
+    reason_codes: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -53,7 +52,7 @@ class FilterResult:
 
     passed: bool
     reason: str = ""
-    reason_codes: list[str] = field(default_factory=list)
+    reason_codes: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -61,7 +60,7 @@ class SizerResult:
     """Output of a sizer plugin."""
 
     factor: float  # multiplicative scaling (0.0 to N)
-    reason_codes: list[str] = field(default_factory=list)
+    reason_codes: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -74,7 +73,7 @@ class ExitResult:
     reduction_pct: float = 0.0  # 0.0 to 1.0
     stop_price: float | None = None
     reason: str = ""
-    reason_codes: list[str] = field(default_factory=list)
+    reason_codes: tuple[str, ...] = ()
 
 
 # ---------------------------------------------------------------------------

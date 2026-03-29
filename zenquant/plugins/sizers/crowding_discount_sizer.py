@@ -71,4 +71,4 @@ def compute(
     if quality_state in ("DEGRADED", "UNSAFE"):
         codes.append("QUALITY_DEGRADED")
 
-    return SizerResult(factor=round(factor, 6), reason_codes=codes)
+    return SizerResult(factor=round(factor, 6), reason_codes=tuple(codes))

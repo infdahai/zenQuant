@@ -35,7 +35,7 @@ def compute(
             urgency="IMMEDIATE",
             reduction_pct=1.0,
             reason="Bull playbook invalidated by downtrend",
-            reason_codes=["EXIT_INVALIDATION", "DIRECTIONAL_FLIP"],
+            reason_codes=("EXIT_INVALIDATION", "DIRECTIONAL_FLIP"),
         )
     if direction < 0 and "BEAR" in playbook_id and directional_state == "UPTREND":
         return ExitResult(
@@ -44,6 +44,6 @@ def compute(
             urgency="IMMEDIATE",
             reduction_pct=1.0,
             reason="Bear playbook invalidated by uptrend",
-            reason_codes=["EXIT_INVALIDATION", "DIRECTIONAL_FLIP"],
+            reason_codes=("EXIT_INVALIDATION", "DIRECTIONAL_FLIP"),
         )
     return ExitResult(should_exit=False)

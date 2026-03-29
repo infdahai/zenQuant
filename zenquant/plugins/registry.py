@@ -10,9 +10,10 @@ from __future__ import annotations
 
 import importlib.util
 import sys
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 from zenquant.plugins.protocols import PluginMeta
 
@@ -108,6 +109,28 @@ def load_registry(
 
     # Sort exits by priority (lower = higher priority)
     registry.exits.sort(key=lambda p: p.weight)
+
+    # Validate signal weights: warn if all zero or any negative
+    if registry.signals:
+        weights = [p.weight for p in registry.signals]
+        if all(w <= 0 for w in weights):
+            import warnings
+
+            warnings.warn(
+                "All signal weights are zero or negative — "
+                "compose_signals will produce no direction. "
+                f"Weights: {registry.signal_weights}",
+                stacklevel=2,
+            )
+        negative = [p.meta.name for p in registry.signals if p.weight < 0]
+        if negative:
+            import warnings
+
+            warnings.warn(
+                f"Negative signal weights detected: {negative}. "
+                "This may cause unexpected direction inversion.",
+                stacklevel=2,
+            )
 
     return registry
 

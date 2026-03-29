@@ -67,12 +67,12 @@ def perturb_events(
 
         row = deepcopy(event)
 
-        # Price noise
+        # Price noise: independent factor per field to test wick/body structure
         if config.price_noise_pct > 0:
-            noise_factor = 1.0 + rng.gauss(0, config.price_noise_pct)
-            for field in ("open", "high", "low", "close"):
-                if field in row:
-                    row[field] = float(row[field]) * noise_factor
+            for price_field in ("open", "high", "low", "close"):
+                if price_field in row:
+                    noise_factor = 1.0 + rng.gauss(0, config.price_noise_pct)
+                    row[price_field] = float(row[price_field]) * noise_factor
             # Maintain OHLC consistency: high >= max(open, close), low <= min(open, close)
             if "high" in row and "open" in row and "close" in row:
                 row["high"] = max(float(row["high"]), float(row["open"]), float(row["close"]))
@@ -84,7 +84,26 @@ def perturb_events(
             noise_factor = 1.0 + rng.gauss(0, config.volume_noise_pct)
             row["volume"] = max(0.0, float(row["volume"]) * noise_factor)
 
+        # Spread noise: widen the high-low range to simulate worse fills
+        if config.spread_noise_bps > 0 and "high" in row and "low" in row:
+            mid = (float(row["high"]) + float(row["low"])) / 2.0
+            spread_pct = config.spread_noise_bps / 10_000.0
+            row["high"] = float(row["high"]) + mid * spread_pct / 2.0
+            row["low"] = float(row["low"]) - mid * spread_pct / 2.0
+
         result.append(row)
+
+    # Execution delay: shift close prices forward by N bars to simulate latency
+    if config.execution_delay_bars > 0 and len(result) > config.execution_delay_bars:
+        delayed: list[dict[str, Any]] = []
+        delay = config.execution_delay_bars
+        for i, row in enumerate(result):
+            row = deepcopy(row)
+            if i + delay < len(result):
+                # Decision uses delayed close price (as if we acted N bars late)
+                row["close"] = result[i + delay]["close"]
+            delayed.append(row)
+        result = delayed
 
     return result
 

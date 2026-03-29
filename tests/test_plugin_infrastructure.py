@@ -22,7 +22,6 @@ from zenquant.plugins.protocols import (
 )
 from zenquant.plugins.registry import LoadedPlugin, PluginRegistry, load_registry
 
-
 # ---------------------------------------------------------------------------
 # Helpers: build LoadedPlugin from lambdas for unit testing
 # ---------------------------------------------------------------------------
@@ -32,7 +31,7 @@ def _signal_plugin(name: str, value: float, confidence: float = 0.8, weight: flo
     return LoadedPlugin(
         meta=PluginMeta(name=name, version="1.0", plugin_type="signal", description=name),
         compute=lambda ind, st, cfg: SignalResult(
-            value=value, confidence=confidence, reason_codes=[f"{name.upper()}"]
+            value=value, confidence=confidence, reason_codes=(f"{name.upper()}",)
         ),
         config={},
         weight=weight,
@@ -44,7 +43,7 @@ def _filter_plugin(name: str, passed: bool) -> LoadedPlugin:
     return LoadedPlugin(
         meta=PluginMeta(name=name, version="1.0", plugin_type="filter", description=name),
         compute=lambda ind, st, cfg: FilterResult(
-            passed=passed, reason="" if passed else f"{name} blocked", reason_codes=[f"{name.upper()}"]
+            passed=passed, reason="" if passed else f"{name} blocked", reason_codes=(f"{name.upper()}",)
         ),
         config={},
         weight=1.0,
@@ -56,7 +55,7 @@ def _sizer_plugin(name: str, factor: float) -> LoadedPlugin:
     return LoadedPlugin(
         meta=PluginMeta(name=name, version="1.0", plugin_type="sizer", description=name),
         compute=lambda ind, st, cfg: SizerResult(
-            factor=factor, reason_codes=[f"{name.upper()}"]
+            factor=factor, reason_codes=(f"{name.upper()}",)
         ),
         config={},
         weight=1.0,
@@ -72,7 +71,7 @@ def _exit_plugin(name: str, should_exit: bool, priority: int = 99) -> LoadedPlug
             exit_type=name.upper() if should_exit else "NONE",
             urgency="IMMEDIATE" if should_exit else "NONE",
             reduction_pct=1.0 if should_exit else 0.0,
-            reason_codes=[f"{name.upper()}"] if should_exit else [],
+            reason_codes=(f"{name.upper()}",) if should_exit else (),
         ),
         config={},
         weight=float(priority),
@@ -89,14 +88,14 @@ class TestProtocols(unittest.TestCase):
     """Verify result types are frozen and well-formed."""
 
     def test_signal_result_frozen(self):
-        r = SignalResult(value=0.5, confidence=0.8, reason_codes=["TEST"])
+        r = SignalResult(value=0.5, confidence=0.8, reason_codes=("TEST",))
         with self.assertRaises(AttributeError):
             r.value = 1.0  # type: ignore[misc]
 
     def test_filter_result_defaults(self):
         r = FilterResult(passed=True)
         self.assertEqual(r.reason, "")
-        self.assertEqual(r.reason_codes, [])
+        self.assertEqual(r.reason_codes, ())
 
     def test_exit_result_defaults(self):
         r = ExitResult(should_exit=False)
@@ -279,7 +278,7 @@ class TestLoadRegistry(unittest.TestCase):
                 )
 
                 def compute(indicators, state, config):
-                    return SignalResult(value=0.42, confidence=0.9, reason_codes=["TEST"])
+                    return SignalResult(value=0.42, confidence=0.9, reason_codes=("TEST",))
             """)
 
             profile = {"signals": {"test_sig": {"enabled": True, "weight": 0.6}}}

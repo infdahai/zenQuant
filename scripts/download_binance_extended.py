@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import argparse
 import time
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -26,6 +26,7 @@ import requests
 
 BASE_URL = "https://fapi.binance.com"
 REQUEST_DELAY = 0.25  # seconds between requests (rate limit: 2400 weight/min)
+MAX_PAGES = 5000  # dead loop protection: max pagination iterations
 
 
 def _get(
@@ -39,7 +40,7 @@ def _get(
         try:
             resp = requests.get(url, params=params, timeout=10)
             if resp.status_code == 429:
-                print(f"  Rate limited, sleeping 60s...")
+                print("  Rate limited, sleeping 60s...")
                 time.sleep(60)
                 continue
             resp.raise_for_status()
@@ -85,13 +86,15 @@ def download_long_short_ratio(
     output_path = output_dir / "long_short_ratio" / symbol / "data.parquet"
 
     limit = 500
-    end_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
-    start_ms = int((datetime.now(timezone.utc) - timedelta(days=days)).timestamp() * 1000)
+    end_ms = int(datetime.now(UTC).timestamp() * 1000)
+    start_ms = int((datetime.now(UTC) - timedelta(days=days)).timestamp() * 1000)
 
     all_records: list[dict] = []
     cursor = start_ms
+    pages = 0
 
-    while cursor < end_ms:
+    while cursor < end_ms and pages < MAX_PAGES:
+        pages += 1
         data = _get(
             "/futures/data/globalLongShortAccountRatio",
             {"symbol": symbol, "period": period, "limit": limit, "startTime": cursor},
@@ -128,13 +131,15 @@ def download_taker_ratio(
     output_path = output_dir / "taker_ratio" / symbol / "data.parquet"
 
     limit = 500
-    end_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
-    start_ms = int((datetime.now(timezone.utc) - timedelta(days=days)).timestamp() * 1000)
+    end_ms = int(datetime.now(UTC).timestamp() * 1000)
+    start_ms = int((datetime.now(UTC) - timedelta(days=days)).timestamp() * 1000)
 
     all_records: list[dict] = []
     cursor = start_ms
+    pages = 0
 
-    while cursor < end_ms:
+    while cursor < end_ms and pages < MAX_PAGES:
+        pages += 1
         data = _get(
             "/futures/data/takerlongshortRatio",
             {"symbol": symbol, "period": period, "limit": limit, "startTime": cursor},

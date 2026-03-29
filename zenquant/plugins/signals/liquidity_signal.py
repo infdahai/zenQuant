@@ -48,6 +48,6 @@ def compute(
         return SignalResult(
             value=direction,
             confidence=confidence,
-            reason_codes=["LIQUIDITY_MEAN_REVERSION"],
+            reason_codes=("LIQUIDITY_MEAN_REVERSION",),
         )
     return SignalResult(value=0.0, confidence=0.2)

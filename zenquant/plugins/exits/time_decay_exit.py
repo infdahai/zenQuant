@@ -49,6 +49,6 @@ def compute(
             urgency="GRADUAL",
             reduction_pct=0.5,
             reason=f"Held {bars_held} bars without profit",
-            reason_codes=["EXIT_TIME_DECAY", "UNPROFITABLE"],
+            reason_codes=("EXIT_TIME_DECAY", "UNPROFITABLE"),
         )
     return ExitResult(should_exit=False)

@@ -27,12 +27,12 @@ def compute(
     signal_direction = float(state.get("signal_direction", 0.0) or 0.0)
 
     if bias_direction == 0.0 or signal_direction == 0.0:
-        return FilterResult(passed=True, reason_codes=["TREND_NO_CONFLICT"])
+        return FilterResult(passed=True, reason_codes=("TREND_NO_CONFLICT",))
 
     if bias_direction * signal_direction < 0:
         return FilterResult(
             passed=False,
             reason=f"Signal direction {signal_direction} conflicts with 1D bias {bias_direction}",
-            reason_codes=["TREND_BIAS_CONFLICT"],
+            reason_codes=("TREND_BIAS_CONFLICT",),
         )
-    return FilterResult(passed=True, reason_codes=["TREND_ALIGNED"])
+    return FilterResult(passed=True, reason_codes=("TREND_ALIGNED",))
