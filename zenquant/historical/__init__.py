@@ -1,6 +1,7 @@
 """Historical data sync and replay helpers for deterministic backtests."""
 
 from .binance import BinanceHistoricalDownloader, BinanceHistoricalSyncConfig
+from .perturbation import PerturbationConfig
 from .replay import HistoricalBacktest, HistoricalBacktestConfig, HistoricalBacktestResult
 from .storage import (
     HistoricalDatasetLayout,
@@ -17,6 +18,7 @@ __all__ = [
     "HistoricalBacktest",
     "HistoricalBacktestConfig",
     "HistoricalBacktestResult",
+    "PerturbationConfig",
     "HistoricalDatasetLayout",
     "HistoricalFundingRow",
     "HistoricalKlineRow",

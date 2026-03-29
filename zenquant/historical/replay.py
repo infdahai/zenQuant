@@ -40,6 +40,7 @@ from zenquant.risk import RiskOverlay, RiskOverlayConfig
 from zenquant.state import StateEngine
 from zenquant.strategy import ARCStrategyEngine, ARCStrategyConfig
 
+from .perturbation import PerturbationConfig, perturb_events
 from .storage import read_parquet_rows
 
 
@@ -58,6 +59,8 @@ class HistoricalBacktestConfig:
     open_interest_timeframe: str = "4h"
     # Strategy config override (for parameter sweeps)
     strategy_config: ARCStrategyConfig | None = None
+    # Domain randomization (for robustness testing)
+    perturbation: PerturbationConfig | None = None
 
 
 @dataclass(slots=True)
@@ -153,6 +156,8 @@ class HistoricalBacktest:
                 "no historical events available for replay; "
                 f"expected Parquet data under {self._config.root_dir} for symbol {self._config.symbol}"
             )
+        if self._config.perturbation is not None:
+            events = perturb_events(events, self._config.perturbation)
         for event in events:
             self._publish_event(event)
 
