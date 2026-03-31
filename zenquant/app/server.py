@@ -105,6 +105,7 @@ class ZenQuantWebRuntime:
         self._started = False
         self._live_symbols = ("BTCUSDT_PERP",)
         self.deribit_ingestor: DeribitOptionsIngestor | None = None
+        self._telegram: Any = None
 
         self.bus = InMemoryJetStream()
         self.bus.add_stream(StreamConfig(name="STREAM_MARKET_DATA", subjects=["md.>"]))
@@ -189,6 +190,7 @@ class ZenQuantWebRuntime:
             self._initialize_trading_chain()
             self._start_online_state()
             await self._start_deribit()
+            await self._start_telegram()
             self._live_start_task = asyncio.create_task(self._start_live_runtime())
             return
         self._start_online_state()
@@ -210,6 +212,8 @@ class ZenQuantWebRuntime:
             await self.ingestor.stop()
             if self.deribit_ingestor is not None:
                 await self.deribit_ingestor.stop()
+            if self._telegram is not None:
+                await self._telegram.stop()
         if self._tick_task is not None:
             self._tick_task.cancel()
             try:
@@ -353,6 +357,22 @@ class ZenQuantWebRuntime:
         await self.deribit_ingestor.start()
         self.state.on_runtime_status({"deribit": self._deribit_snapshot()})
         self._schedule_state_broadcast()
+
+    async def _start_telegram(self) -> None:
+        """Start the optional Telegram notification bot for live mode."""
+        from zenquant.notify.config import TelegramConfig
+
+        config = TelegramConfig.from_env()
+        if not config.enabled:
+            return
+        from zenquant.notify.telegram import TelegramNotifier
+
+        self._telegram = TelegramNotifier(
+            config=config,
+            snapshot_fn=lambda: self.snapshot(symbol="BTCUSDT_PERP", tf="4h"),
+        )
+        self._telegram.wire_bus(self.bus)
+        await self._telegram.start()
 
     async def _start_live_runtime(self) -> None:
         """Warm live context in the background so the UI can report startup state."""
