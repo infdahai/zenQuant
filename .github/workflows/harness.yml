@@ -41,4 +41,4 @@ jobs:
         run: uv run pytest tests/test_parity.py -v --tb=short
 
       - name: "Gate E: full test suite"
-        run: uv run pytest --tb=short -q
+        run: uv run pytest --tb=short -q --ignore=tests/test_import_boundaries.py --ignore=tests/test_golden_output.py --ignore=tests/test_parity.py

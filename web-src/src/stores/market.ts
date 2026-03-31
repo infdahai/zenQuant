@@ -141,7 +141,7 @@ export const useMarketStore = defineStore("market", () => {
         if (!isCurrent(version, selection)) return;
         streamStatus.value = "reconnecting";
         if (reconnectTimer) clearTimeout(reconnectTimer);
-        reconnectTimer = setTimeout(() => void reload(), 1200);
+        reconnectTimer = setTimeout(() => void reload(), 1200 + Math.random() * 800);
       },
       onOpen() {
         if (!isCurrent(version, selection)) return;
@@ -162,7 +162,7 @@ export const useMarketStore = defineStore("market", () => {
         if (!isCurrent(version, selection)) return;
         streamStatus.value = "reconnecting";
         if (reconnectTimer) clearTimeout(reconnectTimer);
-        reconnectTimer = setTimeout(() => void reload(), 1200);
+        reconnectTimer = setTimeout(() => void reload(), 1200 + Math.random() * 800);
       },
       onOpen() {
         if (!isCurrent(version, selection)) return;

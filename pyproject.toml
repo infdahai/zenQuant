@@ -14,8 +14,10 @@ dependencies = [
     "pyarrow>=20.0.0",
     "psycopg[binary]>=3.2.9",
     "uvicorn[standard]>=0.30.0",
-    "python-telegram-bot>=21.0",
 ]
+
+[project.optional-dependencies]
+telegram = ["python-telegram-bot>=21.0"]
 
 [project.scripts]
 zenquant-backtest = "zenquant.app.backtest:main"
