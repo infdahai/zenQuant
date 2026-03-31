@@ -211,7 +211,9 @@ class Campaign:
             if total > 100_000:
                 raise ValueError(f"Grid too large: {total:,} combinations (max 100,000)")
             if total > 10_000:
-                logger.warning(f"Large grid: {total:,} combinations")
+                import warnings
+
+                warnings.warn(f"Large grid: {total:,} combinations", stacklevel=2)
 
     def run(self) -> CampaignReport:
         """Execute the full campaign pipeline."""
@@ -236,7 +238,7 @@ class Campaign:
             validations = self._run_walk_forward(sweep.top_n)
             self._log(f"Walk-forward: {len(validations)} candidates validated")
         else:
-            logger.warning("Walk-forward validation skipped: no splits provided")
+            self._log("Walk-forward validation skipped: no splits provided")
             # Skip WF — treat sweep top-N as candidates directly
             for entry in sweep.top_n:
                 m = entry["metrics"]
