@@ -24,6 +24,7 @@ Architecture Note:
 from __future__ import annotations
 
 import json
+import math
 import os
 import time
 from concurrent.futures import ProcessPoolExecutor, as_completed
@@ -202,6 +203,16 @@ class Campaign:
         self._tracker = ExperimentTracker(self._campaign_dir)
         self._workers = _max_workers()
 
+        # Guard against accidental grid explosion
+        sp = self._config.search_space
+        all_vals = list(sp.strategy_params.values()) + list(sp.plugin_params.values())
+        if all_vals:
+            total = math.prod(len(v) for v in all_vals)
+            if total > 100_000:
+                raise ValueError(f"Grid too large: {total:,} combinations (max 100,000)")
+            if total > 10_000:
+                logger.warning(f"Large grid: {total:,} combinations")
+
     def run(self) -> CampaignReport:
         """Execute the full campaign pipeline."""
         start = time.time()
@@ -225,6 +236,7 @@ class Campaign:
             validations = self._run_walk_forward(sweep.top_n)
             self._log(f"Walk-forward: {len(validations)} candidates validated")
         else:
+            logger.warning("Walk-forward validation skipped: no splits provided")
             # Skip WF — treat sweep top-N as candidates directly
             for entry in sweep.top_n:
                 m = entry["metrics"]

@@ -60,8 +60,10 @@ class TelegramNotifier:
             from telegram import Update
             from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
         except ImportError:
-            logger.warning("python-telegram-bot not installed, Telegram notifier disabled")
-            return
+            raise ImportError(
+                "python-telegram-bot is required when Telegram notifier is enabled. "
+                "Install with: uv add python-telegram-bot"
+            )
 
         async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             snap = self._get_snapshot()

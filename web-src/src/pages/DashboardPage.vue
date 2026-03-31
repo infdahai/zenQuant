@@ -42,21 +42,38 @@ onMounted(() => {
 });
 onBeforeUnmount(() => clearInterval(timer));
 
+// ── Snapshot type ──
+interface Snapshot {
+  directional_bias?: Record<string, unknown>;
+  directional_bias_meta?: Record<string, unknown>;
+  latest_indicator?: Record<string, unknown>;
+  market_state?: Record<string, unknown>;
+  active_playbook?: Record<string, unknown>;
+  latest_sizing?: Record<string, unknown>;
+  latest_exit?: Record<string, unknown>;
+  deribit_risk?: Record<string, unknown>;
+  deribit_history?: Record<string, unknown>[];
+  position_state?: Record<string, unknown>;
+  latest_target?: Record<string, unknown>;
+  reasons?: Record<string, unknown>[];
+  [key: string]: unknown;
+}
+
 // ── Computed projections ──
-const snapshot = computed(() => (store.snapshot as Record<string, unknown>) || {});
-const indicator = computed(() => store.latestIndicator || (snapshot.value.latest_indicator as Record<string, unknown>) || null);
-const directionalBias = computed(() => (snapshot.value.directional_bias as Record<string, unknown>) || null);
-const directionalBiasMeta = computed(() => (snapshot.value.directional_bias_meta as Record<string, unknown>) || null);
-const marketState = computed(() => (snapshot.value.market_state as Record<string, unknown>) || null);
-const activePlaybook = computed(() => (snapshot.value.active_playbook as Record<string, unknown>) || null);
-const latestSizing = computed(() => (snapshot.value.latest_sizing as Record<string, unknown>) || null);
-const latestExit = computed(() => (snapshot.value.latest_exit as Record<string, unknown>) || null);
-const deribitRisk = computed(() => (snapshot.value.deribit_risk as Record<string, unknown>) || null);
-const deribitHistory = computed(() => ((snapshot.value.deribit_history as Record<string, unknown>[]) || []).slice(-96));
-const positionState = computed(() => (snapshot.value.position_state as Record<string, unknown>) || null);
-const latestTarget = computed(() => (snapshot.value.latest_target as Record<string, unknown>) || null);
+const snapshot = computed(() => (store.snapshot as Snapshot) || {});
+const indicator = computed(() => store.latestIndicator || snapshot.value.latest_indicator || null);
+const directionalBias = computed(() => snapshot.value.directional_bias || null);
+const directionalBiasMeta = computed(() => snapshot.value.directional_bias_meta || null);
+const marketState = computed(() => snapshot.value.market_state || null);
+const activePlaybook = computed(() => snapshot.value.active_playbook || null);
+const latestSizing = computed(() => snapshot.value.latest_sizing || null);
+const latestExit = computed(() => snapshot.value.latest_exit || null);
+const deribitRisk = computed(() => snapshot.value.deribit_risk || null);
+const deribitHistory = computed(() => (snapshot.value.deribit_history || []).slice(-96));
+const positionState = computed(() => snapshot.value.position_state || null);
+const latestTarget = computed(() => snapshot.value.latest_target || null);
 const latestReason = computed(() => {
-  const reasons = (snapshot.value.reasons as Record<string, unknown>[]) || [];
+  const reasons = snapshot.value.reasons || [];
   return reasons[0] || null;
 });
 const reports = computed(() => (snapshot.value.reports as Record<string, unknown>[]) || []);
