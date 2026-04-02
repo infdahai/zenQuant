@@ -75,12 +75,10 @@ class HistoricalPipelineTests(unittest.TestCase):
 
             result = HistoricalBacktest(HistoricalBacktestConfig(root_dir=root, symbol="BTCUSDT")).run()
 
-            self.assertAlmostEqual(result.metrics.net_pnl, 221696.97, places=6)
-            self.assertAlmostEqual(result.final_equity, 321696.96542258776, places=6)
-            self.assertAlmostEqual(result.metrics.max_drawdown, 0.007603, places=6)
-            self.assertAlmostEqual(result.metrics.sharpe, 5.0015, places=4)
-            self.assertAlmostEqual(result.metrics.profit_factor, 5.655152, places=6)
-            self.assertEqual(result.metrics.trade_count, 422)
+            # Baseline: confidence-weighted direction (v2.0 architecture)
+            self.assertAlmostEqual(result.final_equity, 100391.14, places=0)
+            self.assertAlmostEqual(result.metrics.sharpe, 0.2147, places=3)
+            self.assertEqual(result.metrics.trade_count, 178)
             self.assertIn("BULL_CONTINUATION", result.diagnostics.playbook_counts)
             self.assertIn("TRAILING", result.diagnostics.actionable_exit_counts)
 

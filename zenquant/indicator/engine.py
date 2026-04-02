@@ -113,11 +113,17 @@ class IndicatorEngine:
         bus: EventBus,
         store: IndicatorStore,
         config: IndicatorEngineConfig | None = None,
+        macro_store: object | None = None,
+        options_store: object | None = None,
     ) -> None:
         self._bus = bus
         self._store = store
         self._config = config or IndicatorEngineConfig()
-        self._formula_hash = _formula_hash(self._config)
+        self._macro_store = macro_store  # MacroDataStore (optional, avoids circular import)
+        self._options_store = options_store  # OptionsDataStore (optional, avoids circular import)
+        self._formula_hash = _formula_hash(
+            self._config, has_macro=macro_store is not None, has_options=options_store is not None
+        )
 
         self._pending: dict[tuple[str, Timeframe, int], _PendingPoint] = {}
         # Buffer must hold enough bars for vol, atr, pivot lookback, and ROC
@@ -157,6 +163,12 @@ class IndicatorEngine:
         self._ob_index_by_cutoff: dict[tuple[Timeframe, int], dict[str, float]] = defaultdict(dict)
         self._pending_overall: dict[tuple[Timeframe, int], list[IndicatorPack]] = defaultdict(list)
         self._overall_by_cutoff: dict[tuple[Timeframe, int], float] = {}
+        # Daily close prices for 200MA cycle position (per symbol)
+        self._daily_closes: dict[str, deque[float]] = defaultdict(lambda: deque(maxlen=250))
+        # Structure state history for directional consistency
+        self._structure_states: dict[tuple[str, Timeframe], deque[str]] = defaultdict(
+            lambda: deque(maxlen=120)  # ~20 days of 4H bars
+        )
 
         self._bus.subscribe("md.candle.>", self._on_candle)
         self._bus.subscribe("md.snapshot.>", self._on_snapshot)
@@ -231,6 +243,13 @@ class IndicatorEngine:
         )
         self._last_swing_structure[history_key] = swing_struct
 
+        # Directional consistency: ratio of |UPTREND - DOWNTREND| / total
+        self._structure_states[history_key].append(swing_struct.structure_state)
+        _sh = self._structure_states[history_key]
+        _up = sum(1 for s in _sh if s == "UPTREND")
+        _dn = sum(1 for s in _sh if s == "DOWNTREND")
+        directional_consistency = abs(_up - _dn) / max(_up + _dn, 1)
+
         # --- Phase 2: Momentum ROC z-score ---
         roc_raw = _rate_of_change(candles, lookback=self._config.roc_lookback)
         roc_series = self._roc_values[history_key]
@@ -262,6 +281,66 @@ class IndicatorEngine:
         )
 
         quality_flags = sorted(set(snapshot.quality_flags)) if snapshot.quality_flags else ["OK"]
+
+        # Inject macro indicator values if store is available
+        macro_values: dict[str, object] = {}
+        if self._macro_store is not None and hasattr(self._macro_store, "lookup"):
+            macro_snap = self._macro_store.lookup(candle.bar_end_ns)
+            macro_values = {
+                "vix": macro_snap.vix,
+                "vix_z": macro_snap.vix_z,
+                "dxy": macro_snap.dxy,
+                "dxy_z": macro_snap.dxy_z,
+                "yield_10y": macro_snap.yield_10y,
+                "yield_10y_z": macro_snap.yield_10y_z,
+            }
+            for flag in macro_snap.quality_flags:
+                if flag not in quality_flags:
+                    quality_flags.append(flag)
+            quality_flags = sorted(set(quality_flags))
+
+        # Inject options indicator values if store is available
+        if self._options_store is not None and hasattr(self._options_store, "lookup"):
+            options_snap = self._options_store.lookup(candle.bar_end_ns)
+            options_values = {
+                "atm_iv_30d": options_snap.atm_iv_30d,
+                "atm_iv_z": options_snap.atm_iv_z,
+                "term_structure_slope": options_snap.term_structure_slope,
+                "term_slope_z": options_snap.term_slope_z,
+                "put_call_skew_25d": options_snap.put_call_skew_25d,
+                "skew_z": options_snap.skew_z,
+            }
+            macro_values.update(options_values)
+            for flag in options_snap.quality_flags:
+                if flag not in quality_flags:
+                    quality_flags.append(flag)
+            quality_flags = sorted(set(quality_flags))
+
+        # Accumulate daily closes for 200MA cycle position
+        if candle.timeframe is Timeframe.TF_1D:
+            self._daily_closes[candle.symbol].append(candle.close)
+        # Compute cycle_position = current_price / MA_200
+        daily_closes = self._daily_closes.get(candle.symbol)
+        if daily_closes and len(daily_closes) >= 200:
+            ma_200 = sum(list(daily_closes)[-200:]) / 200
+            cycle_position = candle.close / ma_200 if ma_200 > 0 else 1.0
+        else:
+            cycle_position = 1.0  # Neutral when insufficient data
+        macro_values["cycle_position"] = round(cycle_position, 4)
+        macro_values["directional_consistency"] = round(directional_consistency, 4)
+
+        # OU process: mean-reversion speed κ and fragility ratio
+        ou_kappa = _ou_kappa(candles, window=self._config.vol_window)
+        total_depth = snapshot.bid_depth + snapshot.ask_depth
+        fragility_ratio = (ou_kappa / total_depth) if total_depth > 1e-9 else 0.0
+        macro_values["ou_kappa"] = round(ou_kappa, 6)
+        macro_values["fragility_ratio"] = round(fragility_ratio, 6)
+
+        # Future Basis proxy: funding_oi_weighted captures leveraged demand direction
+        # Positive = longs pay shorts (bullish demand), negative = shorts pay longs
+        # Already available as funding_oi_z in the pack, but raw value useful for thresholds
+        macro_values["funding_oi_raw"] = round(funding_value, 6)
+
         pack = IndicatorPack(
             ts_ns=candle.bar_end_ns,
             symbol=candle.symbol,
@@ -298,6 +377,7 @@ class IndicatorEngine:
                 "momentum_roc": roc_raw,
                 "momentum_roc_z": momentum_roc_z,
                 "multi_momentum_z": multi_momentum_z,
+                **macro_values,
             },
             components=components,
         )
@@ -383,7 +463,7 @@ class IndicatorEngine:
             self._overall_by_cutoff.pop(key, None)
 
 
-def _formula_hash(config: IndicatorEngineConfig) -> str:
+def _formula_hash(config: IndicatorEngineConfig, *, has_macro: bool = False, has_options: bool = False) -> str:
     """Fingerprint the indicator formula so decisions stay auditable across versions."""
     formula = (
         f"rv=std(logret,w={config.vol_window});"
@@ -396,7 +476,10 @@ def _formula_hash(config: IndicatorEngineConfig) -> str:
         f"roc_lookback={config.roc_lookback};"
         f"roc_z_window={config.roc_z_window};"
         f"roc_horizons={','.join(str(h) for h in config.roc_horizons)};"
-        f"expected_symbols={','.join(config.expected_symbols)}"
+        f"expected_symbols={','.join(config.expected_symbols)};"
+        f"macro={'vix,dxy,yield_10y' if has_macro else 'none'};"
+        f"options={'atm_iv,skew,term' if has_options else 'none'};"
+        f"cycle=200ma;ou_kappa=vol_window"
     )
     return f"sha256:{hashlib.sha256(formula.encode('utf-8')).hexdigest()}"
 
@@ -406,32 +489,7 @@ def _ob_imbalance(bid_depth: float, ask_depth: float) -> float:
     return math.log((bid_depth + 1e-9) / (ask_depth + 1e-9))
 
 
-def _median(values: list[float]) -> float:
-    if not values:
-        return 0.0
-    ordered = sorted(values)
-    mid = len(ordered) // 2
-    if len(ordered) % 2 == 1:
-        return ordered[mid]
-    return (ordered[mid - 1] + ordered[mid]) / 2.0
-
-
-def _mad(values: list[float], med: float) -> float:
-    deviations = [abs(v - med) for v in values]
-    return _median(deviations)
-
-
-def _robust_z(values: list[float], current: float, min_samples: int) -> float:
-    """Robust z-score based on median and MAD instead of mean and standard deviation."""
-    reference = values[:-1]
-    if len(reference) < min_samples:
-        return 0.0
-    med = _median(reference)
-    mad = _mad(reference, med)
-    if mad < 1e-9:
-        return 0.0
-    z = 0.6745 * (current - med) / mad
-    return max(-6.0, min(6.0, z))
+from zenquant.data._z_utils import robust_z as _robust_z  # noqa: E402
 
 
 def _slope(values: list[float]) -> float:
@@ -496,6 +554,48 @@ def _atr(candles: list[Candle], window: int) -> float:
     if not true_ranges:
         return 0.0
     return sum(true_ranges) / len(true_ranges)
+
+
+def _ou_kappa(candles: list[Candle], window: int) -> float:
+    """Estimate OU mean-reversion speed κ from price series.
+
+    Uses OLS regression: ΔX_t = a + b*X_{t-1}
+    where κ = -b and half_life = ln(2)/κ.
+
+    Higher κ → market reverts quickly (stable).
+    Lower κ → market has shock memory (fragile).
+    Returns 0.0 if insufficient data.
+    """
+    if len(candles) < window + 1:
+        return 0.0
+    closes = [c.close for c in candles[-(window + 1) :]]
+    if len(closes) < 3:
+        return 0.0
+
+    # Log prices for stationarity
+    log_prices = [math.log(max(p, 1e-9)) for p in closes]
+
+    # ΔX_t = log(P_t) - log(P_{t-1}), regress on X_{t-1}
+    n = len(log_prices) - 1
+    x_vals = log_prices[:-1]  # X_{t-1}
+    y_vals = [log_prices[i + 1] - log_prices[i] for i in range(n)]  # ΔX_t
+
+    x_mean = sum(x_vals) / n
+    y_mean = sum(y_vals) / n
+
+    var_x = 0.0
+    cov_xy = 0.0
+    for i in range(n):
+        dx = x_vals[i] - x_mean
+        var_x += dx * dx
+        cov_xy += dx * (y_vals[i] - y_mean)
+
+    if var_x < 1e-15:
+        return 0.0
+
+    beta = cov_xy / var_x
+    kappa = -beta  # Mean reversion speed
+    return max(0.0, kappa)  # Clamp to non-negative
 
 
 ZEN_PULSE_WEIGHTS = {

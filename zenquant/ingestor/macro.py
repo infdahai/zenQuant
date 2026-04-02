@@ -169,6 +169,83 @@ def fetch_transaction_count(output_dir: Path, days: int = 365) -> int:
     return saved
 
 
+def _fetch_yfinance(
+    ticker: str,
+    name: str,
+    output_dir: Path,
+    period: str = "2y",
+) -> int:
+    """Fetch daily close from Yahoo Finance via yfinance.
+
+    Requires ``yfinance`` (optional dependency group ``macro``).
+    """
+    try:
+        import yfinance as yf
+    except ImportError:
+        print(f"  yfinance not installed — skipping {name}. Install with: uv pip install 'zenquant[macro]'")
+        return 0
+
+    print(f"Fetching {name} ({ticker}, {period})...")
+    try:
+        data = yf.download(ticker, period=period, progress=False, auto_adjust=True)
+    except Exception as e:
+        print(f"  yfinance download failed for {ticker}: {e}")
+        return 0
+
+    if data.empty:
+        print(f"  No data returned for {ticker}")
+        return 0
+
+    import pandas as pd
+
+    # Flatten MultiIndex columns if present (yfinance can return MultiIndex with auto_adjust=True)
+    if isinstance(data.columns, pd.MultiIndex):
+        data.columns = data.columns.get_level_values(0)
+
+    records: list[dict] = []
+    for ts, row in data.iterrows():
+        ts_val = pd.Timestamp(ts)
+        ts_ns = int(ts_val.timestamp() * 1_000_000_000)
+        # Safely extract Close value (handles potential Series objects)
+        close_val = row["Close"]
+        if isinstance(close_val, pd.Series):
+            close_val = close_val.iloc[0]
+        if pd.notna(close_val):
+            records.append({"ts_ns": ts_ns, "value": float(close_val)})
+
+    output_path = output_dir / name / "data.parquet"
+    saved = _save_parquet(records, output_path)
+    print(f"  Saved {saved} records to {output_path}")
+    return saved
+
+
+def fetch_vix(output_dir: Path, period: str = "2y") -> int:
+    """Fetch CBOE VIX index daily close.
+
+    VIX measures 30-day implied volatility of S&P 500 options.
+    High VIX (>30) = market fear, historically correlated with crypto sell-offs.
+    """
+    return _fetch_yfinance("^VIX", "vix", output_dir, period)
+
+
+def fetch_dxy(output_dir: Path, period: str = "2y") -> int:
+    """Fetch US Dollar Index (DXY) daily close.
+
+    DXY measures USD strength against a basket of 6 currencies.
+    Strong dollar (rising DXY) typically bearish for risk assets including crypto.
+    """
+    return _fetch_yfinance("DX-Y.NYB", "dxy", output_dir, period)
+
+
+def fetch_treasury_10y(output_dir: Path, period: str = "2y") -> int:
+    """Fetch 10-Year US Treasury Yield daily close.
+
+    Rising yields = tighter financial conditions, risk-off.
+    Sharp yield moves signal macro regime shifts.
+    """
+    return _fetch_yfinance("^TNX", "treasury_10y", output_dir, period)
+
+
 def run_all(output_dir: Path = Path("data/raw/macro"), days: int = 365) -> None:
     """Fetch all macro signals. Safe to run daily as a cron job."""
     print(f"Fetching macro signals \u2192 {output_dir}")
@@ -185,6 +262,16 @@ def run_all(output_dir: Path = Path("data/raw/macro"), days: int = 365) -> None:
     time.sleep(REQUEST_DELAY)
 
     total += fetch_transaction_count(output_dir, days=days)
+    time.sleep(REQUEST_DELAY)
+
+    # Traditional macro indicators (require yfinance)
+    total += fetch_vix(output_dir)
+    time.sleep(REQUEST_DELAY)
+
+    total += fetch_dxy(output_dir)
+    time.sleep(REQUEST_DELAY)
+
+    total += fetch_treasury_10y(output_dir)
 
     print()
     print(f"Done. Total records: {total:,}")

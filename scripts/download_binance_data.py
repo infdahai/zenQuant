@@ -1,14 +1,20 @@
 #!/usr/bin/env python3
 """Download Binance historical data for backtesting.
 
-This script downloads the last 3 months of:
-- 4h and 1d klines (OHLCV data)
-- Funding rates
-- Open interest
+Usage:
+    # BTC full history (2019 to present)
+    uv run python scripts/download_binance_data.py --days 2500
 
-Data is saved in Parquet format for efficient replay.
+    # ETH data collection
+    uv run python scripts/download_binance_data.py --symbol ETHUSDT --days 2000
+
+    # Quick 3-month update
+    uv run python scripts/download_binance_data.py --days 90
+
+Data is saved as CSV files for replay via convert_csv_to_parquet.py.
 """
 
+import argparse
 import sys
 import urllib.request
 import zipfile
@@ -16,11 +22,10 @@ from datetime import datetime, timedelta
 from pathlib import Path
 
 
-def download_binance_data(days: int = 90):
+def download_binance_data(days: int = 90, symbol: str = "BTCUSDT"):
     """Download last N days of Binance futures data."""
 
     base_url = "https://data.binance.vision/data/futures/um/daily"
-    symbol = "BTCUSDT"
 
     # Calculate date range
     end_date = datetime.now()
@@ -141,18 +146,19 @@ def download_and_extract(url: str, output_path: Path, extract_dir: Path) -> bool
 
 
 if __name__ == "__main__":
-    days = 540  # Default to 18 months (1.5 BTC cycles)
-    if len(sys.argv) > 1:
-        days = int(sys.argv[1])
+    parser = argparse.ArgumentParser(description="Download Binance futures historical data.")
+    parser.add_argument("--days", type=int, default=2500, help="Number of days to download (default: 2500)")
+    parser.add_argument("--symbol", type=str, default="BTCUSDT", help="Trading symbol (default: BTCUSDT)")
+    args = parser.parse_args()
 
-    successful, failed = download_binance_data(days)
+    successful, failed = download_binance_data(days=args.days, symbol=args.symbol)
 
     if successful == 0:
-        print("❌ No data downloaded. Please check your internet connection.")
+        print("No data downloaded. Please check your internet connection.")
         sys.exit(1)
     elif successful < 300:
-        print("⚠️  Limited data downloaded. Consider downloading more days for full cycle coverage.")
+        print("Limited data downloaded. Consider downloading more days for full cycle coverage.")
         sys.exit(0)
     else:
-        print("✅ Sufficient data downloaded. Ready for backtesting!")
+        print("Sufficient data downloaded. Ready for backtesting!")
         sys.exit(0)

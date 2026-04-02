@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from zenquant.data import MacroDataStore, MacroDataStoreConfig
 from zenquant.domain import IndicatorPack, TargetPosition
 from zenquant.execution import ExecutionGateway, ExecutionKernel
 from zenquant.indicator import IndicatorEngine, IndicatorStore
@@ -50,11 +51,18 @@ class ZenQuantPipeline:
         self.bus.add_stream(StreamConfig(name="STREAM_EXEC", subjects=["exec.>"]))
 
         self.indicator_store = IndicatorStore()
+        # Load macro data if available (VIX, DXY, Treasury yields)
+        self.macro_store = MacroDataStore(MacroDataStoreConfig())
+        self.macro_store.load()
         # ORDERING INVARIANT: SnapshotBuilder must be instantiated before
         # BarClockService so bar-close CVD is finalized before clock events.
         self.snapshot_builder = SnapshotBuilder(bus=self.bus)
         self.bar_clock = BarClockService(bus=self.bus)
-        self.indicator_engine = IndicatorEngine(bus=self.bus, store=self.indicator_store)
+        self.indicator_engine = IndicatorEngine(
+            bus=self.bus,
+            store=self.indicator_store,
+            macro_store=self.macro_store if self.macro_store.loaded else None,
+        )
         # ORDERING INVARIANT: RiskOverlay must subscribe before ARCStrategyEngine
         # so indicator state is fresh when intents are evaluated.
         self.risk_overlay = RiskOverlay(bus=self.bus)

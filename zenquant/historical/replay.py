@@ -13,6 +13,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from zenquant.data import MacroDataStore, MacroDataStoreConfig, OptionsDataStore, OptionsDataStoreConfig
 from zenquant.domain import (
     BacktestDiagnostics,
     BacktestMetrics,
@@ -36,6 +37,7 @@ from zenquant.domain import (
 from zenquant.execution import ExecutionKernel, SimulatedGateway
 from zenquant.indicator import IndicatorEngine, IndicatorEngineConfig, IndicatorStore
 from zenquant.infra import InMemoryJetStream, StreamConfig
+from zenquant.plugins.profile import build_from_profile
 from zenquant.risk import RiskOverlay, RiskOverlayConfig
 from zenquant.state import StateEngine
 from zenquant.strategy import ARCStrategyConfig, ARCStrategyEngine
@@ -61,6 +63,12 @@ class HistoricalBacktestConfig:
     strategy_config: ARCStrategyConfig | None = None
     # Domain randomization (for robustness testing)
     perturbation: PerturbationConfig | None = None
+    # Macro data directory (VIX, DXY, Treasury yields)
+    macro_dir: Path = Path("data/raw/macro")
+    # Options data directory (Deribit IV, skew, term structure)
+    options_dir: Path = Path("data/raw/deribit_options")
+    # Plugin profile path (default.toml, etc.)
+    profile_path: Path | None = Path("config/profiles/default.toml")
 
 
 @dataclass(slots=True)
@@ -93,18 +101,34 @@ class HistoricalBacktest:
         self.bus.add_stream(StreamConfig(name="STREAM_EXEC", subjects=["exec.>"]))
 
         self.indicator_store = IndicatorStore()
+        # Load macro data if available
+        self._macro_store = MacroDataStore(MacroDataStoreConfig(macro_dir=self._config.macro_dir))
+        self._macro_store.load()
+        # Load options data if available
+        self._options_store = OptionsDataStore(
+            OptionsDataStoreConfig(options_dir=self._config.options_dir, currency="BTC")
+        )
+        self._options_store.load()
         self.indicator_engine = IndicatorEngine(
             bus=self.bus,
             store=self.indicator_store,
             config=IndicatorEngineConfig(expected_symbols=(self._config.portfolio_symbol,)),
+            macro_store=self._macro_store if self._macro_store.loaded else None,
+            options_store=self._options_store if self._options_store.loaded else None,
         )
         self.risk_overlay = RiskOverlay(
             bus=self.bus,
             config=RiskOverlayConfig(starting_equity=self._config.starting_equity),
         )
+        # Load plugin registry if profile path provided
+        plugin_registry = None
+        if self._config.profile_path and self._config.profile_path.exists():
+            plugin_root = Path(__file__).parent.parent / "plugins"
+            _, plugin_registry = build_from_profile(self._config.profile_path, plugin_root=plugin_root)
         self.strategy_engine = ARCStrategyEngine(
             bus=self.bus,
             config=self._config.strategy_config,
+            plugin_registry=plugin_registry,
         )
         self.state_engine = StateEngine(bus=self.bus)
         self.execution_kernel = ExecutionKernel(
@@ -404,7 +428,7 @@ class HistoricalBacktest:
             playbook_counts=dict(playbook_counts),
             actionable_exit_counts=dict(actionable_exit_counts),
             risk_flag_counts=dict(risk_flag_counts),
-            top_target_reason_codes=dict(target_reason_counts.most_common(10)),
+            top_target_reason_codes=dict(target_reason_counts.most_common(50)),
         )
 
     def build_analysis_rows(self, *, horizons: tuple[int, ...] = (1, 3, 6)) -> list[dict[str, Any]]:

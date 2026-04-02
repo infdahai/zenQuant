@@ -100,6 +100,56 @@ def _build_full_config(args: argparse.Namespace) -> CampaignConfig:
     )
 
 
+def _build_bayesian_config(args: argparse.Namespace) -> CampaignConfig:
+    """Bayesian campaign: Optuna TPE over all 8 strategy params + WF + robustness.
+
+    Grid equivalent: 57,600 combinations (infeasible).
+    Optuna: 200 trials (~10 minutes on 6-year data).
+    """
+    # Walk-forward splits (same as full)
+    now = datetime.now()
+    splits: list[WalkForwardSplit] = []
+    base = now - timedelta(days=365)
+    for i in range(3):
+        train_start = base + timedelta(days=i * 90)
+        train_end = train_start + timedelta(days=90)
+        val_start = train_end
+        val_end = val_start + timedelta(days=90)
+        splits.append(
+            WalkForwardSplit(
+                train_start_ns=int(train_start.timestamp() * 1e9),
+                train_end_ns=int(train_end.timestamp() * 1e9),
+                val_start_ns=int(val_start.timestamp() * 1e9),
+                val_end_ns=int(val_end.timestamp() * 1e9),
+            )
+        )
+
+    return CampaignConfig(
+        data_root=Path(args.data_root),
+        symbol=args.symbol,
+        search_space=SearchSpace(
+            strategy_params={
+                "bull_leverage": [2.0, 2.5, 3.0, 3.5],
+                "bear_leverage": [1.5, 2.0, 2.5],
+                "range_leverage": [1.0, 1.5, 2.0],
+                "preserve_capital_risk": [0.50, 0.55, 0.60, 0.65, 0.70],
+                "exit_transition_risk": [0.75, 0.80, 0.85, 0.90],
+                "target_vol_4h": [0.40, 0.50, 0.60, 0.70, 0.80],
+                "target_vol_1d": [0.35, 0.45, 0.50, 0.60],
+                "trailing_stop_atr_mult": [1.5, 2.0, 2.5, 3.0],
+            },
+        ),
+        sweep_mode="bayesian",
+        n_trials=200,
+        wf_splits=splits,
+        top_n_for_validation=args.top_n,
+        robustness_seeds=[] if args.no_robustness else [42, 123, 456, 789, 1024],
+        campaign_label=args.label or "bayesian_full",
+        output_dir=Path(args.output_dir),
+        verbose=not args.quiet,
+    )
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         description="Run an AutoResearch optimization campaign",
@@ -107,6 +157,7 @@ def main() -> None:
     )
     parser.add_argument("--quick", action="store_true", help="Quick campaign (sweep only)")
     parser.add_argument("--full", action="store_true", help="Full campaign (sweep + WF + robustness)")
+    parser.add_argument("--bayesian", action="store_true", help="Bayesian campaign (Optuna, all 8 params, WF + robustness)")
     parser.add_argument("--data-root", default="data/raw/binance", help="Historical data root")
     parser.add_argument("--symbol", default="BTCUSDT", help="Symbol to optimize")
     parser.add_argument("--output-dir", default="results/campaigns", help="Campaign output directory")
@@ -122,10 +173,15 @@ def main() -> None:
 
     args = parser.parse_args()
 
-    if not args.quick and not args.full:
-        parser.error("Must specify --quick or --full")
+    if not args.quick and not args.full and not args.bayesian:
+        parser.error("Must specify --quick, --full, or --bayesian")
 
-    config = _build_quick_config(args) if args.quick else _build_full_config(args)
+    if args.bayesian:
+        config = _build_bayesian_config(args)
+    elif args.full:
+        config = _build_full_config(args)
+    else:
+        config = _build_quick_config(args)
     campaign = Campaign(config)
     report = campaign.run()
 

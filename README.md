@@ -106,6 +106,8 @@ ZenQuant addresses these by enforcing:
 │  Indicator Engine                                               │
 │  • Phase 1: vol, cvd, funding, zen_pulse                        │
 │  • Phase 2: swing points, momentum ROC                          │
+│  • Macro: VIX, DXY, Treasury yields (z-scored)                  │
+│  • Options: ATM IV, skew, term structure (z-scored)              │
 │  • Quality flags & formula hashing                              │
 └────────────────────────┬────────────────────────────────────────┘
                          │
@@ -337,8 +339,10 @@ Use historical replay to search safely. Use live audit exports to verify that th
 
 Phase 1: `realized_vol`, `atr`, `ob_liq_z`, `overall_ob_liq_z`, `cvd_slope`, `funding_oi_z`, `funding_oi_weighted`, `zen_pulse`
 Phase 2: `structure_state` (swing points), `momentum_roc_z`
+Macro: `vix`, `vix_z`, `dxy`, `dxy_z`, `yield_10y`, `yield_10y_z` (from MacroDataStore)
+Options: `atm_iv_30d`, `atm_iv_z`, `skew_z`, `term_slope_z` (from OptionsDataStore, pending data)
 
-Quality flags: `OK`, `BOOK_STALE`, `VENUE_DOWN`, `MISSING_OI`, `LOW_OI_COVERAGE`, `DATA_STALE`, `DATA_FUTURE`
+Quality flags: `OK`, `BOOK_STALE`, `VENUE_DOWN`, `MISSING_OI`, `LOW_OI_COVERAGE`, `DATA_STALE`, `DATA_FUTURE`, `MACRO_STALE`, `OPTIONS_STALE`
 
 ### Risk Overlay
 
@@ -366,6 +370,17 @@ Each plugin is one `.py` file with a `meta` descriptor and a `compute()` pure fu
 Configuration in `config/profiles/default.toml`. See `zenquant/plugins/protocols.py`
 for the interface contract.
 
+**Active Signal Plugins** (default profile):
+
+| Signal | Weight | Source | Description |
+|--------|--------|--------|-------------|
+| `multi_momentum_signal` | 0.45 | Price structure | Multi-horizon momentum ROC |
+| `cvd_signal` | 0.25 | CVD slope | Cumulative volume delta direction |
+| `liquidity_signal` | 0.20 | Order book | OB imbalance mean-reversion |
+| `crowding_signal` | 0.10 | Funding × OI | Contrarian positioning |
+| `macro_regime_signal` | 0.12 | VIX/DXY/10Y | Cross-asset risk-on/off |
+| `options_vol_signal` | 0.15 | Deribit IV | Vol mean-reversion (disabled pending data) |
+
 ### Validation Infrastructure
 
 - **Parallel walk-forward**: `ProcessPoolExecutor` (6-8x speedup on M4 Pro)
@@ -375,13 +390,16 @@ for the interface contract.
 ### Test Coverage
 
 ```
-119 tests passing, 4 skipped (require live external systems)
+223 tests passing, 5 skipped (require live external systems)
 
 Core coverage:
 ✅ E2E decision chain tests
 ✅ Live bootstrap and bar-close tests
 ✅ Exit engine priority logic
 ✅ Playbook selection (config override, crowded-long fallthrough)
+✅ Macro data store (point-in-time, z-scores, staleness)
+✅ Options data store (ATM IV, skew, term structure)
+✅ Signal plugins (macro regime, options vol, momentum, CVD, liquidity, crowding)
 ✅ Sizing computation (UNSAFE zero-leverage, config overrides)
 ✅ State classification
 ✅ Plugin infrastructure (registry, orchestrator, composition)
@@ -801,6 +819,6 @@ This software is provided for educational and research purposes only. It is not 
 
 ---
 
-**Last Updated**: 2026-03-28
-**Test Status**: 119 passing, 4 skipped
+**Last Updated**: 2026-04-01
+**Test Status**: 223 passing, 5 skipped
 **Documentation**: `docs/OPERATIONS.md` (deployment & monitoring), `docs/VALIDATION.md` (results & baselines)

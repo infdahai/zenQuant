@@ -17,11 +17,7 @@ enabled = true
 weight = 0.45
 momentum_threshold = 0.3
 use_single_fallback = true
-
-[signals.momentum_signal]
-enabled = false
-weight = 0.40
-momentum_threshold = 0.3
+signal_sign = 1.0
 
 [signals.cvd_signal]
 enabled = true
@@ -37,6 +33,21 @@ ob_extreme_threshold = 1.2
 enabled = true
 weight = 0.10
 extreme_threshold = 1.8
+
+[signals.macro_regime_signal]
+enabled = true
+weight = 0.12
+vix_extreme_threshold = 1.5
+dxy_strong_threshold = 1.5
+yield_stress_threshold = 2.0
+
+[signals.options_vol_signal]
+enabled = false  # Enable after collecting 30-60 days of options snapshots
+weight = 0.15
+low_iv_threshold = -0.5
+high_iv_threshold = 1.5
+extreme_iv_threshold = 2.5
+inverted_skew_threshold = -1.0
 
 # ─── Filter Plugins ─────────────────────────────────────────
 # Composition: AND chain → all must pass

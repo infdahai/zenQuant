@@ -18,6 +18,8 @@ dependencies = [
 
 [project.optional-dependencies]
 telegram = ["python-telegram-bot>=21.0"]
+macro = ["yfinance>=0.2.0"]
+optimize = ["optuna>=4.0.0"]
 
 [project.scripts]
 zenquant-backtest = "zenquant.app.backtest:main"

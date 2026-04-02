@@ -32,6 +32,10 @@ class RiskOverlayConfig:
     daily_loss_limit: float = 0.06
     daily_safe_lev_cap: float = 0.35
     kill_switch_drawdown: float = 0.22
+    # Kill switch recovery (Claude Code "fallback model" pattern)
+    kill_recovery_threshold: float = 0.12  # DD must recover below this to start recovery
+    kill_cooldown_bars: int = 36  # 36 bars = 6 days at 4H (cooldown before re-entry)
+    kill_ramp_bars: int = 24  # 24 bars = 4 days to ramp from 0.2x to 1.0x leverage
 
 
 class RiskOverlay:
@@ -53,6 +57,10 @@ class RiskOverlay:
         self._actual_positions: dict[str, float] = {}
         self._latest_indicator: dict[tuple[str, Timeframe], IndicatorPack] = {}
         self._day_anchor: tuple[int, float] | None = None
+        # Kill switch recovery state
+        self._kill_active = False
+        self._kill_bar_count = 0  # Bars since kill switch first triggered
+        self._recovery_bar_count = 0  # Bars since DD dropped below recovery threshold
 
         self._bus.subscribe("indicator.>", self._on_indicator)
         self._bus.subscribe("intent.target_position.>", self._on_target_position)
@@ -128,8 +136,21 @@ class RiskOverlay:
             lev_cap *= 0.65
             flags.append("DD_STEP_1")
 
+        # Kill switch with recovery (Claude Code "fallback model" pattern)
         if drawdown >= self._config.kill_switch_drawdown:
-            flags.append("KILL_SWITCH")
+            if not self._kill_active:
+                self._kill_active = True
+                self._kill_bar_count = 0
+            self._kill_bar_count += 1
+            # After cooldown, reset HWM and recover (break the deadlock)
+            if self._kill_bar_count >= self._config.kill_cooldown_bars:
+                self._high_water_mark = self._equity  # Fresh start
+                self._kill_active = False
+                self._kill_bar_count = 0
+                lev_cap *= 0.3  # Start with reduced leverage
+                flags.append("KILL_RECOVERED")
+            else:
+                flags.append("KILL_SWITCH")
 
         daily_loss = self._daily_loss(target.cutoff_time_ns)
         if daily_loss >= self._config.daily_loss_limit:

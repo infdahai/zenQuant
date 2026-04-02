@@ -24,6 +24,10 @@ class ExecutionKernelConfig:
     min_trade_qty: float = 0.0001
     max_trade_qty_per_bar: float = 1.0
     max_slippage_bps: float = 8.0
+    # Gradual position adjustment (pyramid-style execution)
+    # 1.0 = execute full delta (legacy behavior), <1.0 = partial fills per bar
+    entry_fraction: float = 1.0  # Fraction of delta when adding to position
+    exit_fraction: float = 1.0  # Fraction of delta when reducing position
 
 
 class ExecutionKernel:
@@ -99,6 +103,12 @@ class ExecutionKernel:
             trade_qty = min(abs(delta_qty), abs(current_position))
         else:
             trade_qty = min(abs(delta_qty), self._config.max_trade_qty_per_bar)
+
+        # Gradual execution: apply entry/exit fraction
+        is_reducing = current_position != 0 and current_position * delta_qty < 0
+        fraction = self._config.exit_fraction if is_reducing else self._config.entry_fraction
+        if fraction < 1.0:
+            trade_qty = trade_qty * fraction
 
         order = ExecutionOrder(
             client_order_id=f"{symbol}-{payload.cutoff_time_ns}-{next(self._order_seq)}",
