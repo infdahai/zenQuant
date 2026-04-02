@@ -107,6 +107,14 @@ class ARCStrategyEngine:
             or ExitEngineConfig(min_bars_before_trail=self._config.min_bars_before_trail)
         )
 
+        # Adaptive signal weighting: track rolling IC per signal
+        from collections import deque, defaultdict
+
+        self._signal_values: dict[str, deque[float]] = defaultdict(lambda: deque(maxlen=120))
+        self._forward_returns: deque[float] = deque(maxlen=120)
+        self._last_close: dict[str, float] = {}
+        self._adaptive_weights: dict[str, float] = {}
+
         # Phase 2: multi-timeframe coordination
         self._directional_bias: dict[str, DirectionalBias] = {}  # symbol -> 1d bias
 
@@ -586,14 +594,50 @@ class ARCStrategyEngine:
         if state_dict is None:
             state_dict = self._state_dict(state, playbook)
 
+        # Update rolling IC tracker (online learning)
+        close = float(ind_dict.get("close", ind_dict.get("last_price", 0)) or 0)
+        symbol = pack.symbol if hasattr(pack, "symbol") else ""
+        prev_close = self._last_close.get(symbol, 0)
+        if prev_close > 0 and close > 0:
+            self._forward_returns.append((close - prev_close) / prev_close)
+        self._last_close[symbol] = close
+
+        # Compute adaptive weights from rolling IC (every bar, lightweight)
+        effective_weights = dict(self._plugins.signal_weights)
+        if len(self._forward_returns) >= 60:
+            import math
+
+            rets = list(self._forward_returns)
+            for sig_name, sig_deque in self._signal_values.items():
+                vals = list(sig_deque)[-len(rets) :]
+                if len(vals) < 60:
+                    continue
+                aligned = min(len(vals), len(rets))
+                v, r = vals[-aligned:], rets[-aligned:]
+                # Simplified rank correlation
+                n = len(v)
+                mv, mr2 = sum(v) / n, sum(r) / n
+                cov = sum((v[i] - mv) * (r[i] - mr2) for i in range(n))
+                sv = math.sqrt(sum((v[i] - mv) ** 2 for i in range(n)))
+                sr = math.sqrt(sum((r[i] - mr2) ** 2 for i in range(n)))
+                ic = cov / (sv * sr) if sv > 1e-12 and sr > 1e-12 else 0.0
+                # Scale weight: IC>0 → full weight, IC<0 → reduce to 20%
+                base_w = self._plugins.signal_weights.get(sig_name, 1.0)
+                scale = max(0.2, min(1.0, 0.5 + ic * 5.0))
+                effective_weights[sig_name] = base_w * scale
+
         # Compose signals → weighted direction
         composed = compose_signals(
             self._plugins.signals,
-            self._plugins.signal_weights,
+            effective_weights,
             ind_dict,
             state_dict,
         )
         reason_codes = list(composed.reason_codes)
+
+        # Track each signal's contribution for rolling IC
+        for sig_name, contrib in composed.contributions.items():
+            self._signal_values[sig_name].append(contrib)
 
         # Discretize to {-1, 0, 1} based on direction threshold
         direction = 0.0
