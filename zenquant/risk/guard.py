@@ -61,6 +61,11 @@ class RiskOverlay:
         self._kill_active = False
         self._kill_bar_count = 0  # Bars since kill switch first triggered
         self._recovery_bar_count = 0  # Bars since DD dropped below recovery threshold
+        # Level 3 AI-native: strategy self-awareness (equity curve anomaly detection)
+        from collections import deque
+
+        self._equity_history: deque[float] = deque(maxlen=120)
+        self._degraded_mode_bars = 0
 
         self._bus.subscribe("indicator.>", self._on_indicator)
         self._bus.subscribe("intent.target_position.>", self._on_target_position)
@@ -126,6 +131,27 @@ class RiskOverlay:
         flags: list[str] = []
         drawdown = self._drawdown()
         lev_cap = self._config.max_leverage
+
+        # Level 3: Strategy self-awareness — detect equity curve degradation
+        self._equity_history.append(self._equity)
+        if len(self._equity_history) >= 60:
+            recent = list(self._equity_history)
+            # Rolling return over last 60 bars
+            returns_60 = [(recent[i] - recent[i - 1]) / recent[i - 1]
+                          for i in range(1, len(recent)) if recent[i - 1] > 0]
+            if returns_60:
+                import math
+
+                avg_ret = sum(returns_60) / len(returns_60)
+                var = sum((r - avg_ret) ** 2 for r in returns_60) / len(returns_60)
+                rolling_sharpe = (avg_ret / math.sqrt(var)) * math.sqrt(len(returns_60)) if var > 1e-15 else 0
+                if rolling_sharpe < -2.0:
+                    self._degraded_mode_bars += 1
+                    if self._degraded_mode_bars >= 24:  # 4 days of severely negative
+                        lev_cap *= 0.4
+                        flags.append("STRATEGY_DEGRADED")
+                else:
+                    self._degraded_mode_bars = max(0, self._degraded_mode_bars - 1)
         if drawdown >= self._config.dd_step_3:
             lev_cap *= 0.2
             flags.append("DD_STEP_3")

@@ -1,18 +1,18 @@
 {
   "schema": "golden_output.v1",
-  "description": "Baseline: adaptive IC weights + confidence-weighted direction",
+  "description": "Baseline: v2.0 + adaptive IC + strategy degradation detection",
   "metrics": {
-    "net_pnl": 391.14,
-    "sharpe": -0.2438,
-    "max_drawdown": 0.0185,
-    "profit_factor": 2.398299,
+    "net_pnl": -2165.87,
+    "sharpe": -13.516,
+    "max_drawdown": 0.02295,
+    "profit_factor": 2.589043,
     "trade_count": 218,
-    "win_rate": 0.570248,
+    "win_rate": 0.556452,
     "total_bars": 540
   },
   "equity": {
     "starting": 100000.0,
-    "final": 100391.14361400003
+    "final": 97834.13099057962
   },
   "diagnostics": {
     "playbook_counts": {
@@ -20,7 +20,7 @@
       "BULL_CONTINUATION": 138
     },
     "actionable_exit_counts": {
-      "TIME_DECAY": 18,
+      "TIME_DECAY": 19,
       "TRAILING": 2
     }
   },

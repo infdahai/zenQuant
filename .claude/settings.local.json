@@ -59,7 +59,8 @@
       "Bash(brew install:*)",
       "Bash(sed -i '' 's/weight = .*/weight = __TRACKED_VAR__/' config/profiles/default.toml)",
       "Bash(break)",
-      "Bash(pdftotext \"/Users/disaster/Downloads/ai-agent-deep-dive-v2.pdf\" -)"
+      "Bash(pdftotext \"/Users/disaster/Downloads/ai-agent-deep-dive-v2.pdf\" -)",
+      "Bash(echo \"PID: $!\")"
     ]
   }
 }
