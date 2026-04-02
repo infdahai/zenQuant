@@ -46,7 +46,20 @@
       "WebFetch(domain:martinfowler.com)",
       "WebFetch(domain:blog.langchain.com)",
       "Bash(git stash:*)",
-      "Bash(git:*)"
+      "Bash(git:*)",
+      "Bash(npm install:*)",
+      "Bash(npm run:*)",
+      "Bash(while read:*)",
+      "Bash(do grep:*)",
+      "Bash(done)",
+      "WebFetch(domain:chart.kiyotaka.ai)",
+      "WebFetch(domain:docs.coinkarma.co)",
+      "WebFetch(domain:mp.weixin.qq.com)",
+      "WebFetch(domain:raw.githubusercontent.com)",
+      "Bash(brew install:*)",
+      "Bash(sed -i '' 's/weight = .*/weight = __TRACKED_VAR__/' config/profiles/default.toml)",
+      "Bash(break)",
+      "Bash(pdftotext \"/Users/disaster/Downloads/ai-agent-deep-dive-v2.pdf\" -)"
     ]
   }
 }
