@@ -7,16 +7,19 @@
 Regime-aware crypto perpetual futures trading system. BTC-first, 4H execution timeframe.
 完整角色定义和架构约束见 `AGENTS.md`。
 
-## 当前信号体系 (6 plugins)
+## 当前信号体系 (9 plugins, 8 active)
 
-| Signal | Weight | Status | Source |
-|--------|--------|--------|--------|
-| multi_momentum_signal | 0.45 | Active | Price structure (multi-horizon ROC) |
-| cvd_signal | 0.25 | Active | Cumulative volume delta |
-| liquidity_signal | 0.20 | Active | Order book imbalance |
-| crowding_signal | 0.10 | Active | Funding x OI positioning |
-| macro_regime_signal | 0.12 | Active | VIX/DXY/Treasury yields |
-| options_vol_signal | 0.15 | Disabled | Deribit ATM IV/skew (pending 30d data) |
+| Signal | Weight | Status | Source | IC |
+|--------|--------|--------|--------|----|
+| multi_momentum_signal | 0.45 | Active | Price structure (multi-horizon ROC) | -0.08 (弱) |
+| crash_reversal_signal | 0.25 | Active | 极端崩盘反转 (bar ret<-5%) | **-0.21** (最强) |
+| cvd_signal | 0.25 | Active | Cumulative volume delta | -0.03 |
+| vol_mean_reversion_signal | 0.20 | Active | 波动率均值回归 (rv20/rv60>1.5) | **+2.98%/5d excess** |
+| liquidity_signal | 0.20 | Active | Order book imbalance | N/A(无OB数据) |
+| macro_regime_signal | 0.12 | Active | VIX/DXY/Treasury/TLT | -0.01 |
+| funding_alpha_signal | 0.10 | Active | 资金费率反转(contrarian) | -0.03 |
+| crowding_signal | 0.10 | Active | Funding x OI positioning | N/A |
+| options_vol_signal | 0.15 | Disabled | Deribit ATM IV/skew (pending 30d data) | N/A |
 
 ## 架构三层分离
 
@@ -30,8 +33,8 @@ Layer 1 (数据)  → 一次搭建永久运行 (GitHub Actions, DataStores, Parq
 
 **架构**: v2.0 confidence-weighted direction (signal × weight × confidence)
 **数据**: BTC 12,766 + ETH 11,342 + BNB 1,740 + SOL 1,938 bars
-**性能**: BTC Train=1.92 / Test=2.52 (不过拟合). ETH=-0.31 (需适配)
-**下一步**: Phase 2 滚动IC监控 + 截面信号
+**性能**: BTC Train=1.33 / Test=2.03 (不过拟合). ETH=-0.31 (需适配)
+**下一步**: Paper trading验证 + Live执行优化
 
 核心原则(文章"骨架+血肉"): 6层决策链是骨架(不替代)，AI只调参数(血肉)
 每个新因子必须IC>0.03才启用(防止因子幻象)

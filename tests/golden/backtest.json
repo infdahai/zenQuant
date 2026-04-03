@@ -1,6 +1,6 @@
 {
   "schema": "golden_output.v1",
-  "description": "v2.0 + crash_reversal + funding_alpha + vol_mean_reversion",
+  "description": "v2.0 complete: confidence + adaptive IC + crash + vol MR + TLT macro",
   "metrics": {
     "net_pnl": -1326.85,
     "sharpe": -12.4886,
