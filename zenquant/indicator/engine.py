@@ -351,6 +351,11 @@ class IndicatorEngine:
         macro_values["volume_ratio"] = round(volume_ratio, 2)
         macro_values["open"] = candle.open
 
+        # Vol ratio: short-term RV / long-term RV (vol spike detection)
+        rv_60 = _realized_vol(candles, window=60, timeframe=candle.timeframe)
+        vol_ratio_rv = realized_vol / rv_60 if rv_60 > 0.01 else 1.0
+        macro_values["vol_ratio_rv"] = round(vol_ratio_rv, 3)
+
         pack = IndicatorPack(
             ts_ns=candle.bar_end_ns,
             symbol=candle.symbol,

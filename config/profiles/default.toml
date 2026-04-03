@@ -61,6 +61,12 @@ weight = 0.10
 high_funding_z = 2.0
 low_funding_z = -2.0
 
+[signals.vol_mean_reversion_signal]
+enabled = true
+weight = 0.20
+spike_threshold = 1.5
+compression_threshold = 0.5
+
 # ─── Filter Plugins ─────────────────────────────────────────
 # Composition: AND chain → all must pass
 

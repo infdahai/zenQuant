@@ -69,7 +69,11 @@
       "WebFetch(domain:www.jpmorganchase.com)",
       "WebFetch(domain:blog.kaiko.com)",
       "WebFetch(domain:medium.com)",
-      "WebFetch(domain:en.wikipedia.org)"
+      "WebFetch(domain:en.wikipedia.org)",
+      "Bash(kill 96297 96299)",
+      "Bash(echo \"New PID: $!\")",
+      "WebFetch(domain:www.deribit.com)",
+      "WebFetch(domain:greeks.live)"
     ]
   }
 }

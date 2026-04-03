@@ -1,18 +1,18 @@
 {
   "schema": "golden_output.v1",
-  "description": "Baseline: v2.0 + crash_reversal + funding_alpha signals",
+  "description": "v2.0 + crash_reversal + funding_alpha + vol_mean_reversion",
   "metrics": {
-    "net_pnl": -1466.75,
-    "sharpe": -12.3179,
-    "max_drawdown": 0.015401,
-    "profit_factor": 4.70471,
-    "trade_count": 175,
-    "win_rate": 0.616162,
+    "net_pnl": -1326.85,
+    "sharpe": -12.4886,
+    "max_drawdown": 0.013424,
+    "profit_factor": 5.289416,
+    "trade_count": 151,
+    "win_rate": 0.595238,
     "total_bars": 540
   },
   "equity": {
     "starting": 100000.0,
-    "final": 98533.25491470752
+    "final": 98673.14997333362
   },
   "diagnostics": {
     "playbook_counts": {
@@ -27,6 +27,6 @@
   "counts": {
     "indicator_packs": 630,
     "targets": 540,
-    "reports": 175
+    "reports": 151
   }
 }
