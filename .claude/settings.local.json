@@ -73,7 +73,8 @@
       "Bash(kill 96297 96299)",
       "Bash(echo \"New PID: $!\")",
       "WebFetch(domain:www.deribit.com)",
-      "WebFetch(domain:greeks.live)"
+      "WebFetch(domain:greeks.live)",
+      "Bash(kill 6910 6912)"
     ]
   }
 }
