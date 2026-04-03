@@ -49,6 +49,18 @@ high_iv_threshold = 1.5
 extreme_iv_threshold = 2.5
 inverted_skew_threshold = -1.0
 
+[signals.crash_reversal_signal]
+enabled = true
+weight = 0.25
+crash_threshold = -0.05
+deep_crash_threshold = -0.08
+
+[signals.funding_alpha_signal]
+enabled = true
+weight = 0.10
+high_funding_z = 2.0
+low_funding_z = -2.0
+
 # ─── Filter Plugins ─────────────────────────────────────────
 # Composition: AND chain → all must pass
 

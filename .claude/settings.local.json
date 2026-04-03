@@ -60,7 +60,16 @@
       "Bash(sed -i '' 's/weight = .*/weight = __TRACKED_VAR__/' config/profiles/default.toml)",
       "Bash(break)",
       "Bash(pdftotext \"/Users/disaster/Downloads/ai-agent-deep-dive-v2.pdf\" -)",
-      "Bash(echo \"PID: $!\")"
+      "Bash(echo \"PID: $!\")",
+      "WebFetch(domain:papers.ssrn.com)",
+      "WebFetch(domain:scholar.google.com)",
+      "WebFetch(domain:www.coindesk.com)",
+      "WebFetch(domain:arxiv.org)",
+      "WebFetch(domain:www.theblock.co)",
+      "WebFetch(domain:www.jpmorganchase.com)",
+      "WebFetch(domain:blog.kaiko.com)",
+      "WebFetch(domain:medium.com)",
+      "WebFetch(domain:en.wikipedia.org)"
     ]
   }
 }

@@ -75,9 +75,9 @@ class HistoricalPipelineTests(unittest.TestCase):
 
             result = HistoricalBacktest(HistoricalBacktestConfig(root_dir=root, symbol="BTCUSDT")).run()
 
-            # Baseline: adaptive IC weights + confidence-weighted direction
-            self.assertAlmostEqual(result.metrics.sharpe, -13.5160, places=2)
-            self.assertEqual(result.metrics.trade_count, 218)
+            # Baseline: v2.0 + crash_reversal + funding_alpha
+            self.assertAlmostEqual(result.metrics.sharpe, -12.3179, places=2)
+            self.assertEqual(result.metrics.trade_count, 175)
             self.assertIn("BULL_CONTINUATION", result.diagnostics.playbook_counts)
             self.assertIn("TRAILING", result.diagnostics.actionable_exit_counts)
 

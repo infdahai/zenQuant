@@ -126,7 +126,7 @@ class TestRegistryLoadsRealPlugins(unittest.TestCase):
 
         profile, registry = build_from_profile(PROFILE_PATH, plugin_root=PLUGIN_ROOT)
 
-        self.assertEqual(len(registry.signals), 5)  # options_vol_signal disabled by default
+        self.assertEqual(len(registry.signals), 7)  # +crash_reversal +funding_alpha, options disabled
         self.assertEqual(len(registry.filters), 2)
         self.assertEqual(len(registry.sizers), 4)
         self.assertEqual(len(registry.exits), 5)

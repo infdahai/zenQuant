@@ -341,6 +341,16 @@ class IndicatorEngine:
         # Already available as funding_oi_z in the pack, but raw value useful for thresholds
         macro_values["funding_oi_raw"] = round(funding_value, 6)
 
+        # Volume ratio: current volume / 20-bar average
+        vol_values = [c.volume for c in candles[-21:]] if len(candles) >= 21 else []
+        if len(vol_values) >= 2:
+            vol_avg = sum(vol_values[:-1]) / len(vol_values[:-1])
+            volume_ratio = candle.volume / vol_avg if vol_avg > 0 else 1.0
+        else:
+            volume_ratio = 1.0
+        macro_values["volume_ratio"] = round(volume_ratio, 2)
+        macro_values["open"] = candle.open
+
         pack = IndicatorPack(
             ts_ns=candle.bar_end_ns,
             symbol=candle.symbol,
