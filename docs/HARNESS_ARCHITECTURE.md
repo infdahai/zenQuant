@@ -64,6 +64,17 @@
     zenquant-check  (one command, all gates)
     ════════════════════════════════════════
 
+    Gate 0: FACTOR HEALTH (Verification Agent pattern)
+    ┌─────────────────────────────────────────────────┐
+    │  IC stability: no sign flip between data halves │
+    │  Sprint contracts: min 2 active signals         │
+    │  Walk-forward stability on synthetic data       │
+    │  Data split config: temporal ordering valid      │
+    │  Disabled signals: no high-weight dead weight    │
+    └────────────────────┬────────────────────────────┘
+              PASS       │       FAIL → flag signal for review
+              v
+
     Gate A: FORMAT + LINT
     ┌─────────────────────────────────────────────────┐
     │  ruff check zenquant/ tests/ scripts/           │
@@ -120,15 +131,32 @@
     Gate E: FULL TEST SUITE
     ┌─────────────────────────────────────────────────┐
     │  uv run pytest --tb=short -q                    │
-    │  223+ tests, 4 skipped (external deps)          │
+    │  259+ tests, 5 skipped (external deps)           │
     │                                                 │
     │  Covers: e2e chain, exits, playbooks, sizing,   │
-    │  state, plugins, perturbation, research,        │
-    │  AutoResearch, PR #7 fixes, tuning tools        │
+    │  state, plugins, perturbation, risk guard,      │
+    │  execution pyramid, basis store, 1H execution   │
     │                                                 │
     │  WHY: Evidence, not vibes.                      │
-    │  COST: ~2 seconds                               │
+    │  COST: ~5 seconds                               │
+    └────────────────────┬────────────────────────────┘
+              PASS       │       FAIL → block merge
+              v
+
+    Gate F: WALK-FORWARD OVERFIT DETECTION
+    ┌─────────────────────────────────────────────────┐
+    │  8 rolling windows (2yr train → 6mo test)       │
+    │  Checks: all windows positive Sharpe            │
+    │  Detects: OVERFIT (train>1.0, test<0)           │
+    │                                                 │
+    │  WHY: Independent OOS evaluator (GAN principle) │
+    │  COST: ~30 seconds                              │
     └─────────────────────────────────────────────────┘
+
+    + ADVERSARIAL STRESS (3 GAN-style scenarios)
+    + SIGNAL ABLATION (periodic load-bearing analysis)
+    + SECRET BENCHMARK (quarterly 2026+ OOS, GitHub Action)
+    + ANTI-SNOOPING VALIDATOR (static code check)
 ```
 
 ## 3. AutoResearch Campaign Loop (Harness for Optimization)
