@@ -1,0 +1,42 @@
+# Data split configuration — STRICT temporal separation
+#
+# CRITICAL: The split is TEMPORAL ONLY, applied uniformly across ALL data frequencies.
+# 5min/1h/4h/1d are different aggregations of the SAME market prices.
+# You CANNOT use 5min-2024 to train and 4h-2024 to test — that's the same data.
+#
+# Statistical budget rule:
+#   Train: freely accessible, unlimited experiments
+#   Dev: accessible for ablation/tuning, track in experiments/SNOOPING_LOG.md
+#   Test: SECRET — quarterly blind test only, no parameter changes based on results
+#
+# Any parameter change triggered by Test results = OVERFIT
+
+[splits]
+train_start = "2020-01-01"
+train_end = "2023-12-31"
+
+dev_start = "2024-01-01"
+dev_end = "2025-12-31"
+
+# SECRET BENCHMARK — do NOT use for tuning
+test_start = "2026-01-01"
+# test_end auto-extends to latest available data
+
+# Data frequencies available (all share the same temporal split)
+[frequencies]
+available = ["5m", "1h", "4h", "1d"]
+
+# Execution timeframes supported
+[execution]
+primary = "4h"           # Default: 4H signal generation
+entry_optimization = "1h" # Optional: 1H entry timing within 4H targets
+bias = "1d"              # Daily regime classification
+
+# Feature aggregation paths (cross-frequency, NOT cross-temporal)
+# These are SAFE because they aggregate within the same temporal window:
+#   5min → 4H features (rv_hf, consistency): 48 bars within same 4H period
+#   5min → 1H features (rv_hf_1h): 12 bars within same 1H period
+#   aggTrades → 4H/1H CVD: tick data within same bar period
+# These would be UNSAFE (temporal leakage):
+#   Using future 5min bars to predict current 4H bar
+#   Using test-period statistics for train-period z-score computation
