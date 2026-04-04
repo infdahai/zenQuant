@@ -67,6 +67,10 @@ class RiskOverlayConfig:
     # VPIN toxic flow (Easley, Lopez de Prado & O'Hara 2012)
     vpin_toxic_threshold: float = 0.10  # p95 = 0.10, above = toxic flow
     vpin_toxic_mult: float = 0.70
+    # Weekend vol adjustment (Hansen et al. 2021, verified in our data)
+    # Sat=0.69x, Sun=0.83x vs weekday avg — weekend positions can be slightly larger
+    # (lower vol = same risk at larger position)
+    weekend_vol_scalar: float = 1.25  # inverse of 0.80 avg weekend/weekday ratio
     # Kill switch recovery (Claude Code "fallback model" pattern)
     kill_recovery_threshold: float = 0.12  # DD must recover below this to start recovery
     kill_cooldown_bars: int = 36  # 36 bars = 6 days at 4H (cooldown before re-entry)
@@ -265,6 +269,14 @@ class RiskOverlay:
             if vpin > self._config.vpin_toxic_threshold:
                 lev_cap *= self._config.vpin_toxic_mult
                 flags.append("VPIN_TOXIC")
+
+            # Weekend vol adjustment: lower vol = can hold slightly larger position
+            from datetime import UTC, datetime
+
+            bar_dt = datetime.fromtimestamp(target.cutoff_time_ns / 1e9, tz=UTC)
+            if bar_dt.weekday() >= 5:  # Saturday=5, Sunday=6
+                lev_cap *= self._config.weekend_vol_scalar
+                flags.append("WEEKEND_VOL_ADJUST")
 
             cycle_pos = float(indicator.values.get("cycle_position", 1.0) or 1.0)
             if cycle_pos > self._config.overheated_cycle_threshold and funding_oi_z > self._config.overheated_funding_threshold:
