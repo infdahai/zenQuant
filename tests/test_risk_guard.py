@@ -186,5 +186,180 @@ class VPINTests(unittest.TestCase):
         self.assertTrue(decisions)
         self.assertNotIn("VPIN_TOXIC", decisions[-1].flags)
 
+    # ── Boundary tests (GAN discriminator feedback) ──
+    def test_vpin_exact_threshold_no_flag(self) -> None:
+        """VPIN at exact threshold (0.10) should NOT trigger (logic uses > not >=)."""
+        bus = InMemoryJetStream()
+        overlay = RiskOverlay(bus=bus)
+        decisions = []
+        bus.subscribe("risk.overlay.decision", lambda _, p: decisions.append(p))
+
+        bus.publish("indicator.pack.v1.4h.BTCUSDT_PERP", _make_pack({"vpin": 0.10}))
+        bus.publish("intent.target_position.arc.BTCUSDT_PERP", _make_target())
+
+        self.assertNotIn("VPIN_TOXIC", decisions[-1].flags)
+
+    def test_vpin_just_above_threshold_triggers(self) -> None:
+        """VPIN just above threshold (0.10001) should trigger."""
+        bus = InMemoryJetStream()
+        overlay = RiskOverlay(bus=bus)
+        decisions = []
+        bus.subscribe("risk.overlay.decision", lambda _, p: decisions.append(p))
+
+        bus.publish("indicator.pack.v1.4h.BTCUSDT_PERP", _make_pack({"vpin": 0.10001}))
+        bus.publish("intent.target_position.arc.BTCUSDT_PERP", _make_target())
+
+        self.assertIn("VPIN_TOXIC", decisions[-1].flags)
+
+
+class DDStepBoundaryTests(unittest.TestCase):
+    """Boundary tests for DD step thresholds (asymmetric long vs short)."""
+
+    def test_long_dd_at_exact_step1_threshold(self) -> None:
+        """Long DD at exact 15% should trigger DD_STEP_1 (logic uses >=)."""
+        bus = InMemoryJetStream()
+        overlay = RiskOverlay(bus=bus)
+        decisions = []
+        bus.subscribe("risk.overlay.decision", lambda _, p: decisions.append(p))
+
+        overlay.apply_fee(15_000.0)  # Exact 15% DD
+        bus.publish("indicator.pack.v1.4h.BTCUSDT_PERP", _make_pack())
+        bus.publish("intent.target_position.arc.BTCUSDT_PERP", _make_target(qty=1.0))
+
+        self.assertIn("DD_STEP_1", decisions[-1].flags)
+
+    def test_long_dd_just_below_step1_no_flag(self) -> None:
+        """Long DD just below 15% (14.99%) should NOT trigger."""
+        bus = InMemoryJetStream()
+        overlay = RiskOverlay(bus=bus)
+        decisions = []
+        bus.subscribe("risk.overlay.decision", lambda _, p: decisions.append(p))
+
+        overlay.apply_fee(14_990.0)  # 14.99% DD
+        bus.publish("indicator.pack.v1.4h.BTCUSDT_PERP", _make_pack())
+        bus.publish("intent.target_position.arc.BTCUSDT_PERP", _make_target(qty=1.0))
+
+        self.assertNotIn("DD_STEP_1", decisions[-1].flags)
+
+    def test_short_dd_at_exact_step1_threshold(self) -> None:
+        """Short DD at exact 8% should trigger DD_STEP_1."""
+        bus = InMemoryJetStream()
+        overlay = RiskOverlay(bus=bus)
+        decisions = []
+        bus.subscribe("risk.overlay.decision", lambda _, p: decisions.append(p))
+
+        overlay.apply_fee(8_000.0)  # Exact 8% DD
+        bus.publish("indicator.pack.v1.4h.BTCUSDT_PERP", _make_pack())
+        bus.publish("intent.target_position.arc.BTCUSDT_PERP", _make_target(qty=-1.0))
+
+        self.assertIn("DD_STEP_1", decisions[-1].flags)
+
+    def test_kill_switch_at_exact_threshold(self) -> None:
+        """Kill switch at exact 30% DD should trigger."""
+        bus = InMemoryJetStream()
+        overlay = RiskOverlay(bus=bus)
+        decisions = []
+        bus.subscribe("risk.overlay.decision", lambda _, p: decisions.append(p))
+
+        overlay.apply_fee(30_000.0)  # Exact 30% DD
+        bus.publish("indicator.pack.v1.4h.BTCUSDT_PERP", _make_pack())
+        bus.publish("intent.target_position.arc.BTCUSDT_PERP", _make_target())
+
+        self.assertIn("KILL_SWITCH", decisions[-1].flags)
+
+    def test_kill_switch_just_below_threshold_no_flag(self) -> None:
+        """Kill switch just below 30% (29.99%) should NOT trigger."""
+        bus = InMemoryJetStream()
+        overlay = RiskOverlay(bus=bus)
+        decisions = []
+        bus.subscribe("risk.overlay.decision", lambda _, p: decisions.append(p))
+
+        overlay.apply_fee(29_990.0)  # 29.99% DD
+        bus.publish("indicator.pack.v1.4h.BTCUSDT_PERP", _make_pack())
+        bus.publish("intent.target_position.arc.BTCUSDT_PERP", _make_target())
+
+        self.assertNotIn("KILL_SWITCH", decisions[-1].flags)
+
+
+class CrowdingBoundaryTests(unittest.TestCase):
+    """Boundary tests for crowding thresholds."""
+
+    def test_crowding_at_exact_threshold(self) -> None:
+        """Crowding at exact 2.2 should trigger CROWDING_EXTREME (logic uses >=)."""
+        bus = InMemoryJetStream()
+        overlay = RiskOverlay(bus=bus)
+        decisions = []
+        bus.subscribe("risk.overlay.decision", lambda _, p: decisions.append(p))
+
+        bus.publish("indicator.pack.v1.4h.BTCUSDT_PERP", _make_pack({"funding_oi_z": 2.2}))
+        bus.publish("intent.target_position.arc.BTCUSDT_PERP", _make_target())
+
+        self.assertIn("CROWDING_EXTREME", decisions[-1].flags)
+
+    def test_crowding_just_below_threshold_no_flag(self) -> None:
+        """Crowding just below 2.2 should NOT trigger."""
+        bus = InMemoryJetStream()
+        overlay = RiskOverlay(bus=bus)
+        decisions = []
+        bus.subscribe("risk.overlay.decision", lambda _, p: decisions.append(p))
+
+        bus.publish("indicator.pack.v1.4h.BTCUSDT_PERP", _make_pack({"funding_oi_z": 2.19}))
+        bus.publish("intent.target_position.arc.BTCUSDT_PERP", _make_target())
+
+        self.assertNotIn("CROWDING_EXTREME", decisions[-1].flags)
+
+    def test_severe_crowding_at_exact_threshold(self) -> None:
+        """Severe crowding at exact 3.0 should trigger SEVERE_CROWDING."""
+        bus = InMemoryJetStream()
+        overlay = RiskOverlay(bus=bus)
+        decisions = []
+        bus.subscribe("risk.overlay.decision", lambda _, p: decisions.append(p))
+
+        bus.publish("indicator.pack.v1.4h.BTCUSDT_PERP", _make_pack({"funding_oi_z": 3.0}))
+        bus.publish("intent.target_position.arc.BTCUSDT_PERP", _make_target())
+
+        self.assertIn("SEVERE_CROWDING", decisions[-1].flags)
+
+    def test_negative_crowding_at_exact_threshold(self) -> None:
+        """Negative crowding at -2.2 should trigger (abs value check)."""
+        bus = InMemoryJetStream()
+        overlay = RiskOverlay(bus=bus)
+        decisions = []
+        bus.subscribe("risk.overlay.decision", lambda _, p: decisions.append(p))
+
+        bus.publish("indicator.pack.v1.4h.BTCUSDT_PERP", _make_pack({"funding_oi_z": -2.2}))
+        bus.publish("intent.target_position.arc.BTCUSDT_PERP", _make_target())
+
+        self.assertIn("CROWDING_EXTREME", decisions[-1].flags)
+
+
+class VolShockBoundaryTests(unittest.TestCase):
+    """Boundary tests for vol shock threshold."""
+
+    def test_vol_shock_at_exact_threshold(self) -> None:
+        """Realized vol at exact 0.95 should trigger VOL_SHOCK (logic uses >=)."""
+        bus = InMemoryJetStream()
+        overlay = RiskOverlay(bus=bus)
+        decisions = []
+        bus.subscribe("risk.overlay.decision", lambda _, p: decisions.append(p))
+
+        bus.publish("indicator.pack.v1.4h.BTCUSDT_PERP", _make_pack({"realized_vol": 0.95}))
+        bus.publish("intent.target_position.arc.BTCUSDT_PERP", _make_target())
+
+        self.assertIn("VOL_SHOCK", decisions[-1].flags)
+
+    def test_vol_shock_just_below_threshold_no_flag(self) -> None:
+        """Realized vol just below 0.95 should NOT trigger."""
+        bus = InMemoryJetStream()
+        overlay = RiskOverlay(bus=bus)
+        decisions = []
+        bus.subscribe("risk.overlay.decision", lambda _, p: decisions.append(p))
+
+        bus.publish("indicator.pack.v1.4h.BTCUSDT_PERP", _make_pack({"realized_vol": 0.949}))
+        bus.publish("intent.target_position.arc.BTCUSDT_PERP", _make_target())
+
+        self.assertNotIn("VOL_SHOCK", decisions[-1].flags)
+
+
 if __name__ == "__main__":
     unittest.main()
