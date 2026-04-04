@@ -159,5 +159,32 @@ class ConfigurabilityTests(unittest.TestCase):
         self.assertIn("VOL_SHOCK", decisions[-1].flags)
 
 
+class VPINTests(unittest.TestCase):
+    def test_vpin_toxic_flag(self) -> None:
+        """High VPIN triggers VPIN_TOXIC flag."""
+        bus = InMemoryJetStream()
+        overlay = RiskOverlay(bus=bus)
+        decisions = []
+        bus.subscribe("risk.overlay.decision", lambda _, p: decisions.append(p))
+
+        bus.publish("indicator.pack.v1.4h.BTCUSDT_PERP", _make_pack({"vpin": 0.15}))
+        bus.publish("intent.target_position.arc.BTCUSDT_PERP", _make_target())
+
+        self.assertTrue(decisions)
+        self.assertIn("VPIN_TOXIC", decisions[-1].flags)
+
+    def test_low_vpin_no_flag(self) -> None:
+        """Normal VPIN does not trigger flag."""
+        bus = InMemoryJetStream()
+        overlay = RiskOverlay(bus=bus)
+        decisions = []
+        bus.subscribe("risk.overlay.decision", lambda _, p: decisions.append(p))
+
+        bus.publish("indicator.pack.v1.4h.BTCUSDT_PERP", _make_pack({"vpin": 0.03}))
+        bus.publish("intent.target_position.arc.BTCUSDT_PERP", _make_target())
+
+        self.assertTrue(decisions)
+        self.assertNotIn("VPIN_TOXIC", decisions[-1].flags)
+
 if __name__ == "__main__":
     unittest.main()

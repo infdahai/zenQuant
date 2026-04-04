@@ -64,6 +64,9 @@ class RiskOverlayConfig:
     overheated_funding_threshold: float = 1.5
     overheated_mult: float = 0.40
     high_cycle_mult: float = 0.70
+    # VPIN toxic flow (Easley, Lopez de Prado & O'Hara 2012)
+    vpin_toxic_threshold: float = 0.10  # p95 = 0.10, above = toxic flow
+    vpin_toxic_mult: float = 0.70
     # Kill switch recovery (Claude Code "fallback model" pattern)
     kill_recovery_threshold: float = 0.12  # DD must recover below this to start recovery
     kill_cooldown_bars: int = 36  # 36 bars = 6 days at 4H (cooldown before re-entry)
@@ -257,6 +260,12 @@ class RiskOverlay:
 
             # High position sizing: cycle_position + funding as "overheated" detector
             # PaulWei pattern: reduce size at highs, not stop trading
+            # VPIN toxic flow: high informed trading probability → reduce exposure
+            vpin = float(indicator.values.get("vpin", 0.0) or 0.0)
+            if vpin > self._config.vpin_toxic_threshold:
+                lev_cap *= self._config.vpin_toxic_mult
+                flags.append("VPIN_TOXIC")
+
             cycle_pos = float(indicator.values.get("cycle_position", 1.0) or 1.0)
             if cycle_pos > self._config.overheated_cycle_threshold and funding_oi_z > self._config.overheated_funding_threshold:
                 lev_cap *= self._config.overheated_mult
