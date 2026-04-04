@@ -28,8 +28,10 @@ class ExecutionKernelConfig:
     # New position: only fill pyramid_initial_pct of target
     # Profitable position: add pyramid_add_pct more
     # Losing position: don't add (wait for time_decay exit)
-    pyramid_initial_pct: float = 0.3  # 30% on first entry
-    pyramid_add_pct: float = 0.3  # 30% per profitable bar
+    pyramid_initial_pct: float = 0.3  # 30% on first entry (long)
+    pyramid_add_pct: float = 0.3  # 30% per profitable bar (long)
+    pyramid_short_initial_pct: float = 0.2  # 20% on first short entry (more conservative)
+    pyramid_short_add_pct: float = 0.2  # 20% per profitable bar (short)
     pyramid_enabled: bool = True
     # Legacy gradual execution (kept for compatibility)
     entry_fraction: float = 1.0
@@ -128,17 +130,21 @@ class ExecutionKernel:
                 and (mark_price - entry_px) * (1 if current_position > 0 else -1) > 0
             )
 
+            # Asymmetric pyramid: longs more aggressive, shorts more conservative
+            is_short = payload.target_qty < 0
+            init_pct = self._config.pyramid_short_initial_pct if is_short else self._config.pyramid_initial_pct
+            add_pct = self._config.pyramid_short_add_pct if is_short else self._config.pyramid_add_pct
+
             if is_new_direction:
-                # New position: only take initial slice (30%)
-                trade_qty = abs(payload.target_qty) * self._config.pyramid_initial_pct
-                self._pyramid_filled_pct[symbol] = self._config.pyramid_initial_pct
+                trade_qty = abs(payload.target_qty) * init_pct
+                self._pyramid_filled_pct[symbol] = init_pct
             elif is_profitable:
                 # Profitable: add another slice (PaulWei: scale in on winners)
                 filled = self._pyramid_filled_pct.get(symbol, 1.0)
                 if filled < 1.0:
-                    add_pct = min(self._config.pyramid_add_pct, 1.0 - filled)
-                    trade_qty = abs(payload.target_qty) * add_pct
-                    self._pyramid_filled_pct[symbol] = filled + add_pct
+                    actual_add = min(add_pct, 1.0 - filled)
+                    trade_qty = abs(payload.target_qty) * actual_add
+                    self._pyramid_filled_pct[symbol] = filled + actual_add
                 else:
                     trade_qty = 0  # Fully positioned
             else:
