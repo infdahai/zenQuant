@@ -6,14 +6,13 @@ from typing import Any
 
 
 class Timeframe(StrEnum):
+    TF_1H = "1h"
     TF_4H = "4h"
     TF_1D = "1d"
 
     @property
     def seconds(self) -> int:
-        if self is Timeframe.TF_4H:
-            return 4 * 60 * 60
-        return 24 * 60 * 60
+        return {"1h": 3600, "4h": 14400, "1d": 86400}[self.value]
 
 
 @dataclass(slots=True, frozen=True)
@@ -105,6 +104,8 @@ class MarketSnapshot:
     oi_coverage: float
     staleness_ms: int
     quality_flags: list[str]
+    vpin: float = 0.0  # Volume-synchronized probability of informed trading
+    large_trade_count: int = 0  # Trades > $100k in this bar
 
 
 @dataclass(slots=True)

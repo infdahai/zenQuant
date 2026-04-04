@@ -22,16 +22,23 @@ class RiskOverlayConfig:
 
     portfolio: str = "arc"
     starting_equity: float = 100_000.0
-    max_leverage: float = 2.5
-    dd_step_1: float = 0.05
-    dd_step_2: float = 0.1
-    dd_step_3: float = 0.16
+    # PaulWei-calibrated: asymmetric DD tolerance (long vs short)
+    # M2 monetary expansion → BTC long-term upward → longs recover, shorts don't
+    max_leverage: float = 6.0
+    # Long DD steps: patient (fiat debasement will bail out)
+    dd_step_1_long: float = 0.15
+    dd_step_2_long: float = 0.22
+    dd_step_3_long: float = 0.28
+    # Short DD steps: strict (unlimited risk in appreciating asset)
+    dd_step_1_short: float = 0.08
+    dd_step_2_short: float = 0.14
+    dd_step_3_short: float = 0.20
     vol_shock_threshold: float = 0.95
     crowding_threshold: float = 2.2
     severe_crowding_threshold: float = 3.0
-    daily_loss_limit: float = 0.06
-    daily_safe_lev_cap: float = 0.35
-    kill_switch_drawdown: float = 0.22
+    daily_loss_limit: float = 0.10
+    daily_safe_lev_cap: float = 0.50
+    kill_switch_drawdown: float = 0.30
     # Kill switch recovery (Claude Code "fallback model" pattern)
     kill_recovery_threshold: float = 0.12  # DD must recover below this to start recovery
     kill_cooldown_bars: int = 36  # 36 bars = 6 days at 4H (cooldown before re-entry)
@@ -152,13 +159,20 @@ class RiskOverlay:
                         flags.append("STRATEGY_DEGRADED")
                 else:
                     self._degraded_mode_bars = max(0, self._degraded_mode_bars - 1)
-        if drawdown >= self._config.dd_step_3:
+        # Asymmetric DD stepping: longs get patience, shorts get discipline
+        # PaulWei: "暂时被套 → 等待 (M2 bail out)" for longs
+        is_net_long = target.target_qty > 0
+        dd_1 = self._config.dd_step_1_long if is_net_long else self._config.dd_step_1_short
+        dd_2 = self._config.dd_step_2_long if is_net_long else self._config.dd_step_2_short
+        dd_3 = self._config.dd_step_3_long if is_net_long else self._config.dd_step_3_short
+
+        if drawdown >= dd_3:
             lev_cap *= 0.2
             flags.append("DD_STEP_3")
-        elif drawdown >= self._config.dd_step_2:
+        elif drawdown >= dd_2:
             lev_cap *= 0.4
             flags.append("DD_STEP_2")
-        elif drawdown >= self._config.dd_step_1:
+        elif drawdown >= dd_1:
             lev_cap *= 0.65
             flags.append("DD_STEP_1")
 
@@ -209,6 +223,18 @@ class RiskOverlay:
             elif qqq_z < -1.5 or iwm_z < -1.5:
                 lev_cap *= 0.8
                 flags.append("EQUITY_STRESS")
+
+            # COT institutional crowding: only reduce when our position aligns with
+            # extreme crowd positioning (contrarian — reduce when everyone agrees)
+            cot_leveraged_z = float(indicator.values.get("cot_leveraged_z", 0.0) or 0.0)
+            if target.target_qty > 0 and cot_leveraged_z > 2.5:
+                # We're long AND leveraged funds extremely long → crowded
+                lev_cap *= 0.7
+                flags.append("COT_CROWDING")
+            elif target.target_qty < 0 and cot_leveraged_z < -2.5:
+                # We're short AND leveraged funds extremely short → crowded
+                lev_cap *= 0.7
+                flags.append("COT_CROWDING")
 
             # High position sizing: cycle_position + funding as "overheated" detector
             # PaulWei pattern: reduce size at highs, not stop trading
