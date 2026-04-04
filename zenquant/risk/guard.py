@@ -64,6 +64,12 @@ class RiskOverlayConfig:
     overheated_funding_threshold: float = 1.5
     overheated_mult: float = 0.40
     high_cycle_mult: float = 0.70
+    # GEX regime (gamma exposure from Deribit options)
+    gex_pinning_mult: float = 1.15  # PINNING = vol compressed, can hold slightly more
+    gex_amplifying_mult: float = 0.70  # AMPLIFYING = vol will expand, reduce exposure
+    # Spot-perp basis extreme (premium too high = crowded longs)
+    basis_extreme_threshold: float = 2.0  # z-score
+    basis_extreme_mult: float = 0.80
     # VPIN toxic flow (Easley, Lopez de Prado & O'Hara 2012)
     vpin_toxic_threshold: float = 0.10  # p95 = 0.10, above = toxic flow
     vpin_toxic_mult: float = 0.70
@@ -269,6 +275,21 @@ class RiskOverlay:
             if vpin > self._config.vpin_toxic_threshold:
                 lev_cap *= self._config.vpin_toxic_mult
                 flags.append("VPIN_TOXIC")
+
+            # Spot-perp basis: extreme premium = crowded, reduce long exposure
+            basis_z = float(indicator.values.get("basis_z", 0.0) or 0.0)
+            if target.target_qty > 0 and basis_z > self._config.basis_extreme_threshold:
+                lev_cap *= self._config.basis_extreme_mult
+                flags.append("BASIS_PREMIUM_EXTREME")
+
+            # GEX regime: gamma exposure determines vol regime
+            gex_regime = str(indicator.values.get("gex_regime", "") or "")
+            if gex_regime == "PINNING":
+                lev_cap *= self._config.gex_pinning_mult
+                flags.append("GEX_PINNING")
+            elif gex_regime == "AMPLIFYING":
+                lev_cap *= self._config.gex_amplifying_mult
+                flags.append("GEX_AMPLIFYING")
 
             # Weekend vol adjustment: lower vol = can hold slightly larger position
             bar_dt = datetime.fromtimestamp(target.cutoff_time_ns / 1e9, tz=UTC)
