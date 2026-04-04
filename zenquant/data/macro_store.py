@@ -39,6 +39,12 @@ class MacroSnapshot:
     qqq_z: float
     iwm: float | None
     iwm_z: float
+    ndx: float | None  # Nasdaq 100
+    ndx_z: float
+    gold: float | None  # Gold (GLD)
+    gold_z: float
+    m2: float | None  # M2 money supply
+    m2_z: float
     quality_flags: list[str]
 
 
@@ -72,6 +78,10 @@ class MacroDataStore:
             "tlt": self._config.macro_dir / "tlt" / "data.parquet",
             "qqq": self._config.macro_dir / "qqq" / "data.parquet",
             "iwm": self._config.macro_dir / "iwm" / "data.parquet",
+            # New: individual macro factors for cross-sectional analysis
+            "ndx": self._config.macro_dir / "ndx" / "data.parquet",  # Nasdaq 100
+            "gold": self._config.macro_dir / "gold" / "data.parquet",  # Gold (GLD)
+            "m2": self._config.macro_dir / "m2" / "data.parquet",  # M2 money supply
         }
 
         for name, path in series_map.items():
@@ -109,6 +119,9 @@ class MacroDataStore:
         tlt, tlt_z = self._lookup_one("tlt", cutoff_time_ns)
         qqq, qqq_z = self._lookup_one("qqq", cutoff_time_ns)
         iwm, iwm_z = self._lookup_one("iwm", cutoff_time_ns)
+        ndx, ndx_z = self._lookup_one("ndx", cutoff_time_ns)
+        gold, gold_z = self._lookup_one("gold", cutoff_time_ns)
+        m2, m2_z = self._lookup_one("m2", cutoff_time_ns)
 
         quality_flags: list[str] = []
         # Check staleness across all loaded series
@@ -130,6 +143,12 @@ class MacroDataStore:
             qqq_z=qqq_z,
             iwm=iwm,
             iwm_z=iwm_z,
+            ndx=ndx,
+            ndx_z=ndx_z,
+            gold=gold,
+            gold_z=gold_z,
+            m2=m2,
+            m2_z=m2_z,
             quality_flags=quality_flags,
         )
 

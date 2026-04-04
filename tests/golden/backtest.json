@@ -1,29 +1,27 @@
 {
-  "schema": "golden_output.v1",
-  "description": "v2.0 final: pyramid + asymmetric risk + rv_hf as data (not signal)",
   "metrics": {
-    "net_pnl": -962.3,
-    "sharpe": -10.2523,
-    "max_drawdown": 0.009587,
-    "profit_factor": 10.245453,
-    "trade_count": 134,
-    "win_rate": 0.55,
-    "total_bars": 540
+    "net_pnl": 3726231.4,
+    "sharpe": 6.8901,
+    "max_drawdown": 0.001257,
+    "profit_factor": 102.190188,
+    "trade_count": 316
   },
   "equity": {
-    "starting": 100000.0,
-    "final": 99037.7044227449
-  },
-  "diagnostics": {
-    "playbook_counts": {
-      "RANGE_LIGHT": 492,
-      "BULL_CONTINUATION": 138
-    },
-    "actionable_exit_counts": {}
+    "final": 3826231.399066
   },
   "counts": {
     "indicator_packs": 630,
     "targets": 540,
-    "reports": 134
+    "reports": 316
+  },
+  "diagnostics": {
+    "playbook_counts": {
+      "RANGE_LIGHT": 476,
+      "BULL_CONTINUATION": 133,
+      "CAPITAL_PRESERVATION": 21
+    },
+    "actionable_exit_counts": {
+      "REGIME_CHANGE": 18
+    }
   }
 }

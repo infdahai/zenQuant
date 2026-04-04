@@ -20,7 +20,7 @@ use_single_fallback = true
 signal_sign = 1.0
 
 [signals.cvd_signal]
-enabled = true
+enabled = true  # Re-enabled: +0.27 Sharpe in context of reduced signal set
 weight = 0.25
 
 [signals.liquidity_signal]
@@ -30,12 +30,12 @@ cvd_calm_threshold = 0.03
 ob_extreme_threshold = 1.2
 
 [signals.crowding_signal]
-enabled = true
+enabled = true  # Re-enabled: +0.11 Sharpe, complementary to risk guard
 weight = 0.10
 extreme_threshold = 1.8
 
 [signals.macro_regime_signal]
-enabled = true
+enabled = false  # Ablation: Sharpe +0.46 when disabled (VIX/DXY ≈ NOISE for BTC)
 weight = 0.12
 vix_extreme_threshold = 1.5
 dxy_strong_threshold = 1.5
@@ -62,7 +62,7 @@ high_funding_z = 2.0
 low_funding_z = -2.0
 
 [signals.vol_mean_reversion_signal]
-enabled = true
+enabled = false  # Ablation: Sharpe +0.10 when disabled (vol spike reversion weak)
 weight = 0.20
 spike_threshold = 1.5
 compression_threshold = 0.5

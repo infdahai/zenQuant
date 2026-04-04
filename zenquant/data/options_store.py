@@ -201,10 +201,10 @@ class OptionsDataStore:
         )
 
     def _compute_atm_iv(self, df) -> float | None:
-        """Extract ATM IV from options chain at 30-day tenor.
+        """Extract ATM IV from options chain at ~30-day tenor.
 
         Logic:
-        1. Filter options with expiry ≈ 30 days (±7 days tolerance)
+        1. Find the expiry closest to 30 days (Deribit expiries are sparse)
         2. Find strikes closest to underlying_price (ATM)
         3. Weight call + put IV by open_interest
         4. Return weighted average
@@ -212,15 +212,21 @@ class OptionsDataStore:
         import pandas as pd
 
         target_dte = 30
-        tolerance = 7
 
         # Compute DTE (days to expiry)
         now_ts = df["snapshot_ts_ns"].iloc[0] / 1e9
         df = df.copy()
         df["dte"] = (df["expiry_ts_ms"] / 1000 - now_ts) / 86400
 
-        # Filter by DTE
-        valid = df[(df["dte"] >= target_dte - tolerance) & (df["dte"] <= target_dte + tolerance)]
+        # Find closest available expiry to 30 days (within 7-90 day range)
+        eligible = df[(df["dte"] >= 7) & (df["dte"] <= 90)]
+        if eligible.empty:
+            return None
+
+        # Pick the expiry closest to target
+        unique_dtes = eligible["dte"].round(0).unique()
+        closest_dte = min(unique_dtes, key=lambda d: abs(d - target_dte))
+        valid = eligible[eligible["dte"].round(0) == closest_dte]
         if valid.empty:
             return None
 
@@ -249,13 +255,19 @@ class OptionsDataStore:
         import pandas as pd
 
         target_dte = 30
-        tolerance = 7
 
         # Filter by DTE
         now_ts = df["snapshot_ts_ns"].iloc[0] / 1e9
         df = df.copy()
         df["dte"] = (df["expiry_ts_ms"] / 1000 - now_ts) / 86400
-        valid = df[(df["dte"] >= target_dte - tolerance) & (df["dte"] <= target_dte + tolerance)]
+
+        # Find closest expiry to 30 days
+        eligible = df[(df["dte"] >= 7) & (df["dte"] <= 90)]
+        if eligible.empty:
+            return None
+        unique_dtes = eligible["dte"].round(0).unique()
+        closest_dte = min(unique_dtes, key=lambda d: abs(d - target_dte))
+        valid = eligible[eligible["dte"].round(0) == closest_dte]
         if valid.empty:
             return None
 
@@ -290,24 +302,33 @@ class OptionsDataStore:
         return float(put_iv - call_iv)
 
     def _compute_term_structure(self, df) -> float | None:
-        """Compute IV term structure slope: (90d_IV - 7d_IV) / 90d_IV.
+        """Compute IV term structure slope: (far_IV - near_IV) / far_IV.
 
         Positive = contango (normal), negative = backwardation (stress).
+        Uses closest available expiries to 7d (near) and 90d (far).
         """
         import pandas as pd
-
-        near_dte = 7
-        far_dte = 90
-        tolerance = 3
 
         # Compute DTE
         now_ts = df["snapshot_ts_ns"].iloc[0] / 1e9
         df = df.copy()
         df["dte"] = (df["expiry_ts_ms"] / 1000 - now_ts) / 86400
 
-        # Filter near and far options
-        near = df[(df["dte"] >= near_dte - tolerance) & (df["dte"] <= near_dte + tolerance)]
-        far = df[(df["dte"] >= far_dte - tolerance) & (df["dte"] <= far_dte + tolerance)]
+        # Find near-term (closest to 7d, must be 3-30d)
+        near_eligible = df[(df["dte"] >= 3) & (df["dte"] <= 30)]
+        # Find far-term (closest to 90d, must be 45-365d)
+        far_eligible = df[(df["dte"] >= 45) & (df["dte"] <= 365)]
+
+        if near_eligible.empty or far_eligible.empty:
+            return None
+
+        near_dtes = near_eligible["dte"].round(0).unique()
+        far_dtes = far_eligible["dte"].round(0).unique()
+        closest_near = min(near_dtes, key=lambda d: abs(d - 7))
+        closest_far = min(far_dtes, key=lambda d: abs(d - 90))
+
+        near = near_eligible[near_eligible["dte"].round(0) == closest_near]
+        far = far_eligible[far_eligible["dte"].round(0) == closest_far]
 
         if near.empty or far.empty:
             return None
