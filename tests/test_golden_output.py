@@ -1,10 +1,18 @@
-"""Gate C: Golden output regression test.
+"""Gate C: Golden output regression test (validates REPRODUCIBILITY not CORRECTNESS).
 
-Any code change that alters backtest behavior will cause this test to fail.
-If the change is intentional, update tests/golden/backtest.json and commit
-with an explanation of WHY the golden output changed.
+This test validates that backtest behavior is STABLE (unchanged from baseline).
+It does NOT validate that behavior is CORRECT.
+
+When this test fails:
+  1. Check test_backtest_invariants.py first (validates correctness)
+  2. If invariants pass: change is intentional → see tests/golden/POLICY.md
+  3. If invariants fail: DO NOT regen golden, fix the bug in code
+
+IMPORTANT: Regenerating golden files encodes current behavior as "correct".
+Only regen after verifying correctness independently (see POLICY.md).
 
 This is mechanical enforcement: documents rot, golden files don't.
+But golden files can encode bugs if regenerated without discipline.
 """
 
 from __future__ import annotations
