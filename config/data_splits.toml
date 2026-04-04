@@ -1,0 +1,19 @@
+# Data split configuration — STRICT temporal separation
+#
+# Statistical budget rule:
+#   Train: freely accessible, unlimited experiments
+#   Dev: accessible for ablation/tuning, track in SNOOPING_LOG.md
+#   Test: SECRET — quarterly blind test only, no parameter changes based on results
+#
+# Any parameter change triggered by Test results = OVERFIT
+
+[splits]
+train_start = "2020-01-01"
+train_end = "2023-12-31"
+
+dev_start = "2024-01-01"
+dev_end = "2025-12-31"
+
+# SECRET BENCHMARK — do NOT use for tuning
+test_start = "2026-01-01"
+# test_end auto-extends to latest available data
