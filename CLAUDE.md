@@ -61,3 +61,6 @@ Layer 1 (数据)  → 一次搭建永久运行 (GitHub Actions, DataStores, Parq
 - **Macro信号是核心基础设施** — 但IC分析显示VIX/DXY对BTC预测力接近NOISE (2026-04-02)
 - **确定性检查 > LLM判断** — Agent只做advisory，不做决策 (2026-04-01)
 - **数据收集与策略参数分离** — infra一经搭建不随策略迭代变化 (2026-04-01)
+- **Position sizing IS the stop loss** — PaulWei哲学: 仓位小到不会爆仓, 不需要价格止损 (2026-04-04)
+- **BTC长期非对称** — 法币贬值→稀缺资产长期涨→做多比做空更安全→多空风控应不对称 (2026-04-04)
+- **5min RV是最强因子** — IC=+0.248, 远超其他所有因子. 学术验证(Andersen 1998) (2026-04-04)
