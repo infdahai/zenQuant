@@ -33,12 +33,37 @@ class RiskOverlayConfig:
     dd_step_1_short: float = 0.08
     dd_step_2_short: float = 0.14
     dd_step_3_short: float = 0.20
+    # DD step leverage multipliers (how much to reduce at each step)
+    dd_step_1_mult: float = 0.65
+    dd_step_2_mult: float = 0.40
+    dd_step_3_mult: float = 0.20
     vol_shock_threshold: float = 0.95
+    vol_shock_mult: float = 0.40
     crowding_threshold: float = 2.2
+    crowding_mult: float = 0.70
     severe_crowding_threshold: float = 3.0
     daily_loss_limit: float = 0.10
     daily_safe_lev_cap: float = 0.50
     kill_switch_drawdown: float = 0.30
+    # Strategy degradation detection
+    degradation_sharpe_threshold: float = -2.0
+    degradation_min_bars: int = 24
+    degradation_mult: float = 0.40
+    # Kill switch recovery leverage
+    kill_recovery_mult: float = 0.30
+    # Equity risk thresholds
+    equity_risk_off_threshold: float = -2.0
+    equity_risk_off_mult: float = 0.50
+    equity_stress_threshold: float = -1.5
+    equity_stress_mult: float = 0.80
+    # COT crowding
+    cot_crowding_threshold: float = 2.5
+    cot_crowding_mult: float = 0.70
+    # Overheated market
+    overheated_cycle_threshold: float = 1.3
+    overheated_funding_threshold: float = 1.5
+    overheated_mult: float = 0.40
+    high_cycle_mult: float = 0.70
     # Kill switch recovery (Claude Code "fallback model" pattern)
     kill_recovery_threshold: float = 0.12  # DD must recover below this to start recovery
     kill_cooldown_bars: int = 36  # 36 bars = 6 days at 4H (cooldown before re-entry)
@@ -152,10 +177,10 @@ class RiskOverlay:
                 avg_ret = sum(returns_60) / len(returns_60)
                 var = sum((r - avg_ret) ** 2 for r in returns_60) / len(returns_60)
                 rolling_sharpe = (avg_ret / math.sqrt(var)) * math.sqrt(len(returns_60)) if var > 1e-15 else 0
-                if rolling_sharpe < -2.0:
+                if rolling_sharpe < self._config.degradation_sharpe_threshold:
                     self._degraded_mode_bars += 1
-                    if self._degraded_mode_bars >= 24:  # 4 days of severely negative
-                        lev_cap *= 0.4
+                    if self._degraded_mode_bars >= self._config.degradation_min_bars:
+                        lev_cap *= self._config.degradation_mult
                         flags.append("STRATEGY_DEGRADED")
                 else:
                     self._degraded_mode_bars = max(0, self._degraded_mode_bars - 1)
@@ -167,13 +192,13 @@ class RiskOverlay:
         dd_3 = self._config.dd_step_3_long if is_net_long else self._config.dd_step_3_short
 
         if drawdown >= dd_3:
-            lev_cap *= 0.2
+            lev_cap *= self._config.dd_step_3_mult
             flags.append("DD_STEP_3")
         elif drawdown >= dd_2:
-            lev_cap *= 0.4
+            lev_cap *= self._config.dd_step_2_mult
             flags.append("DD_STEP_2")
         elif drawdown >= dd_1:
-            lev_cap *= 0.65
+            lev_cap *= self._config.dd_step_1_mult
             flags.append("DD_STEP_1")
 
         # Kill switch with recovery (Claude Code "fallback model" pattern)
@@ -187,7 +212,7 @@ class RiskOverlay:
                 self._high_water_mark = self._equity  # Fresh start
                 self._kill_active = False
                 self._kill_bar_count = 0
-                lev_cap *= 0.3  # Start with reduced leverage
+                lev_cap *= self._config.kill_recovery_mult
                 flags.append("KILL_RECOVERED")
             else:
                 flags.append("KILL_SWITCH")
@@ -203,10 +228,10 @@ class RiskOverlay:
             realized_vol = float(indicator.values.get("realized_vol", 0.0) or 0.0)
             funding_oi_z = float(indicator.values.get("funding_oi_z", 0.0) or 0.0)
             if realized_vol >= self._config.vol_shock_threshold:
-                lev_cap *= 0.4
+                lev_cap *= self._config.vol_shock_mult
                 flags.append("VOL_SHOCK")
             if abs(funding_oi_z) >= self._config.crowding_threshold:
-                lev_cap *= 0.7
+                lev_cap *= self._config.crowding_mult
                 flags.append("CROWDING_EXTREME")
             if abs(funding_oi_z) >= self._config.severe_crowding_threshold:
                 reduce_only = True
@@ -216,36 +241,31 @@ class RiskOverlay:
             # IC direction unstable but |IC|>0.05 → use as risk sizing, not direction
             qqq_z = float(indicator.values.get("qqq_z", 0.0) or 0.0)
             iwm_z = float(indicator.values.get("iwm_z", 0.0) or 0.0)
-            if qqq_z < -2.0 and iwm_z < -2.0:
-                # Both equity indices crashing → macro risk-off → reduce BTC exposure
-                lev_cap *= 0.5
+            if qqq_z < self._config.equity_risk_off_threshold and iwm_z < self._config.equity_risk_off_threshold:
+                lev_cap *= self._config.equity_risk_off_mult
                 flags.append("EQUITY_RISK_OFF")
-            elif qqq_z < -1.5 or iwm_z < -1.5:
-                lev_cap *= 0.8
+            elif qqq_z < self._config.equity_stress_threshold or iwm_z < self._config.equity_stress_threshold:
+                lev_cap *= self._config.equity_stress_mult
                 flags.append("EQUITY_STRESS")
 
             # COT institutional crowding: only reduce when our position aligns with
             # extreme crowd positioning (contrarian — reduce when everyone agrees)
             cot_leveraged_z = float(indicator.values.get("cot_leveraged_z", 0.0) or 0.0)
-            if target.target_qty > 0 and cot_leveraged_z > 2.5:
-                # We're long AND leveraged funds extremely long → crowded
-                lev_cap *= 0.7
+            if target.target_qty > 0 and cot_leveraged_z > self._config.cot_crowding_threshold:
+                lev_cap *= self._config.cot_crowding_mult
                 flags.append("COT_CROWDING")
-            elif target.target_qty < 0 and cot_leveraged_z < -2.5:
-                # We're short AND leveraged funds extremely short → crowded
-                lev_cap *= 0.7
+            elif target.target_qty < 0 and cot_leveraged_z < -self._config.cot_crowding_threshold:
+                lev_cap *= self._config.cot_crowding_mult
                 flags.append("COT_CROWDING")
 
             # High position sizing: cycle_position + funding as "overheated" detector
             # PaulWei pattern: reduce size at highs, not stop trading
             cycle_pos = float(indicator.values.get("cycle_position", 1.0) or 1.0)
-            if cycle_pos > 1.3 and funding_oi_z > 1.5:
-                # Overheated: price far above 200MA + leveraged longs crowded
-                lev_cap *= 0.4
+            if cycle_pos > self._config.overheated_cycle_threshold and funding_oi_z > self._config.overheated_funding_threshold:
+                lev_cap *= self._config.overheated_mult
                 flags.append("OVERHEATED_SIZING")
-            elif cycle_pos > 1.3:
-                # High but not crowded: moderate reduction
-                lev_cap *= 0.7
+            elif cycle_pos > self._config.overheated_cycle_threshold:
+                lev_cap *= self._config.high_cycle_mult
                 flags.append("HIGH_CYCLE_SIZING")
             if any(
                 flag in {"BOOK_STALE", "VENUE_DOWN", "DATA_STALE", "DATA_FUTURE"} for flag in indicator.quality_flags
