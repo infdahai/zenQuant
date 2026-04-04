@@ -1,18 +1,18 @@
 {
   "schema": "golden_output.v1",
-  "description": "v2.0 + PaulWei patterns: high-cycle sizing + winning position sizer",
+  "description": "v2.0 + pyramid execution (PaulWei pattern)",
   "metrics": {
-    "net_pnl": -1326.85,
-    "sharpe": -12.4886,
-    "max_drawdown": 0.013424,
-    "profit_factor": 5.289416,
-    "trade_count": 151,
-    "win_rate": 0.595238,
+    "net_pnl": 25235.89,
+    "sharpe": 3.2307,
+    "max_drawdown": 0.005471,
+    "profit_factor": 10.373187,
+    "trade_count": 152,
+    "win_rate": 0.552632,
     "total_bars": 540
   },
   "equity": {
     "starting": 100000.0,
-    "final": 98673.14997333362
+    "final": 125235.8936400209
   },
   "diagnostics": {
     "playbook_counts": {
@@ -20,13 +20,13 @@
       "BULL_CONTINUATION": 138
     },
     "actionable_exit_counts": {
-      "TIME_DECAY": 18,
-      "TRAILING": 2
+      "TIME_DECAY": 9,
+      "TRAILING": 1
     }
   },
   "counts": {
     "indicator_packs": 630,
     "targets": 540,
-    "reports": 151
+    "reports": 152
   }
 }
