@@ -2,7 +2,7 @@
 """Download macro indicator data via yfinance.
 
 Each indicator is stored independently for cross-sectional analysis.
-Separating VIX, DXY, 10Y yield, Nasdaq, Gold, M2 allows treating each
+Separating VIX, DXY, 10Y yield, Nasdaq, Gold allows treating each
 as an independent factor rather than a composite signal.
 
 Usage:
@@ -31,11 +31,6 @@ SERIES = {
     "iwm": "IWM",            # Russell 2000 ETF
     "ndx": "^NDX",           # Nasdaq 100 Index (direct)
     "gold": "GLD",           # Gold ETF
-    # M2 is from FRED, not yfinance — handled separately
-}
-
-FRED_SERIES = {
-    "m2": "M2SL",  # M2 Money Stock (monthly, billions)
 }
 
 
@@ -93,57 +88,6 @@ def download_yfinance(output_dir: Path, years: int = 7) -> None:
             print(f"    Error: {e}")
 
 
-def download_fred_m2(output_dir: Path, years: int = 7) -> None:
-    """Download M2 money supply from FRED (free, no key needed for basic access)."""
-    import json
-    import ssl
-    import urllib.request
-
-    print("  Downloading M2 money supply (FRED)...")
-
-    # FRED public API (no key for observations endpoint via web)
-    end = datetime.now(UTC)
-    start = end - timedelta(days=years * 365)
-
-    # Use FRED web data download (CSV format, no API key needed)
-    url = (
-        f"https://fred.stlouisfed.org/graph/fredgraph.csv"
-        f"?id=M2SL&cosd={start.strftime('%Y-%m-%d')}&coed={end.strftime('%Y-%m-%d')}"
-    )
-
-    try:
-        ctx = ssl.create_default_context()
-        ctx.check_hostname = False
-        ctx.verify_mode = ssl.CERT_NONE
-        req = urllib.request.Request(url, headers={"User-Agent": "zenquant/1.0"})
-        with urllib.request.urlopen(req, timeout=30, context=ctx) as resp:
-            content = resp.read().decode("utf-8")
-
-        records: list[dict] = []
-        for line in content.strip().split("\n")[1:]:  # Skip header
-            parts = line.strip().split(",")
-            if len(parts) < 2 or parts[1] == ".":
-                continue
-            try:
-                date = datetime.strptime(parts[0], "%Y-%m-%d").replace(tzinfo=UTC)
-                value = float(parts[1])
-                records.append({"ts_ns": int(date.timestamp() * 1_000_000_000), "value": value})
-            except (ValueError, IndexError):
-                continue
-
-        if records:
-            out_path = output_dir / "m2" / "data.parquet"
-            out_path.parent.mkdir(parents=True, exist_ok=True)
-            table = pa.Table.from_pylist(records)
-            pq.write_table(table, out_path)
-            print(f"    {len(records)} records → {out_path}")
-        else:
-            print("    No M2 data retrieved")
-
-    except Exception as e:
-        print(f"    M2 download error: {e}")
-
-
 def main() -> None:
     parser = argparse.ArgumentParser(description="Download macro indicator data")
     parser.add_argument("--output", type=Path, default=Path("data/raw/macro"))
@@ -156,7 +100,6 @@ def main() -> None:
     print("=" * 50)
 
     download_yfinance(args.output, years=args.years)
-    download_fred_m2(args.output, years=args.years)
 
     print("\nDone.")
 
