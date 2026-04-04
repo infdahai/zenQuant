@@ -130,3 +130,75 @@ class ExecutionRouterTests(unittest.TestCase):
 
         self.assertEqual(len(reports), 1)
         self.assertEqual(reports[0].avg_price, 100.5)
+
+
+class PyramidExecutionTests(unittest.TestCase):
+    """Verify pyramid sizing: partial initial entry, asymmetric long/short."""
+
+    def _setup(self, pyramid_enabled: bool = True):
+        from zenquant.execution.router import ExecutionKernelConfig
+
+        bus = InMemoryJetStream()
+        risk = RiskOverlay(bus)
+        config = ExecutionKernelConfig(pyramid_enabled=pyramid_enabled)
+        kernel = ExecutionKernel(bus, SimulatedGateway(), risk, config=config)
+        reports = []
+        bus.subscribe("exec.order.report", lambda _, p: reports.append(p))
+
+        bus.publish(
+            "md.mark.BINANCE.BTCUSDT_PERP",
+            MarkPriceUpdate(
+                meta=EventMeta(event_time_ns=1, ingest_time_ns=1, venue="BINANCE",
+                               symbol="BTCUSDT_PERP", stream_seq=1),
+                mark_price=40000.0,
+            ),
+        )
+        return bus, kernel, reports
+
+    def test_long_initial_30pct(self) -> None:
+        """Long pyramid entry = 30% of target."""
+        bus, kernel, reports = self._setup()
+        bus.publish("intent.target_position.final.BTCUSDT_PERP", TargetPosition(
+            intent_id="t1", portfolio="arc", symbol="BTCUSDT_PERP",
+            timeframe=Timeframe.TF_4H, cutoff_time_ns=2,
+            target_qty=1.0, target_leverage=2.0, reduce_only=False,
+            regime="TREND", regime_confidence=0.9, reason_codes=["TEST"],
+        ))
+        self.assertEqual(len(reports), 1)
+        self.assertAlmostEqual(reports[0].filled_qty, 0.3, places=2)
+
+    def test_short_initial_20pct(self) -> None:
+        """Short pyramid entry = 20% (more conservative)."""
+        bus, kernel, reports = self._setup()
+        bus.publish("intent.target_position.final.BTCUSDT_PERP", TargetPosition(
+            intent_id="t1", portfolio="arc", symbol="BTCUSDT_PERP",
+            timeframe=Timeframe.TF_4H, cutoff_time_ns=2,
+            target_qty=-1.0, target_leverage=2.0, reduce_only=False,
+            regime="TREND", regime_confidence=0.9, reason_codes=["TEST"],
+        ))
+        self.assertEqual(len(reports), 1)
+        self.assertAlmostEqual(reports[0].filled_qty, 0.2, places=2)
+
+    def test_pyramid_disabled_fills_full(self) -> None:
+        """Without pyramid, fill up to max_trade_qty_per_bar."""
+        bus, kernel, reports = self._setup(pyramid_enabled=False)
+        bus.publish("intent.target_position.final.BTCUSDT_PERP", TargetPosition(
+            intent_id="t1", portfolio="arc", symbol="BTCUSDT_PERP",
+            timeframe=Timeframe.TF_4H, cutoff_time_ns=2,
+            target_qty=1.0, target_leverage=2.0, reduce_only=False,
+            regime="TREND", regime_confidence=0.9, reason_codes=["TEST"],
+        ))
+        self.assertEqual(len(reports), 1)
+        self.assertGreater(reports[0].filled_qty, 0.3)
+
+    def test_position_tracked(self) -> None:
+        """Kernel tracks positions after fills."""
+        bus, kernel, reports = self._setup()
+        bus.publish("intent.target_position.final.BTCUSDT_PERP", TargetPosition(
+            intent_id="t1", portfolio="arc", symbol="BTCUSDT_PERP",
+            timeframe=Timeframe.TF_4H, cutoff_time_ns=2,
+            target_qty=1.0, target_leverage=2.0, reduce_only=False,
+            regime="TREND", regime_confidence=0.9, reason_codes=["TEST"],
+        ))
+        self.assertIn("BTCUSDT_PERP", kernel.positions)
+        self.assertGreater(kernel.positions["BTCUSDT_PERP"], 0)
