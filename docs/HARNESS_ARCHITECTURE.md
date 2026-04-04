@@ -2,6 +2,11 @@
 
 > Human steers, agent executes. The repo is the system of record.
 
+**Related Documentation**:
+- [Testing Philosophy](TESTING_PHILOSOPHY.md) — GAN discriminator principles, boundary tests, dual-layer validation
+- [Adversarial Harness](ADVERSARIAL_HARNESS.md) — Historical replay, synthetic stress scenarios
+- [Validation Results](VALIDATION.md) — Current performance, IC analysis, overfitting assessment
+
 ## 1. High-Level Harness Topology
 
 ```
