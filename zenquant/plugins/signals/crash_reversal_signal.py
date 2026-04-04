@@ -14,7 +14,6 @@ from typing import Any
 
 from zenquant.plugins.protocols import PluginMeta, SignalResult
 
-
 meta = PluginMeta(
     name="crash_reversal_signal",
     version="1.0.0",

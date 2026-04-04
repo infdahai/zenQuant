@@ -111,7 +111,7 @@ class ARCStrategyEngine:
         )
 
         # Adaptive signal weighting: track rolling IC per signal
-        from collections import deque, defaultdict
+        from collections import defaultdict, deque
 
         self._signal_values: dict[str, deque[float]] = defaultdict(lambda: deque(maxlen=120))
         self._forward_returns: deque[float] = deque(maxlen=120)

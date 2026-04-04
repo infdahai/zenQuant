@@ -13,7 +13,6 @@ from typing import Any
 
 from zenquant.plugins.protocols import PluginMeta, SizerResult
 
-
 meta = PluginMeta(
     name="winning_position_sizer",
     version="1.0.0",

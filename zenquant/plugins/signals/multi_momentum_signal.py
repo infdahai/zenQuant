@@ -15,7 +15,6 @@ from typing import Any
 
 from zenquant.plugins.protocols import PluginMeta, SignalResult
 
-
 meta = PluginMeta(
     name="multi_momentum_signal",
     version="2.0.0",

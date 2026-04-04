@@ -13,7 +13,6 @@ Usage:
 
 from __future__ import annotations
 
-import copy
 import sys
 from pathlib import Path
 
@@ -60,7 +59,6 @@ def run_ablation() -> None:
 
         # Create modified profile: copy original and disable target signal
         import tempfile
-        import shutil
 
         with tempfile.NamedTemporaryFile(suffix=".toml", delete=False, mode="w") as tmp:
             # Read original and insert enabled=false for target signal

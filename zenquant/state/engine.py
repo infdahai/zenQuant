@@ -35,7 +35,7 @@ class StateEngine:
         self._last_regime: dict[tuple[str, Timeframe], str] = {}
         self._last_directional: dict[tuple[str, Timeframe], str] = {}
         # Track structure_state history for directional consistency
-        from collections import deque, defaultdict
+        from collections import defaultdict, deque
 
         self._structure_history: dict[tuple[str, Timeframe], deque[str]] = defaultdict(
             lambda: deque(maxlen=120)  # ~20 days of 4H bars

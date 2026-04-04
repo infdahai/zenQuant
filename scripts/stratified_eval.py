@@ -14,7 +14,6 @@ from __future__ import annotations
 
 import argparse
 import math
-from collections import Counter
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -147,10 +146,10 @@ def evaluate(
     print("VERDICT:")
     total_years = len([y for y in years if len(years[y]) >= 20])
     checks = [
-        (f"Worst year Sharpe > -1.0", worst_sharpe > -1.0, f"{worst_sharpe:.1f}"),
-        (f"Losing years < 50%", losing_years < total_years * 0.5, f"{losing_years}/{total_years}"),
-        (f"TREND PnL > 0", regime_data.get("TREND", {}).get("pnl", 0) > 0, f"${regime_data.get('TREND', {}).get('pnl', 0):,.0f}"),
-        (f"Max DD < 35%", m.max_drawdown < 0.35, f"{m.max_drawdown:.1%}"),
+        ("Worst year Sharpe > -1.0", worst_sharpe > -1.0, f"{worst_sharpe:.1f}"),
+        ("Losing years < 50%", losing_years < total_years * 0.5, f"{losing_years}/{total_years}"),
+        ("TREND PnL > 0", regime_data.get("TREND", {}).get("pnl", 0) > 0, f"${regime_data.get('TREND', {}).get('pnl', 0):,.0f}"),
+        ("Max DD < 35%", m.max_drawdown < 0.35, f"{m.max_drawdown:.1%}"),
     ]
     for name, passed, value in checks:
         status = "PASS" if passed else "FAIL"

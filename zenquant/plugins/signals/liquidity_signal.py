@@ -10,7 +10,6 @@ from typing import Any
 
 from zenquant.plugins.protocols import PluginMeta, SignalResult
 
-
 meta = PluginMeta(
     name="liquidity_signal",
     version="2.0.0",

@@ -20,7 +20,6 @@ from pathlib import Path
 import pyarrow as pa
 import pyarrow.parquet as pq
 
-
 # yfinance tickers for each macro series
 SERIES = {
     "vix": "^VIX",           # CBOE Volatility Index
@@ -73,7 +72,7 @@ def download_yfinance(output_dir: Path, years: int = 7) -> None:
                 close = row.get("Close", row.get("Adj Close"))
                 if close is None or (hasattr(close, "__iter__") and not isinstance(close, str)):
                     # Handle Series/array case
-                    close = float(list(close)[0]) if hasattr(close, "__iter__") else float(close)
+                    close = float(next(iter(close))) if hasattr(close, "__iter__") else float(close)
                 close = float(close)
                 if close <= 0:
                     continue
@@ -95,7 +94,6 @@ def download_yfinance(output_dir: Path, years: int = 7) -> None:
 
 def download_fred_m2(output_dir: Path, years: int = 7) -> None:
     """Download M2 money supply from FRED (free, no key needed for basic access)."""
-    import json
     import ssl
     import urllib.request
 

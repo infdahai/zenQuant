@@ -10,10 +10,9 @@ Logs to JSONL files, one line per bar.
 from __future__ import annotations
 
 import json
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
 
 from zenquant.domain import (
     ExecutionReport,

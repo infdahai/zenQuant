@@ -25,12 +25,11 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 
 async def run_paper_trading(symbol: str = "BTCUSDT", duration_hours: float = 24.0) -> None:
-    from zenquant.domain import IndicatorPack, MarketState, TargetPosition, Timeframe
-    from zenquant.historical.replay import HistoricalBacktestConfig
     from zenquant.app.pipeline import ZenQuantPipeline
+    from zenquant.domain import IndicatorPack, MarketState, TargetPosition, Timeframe
 
     print(f"{'=' * 60}")
-    print(f"zenQuant Paper Trading")
+    print("zenQuant Paper Trading")
     print(f"{'=' * 60}")
     print(f"Symbol: {symbol}")
     print(f"Duration: {duration_hours}h")
@@ -102,16 +101,16 @@ async def run_paper_trading(symbol: str = "BTCUSDT", duration_hours: float = 24.
     )
     stream = BinancePerpStreamClient(bus=bus, config=ws_config)
 
-    print(f"Connecting to Binance WebSocket...")
+    print("Connecting to Binance WebSocket...")
     print(f"Logging decisions to: {log_file}")
-    print(f"Press Ctrl+C to stop")
+    print("Press Ctrl+C to stop")
     print()
 
     # Handle graceful shutdown
     stop_event = asyncio.Event()
 
     def shutdown(*_):
-        print(f"\nShutting down...")
+        print("\nShutting down...")
         stop_event.set()
 
     signal.signal(signal.SIGINT, shutdown)
@@ -148,7 +147,7 @@ async def run_paper_trading(symbol: str = "BTCUSDT", duration_hours: float = 24.
 
     # Summary
     print(f"\n{'=' * 60}")
-    print(f"Paper Trading Summary")
+    print("Paper Trading Summary")
     print(f"{'=' * 60}")
     print(f"Duration: {(time.time() - start_time)/3600:.1f}h")
     print(f"Decisions logged: {len(decisions)}")
