@@ -33,12 +33,13 @@ def download_binance_data(days: int = 90, symbol: str = "BTCUSDT"):
 
     # Create directories
     base_dir = Path("data/raw/binance")
+    klines_1h_dir = base_dir / "klines" / symbol / "1h"
     klines_4h_dir = base_dir / "klines" / symbol / "4h"
     klines_1d_dir = base_dir / "klines" / symbol / "1d"
     funding_dir = base_dir / "funding" / symbol
     oi_dir = base_dir / "open_interest" / symbol / "4h"
 
-    for dir_path in [klines_4h_dir, klines_1d_dir, funding_dir, oi_dir]:
+    for dir_path in [klines_1h_dir, klines_4h_dir, klines_1d_dir, funding_dir, oi_dir]:
         dir_path.mkdir(parents=True, exist_ok=True)
 
     print(f"Downloading Binance data from {start_date.date()} to {end_date.date()}")
@@ -53,6 +54,15 @@ def download_binance_data(days: int = 90, symbol: str = "BTCUSDT"):
     current = start_date
     while current <= end_date:
         date_str = current.strftime("%Y-%m-%d")
+
+        # Download 1h klines
+        url = f"{base_url}/klines/{symbol}/1h/{symbol}-1h-{date_str}.zip"
+        output = klines_1h_dir / f"{symbol}-1h-{date_str}.zip"
+        if download_and_extract(url, output, klines_1h_dir):
+            successful += 1
+        else:
+            failed += 1
+        total_files += 1
 
         # Download 4h klines
         url = f"{base_url}/klines/{symbol}/4h/{symbol}-4h-{date_str}.zip"

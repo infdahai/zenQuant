@@ -46,12 +46,16 @@ class HFFeatureStoreConfig:
 
 
 class HFFeatureStore:
-    """Load 5min parquet and provide pre-computed 4H features via point-in-time lookup."""
+    """Load 5min parquet and provide pre-computed 4H and 1H features via point-in-time lookup."""
+
+    BARS_PER_1H = 12  # 5min bars per 1H period
 
     def __init__(self, config: HFFeatureStoreConfig | None = None) -> None:
         self._config = config or HFFeatureStoreConfig()
         self._bar_end_ns: list[int] = []  # 4H bar end timestamps
         self._features: list[HFFeatures] = []  # Pre-computed features per 4H bar
+        self._bar_end_ns_1h: list[int] = []  # 1H bar end timestamps
+        self._features_1h: list[HFFeatures] = []  # Pre-computed features per 1H bar
 
     @property
     def loaded(self) -> bool:
@@ -95,6 +99,17 @@ class HFFeatureStore:
             self._bar_end_ns.append(bar_end_ns)
             self._features.append(features)
 
+        # Also group into 1H blocks (12 × 5min bars)
+        block_1h = self.BARS_PER_1H
+        for start in range(0, n - block_1h + 1, block_1h):
+            end = start + block_1h
+            block_closes = closes[start:end]
+            block_volumes = volumes[start:end]
+            bar_end_ns = int(open_times_ns[end - 1]) + 5 * 60 * 1_000_000_000
+            features = self._compute_features(block_closes, block_volumes)
+            self._bar_end_ns_1h.append(bar_end_ns)
+            self._features_1h.append(features)
+
     def lookup(self, cutoff_time_ns: int) -> HFFeatures:
         """Return features for the 4H bar ending at or before cutoff."""
         if not self._bar_end_ns:
@@ -112,6 +127,23 @@ class HFFeatureStore:
                 realized_skew=0.0, n_bars=0,
             )
         return self._features[idx]
+
+    def lookup_1h(self, cutoff_time_ns: int) -> HFFeatures:
+        """Return features for the 1H bar ending at or before cutoff."""
+        if not self._bar_end_ns_1h:
+            return HFFeatures(
+                realized_vol_hf=0.0, intra_bar_consistency=1.0,
+                intra_bar_max_dd=0.0, volume_front_ratio=0.5,
+                realized_skew=0.0, n_bars=0,
+            )
+        idx = bisect.bisect_right(self._bar_end_ns_1h, cutoff_time_ns) - 1
+        if idx < 0:
+            return HFFeatures(
+                realized_vol_hf=0.0, intra_bar_consistency=1.0,
+                intra_bar_max_dd=0.0, volume_front_ratio=0.5,
+                realized_skew=0.0, n_bars=0,
+            )
+        return self._features_1h[idx]
 
     def _compute_features(self, closes: list, volumes: list) -> HFFeatures:
         """Compute all features from a block of 5min closes."""
