@@ -31,10 +31,11 @@ Layer 1 (数据)  → 一次搭建永久运行 (GitHub Actions, DataStores, Parq
 
 ## 当前性能 (2026-04-04, PaulWei asymmetric DD)
 
-**全期 (2020-2025)**: Sharpe 1.68, $100k→$5.73M (57.3x), DD 14.4%, 6年全部正收益
-**数据**: real CVD 13,638 4H + 54,552 1H buckets, COT 326 weeks, NDX/Gold/M2
-**1H dual-layer**: 4H signal → 1H entry optimization, DD改善46% (2024: 5.9%→3.2%)
-**Walk-forward**: 8/8 windows positive, avg OOS ratio 1.11, 0 overfit
+**全期 (2020-2025)**: Sharpe 1.95, $100k→$10.5M, DD 22.3%, 6年全部正收益
+**Risk guards**: VPIN toxic flow (+16% Sharpe), weekend vol adjustment, asymmetric DD
+**数据**: real CVD 13,638 4H + 54,552 1H, COT 326wk, spot basis 7,697, NDX/Gold
+**Walk-forward**: 8/8 windows positive, avg OOS ratio 1.11, Train/Test gap 9%
+**Tests**: 259 pass, 7 gates + adversarial + anti-snooping
 
 核心原则(文章"骨架+血肉"): 6层决策链是骨架(不替代)，AI只调参数(血肉)
 每个新因子必须IC>0.03才启用(防止因子幻象)
