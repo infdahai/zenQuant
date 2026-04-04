@@ -352,7 +352,7 @@ def run_historical_replay(periods_file: Path = Path("tests/adversarial/worst_per
         results.append(adv_result)
 
         status = "PASS" if passed else "FAIL"
-        print(f"  Sharpe={m.sharpe:.2f}, DD={m.max_dd:.1%}, PnL=${m.net_pnl:,.0f} → {status}")
+        print(f"  Sharpe={m.sharpe:.2f}, DD={m.max_drawdown:.1%}, PnL=${m.net_pnl:,.0f} → {status}")
 
     return results
 
