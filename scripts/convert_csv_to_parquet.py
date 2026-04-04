@@ -72,41 +72,41 @@ def csv_to_parquet(csv_dir: Path, output_dir: Path, data_type: str):
 
 
 def main():
-    base_dir = Path("data/raw/binance")
-    symbol = "BTCUSDT"
+    import argparse
 
+    parser = argparse.ArgumentParser(description="Convert Binance CSV to Parquet")
+    parser.add_argument("--symbol", default="BTCUSDT")
+    parser.add_argument("--source", default="binance", choices=["binance", "binance_spot"])
+    args = parser.parse_args()
+
+    base_dir = Path(f"data/raw/{args.source}")
+    symbol = args.symbol
     total_rows = 0
 
-    # Convert 4h klines
-    csv_dir = base_dir / "klines" / symbol / "4h"
-    output_dir = csv_dir
-    rows = csv_to_parquet(csv_dir, output_dir, "klines")
-    total_rows += rows
+    # Convert all available timeframes
+    for tf in ["5m", "1h", "4h", "1d"]:
+        csv_dir = base_dir / "klines" / symbol / tf
+        if csv_dir.exists() and list(csv_dir.glob("*.csv")):
+            rows = csv_to_parquet(csv_dir, csv_dir, "klines")
+            total_rows += rows
 
-    # Convert 1d klines
-    csv_dir = base_dir / "klines" / symbol / "1d"
-    output_dir = csv_dir
-    rows = csv_to_parquet(csv_dir, output_dir, "klines")
-    total_rows += rows
+    # Convert funding (futures only)
+    if args.source == "binance":
+        csv_dir = base_dir / "funding" / symbol
+        if csv_dir.exists() and list(csv_dir.glob("*.csv")):
+            rows = csv_to_parquet(csv_dir, csv_dir, "funding")
+            total_rows += rows
 
-    # Convert funding
-    csv_dir = base_dir / "funding" / symbol
-    output_dir = csv_dir
-    rows = csv_to_parquet(csv_dir, output_dir, "funding")
-    total_rows += rows
-
-    # Convert open interest
-    csv_dir = base_dir / "open_interest" / symbol / "4h"
-    output_dir = csv_dir
-    rows = csv_to_parquet(csv_dir, output_dir, "open_interest")
-    total_rows += rows
+        # Convert open interest
+        csv_dir = base_dir / "open_interest" / symbol / "4h"
+        if csv_dir.exists() and list(csv_dir.glob("*.csv")):
+            rows = csv_to_parquet(csv_dir, csv_dir, "open_interest")
+            total_rows += rows
 
     print()
     print("=" * 60)
     print(f"Conversion complete! Total rows: {total_rows:,}")
-    print()
-    print("Ready for backtesting!")
-    print("Run: uv run python scripts/param_sweep.py --quick")
+    print(f"Source: {args.source}, Symbol: {symbol}")
 
 
 if __name__ == "__main__":
