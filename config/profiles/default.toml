@@ -103,6 +103,11 @@ confidence_threshold = 0.75
 transition_risk_max = 0.30
 boost_max = 1.30
 
+[sizers.winning_position_sizer]
+enabled = true
+win_boost_max = 1.4
+lose_discount = 0.7
+
 # ─── Exit Plugins ───────────────────────────────────────────
 # Composition: priority-ordered → first match wins
 

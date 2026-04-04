@@ -126,9 +126,9 @@ class TestRegistryLoadsRealPlugins(unittest.TestCase):
 
         profile, registry = build_from_profile(PROFILE_PATH, plugin_root=PLUGIN_ROOT)
 
-        self.assertEqual(len(registry.signals), 8)  # +crash_reversal +funding_alpha +vol_mean_reversion, options disabled
+        self.assertEqual(len(registry.signals), 8)  # 8 active signals, options disabled
         self.assertEqual(len(registry.filters), 2)
-        self.assertEqual(len(registry.sizers), 4)
+        self.assertEqual(len(registry.sizers), 5)  # +winning_position_sizer
         self.assertEqual(len(registry.exits), 5)
 
         # Verify exit priority ordering

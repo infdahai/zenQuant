@@ -197,6 +197,18 @@ class RiskOverlay:
             if abs(funding_oi_z) >= self._config.severe_crowding_threshold:
                 reduce_only = True
                 flags.append("SEVERE_CROWDING")
+
+            # High position sizing: cycle_position + funding as "overheated" detector
+            # PaulWei pattern: reduce size at highs, not stop trading
+            cycle_pos = float(indicator.values.get("cycle_position", 1.0) or 1.0)
+            if cycle_pos > 1.3 and funding_oi_z > 1.5:
+                # Overheated: price far above 200MA + leveraged longs crowded
+                lev_cap *= 0.4
+                flags.append("OVERHEATED_SIZING")
+            elif cycle_pos > 1.3:
+                # High but not crowded: moderate reduction
+                lev_cap *= 0.7
+                flags.append("HIGH_CYCLE_SIZING")
             if any(
                 flag in {"BOOK_STALE", "VENUE_DOWN", "DATA_STALE", "DATA_FUTURE"} for flag in indicator.quality_flags
             ):

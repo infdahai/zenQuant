@@ -1,6 +1,6 @@
 {
   "schema": "golden_output.v1",
-  "description": "v2.0 complete: confidence + adaptive IC + crash + vol MR + TLT macro",
+  "description": "v2.0 + PaulWei patterns: high-cycle sizing + winning position sizer",
   "metrics": {
     "net_pnl": -1326.85,
     "sharpe": -12.4886,
