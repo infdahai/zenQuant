@@ -1,6 +1,6 @@
 {
   "schema": "golden_output.v1",
-  "description": "v2.0 + pyramid + rv_hf + asymmetric risk",
+  "description": "v2.0 final: pyramid + asymmetric risk + rv_hf as data (not signal)",
   "metrics": {
     "net_pnl": -962.3,
     "sharpe": -10.2523,
