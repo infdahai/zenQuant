@@ -43,8 +43,6 @@ class MacroSnapshot:
     ndx_z: float
     gold: float | None  # Gold (GLD)
     gold_z: float
-    m2: float | None  # M2 money supply
-    m2_z: float
     quality_flags: list[str]
 
 
@@ -81,7 +79,6 @@ class MacroDataStore:
             # New: individual macro factors for cross-sectional analysis
             "ndx": self._config.macro_dir / "ndx" / "data.parquet",  # Nasdaq 100
             "gold": self._config.macro_dir / "gold" / "data.parquet",  # Gold (GLD)
-            "m2": self._config.macro_dir / "m2" / "data.parquet",  # M2 money supply
         }
 
         for name, path in series_map.items():
@@ -121,7 +118,6 @@ class MacroDataStore:
         iwm, iwm_z = self._lookup_one("iwm", cutoff_time_ns)
         ndx, ndx_z = self._lookup_one("ndx", cutoff_time_ns)
         gold, gold_z = self._lookup_one("gold", cutoff_time_ns)
-        m2, m2_z = self._lookup_one("m2", cutoff_time_ns)
 
         quality_flags: list[str] = []
         # Check staleness across all loaded series
@@ -147,8 +143,6 @@ class MacroDataStore:
             ndx_z=ndx_z,
             gold=gold,
             gold_z=gold_z,
-            m2=m2,
-            m2_z=m2_z,
             quality_flags=quality_flags,
         )
 

@@ -251,10 +251,7 @@ class RiskOverlay:
             # COT institutional crowding: only reduce when our position aligns with
             # extreme crowd positioning (contrarian — reduce when everyone agrees)
             cot_leveraged_z = float(indicator.values.get("cot_leveraged_z", 0.0) or 0.0)
-            if target.target_qty > 0 and cot_leveraged_z > self._config.cot_crowding_threshold:
-                lev_cap *= self._config.cot_crowding_mult
-                flags.append("COT_CROWDING")
-            elif target.target_qty < 0 and cot_leveraged_z < -self._config.cot_crowding_threshold:
+            if (target.target_qty > 0 and cot_leveraged_z > self._config.cot_crowding_threshold) or (target.target_qty < 0 and cot_leveraged_z < -self._config.cot_crowding_threshold):
                 lev_cap *= self._config.cot_crowding_mult
                 flags.append("COT_CROWDING")
 

@@ -15,7 +15,7 @@ Regime-aware crypto perpetual futures trading system. BTC-first, 4H execution ti
 | crash_reversal_signal | 0.25 | **Active** | 极端崩盘反转 (bar ret<-5%) | LOAD-BEARING (-0.14) |
 | cvd_signal | 0.25 | **Active** | Real CVD from aggTrades | Re-enabled (+0.27) |
 | funding_alpha_signal | 0.10 | **Active** | 资金费率反转(contrarian) | LOAD-BEARING (-0.10) |
-| liquidity_signal | 0.20 | **Active** | Order book imbalance | LOAD-BEARING (-0.02) |
+| liquidity_signal | 0.20 | **Active** | Order book imbalance | PHANTOM (0/12766 fires, live-only) |
 | crowding_signal | 0.10 | **Active** | Funding x OI positioning | Re-enabled (+0.11) |
 | macro_regime_signal | 0.12 | Disabled | VIX/DXY → NOISE for BTC | DEAD WEIGHT (+0.46) |
 | vol_mean_reversion_signal | 0.20 | Disabled | Vol spike reversion weak | DEAD WEIGHT (-0.13) |

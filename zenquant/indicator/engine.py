@@ -311,7 +311,6 @@ class IndicatorEngine:
                 # Cross-sectional macro factors (individual, not composite)
                 "ndx_z": macro_snap.ndx_z,
                 "gold_z": macro_snap.gold_z,
-                "m2_z": macro_snap.m2_z,
             }
             for flag in macro_snap.quality_flags:
                 if flag not in quality_flags:
