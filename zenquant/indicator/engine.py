@@ -327,6 +327,9 @@ class IndicatorEngine:
                 "term_slope_z": options_snap.term_slope_z,
                 "put_call_skew_25d": options_snap.put_call_skew_25d,
                 "skew_z": options_snap.skew_z,
+                "gex_net": options_snap.net_gex,
+                "gex_regime": options_snap.gex_regime,
+                "gamma_wall_strike": options_snap.gamma_wall_strike,
             }
             macro_values.update(options_values)
             for flag in options_snap.quality_flags:

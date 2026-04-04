@@ -35,7 +35,12 @@ class OptionsSnapshot:
     put_call_skew_25d: float | None  # (90% put IV) - (110% call IV)
     skew_z: float
     underlying_price: float
-    quality_flags: list[str]
+    # GEX metrics (gamma exposure)
+    net_gex: float = 0.0  # Positive = pinning, negative = amplifying
+    gamma_wall_strike: float | None = None  # Price magnet above
+    flip_strike: float | None = None  # Below this = volatile
+    gex_regime: str = ""  # PINNING | AMPLIFYING | NEUTRAL
+    quality_flags: list[str] = field(default_factory=list)
 
 
 from zenquant.data._z_utils import robust_z as _robust_z
@@ -58,6 +63,11 @@ class OptionsDataStore:
         self._skew: list[float | None] = []
         self._term_slope: list[float | None] = []
         self._spot: list[float] = []
+        # GEX metrics per snapshot
+        self._net_gex: list[float] = []
+        self._gamma_wall: list[float | None] = []
+        self._flip_strike: list[float | None] = []
+        self._gex_regime: list[str] = []
 
     @property
     def loaded(self) -> bool:
@@ -103,12 +113,19 @@ class OptionsDataStore:
                 skew = self._compute_skew(df)
                 term_slope = self._compute_term_structure(df)
 
+                # Compute GEX from full options chain
+                net_gex, gamma_wall, flip_strike, gex_regime = self._compute_gex(df, spot)
+
                 # Append to time series
                 self._timestamps.append(snapshot_ts)
                 self._atm_iv.append(atm_iv)
                 self._skew.append(skew)
                 self._term_slope.append(term_slope)
                 self._spot.append(spot)
+                self._net_gex.append(net_gex)
+                self._gamma_wall.append(gamma_wall)
+                self._flip_strike.append(flip_strike)
+                self._gex_regime.append(gex_regime)
 
             except Exception as e:
                 print(f"  Warning: Failed to load {path}: {e}")
@@ -122,6 +139,10 @@ class OptionsDataStore:
             self._skew = [self._skew[i] for i in indices]
             self._term_slope = [self._term_slope[i] for i in indices]
             self._spot = [self._spot[i] for i in indices]
+            self._net_gex = [self._net_gex[i] for i in indices]
+            self._gamma_wall = [self._gamma_wall[i] for i in indices]
+            self._flip_strike = [self._flip_strike[i] for i in indices]
+            self._gex_regime = [self._gex_regime[i] for i in indices]
 
     def lookup(self, cutoff_time_ns: int) -> OptionsSnapshot:
         """Return latest options snapshot before cutoff (point-in-time correct)."""
@@ -207,8 +228,28 @@ class OptionsDataStore:
             put_call_skew_25d=skew,
             skew_z=skew_z,
             underlying_price=spot,
+            net_gex=self._net_gex[idx] if idx < len(self._net_gex) else 0.0,
+            gamma_wall_strike=self._gamma_wall[idx] if idx < len(self._gamma_wall) else None,
+            flip_strike=self._flip_strike[idx] if idx < len(self._flip_strike) else None,
+            gex_regime=self._gex_regime[idx] if idx < len(self._gex_regime) else "",
             quality_flags=quality_flags,
         )
+
+    def _compute_gex(self, df, spot: float) -> tuple[float, float | None, float | None, str]:
+        """Compute GEX metrics from full options chain."""
+        try:
+            from zenquant.research.gex import compute_gex_profile
+
+            rows = df.to_dict("records")
+            profile = compute_gex_profile(rows, spot=spot)
+            return (
+                profile.net_gex,
+                profile.gamma_wall_strike,
+                profile.flip_strike,
+                profile.regime,
+            )
+        except Exception:
+            return 0.0, None, None, ""
 
     def _compute_atm_iv(self, df) -> float | None:
         """Extract ATM IV from options chain at ~30-day tenor.
