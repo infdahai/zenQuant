@@ -42,7 +42,7 @@ dxy_strong_threshold = 1.5
 yield_stress_threshold = 2.0
 
 [signals.options_vol_signal]
-enabled = false  # Enable after collecting 30-60 days of options snapshots
+enabled = true  # Auto-neutral when no data (atm_iv_z==0 → returns 0). Activates when Deribit snapshots ≥ 30.
 weight = 0.15
 low_iv_threshold = -0.5
 high_iv_threshold = 1.5

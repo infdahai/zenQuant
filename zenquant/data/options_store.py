@@ -63,6 +63,16 @@ class OptionsDataStore:
     def loaded(self) -> bool:
         return len(self._timestamps) > 0
 
+    @property
+    def snapshot_count(self) -> int:
+        """Number of loaded options chain snapshots."""
+        return len(self._timestamps)
+
+    @property
+    def ready_for_signal(self) -> bool:
+        """True when enough snapshots exist for meaningful z-scores (≥30)."""
+        return self.snapshot_count >= self._config.z_window
+
     def load(self) -> None:
         """Load all options chain snapshots and compute IV metrics."""
         currency_dir = self._config.options_dir / self._config.currency
