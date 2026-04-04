@@ -7,19 +7,33 @@
 Regime-aware crypto perpetual futures trading system. BTC-first, 4H execution timeframe.
 完整角色定义和架构约束见 `AGENTS.md`。
 
-## 当前信号体系 (9 plugins, 6 active — after ablation 2026-04-04)
+## 当前信号体系 (9 plugins, 7 active)
 
-| Signal | Weight | Status | Source | Ablation |
-|--------|--------|--------|--------|----------|
-| multi_momentum_signal | 0.45 | **Active** | Price structure (multi-horizon ROC) | LOAD-BEARING (-0.04) |
-| crash_reversal_signal | 0.25 | **Active** | 极端崩盘反转 (bar ret<-5%) | LOAD-BEARING (-0.14) |
-| cvd_signal | 0.25 | **Active** | Real CVD from aggTrades | Re-enabled (+0.27) |
-| funding_alpha_signal | 0.10 | **Active** | 资金费率反转(contrarian) | LOAD-BEARING (-0.10) |
-| liquidity_signal | 0.20 | **Active** | Order book imbalance | PHANTOM (0/12766 fires, live-only) |
-| crowding_signal | 0.10 | **Active** | Funding x OI positioning | Re-enabled (+0.11) |
-| macro_regime_signal | 0.12 | Disabled | VIX/DXY → NOISE for BTC | DEAD WEIGHT (+0.46) |
-| vol_mean_reversion_signal | 0.20 | Disabled | Vol spike reversion weak | DEAD WEIGHT (-0.13) |
-| options_vol_signal | 0.15 | Disabled | Deribit ATM IV/skew (collecting data) | Pending |
+| Signal | Weight | Status | Source | Note |
+|--------|--------|--------|--------|------|
+| multi_momentum_signal | 0.45 | **Active** | Multi-horizon ROC | LOAD-BEARING |
+| crash_reversal_signal | 0.25 | **Active** | 极端崩盘反转 | LOAD-BEARING (IC=-0.21) |
+| cvd_signal | 0.25 | **Active** | Real CVD from aggTrades | Re-enabled |
+| funding_alpha_signal | 0.10 | **Active** | 资金费率反转 | LOAD-BEARING |
+| liquidity_signal | 0.20 | **Active** | Order book imbalance | PHANTOM (live-only) |
+| crowding_signal | 0.10 | **Active** | Funding x OI | Re-enabled |
+| options_vol_signal | 0.15 | **Active** | Deribit IV/skew + GEX | Auto-neutral without data |
+| macro_regime_signal | 0.12 | Disabled | VIX/DXY → NOISE | DEAD WEIGHT |
+| vol_mean_reversion_signal | 0.20 | Disabled | Vol spike weak | DEAD WEIGHT |
+
+## Risk Guards (configurable via RiskOverlayConfig)
+
+| Guard | Trigger | Effect |
+|-------|---------|--------|
+| Asymmetric DD | Long 15/22/28%, Short 8/14/20% | lev ×0.65/0.40/0.20 |
+| VPIN toxic flow | vpin > 0.10 (p95) | lev ×0.70 |
+| GEX regime | PINNING / AMPLIFYING | lev ×1.15 / ×0.70 |
+| Basis premium | basis_z > 2.0 (long only) | lev ×0.80 |
+| Weekend vol | Sat/Sun | lev ×1.25 |
+| COT crowding | leveraged_z > 2.5 (directional) | lev ×0.70 |
+| Equity stress | QQQ+IWM crash | lev ×0.50 |
+| Vol shock | realized_vol > 0.95 | lev ×0.40 |
+| Kill switch | DD > 30% | reduce_only → recovery |
 
 ## 架构三层分离
 
