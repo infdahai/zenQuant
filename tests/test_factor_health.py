@@ -320,5 +320,26 @@ class TestFactorHealth(unittest.TestCase):
                     )
 
 
+    def test_data_split_config_exists_and_valid(self) -> None:
+        """Sprint contract: data splits must be defined and temporally ordered."""
+        import tomllib
+
+        split_path = Path("config/data_splits.toml")
+        if not split_path.exists():
+            self.skipTest("data_splits.toml not found")
+
+        config = tomllib.loads(split_path.read_text())
+        splits = config["splits"]
+
+        train_end = splits["train_end"]
+        dev_start = splits["dev_start"]
+        dev_end = splits["dev_end"]
+        test_start = splits["test_start"]
+
+        # Temporal ordering: train < dev < test, no overlap
+        self.assertLessEqual(train_end, dev_start, "Train/Dev overlap!")
+        self.assertLessEqual(dev_end, test_start, "Dev/Test overlap!")
+
+
 if __name__ == "__main__":
     unittest.main()
