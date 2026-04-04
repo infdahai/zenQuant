@@ -7,19 +7,19 @@
 Regime-aware crypto perpetual futures trading system. BTC-first, 4H execution timeframe.
 完整角色定义和架构约束见 `AGENTS.md`。
 
-## 当前信号体系 (9 plugins, 8 active)
+## 当前信号体系 (9 plugins, 6 active — after ablation 2026-04-04)
 
-| Signal | Weight | Status | Source | IC |
-|--------|--------|--------|--------|----|
-| multi_momentum_signal | 0.45 | Active | Price structure (multi-horizon ROC) | -0.08 (弱) |
-| crash_reversal_signal | 0.25 | Active | 极端崩盘反转 (bar ret<-5%) | **-0.21** (最强) |
-| cvd_signal | 0.25 | Active | Cumulative volume delta | -0.03 |
-| vol_mean_reversion_signal | 0.20 | Active | 波动率均值回归 (rv20/rv60>1.5) | **+2.98%/5d excess** |
-| liquidity_signal | 0.20 | Active | Order book imbalance | N/A(无OB数据) |
-| macro_regime_signal | 0.12 | Active | VIX/DXY/Treasury/TLT | -0.01 |
-| funding_alpha_signal | 0.10 | Active | 资金费率反转(contrarian) | -0.03 |
-| crowding_signal | 0.10 | Active | Funding x OI positioning | N/A |
-| options_vol_signal | 0.15 | Disabled | Deribit ATM IV/skew (pending 30d data) | N/A |
+| Signal | Weight | Status | Source | Ablation |
+|--------|--------|--------|--------|----------|
+| multi_momentum_signal | 0.45 | **Active** | Price structure (multi-horizon ROC) | LOAD-BEARING (-0.04) |
+| crash_reversal_signal | 0.25 | **Active** | 极端崩盘反转 (bar ret<-5%) | LOAD-BEARING (-0.14) |
+| cvd_signal | 0.25 | **Active** | Real CVD from aggTrades | Re-enabled (+0.27) |
+| funding_alpha_signal | 0.10 | **Active** | 资金费率反转(contrarian) | LOAD-BEARING (-0.10) |
+| liquidity_signal | 0.20 | **Active** | Order book imbalance | PHANTOM (0/12766 fires, live-only) |
+| crowding_signal | 0.10 | **Active** | Funding x OI positioning | Re-enabled (+0.11) |
+| macro_regime_signal | 0.12 | Disabled | VIX/DXY → NOISE for BTC | DEAD WEIGHT (+0.46) |
+| vol_mean_reversion_signal | 0.20 | Disabled | Vol spike reversion weak | DEAD WEIGHT (-0.13) |
+| options_vol_signal | 0.15 | Disabled | Deribit ATM IV/skew (collecting data) | Pending |
 
 ## 架构三层分离
 
@@ -29,19 +29,27 @@ Layer 2 (逻辑)  → 5-gate harness保护 (signal compute(), regime rules)
 Layer 1 (数据)  → 一次搭建永久运行 (GitHub Actions, DataStores, Parquet)
 ```
 
-## 战略优先级 (Phase 2 Plan, 2026-04-02)
+## 当前性能 (2026-04-04, PaulWei asymmetric DD)
 
-**架构**: v2.0 confidence-weighted direction + pyramid execution + equity risk overlay
-**数据**: BTC 12,766 + ETH 11,342 + BNB 1,740 + SOL 1,938 bars + 5min收集中
-**性能**: BTC Train=1.53 / Test=1.74 (7年0亏损年). ETH=-0.84 (不交易)
-**下一步**: 5min特征提取 + 1H执行层 + RL执行timing
+**全期 (2020-2025)**: Sharpe 1.68, $100k→$5.73M (57.3x), DD 14.4%, 6年全部正收益
+**数据**: real CVD 13,638 4H + 54,552 1H buckets, COT 326 weeks, NDX/Gold/M2
+**1H dual-layer**: 4H signal → 1H entry optimization, DD改善46% (2024: 5.9%→3.2%)
+**Walk-forward**: 8/8 windows positive, avg OOS ratio 1.11, 0 overfit
 
 核心原则(文章"骨架+血肉"): 6层决策链是骨架(不替代)，AI只调参数(血肉)
 每个新因子必须IC>0.03才启用(防止因子幻象)
 
-## 质量门禁 (Harness)
+## 质量门禁 (Harness — 7 gates + adversarial)
 
-5-gate chain: ruff → import boundaries → golden output → parity → pytest(220+)
+Gate 0: Factor Health (IC stability, sprint contracts, walk-forward stability)
+Gate A: ruff lint
+Gate B: Import boundaries
+Gate C: Golden output regression
+Gate D: Plugin/legacy parity
+Gate E: Full pytest (242 tests)
+Gate F: Walk-forward overfit detection (8 OOS windows)
++ Adversarial: 3 GAN-style scenarios (whipsaw, vacuum, crowding trap)
++ Signal Ablation: periodic load-bearing analysis
 详见 `docs/HARNESS_ARCHITECTURE.md`
 
 ## 评估纪律 (最重要)
@@ -64,3 +72,7 @@ Layer 1 (数据)  → 一次搭建永久运行 (GitHub Actions, DataStores, Parq
 - **Position sizing IS the stop loss** — PaulWei哲学: 仓位小到不会爆仓, 不需要价格止损 (2026-04-04)
 - **BTC长期非对称** — 法币贬值→稀缺资产长期涨→做多比做空更安全→多空风控应不对称 (2026-04-04)
 - **5min RV是最强因子** — IC=+0.248, 远超其他所有因子. 学术验证(Andersen 1998) (2026-04-04)
+- **Signal ablation发现交互效应** — 单因子ablation有误杀风险, 需sequential验证 (2026-04-04)
+- **PaulWei asymmetric DD** — 做多DD 15/22/28%, 做空DD 8/14/20%, 57.3x收益 (2026-04-04)
+- **Anthropic harness engineering** — load-bearing analysis + GAN-style adversarial evaluator (2026-04-04)
+- **多时间帧共识** — Elder/AQR/ICT: 大周期定方向,小周期做执行. 4H:1H=4x在最优范围 (2026-04-04)

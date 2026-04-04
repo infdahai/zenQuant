@@ -118,6 +118,7 @@ class IndicatorEngine:
         options_store: object | None = None,
         hf_store: object | None = None,
         cot_store: object | None = None,
+        basis_store: object | None = None,
     ) -> None:
         self._bus = bus
         self._store = store
@@ -126,6 +127,7 @@ class IndicatorEngine:
         self._options_store = options_store  # OptionsDataStore (optional, avoids circular import)
         self._hf_store = hf_store  # HFFeatureStore (optional, 5min features)
         self._cot_store = cot_store  # CotDataStore (optional, weekly institutional positioning)
+        self._basis_store = basis_store  # BasisDataStore (optional, spot-perp premium)
         self._formula_hash = _formula_hash(
             self._config, has_macro=macro_store is not None, has_options=options_store is not None
         )
@@ -309,7 +311,6 @@ class IndicatorEngine:
                 # Cross-sectional macro factors (individual, not composite)
                 "ndx_z": macro_snap.ndx_z,
                 "gold_z": macro_snap.gold_z,
-                "m2_z": macro_snap.m2_z,
             }
             for flag in macro_snap.quality_flags:
                 if flag not in quality_flags:
@@ -390,6 +391,12 @@ class IndicatorEngine:
             cot = self._cot_store.lookup(candle.bar_end_ns)
             macro_values["cot_asset_mgr_z"] = cot.asset_mgr_z
             macro_values["cot_leveraged_z"] = cot.leveraged_z
+
+        # Inject spot-perp basis (whale flow detection)
+        if self._basis_store is not None and hasattr(self._basis_store, "lookup"):
+            basis = self._basis_store.lookup(candle.bar_end_ns)
+            macro_values["basis_pct"] = basis.basis_pct
+            macro_values["basis_z"] = basis.basis_z
 
         pack = IndicatorPack(
             ts_ns=candle.bar_end_ns,

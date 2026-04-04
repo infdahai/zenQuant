@@ -101,6 +101,26 @@ async def run_paper_trading(symbol: str = "BTCUSDT", duration_hours: float = 24.
     )
     stream = BinancePerpStreamClient(bus=bus, config=ws_config)
 
+    # Start Deribit options collector (background, every 4H)
+    options_task = None
+    try:
+        from pathlib import Path as _P
+
+        from scripts.collect_deribit_options import collect_once
+
+        async def _options_loop():
+            while True:
+                try:
+                    collect_once("BTC", _P("data/raw/deribit_options"))
+                except Exception as e:
+                    print(f"  [OPTIONS] Error: {e}")
+                await asyncio.sleep(4 * 3600)  # Every 4H
+
+        print("Deribit options collector: enabled (every 4H)")
+    except ImportError:
+        print("Deribit options collector: disabled (import error)")
+
+
     print("Connecting to Binance WebSocket...")
     print(f"Logging decisions to: {log_file}")
     print("Press Ctrl+C to stop")
@@ -122,7 +142,9 @@ async def run_paper_trading(symbol: str = "BTCUSDT", duration_hours: float = 24.
 
     try:
         await stream.start()
-        stream_task = asyncio.ensure_future(asyncio.sleep(duration_hours * 3600))
+        # Start background options collector
+        if options_task is None:
+            options_task = asyncio.ensure_future(_options_loop())
 
         while not stop_event.is_set():
             await asyncio.sleep(10)
@@ -143,6 +165,8 @@ async def run_paper_trading(symbol: str = "BTCUSDT", duration_hours: float = 24.
     except asyncio.CancelledError:
         pass
     finally:
+        if options_task:
+            options_task.cancel()
         await stream.stop()
 
     # Summary
