@@ -1,0 +1,46 @@
+name: Data Sync (Weekly)
+
+on:
+  schedule:
+    - cron: '0 6 * * 0'  # Every Sunday at 06:00 UTC
+  workflow_dispatch:
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - run: uv sync
+
+      - name: Download Binance futures data
+        run: uv run python scripts/download_binance_data.py --days 30 --symbol BTCUSDT
+
+      - name: Download Binance spot data
+        run: uv run python scripts/download_spot_data.py --days 30 --symbol BTCUSDT
+
+      - name: Convert to Parquet
+        run: |
+          uv run python scripts/convert_csv_to_parquet.py --source binance
+          uv run python scripts/convert_csv_to_parquet.py --source binance_spot
+
+      - name: Download macro data
+        run: uv run python scripts/download_macro_data.py --years 1
+
+      - name: Download COT data
+        run: uv run python scripts/download_cot.py --years 1
+
+      - name: Deribit options snapshot
+        run: uv run python scripts/collect_deribit_options.py --once
+
+      - name: Summary
+        run: |
+          echo "Data sync complete"
+          ls -lh data/raw/binance/klines/BTCUSDT/4h/data.parquet 2>/dev/null || true
+          ls -lh data/raw/cftc/cot_btc.parquet 2>/dev/null || true
