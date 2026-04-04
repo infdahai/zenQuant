@@ -4,22 +4,31 @@
 Anthropic harness principle: Generator should not self-evaluate.
 This script constructs adversarial market conditions designed to break the strategy.
 
-Three adversarial scenarios:
-1. Regime Whipsaw — rapid trend reversals every 20 bars
-2. Liquidity Vacuum — sudden price gaps (-5% to -10%)
-3. Crowding Trap — extreme funding/OI but price continues trending
+Two modes:
+
+1. SYNTHETIC (default):
+   - Regime Whipsaw — rapid trend reversals every 20 bars
+   - Liquidity Vacuum — sudden price gaps (-5% to -10%)
+   - Crowding Trap — extreme funding/OI but price continues trending
+
+2. HISTORICAL (--historical):
+   - Replay actual worst DD periods from full backtest
+   - Requires: run `python scripts/extract_worst_periods.py` first
+   - Reads: tests/adversarial/worst_periods.json
 
 Sprint contracts (hard thresholds):
-- Whipsaw: Sharpe > -1.0 (don't collapse)
-- Vacuum: Max DD < 20% (risk controls hold)
-- Crowding Trap: No false SEVERE_CROWDING in normal regime
+- Synthetic: Sharpe > 0.0 (must remain profitable)
+- Historical: Sharpe > 0.0 (must survive actual worst periods)
 
 Usage:
-    uv run python scripts/adversarial_stress.py
+    uv run python scripts/adversarial_stress.py              # Synthetic scenarios
+    uv run python scripts/adversarial_stress.py --historical # Historical replay
 """
 
 from __future__ import annotations
 
+import argparse
+import json
 import math
 import sys
 import tempfile
@@ -289,52 +298,123 @@ def run_scenario(
     )
 
 
+def run_historical_replay(periods_file: Path = Path("tests/adversarial/worst_periods.json")) -> list[AdversarialResult]:
+    """Replay actual worst DD periods from backtest history.
+
+    Uses real market data from periods where strategy performed worst.
+    More realistic than synthetic scenarios.
+    """
+    if not periods_file.exists():
+        print(f"ERROR: {periods_file} not found")
+        print("Run: python scripts/extract_worst_periods.py first")
+        sys.exit(1)
+
+    data = json.loads(periods_file.read_text())
+    worst_periods = data['worst_periods']
+
+    print(f"Loaded {len(worst_periods)} worst periods from {periods_file}")
+    print(f"Full backtest: Sharpe {data['full_backtest']['sharpe']:.2f}, "
+          f"Max DD {data['full_backtest']['max_dd']:.1%}")
+
+    results: list[AdversarialResult] = []
+    for period in worst_periods:
+        name = f"HISTORICAL_{period['description'].replace(' ', '_')}"
+        start_ns = period['start_ns']
+        end_ns = period['end_ns']
+
+        print(f"\n[{period['rank']}/{len(worst_periods)}] {period['description']} "
+              f"(Original DD: {period['max_dd']:.1%})...")
+
+        # Run backtest on this specific time window
+        config = HistoricalBacktestConfig(
+            root_dir=Path("data/raw/binance"),
+            symbol="BTCUSDT",
+            start_ns=start_ns,
+            end_ns=end_ns,
+        )
+        result = HistoricalBacktest(config).run()
+        m = result.metrics
+
+        # Historical replay pass criteria: must remain profitable even in worst period
+        passed = m.sharpe >= 0.0 and m.max_drawdown <= 0.25
+
+        adv_result = AdversarialResult(
+            name=name,
+            sharpe=m.sharpe,
+            max_dd=m.max_drawdown,
+            pnl=m.net_pnl,
+            trades=m.trade_count,
+            threshold_sharpe=0.0,
+            threshold_dd=0.25,
+            passed=passed,
+            detail=f"Original DD: {period['max_dd']:.1%}, Bars: {period['bars']}",
+        )
+        results.append(adv_result)
+
+        status = "PASS" if passed else "FAIL"
+        print(f"  Sharpe={m.sharpe:.2f}, DD={m.max_dd:.1%}, PnL=${m.net_pnl:,.0f} → {status}")
+
+    return results
+
+
 def main() -> None:
+    parser = argparse.ArgumentParser(description="Adversarial stress testing")
+    parser.add_argument("--historical", action="store_true",
+                       help="Run historical replay instead of synthetic scenarios")
+    parser.add_argument("--periods-file", type=Path, default=Path("tests/adversarial/worst_periods.json"),
+                       help="Path to worst periods JSON (for --historical)")
+    args = parser.parse_args()
+
     print("Adversarial Stress Test — GAN-Style Evaluator")
     print("=" * 65)
 
-    scenarios = []
+    if args.historical:
+        print("Mode: HISTORICAL REPLAY (actual worst periods)")
+        scenarios = run_historical_replay(args.periods_file)
+    else:
+        print("Mode: SYNTHETIC (invented adversarial scenarios)")
+        scenarios = []
 
-    # Scenario 1: Regime Whipsaw
-    print("\n[1/3] Regime Whipsaw (rapid trend reversals)...")
-    daily, four_h = _whipsaw_klines()
-    r1 = run_scenario(
-        "REGIME_WHIPSAW", daily, four_h,
-        _normal_funding(), _normal_oi(),
-        threshold_sharpe=-1.0, threshold_dd=0.25,
-    )
-    scenarios.append(r1)
-    print(f"  Sharpe={r1.sharpe:.2f}, DD={r1.max_dd:.1%} → {'PASS' if r1.passed else 'FAIL'}")
+        # Scenario 1: Regime Whipsaw
+        print("\n[1/3] Regime Whipsaw (rapid trend reversals)...")
+        daily, four_h = _whipsaw_klines()
+        r1 = run_scenario(
+            "REGIME_WHIPSAW", daily, four_h,
+            _normal_funding(), _normal_oi(),
+            threshold_sharpe=0.0, threshold_dd=0.25,
+        )
+        scenarios.append(r1)
+        print(f"  Sharpe={r1.sharpe:.2f}, DD={r1.max_dd:.1%} → {'PASS' if r1.passed else 'FAIL'}")
 
-    # Scenario 2: Liquidity Vacuum
-    print("\n[2/3] Liquidity Vacuum (sudden price gaps)...")
-    daily, four_h = _vacuum_klines()
-    r2 = run_scenario(
-        "LIQUIDITY_VACUUM", daily, four_h,
-        _normal_funding(), _normal_oi(),
-        threshold_sharpe=-1.5, threshold_dd=0.20,
-    )
-    scenarios.append(r2)
-    print(f"  Sharpe={r2.sharpe:.2f}, DD={r2.max_dd:.1%} → {'PASS' if r2.passed else 'FAIL'}")
+        # Scenario 2: Liquidity Vacuum
+        print("\n[2/3] Liquidity Vacuum (sudden price gaps)...")
+        daily, four_h = _vacuum_klines()
+        r2 = run_scenario(
+            "LIQUIDITY_VACUUM", daily, four_h,
+            _normal_funding(), _normal_oi(),
+            threshold_sharpe=0.0, threshold_dd=0.20,
+        )
+        scenarios.append(r2)
+        print(f"  Sharpe={r2.sharpe:.2f}, DD={r2.max_dd:.1%} → {'PASS' if r2.passed else 'FAIL'}")
 
-    # Scenario 3: Crowding Trap
-    print("\n[3/3] Crowding Trap (extreme funding, price keeps trending)...")
-    daily, four_h = _trending_klines()
-    r3 = run_scenario(
-        "CROWDING_TRAP", daily, four_h,
-        _crowding_trap_funding(), _normal_oi(),
-        threshold_sharpe=-0.5, threshold_dd=0.15,
-    )
-    scenarios.append(r3)
-    print(f"  Sharpe={r3.sharpe:.2f}, DD={r3.max_dd:.1%} → {'PASS' if r3.passed else 'FAIL'}")
+        # Scenario 3: Crowding Trap
+        print("\n[3/3] Crowding Trap (extreme funding, price keeps trending)...")
+        daily, four_h = _trending_klines()
+        r3 = run_scenario(
+            "CROWDING_TRAP", daily, four_h,
+            _crowding_trap_funding(), _normal_oi(),
+            threshold_sharpe=0.0, threshold_dd=0.15,
+        )
+        scenarios.append(r3)
+        print(f"  Sharpe={r3.sharpe:.2f}, DD={r3.max_dd:.1%} → {'PASS' if r3.passed else 'FAIL'}")
 
     # Summary
     print("\n" + "=" * 65)
-    print(f"{'Scenario':<25} {'Sharpe':>8} {'Max DD':>8} {'Trades':>8} {'Result':>8}")
+    print(f"{'Scenario':<30} {'Sharpe':>8} {'Max DD':>8} {'Trades':>8} {'Result':>8}")
     print("-" * 65)
     for s in scenarios:
         status = "PASS" if s.passed else "FAIL"
-        print(f"{s.name:<25} {s.sharpe:>8.2f} {s.max_dd:>7.1%} {s.trades:>8} {status:>8}")
+        print(f"{s.name:<30} {s.sharpe:>8.2f} {s.max_dd:>7.1%} {s.trades:>8} {status:>8}")
 
     passed = sum(1 for s in scenarios if s.passed)
     total = len(scenarios)
@@ -344,11 +424,13 @@ def main() -> None:
         print("\nVulnerabilities detected:")
         for s in scenarios:
             if not s.passed:
-                print(f"  {s.name}: Sharpe={s.sharpe:.2f} (need>{s.threshold_sharpe}), DD={s.max_dd:.1%} (need<{s.threshold_dd:.0%})")
+                print(f"  {s.name}: Sharpe={s.sharpe:.2f} (need>{s.threshold_sharpe}), "
+                      f"DD={s.max_dd:.1%} (need<{s.threshold_dd:.0%})")
                 print(f"    {s.detail}")
         sys.exit(1)
     else:
-        print("\nAll adversarial scenarios passed. Strategy is robust.")
+        mode = "HISTORICAL" if args.historical else "SYNTHETIC"
+        print(f"\nAll {mode} adversarial scenarios passed. Strategy is robust.")
 
 
 if __name__ == "__main__":
