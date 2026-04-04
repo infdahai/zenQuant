@@ -23,7 +23,7 @@ import subprocess
 import sys
 import time
 
-GATES = ["0", "a", "b", "c", "d", "e"]
+GATES = ["0", "a", "b", "c", "d", "e", "f"]
 
 
 def _run(cmd: list[str], label: str) -> bool:
@@ -115,6 +115,21 @@ def gate_e() -> bool:
     )
 
 
+def gate_f() -> bool:
+    """Gate F: Walk-forward overfit detection.
+
+    Anthropic harness principle: "Agents tend to confidently praise their own work."
+    Independent out-of-sample evaluator catches overfitting that in-sample tests miss.
+
+    Runs walk-forward eval with 2y train / 6m test windows.
+    FAIL if any window shows OVERFIT verdict (train Sharpe > 1.0 but test < 0).
+    """
+    return _run(
+        [sys.executable, "scripts/walk_forward_eval.py", "--train-years", "2", "--test-months", "6"],
+        "F: walk-forward overfit detection",
+    )
+
+
 GATE_MAP = {
     "0": gate_0,
     "a": gate_a,
@@ -122,6 +137,7 @@ GATE_MAP = {
     "c": gate_c,
     "d": gate_d,
     "e": gate_e,
+    "f": gate_f,
 }
 
 
