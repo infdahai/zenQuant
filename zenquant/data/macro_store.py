@@ -35,6 +35,10 @@ class MacroSnapshot:
     yield_10y_z: float
     tlt: float | None
     tlt_z: float
+    qqq: float | None
+    qqq_z: float
+    iwm: float | None
+    iwm_z: float
     quality_flags: list[str]
 
 
@@ -66,6 +70,8 @@ class MacroDataStore:
             "dxy": self._config.macro_dir / "dxy" / "data.parquet",
             "yield_10y": self._config.macro_dir / "treasury_10y" / "data.parquet",
             "tlt": self._config.macro_dir / "tlt" / "data.parquet",
+            "qqq": self._config.macro_dir / "qqq" / "data.parquet",
+            "iwm": self._config.macro_dir / "iwm" / "data.parquet",
         }
 
         for name, path in series_map.items():
@@ -101,6 +107,8 @@ class MacroDataStore:
         dxy, dxy_z = self._lookup_one("dxy", cutoff_time_ns)
         yield_10y, yield_10y_z = self._lookup_one("yield_10y", cutoff_time_ns)
         tlt, tlt_z = self._lookup_one("tlt", cutoff_time_ns)
+        qqq, qqq_z = self._lookup_one("qqq", cutoff_time_ns)
+        iwm, iwm_z = self._lookup_one("iwm", cutoff_time_ns)
 
         quality_flags: list[str] = []
         # Check staleness across all loaded series
@@ -118,6 +126,10 @@ class MacroDataStore:
             yield_10y_z=yield_10y_z,
             tlt=tlt,
             tlt_z=tlt_z,
+            qqq=qqq,
+            qqq_z=qqq_z,
+            iwm=iwm,
+            iwm_z=iwm_z,
             quality_flags=quality_flags,
         )
 

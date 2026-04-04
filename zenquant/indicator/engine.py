@@ -295,6 +295,8 @@ class IndicatorEngine:
                 "yield_10y_z": macro_snap.yield_10y_z,
                 "tlt": macro_snap.tlt,
                 "tlt_z": macro_snap.tlt_z,
+                "qqq_z": macro_snap.qqq_z,
+                "iwm_z": macro_snap.iwm_z,
             }
             for flag in macro_snap.quality_flags:
                 if flag not in quality_flags:

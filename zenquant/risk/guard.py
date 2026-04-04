@@ -198,6 +198,18 @@ class RiskOverlay:
                 reduce_only = True
                 flags.append("SEVERE_CROWDING")
 
+            # Equity market risk: when QQQ+IWM both crash → reduce BTC leverage
+            # IC direction unstable but |IC|>0.05 → use as risk sizing, not direction
+            qqq_z = float(indicator.values.get("qqq_z", 0.0) or 0.0)
+            iwm_z = float(indicator.values.get("iwm_z", 0.0) or 0.0)
+            if qqq_z < -2.0 and iwm_z < -2.0:
+                # Both equity indices crashing → macro risk-off → reduce BTC exposure
+                lev_cap *= 0.5
+                flags.append("EQUITY_RISK_OFF")
+            elif qqq_z < -1.5 or iwm_z < -1.5:
+                lev_cap *= 0.8
+                flags.append("EQUITY_STRESS")
+
             # High position sizing: cycle_position + funding as "overheated" detector
             # PaulWei pattern: reduce size at highs, not stop trading
             cycle_pos = float(indicator.values.get("cycle_position", 1.0) or 1.0)
