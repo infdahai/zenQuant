@@ -271,8 +271,6 @@ class RiskOverlay:
                 flags.append("VPIN_TOXIC")
 
             # Weekend vol adjustment: lower vol = can hold slightly larger position
-            from datetime import UTC, datetime
-
             bar_dt = datetime.fromtimestamp(target.cutoff_time_ns / 1e9, tz=UTC)
             if bar_dt.weekday() >= 5:  # Saturday=5, Sunday=6
                 lev_cap *= self._config.weekend_vol_scalar
