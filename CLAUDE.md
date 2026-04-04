@@ -31,10 +31,10 @@ Layer 1 (数据)  → 一次搭建永久运行 (GitHub Actions, DataStores, Parq
 
 ## 战略优先级 (Phase 2 Plan, 2026-04-02)
 
-**架构**: v2.0 confidence-weighted direction (signal × weight × confidence)
-**数据**: BTC 12,766 + ETH 11,342 + BNB 1,740 + SOL 1,938 bars
-**性能**: BTC Train=1.33 / Test=2.03 (不过拟合). ETH=-0.31 (需适配)
-**下一步**: Paper trading验证 + Live执行优化
+**架构**: v2.0 confidence-weighted direction + pyramid execution + equity risk overlay
+**数据**: BTC 12,766 + ETH 11,342 + BNB 1,740 + SOL 1,938 bars + 5min收集中
+**性能**: BTC Train=1.53 / Test=1.74 (7年0亏损年). ETH=-0.84 (不交易)
+**下一步**: 5min特征提取 + 1H执行层 + RL执行timing
 
 核心原则(文章"骨架+血肉"): 6层决策链是骨架(不替代)，AI只调参数(血肉)
 每个新因子必须IC>0.03才启用(防止因子幻象)

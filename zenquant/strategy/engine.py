@@ -769,6 +769,17 @@ class ARCStrategyEngine:
 
     def _state_dict(self, state: MarketState, playbook: PlaybookSelection) -> dict[str, Any]:
         """Build the flat dict that plugins receive as ``state``."""
+        # Compute position unrealized PnL for sizers (PaulWei pyramid pattern)
+        pos_key = (state.symbol, state.timeframe)
+        pos = self._positions.get(pos_key)
+        position_unrealized_pnl = 0.0
+        if pos is not None and abs(pos.current_qty) > 0:
+            price = self._latest_packs.get(pos_key)
+            if price:
+                last_px = float(price.values.get("close", price.values.get("last_price", 0)) or 0)
+                if last_px > 0 and pos.entry_price > 0:
+                    position_unrealized_pnl = (last_px - pos.entry_price) * pos.current_qty
+
         return {
             "regime": state.regime,
             "directional_state": state.directional_state,
@@ -788,6 +799,7 @@ class ARCStrategyEngine:
             "time_decay_bars": playbook.time_decay_bars,
             "timeframe": state.timeframe.value,
             "equity": self._equity,
+            "position_unrealized_pnl": position_unrealized_pnl,
         }
 
     @staticmethod
