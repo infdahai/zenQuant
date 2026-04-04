@@ -115,12 +115,14 @@ class IndicatorEngine:
         config: IndicatorEngineConfig | None = None,
         macro_store: object | None = None,
         options_store: object | None = None,
+        hf_store: object | None = None,
     ) -> None:
         self._bus = bus
         self._store = store
         self._config = config or IndicatorEngineConfig()
         self._macro_store = macro_store  # MacroDataStore (optional, avoids circular import)
         self._options_store = options_store  # OptionsDataStore (optional, avoids circular import)
+        self._hf_store = hf_store  # HFFeatureStore (optional, 5min features)
         self._formula_hash = _formula_hash(
             self._config, has_macro=macro_store is not None, has_options=options_store is not None
         )
@@ -359,6 +361,12 @@ class IndicatorEngine:
         rv_60 = _realized_vol(candles, window=60, timeframe=candle.timeframe)
         vol_ratio_rv = realized_vol / rv_60 if rv_60 > 0.01 else 1.0
         macro_values["vol_ratio_rv"] = round(vol_ratio_rv, 3)
+
+        # Inject 5min HF features (rv_hf is strongest factor, IC=+0.248)
+        if self._hf_store is not None and hasattr(self._hf_store, "lookup"):
+            hf = self._hf_store.lookup(candle.bar_end_ns)
+            macro_values["rv_hf"] = hf.realized_vol_hf
+            macro_values["intra_bar_max_dd"] = hf.intra_bar_max_dd
 
         pack = IndicatorPack(
             ts_ns=candle.bar_end_ns,

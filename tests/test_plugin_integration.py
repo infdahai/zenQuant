@@ -128,7 +128,7 @@ class TestRegistryLoadsRealPlugins(unittest.TestCase):
 
         self.assertEqual(len(registry.signals), 8)  # 8 active signals, options disabled
         self.assertEqual(len(registry.filters), 2)
-        self.assertEqual(len(registry.sizers), 5)  # +winning_position_sizer
+        self.assertEqual(len(registry.sizers), 4)  # winning_position_sizer disabled
         self.assertEqual(len(registry.exits), 5)
 
         # Verify exit priority ordering

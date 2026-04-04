@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any
 
 from zenquant.data import MacroDataStore, MacroDataStoreConfig, OptionsDataStore, OptionsDataStoreConfig
+from zenquant.indicator.hf_features import HFFeatureStore, HFFeatureStoreConfig
 from zenquant.domain import (
     BacktestDiagnostics,
     BacktestMetrics,
@@ -109,12 +110,17 @@ class HistoricalBacktest:
             OptionsDataStoreConfig(options_dir=self._config.options_dir, currency="BTC")
         )
         self._options_store.load()
+        # Load HF (5min) features if available
+        hf_dir = self._config.root_dir / "klines" / self._config.symbol / "5m"
+        self._hf_store = HFFeatureStore(HFFeatureStoreConfig(data_dir=hf_dir))
+        self._hf_store.load()
         self.indicator_engine = IndicatorEngine(
             bus=self.bus,
             store=self.indicator_store,
             config=IndicatorEngineConfig(expected_symbols=(self._config.portfolio_symbol,)),
             macro_store=self._macro_store if self._macro_store.loaded else None,
             options_store=self._options_store if self._options_store.loaded else None,
+            hf_store=self._hf_store if self._hf_store.loaded else None,
         )
         self.risk_overlay = RiskOverlay(
             bus=self.bus,
