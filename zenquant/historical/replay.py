@@ -13,6 +13,14 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from zenquant.data import (
+    CotDataStore,
+    CotStoreConfig,
+    MacroDataStore,
+    MacroDataStoreConfig,
+    OptionsDataStore,
+    OptionsDataStoreConfig,
+)
 from zenquant.domain import (
     BacktestDiagnostics,
     BacktestMetrics,
@@ -35,7 +43,9 @@ from zenquant.domain import (
 )
 from zenquant.execution import ExecutionKernel, SimulatedGateway
 from zenquant.indicator import IndicatorEngine, IndicatorEngineConfig, IndicatorStore
+from zenquant.indicator.hf_features import HFFeatureStore, HFFeatureStoreConfig
 from zenquant.infra import InMemoryJetStream, StreamConfig
+from zenquant.plugins.profile import build_from_profile
 from zenquant.risk import RiskOverlay, RiskOverlayConfig
 from zenquant.state import StateEngine
 from zenquant.strategy import ARCStrategyConfig, ARCStrategyEngine
@@ -56,11 +66,23 @@ class HistoricalBacktestConfig:
     starting_equity: float = 100_000.0
     execution_timeframe: Timeframe = Timeframe.TF_4H
     bias_timeframe: Timeframe = Timeframe.TF_1D
+    # Dual-layer: set to TF_4H when execution is TF_1H (4H constrains 1H)
+    context_timeframe: Timeframe | None = None
     open_interest_timeframe: str = "4h"
     # Strategy config override (for parameter sweeps)
     strategy_config: ARCStrategyConfig | None = None
+    # Risk config override (for risk appetite tuning)
+    risk_config: RiskOverlayConfig | None = None
     # Domain randomization (for robustness testing)
     perturbation: PerturbationConfig | None = None
+    # Macro data directory (VIX, DXY, Treasury yields)
+    macro_dir: Path = Path("data/raw/macro")
+    # Options data directory (Deribit IV, skew, term structure)
+    options_dir: Path = Path("data/raw/deribit_options")
+    # CFTC COT data path
+    cot_path: Path = Path("data/raw/cftc/cot_btc.parquet")
+    # Plugin profile path (default.toml, etc.)
+    profile_path: Path | None = Path("config/profiles/default.toml")
 
 
 @dataclass(slots=True)
@@ -93,18 +115,43 @@ class HistoricalBacktest:
         self.bus.add_stream(StreamConfig(name="STREAM_EXEC", subjects=["exec.>"]))
 
         self.indicator_store = IndicatorStore()
+        # Load macro data if available
+        self._macro_store = MacroDataStore(MacroDataStoreConfig(macro_dir=self._config.macro_dir))
+        self._macro_store.load()
+        # Load options data if available
+        self._options_store = OptionsDataStore(
+            OptionsDataStoreConfig(options_dir=self._config.options_dir, currency="BTC")
+        )
+        self._options_store.load()
+        # Load HF (5min) features if available
+        hf_dir = self._config.root_dir / "klines" / self._config.symbol / "5m"
+        self._hf_store = HFFeatureStore(HFFeatureStoreConfig(data_dir=hf_dir))
+        self._hf_store.load()
+        # Load CFTC COT data if available
+        self._cot_store = CotDataStore(CotStoreConfig(cot_path=self._config.cot_path))
+        self._cot_store.load()
         self.indicator_engine = IndicatorEngine(
             bus=self.bus,
             store=self.indicator_store,
             config=IndicatorEngineConfig(expected_symbols=(self._config.portfolio_symbol,)),
+            macro_store=self._macro_store if self._macro_store.loaded else None,
+            options_store=self._options_store if self._options_store.loaded else None,
+            hf_store=self._hf_store if self._hf_store.loaded else None,
+            cot_store=self._cot_store if self._cot_store.loaded else None,
         )
         self.risk_overlay = RiskOverlay(
             bus=self.bus,
-            config=RiskOverlayConfig(starting_equity=self._config.starting_equity),
+            config=self._config.risk_config or RiskOverlayConfig(starting_equity=self._config.starting_equity),
         )
+        # Load plugin registry if profile path provided
+        plugin_registry = None
+        if self._config.profile_path and self._config.profile_path.exists():
+            plugin_root = Path(__file__).parent.parent / "plugins"
+            _, plugin_registry = build_from_profile(self._config.profile_path, plugin_root=plugin_root)
         self.strategy_engine = ARCStrategyEngine(
             bus=self.bus,
             config=self._config.strategy_config,
+            plugin_registry=plugin_registry,
         )
         self.state_engine = StateEngine(bus=self.bus)
         self.execution_kernel = ExecutionKernel(
@@ -192,11 +239,30 @@ class HistoricalBacktest:
             params=_time_filter_params(self._config.start_ns, self._config.end_ns),
             order_by="ts_ns ASC",
         )
+        # Load pre-aggregated aggTrades (real order flow CVD)
+        self._aggtrades: dict[str, dict[int, dict[str, Any]]] = {}
+        for tf_label in ("4h", "1h"):
+            agg_glob = str(self._config.root_dir / "aggtrades" / self._config.symbol / tf_label / "*.parquet")
+            agg_rows = read_parquet_rows(agg_glob, order_by="ts_ns ASC")
+            if agg_rows:
+                bucket = {}
+                for agg_row in agg_rows:
+                    bucket[int(agg_row["ts_ns"])] = agg_row
+                self._aggtrades[tf_label] = bucket
+                print(f"  Loaded {len(bucket)} {tf_label} aggTrades buckets (real CVD)")
+
         self._funding_index = -1
         self._open_interest_index = -1
 
         candles: list[dict[str, Any]] = []
-        for timeframe in (self._config.bias_timeframe, self._config.execution_timeframe):
+        # Build unique set of timeframes to load (bias → context → execution)
+        timeframes_to_load: list[Timeframe] = [self._config.bias_timeframe]
+        if self._config.context_timeframe and self._config.context_timeframe not in timeframes_to_load:
+            timeframes_to_load.append(self._config.context_timeframe)
+        if self._config.execution_timeframe not in timeframes_to_load:
+            timeframes_to_load.append(self._config.execution_timeframe)
+
+        for timeframe in timeframes_to_load:
             rows = read_parquet_rows(
                 str(self._config.root_dir / "klines" / self._config.symbol / timeframe.value / "*.parquet"),
                 where_sql=_time_filter_sql(self._config.start_ns, self._config.end_ns, column="close_time_ns"),
@@ -253,6 +319,19 @@ class HistoricalBacktest:
                 trade_count=int(row["trade_count"]),
             ),
         )
+        # Use real aggTrades CVD if available, otherwise fall back to volume proxy
+        tf_label = str(row.get("event_timeframe", "4h"))
+        agg_buckets = self._aggtrades.get(tf_label, self._aggtrades.get("4h", {}))
+        agg_bucket = agg_buckets.get(int(row["open_time_ns"]))
+        if agg_bucket is not None:
+            cvd_delta = float(agg_bucket["cvd_delta"])
+            vpin = float(agg_bucket.get("vpin", 0.0))
+            large_trade_count = int(agg_bucket.get("large_trade_count", 0))
+        else:
+            cvd_delta = _proxy_cvd_delta(row)
+            vpin = 0.0
+            large_trade_count = 0
+
         self.bus.publish(
             f"md.snapshot.{timeframe.value}.{self._config.portfolio_symbol}",
             MarketSnapshot(
@@ -264,11 +343,13 @@ class HistoricalBacktest:
                 ask_depth=max(float(row["volume"]), 1.0),
                 book_age_ms=0,
                 venue_count=1,
-                cvd_delta=_proxy_cvd_delta(row),
+                cvd_delta=cvd_delta,
                 funding_oi_weighted=float(funding_row.get("funding_rate", 0.0)) if funding_row else None,
                 oi_coverage=1.0 if oi_row else 0.0,
                 staleness_ms=_aux_staleness_ms(cutoff_ns, funding_row, oi_row),
                 quality_flags=["OK"] if oi_row else ["MISSING_OI"],
+                vpin=vpin,
+                large_trade_count=large_trade_count,
             ),
         )
         if timeframe == self._config.execution_timeframe:
@@ -404,7 +485,7 @@ class HistoricalBacktest:
             playbook_counts=dict(playbook_counts),
             actionable_exit_counts=dict(actionable_exit_counts),
             risk_flag_counts=dict(risk_flag_counts),
-            top_target_reason_codes=dict(target_reason_counts.most_common(10)),
+            top_target_reason_codes=dict(target_reason_counts.most_common(50)),
         )
 
     def build_analysis_rows(self, *, horizons: tuple[int, ...] = (1, 3, 6)) -> list[dict[str, Any]]:
@@ -731,14 +812,14 @@ def _aux_staleness_ms(
 
 def _parse_timeframe(value: str) -> Timeframe:
     """Map storage tokens to the domain timeframe enum."""
-    if value == Timeframe.TF_1D.value:
-        return Timeframe.TF_1D
-    return Timeframe.TF_4H
+    return {"1h": Timeframe.TF_1H, "4h": Timeframe.TF_4H, "1d": Timeframe.TF_1D}.get(
+        value, Timeframe.TF_4H
+    )
 
 
 def _timeframe_priority(value: str) -> int:
-    """Keep 1d context ahead of 4h execution when bars share a close time."""
-    return 0 if value == Timeframe.TF_1D.value else 1
+    """Order: 1d context first (0), then 4h (1), then 1h execution last (2)."""
+    return {"1d": 0, "4h": 1, "1h": 2}.get(value, 1)
 
 
 def _equity_returns(snapshots: list[RiskSnapshot]) -> list[float]:

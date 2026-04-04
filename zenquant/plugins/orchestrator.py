@@ -77,7 +77,7 @@ def compose_signals(
         w = weights.get(plugin.meta.name, 1.0)
         norm_w = w / total_weight
         result: SignalResult = plugin.compute(indicators, state, plugin.config)
-        contribution = result.value * norm_w
+        contribution = result.value * norm_w * result.confidence
         weighted_dir += contribution
         weighted_conf += result.confidence * norm_w
         contributions[plugin.meta.name] = round(contribution, 6)

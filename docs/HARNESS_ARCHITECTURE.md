@@ -47,7 +47,7 @@
     +--------+
     | Gate E |
     | pytest |
-    | 178+   |
+    | 223+   |
     +--------+
          |
          v
@@ -120,7 +120,7 @@
     Gate E: FULL TEST SUITE
     ┌─────────────────────────────────────────────────┐
     │  uv run pytest --tb=short -q                    │
-    │  178+ tests, 4 skipped (external deps)          │
+    │  223+ tests, 4 skipped (external deps)          │
     │                                                 │
     │  Covers: e2e chain, exits, playbooks, sizing,   │
     │  state, plugins, perturbation, research,        │

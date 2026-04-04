@@ -1,0 +1,42 @@
+name: Collect Deribit Options
+
+on:
+  schedule:
+    - cron: '0 */4 * * *'  # Every 4 hours
+  workflow_dispatch: {}     # Manual trigger
+
+jobs:
+  collect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v4
+        with:
+          version: "latest"
+
+      - name: Install dependencies
+        run: uv sync
+
+      - name: Download BTC options chain
+        run: uv run python scripts/download_deribit_options_chain.py --currency BTC
+
+      - name: Upload to S3
+        if: env.AWS_ACCESS_KEY_ID != ''
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: us-east-1
+        run: |
+          pip install awscli
+          aws s3 sync data/raw/deribit_options/ s3://${{ secrets.S3_BUCKET }}/deribit_options/ --quiet
+
+      - name: Upload artifact (fallback if no S3)
+        if: env.AWS_ACCESS_KEY_ID == ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: options-snapshot-${{ github.run_id }}
+          path: data/raw/deribit_options/
+          retention-days: 90

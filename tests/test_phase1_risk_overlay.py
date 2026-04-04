@@ -58,7 +58,7 @@ class Phase1RiskOverlayTests(unittest.TestCase):
         decisions = []
         bus.subscribe("risk.overlay.decision", lambda _subject, payload: decisions.append(payload))
 
-        overlay.apply_fee(6_000.0)  # 6% drawdown -> DD_STEP_1
+        overlay.apply_fee(16_000.0)  # 16% drawdown -> DD_STEP_1 (long threshold=15%)
         pack = IndicatorPack(
             ts_ns=1,
             symbol="BTCUSDT_PERP",

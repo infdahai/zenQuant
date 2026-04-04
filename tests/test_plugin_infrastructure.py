@@ -116,7 +116,8 @@ class TestComposeSignals(unittest.TestCase):
         plugins = [_signal_plugin("mom", value=0.8, confidence=0.9)]
         weights = {"mom": 1.0}
         result = compose_signals(plugins, weights, {}, {})
-        self.assertAlmostEqual(result.direction, 0.8, places=4)
+        # direction = value * norm_weight * confidence = 0.8 * 1.0 * 0.9 = 0.72
+        self.assertAlmostEqual(result.direction, 0.72, places=4)
         self.assertAlmostEqual(result.confidence, 0.9, places=4)
 
     def test_weighted_combination(self):
@@ -126,8 +127,8 @@ class TestComposeSignals(unittest.TestCase):
         ]
         weights = {"bull": 0.7, "bear": 0.3}
         result = compose_signals(plugins, weights, {}, {})
-        # expected: 1.0 * 0.7 + (-1.0) * 0.3 = 0.4
-        self.assertAlmostEqual(result.direction, 0.4, places=4)
+        # direction = 1.0*(0.7/1.0)*0.9 + (-1.0)*(0.3/1.0)*0.7 = 0.63 - 0.21 = 0.42
+        self.assertAlmostEqual(result.direction, 0.42, places=4)
         self.assertIn("bull", result.contributions)
         self.assertIn("bear", result.contributions)
 

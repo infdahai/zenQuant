@@ -23,7 +23,7 @@ import subprocess
 import sys
 import time
 
-GATES = ["a", "b", "c", "d", "e"]
+GATES = ["0", "a", "b", "c", "d", "e", "f"]
 
 
 def _run(cmd: list[str], label: str) -> bool:
@@ -43,6 +43,22 @@ def _project_root() -> str:
     from pathlib import Path
 
     return str(Path(__file__).parent.parent.parent)
+
+
+def gate_0() -> bool:
+    """Gate 0: Factor Health Check — Verification Agent pattern.
+
+    Runs IC analysis on full historical data to detect:
+    1. Factors used with wrong sign (IC direction mismatch)
+    2. NOISE factors with >10% signal weight
+    3. Factor decay (IC degrading over time)
+
+    WHY: "A signal with wrong direction is worse than no signal."
+    """
+    return _run(
+        [sys.executable, "-m", "pytest", "tests/test_factor_health.py", "-v", "--tb=short"],
+        "0: factor health check",
+    )
 
 
 def gate_a() -> bool:
@@ -99,12 +115,29 @@ def gate_e() -> bool:
     )
 
 
+def gate_f() -> bool:
+    """Gate F: Walk-forward overfit detection.
+
+    Anthropic harness principle: "Agents tend to confidently praise their own work."
+    Independent out-of-sample evaluator catches overfitting that in-sample tests miss.
+
+    Runs walk-forward eval with 2y train / 6m test windows.
+    FAIL if any window shows OVERFIT verdict (train Sharpe > 1.0 but test < 0).
+    """
+    return _run(
+        [sys.executable, "scripts/walk_forward_eval.py", "--train-years", "2", "--test-months", "6"],
+        "F: walk-forward overfit detection",
+    )
+
+
 GATE_MAP = {
+    "0": gate_0,
     "a": gate_a,
     "b": gate_b,
     "c": gate_c,
     "d": gate_d,
     "e": gate_e,
+    "f": gate_f,
 }
 
 

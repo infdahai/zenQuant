@@ -17,6 +17,10 @@ class _IndicatorValues:
     zen_pulse: float
     structure_state: str
     momentum_roc_z: float
+    vix_z: float
+    dxy_z: float
+    yield_10y_z: float
+    cycle_position: float = 1.0  # price/MA200: <0.8 bear, >1.3 overheated
 
 
 class StateEngine:
@@ -30,6 +34,12 @@ class StateEngine:
         self._bus = bus
         self._last_regime: dict[tuple[str, Timeframe], str] = {}
         self._last_directional: dict[tuple[str, Timeframe], str] = {}
+        # Track structure_state history for directional consistency
+        from collections import deque, defaultdict
+
+        self._structure_history: dict[tuple[str, Timeframe], deque[str]] = defaultdict(
+            lambda: deque(maxlen=120)  # ~20 days of 4H bars
+        )
         self._bus.subscribe("indicator.>", self._on_indicator)
 
     def _on_indicator(self, _: str, payload: object) -> None:
@@ -55,6 +65,7 @@ class StateEngine:
         volatility_state, volatility_confidence = _classify_volatility_state(
             quality_flags=pack.quality_flags,
             realized_vol=vals.realized_vol,
+            vix_z=vals.vix_z,
         )
         positioning_state, positioning_confidence = _classify_positioning_state(
             funding_oi_z=vals.funding_oi_z,
@@ -62,12 +73,22 @@ class StateEngine:
         quality_state, quality_confidence = _classify_quality_state(
             quality_flags=pack.quality_flags,
         )
+        # Track structure history for directional consistency
+        self._structure_history[key].append(vals.structure_state)
+        hist = self._structure_history[key]
+        up = sum(1 for s in hist if s == "UPTREND")
+        down = sum(1 for s in hist if s == "DOWNTREND")
+        directional_consistency = abs(up - down) / max(up + down, 1)  # 0=chop, 1=consistent
+
         regime, regime_confidence = _classify_regime(
             last_regime=last_regime,
             quality_flags=pack.quality_flags,
             realized_vol=vals.realized_vol,
             cvd_slope=vals.cvd_slope,
             zen_pulse=vals.zen_pulse,
+            yield_10y_z=vals.yield_10y_z,
+            cycle_position=vals.cycle_position,
+            directional_consistency=directional_consistency,
         )
         self._last_regime[key] = regime
         self._last_directional[key] = directional_state
@@ -116,6 +137,10 @@ def _extract_values(values: dict[str, Any]) -> _IndicatorValues:
         zen_pulse=float(values.get("zen_pulse", 50.0) or 50.0),
         structure_state=str(values.get("structure_state") or values.get("swing_structure") or "NEUTRAL"),
         momentum_roc_z=float(values.get("momentum_roc_z", 0.0) or 0.0),
+        vix_z=float(values.get("vix_z", 0.0) or 0.0),
+        dxy_z=float(values.get("dxy_z", 0.0) or 0.0),
+        yield_10y_z=float(values.get("yield_10y_z", 0.0) or 0.0),
+        cycle_position=float(values.get("cycle_position", 1.0) or 1.0),
     )
 
 
@@ -159,11 +184,14 @@ def _classify_volatility_state(
     *,
     quality_flags: list[str],
     realized_vol: float,
+    vix_z: float = 0.0,
 ) -> tuple[str, float]:
     degraded = any(flag in {"BOOK_STALE", "VENUE_DOWN", "DATA_STALE", "DATA_FUTURE"} for flag in quality_flags)
     if degraded or realized_vol > 2.8:
         return "DISTORTED", 0.9
-    if realized_vol > 1.5:
+    if vix_z > 3.0:
+        return "DISTORTED", 0.85
+    if realized_vol > 1.5 or vix_z > 2.0:
         return "HIGH", 0.75
     if realized_vol < 0.45:
         return "LOW", 0.7
@@ -186,6 +214,8 @@ def _classify_quality_state(*, quality_flags: list[str]) -> tuple[str, float]:
         return "UNSAFE", 0.95
     if flags & {"DATA_STALE", "BOOK_STALE"}:
         return "DEGRADED", 0.85
+    if flags & {"MACRO_STALE"}:
+        return "NOISY", 0.7
     if flags != {"OK"}:
         return "NOISY", 0.7
     return "TRADABLE", 0.9
@@ -198,6 +228,9 @@ def _classify_regime(
     realized_vol: float,
     cvd_slope: float,
     zen_pulse: float,
+    yield_10y_z: float = 0.0,
+    cycle_position: float = 1.0,
+    directional_consistency: float = 1.0,
 ) -> tuple[str, float]:
     degraded = any(flag in {"BOOK_STALE", "VENUE_DOWN", "DATA_STALE", "DATA_FUTURE"} for flag in quality_flags)
     if degraded or realized_vol > 2.8:
@@ -213,6 +246,12 @@ def _classify_regime(
 
     if trend_gate:
         confidence = min(1.0, 0.45 + (trend_strength * 0.4) + (pulse_strength * 0.15))
+        if abs(yield_10y_z) > 2.0:
+            confidence *= 0.9
+        if cycle_position > 1.3:
+            confidence *= 0.8
+        elif cycle_position < 0.8:
+            confidence *= 0.85
         return "TREND", confidence
 
     confidence = max(0.35, 1.0 - min(0.6, abs(cvd_slope) * 5.0))

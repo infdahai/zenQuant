@@ -1,32 +1,27 @@
 {
-  "schema": "golden_output.v1",
-  "description": "Baseline metrics from synthetic 90-day BTC dataset with default parameters",
   "metrics": {
-    "net_pnl": 221696.97,
-    "sharpe": 5.0015,
-    "max_drawdown": 0.007603,
-    "profit_factor": 5.655152,
-    "trade_count": 422,
-    "win_rate": 0.655814,
-    "total_bars": 540
+    "net_pnl": 3726231.4,
+    "sharpe": 6.8901,
+    "max_drawdown": 0.001257,
+    "profit_factor": 102.190188,
+    "trade_count": 316
   },
   "equity": {
-    "starting": 100000.0,
-    "final": 321696.96542258776
-  },
-  "diagnostics": {
-    "playbook_counts": {
-      "RANGE_LIGHT": 492,
-      "BULL_CONTINUATION": 138
-    },
-    "actionable_exit_counts": {
-      "TIME_DECAY": 19,
-      "TRAILING": 2
-    }
+    "final": 3826231.399066
   },
   "counts": {
     "indicator_packs": 630,
     "targets": 540,
-    "reports": 422
+    "reports": 316
+  },
+  "diagnostics": {
+    "playbook_counts": {
+      "RANGE_LIGHT": 476,
+      "BULL_CONTINUATION": 133,
+      "CAPITAL_PRESERVATION": 21
+    },
+    "actionable_exit_counts": {
+      "REGIME_CHANGE": 18
+    }
   }
 }

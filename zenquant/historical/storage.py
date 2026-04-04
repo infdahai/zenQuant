@@ -54,6 +54,21 @@ class HistoricalOpenInterestRow:
 
 
 @dataclass(slots=True, frozen=True)
+class HistoricalAggTrade4hRow:
+    """Pre-aggregated 4H order flow bucket from aggTrades."""
+
+    ts_ns: int
+    buy_volume: float
+    sell_volume: float
+    cvd_delta: float
+    buy_usd: float
+    sell_usd: float
+    trade_count: int
+    large_trade_count: int
+    vpin: float
+
+
+@dataclass(slots=True, frozen=True)
 class HistoricalDatasetLayout:
     """Canonical on-disk layout used by README Phase 2 historical tasks."""
 
@@ -67,6 +82,9 @@ class HistoricalDatasetLayout:
 
     def open_interest_path(self, symbol: str, timeframe: str, partition: str) -> Path:
         return self.root_dir / "open_interest" / symbol / timeframe / f"{partition}.parquet"
+
+    def aggtrades_4h_glob(self, symbol: str) -> str:
+        return str(self.root_dir / "aggtrades" / symbol / "4h" / "*.parquet")
 
 
 def write_parquet_rows(path: Path, rows: list[object]) -> None:

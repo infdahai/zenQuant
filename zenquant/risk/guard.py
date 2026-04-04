@@ -22,16 +22,27 @@ class RiskOverlayConfig:
 
     portfolio: str = "arc"
     starting_equity: float = 100_000.0
-    max_leverage: float = 2.5
-    dd_step_1: float = 0.05
-    dd_step_2: float = 0.1
-    dd_step_3: float = 0.16
+    # PaulWei-calibrated: asymmetric DD tolerance (long vs short)
+    # M2 monetary expansion → BTC long-term upward → longs recover, shorts don't
+    max_leverage: float = 6.0
+    # Long DD steps: patient (fiat debasement will bail out)
+    dd_step_1_long: float = 0.15
+    dd_step_2_long: float = 0.22
+    dd_step_3_long: float = 0.28
+    # Short DD steps: strict (unlimited risk in appreciating asset)
+    dd_step_1_short: float = 0.08
+    dd_step_2_short: float = 0.14
+    dd_step_3_short: float = 0.20
     vol_shock_threshold: float = 0.95
     crowding_threshold: float = 2.2
     severe_crowding_threshold: float = 3.0
-    daily_loss_limit: float = 0.06
-    daily_safe_lev_cap: float = 0.35
-    kill_switch_drawdown: float = 0.22
+    daily_loss_limit: float = 0.10
+    daily_safe_lev_cap: float = 0.50
+    kill_switch_drawdown: float = 0.30
+    # Kill switch recovery (Claude Code "fallback model" pattern)
+    kill_recovery_threshold: float = 0.12  # DD must recover below this to start recovery
+    kill_cooldown_bars: int = 36  # 36 bars = 6 days at 4H (cooldown before re-entry)
+    kill_ramp_bars: int = 24  # 24 bars = 4 days to ramp from 0.2x to 1.0x leverage
 
 
 class RiskOverlay:
@@ -53,6 +64,15 @@ class RiskOverlay:
         self._actual_positions: dict[str, float] = {}
         self._latest_indicator: dict[tuple[str, Timeframe], IndicatorPack] = {}
         self._day_anchor: tuple[int, float] | None = None
+        # Kill switch recovery state
+        self._kill_active = False
+        self._kill_bar_count = 0  # Bars since kill switch first triggered
+        self._recovery_bar_count = 0  # Bars since DD dropped below recovery threshold
+        # Level 3 AI-native: strategy self-awareness (equity curve anomaly detection)
+        from collections import deque
+
+        self._equity_history: deque[float] = deque(maxlen=120)
+        self._degraded_mode_bars = 0
 
         self._bus.subscribe("indicator.>", self._on_indicator)
         self._bus.subscribe("intent.target_position.>", self._on_target_position)
@@ -118,18 +138,59 @@ class RiskOverlay:
         flags: list[str] = []
         drawdown = self._drawdown()
         lev_cap = self._config.max_leverage
-        if drawdown >= self._config.dd_step_3:
+
+        # Level 3: Strategy self-awareness — detect equity curve degradation
+        self._equity_history.append(self._equity)
+        if len(self._equity_history) >= 60:
+            recent = list(self._equity_history)
+            # Rolling return over last 60 bars
+            returns_60 = [(recent[i] - recent[i - 1]) / recent[i - 1]
+                          for i in range(1, len(recent)) if recent[i - 1] > 0]
+            if returns_60:
+                import math
+
+                avg_ret = sum(returns_60) / len(returns_60)
+                var = sum((r - avg_ret) ** 2 for r in returns_60) / len(returns_60)
+                rolling_sharpe = (avg_ret / math.sqrt(var)) * math.sqrt(len(returns_60)) if var > 1e-15 else 0
+                if rolling_sharpe < -2.0:
+                    self._degraded_mode_bars += 1
+                    if self._degraded_mode_bars >= 24:  # 4 days of severely negative
+                        lev_cap *= 0.4
+                        flags.append("STRATEGY_DEGRADED")
+                else:
+                    self._degraded_mode_bars = max(0, self._degraded_mode_bars - 1)
+        # Asymmetric DD stepping: longs get patience, shorts get discipline
+        # PaulWei: "暂时被套 → 等待 (M2 bail out)" for longs
+        is_net_long = target.target_qty > 0
+        dd_1 = self._config.dd_step_1_long if is_net_long else self._config.dd_step_1_short
+        dd_2 = self._config.dd_step_2_long if is_net_long else self._config.dd_step_2_short
+        dd_3 = self._config.dd_step_3_long if is_net_long else self._config.dd_step_3_short
+
+        if drawdown >= dd_3:
             lev_cap *= 0.2
             flags.append("DD_STEP_3")
-        elif drawdown >= self._config.dd_step_2:
+        elif drawdown >= dd_2:
             lev_cap *= 0.4
             flags.append("DD_STEP_2")
-        elif drawdown >= self._config.dd_step_1:
+        elif drawdown >= dd_1:
             lev_cap *= 0.65
             flags.append("DD_STEP_1")
 
+        # Kill switch with recovery (Claude Code "fallback model" pattern)
         if drawdown >= self._config.kill_switch_drawdown:
-            flags.append("KILL_SWITCH")
+            if not self._kill_active:
+                self._kill_active = True
+                self._kill_bar_count = 0
+            self._kill_bar_count += 1
+            # After cooldown, reset HWM and recover (break the deadlock)
+            if self._kill_bar_count >= self._config.kill_cooldown_bars:
+                self._high_water_mark = self._equity  # Fresh start
+                self._kill_active = False
+                self._kill_bar_count = 0
+                lev_cap *= 0.3  # Start with reduced leverage
+                flags.append("KILL_RECOVERED")
+            else:
+                flags.append("KILL_SWITCH")
 
         daily_loss = self._daily_loss(target.cutoff_time_ns)
         if daily_loss >= self._config.daily_loss_limit:
@@ -150,6 +211,42 @@ class RiskOverlay:
             if abs(funding_oi_z) >= self._config.severe_crowding_threshold:
                 reduce_only = True
                 flags.append("SEVERE_CROWDING")
+
+            # Equity market risk: when QQQ+IWM both crash → reduce BTC leverage
+            # IC direction unstable but |IC|>0.05 → use as risk sizing, not direction
+            qqq_z = float(indicator.values.get("qqq_z", 0.0) or 0.0)
+            iwm_z = float(indicator.values.get("iwm_z", 0.0) or 0.0)
+            if qqq_z < -2.0 and iwm_z < -2.0:
+                # Both equity indices crashing → macro risk-off → reduce BTC exposure
+                lev_cap *= 0.5
+                flags.append("EQUITY_RISK_OFF")
+            elif qqq_z < -1.5 or iwm_z < -1.5:
+                lev_cap *= 0.8
+                flags.append("EQUITY_STRESS")
+
+            # COT institutional crowding: only reduce when our position aligns with
+            # extreme crowd positioning (contrarian — reduce when everyone agrees)
+            cot_leveraged_z = float(indicator.values.get("cot_leveraged_z", 0.0) or 0.0)
+            if target.target_qty > 0 and cot_leveraged_z > 2.5:
+                # We're long AND leveraged funds extremely long → crowded
+                lev_cap *= 0.7
+                flags.append("COT_CROWDING")
+            elif target.target_qty < 0 and cot_leveraged_z < -2.5:
+                # We're short AND leveraged funds extremely short → crowded
+                lev_cap *= 0.7
+                flags.append("COT_CROWDING")
+
+            # High position sizing: cycle_position + funding as "overheated" detector
+            # PaulWei pattern: reduce size at highs, not stop trading
+            cycle_pos = float(indicator.values.get("cycle_position", 1.0) or 1.0)
+            if cycle_pos > 1.3 and funding_oi_z > 1.5:
+                # Overheated: price far above 200MA + leveraged longs crowded
+                lev_cap *= 0.4
+                flags.append("OVERHEATED_SIZING")
+            elif cycle_pos > 1.3:
+                # High but not crowded: moderate reduction
+                lev_cap *= 0.7
+                flags.append("HIGH_CYCLE_SIZING")
             if any(
                 flag in {"BOOK_STALE", "VENUE_DOWN", "DATA_STALE", "DATA_FUTURE"} for flag in indicator.quality_flags
             ):

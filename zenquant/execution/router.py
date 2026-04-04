@@ -24,6 +24,18 @@ class ExecutionKernelConfig:
     min_trade_qty: float = 0.0001
     max_trade_qty_per_bar: float = 1.0
     max_slippage_bps: float = 8.0
+    # Pyramid execution (PaulWei pattern):
+    # New position: only fill pyramid_initial_pct of target
+    # Profitable position: add pyramid_add_pct more
+    # Losing position: don't add (wait for time_decay exit)
+    pyramid_initial_pct: float = 0.3  # 30% on first entry (long)
+    pyramid_add_pct: float = 0.3  # 30% per profitable bar (long)
+    pyramid_short_initial_pct: float = 0.2  # 20% on first short entry (more conservative)
+    pyramid_short_add_pct: float = 0.2  # 20% per profitable bar (short)
+    pyramid_enabled: bool = True
+    # Legacy gradual execution (kept for compatibility)
+    entry_fraction: float = 1.0
+    exit_fraction: float = 1.0
 
 
 class ExecutionKernel:
@@ -50,6 +62,9 @@ class ExecutionKernel:
         self._best_bid: dict[str, float] = {}
         self._best_ask: dict[str, float] = {}
         self._positions: dict[str, float] = {}
+        # Pyramid tracking: entry price for profitability check
+        self._entry_prices: dict[str, float] = {}
+        self._pyramid_filled_pct: dict[str, float] = {}  # How much of target is filled
 
         self._bus.subscribe("md.trade.>", self._on_trade)
         self._bus.subscribe("md.mark.>", self._on_mark_price)
@@ -91,6 +106,8 @@ class ExecutionKernel:
             return
 
         side = 1 if delta_qty > 0 else -1
+        is_reducing = current_position != 0 and current_position * delta_qty < 0
+
         if payload.reduce_only:
             if abs(current_position) < self._config.min_trade_qty:
                 return
@@ -99,6 +116,48 @@ class ExecutionKernel:
             trade_qty = min(abs(delta_qty), abs(current_position))
         else:
             trade_qty = min(abs(delta_qty), self._config.max_trade_qty_per_bar)
+
+        # Pyramid execution (PaulWei pattern)
+        if self._config.pyramid_enabled and not is_reducing and not payload.reduce_only:
+            is_new_direction = (
+                abs(current_position) < self._config.min_trade_qty
+                or current_position * delta_qty < 0
+            )
+            entry_px = self._entry_prices.get(symbol, 0)
+            is_profitable = (
+                entry_px > 0
+                and abs(current_position) > self._config.min_trade_qty
+                and (mark_price - entry_px) * (1 if current_position > 0 else -1) > 0
+            )
+
+            # Asymmetric pyramid: longs more aggressive, shorts more conservative
+            is_short = payload.target_qty < 0
+            init_pct = self._config.pyramid_short_initial_pct if is_short else self._config.pyramid_initial_pct
+            add_pct = self._config.pyramid_short_add_pct if is_short else self._config.pyramid_add_pct
+
+            if is_new_direction:
+                trade_qty = abs(payload.target_qty) * init_pct
+                self._pyramid_filled_pct[symbol] = init_pct
+            elif is_profitable:
+                # Profitable: add another slice (PaulWei: scale in on winners)
+                filled = self._pyramid_filled_pct.get(symbol, 1.0)
+                if filled < 1.0:
+                    actual_add = min(add_pct, 1.0 - filled)
+                    trade_qty = abs(payload.target_qty) * actual_add
+                    self._pyramid_filled_pct[symbol] = filled + actual_add
+                else:
+                    trade_qty = 0  # Fully positioned
+            else:
+                # Losing: don't add (PaulWei: cut losers, don't average down)
+                trade_qty = 0
+
+            if trade_qty < self._config.min_trade_qty:
+                return
+        elif not is_reducing:
+            # Legacy gradual execution
+            fraction = self._config.entry_fraction
+            if fraction < 1.0:
+                trade_qty = trade_qty * fraction
 
         order = ExecutionOrder(
             client_order_id=f"{symbol}-{payload.cutoff_time_ns}-{next(self._order_seq)}",
@@ -119,7 +178,21 @@ class ExecutionKernel:
         )
         self._bus.publish("exec.order.report", report)
         if report.status == "FILLED" and report.filled_qty > 0:
-            self._positions[symbol] = current_position + (side * report.filled_qty)
+            new_position = current_position + (side * report.filled_qty)
+            self._positions[symbol] = new_position
+            # Track entry price for pyramid profitability check
+            if abs(current_position) < self._config.min_trade_qty:
+                # New position: set entry price
+                self._entry_prices[symbol] = report.avg_price
+                self._pyramid_filled_pct[symbol] = self._config.pyramid_initial_pct
+            elif current_position * new_position < 0:
+                # Flipped direction: reset
+                self._entry_prices[symbol] = report.avg_price
+                self._pyramid_filled_pct[symbol] = self._config.pyramid_initial_pct
+            elif abs(new_position) < self._config.min_trade_qty:
+                # Closed: reset
+                self._entry_prices.pop(symbol, None)
+                self._pyramid_filled_pct.pop(symbol, None)
             self._risk_overlay.apply_fee(report.fee)
 
     @property

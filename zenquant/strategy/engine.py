@@ -55,14 +55,16 @@ class ARCStrategyConfig:
 
     portfolio: str = "arc"
     account_equity: float = 100_000.0
-    max_leverage: float = 3.5
+    max_leverage: float = 6.0
     # NOTE: ANNUALIZED vol targets — must match indicator engine units.
     # realized_vol is scaled by sqrt(365 * bars_per_day).
-    target_vol_4h: float = 0.65
-    target_vol_1d: float = 0.85
+    # PaulWei-calibrated: higher targets = larger positions = more conviction
+    target_vol_1h: float = 0.80
+    target_vol_4h: float = 1.10
+    target_vol_1d: float = 1.30
     min_trade_qty: float = 0.0001
     execution_timeframe: Timeframe = Timeframe.TF_4H
-    bias_max_age_4h_bars: int = 8
+    bias_max_age_bars: int = 8
     # Phase 2: trailing stop config
     trailing_stop_atr_mult: float = 2.5  # ATR multiplier for trailing stop
     min_bars_before_trail: int = 1  # minimum bars held before activating trail
@@ -98,6 +100,7 @@ class ARCStrategyEngine:
         self._sizing_engine = SizingEngine(
             config=self._config.sizing_config
             or SizingEngineConfig(
+                target_vol_1h=self._config.target_vol_1h,
                 target_vol_4h=self._config.target_vol_4h,
                 target_vol_1d=self._config.target_vol_1d,
             )
@@ -107,8 +110,20 @@ class ARCStrategyEngine:
             or ExitEngineConfig(min_bars_before_trail=self._config.min_bars_before_trail)
         )
 
+        # Adaptive signal weighting: track rolling IC per signal
+        from collections import deque, defaultdict
+
+        self._signal_values: dict[str, deque[float]] = defaultdict(lambda: deque(maxlen=120))
+        self._forward_returns: deque[float] = deque(maxlen=120)
+        self._last_close: dict[str, float] = {}
+        self._adaptive_weights: dict[str, float] = {}
+
         # Phase 2: multi-timeframe coordination
         self._directional_bias: dict[str, DirectionalBias] = {}  # symbol -> 1d bias
+        self._context_bias: dict[str, DirectionalBias] = {}  # symbol -> 4h context bias (dual-layer)
+        # Dual-layer: pending 4H targets waiting for optimal 1H entry
+        self._pending_4h_target: dict[str, TargetPosition] = {}
+        self._pending_4h_bars: dict[str, int] = {}  # bars waited since 4H target
 
         # Phase 2: position tracking for trailing stops
         self._positions: dict[tuple[str, Timeframe], OpenPositionState] = {}
@@ -202,6 +217,30 @@ class ARCStrategyEngine:
         if state.timeframe == Timeframe.TF_1D:
             self._update_directional_bias(state)
             return
+        # Dual-layer: 4H computes target but stores as pending for 1H entry optimization
+        if state.timeframe == Timeframe.TF_4H and self._config.execution_timeframe == Timeframe.TF_1H:
+            self._update_context_bias(state)
+            pack = self._latest_packs.get((state.symbol, state.timeframe))
+            if pack is not None:
+                target = self._build_target(pack, state, playbook)
+                self._pending_4h_target[state.symbol] = target
+                self._pending_4h_bars[state.symbol] = 0
+            return
+
+        # 1H entry optimization: execute pending 4H target at optimal 1H timing
+        if state.timeframe == Timeframe.TF_1H and self._config.execution_timeframe == Timeframe.TF_1H:
+            target = self._try_1h_entry(state)
+            if target is None:
+                return
+            reason = self._build_reason(target)
+            self._bus.publish(
+                f"strategy.regime.{self._config.portfolio}",
+                {"symbol": target.symbol, "regime": target.regime},
+            )
+            self._bus.publish(f"intent.target_position.{self._config.portfolio}.{target.symbol}", target)
+            self._bus.publish(f"intent.reason.{self._config.portfolio}", reason)
+            return
+
         pack = self._latest_packs.get((state.symbol, state.timeframe))
         if pack is None:
             return
@@ -226,6 +265,105 @@ class ARCStrategyEngine:
         )
         self._directional_bias[state.symbol] = bias
         self._bus.publish(f"strategy.bias.1d.{state.symbol}", bias)
+
+    def _update_context_bias(self, state: MarketState) -> None:
+        """Store 4H context bias for dual-layer 1H execution."""
+        bias = DirectionalBias(
+            symbol=state.symbol,
+            cutoff_time_ns=state.cutoff_time_ns,
+            direction=state.direction_signal,
+            regime=state.regime,
+            confidence=state.regime_confidence,
+            quality_flags=list(state.quality_flags),
+        )
+        self._context_bias[state.symbol] = bias
+        self._bus.publish(f"strategy.bias.4h.{state.symbol}", bias)
+
+    def _try_1h_entry(self, state: MarketState) -> TargetPosition | None:
+        """Check if 1H bar provides optimal entry for pending 4H target.
+
+        Entry optimization logic:
+        - Long pending: enter on 1H pullback (close < open) or timeout
+        - Short pending: enter on 1H bounce (close > open) or timeout
+        - Crash: enter immediately on extreme 1H bar (ret < -3%)
+        - Timeout: execute after 3 1H bars regardless
+        """
+        symbol = state.symbol
+        pending = self._pending_4h_target.get(symbol)
+        if pending is None:
+            return None
+
+        bars_waited = self._pending_4h_bars.get(symbol, 0)
+        self._pending_4h_bars[symbol] = bars_waited + 1
+
+        pack = self._latest_packs.get((symbol, Timeframe.TF_1H))
+        if pack is None:
+            return None
+
+        price = float(pack.values.get("last_price", 0) or 0)
+        if price <= 0:
+            return None
+
+        # Multi-factor entry scoring (richer than simple momentum check)
+        pending_direction = 1.0 if pending.target_qty > 0 else -1.0
+        is_long = pending.target_qty > 0
+        timeout = bars_waited >= 3
+
+        entry_score = 0.0
+
+        # 1. Momentum pullback/bounce (existing logic, refined)
+        momentum = float(pack.values.get("momentum_roc", 0) or 0)
+        if is_long and momentum < 0:
+            entry_score += min(0.5, abs(momentum) * 5)  # Deeper dip = better entry
+        elif not is_long and momentum > 0:
+            entry_score += min(0.5, abs(momentum) * 5)  # Higher bounce = better entry
+
+        # 2. Structure break confirmation (1H swing structure aligns with 4H)
+        structure_break = float(pack.values.get("structure_break", 0) or 0)
+        if structure_break * pending_direction > 0:
+            entry_score += 0.4  # 1H structure confirms 4H direction
+
+        # 3. CVD flow confirmation (real order flow aligns with direction)
+        cvd_slope = float(pack.values.get("cvd_slope", 0) or 0)
+        if cvd_slope * pending_direction > 0:
+            entry_score += 0.3  # Buy/sell pressure confirms
+
+        # 4. Volatility contraction (lower vol = tighter entry)
+        rv = float(pack.values.get("realized_vol", 0) or 0)
+        vol_ratio = float(pack.values.get("vol_ratio_rv", 1.0) or 1.0)
+        if vol_ratio < 1.0:
+            entry_score += 0.2  # Vol contracting = calm entry
+
+        # 5. Crash reversal (extreme 1H dip for long entry)
+        if is_long and momentum < -0.02:
+            entry_score += 0.5  # Crash + pending long = immediate
+
+        should_enter = entry_score >= 0.5 or timeout
+
+        if not should_enter:
+            return None
+
+        # Execute the pending 4H target at 1H timing
+        # Update cutoff time to current 1H bar
+        executed = TargetPosition(
+            intent_id=pending.intent_id,
+            portfolio=pending.portfolio,
+            symbol=pending.symbol,
+            timeframe=Timeframe.TF_1H,
+            cutoff_time_ns=state.cutoff_time_ns,
+            target_qty=pending.target_qty,
+            target_leverage=pending.target_leverage,
+            reduce_only=pending.reduce_only,
+            regime=pending.regime,
+            regime_confidence=pending.regime_confidence,
+            reason_codes=[*pending.reason_codes, "1H_ENTRY_OPTIMIZED"],
+        )
+
+        # Clear pending
+        self._pending_4h_target.pop(symbol, None)
+        self._pending_4h_bars.pop(symbol, None)
+
+        return executed
 
     def _build_target(
         self,
@@ -408,7 +546,7 @@ class ARCStrategyEngine:
         if cutoff_time_ns < bias.cutoff_time_ns:
             return None, "BIAS_FUTURE"
 
-        max_age_ns = self._config.bias_max_age_4h_bars * Timeframe.TF_4H.seconds * 1_000_000_000
+        max_age_ns = self._config.bias_max_age_bars * self._config.execution_timeframe.seconds * 1_000_000_000
         if (cutoff_time_ns - bias.cutoff_time_ns) > max_age_ns:
             return None, "BIAS_STALE"
         return bias, ""
@@ -586,14 +724,50 @@ class ARCStrategyEngine:
         if state_dict is None:
             state_dict = self._state_dict(state, playbook)
 
+        # Update rolling IC tracker (online learning)
+        close = float(ind_dict.get("close", ind_dict.get("last_price", 0)) or 0)
+        symbol = pack.symbol if hasattr(pack, "symbol") else ""
+        prev_close = self._last_close.get(symbol, 0)
+        if prev_close > 0 and close > 0:
+            self._forward_returns.append((close - prev_close) / prev_close)
+        self._last_close[symbol] = close
+
+        # Compute adaptive weights from rolling IC (every bar, lightweight)
+        effective_weights = dict(self._plugins.signal_weights)
+        if len(self._forward_returns) >= 60:
+            import math
+
+            rets = list(self._forward_returns)
+            for sig_name, sig_deque in self._signal_values.items():
+                vals = list(sig_deque)[-len(rets) :]
+                if len(vals) < 60:
+                    continue
+                aligned = min(len(vals), len(rets))
+                v, r = vals[-aligned:], rets[-aligned:]
+                # Simplified rank correlation
+                n = len(v)
+                mv, mr2 = sum(v) / n, sum(r) / n
+                cov = sum((v[i] - mv) * (r[i] - mr2) for i in range(n))
+                sv = math.sqrt(sum((v[i] - mv) ** 2 for i in range(n)))
+                sr = math.sqrt(sum((r[i] - mr2) ** 2 for i in range(n)))
+                ic = cov / (sv * sr) if sv > 1e-12 and sr > 1e-12 else 0.0
+                # Scale weight: IC>0 → full weight, IC<0 → reduce to 20%
+                base_w = self._plugins.signal_weights.get(sig_name, 1.0)
+                scale = max(0.2, min(1.0, 0.5 + ic * 5.0))
+                effective_weights[sig_name] = base_w * scale
+
         # Compose signals → weighted direction
         composed = compose_signals(
             self._plugins.signals,
-            self._plugins.signal_weights,
+            effective_weights,
             ind_dict,
             state_dict,
         )
         reason_codes = list(composed.reason_codes)
+
+        # Track each signal's contribution for rolling IC
+        for sig_name, contrib in composed.contributions.items():
+            self._signal_values[sig_name].append(contrib)
 
         # Discretize to {-1, 0, 1} based on direction threshold
         direction = 0.0
@@ -611,6 +785,16 @@ class ARCStrategyEngine:
                 if direction != 0.0 and direction * bias.direction < 0:
                     direction = 0.0
                     reason_codes.append("BIAS_DIRECTION_BLOCK")
+
+            # Dual-layer: 4H context constrains 1H execution
+            ctx_bias = self._context_bias.get(pack.symbol)
+            if ctx_bias is not None and ctx_bias.direction != 0.0:
+                ctx_age_ns = pack.cutoff_time_ns - ctx_bias.cutoff_time_ns
+                # 4H bias valid for ~6 bars of 1H (= 1 full 4H bar + buffer)
+                if 0 < ctx_age_ns < 6 * Timeframe.TF_1H.seconds * 1_000_000_000:
+                    if direction != 0.0 and direction * ctx_bias.direction < 0:
+                        direction = 0.0
+                        reason_codes.append("CTX_4H_DIRECTION_BLOCK")
 
         # Apply filters
         if direction != 0.0 and self._plugins.filters:
@@ -725,6 +909,17 @@ class ARCStrategyEngine:
 
     def _state_dict(self, state: MarketState, playbook: PlaybookSelection) -> dict[str, Any]:
         """Build the flat dict that plugins receive as ``state``."""
+        # Compute position unrealized PnL for sizers (PaulWei pyramid pattern)
+        pos_key = (state.symbol, state.timeframe)
+        pos = self._positions.get(pos_key)
+        position_unrealized_pnl = 0.0
+        if pos is not None and abs(pos.current_qty) > 0:
+            price = self._latest_packs.get(pos_key)
+            if price:
+                last_px = float(price.values.get("close", price.values.get("last_price", 0)) or 0)
+                if last_px > 0 and pos.entry_price > 0:
+                    position_unrealized_pnl = (last_px - pos.entry_price) * pos.current_qty
+
         return {
             "regime": state.regime,
             "directional_state": state.directional_state,
@@ -744,6 +939,7 @@ class ARCStrategyEngine:
             "time_decay_bars": playbook.time_decay_bars,
             "timeframe": state.timeframe.value,
             "equity": self._equity,
+            "position_unrealized_pnl": position_unrealized_pnl,
         }
 
     @staticmethod

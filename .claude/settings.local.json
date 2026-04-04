@@ -46,7 +46,8 @@
       "WebFetch(domain:martinfowler.com)",
       "WebFetch(domain:blog.langchain.com)",
       "Bash(git stash:*)",
-      "Bash(git:*)"
+      "Bash(git:*)",
+      "Bash(uv lock:*)"
     ]
   }
 }

@@ -88,6 +88,10 @@ class CampaignConfig:
 
     # Search
     search_space: SearchSpace = field(default_factory=SearchSpace)
+    # Sweep mode: "grid" (exhaustive Cartesian product) or "bayesian" (Optuna TPE)
+    sweep_mode: str = "grid"
+    # Number of Optuna trials (only used when sweep_mode="bayesian")
+    n_trials: int = 50
 
     # Walk-forward validation
     wf_splits: list[WalkForwardSplit] = field(default_factory=list)
@@ -288,12 +292,17 @@ class Campaign:
     # ── Stage 1: Sweep ─────────────────────────────────────
 
     def _run_sweep(self) -> SweepResult:
+        if self._config.sweep_mode == "bayesian":
+            return self._run_optuna_sweep()
+        return self._run_grid_sweep()
+
+    def _run_grid_sweep(self) -> SweepResult:
         start = time.time()
         param_grid = _build_param_grid(self._config.search_space)
         if not param_grid:
             return SweepResult(total_combinations=0, results=[], top_n=[], runtime_s=0)
 
-        self._log(f"Sweep: {len(param_grid)} parameter combinations")
+        self._log(f"Grid sweep: {len(param_grid)} parameter combinations")
 
         # Build backtest args — full data range (no splits)
         args_list = [
@@ -325,6 +334,85 @@ class Campaign:
 
         return SweepResult(
             total_combinations=len(param_grid),
+            results=sorted_results,
+            top_n=top_n,
+            runtime_s=time.time() - start,
+        )
+
+    def _run_optuna_sweep(self) -> SweepResult:
+        """Bayesian optimization via Optuna TPE sampler.
+
+        Instead of exhaustively testing all grid combinations, Optuna builds
+        a probabilistic model of the parameter space and samples promising
+        regions adaptively.  Typically 10-50x more sample-efficient than grid.
+        """
+        try:
+            import optuna
+        except ImportError:
+            raise ImportError("Optuna required for bayesian sweep. Install: uv pip install 'zenquant[optimize]'") from None
+
+        start = time.time()
+        space = self._config.search_space
+        all_params: dict[str, list[Any]] = {}
+        all_params.update(space.strategy_params)
+        all_params.update(space.plugin_params)
+
+        if not all_params:
+            return SweepResult(total_combinations=0, results=[], top_n=[], runtime_s=0)
+
+        grid_size = math.prod(len(v) for v in all_params.values())
+        n_trials = min(self._config.n_trials, grid_size)
+        self._log(f"Bayesian sweep: {n_trials} trials (grid would be {grid_size})")
+
+        # Collect all results for ranking
+        all_results: list[dict[str, Any]] = []
+
+        def objective(trial: optuna.Trial) -> float:
+            params: dict[str, Any] = {}
+            for key, values in all_params.items():
+                params[key] = trial.suggest_categorical(key, values)
+
+            args = (
+                params,
+                str(self._config.data_root),
+                self._config.symbol,
+                self._config.starting_equity,
+                None,
+                None,
+                None,
+            )
+            _, metrics = _run_backtest_worker(args)
+
+            self._tracker.record(params, metrics, tags=["sweep", "bayesian"])
+            all_results.append({"params": params, "metrics": metrics})
+
+            primary = metrics.get(self._config.primary_metric, 0)
+            return primary
+
+        # Suppress Optuna's verbose logging
+        optuna.logging.set_verbosity(optuna.logging.WARNING)
+
+        study = optuna.create_study(
+            direction="maximize",
+            sampler=optuna.samplers.TPESampler(seed=42),
+        )
+        study.optimize(objective, n_trials=n_trials, n_jobs=1)
+
+        # Sort all evaluated results
+        sorted_results = sorted(
+            all_results,
+            key=lambda x: x["metrics"].get(self._config.primary_metric, 0),
+            reverse=True,
+        )
+        top_n = sorted_results[: self._config.top_n_for_validation]
+
+        self._log(
+            f"Bayesian sweep complete: best {self._config.primary_metric} = "
+            f"{study.best_value:.4f} in {n_trials} trials"
+        )
+
+        return SweepResult(
+            total_combinations=n_trials,
             results=sorted_results,
             top_n=top_n,
             runtime_s=time.time() - start,

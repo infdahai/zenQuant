@@ -1,14 +1,20 @@
 #!/usr/bin/env python3
 """Download Binance historical data for backtesting.
 
-This script downloads the last 3 months of:
-- 4h and 1d klines (OHLCV data)
-- Funding rates
-- Open interest
+Usage:
+    # BTC full history (2019 to present)
+    uv run python scripts/download_binance_data.py --days 2500
 
-Data is saved in Parquet format for efficient replay.
+    # ETH data collection
+    uv run python scripts/download_binance_data.py --symbol ETHUSDT --days 2000
+
+    # Quick 3-month update
+    uv run python scripts/download_binance_data.py --days 90
+
+Data is saved as CSV files for replay via convert_csv_to_parquet.py.
 """
 
+import argparse
 import sys
 import urllib.request
 import zipfile
@@ -16,11 +22,10 @@ from datetime import datetime, timedelta
 from pathlib import Path
 
 
-def download_binance_data(days: int = 90):
+def download_binance_data(days: int = 90, symbol: str = "BTCUSDT"):
     """Download last N days of Binance futures data."""
 
     base_url = "https://data.binance.vision/data/futures/um/daily"
-    symbol = "BTCUSDT"
 
     # Calculate date range
     end_date = datetime.now()
@@ -28,12 +33,13 @@ def download_binance_data(days: int = 90):
 
     # Create directories
     base_dir = Path("data/raw/binance")
+    klines_1h_dir = base_dir / "klines" / symbol / "1h"
     klines_4h_dir = base_dir / "klines" / symbol / "4h"
     klines_1d_dir = base_dir / "klines" / symbol / "1d"
     funding_dir = base_dir / "funding" / symbol
     oi_dir = base_dir / "open_interest" / symbol / "4h"
 
-    for dir_path in [klines_4h_dir, klines_1d_dir, funding_dir, oi_dir]:
+    for dir_path in [klines_1h_dir, klines_4h_dir, klines_1d_dir, funding_dir, oi_dir]:
         dir_path.mkdir(parents=True, exist_ok=True)
 
     print(f"Downloading Binance data from {start_date.date()} to {end_date.date()}")
@@ -48,6 +54,15 @@ def download_binance_data(days: int = 90):
     current = start_date
     while current <= end_date:
         date_str = current.strftime("%Y-%m-%d")
+
+        # Download 1h klines
+        url = f"{base_url}/klines/{symbol}/1h/{symbol}-1h-{date_str}.zip"
+        output = klines_1h_dir / f"{symbol}-1h-{date_str}.zip"
+        if download_and_extract(url, output, klines_1h_dir):
+            successful += 1
+        else:
+            failed += 1
+        total_files += 1
 
         # Download 4h klines
         url = f"{base_url}/klines/{symbol}/4h/{symbol}-4h-{date_str}.zip"
@@ -141,18 +156,19 @@ def download_and_extract(url: str, output_path: Path, extract_dir: Path) -> bool
 
 
 if __name__ == "__main__":
-    days = 540  # Default to 18 months (1.5 BTC cycles)
-    if len(sys.argv) > 1:
-        days = int(sys.argv[1])
+    parser = argparse.ArgumentParser(description="Download Binance futures historical data.")
+    parser.add_argument("--days", type=int, default=2500, help="Number of days to download (default: 2500)")
+    parser.add_argument("--symbol", type=str, default="BTCUSDT", help="Trading symbol (default: BTCUSDT)")
+    args = parser.parse_args()
 
-    successful, failed = download_binance_data(days)
+    successful, failed = download_binance_data(days=args.days, symbol=args.symbol)
 
     if successful == 0:
-        print("❌ No data downloaded. Please check your internet connection.")
+        print("No data downloaded. Please check your internet connection.")
         sys.exit(1)
     elif successful < 300:
-        print("⚠️  Limited data downloaded. Consider downloading more days for full cycle coverage.")
+        print("Limited data downloaded. Consider downloading more days for full cycle coverage.")
         sys.exit(0)
     else:
-        print("✅ Sufficient data downloaded. Ready for backtesting!")
+        print("Sufficient data downloaded. Ready for backtesting!")
         sys.exit(0)

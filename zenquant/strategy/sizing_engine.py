@@ -12,6 +12,7 @@ from zenquant.domain import MarketState, PlaybookSelection, SizingDecision, Time
 class SizingEngineConfig:
     """Static sizing parameters shared across backtest, replay, and live."""
 
+    target_vol_1h: float = 0.55
     target_vol_4h: float = 0.60
     target_vol_1d: float = 0.50
     min_realized_vol_ratio: float = 0.25
@@ -82,9 +83,11 @@ class SizingEngine:
         )
 
     def _target_vol(self, timeframe: Timeframe) -> float:
-        if timeframe is Timeframe.TF_4H:
-            return self._config.target_vol_4h
-        return self._config.target_vol_1d
+        return {
+            Timeframe.TF_1H: self._config.target_vol_1h,
+            Timeframe.TF_4H: self._config.target_vol_4h,
+            Timeframe.TF_1D: self._config.target_vol_1d,
+        }.get(timeframe, self._config.target_vol_4h)
 
     def _base_size(self, equity: float, realized_vol: float, target_vol: float) -> float:
         """Vol-targeted leverage budget.
