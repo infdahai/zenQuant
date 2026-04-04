@@ -25,7 +25,6 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 
 async def run_paper_trading(symbol: str = "BTCUSDT", duration_hours: float = 24.0) -> None:
-    from zenquant.app.pipeline import ZenQuantPipeline
     from zenquant.domain import IndicatorPack, MarketState, TargetPosition, Timeframe
 
     print(f"{'=' * 60}")
@@ -36,9 +35,58 @@ async def run_paper_trading(symbol: str = "BTCUSDT", duration_hours: float = 24.
     print(f"Start: {datetime.now(UTC).strftime('%Y-%m-%d %H:%M:%S UTC')}")
     print()
 
-    # Initialize pipeline
-    pipeline = ZenQuantPipeline()
-    bus = pipeline.bus
+    # Initialize pipeline components directly (not ZenQuantPipeline which includes SyntheticIngestor)
+    from pathlib import Path as _Path
+
+    from zenquant.data import CotDataStore, CotStoreConfig, MacroDataStore, MacroDataStoreConfig
+    from zenquant.execution import ExecutionKernel, SimulatedGateway
+    from zenquant.indicator import IndicatorEngine, IndicatorEngineConfig, IndicatorStore
+    from zenquant.indicator.hf_features import HFFeatureStore, HFFeatureStoreConfig
+    from zenquant.infra import InMemoryJetStream, StreamConfig
+    from zenquant.market import BarClockService, SnapshotBuilder
+    from zenquant.plugins.profile import build_from_profile
+    from zenquant.risk import RiskOverlay
+    from zenquant.state import StateEngine
+    from zenquant.strategy import ARCStrategyEngine
+
+    bus = InMemoryJetStream()
+    bus.add_stream(StreamConfig(name="STREAM_MARKET_DATA", subjects=["md.>"]))
+    bus.add_stream(StreamConfig(name="STREAM_CLOCK", subjects=["clock.>"]))
+    bus.add_stream(StreamConfig(name="STREAM_INDICATORS", subjects=["indicator.>"]))
+    bus.add_stream(StreamConfig(name="STREAM_INTENTS", subjects=["intent.>"]))
+    bus.add_stream(StreamConfig(name="STREAM_EXEC", subjects=["exec.>"]))
+
+    # Load data stores
+    macro_store = MacroDataStore(MacroDataStoreConfig())
+    macro_store.load()
+    cot_store = CotDataStore(CotStoreConfig())
+    cot_store.load()
+    hf_dir = _Path("data/raw/binance/klines") / symbol / "5m"
+    hf_store = HFFeatureStore(HFFeatureStoreConfig(data_dir=hf_dir))
+    hf_store.load()
+
+    # Wire components (ordering matters: snapshot → clock → indicator → risk → strategy → state → execution)
+    SnapshotBuilder(bus=bus)
+    BarClockService(bus=bus)
+
+    indicator_store = IndicatorStore()
+    IndicatorEngine(
+        bus=bus, store=indicator_store,
+        config=IndicatorEngineConfig(expected_symbols=(f"{symbol}_PERP",)),
+        macro_store=macro_store if macro_store.loaded else None,
+        hf_store=hf_store if hf_store.loaded else None,
+        cot_store=cot_store if cot_store.loaded else None,
+    )
+
+    risk_overlay = RiskOverlay(bus=bus)
+
+    profile_path = _Path("config/profiles/default.toml")
+    plugin_registry = None
+    if profile_path.exists():
+        _, plugin_registry = build_from_profile(profile_path, plugin_root=_Path("zenquant/plugins"))
+    ARCStrategyEngine(bus=bus, plugin_registry=plugin_registry)
+    StateEngine(bus=bus)
+    ExecutionKernel(bus=bus, gateway=SimulatedGateway(), risk_overlay=risk_overlay)
 
     # Decision log
     log_dir = Path("logs/paper_trading")
