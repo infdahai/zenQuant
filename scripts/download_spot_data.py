@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
 """Download Binance SPOT klines for spot-perp basis analysis.
 
-Whales influence BTC price through spot market. The spot-perpetual basis
-(premium/discount) reveals institutional flow direction.
+Uses monthly archives (fast) + daily for current month.
 
 Usage:
     uv run python scripts/download_spot_data.py
@@ -18,59 +17,82 @@ import zipfile
 from datetime import datetime, timedelta
 from pathlib import Path
 
+MONTHLY_URL = "https://data.binance.vision/data/spot/monthly/klines"
+DAILY_URL = "https://data.binance.vision/data/spot/daily/klines"
+
+
+def download_and_extract(url: str, output_path: Path, extract_dir: Path) -> bool:
+    try:
+        csv_name = output_path.stem + ".csv"
+        if (extract_dir / csv_name).exists():
+            return True
+        urllib.request.urlretrieve(url, output_path)
+        with zipfile.ZipFile(output_path, "r") as zf:
+            zf.extractall(extract_dir)
+        output_path.unlink()
+        return True
+    except Exception:
+        output_path.unlink(missing_ok=True)
+        return False
+
 
 def download_spot_data(days: int = 2000, symbol: str = "BTCUSDT") -> tuple[int, int]:
-    """Download last N days of Binance spot klines."""
-    base_url = "https://data.binance.vision/data/spot/daily/klines"
-
     end_date = datetime.now()
     start_date = end_date - timedelta(days=days)
 
     base_dir = Path("data/raw/binance_spot")
-    klines_4h_dir = base_dir / "klines" / symbol / "4h"
-    klines_1h_dir = base_dir / "klines" / symbol / "1h"
+    timeframes = ["1h", "4h"]
 
-    for d in [klines_4h_dir, klines_1h_dir]:
-        d.mkdir(parents=True, exist_ok=True)
+    for tf in timeframes:
+        (base_dir / "klines" / symbol / tf).mkdir(parents=True, exist_ok=True)
 
     print(f"Downloading Binance SPOT data: {symbol}")
-    print(f"Range: {start_date.date()} → {end_date.date()} ({days} days)")
+    print(f"Range: {start_date.date()} → {end_date.date()}")
     print("=" * 50)
 
     successful = 0
     failed = 0
-    current = start_date
 
-    while current <= end_date:
-        date_str = current.strftime("%Y-%m-%d")
+    # Phase 1: Monthly archives
+    current = start_date.replace(day=1)
+    last_complete = end_date.replace(day=1) - timedelta(days=1)
 
-        for tf, out_dir in [("4h", klines_4h_dir), ("1h", klines_1h_dir)]:
-            url = f"{base_url}/{symbol}/{tf}/{symbol}-{tf}-{date_str}.zip"
-            zip_path = out_dir / f"{symbol}-{tf}-{date_str}.zip"
-            csv_name = f"{symbol}-{tf}-{date_str}.csv"
-
-            if (out_dir / csv_name).exists():
+    print("\n[Monthly]")
+    while current <= last_complete:
+        month_str = current.strftime("%Y-%m")
+        for tf in timeframes:
+            url = f"{MONTHLY_URL}/{symbol}/{tf}/{symbol}-{tf}-{month_str}.zip"
+            out_dir = base_dir / "klines" / symbol / tf
+            out = out_dir / f"{symbol}-{tf}-{month_str}.zip"
+            if download_and_extract(url, out, out_dir):
                 successful += 1
-                continue
-
-            try:
-                urllib.request.urlretrieve(url, zip_path)
-                with zipfile.ZipFile(zip_path, "r") as zf:
-                    zf.extractall(out_dir)
-                zip_path.unlink()
-                successful += 1
-            except Exception:
-                zip_path.unlink(missing_ok=True)
+            else:
                 failed += 1
 
-        if current.day == 1 or current.date() == end_date.date():
-            print(f"  {current.date()} — {successful} ok, {failed} failed")
+        if current.month == 1 or current >= last_complete.replace(day=1):
+            print(f"  {month_str} — {successful} ok, {failed} failed")
 
+        if current.month == 12:
+            current = current.replace(year=current.year + 1, month=1)
+        else:
+            current = current.replace(month=current.month + 1)
+
+    # Phase 2: Daily (current month)
+    print("\n[Daily]")
+    current = end_date.replace(day=1)
+    while current <= end_date:
+        date_str = current.strftime("%Y-%m-%d")
+        for tf in timeframes:
+            url = f"{DAILY_URL}/{symbol}/{tf}/{symbol}-{tf}-{date_str}.zip"
+            out_dir = base_dir / "klines" / symbol / tf
+            out = out_dir / f"{symbol}-{tf}-{date_str}.zip"
+            if download_and_extract(url, out, out_dir):
+                successful += 1
+            else:
+                failed += 1
         current += timedelta(days=1)
 
     print(f"\nDone: {successful} ok, {failed} failed")
-    print(f"Spot 4H: {klines_4h_dir}")
-    print(f"Spot 1H: {klines_1h_dir}")
     return successful, failed
 
 
