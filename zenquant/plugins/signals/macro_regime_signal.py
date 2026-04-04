@@ -14,7 +14,6 @@ from typing import Any
 
 from zenquant.plugins.protocols import PluginMeta, SignalResult
 
-
 meta = PluginMeta(
     name="macro_regime_signal",
     version="2.0.0",

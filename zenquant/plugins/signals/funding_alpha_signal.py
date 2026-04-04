@@ -16,7 +16,6 @@ from typing import Any
 
 from zenquant.plugins.protocols import PluginMeta, SignalResult
 
-
 meta = PluginMeta(
     name="funding_alpha_signal",
     version="1.0.0",

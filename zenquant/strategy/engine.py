@@ -62,7 +62,7 @@ class ARCStrategyConfig:
     target_vol_1h: float = 0.80
     target_vol_4h: float = 1.10
     target_vol_1d: float = 1.30
-    min_trade_qty: float = 0.0001
+    min_trade_qty: float = 0.0001  # SNOOPING_OK: exchange min order size
     execution_timeframe: Timeframe = Timeframe.TF_4H
     bias_max_age_bars: int = 8
     # Phase 2: trailing stop config
@@ -111,7 +111,7 @@ class ARCStrategyEngine:
         )
 
         # Adaptive signal weighting: track rolling IC per signal
-        from collections import deque, defaultdict
+        from collections import defaultdict, deque
 
         self._signal_values: dict[str, deque[float]] = defaultdict(lambda: deque(maxlen=120))
         self._forward_returns: deque[float] = deque(maxlen=120)

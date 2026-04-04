@@ -99,7 +99,7 @@ class CampaignConfig:
 
     # Robustness
     robustness_seeds: list[int] = field(default_factory=lambda: [42, 123, 456, 789, 1024])
-    robustness_price_noise: float = 0.001
+    robustness_price_noise: float = 0.001  # SNOOPING_OK: domain randomization param
     robustness_volume_noise: float = 0.05
     robustness_bar_dropout: float = 0.02
 

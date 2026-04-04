@@ -12,9 +12,8 @@ from __future__ import annotations
 
 import tempfile
 import unittest
-from pathlib import Path
-
 from datetime import UTC, datetime
+from pathlib import Path
 
 from zenquant.domain import Timeframe
 from zenquant.historical import (
