@@ -14,6 +14,8 @@ from pathlib import Path
 from typing import Any
 
 from zenquant.data import (
+    BasisDataStore,
+    BasisStoreConfig,
     CotDataStore,
     CotStoreConfig,
     MacroDataStore,
@@ -130,6 +132,12 @@ class HistoricalBacktest:
         # Load CFTC COT data if available
         self._cot_store = CotDataStore(CotStoreConfig(cot_path=self._config.cot_path))
         self._cot_store.load()
+        # Load spot-perp basis data if available
+        self._basis_store = BasisDataStore(BasisStoreConfig(
+            spot_dir=Path("data/raw/binance_spot/klines") / self._config.symbol / "4h",
+            perp_dir=self._config.root_dir / "klines" / self._config.symbol / "4h",
+        ))
+        self._basis_store.load()
         self.indicator_engine = IndicatorEngine(
             bus=self.bus,
             store=self.indicator_store,
@@ -138,6 +146,7 @@ class HistoricalBacktest:
             options_store=self._options_store if self._options_store.loaded else None,
             hf_store=self._hf_store if self._hf_store.loaded else None,
             cot_store=self._cot_store if self._cot_store.loaded else None,
+            basis_store=self._basis_store if self._basis_store.loaded else None,
         )
         self.risk_overlay = RiskOverlay(
             bus=self.bus,
