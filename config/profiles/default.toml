@@ -49,6 +49,11 @@ high_iv_threshold = 1.5
 extreme_iv_threshold = 2.5
 inverted_skew_threshold = -1.0
 
+[signals.cross_asset_flow_signal]
+enabled = true  # Auto-neutral without ETH data. ETH→BTC transfer entropy.
+weight = 0.10
+te_threshold = 0.1
+
 [signals.crash_reversal_signal]
 enabled = true
 weight = 0.25

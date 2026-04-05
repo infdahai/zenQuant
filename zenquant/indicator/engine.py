@@ -119,6 +119,7 @@ class IndicatorEngine:
         hf_store: object | None = None,
         cot_store: object | None = None,
         basis_store: object | None = None,
+        eth_store: object | None = None,
     ) -> None:
         self._bus = bus
         self._store = store
@@ -128,6 +129,8 @@ class IndicatorEngine:
         self._hf_store = hf_store  # HFFeatureStore (optional, 5min features)
         self._cot_store = cot_store  # CotDataStore (optional, weekly institutional positioning)
         self._basis_store = basis_store  # BasisDataStore (optional, spot-perp premium)
+        self._eth_store = eth_store  # EthDataStore (optional, cross-asset TE)
+        self._btc_returns_buffer: list[float] = []  # Rolling BTC returns for TE
         self._formula_hash = _formula_hash(
             self._config, has_macro=macro_store is not None, has_options=options_store is not None
         )
@@ -401,6 +404,29 @@ class IndicatorEngine:
             basis = self._basis_store.lookup(candle.bar_end_ns)
             macro_values["basis_pct"] = basis.basis_pct
             macro_values["basis_z"] = basis.basis_z
+
+        # Inject ETH→BTC Transfer Entropy (cross-asset information flow)
+        if self._eth_store is not None and hasattr(self._eth_store, "get_returns_before"):
+            # Track BTC returns for TE computation
+            btc_ret = 0.0
+            if len(self._candles.get((candle.symbol, candle.timeframe), [])) >= 2:
+                prev = list(self._candles[(candle.symbol, candle.timeframe)])[-2]
+                if prev.close > 0:
+                    btc_ret = (candle.close - prev.close) / prev.close
+            self._btc_returns_buffer.append(btc_ret)
+            if len(self._btc_returns_buffer) > 200:
+                self._btc_returns_buffer = self._btc_returns_buffer[-200:]
+
+            eth_returns = self._eth_store.get_returns_before(candle.bar_end_ns, window=120)
+            if len(eth_returns) >= 60 and len(self._btc_returns_buffer) >= 60:
+                from zenquant.research.transfer_entropy import transfer_entropy
+
+                n = min(len(eth_returns), len(self._btc_returns_buffer))
+                te = transfer_entropy(eth_returns[-n:], self._btc_returns_buffer[-n:])
+                macro_values["te_eth_to_btc"] = round(te, 4)
+                # ETH momentum for direction
+                if len(eth_returns) >= 6:
+                    macro_values["eth_momentum"] = sum(eth_returns[-6:])
 
         pack = IndicatorPack(
             ts_ns=candle.bar_end_ns,

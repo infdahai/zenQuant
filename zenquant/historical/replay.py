@@ -23,6 +23,7 @@ from zenquant.data import (
     OptionsDataStore,
     OptionsDataStoreConfig,
 )
+from zenquant.data.eth_store import EthDataStore, EthStoreConfig
 from zenquant.domain import (
     BacktestDiagnostics,
     BacktestMetrics,
@@ -136,6 +137,11 @@ class HistoricalBacktest:
         # Load CFTC COT data if available
         self._cot_store = CotDataStore(CotStoreConfig(cot_path=self._config.cot_path))
         self._cot_store.load()
+        # Load ETH data for cross-asset Transfer Entropy
+        self._eth_store = EthDataStore(EthStoreConfig(
+            eth_kline_path=self._config.root_dir / "klines" / "ETHUSDT" / "4h",
+        ))
+        self._eth_store.load()
         # Load spot-perp basis data if available
         self._basis_store = BasisDataStore(BasisStoreConfig(
             spot_dir=Path("data/raw/binance_spot/klines") / self._config.symbol / "4h",
@@ -151,6 +157,7 @@ class HistoricalBacktest:
             hf_store=self._hf_store if self._hf_store.loaded else None,
             cot_store=self._cot_store if self._cot_store.loaded else None,
             basis_store=self._basis_store if self._basis_store.loaded else None,
+            eth_store=self._eth_store if self._eth_store.loaded else None,
         )
         self.risk_overlay = RiskOverlay(
             bus=self.bus,
