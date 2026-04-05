@@ -29,6 +29,7 @@ Regime-aware crypto perpetual futures trading system. BTC-first, 4H execution ti
 | VPIN toxic flow | vpin > 0.10 (p95) | lev ×0.70 |
 | GEX regime | PINNING / AMPLIFYING | lev ×1.15 / ×0.70 |
 | Basis premium | basis_z > 2.0 (long only) | lev ×0.80 |
+| Basis discount | basis_z < -2.0 (short only) | lev ×0.80 |
 | Weekend vol | Sat/Sun | lev ×1.25 |
 | COT crowding | leveraged_z > 2.5 (directional) | lev ×0.70 |
 | Equity stress | QQQ+IWM crash | lev ×0.50 |

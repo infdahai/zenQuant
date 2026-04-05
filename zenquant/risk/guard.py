@@ -70,6 +70,9 @@ class RiskOverlayConfig:
     # Spot-perp basis extreme (premium too high = crowded longs)
     basis_extreme_threshold: float = 2.0  # z-score
     basis_extreme_mult: float = 0.80
+    # Basis discount: perp trading below spot = short squeeze risk
+    basis_discount_threshold: float = -2.0  # z-score
+    basis_discount_mult: float = 0.80
     # VPIN toxic flow (Easley, Lopez de Prado & O'Hara 2012)
     vpin_toxic_threshold: float = 0.10  # p95 = 0.10, above = toxic flow
     vpin_toxic_mult: float = 0.70
@@ -281,6 +284,9 @@ class RiskOverlay:
             if target.target_qty > 0 and basis_z > self._config.basis_extreme_threshold:
                 lev_cap *= self._config.basis_extreme_mult
                 flags.append("BASIS_PREMIUM_EXTREME")
+            elif target.target_qty < 0 and basis_z < self._config.basis_discount_threshold:
+                lev_cap *= self._config.basis_discount_mult
+                flags.append("BASIS_DISCOUNT_EXTREME")
 
             # GEX regime: gamma exposure determines vol regime
             gex_regime = str(indicator.values.get("gex_regime", "") or "")
