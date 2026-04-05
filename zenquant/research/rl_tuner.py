@@ -28,10 +28,12 @@ import numpy as np
 from gymnasium import spaces
 
 from zenquant.historical import HistoricalBacktest, HistoricalBacktestConfig
+from zenquant.indicator import IndicatorEngineConfig
 from zenquant.risk import RiskOverlayConfig
 from zenquant.strategy import ARCStrategyConfig
 
 # Parameter grid: each parameter has discrete choices
+# Expanded from 8 → 20 params (26% coverage of 78 total)
 PARAM_GRID = {
     # Signal weights (6 active)
     "w_momentum": [0.20, 0.30, 0.45, 0.60],
@@ -40,9 +42,23 @@ PARAM_GRID = {
     "w_funding": [0.05, 0.10, 0.15],
     "w_crowding": [0.05, 0.10, 0.15],
     "w_liquidity": [0.10, 0.20, 0.30],
-    # Risk params
+    # Risk: DD stepping (high impact — PaulWei calibration)
     "dd_step_1_long": [0.10, 0.15, 0.20],
+    "dd_step_1_short": [0.05, 0.08, 0.12],
+    # Risk: leverage and vol targets (core sizing)
+    "max_leverage": [4.0, 6.0, 8.0],
+    "target_vol_4h": [0.80, 1.10, 1.40],
+    # Risk: guard thresholds
     "vpin_threshold": [0.08, 0.10, 0.12],
+    "crowding_threshold": [1.8, 2.2, 2.5],
+    "vol_shock_threshold": [0.80, 0.95, 1.10],
+    # Strategy: execution params
+    "trailing_stop_atr_mult": [2.0, 2.5, 3.0],
+    "bias_max_age_bars": [6, 8, 12],
+    # Indicator: computation windows
+    "vol_window": [15, 20, 30],
+    "cvd_window": [6, 8, 12],
+    "roc_lookback": [8, 12, 18],
 }
 
 # Train period windows (6-month chunks from 2020-2023)
@@ -142,14 +158,20 @@ class ParamTunerEnv(gym.Env):
         start_ns, end_ns = window
 
         strategy_config = ARCStrategyConfig(
-            target_vol_4h=1.10,  # PaulWei calibrated
+            target_vol_4h=params.get("target_vol_4h", 1.10),
             target_vol_1d=1.30,
-            max_leverage=6.0,
+            max_leverage=params.get("max_leverage", 6.0),
+            trailing_stop_atr_mult=params.get("trailing_stop_atr_mult", 2.5),
+            bias_max_age_bars=int(params.get("bias_max_age_bars", 8)),
         )
 
         risk_config = RiskOverlayConfig(
+            max_leverage=params.get("max_leverage", 6.0),
             dd_step_1_long=params.get("dd_step_1_long", 0.15),
+            dd_step_1_short=params.get("dd_step_1_short", 0.08),
             vpin_toxic_threshold=params.get("vpin_threshold", 0.10),
+            crowding_threshold=params.get("crowding_threshold", 2.2),
+            vol_shock_threshold=params.get("vol_shock_threshold", 0.95),
         )
 
         # Map RL param names → plugin signal names
@@ -162,6 +184,12 @@ class ParamTunerEnv(gym.Env):
             "liquidity_signal": params.get("w_liquidity", 0.20),
         }
 
+        indicator_config = IndicatorEngineConfig(
+            vol_window=int(params.get("vol_window", 20)),
+            cvd_window=int(params.get("cvd_window", 8)),
+            roc_lookback=int(params.get("roc_lookback", 12)),
+        )
+
         try:
             result = HistoricalBacktest(
                 HistoricalBacktestConfig(
@@ -170,6 +198,7 @@ class ParamTunerEnv(gym.Env):
                     strategy_config=strategy_config,
                     risk_config=risk_config,
                     signal_weight_overrides=weight_overrides,
+                    indicator_config=indicator_config,
                 )
             ).run()
 

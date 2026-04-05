@@ -77,6 +77,8 @@ class HistoricalBacktestConfig:
     risk_config: RiskOverlayConfig | None = None
     # Signal weight overrides (for RL tuner — bypass default.toml weights)
     signal_weight_overrides: dict[str, float] | None = None
+    # Indicator config override (for RL tuner — vol_window, cvd_window, etc.)
+    indicator_config: IndicatorEngineConfig | None = None
     # Domain randomization (for robustness testing)
     perturbation: PerturbationConfig | None = None
     # Macro data directory (VIX, DXY, Treasury yields)
@@ -143,7 +145,7 @@ class HistoricalBacktest:
         self.indicator_engine = IndicatorEngine(
             bus=self.bus,
             store=self.indicator_store,
-            config=IndicatorEngineConfig(expected_symbols=(self._config.portfolio_symbol,)),
+            config=self._config.indicator_config or IndicatorEngineConfig(expected_symbols=(self._config.portfolio_symbol,)),
             macro_store=self._macro_store if self._macro_store.loaded else None,
             options_store=self._options_store if self._options_store.loaded else None,
             hf_store=self._hf_store if self._hf_store.loaded else None,
