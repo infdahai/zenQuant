@@ -13,7 +13,6 @@ from typing import Any
 
 from zenquant.plugins.protocols import PluginMeta, SignalResult
 
-
 meta = PluginMeta(
     name="cross_asset_flow_signal",
     version="1.0.0",

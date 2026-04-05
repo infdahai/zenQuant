@@ -17,7 +17,6 @@ from typing import Any
 
 from zenquant.plugins.protocols import PluginMeta, SignalResult
 
-
 meta = PluginMeta(
     name="vacuum_signal",
     version="1.0.0",
