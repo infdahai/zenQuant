@@ -45,13 +45,33 @@ class SimulatedGateway(ExecutionGateway):
                 reject_reason="invalid_order",
             )
 
-        exec_price = self._execution_price(
-            side=order.side,
-            mark_price=mark_price,
-            best_bid=best_bid,
-            best_ask=best_ask,
-        )
-        fee = order.quantity * exec_price * self._config.taker_fee_rate
+        # Limit order: check if price is reachable
+        if order.order_type == "LIMIT" and order.limit_price is not None:
+            fillable = (
+                (order.side > 0 and mark_price <= order.limit_price)
+                or (order.side < 0 and mark_price >= order.limit_price)
+            )
+            if not fillable:
+                return ExecutionReport(
+                    client_order_id=order.client_order_id,
+                    symbol=order.symbol,
+                    side=order.side,
+                    status="PENDING",
+                    filled_qty=0.0,
+                    avg_price=0.0,
+                    fee=0.0,
+                    transaction_time_ns=now_ns or time.time_ns(),
+                )
+            exec_price = order.limit_price
+            fee = order.quantity * exec_price * self._config.maker_fee_rate
+        else:
+            exec_price = self._execution_price(
+                side=order.side,
+                mark_price=mark_price,
+                best_bid=best_bid,
+                best_ask=best_ask,
+            )
+            fee = order.quantity * exec_price * self._config.taker_fee_rate
         return ExecutionReport(
             client_order_id=order.client_order_id,
             symbol=order.symbol,

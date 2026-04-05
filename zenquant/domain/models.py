@@ -184,6 +184,8 @@ class ExecutionOrder:
     quantity: float
     reduce_only: bool
     max_slippage_bps: float
+    order_type: str = "MARKET"  # MARKET or LIMIT
+    limit_price: float | None = None  # Required for LIMIT orders
 
 
 @dataclass(slots=True)

@@ -13,6 +13,7 @@ class ExecutionGatewayConfig:
     """Shared execution-cost assumptions for gateway implementations."""
 
     taker_fee_rate: float = 0.0004
+    maker_fee_rate: float = 0.0002  # Limit orders get maker fee
 
 
 class ExecutionGateway:
