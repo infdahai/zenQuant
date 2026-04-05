@@ -58,8 +58,9 @@ deep_crash_threshold = -0.08
 [signals.funding_alpha_signal]
 enabled = true
 weight = 0.10
-high_funding_z = 2.0
-low_funding_z = -2.0
+# Asymmetric: positive funding mean-reverts faster (18H) than negative (36H)
+high_funding_z = 1.8   # More sensitive to crowded longs (faster reversion)
+low_funding_z = -2.2   # Less sensitive to crowded shorts (slower reversion)
 
 [signals.vol_mean_reversion_signal]
 enabled = false  # Ablation: Sharpe +0.10 when disabled (vol spike reversion weak)

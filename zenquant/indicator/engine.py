@@ -327,6 +327,7 @@ class IndicatorEngine:
                 "term_slope_z": options_snap.term_slope_z,
                 "put_call_skew_25d": options_snap.put_call_skew_25d,
                 "skew_z": options_snap.skew_z,
+                "skew_velocity": options_snap.skew_velocity,
                 "gex_net": options_snap.net_gex,
                 "gex_regime": options_snap.gex_regime,
                 "gamma_wall_strike": options_snap.gamma_wall_strike,

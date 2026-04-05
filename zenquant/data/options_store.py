@@ -35,6 +35,8 @@ class OptionsSnapshot:
     put_call_skew_25d: float | None  # (90% put IV) - (110% call IV)
     skew_z: float
     underlying_price: float
+    # Skew velocity (dSkew/dt per hour) — informed traders buy puts before selling
+    skew_velocity: float = 0.0  # Negative = puts getting expensive faster = bearish
     # GEX metrics (gamma exposure)
     net_gex: float = 0.0  # Positive = pinning, negative = amplifying
     gamma_wall_strike: float | None = None  # Price magnet above
@@ -63,6 +65,8 @@ class OptionsDataStore:
         self._skew: list[float | None] = []
         self._term_slope: list[float | None] = []
         self._spot: list[float] = []
+        # Skew velocity (dSkew/dt between snapshots)
+        self._skew_velocity: list[float] = []
         # GEX metrics per snapshot
         self._net_gex: list[float] = []
         self._gamma_wall: list[float | None] = []
@@ -143,6 +147,17 @@ class OptionsDataStore:
             self._gamma_wall = [self._gamma_wall[i] for i in indices]
             self._flip_strike = [self._flip_strike[i] for i in indices]
             self._gex_regime = [self._gex_regime[i] for i in indices]
+
+            # Compute skew velocity (dSkew/dt) after sorting
+            self._skew_velocity = [0.0]  # First snapshot has no previous
+            for i in range(1, len(self._timestamps)):
+                s0 = self._skew[i - 1]
+                s1 = self._skew[i]
+                dt_hours = (self._timestamps[i] - self._timestamps[i - 1]) / (3600 * 1e9)
+                if s0 is not None and s1 is not None and dt_hours > 0:
+                    self._skew_velocity.append((s1 - s0) / dt_hours)
+                else:
+                    self._skew_velocity.append(0.0)
 
     def lookup(self, cutoff_time_ns: int) -> OptionsSnapshot:
         """Return latest options snapshot before cutoff (point-in-time correct)."""
@@ -228,6 +243,7 @@ class OptionsDataStore:
             put_call_skew_25d=skew,
             skew_z=skew_z,
             underlying_price=spot,
+            skew_velocity=self._skew_velocity[idx] if idx < len(self._skew_velocity) else 0.0,
             net_gex=self._net_gex[idx] if idx < len(self._net_gex) else 0.0,
             gamma_wall_strike=self._gamma_wall[idx] if idx < len(self._gamma_wall) else None,
             flip_strike=self._flip_strike[idx] if idx < len(self._flip_strike) else None,

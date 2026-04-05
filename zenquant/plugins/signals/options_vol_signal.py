@@ -104,5 +104,30 @@ def compute(
             reason_codes=tuple(reason_codes),
         )
 
+    # --- Skew velocity: rapid put skew steepening = informed selling ---
+    # Cao et al. (2024): d(skew)/dt has 3-5x higher IC than skew level
+    skew_vel = float(indicators.get("skew_velocity", 0.0) or 0.0)
+    skew_vel_threshold = config.get("skew_velocity_threshold", 0.5)
+
+    if skew_vel > skew_vel_threshold:
+        # Puts getting expensive fast → informed traders buying protection → bearish
+        magnitude = -min(0.6, 0.3 + skew_vel / 5)
+        confidence = min(0.8, 0.4 + skew_vel / 8)
+        return SignalResult(
+            value=magnitude,
+            confidence=confidence,
+            reason_codes=("OPTIONS_SKEW_STEEPENING",),
+        )
+
+    if skew_vel < -skew_vel_threshold:
+        # Puts getting cheaper fast → fear subsiding → mildly bullish
+        magnitude = min(0.4, 0.2 + abs(skew_vel) / 8)
+        confidence = min(0.6, 0.3 + abs(skew_vel) / 10)
+        return SignalResult(
+            value=magnitude,
+            confidence=confidence,
+            reason_codes=("OPTIONS_SKEW_FLATTENING",),
+        )
+
     # --- Mid-range IV: Neutral (defer to other signals) ---
     return SignalResult(value=0.0, confidence=0.2)
