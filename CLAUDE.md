@@ -34,6 +34,7 @@ Regime-aware crypto perpetual futures trading system. BTC-first, 4H execution ti
 | COT crowding | leveraged_z > 2.5 (directional) | lev ×0.70 |
 | Equity stress | QQQ+IWM crash | lev ×0.50 |
 | Vol shock | realized_vol > 0.95 | lev ×0.40 |
+| Macro event | FOMC/CPI day | lev ×0.75 |
 | Kill switch | DD > 30% | reduce_only → recovery |
 
 ## 架构三层分离

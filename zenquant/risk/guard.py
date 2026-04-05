@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 
+from zenquant.data.event_calendar import is_macro_event_bar
 from zenquant.domain import (
     ExecutionReport,
     IndicatorPack,
@@ -80,6 +81,8 @@ class RiskOverlayConfig:
     # Sat=0.69x, Sun=0.83x vs weekday avg — weekend positions can be slightly larger
     # (lower vol = same risk at larger position)
     weekend_vol_scalar: float = 1.25  # inverse of 0.80 avg weekend/weekday ratio
+    # Macro event calendar (FOMC/CPI) — reduce leverage during high-vol events
+    macro_event_mult: float = 0.75  # Reduce 25% during FOMC/CPI bars
     # Kill switch recovery (Claude Code "fallback model" pattern)
     kill_recovery_threshold: float = 0.12  # DD must recover below this to start recovery
     kill_cooldown_bars: int = 36  # 36 bars = 6 days at 4H (cooldown before re-entry)
@@ -302,6 +305,11 @@ class RiskOverlay:
             if bar_dt.weekday() >= 5:  # Saturday=5, Sunday=6
                 lev_cap *= self._config.weekend_vol_scalar
                 flags.append("WEEKEND_VOL_ADJUST")
+
+            # Macro event calendar: reduce leverage during FOMC/CPI bars
+            if is_macro_event_bar(target.cutoff_time_ns):
+                lev_cap *= self._config.macro_event_mult
+                flags.append("MACRO_EVENT")
 
             cycle_pos = float(indicator.values.get("cycle_position", 1.0) or 1.0)
             if cycle_pos > self._config.overheated_cycle_threshold and funding_oi_z > self._config.overheated_funding_threshold:
