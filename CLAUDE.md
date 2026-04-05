@@ -81,6 +81,42 @@ Gate F: Walk-forward overfit detection (8 OOS windows)
 
 ---
 
+## Testing Limitations
+
+### BTC Cycle Dependency ⚠️
+
+**Issue**: BTC has strong 4-year halving cycles (2020→2024→2028). Train/Dev/Test split may not capture all cycle phases evenly.
+
+**Current Split**:
+- **Train** (2020-2023): Full Cycle 3 (POST_HALVING → BULL → CRASH → BEAR → RECOVERY) ✅
+- **Dev** (2024-2025): Partial Cycle 4 (POST_HALVING → BULL_INITIAL, missing CRASH/BEAR) ⚠️
+- **Test** (2026+): Future (unknown phases)
+
+**Impact on Metrics**:
+- Sharpe varies 5x across cycle phases (0.5 in BEAR → 3.0 in BULL_PEAK)
+- OOS ratio may mislead if Dev/Train in different phases
+- Example: RL tuner showed Train Sharpe 3.31 vs Dev Sharpe 2.06 (OOS ratio 0.62)
+  - Looks like overfitting, but actually **cycle phase effect** (BULL_PEAK vs POST_HALVING)
+  - Evidence: RL params = Manual params on Dev (both 2.06) → parameter-insensitive, not overfitting
+
+**Mitigation**:
+1. **Walk-forward validation** — 8 windows cover different cycle positions (current)
+2. **Phase-specific reporting** — break down Sharpe by cycle phase (planned 2026 Q2)
+3. **Cycle-aware testing** — stratified validation (planned 2026 Q3)
+4. **Full-cycle validation** — 2028 when Cycle 4 completes (gold standard)
+
+**Current Confidence**: ⚠️ **MODERATE** (1.5 cycles better than most crypto funds, but < traditional quant standards)
+
+**Details**: `docs/CYCLE_AWARE_TESTING.md`
+
+### Dev Set Budget (SNOOPING_LOG.md)
+
+**Status**: 32/50 uses (🟠 64% exhausted)  
+**Remaining**: 18 uses  
+**Next refresh**: 2026 Q3 (滚动更新: Train扩展至2024, Dev更新为2025-2026)
+
+---
+
 ## 评估纪律 (最重要)
 
 - **Train/Test严格分割**: Train=2020-2023, Test=2024-2026. Test是secret benchmark, NEVER用于调参
