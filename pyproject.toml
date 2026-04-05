@@ -14,6 +14,8 @@ dependencies = [
     "pyarrow>=20.0.0",
     "psycopg[binary]>=3.2.9",
     "uvicorn[standard]>=0.30.0",
+    "stable-baselines3>=2.8.0",
+    "gymnasium>=1.2.3",
 ]
 
 [project.optional-dependencies]
@@ -78,6 +80,13 @@ quote-style = "double"
 
 [dependency-groups]
 dev = [
+    "mutmut>=3.5.0",
     "pytest>=9.0",
     "ruff>=0.15.8",
 ]
+
+# ── Mutation Testing ────────────────────────────────────────
+[tool.mutmut]
+paths_to_mutate = "zenquant/plugins/signals/options_vol_signal.py"
+tests_dir = "tests/"
+runner = "python -m pytest -x -q"
