@@ -1,18 +1,18 @@
 {
   "metrics": {
-    "net_pnl": 1934478.38,
-    "sharpe": 6.5469,
-    "max_drawdown": 0.001568,
-    "profit_factor": 11.250989,
-    "trade_count": 286
+    "net_pnl": 3167242.52,
+    "sharpe": 6.7841,
+    "max_drawdown": 0.001576,
+    "profit_factor": 11.581771,
+    "trade_count": 276
   },
   "equity": {
-    "final": 2034478.379512
+    "final": 3267242.518593
   },
   "counts": {
     "indicator_packs": 630,
     "targets": 540,
-    "reports": 286
+    "reports": 276
   },
   "diagnostics": {
     "playbook_counts": {

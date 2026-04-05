@@ -50,7 +50,7 @@ extreme_iv_threshold = 2.5
 inverted_skew_threshold = -1.0
 
 [signals.cross_asset_flow_signal]
-enabled = true  # Auto-neutral without ETH data. ETH→BTC transfer entropy.
+enabled = false  # IC=0.014 NOISE — disabled per IC>0.03 rule. Re-evaluate with more data.
 weight = 0.10
 te_threshold = 0.1
 
@@ -63,9 +63,9 @@ deep_crash_threshold = -0.08
 [signals.funding_alpha_signal]
 enabled = true
 weight = 0.10
-# Asymmetric: positive funding mean-reverts faster (18H) than negative (36H)
-high_funding_z = 1.8   # More sensitive to crowded longs (faster reversion)
-low_funding_z = -2.2   # Less sensitive to crowded shorts (slower reversion)
+# Reverted to symmetric: asymmetric IC=0.027 < 0.03 threshold
+high_funding_z = 2.0
+low_funding_z = -2.0
 
 [signals.vol_mean_reversion_signal]
 enabled = false  # Ablation: Sharpe +0.10 when disabled (vol spike reversion weak)
