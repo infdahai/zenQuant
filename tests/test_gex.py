@@ -184,5 +184,164 @@ class TestGexToSignal(unittest.TestCase):
         self.assertEqual(sig["gex_regime_score"], 0.0)
 
 
+class TestGexRegimeBoundaryConditions(unittest.TestCase):
+    """Boundary tests for GEX regime classification thresholds.
+
+    Tests exact 1e6 threshold, epsilon around zero, and edge cases.
+    Existing tests use happy path values (large positive/negative GEX).
+    Boundary tests verify off-by-one logic around thresholds.
+    """
+
+    def test_exact_1e6_is_pinning_not_neutral(self) -> None:
+        """net_gex = 1,000,000 exactly should be PINNING (logic uses abs < 1e6 for NEUTRAL)."""
+        from zenquant.research.gex import _classify_regime
+
+        regime, _ = _classify_regime(
+            net_gex=1_000_000.0,
+            spot=95000.0,
+            gamma_wall=96000.0,
+            flip=None,
+        )
+
+        # abs(1e6) = 1e6, which is NOT < 1e6, so should be PINNING
+        self.assertEqual(regime, "PINNING")
+
+    def test_just_below_1e6_is_neutral(self) -> None:
+        """net_gex = 999,999 should be NEUTRAL (abs < 1e6)."""
+        from zenquant.research.gex import _classify_regime
+
+        regime, _ = _classify_regime(
+            net_gex=999_999.0,
+            spot=95000.0,
+            gamma_wall=None,
+            flip=None,
+        )
+
+        self.assertEqual(regime, "NEUTRAL")
+
+    def test_exact_minus_1e6_is_amplifying_not_neutral(self) -> None:
+        """net_gex = -1,000,000 exactly should be AMPLIFYING."""
+        from zenquant.research.gex import _classify_regime
+
+        regime, _ = _classify_regime(
+            net_gex=-1_000_000.0,
+            spot=95000.0,
+            gamma_wall=None,
+            flip=93000.0,
+        )
+
+        # abs(-1e6) = 1e6, which is NOT < 1e6, so should be AMPLIFYING
+        self.assertEqual(regime, "AMPLIFYING")
+
+    def test_just_above_minus_1e6_is_neutral(self) -> None:
+        """net_gex = -999,999 should be NEUTRAL (abs < 1e6)."""
+        from zenquant.research.gex import _classify_regime
+
+        regime, _ = _classify_regime(
+            net_gex=-999_999.0,
+            spot=95000.0,
+            gamma_wall=None,
+            flip=None,
+        )
+
+        self.assertEqual(regime, "NEUTRAL")
+
+    def test_exact_zero_is_neutral(self) -> None:
+        """net_gex = 0.0 should be NEUTRAL."""
+        from zenquant.research.gex import _classify_regime
+
+        regime, _ = _classify_regime(
+            net_gex=0.0,
+            spot=95000.0,
+            gamma_wall=None,
+            flip=None,
+        )
+
+        self.assertEqual(regime, "NEUTRAL")
+
+    def test_epsilon_positive_is_neutral(self) -> None:
+        """net_gex = 0.1 (epsilon positive) should be NEUTRAL."""
+        from zenquant.research.gex import _classify_regime
+
+        regime, _ = _classify_regime(
+            net_gex=0.1,
+            spot=95000.0,
+            gamma_wall=None,
+            flip=None,
+        )
+
+        self.assertEqual(regime, "NEUTRAL")
+
+    def test_epsilon_negative_is_neutral(self) -> None:
+        """net_gex = -0.1 (epsilon negative) should be NEUTRAL."""
+        from zenquant.research.gex import _classify_regime
+
+        regime, _ = _classify_regime(
+            net_gex=-0.1,
+            spot=95000.0,
+            gamma_wall=None,
+            flip=None,
+        )
+
+        self.assertEqual(regime, "NEUTRAL")
+
+    def test_large_positive_gex_is_pinning(self) -> None:
+        """net_gex >> 1e6 should be PINNING."""
+        from zenquant.research.gex import _classify_regime
+
+        regime, _ = _classify_regime(
+            net_gex=1e9,  # 1 billion
+            spot=95000.0,
+            gamma_wall=97000.0,
+            flip=None,
+        )
+
+        self.assertEqual(regime, "PINNING")
+
+    def test_large_negative_gex_is_amplifying(self) -> None:
+        """net_gex << -1e6 should be AMPLIFYING."""
+        from zenquant.research.gex import _classify_regime
+
+        regime, _ = _classify_regime(
+            net_gex=-1e9,  # -1 billion
+            spot=95000.0,
+            gamma_wall=None,
+            flip=93000.0,
+        )
+
+        self.assertEqual(regime, "AMPLIFYING")
+
+    def test_gex_profile_boundary_empty_strikes_after_filtering(self) -> None:
+        """All strikes filtered out (min_oi, max_dte) should return NEUTRAL."""
+        rows = [
+            _make_row(95000, "call", oi=0.1),  # Below min_oi
+        ]
+        profile = compute_gex_profile(rows, spot=95000.0, min_oi=1.0)
+
+        self.assertEqual(profile.regime, "NEUTRAL")
+        self.assertEqual(profile.regime_reason, "No strikes after filtering")
+
+    def test_gex_profile_boundary_all_expired(self) -> None:
+        """All expired options (DTE < 0) should return NEUTRAL."""
+        import time
+
+        now_s = time.time()
+        rows = [
+            {
+                "snapshot_ts_ns": int(now_s * 1e9),
+                "strike": 95000,
+                "option_type": "call",
+                "open_interest": 1000,
+                "mark_iv": 60.0,
+                "expiry_ts_ms": int((now_s - 86400) * 1000),  # expired
+                "underlying_price": 95000,
+            }
+        ]
+        profile = compute_gex_profile(rows, spot=95000.0)
+
+        self.assertEqual(profile.regime, "NEUTRAL")
+        self.assertEqual(profile.net_gex, 0.0)
+
+
 if __name__ == "__main__":
     unittest.main()
