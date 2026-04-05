@@ -31,7 +31,6 @@ from zenquant.historical import HistoricalBacktest, HistoricalBacktestConfig
 from zenquant.risk import RiskOverlayConfig
 from zenquant.strategy import ARCStrategyConfig
 
-
 # Parameter grid: each parameter has discrete choices
 PARAM_GRID = {
     # Signal weights (6 active)
@@ -76,7 +75,7 @@ class ParamTunerEnv(gym.Env):
     The agent learns which parameter combinations produce best Sharpe.
     """
 
-    metadata = {"render_modes": []}
+    metadata: dict[str, list[str]] = {"render_modes": []}  # noqa: RUF012
 
     def __init__(self) -> None:
         super().__init__()
@@ -153,9 +152,16 @@ class ParamTunerEnv(gym.Env):
             vpin_toxic_threshold=params.get("vpin_threshold", 0.10),
         )
 
-        # Apply signal weights via profile override
-        # Note: weights are applied through default.toml, but for RL we'd need
-        # to pass them dynamically. For now, we vary risk params only.
+        # Map RL param names → plugin signal names
+        weight_overrides = {
+            "multi_momentum_signal": params.get("w_momentum", 0.45),
+            "crash_reversal_signal": params.get("w_crash", 0.25),
+            "cvd_signal": params.get("w_cvd", 0.25),
+            "funding_alpha_signal": params.get("w_funding", 0.10),
+            "crowding_signal": params.get("w_crowding", 0.10),
+            "liquidity_signal": params.get("w_liquidity", 0.20),
+        }
+
         try:
             result = HistoricalBacktest(
                 HistoricalBacktestConfig(
@@ -163,6 +169,7 @@ class ParamTunerEnv(gym.Env):
                     end_ns=end_ns,
                     strategy_config=strategy_config,
                     risk_config=risk_config,
+                    signal_weight_overrides=weight_overrides,
                 )
             ).run()
 

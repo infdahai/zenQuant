@@ -62,9 +62,14 @@ class PluginRegistry:
             "exits": [p.meta.name for p in self.exits],
         }
 
+    # Dynamic weight overrides (for RL tuner / runtime adjustment)
+    weight_overrides: dict[str, float] = field(default_factory=dict)
+
     @property
     def signal_weights(self) -> dict[str, float]:
-        return {p.meta.name: p.weight for p in self.signals}
+        base = {p.meta.name: p.weight for p in self.signals}
+        base.update(self.weight_overrides)
+        return base
 
 
 def load_registry(

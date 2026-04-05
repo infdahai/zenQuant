@@ -75,6 +75,8 @@ class HistoricalBacktestConfig:
     strategy_config: ARCStrategyConfig | None = None
     # Risk config override (for risk appetite tuning)
     risk_config: RiskOverlayConfig | None = None
+    # Signal weight overrides (for RL tuner — bypass default.toml weights)
+    signal_weight_overrides: dict[str, float] | None = None
     # Domain randomization (for robustness testing)
     perturbation: PerturbationConfig | None = None
     # Macro data directory (VIX, DXY, Treasury yields)
@@ -157,6 +159,9 @@ class HistoricalBacktest:
         if self._config.profile_path and self._config.profile_path.exists():
             plugin_root = Path(__file__).parent.parent / "plugins"
             _, plugin_registry = build_from_profile(self._config.profile_path, plugin_root=plugin_root)
+            # Apply RL tuner weight overrides (dynamic, bypass default.toml)
+            if self._config.signal_weight_overrides and plugin_registry is not None:
+                plugin_registry.weight_overrides = dict(self._config.signal_weight_overrides)
         self.strategy_engine = ARCStrategyEngine(
             bus=self.bus,
             config=self._config.strategy_config,
