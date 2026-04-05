@@ -67,6 +67,20 @@ Gate F: Walk-forward overfit detection (8 OOS windows)
 + Signal Ablation: periodic load-bearing analysis
 详见 `docs/HARNESS_ARCHITECTURE.md`
 
+## Known Vulnerabilities (adversarial replay 2026-04-05)
+
+**Historical Replay**: 4/5 worst periods PASS, 1/5 FAIL (80% pass rate)
+
+| Period | Issue | Root Cause | Fix Attempted | Result |
+|--------|-------|------------|---------------|--------|
+| **2023-08** | Sharpe -3.69 (-15.6% BTC decline) | Regime misclassification: RANGE 82% (should use BEAR_DEFENSE) | Lower momentum threshold -0.5→-0.15 | **Worse** (-3.69→-4.20) |
+
+**Details**: `logs/paper_trading/2023-08_root_cause.md`  
+**Lesson**: Slow grinds (persistent downtrend without crashes) are strategy limitation. BEAR_DEFENSE works (68% win rate) but under-used (6.5% vs needed 27.9%). Threshold tuning degraded other periods.  
+**Decision**: Document vulnerability, no fix deployed. Not all market conditions are tradable.
+
+---
+
 ## 评估纪律 (最重要)
 
 - **Train/Test严格分割**: Train=2020-2023, Test=2024-2026. Test是secret benchmark, NEVER用于调参
