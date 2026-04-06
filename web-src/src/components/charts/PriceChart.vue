@@ -13,6 +13,8 @@ import { colors } from "../../theme/dark";
 const props = defineProps({
   candles: { type: Array as PropType<Record<string, unknown>[]>, default: () => [] },
   position: { type: Object as PropType<Record<string, unknown> | null>, default: null },
+  gammaWall: { type: Number, default: 0 },
+  flipStrike: { type: Number, default: 0 },
   height: { type: Number, default: 320 },
 });
 
@@ -21,6 +23,8 @@ let chart: IChartApi | null = null;
 let candleSeries: ISeriesApi<"Candlestick"> | null = null;
 let entryLine: ISeriesApi<"Line"> | null = null;
 let stopLine: ISeriesApi<"Line"> | null = null;
+let gammaWallLine: ISeriesApi<"Line"> | null = null;
+let flipStrikeLine: ISeriesApi<"Line"> | null = null;
 
 onMounted(() => {
   if (!chartContainer.value) return;
@@ -67,6 +71,26 @@ onMounted(() => {
     crosshairMarkerVisible: false,
     priceLineVisible: false,
     lastValueVisible: false,
+  });
+
+  gammaWallLine = chart.addLineSeries({
+    color: "#ff9800",
+    lineWidth: 1,
+    lineStyle: LineStyle.SparseDotted,
+    crosshairMarkerVisible: false,
+    priceLineVisible: false,
+    lastValueVisible: true,
+    title: "Gamma Wall",
+  });
+
+  flipStrikeLine = chart.addLineSeries({
+    color: "#f44336",
+    lineWidth: 1,
+    lineStyle: LineStyle.SparseDotted,
+    crosshairMarkerVisible: false,
+    priceLineVisible: false,
+    lastValueVisible: true,
+    title: "GEX Flip",
   });
 
   const observer = new ResizeObserver((entries) => {
@@ -121,9 +145,33 @@ function updateData() {
       ]);
     }
   }
+
+  // GEX overlay lines
+  if (data.length) {
+    const first = data[0];
+    const last = data[data.length - 1];
+
+    if (props.gammaWall > 0 && gammaWallLine) {
+      gammaWallLine.setData([
+        { time: first.time, value: props.gammaWall },
+        { time: last.time, value: props.gammaWall },
+      ]);
+    } else if (gammaWallLine) {
+      gammaWallLine.setData([]);
+    }
+
+    if (props.flipStrike > 0 && flipStrikeLine) {
+      flipStrikeLine.setData([
+        { time: first.time, value: props.flipStrike },
+        { time: last.time, value: props.flipStrike },
+      ]);
+    } else if (flipStrikeLine) {
+      flipStrikeLine.setData([]);
+    }
+  }
 }
 
-watch(() => [props.candles, props.position], updateData, { deep: true });
+watch(() => [props.candles, props.position, props.gammaWall, props.flipStrike], updateData, { deep: true });
 </script>
 
 <template>

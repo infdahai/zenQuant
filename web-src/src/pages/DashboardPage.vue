@@ -338,7 +338,7 @@ const deribitIvSeries = computed(() => deribitHistory.value.map((item) => Number
     <!-- Charts row -->
     <div class="grid-2">
       <Panel title="Price Curve">
-        <PriceChart :candles="candles" :position="positionState" :height="290" />
+        <PriceChart :candles="candles" :position="positionState" :gamma-wall="Number(ind('gamma_wall_strike') || 0)" :flip-strike="Number(ind('flip_strike') || 0)" :height="290" />
         <div class="grid-2 mt-8" data-testid="price-overlay-legend">
           <MetricCell
             v-if="positionState && Number(positionState.entry_price) > 0"
