@@ -126,7 +126,7 @@ class TestRegistryLoadsRealPlugins(unittest.TestCase):
 
         profile, registry = build_from_profile(PROFILE_PATH, plugin_root=PLUGIN_ROOT)
 
-        self.assertEqual(len(registry.signals), 6)  # 6 active (macro_regime + vol_mr disabled after ablation review)
+        self.assertEqual(len(registry.signals), 7)  # 7 active (macro_regime + vol_mr + cross_asset_flow disabled after IC review)
         self.assertEqual(len(registry.filters), 2)
         self.assertEqual(len(registry.sizers), 4)  # winning_position_sizer disabled
         self.assertEqual(len(registry.exits), 5)

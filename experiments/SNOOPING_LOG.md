@@ -15,6 +15,8 @@
 | 2026-04-04 | Individual macro IC | IWM only SIGNAL | No new signals added | LOW |
 | 2026-04-04 | 1H entry optimization | DD -46% | Kept as entry optimizer | MEDIUM |
 | 2026-04-04 | Basis IC analysis | +0.021 NOISE | No signal, risk guard only | LOW |
+| 2026-04-06 | P1/P3 IC analysis | P1=0.001 P3=0.014 NOISE | P3 disabled, P1 kept (auto-neutral) | MEDIUM — 1 run |
+| 2026-04-06 | P2 funding ablation (3-way) | asym 2.04 vs sym 2.21 vs off 1.41 | Restored symmetric (2.0/-2.0) | MEDIUM — 3 runs |
 
 ## Test Set (2026+ — SECRET BENCHMARK)
 

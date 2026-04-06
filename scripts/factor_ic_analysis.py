@@ -142,6 +142,11 @@ def analyze_factors(
         "ou_kappa",
         "fragility_ratio",
         "funding_oi_raw",
+        # P1: IV Skew velocity
+        "skew_velocity",
+        # P3: ETH→BTC Transfer Entropy
+        "te_eth_to_btc",
+        "eth_momentum",
     ]
 
     results: list[FactorIC] = []
