@@ -2759,6 +2759,7 @@ telegram = [
 
 [package.dev-dependencies]
 dev = [
+    { name = "httpx" },
     { name = "mutmut" },
     { name = "pytest" },
     { name = "ruff" },
@@ -2781,6 +2782,7 @@ provides-extras = ["telegram", "macro", "optimize"]
 
 [package.metadata.requires-dev]
 dev = [
+    { name = "httpx", specifier = ">=0.28.1" },
     { name = "mutmut", specifier = ">=3.5.0" },
     { name = "pytest", specifier = ">=9.0" },
     { name = "ruff", specifier = ">=0.15.8" },

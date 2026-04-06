@@ -80,6 +80,7 @@ quote-style = "double"
 
 [dependency-groups]
 dev = [
+    "httpx>=0.28.1",
     "mutmut>=3.5.0",
     "pytest>=9.0",
     "ruff>=0.15.8",

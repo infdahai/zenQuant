@@ -1,0 +1,166 @@
+"""Unit tests for multi_momentum_signal plugin — primary trend signal (weight=0.45)."""
+
+import unittest
+
+
+class MultiMomentumSignalTests(unittest.TestCase):
+    """Verify multi-horizon momentum with structure confirmation."""
+
+    def _compute(self, indicators, state=None, config=None):
+        from zenquant.plugins.signals import multi_momentum_signal
+
+        state = state or {"regime": "TREND"}
+        config = config or {"momentum_threshold": 0.3, "signal_sign": 1.0, "use_single_fallback": True}
+        return multi_momentum_signal.compute(indicators, state, config)
+
+    # ── Regime filtering ──
+
+    def test_stress_regime_neutral(self) -> None:
+        """STRESS regime → neutral regardless of momentum."""
+        result = self._compute(
+            {"multi_momentum_z": 2.0, "structure_state": "UPTREND"},
+            state={"regime": "STRESS"},
+        )
+        self.assertEqual(result.value, 0.0)
+        self.assertEqual(result.confidence, 0.0)
+
+    def test_range_regime_no_strong_signal(self) -> None:
+        """RANGE regime → falls through to default (TREND gate blocks strong signals)."""
+        result = self._compute(
+            {"multi_momentum_z": 1.0, "structure_state": "UPTREND"},
+            state={"regime": "RANGE"},
+        )
+        self.assertEqual(result.value, 0.0)
+
+    # ── None / missing key handling ──
+
+    def test_none_momentum_with_fallback(self) -> None:
+        """multi_momentum_z=None → falls back to momentum_roc_z."""
+        result = self._compute({
+            "momentum_roc_z": 1.0,
+            "structure_state": "UPTREND",
+        })
+        self.assertGreater(result.value, 0.0)
+
+    def test_none_momentum_no_fallback(self) -> None:
+        """multi_momentum_z=None + use_single_fallback=False → neutral."""
+        result = self._compute(
+            {"momentum_roc_z": 1.0, "structure_state": "UPTREND"},
+            config={"momentum_threshold": 0.3, "signal_sign": 1.0, "use_single_fallback": False},
+        )
+        self.assertEqual(result.value, 0.0)
+
+    def test_both_missing_neutral(self) -> None:
+        """Both momentum keys missing → neutral."""
+        result = self._compute({"structure_state": "UPTREND"})
+        self.assertEqual(result.value, 0.0)
+
+    def test_missing_structure_defaults_neutral(self) -> None:
+        """Missing structure_state defaults to NEUTRAL → won't match UPTREND/DOWNTREND."""
+        result = self._compute({"multi_momentum_z": 1.0})
+        # No structure match → only weak signal if abs > 2*threshold
+        self.assertLessEqual(abs(result.value), 0.6)
+
+    # ── Boundary tests ──
+
+    def test_boundary_at_exact_threshold(self) -> None:
+        """roc_z = 0.3 exactly → should NOT trigger (uses >)."""
+        result = self._compute({
+            "multi_momentum_z": 0.3,
+            "structure_state": "UPTREND",
+        })
+        self.assertEqual(result.value, 0.0)
+
+    def test_boundary_just_above_threshold(self) -> None:
+        """roc_z = 0.301 + UPTREND → bullish."""
+        result = self._compute({
+            "multi_momentum_z": 0.301,
+            "structure_state": "UPTREND",
+        })
+        self.assertGreater(result.value, 0.0)
+        self.assertIn("MULTI_MOM_BULL", result.reason_codes)
+
+    def test_boundary_negative_at_threshold(self) -> None:
+        """roc_z = -0.3 exactly → should NOT trigger."""
+        result = self._compute({
+            "multi_momentum_z": -0.3,
+            "structure_state": "DOWNTREND",
+        })
+        self.assertEqual(result.value, 0.0)
+
+    def test_boundary_negative_just_below(self) -> None:
+        """roc_z = -0.301 + DOWNTREND → bearish."""
+        result = self._compute({
+            "multi_momentum_z": -0.301,
+            "structure_state": "DOWNTREND",
+        })
+        self.assertLess(result.value, 0.0)
+        self.assertIn("MULTI_MOM_BEAR", result.reason_codes)
+
+    # ── Happy path: strong signals ──
+
+    def test_uptrend_bullish(self) -> None:
+        """TREND + UPTREND + roc_z > threshold → strong bullish (value=1.0)."""
+        result = self._compute({
+            "multi_momentum_z": 1.5,
+            "structure_state": "UPTREND",
+        })
+        self.assertEqual(result.value, 1.0)
+        self.assertIn("MULTI_MOM_BULL", result.reason_codes)
+        self.assertIn("STRUCTURE_UPTREND", result.reason_codes)
+
+    def test_downtrend_bearish(self) -> None:
+        """TREND + DOWNTREND + roc_z < -threshold → strong bearish (value=-1.0)."""
+        result = self._compute({
+            "multi_momentum_z": -1.5,
+            "structure_state": "DOWNTREND",
+        })
+        self.assertEqual(result.value, -1.0)
+        self.assertIn("MULTI_MOM_BEAR", result.reason_codes)
+        self.assertIn("STRUCTURE_DOWNTREND", result.reason_codes)
+
+    # ── Weak signal (no structure match) ──
+
+    def test_weak_signal_strong_momentum_no_structure(self) -> None:
+        """abs(roc_z) > 2*threshold but wrong structure → weak signal (0.6)."""
+        result = self._compute({
+            "multi_momentum_z": 1.0,  # > 0.6 = 2*0.3
+            "structure_state": "NEUTRAL",
+        })
+        self.assertAlmostEqual(abs(result.value), 0.6, places=5)
+        self.assertIn("MULTI_MOM_WEAK", result.reason_codes)
+
+    def test_weak_boundary_at_2x_threshold(self) -> None:
+        """abs(roc_z) = 0.6 exactly → should NOT trigger weak (uses >)."""
+        result = self._compute({
+            "multi_momentum_z": 0.6,
+            "structure_state": "NEUTRAL",
+        })
+        self.assertEqual(result.value, 0.0)
+
+    # ── Confidence scaling ──
+
+    def test_confidence_scales_with_magnitude(self) -> None:
+        """Higher momentum → higher confidence."""
+        low = self._compute({"multi_momentum_z": 0.5, "structure_state": "UPTREND"})
+        high = self._compute({"multi_momentum_z": 3.0, "structure_state": "UPTREND"})
+        self.assertGreater(high.confidence, low.confidence)
+
+    def test_confidence_capped_at_1(self) -> None:
+        """Extreme momentum → confidence capped at 1.0."""
+        result = self._compute({"multi_momentum_z": 100.0, "structure_state": "UPTREND"})
+        self.assertLessEqual(result.confidence, 1.0)
+
+    # ── Signal sign config ──
+
+    def test_signal_sign_flips_direction(self) -> None:
+        """signal_sign=-1.0 flips all values."""
+        result = self._compute(
+            {"multi_momentum_z": 1.5, "structure_state": "UPTREND"},
+            config={"momentum_threshold": 0.3, "signal_sign": -1.0, "use_single_fallback": True},
+        )
+        self.assertEqual(result.value, -1.0)  # Flipped from +1.0
+
+
+if __name__ == "__main__":
+    unittest.main()

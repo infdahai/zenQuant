@@ -361,5 +361,90 @@ class VolShockBoundaryTests(unittest.TestCase):
         self.assertNotIn("VOL_SHOCK", decisions[-1].flags)
 
 
+class BasisDiscountBoundaryTests(unittest.TestCase):
+    """Boundary tests for basis discount guard (short-side protection)."""
+
+    def test_basis_discount_short_triggers(self) -> None:
+        """Short position + deep basis discount (-2.5) should trigger."""
+        bus = InMemoryJetStream()
+        overlay = RiskOverlay(bus=bus)
+        decisions = []
+        bus.subscribe("risk.overlay.decision", lambda _, p: decisions.append(p))
+
+        bus.publish("indicator.pack.v1.4h.BTCUSDT_PERP", _make_pack({"basis_z": -2.5}))
+        bus.publish("intent.target_position.arc.BTCUSDT_PERP", _make_target(qty=-1.0))
+
+        self.assertIn("BASIS_DISCOUNT_EXTREME", decisions[-1].flags)
+
+    def test_basis_discount_long_no_trigger(self) -> None:
+        """Long position + deep basis discount should NOT trigger (direction-gated)."""
+        bus = InMemoryJetStream()
+        overlay = RiskOverlay(bus=bus)
+        decisions = []
+        bus.subscribe("risk.overlay.decision", lambda _, p: decisions.append(p))
+
+        bus.publish("indicator.pack.v1.4h.BTCUSDT_PERP", _make_pack({"basis_z": -2.5}))
+        bus.publish("intent.target_position.arc.BTCUSDT_PERP", _make_target(qty=1.0))
+
+        self.assertNotIn("BASIS_DISCOUNT_EXTREME", decisions[-1].flags)
+
+    def test_basis_discount_at_exact_threshold_triggers(self) -> None:
+        """basis_z at exact -2.0 should trigger (logic uses <, -2.0 < -2.0 is False)."""
+        bus = InMemoryJetStream()
+        overlay = RiskOverlay(bus=bus)
+        decisions = []
+        bus.subscribe("risk.overlay.decision", lambda _, p: decisions.append(p))
+
+        bus.publish("indicator.pack.v1.4h.BTCUSDT_PERP", _make_pack({"basis_z": -2.0}))
+        bus.publish("intent.target_position.arc.BTCUSDT_PERP", _make_target(qty=-1.0))
+
+        # -2.0 < -2.0 is False, so should NOT trigger
+        self.assertNotIn("BASIS_DISCOUNT_EXTREME", decisions[-1].flags)
+
+    def test_basis_discount_just_below_threshold_triggers(self) -> None:
+        """basis_z just below -2.0 should trigger."""
+        bus = InMemoryJetStream()
+        overlay = RiskOverlay(bus=bus)
+        decisions = []
+        bus.subscribe("risk.overlay.decision", lambda _, p: decisions.append(p))
+
+        bus.publish("indicator.pack.v1.4h.BTCUSDT_PERP", _make_pack({"basis_z": -2.001}))
+        bus.publish("intent.target_position.arc.BTCUSDT_PERP", _make_target(qty=-1.0))
+
+        self.assertIn("BASIS_DISCOUNT_EXTREME", decisions[-1].flags)
+
+    def test_basis_discount_just_above_threshold_no_trigger(self) -> None:
+        """basis_z just above -2.0 (-1.99) should NOT trigger."""
+        bus = InMemoryJetStream()
+        overlay = RiskOverlay(bus=bus)
+        decisions = []
+        bus.subscribe("risk.overlay.decision", lambda _, p: decisions.append(p))
+
+        bus.publish("indicator.pack.v1.4h.BTCUSDT_PERP", _make_pack({"basis_z": -1.99}))
+        bus.publish("intent.target_position.arc.BTCUSDT_PERP", _make_target(qty=-1.0))
+
+        self.assertNotIn("BASIS_DISCOUNT_EXTREME", decisions[-1].flags)
+
+    def test_basis_premium_and_discount_independent(self) -> None:
+        """Premium guard fires on longs, discount guard fires on shorts — never both."""
+        bus = InMemoryJetStream()
+        overlay = RiskOverlay(bus=bus)
+        decisions = []
+        bus.subscribe("risk.overlay.decision", lambda _, p: decisions.append(p))
+
+        # Long + positive basis → premium fires, discount does not
+        bus.publish("indicator.pack.v1.4h.BTCUSDT_PERP", _make_pack({"basis_z": 2.5}))
+        bus.publish("intent.target_position.arc.BTCUSDT_PERP", _make_target(qty=1.0))
+        self.assertIn("BASIS_PREMIUM_EXTREME", decisions[-1].flags)
+        self.assertNotIn("BASIS_DISCOUNT_EXTREME", decisions[-1].flags)
+
+        # Short + negative basis → discount fires, premium does not
+        decisions.clear()
+        bus.publish("indicator.pack.v1.4h.BTCUSDT_PERP", _make_pack({"basis_z": -2.5}))
+        bus.publish("intent.target_position.arc.BTCUSDT_PERP", _make_target(qty=-1.0))
+        self.assertNotIn("BASIS_PREMIUM_EXTREME", decisions[-1].flags)
+        self.assertIn("BASIS_DISCOUNT_EXTREME", decisions[-1].flags)
+
+
 if __name__ == "__main__":
     unittest.main()

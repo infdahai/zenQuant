@@ -396,5 +396,65 @@ class OptionsVolSignalBoundaryTests(unittest.TestCase):
         self.assertEqual(result.confidence, 0.0)
 
 
+class SkewVelocityTests(unittest.TestCase):
+    """Verify P1: IV Skew Velocity (dSkew/dt) signal behavior.
+
+    Skew velocity is checked when IV is in mid-range (not low/high/extreme).
+    To reach this path: set atm_iv_z in [-0.5, 1.5] range, non-zero.
+    """
+
+    _MID_RANGE_CONFIG: dict[str, float] = {  # noqa: RUF012
+        "low_iv_threshold": -0.5,
+        "high_iv_threshold": 1.5,
+        "extreme_iv_threshold": 2.5,
+        "inverted_skew_threshold": -1.0,
+    }
+
+    def _compute(self, indicators):
+        from zenquant.plugins.signals import options_vol_signal
+
+        state = {"regime": "TREND"}
+        return options_vol_signal.compute(indicators, state, self._MID_RANGE_CONFIG)
+
+    def test_rapid_steepening_bearish(self) -> None:
+        """skew_vel > 0.5 → bearish (puts getting expensive fast)."""
+        result = self._compute({"atm_iv_z": 0.5, "skew_z": 0.0, "skew_velocity": 1.0})
+        self.assertLess(result.value, 0.0)
+        self.assertIn("OPTIONS_SKEW_STEEPENING", result.reason_codes)
+
+    def test_rapid_flattening_bullish(self) -> None:
+        """skew_vel < -0.5 → mildly bullish (fear subsiding)."""
+        result = self._compute({"atm_iv_z": 0.5, "skew_z": 0.0, "skew_velocity": -1.0})
+        self.assertGreater(result.value, 0.0)
+        self.assertIn("OPTIONS_SKEW_FLATTENING", result.reason_codes)
+
+    def test_velocity_within_threshold_neutral(self) -> None:
+        """skew_vel = 0.3 (within ±0.5) → no skew signal, falls to mid-range neutral."""
+        result = self._compute({"atm_iv_z": 0.5, "skew_z": 0.0, "skew_velocity": 0.3})
+        self.assertEqual(result.value, 0.0)
+
+    def test_velocity_at_exact_threshold(self) -> None:
+        """skew_vel = 0.5 exactly → should NOT trigger (uses >)."""
+        result = self._compute({"atm_iv_z": 0.5, "skew_z": 0.0, "skew_velocity": 0.5})
+        self.assertEqual(result.value, 0.0)
+
+    def test_steepening_magnitude_capped(self) -> None:
+        """Extreme steepening → magnitude capped at -0.6."""
+        result = self._compute({"atm_iv_z": 0.5, "skew_z": 0.0, "skew_velocity": 100.0})
+        self.assertGreaterEqual(result.value, -0.6)
+
+    def test_flattening_magnitude_capped(self) -> None:
+        """Extreme flattening → magnitude capped at +0.4."""
+        result = self._compute({"atm_iv_z": 0.5, "skew_z": 0.0, "skew_velocity": -100.0})
+        self.assertLessEqual(result.value, 0.4)
+
+    def test_steepening_asymmetry(self) -> None:
+        """Bearish skew (steepening) cap -0.6 > bullish cap +0.4 — asymmetric by design."""
+        steep = self._compute({"atm_iv_z": 0.5, "skew_z": 0.0, "skew_velocity": 50.0})
+        flat = self._compute({"atm_iv_z": 0.5, "skew_z": 0.0, "skew_velocity": -50.0})
+        self.assertGreater(abs(steep.value), abs(flat.value),
+                           "Steepening (bearish) should be stronger than flattening (bullish)")
+
+
 if __name__ == "__main__":
     unittest.main()
