@@ -24,15 +24,18 @@ class ExecutionKernelConfig:
     min_trade_qty: float = 0.0001
     max_trade_qty_per_bar: float = 1.0
     max_slippage_bps: float = 8.0
-    # Pyramid execution (PaulWei pattern):
-    # New position: only fill pyramid_initial_pct of target
-    # Profitable position: add pyramid_add_pct more
-    # Losing position: don't add (wait for time_decay exit)
-    pyramid_initial_pct: float = 0.3  # 30% on first entry (long)
-    pyramid_add_pct: float = 0.3  # 30% per profitable bar (long)
-    pyramid_short_initial_pct: float = 0.2  # 20% on first short entry (more conservative)
-    pyramid_short_add_pct: float = 0.2  # 20% per profitable bar (short)
+    # PaulWei DCA Grid execution (learned from Hyperliquid era):
+    # - Small initial entry (10%), many small adds (5%)
+    # - Longs: add on BOTH profitable AND losing bars (conviction DCA)
+    # - Shorts: only add on profitable bars (strict)
+    pyramid_initial_pct: float = 0.30  # 30% on first entry
+    pyramid_add_pct: float = 0.30  # 30% per bar
+    pyramid_short_initial_pct: float = 0.20  # 20% on first short entry
+    pyramid_short_add_pct: float = 0.20  # 20% per profitable bar (short)
     pyramid_enabled: bool = True
+    # PaulWei DCA: allow adding to losing long positions (conviction)
+    # "越跌越买" — only for longs, shorts still require profitability
+    dca_on_loss_long: bool = True
     # Legacy gradual execution (kept for compatibility)
     entry_fraction: float = 1.0
     exit_fraction: float = 1.0
@@ -139,7 +142,7 @@ class ExecutionKernel:
                 trade_qty = abs(payload.target_qty) * init_pct
                 self._pyramid_filled_pct[symbol] = init_pct
             elif is_profitable:
-                # Profitable: add another slice (PaulWei: scale in on winners)
+                # Profitable: add another slice
                 filled = self._pyramid_filled_pct.get(symbol, 1.0)
                 if filled < 1.0:
                     actual_add = min(add_pct, 1.0 - filled)
@@ -147,8 +150,18 @@ class ExecutionKernel:
                     self._pyramid_filled_pct[symbol] = filled + actual_add
                 else:
                     trade_qty = 0  # Fully positioned
+            elif not is_short and self._config.dca_on_loss_long:
+                # PaulWei DCA: 做多亏损时也加仓 (conviction — 越跌越买)
+                # But at reduced size (half of normal add)
+                filled = self._pyramid_filled_pct.get(symbol, 1.0)
+                if filled < 1.0:
+                    dca_add = min(add_pct * 0.5, 1.0 - filled)
+                    trade_qty = abs(payload.target_qty) * dca_add
+                    self._pyramid_filled_pct[symbol] = filled + dca_add
+                else:
+                    trade_qty = 0
             else:
-                # Losing: don't add (PaulWei: cut losers, don't average down)
+                # Short losing: don't add (shorts are strict)
                 trade_qty = 0
 
             if trade_qty < self._config.min_trade_qty:
