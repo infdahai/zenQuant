@@ -87,6 +87,14 @@ const candles = computed(() => ((snapshot.value.candles as Record<string, unknow
 const priceSeries = computed(() => ((snapshot.value.price_series as Record<string, unknown>[]) || []).slice(-300));
 const equityCurve = computed(() => ((snapshot.value.equity_curve as Record<string, unknown>[]) || []).map((item) => Number((item as Record<string, unknown>).equity)));
 const pnlSummary = computed(() => (snapshot.value.pnl_summary as Record<string, unknown>) || null);
+
+// Helper to access indicator values by key
+function ind(key: string): unknown {
+  const iv = indicator.value as Record<string, unknown> | null;
+  if (!iv) return null;
+  const values = iv.values as Record<string, unknown> | undefined;
+  return values?.[key] ?? null;
+}
 const alerts = computed(() => ((snapshot.value.alerts as Record<string, unknown>[]) || []).slice(0, 6));
 const proxyLatest = computed(() => (snapshot.value.proxy_indicator_latest as Record<string, unknown>) || {});
 const proxyHistory = computed(() => (snapshot.value.proxy_indicator_history as Record<string, Record<string, unknown>[]>) || {});
@@ -380,6 +388,64 @@ const deribitIvSeries = computed(() => deribitHistory.value.map((item) => Number
         </div>
       </Panel>
     </div>
+
+    <!-- Risk Guards & Alpha -->
+    <Panel title="Risk Guards & Alpha">
+      <div class="grid-decision-sm">
+        <MetricCell
+          label="GEX Regime"
+          :value="String(ind('gex_regime') || 'N/A')"
+          :detail="ind('gex_net') ? 'Net: ' + formatNumber(Number(ind('gex_net')), 0) : 'No options data'"
+          :tone="ind('gex_regime') === 'PINNING' ? 'ok' : ind('gex_regime') === 'AMPLIFYING' ? 'danger' : ''"
+        />
+        <MetricCell
+          label="VPIN"
+          :value="ind('vpin') ? formatNumber(Number(ind('vpin')), 3) : '-'"
+          :detail="Number(ind('vpin')) > 0.10 ? 'TOXIC FLOW' : 'Normal'"
+          :tone="Number(ind('vpin')) > 0.10 ? 'danger' : Number(ind('vpin')) > 0.05 ? 'warning' : 'ok'"
+        />
+        <MetricCell
+          label="Basis"
+          :value="ind('basis_pct') ? formatSignedPercent(Number(ind('basis_pct'))) : '-'"
+          :detail="ind('basis_z') ? 'z=' + formatNumber(Number(ind('basis_z')), 1) : ''"
+          :tone="Math.abs(Number(ind('basis_z'))) > 2.0 ? 'warning' : 'ok'"
+        />
+        <MetricCell
+          label="COT Institutional"
+          :value="ind('cot_asset_mgr_z') ? formatNumber(Number(ind('cot_asset_mgr_z')), 1) + 'z' : '-'"
+          :detail="ind('cot_leveraged_z') ? 'Leveraged: ' + formatNumber(Number(ind('cot_leveraged_z')), 1) + 'z' : ''"
+          :tone="Math.abs(Number(ind('cot_leveraged_z'))) > 2.5 ? 'danger' : 'ok'"
+        />
+        <MetricCell
+          label="Gamma Wall"
+          :value="ind('gamma_wall_strike') ? '$' + formatNumber(Number(ind('gamma_wall_strike')), 0) : '-'"
+          :detail="ind('gex_regime') === 'PINNING' ? 'Price magnet' : ''"
+        />
+        <MetricCell
+          label="Cycle (200MA)"
+          :value="ind('cycle_position') ? formatNumber(Number(ind('cycle_position')), 2) : '-'"
+          :detail="Number(ind('cycle_position')) > 1.3 ? 'Overheated' : Number(ind('cycle_position')) < 0.8 ? 'Deep value' : 'Normal'"
+          :tone="Number(ind('cycle_position')) > 1.3 ? 'warning' : 'ok'"
+        />
+        <MetricCell
+          label="Vol Ratio"
+          :value="ind('vol_ratio_rv') ? formatNumber(Number(ind('vol_ratio_rv')), 2) : '-'"
+          :detail="Number(ind('vol_ratio_rv')) > 1.5 ? 'Vol spike' : 'Normal'"
+          :tone="Number(ind('vol_ratio_rv')) > 1.5 ? 'danger' : 'ok'"
+        />
+        <MetricCell
+          label="RV (5min)"
+          :value="ind('rv_hf') ? formatNumber(Number(ind('rv_hf')), 2) : '-'"
+          detail="Annualized 5min vol"
+        />
+        <MetricCell
+          label="Skew Velocity"
+          :value="ind('skew_velocity') ? formatNumber(Number(ind('skew_velocity')), 2) + '/h' : '-'"
+          :detail="Number(ind('skew_velocity')) > 0.5 ? 'Puts cheapening' : Number(ind('skew_velocity')) < -0.5 ? 'Puts expensive' : 'Stable'"
+          :tone="Number(ind('skew_velocity')) < -0.5 ? 'danger' : 'ok'"
+        />
+      </div>
+    </Panel>
 
     <!-- 4D State -->
     <Panel title="4D State">
