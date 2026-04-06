@@ -165,6 +165,10 @@ class ZenQuantWebRuntime:
         if self._runtime_mode != "live":
             self._initialize_trading_chain()
 
+        self._subscribe_all()
+
+    def _subscribe_all(self) -> None:
+        """Subscribe to all event bus topics for dashboard state updates."""
         self.bus.subscribe("md.candle.>", self._on_candle)
         self.bus.subscribe("md.mark.>", self._on_mark_price)
         self.bus.subscribe("indicator.>", self._on_indicator)
@@ -606,7 +610,7 @@ class ZenQuantWebRuntime:
             self._schedule_state_broadcast()
 
 
-def create_app(runtime_mode: str = "demo") -> FastAPI:
+def create_app(runtime_mode: str = "demo", bus: Any = None) -> FastAPI:
     """Create the FastAPI application used by ``zenquant-web``.
 
     Example:
@@ -619,6 +623,10 @@ def create_app(runtime_mode: str = "demo") -> FastAPI:
         ) from _FASTAPI_IMPORT_ERROR
 
     runtime = ZenQuantWebRuntime(runtime_mode=runtime_mode)
+    # Allow external bus injection (e.g., from paper trading)
+    if bus is not None:
+        runtime.bus = bus
+        runtime._subscribe_all()  # Re-subscribe with the injected bus
 
     @asynccontextmanager
     async def lifespan(_: FastAPI):

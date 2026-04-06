@@ -169,6 +169,24 @@ async def run_paper_trading(symbol: str = "BTCUSDT", duration_hours: float = 24.
         print("Deribit options collector: disabled (import error)")
 
 
+    # Start embedded dashboard server (shares bus with paper trading)
+    dashboard_task = None
+    try:
+        from zenquant.app.server import create_app
+        import uvicorn
+
+        app = create_app(bus=bus)
+
+        async def _run_dashboard():
+            config = uvicorn.Config(app, host="0.0.0.0", port=8000, log_level="warning")
+            server = uvicorn.Server(config)
+            await server.serve()
+
+        dashboard_task = asyncio.ensure_future(_run_dashboard())
+        print("Dashboard: http://localhost:8000/static/ (embedded)")
+    except Exception as e:
+        print(f"Dashboard: disabled ({e})")
+
     print("Connecting to Binance WebSocket...")
     print(f"Logging decisions to: {log_file}")
     print("Press Ctrl+C to stop")
