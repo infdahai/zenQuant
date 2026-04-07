@@ -1,29 +1,27 @@
 {
   "metrics": {
-    "sharpe": 5.4174,
-    "net_pnl": 1734808.13,
+    "sharpe": 6.104,
+    "net_pnl": 6982012.52,
     "max_drawdown": 0.003643,
-    "profit_factor": 3.945599,
-    "trade_count": 310
+    "profit_factor": 4.88722,
+    "trade_count": 341
   },
   "equity": {
-    "final": 1834808.1325648916
+    "final": 7082012.515578098
   },
   "counts": {
     "indicator_packs": 630,
     "targets": 540,
-    "reports": 310
+    "reports": 341
   },
   "diagnostics": {
     "playbook_counts": {
-      "RANGE_LIGHT": 468,
+      "RANGE_LIGHT": 484,
       "BEAR_DEFENSE": 8,
-      "BULL_CONTINUATION": 133,
-      "CAPITAL_PRESERVATION": 21
+      "BULL_CONTINUATION": 138
     },
     "actionable_exit_counts": {
-      "REGIME_CHANGE": 18,
-      "TRAILING": 2
+      "TRAILING": 3
     }
   }
 }
