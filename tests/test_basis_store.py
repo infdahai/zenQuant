@@ -7,7 +7,6 @@ from pathlib import Path
 import pyarrow as pa
 import pyarrow.parquet as pq
 
-
 HOUR_NS = 3600 * 1_000_000_000
 
 
