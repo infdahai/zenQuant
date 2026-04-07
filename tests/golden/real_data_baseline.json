@@ -1,0 +1,16 @@
+{
+  "description": "Real data baseline (2020-2025) \u2014 updated only via scripts/update_golden.py",
+  "updated_at": "2026-04-07",
+  "reason": "4 new execution features: flip_immediate, adaptive_pyramid, gradual_exit, DCA distance gating. Sharpe 1.75\u21922.29, DD 9.9\u219212.5%",
+  "metrics": {
+    "sharpe": 2.2934,
+    "max_drawdown": 0.1253,
+    "profit_factor": 1.2181,
+    "trade_count": 4809
+  },
+  "tolerances": {
+    "sharpe_max_decrease_pct": 30,
+    "dd_max_increase_pct": 50,
+    "comment": "If Sharpe drops >30% or DD increases >50%, the change is too large for auto-merge"
+  }
+}

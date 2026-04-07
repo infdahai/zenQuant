@@ -123,6 +123,27 @@ class PlaybookEngineTests(unittest.TestCase):
         self.assertEqual(playbook.playbook_id, "RANGE_LIGHT")
         self.assertEqual(playbook.time_decay_bars, 5)
 
+    def test_bearish_transition_override_prefers_bear_defense(self) -> None:
+        playbook = PlaybookEngine().select(
+            _state(
+                directional_state="TRANSITION",
+                directional_confidence=0.56,
+                transition_risk=0.3,
+            )
+        )
+        self.assertEqual(playbook.playbook_id, "RANGE_LIGHT")
+
+        bearish_transition = _state(
+            directional_state="TRANSITION",
+            directional_confidence=0.56,
+            transition_risk=0.3,
+        )
+        bearish_transition.direction_signal = -0.7
+
+        playbook = PlaybookEngine().select(bearish_transition)
+        self.assertEqual(playbook.playbook_id, "BEAR_DEFENSE")
+        self.assertIn(-1.0, playbook.allowed_directions)
+
 
 if __name__ == "__main__":
     unittest.main()
