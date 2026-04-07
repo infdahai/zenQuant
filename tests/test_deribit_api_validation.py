@@ -11,6 +11,15 @@ def _network_tests_enabled() -> bool:
     return os.getenv("ZENQUANT_RUN_DERIBIT_NETWORK_TESTS", "").strip().lower() in {"1", "true", "yes"}
 
 
+async def _poll_once_or_skip(ingestor: DeribitOptionsIngestor):
+    try:
+        return await ingestor.poll_once()
+    except RuntimeError as exc:
+        if "Deribit request failed" in str(exc):
+            raise unittest.SkipTest(f"Live Deribit endpoint unavailable: {exc}") from exc
+        raise
+
+
 def _summary(instrument_name: str, mark_iv: float, open_interest: float, volume_usd: float) -> dict[str, object]:
     return {
         "instrument_name": instrument_name,
@@ -141,7 +150,7 @@ class DeribitAPIValidationTests(unittest.IsolatedAsyncioTestCase):
         published = []
         bus.subscribe("risk.deribit.>", lambda _subject, payload: published.append(payload))
 
-        pack = await ingestor.poll_once()
+        pack = await _poll_once_or_skip(ingestor)
 
         self.assertIsNotNone(pack, "Deribit API returned no pack")
         assert pack is not None
@@ -159,8 +168,8 @@ class DeribitAPIValidationTests(unittest.IsolatedAsyncioTestCase):
         bus = InMemoryJetStream()
         ingestor = DeribitOptionsIngestor(bus=bus)
 
-        first = await ingestor.poll_once()
-        second = await ingestor.poll_once()
+        first = await _poll_once_or_skip(ingestor)
+        second = await _poll_once_or_skip(ingestor)
 
         self.assertIsNotNone(first)
         self.assertIsNotNone(second)
@@ -173,7 +182,7 @@ class DeribitAPIValidationTests(unittest.IsolatedAsyncioTestCase):
         bus = InMemoryJetStream()
         ingestor = DeribitOptionsIngestor(bus=bus)
 
-        pack = await ingestor.poll_once()
+        pack = await _poll_once_or_skip(ingestor)
 
         self.assertIsNotNone(pack)
         assert pack is not None
