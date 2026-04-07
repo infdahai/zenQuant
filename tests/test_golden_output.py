@@ -57,7 +57,18 @@ class TestGoldenOutput(unittest.TestCase):
                 _open_interest_rows(),
             )
 
-            result = HistoricalBacktest(HistoricalBacktestConfig(root_dir=root, symbol="BTCUSDT")).run()
+            # Keep Gate C hermetic: synthetic fixtures must not be affected by
+            # optional repo-local datasets that may exist on one machine but not another.
+            result = HistoricalBacktest(
+                HistoricalBacktestConfig(
+                    root_dir=root,
+                    symbol="BTCUSDT",
+                    macro_dir=root / "macro",
+                    options_dir=root / "deribit_options",
+                    cot_path=root / "cftc" / "cot_btc.parquet",
+                    liquidation_dir=root / "liquidations" / "aggregated",
+                )
+            ).run()
 
         gm = golden["metrics"]
         self.assertAlmostEqual(
