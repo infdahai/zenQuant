@@ -58,7 +58,7 @@ def analyze_stability(results: list[dict]) -> None:
     sharpe_std = np.std(sharpes)
     sharpe_cv = sharpe_std / sharpe_mean if sharpe_mean > 0 else float("inf")
 
-    print(f"Sharpe Ratio Stability:")
+    print("Sharpe Ratio Stability:")
     print(f"  Mean:  {sharpe_mean:.2f}")
     print(f"  Std:   {sharpe_std:.2f}")
     print(f"  CV:    {sharpe_cv:.2f}")
@@ -83,7 +83,7 @@ def analyze_stability(results: list[dict]) -> None:
                 all_params[param] = []
             all_params[param].append(value)
 
-    print(f"Parameter Stability:")
+    print("Parameter Stability:")
     print(f"  {'Parameter':<20} {'Mean':>8} {'Std':>8} {'CV':>8} Status")
     print(f"  {'-' * 60}")
 
@@ -162,7 +162,7 @@ def main() -> None:
     print(f"Runs: {args.runs}")
     print(f"Episodes per run: {args.episodes}")
     print()
-    print("Note: This will take ~{} minutes".format(args.runs * args.episodes * 0.2))
+    print(f"Note: This will take ~{args.runs * args.episodes * 0.2} minutes")
     print("=" * 70)
 
     results = []

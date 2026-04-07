@@ -129,7 +129,7 @@ class LiquidationStoreTests(unittest.TestCase):
             records = []
             for i in range(20):
                 long_var = 80_000 + (i % 5) * 10_000  # 80k-120k variation
-                short_var = 40_000 + (i % 3) * 5_000   # 40k-50k variation
+                short_var = 40_000 + (i % 3) * 5_000  # 40k-50k variation
                 records.append(_make_bucket((i + 1) * 4 * HOUR_NS, long_usd=long_var, short_usd=short_var))
             # Extreme liquidation event
             records.append(_make_bucket(21 * 4 * HOUR_NS, long_usd=5_000_000, short_usd=2_000_000))

@@ -17,8 +17,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-import numpy as np
 import pandas as pd
+
 from zenquant.historical import HistoricalBacktest, HistoricalBacktestConfig
 from zenquant.risk import RiskOverlayConfig
 
@@ -62,9 +62,9 @@ def analyze_signal_correlation(signals: list[str] | None = None) -> None:
     # Default signals to analyze (positioning + flow signals)
     if signals is None:
         signals = [
-            "funding_oi_z",      # funding_alpha_signal (positioning)
-            "ob_liq_z",          # liquidity_signal (order book)
-            "cvd_slope",         # cvd_signal (order flow)
+            "funding_oi_z",  # funding_alpha_signal (positioning)
+            "ob_liq_z",  # liquidity_signal (order book)
+            "cvd_slope",  # cvd_signal (order flow)
             # crowding signal not in analysis_rows directly (need to check)
         ]
 
@@ -124,7 +124,7 @@ def analyze_signal_correlation(signals: list[str] | None = None) -> None:
     print("Signal Statistics")
     print("-" * 70)
     stats = signal_df.describe().T
-    print(stats[['mean', 'std', 'min', 'max']].to_string())
+    print(stats[["mean", "std", "min", "max"]].to_string())
     print()
 
     # Interpretation

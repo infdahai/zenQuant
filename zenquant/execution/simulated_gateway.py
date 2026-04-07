@@ -47,9 +47,8 @@ class SimulatedGateway(ExecutionGateway):
 
         # Limit order: check if price is reachable
         if order.order_type == "LIMIT" and order.limit_price is not None:
-            fillable = (
-                (order.side > 0 and mark_price <= order.limit_price)
-                or (order.side < 0 and mark_price >= order.limit_price)
+            fillable = (order.side > 0 and mark_price <= order.limit_price) or (
+                order.side < 0 and mark_price >= order.limit_price
             )
             if not fillable:
                 return ExecutionReport(

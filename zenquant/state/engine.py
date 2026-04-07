@@ -20,7 +20,18 @@ class _IndicatorValues:
     vix_z: float
     dxy_z: float
     yield_10y_z: float
+    liq_intensity_z: float = 0.0
+    liq_imbalance: float = 0.0
+    liq_max_single_share: float = 0.0
+    liq_stale: bool = False
     cycle_position: float = 1.0  # price/MA200: <0.8 bear, >1.3 overheated
+
+
+@dataclass(slots=True, frozen=True)
+class StateEngineConfig:
+    """Feature flags for deterministic state classification research."""
+
+    enable_liquidation_overlay: bool = True
 
 
 class StateEngine:
@@ -30,8 +41,9 @@ class StateEngine:
     risk to warn when state is about to change.
     """
 
-    def __init__(self, bus: EventBus) -> None:
+    def __init__(self, bus: EventBus, config: StateEngineConfig | None = None) -> None:
         self._bus = bus
+        self._config = config or StateEngineConfig()
         self._last_regime: dict[tuple[str, Timeframe], str] = {}
         self._last_directional: dict[tuple[str, Timeframe], str] = {}
         # Track structure_state history for directional consistency
@@ -60,6 +72,12 @@ class StateEngine:
         directional_state, directional_confidence, direction_signal = _classify_directional_state(
             structure_state=vals.structure_state,
             momentum_roc_z=vals.momentum_roc_z,
+            cvd_slope=vals.cvd_slope,
+            zen_pulse=vals.zen_pulse,
+            liq_intensity_z=vals.liq_intensity_z if self._config.enable_liquidation_overlay else 0.0,
+            liq_imbalance=vals.liq_imbalance if self._config.enable_liquidation_overlay else 0.0,
+            liq_stale=vals.liq_stale if self._config.enable_liquidation_overlay else True,
+            cycle_position=vals.cycle_position,
             last_directional=last_directional,
         )
         volatility_state, volatility_confidence = _classify_volatility_state(
@@ -86,6 +104,9 @@ class StateEngine:
             realized_vol=vals.realized_vol,
             cvd_slope=vals.cvd_slope,
             zen_pulse=vals.zen_pulse,
+            liq_intensity_z=vals.liq_intensity_z if self._config.enable_liquidation_overlay else 0.0,
+            liq_imbalance=vals.liq_imbalance if self._config.enable_liquidation_overlay else 0.0,
+            liq_stale=vals.liq_stale if self._config.enable_liquidation_overlay else True,
             yield_10y_z=vals.yield_10y_z,
             cycle_position=vals.cycle_position,
             directional_consistency=directional_consistency,
@@ -101,6 +122,19 @@ class StateEngine:
             quality_confidence,
         )
         transition_risk = max(0.0, 1.0 - min_confidence)
+        reason_codes = [
+            f"DIRECTION_{directional_state}",
+            f"VOL_{volatility_state}",
+            f"POSITIONING_{positioning_state}",
+            f"QUALITY_{quality_state}",
+            f"REGIME_{regime}",
+        ]
+        if self._config.enable_liquidation_overlay and not vals.liq_stale and vals.liq_intensity_z >= 2.2:
+            reason_codes.append("LIQUIDATION_CASCADE")
+        if self._config.enable_liquidation_overlay and not vals.liq_stale and vals.liq_imbalance >= 0.2:
+            reason_codes.append("LIQ_LONGS_FLUSHED")
+        if self._config.enable_liquidation_overlay and not vals.liq_stale and vals.liq_imbalance <= -0.2:
+            reason_codes.append("LIQ_SHORTS_FLUSHED")
 
         return MarketState(
             symbol=pack.symbol,
@@ -119,13 +153,7 @@ class StateEngine:
             direction_signal=direction_signal,
             transition_risk=round(transition_risk, 4),
             quality_flags=list(pack.quality_flags),
-            reason_codes=[
-                f"DIRECTION_{directional_state}",
-                f"VOL_{volatility_state}",
-                f"POSITIONING_{positioning_state}",
-                f"QUALITY_{quality_state}",
-                f"REGIME_{regime}",
-            ],
+            reason_codes=reason_codes,
         )
 
 
@@ -140,6 +168,10 @@ def _extract_values(values: dict[str, Any]) -> _IndicatorValues:
         vix_z=float(values.get("vix_z", 0.0) or 0.0),
         dxy_z=float(values.get("dxy_z", 0.0) or 0.0),
         yield_10y_z=float(values.get("yield_10y_z", 0.0) or 0.0),
+        liq_intensity_z=float(values.get("liq_intensity_z", 0.0) or 0.0),
+        liq_imbalance=float(values.get("liq_imbalance", 0.0) or 0.0),
+        liq_max_single_share=float(values.get("liq_max_single_share", 0.0) or 0.0),
+        liq_stale=bool(values.get("liq_stale", False)),
         cycle_position=float(values.get("cycle_position", 1.0) or 1.0),
     )
 
@@ -148,6 +180,12 @@ def _classify_directional_state(
     *,
     structure_state: str,
     momentum_roc_z: float,
+    cvd_slope: float,
+    zen_pulse: float,
+    liq_intensity_z: float,
+    liq_imbalance: float,
+    liq_stale: bool,
+    cycle_position: float,
     last_directional: str,
 ) -> tuple[str, float, float]:
     """Classify directional state with hysteresis to avoid rapid flipping.
@@ -160,21 +198,42 @@ def _classify_directional_state(
     Returns:
         (directional_state, confidence, direction_signal)
     """
+    bearish_grind = momentum_roc_z <= -0.18 and cvd_slope <= -0.025 and zen_pulse <= 49.0 and cycle_position <= 1.15
+    bearish_transition = (
+        momentum_roc_z <= -0.10 and cvd_slope <= -0.015 and zen_pulse <= 50.0 and cycle_position <= 1.20
+    )
+    liquidation_bearish = not liq_stale and liq_intensity_z >= 2.2 and liq_imbalance >= 0.20
+
     # Strong trend signals (high threshold for entry)
     if structure_state == "UPTREND" and momentum_roc_z > 0.5:
         return "UPTREND", min(1.0, 0.55 + min(0.35, momentum_roc_z / 4.0)), 1.0
     if structure_state == "DOWNTREND" and momentum_roc_z < -0.5:
         return "DOWNTREND", min(1.0, 0.55 + min(0.35, abs(momentum_roc_z) / 4.0)), -1.0
+    if structure_state == "DOWNTREND" and bearish_grind:
+        confidence = min(1.0, 0.58 + min(0.18, abs(momentum_roc_z) / 5.0))
+        if liquidation_bearish:
+            confidence = min(1.0, confidence + 0.12)
+        return "DOWNTREND", confidence, -0.9
+    if liquidation_bearish and bearish_transition:
+        confidence = min(1.0, 0.60 + min(0.15, liq_intensity_z / 10.0))
+        return "DOWNTREND", confidence, -0.9
 
     # Hysteresis: stay in trend with lower threshold
     if last_directional == "UPTREND" and structure_state == "UPTREND" and momentum_roc_z > 0.2:
         return "UPTREND", 0.5, 1.0  # lower confidence but stay in trend
     if last_directional == "DOWNTREND" and structure_state == "DOWNTREND" and momentum_roc_z < -0.2:
         return "DOWNTREND", 0.5, -1.0
+    if last_directional == "DOWNTREND" and structure_state in {"DOWNTREND", "NEUTRAL"} and bearish_transition:
+        return "DOWNTREND", 0.60 if liquidation_bearish else 0.52, -0.8
 
     # Clear neutral state
     if structure_state == "NEUTRAL" and abs(momentum_roc_z) < 0.3:
+        if bearish_transition:
+            return "TRANSITION", 0.64 if liquidation_bearish else 0.56, -0.70 if liquidation_bearish else -0.65
         return "NEUTRAL", 0.75, 0.0
+
+    if bearish_transition:
+        return "TRANSITION", 0.60 if liquidation_bearish else 0.52, -0.70 if liquidation_bearish else -0.55
 
     # Transition state (conflicting signals or weak trend)
     return "TRANSITION", 0.45, 0.0
@@ -228,6 +287,9 @@ def _classify_regime(
     realized_vol: float,
     cvd_slope: float,
     zen_pulse: float,
+    liq_intensity_z: float,
+    liq_imbalance: float,
+    liq_stale: bool,
     yield_10y_z: float = 0.0,
     cycle_position: float = 1.0,
     directional_consistency: float = 1.0,
@@ -235,6 +297,8 @@ def _classify_regime(
     degraded = any(flag in {"BOOK_STALE", "VENUE_DOWN", "DATA_STALE", "DATA_FUTURE"} for flag in quality_flags)
     if degraded or realized_vol > 2.8:
         return "STRESS", 0.9
+    if not liq_stale and liq_intensity_z >= 2.4 and abs(liq_imbalance) >= 0.2:
+        return "STRESS", min(0.95, 0.78 + min(0.12, liq_intensity_z / 12.0))
 
     trend_strength = min(1.0, abs(cvd_slope) * 10.0)
     pulse_strength = min(1.0, max(0.0, (zen_pulse - 50.0) / 50.0))

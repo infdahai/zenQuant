@@ -36,21 +36,17 @@ SUSPICIOUS_PATTERNS = [
     # Dev set dates (2024-2025)
     (r"202[45]-\d{2}-\d{2}", "Hardcoded Dev set date"),
     (r"datetime\(202[45],", "Hardcoded Dev set datetime"),
-
     # Test set dates (2026+)
     (r"2026-\d{2}-\d{2}", "Hardcoded Test set date"),
     (r"datetime\(2026,", "Hardcoded Test set datetime"),
-
     # Overly precise thresholds (3+ decimal places for probabilities/weights)
     (r"[><=]\s*0\.\d{3,}", "Suspiciously precise threshold (3+ decimals)"),
     (r"[><=]\s*\d+\.\d{3,}", "Suspiciously precise threshold"),
-
     # Specific Dev set discoveries from SNOOPING_LOG
     (r"0\.46[0-9]", "Macro ablation Sharpe delta (see SNOOPING_LOG 2026-04-04)"),
     (r"0\.27[0-9]", "CVD re-enable Sharpe delta"),
     (r"23\.[45]", "VIX threshold suspiciously close to Dev set mean"),
     (r"104\.[0-9]", "DXY threshold suspiciously close to Dev set mean"),
-
     # Symbol-specific hardcoding (should use config)
     (r"if.*symbol\s*==\s*['\"]BTCUSDT['\"]", "Hardcoded symbol check (use config)"),
 ]
@@ -58,9 +54,9 @@ SUSPICIOUS_PATTERNS = [
 # Patterns that are OK (escape hatch for false positives)
 ALLOWLIST = [
     r"# SNOOPING_OK:",  # Explicit annotation
-    r"test_.*\.py",     # Test files can reference dates
-    r"SNOOPING_LOG\.md", # The log itself
-    r"data_splits\.toml", # Config file
+    r"test_.*\.py",  # Test files can reference dates
+    r"SNOOPING_LOG\.md",  # The log itself
+    r"data_splits\.toml",  # Config file
 ]
 
 

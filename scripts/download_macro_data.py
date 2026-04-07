@@ -22,14 +22,14 @@ import pyarrow.parquet as pq
 
 # yfinance tickers for each macro series
 SERIES = {
-    "vix": "^VIX",           # CBOE Volatility Index
-    "dxy": "DX-Y.NYB",       # US Dollar Index
+    "vix": "^VIX",  # CBOE Volatility Index
+    "dxy": "DX-Y.NYB",  # US Dollar Index
     "treasury_10y": "^TNX",  # 10-Year Treasury Yield
-    "tlt": "TLT",            # 20+ Year Treasury Bond ETF (liquidity proxy)
-    "qqq": "QQQ",            # Nasdaq 100 ETF
-    "iwm": "IWM",            # Russell 2000 ETF
-    "ndx": "^NDX",           # Nasdaq 100 Index (direct)
-    "gold": "GLD",           # Gold ETF
+    "tlt": "TLT",  # 20+ Year Treasury Bond ETF (liquidity proxy)
+    "qqq": "QQQ",  # Nasdaq 100 ETF
+    "iwm": "IWM",  # Russell 2000 ETF
+    "ndx": "^NDX",  # Nasdaq 100 Index (direct)
+    "gold": "GLD",  # Gold ETF
 }
 
 

@@ -36,10 +36,12 @@ class MultiMomentumSignalTests(unittest.TestCase):
 
     def test_none_momentum_with_fallback(self) -> None:
         """multi_momentum_z=None → falls back to momentum_roc_z."""
-        result = self._compute({
-            "momentum_roc_z": 1.0,
-            "structure_state": "UPTREND",
-        })
+        result = self._compute(
+            {
+                "momentum_roc_z": 1.0,
+                "structure_state": "UPTREND",
+            }
+        )
         self.assertGreater(result.value, 0.0)
 
     def test_none_momentum_no_fallback(self) -> None:
@@ -65,35 +67,43 @@ class MultiMomentumSignalTests(unittest.TestCase):
 
     def test_boundary_at_exact_threshold(self) -> None:
         """roc_z = 0.3 exactly → should NOT trigger (uses >)."""
-        result = self._compute({
-            "multi_momentum_z": 0.3,
-            "structure_state": "UPTREND",
-        })
+        result = self._compute(
+            {
+                "multi_momentum_z": 0.3,
+                "structure_state": "UPTREND",
+            }
+        )
         self.assertEqual(result.value, 0.0)
 
     def test_boundary_just_above_threshold(self) -> None:
         """roc_z = 0.301 + UPTREND → bullish."""
-        result = self._compute({
-            "multi_momentum_z": 0.301,
-            "structure_state": "UPTREND",
-        })
+        result = self._compute(
+            {
+                "multi_momentum_z": 0.301,
+                "structure_state": "UPTREND",
+            }
+        )
         self.assertGreater(result.value, 0.0)
         self.assertIn("MULTI_MOM_BULL", result.reason_codes)
 
     def test_boundary_negative_at_threshold(self) -> None:
         """roc_z = -0.3 exactly → should NOT trigger."""
-        result = self._compute({
-            "multi_momentum_z": -0.3,
-            "structure_state": "DOWNTREND",
-        })
+        result = self._compute(
+            {
+                "multi_momentum_z": -0.3,
+                "structure_state": "DOWNTREND",
+            }
+        )
         self.assertEqual(result.value, 0.0)
 
     def test_boundary_negative_just_below(self) -> None:
         """roc_z = -0.301 + DOWNTREND → bearish."""
-        result = self._compute({
-            "multi_momentum_z": -0.301,
-            "structure_state": "DOWNTREND",
-        })
+        result = self._compute(
+            {
+                "multi_momentum_z": -0.301,
+                "structure_state": "DOWNTREND",
+            }
+        )
         self.assertLess(result.value, 0.0)
         self.assertIn("MULTI_MOM_BEAR", result.reason_codes)
 
@@ -101,20 +111,24 @@ class MultiMomentumSignalTests(unittest.TestCase):
 
     def test_uptrend_bullish(self) -> None:
         """TREND + UPTREND + roc_z > threshold → strong bullish (value=1.0)."""
-        result = self._compute({
-            "multi_momentum_z": 1.5,
-            "structure_state": "UPTREND",
-        })
+        result = self._compute(
+            {
+                "multi_momentum_z": 1.5,
+                "structure_state": "UPTREND",
+            }
+        )
         self.assertEqual(result.value, 1.0)
         self.assertIn("MULTI_MOM_BULL", result.reason_codes)
         self.assertIn("STRUCTURE_UPTREND", result.reason_codes)
 
     def test_downtrend_bearish(self) -> None:
         """TREND + DOWNTREND + roc_z < -threshold → strong bearish (value=-1.0)."""
-        result = self._compute({
-            "multi_momentum_z": -1.5,
-            "structure_state": "DOWNTREND",
-        })
+        result = self._compute(
+            {
+                "multi_momentum_z": -1.5,
+                "structure_state": "DOWNTREND",
+            }
+        )
         self.assertEqual(result.value, -1.0)
         self.assertIn("MULTI_MOM_BEAR", result.reason_codes)
         self.assertIn("STRUCTURE_DOWNTREND", result.reason_codes)
@@ -123,19 +137,23 @@ class MultiMomentumSignalTests(unittest.TestCase):
 
     def test_weak_signal_strong_momentum_no_structure(self) -> None:
         """abs(roc_z) > 2*threshold but wrong structure → weak signal (0.6)."""
-        result = self._compute({
-            "multi_momentum_z": 1.0,  # > 0.6 = 2*0.3
-            "structure_state": "NEUTRAL",
-        })
+        result = self._compute(
+            {
+                "multi_momentum_z": 1.0,  # > 0.6 = 2*0.3
+                "structure_state": "NEUTRAL",
+            }
+        )
         self.assertAlmostEqual(abs(result.value), 0.6, places=5)
         self.assertIn("MULTI_MOM_WEAK", result.reason_codes)
 
     def test_weak_boundary_at_2x_threshold(self) -> None:
         """abs(roc_z) = 0.6 exactly → should NOT trigger weak (uses >)."""
-        result = self._compute({
-            "multi_momentum_z": 0.6,
-            "structure_state": "NEUTRAL",
-        })
+        result = self._compute(
+            {
+                "multi_momentum_z": 0.6,
+                "structure_state": "NEUTRAL",
+            }
+        )
         self.assertEqual(result.value, 0.0)
 
     # ── Confidence scaling ──

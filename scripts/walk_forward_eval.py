@@ -60,13 +60,15 @@ def run_walk_forward(train_years: int = 2, test_months: int = 6) -> None:
             m = months_offset % 12 + 1
             return _ts(y, m)
 
-        windows.append({
-            "train_start_ns": _to_ns(train_start),
-            "train_end_ns": _to_ns(train_end),
-            "test_start_ns": _to_ns(test_start),
-            "test_end_ns": _to_ns(test_end),
-            "label": f"Train {start_year + train_start // 12}-{start_year + train_end // 12} → Test {start_year + test_start // 12}",
-        })
+        windows.append(
+            {
+                "train_start_ns": _to_ns(train_start),
+                "train_end_ns": _to_ns(train_end),
+                "test_start_ns": _to_ns(test_start),
+                "test_end_ns": _to_ns(test_end),
+                "label": f"Train {start_year + train_start // 12}-{start_year + train_end // 12} → Test {start_year + test_start // 12}",
+            }
+        )
 
         current_start_month += slide_months
 
@@ -111,19 +113,20 @@ def run_walk_forward(train_years: int = 2, test_months: int = 6) -> None:
         elif test_sharpe > train_sharpe:
             verdict = "ROBUST"
 
-        results.append({
-            "label": w["label"],
-            "train_sharpe": train_sharpe,
-            "test_sharpe": test_sharpe,
-            "train_pnl": train_pnl,
-            "test_pnl": test_pnl,
-            "overfit_ratio": overfit_ratio,
-            "verdict": verdict,
-        })
+        results.append(
+            {
+                "label": w["label"],
+                "train_sharpe": train_sharpe,
+                "test_sharpe": test_sharpe,
+                "train_pnl": train_pnl,
+                "test_pnl": test_pnl,
+                "overfit_ratio": overfit_ratio,
+                "verdict": verdict,
+            }
+        )
 
         print(
-            f"  Train Sharpe={train_sharpe:.2f}, Test Sharpe={test_sharpe:.2f}, "
-            f"Ratio={overfit_ratio:.2f} → {verdict}"
+            f"  Train Sharpe={train_sharpe:.2f}, Test Sharpe={test_sharpe:.2f}, Ratio={overfit_ratio:.2f} → {verdict}"
         )
 
     # Summary

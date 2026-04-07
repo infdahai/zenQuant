@@ -1,6 +1,7 @@
-"""RL-based parameter tuner — replaces grid/Bayesian sweep.
+"""RL-based parameter tuner for parameter-only research optimization.
 
-Uses PPO to learn optimal signal weights and risk thresholds.
+Uses PPO to learn optimal signal weights, risk thresholds, and execution
+speeds/gating parameters.
 The skeleton (signals, risk guards, execution) is FIXED.
 RL only tunes parameters (血肉), never the architecture (骨架).
 
@@ -27,6 +28,7 @@ import gymnasium as gym
 import numpy as np
 from gymnasium import spaces
 
+from zenquant.execution import ExecutionKernelConfig
 from zenquant.historical import HistoricalBacktest, HistoricalBacktestConfig
 from zenquant.indicator import IndicatorEngineConfig
 from zenquant.risk import RiskOverlayConfig
@@ -52,13 +54,18 @@ PARAM_GRID = {
     "vpin_threshold": [0.08, 0.10, 0.12],
     "crowding_threshold": [1.8, 2.2, 2.5],
     "vol_shock_threshold": [0.80, 0.95, 1.10],
-    # Strategy: execution params
+    # Strategy: state / execution behavior
     "trailing_stop_atr_mult": [2.0, 2.5, 3.0],
     "bias_max_age_bars": [6, 8, 12],
     # Indicator: computation windows
     "vol_window": [15, 20, 30],
     "cvd_window": [6, 8, 12],
     "roc_lookback": [8, 12, 18],
+    # Execution: PaulWei long-only DCA + profitable pyramiding + gradual exit
+    "pyramid_initial_pct": [0.20, 0.30, 0.40],
+    "pyramid_add_pct": [0.15, 0.30, 0.45],
+    "dca_max_adverse_atr": [2.0, 3.0, 4.0],
+    "exit_unwind_pct": [0.20, 0.30, 0.40],
 }
 
 # Train period windows (6-month chunks from 2020-2023)
@@ -82,6 +89,64 @@ class TunerResult:
     pnl: float
     max_dd: float
     trades: int
+
+
+def build_strategy_config(params: dict[str, float]) -> ARCStrategyConfig:
+    """Map tuned params into strategy config without changing strategy structure."""
+    return ARCStrategyConfig(
+        target_vol_4h=params.get("target_vol_4h", 1.10),
+        target_vol_1d=1.30,
+        max_leverage=params.get("max_leverage", 6.0),
+        trailing_stop_atr_mult=params.get("trailing_stop_atr_mult", 2.5),
+        bias_max_age_bars=int(params.get("bias_max_age_bars", 8)),
+    )
+
+
+def build_risk_config(params: dict[str, float]) -> RiskOverlayConfig:
+    """Map tuned params into risk overlay thresholds."""
+    return RiskOverlayConfig(
+        max_leverage=params.get("max_leverage", 6.0),
+        dd_step_1_long=params.get("dd_step_1_long", 0.15),
+        dd_step_1_short=params.get("dd_step_1_short", 0.08),
+        vpin_toxic_threshold=params.get("vpin_threshold", 0.10),
+        crowding_threshold=params.get("crowding_threshold", 2.2),
+        vol_shock_threshold=params.get("vol_shock_threshold", 0.95),
+    )
+
+
+def build_execution_config(params: dict[str, float]) -> ExecutionKernelConfig:
+    """Tune execution speeds while keeping the PaulWei philosophy fixed."""
+    return ExecutionKernelConfig(
+        pyramid_enabled=True,
+        dca_on_loss_long=True,
+        adaptive_pyramid_enabled=True,
+        gradual_exit_enabled=True,
+        pyramid_initial_pct=params.get("pyramid_initial_pct", 0.30),
+        pyramid_add_pct=params.get("pyramid_add_pct", 0.30),
+        dca_max_adverse_atr=params.get("dca_max_adverse_atr", 3.0),
+        exit_unwind_pct=params.get("exit_unwind_pct", 0.30),
+    )
+
+
+def build_indicator_config(params: dict[str, float]) -> IndicatorEngineConfig:
+    """Map tuned params into indicator windows."""
+    return IndicatorEngineConfig(
+        vol_window=int(params.get("vol_window", 20)),
+        cvd_window=int(params.get("cvd_window", 8)),
+        roc_lookback=int(params.get("roc_lookback", 12)),
+    )
+
+
+def build_signal_weight_overrides(params: dict[str, float]) -> dict[str, float]:
+    """Map tuned params into plugin signal weights."""
+    return {
+        "multi_momentum_signal": params.get("w_momentum", 0.45),
+        "crash_reversal_signal": params.get("w_crash", 0.25),
+        "cvd_signal": params.get("w_cvd", 0.25),
+        "funding_alpha_signal": params.get("w_funding", 0.10),
+        "crowding_signal": params.get("w_crowding", 0.10),
+        "liquidity_signal": params.get("w_liquidity", 0.20),
+    }
 
 
 class ParamTunerEnv(gym.Env):
@@ -141,14 +206,17 @@ class ParamTunerEnv(gym.Env):
             reward -= 1.0  # Penalty for too few trades (degenerate solution)
 
         # Update observation
-        self._last_obs = np.array([
-            min(10.0, max(-10.0, result.sharpe)),
-            min(1.0, max(-1.0, result.pnl / 100_000)),  # Normalized
-            min(1.0, result.max_dd),
-            min(1.0, result.trades / 500),
-            0.5,  # Placeholder for regime distribution
-            0.5,
-        ], dtype=np.float32)
+        self._last_obs = np.array(
+            [
+                min(10.0, max(-10.0, result.sharpe)),
+                min(1.0, max(-1.0, result.pnl / 100_000)),  # Normalized
+                min(1.0, result.max_dd),
+                min(1.0, result.trades / 500),
+                0.5,  # Placeholder for regime distribution
+                0.5,
+            ],
+            dtype=np.float32,
+        )
 
         # Each step is a complete episode (one backtest = done)
         return self._last_obs, float(reward), True, False, {"result": result}
@@ -157,38 +225,11 @@ class ParamTunerEnv(gym.Env):
         """Run one backtest with specified parameters on a train window."""
         start_ns, end_ns = window
 
-        strategy_config = ARCStrategyConfig(
-            target_vol_4h=params.get("target_vol_4h", 1.10),
-            target_vol_1d=1.30,
-            max_leverage=params.get("max_leverage", 6.0),
-            trailing_stop_atr_mult=params.get("trailing_stop_atr_mult", 2.5),
-            bias_max_age_bars=int(params.get("bias_max_age_bars", 8)),
-        )
-
-        risk_config = RiskOverlayConfig(
-            max_leverage=params.get("max_leverage", 6.0),
-            dd_step_1_long=params.get("dd_step_1_long", 0.15),
-            dd_step_1_short=params.get("dd_step_1_short", 0.08),
-            vpin_toxic_threshold=params.get("vpin_threshold", 0.10),
-            crowding_threshold=params.get("crowding_threshold", 2.2),
-            vol_shock_threshold=params.get("vol_shock_threshold", 0.95),
-        )
-
-        # Map RL param names → plugin signal names
-        weight_overrides = {
-            "multi_momentum_signal": params.get("w_momentum", 0.45),
-            "crash_reversal_signal": params.get("w_crash", 0.25),
-            "cvd_signal": params.get("w_cvd", 0.25),
-            "funding_alpha_signal": params.get("w_funding", 0.10),
-            "crowding_signal": params.get("w_crowding", 0.10),
-            "liquidity_signal": params.get("w_liquidity", 0.20),
-        }
-
-        indicator_config = IndicatorEngineConfig(
-            vol_window=int(params.get("vol_window", 20)),
-            cvd_window=int(params.get("cvd_window", 8)),
-            roc_lookback=int(params.get("roc_lookback", 12)),
-        )
+        strategy_config = build_strategy_config(params)
+        risk_config = build_risk_config(params)
+        execution_config = build_execution_config(params)
+        weight_overrides = build_signal_weight_overrides(params)
+        indicator_config = build_indicator_config(params)
 
         try:
             result = HistoricalBacktest(
@@ -199,6 +240,7 @@ class ParamTunerEnv(gym.Env):
                     risk_config=risk_config,
                     signal_weight_overrides=weight_overrides,
                     indicator_config=indicator_config,
+                    execution_config=execution_config,
                 )
             ).run()
 
@@ -232,7 +274,7 @@ def train_tuner(total_timesteps: int = 200, verbose: int = 1) -> dict[str, Any]:
     )
 
     print(f"Training RL tuner for {total_timesteps} episodes...")
-    print(f"Parameter grid: {len(PARAM_GRID)} params, ~37k combinations")
+    print(f"Parameter grid: {len(PARAM_GRID)} params")
     print(f"Train windows: {len(TRAIN_WINDOWS)} x 6-month windows")
     print("=" * 60)
 

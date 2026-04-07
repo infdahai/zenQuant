@@ -96,12 +96,14 @@ def _csv_to_parquet(csv_path: Path, parquet_path: Path) -> None:
             # Columns: agg_trade_id, price, quantity, first_trade_id, last_trade_id, transact_time, is_buyer_maker
             try:
                 transact_time_ms = int(line[5])
-                rows.append({
-                    "ts_ns": transact_time_ms * 1_000_000,
-                    "price": float(line[1]),
-                    "qty": float(line[2]),
-                    "is_buyer_maker": line[6].strip().lower() == "true",
-                })
+                rows.append(
+                    {
+                        "ts_ns": transact_time_ms * 1_000_000,
+                        "price": float(line[1]),
+                        "qty": float(line[2]),
+                        "is_buyer_maker": line[6].strip().lower() == "true",
+                    }
+                )
             except (ValueError, IndexError):
                 continue
 
@@ -195,17 +197,19 @@ def aggregate_to_timeframe(symbol: str, base_dir: Path, timeframe: str = "4h") -
         cvd_delta = buy_vol - sell_vol
         vpin = abs(cvd_delta) / total_vol if total_vol > 0 else 0.0
 
-        records.append({
-            "ts_ns": ts,
-            "buy_volume": round(buy_vol, 6),
-            "sell_volume": round(sell_vol, 6),
-            "cvd_delta": round(cvd_delta, 6),
-            "buy_usd": round(b["buy_usd"], 2),
-            "sell_usd": round(b["sell_usd"], 2),
-            "trade_count": b["trade_count"],
-            "large_trade_count": b["large_trade_count"],
-            "vpin": round(vpin, 6),
-        })
+        records.append(
+            {
+                "ts_ns": ts,
+                "buy_volume": round(buy_vol, 6),
+                "sell_volume": round(sell_vol, 6),
+                "cvd_delta": round(cvd_delta, 6),
+                "buy_usd": round(b["buy_usd"], 2),
+                "sell_usd": round(b["sell_usd"], 2),
+                "trade_count": b["trade_count"],
+                "large_trade_count": b["large_trade_count"],
+                "vpin": round(vpin, 6),
+            }
+        )
 
     out_path = out_dir / "data.parquet"
     table = pa.Table.from_pylist(records)

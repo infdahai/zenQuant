@@ -120,6 +120,7 @@ class IndicatorEngine:
         cot_store: object | None = None,
         basis_store: object | None = None,
         eth_store: object | None = None,
+        liquidation_store: object | None = None,
     ) -> None:
         self._bus = bus
         self._store = store
@@ -130,9 +131,13 @@ class IndicatorEngine:
         self._cot_store = cot_store  # CotDataStore (optional, weekly institutional positioning)
         self._basis_store = basis_store  # BasisDataStore (optional, spot-perp premium)
         self._eth_store = eth_store  # EthDataStore (optional, cross-asset TE)
+        self._liquidation_store = liquidation_store  # LiquidationDataStore (optional, aggregated force-order data)
         self._btc_returns_buffer: list[float] = []  # Rolling BTC returns for TE
         self._formula_hash = _formula_hash(
-            self._config, has_macro=macro_store is not None, has_options=options_store is not None
+            self._config,
+            has_macro=macro_store is not None,
+            has_options=options_store is not None,
+            has_liquidation=liquidation_store is not None,
         )
 
         self._pending: dict[tuple[str, Timeframe, int], _PendingPoint] = {}
@@ -428,6 +433,25 @@ class IndicatorEngine:
                 if len(eth_returns) >= 6:
                     macro_values["eth_momentum"] = sum(eth_returns[-6:])
 
+        # Liquidation data is aggregated venue pressure, not tick-precise execution truth.
+        if self._liquidation_store is not None and hasattr(self._liquidation_store, "lookup"):
+            liq = self._liquidation_store.lookup(candle.bar_end_ns)
+            total_liq = max(0.0, float(liq.total_liq_usd))
+            max_single = max(0.0, float(liq.max_single_liq_usd))
+            macro_values["liq_total_usd"] = total_liq
+            macro_values["liq_long_usd"] = float(liq.long_liq_usd)
+            macro_values["liq_short_usd"] = float(liq.short_liq_usd)
+            macro_values["liq_imbalance"] = float(liq.liq_imbalance)
+            macro_values["liq_intensity_z"] = float(liq.liq_intensity_z)
+            macro_values["liq_imbalance_z"] = float(liq.liq_imbalance_z)
+            macro_values["liq_max_single_usd"] = max_single
+            macro_values["liq_max_single_share"] = (max_single / total_liq) if total_liq > 0 else 0.0
+            macro_values["liq_stale"] = "LIQ_STALE" in liq.quality_flags
+            for flag in liq.quality_flags:
+                if flag not in quality_flags:
+                    quality_flags.append(flag)
+            quality_flags = sorted(set(quality_flags))
+
         pack = IndicatorPack(
             ts_ns=candle.bar_end_ns,
             symbol=candle.symbol,
@@ -552,7 +576,13 @@ class IndicatorEngine:
             self._overall_by_cutoff.pop(key, None)
 
 
-def _formula_hash(config: IndicatorEngineConfig, *, has_macro: bool = False, has_options: bool = False) -> str:
+def _formula_hash(
+    config: IndicatorEngineConfig,
+    *,
+    has_macro: bool = False,
+    has_options: bool = False,
+    has_liquidation: bool = False,
+) -> str:
     """Fingerprint the indicator formula so decisions stay auditable across versions."""
     formula = (
         f"rv=std(logret,w={config.vol_window});"
@@ -568,6 +598,7 @@ def _formula_hash(config: IndicatorEngineConfig, *, has_macro: bool = False, has
         f"expected_symbols={','.join(config.expected_symbols)};"
         f"macro={'vix,dxy,yield_10y' if has_macro else 'none'};"
         f"options={'atm_iv,skew,term' if has_options else 'none'};"
+        f"liquidation={'total,imbalance,max_single' if has_liquidation else 'none'};"
         f"cycle=200ma;ou_kappa=vol_window"
     )
     return f"sha256:{hashlib.sha256(formula.encode('utf-8')).hexdigest()}"

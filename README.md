@@ -33,6 +33,51 @@ uv run python scripts/export_live_training_data.py --dsn "$ZENQUANT_PG_DSN" --sy
 open http://127.0.0.1:8090
 ```
 
+## Claude CLI Usage Discipline
+
+This repo is large enough that careless Claude CLI usage can waste a lot of tokens without improving output quality.
+
+- Use the repo `.claudesignore` to keep `data/`, `logs/`, `results/`, dependency folders, and compiled assets out of default context.
+- Ask Claude about a specific file or subsystem first. Prefer `zenquant/app/check.py` over "scan the whole repo".
+- Do not use Claude as a background process monitor. Run long jobs in the terminal, then paste back a short failure snippet if analysis is needed.
+- Do not repeatedly ask Claude to poll whether a script has finished. That pattern burns cache reads on large contexts.
+- Keep one model per task when possible so cache reads stay reusable instead of forcing expensive rewrites.
+- For large outputs, summarize first: share a short `rg`, `git diff --stat`, or trimmed traceback instead of full generated logs.
+
+## RL Research Tuning
+
+`RL` is supported as a research-only parameter tuner. It may tune weights, risk thresholds, indicator windows, and execution speeds, but it must not rewrite strategy architecture, regime logic, or risk precedence.
+
+```bash
+# Supported RL tuner entrypoint
+uv run zenquant-rl-tune --episodes 200 --output results/rl_tuner.json
+```
+
+Execution defaults follow the PaulWei pattern:
+- long-only DCA on adverse moves
+- profitable pyramiding
+- gradual exits by default
+- ATR distance gating on DCA
+- risk overlay always has final authority
+
+## Historical Validation Snapshot
+
+The current BTC strategy has passed the repo's historical validation spec for variant comparison and the 2023-08 bearish-grind repair.
+
+- Spec: [`docs/TEST_SPEC_VARIANT_COMPARISON_AND_202308_REPAIR.md`](/Users/disaster/workspace/code/zenQuant/docs/TEST_SPEC_VARIANT_COMPARISON_AND_202308_REPAIR.md)
+- Latest execution record: [`docs/HISTORICAL_VALIDATION_2026_04_07.md`](/Users/disaster/workspace/code/zenQuant/docs/HISTORICAL_VALIDATION_2026_04_07.md)
+- Current historical conclusion: 2023-08 is no longer a known failure, walk-forward shows no obvious overfit warning, and historical adversarial replay passes `5/5` worst periods.
+
+Minimal re-check commands:
+
+```bash
+uv run pytest tests/test_variant_comparison.py tests/test_202308_bearish_grind.py tests/test_historical_pipeline.py -q --tb=short
+uv run pytest tests/test_golden_output.py tests/test_backtest_invariants.py tests/test_parity.py tests/test_execution_router.py tests/test_execution_sensitivity.py tests/test_scenario_risk.py -q --tb=short
+uv run python scripts/compare_variants.py --root data/raw/binance --symbol BTCUSDT --output-dir /tmp/zenquant-variant-compare
+uv run python scripts/walk_forward_eval.py
+uv run python scripts/adversarial_stress.py --historical
+```
+
 ---
 
 ## Table of Contents
@@ -283,6 +328,13 @@ Use this path for:
 - paper-live review
 - live/backtest parity checks
 - training on observed production behavior
+
+Current repo status:
+- paper trading has been started and partially logged
+- paper-live validation is **not yet complete**
+- completion requires a sustained run plus an explicit `paper-live` export/review
+
+See [PAPER_TRADING_STATUS.md](/Users/disaster/workspace/code/zenQuant/docs/PAPER_TRADING_STATUS.md).
 
 ### Practical Rule
 

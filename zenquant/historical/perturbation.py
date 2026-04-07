@@ -210,10 +210,7 @@ def _apply_liquidity_vacuum(
 
     # Select random gap positions (avoid first/last 10% of data)
     margin = len(events) // 10
-    gap_positions = sorted(rng.sample(
-        range(margin, len(events) - margin),
-        config.liquidity_vacuum_count
-    ))
+    gap_positions = sorted(rng.sample(range(margin, len(events) - margin), config.liquidity_vacuum_count))
 
     result: list[dict[str, Any]] = []
     for i, event in enumerate(events):

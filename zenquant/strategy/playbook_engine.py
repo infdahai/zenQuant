@@ -14,6 +14,8 @@ class PlaybookEngineConfig:
     preserve_capital_transition_risk: float = 0.60
     preserve_capital_min_overall_confidence: float = 0.35
     trade_directional_confidence_floor: float = 0.5
+    bearish_override_confidence_floor: float = 0.5
+    bearish_override_direction_signal: float = -0.5
     bull_max_leverage: float = 2.50
     bear_max_leverage: float = 2.25
     range_max_leverage: float = 1.5
@@ -39,6 +41,8 @@ class PlaybookEngine:
         if self._should_trade_bull(state):
             return self._bull_continuation(state)
         if self._should_trade_bear(state):
+            return self._bear_defense(state)
+        if self._should_trade_bear_override(state):
             return self._bear_defense(state)
         return self._range_light(state)
 
@@ -66,6 +70,16 @@ class PlaybookEngine:
             and state.volatility_state != "DISTORTED"
             and state.positioning_state != "CROWDED_SHORT"
             and state.directional_confidence >= self._config.trade_directional_confidence_floor
+        )
+
+    def _should_trade_bear_override(self, state: MarketState) -> bool:
+        return (
+            state.directional_state == "TRANSITION"
+            and state.direction_signal <= self._config.bearish_override_direction_signal
+            and state.quality_state in {"TRADABLE", "NOISY"}
+            and state.volatility_state != "DISTORTED"
+            and state.positioning_state != "CROWDED_SHORT"
+            and state.directional_confidence >= self._config.bearish_override_confidence_floor
         )
 
     def _bull_continuation(self, state: MarketState) -> PlaybookSelection:

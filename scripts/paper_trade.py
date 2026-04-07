@@ -71,7 +71,8 @@ async def run_paper_trading(symbol: str = "BTCUSDT", duration_hours: float = 24.
 
     indicator_store = IndicatorStore()
     IndicatorEngine(
-        bus=bus, store=indicator_store,
+        bus=bus,
+        store=indicator_store,
         config=IndicatorEngineConfig(expected_symbols=(f"{symbol}_PERP",)),
         macro_store=macro_store if macro_store.loaded else None,
         hf_store=hf_store if hf_store.loaded else None,
@@ -101,17 +102,21 @@ async def run_paper_trading(symbol: str = "BTCUSDT", duration_hours: float = 24.
             return
         if payload.timeframe != Timeframe.TF_4H:
             return
-        print(f"  [INDICATOR] {payload.symbol} 4H close={payload.values.get('close', '?')} "
-              f"momentum_z={payload.values.get('multi_momentum_z', 0):.2f} "
-              f"cvd_slope={payload.values.get('cvd_slope', 0):.4f}")
+        print(
+            f"  [INDICATOR] {payload.symbol} 4H close={payload.values.get('close', '?')} "
+            f"momentum_z={payload.values.get('multi_momentum_z', 0):.2f} "
+            f"cvd_slope={payload.values.get('cvd_slope', 0):.4f}"
+        )
 
     def on_state(subject: str, payload: object) -> None:
         if not isinstance(payload, MarketState):
             return
         if payload.timeframe != Timeframe.TF_4H:
             return
-        print(f"  [STATE] regime={payload.regime} dir={payload.directional_state} "
-              f"vol={payload.volatility_state} confidence={payload.overall_confidence():.2f}")
+        print(
+            f"  [STATE] regime={payload.regime} dir={payload.directional_state} "
+            f"vol={payload.volatility_state} confidence={payload.overall_confidence():.2f}"
+        )
 
     def on_target(subject: str, payload: object) -> None:
         if not isinstance(payload, TargetPosition):
@@ -132,8 +137,10 @@ async def run_paper_trading(symbol: str = "BTCUSDT", duration_hours: float = 24.
             f.write(json.dumps(decision) + "\n")
 
         direction = "LONG" if payload.target_qty > 0 else "SHORT" if payload.target_qty < 0 else "FLAT"
-        print(f"  [TARGET] {direction} qty={payload.target_qty:.4f} "
-              f"lev={payload.target_leverage:.2f} reduce_only={payload.reduce_only}")
+        print(
+            f"  [TARGET] {direction} qty={payload.target_qty:.4f} "
+            f"lev={payload.target_leverage:.2f} reduce_only={payload.reduce_only}"
+        )
         print(f"           reasons: {', '.join(payload.reason_codes[:5])}")
 
     bus.subscribe("indicator.>", on_indicator)
@@ -168,12 +175,12 @@ async def run_paper_trading(symbol: str = "BTCUSDT", duration_hours: float = 24.
     except ImportError:
         print("Deribit options collector: disabled (import error)")
 
-
     # Start embedded dashboard server (shares bus with paper trading)
     dashboard_task = None
     try:
-        from zenquant.app.server import create_app
         import uvicorn
+
+        from zenquant.app.server import create_app
 
         app = create_app(bus=bus)
 
@@ -224,9 +231,11 @@ async def run_paper_trading(symbol: str = "BTCUSDT", duration_hours: float = 24.
 
             # Periodic status
             if int(elapsed) % 300 < 10:  # Every 5 minutes
-                print(f"  [STATUS] Elapsed: {elapsed/3600:.1f}h, "
-                      f"Decisions: {len(decisions)}, "
-                      f"Remaining: {remaining/3600:.1f}h")
+                print(
+                    f"  [STATUS] Elapsed: {elapsed / 3600:.1f}h, "
+                    f"Decisions: {len(decisions)}, "
+                    f"Remaining: {remaining / 3600:.1f}h"
+                )
 
     except asyncio.CancelledError:
         pass
@@ -239,7 +248,7 @@ async def run_paper_trading(symbol: str = "BTCUSDT", duration_hours: float = 24.
     print(f"\n{'=' * 60}")
     print("Paper Trading Summary")
     print(f"{'=' * 60}")
-    print(f"Duration: {(time.time() - start_time)/3600:.1f}h")
+    print(f"Duration: {(time.time() - start_time) / 3600:.1f}h")
     print(f"Decisions logged: {len(decisions)}")
     print(f"Log file: {log_file}")
 

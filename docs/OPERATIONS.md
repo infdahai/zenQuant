@@ -65,6 +65,11 @@ curl http://127.0.0.1:8090/healthz
 uv run zenquant-live-validate --base-url http://127.0.0.1:8090
 ```
 
+Important:
+- running the service once does **not** mean paper trading is complete
+- paper trading is complete only after a sustained `2 weeks` run and at least one formal `paper-live` export/review
+- current repo evidence should be treated as partial progress, not final validation
+
 ### Dashboard
 
 Open `http://127.0.0.1:8090`. Key panels:
@@ -103,6 +108,12 @@ WHERE ts_ns > extract(epoch from now() - interval '7 days') * 1e9
 AND array_length(flags, 1) > 0
 GROUP BY flags;
 ```
+
+Completion evidence should include:
+- continuous runtime window
+- successful `paper-live` export
+- parity / risk / execution review
+- health and persistence evidence
 
 ---
 

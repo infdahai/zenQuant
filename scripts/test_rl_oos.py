@@ -125,10 +125,14 @@ def main() -> None:
 
     print()
     print("Dev Set Results:")
-    print(f"  RL params:     Sharpe={results['dev_rl']['sharpe']:.2f}, "
-          f"PnL=${results['dev_rl']['pnl']:,.0f}, DD={results['dev_rl']['max_dd']:.1%}")
-    print(f"  Manual params: Sharpe={results['dev_manual']['sharpe']:.2f}, "
-          f"PnL=${results['dev_manual']['pnl']:,.0f}, DD={results['dev_manual']['max_dd']:.1%}")
+    print(
+        f"  RL params:     Sharpe={results['dev_rl']['sharpe']:.2f}, "
+        f"PnL=${results['dev_rl']['pnl']:,.0f}, DD={results['dev_rl']['max_dd']:.1%}"
+    )
+    print(
+        f"  Manual params: Sharpe={results['dev_manual']['sharpe']:.2f}, "
+        f"PnL=${results['dev_manual']['pnl']:,.0f}, DD={results['dev_manual']['max_dd']:.1%}"
+    )
 
     # 2. Train set (in-sample) — for OOS ratio
     if not args.quick:
@@ -141,11 +145,15 @@ def main() -> None:
 
         print()
         print("Train Set Results:")
-        print(f"  RL params: Sharpe={results['train_rl']['sharpe']:.2f}, "
-              f"PnL=${results['train_rl']['pnl']:,.0f}, DD={results['train_rl']['max_dd']:.1%}")
+        print(
+            f"  RL params: Sharpe={results['train_rl']['sharpe']:.2f}, "
+            f"PnL=${results['train_rl']['pnl']:,.0f}, DD={results['train_rl']['max_dd']:.1%}"
+        )
 
         # Compute OOS ratio
-        oos_ratio = results["dev_rl"]["sharpe"] / results["train_rl"]["sharpe"] if results["train_rl"]["sharpe"] > 0 else 0.0
+        oos_ratio = (
+            results["dev_rl"]["sharpe"] / results["train_rl"]["sharpe"] if results["train_rl"]["sharpe"] > 0 else 0.0
+        )
 
         print()
         print(f"OOS Ratio (Dev/Train): {oos_ratio:.2f}")
@@ -162,10 +170,14 @@ def main() -> None:
 
         print()
         print("Full Period Results:")
-        print(f"  RL params:     Sharpe={results['full_rl']['sharpe']:.2f}, "
-              f"PnL=${results['full_rl']['pnl']:,.0f}, DD={results['full_rl']['max_dd']:.1%}")
-        print(f"  Manual params: Sharpe={results['full_manual']['sharpe']:.2f}, "
-              f"PnL=${results['full_manual']['pnl']:,.0f}, DD={results['full_manual']['max_dd']:.1%}")
+        print(
+            f"  RL params:     Sharpe={results['full_rl']['sharpe']:.2f}, "
+            f"PnL=${results['full_rl']['pnl']:,.0f}, DD={results['full_rl']['max_dd']:.1%}"
+        )
+        print(
+            f"  Manual params: Sharpe={results['full_manual']['sharpe']:.2f}, "
+            f"PnL=${results['full_manual']['pnl']:,.0f}, DD={results['full_manual']['max_dd']:.1%}"
+        )
 
     # Analysis
     print()
@@ -176,15 +188,19 @@ def main() -> None:
 
     # Dev set improvement
     dev_improvement = results["dev_rl"]["sharpe"] - results["dev_manual"]["sharpe"]
-    dev_improvement_pct = (dev_improvement / results["dev_manual"]["sharpe"]) * 100 if results["dev_manual"]["sharpe"] > 0 else 0
+    dev_improvement_pct = (
+        (dev_improvement / results["dev_manual"]["sharpe"]) * 100 if results["dev_manual"]["sharpe"] > 0 else 0
+    )
 
-    print(f"Dev Set Improvement (RL vs Manual):")
+    print("Dev Set Improvement (RL vs Manual):")
     print(f"  Sharpe delta: {dev_improvement:+.2f} ({dev_improvement_pct:+.1f}%)")
     print()
 
     # OOS ratio (if available)
     if not args.quick:
-        oos_ratio = results["dev_rl"]["sharpe"] / results["train_rl"]["sharpe"] if results["train_rl"]["sharpe"] > 0 else 0.0
+        oos_ratio = (
+            results["dev_rl"]["sharpe"] / results["train_rl"]["sharpe"] if results["train_rl"]["sharpe"] > 0 else 0.0
+        )
         print(f"OOS Ratio (Dev/Train): {oos_ratio:.2f}")
         print()
 
@@ -214,22 +230,22 @@ def main() -> None:
 
     # Criterion 1: Dev improvement
     if dev_improvement > 0.2:
-        print("✅ Dev Sharpe improvement: +{:.2f} (target: >+0.20)".format(dev_improvement))
+        print(f"✅ Dev Sharpe improvement: +{dev_improvement:.2f} (target: >+0.20)")
         criteria_passed += 1
     elif dev_improvement > 0.0:
-        print("⚠️  Dev Sharpe improvement: +{:.2f} (marginal, target: >+0.20)".format(dev_improvement))
+        print(f"⚠️  Dev Sharpe improvement: +{dev_improvement:.2f} (marginal, target: >+0.20)")
     else:
-        print("❌ Dev Sharpe improvement: {:.2f} (worse than manual)".format(dev_improvement))
+        print(f"❌ Dev Sharpe improvement: {dev_improvement:.2f} (worse than manual)")
 
     # Criterion 2: OOS ratio (if available)
     if not args.quick:
         if oos_ratio > 0.80:
-            print("✅ OOS ratio: {:.2f} (target: >0.80)".format(oos_ratio))
+            print(f"✅ OOS ratio: {oos_ratio:.2f} (target: >0.80)")
             criteria_passed += 1
         elif oos_ratio > 0.60:
-            print("⚠️  OOS ratio: {:.2f} (marginal, target: >0.80)".format(oos_ratio))
+            print(f"⚠️  OOS ratio: {oos_ratio:.2f} (marginal, target: >0.80)")
         else:
-            print("❌ OOS ratio: {:.2f} (overfitting, target: >0.80)".format(oos_ratio))
+            print(f"❌ OOS ratio: {oos_ratio:.2f} (overfitting, target: >0.80)")
     else:
         print("⏸️  OOS ratio: Not computed (use --full for this)")
         criteria_total = 2  # Adjust total if OOS not computed
@@ -239,12 +255,12 @@ def main() -> None:
     dev_trades = results["dev_rl"]["trades"]
 
     if dev_dd < 0.40 and dev_trades > 20:
-        print("✅ No reward hacking: DD={:.1%}, trades={}".format(dev_dd, dev_trades))
+        print(f"✅ No reward hacking: DD={dev_dd:.1%}, trades={dev_trades}")
         criteria_passed += 1
     elif dev_dd < 0.50 or dev_trades > 10:
-        print("⚠️  Marginal metrics: DD={:.1%}, trades={}".format(dev_dd, dev_trades))
+        print(f"⚠️  Marginal metrics: DD={dev_dd:.1%}, trades={dev_trades}")
     else:
-        print("❌ Reward hacking detected: DD={:.1%}, trades={}".format(dev_dd, dev_trades))
+        print(f"❌ Reward hacking detected: DD={dev_dd:.1%}, trades={dev_trades}")
 
     print()
     print(f"Criteria passed: {criteria_passed}/{criteria_total}")
@@ -259,7 +275,9 @@ def main() -> None:
         recommendation = "Some improvement but not decisive. A/B test recommended (10% capital on RL, 90% on manual)."
     else:
         verdict = "❌ REJECT RL PARAMS"
-        recommendation = "RL parameters do not improve over manual baseline or show overfitting. Stick with manual params."
+        recommendation = (
+            "RL parameters do not improve over manual baseline or show overfitting. Stick with manual params."
+        )
 
     print(f"Verdict: {verdict}")
     print(f"Recommendation: {recommendation}")
@@ -268,13 +286,17 @@ def main() -> None:
     # Save results
     output_path = Path("rl_oos_results.json")
     with open(output_path, "w") as f:
-        json.dump({
-            "rl_params": rl_params,
-            "manual_params": manual_params,
-            "results": results,
-            "verdict": verdict,
-            "recommendation": recommendation,
-        }, f, indent=2)
+        json.dump(
+            {
+                "rl_params": rl_params,
+                "manual_params": manual_params,
+                "results": results,
+                "verdict": verdict,
+                "recommendation": recommendation,
+            },
+            f,
+            indent=2,
+        )
 
     print(f"Results saved to {output_path}")
     print()

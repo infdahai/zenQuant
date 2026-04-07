@@ -100,27 +100,40 @@ def _whipsaw_klines(days: int = 180) -> tuple[list[HistoricalKlineRow], list[His
         low = min(open_px, close) - 30
 
         open_time = base + idx * _4h_ns()
-        four_h.append(HistoricalKlineRow(
-            symbol="BTCUSDT", timeframe="4h",
-            open_time_ns=open_time, close_time_ns=open_time + _4h_ns(),
-            open=round(open_px, 2), high=round(high, 2),
-            low=round(low, 2), close=round(close, 2),
-            volume=50.0, trade_count=500,
-        ))
+        four_h.append(
+            HistoricalKlineRow(
+                symbol="BTCUSDT",
+                timeframe="4h",
+                open_time_ns=open_time,
+                close_time_ns=open_time + _4h_ns(),
+                open=round(open_px, 2),
+                high=round(high, 2),
+                low=round(low, 2),
+                close=round(close, 2),
+                volume=50.0,
+                trade_count=500,
+            )
+        )
 
     # Daily from 4H
     for d in range(days):
-        d_bars = four_h[d * 6:(d + 1) * 6]
+        d_bars = four_h[d * 6 : (d + 1) * 6]
         if not d_bars:
             continue
-        daily.append(HistoricalKlineRow(
-            symbol="BTCUSDT", timeframe="1d",
-            open_time_ns=d_bars[0].open_time_ns,
-            close_time_ns=d_bars[-1].close_time_ns,
-            open=d_bars[0].open, high=max(b.high for b in d_bars),
-            low=min(b.low for b in d_bars), close=d_bars[-1].close,
-            volume=sum(b.volume for b in d_bars), trade_count=3000,
-        ))
+        daily.append(
+            HistoricalKlineRow(
+                symbol="BTCUSDT",
+                timeframe="1d",
+                open_time_ns=d_bars[0].open_time_ns,
+                close_time_ns=d_bars[-1].close_time_ns,
+                open=d_bars[0].open,
+                high=max(b.high for b in d_bars),
+                low=min(b.low for b in d_bars),
+                close=d_bars[-1].close,
+                volume=sum(b.volume for b in d_bars),
+                trade_count=3000,
+            )
+        )
 
     return daily, four_h
 
@@ -131,6 +144,7 @@ def _whipsaw_klines(days: int = 180) -> tuple[list[HistoricalKlineRow], list[His
 def _vacuum_klines(days: int = 180) -> tuple[list[HistoricalKlineRow], list[HistoricalKlineRow]]:
     """Normal uptrend with sudden -5% to -10% gaps at random intervals."""
     import random
+
     rng = random.Random(42)
     base = _base_ns()
     daily: list[HistoricalKlineRow] = []
@@ -144,7 +158,7 @@ def _vacuum_klines(days: int = 180) -> tuple[list[HistoricalKlineRow], list[Hist
 
         if idx in gap_intervals:
             gap_pct = rng.uniform(-0.10, -0.05)
-            price *= (1 + gap_pct)
+            price *= 1 + gap_pct
         else:
             price += rng.gauss(5, 40)  # slight uptrend with noise
 
@@ -153,26 +167,39 @@ def _vacuum_klines(days: int = 180) -> tuple[list[HistoricalKlineRow], list[Hist
         low = min(open_px, close) - rng.uniform(10, 50)
 
         open_time = base + idx * _4h_ns()
-        four_h.append(HistoricalKlineRow(
-            symbol="BTCUSDT", timeframe="4h",
-            open_time_ns=open_time, close_time_ns=open_time + _4h_ns(),
-            open=round(open_px, 2), high=round(high, 2),
-            low=round(low, 2), close=round(close, 2),
-            volume=round(50 + rng.gauss(0, 10), 2), trade_count=500,
-        ))
+        four_h.append(
+            HistoricalKlineRow(
+                symbol="BTCUSDT",
+                timeframe="4h",
+                open_time_ns=open_time,
+                close_time_ns=open_time + _4h_ns(),
+                open=round(open_px, 2),
+                high=round(high, 2),
+                low=round(low, 2),
+                close=round(close, 2),
+                volume=round(50 + rng.gauss(0, 10), 2),
+                trade_count=500,
+            )
+        )
 
     for d in range(days):
-        d_bars = four_h[d * 6:(d + 1) * 6]
+        d_bars = four_h[d * 6 : (d + 1) * 6]
         if not d_bars:
             continue
-        daily.append(HistoricalKlineRow(
-            symbol="BTCUSDT", timeframe="1d",
-            open_time_ns=d_bars[0].open_time_ns,
-            close_time_ns=d_bars[-1].close_time_ns,
-            open=d_bars[0].open, high=max(b.high for b in d_bars),
-            low=min(b.low for b in d_bars), close=d_bars[-1].close,
-            volume=sum(b.volume for b in d_bars), trade_count=3000,
-        ))
+        daily.append(
+            HistoricalKlineRow(
+                symbol="BTCUSDT",
+                timeframe="1d",
+                open_time_ns=d_bars[0].open_time_ns,
+                close_time_ns=d_bars[-1].close_time_ns,
+                open=d_bars[0].open,
+                high=max(b.high for b in d_bars),
+                low=min(b.low for b in d_bars),
+                close=d_bars[-1].close,
+                volume=sum(b.volume for b in d_bars),
+                trade_count=3000,
+            )
+        )
 
     return daily, four_h
 
@@ -188,11 +215,13 @@ def _crowding_trap_funding(days: int = 180) -> list[HistoricalFundingRow]:
     for i in range(days * 3):
         # Extreme positive funding (suggests crowded longs) but market keeps going up
         rate = 0.001 + math.sin(i / 5.0) * 0.0005  # 10x normal funding
-        rows.append(HistoricalFundingRow(
-            symbol="BTCUSDT",
-            funding_time_ns=base + i * interval,
-            funding_rate=round(rate, 8),
-        ))
+        rows.append(
+            HistoricalFundingRow(
+                symbol="BTCUSDT",
+                funding_time_ns=base + i * interval,
+                funding_rate=round(rate, 8),
+            )
+        )
     return rows
 
 
@@ -210,26 +239,39 @@ def _trending_klines(days: int = 180) -> tuple[list[HistoricalKlineRow], list[Hi
         high = max(open_px, close) + 25
         low = min(open_px, close) - 20
         open_time = base + idx * _4h_ns()
-        four_h.append(HistoricalKlineRow(
-            symbol="BTCUSDT", timeframe="4h",
-            open_time_ns=open_time, close_time_ns=open_time + _4h_ns(),
-            open=round(open_px, 2), high=round(high, 2),
-            low=round(low, 2), close=round(close, 2),
-            volume=50.0, trade_count=500,
-        ))
+        four_h.append(
+            HistoricalKlineRow(
+                symbol="BTCUSDT",
+                timeframe="4h",
+                open_time_ns=open_time,
+                close_time_ns=open_time + _4h_ns(),
+                open=round(open_px, 2),
+                high=round(high, 2),
+                low=round(low, 2),
+                close=round(close, 2),
+                volume=50.0,
+                trade_count=500,
+            )
+        )
 
     for d in range(days):
-        d_bars = four_h[d * 6:(d + 1) * 6]
+        d_bars = four_h[d * 6 : (d + 1) * 6]
         if not d_bars:
             continue
-        daily.append(HistoricalKlineRow(
-            symbol="BTCUSDT", timeframe="1d",
-            open_time_ns=d_bars[0].open_time_ns,
-            close_time_ns=d_bars[-1].close_time_ns,
-            open=d_bars[0].open, high=max(b.high for b in d_bars),
-            low=min(b.low for b in d_bars), close=d_bars[-1].close,
-            volume=sum(b.volume for b in d_bars), trade_count=3000,
-        ))
+        daily.append(
+            HistoricalKlineRow(
+                symbol="BTCUSDT",
+                timeframe="1d",
+                open_time_ns=d_bars[0].open_time_ns,
+                close_time_ns=d_bars[-1].close_time_ns,
+                open=d_bars[0].open,
+                high=max(b.high for b in d_bars),
+                low=min(b.low for b in d_bars),
+                close=d_bars[-1].close,
+                volume=sum(b.volume for b in d_bars),
+                trade_count=3000,
+            )
+        )
 
     return daily, four_h
 
@@ -252,7 +294,8 @@ def _normal_oi(days: int = 180) -> list[HistoricalOpenInterestRow]:
     interval = _4h_ns()
     return [
         HistoricalOpenInterestRow(
-            symbol="BTCUSDT", timeframe="4h",
+            symbol="BTCUSDT",
+            timeframe="4h",
             ts_ns=base + i * interval,
             open_interest=round(1_500_000_000 + i * 1_000_000, 2),
         )
@@ -278,9 +321,7 @@ def run_scenario(
         write_parquet_rows(layout.funding_path("BTCUSDT", "2024-01"), funding)
         write_parquet_rows(layout.open_interest_path("BTCUSDT", "4h", "2024-01"), oi)
 
-        result = HistoricalBacktest(
-            HistoricalBacktestConfig(root_dir=root, symbol="BTCUSDT")
-        ).run()
+        result = HistoricalBacktest(HistoricalBacktestConfig(root_dir=root, symbol="BTCUSDT")).run()
 
     m = result.metrics
     passed = m.sharpe >= threshold_sharpe and m.max_drawdown <= threshold_dd
@@ -310,20 +351,21 @@ def run_historical_replay(periods_file: Path = Path("tests/adversarial/worst_per
         sys.exit(1)
 
     data = json.loads(periods_file.read_text())
-    worst_periods = data['worst_periods']
+    worst_periods = data["worst_periods"]
 
     print(f"Loaded {len(worst_periods)} worst periods from {periods_file}")
-    print(f"Full backtest: Sharpe {data['full_backtest']['sharpe']:.2f}, "
-          f"Max DD {data['full_backtest']['max_dd']:.1%}")
+    print(f"Full backtest: Sharpe {data['full_backtest']['sharpe']:.2f}, Max DD {data['full_backtest']['max_dd']:.1%}")
 
     results: list[AdversarialResult] = []
     for period in worst_periods:
         name = f"HISTORICAL_{period['description'].replace(' ', '_')}"
-        start_ns = period['start_ns']
-        end_ns = period['end_ns']
+        start_ns = period["start_ns"]
+        end_ns = period["end_ns"]
 
-        print(f"\n[{period['rank']}/{len(worst_periods)}] {period['description']} "
-              f"(Original DD: {period['max_dd']:.1%})...")
+        print(
+            f"\n[{period['rank']}/{len(worst_periods)}] {period['description']} "
+            f"(Original DD: {period['max_dd']:.1%})..."
+        )
 
         # Run backtest on this specific time window
         config = HistoricalBacktestConfig(
@@ -359,10 +401,15 @@ def run_historical_replay(periods_file: Path = Path("tests/adversarial/worst_per
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Adversarial stress testing")
-    parser.add_argument("--historical", action="store_true",
-                       help="Run historical replay instead of synthetic scenarios")
-    parser.add_argument("--periods-file", type=Path, default=Path("tests/adversarial/worst_periods.json"),
-                       help="Path to worst periods JSON (for --historical)")
+    parser.add_argument(
+        "--historical", action="store_true", help="Run historical replay instead of synthetic scenarios"
+    )
+    parser.add_argument(
+        "--periods-file",
+        type=Path,
+        default=Path("tests/adversarial/worst_periods.json"),
+        help="Path to worst periods JSON (for --historical)",
+    )
     args = parser.parse_args()
 
     print("Adversarial Stress Test — GAN-Style Evaluator")
@@ -379,9 +426,13 @@ def main() -> None:
         print("\n[1/3] Regime Whipsaw (rapid trend reversals)...")
         daily, four_h = _whipsaw_klines()
         r1 = run_scenario(
-            "REGIME_WHIPSAW", daily, four_h,
-            _normal_funding(), _normal_oi(),
-            threshold_sharpe=0.0, threshold_dd=0.25,
+            "REGIME_WHIPSAW",
+            daily,
+            four_h,
+            _normal_funding(),
+            _normal_oi(),
+            threshold_sharpe=0.0,
+            threshold_dd=0.25,
         )
         scenarios.append(r1)
         print(f"  Sharpe={r1.sharpe:.2f}, DD={r1.max_dd:.1%} → {'PASS' if r1.passed else 'FAIL'}")
@@ -390,9 +441,13 @@ def main() -> None:
         print("\n[2/3] Liquidity Vacuum (sudden price gaps)...")
         daily, four_h = _vacuum_klines()
         r2 = run_scenario(
-            "LIQUIDITY_VACUUM", daily, four_h,
-            _normal_funding(), _normal_oi(),
-            threshold_sharpe=0.0, threshold_dd=0.20,
+            "LIQUIDITY_VACUUM",
+            daily,
+            four_h,
+            _normal_funding(),
+            _normal_oi(),
+            threshold_sharpe=0.0,
+            threshold_dd=0.20,
         )
         scenarios.append(r2)
         print(f"  Sharpe={r2.sharpe:.2f}, DD={r2.max_dd:.1%} → {'PASS' if r2.passed else 'FAIL'}")
@@ -401,9 +456,13 @@ def main() -> None:
         print("\n[3/3] Crowding Trap (extreme funding, price keeps trending)...")
         daily, four_h = _trending_klines()
         r3 = run_scenario(
-            "CROWDING_TRAP", daily, four_h,
-            _crowding_trap_funding(), _normal_oi(),
-            threshold_sharpe=0.0, threshold_dd=0.15,
+            "CROWDING_TRAP",
+            daily,
+            four_h,
+            _crowding_trap_funding(),
+            _normal_oi(),
+            threshold_sharpe=0.0,
+            threshold_dd=0.15,
         )
         scenarios.append(r3)
         print(f"  Sharpe={r3.sharpe:.2f}, DD={r3.max_dd:.1%} → {'PASS' if r3.passed else 'FAIL'}")
@@ -424,8 +483,10 @@ def main() -> None:
         print("\nVulnerabilities detected:")
         for s in scenarios:
             if not s.passed:
-                print(f"  {s.name}: Sharpe={s.sharpe:.2f} (need>{s.threshold_sharpe}), "
-                      f"DD={s.max_dd:.1%} (need<{s.threshold_dd:.0%})")
+                print(
+                    f"  {s.name}: Sharpe={s.sharpe:.2f} (need>{s.threshold_sharpe}), "
+                    f"DD={s.max_dd:.1%} (need<{s.threshold_dd:.0%})"
+                )
                 print(f"    {s.detail}")
         sys.exit(1)
     else:

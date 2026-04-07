@@ -111,11 +111,16 @@ def _daily_rows(days: int = 30) -> list[HistoricalKlineRow]:
         close_time_ns = open_time_ns + interval_ns
         rows.append(
             HistoricalKlineRow(
-                symbol="BTCUSDT", timeframe="1d",
-                open_time_ns=open_time_ns, close_time_ns=close_time_ns,
-                open=round(open_px, 4), high=round(high, 4),
-                low=round(low, 4), close=round(close, 4),
-                volume=round(180 + (idx % 7) * 4, 4), trade_count=800 + idx,
+                symbol="BTCUSDT",
+                timeframe="1d",
+                open_time_ns=open_time_ns,
+                close_time_ns=close_time_ns,
+                open=round(open_px, 4),
+                high=round(high, 4),
+                low=round(low, 4),
+                close=round(close, 4),
+                volume=round(180 + (idx % 7) * 4, 4),
+                trade_count=800 + idx,
             )
         )
     return rows
@@ -136,11 +141,16 @@ def _four_hour_rows(days: int = 30) -> list[HistoricalKlineRow]:
         close_time_ns = open_time_ns + interval_ns
         rows.append(
             HistoricalKlineRow(
-                symbol="BTCUSDT", timeframe="4h",
-                open_time_ns=open_time_ns, close_time_ns=close_time_ns,
-                open=round(open_px, 4), high=round(high, 4),
-                low=round(low, 4), close=round(close, 4),
-                volume=round(38 + (idx % 9) * 1.5, 4), trade_count=120 + idx,
+                symbol="BTCUSDT",
+                timeframe="4h",
+                open_time_ns=open_time_ns,
+                close_time_ns=close_time_ns,
+                open=round(open_px, 4),
+                high=round(high, 4),
+                low=round(low, 4),
+                close=round(close, 4),
+                volume=round(38 + (idx % 9) * 1.5, 4),
+                trade_count=120 + idx,
             )
         )
     return rows
@@ -161,11 +171,16 @@ def _one_hour_rows(days: int = 30) -> list[HistoricalKlineRow]:
         close_time_ns = open_time_ns + interval_ns
         rows.append(
             HistoricalKlineRow(
-                symbol="BTCUSDT", timeframe="1h",
-                open_time_ns=open_time_ns, close_time_ns=close_time_ns,
-                open=round(open_px, 4), high=round(high, 4),
-                low=round(low, 4), close=round(close, 4),
-                volume=round(8 + (idx % 5) * 0.5, 4), trade_count=30 + (idx % 20),
+                symbol="BTCUSDT",
+                timeframe="1h",
+                open_time_ns=open_time_ns,
+                close_time_ns=close_time_ns,
+                open=round(open_px, 4),
+                high=round(high, 4),
+                low=round(low, 4),
+                close=round(close, 4),
+                volume=round(8 + (idx % 5) * 0.5, 4),
+                trade_count=30 + (idx % 20),
             )
         )
     return rows
@@ -189,7 +204,8 @@ def _open_interest_rows(days: int = 30) -> list[HistoricalOpenInterestRow]:
     interval_ns = 4 * 60 * 60 * 1_000_000_000
     return [
         HistoricalOpenInterestRow(
-            symbol="BTCUSDT", timeframe="4h",
+            symbol="BTCUSDT",
+            timeframe="4h",
             ts_ns=base_ns + (idx * interval_ns),
             open_interest=round(1_500_000_000 + idx * 2_500_000, 4),
         )

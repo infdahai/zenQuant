@@ -60,16 +60,18 @@ def extract_worst_dd_windows(
         if equity >= peak_equity:
             # End of drawdown period
             if in_drawdown and max_dd_in_window >= min_dd_threshold:
-                dd_peaks.append({
-                    'start_idx': max(0, dd_start_idx - context_bars),
-                    'peak_idx': dd_start_idx,
-                    'trough_idx': max_dd_idx,
-                    'end_idx': i,
-                    'max_dd': max_dd_in_window,
-                    'peak_equity': peak_equity,
-                    'trough_equity': risk_snapshots[max_dd_idx].equity,
-                    'timestamp': snapshot.ts_ns,
-                })
+                dd_peaks.append(
+                    {
+                        "start_idx": max(0, dd_start_idx - context_bars),
+                        "peak_idx": dd_start_idx,
+                        "trough_idx": max_dd_idx,
+                        "end_idx": i,
+                        "max_dd": max_dd_in_window,
+                        "peak_equity": peak_equity,
+                        "trough_equity": risk_snapshots[max_dd_idx].equity,
+                        "timestamp": snapshot.ts_ns,
+                    }
+                )
             peak_equity = equity
             in_drawdown = False
             max_dd_in_window = 0.0
@@ -85,7 +87,7 @@ def extract_worst_dd_windows(
                 max_dd_idx = i
 
     # Sort by worst DD first
-    dd_peaks.sort(key=lambda x: x['max_dd'], reverse=True)
+    dd_peaks.sort(key=lambda x: x["max_dd"], reverse=True)
 
     # Take top N non-overlapping periods
     selected: list[dict] = []
@@ -96,7 +98,7 @@ def extract_worst_dd_windows(
         # Check if overlaps with already selected periods
         overlaps = False
         for s in selected:
-            if not (peak['end_idx'] < s['start_idx'] or peak['start_idx'] > s['end_idx']):
+            if not (peak["end_idx"] < s["start_idx"] or peak["start_idx"] > s["end_idx"]):
                 overlaps = True
                 break
 
@@ -126,7 +128,7 @@ def main() -> None:
     backtest = HistoricalBacktest(config)
     result = backtest.run()
 
-    print(f"  Backtest complete:")
+    print("  Backtest complete:")
     print(f"    Sharpe: {result.metrics.sharpe:.2f}")
     print(f"    Max DD: {result.metrics.max_drawdown:.1%}")
     print(f"    Trades: {result.metrics.trade_count}")
@@ -148,29 +150,33 @@ def main() -> None:
     # Convert to serializable format
     output_periods = []
     for i, period in enumerate(worst_periods, 1):
-        timestamp_ns = period['timestamp']
+        timestamp_ns = period["timestamp"]
         dt = datetime.fromtimestamp(timestamp_ns / 1e9, tz=UTC)
 
         # Calculate window timestamps from risk snapshots
-        start_snapshot = backtest._risk_snapshots[period['start_idx']]
-        end_snapshot = backtest._risk_snapshots[period['end_idx']]
+        start_snapshot = backtest._risk_snapshots[period["start_idx"]]
+        end_snapshot = backtest._risk_snapshots[period["end_idx"]]
 
-        output_periods.append({
-            'rank': i,
-            'max_dd': round(period['max_dd'], 4),
-            'start_ns': start_snapshot.ts_ns,
-            'end_ns': end_snapshot.ts_ns,
-            'start_date': datetime.fromtimestamp(start_snapshot.ts_ns / 1e9, tz=UTC).isoformat(),
-            'end_date': datetime.fromtimestamp(end_snapshot.ts_ns / 1e9, tz=UTC).isoformat(),
-            'peak_equity': round(period['peak_equity'], 2),
-            'trough_equity': round(period['trough_equity'], 2),
-            'bars': period['end_idx'] - period['start_idx'],
-            'description': f"{dt.strftime('%Y-%m')} DD",
-        })
+        output_periods.append(
+            {
+                "rank": i,
+                "max_dd": round(period["max_dd"], 4),
+                "start_ns": start_snapshot.ts_ns,
+                "end_ns": end_snapshot.ts_ns,
+                "start_date": datetime.fromtimestamp(start_snapshot.ts_ns / 1e9, tz=UTC).isoformat(),
+                "end_date": datetime.fromtimestamp(end_snapshot.ts_ns / 1e9, tz=UTC).isoformat(),
+                "peak_equity": round(period["peak_equity"], 2),
+                "trough_equity": round(period["trough_equity"], 2),
+                "bars": period["end_idx"] - period["start_idx"],
+                "description": f"{dt.strftime('%Y-%m')} DD",
+            }
+        )
 
-        print(f"  #{i}: {output_periods[-1]['max_dd']:.1%} DD "
-              f"({output_periods[-1]['start_date'][:10]} to {output_periods[-1]['end_date'][:10]}, "
-              f"{output_periods[-1]['bars']} bars)")
+        print(
+            f"  #{i}: {output_periods[-1]['max_dd']:.1%} DD "
+            f"({output_periods[-1]['start_date'][:10]} to {output_periods[-1]['end_date'][:10]}, "
+            f"{output_periods[-1]['bars']} bars)"
+        )
 
     # Save to JSON
     print(f"\n[3/3] Saving to {args.output}...")
@@ -178,13 +184,13 @@ def main() -> None:
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
     output_data = {
-        'extracted_at': datetime.now(UTC).isoformat(),
-        'full_backtest': {
-            'sharpe': round(result.metrics.sharpe, 4),
-            'max_dd': round(result.metrics.max_drawdown, 4),
-            'total_bars': result.metrics.total_bars,
+        "extracted_at": datetime.now(UTC).isoformat(),
+        "full_backtest": {
+            "sharpe": round(result.metrics.sharpe, 4),
+            "max_dd": round(result.metrics.max_drawdown, 4),
+            "total_bars": result.metrics.total_bars,
         },
-        'worst_periods': output_periods,
+        "worst_periods": output_periods,
     }
 
     output_path.write_text(json.dumps(output_data, indent=2))

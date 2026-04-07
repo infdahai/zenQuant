@@ -114,17 +114,23 @@ class HFFeatureStore:
         """Return features for the 4H bar ending at or before cutoff."""
         if not self._bar_end_ns:
             return HFFeatures(
-                realized_vol_hf=0.0, intra_bar_consistency=1.0,
-                intra_bar_max_dd=0.0, volume_front_ratio=0.5,
-                realized_skew=0.0, n_bars=0,
+                realized_vol_hf=0.0,
+                intra_bar_consistency=1.0,
+                intra_bar_max_dd=0.0,
+                volume_front_ratio=0.5,
+                realized_skew=0.0,
+                n_bars=0,
             )
 
         idx = bisect.bisect_right(self._bar_end_ns, cutoff_time_ns) - 1
         if idx < 0:
             return HFFeatures(
-                realized_vol_hf=0.0, intra_bar_consistency=1.0,
-                intra_bar_max_dd=0.0, volume_front_ratio=0.5,
-                realized_skew=0.0, n_bars=0,
+                realized_vol_hf=0.0,
+                intra_bar_consistency=1.0,
+                intra_bar_max_dd=0.0,
+                volume_front_ratio=0.5,
+                realized_skew=0.0,
+                n_bars=0,
             )
         return self._features[idx]
 
@@ -132,16 +138,22 @@ class HFFeatureStore:
         """Return features for the 1H bar ending at or before cutoff."""
         if not self._bar_end_ns_1h:
             return HFFeatures(
-                realized_vol_hf=0.0, intra_bar_consistency=1.0,
-                intra_bar_max_dd=0.0, volume_front_ratio=0.5,
-                realized_skew=0.0, n_bars=0,
+                realized_vol_hf=0.0,
+                intra_bar_consistency=1.0,
+                intra_bar_max_dd=0.0,
+                volume_front_ratio=0.5,
+                realized_skew=0.0,
+                n_bars=0,
             )
         idx = bisect.bisect_right(self._bar_end_ns_1h, cutoff_time_ns) - 1
         if idx < 0:
             return HFFeatures(
-                realized_vol_hf=0.0, intra_bar_consistency=1.0,
-                intra_bar_max_dd=0.0, volume_front_ratio=0.5,
-                realized_skew=0.0, n_bars=0,
+                realized_vol_hf=0.0,
+                intra_bar_consistency=1.0,
+                intra_bar_max_dd=0.0,
+                volume_front_ratio=0.5,
+                realized_skew=0.0,
+                n_bars=0,
             )
         return self._features_1h[idx]
 
@@ -190,7 +202,7 @@ class HFFeatureStore:
             mean_r = sum(returns) / len(returns)
             m3 = sum((r - mean_r) ** 3 for r in returns) / len(returns)
             std_r = math.sqrt(sum_sq / len(returns))
-            skew = m3 / (std_r ** 3) if std_r > 1e-12 else 0.0
+            skew = m3 / (std_r**3) if std_r > 1e-12 else 0.0
         else:
             skew = 0.0
 

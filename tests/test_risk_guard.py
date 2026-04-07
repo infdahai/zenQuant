@@ -17,20 +17,32 @@ def _make_pack(values: dict | None = None) -> IndicatorPack:
     if values:
         base.update(values)
     return IndicatorPack(
-        ts_ns=1, symbol="BTCUSDT_PERP", timeframe=Timeframe.TF_4H,
-        cutoff_time_ns=1, indicator_version="v1", formula_hash="test",
+        ts_ns=1,
+        symbol="BTCUSDT_PERP",
+        timeframe=Timeframe.TF_4H,
+        cutoff_time_ns=1,
+        indicator_version="v1",
+        formula_hash="test",
         quality_flags=["OK"],
         coverage=IndicatorCoverage(venue_count=2, oi_coverage=1.0, staleness_ms=0),
-        values=base, components={},
+        values=base,
+        components={},
     )
 
 
 def _make_target(qty: float = 1.0, reduce_only: bool = False) -> TargetPosition:
     return TargetPosition(
-        intent_id="test", portfolio="arc", symbol="BTCUSDT_PERP",
-        timeframe=Timeframe.TF_4H, cutoff_time_ns=2,
-        target_qty=qty, target_leverage=2.0, reduce_only=reduce_only,
-        regime="TREND", regime_confidence=0.9, reason_codes=["TEST"],
+        intent_id="test",
+        portfolio="arc",
+        symbol="BTCUSDT_PERP",
+        timeframe=Timeframe.TF_4H,
+        cutoff_time_ns=2,
+        target_qty=qty,
+        target_leverage=2.0,
+        reduce_only=reduce_only,
+        regime="TREND",
+        regime_confidence=0.9,
+        reason_codes=["TEST"],
     )
 
 
@@ -125,15 +137,13 @@ class CrowdingTests(unittest.TestCase):
         bus.subscribe("risk.overlay.decision", lambda _, p: decisions.append(p))
 
         # Long position + leveraged funds extremely long → COT_CROWDING
-        bus.publish("indicator.pack.v1.4h.BTCUSDT_PERP",
-                     _make_pack({"cot_leveraged_z": 3.0}))
+        bus.publish("indicator.pack.v1.4h.BTCUSDT_PERP", _make_pack({"cot_leveraged_z": 3.0}))
         bus.publish("intent.target_position.arc.BTCUSDT_PERP", _make_target(qty=1.0))
         self.assertIn("COT_CROWDING", decisions[-1].flags)
 
         # Short position + leveraged funds extremely long → NO COT_CROWDING
         decisions.clear()
-        bus.publish("indicator.pack.v1.4h.BTCUSDT_PERP",
-                     _make_pack({"cot_leveraged_z": 3.0}))
+        bus.publish("indicator.pack.v1.4h.BTCUSDT_PERP", _make_pack({"cot_leveraged_z": 3.0}))
         bus.publish("intent.target_position.arc.BTCUSDT_PERP", _make_target(qty=-1.0))
         self.assertNotIn("COT_CROWDING", decisions[-1].flags)
 
@@ -151,8 +161,9 @@ class ConfigurabilityTests(unittest.TestCase):
         bus.subscribe("risk.overlay.decision", lambda _, p: decisions.append(p))
 
         overlay.apply_fee(6_000.0)  # 6% DD (above custom 5% threshold)
-        bus.publish("indicator.pack.v1.4h.BTCUSDT_PERP",
-                     _make_pack({"realized_vol": 0.6}))  # Above custom 0.5 threshold
+        bus.publish(
+            "indicator.pack.v1.4h.BTCUSDT_PERP", _make_pack({"realized_vol": 0.6})
+        )  # Above custom 0.5 threshold
         bus.publish("intent.target_position.arc.BTCUSDT_PERP", _make_target())
 
         self.assertIn("DD_STEP_1", decisions[-1].flags)

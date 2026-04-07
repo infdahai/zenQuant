@@ -1,3 +1,3 @@
-from .engine import StateEngine
+from .engine import StateEngine, StateEngineConfig
 
-__all__ = ["StateEngine"]
+__all__ = ["StateEngine", "StateEngineConfig"]

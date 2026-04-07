@@ -109,14 +109,16 @@ class TestCombinedPerturbations(unittest.TestCase):
         # Bars 0-4: cumulative uptrend (+100 per bar)
         # Bar 0: +100, Bar 1: +200, Bar 2: +300, Bar 3: +400, Bar 4: +500
         # Even with ±0.1% noise (~±42), bar 4 should be higher than bar 0
-        self.assertGreater(result[4]["close"], result[0]["close"],
-                          "Bar 4 should be higher than bar 0 (uptrend first half)")
+        self.assertGreater(
+            result[4]["close"], result[0]["close"], "Bar 4 should be higher than bar 0 (uptrend first half)"
+        )
 
         # Bars 5-9: cumulative downtrend (-100 per bar from peak)
         # Bar 5: +400, Bar 6: +300, Bar 7: +200, Bar 8: +100, Bar 9: +0
         # Bar 5 should be higher than bar 9
-        self.assertGreater(result[5]["close"], result[9]["close"],
-                          "Bar 5 should be higher than bar 9 (downtrend second half)")
+        self.assertGreater(
+            result[5]["close"], result[9]["close"], "Bar 5 should be higher than bar 9 (downtrend second half)"
+        )
 
 
 class TestNoopConfig(unittest.TestCase):

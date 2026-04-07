@@ -52,11 +52,41 @@ def run_stress_tests(data_root: str = "data/raw/binance", symbol: str = "BTCUSDT
             None,
             lambda s, dd: s > -2.0 and dd < 0.3,
         ),
-        ("Noise seed=42", None, None, PerturbationConfig(seed=42, price_noise_pct=0.001, volume_noise_pct=0.05, bar_dropout_pct=0.02), lambda s, dd: s > 0),
-        ("Noise seed=123", None, None, PerturbationConfig(seed=123, price_noise_pct=0.001, volume_noise_pct=0.05, bar_dropout_pct=0.02), lambda s, dd: s > 0),
-        ("Noise seed=456", None, None, PerturbationConfig(seed=456, price_noise_pct=0.001, volume_noise_pct=0.05, bar_dropout_pct=0.02), lambda s, dd: s > 0),
-        ("Noise seed=789", None, None, PerturbationConfig(seed=789, price_noise_pct=0.001, volume_noise_pct=0.05, bar_dropout_pct=0.02), lambda s, dd: s > 0),
-        ("Noise seed=1024", None, None, PerturbationConfig(seed=1024, price_noise_pct=0.001, volume_noise_pct=0.05, bar_dropout_pct=0.02), lambda s, dd: s > 0),
+        (
+            "Noise seed=42",
+            None,
+            None,
+            PerturbationConfig(seed=42, price_noise_pct=0.001, volume_noise_pct=0.05, bar_dropout_pct=0.02),
+            lambda s, dd: s > 0,
+        ),
+        (
+            "Noise seed=123",
+            None,
+            None,
+            PerturbationConfig(seed=123, price_noise_pct=0.001, volume_noise_pct=0.05, bar_dropout_pct=0.02),
+            lambda s, dd: s > 0,
+        ),
+        (
+            "Noise seed=456",
+            None,
+            None,
+            PerturbationConfig(seed=456, price_noise_pct=0.001, volume_noise_pct=0.05, bar_dropout_pct=0.02),
+            lambda s, dd: s > 0,
+        ),
+        (
+            "Noise seed=789",
+            None,
+            None,
+            PerturbationConfig(seed=789, price_noise_pct=0.001, volume_noise_pct=0.05, bar_dropout_pct=0.02),
+            lambda s, dd: s > 0,
+        ),
+        (
+            "Noise seed=1024",
+            None,
+            None,
+            PerturbationConfig(seed=1024, price_noise_pct=0.001, volume_noise_pct=0.05, bar_dropout_pct=0.02),
+            lambda s, dd: s > 0,
+        ),
     ]
 
     print(f"{'=' * 65}")
@@ -93,11 +123,19 @@ def run_stress_tests(data_root: str = "data/raw/binance", symbol: str = "BTCUSDT
     rob_pass = sum(
         1
         for i, (name, s, e, p, fn) in enumerate(tests)
-        if p is not None and i < len(tests) and fn(
+        if p is not None
+        and i < len(tests)
+        and fn(
             _sharpe_from_snapshots(
                 HistoricalBacktest(
-                    HistoricalBacktestConfig(root_dir=root, symbol=symbol, portfolio_symbol=f"{symbol}_PERP", perturbation=p)
-                ).run()._risk_snapshots if False else []
+                    HistoricalBacktestConfig(
+                        root_dir=root, symbol=symbol, portfolio_symbol=f"{symbol}_PERP", perturbation=p
+                    )
+                )
+                .run()
+                ._risk_snapshots
+                if False
+                else []
             ),
             0,
         )

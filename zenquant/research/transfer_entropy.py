@@ -132,8 +132,8 @@ def rolling_transfer_entropy(
     result = [0.0] * n
 
     for i in range(window, n):
-        src_window = source_returns[i - window:i]
-        tgt_window = target_returns[i - window:i]
+        src_window = source_returns[i - window : i]
+        tgt_window = target_returns[i - window : i]
         result[i] = transfer_entropy(src_window, tgt_window, lag=lag)
 
     return result
