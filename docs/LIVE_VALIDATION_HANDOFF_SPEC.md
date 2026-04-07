@@ -199,6 +199,7 @@ uv run zenquant-web --host 127.0.0.1 --port 8090 --mode live
 ```bash
 curl http://127.0.0.1:8090/healthz
 uv run zenquant-live-validate --base-url http://127.0.0.1:8090 --require-db
+uv run zenquant-live-scorecard --base-url http://127.0.0.1:8090 --require-db
 ```
 
 通过标准：
@@ -211,8 +212,9 @@ uv run zenquant-live-validate --base-url http://127.0.0.1:8090 --require-db
   - `state_4h = true`
   - `playbook_4h = true`
   - `target_4h = true`
-  - `database_connected = true`
-  - `database_writes > 0`
+- `database_connected = true`
+- `database_writes > 0`
+- scorecard 已生成并落盘到 `results/paper_live_scorecards/`
 
 ### 4.4 运行中健康检查
 
@@ -223,6 +225,7 @@ uv run zenquant-live-validate --base-url http://127.0.0.1:8090 --require-db
 - intent / target 持续生成
 - 风险快照持续写入
 - 审计写入无 dropped writes
+- 前端 `Paper-Live Scorecard` 面板与 CLI 输出一致
 
 ### 4.5 导出与复盘
 
@@ -236,6 +239,17 @@ uv run python scripts/export_live_training_data.py --dsn "$ZENQUANT_PG_DSN" --sy
 
 ```bash
 uv run zenquant-live-export --dsn "$ZENQUANT_PG_DSN" --symbol BTCUSDT_PERP --label paper-live
+```
+
+正式 review 完成后，记录一条 scorecard review：
+
+```bash
+uv run zenquant-live-scorecard \
+  --base-url http://127.0.0.1:8090 \
+  --require-db \
+  --record-review PASS \
+  --review-summary "weekly parity / execution / risk review passed" \
+  --review-artifact results/live_training_runs/<run_id>/report.md
 ```
 
 导出产物必须用于后续 review，至少覆盖：

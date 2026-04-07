@@ -31,6 +31,56 @@ class LiveValidationConfig:
     output_path: Path | None = None
 
 
+def build_live_observation(
+    *,
+    health: dict[str, Any],
+    state_4h: dict[str, Any],
+    state_1d: dict[str, Any],
+    now_ns: int,
+    bar_close_counts: dict[str, int],
+) -> dict[str, Any]:
+    """Normalize one live runtime snapshot into the validation schema."""
+    runtime_status = dict((state_4h or {}).get("runtime_status") or {})
+    database = dict(runtime_status.get("database") or {})
+
+    return {
+        "ts_ns": now_ns,
+        "health_status": (health or {}).get("status"),
+        "mode": (health or {}).get("mode"),
+        "bootstrap_phase": runtime_status.get("bootstrap_phase", ""),
+        "market_connected": bool(runtime_status.get("market_connected")),
+        "last_market_event_ns": int(runtime_status.get("last_market_event_ns", 0) or 0),
+        "database_enabled": bool(database.get("enabled")),
+        "database_connected": bool(database.get("connected")),
+        "database_writes": int(database.get("writes", 0) or 0),
+        "database_dropped": int(database.get("dropped", 0) or 0),
+        "indicator_4h": bool((state_4h or {}).get("latest_indicator")),
+        "state_4h": bool((state_4h or {}).get("market_state")),
+        "playbook_4h": bool((state_4h or {}).get("active_playbook")),
+        "sizing_4h": bool((state_4h or {}).get("latest_sizing")),
+        "target_4h": bool((state_4h or {}).get("latest_target")),
+        "indicator_1d": bool((state_1d or {}).get("latest_indicator")),
+        "state_1d": bool((state_1d or {}).get("market_state")),
+        "bias_1d": bool((state_1d or {}).get("directional_bias")),
+        "bar_close_count_4h": int(bar_close_counts.get("4h", 0) or 0),
+        "bar_close_count_1d": int(bar_close_counts.get("1d", 0) or 0),
+    }
+
+
+def summarize_validation(
+    *,
+    observations: list[dict[str, Any]],
+    bar_close_counts: dict[str, int],
+    config: LiveValidationConfig,
+) -> dict[str, Any]:
+    """Summarize one or more validation observations into operator output."""
+    return _summarize(
+        observations=observations,
+        bar_close_counts=bar_close_counts,
+        config=config,
+    )
+
+
 def run_validation(config: LiveValidationConfig) -> dict[str, Any]:
     """Run one validation session and return a JSON-serializable summary."""
     started_ns = time.time_ns()
@@ -49,8 +99,6 @@ def run_validation(config: LiveValidationConfig) -> dict[str, Any]:
             f"{config.base_url}/api/state?{urllib.parse.urlencode({'symbol': config.symbol, 'tf': '1d'})}"
         )
 
-        runtime_status = dict((state_4h or {}).get("runtime_status") or {})
-        database = dict(runtime_status.get("database") or {})
         latest_4h_cutoff = int(((state_4h or {}).get("latest_indicator") or {}).get("cutoff_time_ns") or 0)
         latest_1d_cutoff = int(((state_1d or {}).get("latest_indicator") or {}).get("cutoff_time_ns") or 0)
 
@@ -64,35 +112,20 @@ def run_validation(config: LiveValidationConfig) -> dict[str, Any]:
             seen_cutoffs["1d"] = latest_1d_cutoff
 
         observations.append(
-            {
-                "ts_ns": now_ns,
-                "health_status": (health or {}).get("status"),
-                "mode": (health or {}).get("mode"),
-                "bootstrap_phase": runtime_status.get("bootstrap_phase", ""),
-                "market_connected": bool(runtime_status.get("market_connected")),
-                "last_market_event_ns": int(runtime_status.get("last_market_event_ns", 0) or 0),
-                "database_enabled": bool(database.get("enabled")),
-                "database_connected": bool(database.get("connected")),
-                "database_writes": int(database.get("writes", 0) or 0),
-                "database_dropped": int(database.get("dropped", 0) or 0),
-                "indicator_4h": bool((state_4h or {}).get("latest_indicator")),
-                "state_4h": bool((state_4h or {}).get("market_state")),
-                "playbook_4h": bool((state_4h or {}).get("active_playbook")),
-                "sizing_4h": bool((state_4h or {}).get("latest_sizing")),
-                "target_4h": bool((state_4h or {}).get("latest_target")),
-                "indicator_1d": bool((state_1d or {}).get("latest_indicator")),
-                "state_1d": bool((state_1d or {}).get("market_state")),
-                "bias_1d": bool((state_1d or {}).get("directional_bias")),
-                "bar_close_count_4h": bar_close_counts["4h"],
-                "bar_close_count_1d": bar_close_counts["1d"],
-            }
+            build_live_observation(
+                health=health,
+                state_4h=state_4h,
+                state_1d=state_1d,
+                now_ns=now_ns,
+                bar_close_counts=bar_close_counts,
+            )
         )
 
         if now_ns >= deadline_ns or config.watch_seconds <= 0:
             break
         time.sleep(max(1.0, config.poll_interval_s))
 
-    summary = _summarize(
+    summary = summarize_validation(
         observations=observations,
         bar_close_counts=bar_close_counts,
         config=config,

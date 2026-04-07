@@ -32,6 +32,28 @@ export async function fetchIndicatorHistory(
   return response.json();
 }
 
+export async function fetchPaperLiveScorecardLatest(
+  symbol: string,
+): Promise<Record<string, unknown>> {
+  const query = new URLSearchParams({ symbol });
+  const response = await fetch(`/api/paper-live/scorecard/latest?${query.toString()}`);
+  if (!response.ok) {
+    throw new Error(`paper-live scorecard request failed: ${response.status}`);
+  }
+  return response.json();
+}
+
+export async function fetchPaperLiveScorecardHistory(
+  limit = 50,
+): Promise<Record<string, unknown>[]> {
+  const query = new URLSearchParams({ limit: String(limit) });
+  const response = await fetch(`/api/paper-live/scorecard/history?${query.toString()}`);
+  if (!response.ok) {
+    throw new Error(`paper-live history request failed: ${response.status}`);
+  }
+  return response.json();
+}
+
 function buildWsUrl(path: string, symbol: string, tf: string): string {
   const protocol = window.location.protocol === "https:" ? "wss" : "ws";
   const query = new URLSearchParams({ symbol, tf });

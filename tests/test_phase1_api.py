@@ -50,6 +50,20 @@ class Phase1APITests(unittest.TestCase):
             self.assertIn("position_state", state)
             self.assertIn("latest_target", state)
 
+            scorecard_resp = client.get(
+                "/api/paper-live/scorecard/latest",
+                params={"symbol": "BTCUSDT_PERP"},
+            )
+            self.assertEqual(scorecard_resp.status_code, 200)
+            scorecard = scorecard_resp.json()
+            self.assertIn("healthy", scorecard)
+            self.assertIn("status_label", scorecard)
+            self.assertIn("pending_items", scorecard)
+
+            history_resp = client.get("/api/paper-live/scorecard/history", params={"limit": 5})
+            self.assertEqual(history_resp.status_code, 200)
+            self.assertIsInstance(history_resp.json(), list)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -31,6 +31,11 @@ except ModuleNotFoundError as exc:
     _FASTAPI_IMPORT_ERROR = exc
 
 from zenquant.app.live_state import DashboardStateStore
+from zenquant.app.paper_live_scorecard import (
+    SCORECARD_ROOT,
+    build_runtime_scorecard,
+    load_scorecard_history_payloads,
+)
 from zenquant.domain import (
     Candle,
     DeribitRiskPack,
@@ -681,6 +686,27 @@ def create_app(runtime_mode: str = "demo", bus: Any = None) -> FastAPI:
             to_ns=to_ns,
         )
         return JSONResponse([_indicator_payload(point) for point in history])
+
+    @app.get("/api/paper-live/scorecard/latest")
+    async def get_paper_live_scorecard_latest(symbol: str = "BTCUSDT_PERP") -> JSONResponse:
+        state_4h = runtime.snapshot(symbol=symbol, tf="4h")
+        state_1d = runtime.snapshot(symbol=symbol, tf="1d")
+        health = await healthz()
+        return JSONResponse(
+            build_runtime_scorecard(
+                health=health,
+                state_4h=state_4h,
+                state_1d=state_1d,
+                symbol=symbol,
+                require_db=runtime_mode == "live",
+                output_root=SCORECARD_ROOT,
+            )
+        )
+
+    @app.get("/api/paper-live/scorecard/history")
+    async def get_paper_live_scorecard_history(limit: int = 50) -> JSONResponse:
+        clipped = min(max(1, limit), 200)
+        return JSONResponse(load_scorecard_history_payloads(SCORECARD_ROOT, limit=clipped))
 
     @app.get("/")
     async def index() -> FileResponse:

@@ -99,6 +99,19 @@ export function formatRelativeTimeFromNs(
   return `${Math.round(ageMs / 3_600_000)}h ago`;
 }
 
+export function formatDurationSeconds(value: unknown): string {
+  const seconds = Number(value);
+  if (!Number.isFinite(seconds) || seconds <= 0) return "0m";
+  const totalMinutes = Math.floor(seconds / 60);
+  const totalHours = Math.floor(totalMinutes / 60);
+  const days = Math.floor(totalHours / 24);
+  const hours = totalHours % 24;
+  const minutes = totalMinutes % 60;
+  if (days > 0) return `${days}d ${hours}h`;
+  if (totalHours > 0) return `${totalHours}h ${minutes}m`;
+  return `${totalMinutes}m`;
+}
+
 export function formatBiasLabel(
   direction: unknown,
   hasSignal = true,

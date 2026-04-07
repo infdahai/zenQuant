@@ -1,6 +1,7 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, reactive, ref } from "vue";
+import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from "vue";
 import { NTag, NButton, NSpace, NGrid, NGridItem, NCollapse, NCollapseItem } from "naive-ui";
+import { fetchPaperLiveScorecardLatest } from "../api/client";
 import { useMarketStore } from "../stores/market";
 import Panel from "../components/panels/Panel.vue";
 import MetricCell from "../components/panels/MetricCell.vue";
@@ -15,6 +16,7 @@ import {
   formatDisplayValue,
   formatNumber,
   formatPercent,
+  formatDurationSeconds,
   formatRegimeLabel,
   formatRelativeTimeFromNs,
   formatSignedCurrency,
@@ -37,10 +39,23 @@ const expandMode = ref(loadExpandMode());
 const expanded = reactive<Record<string, boolean>>({});
 
 let timer: ReturnType<typeof setInterval>;
+let scorecardTimer: ReturnType<typeof setInterval> | null = null;
 onMounted(() => {
   timer = setInterval(() => (nowMs.value = Date.now()), 1000);
+  void refreshPaperLiveScorecard();
+  scorecardTimer = setInterval(() => void refreshPaperLiveScorecard(), 30000);
 });
-onBeforeUnmount(() => clearInterval(timer));
+onBeforeUnmount(() => {
+  clearInterval(timer);
+  if (scorecardTimer) clearInterval(scorecardTimer);
+});
+
+watch(
+  () => store.symbol,
+  () => {
+    void refreshPaperLiveScorecard();
+  },
+);
 
 // ── Snapshot type ──
 interface Snapshot {
@@ -57,6 +72,20 @@ interface Snapshot {
   latest_target?: Record<string, unknown>;
   reasons?: Record<string, unknown>[];
   [key: string]: unknown;
+}
+
+interface Scorecard {
+  healthy?: boolean;
+  status_label?: string;
+  failures?: string[];
+  checked_at?: string;
+  sustained_run?: Record<string, unknown>;
+  pass_rates?: Record<string, Record<string, unknown>>;
+  latest_export?: Record<string, unknown> | null;
+  latest_review?: Record<string, unknown> | null;
+  completed_items?: string[];
+  pending_items?: string[];
+  validation?: Record<string, unknown>;
 }
 
 // ── Computed projections ──
@@ -87,6 +116,8 @@ const candles = computed(() => ((snapshot.value.candles as Record<string, unknow
 const priceSeries = computed(() => ((snapshot.value.price_series as Record<string, unknown>[]) || []).slice(-300));
 const equityCurve = computed(() => ((snapshot.value.equity_curve as Record<string, unknown>[]) || []).map((item) => Number((item as Record<string, unknown>).equity)));
 const pnlSummary = computed(() => (snapshot.value.pnl_summary as Record<string, unknown>) || null);
+const paperLiveScorecard = ref<Scorecard | null>(null);
+const paperLiveScorecardError = ref("");
 
 // Helper to access indicator values by key
 function ind(key: string): unknown {
@@ -264,6 +295,67 @@ function toneColor(tone: string) {
 }
 
 const deribitIvSeries = computed(() => deribitHistory.value.map((item) => Number((item as Record<string, unknown>).atm_iv_30d || 0)));
+
+async function refreshPaperLiveScorecard() {
+  try {
+    paperLiveScorecard.value = (await fetchPaperLiveScorecardLatest(store.symbol)) as Scorecard;
+    paperLiveScorecardError.value = "";
+  } catch (err) {
+    paperLiveScorecardError.value = err instanceof Error ? err.message : String(err);
+  }
+}
+
+const scorecardTone = computed<Tone>(() => {
+  if (paperLiveScorecardError.value) return "warning";
+  if (!paperLiveScorecard.value) return "warning";
+  return paperLiveScorecard.value.healthy ? "ok" : "danger";
+});
+
+const scorecardSummary = computed(() => {
+  if (paperLiveScorecardError.value) {
+    return {
+      headline: "Scorecard unavailable",
+      detail: paperLiveScorecardError.value,
+      tone: "warning" as Tone,
+    };
+  }
+  if (!paperLiveScorecard.value) {
+    return {
+      headline: "Warming scorecard",
+      detail: "Awaiting first paper-live scorecard snapshot",
+      tone: "warning" as Tone,
+    };
+  }
+  const failures = Array.isArray(paperLiveScorecard.value.failures)
+    ? paperLiveScorecard.value.failures.filter(Boolean).join(" | ")
+    : "";
+  return {
+    headline: String(paperLiveScorecard.value.status_label || "paper trading in progress"),
+    detail: failures || "System healthy; sustained validation still in progress",
+    tone: scorecardTone.value,
+  };
+});
+
+const scorecardCurrent = computed(
+  () => (paperLiveScorecard.value?.validation?.latest as Record<string, unknown>) || {},
+);
+const scorecardStreak = computed(
+  () => (paperLiveScorecard.value?.sustained_run as Record<string, unknown>) || {},
+);
+const scorecard24h = computed(
+  () => (paperLiveScorecard.value?.pass_rates?.["24h"] as Record<string, unknown>) || {},
+);
+const scorecard7d = computed(
+  () => (paperLiveScorecard.value?.pass_rates?.["7d"] as Record<string, unknown>) || {},
+);
+const scorecardExport = computed(
+  () => (paperLiveScorecard.value?.latest_export as Record<string, unknown> | null) || null,
+);
+const scorecardReview = computed(
+  () => (paperLiveScorecard.value?.latest_review as Record<string, unknown> | null) || null,
+);
+const scorecardCompletedItems = computed(() => (paperLiveScorecard.value?.completed_items || []).slice(0, 5));
+const scorecardPendingItems = computed(() => (paperLiveScorecard.value?.pending_items || []).slice(0, 6));
 </script>
 
 <template>
@@ -315,6 +407,85 @@ const deribitIvSeries = computed(() => deribitHistory.value.map((item) => Number
         </MetricCell>
         <MetricCell label="Total PnL" :value="pnlSummary ? formatSignedCurrency(pnlSummary.pnl_abs, 2) : '-'" :detail="pnlSummary ? formatPercent(pnlSummary.pnl_pct, 2) + ' from start' : 'Waiting for equity baseline'" :tone="primaryRiskTone" />
         <MetricCell label="Equity" :value="riskSnapshot ? formatCurrency(riskSnapshot.equity, 2) : '-'" :detail="riskSnapshot ? 'Drawdown ' + formatPercent(riskSnapshot.drawdown, 2) : 'No risk snapshot yet'" />
+      </div>
+    </Panel>
+
+    <Panel title="Paper-Live Scorecard">
+      <div class="grid-4">
+        <MetricCell
+          label="Paper-live status"
+          :value="scorecardSummary.headline"
+          :detail="scorecardSummary.detail"
+          :tone="scorecardSummary.tone"
+          wide
+        />
+        <MetricCell
+          label="Healthy streak"
+          :value="formatDurationSeconds(scorecardStreak.healthy_duration_seconds)"
+          :detail="scorecardStreak.healthy_started_at ? 'Since ' + String(scorecardStreak.healthy_started_at) : 'Healthy streak not established yet'"
+          :tone="scorecardTone"
+        />
+        <MetricCell
+          label="Last failure"
+          :value="scorecardStreak.last_failure_at ? String(scorecardStreak.last_failure_at) : 'None recorded'"
+          :detail="Array.isArray(scorecardStreak.last_failure_reasons) && scorecardStreak.last_failure_reasons.length ? formatCodes(scorecardStreak.last_failure_reasons as string[], 4) : 'No stop conditions recorded in scorecard history'"
+          :tone="Array.isArray(scorecardStreak.last_failure_reasons) && scorecardStreak.last_failure_reasons.length ? 'danger' : 'ok'"
+        />
+        <MetricCell
+          label="24h pass rate"
+          :value="scorecard24h.pass_rate !== undefined && scorecard24h.pass_rate !== null ? formatPercent(scorecard24h.pass_rate, 1) : 'No history'"
+          :detail="scorecard24h.observations ? String(scorecard24h.observations) + ' checks' : 'Scorecard history not accumulated yet'"
+          :tone="Number(scorecard24h.pass_rate || 0) >= 1 ? 'ok' : Number(scorecard24h.pass_rate || 0) >= 0.8 ? 'warning' : 'danger'"
+        />
+        <MetricCell
+          label="7d pass rate"
+          :value="scorecard7d.pass_rate !== undefined && scorecard7d.pass_rate !== null ? formatPercent(scorecard7d.pass_rate, 1) : 'No history'"
+          :detail="scorecard7d.observations ? String(scorecard7d.observations) + ' checks' : 'Awaiting sustained paper-live run'"
+          :tone="Number(scorecard7d.pass_rate || 0) >= 1 ? 'ok' : Number(scorecard7d.pass_rate || 0) >= 0.8 ? 'warning' : 'danger'"
+        />
+        <MetricCell
+          label="DB audit"
+          :value="scorecardCurrent.database_connected ? 'Connected' : 'Missing'"
+          :detail="'Writes ' + formatNumber(scorecardCurrent.database_writes || 0, 0) + ' · dropped ' + formatNumber(scorecardCurrent.database_dropped || 0, 0)"
+          :tone="scorecardCurrent.database_connected && Number(scorecardCurrent.database_dropped || 0) <= 0 ? 'ok' : 'danger'"
+        />
+        <MetricCell
+          label="Decision chain"
+          :value="scorecardCurrent.target_4h && scorecardCurrent.playbook_4h && scorecardCurrent.sizing_4h ? 'Complete' : 'Incomplete'"
+          :detail="'4H target/playbook/sizing + 1D bias visibility'"
+          :tone="scorecardCurrent.target_4h && scorecardCurrent.playbook_4h && scorecardCurrent.sizing_4h && scorecardCurrent.bias_1d ? 'ok' : 'warning'"
+        />
+        <MetricCell
+          label="Bar-close progress"
+          :value="'4H ' + formatNumber(scorecardCurrent.bar_close_count_4h || 0, 0) + ' · 1D ' + formatNumber(scorecardCurrent.bar_close_count_1d || 0, 0)"
+          :detail="'Cutoff progression observed by live validator'"
+        />
+        <MetricCell
+          label="Latest export"
+          :value="scorecardExport ? String(scorecardExport.label || scorecardExport.run_id || 'ready') : 'Missing'"
+          :detail="scorecardExport ? String(scorecardExport.run_dir || scorecardExport.created_at || '') : 'Formal export still required for paper-live completion'"
+          :tone="scorecardExport ? 'ok' : 'warning'"
+        />
+        <MetricCell
+          label="Formal review"
+          :value="scorecardReview ? String(scorecardReview.verdict || 'recorded') : 'Missing'"
+          :detail="scorecardReview ? String(scorecardReview.summary || scorecardReview.reviewed_at || '') : 'Formal paper-live review not recorded yet'"
+          :tone="scorecardReview ? 'ok' : 'warning'"
+        />
+      </div>
+      <div class="grid-2 mt-8">
+        <div class="event-list">
+          <div class="panel-title">Completed</div>
+          <div v-for="(item, i) in scorecardCompletedItems" :key="'done' + i" class="event-row event-ok">
+            <strong>{{ item }}</strong>
+          </div>
+        </div>
+        <div class="event-list">
+          <div class="panel-title">Still Required</div>
+          <div v-for="(item, i) in scorecardPendingItems" :key="'todo' + i" class="event-row event-warning">
+            <strong>{{ item }}</strong>
+          </div>
+        </div>
       </div>
     </Panel>
 
@@ -686,6 +857,7 @@ const deribitIvSeries = computed(() => deribitHistory.value.map((item) => Number
 }
 
 .event-danger { border-left: 2px solid #ff4757; }
+.event-ok { border-left: 2px solid #14d9b4; }
 .event-warning { border-left: 2px solid #f5a524; }
 
 .empty-state {

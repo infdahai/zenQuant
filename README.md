@@ -509,6 +509,7 @@ All commands are installed via `pyproject.toml` entry points:
 |---|---|
 | `zenquant-backtest` | Run deterministic historical replay |
 | `zenquant-web` | Start the live paper-trading server |
+| `zenquant-live-scorecard` | Persist and review the paper-live operator scorecard |
 | `zenquant-live-validate` | Validate a running live instance |
 | `zenquant-history-sync` | Download historical market data |
 | `zenquant-demo` | Run demo/synthetic mode |
@@ -542,6 +543,9 @@ curl "http://127.0.0.1:8090/api/state?symbol=BTCUSDT_PERP&tf=4h"
 uv run zenquant-live-validate --base-url http://127.0.0.1:8090
 uv run zenquant-live-validate --base-url http://127.0.0.1:8090 \
   --require-db --watch-seconds 86400 --output .artifacts/live-24h-summary.json
+
+# 5. Persist the operator scorecard used by the dashboard and weekly review
+uv run zenquant-live-scorecard --base-url http://127.0.0.1:8090 --require-db
 ```
 
 What you should see:
@@ -564,6 +568,8 @@ What you should see:
 - `GET /api/indicators/latest?symbol=BTCUSDT_PERP&tf=4h`
 - `GET /api/indicators/history?symbol=BTCUSDT_PERP&tf=4h&from=...&to=...`
 - `GET /api/state?symbol=BTCUSDT_PERP&tf=4h`
+- `GET /api/paper-live/scorecard/latest?symbol=BTCUSDT_PERP`
+- `GET /api/paper-live/scorecard/history?limit=50`
 - `GET /healthz`
 
 **WebSocket:**
@@ -574,6 +580,7 @@ What you should see:
 
 The dashboard runs at `http://127.0.0.1:8090` (or whatever port you configured) and shows:
 - Current market state (4D classification)
+- Paper-live scorecard, sustained-run status, export/review readiness
 - Active playbook and confidence
 - Position status and unrealized PnL
 - Exit decision and trailing stop
