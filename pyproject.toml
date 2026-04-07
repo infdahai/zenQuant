@@ -27,9 +27,11 @@ optimize = ["optuna>=4.0.0"]
 zenquant-backtest = "zenquant.app.backtest:main"
 zenquant-demo = "zenquant.app.demo:main"
 zenquant-history-sync = "zenquant.app.history_sync:main"
+zenquant-live-export = "zenquant.app.live_export:main"
 zenquant-live-validate = "zenquant.app.live_validate:main"
 zenquant-web = "zenquant.app.server:main"
 zenquant-check = "zenquant.app.check:main"
+zenquant-rl-tune = "zenquant.app.rl_tune:main"
 
 [tool.setuptools.packages.find]
 include = ["zenquant*"]
