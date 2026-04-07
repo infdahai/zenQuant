@@ -214,9 +214,7 @@ def compare_variants(
     )
     for validation in report["validation_reports"]:
         validation["comparison_to_baseline"] = (
-            None
-            if validation["variant"] == "paulwei_baseline"
-            else _validation_delta(validation, baseline_validation)
+            None if validation["variant"] == "paulwei_baseline" else _validation_delta(validation, baseline_validation)
         )
 
     return report
@@ -314,12 +312,8 @@ def default_walk_forward_windows() -> list[WindowSpec]:
 
 def _run_window(base_config: HistoricalBacktestConfig, variant: VariantSpec, window: WindowSpec) -> dict[str, Any]:
     runner, result = _run_variant_backtest(base_config, variant, start_ns=window.start_ns, end_ns=window.end_ns)
-    states = [
-        state for state in runner._market_states if state.timeframe == base_config.execution_timeframe
-    ]
-    playbooks = [
-        playbook for playbook in runner._playbooks if playbook.timeframe == base_config.execution_timeframe
-    ]
+    states = [state for state in runner._market_states if state.timeframe == base_config.execution_timeframe]
+    playbooks = [playbook for playbook in runner._playbooks if playbook.timeframe == base_config.execution_timeframe]
     return {
         "variant": variant.name,
         "window_label": window.label,
@@ -419,8 +413,7 @@ def _comparison_delta(current: dict[str, Any], baseline: dict[str, Any]) -> dict
     metrics_keys = ("sharpe", "net_pnl", "max_drawdown", "profit_factor", "trade_count")
     return {
         "metrics_delta": {
-            key: round(float(current["metrics"][key]) - float(baseline["metrics"][key]), 6)
-            for key in metrics_keys
+            key: round(float(current["metrics"][key]) - float(baseline["metrics"][key]), 6) for key in metrics_keys
         },
         "diagnostics_diff": {
             "playbook_counts": _counter_diff(
