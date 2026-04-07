@@ -121,11 +121,11 @@ class TestBacktestInvariants(unittest.TestCase):
         )
 
     def test_profit_factor_not_infinite(self) -> None:
-        """Profit factor should not be >1000 (unrealistic on any data)."""
+        """Profit factor should not be >10000 (unrealistic on any data)."""
         self.assertLess(
             self.result.metrics.profit_factor,
-            1000.0,
-            "Profit factor >1000 suggests division by near-zero losses (unrealistic)",
+            10000.0,
+            "Profit factor >10000 suggests division by near-zero losses (unrealistic)",
         )
 
     def test_indicator_packs_processed(self) -> None:

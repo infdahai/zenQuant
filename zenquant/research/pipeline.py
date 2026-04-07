@@ -63,6 +63,7 @@ def run_research_pipeline(config: ResearchRunConfig) -> ResearchRunArtifact:
         "run_id": run_id,
         "metrics": _to_jsonable(asdict(result.metrics)),
         "diagnostics": _to_jsonable(asdict(result.diagnostics)),
+        "cycle_context": _to_jsonable(asdict(result.cycle_context)),
         "total_indicator_packs": result.total_indicator_packs,
         "total_targets": result.total_targets,
         "total_reports": result.total_reports,
@@ -128,6 +129,7 @@ def _csv_cell(value: Any) -> Any:
 def _build_report(manifest: dict[str, Any], summary: dict[str, Any], rows: list[dict[str, Any]]) -> str:
     metrics = summary["metrics"]
     diagnostics = summary["diagnostics"]
+    cycle_context = summary.get("cycle_context", {})
     horizons = [int(value) for value in manifest["horizons"]]
     coverage_lines = [
         f"- future_return_{horizon}: `{sum(1 for row in rows if row.get(f'future_return_{horizon}') is not None)}`"
@@ -158,6 +160,13 @@ def _build_report(manifest: dict[str, Any], summary: dict[str, Any], rows: list[
             f"- actionable_exit_counts: `{diagnostics['actionable_exit_counts']}`",
             f"- risk_flag_counts: `{diagnostics['risk_flag_counts']}`",
             f"- top_target_reason_codes: `{diagnostics['top_target_reason_codes']}`",
+            "",
+            "## Cycle Context",
+            "",
+            f"- dominant_cycle: `{cycle_context.get('dominant_cycle', 'n/a')}`",
+            f"- dominant_phase: `{cycle_context.get('dominant_phase', 'n/a')}`",
+            f"- phase_distribution: `{cycle_context.get('phase_distribution', {})}`",
+            f"- sharpe_by_phase: `{cycle_context.get('sharpe_by_phase', {})}`",
             "",
             "## Label Coverage",
             "",

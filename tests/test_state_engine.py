@@ -148,6 +148,42 @@ class StateEngineTests(unittest.TestCase):
         self.assertEqual(len(states), 1)
         self.assertEqual(states[0].quality_state, "NOISY")
 
+    def test_bearish_grind_promotes_transition_to_downtrend_bias(self) -> None:
+        bus = InMemoryJetStream()
+        StateEngine(bus)
+
+        states: list[MarketState] = []
+        bus.subscribe("state.market.>", lambda _subject, payload: states.append(payload))
+
+        bus.publish(
+            "indicator.pack.v1.4h.BTCUSDT_PERP",
+            IndicatorPack(
+                ts_ns=50,
+                symbol="BTCUSDT_PERP",
+                timeframe=Timeframe.TF_4H,
+                cutoff_time_ns=50,
+                indicator_version="pack.v1",
+                formula_hash="sha256:test",
+                quality_flags=["OK"],
+                coverage=IndicatorCoverage(venue_count=1, oi_coverage=1.0, staleness_ms=0),
+                values={
+                    "realized_vol": 0.9,
+                    "cvd_slope": -0.03,
+                    "funding_oi_z": -0.2,
+                    "zen_pulse": 48.0,
+                    "structure_state": "NEUTRAL",
+                    "momentum_roc_z": -0.16,
+                    "cycle_position": 0.98,
+                },
+                components={},
+            ),
+        )
+
+        self.assertEqual(len(states), 1)
+        self.assertEqual(states[0].directional_state, "TRANSITION")
+        self.assertLess(states[0].direction_signal, -0.5)
+        self.assertGreaterEqual(states[0].directional_confidence, 0.5)
+
 
 if __name__ == "__main__":
     unittest.main()

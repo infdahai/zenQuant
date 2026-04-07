@@ -38,6 +38,11 @@ class HistoricalPipelineTests(unittest.TestCase):
             self.assertIn("BULL_CONTINUATION", result.diagnostics.playbook_counts)
             self.assertIn("OK", result.diagnostics.risk_flag_counts)
             self.assertGreater(len(result.diagnostics.top_target_reason_codes), 0)
+            self.assertEqual(result.cycle_context.dominant_cycle, 3)
+            self.assertEqual(result.cycle_context.dominant_phase, "RECOVERY")
+            self.assertEqual(result.cycle_context.phase_distribution, {"RECOVERY": 1.0})
+            self.assertEqual(result.cycle_context.phase_bar_counts, {"RECOVERY": result.metrics.total_bars})
+            self.assertIn("RECOVERY", result.cycle_context.sharpe_by_phase)
 
     def test_historical_backtest_is_deterministic_for_same_dataset(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -60,6 +65,7 @@ class HistoricalPipelineTests(unittest.TestCase):
             self.assertAlmostEqual(first.metrics.max_drawdown, second.metrics.max_drawdown, places=6)
             self.assertEqual(first.diagnostics.playbook_counts, second.diagnostics.playbook_counts)
             self.assertEqual(first.diagnostics.actionable_exit_counts, second.diagnostics.actionable_exit_counts)
+            self.assertEqual(first.cycle_context, second.cycle_context)
 
     def test_historical_backtest_matches_phase6_baseline_metrics(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

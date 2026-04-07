@@ -142,6 +142,8 @@ class TargetPosition:
     regime: str
     regime_confidence: float
     reason_codes: list[str]
+    realized_vol: float = 0.0  # execution layer uses for adaptive speed
+    atr: float = 0.0  # DCA distance gating
 
 
 @dataclass(slots=True)
@@ -465,6 +467,18 @@ class BacktestMetrics:
     trade_count: int
     turnover_per_day: float
     fee_drag_pct: float  # fees / gross_pnl
+
+
+@dataclass(slots=True)
+class BacktestCycleContext:
+    """Cycle-phase context for interpreting BTC backtest metrics."""
+
+    dominant_cycle: int
+    dominant_phase: str
+    cycle_distribution: dict[str, float]
+    phase_distribution: dict[str, float]
+    phase_bar_counts: dict[str, int]
+    sharpe_by_phase: dict[str, float]
 
 
 @dataclass(slots=True)

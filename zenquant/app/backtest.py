@@ -40,12 +40,18 @@ def main() -> None:
     print(f"sharpe={metrics.sharpe:.4f}")
     print(f"profit_factor={metrics.profit_factor:.4f}")
     print(f"turnover_per_day={metrics.turnover_per_day:.2f}")
+    print(
+        "cycle_context="
+        f"cycle_{result.cycle_context.dominant_cycle}:{result.cycle_context.dominant_phase}"
+    )
+    print(f"sharpe_by_phase={result.cycle_context.sharpe_by_phase}")
     print(f"playbooks={result.diagnostics.playbook_counts}")
     print(f"actionable_exits={result.diagnostics.actionable_exit_counts}")
     if args.output:
         payload = {
             "metrics": asdict(metrics),
             "diagnostics": asdict(result.diagnostics),
+            "cycle_context": asdict(result.cycle_context),
             "total_indicator_packs": result.total_indicator_packs,
             "total_targets": result.total_targets,
             "total_reports": result.total_reports,

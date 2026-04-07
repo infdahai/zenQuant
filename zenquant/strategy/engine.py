@@ -357,6 +357,8 @@ class ARCStrategyEngine:
             regime=pending.regime,
             regime_confidence=pending.regime_confidence,
             reason_codes=[*pending.reason_codes, "1H_ENTRY_OPTIMIZED"],
+            realized_vol=pending.realized_vol,
+            atr=pending.atr,
         )
 
         # Clear pending
@@ -429,6 +431,15 @@ class ARCStrategyEngine:
             if playbook.is_reduce_only() and direction != 0.0:
                 reason_codes.append("PLAYBOOK_DIRECTION_BLOCK")
                 direction = 0.0
+
+            if (
+                direction == 0.0
+                and playbook.playbook_id == "BEAR_DEFENSE"
+                and state.direction_signal < 0.0
+                and state.directional_confidence >= 0.5
+            ):
+                direction = -1.0
+                reason_codes.append("STATE_BEARISH_DIRECTION_OVERRIDE")
 
             if self._plugins.sizers:
                 target_leverage, sizer_codes = self._plugin_sizing(pack, state, playbook, _ind_dict, _state_dict)
@@ -534,6 +545,8 @@ class ARCStrategyEngine:
             regime=regime,
             regime_confidence=round(regime_confidence, 4),
             reason_codes=reason_codes,
+            realized_vol=float(pack.values.get("realized_vol", 0) or 0),
+            atr=float(pack.values.get("atr", 0) or 0),
         )
 
     def _active_directional_bias(self, symbol: str, cutoff_time_ns: int) -> tuple[DirectionalBias | None, str]:
@@ -603,6 +616,8 @@ class ARCStrategyEngine:
             regime=state.regime,
             regime_confidence=round(state.regime_confidence, 4),
             reason_codes=[f"REGIME_{state.regime}", *exit_decision.reason_codes],
+            realized_vol=float(pack.values.get("realized_vol", 0) or 0),
+            atr=float(pack.values.get("atr", 0) or 0),
         )
 
     @staticmethod

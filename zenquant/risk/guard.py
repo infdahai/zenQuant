@@ -83,6 +83,12 @@ class RiskOverlayConfig:
     weekend_vol_scalar: float = 1.25  # inverse of 0.80 avg weekend/weekday ratio
     # Macro event calendar (FOMC/CPI) — reduce leverage during high-vol events
     macro_event_mult: float = 0.75  # Reduce 25% during FOMC/CPI bars
+    # Liquidation pressure guard
+    liq_risk_guard_threshold: float = 2.2
+    liq_risk_guard_mult: float = 0.75
+    liq_transition_guard_mult: float = 0.80
+    liq_imbalance_threshold: float = 0.20
+    enable_liq_risk_guard: bool = True
     # Kill switch recovery (Claude Code "fallback model" pattern)
     kill_recovery_threshold: float = 0.12  # DD must recover below this to start recovery
     kill_cooldown_bars: int = 36  # 36 bars = 6 days at 4H (cooldown before re-entry)
@@ -310,6 +316,26 @@ class RiskOverlay:
             if is_macro_event_bar(target.cutoff_time_ns):
                 lev_cap *= self._config.macro_event_mult
                 flags.append("MACRO_EVENT")
+
+            liq_stale = bool(indicator.values.get("liq_stale", False))
+            liq_intensity_z = float(indicator.values.get("liq_intensity_z", 0.0) or 0.0)
+            liq_imbalance = float(indicator.values.get("liq_imbalance", 0.0) or 0.0)
+            if (
+                self._config.enable_liq_risk_guard
+                and not liq_stale
+                and liq_intensity_z >= self._config.liq_risk_guard_threshold
+            ):
+                lev_cap *= self._config.liq_risk_guard_mult
+                flags.append("LIQUIDATION_PRESSURE")
+                structure_state = str(indicator.values.get("structure_state", "NEUTRAL") or "NEUTRAL")
+                momentum_roc_z = float(indicator.values.get("momentum_roc_z", 0.0) or 0.0)
+                if (
+                    structure_state == "NEUTRAL"
+                    or abs(momentum_roc_z) < 0.35
+                    or abs(liq_imbalance) >= self._config.liq_imbalance_threshold
+                ):
+                    lev_cap *= self._config.liq_transition_guard_mult
+                    flags.append("LIQ_TRANSITION_GUARD")
 
             cycle_pos = float(indicator.values.get("cycle_position", 1.0) or 1.0)
             if cycle_pos > self._config.overheated_cycle_threshold and funding_oi_z > self._config.overheated_funding_threshold:

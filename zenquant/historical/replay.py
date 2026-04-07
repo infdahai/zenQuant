@@ -10,6 +10,7 @@ from __future__ import annotations
 import math
 from collections import Counter
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -18,6 +19,8 @@ from zenquant.data import (
     BasisStoreConfig,
     CotDataStore,
     CotStoreConfig,
+    LiquidationDataStore,
+    LiquidationStoreConfig,
     MacroDataStore,
     MacroDataStoreConfig,
     OptionsDataStore,
@@ -25,6 +28,7 @@ from zenquant.data import (
 )
 from zenquant.data.eth_store import EthDataStore, EthStoreConfig
 from zenquant.domain import (
+    BacktestCycleContext,
     BacktestDiagnostics,
     BacktestMetrics,
     BarCloseEvent,
@@ -44,13 +48,13 @@ from zenquant.domain import (
     TargetPosition,
     Timeframe,
 )
-from zenquant.execution import ExecutionKernel, SimulatedGateway
+from zenquant.execution import ExecutionKernel, ExecutionKernelConfig, SimulatedGateway
 from zenquant.indicator import IndicatorEngine, IndicatorEngineConfig, IndicatorStore
 from zenquant.indicator.hf_features import HFFeatureStore, HFFeatureStoreConfig
 from zenquant.infra import InMemoryJetStream, StreamConfig
 from zenquant.plugins.profile import build_from_profile
 from zenquant.risk import RiskOverlay, RiskOverlayConfig
-from zenquant.state import StateEngine
+from zenquant.state import StateEngine, StateEngineConfig
 from zenquant.strategy import ARCStrategyConfig, ARCStrategyEngine
 
 from .perturbation import PerturbationConfig, perturb_events
@@ -76,10 +80,14 @@ class HistoricalBacktestConfig:
     strategy_config: ARCStrategyConfig | None = None
     # Risk config override (for risk appetite tuning)
     risk_config: RiskOverlayConfig | None = None
+    # Execution config override (for variant comparison / sensitivity checks)
+    execution_config: ExecutionKernelConfig | None = None
     # Signal weight overrides (for RL tuner — bypass default.toml weights)
     signal_weight_overrides: dict[str, float] | None = None
     # Indicator config override (for RL tuner — vol_window, cvd_window, etc.)
     indicator_config: IndicatorEngineConfig | None = None
+    # Execution config override (for RL tuner / execution sensitivity tests)
+    execution_config: ExecutionKernelConfig | None = None
     # Domain randomization (for robustness testing)
     perturbation: PerturbationConfig | None = None
     # Macro data directory (VIX, DXY, Treasury yields)
@@ -88,6 +96,11 @@ class HistoricalBacktestConfig:
     options_dir: Path = Path("data/raw/deribit_options")
     # CFTC COT data path
     cot_path: Path = Path("data/raw/cftc/cot_btc.parquet")
+    # Aggregated liquidation data path
+    liquidation_dir: Path = Path("data/raw/binance/liquidations/aggregated")
+    # Research toggles for liquidation ablation
+    liquidation_data_enabled: bool = True
+    state_liquidation_overlay_enabled: bool = True
     # Plugin profile path (default.toml, etc.)
     profile_path: Path | None = Path("config/profiles/default.toml")
 
@@ -102,6 +115,7 @@ class HistoricalBacktestResult:
     total_targets: int
     total_reports: int
     final_equity: float
+    cycle_context: BacktestCycleContext
 
 
 class HistoricalBacktest:
@@ -137,6 +151,11 @@ class HistoricalBacktest:
         # Load CFTC COT data if available
         self._cot_store = CotDataStore(CotStoreConfig(cot_path=self._config.cot_path))
         self._cot_store.load()
+        # Load liquidation data if available
+        self._liquidation_store = LiquidationDataStore(
+            LiquidationStoreConfig(liquidation_dir=self._config.liquidation_dir)
+        )
+        self._liquidation_store.load()
         # Load ETH data for cross-asset Transfer Entropy
         self._eth_store = EthDataStore(EthStoreConfig(
             eth_kline_path=self._config.root_dir / "klines" / "ETHUSDT" / "4h",
@@ -158,6 +177,11 @@ class HistoricalBacktest:
             cot_store=self._cot_store if self._cot_store.loaded else None,
             basis_store=self._basis_store if self._basis_store.loaded else None,
             eth_store=self._eth_store if self._eth_store.loaded else None,
+            liquidation_store=(
+                self._liquidation_store
+                if self._config.liquidation_data_enabled and self._liquidation_store.loaded
+                else None
+            ),
         )
         self.risk_overlay = RiskOverlay(
             bus=self.bus,
@@ -176,11 +200,15 @@ class HistoricalBacktest:
             config=self._config.strategy_config,
             plugin_registry=plugin_registry,
         )
-        self.state_engine = StateEngine(bus=self.bus)
+        self.state_engine = StateEngine(
+            bus=self.bus,
+            config=StateEngineConfig(enable_liquidation_overlay=self._config.state_liquidation_overlay_enabled),
+        )
         self.execution_kernel = ExecutionKernel(
             bus=self.bus,
             gateway=SimulatedGateway(),
             risk_overlay=self.risk_overlay,
+            config=self._config.execution_config,
         )
 
         self._indicators: list[IndicatorPack] = []
@@ -240,6 +268,7 @@ class HistoricalBacktest:
             total_targets=len(self._targets),
             total_reports=len(self._reports),
             final_equity=self.risk_overlay.equity,
+            cycle_context=self._build_cycle_context(events),
         )
 
     def _load_events(self) -> list[dict[str, Any]]:
@@ -509,6 +538,45 @@ class HistoricalBacktest:
             actionable_exit_counts=dict(actionable_exit_counts),
             risk_flag_counts=dict(risk_flag_counts),
             top_target_reason_codes=dict(target_reason_counts.most_common(50)),
+        )
+
+    def _build_cycle_context(self, events: list[dict[str, Any]]) -> BacktestCycleContext:
+        execution_events = [
+            item for item in events if item["event_timeframe"] == self._config.execution_timeframe.value
+        ]
+        if not execution_events:
+            return BacktestCycleContext(
+                dominant_cycle=0,
+                dominant_phase="UNKNOWN",
+                cycle_distribution={},
+                phase_distribution={},
+                phase_bar_counts={},
+                sharpe_by_phase={},
+            )
+
+        phase_counts: Counter[str] = Counter()
+        cycle_counts: Counter[int] = Counter()
+        for row in execution_events:
+            cycle_num, phase = _get_cycle_phase(int(row["close_time_ns"]))
+            phase_counts[phase] += 1
+            cycle_counts[cycle_num] += 1
+
+        total_bars = len(execution_events)
+        dominant_cycle = max(cycle_counts.items(), key=lambda item: (item[1], item[0]))[0]
+        dominant_phase = max(phase_counts.items(), key=lambda item: (item[1], item[0]))[0]
+        return BacktestCycleContext(
+            dominant_cycle=dominant_cycle,
+            dominant_phase=dominant_phase,
+            cycle_distribution={
+                str(cycle): round(count / total_bars, 4)
+                for cycle, count in sorted(cycle_counts.items())
+            },
+            phase_distribution={
+                phase: round(count / total_bars, 4)
+                for phase, count in sorted(phase_counts.items())
+            },
+            phase_bar_counts=dict(sorted(phase_counts.items())),
+            sharpe_by_phase=_sharpe_by_phase(self._risk_snapshots),
         )
 
     def build_analysis_rows(self, *, horizons: tuple[int, ...] = (1, 3, 6)) -> list[dict[str, Any]]:
@@ -878,6 +946,62 @@ def _annualized_ratio(
     if std <= 0:
         return 0.0
     return (mean_return / std) * math.sqrt(periods_per_year)
+
+
+_HALVINGS_NS: tuple[tuple[int, int], ...] = (
+    (int(datetime(2012, 11, 28, tzinfo=UTC).timestamp() * 1_000_000_000), 1),
+    (int(datetime(2016, 7, 9, tzinfo=UTC).timestamp() * 1_000_000_000), 2),
+    (int(datetime(2020, 5, 11, tzinfo=UTC).timestamp() * 1_000_000_000), 3),
+    (int(datetime(2024, 4, 20, tzinfo=UTC).timestamp() * 1_000_000_000), 4),
+)
+
+
+def _get_cycle_phase(timestamp_ns: int) -> tuple[int, str]:
+    cycle_start_ns = 0
+    cycle_num = 0
+    for halving_ns, current_cycle in _HALVINGS_NS:
+        if timestamp_ns >= halving_ns:
+            cycle_start_ns = halving_ns
+            cycle_num = current_cycle
+        else:
+            break
+    if cycle_num == 0:
+        return 0, "UNKNOWN"
+
+    months_since = (timestamp_ns - cycle_start_ns) / 1_000_000_000 / 86_400 / 30.0
+    if months_since < 6:
+        return cycle_num, "POST_HALVING"
+    if months_since < 12:
+        return cycle_num, "BULL_INITIAL"
+    if months_since < 18:
+        return cycle_num, "BULL_PEAK"
+    if months_since < 24:
+        return cycle_num, "CRASH"
+    if months_since < 36:
+        return cycle_num, "BEAR"
+    return cycle_num, "RECOVERY"
+
+
+def _sharpe_by_phase(snapshots: list[RiskSnapshot]) -> dict[str, float]:
+    if len(snapshots) < 2:
+        return {}
+
+    phase_returns: dict[str, list[float]] = {}
+    previous_equity: float | None = None
+    for snapshot in sorted(snapshots, key=lambda item: item.ts_ns):
+        equity = float(snapshot.equity)
+        if previous_equity is None or previous_equity <= 0:
+            previous_equity = equity
+            continue
+        phase = _get_cycle_phase(snapshot.ts_ns)[1]
+        phase_returns.setdefault(phase, []).append((equity - previous_equity) / previous_equity)
+        previous_equity = equity
+
+    return {
+        phase: round(_annualized_ratio(returns, periods_per_year=6 * 365), 4)
+        for phase, returns in sorted(phase_returns.items())
+        if returns
+    }
 
 
 def _max_drawdown(snapshots: list[RiskSnapshot]) -> tuple[float, int]:
