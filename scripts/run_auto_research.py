@@ -157,7 +157,9 @@ def main() -> None:
     )
     parser.add_argument("--quick", action="store_true", help="Quick campaign (sweep only)")
     parser.add_argument("--full", action="store_true", help="Full campaign (sweep + WF + robustness)")
-    parser.add_argument("--bayesian", action="store_true", help="Bayesian campaign (Optuna, all 8 params, WF + robustness)")
+    parser.add_argument(
+        "--bayesian", action="store_true", help="Bayesian campaign (Optuna, all 8 params, WF + robustness)"
+    )
     parser.add_argument("--data-root", default="data/raw/binance", help="Historical data root")
     parser.add_argument("--symbol", default="BTCUSDT", help="Symbol to optimize")
     parser.add_argument("--output-dir", default="results/campaigns", help="Campaign output directory")

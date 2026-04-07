@@ -194,8 +194,9 @@ class RiskOverlay:
         if len(self._equity_history) >= 60:
             recent = list(self._equity_history)
             # Rolling return over last 60 bars
-            returns_60 = [(recent[i] - recent[i - 1]) / recent[i - 1]
-                          for i in range(1, len(recent)) if recent[i - 1] > 0]
+            returns_60 = [
+                (recent[i] - recent[i - 1]) / recent[i - 1] for i in range(1, len(recent)) if recent[i - 1] > 0
+            ]
             if returns_60:
                 import math
 
@@ -276,7 +277,9 @@ class RiskOverlay:
             # COT institutional crowding: only reduce when our position aligns with
             # extreme crowd positioning (contrarian — reduce when everyone agrees)
             cot_leveraged_z = float(indicator.values.get("cot_leveraged_z", 0.0) or 0.0)
-            if (target.target_qty > 0 and cot_leveraged_z > self._config.cot_crowding_threshold) or (target.target_qty < 0 and cot_leveraged_z < -self._config.cot_crowding_threshold):
+            if (target.target_qty > 0 and cot_leveraged_z > self._config.cot_crowding_threshold) or (
+                target.target_qty < 0 and cot_leveraged_z < -self._config.cot_crowding_threshold
+            ):
                 lev_cap *= self._config.cot_crowding_mult
                 flags.append("COT_CROWDING")
 
@@ -338,7 +341,10 @@ class RiskOverlay:
                     flags.append("LIQ_TRANSITION_GUARD")
 
             cycle_pos = float(indicator.values.get("cycle_position", 1.0) or 1.0)
-            if cycle_pos > self._config.overheated_cycle_threshold and funding_oi_z > self._config.overheated_funding_threshold:
+            if (
+                cycle_pos > self._config.overheated_cycle_threshold
+                and funding_oi_z > self._config.overheated_funding_threshold
+            ):
                 lev_cap *= self._config.overheated_mult
                 flags.append("OVERHEATED_SIZING")
             elif cycle_pos > self._config.overheated_cycle_threshold:

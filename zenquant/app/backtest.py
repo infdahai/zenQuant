@@ -40,10 +40,7 @@ def main() -> None:
     print(f"sharpe={metrics.sharpe:.4f}")
     print(f"profit_factor={metrics.profit_factor:.4f}")
     print(f"turnover_per_day={metrics.turnover_per_day:.2f}")
-    print(
-        "cycle_context="
-        f"cycle_{result.cycle_context.dominant_cycle}:{result.cycle_context.dominant_phase}"
-    )
+    print(f"cycle_context=cycle_{result.cycle_context.dominant_cycle}:{result.cycle_context.dominant_phase}")
     print(f"sharpe_by_phase={result.cycle_context.sharpe_by_phase}")
     print(f"playbooks={result.diagnostics.playbook_counts}")
     print(f"actionable_exits={result.diagnostics.actionable_exit_counts}")

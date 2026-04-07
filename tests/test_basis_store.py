@@ -35,10 +35,12 @@ class BasisStoreTests(unittest.TestCase):
     def test_empty_store(self) -> None:
         from zenquant.data import BasisDataStore, BasisStoreConfig
 
-        store = BasisDataStore(BasisStoreConfig(
-            spot_dir=Path("/nonexistent/spot"),
-            perp_dir=Path("/nonexistent/perp"),
-        ))
+        store = BasisDataStore(
+            BasisStoreConfig(
+                spot_dir=Path("/nonexistent/spot"),
+                perp_dir=Path("/nonexistent/perp"),
+            )
+        )
         store.load()
         self.assertFalse(store.loaded)
         snap = store.lookup(HOUR_NS * 100)
@@ -53,12 +55,8 @@ class BasisStoreTests(unittest.TestCase):
             perp_dir = Path(tmp) / "perp"
 
             # Spot at 40000, perp at 40100 (0.25% premium)
-            _write_klines(spot_dir / "data.parquet", [
-                _make_kline(i * 4 * HOUR_NS, 40000.0) for i in range(20)
-            ])
-            _write_klines(perp_dir / "data.parquet", [
-                _make_kline(i * 4 * HOUR_NS, 40100.0) for i in range(20)
-            ])
+            _write_klines(spot_dir / "data.parquet", [_make_kline(i * 4 * HOUR_NS, 40000.0) for i in range(20)])
+            _write_klines(perp_dir / "data.parquet", [_make_kline(i * 4 * HOUR_NS, 40100.0) for i in range(20)])
 
             store = BasisDataStore(BasisStoreConfig(spot_dir=spot_dir, perp_dir=perp_dir))
             store.load()
@@ -76,14 +74,20 @@ class BasisStoreTests(unittest.TestCase):
             spot_dir = Path(tmp) / "spot"
             perp_dir = Path(tmp) / "perp"
 
-            _write_klines(spot_dir / "data.parquet", [
-                _make_kline(10 * 4 * HOUR_NS, 40000.0),
-                _make_kline(20 * 4 * HOUR_NS, 41000.0),
-            ])
-            _write_klines(perp_dir / "data.parquet", [
-                _make_kline(10 * 4 * HOUR_NS, 40200.0),
-                _make_kline(20 * 4 * HOUR_NS, 40800.0),
-            ])
+            _write_klines(
+                spot_dir / "data.parquet",
+                [
+                    _make_kline(10 * 4 * HOUR_NS, 40000.0),
+                    _make_kline(20 * 4 * HOUR_NS, 41000.0),
+                ],
+            )
+            _write_klines(
+                perp_dir / "data.parquet",
+                [
+                    _make_kline(10 * 4 * HOUR_NS, 40200.0),
+                    _make_kline(20 * 4 * HOUR_NS, 40800.0),
+                ],
+            )
 
             store = BasisDataStore(BasisStoreConfig(spot_dir=spot_dir, perp_dir=perp_dir))
             store.load()

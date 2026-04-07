@@ -349,7 +349,9 @@ class Campaign:
         try:
             import optuna
         except ImportError:
-            raise ImportError("Optuna required for bayesian sweep. Install: uv pip install 'zenquant[optimize]'") from None
+            raise ImportError(
+                "Optuna required for bayesian sweep. Install: uv pip install 'zenquant[optimize]'"
+            ) from None
 
         start = time.time()
         space = self._config.search_space
@@ -407,8 +409,7 @@ class Campaign:
         top_n = sorted_results[: self._config.top_n_for_validation]
 
         self._log(
-            f"Bayesian sweep complete: best {self._config.primary_metric} = "
-            f"{study.best_value:.4f} in {n_trials} trials"
+            f"Bayesian sweep complete: best {self._config.primary_metric} = {study.best_value:.4f} in {n_trials} trials"
         )
 
         return SweepResult(

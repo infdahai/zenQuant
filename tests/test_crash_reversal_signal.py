@@ -101,8 +101,7 @@ class CrashReversalSignalTests(unittest.TestCase):
         """Crash reversal is always bullish — never returns negative value."""
         for close in [90, 85, 80, 70, 50]:
             result = self._compute(self._bar(100, close))
-            self.assertGreaterEqual(result.value, 0.0,
-                                    f"close={close} produced bearish signal")
+            self.assertGreaterEqual(result.value, 0.0, f"close={close} produced bearish signal")
 
     # ── Volume confirmation ──
 

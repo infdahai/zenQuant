@@ -140,7 +140,12 @@ class OptionsVolSignalTests(unittest.TestCase):
         result1 = options_vol_signal.compute(
             {"atm_iv_z": -1.0, "skew_z": 0.0},
             {"regime": "TREND"},
-            {"low_iv_threshold": -0.5, "high_iv_threshold": 1.5, "extreme_iv_threshold": 2.5, "inverted_skew_threshold": -1.0},
+            {
+                "low_iv_threshold": -0.5,
+                "high_iv_threshold": 1.5,
+                "extreme_iv_threshold": 2.5,
+                "inverted_skew_threshold": -1.0,
+            },
         )
         self.assertEqual(result1.reason_codes, ("OPTIONS_LOW_IV",))
 
@@ -148,7 +153,12 @@ class OptionsVolSignalTests(unittest.TestCase):
         result2 = options_vol_signal.compute(
             {"atm_iv_z": 2.0, "skew_z": 0.0},
             {"regime": "TREND"},
-            {"low_iv_threshold": -0.5, "high_iv_threshold": 1.5, "extreme_iv_threshold": 2.5, "inverted_skew_threshold": -1.0},
+            {
+                "low_iv_threshold": -0.5,
+                "high_iv_threshold": 1.5,
+                "extreme_iv_threshold": 2.5,
+                "inverted_skew_threshold": -1.0,
+            },
         )
         self.assertIn("OPTIONS_HIGH_IV", result2.reason_codes)
 
@@ -156,7 +166,12 @@ class OptionsVolSignalTests(unittest.TestCase):
         result3 = options_vol_signal.compute(
             {"atm_iv_z": 3.0, "skew_z": 0.0},
             {"regime": "TREND"},
-            {"low_iv_threshold": -0.5, "high_iv_threshold": 1.5, "extreme_iv_threshold": 2.5, "inverted_skew_threshold": -1.0},
+            {
+                "low_iv_threshold": -0.5,
+                "high_iv_threshold": 1.5,
+                "extreme_iv_threshold": 2.5,
+                "inverted_skew_threshold": -1.0,
+            },
         )
         self.assertIn("OPTIONS_DISTORTED", result3.reason_codes)
 
@@ -452,8 +467,9 @@ class SkewVelocityTests(unittest.TestCase):
         """Bearish skew (steepening) cap -0.6 > bullish cap +0.4 — asymmetric by design."""
         steep = self._compute({"atm_iv_z": 0.5, "skew_z": 0.0, "skew_velocity": 50.0})
         flat = self._compute({"atm_iv_z": 0.5, "skew_z": 0.0, "skew_velocity": -50.0})
-        self.assertGreater(abs(steep.value), abs(flat.value),
-                           "Steepening (bearish) should be stronger than flattening (bullish)")
+        self.assertGreater(
+            abs(steep.value), abs(flat.value), "Steepening (bearish) should be stronger than flattening (bullish)"
+        )
 
 
 if __name__ == "__main__":

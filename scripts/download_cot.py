@@ -100,20 +100,22 @@ def _parse_cot_csv(content: str) -> list[dict]:
             dealer_short = _safe_int(row.get("Dealer_Positions_Short_All", 0))
             total_oi = _safe_int(row.get("Open_Interest_All", 0))
 
-            rows.append({
-                "report_date_ns": report_date_ns,
-                "market_name": market_name.strip(),
-                "asset_mgr_long": asset_mgr_long,
-                "asset_mgr_short": asset_mgr_short,
-                "asset_mgr_net": asset_mgr_long - asset_mgr_short,
-                "leveraged_long": lev_long,
-                "leveraged_short": lev_short,
-                "leveraged_net": lev_long - lev_short,
-                "dealer_long": dealer_long,
-                "dealer_short": dealer_short,
-                "dealer_net": dealer_long - dealer_short,
-                "total_oi": total_oi,
-            })
+            rows.append(
+                {
+                    "report_date_ns": report_date_ns,
+                    "market_name": market_name.strip(),
+                    "asset_mgr_long": asset_mgr_long,
+                    "asset_mgr_short": asset_mgr_short,
+                    "asset_mgr_net": asset_mgr_long - asset_mgr_short,
+                    "leveraged_long": lev_long,
+                    "leveraged_short": lev_short,
+                    "leveraged_net": lev_long - lev_short,
+                    "dealer_long": dealer_long,
+                    "dealer_short": dealer_short,
+                    "dealer_net": dealer_long - dealer_short,
+                    "total_oi": total_oi,
+                }
+            )
         except (ValueError, KeyError):
             continue
 

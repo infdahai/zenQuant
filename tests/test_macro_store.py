@@ -10,9 +10,7 @@ def _write_parquet(path: Path, records: list[dict]) -> None:
     import pyarrow.parquet as pq
 
     path.parent.mkdir(parents=True, exist_ok=True)
-    table = pa.Table.from_pydict({
-        k: [r[k] for r in records] for k in records[0]
-    })
+    table = pa.Table.from_pydict({k: [r[k] for r in records] for k in records[0]})
     pq.write_table(table, path)
 
 
@@ -20,22 +18,27 @@ DAY_NS = 86_400 * 1_000_000_000
 
 
 class MacroDataStoreTests(unittest.TestCase):
-    def _make_store(self, tmpdir: str, vix: list[tuple[int, float]] | None = None,
-                    dxy: list[tuple[int, float]] | None = None,
-                    yields: list[tuple[int, float]] | None = None) -> MacroDataStore:
+    def _make_store(
+        self,
+        tmpdir: str,
+        vix: list[tuple[int, float]] | None = None,
+        dxy: list[tuple[int, float]] | None = None,
+        yields: list[tuple[int, float]] | None = None,
+    ) -> MacroDataStore:
         macro_dir = Path(tmpdir)
         if vix:
-            _write_parquet(macro_dir / "vix" / "data.parquet",
-                           [{"ts_ns": t, "value": v} for t, v in vix])
+            _write_parquet(macro_dir / "vix" / "data.parquet", [{"ts_ns": t, "value": v} for t, v in vix])
         if dxy:
-            _write_parquet(macro_dir / "dxy" / "data.parquet",
-                           [{"ts_ns": t, "value": v} for t, v in dxy])
+            _write_parquet(macro_dir / "dxy" / "data.parquet", [{"ts_ns": t, "value": v} for t, v in dxy])
         if yields:
-            _write_parquet(macro_dir / "treasury_10y" / "data.parquet",
-                           [{"ts_ns": t, "value": v} for t, v in yields])
-        store = MacroDataStore(MacroDataStoreConfig(
-            macro_dir=macro_dir, z_window=60, robust_z_min_samples=5,
-        ))
+            _write_parquet(macro_dir / "treasury_10y" / "data.parquet", [{"ts_ns": t, "value": v} for t, v in yields])
+        store = MacroDataStore(
+            MacroDataStoreConfig(
+                macro_dir=macro_dir,
+                z_window=60,
+                robust_z_min_samples=5,
+            )
+        )
         store.load()
         return store
 
@@ -65,6 +68,7 @@ class MacroDataStoreTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             # Varying series with an extreme outlier at the end
             import random
+
             rng = random.Random(42)
             vix_data = [(i * DAY_NS, 20.0 + rng.gauss(0, 2)) for i in range(1, 31)]
             vix_data.append((31 * DAY_NS, 50.0))  # extreme outlier

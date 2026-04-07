@@ -27,11 +27,20 @@ from zenquant.historical import (
 )
 
 
-def _make_kline(open_time_ns: int, close_time_ns: int, o: float, h: float, lo: float, c: float, vol: float) -> HistoricalKlineRow:
+def _make_kline(
+    open_time_ns: int, close_time_ns: int, o: float, h: float, lo: float, c: float, vol: float
+) -> HistoricalKlineRow:
     return HistoricalKlineRow(
-        symbol="BTCUSDT", timeframe="4h",
-        open_time_ns=open_time_ns, close_time_ns=close_time_ns,
-        open=o, high=h, low=lo, close=c, volume=vol, trade_count=1000,
+        symbol="BTCUSDT",
+        timeframe="4h",
+        open_time_ns=open_time_ns,
+        close_time_ns=close_time_ns,
+        open=o,
+        high=h,
+        low=lo,
+        close=c,
+        volume=vol,
+        trade_count=1000,
     )
 
 
@@ -41,13 +50,20 @@ def _daily_rows(days: int = 90) -> list[HistoricalKlineRow]:
     rows: list[HistoricalKlineRow] = []
     for idx in range(days):
         trend = 42_000 + (idx * 95)
-        rows.append(HistoricalKlineRow(
-            symbol="BTCUSDT", timeframe="1d",
-            open_time_ns=base_ns + idx * interval_ns,
-            close_time_ns=base_ns + (idx + 1) * interval_ns - 1,
-            open=trend, high=trend + 400, low=trend - 300, close=trend + 50,
-            volume=1000.0 + idx * 10, trade_count=5000,
-        ))
+        rows.append(
+            HistoricalKlineRow(
+                symbol="BTCUSDT",
+                timeframe="1d",
+                open_time_ns=base_ns + idx * interval_ns,
+                close_time_ns=base_ns + (idx + 1) * interval_ns - 1,
+                open=trend,
+                high=trend + 400,
+                low=trend - 300,
+                close=trend + 50,
+                volume=1000.0 + idx * 10,
+                trade_count=5000,
+            )
+        )
     return rows
 
 
@@ -58,13 +74,20 @@ def _four_hour_rows(days: int = 90) -> list[HistoricalKlineRow]:
     for idx in range(days * 6):
         day = idx // 6
         trend = 42_000 + (day * 95) + (idx % 6) * 15
-        rows.append(HistoricalKlineRow(
-            symbol="BTCUSDT", timeframe="4h",
-            open_time_ns=base_ns + idx * interval_ns,
-            close_time_ns=base_ns + (idx + 1) * interval_ns - 1,
-            open=trend, high=trend + 200, low=trend - 150, close=trend + 25,
-            volume=200.0 + idx, trade_count=1000,
-        ))
+        rows.append(
+            HistoricalKlineRow(
+                symbol="BTCUSDT",
+                timeframe="4h",
+                open_time_ns=base_ns + idx * interval_ns,
+                close_time_ns=base_ns + (idx + 1) * interval_ns - 1,
+                open=trend,
+                high=trend + 200,
+                low=trend - 150,
+                close=trend + 25,
+                volume=200.0 + idx,
+                trade_count=1000,
+            )
+        )
     return rows
 
 
@@ -81,7 +104,9 @@ def _open_interest_rows(days: int = 90) -> list[HistoricalOpenInterestRow]:
     base_ns = int(datetime(2024, 1, 1, tzinfo=UTC).timestamp() * 1_000_000_000)
     interval_ns = 4 * 60 * 60 * 1_000_000_000
     return [
-        HistoricalOpenInterestRow(symbol="BTCUSDT", timeframe="4h", ts_ns=base_ns + i * interval_ns, open_interest=50_000.0 + i * 10)
+        HistoricalOpenInterestRow(
+            symbol="BTCUSDT", timeframe="4h", ts_ns=base_ns + i * interval_ns, open_interest=50_000.0 + i * 10
+        )
         for i in range(days * 6)
     ]
 
@@ -184,7 +209,8 @@ class TestFactorHealth(unittest.TestCase):
                 weight = cfg.get("weight", 0)
                 # Disabled signals with weight > 0.3 might indicate a config error
                 self.assertLessEqual(
-                    weight, 0.3,
+                    weight,
+                    0.3,
                     f"Disabled signal '{name}' has weight={weight} > 0.3 — review if this should be re-enabled",
                 )
 
@@ -199,7 +225,8 @@ class TestFactorHealth(unittest.TestCase):
         config = tomllib.loads(config_path.read_text())
         active = [n for n, c in config.get("signals", {}).items() if c.get("enabled", True)]
         self.assertGreaterEqual(
-            len(active), 2,
+            len(active),
+            2,
             f"Only {len(active)} active signal(s) — single-factor risk too high",
         )
 
@@ -231,10 +258,10 @@ class TestFactorHealth(unittest.TestCase):
 
             # Sprint contract: test Sharpe must not be catastrophically negative
             self.assertGreater(
-                result.metrics.sharpe, -2.0,
+                result.metrics.sharpe,
+                -2.0,
                 f"Walk-forward test Sharpe={result.metrics.sharpe:.2f} < -2.0 — potential overfit",
             )
-
 
     def test_sprint_contract_ic_stability(self) -> None:
         """Sprint contract: active signals must have stable IC across time windows.

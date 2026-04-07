@@ -46,7 +46,6 @@ class StateEngineTests(unittest.TestCase):
         self.assertGreaterEqual(state.transition_risk, 0.0)
         self.assertLessEqual(state.transition_risk, 1.0)
 
-
     def test_vix_z_upgrades_volatility_to_high(self) -> None:
         bus = InMemoryJetStream()
         StateEngine(bus)

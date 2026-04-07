@@ -198,17 +198,9 @@ def _classify_directional_state(
     Returns:
         (directional_state, confidence, direction_signal)
     """
-    bearish_grind = (
-        momentum_roc_z <= -0.18
-        and cvd_slope <= -0.025
-        and zen_pulse <= 49.0
-        and cycle_position <= 1.15
-    )
+    bearish_grind = momentum_roc_z <= -0.18 and cvd_slope <= -0.025 and zen_pulse <= 49.0 and cycle_position <= 1.15
     bearish_transition = (
-        momentum_roc_z <= -0.10
-        and cvd_slope <= -0.015
-        and zen_pulse <= 50.0
-        and cycle_position <= 1.20
+        momentum_roc_z <= -0.10 and cvd_slope <= -0.015 and zen_pulse <= 50.0 and cycle_position <= 1.20
     )
     liquidation_bearish = not liq_stale and liq_intensity_z >= 2.2 and liq_imbalance >= 0.20
 

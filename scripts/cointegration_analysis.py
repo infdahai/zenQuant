@@ -36,9 +36,7 @@ def load_close_prices(symbol: str) -> list[tuple[int, float]]:
     return [(int(row["close_time_ns"]), float(row["close"])) for _, row in df.iterrows()]
 
 
-def align_series(
-    btc: list[tuple[int, float]], eth: list[tuple[int, float]]
-) -> tuple[list[float], list[float]]:
+def align_series(btc: list[tuple[int, float]], eth: list[tuple[int, float]]) -> tuple[list[float], list[float]]:
     """Align two time series by timestamp."""
     btc_dict = dict(btc)
     eth_dict = dict(eth)
@@ -105,9 +103,7 @@ def half_life(residuals: list[float]) -> float:
     return hl
 
 
-def rolling_cointegration(
-    btc: list[float], eth: list[float], window: int = 1500
-) -> float:
+def rolling_cointegration(btc: list[float], eth: list[float], window: int = 1500) -> float:
     """Test cointegration stability: what % of rolling windows pass ADF test."""
     n = len(btc)
     if n < window + 100:
@@ -154,7 +150,7 @@ def main() -> None:
     alpha, beta, residuals = ols_regression(btc_train, eth_train)
     t_stat, is_stationary = adf_test_manual(residuals)
 
-    print(f"\n--- Engle-Granger Cointegration Test ---")
+    print("\n--- Engle-Granger Cointegration Test ---")
     print(f"  Hedge ratio (beta): {beta:.4f}")
     print(f"  ADF t-statistic: {t_stat:.2f}")
     print(f"  Stationary (p<0.05): {'YES' if is_stationary else 'NO'}")
@@ -162,13 +158,13 @@ def main() -> None:
     # 2. Half-life
     hl = half_life(residuals)
     hl_days = hl / 6  # 4H bars → days
-    print(f"\n--- Mean-Reversion Half-Life ---")
+    print("\n--- Mean-Reversion Half-Life ---")
     print(f"  Half-life: {hl:.0f} bars ({hl_days:.1f} days)")
     print(f"  Fast enough for 4H: {'YES' if hl_days < 30 else 'NO'}")
 
     # 3. Rolling stability
     stability = rolling_cointegration(btc_train, eth_train)
-    print(f"\n--- Rolling Stability ---")
+    print("\n--- Rolling Stability ---")
     print(f"  Windows passing ADF: {stability:.0%}")
     print(f"  Stable (>70%): {'YES' if stability > 0.7 else 'NO'}")
 

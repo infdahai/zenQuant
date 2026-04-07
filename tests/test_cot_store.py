@@ -104,11 +104,13 @@ class CotStoreTests(unittest.TestCase):
             # 20 normal weeks + 1 extreme
             records = []
             for i in range(20):
-                records.append(_make_cot_row(
-                    i + 1,
-                    asset_mgr_net=1000 + (i % 5) * 100,
-                    leveraged_net=-500 + (i % 3) * 50,
-                ))
+                records.append(
+                    _make_cot_row(
+                        i + 1,
+                        asset_mgr_net=1000 + (i % 5) * 100,
+                        leveraged_net=-500 + (i % 3) * 50,
+                    )
+                )
             # Extreme crowding
             records.append(_make_cot_row(21, asset_mgr_net=10000, leveraged_net=-5000))
             _write_cot_parquet(path, records)

@@ -157,20 +157,25 @@ class HistoricalBacktest:
         )
         self._liquidation_store.load()
         # Load ETH data for cross-asset Transfer Entropy
-        self._eth_store = EthDataStore(EthStoreConfig(
-            eth_kline_path=self._config.root_dir / "klines" / "ETHUSDT" / "4h",
-        ))
+        self._eth_store = EthDataStore(
+            EthStoreConfig(
+                eth_kline_path=self._config.root_dir / "klines" / "ETHUSDT" / "4h",
+            )
+        )
         self._eth_store.load()
         # Load spot-perp basis data if available
-        self._basis_store = BasisDataStore(BasisStoreConfig(
-            spot_dir=Path("data/raw/binance_spot/klines") / self._config.symbol / "4h",
-            perp_dir=self._config.root_dir / "klines" / self._config.symbol / "4h",
-        ))
+        self._basis_store = BasisDataStore(
+            BasisStoreConfig(
+                spot_dir=Path("data/raw/binance_spot/klines") / self._config.symbol / "4h",
+                perp_dir=self._config.root_dir / "klines" / self._config.symbol / "4h",
+            )
+        )
         self._basis_store.load()
         self.indicator_engine = IndicatorEngine(
             bus=self.bus,
             store=self.indicator_store,
-            config=self._config.indicator_config or IndicatorEngineConfig(expected_symbols=(self._config.portfolio_symbol,)),
+            config=self._config.indicator_config
+            or IndicatorEngineConfig(expected_symbols=(self._config.portfolio_symbol,)),
             macro_store=self._macro_store if self._macro_store.loaded else None,
             options_store=self._options_store if self._options_store.loaded else None,
             hf_store=self._hf_store if self._hf_store.loaded else None,
@@ -568,13 +573,9 @@ class HistoricalBacktest:
             dominant_cycle=dominant_cycle,
             dominant_phase=dominant_phase,
             cycle_distribution={
-                str(cycle): round(count / total_bars, 4)
-                for cycle, count in sorted(cycle_counts.items())
+                str(cycle): round(count / total_bars, 4) for cycle, count in sorted(cycle_counts.items())
             },
-            phase_distribution={
-                phase: round(count / total_bars, 4)
-                for phase, count in sorted(phase_counts.items())
-            },
+            phase_distribution={phase: round(count / total_bars, 4) for phase, count in sorted(phase_counts.items())},
             phase_bar_counts=dict(sorted(phase_counts.items())),
             sharpe_by_phase=_sharpe_by_phase(self._risk_snapshots),
         )
@@ -903,9 +904,7 @@ def _aux_staleness_ms(
 
 def _parse_timeframe(value: str) -> Timeframe:
     """Map storage tokens to the domain timeframe enum."""
-    return {"1h": Timeframe.TF_1H, "4h": Timeframe.TF_4H, "1d": Timeframe.TF_1D}.get(
-        value, Timeframe.TF_4H
-    )
+    return {"1h": Timeframe.TF_1H, "4h": Timeframe.TF_4H, "1d": Timeframe.TF_1D}.get(value, Timeframe.TF_4H)
 
 
 def _timeframe_priority(value: str) -> int:

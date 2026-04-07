@@ -148,7 +148,11 @@ def evaluate(
     checks = [
         ("Worst year Sharpe > -1.0", worst_sharpe > -1.0, f"{worst_sharpe:.1f}"),
         ("Losing years < 50%", losing_years < total_years * 0.5, f"{losing_years}/{total_years}"),
-        ("TREND PnL > 0", regime_data.get("TREND", {}).get("pnl", 0) > 0, f"${regime_data.get('TREND', {}).get('pnl', 0):,.0f}"),
+        (
+            "TREND PnL > 0",
+            regime_data.get("TREND", {}).get("pnl", 0) > 0,
+            f"${regime_data.get('TREND', {}).get('pnl', 0):,.0f}",
+        ),
         ("Max DD < 35%", m.max_drawdown < 0.35, f"{m.max_drawdown:.1%}"),
     ]
     for name, passed, value in checks:

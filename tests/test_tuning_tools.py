@@ -35,6 +35,8 @@ def _mock_backtest_worker(args):
         "trade_count": 100,
         "fee_drag_pct": 0.02,
     }
+
+
 COMPARE_RESULTS = _load_module("compare_results_module", "scripts/compare_results.py")
 
 
@@ -139,7 +141,6 @@ class TuningToolsTests(unittest.TestCase):
         self.assertEqual(results[0].total_trades, 12)
         ranked = COMPARE_RESULTS.rank_by_metric(results, "sharpe", top_n=1)
         self.assertEqual(ranked[0].run_id, 1)
-
 
     def test_optuna_bayesian_sweep_finds_best_params(self) -> None:
         """Verify Bayesian sweep via Optuna runs and finds optimal parameters."""

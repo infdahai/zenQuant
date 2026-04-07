@@ -83,7 +83,7 @@ class HistoricalPipelineTests(unittest.TestCase):
 
             # Baseline: v2.0 + pyramid + rv_hf + asymmetric risk
             self.assertGreater(result.metrics.trade_count, 5)
-            
+
             self.assertIn("BULL_CONTINUATION", result.diagnostics.playbook_counts)
             # Trailing may not fire on small synthetic dataset with pyramid execution
             self.assertIsInstance(result.diagnostics.actionable_exit_counts, dict)

@@ -69,8 +69,12 @@ def main() -> None:
         return
 
     signal_keys = [
-        "multi_momentum_z", "cvd_slope", "funding_oi_z",
-        "cycle_position", "vol_ratio_rv", "directional_consistency",
+        "multi_momentum_z",
+        "cvd_slope",
+        "funding_oi_z",
+        "cycle_position",
+        "vol_ratio_rv",
+        "directional_consistency",
     ]
 
     # Compute IC for last N bars vs full history

@@ -50,9 +50,7 @@ def _build_research_verdict(payload: dict, readiness: dict) -> dict:
         for item in payload["window_reports"]
         if item["variant"] == "paulwei_baseline" and item["window_label"] == "overall"
     )
-    baseline_validation = next(
-        item for item in payload["validation_reports"] if item["variant"] == "paulwei_baseline"
-    )
+    baseline_validation = next(item for item in payload["validation_reports"] if item["variant"] == "paulwei_baseline")
 
     verdicts = []
     for variant in payload["validation_reports"]:
@@ -143,10 +141,7 @@ def main() -> None:
     md_path.write_text(build_markdown_summary(payload), encoding="utf-8")
 
     if not readiness.data_ready:
-        print(
-            "Liquidation data not ready: "
-            f"blocked_by={readiness.blocked_by} detail={readiness.detail}"
-        )
+        print(f"Liquidation data not ready: blocked_by={readiness.blocked_by} detail={readiness.detail}")
     print(f"Saved JSON report to {json_path}")
     print(f"Saved Markdown summary to {md_path}")
     for verdict in payload["research_verdict"]["variant_verdicts"]:

@@ -38,9 +38,11 @@ def main() -> None:
 
     # Run backtest
     print("Running full backtest...")
-    result = HistoricalBacktest(HistoricalBacktestConfig(
-        profile_path=Path("config/profiles/default.toml"),
-    )).run()
+    result = HistoricalBacktest(
+        HistoricalBacktestConfig(
+            profile_path=Path("config/profiles/default.toml"),
+        )
+    ).run()
 
     new_metrics = {
         "sharpe": round(result.metrics.sharpe, 4),

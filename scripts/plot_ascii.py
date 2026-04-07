@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import argparse
 import csv
-import sys
 from pathlib import Path
 
 
@@ -21,11 +20,13 @@ def plot_ascii_equity_curve(csv_file: str, width: int = 80, height: int = 25) ->
     with Path(csv_file).open() as f:
         reader = csv.DictReader(f)
         for row in reader:
-            rows.append({
-                'timestamp': row['timestamp'][:10],  # Date only
-                'equity': float(row['equity']),
-                'dd': float(row['drawdown_pct']),
-            })
+            rows.append(
+                {
+                    "timestamp": row["timestamp"][:10],  # Date only
+                    "equity": float(row["equity"]),
+                    "dd": float(row["drawdown_pct"]),
+                }
+            )
 
     if not rows:
         print("No data in CSV")
@@ -36,7 +37,7 @@ def plot_ascii_equity_curve(csv_file: str, width: int = 80, height: int = 25) ->
     sampled = rows[::step]
 
     # Get equity range
-    equities = [r['equity'] for r in sampled]
+    equities = [r["equity"] for r in sampled]
     min_equity = min(equities)
     max_equity = max(equities)
     equity_range = max_equity - min_equity
@@ -48,24 +49,24 @@ def plot_ascii_equity_curve(csv_file: str, width: int = 80, height: int = 25) ->
     print(f"{'=' * width}\n")
 
     # Create grid
-    grid = [[' ' for _ in range(width)] for _ in range(height)]
+    grid = [[" " for _ in range(width)] for _ in range(height)]
 
     # Plot equity line
     for i, row in enumerate(sampled):
         if i >= width:
             break
 
-        equity = row['equity']
+        equity = row["equity"]
         # Normalize to grid height
         y = int((equity - min_equity) / equity_range * (height - 1)) if equity_range > 0 else height // 2
         y = height - 1 - y  # Flip y-axis
 
-        grid[y][i] = '●'
+        grid[y][i] = "●"
 
         # Fill column below
         for j in range(y + 1, height):
-            if grid[j][i] == ' ':
-                grid[j][i] = '│'
+            if grid[j][i] == " ":
+                grid[j][i] = "│"
 
     # Print grid
     for i, row_chars in enumerate(grid):
@@ -76,14 +77,14 @@ def plot_ascii_equity_curve(csv_file: str, width: int = 80, height: int = 25) ->
         else:
             label = "           │"
 
-        print(label + ''.join(row_chars))
+        print(label + "".join(row_chars))
 
     # X-axis
     print("           └" + "─" * width)
-    print("            " + rows[0]['timestamp'] + (" " * (width - 35)) + rows[-1]['timestamp'])
+    print("            " + rows[0]["timestamp"] + (" " * (width - 35)) + rows[-1]["timestamp"])
 
     # Legend
-    print(f"\nLegend: ● = Equity point | │ = Fill")
+    print("\nLegend: ● = Equity point | │ = Fill")
     print(f"Samples: {len(sampled)} points (from {len(rows)} total)")
 
 

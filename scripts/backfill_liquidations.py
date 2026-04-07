@@ -50,10 +50,7 @@ def main() -> None:
             end_time_ms=end_ms,
         )
         all_events.extend(events)
-        print(
-            f"{start_dt.strftime('%Y-%m-%d')} -> {end_dt.strftime('%Y-%m-%d')} "
-            f"events={len(events)}"
-        )
+        print(f"{start_dt.strftime('%Y-%m-%d')} -> {end_dt.strftime('%Y-%m-%d')} events={len(events)}")
 
     if not all_events:
         print("Backfill completed but returned zero events; refusing to write empty history.")

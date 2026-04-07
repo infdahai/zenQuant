@@ -99,16 +99,18 @@ def run_ablation() -> None:
             pnl_delta = pnl - baseline_pnl
 
             verdict = "DEAD WEIGHT" if sharpe_delta >= 0 else "LOAD-BEARING"
-            results.append({
-                "signal": signal_name,
-                "sharpe": sharpe,
-                "sharpe_delta": sharpe_delta,
-                "pnl": pnl,
-                "pnl_delta": pnl_delta,
-                "dd": dd,
-                "trades": trades,
-                "verdict": verdict,
-            })
+            results.append(
+                {
+                    "signal": signal_name,
+                    "sharpe": sharpe,
+                    "sharpe_delta": sharpe_delta,
+                    "pnl": pnl,
+                    "pnl_delta": pnl_delta,
+                    "dd": dd,
+                    "trades": trades,
+                    "verdict": verdict,
+                }
+            )
 
             print(f"  Sharpe={sharpe:.2f} (Δ={sharpe_delta:+.2f}), PnL=${pnl:,.0f} (Δ=${pnl_delta:+,.0f}) → {verdict}")
 
