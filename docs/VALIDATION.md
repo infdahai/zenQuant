@@ -2,6 +2,22 @@
 
 Historical validation evidence and baseline metrics.
 
+## Current Historical Status (2026-04-07)
+
+The authoritative validation handoff path for the current strategy is:
+
+- Handoff spec: [`LIVE_VALIDATION_HANDOFF_SPEC.md`](/Users/disaster/workspace/code/zenQuant/docs/LIVE_VALIDATION_HANDOFF_SPEC.md)
+- Execution record: [`HISTORICAL_VALIDATION_2026_04_07.md`](/Users/disaster/workspace/code/zenQuant/docs/HISTORICAL_VALIDATION_2026_04_07.md)
+
+Current conclusion:
+
+- `2023-08` bearish-grind repair is validated on historical replay
+- `walk_forward_eval.py` shows `0/8` overfit windows and Avg OOS ratio `1.25`
+- `adversarial_stress.py --historical` passes `5/5` worst periods
+- `current` and `paulwei_baseline` are still identical on the current historical path, so the framework is validated but no superior promoted variant has been established yet
+
+Use the handoff spec for re-run commands, paper-live startup, and acceptance criteria. Treat this file as a summary, not as the source of truth for test contracts.
+
 ---
 
 ## Current Performance (v2.0 + Pyramid, 2026-04-04)

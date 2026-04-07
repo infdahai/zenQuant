@@ -27,7 +27,7 @@ uv run zenquant-web --host 127.0.0.1 --port 8090 --mode live
 uv run python scripts/run_research_pipeline.py --root data/raw/binance --symbol BTCUSDT --label baseline
 
 # Export a labeled research dataset from live/paper PostgreSQL audit logs
-uv run python scripts/export_live_training_data.py --dsn "$ZENQUANT_PG_DSN" --symbol BTCUSDT_PERP --label paper-live
+uv run zenquant-live-export --dsn "$ZENQUANT_PG_DSN" --symbol BTCUSDT_PERP --label paper-live
 
 # View dashboard
 open http://127.0.0.1:8090
@@ -62,9 +62,9 @@ Execution defaults follow the PaulWei pattern:
 
 ## Historical Validation Snapshot
 
-The current BTC strategy has passed the repo's historical validation spec for variant comparison and the 2023-08 bearish-grind repair.
+The current BTC strategy has passed the repo's handoff validation path for historical replay, variant comparison, and the 2023-08 bearish-grind repair.
 
-- Spec: [`docs/TEST_SPEC_VARIANT_COMPARISON_AND_202308_REPAIR.md`](/Users/disaster/workspace/code/zenQuant/docs/TEST_SPEC_VARIANT_COMPARISON_AND_202308_REPAIR.md)
+- Handoff spec: [`docs/LIVE_VALIDATION_HANDOFF_SPEC.md`](/Users/disaster/workspace/code/zenQuant/docs/LIVE_VALIDATION_HANDOFF_SPEC.md)
 - Latest execution record: [`docs/HISTORICAL_VALIDATION_2026_04_07.md`](/Users/disaster/workspace/code/zenQuant/docs/HISTORICAL_VALIDATION_2026_04_07.md)
 - Current historical conclusion: 2023-08 is no longer a known failure, walk-forward shows no obvious overfit warning, and historical adversarial replay passes `5/5` worst periods.
 
@@ -307,7 +307,7 @@ Use this when the system is already running with PostgreSQL audit persistence an
 
 ```bash
 export ZENQUANT_PG_DSN='postgresql://user:pass@host:5432/zenquant'
-uv run python scripts/export_live_training_data.py \
+uv run zenquant-live-export \
   --dsn "$ZENQUANT_PG_DSN" \
   --symbol BTCUSDT_PERP \
   --label paper-live
@@ -330,11 +330,11 @@ Use this path for:
 - training on observed production behavior
 
 Current repo status:
-- paper trading has been started and partially logged
-- paper-live validation is **not yet complete**
-- completion requires a sustained run plus an explicit `paper-live` export/review
+- paper-live can be started after the handoff gates pass
+- paper-live validation is **not yet complete** until the sustained run and formal export/review finish
+- use the handoff spec as the single tester/operator contract
 
-See [PAPER_TRADING_STATUS.md](/Users/disaster/workspace/code/zenQuant/docs/PAPER_TRADING_STATUS.md).
+See [LIVE_VALIDATION_HANDOFF_SPEC.md](/Users/disaster/workspace/code/zenQuant/docs/LIVE_VALIDATION_HANDOFF_SPEC.md).
 
 ### Practical Rule
 

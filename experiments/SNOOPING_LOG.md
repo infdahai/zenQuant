@@ -25,6 +25,8 @@
 | 2026-04-04 | >.5 | <30% | PASS | First benchmark |
 | 2026-04-04 | >.5 | <30% | PASS | Post-config extraction |
 
+| 2026-04-07 | Baseline update: 4 new execution features: flip_immediate, adaptive_pyramid, gradual_exit, DCA distance gating. Sharpe 1.75→2.29, DD 9.9→12.5% | Sharpe +0.55 | Updated real_data_baseline.json | LOW — 1 run |
+
 ## Budget Assessment
 
 Total Dev experiments: ~30 runs

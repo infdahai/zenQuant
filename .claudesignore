@@ -1,0 +1,48 @@
+# Keep Claude CLI focused on source, configs, and concise docs.
+# Exclude large, generated, runtime, and dependency artifacts that
+# inflate context without improving code understanding.
+
+# VCS / local tool state
+.git/
+.claude/settings.local.json
+.DS_Store
+
+# Python / JS environments and caches
+.venv/
+__pycache__/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+*.pyc
+*.pyo
+node_modules/
+
+# Build outputs
+build/
+dist/
+*.egg-info/
+playwright-report/
+test-results/
+
+# Runtime and generated artifacts
+data/
+logs/
+results/
+mutants/
+.artifacts/
+
+# Compiled frontend assets
+zenquant/web/assets/
+
+# Large binary / export formats
+*.parquet
+*.csv
+*.jsonl
+*.zip
+*.sqlite
+*.db
+*.png
+*.jpg
+*.jpeg
+*.webp
+*.pdf

@@ -7,6 +7,41 @@
 Regime-aware crypto perpetual futures trading system. BTC-first, 4H execution timeframe.
 完整角色定义和架构约束见 `AGENTS.md`。
 
+## Claude CLI Low-Token Workflow
+
+- 先读 `AGENTS.md`、`CLAUDE.md` 和当前目标文件，不要先全仓扫描。
+- 默认只打开本次任务直接相关的 1-3 个文件；需要扩展时再逐步加。
+- 不把 Claude CLI 当后台轮询器、watchdog、tail 跟随器、长任务守护器。
+- 长任务先交给终端原生命令运行；完成后只把一次性日志片段或失败堆栈给 Claude。
+- 优先点名具体路径，例如“检查 `zenquant/app/check.py`”，不要用“看看整个项目哪里有问题”。
+- 不要在同一任务里频繁切换模型；保持单模型会话以提高缓存命中。
+- `data/`、`logs/`、`results/`、`.venv/`、`node_modules/` 等大目录默认由 `.claudesignore` 排除，只有明确需要时才人工摘取小片段提供。
+- 需要目录结构时，先贴精简树或 `rg --files` 结果，不要让工具暴力遍历大目录。
+
+## RL And Execution Defaults
+
+- RL 只做参数微调，不改策略骨架、不改 regime 逻辑、不改 risk precedence。
+- RL 可以调：signal weights、risk thresholds、indicator windows、execution speeds/gating。
+- 执行默认哲学固定为 PaulWei:
+  - 长仓允许亏损 DCA
+  - 空仓只在盈利时加仓
+  - 默认 gradual exit
+  - DCA 受 ATR 距离门控
+  - risk overlay 永远可以覆盖执行意图
+
+## 历史验证状态 (2026-04-07)
+
+- 权威交付规格：`docs/LIVE_VALIDATION_HANDOFF_SPEC.md`
+- 最新执行记录：`docs/HISTORICAL_VALIDATION_2026_04_07.md`
+- 当前结论：
+  - `2023-08` 慢跌窗口已不再是已知 failure
+  - `compare_variants.py` 可稳定生成 `comparison.json` / `comparison.md`
+  - walk-forward：`8/8` 窗口无 overfit warning，Avg OOS ratio `1.25`
+  - historical adversarial：`5/5` worst periods pass
+- 当前边界：
+  - `current` 与 `paulwei_baseline` 在真实历史路径上暂时仍一致
+  - 这说明 comparison contract 稳定，但还不能证明存在优于 PaulWei 的新 execution alpha
+
 ## 当前信号体系 (9 plugins, 7 active)
 
 | Signal | Weight | Status | Source | Note |
@@ -69,17 +104,11 @@ Gate F: Walk-forward overfit detection (8 OOS windows)
 + Signal Ablation: periodic load-bearing analysis
 详见 `docs/HARNESS_ARCHITECTURE.md`
 
-## Known Vulnerabilities (adversarial replay 2026-04-05)
+## Historical Risk Notes
 
-**Historical Replay**: 4/5 worst periods PASS, 1/5 FAIL (80% pass rate)
-
-| Period | Issue | Root Cause | Fix Attempted | Result |
-|--------|-------|------------|---------------|--------|
-| **2023-08** | Sharpe -3.69 (-15.6% BTC decline) | Regime misclassification: RANGE 82% (should use BEAR_DEFENSE) | Lower momentum threshold -0.5→-0.15 | **Worse** (-3.69→-4.20) |
-
-**Details**: `logs/paper_trading/2023-08_root_cause.md`  
-**Lesson**: Slow grinds (persistent downtrend without crashes) are strategy limitation. BEAR_DEFENSE works (68% win rate) but under-used (6.5% vs needed 27.9%). Threshold tuning degraded other periods.  
-**Decision**: Document vulnerability, no fix deployed. Not all market conditions are tradable.
+- `2023-08` 曾经是 adversarial historical replay 的已知脆弱窗口，但当前版本已通过专项修复验证。
+- 旧的 root-cause 分析仍有参考价值，见 `logs/paper_trading/2023-08_root_cause.md` 和 `docs/GAN_WORKFLOW.md`。
+- 当前不再把 `2023-08` 记录为未修复漏洞；今后若该窗口重新转红，应视为回归而不是“已知可接受失败”。
 
 ---
 
@@ -111,7 +140,7 @@ Gate F: Walk-forward overfit detection (8 OOS windows)
 
 **Details**: `docs/CYCLE_AWARE_TESTING.md`
 
-### Dev Set Budget (SNOOPING_LOG.md)
+### Dev Set Budget (experiments/SNOOPING_LOG.md)
 
 **Status**: 32/50 uses (🟠 64% exhausted)  
 **Remaining**: 18 uses  

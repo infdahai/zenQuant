@@ -274,6 +274,18 @@ The goal is to build a stable decision framework that behaves well across regime
 
 The work should happen in five phases.
 
+## Context Budget Discipline
+
+Treat context as a scarce production resource.
+
+- Do not scan the whole repository unless the task truly requires it.
+- Start with the narrowest possible slice: task contract, target module, related test.
+- Prefer targeted file reads over broad directory traversal.
+- Do not use the coding agent as a background poller for long-running local jobs.
+- For long commands, run them in the shell and inspect the result once, instead of repeatedly re-querying state.
+- Exclude generated artifacts, logs, datasets, and large result files from default investigation unless they are directly needed.
+- Summarize large outputs before feeding them back into the next step.
+
 ### Phase 1 — Discovery
 Before building, clarify the real need.
 

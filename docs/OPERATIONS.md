@@ -56,19 +56,20 @@ Strategy must pass validation on **5 different seeds** to be considered robust.
 # Create database
 createdb zenquant_live
 
-# Start paper trading
+# Start paper-live runtime
 export ZENQUANT_PG_DSN="postgresql://localhost/zenquant_live"
 uv run zenquant-web --host 127.0.0.1 --port 8090 --mode live
 
 # Verify health
 curl http://127.0.0.1:8090/healthz
-uv run zenquant-live-validate --base-url http://127.0.0.1:8090
+uv run zenquant-live-validate --base-url http://127.0.0.1:8090 --require-db
 ```
 
 Important:
 - running the service once does **not** mean paper trading is complete
 - paper trading is complete only after a sustained `2 weeks` run and at least one formal `paper-live` export/review
 - current repo evidence should be treated as partial progress, not final validation
+- tester/operator handoff is defined only by [`LIVE_VALIDATION_HANDOFF_SPEC.md`](/Users/disaster/workspace/code/zenQuant/docs/LIVE_VALIDATION_HANDOFF_SPEC.md)
 
 ### Dashboard
 
@@ -130,7 +131,7 @@ Friday:    Deploy updated profile, monitor first bar close
 ### Export Live Data for Research
 
 ```bash
-uv run python scripts/export_live_training_data.py \
+uv run zenquant-live-export \
   --dsn "$ZENQUANT_PG_DSN" \
   --symbol BTCUSDT_PERP \
   --label weekly-review
