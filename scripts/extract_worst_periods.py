@@ -126,7 +126,7 @@ def main() -> None:
     backtest = HistoricalBacktest(config)
     result = backtest.run()
 
-    print(f"  Backtest complete:")
+    print("  Backtest complete:")
     print(f"    Sharpe: {result.metrics.sharpe:.2f}")
     print(f"    Max DD: {result.metrics.max_drawdown:.1%}")
     print(f"    Trades: {result.metrics.trade_count}")

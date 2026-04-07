@@ -172,8 +172,9 @@ async def run_paper_trading(symbol: str = "BTCUSDT", duration_hours: float = 24.
     # Start embedded dashboard server (shares bus with paper trading)
     dashboard_task = None
     try:
-        from zenquant.app.server import create_app
         import uvicorn
+
+        from zenquant.app.server import create_app
 
         app = create_app(bus=bus)
 
