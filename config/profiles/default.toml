@@ -48,6 +48,24 @@ low_iv_threshold = -0.5
 high_iv_threshold = 1.5
 extreme_iv_threshold = 2.5
 inverted_skew_threshold = -1.0
+skew_velocity_threshold = 0.5
+term_inversion_threshold = -0.5
+surface_dislocation_threshold = 0.55
+oi_concentration_threshold = 0.55
+
+[signals.perp_carry_stress_signal]
+enabled = true
+weight = 0.08
+carry_stress_threshold = 0.45
+leverage_pressure_threshold = 0.45
+
+[signals.vol_structure_signal]
+enabled = true
+weight = 0.08
+expansion_threshold = 1.30
+compression_threshold = 0.85
+vol_of_vol_threshold = 0.12
+persistence_threshold = 0.65
 
 [signals.cross_asset_flow_signal]
 enabled = false  # IC=0.014 NOISE — disabled per IC>0.03 rule. Re-evaluate with more data.

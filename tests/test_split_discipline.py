@@ -3,11 +3,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from unittest.mock import patch
 
-from zenResearch.historical import HistoricalBacktestConfig
-from zenResearch.research.auto_research import Campaign, CampaignConfig, SearchSpace
-from zenResearch.research.comparison import compare_variants, default_walk_forward_windows
-from zenResearch.research.framework_search import FrameworkEvaluator
-from zenResearch.research.splits import default_btc_split_spec, split_summary_json
+from zenquant.historical import HistoricalBacktestConfig
+from zenquant.research.auto_research import Campaign, CampaignConfig, SearchSpace
+from zenquant.research.comparison import compare_variants, default_walk_forward_windows
+from zenquant.research.framework_search import FrameworkEvaluator
+from zenquant.research.splits import default_btc_split_spec, split_summary_json
 
 
 class SplitContractTests(unittest.TestCase):
@@ -84,7 +84,7 @@ class ResearchDisciplineTests(unittest.TestCase):
                 self._market_states = [FakeState()]
                 self._playbooks = [FakePlaybook()]
 
-        with patch("zenResearch.research.comparison._run_variant_backtest", return_value=(FakeRunner(), FakeResult())):
+        with patch("zenquant.research.comparison._run_variant_backtest", return_value=(FakeRunner(), FakeResult())):
             payload = compare_variants(
                 HistoricalBacktestConfig(root_dir=Path("data/raw/binance"), symbol="BTCUSDT"),
                 walk_forward_windows=[],
@@ -97,7 +97,7 @@ class ResearchDisciplineTests(unittest.TestCase):
         self.assertEqual(payload["split_scope"], "train_dev_only")
 
     def test_framework_report_records_test_evaluated_false_until_acceptance(self) -> None:
-        from zenResearch.research.framework_search import CandidateSummary
+        from zenquant.research.framework_search import CandidateSummary
 
         candidate = CandidateSummary(
             variant="current",
@@ -115,7 +115,7 @@ class ResearchDisciplineTests(unittest.TestCase):
         )
         with (
             patch.object(FrameworkEvaluator, "_evaluate_variant", return_value=candidate),
-            patch("zenResearch.research.framework_search._build_comparison_payload", return_value={}),
+            patch("zenquant.research.framework_search._build_comparison_payload", return_value={}),
         ):
             evaluator = FrameworkEvaluator(HistoricalBacktestConfig(), split_spec=default_btc_split_spec())
             report = evaluator.final_report(optuna_params=None, rl_params=None, search_status={}, full=False, evaluate_test=False)

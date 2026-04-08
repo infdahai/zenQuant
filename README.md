@@ -20,7 +20,7 @@ uv sync
 uv run zenquant-backtest --root data/raw/binance --symbol BTCUSDT
 
 # Start live paper-trading runtime (default port 8090)
-export ZENQUANT_PG_DSN='postgresql://user:pass@host:5432/zenquant'
+export ZENQUANT_PG_DSN='postgresql://user:pass@host:5432/zenQuant'
 uv run zenquant-web --host 127.0.0.1 --port 8090 --mode live
 
 # Export a labeled research dataset from historical replay
@@ -47,6 +47,9 @@ This repo is large enough that careless Claude CLI usage can waste a lot of toke
 ## RL Research Tuning
 
 `RL` is supported as a research-only parameter tuner. It may tune weights, risk thresholds, indicator windows, and execution speeds, but it must not rewrite strategy architecture, regime logic, or risk precedence.
+
+For a repository-grounded explanation of how `RL` and `Optuna` are actually used
+in ZenQuant, see [`docs/RL_OPTUNA_EXPLAINER.md`](/Users/disaster/workspace/code/zenQuant/docs/RL_OPTUNA_EXPLAINER.md).
 
 ## Dataset Split Discipline
 
@@ -90,7 +93,7 @@ Minimal re-check commands:
 ```bash
 uv run pytest tests/test_variant_comparison.py tests/test_202308_bearish_grind.py tests/test_historical_pipeline.py -q --tb=short
 uv run pytest tests/test_golden_output.py tests/test_backtest_invariants.py tests/test_parity.py tests/test_execution_router.py tests/test_execution_sensitivity.py tests/test_scenario_risk.py -q --tb=short
-uv run python scripts/compare_variants.py --root data/raw/binance --symbol BTCUSDT --split dev --output-dir /tmp/zenquant-variant-compare
+uv run python scripts/compare_variants.py --root data/raw/binance --symbol BTCUSDT --split dev --output-dir /tmp/zenQuant-variant-compare
 uv run python scripts/walk_forward_eval.py
 uv run python scripts/adversarial_stress.py --historical --split dev
 ```
@@ -323,7 +326,7 @@ Use this path for:
 Use this when the system is already running with PostgreSQL audit persistence and you want to learn from real monitored behavior.
 
 ```bash
-export ZENQUANT_PG_DSN='postgresql://user:pass@host:5432/zenquant'
+export ZENQUANT_PG_DSN='postgresql://user:pass@host:5432/zenQuant'
 uv run zenquant-live-export \
   --dsn "$ZENQUANT_PG_DSN" \
   --symbol BTCUSDT_PERP \
@@ -514,7 +517,7 @@ curl -LsSf https://astral.sh/uv/install.sh | sh
 ### Installation
 
 ```bash
-git clone https://github.com/infdahai/zenQuant.git
+git clone https://github.com/infdahai/zenquant.git
 cd zenQuant
 
 # Install dependencies
@@ -551,7 +554,7 @@ uv run zenquant-backtest --root data/raw/binance --symbol BTCUSDT
 
 ```bash
 # 1. Start the live runtime (default port 8090)
-export ZENQUANT_PG_DSN='postgresql://user:pass@host:5432/zenquant'
+export ZENQUANT_PG_DSN='postgresql://user:pass@host:5432/zenQuant'
 uv run zenquant-web --host 127.0.0.1 --port 8090 --mode live
 
 # 2. Optional: enable Deribit options observation layer
@@ -815,7 +818,7 @@ uv run pytest
 uv run pytest tests/test_exit_engine.py -v
 
 # With coverage
-uv run pytest --cov=zenquant --cov-report=html
+uv run pytest --cov=zenQuant --cov-report=html
 
 # Run skipped tests (require external systems)
 export ZENQUANT_RUN_DERIBIT_NETWORK_TESTS=1

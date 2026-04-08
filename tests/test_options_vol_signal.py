@@ -175,6 +175,30 @@ class OptionsVolSignalTests(unittest.TestCase):
         )
         self.assertIn("OPTIONS_DISTORTED", result3.reason_codes)
 
+    def test_surface_dislocation_without_extreme_iv_still_warns(self) -> None:
+        from zenquant.plugins.signals import options_vol_signal
+
+        result = options_vol_signal.compute(
+            {
+                "atm_iv_z": 0.8,
+                "skew_z": -0.4,
+                "term_slope_z": -0.8,
+                "options_surface_dislocation": 0.7,
+            },
+            {"regime": "TREND"},
+            {
+                "low_iv_threshold": -0.5,
+                "high_iv_threshold": 1.5,
+                "extreme_iv_threshold": 2.5,
+                "inverted_skew_threshold": -1.0,
+                "term_inversion_threshold": -0.5,
+                "surface_dislocation_threshold": 0.55,
+            },
+        )
+
+        self.assertLess(result.value, 0.0)
+        self.assertIn("OPTIONS_SURFACE_DISLOCATION", result.reason_codes)
+
 
 class OptionsVolSignalBoundaryTests(unittest.TestCase):
     """Boundary tests to eliminate happy path bias.

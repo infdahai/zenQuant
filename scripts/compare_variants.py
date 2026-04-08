@@ -12,12 +12,12 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from zenquant.historical import HistoricalBacktestConfig
 from zenquant.research.comparison import (
-    WindowSpec,
     build_markdown_summary,
     compare_variants,
-    fixed_2023_08_window,
-    windows_from_worst_periods,
+    default_comparison_windows,
+    filtered_worst_period_windows,
 )
+from zenquant.research.splits import default_btc_split_spec
 
 
 def main() -> None:
@@ -25,14 +25,16 @@ def main() -> None:
     parser.add_argument("--root", default="data/raw/binance")
     parser.add_argument("--symbol", default="BTCUSDT")
     parser.add_argument("--output-dir", default="results/variant_comparison")
+    parser.add_argument("--split", choices=("dev", "test"), default="dev")
     parser.add_argument("--include-worst-periods", action="store_true")
     parser.add_argument("--skip-walk-forward", action="store_true")
     args = parser.parse_args()
 
-    windows = [WindowSpec(label="overall"), fixed_2023_08_window()]
+    split_spec = default_btc_split_spec()
+    windows = default_comparison_windows(split_spec, args.split)
     if args.include_worst_periods:
         seen = {window.label for window in windows}
-        for window in windows_from_worst_periods():
+        for window in filtered_worst_period_windows(split_spec, args.split):
             if window.label not in seen:
                 windows.append(window)
                 seen.add(window.label)
@@ -45,6 +47,8 @@ def main() -> None:
         ),
         windows=windows,
         walk_forward_windows=[] if args.skip_walk_forward else None,
+        split_spec=split_spec,
+        comparison_split=args.split,
     )
 
     output_dir = Path(args.output_dir)

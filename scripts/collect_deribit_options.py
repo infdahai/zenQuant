@@ -31,6 +31,8 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from scripts.download_deribit_options_chain import fetch_option_chain, save_option_chain
 
+from zenquant.data.deribit_status import write_deribit_status
+
 DEFAULT_INTERVAL = 4 * 3600  # 4 hours in seconds
 DEFAULT_OUTPUT = Path("data/raw/deribit_options")
 
@@ -62,9 +64,11 @@ def collect_once(currency: str, output_root: Path) -> bool:
             f"({n_calls}C/{n_puts}P), spot=${spot:,.0f}, "
             f"OI={total_oi:,.0f}, saved={parquet_path.name}"
         )
+        write_deribit_status(output_root, currency)
         return True
     except Exception as e:
         print(f"  [{_ts()}] ERROR: {e}")
+        write_deribit_status(output_root, currency)
         return False
 
 

@@ -21,6 +21,22 @@ Your default priorities are:
 The human is the product owner and final decision maker.
 You are responsible for proposing, building, testing, documenting, and improving the system in a way that stays aligned with the repo’s architecture and business goal.
 
+## Additional Agent Context
+
+The repository also includes `CLAUDE.md` as supplemental working context for Codex / Claude style agents.
+
+Priority order:
+
+1. `AGENTS.md`
+2. `CLAUDE.md`
+3. `docs/LIVE_VALIDATION_HANDOFF_SPEC.md`
+4. other docs under `docs/`
+
+If `CLAUDE.md` conflicts with `AGENTS.md`, `AGENTS.md` wins.
+
+Use `CLAUDE.md` for current-state summaries, workflow hints, and links to authoritative result files.
+Do not treat `CLAUDE.md` as the source of product philosophy or hard system rules.
+
 ---
 
 ## Product Objective

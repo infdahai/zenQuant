@@ -11,7 +11,10 @@ from typing import Any
 
 from zenquant.execution import ExecutionKernelConfig
 from zenquant.historical import HistoricalBacktest, HistoricalBacktestConfig
+from zenquant.indicator import IndicatorEngineConfig
+from zenquant.research.splits import DatasetSplitSpec, SplitWindow, default_btc_split_spec, period_within_split
 from zenquant.risk import RiskOverlayConfig
+from zenquant.strategy import ARCStrategyConfig
 
 
 @dataclass(slots=True, frozen=True)
@@ -22,6 +25,9 @@ class VariantSpec:
     label: str
     risk_config: RiskOverlayConfig | None = None
     execution_config: ExecutionKernelConfig | None = None
+    strategy_config: ARCStrategyConfig | None = None
+    indicator_config: IndicatorEngineConfig | None = None
+    signal_weight_overrides: dict[str, float] | None = None
     liquidation_data_enabled: bool | None = None
     state_liquidation_overlay_enabled: bool | None = None
 
@@ -172,11 +178,20 @@ def compare_variants(
     variants: list[VariantSpec] | None = None,
     windows: list[WindowSpec] | None = None,
     walk_forward_windows: list[WindowSpec] | None = None,
+    split_spec: DatasetSplitSpec | None = None,
+    comparison_split: str = "dev",
 ) -> dict[str, Any]:
     """Run one deterministic comparison bundle and return a JSON-ready payload."""
     variant_specs = variants if variants is not None else default_variant_specs()
-    comparison_windows = windows if windows is not None else [WindowSpec(label="overall"), fixed_2023_08_window()]
-    wf_windows = walk_forward_windows if walk_forward_windows is not None else default_walk_forward_windows()
+    resolved_split_spec = split_spec or default_btc_split_spec()
+    comparison_windows = (
+        windows if windows is not None else default_comparison_windows(resolved_split_spec, comparison_split)
+    )
+    wf_windows = (
+        walk_forward_windows
+        if walk_forward_windows is not None
+        else default_walk_forward_windows(split_spec=resolved_split_spec, comparison_split=comparison_split)
+    )
 
     report: dict[str, Any] = {
         "created_at": datetime.now(UTC).isoformat(),
@@ -186,6 +201,7 @@ def compare_variants(
         "windows": [asdict(window) for window in comparison_windows],
         "window_reports": [],
         "validation_reports": [],
+        "split_scope": "train_dev_only" if comparison_split == "dev" else "frozen_test_acceptance",
     }
 
     window_runs_by_variant: dict[str, list[dict[str, Any]]] = {}
@@ -283,31 +299,67 @@ def windows_from_worst_periods(periods_path: Path = Path("tests/adversarial/wors
     ]
 
 
-def default_walk_forward_windows() -> list[WindowSpec]:
+def split_window_spec(split_spec: DatasetSplitSpec, split_name: str) -> WindowSpec:
+    mapping = {
+        "train": split_spec.train,
+        "dev": split_spec.dev,
+        "test": split_spec.test,
+    }
+    window = mapping[split_name]
+    return WindowSpec(label=window.name, start_ns=window.start_ns, end_ns=window.end_ns)
+
+
+def default_comparison_windows(
+    split_spec: DatasetSplitSpec | None = None,
+    comparison_split: str = "dev",
+) -> list[WindowSpec]:
+    spec = split_spec or default_btc_split_spec()
+    if comparison_split == "test":
+        return [split_window_spec(spec, "test")]
+    return [split_window_spec(spec, "dev"), fixed_2023_08_window(), *filtered_worst_period_windows(spec, comparison_split)]
+
+
+def default_walk_forward_windows(
+    *,
+    split_spec: DatasetSplitSpec | None = None,
+    comparison_split: str = "dev",
+) -> list[WindowSpec]:
+    spec = split_spec or default_btc_split_spec()
+    if comparison_split != "dev" or spec.dev.end_ns is None:
+        return []
     windows: list[WindowSpec] = []
-    start_year = 2020
-    end_year = 2026
     train_months = 24
     test_months = 6
     current_start_month = 0
     while True:
-        train_start = current_start_month
-        train_end = train_start + train_months
-        test_start = train_end
+        test_start = current_start_month + train_months
         test_end = test_start + test_months
-        ts_year = start_year + test_end // 12
-        ts_month = test_end % 12 + 1
-        if ts_year > end_year or (ts_year == end_year and ts_month > 6):
+        start_ns = _month_ts(2020, test_start)
+        end_ns = _month_ts(2020, test_end)
+        if start_ns < spec.dev.start_ns:
+            current_start_month += test_months
+            continue
+        if end_ns > spec.dev.end_ns:
             break
-        windows.append(
-            WindowSpec(
-                label=f"wf_{len(windows) + 1}",
-                start_ns=_month_ts(start_year, test_start),
-                end_ns=_month_ts(start_year, test_end),
-            )
-        )
+        windows.append(WindowSpec(label=f"wf_{len(windows) + 1}", start_ns=start_ns, end_ns=end_ns))
         current_start_month += test_months
     return windows
+
+
+def filtered_worst_period_windows(
+    split_spec: DatasetSplitSpec | None = None,
+    comparison_split: str = "dev",
+) -> list[WindowSpec]:
+    spec = split_spec or default_btc_split_spec()
+    split_window: SplitWindow = spec.dev if comparison_split == "dev" else spec.test
+    windows = windows_from_worst_periods()
+    return [
+        window
+        for window in windows
+        if window.start_ns is not None
+        and window.end_ns is not None
+        and period_within_split(window.start_ns, window.end_ns, split_window)
+    ]
 
 
 def _run_window(base_config: HistoricalBacktestConfig, variant: VariantSpec, window: WindowSpec) -> dict[str, Any]:
@@ -386,6 +438,9 @@ def _run_variant_backtest(
         end_ns=end_ns,
         risk_config=variant.risk_config or base_config.risk_config,
         execution_config=variant.execution_config or base_config.execution_config,
+        strategy_config=variant.strategy_config or base_config.strategy_config,
+        indicator_config=variant.indicator_config or base_config.indicator_config,
+        signal_weight_overrides=variant.signal_weight_overrides or base_config.signal_weight_overrides,
         liquidation_data_enabled=(
             base_config.liquidation_data_enabled
             if variant.liquidation_data_enabled is None

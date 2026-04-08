@@ -7,9 +7,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from unittest.mock import patch
 
-from zenResearch.historical import HistoricalBacktestConfig
-from zenResearch.research.framework_params import build_replay_toggles, core_param_grid
-from zenResearch.research.framework_search import (
+from zenquant.historical import HistoricalBacktestConfig
+from zenquant.research.framework_params import build_replay_toggles, core_param_grid
+from zenquant.research.framework_search import (
     CandidateSummary,
     FrameworkEvaluator,
     SearchReport,
@@ -17,7 +17,7 @@ from zenResearch.research.framework_search import (
     run_optuna_search,
     write_search_report,
 )
-from zenResearch.research.splits import default_btc_split_spec, split_summary_json
+from zenquant.research.splits import default_btc_split_spec, split_summary_json
 
 
 def _load_module(name: str, path: str):
@@ -81,7 +81,7 @@ class FrameworkEvaluatorTests(unittest.TestCase):
             detail = "missing"
 
         with (
-            patch("zenResearch.research.framework_search.liquidation_readiness", return_value=FakeReadiness()),
+            patch("zenquant.research.framework_search.liquidation_readiness", return_value=FakeReadiness()),
             patch.object(FrameworkEvaluator, "_evaluate_variant", return_value=fake_summary),
         ):
             evaluator = FrameworkEvaluator(HistoricalBacktestConfig())
@@ -262,7 +262,7 @@ class SearchReportSerializationTests(unittest.TestCase):
         )
 
         with (
-            patch("zenResearch.research.framework_search.run_search_stage", return_value=FakeSweep(
+            patch("zenquant.research.framework_search.run_search_stage", return_value=FakeSweep(
                 total_combinations=2,
                 results=[],
                 top_n=[

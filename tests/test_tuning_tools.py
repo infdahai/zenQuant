@@ -149,10 +149,25 @@ class TuningToolsTests(unittest.TestCase):
         except ImportError:
             self.skipTest("optuna not installed")
 
-        from zenquant.research.auto_research import Campaign, CampaignConfig, SearchSpace
+        from zenquant.research.auto_research import Campaign, CampaignConfig, SearchSpace, WalkForwardSplit
+        from zenquant.research.comparison import default_walk_forward_windows
+        from zenquant.research.splits import default_btc_split_spec
+
+        spec = default_btc_split_spec()
+        wf_splits = []
+        for window in default_walk_forward_windows(split_spec=spec, comparison_split="dev")[:2]:
+            wf_splits.append(
+                {
+                    "train_start_ns": spec.train.start_ns,
+                    "train_end_ns": window.start_ns,
+                    "val_start_ns": window.start_ns,
+                    "val_end_ns": window.end_ns,
+                }
+            )
 
         # Create a simple search space
         config = CampaignConfig(
+            split_spec=spec,
             search_space=SearchSpace(
                 strategy_params={
                     "bull_leverage": [2.0, 2.5, 3.0, 3.5],
@@ -161,6 +176,7 @@ class TuningToolsTests(unittest.TestCase):
             ),
             sweep_mode="bayesian",
             n_trials=5,  # Small for test speed
+            wf_splits=[WalkForwardSplit(**item) for item in wf_splits],
             verbose=False,
         )
 

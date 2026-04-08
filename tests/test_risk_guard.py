@@ -147,6 +147,30 @@ class CrowdingTests(unittest.TestCase):
         bus.publish("intent.target_position.arc.BTCUSDT_PERP", _make_target(qty=-1.0))
         self.assertNotIn("COT_CROWDING", decisions[-1].flags)
 
+    def test_carry_stress_and_vol_term_reduce_risk(self) -> None:
+        bus = InMemoryJetStream()
+        overlay = RiskOverlay(bus=bus)
+        decisions = []
+        bus.subscribe("risk.overlay.decision", lambda _, p: decisions.append(p))
+
+        bus.publish(
+            "indicator.pack.v1.4h.BTCUSDT_PERP",
+            _make_pack(
+                {
+                    "carry_stress_score": 0.7,
+                    "leverage_pressure_score": 0.8,
+                    "rv_term_ratio": 1.45,
+                    "vol_of_vol": 0.18,
+                    "trend_persistence": 0.4,
+                }
+            ),
+        )
+        bus.publish("intent.target_position.arc.BTCUSDT_PERP", _make_target(qty=1.0))
+
+        self.assertIn("PERP_CARRY_STRESS_LONG", decisions[-1].flags)
+        self.assertIn("LEVERAGE_PRESSURE", decisions[-1].flags)
+        self.assertIn("VOL_TERM_STRESS", decisions[-1].flags)
+
 
 class ConfigurabilityTests(unittest.TestCase):
     def test_custom_config_respected(self) -> None:

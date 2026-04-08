@@ -18,7 +18,7 @@
 ```bash
 uv run pytest tests/test_variant_comparison.py tests/test_202308_bearish_grind.py tests/test_historical_pipeline.py -q --tb=short
 uv run pytest tests/test_golden_output.py tests/test_backtest_invariants.py tests/test_parity.py tests/test_execution_router.py tests/test_execution_sensitivity.py tests/test_scenario_risk.py -q --tb=short
-uv run python scripts/compare_variants.py --root data/raw/binance --symbol BTCUSDT --output-dir /tmp/zenquant-variant-compare
+uv run python scripts/compare_variants.py --root data/raw/binance --symbol BTCUSDT --output-dir /tmp/zenQuant-variant-compare
 uv run python scripts/walk_forward_eval.py
 uv run python scripts/adversarial_stress.py --historical
 ```
@@ -48,8 +48,8 @@ uv run python scripts/adversarial_stress.py --historical
 
 产物：
 
-- `/tmp/zenquant-variant-compare/comparison.json`
-- `/tmp/zenquant-variant-compare/comparison.md`
+- `/tmp/zenQuant-variant-compare/comparison.json`
+- `/tmp/zenQuant-variant-compare/comparison.md`
 
 关键字段检查：
 
@@ -113,4 +113,4 @@ uv run python scripts/adversarial_stress.py --historical
 
 - 这只是历史层有效，不等于上线证明。
 - 下一层验证仍然应是 paper/live incremental validation。
-- `/tmp/zenquant-variant-compare/` 是本地生成产物路径，不纳入版本控制。
+- `/tmp/zenQuant-variant-compare/` 是本地生成产物路径，不纳入版本控制。

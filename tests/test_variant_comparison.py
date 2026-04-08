@@ -1,8 +1,10 @@
 import math
 import tempfile
 import unittest
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
+from unittest.mock import patch
 
 from zenquant.historical import (
     HistoricalBacktestConfig,
@@ -12,7 +14,8 @@ from zenquant.historical import (
     HistoricalOpenInterestRow,
     write_parquet_rows,
 )
-from zenquant.research.comparison import WindowSpec, compare_variants
+from zenquant.research.comparison import compare_variants, split_window_spec
+from zenquant.research.splits import default_btc_split_spec
 
 
 def _daily_rows(days: int = 90) -> list[HistoricalKlineRow]:
@@ -107,6 +110,50 @@ def _open_interest_rows(days: int = 90) -> list[HistoricalOpenInterestRow]:
 
 class VariantComparisonTests(unittest.TestCase):
     def test_compare_variants_returns_required_report_fields(self) -> None:
+        @dataclass
+        class FakeMetrics:
+            sharpe: float = 1.2
+            net_pnl: float = 100.0
+            max_drawdown: float = 0.1
+            profit_factor: float = 1.4
+            trade_count: int = 10
+            win_rate: float = 0.5
+
+        @dataclass
+        class FakeDiagnostics:
+            playbook_counts: dict[str, int]
+            risk_flag_counts: dict[str, int]
+            actionable_exit_counts: dict[str, int]
+
+        @dataclass
+        class FakeCycle:
+            cycle_position: float = 0.0
+            cycle_peak_distance: float = 0.0
+            cycle_trough_distance: float = 0.0
+            cycle_momentum: float = 0.0
+            cycle_confidence: float = 0.0
+
+        @dataclass
+        class FakeState:
+            timeframe: str = "4h"
+            directional_state: str = "bull"
+            regime: str = "trend"
+
+        @dataclass
+        class FakePlaybook:
+            timeframe: str = "4h"
+            playbook_id: str = "BULL_CONTINUATION"
+
+        class FakeResult:
+            metrics = FakeMetrics()
+            diagnostics = FakeDiagnostics({"BULL_CONTINUATION": 1}, {"OK": 1}, {"NONE": 1})
+            cycle_context = FakeCycle()
+
+        class FakeRunner:
+            def __init__(self) -> None:
+                self._market_states = [FakeState()]
+                self._playbooks = [FakePlaybook()]
+
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             layout = HistoricalDatasetLayout(root_dir=root)
@@ -115,11 +162,14 @@ class VariantComparisonTests(unittest.TestCase):
             write_parquet_rows(layout.funding_path("BTCUSDT", "2024-01"), _funding_rows())
             write_parquet_rows(layout.open_interest_path("BTCUSDT", "4h", "2024-01"), _open_interest_rows())
 
-            payload = compare_variants(
-                HistoricalBacktestConfig(root_dir=root, symbol="BTCUSDT"),
-                windows=[WindowSpec(label="overall")],
-                walk_forward_windows=[],
-            )
+            with patch("zenquant.research.comparison._run_variant_backtest", return_value=(FakeRunner(), FakeResult())):
+                payload = compare_variants(
+                    HistoricalBacktestConfig(root_dir=root, symbol="BTCUSDT"),
+                    windows=[split_window_spec(default_btc_split_spec(), "dev")],
+                    walk_forward_windows=[],
+                    split_spec=default_btc_split_spec(),
+                    comparison_split="dev",
+                )
 
         variants = {item["name"] for item in payload["variants"]}
         self.assertEqual(variants, {"current", "paulwei_baseline"})

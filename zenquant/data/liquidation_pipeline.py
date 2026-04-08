@@ -42,6 +42,7 @@ class LiquidationBucket:
     total_liq_usd: float
     max_single_liq_usd: float
     liq_imbalance: float
+    source: str
 
 
 @dataclass(slots=True, frozen=True)
@@ -58,7 +59,9 @@ class LiquidationReadiness:
     nonstale_bars: int
     extreme_bars: int
     max_total_liq_usd: float
+    coverage_ratio: float
     data_ready: bool
+    promotion_ready: bool
     blocked_by: str | None
     detail: str
 
@@ -119,9 +122,64 @@ def aggregate_liquidation_events(events: Iterable[LiquidationEvent]) -> list[Liq
                 total_liq_usd=total_liq_usd,
                 max_single_liq_usd=round(float(row["max_single_liq_usd"]), 2),
                 liq_imbalance=liq_imbalance,
+                source=str(event.source),
             )
         )
     return buckets
+
+
+def merge_liquidation_buckets(buckets: Iterable[LiquidationBucket]) -> list[LiquidationBucket]:
+    """Merge multiple source buckets into one deterministic symbol/bucket series."""
+    grouped: dict[tuple[str, int, int], dict[str, float | int | str | set[str]]] = {}
+    for bucket in buckets:
+        key = (bucket.symbol.upper(), bucket.bucket_start_ns, bucket.bucket_end_ns)
+        row = grouped.setdefault(
+            key,
+            {
+                "symbol": bucket.symbol.upper(),
+                "bucket_start_ns": bucket.bucket_start_ns,
+                "bucket_end_ns": bucket.bucket_end_ns,
+                "long_liq_count": 0,
+                "short_liq_count": 0,
+                "long_liq_usd": 0.0,
+                "short_liq_usd": 0.0,
+                "max_single_liq_usd": 0.0,
+                "sources": set(),
+            },
+        )
+        row["long_liq_count"] = int(row["long_liq_count"]) + int(bucket.long_liq_count)
+        row["short_liq_count"] = int(row["short_liq_count"]) + int(bucket.short_liq_count)
+        row["long_liq_usd"] = float(row["long_liq_usd"]) + float(bucket.long_liq_usd)
+        row["short_liq_usd"] = float(row["short_liq_usd"]) + float(bucket.short_liq_usd)
+        row["max_single_liq_usd"] = max(float(row["max_single_liq_usd"]), float(bucket.max_single_liq_usd))
+        sources = row["sources"]
+        assert isinstance(sources, set)
+        sources.add(bucket.source)
+
+    merged: list[LiquidationBucket] = []
+    for _, row in sorted(grouped.items(), key=lambda item: (item[0][0], item[0][1])):
+        long_liq_usd = round(float(row["long_liq_usd"]), 2)
+        short_liq_usd = round(float(row["short_liq_usd"]), 2)
+        total_liq_usd = round(long_liq_usd + short_liq_usd, 2)
+        liq_imbalance = 0.0
+        if total_liq_usd > 0:
+            liq_imbalance = round((long_liq_usd - short_liq_usd) / total_liq_usd, 4)
+        merged.append(
+            LiquidationBucket(
+                bucket_start_ns=int(row["bucket_start_ns"]),
+                bucket_end_ns=int(row["bucket_end_ns"]),
+                symbol=str(row["symbol"]),
+                long_liq_count=int(row["long_liq_count"]),
+                short_liq_count=int(row["short_liq_count"]),
+                long_liq_usd=long_liq_usd,
+                short_liq_usd=short_liq_usd,
+                total_liq_usd=total_liq_usd,
+                max_single_liq_usd=round(float(row["max_single_liq_usd"]), 2),
+                liq_imbalance=liq_imbalance,
+                source="merged",
+            )
+        )
+    return merged
 
 
 def write_raw_liquidations(root_dir: Path, events: Iterable[LiquidationEvent]) -> list[Path]:
@@ -154,7 +212,12 @@ def write_aggregated_liquidations(root_dir: Path, buckets: Iterable[LiquidationB
     return written
 
 
-def liquidation_readiness(root_dir: Path, symbol: str) -> LiquidationReadiness:
+def liquidation_readiness(
+    root_dir: Path,
+    symbol: str,
+    *,
+    liquidation_dir: Path | None = None,
+) -> LiquidationReadiness:
     """Assess whether liquidation history is present enough to enable research."""
     layout = HistoricalDatasetLayout(root_dir=root_dir)
     kline_rows = read_parquet_rows(
@@ -162,7 +225,8 @@ def liquidation_readiness(root_dir: Path, symbol: str) -> LiquidationReadiness:
         order_by="open_time_ns ASC",
     )
     total_bars = len(kline_rows)
-    liquidations_glob = str(root_dir / "liquidations" / "aggregated" / symbol / "**" / "*.parquet")
+    aggregated_root = liquidation_dir if liquidation_dir is not None else root_dir / "liquidations" / "aggregated"
+    liquidations_glob = str(aggregated_root / symbol / "**" / "*.parquet")
     liq_rows = read_parquet_rows(liquidations_glob, order_by="bucket_start_ns ASC")
     if not liq_rows:
         detail = "no aggregated liquidation history found under liquidations/aggregated"
@@ -172,7 +236,9 @@ def liquidation_readiness(root_dir: Path, symbol: str) -> LiquidationReadiness:
             nonstale_bars=0,
             extreme_bars=0,
             max_total_liq_usd=0.0,
+            coverage_ratio=0.0,
             data_ready=False,
+            promotion_ready=False,
             blocked_by="missing_liquidation_history",
             detail=detail,
         )
@@ -184,7 +250,13 @@ def liquidation_readiness(root_dir: Path, symbol: str) -> LiquidationReadiness:
     extreme_bars = sum(1 for row in nonzero_rows if float(row.get("total_liq_usd", 0.0)) >= extreme_threshold)
     nonstale_bars = nonzero_bars
     data_ready = nonzero_bars > 0
-    blocked_by = None if data_ready else "missing_liquidation_history"
+    coverage_ratio = round((nonzero_bars / total_bars), 4) if total_bars else 0.0
+    promotion_ready = data_ready and coverage_ratio >= 0.10 and extreme_bars >= 3
+    blocked_by = None
+    if not data_ready:
+        blocked_by = "missing_liquidation_history"
+    elif not promotion_ready:
+        blocked_by = "not_promotion_ready"
     detail = (
         f"aggregated liquidation history loaded: nonzero_bars={nonzero_bars} "
         f"max_total_liq_usd={max_total_liq_usd:,.2f}"
@@ -195,7 +267,9 @@ def liquidation_readiness(root_dir: Path, symbol: str) -> LiquidationReadiness:
         nonstale_bars=nonstale_bars,
         extreme_bars=extreme_bars,
         max_total_liq_usd=max_total_liq_usd,
+        coverage_ratio=coverage_ratio,
         data_ready=data_ready,
+        promotion_ready=promotion_ready,
         blocked_by=blocked_by,
         detail=detail,
     )

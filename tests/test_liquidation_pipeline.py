@@ -10,6 +10,7 @@ from zenquant.data.liquidation_pipeline import (
     aggregate_liquidation_events,
     aligned_bucket_bounds,
     liquidation_readiness,
+    merge_liquidation_buckets,
     probe_binance_force_orders_support,
     write_aggregated_liquidations,
 )
@@ -72,7 +73,49 @@ class LiquidationPipelineTests(unittest.TestCase):
         self.assertEqual(btc.long_liq_count, 1)
         self.assertEqual(btc.short_liq_count, 1)
         self.assertAlmostEqual(btc.total_liq_usd, 118_000.0)
+        self.assertEqual(btc.source, "test")
         self.assertEqual(eth.bucket_start_ns, _ts(2024, 1, 1, 8))
+
+    def test_merge_liquidation_buckets_combines_sources(self) -> None:
+        buckets = merge_liquidation_buckets(
+            [
+                aggregate_liquidation_events(
+                    [
+                        LiquidationEvent(
+                            ts_ns=_ts(2024, 1, 1, 4),
+                            symbol="BTCUSDT",
+                            side="SELL",
+                            price=40_000.0,
+                            qty=1.0,
+                            usd_value=40_000.0,
+                            source="binance_official",
+                            trade_time_ms=_ts(2024, 1, 1, 4) // 1_000_000,
+                        )
+                    ]
+                )[0],
+                aggregate_liquidation_events(
+                    [
+                        LiquidationEvent(
+                            ts_ns=_ts(2024, 1, 1, 5),
+                            symbol="BTCUSDT",
+                            side="BUY",
+                            price=39_000.0,
+                            qty=1.0,
+                            usd_value=39_000.0,
+                            source="hyperliquid_public",
+                            trade_time_ms=_ts(2024, 1, 1, 5) // 1_000_000,
+                        )
+                    ]
+                )[0],
+            ]
+        )
+
+        self.assertEqual(len(buckets), 1)
+        merged = buckets[0]
+        self.assertEqual(merged.source, "merged")
+        self.assertEqual(merged.long_liq_count, 1)
+        self.assertEqual(merged.short_liq_count, 1)
+        self.assertAlmostEqual(merged.total_liq_usd, 79_000.0)
 
     def test_liquidation_readiness_reports_missing_history(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -136,10 +179,12 @@ class LiquidationPipelineTests(unittest.TestCase):
                     )
                 ]
             )
-            write_aggregated_liquidations(root / "liquidations", buckets)
-            readiness = liquidation_readiness(root_dir=root, symbol="BTCUSDT")
+            liq_root = root / "merged_liquidations"
+            write_aggregated_liquidations(liq_root, buckets)
+            readiness = liquidation_readiness(root_dir=root, symbol="BTCUSDT", liquidation_dir=liq_root / "aggregated")
 
         self.assertTrue(readiness.data_ready)
+        self.assertFalse(readiness.promotion_ready)
         self.assertEqual(readiness.nonzero_bars, 1)
         self.assertEqual(readiness.nonstale_bars, 1)
 

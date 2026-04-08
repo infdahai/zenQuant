@@ -131,12 +131,12 @@ uv run pytest tests/test_liquidation_store.py tests/test_liquidation_signal_inte
 ### 2.2 必跑脚本级验证
 
 ```bash
-uv run python scripts/compare_variants.py --root data/raw/binance --symbol BTCUSDT --split dev --output-dir /tmp/zenquant-variant-compare
-uv run python scripts/compare_variants.py --root data/raw/binance --symbol BTCUSDT --split test --output-dir /tmp/zenquant-variant-compare-test
+uv run python scripts/compare_variants.py --root data/raw/binance --symbol BTCUSDT --split dev --output-dir /tmp/zenQuant-variant-compare
+uv run python scripts/compare_variants.py --root data/raw/binance --symbol BTCUSDT --split test --output-dir /tmp/zenQuant-variant-compare-test
 uv run python scripts/walk_forward_eval.py
 uv run python scripts/adversarial_stress.py --historical --split dev
 uv run python scripts/adversarial_stress.py --historical --split test
-uv run python scripts/research_liquidation.py --root data/raw/binance --symbol BTCUSDT --liquidation-dir data/raw/merged_liquidations/aggregated --output-dir /tmp/zenquant-liquidation-research --skip-walk-forward --include-worst-periods
+uv run python scripts/research_liquidation.py --root data/raw/binance --symbol BTCUSDT --liquidation-dir data/raw/merged_liquidations/aggregated --output-dir /tmp/zenQuant-liquidation-research --skip-walk-forward --include-worst-periods
 uv run python scripts/deribit_collector_status.py --root data/raw/deribit_options --currency BTC --write-status
 uv run python scripts/backfill_hyperliquid_history.py --coin BTC --output data/raw/hyperliquid/liquidations --days 7
 uv run python scripts/collect_hyperliquid_liquidations.py --coin BTC --output data/raw/hyperliquid/liquidations

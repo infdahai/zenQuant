@@ -3,7 +3,7 @@ requires = ["setuptools>=68", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "zenResearch"
+name = "zenquant"
 version = "0.1.0"
 description = "ZenQuant 4.0 Phase 1 deterministic indicator-first kernel"
 readme = "README.md"
@@ -24,25 +24,25 @@ macro = ["yfinance>=0.2.0"]
 optimize = ["optuna>=4.0.0"]
 
 [project.scripts]
-zenresearch-backtest = "zenResearch.app.backtest:main"
-zenresearch-demo = "zenResearch.app.demo:main"
-zenresearch-history-sync = "zenResearch.app.history_sync:main"
-zenresearch-live-export = "zenResearch.app.live_export:main"
-zenresearch-live-scorecard = "zenResearch.app.paper_live_scorecard:main"
-zenresearch-live-validate = "zenResearch.app.live_validate:main"
-zenresearch-web = "zenResearch.app.server:main"
-zenresearch-check = "zenResearch.app.check:main"
-zenresearch-rl-tune = "zenResearch.app.rl_tune:main"
+zenquant-backtest = "zenquant.app.backtest:main"
+zenquant-demo = "zenquant.app.demo:main"
+zenquant-history-sync = "zenquant.app.history_sync:main"
+zenquant-live-export = "zenquant.app.live_export:main"
+zenquant-live-scorecard = "zenquant.app.paper_live_scorecard:main"
+zenquant-live-validate = "zenquant.app.live_validate:main"
+zenquant-web = "zenquant.app.server:main"
+zenquant-check = "zenquant.app.check:main"
+zenquant-rl-tune = "zenquant.app.rl_tune:main"
 
 [tool.setuptools.packages.find]
-include = ["zenResearch*"]
+include = ["zenquant*"]
 
 # ── Harness Engineering: Gate A (ruff) ──────────────────────
 
 [tool.ruff]
 target-version = "py311"
 line-length = 120
-src = ["zenResearch", "tests", "scripts"]
+src = ["zenquant", "tests", "scripts"]
 
 [tool.ruff.lint]
 select = [
@@ -76,7 +76,7 @@ ignore = [
 ]
 
 [tool.ruff.lint.isort]
-known-first-party = ["zenResearch"]
+known-first-party = ["zenquant"]
 
 [tool.ruff.format]
 quote-style = "double"
@@ -91,6 +91,6 @@ dev = [
 
 # ── Mutation Testing ────────────────────────────────────────
 [tool.mutmut]
-paths_to_mutate = "zenResearch/plugins/signals/options_vol_signal.py"
+paths_to_mutate = "zenquant/plugins/signals/options_vol_signal.py"
 tests_dir = "tests/"
 runner = "python -m pytest -x -q"

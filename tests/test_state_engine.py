@@ -183,6 +183,50 @@ class StateEngineTests(unittest.TestCase):
         self.assertLess(states[0].direction_signal, -0.5)
         self.assertGreaterEqual(states[0].directional_confidence, 0.5)
 
+    def test_leverage_pressure_and_liquidation_follow_through_raise_stress_reasons(self) -> None:
+        bus = InMemoryJetStream()
+        StateEngine(bus)
+
+        states: list[MarketState] = []
+        bus.subscribe("state.market.>", lambda _subject, payload: states.append(payload))
+
+        bus.publish(
+            "indicator.pack.v1.4h.BTCUSDT_PERP",
+            IndicatorPack(
+                ts_ns=60,
+                symbol="BTCUSDT_PERP",
+                timeframe=Timeframe.TF_4H,
+                cutoff_time_ns=60,
+                indicator_version="pack.v1",
+                formula_hash="sha256:test",
+                quality_flags=["OK"],
+                coverage=IndicatorCoverage(venue_count=1, oi_coverage=1.0, staleness_ms=0),
+                values={
+                    "realized_vol": 1.1,
+                    "cvd_slope": -0.03,
+                    "funding_oi_z": 1.2,
+                    "zen_pulse": 48.0,
+                    "structure_state": "DOWNTREND",
+                    "momentum_roc_z": -0.4,
+                    "carry_stress_score": 0.65,
+                    "leverage_pressure_score": 0.78,
+                    "rv_term_ratio": 1.42,
+                    "vol_of_vol": 0.16,
+                    "liq_intensity_z": 2.7,
+                    "liq_imbalance": 0.35,
+                    "liq_follow_through_score": 0.72,
+                    "options_surface_dislocation": 0.62,
+                },
+                components={},
+            ),
+        )
+
+        self.assertEqual(len(states), 1)
+        self.assertEqual(states[0].directional_state, "DOWNTREND")
+        self.assertIn("LIQ_CASCADE_CONTINUATION", states[0].reason_codes)
+        self.assertIn("LEVERAGE_QUALITY_CROWDED_LONG", states[0].reason_codes)
+        self.assertIn("VOL_STRUCTURE_STRESSED", states[0].reason_codes)
+
 
 if __name__ == "__main__":
     unittest.main()

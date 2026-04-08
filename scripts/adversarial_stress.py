@@ -47,6 +47,7 @@ from zenquant.historical import (
     HistoricalOpenInterestRow,
     write_parquet_rows,
 )
+from zenquant.research.splits import default_btc_split_spec, period_within_split
 
 
 @dataclass
@@ -339,7 +340,11 @@ def run_scenario(
     )
 
 
-def run_historical_replay(periods_file: Path = Path("tests/adversarial/worst_periods.json")) -> list[AdversarialResult]:
+def run_historical_replay(
+    periods_file: Path = Path("tests/adversarial/worst_periods.json"),
+    *,
+    split_name: str = "dev",
+) -> list[AdversarialResult]:
     """Replay actual worst DD periods from backtest history.
 
     Uses real market data from periods where strategy performed worst.
@@ -351,7 +356,13 @@ def run_historical_replay(periods_file: Path = Path("tests/adversarial/worst_per
         sys.exit(1)
 
     data = json.loads(periods_file.read_text())
-    worst_periods = data["worst_periods"]
+    split_spec = default_btc_split_spec()
+    split_window = getattr(split_spec, split_name)
+    worst_periods = [
+        item
+        for item in data["worst_periods"]
+        if period_within_split(int(item["start_ns"]), int(item["end_ns"]), split_window)
+    ]
 
     print(f"Loaded {len(worst_periods)} worst periods from {periods_file}")
     print(f"Full backtest: Sharpe {data['full_backtest']['sharpe']:.2f}, Max DD {data['full_backtest']['max_dd']:.1%}")
@@ -410,14 +421,15 @@ def main() -> None:
         default=Path("tests/adversarial/worst_periods.json"),
         help="Path to worst periods JSON (for --historical)",
     )
+    parser.add_argument("--split", choices=("dev", "test"), default="dev")
     args = parser.parse_args()
 
     print("Adversarial Stress Test — GAN-Style Evaluator")
     print("=" * 65)
 
     if args.historical:
-        print("Mode: HISTORICAL REPLAY (actual worst periods)")
-        scenarios = run_historical_replay(args.periods_file)
+        print(f"Mode: HISTORICAL REPLAY ({args.split})")
+        scenarios = run_historical_replay(args.periods_file, split_name=args.split)
     else:
         print("Mode: SYNTHETIC (invented adversarial scenarios)")
         scenarios = []

@@ -40,7 +40,31 @@ def _build_research_verdict(payload: dict, readiness: dict) -> dict:
         return {
             "baseline_variant": "paulwei_baseline",
             "data_ready": False,
+            "promotion_ready": False,
             "blocked_by": readiness["blocked_by"],
+            "detail": readiness["detail"],
+            "variant_verdicts": verdicts,
+        }
+
+    if not readiness["promotion_ready"]:
+        verdicts = []
+        for variant in payload["validation_reports"]:
+            if variant["variant"] == "paulwei_baseline":
+                continue
+            verdicts.append(
+                {
+                    "variant": variant["variant"],
+                    "promotion_candidate": False,
+                    "generalization_score": 0.0,
+                    "blocked_by": "not_promotion_ready",
+                    "verdict": "not_promotion_ready",
+                }
+            )
+        return {
+            "baseline_variant": "paulwei_baseline",
+            "data_ready": True,
+            "promotion_ready": False,
+            "blocked_by": "not_promotion_ready",
             "detail": readiness["detail"],
             "variant_verdicts": verdicts,
         }
@@ -82,6 +106,7 @@ def _build_research_verdict(payload: dict, readiness: dict) -> dict:
     return {
         "baseline_variant": "paulwei_baseline",
         "data_ready": True,
+        "promotion_ready": True,
         "blocked_by": None,
         "detail": readiness["detail"],
         "variant_verdicts": verdicts,
@@ -93,6 +118,7 @@ def main() -> None:
     parser.add_argument("--root", default="data/raw/binance")
     parser.add_argument("--symbol", default="BTCUSDT")
     parser.add_argument("--output-dir", default="results/liquidation_research")
+    parser.add_argument("--liquidation-dir", default="data/raw/merged_liquidations/aggregated")
     parser.add_argument("--include-worst-periods", action="store_true")
     parser.add_argument("--skip-walk-forward", action="store_true")
     args = parser.parse_args()
@@ -100,6 +126,7 @@ def main() -> None:
     readiness = liquidation_readiness(
         root_dir=Path(args.root),
         symbol=args.symbol,
+        liquidation_dir=Path(args.liquidation_dir),
     )
     readiness_payload = {
         "total_bars": readiness.total_bars,
@@ -108,6 +135,7 @@ def main() -> None:
         "extreme_bars": readiness.extreme_bars,
         "max_total_liq_usd": readiness.max_total_liq_usd,
         "data_ready": readiness.data_ready,
+        "promotion_ready": readiness.promotion_ready,
         "blocked_by": readiness.blocked_by,
         "detail": readiness.detail,
     }
@@ -125,10 +153,11 @@ def main() -> None:
             root_dir=Path(args.root),
             symbol=args.symbol,
             portfolio_symbol=f"{args.symbol}_PERP",
+            liquidation_dir=Path(args.liquidation_dir),
         ),
         variants=liquidation_research_variant_specs(),
         windows=windows,
-        walk_forward_windows=[] if args.skip_walk_forward or not readiness.data_ready else None,
+        walk_forward_windows=[] if args.skip_walk_forward or not readiness.promotion_ready else None,
     )
     payload["liquidation_readiness"] = readiness_payload
     payload["research_verdict"] = _build_research_verdict(payload, readiness_payload)

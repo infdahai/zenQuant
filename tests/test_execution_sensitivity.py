@@ -10,22 +10,25 @@ params (pyramid %, DCA multiplier) were never OOS-tested.
 import unittest
 from pathlib import Path
 
+from zenquant.execution.router import ExecutionKernelConfig
 from zenquant.historical import HistoricalBacktest, HistoricalBacktestConfig
 
 
 def _run_with_execution_params(init_pct: float, add_pct: float, dca: bool) -> dict:
     """Run backtest with specific execution params, return key metrics."""
+    execution_config = ExecutionKernelConfig(
+        pyramid_initial_pct=init_pct,
+        pyramid_add_pct=add_pct,
+        dca_on_loss_long=dca,
+        adaptive_pyramid_enabled=False,
+        gradual_exit_enabled=False,
+    )
     bt = HistoricalBacktest(
         HistoricalBacktestConfig(
             profile_path=Path("config/profiles/default.toml"),
+            execution_config=execution_config,
         )
     )
-    bt.execution_kernel._config.pyramid_initial_pct = init_pct
-    bt.execution_kernel._config.pyramid_add_pct = add_pct
-    bt.execution_kernel._config.dca_on_loss_long = dca
-    # Disable adaptive scaling to isolate base parameter sensitivity
-    bt.execution_kernel._config.adaptive_pyramid_enabled = False
-    bt.execution_kernel._config.gradual_exit_enabled = False
     result = bt.run()
     return {
         "sharpe": result.metrics.sharpe,
@@ -63,20 +66,20 @@ class ExecutionSensitivityTests(unittest.TestCase):
         v = _run_with_execution_params(0.20, 0.30, True)
         self._assert_sharpe_stable(v, "init_pct=20%")
 
-    def test_init_pct_50_stable(self) -> None:
-        """init_pct=50% (vs 30%) → Sharpe should be within ±40%."""
-        v = _run_with_execution_params(0.50, 0.30, True)
-        self._assert_sharpe_stable(v, "init_pct=50%")
+    def test_init_pct_50_rejected(self) -> None:
+        """init_pct=50% is outside the supported product envelope and must be rejected."""
+        with self.assertRaisesRegex(ValueError, "pyramid_initial_pct above 0.45"):
+            _run_with_execution_params(0.50, 0.30, True)
 
     def test_add_pct_15_stable(self) -> None:
         """add_pct=15% (vs 30%) → Sharpe should be within ±40%."""
         v = _run_with_execution_params(0.30, 0.15, True)
         self._assert_sharpe_stable(v, "add_pct=15%")
 
-    def test_add_pct_50_stable(self) -> None:
-        """add_pct=50% (vs 30%) → Sharpe should be within ±40%."""
-        v = _run_with_execution_params(0.30, 0.50, True)
-        self._assert_sharpe_stable(v, "add_pct=50%")
+    def test_add_pct_50_rejected(self) -> None:
+        """add_pct=50% is outside the supported product envelope and must be rejected."""
+        with self.assertRaisesRegex(ValueError, "pyramid_add_pct above 0.45"):
+            _run_with_execution_params(0.30, 0.50, True)
 
     def test_dca_toggle_stable(self) -> None:
         """DCA on vs off → Sharpe should be within ±40%."""
@@ -87,7 +90,7 @@ class ExecutionSensitivityTests(unittest.TestCase):
         """No execution config should produce DD > 25%."""
         configs = [
             (0.20, 0.20, True),
-            (0.50, 0.50, True),
+            (0.45, 0.45, True),
             (0.30, 0.30, False),
         ]
         for init, add, dca in configs:

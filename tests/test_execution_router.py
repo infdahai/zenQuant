@@ -794,3 +794,17 @@ class FlipExecutionTests(unittest.TestCase):
 
         # Pyramid state should be reset to initial short pct (0.20)
         self.assertAlmostEqual(kernel._pyramid_filled_pct.get("BTCUSDT_PERP", 0), 0.20, places=2)
+
+
+class ExecutionConfigBoundsTests(unittest.TestCase):
+    def test_rejects_initial_pct_above_supported_range(self) -> None:
+        from zenquant.execution.router import ExecutionKernelConfig
+
+        with self.assertRaisesRegex(ValueError, "pyramid_initial_pct above 0.45"):
+            ExecutionKernelConfig(pyramid_initial_pct=0.50)
+
+    def test_rejects_add_pct_above_supported_range(self) -> None:
+        from zenquant.execution.router import ExecutionKernelConfig
+
+        with self.assertRaisesRegex(ValueError, "pyramid_add_pct above 0.45"):
+            ExecutionKernelConfig(pyramid_add_pct=0.50)

@@ -8,6 +8,7 @@ from zenquant.app import rl_tune
 from zenquant.execution import ExecutionKernelConfig
 from zenquant.historical import HistoricalBacktestConfig
 from zenquant.research import rl_tuner
+from zenquant.research.splits import default_btc_split_spec
 
 
 class RLTunerConfigTests(unittest.TestCase):
@@ -49,7 +50,7 @@ class RLTunerConfigTests(unittest.TestCase):
             def run(self):
                 return FakeResult()
 
-        env = rl_tuner.ParamTunerEnv()
+        env = rl_tuner.ParamTunerEnv(split_spec=default_btc_split_spec())
         params = {
             "pyramid_initial_pct": 0.4,
             "pyramid_add_pct": 0.15,
@@ -74,7 +75,8 @@ class RLTuneCliTests(unittest.TestCase):
     def test_cli_writes_json_summary(self) -> None:
         payload = {
             "best_params": {"pyramid_initial_pct": 0.3, "w_momentum": 0.45},
-            "best_sharpe": 1.75,
+            "train_sharpe": 1.75,
+            "dev_sharpe": 1.25,
             "all_results": [(1.75, {"w_momentum": 0.45})],
         }
 
@@ -91,7 +93,7 @@ class RLTuneCliTests(unittest.TestCase):
 
             saved = json.loads(output.read_text(encoding="utf-8"))
 
-        self.assertEqual(saved["best_sharpe"], 1.75)
+        self.assertEqual(saved["train_sharpe"], 1.75)
         self.assertEqual(saved["best_params"]["pyramid_initial_pct"], 0.3)
 
 

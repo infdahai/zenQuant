@@ -25,7 +25,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 
 async def run_paper_trading(symbol: str = "BTCUSDT", duration_hours: float = 24.0) -> None:
-    from zenResearch.domain import IndicatorPack, MarketState, TargetPosition, Timeframe
+    from zenquant.domain import IndicatorPack, MarketState, TargetPosition, Timeframe
 
     print(f"{'=' * 60}")
     print("zenQuant Paper Trading")
@@ -38,16 +38,16 @@ async def run_paper_trading(symbol: str = "BTCUSDT", duration_hours: float = 24.
     # Initialize pipeline components directly (not ZenQuantPipeline which includes SyntheticIngestor)
     from pathlib import Path as _Path
 
-    from zenResearch.data import CotDataStore, CotStoreConfig, MacroDataStore, MacroDataStoreConfig
-    from zenResearch.execution import ExecutionKernel, SimulatedGateway
-    from zenResearch.indicator import IndicatorEngine, IndicatorEngineConfig, IndicatorStore
-    from zenResearch.indicator.hf_features import HFFeatureStore, HFFeatureStoreConfig
-    from zenResearch.infra import InMemoryJetStream, StreamConfig
-    from zenResearch.market import BarClockService, SnapshotBuilder
-    from zenResearch.plugins.profile import build_from_profile
-    from zenResearch.risk import RiskOverlay
-    from zenResearch.state import StateEngine
-    from zenResearch.strategy import ARCStrategyEngine
+    from zenquant.data import CotDataStore, CotStoreConfig, MacroDataStore, MacroDataStoreConfig
+    from zenquant.execution import ExecutionKernel, SimulatedGateway
+    from zenquant.indicator import IndicatorEngine, IndicatorEngineConfig, IndicatorStore
+    from zenquant.indicator.hf_features import HFFeatureStore, HFFeatureStoreConfig
+    from zenquant.infra import InMemoryJetStream, StreamConfig
+    from zenquant.market import BarClockService, SnapshotBuilder
+    from zenquant.plugins.profile import build_from_profile
+    from zenquant.risk import RiskOverlay
+    from zenquant.state import StateEngine
+    from zenquant.strategy import ARCStrategyEngine
 
     bus = InMemoryJetStream()
     bus.add_stream(StreamConfig(name="STREAM_MARKET_DATA", subjects=["md.>"]))
@@ -84,7 +84,7 @@ async def run_paper_trading(symbol: str = "BTCUSDT", duration_hours: float = 24.
     profile_path = _Path("config/profiles/default.toml")
     plugin_registry = None
     if profile_path.exists():
-        _, plugin_registry = build_from_profile(profile_path, plugin_root=_Path("zenResearch/plugins"))
+        _, plugin_registry = build_from_profile(profile_path, plugin_root=_Path("zenquant/plugins"))
     ARCStrategyEngine(bus=bus, plugin_registry=plugin_registry)
     StateEngine(bus=bus)
     ExecutionKernel(bus=bus, gateway=SimulatedGateway(), risk_overlay=risk_overlay)
@@ -148,7 +148,7 @@ async def run_paper_trading(symbol: str = "BTCUSDT", duration_hours: float = 24.
     bus.subscribe("intent.target_position.final.>", on_target)
 
     # Connect to Binance live data
-    from zenResearch.ingestor.binance_ws import BinancePerpStreamClient, BinancePerpStreamConfig
+    from zenquant.ingestor.binance_ws import BinancePerpStreamClient, BinancePerpStreamConfig
 
     ws_config = BinancePerpStreamConfig(
         symbols=(f"{symbol}_PERP",),
@@ -180,7 +180,7 @@ async def run_paper_trading(symbol: str = "BTCUSDT", duration_hours: float = 24.
     try:
         import uvicorn
 
-        from zenResearch.app.server import create_app
+        from zenquant.app.server import create_app
 
         app = create_app(bus=bus)
 

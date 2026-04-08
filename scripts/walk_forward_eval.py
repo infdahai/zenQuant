@@ -22,55 +22,43 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from zenquant.historical import HistoricalBacktest, HistoricalBacktestConfig
+from zenquant.research.comparison import default_walk_forward_windows
+from zenquant.research.splits import default_btc_split_spec
 
 
 def _ts(year: int, month: int = 1) -> int:
     return int(datetime(year, month, 1, tzinfo=UTC).timestamp() * 1_000_000_000)
 
 
+def _shift_months(ts_ns: int, months: int) -> int:
+    dt = datetime.fromtimestamp(ts_ns / 1e9, tz=UTC)
+    month_index = (dt.month - 1) + months
+    year = dt.year + month_index // 12
+    month = month_index % 12 + 1
+    return int(datetime(year, month, 1, tzinfo=UTC).timestamp() * 1e9)
+
+
 def run_walk_forward(train_years: int = 2, test_months: int = 6) -> None:
-    print("Walk-Forward Evaluation — Independent Out-of-Sample Test")
+    print("Walk-Forward Evaluation — Train/Dev Selection Layer")
     print(f"Train: {train_years} years, Test: {test_months} months, Slide: {test_months} months")
+    print("split_scope=train_dev_only")
     print("=" * 70)
 
-    # Define windows (start from 2020, slide by test_months)
+    spec = default_btc_split_spec()
     windows: list[dict] = []
-    start_year = 2020
-    end_year = 2026
-
-    train_months = train_years * 12
-    slide_months = test_months
-
-    current_start_month = 0  # months from 2020-01
-
-    while True:
-        train_start = current_start_month
-        train_end = train_start + train_months
-        test_start = train_end
-        test_end = test_start + test_months
-
-        # Convert to year/month
-        ts_year = start_year + test_end // 12
-        ts_month = test_end % 12 + 1
-        if ts_year > end_year or (ts_year == end_year and ts_month > 6):
-            break
-
-        def _to_ns(months_offset: int) -> int:
-            y = start_year + months_offset // 12
-            m = months_offset % 12 + 1
-            return _ts(y, m)
-
+    for window in default_walk_forward_windows(split_spec=spec, comparison_split="dev"):
+        train_end_ns = window.start_ns
+        assert train_end_ns is not None and window.end_ns is not None
+        train_start_ns = _shift_months(train_end_ns, -(train_years * 12))
         windows.append(
             {
-                "train_start_ns": _to_ns(train_start),
-                "train_end_ns": _to_ns(train_end),
-                "test_start_ns": _to_ns(test_start),
-                "test_end_ns": _to_ns(test_end),
-                "label": f"Train {start_year + train_start // 12}-{start_year + train_end // 12} → Test {start_year + test_start // 12}",
+                "train_start_ns": train_start_ns,
+                "train_end_ns": train_end_ns,
+                "test_start_ns": window.start_ns,
+                "test_end_ns": window.end_ns,
+                "label": window.label,
             }
         )
-
-        current_start_month += slide_months
 
     print(f"Windows: {len(windows)}")
     print()
@@ -88,8 +76,7 @@ def run_walk_forward(train_years: int = 2, test_months: int = 6) -> None:
             train_sharpe = train_result.metrics.sharpe
             train_pnl = train_result.metrics.net_pnl
         except Exception as e:
-            print(f"  Train ERROR: {e}")
-            continue
+            raise RuntimeError(f"Train ERROR in {w['label']}: {e}") from e
 
         # Test period (out-of-sample)
         try:
@@ -99,8 +86,7 @@ def run_walk_forward(train_years: int = 2, test_months: int = 6) -> None:
             test_sharpe = test_result.metrics.sharpe
             test_pnl = test_result.metrics.net_pnl
         except Exception as e:
-            print(f"  Test ERROR: {e}")
-            continue
+            raise RuntimeError(f"Test ERROR in {w['label']}: {e}") from e
 
         # Overfitting ratio: test/train (ideal > 0.5)
         overfit_ratio = test_sharpe / train_sharpe if abs(train_sharpe) > 0.01 else 0.0
@@ -154,11 +140,11 @@ def run_walk_forward(train_years: int = 2, test_months: int = 6) -> None:
         print(f"  Overfit windows:  {overfit_count}/{len(results)}")
 
         if avg_ratio > 0.5:
-            print(f"\n✅ Strategy shows good out-of-sample stability (ratio={avg_ratio:.2f})")
+            print(f"\nStrategy shows good train→dev stability (ratio={avg_ratio:.2f})")
         elif avg_ratio > 0.3:
-            print(f"\n⚠️ Moderate out-of-sample degradation (ratio={avg_ratio:.2f})")
+            print(f"\nModerate train→dev degradation (ratio={avg_ratio:.2f})")
         else:
-            print(f"\n🔴 Severe overfitting detected (ratio={avg_ratio:.2f})")
+            print(f"\nSevere train→dev overfitting detected (ratio={avg_ratio:.2f})")
 
 
 if __name__ == "__main__":

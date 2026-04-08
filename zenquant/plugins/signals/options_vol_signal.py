@@ -23,6 +23,8 @@ class Config:
     high_iv_threshold: float = 1.5  # z-score: elevated vol
     extreme_iv_threshold: float = 2.5  # z-score: extreme vol (distortion)
     inverted_skew_threshold: float = -1.0  # z-score: call IV > put IV
+    term_inversion_threshold: float = -0.5
+    surface_dislocation_threshold: float = 0.55
 
 
 meta = PluginMeta(
@@ -57,7 +59,8 @@ def compute(
     # Extract options indicators (z-scored) — safe defaults if unavailable
     atm_iv_z = float(indicators.get("atm_iv_z", 0.0) or 0.0)
     skew_z = float(indicators.get("skew_z", 0.0) or 0.0)
-    # term_slope_z could be used later for regime transitions
+    term_slope_z = float(indicators.get("term_slope_z", 0.0) or 0.0)
+    surface_dislocation = float(indicators.get("options_surface_dislocation", 0.0) or 0.0)
 
     # No options data available — stay neutral
     if atm_iv_z == 0.0 and skew_z == 0.0:
@@ -68,6 +71,8 @@ def compute(
     high_iv = config.get("high_iv_threshold", 1.5)
     extreme_iv = config.get("extreme_iv_threshold", 2.5)
     skew_threshold = config.get("inverted_skew_threshold", -1.0)
+    term_inversion_threshold = config.get("term_inversion_threshold", -0.5)
+    surface_dislocation_threshold = config.get("surface_dislocation_threshold", 0.55)
 
     # --- Low IV regime: Bullish (calm vol = complacency) ---
     if atm_iv_z < low_iv:
@@ -102,6 +107,15 @@ def compute(
             value=magnitude,
             confidence=confidence,
             reason_codes=tuple(reason_codes),
+        )
+
+    if surface_dislocation >= surface_dislocation_threshold and term_slope_z <= term_inversion_threshold:
+        magnitude = -min(0.6, 0.25 + surface_dislocation * 0.4 + abs(term_slope_z) * 0.15)
+        confidence = min(0.8, 0.4 + surface_dislocation * 0.35)
+        return SignalResult(
+            value=magnitude,
+            confidence=confidence,
+            reason_codes=("OPTIONS_SURFACE_DISLOCATION",),
         )
 
     # --- Skew velocity: rapid put skew steepening = informed selling ---
