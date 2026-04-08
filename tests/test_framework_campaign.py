@@ -56,7 +56,11 @@ class FrameworkCampaignTests(unittest.TestCase):
                             "rl_episodes_completed": 5,
                             "budget": "smoke",
                             "optuna_available": True,
+                            "train_only_search": True,
+                            "dev_only_ranking": True,
+                            "split_contract_version": "btc_temporal_v1",
                         },
+                        "split_contract": {"version": "btc_temporal_v1"},
                     }
                 ),
                 encoding="utf-8",
@@ -122,6 +126,57 @@ class FrameworkCampaignTests(unittest.TestCase):
 
             payload = json.loads((out / "campaign_status.json").read_text(encoding="utf-8"))
             self.assertEqual(payload["status"], "blocked")
+
+    def test_campaign_invalidates_resume_on_split_contract_mismatch(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp) / "results"
+            checkpoints = out / "checkpoints"
+            checkpoints.mkdir(parents=True, exist_ok=True)
+            (checkpoints / "stage0_readiness.json").write_text(
+                json.dumps({"split_contract": {"version": "btc_temporal_v0"}}),
+                encoding="utf-8",
+            )
+
+            argv = ["run_framework_campaign.py", "--output-dir", str(out), "--resume"]
+            with patch.object(sys, "argv", argv):
+                CAMPAIGN.main()
+
+            payload = json.loads((out / "campaign_status.json").read_text(encoding="utf-8"))
+
+        self.assertEqual(payload["status"], "blocked")
+        self.assertEqual(payload["blocked_by"], "invalidated_checkpoint")
+        self.assertEqual(payload["invalidated_reason"], "split_contract_mismatch")
+        self.assertEqual(payload["split_contract_version"], "btc_temporal_v1")
+        self.assertFalse((out / "checkpoints" / "stage0_readiness.json").exists())
+
+    def test_campaign_invalidates_resume_when_stage1_is_not_train_dev_disciplined(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp) / "results"
+            checkpoints = out / "checkpoints"
+            checkpoints.mkdir(parents=True, exist_ok=True)
+            (checkpoints / "stage1_search.json").write_text(
+                json.dumps(
+                    {
+                        "search_status": {
+                            "split_contract_version": "btc_temporal_v1",
+                            "train_only_search": False,
+                            "dev_only_ranking": True,
+                        },
+                        "split_contract": {"version": "btc_temporal_v1"},
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            argv = ["run_framework_campaign.py", "--output-dir", str(out), "--resume"]
+            with patch.object(sys, "argv", argv):
+                CAMPAIGN.main()
+
+            payload = json.loads((out / "campaign_status.json").read_text(encoding="utf-8"))
+
+        self.assertEqual(payload["status"], "blocked")
+        self.assertEqual(payload["blocked_by"], "invalidated_checkpoint")
+        self.assertEqual(payload["invalidated_reason"], "checkpoint_not_train_only_search")
 
 
 if __name__ == "__main__":

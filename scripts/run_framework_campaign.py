@@ -70,7 +70,10 @@ def _initialize_running_status(
         "search_space_profile": None,
         "resume_supported": True,
         "split_contract": split_summary_json(default_btc_split_spec()),
+        "split_contract_version": default_btc_split_spec().version,
+        "authoritative_promote_path": True,
         "test_evaluated": False,
+        "invalidated_reason": None,
     }
     _write_json(path, payload)
     return payload
@@ -99,6 +102,56 @@ def _archive_prior_outputs(output_dir: Path) -> None:
             shutil.move(str(source), str(target))
 
 
+def _invalidate_resume_state(output_dir: Path, status_path: Path, *, reason: str) -> None:
+    _archive_prior_outputs(output_dir)
+    _write_json(
+        status_path,
+        {
+            "phase": "stage0_readiness",
+            "status": "blocked",
+            "blocked_by": "invalidated_checkpoint",
+            "invalidated_reason": reason,
+            "updated_at": _ts(),
+            "resume_supported": True,
+            "split_contract": split_summary_json(default_btc_split_spec()),
+            "split_contract_version": default_btc_split_spec().version,
+            "authoritative_promote_path": True,
+            "test_evaluated": False,
+        },
+    )
+
+
+def _resume_invalidated_reason(output_dir: Path, *, split_spec_version: str) -> str | None:
+    checkpoint_dir = output_dir / "checkpoints"
+    readiness_payload = _read_json(checkpoint_dir / "stage0_readiness.json") or {}
+    stage1_payload = _read_json(checkpoint_dir / "stage1_search.json") or {}
+    stage2_payload = _read_json(checkpoint_dir / "stage2_full_report.json") or {}
+    status_payload = _read_json(output_dir / "campaign_status.json") or {}
+
+    seen_versions = [
+        readiness_payload.get("split_contract", {}).get("version"),
+        stage1_payload.get("split_contract", {}).get("version"),
+        stage1_payload.get("search_status", {}).get("split_contract_version"),
+        status_payload.get("split_contract", {}).get("version"),
+        status_payload.get("split_contract_version"),
+    ]
+    for version in seen_versions:
+        if version is not None and version != split_spec_version:
+            return "split_contract_mismatch"
+
+    if stage1_payload:
+        search_status = stage1_payload.get("search_status", {})
+        if search_status.get("train_only_search") is not True:
+            return "checkpoint_not_train_only_search"
+        if search_status.get("dev_only_ranking") is not True:
+            return "checkpoint_not_dev_only_ranking"
+
+    if stage2_payload.get("test_evaluated") is True:
+        return "checkpoint_already_consumed_frozen_test"
+
+    return None
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Run resumable framework optimization campaign")
     parser.add_argument("--root", default="data/raw/binance")
@@ -114,6 +167,16 @@ def main() -> None:
     output_dir = Path(args.output_dir)
     if not args.resume:
         _archive_prior_outputs(output_dir)
+    else:
+        invalidated_reason = _resume_invalidated_reason(
+            output_dir,
+            split_spec_version=default_btc_split_spec().version,
+        )
+        if invalidated_reason is not None:
+            _invalidate_resume_state(output_dir, output_dir / "campaign_status.json", reason=invalidated_reason)
+            print("blocked_by=invalidated_checkpoint")
+            print(f"invalidated_reason={invalidated_reason}")
+            return
     output_dir.mkdir(parents=True, exist_ok=True)
     checkpoint_dir = output_dir / "checkpoints"
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
