@@ -3,11 +3,16 @@
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from zenquant.research.auto_research import (
+    Campaign,
+    CampaignConfig,
     SearchSpace,
+    WalkForwardSplit,
     _build_param_grid,
     _build_strategy_config,
+    run_search_stage,
 )
 from zenquant.research.experiment import ExperimentTracker, params_hash
 from zenquant.research.promoter import (
@@ -17,6 +22,7 @@ from zenquant.research.promoter import (
     PromotionGate,
     RobustnessResult,
 )
+from zenquant.research.splits import default_btc_split_spec
 
 
 class TestParamsHash(unittest.TestCase):
@@ -261,6 +267,81 @@ class TestSearchSpace(unittest.TestCase):
         config = _build_strategy_config({"bull_leverage": 2.5})
         self.assertEqual(config.playbook_config.bull_max_leverage, 2.5)
         self.assertIsNone(config.exit_config)
+
+    def test_run_search_stage_uses_train_split_only(self) -> None:
+        config = CampaignConfig(
+            split_spec=default_btc_split_spec(),
+            search_space=SearchSpace(strategy_params={"bull_leverage": [2.5, 3.0]}),
+            sweep_mode="grid",
+            wf_splits=[],
+            robustness_seeds=[],
+            verbose=False,
+        )
+        captured: list[tuple[int | None, int | None]] = []
+
+        def fake_worker(args):
+            captured.append((args[4], args[5]))
+            return args[0], {
+                "sharpe": 1.0,
+                "sortino": 1.0,
+                "net_pnl": 1.0,
+                "max_drawdown": 0.1,
+                "win_rate": 0.5,
+                "profit_factor": 1.0,
+                "trade_count": 10,
+                "fee_drag_pct": 0.01,
+            }
+
+        with (
+            patch("zenquant.research.auto_research._run_backtest_worker", fake_worker),
+            patch("zenquant.research.auto_research._max_workers", return_value=1),
+        ):
+            sweep = run_search_stage(config)
+
+        self.assertEqual(sweep.total_combinations, 2)
+        self.assertTrue(captured)
+        for start_ns, end_ns in captured:
+            self.assertEqual(start_ns, config.split_spec.train.start_ns)
+            self.assertEqual(end_ns, config.split_spec.train.end_ns)
+
+    def test_campaign_report_is_internal_dev_only(self) -> None:
+        spec = default_btc_split_spec()
+        config = CampaignConfig(
+            split_spec=spec,
+            search_space=SearchSpace(strategy_params={"bull_leverage": [2.5]}),
+            wf_splits=[
+                WalkForwardSplit(
+                    train_start_ns=spec.train.start_ns,
+                    train_end_ns=spec.train.end_ns,
+                    val_start_ns=spec.dev.start_ns,
+                    val_end_ns=spec.dev.end_ns,
+                )
+            ],
+            robustness_seeds=[],
+            verbose=False,
+        )
+        def fake_worker(args):
+            params = args[0]
+            bull_lev = params.get("bull_leverage", 2.5)
+            return params, {
+                "sharpe": bull_lev * 1.0,
+                "sortino": bull_lev * 0.8,
+                "net_pnl": bull_lev * 10000,
+                "max_drawdown": 0.1,
+                "win_rate": 0.55,
+                "profit_factor": 1.5,
+                "trade_count": 100,
+                "fee_drag_pct": 0.02,
+            }
+
+        with patch("zenquant.research.auto_research._run_backtest_worker", fake_worker):
+            campaign = Campaign(config)
+            campaign._workers = 1
+            report = campaign.run()
+
+        self.assertFalse(report.authoritative_promote_path)
+        self.assertEqual(report.split_contract_version, "btc_temporal_v1")
+        self.assertFalse(report.test_evaluated)
 
 
 if __name__ == "__main__":

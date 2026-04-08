@@ -1,6 +1,6 @@
 """Deterministic research pipeline helpers built on the main replay kernel."""
 
-from .auto_research import Campaign, CampaignConfig, CampaignReport, SearchSpace, WalkForwardSplit
+from .auto_research import Campaign, CampaignConfig, CampaignReport, SearchSpace, WalkForwardSplit, run_search_stage
 from .comparison import (
     VariantSpec,
     WindowSpec,
@@ -24,6 +24,7 @@ from .promoter import (
     RobustnessResult,
 )
 from .rl_tuner import ParamTunerEnv, train_tuner
+from .splits import DatasetSplitSpec, SplitWindow, default_btc_split_spec, split_summary_json
 
 __all__ = [
     "BaselineMetrics",
@@ -31,6 +32,7 @@ __all__ = [
     "CampaignConfig",
     "CampaignReport",
     "CandidateMetrics",
+    "DatasetSplitSpec",
     "Experiment",
     "ExperimentTracker",
     "ParamTunerEnv",
@@ -41,17 +43,21 @@ __all__ = [
     "ResearchRunConfig",
     "RobustnessResult",
     "SearchSpace",
+    "SplitWindow",
     "VariantSpec",
     "WalkForwardSplit",
     "WindowSpec",
     "build_markdown_summary",
     "compare_variants",
+    "default_btc_split_spec",
     "default_variant_specs",
     "fixed_2023_08_window",
     "liquidation_research_variant_specs",
     "paulwei_execution_baseline",
     "paulwei_risk_baseline",
     "run_research_pipeline",
+    "run_search_stage",
+    "split_summary_json",
     "train_tuner",
     "windows_from_worst_periods",
 ]

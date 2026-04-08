@@ -19,6 +19,12 @@ Usage:
 Architecture Note:
     This module orchestrates existing building blocks (HistoricalBacktest,
     PerturbationConfig, PluginRegistry) — it does not duplicate them.
+
+Authority Note:
+    AutoResearch is an internal/dev-only research harness. It can generate
+    train-split candidates plus dev-side validation/robustness artifacts, but
+    it is not the authoritative promote path. Final promote truth lives in
+    framework_search + run_framework_campaign.
 """
 
 from __future__ import annotations
@@ -51,6 +57,7 @@ from .promoter import (
     PromotionVerdict,
     RobustnessResult,
 )
+from .splits import DatasetSplitSpec, default_btc_split_spec, split_summary_json
 
 # ── Configuration ─────────────────────────────────────────────
 
@@ -85,6 +92,7 @@ class CampaignConfig:
     data_root: Path = Path("data/raw/binance")
     symbol: str = "BTCUSDT"
     starting_equity: float = 100_000.0
+    split_spec: DatasetSplitSpec | None = None
 
     # Search
     search_space: SearchSpace = field(default_factory=SearchSpace)
@@ -154,6 +162,10 @@ class CampaignReport:
     best_params: dict[str, Any] | None
     best_verdict: PromotionVerdict | None
     runtime_s: float
+    authoritative_promote_path: bool = False
+    split_contract_version: str | None = None
+    test_evaluated: bool = False
+    invalidated_reason: str | None = None
 
 
 # ── Orchestrator ──────────────────────────────────────────────
@@ -200,6 +212,8 @@ class Campaign:
 
     def __init__(self, config: CampaignConfig | None = None) -> None:
         self._config = config or CampaignConfig()
+        if self._config.split_spec is None:
+            raise ValueError("split_spec is required for AutoResearch campaigns")
         ts = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
         label = self._config.campaign_label or self._config.symbol.lower()
         self._campaign_id = f"{ts}_{label}"
@@ -242,22 +256,7 @@ class Campaign:
             validations = self._run_walk_forward(sweep.top_n)
             self._log(f"Walk-forward: {len(validations)} candidates validated")
         else:
-            self._log("Walk-forward validation skipped: no splits provided")
-            # Skip WF — treat sweep top-N as candidates directly
-            for entry in sweep.top_n:
-                m = entry["metrics"]
-                validations.append(
-                    ValidationResult(
-                        params=entry["params"],
-                        split_sharpes=[m["sharpe"]],
-                        split_drawdowns=[m["max_drawdown"]],
-                        split_pnls=[m["net_pnl"]],
-                        split_trade_counts=[int(m["trade_count"])],
-                        avg_val_sharpe=m["sharpe"],
-                        avg_val_drawdown=m["max_drawdown"],
-                        total_trade_count=int(m["trade_count"]),
-                    )
-                )
+            raise ValueError("wf_splits are required; dev selection cannot be skipped")
 
         self._tracker.flush()
 
@@ -285,6 +284,9 @@ class Campaign:
             best_params=best_params,
             best_verdict=best_verdict,
             runtime_s=time.time() - start,
+            authoritative_promote_path=False,
+            split_contract_version=self._config.split_spec.version,
+            test_evaluated=False,
         )
         self._save_report(report)
         return report
@@ -304,15 +306,17 @@ class Campaign:
 
         self._log(f"Grid sweep: {len(param_grid)} parameter combinations")
 
-        # Build backtest args — full data range (no splits)
+        split = self._config.split_spec
+        assert split is not None
+        # Build backtest args — train split only
         args_list = [
             (
                 params,
                 str(self._config.data_root),
                 self._config.symbol,
                 self._config.starting_equity,
-                None,  # start_ns
-                None,  # end_ns
+                split.train.start_ns,
+                split.train.end_ns,
                 None,  # perturbation
             )
             for params in param_grid
@@ -374,13 +378,15 @@ class Campaign:
             for key, values in all_params.items():
                 params[key] = trial.suggest_categorical(key, values)
 
+            split = self._config.split_spec
+            assert split is not None
             args = (
                 params,
                 str(self._config.data_root),
                 self._config.symbol,
                 self._config.starting_equity,
-                None,
-                None,
+                split.train.start_ns,
+                split.train.end_ns,
                 None,
             )
             _, metrics = _run_backtest_worker(args)
@@ -485,6 +491,8 @@ class Campaign:
 
     def _run_robustness(self, validations: list[ValidationResult]) -> dict[str, list[RobustnessResult]]:
         cfg = self._config
+        split = cfg.split_spec
+        assert split is not None
         robustness: dict[str, list[RobustnessResult]] = {}
 
         # Build all (candidate × seed) backtest args
@@ -503,8 +511,8 @@ class Campaign:
                     str(cfg.data_root),
                     cfg.symbol,
                     cfg.starting_equity,
-                    None,
-                    None,
+                    split.dev.start_ns,
+                    split.dev.end_ns,
                     perturbation,
                 )
                 all_args.append((key, seed, args))
@@ -597,6 +605,10 @@ class Campaign:
             "campaign_id": report.campaign_id,
             "config": report.config,
             "runtime_s": report.runtime_s,
+            "authoritative_promote_path": report.authoritative_promote_path,
+            "split_contract_version": report.split_contract_version,
+            "test_evaluated": report.test_evaluated,
+            "invalidated_reason": report.invalidated_reason,
             "sweep": {
                 "total_combinations": report.sweep.total_combinations,
                 "runtime_s": report.sweep.runtime_s,
@@ -609,6 +621,17 @@ class Campaign:
             "best_verdict": asdict(report.best_verdict) if report.best_verdict else None,
         }
         path.write_text(json.dumps(data, indent=2, default=str))
+
+
+def run_search_stage(config: CampaignConfig) -> SweepResult:
+    """Run AutoResearch search only on the train split.
+
+    This helper exists so the authoritative framework campaign can reuse
+    AutoResearch's train-only candidate generation without inheriting its
+    legacy promotion semantics.
+    """
+    campaign = Campaign(config)
+    return campaign._run_sweep()
 
 
 # ── Utility functions ─────────────────────────────────────────
@@ -666,6 +689,7 @@ def _config_to_dict(config: CampaignConfig) -> dict[str, Any]:
         "data_root": str(config.data_root),
         "symbol": config.symbol,
         "starting_equity": config.starting_equity,
+        "split_contract": split_summary_json(config.split_spec or default_btc_split_spec()),
         "search_space": asdict(config.search_space),
         "wf_splits": [asdict(s) for s in config.wf_splits],
         "top_n_for_validation": config.top_n_for_validation,

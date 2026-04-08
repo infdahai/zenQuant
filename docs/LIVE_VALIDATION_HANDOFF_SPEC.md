@@ -42,6 +42,7 @@
 - `results/data_readiness/data_readiness.json` 与 `results/framework_optimization/campaign_status.json` 是当前唯一研究状态事实源
 - `paper-live` 所需的运行、验证、导出入口均已存在
 - 旧调优结果若来自旧 split 制度或触碰过当前 `test`，必须标记为 `invalidated`，不得继续作为 tuned winner 使用
+- `scripts/run_framework_campaign.py` 是唯一权威 clean tuning 入口；`scripts/run_auto_research.py` 仅用于 internal/dev research
 
 ### 1.3 当前信号体系
 

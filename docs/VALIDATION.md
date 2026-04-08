@@ -2,6 +2,14 @@
 
 Historical validation evidence and baseline metrics.
 
+Strict temporal split policy now governs all new parameter research:
+
+- `train`: `2020-01-01` to `2023-12-31`
+- `dev`: `2024-01-01` to `2025-12-31`
+- `test`: `2026-01-01` to latest
+
+See [`DATASET_SPLIT_POLICY.md`](/Users/disaster/workspace/code/zenQuant/docs/DATASET_SPLIT_POLICY.md).
+
 ## Current Historical Status (2026-04-07)
 
 The authoritative validation handoff path for the current strategy is:
@@ -12,8 +20,8 @@ The authoritative validation handoff path for the current strategy is:
 Current conclusion:
 
 - `2023-08` bearish-grind repair is validated on historical replay
-- `walk_forward_eval.py` shows `0/8` overfit windows and Avg OOS ratio `1.25`
-- `adversarial_stress.py --historical` passes `5/5` worst periods
+- `walk_forward_eval.py` is now treated as a `train -> dev` selection-layer check
+- `adversarial_stress.py --historical --split dev|test` is split-aware
 - `current` and `paulwei_baseline` are still identical on the current historical path, so the framework is validated but no superior promoted variant has been established yet
 
 Use the handoff spec for re-run commands, paper-live startup, and acceptance criteria. Treat this file as a summary, not as the source of truth for test contracts.
@@ -109,7 +117,7 @@ Use the handoff spec for re-run commands, paper-live startup, and acceptance cri
 | Decision logging | zenquant/research/decision_logger.py | Full chain per bar |
 | Walk-forward | walk_forward_tune.py | Parallelized |
 | Domain randomization | PerturbationConfig | 5-seed robustness |
-| AutoResearch | auto_research.py | Grid + Bayesian (Optuna) |
+| AutoResearch | auto_research.py | Internal/dev-only search worker, not final promote path |
 | Factor health | tests/test_factor_health.py | Gate 0 |
 | Paper trading | scripts/paper_trade.py | Needs stable network |
 | HF features | zenquant/indicator/hf_features.py | Awaiting 5min data |
