@@ -617,6 +617,32 @@ def write_search_report(path: Path, report: SearchReport) -> None:
         asdict(report.optuna_best) if report.optuna_best else None,
         asdict(report.rl_best) if report.rl_best else None,
     ]
+    comparison_to_current = None
+    comparison_to_paulwei = None
+    if best_summary is not None:
+        comparison_to_current = {
+            "variant": best_summary.variant,
+            "drawdown_not_worse": best_summary.dev_drawdown <= report.current.dev_drawdown + 0.03,
+            "worst_dev_sharpe_not_worse": best_summary.worst_dev_sharpe >= report.current.worst_dev_sharpe,
+            "negative_worst_windows_not_worse": (
+                best_summary.negative_dev_worst_windows <= report.current.negative_dev_worst_windows
+            ),
+        }
+        comparison_to_paulwei = {
+            "variant": best_summary.variant,
+            "drawdown_not_worse": best_summary.dev_drawdown <= report.paulwei_baseline.dev_drawdown + 0.03,
+            "worst_dev_sharpe_not_worse": best_summary.worst_dev_sharpe >= report.paulwei_baseline.worst_dev_sharpe,
+            "negative_worst_windows_not_worse": (
+                best_summary.negative_dev_worst_windows <= report.paulwei_baseline.negative_dev_worst_windows
+            ),
+        }
+    verdict_kind = "blocked_by_data_readiness" if payload["readiness"]["blocked_by"] else "promote_candidate_found"
+    if best_summary is not None and not best_summary.promotion_candidate:
+        verdict_kind = (
+            "no_promote_candidate_found_param_side"
+            if best_summary.promotion_failure_reason == "avg_test_sharpe"
+            else "no_promote_candidate_found_architecture_side"
+        )
     payload["final_verdict"] = {
         "best_variant": report.best_variant,
         "candidate_ready_for_test": bool(best_summary.promotion_candidate) if best_summary and not report.test_evaluated else False,
@@ -631,6 +657,9 @@ def write_search_report(path: Path, report: SearchReport) -> None:
         "test_window": payload["split_contract"]["windows"]["test"],
         "liquidation_in_search": payload["search_status"].get("liquidation_in_search"),
         "search_space_profile": payload["search_status"].get("search_space_profile"),
+        "verdict_kind": verdict_kind,
+        "comparison_to_current": comparison_to_current,
+        "comparison_to_paulwei_baseline": comparison_to_paulwei,
         "next_data_priority": (
             "liquidation_history"
             if not payload["readiness"]["promotion_ready"]

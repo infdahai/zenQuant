@@ -23,9 +23,15 @@ def main() -> None:
     if not result:
         raise SystemExit("RL tuner produced no results")
 
+    best_sharpe = result.get("best_sharpe")
+    if best_sharpe is None:
+        best_sharpe = result.get("train_sharpe")
+    if best_sharpe is None:
+        best_sharpe = result.get("train_metrics", {}).get("sharpe", 0.0)
+
     print("ZenQuant RL parameter tuning complete")
     print(f"episodes={args.episodes}")
-    print(f"best_sharpe={result['best_sharpe']:.4f}")
+    print(f"best_sharpe={best_sharpe:.4f}")
     print(f"best_params={json.dumps(result['best_params'], sort_keys=True)}")
     if args.output:
         Path(args.output).write_text(json.dumps(result, indent=2, sort_keys=True), encoding="utf-8")
