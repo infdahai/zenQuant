@@ -1,4 +1,4 @@
-"""AutoResearch campaign orchestrator.
+"""AutoResearch internal research workers.
 
 Runs a full parameter optimization cycle:
 
@@ -208,7 +208,7 @@ def _max_workers() -> int:
 
 
 class Campaign:
-    """AutoResearch campaign — sweep, validate, test robustness, promote."""
+    """Internal research harness for train/dev experimentation."""
 
     def __init__(self, config: CampaignConfig | None = None) -> None:
         self._config = config or CampaignConfig()
@@ -224,7 +224,7 @@ class Campaign:
         # Guard against accidental grid explosion
         sp = self._config.search_space
         all_vals = list(sp.strategy_params.values()) + list(sp.plugin_params.values())
-        if all_vals:
+        if all_vals and self._config.sweep_mode == "grid":
             total = math.prod(len(v) for v in all_vals)
             if total > 100_000:
                 raise ValueError(f"Grid too large: {total:,} combinations (max 100,000)")
@@ -632,6 +632,21 @@ def run_search_stage(config: CampaignConfig) -> SweepResult:
     """
     campaign = Campaign(config)
     return campaign._run_sweep()
+
+
+def run_dev_validation_stage(config: CampaignConfig, candidates: list[dict[str, Any]]) -> list[ValidationResult]:
+    """Run dev-only validation for candidate params."""
+    campaign = Campaign(config)
+    return campaign._run_walk_forward(candidates)
+
+
+def run_dev_robustness_stage(
+    config: CampaignConfig,
+    validations: list[ValidationResult],
+) -> dict[str, list[RobustnessResult]]:
+    """Run dev-only robustness checks for validated candidates."""
+    campaign = Campaign(config)
+    return campaign._run_robustness(validations)
 
 
 # ── Utility functions ─────────────────────────────────────────

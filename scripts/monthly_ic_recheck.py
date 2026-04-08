@@ -2,7 +2,7 @@
 """Monthly IC recheck — detect signal decay automatically.
 
 Run monthly to check if any active signal's IC has degraded.
-If degradation detected → flag for review, optionally trigger AutoResearch.
+If degradation detected → flag for review, then start a clean tuning campaign.
 
 This implements Level 4 AI-native: the system detects its own decay
 and proposes corrections without human intervention.
@@ -127,8 +127,8 @@ def main() -> None:
         for a in alerts:
             print(f"    → {a}: consider reducing weight or disabling")
         print()
-        print("Action: Run AutoResearch to find optimal weights")
-        print("  uv run python scripts/run_auto_research.py --bayesian")
+        print("Action: start a clean tuning campaign")
+        print("  uv run python scripts/run_framework_campaign.py --budget fast")
     else:
         print("✅ All signals stable. No action needed.")
 

@@ -165,72 +165,62 @@
     + ANTI-SNOOPING VALIDATOR (static code check)
 ```
 
-## 3. AutoResearch Campaign Loop (Harness for Optimization)
+## 3. Clean Tuning Campaign Loop (Authoritative Path)
 
 ```
-    ┌──────────────────────────────────────────────────────────┐
-    │              AutoResearch Campaign                        │
-    │                                                          │
-    │   SearchSpace                                            │
-    │   ┌─────────────────────────────────────┐                │
-    │   │ strategy_params:                    │                │
-    │   │   bull_leverage: [2.5, 3.0, 3.5]    │                │
-    │   │   preserve_capital: [0.55..0.70]    │                │
-    │   │   exit_transition: [0.80..0.90]     │                │
-    │   │ plugin_params:                      │                │
-    │   │   momentum_threshold: [0.2..0.4]    │                │
-    │   └─────────────────────────────────────┘                │
-    │          │                                                │
-    │          v                                                │
-    │   Stage 1: SWEEP  ──────────────────────────────────┐    │
-    │   │  N param combos × parallel backtests            │    │
-    │   │  ProcessPoolExecutor (cpu_count - 2)            │    │
-    │   │  ~3s per 539-day replay                         │    │
-    │   │  Record to ExperimentTracker                    │    │
-    │   │  Rank by primary_metric (Sharpe)                │    │
-    │   └─────────────────────────────────────────────────┘    │
-    │          │ top-N                                          │
-    │          v                                                │
-    │   Stage 2: WALK-FORWARD  ───────────────────────────┐    │
-    │   │  3 splits × 90-day train + 90-day OOS           │    │
-    │   │  Validate on unseen data                        │    │
-    │   │  Collect: avg_val_sharpe, avg_val_drawdown       │    │
-    │   └─────────────────────────────────────────────────┘    │
-    │          │ candidates                                     │
-    │          v                                                │
-    │   Stage 3: ROBUSTNESS  ─────────────────────────────┐    │
-    │   │  5 seeds × domain randomization                 │    │
-    │   │  price_noise ±0.1%, volume_noise ±5%            │    │
-    │   │  bar_dropout 2%                                 │    │
-    │   │  Must pass 4/5 seeds                            │    │
-    │   └─────────────────────────────────────────────────┘    │
-    │          │ survivors                                      │
-    │          v                                                │
-    │   Stage 4: PROMOTION GATE  ─────────────────────────┐    │
-    │   │                                                 │    │
-    │   │  ┌─ Walk-Forward Gate ────────────────────┐     │    │
-    │   │  │  avg_val_sharpe > 0.5                  │     │    │
-    │   │  │  sharpe_delta > -0.5 vs baseline       │     │    │
-    │   │  │  avg_val_drawdown < 20%                │     │    │
-    │   │  │  trade_count >= 5                      │     │    │
-    │   │  └────────────────────────────────────────┘     │    │
-    │   │  ┌─ Robustness Gate ──────────────────────┐     │    │
-    │   │  │  4/5 seeds with sharpe > floor         │     │    │
-    │   │  │  max degradation < 0.50                │     │    │
-    │   │  └────────────────────────────────────────┘     │    │
-    │   │  ┌─ Drawdown Regression Gate ─────────────┐     │    │
-    │   │  │  regression < 5pp vs baseline          │     │    │
-    │   │  └────────────────────────────────────────┘     │    │
-    │   │                                                 │    │
-    │   │  ALL pass → PROMOTE                             │    │
-    │   │  WF fail  → REJECT                              │    │
-    │   │  Other    → REVIEW (human decides)              │    │
-    │   └─────────────────────────────────────────────────┘    │
-    │          │                                                │
-    │          v                                                │
-    │   Output: campaign_report.json + experiments.json        │
-    └──────────────────────────────────────────────────────────┘
+    ┌─────────────────────────────────────────────────────────────┐
+    │                Framework Campaign (Authoritative)           │
+    │                                                             │
+    │   Stage 0: READINESS + SPLIT CONTRACT                       │
+    │   │  data_readiness gate                                    │
+    │   │  split_contract = btc_temporal_v1                       │
+    │   │  train = search only / dev = ranking only               │
+    │   │  test = final acceptance only                           │
+    │   └───────────────────────────────────────────────────────┐ │
+    │            │                                               │ │
+    │            v                                               │ │
+    │   Stage 1A: OPTUNA TRAIN SEARCH                            │ │
+    │   │  Bayesian candidate generation on train only           │ │
+    │   │  top-N candidates emitted with split metadata          │ │
+    │   └───────────────────────────────────────────────────────┐ │
+    │            │                                               │ │
+    │            v                                               │ │
+    │   Stage 1B: RL TRAIN EXPLORER                              │ │
+    │   │  train-only interaction search                         │ │
+    │   │  dev shortlist only, not final winner selection        │ │
+    │   └───────────────────────────────────────────────────────┐ │
+    │            │                                               │ │
+    │            v                                               │ │
+    │   Stage 1C: DEV RANKING + ROBUSTNESS                       │ │
+    │   │  avg_dev_sharpe                                        │ │
+    │   │  worst_dev_sharpe                                      │ │
+    │   │  avg_dev_ratio                                         │ │
+    │   │  drawdown / negative worst-window penalties            │ │
+    │   │  AutoResearch workers may assist here                  │ │
+    │   └───────────────────────────────────────────────────────┐ │
+    │            │ finalists                                      │ │
+    │            v                                                │ │
+    │   Stage 2: FROZEN TEST VERDICT                             │ │
+    │   │  overall_drawdown                                       │ │
+    │   │  worst_test_sharpe                                      │ │
+    │   │  negative_worst_windows                                 │ │
+    │   │  promotion gate = final truth                           │ │
+    │   └───────────────────────────────────────────────────────┐ │
+    │            │                                               │ │
+    │            v                                               │ │
+    │   Stage 3: AUTHORITATIVE OUTPUT                            │ │
+    │   │  campaign_status.json                                  │ │
+    │   │  framework_optimization.json                           │ │
+    │   │  framework_optimization.md                             │ │
+    │   └───────────────────────────────────────────────────────┘ │
+    └─────────────────────────────────────────────────────────────┘
 ```
+
+Notes:
+- `scripts/run_framework_campaign.py` is the only authoritative clean tuning entrypoint.
+- `zenquant.research.framework_search` owns the scoring, finalists, and promotion truth.
+- `zenquant.research.auto_research` remains available as an internal worker library for train/dev research only.
+- `scripts/run_auto_research.py` is internal/dev-only and must not be treated as a final promote path.
 
 ## 4. Decision Chain (Strategy Harness)
 
@@ -397,11 +387,12 @@
                                  │   silent behavior divergence
     ─────────────────────────────┼───────────────────────────────────
     Throughput-first merging      │ ~3s backtest enables rapid
-                                 │   iteration. AutoResearch runs
-                                 │   27-243 combos in minutes.
+                                 │   iteration. Framework campaign
+                                 │   reuses AutoResearch workers
+                                 │   under one authoritative path.
     ─────────────────────────────┼───────────────────────────────────
-    GAN-style eval (Anthropic)   │ AutoResearch: sweep = generator
-                                 │ PromotionGate = evaluator
+    GAN-style eval (Anthropic)   │ Candidate search = generator
+                                 │ Promotion gate = evaluator
                                  │ Explicit criteria, not vibes
     ─────────────────────────────┼───────────────────────────────────
     Verification loop (LangChain)│ Walk-forward OOS + robustness

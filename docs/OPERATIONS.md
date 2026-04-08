@@ -6,7 +6,7 @@ How to optimize, deploy, monitor, and iterate on the strategy.
 
 ## 1. Historical Optimization
 
-### Quick Sweep (~5 minutes)
+### Clean Tuning Campaign
 
 ```bash
 # Download data (540 days default)
@@ -15,18 +15,37 @@ uv run python scripts/download_binance_data.py
 # Convert to Parquet
 uv run python scripts/convert_csv_to_parquet.py
 
-# Quick parameter sweep (3 param combos, 1 split)
-uv run python scripts/walk_forward_tune.py --quick
+# Check data readiness first
+uv run python scripts/data_readiness_status.py
+
+# Start the authoritative clean tuning campaign
+uv run python scripts/run_framework_campaign.py \
+  --root data/raw/binance \
+  --symbol BTCUSDT \
+  --liquidation-dir data/raw/merged_liquidations/aggregated \
+  --output-dir results/framework_optimization \
+  --budget fast
 ```
 
-### Full Walk-Forward Validation (~10 minutes, parallelized)
+Authority rules:
+- `scripts/run_framework_campaign.py` is the only authoritative clean tuning entrypoint.
+- `scripts/run_auto_research.py` is internal/dev-only and may help generate train/dev research artifacts, but it is not a final promote path.
+- `test` is reserved for the framework campaign's final verdict stage and must not participate in search or ranking.
+
+### Campaign Outputs
 
 ```bash
-# 27 param combos × 3 splits, uses ProcessPoolExecutor
-uv run python scripts/walk_forward_tune.py --full
+# Running truth
+cat results/framework_optimization/campaign_status.json
 
-# Results saved to results/walk_forward_tuning.json
+# Final report (only after stage3_complete)
+cat results/framework_optimization/framework_optimization.json
 ```
+
+Important:
+- if a prior campaign was interrupted or invalidated, fresh runs archive old checkpoints/results before restarting
+- do not treat a stale `campaign_status.json` with `status=running` as evidence of an active job unless a live process actually exists
+- only `framework_optimization.json/.md` count as final truth, and only after `campaign_status.json` reaches `stage3_complete`
 
 ### Domain Randomization (Robustness Test)
 

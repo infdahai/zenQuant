@@ -1,6 +1,15 @@
 """Deterministic research pipeline helpers built on the main replay kernel."""
 
-from .auto_research import Campaign, CampaignConfig, CampaignReport, SearchSpace, WalkForwardSplit, run_search_stage
+from .auto_research import (
+    Campaign,
+    CampaignConfig,
+    CampaignReport,
+    SearchSpace,
+    WalkForwardSplit,
+    run_dev_robustness_stage,
+    run_dev_validation_stage,
+    run_search_stage,
+)
 from .comparison import (
     VariantSpec,
     WindowSpec,
@@ -55,6 +64,8 @@ __all__ = [
     "liquidation_research_variant_specs",
     "paulwei_execution_baseline",
     "paulwei_risk_baseline",
+    "run_dev_robustness_stage",
+    "run_dev_validation_stage",
     "run_research_pipeline",
     "run_search_stage",
     "split_summary_json",

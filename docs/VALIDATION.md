@@ -115,9 +115,9 @@ Use the handoff spec for re-run commands, paper-live startup, and acceptance cri
 | Stress testing | scripts/stress_test.py | 8/8 pass |
 | IC analysis | scripts/factor_ic_analysis.py | All factors |
 | Decision logging | zenquant/research/decision_logger.py | Full chain per bar |
-| Walk-forward | walk_forward_tune.py | Parallelized |
+| Clean tuning campaign | scripts/run_framework_campaign.py | Authoritative train/dev/test path |
 | Domain randomization | PerturbationConfig | 5-seed robustness |
-| AutoResearch | auto_research.py | Internal/dev-only search worker, not final promote path |
+| AutoResearch | zenquant/research/auto_research.py | Internal/dev-only worker library, not final promote path |
 | Factor health | tests/test_factor_health.py | Gate 0 |
 | Paper trading | scripts/paper_trade.py | Needs stable network |
 | HF features | zenquant/indicator/hf_features.py | Awaiting 5min data |

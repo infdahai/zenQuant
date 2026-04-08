@@ -9,9 +9,12 @@ from zenquant.research.auto_research import (
     Campaign,
     CampaignConfig,
     SearchSpace,
+    ValidationResult,
     WalkForwardSplit,
     _build_param_grid,
     _build_strategy_config,
+    run_dev_robustness_stage,
+    run_dev_validation_stage,
     run_search_stage,
 )
 from zenquant.research.experiment import ExperimentTracker, params_hash
@@ -304,6 +307,111 @@ class TestSearchSpace(unittest.TestCase):
             self.assertEqual(start_ns, config.split_spec.train.start_ns)
             self.assertEqual(end_ns, config.split_spec.train.end_ns)
 
+    def test_run_dev_validation_stage_uses_dev_windows_only(self) -> None:
+        spec = default_btc_split_spec()
+        wf_splits = [
+            WalkForwardSplit(
+                train_start_ns=spec.train.start_ns,
+                train_end_ns=spec.train.end_ns,
+                val_start_ns=spec.dev.start_ns,
+                val_end_ns=spec.dev.start_ns + 10,
+            ),
+            WalkForwardSplit(
+                train_start_ns=spec.train.start_ns,
+                train_end_ns=spec.train.end_ns,
+                val_start_ns=spec.dev.start_ns + 10,
+                val_end_ns=spec.dev.start_ns + 20,
+            ),
+        ]
+        config = CampaignConfig(
+            split_spec=spec,
+            search_space=SearchSpace(strategy_params={"bull_leverage": [2.5]}),
+            wf_splits=wf_splits,
+            robustness_seeds=[],
+            verbose=False,
+        )
+        candidates = [{"params": {"bull_leverage": 2.5}, "metrics": {"sharpe": 1.0}}]
+        captured: list[tuple[int | None, int | None]] = []
+
+        def fake_worker(args):
+            captured.append((args[4], args[5]))
+            return args[0], {
+                "sharpe": 1.0,
+                "sortino": 1.0,
+                "net_pnl": 1.0,
+                "max_drawdown": 0.1,
+                "win_rate": 0.5,
+                "profit_factor": 1.0,
+                "trade_count": 10,
+                "fee_drag_pct": 0.01,
+            }
+
+        with (
+            patch("zenquant.research.auto_research._run_backtest_worker", fake_worker),
+            patch("zenquant.research.auto_research._max_workers", return_value=1),
+        ):
+            validations = run_dev_validation_stage(config, candidates)
+
+        self.assertEqual(len(validations), 1)
+        self.assertEqual(
+            captured,
+            [
+                (wf_splits[0].val_start_ns, wf_splits[0].val_end_ns),
+                (wf_splits[1].val_start_ns, wf_splits[1].val_end_ns),
+            ],
+        )
+
+    def test_run_dev_robustness_stage_uses_dev_split_only(self) -> None:
+        spec = default_btc_split_spec()
+        config = CampaignConfig(
+            split_spec=spec,
+            search_space=SearchSpace(strategy_params={"bull_leverage": [2.5]}),
+            wf_splits=[],
+            robustness_seeds=[11, 22],
+            verbose=False,
+        )
+        validations = [
+            ValidationResult(
+                params={"bull_leverage": 2.5},
+                split_sharpes=[1.0],
+                split_drawdowns=[0.1],
+                split_pnls=[100.0],
+                split_trade_counts=[5],
+                avg_val_sharpe=1.0,
+                avg_val_drawdown=0.1,
+                total_trade_count=5,
+            )
+        ]
+        captured: list[tuple[int | None, int | None]] = []
+
+        def fake_worker(args):
+            captured.append((args[4], args[5]))
+            return args[0], {
+                "sharpe": 1.0,
+                "sortino": 1.0,
+                "net_pnl": 1.0,
+                "max_drawdown": 0.1,
+                "win_rate": 0.5,
+                "profit_factor": 1.0,
+                "trade_count": 10,
+                "fee_drag_pct": 0.01,
+            }
+
+        with (
+            patch("zenquant.research.auto_research._run_backtest_worker", fake_worker),
+            patch("zenquant.research.auto_research._max_workers", return_value=1),
+        ):
+            robustness = run_dev_robustness_stage(config, validations)
+
+        self.assertEqual(len(robustness), 1)
+        self.assertEqual(
+            captured,
+            [
+                (spec.dev.start_ns, spec.dev.end_ns),
+                (spec.dev.start_ns, spec.dev.end_ns),
+            ],
+        )
+
     def test_campaign_report_is_internal_dev_only(self) -> None:
         spec = default_btc_split_spec()
         config = CampaignConfig(
@@ -342,6 +450,33 @@ class TestSearchSpace(unittest.TestCase):
         self.assertFalse(report.authoritative_promote_path)
         self.assertEqual(report.split_contract_version, "btc_temporal_v1")
         self.assertFalse(report.test_evaluated)
+
+    def test_bayesian_search_is_not_rejected_by_theoretical_grid_size(self) -> None:
+        spec = default_btc_split_spec()
+        config = CampaignConfig(
+            split_spec=spec,
+            search_space=SearchSpace(
+                strategy_params={
+                    "a": list(range(101)),
+                    "b": list(range(1000)),
+                }
+            ),
+            sweep_mode="bayesian",
+            n_trials=5,
+            wf_splits=[
+                WalkForwardSplit(
+                    train_start_ns=spec.train.start_ns,
+                    train_end_ns=spec.train.end_ns,
+                    val_start_ns=spec.dev.start_ns,
+                    val_end_ns=spec.dev.end_ns,
+                )
+            ],
+            robustness_seeds=[],
+            verbose=False,
+        )
+
+        campaign = Campaign(config)
+        self.assertEqual(campaign._config.sweep_mode, "bayesian")
 
 
 if __name__ == "__main__":
