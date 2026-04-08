@@ -10,6 +10,15 @@
 
 本文件是测试负责人与 `paper-live` 操作人的唯一入口。研究型文档仅作内部参考，不作为交付依据。
 
+严格数据切分前置条件：
+
+- `train = 2020-01-01 ~ 2023-12-31`
+- `dev = 2024-01-01 ~ 2025-12-31`
+- `test = 2026-01-01 ~ latest`
+- `paper-live` 只能在冻结 `test` 历史验收通过后启动
+
+切分纪律说明见 [`DATASET_SPLIT_POLICY.md`](/Users/disaster/workspace/code/zenQuant/docs/DATASET_SPLIT_POLICY.md)。
+
 ---
 
 ## 1. 当前交付状态
@@ -28,32 +37,69 @@
 - `2023-08` bearish-grind 修复已落地并有回归测试
 - `cycle_context` 已进入历史研究输出
 - `liq_state_overlay` 与 `liq_risk_guard` 已接入，但当前保持 `research-gated`
+- Deribit 已切换为独立 collector + status 契约，状态以 `scripts/deribit_collector_status.py` 与 `data/raw/deribit_options/BTC/_collector_status.json` 为准
+- Hyperliquid 公共数据入口已存在，用于补充 liquidation proxy 历史与前瞻采集；当前默认视为研究数据，不直接改变 live contract
+- `results/data_readiness/data_readiness.json` 与 `results/framework_optimization/campaign_status.json` 是当前唯一研究状态事实源
 - `paper-live` 所需的运行、验证、导出入口均已存在
+- 旧调优结果若来自旧 split 制度或触碰过当前 `test`，必须标记为 `invalidated`，不得继续作为 tuned winner 使用
 
-### 1.3 当前边界
+### 1.3 当前信号体系
+
+当前默认 profile 已建模 `12` 个方向信号，其中默认启用 `9` 个，默认禁用 `3` 个。测试负责人应以 [`config/profiles/default.toml`](/Users/disaster/workspace/code/zenQuant/config/profiles/default.toml) 为唯一配置事实源，不要继续沿用旧的 `6-7` 个 signal 表。
+
+默认启用信号：
+
+| Signal | Weight | 主要角色 | 当前状态 |
+|--------|--------|----------|----------|
+| `multi_momentum_signal` | `0.45` | 趋势骨架 | Active |
+| `cvd_signal` | `0.25` | 订单流确认 | Active |
+| `liquidity_signal` | `0.20` | 流动性失衡/反身性 | Active |
+| `crowding_signal` | `0.10` | 拥挤修正 | Active |
+| `options_vol_signal` | `0.15` | 期权曲面状态 | Active, no-data auto-neutral |
+| `perp_carry_stress_signal` | `0.08` | perp carry / 杠杆压力 | Active |
+| `vol_structure_signal` | `0.08` | 波动结构 / 执行节奏 | Active |
+| `crash_reversal_signal` | `0.25` | 极端下跌反转 | Active |
+| `funding_alpha_signal` | `0.10` | 资金费率反身性 | Active |
+
+默认禁用信号：
+
+| Signal | Weight | 当前状态 | 原因 |
+|--------|--------|----------|------|
+| `macro_regime_signal` | `0.12` | Disabled | 当前 BTC 口径下偏噪音 |
+| `cross_asset_flow_signal` | `0.10` | Disabled | 当前 IC 不足 |
+| `vol_mean_reversion_signal` | `0.20` | Disabled | ablation 下稳健性不足 |
+
+测试口径：
+
+- 当前完整方向信号宇宙是 `12` 个已建模 signals
+- 默认 live / replay 路径当前启用的是 `9` 个 active signals
+- `options_vol_signal` 在 Deribit 数据不足时会自动中性化，不等于 disabled
+- liquidation 当前属于 state / risk / execution overlay，不作为独立方向插件计入这 `12` 个方向信号
+
+### 1.4 当前边界
 
 - `current` 与 `paulwei_baseline` 在当前真实历史路径上仍可能一致
 - 这意味着 comparison framework 已验证，但尚未证明收益层面已稳定优于 PaulWei
 - liquidation 当前不是 promoted alpha
 - 若无可用历史 liquidation 数据，研究结果必须输出 `insufficient_data`
 
-### 1.4 当前历史结论
+### 1.5 当前历史结论
 
 权威历史记录：[`HISTORICAL_VALIDATION_2026_04_07.md`](/Users/disaster/workspace/code/zenQuant/docs/HISTORICAL_VALIDATION_2026_04_07.md)
 
 当前用于交付判断的历史结论：
 
 - `2023-08` 不再是已知 failure
-- walk-forward：`8/8` 窗口无 overfit warning，Avg OOS ratio `1.25`
-- historical adversarial：`5/5` worst periods 通过
+- walk-forward：仅作为 `train -> dev` 选择层证据
+- historical adversarial：必须分别看 `dev` 与 `test`
 - comparison framework 已稳定输出 `comparison.json` / `comparison.md`
 - liquidation research 当前结论必须是：
   - `data_ready=false` 时为 `insufficient_data`
   - 不得假阳性 promote
 
-### 1.5 当前是否可进入 `paper-live`
+### 1.6 当前是否可进入 `paper-live`
 
-结论：**可以进入 `paper-live`，但不等于已经完成 paper-live validation。**
+结论：**只有在冻结 `test` 历史验收通过后，才可以进入 `paper-live`；进入后仍不等于已经完成 paper-live validation。**
 
 进入依据：
 
@@ -84,21 +130,43 @@ uv run pytest tests/test_liquidation_store.py tests/test_liquidation_signal_inte
 ### 2.2 必跑脚本级验证
 
 ```bash
-uv run python scripts/compare_variants.py --root data/raw/binance --symbol BTCUSDT --output-dir /tmp/zenquant-variant-compare
+uv run python scripts/compare_variants.py --root data/raw/binance --symbol BTCUSDT --split dev --output-dir /tmp/zenquant-variant-compare
+uv run python scripts/compare_variants.py --root data/raw/binance --symbol BTCUSDT --split test --output-dir /tmp/zenquant-variant-compare-test
 uv run python scripts/walk_forward_eval.py
-uv run python scripts/adversarial_stress.py --historical
-uv run python scripts/research_liquidation.py --root data/raw/binance --symbol BTCUSDT --output-dir /tmp/zenquant-liquidation-research --skip-walk-forward --include-worst-periods
+uv run python scripts/adversarial_stress.py --historical --split dev
+uv run python scripts/adversarial_stress.py --historical --split test
+uv run python scripts/research_liquidation.py --root data/raw/binance --symbol BTCUSDT --liquidation-dir data/raw/merged_liquidations/aggregated --output-dir /tmp/zenquant-liquidation-research --skip-walk-forward --include-worst-periods
+uv run python scripts/deribit_collector_status.py --root data/raw/deribit_options --currency BTC --write-status
+uv run python scripts/backfill_hyperliquid_history.py --coin BTC --output data/raw/hyperliquid/liquidations --days 7
+uv run python scripts/collect_hyperliquid_liquidations.py --coin BTC --output data/raw/hyperliquid/liquidations
+uv run python scripts/merge_liquidation_sources.py --symbol BTCUSDT --output data/raw/merged_liquidations --input data/raw/hyperliquid/liquidations
+uv run python scripts/data_readiness_status.py --binance-root data/raw/binance --symbol BTCUSDT --deribit-root data/raw/deribit_options --hyperliquid-root data/raw/hyperliquid/liquidations --merged-root data/raw/merged_liquidations --output-dir results/data_readiness
+uv run python scripts/run_framework_campaign.py --root data/raw/binance --symbol BTCUSDT --liquidation-dir data/raw/merged_liquidations/aggregated --output-dir results/framework_optimization --budget high
 ```
 
 通过标准：
 
-- `compare_variants.py` 生成 `comparison.json` 和 `comparison.md`
-- `walk_forward_eval.py` 无明显 overfit warning
-- `adversarial_stress.py --historical` 不出现新增灾难性失败
+- `compare_variants.py --split dev` 只生成 dev 对照，不得用 overall 混合窗口代替
+- `compare_variants.py --split test` 只用于最终历史封板
+- `walk_forward_eval.py` 仅作为 `train -> dev` 选择层检查
+- `adversarial_stress.py --historical --split test` 不出现新增灾难性失败
 - `research_liquidation.py`：
   - 若有数据，必须输出 readiness 与 verdict
   - 若缺数据，必须显式输出 `insufficient_data`
   - 不允许输出假 `promotion_candidate=true`
+- `deribit_collector_status.py`：
+  - 必须输出 `stale / observation_ready / research_ready`
+  - 若 collector 断档，必须显式显示 `stale=true`
+- `backfill_hyperliquid_history.py`：
+  - 必须生成 candle / funding raw 数据与 proxy liquidation buckets
+  - 若免费公共历史不足，必须显式输出 `blocked_by=hyperliquid_public_history_limit`
+- `data_readiness_status.py`：
+  - 必须生成 `results/data_readiness/data_readiness.json` 和 `results/data_readiness/data_readiness.md`
+  - 必须显式给出 Deribit / Binance liquidation / Hyperliquid / merged liquidation 的唯一状态
+- `run_framework_campaign.py`：
+  - 必须先生成 `results/framework_optimization/campaign_status.json`
+  - 若长跑未完成，状态必须是 `running` 或 `blocked`
+  - 只有完成后才应生成最新的 `framework_optimization.json` 和 `framework_optimization.md`
 
 ### 2.3 Stop-Ship 条件
 
@@ -161,6 +229,8 @@ uv run python scripts/research_liquidation.py --root data/raw/binance --symbol B
 - 主策略已达到可进入 `paper-live` 的历史与鲁棒性门槛
 - 当前尚未证明收益层面稳定优于 `paulwei_baseline`
 - liquidation 已完成研究型接入，但尚未完成有效性验证
+- Deribit observation layer 已有独立采集/状态入口，但研究样本仍未达到长期 ready
+- Hyperliquid 免费数据是 liquidation-compatible proxy，不是 venue-native liquidation truth
 
 不允许的表述：
 
@@ -242,6 +312,19 @@ uv run zenquant-live-export --dsn "$ZENQUANT_PG_DSN" --symbol BTCUSDT_PERP --lab
 ```
 
 正式 review 完成后，记录一条 scorecard review：
+
+---
+
+## 5. 研究状态唯一事实源
+
+- 数据完成度：
+  - [`results/data_readiness/data_readiness.json`](/Users/disaster/workspace/code/zenQuant/results/data_readiness/data_readiness.json)
+  - [`results/data_readiness/data_readiness.md`](/Users/disaster/workspace/code/zenQuant/results/data_readiness/data_readiness.md)
+- 长周期搜索状态：
+  - [`results/framework_optimization/campaign_status.json`](/Users/disaster/workspace/code/zenQuant/results/framework_optimization/campaign_status.json)
+- 仅在 campaign 完成后才读取最终报告：
+  - [`results/framework_optimization/framework_optimization.json`](/Users/disaster/workspace/code/zenQuant/results/framework_optimization/framework_optimization.json)
+  - [`results/framework_optimization/framework_optimization.md`](/Users/disaster/workspace/code/zenQuant/results/framework_optimization/framework_optimization.md)
 
 ```bash
 uv run zenquant-live-scorecard \

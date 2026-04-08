@@ -48,6 +48,23 @@ This repo is large enough that careless Claude CLI usage can waste a lot of toke
 
 `RL` is supported as a research-only parameter tuner. It may tune weights, risk thresholds, indicator windows, and execution speeds, but it must not rewrite strategy architecture, regime logic, or risk precedence.
 
+## Dataset Split Discipline
+
+ZenQuant now treats temporal split discipline as a hard anti-overfit contract, not a research preference.
+
+- `train`: `2020-01-01` to `2023-12-31`
+- `dev`: `2024-01-01` to `2025-12-31`
+- `test`: `2026-01-01` to latest available
+
+What each layer is allowed to do:
+
+- `train` learns parameters and produces candidates
+- `dev` ranks candidates, runs weak-window checks, and runs robustness selection
+- `test` is final historical acceptance only
+- `paper-live` starts only after `test` passes
+
+Reference: [`docs/DATASET_SPLIT_POLICY.md`](/Users/disaster/workspace/code/zenQuant/docs/DATASET_SPLIT_POLICY.md)
+
 ```bash
 # Supported RL tuner entrypoint
 uv run zenquant-rl-tune --episodes 200 --output results/rl_tuner.json
@@ -66,16 +83,16 @@ The current BTC strategy has passed the repo's handoff validation path for histo
 
 - Handoff spec: [`docs/LIVE_VALIDATION_HANDOFF_SPEC.md`](/Users/disaster/workspace/code/zenQuant/docs/LIVE_VALIDATION_HANDOFF_SPEC.md)
 - Latest execution record: [`docs/HISTORICAL_VALIDATION_2026_04_07.md`](/Users/disaster/workspace/code/zenQuant/docs/HISTORICAL_VALIDATION_2026_04_07.md)
-- Current historical conclusion: 2023-08 is no longer a known failure, walk-forward shows no obvious overfit warning, and historical adversarial replay passes `5/5` worst periods.
+- Current historical conclusion under the old mixed validation stack remains useful evidence, but final promotion now requires the stricter `train/dev/test` contract above.
 
 Minimal re-check commands:
 
 ```bash
 uv run pytest tests/test_variant_comparison.py tests/test_202308_bearish_grind.py tests/test_historical_pipeline.py -q --tb=short
 uv run pytest tests/test_golden_output.py tests/test_backtest_invariants.py tests/test_parity.py tests/test_execution_router.py tests/test_execution_sensitivity.py tests/test_scenario_risk.py -q --tb=short
-uv run python scripts/compare_variants.py --root data/raw/binance --symbol BTCUSDT --output-dir /tmp/zenquant-variant-compare
+uv run python scripts/compare_variants.py --root data/raw/binance --symbol BTCUSDT --split dev --output-dir /tmp/zenquant-variant-compare
 uv run python scripts/walk_forward_eval.py
-uv run python scripts/adversarial_stress.py --historical
+uv run python scripts/adversarial_stress.py --historical --split dev
 ```
 
 ---
@@ -422,7 +439,7 @@ Each plugin is one `.py` file with a `meta` descriptor and a `compute()` pure fu
 Configuration in `config/profiles/default.toml`. See `zenquant/plugins/protocols.py`
 for the interface contract.
 
-**Active Signal Plugins** (default profile):
+**Directional Signal Inventory** (default profile):
 
 | Signal | Weight | Source | Description |
 |--------|--------|--------|-------------|
@@ -430,8 +447,14 @@ for the interface contract.
 | `cvd_signal` | 0.25 | CVD slope | Cumulative volume delta direction |
 | `liquidity_signal` | 0.20 | Order book | OB imbalance mean-reversion |
 | `crowding_signal` | 0.10 | Funding × OI | Contrarian positioning |
-| `macro_regime_signal` | 0.12 | VIX/DXY/10Y | Cross-asset risk-on/off |
-| `options_vol_signal` | 0.15 | Deribit IV | Vol mean-reversion (disabled pending data) |
+| `options_vol_signal` | 0.15 | Deribit surface | IV/skew/term dislocation, auto-neutral without data |
+| `perp_carry_stress_signal` | 0.08 | Funding + basis + OI | Carry stress / leverage quality |
+| `vol_structure_signal` | 0.08 | Realized vol structure | Vol term structure / persistence |
+| `crash_reversal_signal` | 0.25 | Crash response | Extreme downside reversal |
+| `funding_alpha_signal` | 0.10 | Funding z-score | Funding reflexivity |
+| `macro_regime_signal` | 0.12 | VIX/DXY/10Y | Disabled by default |
+| `cross_asset_flow_signal` | 0.10 | Cross-asset beta | Disabled by default |
+| `vol_mean_reversion_signal` | 0.20 | Vol spike reversion | Disabled by default |
 
 ### Validation Infrastructure
 
