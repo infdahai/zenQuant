@@ -1,11 +1,11 @@
 import unittest
 from pathlib import Path
 
-from zenquant.domain import IndicatorCoverage, IndicatorPack, PlaybookSelection, TargetPosition, Timeframe
-from zenquant.infra import InMemoryJetStream
-from zenquant.plugins.profile import build_from_profile
-from zenquant.state import StateEngine
-from zenquant.strategy import ARCStrategyEngine
+from zenResearch.domain import IndicatorCoverage, IndicatorPack, PlaybookSelection, TargetPosition, Timeframe
+from zenResearch.infra import InMemoryJetStream
+from zenResearch.plugins.profile import build_from_profile
+from zenResearch.state import StateEngine
+from zenResearch.strategy import ARCStrategyEngine
 
 
 def _grind_pack(cutoff_time_ns: int, momentum_roc_z: float, cvd_slope: float, zen_pulse: float) -> IndicatorPack:
@@ -39,7 +39,7 @@ class August2023BearishGrindTests(unittest.TestCase):
         bus = InMemoryJetStream()
         _, registry = build_from_profile(
             Path("config/profiles/default.toml"),
-            plugin_root=Path("zenquant/plugins"),
+            plugin_root=Path("zenResearch/plugins"),
         )
         ARCStrategyEngine(bus, plugin_registry=registry)
         StateEngine(bus)

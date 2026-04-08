@@ -5,7 +5,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from zenquant.research.auto_research import (
+from zenResearch.research.auto_research import (
     Campaign,
     CampaignConfig,
     SearchSpace,
@@ -17,15 +17,15 @@ from zenquant.research.auto_research import (
     run_dev_validation_stage,
     run_search_stage,
 )
-from zenquant.research.experiment import ExperimentTracker, params_hash
-from zenquant.research.promoter import (
+from zenResearch.research.experiment import ExperimentTracker, params_hash
+from zenResearch.research.promoter import (
     BaselineMetrics,
     CandidateMetrics,
     PromotionCriteria,
     PromotionGate,
     RobustnessResult,
 )
-from zenquant.research.splits import default_btc_split_spec
+from zenResearch.research.splits import default_btc_split_spec
 
 
 class TestParamsHash(unittest.TestCase):
@@ -296,8 +296,8 @@ class TestSearchSpace(unittest.TestCase):
             }
 
         with (
-            patch("zenquant.research.auto_research._run_backtest_worker", fake_worker),
-            patch("zenquant.research.auto_research._max_workers", return_value=1),
+            patch("zenResearch.research.auto_research._run_backtest_worker", fake_worker),
+            patch("zenResearch.research.auto_research._max_workers", return_value=1),
         ):
             sweep = run_search_stage(config)
 
@@ -347,8 +347,8 @@ class TestSearchSpace(unittest.TestCase):
             }
 
         with (
-            patch("zenquant.research.auto_research._run_backtest_worker", fake_worker),
-            patch("zenquant.research.auto_research._max_workers", return_value=1),
+            patch("zenResearch.research.auto_research._run_backtest_worker", fake_worker),
+            patch("zenResearch.research.auto_research._max_workers", return_value=1),
         ):
             validations = run_dev_validation_stage(config, candidates)
 
@@ -398,8 +398,8 @@ class TestSearchSpace(unittest.TestCase):
             }
 
         with (
-            patch("zenquant.research.auto_research._run_backtest_worker", fake_worker),
-            patch("zenquant.research.auto_research._max_workers", return_value=1),
+            patch("zenResearch.research.auto_research._run_backtest_worker", fake_worker),
+            patch("zenResearch.research.auto_research._max_workers", return_value=1),
         ):
             robustness = run_dev_robustness_stage(config, validations)
 
@@ -442,7 +442,7 @@ class TestSearchSpace(unittest.TestCase):
                 "fee_drag_pct": 0.02,
             }
 
-        with patch("zenquant.research.auto_research._run_backtest_worker", fake_worker):
+        with patch("zenResearch.research.auto_research._run_backtest_worker", fake_worker):
             campaign = Campaign(config)
             campaign._workers = 1
             report = campaign.run()
