@@ -227,8 +227,21 @@ def main() -> None:
         stage1_path = checkpoint_dir / "stage1_search.json"
         stage1_payload = _read_json(stage1_path) if args.resume else None
         if stage1_payload is None:
-            _update_status(status_path, phase="stage1_search", status="running")
+            _update_status(status_path, phase="stage1_optuna", status="running")
             optuna_params, optuna_trials_payload = run_optuna_search(evaluator, n_trials=optuna_trials)
+            _update_status(
+                status_path,
+                phase="stage1_rl",
+                status="running",
+                optuna_trials_completed=len(optuna_trials_payload),
+                candidate_sources=["auto_research_train_only"],
+                train_only_search=True,
+                dev_only_ranking=True,
+                liquidation_in_search=evaluator.readiness["promotion_ready"],
+                liquidation_blocked_by=None if evaluator.readiness["promotion_ready"] else "not_promotion_ready",
+                search_space_profile=evaluator.search_space_profile,
+                resume_supported=True,
+            )
             rl_result = train_tuner(
                 total_timesteps=rl_episodes,
                 verbose=0,
