@@ -211,7 +211,11 @@ class ParamTunerEnv(gym.Env):
             pnl = result.metrics.net_pnl
             max_dd = result.metrics.max_drawdown
             trades = result.metrics.trade_count
-            candidate_score = sharpe - max(0.0, max_dd - 0.18) * 8.0 - (1.0 if trades < 20 else 0.0)
+            candidate_score = (
+                sharpe
+                - max(0.0, max_dd - 0.10) * 12.0
+                - (1.0 if trades < 20 else 0.0)
+            )
             return TunerResult(
                 params=params,
                 sharpe=sharpe,

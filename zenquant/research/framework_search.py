@@ -425,16 +425,16 @@ def _candidate_score(
         0.34 * avg_test_sharpe
         + 0.22 * worst_test_sharpe
         + 0.18 * avg_oos_ratio
-        + 0.08 * overall_sharpe
-        + 0.05 * weak_window_sharpe
-        + 0.02 * (overall_pnl / 1_000_000.0)
-        - 5.0 * max(0.0, overall_drawdown - 0.16)
+        + 0.05 * overall_sharpe
+        + 0.04 * weak_window_sharpe
+        + 0.01 * (overall_pnl / 1_000_000.0)
+        - 8.0 * max(0.0, overall_drawdown - 0.10)
         - 1.25 * negative_worst_windows
     )
     if baseline is not None:
-        score -= 8.0 * max(0.0, overall_drawdown - (baseline.dev_drawdown + 0.03))
-        score -= 2.0 * max(0.0, baseline.worst_dev_sharpe - worst_test_sharpe)
-        score -= 1.5 * max(0, negative_worst_windows - baseline.negative_dev_worst_windows)
+        score -= 12.0 * max(0.0, overall_drawdown - (baseline.dev_drawdown + 0.02))
+        score -= 3.0 * max(0.0, baseline.worst_dev_sharpe - worst_test_sharpe)
+        score -= 2.0 * max(0, negative_worst_windows - baseline.negative_dev_worst_windows)
     return score
 
 
