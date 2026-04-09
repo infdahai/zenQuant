@@ -19,12 +19,6 @@ from zenquant.risk import RiskOverlayConfig
 from zenquant.strategy import ARCStrategyConfig
 
 PARAM_GRID = {
-    "w_momentum": [0.20, 0.30, 0.45, 0.60],
-    "w_crash": [0.15, 0.25, 0.35],
-    "w_cvd": [0.15, 0.25, 0.35],
-    "w_funding": [0.05, 0.10, 0.15],
-    "w_crowding": [0.05, 0.10, 0.15],
-    "w_liquidity": [0.10, 0.20, 0.30],
     "dd_step_1_long": [0.10, 0.15, 0.20],
     "dd_step_1_short": [0.05, 0.08, 0.12],
     "max_leverage": [4.0, 6.0, 8.0],
@@ -32,15 +26,18 @@ PARAM_GRID = {
     "vpin_threshold": [0.08, 0.10, 0.12],
     "crowding_threshold": [1.8, 2.2, 2.5],
     "vol_shock_threshold": [0.80, 0.95, 1.10],
+    "pyramid_initial_pct": [0.20, 0.25, 0.30],
+    "pyramid_add_pct": [0.10, 0.20, 0.30],
+    "pyramid_short_initial_pct": [0.10, 0.15, 0.20],
+    "pyramid_short_add_pct": [0.08, 0.12, 0.16],
+    "pyramid_spacing_atr": [0.50, 0.75, 1.00],
+    "dca_max_adverse_atr": [2.5, 3.0, 3.5],
+    "dca_spacing_atr": [0.75, 1.25, 1.75],
+    "dca_size_decay": [0.60, 0.75, 0.90],
+    "exit_unwind_pct": [0.20, 0.25, 0.30],
+    "flip_min_confidence": [0.55, 0.65, 0.75],
     "trailing_stop_atr_mult": [2.0, 2.5, 3.0],
     "bias_max_age_bars": [6, 8, 12],
-    "vol_window": [15, 20, 30],
-    "cvd_window": [6, 8, 12],
-    "roc_lookback": [8, 12, 18],
-    "pyramid_initial_pct": [0.20, 0.30, 0.40],
-    "pyramid_add_pct": [0.15, 0.30, 0.45],
-    "dca_max_adverse_atr": [2.0, 3.0, 4.0],
-    "exit_unwind_pct": [0.20, 0.30, 0.40],
 }
 
 @dataclass(slots=True, frozen=True)
@@ -106,8 +103,14 @@ def build_execution_config(params: dict[str, float]) -> ExecutionKernelConfig:
         gradual_exit_enabled=True,
         pyramid_initial_pct=params.get("pyramid_initial_pct", 0.30),
         pyramid_add_pct=params.get("pyramid_add_pct", 0.30),
+        pyramid_short_initial_pct=params.get("pyramid_short_initial_pct", 0.20),
+        pyramid_short_add_pct=params.get("pyramid_short_add_pct", 0.20),
+        pyramid_spacing_atr=params.get("pyramid_spacing_atr", 0.50),
         dca_max_adverse_atr=params.get("dca_max_adverse_atr", 3.0),
+        dca_spacing_atr=params.get("dca_spacing_atr", 0.75),
+        dca_size_decay=params.get("dca_size_decay", 0.75),
         exit_unwind_pct=params.get("exit_unwind_pct", 0.30),
+        flip_min_confidence=params.get("flip_min_confidence", 0.50),
     )
 
 

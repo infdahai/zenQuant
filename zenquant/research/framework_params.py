@@ -60,14 +60,6 @@ def build_replay_toggles(params: dict[str, Any]) -> tuple[bool, bool]:
 
 def core_param_grid(*, include_liquidation_toggles: bool = False) -> dict[str, list[float]]:
     grid: dict[str, list[float]] = {
-        "w_momentum": [0.35, 0.45, 0.55],
-        "w_crash": [0.20, 0.25, 0.30],
-        "w_cvd": [0.20, 0.25, 0.30],
-        "w_funding": [0.08, 0.10, 0.12],
-        "w_crowding": [0.08, 0.10, 0.12],
-        "w_liquidity": [0.15, 0.20, 0.25],
-        "w_perp_carry": [0.04, 0.08],
-        "w_vol_structure": [0.04, 0.08],
         "dd_step_1_long": [0.12, 0.15, 0.18],
         "dd_step_1_short": [0.06, 0.08, 0.10],
         "vpin_threshold": [0.08, 0.10],
@@ -76,11 +68,14 @@ def core_param_grid(*, include_liquidation_toggles: bool = False) -> dict[str, l
         "max_leverage": [3.5, 4.5, 6.0],
         "pyramid_initial_pct": [0.20, 0.25, 0.30],
         "pyramid_add_pct": [0.10, 0.20, 0.30],
+        "pyramid_short_initial_pct": [0.10, 0.15, 0.20],
+        "pyramid_short_add_pct": [0.08, 0.12, 0.16],
+        "pyramid_spacing_atr": [0.50, 0.75, 1.00],
         "exit_unwind_pct": [0.25, 0.30, 0.35],
-        "dca_max_adverse_atr": [2.0, 2.5, 3.0],
-        "vol_window": [15, 20],
-        "cvd_window": [6, 8],
-        "roc_lookback": [8, 12],
+        "dca_max_adverse_atr": [2.5, 3.0, 3.5],
+        "dca_spacing_atr": [0.75, 1.25, 1.75],
+        "dca_size_decay": [0.60, 0.75, 0.90],
+        "flip_min_confidence": [0.55, 0.65, 0.75],
     }
     if include_liquidation_toggles:
         grid.update(
@@ -97,7 +92,11 @@ def core_param_grid(*, include_liquidation_toggles: bool = False) -> dict[str, l
 
 def search_space_profile(*, include_liquidation_toggles: bool = False) -> dict[str, Any]:
     return {
-        "profile": "reduced_core_v3_conservative" if not include_liquidation_toggles else "reduced_core_v3_conservative_liquidation",
+        "profile": (
+            "execution_first_v1"
+            if not include_liquidation_toggles
+            else "execution_first_v1_liquidation"
+        ),
         "include_liquidation_toggles": include_liquidation_toggles,
         "param_count": len(core_param_grid(include_liquidation_toggles=include_liquidation_toggles)),
     }
