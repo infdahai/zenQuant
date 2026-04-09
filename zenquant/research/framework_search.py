@@ -67,6 +67,7 @@ class SearchReport:
     deribit_status: dict[str, Any]
     split_contract: dict[str, Any]
     training_window_coverage: dict[str, Any]
+    training_input_contract: dict[str, Any]
     search_status: dict[str, Any]
     current: CandidateSummary
     paulwei_baseline: CandidateSummary
@@ -126,6 +127,30 @@ class FrameworkEvaluator:
             "dev_walk_forward_windows": [window.label for window in self._full_dev_wf_windows],
             "test_windows": [window.label for window in self._test_windows],
         }
+        kline_root = base_config.root_dir / "klines" / base_config.symbol
+        self._training_input_contract = {
+            "primary_truth_source": "binance",
+            "execution_framework": {
+                "primary_timeframe": "4h",
+                "entry_optimization_timeframe": "1h",
+                "five_min_feature_aggregation_enabled": (kline_root / "5m" / "data.parquet").exists(),
+                "one_hour_bars_available": (kline_root / "1h" / "data.parquet").exists(),
+                "four_hour_bars_available": (kline_root / "4h" / "data.parquet").exists(),
+                "five_min_direct_execution_enabled": False,
+            },
+            "state_feature_sources": {
+                "deribit_in_state_features": bool(
+                    self._deribit_status["enabled"] and self._deribit_status["snapshot_count_7d"] > 0
+                ),
+                "hyperliquid_in_state_features": bool(self._readiness["data_ready"]),
+                "liquidation_in_search": bool(self._readiness["promotion_ready"]),
+            },
+            "signal_stack_contract": {
+                "direction_state_execution_split_enabled": True,
+                "state_signals_do_not_vote_direction": True,
+                "execution_modifiers_do_not_flip_direction": True,
+            },
+        }
         self._search_param_grid = core_param_grid(include_liquidation_toggles=self._readiness["promotion_ready"])
         self._search_space_profile = search_space_profile(include_liquidation_toggles=self._readiness["promotion_ready"])
         self._paulwei_fast: CandidateSummary | None = None
@@ -142,6 +167,10 @@ class FrameworkEvaluator:
     @property
     def search_space_profile(self) -> dict[str, Any]:
         return dict(self._search_space_profile)
+
+    @property
+    def training_input_contract(self) -> dict[str, Any]:
+        return dict(self._training_input_contract)
 
     def candidate_variant(self, params: dict[str, Any], *, name: str, label: str) -> VariantSpec:
         risk_config = build_risk_config(params)
@@ -247,6 +276,7 @@ class FrameworkEvaluator:
             deribit_status=dict(self._deribit_status),
             split_contract=split_summary_json(self._split_spec),
             training_window_coverage=dict(self._training_window_coverage),
+            training_input_contract=dict(self._training_input_contract),
             search_status=dict(search_status or {}),
             current=summaries["current"],
             paulwei_baseline=summaries["paulwei_baseline"],
@@ -566,6 +596,13 @@ def build_markdown_report(report: SearchReport) -> str:
         f"- deribit_research_ready: `{report.deribit_status['research_ready']}`",
         f"- split_contract_version: `{report.split_contract['version']}`",
         "",
+        "## Training Inputs",
+        "",
+        f"- primary_truth_source: `{report.training_input_contract.get('primary_truth_source')}`",
+        f"- execution_framework: `{report.training_input_contract.get('execution_framework')}`",
+        f"- state_feature_sources: `{report.training_input_contract.get('state_feature_sources')}`",
+        f"- signal_stack_contract: `{report.training_input_contract.get('signal_stack_contract')}`",
+        "",
         "## Search Status",
         "",
         f"- optuna_available: `{report.search_status.get('optuna_available')}`",
@@ -631,6 +668,7 @@ def write_search_report(path: Path, report: SearchReport) -> None:
         "deribit_status": payload["deribit_status"],
         "liquidation_readiness": payload["readiness"],
         "training_window_coverage": payload["training_window_coverage"],
+        "training_input_contract": payload["training_input_contract"],
         "split_contract": payload["split_contract"],
     }
     payload["signal_combination_audit"] = report.signal_audit_summary

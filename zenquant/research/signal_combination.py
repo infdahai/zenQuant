@@ -11,6 +11,7 @@ from typing import Any
 from zenquant.domain import Timeframe
 from zenquant.historical import HistoricalBacktest, HistoricalBacktestConfig
 from zenquant.plugins.profile import build_from_profile
+from zenquant.plugins.signal_roles import infer_signal_role
 from zenquant.state.engine import StateEngine
 
 
@@ -31,6 +32,10 @@ class SignalAuditEntry:
     correlation_penalty_multiplier: float
     normalized_final_research_weight: float
     recommended_weight_adjustment: str
+    allowed_in_direction_search: bool
+    allowed_in_state_layer: bool
+    allowed_in_execution_layer: bool
+    search_bound_policy: str
 
 
 @dataclass(slots=True, frozen=True)
@@ -52,26 +57,6 @@ class _NullBus:
 
     def publish(self, *_args: Any, **_kwargs: Any) -> None:
         return None
-
-
-_ROLE_MAP = {
-    "multi_momentum_signal": "direction",
-    "crash_reversal_signal": "direction",
-    "cvd_signal": "direction",
-    "funding_alpha_signal": "direction",
-    "crowding_signal": "direction",
-    "liquidity_signal": "execution_modifier",
-    "options_vol_signal": "state",
-    "perp_carry_stress_signal": "state",
-    "vol_structure_signal": "state",
-    "macro_regime_signal": "state",
-    "cross_asset_flow_signal": "state",
-    "vol_mean_reversion_signal": "direction",
-}
-
-
-def infer_signal_role(name: str) -> str:
-    return _ROLE_MAP.get(name, "direction")
 
 
 def _pearson_corr(x: list[float], y: list[float]) -> float:
@@ -246,6 +231,20 @@ def build_signal_combination_audit(
                 correlation_penalty_multiplier=round(corr_penalty, 4),
                 normalized_final_research_weight=0.0,
                 recommended_weight_adjustment=action,
+                allowed_in_direction_search=role == "direction" and action != "disable",
+                allowed_in_state_layer=role == "state",
+                allowed_in_execution_layer=role == "execution_modifier",
+                search_bound_policy=(
+                    "frozen"
+                    if action == "disable"
+                    else "narrow"
+                    if role == "direction" and action == "downweight"
+                    else "fixed_state"
+                    if role == "state"
+                    else "fixed_execution"
+                    if role == "execution_modifier"
+                    else "default"
+                ),
             )
         )
 
@@ -327,6 +326,10 @@ def build_markdown_audit(audit: SignalCombinationAudit) -> str:
                 f"- avg_abs_correlation: `{entry.avg_abs_correlation}`",
                 f"- final_research_weight: `{entry.normalized_final_research_weight}`",
                 f"- recommended_weight_adjustment: `{entry.recommended_weight_adjustment}`",
+                f"- allowed_in_direction_search: `{entry.allowed_in_direction_search}`",
+                f"- allowed_in_state_layer: `{entry.allowed_in_state_layer}`",
+                f"- allowed_in_execution_layer: `{entry.allowed_in_execution_layer}`",
+                f"- search_bound_policy: `{entry.search_bound_policy}`",
                 f"- redundant_with: `{entry.redundant_with}`",
                 "",
             ]

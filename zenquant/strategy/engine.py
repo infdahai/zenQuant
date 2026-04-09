@@ -117,6 +117,7 @@ class ARCStrategyEngine:
         self._forward_returns: deque[float] = deque(maxlen=120)
         self._last_close: dict[str, float] = {}
         self._adaptive_weights: dict[str, float] = {}
+        self._plugin_signal_context: dict[tuple[str, Timeframe], dict[str, Any]] = {}
 
         # Phase 2: multi-timeframe coordination
         self._directional_bias: dict[str, DirectionalBias] = {}  # symbol -> 1d bias
@@ -778,6 +779,11 @@ class ARCStrategyEngine:
             ind_dict,
             state_dict,
         )
+        self._plugin_signal_context[(pack.symbol, pack.timeframe)] = {
+            "state_confidence_haircut": composed.state_confidence_haircut,
+            "execution_bias": composed.execution_bias,
+            "role_contributions": composed.role_contributions,
+        }
         reason_codes = list(composed.reason_codes)
 
         # Track each signal's contribution for rolling IC
@@ -785,11 +791,16 @@ class ARCStrategyEngine:
             self._signal_values[sig_name].append(contrib)
 
         # Discretize to {-1, 0, 1} based on direction threshold
+        effective_direction = composed.direction * composed.state_confidence_haircut
         direction = 0.0
-        if composed.direction > DIRECTION_THRESHOLD:
+        if effective_direction > DIRECTION_THRESHOLD:
             direction = 1.0
-        elif composed.direction < -DIRECTION_THRESHOLD:
+        elif effective_direction < -DIRECTION_THRESHOLD:
             direction = -1.0
+        if composed.state_confidence_haircut < 0.9999:
+            reason_codes.append("STATE_CONFIDENCE_HAIRCUT")
+        if abs(composed.execution_bias) > 1e-6:
+            reason_codes.append("EXECUTION_MODIFIER_ACTIVE")
 
         # Apply 1D bias with quality/staleness checks (same as legacy path)
         if pack.timeframe == self._config.execution_timeframe:
@@ -843,7 +854,8 @@ class ARCStrategyEngine:
             state_dict = self._state_dict(state, playbook)
 
         composed = compose_sizers(self._plugins.sizers, ind_dict, state_dict)
-        leverage = min(playbook.max_leverage, composed.factor)
+        execution_bias = float(state_dict.get("execution_bias", 0.0) or 0.0)
+        leverage = min(playbook.max_leverage, composed.factor * max(0.75, 1.0 + execution_bias))
         return leverage, list(composed.reason_codes)
 
     def _plugin_exit(
@@ -927,6 +939,7 @@ class ARCStrategyEngine:
         # Compute position unrealized PnL for sizers (PaulWei pyramid pattern)
         pos_key = (state.symbol, state.timeframe)
         pos = self._positions.get(pos_key)
+        plugin_ctx = self._plugin_signal_context.get((state.symbol, state.timeframe), {})
         position_unrealized_pnl = 0.0
         if pos is not None and abs(pos.current_qty) > 0:
             price = self._latest_packs.get(pos_key)
@@ -955,6 +968,9 @@ class ARCStrategyEngine:
             "timeframe": state.timeframe.value,
             "equity": self._equity,
             "position_unrealized_pnl": position_unrealized_pnl,
+            "state_confidence_haircut": float(plugin_ctx.get("state_confidence_haircut", 1.0)),
+            "execution_bias": float(plugin_ctx.get("execution_bias", 0.0)),
+            "signal_role_contributions": dict(plugin_ctx.get("role_contributions", {})),
         }
 
     @staticmethod

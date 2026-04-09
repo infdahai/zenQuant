@@ -241,6 +241,9 @@ def main() -> None:
                 liquidation_in_search=evaluator.readiness["promotion_ready"],
                 liquidation_blocked_by=None if evaluator.readiness["promotion_ready"] else "not_promotion_ready",
                 search_space_profile=evaluator.search_space_profile,
+                five_min_feature_aggregation_enabled=evaluator.training_input_contract["execution_framework"]["five_min_feature_aggregation_enabled"],
+                hyperliquid_in_state_features=evaluator.training_input_contract["state_feature_sources"]["hyperliquid_in_state_features"],
+                deribit_in_state_features=evaluator.training_input_contract["state_feature_sources"]["deribit_in_state_features"],
                 resume_supported=True,
             )
             rl_result = train_tuner(
@@ -269,6 +272,9 @@ def main() -> None:
                     "liquidation_in_search": evaluator.readiness["promotion_ready"],
                     "liquidation_blocked_by": None if evaluator.readiness["promotion_ready"] else "not_promotion_ready",
                     "search_space_profile": evaluator.search_space_profile,
+                    "five_min_feature_aggregation_enabled": evaluator.training_input_contract["execution_framework"]["five_min_feature_aggregation_enabled"],
+                    "hyperliquid_in_state_features": evaluator.training_input_contract["state_feature_sources"]["hyperliquid_in_state_features"],
+                    "deribit_in_state_features": evaluator.training_input_contract["state_feature_sources"]["deribit_in_state_features"],
                     "split_contract_version": split_spec.version,
                     "candidate_sources": [
                         "auto_research_train_only",
@@ -289,6 +295,11 @@ def main() -> None:
             liquidation_in_search=stage1_payload["search_status"].get("liquidation_in_search"),
             liquidation_blocked_by=stage1_payload["search_status"].get("liquidation_blocked_by"),
             search_space_profile=stage1_payload["search_status"].get("search_space_profile"),
+            five_min_feature_aggregation_enabled=stage1_payload["search_status"].get(
+                "five_min_feature_aggregation_enabled"
+            ),
+            hyperliquid_in_state_features=stage1_payload["search_status"].get("hyperliquid_in_state_features"),
+            deribit_in_state_features=stage1_payload["search_status"].get("deribit_in_state_features"),
             candidate_sources=stage1_payload["search_status"].get("candidate_sources"),
             train_only_search=stage1_payload["search_status"].get("train_only_search"),
             dev_only_ranking=stage1_payload["search_status"].get("dev_only_ranking"),

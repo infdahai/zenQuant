@@ -280,6 +280,12 @@ class SearchReportSerializationTests(unittest.TestCase):
             deribit_status={"enabled": True, "observation_ready": False, "research_ready": False},
             split_contract=split_summary_json(default_btc_split_spec()),
             training_window_coverage={"fast_windows": ["overall_recent"]},
+            training_input_contract={
+                "primary_truth_source": "binance",
+                "execution_framework": {"five_min_feature_aggregation_enabled": True},
+                "state_feature_sources": {"deribit_in_state_features": True, "hyperliquid_in_state_features": True},
+                "signal_stack_contract": {"direction_state_execution_split_enabled": True},
+            },
             search_status={
                 "optuna_available": False,
                 "optuna_trials_requested": 2,
@@ -310,6 +316,8 @@ class SearchReportSerializationTests(unittest.TestCase):
         self.assertIn("final_verdict", payload)
         self.assertIn("search_status", payload)
         self.assertIn("signal_combination_audit", payload)
+        self.assertIn("training_input_contract", payload)
+        self.assertTrue(payload["training_input_contract"]["signal_stack_contract"]["direction_state_execution_split_enabled"])
         self.assertEqual(payload["final_verdict"]["best_variant"], "current")
         self.assertIn("promotion_failure_reason", payload["final_verdict"])
         self.assertIn("search_space_profile", payload["final_verdict"])

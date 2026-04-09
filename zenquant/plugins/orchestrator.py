@@ -28,6 +28,9 @@ class ComposedSignal:
     direction: float  # -1.0 to +1.0
     confidence: float  # 0.0 to 1.0
     contributions: dict[str, float] = field(default_factory=dict)
+    role_contributions: dict[str, dict[str, float]] = field(default_factory=dict)
+    state_confidence_haircut: float = 1.0
+    execution_bias: float = 0.0
     reason_codes: list[str] = field(default_factory=list)
 
 
@@ -64,16 +67,27 @@ def compose_signals(
     if not plugins:
         return ComposedSignal(direction=0.0, confidence=0.0)
 
-    total_weight = sum(weights.get(p.meta.name, 1.0) for p in plugins)
+    direction_plugins = [plugin for plugin in plugins if getattr(plugin, "role", "direction") == "direction"]
+    state_plugins = [plugin for plugin in plugins if getattr(plugin, "role", "direction") == "state"]
+    execution_plugins = [
+        plugin for plugin in plugins if getattr(plugin, "role", "direction") == "execution_modifier"
+    ]
+
+    total_weight = sum(weights.get(p.meta.name, 1.0) for p in direction_plugins)
     if total_weight <= 0:
         return ComposedSignal(direction=0.0, confidence=0.0)
 
     weighted_dir = 0.0
     weighted_conf = 0.0
     contributions: dict[str, float] = {}
+    role_contributions: dict[str, dict[str, float]] = {
+        "direction": {},
+        "state": {},
+        "execution_modifier": {},
+    }
     reason_codes: list[str] = []
 
-    for plugin in plugins:
+    for plugin in direction_plugins:
         w = weights.get(plugin.meta.name, 1.0)
         norm_w = w / total_weight
         result: SignalResult = plugin.compute(indicators, state, plugin.config)
@@ -81,13 +95,42 @@ def compose_signals(
         weighted_dir += contribution
         weighted_conf += result.confidence * norm_w
         contributions[plugin.meta.name] = round(contribution, 6)
+        role_contributions["direction"][plugin.meta.name] = round(contribution, 6)
         reason_codes.extend(f"{plugin.meta.name}:{c}" for c in result.reason_codes)
+
+    state_haircut = 1.0
+    if state_plugins:
+        state_values: list[float] = []
+        for plugin in state_plugins:
+            result = plugin.compute(indicators, state, plugin.config)
+            contribution = result.value * result.confidence
+            role_contributions["state"][plugin.meta.name] = round(contribution, 6)
+            state_values.append(contribution)
+            reason_codes.extend(f"{plugin.meta.name}:{c}" for c in result.reason_codes)
+        if state_values:
+            bearish_stress = max(0.0, -sum(state_values) / max(1, len(state_values)))
+            state_haircut = max(0.55, min(1.0, 1.0 - 0.35 * bearish_stress))
+
+    execution_bias = 0.0
+    if execution_plugins:
+        execution_values: list[float] = []
+        for plugin in execution_plugins:
+            result = plugin.compute(indicators, state, plugin.config)
+            contribution = result.value * result.confidence
+            role_contributions["execution_modifier"][plugin.meta.name] = round(contribution, 6)
+            execution_values.append(contribution)
+            reason_codes.extend(f"{plugin.meta.name}:{c}" for c in result.reason_codes)
+        if execution_values:
+            execution_bias = max(-0.35, min(0.35, sum(execution_values) / len(execution_values)))
 
     direction = max(-1.0, min(1.0, weighted_dir))
     return ComposedSignal(
         direction=round(direction, 6),
         confidence=round(weighted_conf, 4),
         contributions=contributions,
+        role_contributions=role_contributions,
+        state_confidence_haircut=round(state_haircut, 4),
+        execution_bias=round(execution_bias, 4),
         reason_codes=reason_codes,
     )
 

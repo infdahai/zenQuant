@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Any
 
 from zenquant.plugins.protocols import PluginMeta
+from zenquant.plugins.signal_roles import infer_signal_role
 
 PLUGIN_TYPES = ("signal", "filter", "sizer", "exit")
 PLUGIN_DIR_MAP = {
@@ -36,6 +37,7 @@ class LoadedPlugin:
     config: dict[str, Any]
     weight: float  # signal weight or exit priority
     source_path: str
+    role: str = "direction"
 
 
 @dataclass(slots=True)
@@ -61,6 +63,12 @@ class PluginRegistry:
             "sizers": [p.meta.name for p in self.sizers],
             "exits": [p.meta.name for p in self.exits],
         }
+
+    def signal_role_groups(self) -> dict[str, list[str]]:
+        groups = {"direction": [], "state": [], "execution_modifier": []}
+        for plugin in self.signals:
+            groups.setdefault(plugin.role, []).append(plugin.meta.name)
+        return {role: sorted(names) for role, names in groups.items()}
 
     # Dynamic weight overrides (for RL tuner / runtime adjustment)
     weight_overrides: dict[str, float] = field(default_factory=dict)
@@ -196,4 +204,5 @@ def _load_one(
         config=config,
         weight=weight,
         source_path=str(plugin_path.resolve()),
+        role=infer_signal_role(plugin_name) if plugin_type == "signal" else "direction",
     )

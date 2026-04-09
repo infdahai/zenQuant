@@ -132,6 +132,36 @@ class TestComposeSignals(unittest.TestCase):
         self.assertIn("bull", result.contributions)
         self.assertIn("bear", result.contributions)
 
+    def test_state_and_execution_roles_do_not_enter_direction_vote(self):
+        direction = _signal_plugin("multi_momentum_signal", value=1.0, confidence=0.8)
+        state = LoadedPlugin(
+            meta=PluginMeta(name="options_vol_signal", version="1.0", plugin_type="signal", description="state"),
+            compute=lambda ind, st, cfg: SignalResult(value=-0.6, confidence=0.9, reason_codes=("STATE",)),
+            config={},
+            weight=1.0,
+            source_path="<test>/options.py",
+            role="state",
+        )
+        execution = LoadedPlugin(
+            meta=PluginMeta(name="liquidity_signal", version="1.0", plugin_type="signal", description="exec"),
+            compute=lambda ind, st, cfg: SignalResult(value=-0.4, confidence=0.5, reason_codes=("EXEC",)),
+            config={},
+            weight=1.0,
+            source_path="<test>/liq.py",
+            role="execution_modifier",
+        )
+        result = compose_signals(
+            [direction, state, execution],
+            {"multi_momentum_signal": 1.0, "options_vol_signal": 1.0, "liquidity_signal": 1.0},
+            {},
+            {},
+        )
+        self.assertAlmostEqual(result.direction, 0.8, places=4)
+        self.assertLess(result.state_confidence_haircut, 1.0)
+        self.assertLess(result.execution_bias, 0.0)
+        self.assertIn("options_vol_signal", result.role_contributions["state"])
+        self.assertIn("liquidity_signal", result.role_contributions["execution_modifier"])
+
     def test_direction_clamped(self):
         plugins = [
             _signal_plugin("a", value=1.0),
@@ -247,6 +277,31 @@ class TestPluginRegistry(unittest.TestCase):
         weights = registry.signal_weights
         self.assertAlmostEqual(weights["a"], 0.7)
         self.assertAlmostEqual(weights["b"], 0.3)
+
+    def test_signal_role_groups(self):
+        registry = PluginRegistry(
+            signals=[
+                LoadedPlugin(
+                    meta=PluginMeta(name="multi_momentum_signal", version="1.0", plugin_type="signal", description="a"),
+                    compute=lambda ind, st, cfg: SignalResult(value=0.0, confidence=0.0),
+                    config={},
+                    weight=0.5,
+                    source_path="<test>/a.py",
+                    role="direction",
+                ),
+                LoadedPlugin(
+                    meta=PluginMeta(name="options_vol_signal", version="1.0", plugin_type="signal", description="b"),
+                    compute=lambda ind, st, cfg: SignalResult(value=0.0, confidence=0.0),
+                    config={},
+                    weight=0.2,
+                    source_path="<test>/b.py",
+                    role="state",
+                ),
+            ]
+        )
+        groups = registry.signal_role_groups()
+        self.assertEqual(groups["direction"], ["multi_momentum_signal"])
+        self.assertEqual(groups["state"], ["options_vol_signal"])
 
 
 class TestLoadRegistry(unittest.TestCase):

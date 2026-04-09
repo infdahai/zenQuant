@@ -44,8 +44,12 @@ class SignalCombinationAuditTests(unittest.TestCase):
         self.assertTrue(any(pair["left"] == "cvd_signal" or pair["right"] == "cvd_signal" for pair in audit.redundant_pairs))
         options_entry = next(entry for entry in audit.signals if entry.name == "options_vol_signal")
         self.assertEqual(options_entry.recommended_weight_adjustment, "research_only")
+        self.assertFalse(options_entry.allowed_in_direction_search)
+        self.assertTrue(options_entry.allowed_in_state_layer)
         momentum_entry = next(entry for entry in audit.signals if entry.name == "multi_momentum_signal")
         self.assertNotEqual(momentum_entry.recommended_weight_adjustment, "disable")
+        self.assertTrue(momentum_entry.allowed_in_direction_search)
+        self.assertEqual(momentum_entry.search_bound_policy, "narrow")
 
     def test_markdown_audit_contains_summary(self) -> None:
         forward_returns = [0.01, -0.01, 0.02, -0.02, 0.01] * 20
