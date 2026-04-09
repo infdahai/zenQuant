@@ -427,20 +427,20 @@ def _candidate_score(
     negative_worst_windows: int,
     baseline: CandidateSummary | None,
 ) -> float:
+    capped_oos_ratio = max(-1.0, min(2.0, avg_oos_ratio))
     score = (
         0.34 * avg_test_sharpe
-        + 0.22 * worst_test_sharpe
-        + 0.18 * avg_oos_ratio
+        + 0.28 * worst_test_sharpe
+        + 0.08 * capped_oos_ratio
         + 0.05 * overall_sharpe
         + 0.04 * weak_window_sharpe
         + 0.01 * (overall_pnl / 1_000_000.0)
-        - 5.0 * max(0.0, overall_drawdown - 0.10)
-        - 18.0 * max(0.0, overall_drawdown - 0.15)
+        - 3.0 * max(0.0, overall_drawdown - 0.10)
         - 1.25 * negative_worst_windows
     )
     if baseline is not None:
-        score -= 8.0 * max(0.0, overall_drawdown - (baseline.dev_drawdown + 0.03))
-        score -= 3.0 * max(0.0, baseline.worst_dev_sharpe - worst_test_sharpe)
+        score -= 10.0 * max(0.0, overall_drawdown - (baseline.dev_drawdown + 0.03))
+        score -= 4.5 * max(0.0, baseline.worst_dev_sharpe - worst_test_sharpe)
         score -= 2.0 * max(0, negative_worst_windows - baseline.negative_dev_worst_windows)
     return score
 
@@ -464,11 +464,11 @@ def _promotion_diagnostics(
     gate_metrics = {
         "avg_test_sharpe": avg_test_sharpe >= baseline.avg_dev_sharpe,
         "worst_test_sharpe": worst_test_sharpe >= baseline.worst_dev_sharpe,
-        "overall_drawdown": overall_drawdown <= 0.15,
+        "overall_drawdown": overall_drawdown <= baseline.dev_drawdown + 0.03,
         "drawdown_preferred_band": overall_drawdown <= baseline.dev_drawdown + 0.03,
         "negative_worst_windows": negative_worst_windows <= baseline.negative_dev_worst_windows,
     }
-    for key in ("overall_drawdown", "worst_test_sharpe", "negative_worst_windows", "avg_test_sharpe"):
+    for key in ("worst_test_sharpe", "overall_drawdown", "negative_worst_windows", "avg_test_sharpe"):
         if not gate_metrics[key]:
             return gate_metrics, key
     return gate_metrics, None
@@ -645,7 +645,7 @@ def write_search_report(path: Path, report: SearchReport) -> None:
     if best_summary is not None:
         comparison_to_current = {
             "variant": best_summary.variant,
-            "drawdown_within_hard_cap": best_summary.dev_drawdown <= 0.15,
+            "drawdown_within_hard_cap": best_summary.dev_drawdown <= report.current.dev_drawdown + 0.03,
             "drawdown_within_preferred_band": best_summary.dev_drawdown <= report.current.dev_drawdown + 0.03,
             "worst_dev_sharpe_not_worse": best_summary.worst_dev_sharpe >= report.current.worst_dev_sharpe,
             "negative_worst_windows_not_worse": (
@@ -654,7 +654,7 @@ def write_search_report(path: Path, report: SearchReport) -> None:
         }
         comparison_to_paulwei = {
             "variant": best_summary.variant,
-            "drawdown_within_hard_cap": best_summary.dev_drawdown <= 0.15,
+            "drawdown_within_hard_cap": best_summary.dev_drawdown <= report.paulwei_baseline.dev_drawdown + 0.03,
             "drawdown_within_preferred_band": (
                 best_summary.dev_drawdown <= report.paulwei_baseline.dev_drawdown + 0.03
             ),

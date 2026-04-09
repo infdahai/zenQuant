@@ -213,6 +213,48 @@ class SearchReportSerializationTests(unittest.TestCase):
         )
         self.assertGreater(within_cap, above_cap)
 
+    def test_candidate_score_caps_extreme_avg_dev_ratio_influence(self) -> None:
+        baseline = CandidateSummary(
+            variant="baseline",
+            robust_score=1.0,
+            selection_split="dev",
+            dev_sharpe=1.0,
+            dev_pnl=100.0,
+            dev_drawdown=0.20,
+            avg_dev_sharpe=0.9,
+            avg_dev_ratio=0.9,
+            worst_dev_sharpe=-0.5,
+            weak_window_sharpe=0.1,
+            negative_dev_worst_windows=0,
+            promotion_candidate=True,
+            blocked_by=None,
+            failed_gate_metrics=None,
+            promotion_failure_reason=None,
+        )
+        normal_ratio = _candidate_score(
+            avg_test_sharpe=1.0,
+            worst_test_sharpe=-0.4,
+            avg_oos_ratio=1.2,
+            overall_sharpe=1.0,
+            overall_pnl=100_000.0,
+            weak_window_sharpe=0.2,
+            overall_drawdown=0.20,
+            negative_worst_windows=0,
+            baseline=baseline,
+        )
+        absurd_ratio = _candidate_score(
+            avg_test_sharpe=1.0,
+            worst_test_sharpe=-0.4,
+            avg_oos_ratio=20.0,
+            overall_sharpe=1.0,
+            overall_pnl=100_000.0,
+            weak_window_sharpe=0.2,
+            overall_drawdown=0.20,
+            negative_worst_windows=0,
+            baseline=baseline,
+        )
+        self.assertLess(abs(absurd_ratio - normal_ratio), 0.2)
+
     def test_write_search_report_emits_delivery_fields(self) -> None:
         summary = CandidateSummary(
             variant="current",

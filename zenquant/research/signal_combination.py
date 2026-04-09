@@ -220,6 +220,8 @@ def build_signal_combination_audit(
 
         if role != "direction":
             action = "research_only"
+        elif baseline_weight >= 0.30 and rank_ic_mean <= 0.0 and ic_mean <= 0.0:
+            action = "downweight"
         elif rank_ic_mean <= 0.0 and ic_mean <= 0.0:
             action = "disable"
         elif avg_abs_corr >= corr_threshold or corr_penalty < 0.75 or ic_multiplier < 0.75:
