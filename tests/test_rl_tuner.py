@@ -12,6 +12,21 @@ from zenquant.research.splits import default_btc_split_spec
 
 
 class RLTunerConfigTests(unittest.TestCase):
+    def test_signal_weight_builder_caps_redundant_funding_crowding_pair(self) -> None:
+        weights = rl_tuner.build_signal_weight_overrides(
+            {
+                "w_funding": 0.20,
+                "w_crowding": 0.20,
+            }
+        )
+
+        self.assertLessEqual(weights["funding_alpha_signal"], 0.12)
+        self.assertLessEqual(weights["crowding_signal"], 0.05)
+        self.assertLessEqual(
+            weights["funding_alpha_signal"] + weights["crowding_signal"],
+            0.14,
+        )
+
     def test_execution_builder_keeps_paulwei_philosophy_fixed(self) -> None:
         config = rl_tuner.build_execution_config(
             {

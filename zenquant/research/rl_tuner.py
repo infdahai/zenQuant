@@ -40,6 +40,10 @@ PARAM_GRID = {
     "bias_max_age_bars": [6, 8, 12],
 }
 
+_FUNDING_WEIGHT_CAP = 0.12
+_CROWDING_WEIGHT_CAP = 0.05
+_CORRELATED_PAIR_COMBINED_CAP = 0.14
+
 @dataclass(slots=True, frozen=True)
 class TunerResult:
     params: dict[str, float]
@@ -123,7 +127,7 @@ def build_indicator_config(params: dict[str, float]) -> IndicatorEngineConfig:
 
 
 def build_signal_weight_overrides(params: dict[str, float]) -> dict[str, float]:
-    return {
+    weights = {
         "multi_momentum_signal": params.get("w_momentum", 0.45),
         "crash_reversal_signal": params.get("w_crash", 0.25),
         "cvd_signal": params.get("w_cvd", 0.25),
@@ -131,6 +135,16 @@ def build_signal_weight_overrides(params: dict[str, float]) -> dict[str, float]:
         "crowding_signal": params.get("w_crowding", 0.10),
         "liquidity_signal": params.get("w_liquidity", 0.20),
     }
+    funding = min(float(weights["funding_alpha_signal"]), _FUNDING_WEIGHT_CAP)
+    crowding = min(float(weights["crowding_signal"]), _CROWDING_WEIGHT_CAP)
+    combined = funding + crowding
+    if combined > _CORRELATED_PAIR_COMBINED_CAP and combined > 1e-12:
+        scale = _CORRELATED_PAIR_COMBINED_CAP / combined
+        funding *= scale
+        crowding *= scale
+    weights["funding_alpha_signal"] = round(funding, 6)
+    weights["crowding_signal"] = round(crowding, 6)
+    return weights
 
 
 class ParamTunerEnv(gym.Env):

@@ -8,7 +8,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from zenquant.historical import HistoricalBacktestConfig
-from zenquant.research.framework_params import build_replay_toggles, core_param_grid
+from zenquant.research.framework_params import build_replay_toggles, core_param_grid, search_space_profile
 from zenquant.research.framework_search import (
     CandidateSummary,
     FrameworkEvaluator,
@@ -50,6 +50,12 @@ class FrameworkParamTests(unittest.TestCase):
         self.assertIn("pyramid_initial_pct", grid)
         self.assertIn("pyramid_spacing_atr", grid)
         self.assertNotIn("liquidation_data_enabled", grid)
+
+    def test_search_space_profile_marks_correlation_constraints(self) -> None:
+        profile = search_space_profile()
+        self.assertEqual(profile["profile"], "execution_first_v2_correlation_constrained")
+        self.assertTrue(profile["direction_weight_policy"]["correlation_constrained"])
+        self.assertEqual(profile["direction_weight_policy"]["frozen_or_capped_signal"], "crowding_signal")
 
 
 class FrameworkEvaluatorTests(unittest.TestCase):

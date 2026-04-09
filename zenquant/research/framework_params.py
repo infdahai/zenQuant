@@ -93,10 +93,17 @@ def core_param_grid(*, include_liquidation_toggles: bool = False) -> dict[str, l
 def search_space_profile(*, include_liquidation_toggles: bool = False) -> dict[str, Any]:
     return {
         "profile": (
-            "execution_first_v1"
+            "execution_first_v2_correlation_constrained"
             if not include_liquidation_toggles
-            else "execution_first_v1_liquidation"
+            else "execution_first_v2_correlation_constrained_liquidation"
         ),
         "include_liquidation_toggles": include_liquidation_toggles,
+        "direction_weight_policy": {
+            "correlation_constrained": True,
+            "primary_direction_signal": "multi_momentum_signal",
+            "narrow_direction_signals": ["crash_reversal_signal", "cvd_signal"],
+            "redundant_pair": ["funding_alpha_signal", "crowding_signal"],
+            "frozen_or_capped_signal": "crowding_signal",
+        },
         "param_count": len(core_param_grid(include_liquidation_toggles=include_liquidation_toggles)),
     }
