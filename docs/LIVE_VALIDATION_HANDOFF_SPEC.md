@@ -39,10 +39,15 @@
 - `liq_state_overlay` 与 `liq_risk_guard` 已接入，但当前保持 `research-gated`
 - Deribit 已切换为独立 collector + status 契约，状态以 `scripts/deribit_collector_status.py` 与 `data/raw/deribit_options/BTC/_collector_status.json` 为准
 - Hyperliquid 公共数据入口已存在，用于补充 liquidation proxy 历史与前瞻采集；当前默认视为研究数据，不直接改变 live contract
+- 数据源分层固定为：
+  - `Binance liquidation = Tier 1 primary truth`
+  - `Hyperliquid public proxy = Tier 2 supplemental`
+  - `merged_liquidations = research input / supplemental view`, 不是 venue-native primary truth
 - `results/data_readiness/data_readiness.json` 与 `results/framework_optimization/campaign_status.json` 是当前唯一研究状态事实源
 - `paper-live` 所需的运行、验证、导出入口均已存在
 - 旧调优结果若来自旧 split 制度或触碰过当前 `test`，必须标记为 `invalidated`，不得继续作为 tuned winner 使用
 - `scripts/run_framework_campaign.py` 是唯一权威 clean tuning 入口；`scripts/run_auto_research.py` 仅用于 internal/dev research
+- `results/data_source_review/hyperliquid_admission_review.json` 是 Hyperliquid 准入与角色判断的唯一研究产物
 
 ### 1.3 当前信号体系
 
@@ -142,6 +147,7 @@ uv run python scripts/backfill_hyperliquid_history.py --coin BTC --output data/r
 uv run python scripts/collect_hyperliquid_liquidations.py --coin BTC --output data/raw/hyperliquid/liquidations
 uv run python scripts/merge_liquidation_sources.py --symbol BTCUSDT --output data/raw/merged_liquidations --input data/raw/hyperliquid/liquidations
 uv run python scripts/data_readiness_status.py --binance-root data/raw/binance --symbol BTCUSDT --deribit-root data/raw/deribit_options --hyperliquid-root data/raw/hyperliquid/liquidations --merged-root data/raw/merged_liquidations --output-dir results/data_readiness
+uv run python scripts/review_hyperliquid_admission.py --symbol BTCUSDT --binance-root data/raw/binance --merged-root data/raw/merged_liquidations --hyperliquid-root data/raw/hyperliquid/liquidations --deribit-root data/raw/deribit_options --output-dir results/data_source_review
 uv run python scripts/run_framework_campaign.py --root data/raw/binance --symbol BTCUSDT --liquidation-dir data/raw/merged_liquidations/aggregated --output-dir results/framework_optimization --budget high
 ```
 
@@ -164,6 +170,13 @@ uv run python scripts/run_framework_campaign.py --root data/raw/binance --symbol
 - `data_readiness_status.py`：
   - 必须生成 `results/data_readiness/data_readiness.json` 和 `results/data_readiness/data_readiness.md`
   - 必须显式给出 Deribit / Binance liquidation / Hyperliquid / merged liquidation 的唯一状态
+- `review_hyperliquid_admission.py`：
+  - 必须生成 `results/data_source_review/hyperliquid_admission_review.json` 和 `results/data_source_review/hyperliquid_admission_review.md`
+  - 必须显式写明：
+    - `admit_as_secondary=true`
+    - `admit_as_primary=false`
+    - `collect_continue=true`
+    - `exclude_from_promote_truth=true`
 - `run_framework_campaign.py`：
   - 必须先生成 `results/framework_optimization/campaign_status.json`
   - 若长跑未完成，状态必须是 `running` 或 `blocked`
@@ -232,6 +245,7 @@ uv run python scripts/run_framework_campaign.py --root data/raw/binance --symbol
 - liquidation 已完成研究型接入，但尚未完成有效性验证
 - Deribit observation layer 已有独立采集/状态入口，但研究样本仍未达到长期 ready
 - Hyperliquid 免费数据是 liquidation-compatible proxy，不是 venue-native liquidation truth
+- Hyperliquid 应继续收集，但当前只作为 supplemental / research source，不替代 Binance 作为 primary truth
 
 不允许的表述：
 
