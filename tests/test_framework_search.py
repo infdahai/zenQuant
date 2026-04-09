@@ -261,6 +261,7 @@ class SearchReportSerializationTests(unittest.TestCase):
         self.assertIn("historical_leaderboard", payload)
         self.assertIn("final_verdict", payload)
         self.assertIn("search_status", payload)
+        self.assertIn("signal_combination_audit", payload)
         self.assertEqual(payload["final_verdict"]["best_variant"], "current")
         self.assertIn("promotion_failure_reason", payload["final_verdict"])
         self.assertIn("search_space_profile", payload["final_verdict"])

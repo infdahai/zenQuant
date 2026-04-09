@@ -79,6 +79,7 @@ class SearchReport:
     test_comparison_payload: dict[str, Any] | None = None
     test_evaluated: bool = False
     report_mode: str = "fast"
+    signal_audit_summary: dict[str, Any] | None = None
 
 
 class FrameworkEvaluator:
@@ -577,6 +578,19 @@ def build_markdown_report(report: SearchReport) -> str:
         f"- search_space_profile: `{report.search_status.get('search_space_profile')}`",
         "",
     ]
+    if report.signal_audit_summary:
+        lines.extend(
+            [
+                "## Signal Audit",
+                "",
+                f"- active_signal_count: `{report.signal_audit_summary.get('active_signal_count')}`",
+                f"- redundant_pair_count: `{report.signal_audit_summary.get('redundant_pair_count')}`",
+                f"- recommended_actions: `{report.signal_audit_summary.get('recommended_actions')}`",
+                f"- top_direction_weights: `{report.signal_audit_summary.get('top_direction_weights')}`",
+                f"- json_path: `{report.signal_audit_summary.get('json_path')}`",
+                "",
+            ]
+        )
     for item in [report.current, report.paulwei_baseline, report.optuna_best, report.rl_best]:
         if item is None:
             continue
@@ -619,6 +633,7 @@ def write_search_report(path: Path, report: SearchReport) -> None:
         "training_window_coverage": payload["training_window_coverage"],
         "split_contract": payload["split_contract"],
     }
+    payload["signal_combination_audit"] = report.signal_audit_summary
     payload["historical_leaderboard"] = [
         asdict(report.current),
         asdict(report.paulwei_baseline),

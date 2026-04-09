@@ -20,6 +20,7 @@ from zenquant.research.framework_search import (
     write_search_report,
 )
 from zenquant.research.rl_tuner import train_tuner
+from zenquant.research.signal_combination import generate_signal_combination_audit
 from zenquant.research.splits import default_btc_split_spec, split_summary_json
 
 
@@ -305,6 +306,12 @@ def main() -> None:
                 full=True,
                 evaluate_test=True,
             )
+            report.signal_audit_summary = generate_signal_combination_audit(
+                data_root=base_config.root_dir,
+                symbol=base_config.symbol,
+                output_dir=output_dir.parent / "signal_combination",
+                profile_path=base_config.profile_path or Path("config/profiles/default.toml"),
+            )
             final_json = output_dir / "framework_optimization.json"
             final_md = output_dir / "framework_optimization.md"
             write_search_report(final_json, report)
@@ -317,6 +324,7 @@ def main() -> None:
                 "test_evaluated": bool(getattr(report, "test_evaluated", False)),
                 "json_path": str(final_json),
                 "md_path": str(final_md),
+                "signal_audit_summary": report.signal_audit_summary,
             }
             _write_json(stage2_path, final_report_payload)
 
