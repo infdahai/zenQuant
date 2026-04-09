@@ -127,8 +127,8 @@ class FrameworkEvaluator:
         }
         self._search_param_grid = core_param_grid(include_liquidation_toggles=self._readiness["promotion_ready"])
         self._search_space_profile = search_space_profile(include_liquidation_toggles=self._readiness["promotion_ready"])
-        self._paulwei_fast = self._evaluate_variant(self._paulwei_variant, fast=True)
-        self._current_fast = self._evaluate_variant(self._current_variant, fast=True)
+        self._paulwei_fast: CandidateSummary | None = None
+        self._current_fast: CandidateSummary | None = None
 
     @property
     def readiness(self) -> dict[str, Any]:
@@ -286,8 +286,8 @@ class FrameworkEvaluator:
         negative_worst_windows = sum(1 for result in worst_results if result.metrics.sharpe < 0)
 
         baseline = None
-        if variant.name != "paulwei_baseline" and hasattr(self, "_paulwei_fast"):
-            baseline = self._paulwei_fast
+        if variant.name != "paulwei_baseline":
+            baseline = self._get_paulwei_fast_summary()
         score = _candidate_score(
             avg_test_sharpe=wf_metrics["avg_test_sharpe"],
             worst_test_sharpe=wf_metrics["worst_test_sharpe"],
@@ -379,6 +379,11 @@ class FrameworkEvaluator:
     def _variant_key(variant: VariantSpec) -> str:
         payload = json.dumps(asdict(variant), sort_keys=True, default=str)
         return sha1(payload.encode("utf-8")).hexdigest()
+
+    def _get_paulwei_fast_summary(self) -> CandidateSummary:
+        if self._paulwei_fast is None:
+            self._paulwei_fast = self._evaluate_variant(self._paulwei_variant, fast=True)
+        return self._paulwei_fast
 
 
 def _run_validation_bundle(
