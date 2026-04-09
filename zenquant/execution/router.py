@@ -37,6 +37,7 @@ class ExecutionKernelConfig:
     pyramid_add_pct: float = 0.30  # 30% per bar
     pyramid_short_initial_pct: float = 0.20  # 20% on first short entry
     pyramid_short_add_pct: float = 0.20  # 20% per profitable bar (short)
+    pyramid_spacing_atr: float = 0.50  # favorable move required between profitable adds
     pyramid_enabled: bool = True
     # Keep long-only DCA fixed in the default philosophy.
     dca_on_loss_long: bool = True
@@ -47,6 +48,10 @@ class ExecutionKernelConfig:
     pyramid_max_speed: float = 0.40  # ceiling: max % per bar (calm)
     dca_min_speed: float = 0.05  # DCA floor in extreme vol
     dca_max_speed: float = 0.20  # DCA ceiling
+    dca_spacing_atr: float = 0.75  # adverse move required between DCA tranches
+    dca_size_decay: float = 0.75  # later DCA tranches get smaller
+    max_long_inventory_tranches: int = 6
+    max_short_inventory_tranches: int = 4
     # Mirror entry slices on non-urgent exits.
     gradual_exit_enabled: bool = True
     exit_unwind_pct: float = 0.30  # reduce 30% of remaining per bar
@@ -60,6 +65,28 @@ class ExecutionKernelConfig:
     # Legacy gradual execution (kept for compatibility)
     entry_fraction: float = 1.0
     exit_fraction: float = 1.0
+
+    def __post_init__(self) -> None:
+        if self.pyramid_initial_pct > 0.45:
+            raise ValueError("pyramid_initial_pct above 0.45")
+        if self.pyramid_add_pct > 0.45:
+            raise ValueError("pyramid_add_pct above 0.45")
+        if self.pyramid_short_initial_pct > 0.35:
+            raise ValueError("pyramid_short_initial_pct above 0.35")
+        if self.pyramid_short_add_pct > 0.35:
+            raise ValueError("pyramid_short_add_pct above 0.35")
+        if not 0.0 < self.exit_unwind_pct <= 0.60:
+            raise ValueError("exit_unwind_pct must be within (0.0, 0.60]")
+        if self.pyramid_spacing_atr <= 0.0:
+            raise ValueError("pyramid_spacing_atr must be positive")
+        if self.dca_spacing_atr <= 0.0:
+            raise ValueError("dca_spacing_atr must be positive")
+        if not 0.0 < self.dca_size_decay <= 1.0:
+            raise ValueError("dca_size_decay must be within (0.0, 1.0]")
+        if self.max_long_inventory_tranches < 1:
+            raise ValueError("max_long_inventory_tranches must be >= 1")
+        if self.max_short_inventory_tranches < 1:
+            raise ValueError("max_short_inventory_tranches must be >= 1")
 
 
 class ExecutionKernel:
@@ -88,7 +115,9 @@ class ExecutionKernel:
         self._positions: dict[str, float] = {}
         # Pyramid tracking: entry price for profitability check
         self._entry_prices: dict[str, float] = {}
+        self._last_fill_prices: dict[str, float] = {}
         self._pyramid_filled_pct: dict[str, float] = {}  # How much of target is filled
+        self._inventory_tranches: dict[str, int] = {}
 
         self._bus.subscribe("md.trade.>", self._on_trade)
         self._bus.subscribe("md.mark.>", self._on_mark_price)
@@ -169,6 +198,8 @@ class ExecutionKernel:
         if self._config.pyramid_enabled and not is_reducing and not payload.reduce_only:
             is_new_direction = abs(current_position) < self._config.min_trade_qty or current_position * delta_qty < 0
             entry_px = self._entry_prices.get(symbol, 0)
+            last_fill_px = self._last_fill_prices.get(symbol, entry_px)
+            tranche_count = self._inventory_tranches.get(symbol, 0)
             is_profitable = (
                 entry_px > 0
                 and abs(current_position) > self._config.min_trade_qty
@@ -179,6 +210,9 @@ class ExecutionKernel:
             is_short = payload.target_qty < 0
             init_pct = self._config.pyramid_short_initial_pct if is_short else self._config.pyramid_initial_pct
             add_pct = self._config.pyramid_short_add_pct if is_short else self._config.pyramid_add_pct
+            max_tranches = (
+                self._config.max_short_inventory_tranches if is_short else self._config.max_long_inventory_tranches
+            )
 
             # Volatility-adaptive speed: fast in calm trends, slow in crashes
             init_pct = self._adaptive_speed(
@@ -200,7 +234,14 @@ class ExecutionKernel:
             elif is_profitable:
                 # Profitable: add another slice
                 filled = self._pyramid_filled_pct.get(symbol, 1.0)
-                if filled < 1.0:
+                favorable_move_atr = self._signed_move_atr(
+                    reference_price=last_fill_px,
+                    mark_price=mark_price,
+                    direction=1 if current_position > 0 else -1,
+                    atr=payload.atr,
+                )
+                spacing_ok = payload.atr <= 0 or favorable_move_atr >= self._config.pyramid_spacing_atr
+                if filled < 1.0 and tranche_count < max_tranches and spacing_ok:
                     actual_add = min(add_pct, 1.0 - filled)
                     trade_qty = abs(payload.target_qty) * actual_add
                     self._pyramid_filled_pct[symbol] = filled + actual_add
@@ -210,10 +251,17 @@ class ExecutionKernel:
                 # PaulWei DCA: 做多亏损时也加仓 (conviction — 越跌越买)
                 # But at reduced size (half of normal add)
                 filled = self._pyramid_filled_pct.get(symbol, 1.0)
-                if filled < 1.0:
+                adverse_move_atr = -self._signed_move_atr(
+                    reference_price=last_fill_px,
+                    mark_price=mark_price,
+                    direction=1,
+                    atr=payload.atr,
+                )
+                spacing_ok = payload.atr <= 0 or adverse_move_atr >= self._config.dca_spacing_atr
+                if filled < 1.0 and tranche_count < max_tranches and spacing_ok:
                     dca_base = self._adaptive_speed(
                         payload.realized_vol,
-                        add_pct * 0.5,
+                        add_pct * 0.5 * (self._config.dca_size_decay ** max(0, tranche_count - 1)),
                         self._config.dca_min_speed,
                         self._config.dca_max_speed,
                     )
@@ -270,15 +318,30 @@ class ExecutionKernel:
             if abs(current_position) < self._config.min_trade_qty:
                 # New position: set entry price
                 self._entry_prices[symbol] = report.avg_price
-                self._pyramid_filled_pct[symbol] = self._config.pyramid_initial_pct
+                self._last_fill_prices[symbol] = report.avg_price
+                init_pct = (
+                    self._config.pyramid_short_initial_pct if new_position < 0 else self._config.pyramid_initial_pct
+                )
+                self._pyramid_filled_pct[symbol] = init_pct
+                self._inventory_tranches[symbol] = 1
             elif current_position * new_position < 0:
                 # Flipped direction: reset
                 self._entry_prices[symbol] = report.avg_price
-                self._pyramid_filled_pct[symbol] = self._config.pyramid_initial_pct
+                self._last_fill_prices[symbol] = report.avg_price
+                init_pct = (
+                    self._config.pyramid_short_initial_pct if new_position < 0 else self._config.pyramid_initial_pct
+                )
+                self._pyramid_filled_pct[symbol] = init_pct
+                self._inventory_tranches[symbol] = 1
             elif abs(new_position) < self._config.min_trade_qty:
                 # Closed: reset
                 self._entry_prices.pop(symbol, None)
+                self._last_fill_prices.pop(symbol, None)
                 self._pyramid_filled_pct.pop(symbol, None)
+                self._inventory_tranches.pop(symbol, None)
+            elif abs(new_position) > abs(current_position):
+                self._last_fill_prices[symbol] = report.avg_price
+                self._inventory_tranches[symbol] = self._inventory_tranches.get(symbol, 1) + 1
             self._risk_overlay.apply_fee(report.fee)
 
     def _execute_flip(
@@ -350,7 +413,9 @@ class ExecutionKernel:
         if open_report.status == "FILLED" and open_report.filled_qty > 0:
             self._positions[symbol] = open_side * open_report.filled_qty
             self._entry_prices[symbol] = open_report.avg_price
+            self._last_fill_prices[symbol] = open_report.avg_price
             self._pyramid_filled_pct[symbol] = init_pct
+            self._inventory_tranches[symbol] = 1
             self._risk_overlay.apply_fee(open_report.fee)
 
     def _adaptive_speed(
@@ -371,6 +436,12 @@ class ExecutionKernel:
         """Check if this exit should bypass gradual unwinding."""
         immediate = {"EXIT_TRAILING_STOP", "EXIT_INVALIDATION", "KILL_SWITCH", "QUALITY_UNSAFE"}
         return bool(set(target.reason_codes) & immediate)
+
+    @staticmethod
+    def _signed_move_atr(*, reference_price: float, mark_price: float, direction: int, atr: float) -> float:
+        if reference_price <= 0 or mark_price <= 0 or atr <= 0:
+            return 0.0
+        return ((mark_price - reference_price) * direction) / atr
 
     @property
     def positions(self) -> dict[str, float]:
