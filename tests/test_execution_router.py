@@ -403,6 +403,40 @@ class DCAOnLossTests(unittest.TestCase):
         total_filled = sum(r.filled_qty for r in reports)
         self.assertLessEqual(total_filled, 1.0, "Total filled should not exceed 100%")
 
+    def test_dca_requires_spacing_between_tranches(self) -> None:
+        bus, kernel, reports = self._setup(mark_price=40000.0)
+
+        bus.publish("intent.target_position.final.BTCUSDT_PERP", self._target(qty=1.0, intent_id="t1", cutoff_ns=2))
+        self.assertEqual(len(reports), 1)
+
+        # Only 0.4 ATR adverse move: should not trigger the next DCA tranche.
+        bus.publish(
+            "md.mark.BINANCE.BTCUSDT_PERP",
+            MarkPriceUpdate(
+                meta=EventMeta(event_time_ns=3, ingest_time_ns=3, venue="BINANCE", symbol="BTCUSDT_PERP", stream_seq=2),
+                mark_price=39800.0,
+            ),
+        )
+        bus.publish(
+            "intent.target_position.final.BTCUSDT_PERP",
+            TargetPosition(
+                intent_id="t2",
+                portfolio="arc",
+                symbol="BTCUSDT_PERP",
+                timeframe=Timeframe.TF_4H,
+                cutoff_time_ns=4,
+                target_qty=1.0,
+                target_leverage=2.0,
+                reduce_only=False,
+                regime="TREND",
+                regime_confidence=0.9,
+                reason_codes=["TEST"],
+                atr=500.0,
+            ),
+        )
+
+        self.assertEqual(len(reports), 1)
+
 
 class AdaptivePyramidTests(unittest.TestCase):
     """Verify vol-adaptive pyramid speed: fast in calm, slow in crashes."""
@@ -465,6 +499,25 @@ class AdaptivePyramidTests(unittest.TestCase):
         bus.publish("intent.target_position.final.BTCUSDT_PERP", self._target(qty=1.0, realized_vol=1.20))
         self.assertEqual(len(reports), 1)
         self.assertAlmostEqual(reports[0].filled_qty, 0.3, places=2)
+
+    def test_profitable_add_requires_spacing(self) -> None:
+        bus, kernel, reports = self._setup()
+        bus.publish("intent.target_position.final.BTCUSDT_PERP", self._target(qty=1.0, realized_vol=0.60, atr=500.0))
+        self.assertEqual(len(reports), 1)
+
+        # Profitable but only 0.4 ATR away from the last fill: no new tranche.
+        bus.publish(
+            "md.mark.BINANCE.BTCUSDT_PERP",
+            MarkPriceUpdate(
+                meta=EventMeta(event_time_ns=3, ingest_time_ns=3, venue="BINANCE", symbol="BTCUSDT_PERP", stream_seq=2),
+                mark_price=40200.0,
+            ),
+        )
+        bus.publish(
+            "intent.target_position.final.BTCUSDT_PERP",
+            self._target(qty=1.0, realized_vol=0.60, atr=500.0, intent_id="t2", cutoff_ns=4),
+        )
+        self.assertEqual(len(reports), 1)
 
 
 class GradualExitTests(unittest.TestCase):
@@ -808,3 +861,9 @@ class ExecutionConfigBoundsTests(unittest.TestCase):
 
         with self.assertRaisesRegex(ValueError, "pyramid_add_pct above 0.45"):
             ExecutionKernelConfig(pyramid_add_pct=0.50)
+
+    def test_rejects_invalid_dca_decay(self) -> None:
+        from zenquant.execution.router import ExecutionKernelConfig
+
+        with self.assertRaisesRegex(ValueError, "dca_size_decay must be within"):
+            ExecutionKernelConfig(dca_size_decay=1.2)

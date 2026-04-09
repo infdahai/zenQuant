@@ -47,7 +47,8 @@ class FrameworkParamTests(unittest.TestCase):
 
     def test_core_param_grid_excludes_liquidation_toggles_by_default(self) -> None:
         grid = core_param_grid()
-        self.assertIn("w_momentum", grid)
+        self.assertIn("pyramid_initial_pct", grid)
+        self.assertIn("pyramid_spacing_atr", grid)
         self.assertNotIn("liquidation_data_enabled", grid)
 
 
@@ -164,6 +165,48 @@ class SearchReportSerializationTests(unittest.TestCase):
         )
         self.assertGreater(stable, aggressive)
 
+    def test_candidate_score_prefers_hard_cap_compliant_drawdown(self) -> None:
+        baseline = CandidateSummary(
+            variant="baseline",
+            robust_score=1.0,
+            selection_split="dev",
+            dev_sharpe=2.0,
+            dev_pnl=100.0,
+            dev_drawdown=0.083,
+            avg_dev_sharpe=2.0,
+            avg_dev_ratio=1.1,
+            worst_dev_sharpe=1.0,
+            weak_window_sharpe=1.2,
+            negative_dev_worst_windows=0,
+            promotion_candidate=True,
+            blocked_by=None,
+            failed_gate_metrics=None,
+            promotion_failure_reason=None,
+        )
+        within_cap = _candidate_score(
+            avg_test_sharpe=2.0,
+            worst_test_sharpe=1.0,
+            avg_oos_ratio=1.0,
+            overall_sharpe=2.0,
+            overall_pnl=1_000_000.0,
+            weak_window_sharpe=1.0,
+            overall_drawdown=0.145,
+            negative_worst_windows=0,
+            baseline=baseline,
+        )
+        above_cap = _candidate_score(
+            avg_test_sharpe=2.0,
+            worst_test_sharpe=1.0,
+            avg_oos_ratio=1.0,
+            overall_sharpe=2.0,
+            overall_pnl=1_000_000.0,
+            weak_window_sharpe=1.0,
+            overall_drawdown=0.17,
+            negative_worst_windows=0,
+            baseline=baseline,
+        )
+        self.assertGreater(within_cap, above_cap)
+
     def test_write_search_report_emits_delivery_fields(self) -> None:
         summary = CandidateSummary(
             variant="current",
@@ -221,6 +264,7 @@ class SearchReportSerializationTests(unittest.TestCase):
         self.assertEqual(payload["final_verdict"]["best_variant"], "current")
         self.assertIn("promotion_failure_reason", payload["final_verdict"])
         self.assertIn("search_space_profile", payload["final_verdict"])
+        self.assertIn("comparison_to_paulwei_baseline", payload["final_verdict"])
 
     def test_run_optuna_search_uses_train_only_autoresearch_candidates(self) -> None:
         @dataclass

@@ -17,8 +17,14 @@ class RLTunerConfigTests(unittest.TestCase):
             {
                 "pyramid_initial_pct": 0.4,
                 "pyramid_add_pct": 0.45,
+                "pyramid_short_initial_pct": 0.15,
+                "pyramid_short_add_pct": 0.12,
+                "pyramid_spacing_atr": 1.0,
                 "dca_max_adverse_atr": 4.0,
+                "dca_spacing_atr": 1.5,
+                "dca_size_decay": 0.6,
                 "exit_unwind_pct": 0.2,
+                "flip_min_confidence": 0.7,
             }
         )
 
@@ -28,8 +34,14 @@ class RLTunerConfigTests(unittest.TestCase):
         self.assertTrue(config.adaptive_pyramid_enabled)
         self.assertAlmostEqual(config.pyramid_initial_pct, 0.4)
         self.assertAlmostEqual(config.pyramid_add_pct, 0.45)
+        self.assertAlmostEqual(config.pyramid_short_initial_pct, 0.15)
+        self.assertAlmostEqual(config.pyramid_short_add_pct, 0.12)
+        self.assertAlmostEqual(config.pyramid_spacing_atr, 1.0)
         self.assertAlmostEqual(config.dca_max_adverse_atr, 4.0)
+        self.assertAlmostEqual(config.dca_spacing_atr, 1.5)
+        self.assertAlmostEqual(config.dca_size_decay, 0.6)
         self.assertAlmostEqual(config.exit_unwind_pct, 0.2)
+        self.assertAlmostEqual(config.flip_min_confidence, 0.7)
 
     def test_env_backtest_passes_execution_config_into_replay(self) -> None:
         captured: dict[str, HistoricalBacktestConfig] = {}
@@ -54,8 +66,14 @@ class RLTunerConfigTests(unittest.TestCase):
         params = {
             "pyramid_initial_pct": 0.4,
             "pyramid_add_pct": 0.15,
+            "pyramid_short_initial_pct": 0.15,
+            "pyramid_short_add_pct": 0.12,
+            "pyramid_spacing_atr": 1.0,
             "dca_max_adverse_atr": 2.0,
+            "dca_spacing_atr": 1.5,
+            "dca_size_decay": 0.6,
             "exit_unwind_pct": 0.4,
+            "flip_min_confidence": 0.7,
         }
 
         with patch.object(rl_tuner, "HistoricalBacktest", FakeBacktest):
@@ -67,8 +85,14 @@ class RLTunerConfigTests(unittest.TestCase):
         assert config.execution_config is not None
         self.assertAlmostEqual(config.execution_config.pyramid_initial_pct, 0.4)
         self.assertAlmostEqual(config.execution_config.pyramid_add_pct, 0.15)
+        self.assertAlmostEqual(config.execution_config.pyramid_short_initial_pct, 0.15)
+        self.assertAlmostEqual(config.execution_config.pyramid_short_add_pct, 0.12)
+        self.assertAlmostEqual(config.execution_config.pyramid_spacing_atr, 1.0)
         self.assertAlmostEqual(config.execution_config.dca_max_adverse_atr, 2.0)
+        self.assertAlmostEqual(config.execution_config.dca_spacing_atr, 1.5)
+        self.assertAlmostEqual(config.execution_config.dca_size_decay, 0.6)
         self.assertAlmostEqual(config.execution_config.exit_unwind_pct, 0.4)
+        self.assertAlmostEqual(config.execution_config.flip_min_confidence, 0.7)
 
 
 class RLTuneCliTests(unittest.TestCase):
