@@ -12,6 +12,7 @@ from zenquant.domain import MarketState, PlaybookSelection, SizingDecision, Time
 class SizingEngineConfig:
     """Static sizing parameters shared across backtest, replay, and live."""
 
+    target_vol_5m: float = 0.45
     target_vol_1h: float = 0.55
     target_vol_4h: float = 0.60
     target_vol_1d: float = 0.50
@@ -84,6 +85,7 @@ class SizingEngine:
 
     def _target_vol(self, timeframe: Timeframe) -> float:
         return {
+            Timeframe.TF_5M: self._config.target_vol_5m,
             Timeframe.TF_1H: self._config.target_vol_1h,
             Timeframe.TF_4H: self._config.target_vol_4h,
             Timeframe.TF_1D: self._config.target_vol_1d,

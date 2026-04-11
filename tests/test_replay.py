@@ -1,7 +1,12 @@
 import unittest
+from pathlib import Path
+from tempfile import TemporaryDirectory
+from unittest.mock import patch
 
-from zenquant.domain import IndicatorPack, MarketState
+from zenquant.domain import IndicatorPack, MarketState, Timeframe
 from zenquant.execution import ExecutionGateway, ExecutionKernel
+from zenquant.historical import HistoricalBacktest, HistoricalBacktestConfig
+from zenquant.historical.storage import HistoricalKlineRow, write_parquet_rows
 from zenquant.indicator import IndicatorEngine, IndicatorStore
 from zenquant.infra import DeterministicReplayer, InMemoryJetStream, StreamConfig
 from zenquant.ingestor import SyntheticIngestor, SyntheticIngestorConfig
@@ -12,6 +17,87 @@ from zenquant.strategy import ARCStrategyEngine
 
 
 class ReplayTests(unittest.TestCase):
+    def test_historical_replay_derives_1h_context_from_5m_when_train_window_missing_native_1h(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            five_min_dir = root / "klines" / "BTCUSDT" / "5m"
+            four_hour_dir = root / "klines" / "BTCUSDT" / "4h"
+            one_day_dir = root / "klines" / "BTCUSDT" / "1d"
+
+            start_ns = 1_699_999_200_000_000_000
+            five_min_rows = []
+            for idx in range(12):
+                open_ns = start_ns + idx * Timeframe.TF_5M.seconds * 1_000_000_000
+                five_min_rows.append(
+                    HistoricalKlineRow(
+                        symbol="BTCUSDT",
+                        timeframe="5m",
+                        open_time_ns=open_ns,
+                        close_time_ns=open_ns + Timeframe.TF_5M.seconds * 1_000_000_000 - 1_000_000,
+                        open=100.0 + idx,
+                        high=101.0 + idx,
+                        low=99.0 + idx,
+                        close=100.5 + idx,
+                        volume=10.0,
+                        trade_count=5,
+                    )
+                )
+            write_parquet_rows(five_min_dir / "data.parquet", five_min_rows)
+            write_parquet_rows(
+                four_hour_dir / "data.parquet",
+                [
+                    HistoricalKlineRow(
+                        symbol="BTCUSDT",
+                        timeframe="4h",
+                        open_time_ns=start_ns,
+                        close_time_ns=start_ns + Timeframe.TF_4H.seconds * 1_000_000_000 - 1_000_000,
+                        open=100.0,
+                        high=120.0,
+                        low=95.0,
+                        close=118.0,
+                        volume=120.0,
+                        trade_count=60,
+                    )
+                ],
+            )
+            write_parquet_rows(
+                one_day_dir / "data.parquet",
+                [
+                    HistoricalKlineRow(
+                        symbol="BTCUSDT",
+                        timeframe="1d",
+                        open_time_ns=start_ns,
+                        close_time_ns=start_ns + Timeframe.TF_1D.seconds * 1_000_000_000 - 1_000_000,
+                        open=100.0,
+                        high=130.0,
+                        low=90.0,
+                        close=125.0,
+                        volume=240.0,
+                        trade_count=120,
+                    )
+                ],
+            )
+
+            with patch("zenquant.historical.replay.HFFeatureStore.load", return_value=None):
+                replay = HistoricalBacktest(
+                    HistoricalBacktestConfig(
+                        root_dir=root,
+                        symbol="BTCUSDT",
+                        execution_timeframe=Timeframe.TF_5M,
+                        direction_timeframe=Timeframe.TF_4H,
+                        context_timeframe=Timeframe.TF_1H,
+                        start_ns=start_ns,
+                        end_ns=start_ns + Timeframe.TF_1H.seconds * 1_000_000_000,
+                    )
+                )
+
+                events = replay._load_events()
+
+        timeframes = [event["event_timeframe"] for event in events]
+        self.assertIn("1h", timeframes)
+        one_hour_events = [event for event in events if event["event_timeframe"] == "1h"]
+        self.assertEqual(len(one_hour_events), 1)
+
     def test_replay_preserves_message_order(self) -> None:
         source_bus = InMemoryJetStream()
         source_bus.add_stream(StreamConfig(name="SRC", subjects=["md.>"]))

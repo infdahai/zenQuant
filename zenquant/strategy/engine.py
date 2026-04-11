@@ -59,6 +59,7 @@ class ARCStrategyConfig:
     # NOTE: ANNUALIZED vol targets — must match indicator engine units.
     # realized_vol is scaled by sqrt(365 * bars_per_day).
     # PaulWei-calibrated: higher targets = larger positions = more conviction
+    target_vol_5m: float = 0.70
     target_vol_1h: float = 0.80
     target_vol_4h: float = 1.10
     target_vol_1d: float = 1.30
@@ -101,6 +102,7 @@ class ARCStrategyEngine:
             config=self._config.sizing_config
             or SizingEngineConfig(
                 target_vol_1h=self._config.target_vol_1h,
+                target_vol_5m=self._config.target_vol_5m,
                 target_vol_4h=self._config.target_vol_4h,
                 target_vol_1d=self._config.target_vol_1d,
             )
@@ -122,9 +124,11 @@ class ARCStrategyEngine:
         # Phase 2: multi-timeframe coordination
         self._directional_bias: dict[str, DirectionalBias] = {}  # symbol -> 1d bias
         self._context_bias: dict[str, DirectionalBias] = {}  # symbol -> 4h context bias (dual-layer)
-        # Dual-layer: pending 4H targets waiting for optimal 1H entry
+        # Multi-layer execution: 4H target -> 1H context -> 5M timing
         self._pending_4h_target: dict[str, TargetPosition] = {}
         self._pending_4h_bars: dict[str, int] = {}  # bars waited since 4H target
+        self._pending_1h_target: dict[str, TargetPosition] = {}
+        self._pending_1h_bars: dict[str, int] = {}
 
         # Phase 2: position tracking for trailing stops
         self._positions: dict[tuple[str, Timeframe], OpenPositionState] = {}
@@ -218,28 +222,59 @@ class ARCStrategyEngine:
         if state.timeframe == Timeframe.TF_1D:
             self._update_directional_bias(state)
             return
-        # Dual-layer: 4H computes target but stores as pending for 1H entry optimization
-        if state.timeframe == Timeframe.TF_4H and self._config.execution_timeframe == Timeframe.TF_1H:
+        # Multi-layer: 4H computes target but stores as pending for lower-timeframe execution.
+        if state.timeframe == Timeframe.TF_4H and self._config.execution_timeframe in {Timeframe.TF_1H, Timeframe.TF_5M}:
             self._update_context_bias(state)
             pack = self._latest_packs.get((state.symbol, state.timeframe))
             if pack is not None:
                 target = self._build_target(pack, state, playbook)
                 self._pending_4h_target[state.symbol] = target
                 self._pending_4h_bars[state.symbol] = 0
+                self._pending_1h_target.pop(state.symbol, None)
+                self._pending_1h_bars.pop(state.symbol, None)
             return
 
-        # 1H entry optimization: execute pending 4H target at optimal 1H timing
+        # 1H entry optimization for direct 1H execution.
         if state.timeframe == Timeframe.TF_1H and self._config.execution_timeframe == Timeframe.TF_1H:
             target = self._try_1h_entry(state)
             if target is None:
-                return
-            reason = self._build_reason(target)
-            self._bus.publish(
-                f"strategy.regime.{self._config.portfolio}",
-                {"symbol": target.symbol, "regime": target.regime},
-            )
-            self._bus.publish(f"intent.target_position.{self._config.portfolio}.{target.symbol}", target)
-            self._bus.publish(f"intent.reason.{self._config.portfolio}", reason)
+                pack = self._latest_packs.get((state.symbol, Timeframe.TF_1H))
+                position = self._positions.get((state.symbol, Timeframe.TF_1H))
+                if pack is not None and position is not None:
+                    target = self._build_execution_hold_or_exit(pack, state, playbook, position)
+            if target is not None:
+                reason = self._build_reason(target)
+                self._bus.publish(
+                    f"strategy.regime.{self._config.portfolio}",
+                    {"symbol": target.symbol, "regime": target.regime},
+                )
+                self._bus.publish(f"intent.target_position.{self._config.portfolio}.{target.symbol}", target)
+                self._bus.publish(f"intent.reason.{self._config.portfolio}", reason)
+            return
+
+        # 1H context confirmation for 5M final timing.
+        if (
+            state.timeframe == Timeframe.TF_1H
+            and self._config.execution_timeframe == Timeframe.TF_5M
+        ):
+            self._stage_5m_entry(state)
+            return
+
+        if state.timeframe == Timeframe.TF_5M and self._config.execution_timeframe == Timeframe.TF_5M:
+            target = self._try_5m_entry_exit(state)
+            if target is None:
+                pack = self._latest_packs.get((state.symbol, Timeframe.TF_5M))
+                position = self._positions.get((state.symbol, Timeframe.TF_5M))
+                if pack is not None and position is not None:
+                    target = self._build_execution_hold_or_exit(pack, state, playbook, position)
+            if target is not None:
+                reason = self._build_reason(target)
+                self._bus.publish(
+                    f"strategy.regime.{self._config.portfolio}",
+                    {"symbol": target.symbol, "regime": target.regime},
+                )
+                self._bus.publish(f"intent.target_position.{self._config.portfolio}.{target.symbol}", target)
+                self._bus.publish(f"intent.reason.{self._config.portfolio}", reason)
             return
 
         pack = self._latest_packs.get((state.symbol, state.timeframe))
@@ -344,22 +379,11 @@ class ARCStrategyEngine:
         if not should_enter:
             return None
 
-        # Execute the pending 4H target at 1H timing
-        # Update cutoff time to current 1H bar
-        executed = TargetPosition(
-            intent_id=pending.intent_id,
-            portfolio=pending.portfolio,
-            symbol=pending.symbol,
+        executed = self._promote_pending_target(
+            pending,
             timeframe=Timeframe.TF_1H,
             cutoff_time_ns=state.cutoff_time_ns,
-            target_qty=pending.target_qty,
-            target_leverage=pending.target_leverage,
-            reduce_only=pending.reduce_only,
-            regime=pending.regime,
-            regime_confidence=pending.regime_confidence,
-            reason_codes=[*pending.reason_codes, "1H_ENTRY_OPTIMIZED"],
-            realized_vol=pending.realized_vol,
-            atr=pending.atr,
+            reason_code="1H_ENTRY_OPTIMIZED",
         )
 
         # Clear pending
@@ -367,6 +391,136 @@ class ARCStrategyEngine:
         self._pending_4h_bars.pop(symbol, None)
 
         return executed
+
+    def _stage_5m_entry(self, state: MarketState) -> None:
+        symbol = state.symbol
+        pending = self._pending_4h_target.get(symbol)
+        if pending is None:
+            return
+
+        bars_waited = self._pending_4h_bars.get(symbol, 0)
+        self._pending_4h_bars[symbol] = bars_waited + 1
+        pack = self._latest_packs.get((symbol, Timeframe.TF_1H))
+        if pack is None:
+            return
+
+        pending_direction = 1.0 if pending.target_qty > 0 else -1.0
+        timeout = bars_waited >= 3
+        entry_score = self._score_lower_timeframe_entry(
+            pack=pack,
+            pending_direction=pending_direction,
+            crash_bonus_threshold=-0.02,
+        )
+        if entry_score < 0.5 and not timeout:
+            return
+
+        staged = self._promote_pending_target(
+            pending,
+            timeframe=Timeframe.TF_5M,
+            cutoff_time_ns=state.cutoff_time_ns,
+            reason_code="1H_CONTEXT_CONFIRMED",
+        )
+        self._pending_1h_target[symbol] = staged
+        self._pending_1h_bars[symbol] = 0
+        self._pending_4h_target.pop(symbol, None)
+        self._pending_4h_bars.pop(symbol, None)
+
+    def _try_5m_entry_exit(self, state: MarketState) -> TargetPosition | None:
+        symbol = state.symbol
+        pending = self._pending_1h_target.get(symbol)
+        if pending is None:
+            return None
+
+        bars_waited = self._pending_1h_bars.get(symbol, 0)
+        self._pending_1h_bars[symbol] = bars_waited + 1
+        pack = self._latest_packs.get((symbol, Timeframe.TF_5M))
+        if pack is None:
+            return None
+
+        pending_direction = 1.0 if pending.target_qty > 0 else -1.0
+        timeout = bars_waited >= 12
+        entry_score = self._score_lower_timeframe_entry(
+            pack=pack,
+            pending_direction=pending_direction,
+            crash_bonus_threshold=-0.008,
+        )
+        vpin = float(pack.values.get("vpin", 0.0) or 0.0)
+        large_trade_count = float(pack.values.get("large_trade_count", 0.0) or 0.0)
+        if vpin > 0.08 and pending_direction > 0:
+            entry_score -= 0.2
+        if vpin > 0.08 and pending_direction < 0:
+            entry_score += 0.1
+        if large_trade_count > 0 and pending_direction * float(pack.values.get("cvd_slope", 0.0) or 0.0) > 0:
+            entry_score += 0.15
+
+        if entry_score < 0.45 and not timeout:
+            return None
+
+        executed = self._promote_pending_target(
+            pending,
+            timeframe=Timeframe.TF_5M,
+            cutoff_time_ns=state.cutoff_time_ns,
+            reason_code="5M_TIMING_CONFIRMED",
+        )
+        self._pending_1h_target.pop(symbol, None)
+        self._pending_1h_bars.pop(symbol, None)
+        return executed
+
+    def _score_lower_timeframe_entry(
+        self,
+        *,
+        pack: IndicatorPack,
+        pending_direction: float,
+        crash_bonus_threshold: float,
+    ) -> float:
+        is_long = pending_direction > 0
+        entry_score = 0.0
+
+        momentum = float(pack.values.get("momentum_roc", 0) or 0)
+        if (is_long and momentum < 0) or (not is_long and momentum > 0):
+            entry_score += min(0.5, abs(momentum) * 5)
+
+        structure_break = float(pack.values.get("structure_break", 0) or 0)
+        if structure_break * pending_direction > 0:
+            entry_score += 0.4
+
+        cvd_slope = float(pack.values.get("cvd_slope", 0) or 0)
+        if cvd_slope * pending_direction > 0:
+            entry_score += 0.3
+
+        vol_ratio = float(pack.values.get("vol_ratio_rv", 1.0) or 1.0)
+        if vol_ratio < 1.0:
+            entry_score += 0.2
+
+        if is_long and momentum < crash_bonus_threshold:
+            entry_score += 0.5
+        if not is_long and momentum > abs(crash_bonus_threshold):
+            entry_score += 0.35
+        return entry_score
+
+    @staticmethod
+    def _promote_pending_target(
+        pending: TargetPosition,
+        *,
+        timeframe: Timeframe,
+        cutoff_time_ns: int,
+        reason_code: str,
+    ) -> TargetPosition:
+        return TargetPosition(
+            intent_id=pending.intent_id,
+            portfolio=pending.portfolio,
+            symbol=pending.symbol,
+            timeframe=timeframe,
+            cutoff_time_ns=cutoff_time_ns,
+            target_qty=pending.target_qty,
+            target_leverage=pending.target_leverage,
+            reduce_only=pending.reduce_only,
+            regime=pending.regime,
+            regime_confidence=pending.regime_confidence,
+            reason_codes=[*pending.reason_codes, reason_code],
+            realized_vol=pending.realized_vol,
+            atr=pending.atr,
+        )
 
     def _build_target(
         self,
@@ -546,6 +700,66 @@ class ARCStrategyEngine:
             regime=regime,
             regime_confidence=round(regime_confidence, 4),
             reason_codes=reason_codes,
+            realized_vol=float(pack.values.get("realized_vol", 0) or 0),
+            atr=float(pack.values.get("atr", 0) or 0),
+        )
+
+    def _build_execution_hold_or_exit(
+        self,
+        pack: IndicatorPack,
+        state: MarketState,
+        playbook: PlaybookSelection,
+        position: OpenPositionState,
+    ) -> TargetPosition | None:
+        vals = self._extract_values(pack.values)
+        position.bars_held += 1
+        last_price = float(pack.values.get("last_price", 0.0) or 0.0)
+        if last_price > 0 and position.entry_price > 0:
+            unrealized_pnl_pct = (last_price - position.entry_price) / position.entry_price * position.direction
+            if unrealized_pnl_pct > position.peak_pnl_pct:
+                position.peak_pnl_pct = unrealized_pnl_pct
+
+        if self._plugins and self._plugins.exits:
+            ind_dict = dict(pack.values)
+            state_dict = self._state_dict(state, playbook)
+            exit_decision = self._plugin_exit(pack, state, playbook, position, ind_dict, state_dict)
+        else:
+            exit_decision = self._exit_engine.check(
+                position,
+                state,
+                playbook,
+                indicators={"price": vals.price, "atr": vals.atr},
+            )
+
+        if exit_decision is not None:
+            self._publish_exit(exit_decision)
+            if exit_decision.should_exit():
+                return self._build_exit_target(
+                    pack=pack,
+                    position=position,
+                    state=state,
+                    exit_decision=exit_decision,
+                    price=vals.price,
+                )
+        else:
+            self._publish_exit(self._exit_engine._no_exit(position, cutoff_time_ns=state.cutoff_time_ns))
+
+        signed_qty = position.direction * position.current_qty
+        target_leverage = 0.0
+        if vals.price > 0 and self._equity > 0:
+            target_leverage = abs(signed_qty * vals.price) / self._equity
+        return TargetPosition(
+            intent_id=self._intent_id(pack),
+            portfolio=self._config.portfolio,
+            symbol=pack.symbol,
+            timeframe=pack.timeframe,
+            cutoff_time_ns=pack.cutoff_time_ns,
+            target_qty=round(signed_qty, 6),
+            target_leverage=round(target_leverage, 4),
+            reduce_only=False,
+            regime=state.regime,
+            regime_confidence=round(state.regime_confidence, 4),
+            reason_codes=[f"REGIME_{state.regime}", "HOLD_EXECUTION_POSITION"],
             realized_vol=float(pack.values.get("realized_vol", 0) or 0),
             atr=float(pack.values.get("atr", 0) or 0),
         )

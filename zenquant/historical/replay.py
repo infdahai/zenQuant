@@ -8,7 +8,7 @@ risk, and execution behavior stays auditable across modes.
 from __future__ import annotations
 
 import math
-from collections import Counter
+from collections import Counter, defaultdict
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -73,7 +73,8 @@ class HistoricalBacktestConfig:
     starting_equity: float = 100_000.0
     execution_timeframe: Timeframe = Timeframe.TF_4H
     bias_timeframe: Timeframe = Timeframe.TF_1D
-    # Dual-layer: set to TF_4H when execution is TF_1H (4H constrains 1H)
+    direction_timeframe: Timeframe = Timeframe.TF_4H
+    # Multi-layer: set to TF_1H when execution is TF_5M (1H constrains 5M)
     context_timeframe: Timeframe | None = None
     open_interest_timeframe: str = "4h"
     # Strategy config override (for parameter sweeps)
@@ -298,7 +299,7 @@ class HistoricalBacktest:
         )
         # Load pre-aggregated aggTrades (real order flow CVD)
         self._aggtrades: dict[str, dict[int, dict[str, Any]]] = {}
-        for tf_label in ("4h", "1h"):
+        for tf_label in ("4h", "1h", "5m"):
             agg_glob = str(self._config.root_dir / "aggtrades" / self._config.symbol / tf_label / "*.parquet")
             agg_rows = read_parquet_rows(agg_glob, order_by="ts_ns ASC")
             if agg_rows:
@@ -312,8 +313,11 @@ class HistoricalBacktest:
         self._open_interest_index = -1
 
         candles: list[dict[str, Any]] = []
-        # Build unique set of timeframes to load (bias → context → execution)
+        loaded_rows: dict[Timeframe, list[dict[str, Any]]] = {}
+        # Build unique set of timeframes to load (bias → direction → context → execution)
         timeframes_to_load: list[Timeframe] = [self._config.bias_timeframe]
+        if self._config.direction_timeframe not in timeframes_to_load:
+            timeframes_to_load.append(self._config.direction_timeframe)
         if self._config.context_timeframe and self._config.context_timeframe not in timeframes_to_load:
             timeframes_to_load.append(self._config.context_timeframe)
         if self._config.execution_timeframe not in timeframes_to_load:
@@ -326,7 +330,20 @@ class HistoricalBacktest:
                 params=_time_filter_params(self._config.start_ns, self._config.end_ns),
                 order_by="close_time_ns ASC",
             )
-            for row in rows:
+            loaded_rows[timeframe] = rows
+            if not rows and timeframe == Timeframe.TF_1H and self._config.execution_timeframe == Timeframe.TF_5M:
+                five_min_rows = loaded_rows.get(Timeframe.TF_5M)
+                if five_min_rows is None:
+                    five_min_rows = read_parquet_rows(
+                        str(self._config.root_dir / "klines" / self._config.symbol / Timeframe.TF_5M.value / "*.parquet"),
+                        where_sql=_time_filter_sql(self._config.start_ns, self._config.end_ns, column="close_time_ns"),
+                        params=_time_filter_params(self._config.start_ns, self._config.end_ns),
+                        order_by="close_time_ns ASC",
+                    )
+                    loaded_rows[Timeframe.TF_5M] = five_min_rows
+                rows = _aggregate_five_min_rows_to_one_hour(five_min_rows)
+                loaded_rows[timeframe] = rows
+            for row in loaded_rows[timeframe]:
                 row["event_timeframe"] = timeframe.value
                 candles.append(row)
 
@@ -484,10 +501,16 @@ class HistoricalBacktest:
 
     def _build_metrics(self, events: list[dict[str, Any]]) -> BacktestMetrics:
         returns = _equity_returns(self._risk_snapshots)
-        sharpe = _annualized_ratio(returns, periods_per_year=6 * 365)
+        periods_per_year = {
+            Timeframe.TF_5M: 288 * 365,
+            Timeframe.TF_1H: 24 * 365,
+            Timeframe.TF_4H: 6 * 365,
+            Timeframe.TF_1D: 365,
+        }.get(self._config.execution_timeframe, 6 * 365)
+        sharpe = _annualized_ratio(returns, periods_per_year=periods_per_year)
         sortino = _annualized_ratio(
             [value for value in returns if value < 0.0],
-            periods_per_year=6 * 365,
+            periods_per_year=periods_per_year,
             baseline_returns=returns,
         )
         max_drawdown, max_dd_duration = _max_drawdown(self._risk_snapshots)
@@ -904,12 +927,14 @@ def _aux_staleness_ms(
 
 def _parse_timeframe(value: str) -> Timeframe:
     """Map storage tokens to the domain timeframe enum."""
-    return {"1h": Timeframe.TF_1H, "4h": Timeframe.TF_4H, "1d": Timeframe.TF_1D}.get(value, Timeframe.TF_4H)
+    return {"5m": Timeframe.TF_5M, "1h": Timeframe.TF_1H, "4h": Timeframe.TF_4H, "1d": Timeframe.TF_1D}.get(
+        value, Timeframe.TF_4H
+    )
 
 
 def _timeframe_priority(value: str) -> int:
-    """Order: 1d context first (0), then 4h (1), then 1h execution last (2)."""
-    return {"1d": 0, "4h": 1, "1h": 2}.get(value, 1)
+    """Order: 1d context first, then 4h, then 1h, then 5m execution last."""
+    return {"1d": 0, "4h": 1, "1h": 2, "5m": 3}.get(value, 1)
 
 
 def _equity_returns(snapshots: list[RiskSnapshot]) -> list[float]:
@@ -1056,3 +1081,46 @@ def _max_favorable_excursion(rows: list[dict[str, Any]], index: int, horizon: in
         return None
     future_highs = [float(row["high"]) for row in rows[index + 1 : end_index]]
     return (max(future_highs) - current_close) / current_close
+
+
+def _aggregate_five_min_rows_to_one_hour(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Derive deterministic 1H candles from 5M bars when train coverage is missing."""
+    if not rows:
+        return []
+
+    hour_ns = Timeframe.TF_1H.seconds * 1_000_000_000
+    bucketed: dict[int, list[dict[str, Any]]] = defaultdict(list)
+    for row in rows:
+        open_ns = int(row["open_time_ns"])
+        hour_start_ns = open_ns - (open_ns % hour_ns)
+        bucketed[hour_start_ns].append(row)
+
+    aggregated: list[dict[str, Any]] = []
+    expected_step_ns = Timeframe.TF_5M.seconds * 1_000_000_000
+    for hour_start_ns in sorted(bucketed):
+        bucket = sorted(bucketed[hour_start_ns], key=lambda item: int(item["open_time_ns"]))
+        if len(bucket) != 12:
+            continue
+        contiguous = all(
+            int(bucket[idx]["open_time_ns"]) - int(bucket[idx - 1]["open_time_ns"]) == expected_step_ns
+            for idx in range(1, len(bucket))
+        )
+        if not contiguous:
+            continue
+        first = bucket[0]
+        last = bucket[-1]
+        aggregated.append(
+            {
+                "symbol": first.get("symbol", ""),
+                "timeframe": Timeframe.TF_1H.value,
+                "open_time_ns": int(first["open_time_ns"]),
+                "close_time_ns": int(last["close_time_ns"]),
+                "open": float(first["open"]),
+                "high": max(float(item["high"]) for item in bucket),
+                "low": min(float(item["low"]) for item in bucket),
+                "close": float(last["close"]),
+                "volume": sum(float(item["volume"]) for item in bucket),
+                "trade_count": sum(int(item["trade_count"]) for item in bucket),
+            }
+        )
+    return aggregated
