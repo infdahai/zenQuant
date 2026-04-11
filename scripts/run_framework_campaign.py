@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import importlib.util
 import json
+import os
 import shutil
 import traceback
 from datetime import UTC, datetime
@@ -44,6 +45,20 @@ def _read_json(path: Path) -> dict[str, Any] | None:
     if not path.exists():
         return None
     return json.loads(path.read_text(encoding="utf-8"))
+
+
+def _read_seed_trials(path: Path | None) -> list[dict[str, Any]]:
+    if path is None or not path.exists():
+        return []
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(payload, list):
+        raise ValueError("seed_trials_file must contain a JSON list")
+    resolved: list[dict[str, Any]] = []
+    for item in payload:
+        if not isinstance(item, dict):
+            raise ValueError("seed_trials_file entries must be JSON objects")
+        resolved.append(dict(item))
+    return resolved
 
 
 def _update_status(path: Path, **kwargs: Any) -> dict[str, Any]:
@@ -86,6 +101,8 @@ def _initialize_running_status(
         "baseline_anchored_search": False,
         "baseline_anchor_variant": None,
         "resume_supported": True,
+        "launcher_pid": None,
+        "campaign_pid": None,
         "split_contract": split_summary_json(default_btc_split_spec()),
         "split_contract_version": default_btc_split_spec().version,
         "authoritative_promote_path": True,
@@ -270,6 +287,7 @@ def main() -> None:
     parser.add_argument("--rl-episodes", type=int)
     parser.add_argument("--liquidation-dir", default="data/raw/merged_liquidations/aggregated")
     parser.add_argument("--resume", action="store_true")
+    parser.add_argument("--seed-trials-file", default=None)
     args = parser.parse_args()
 
     output_dir = Path(args.output_dir)
@@ -292,6 +310,10 @@ def main() -> None:
     log_path = output_dir / "campaign.log"
 
     optuna_trials, rl_episodes = _resolved_budget(args.budget, args.optuna_trials, args.rl_episodes)
+    stage1_parallel_mode = "serial" if args.budget == "smoke" else "cpu_parallel"
+    stage1_max_workers = None if args.budget == "smoke" else max(1, min((os.cpu_count() or 4) - 2, 6 if args.budget == "fast" else 8))
+    stage1_batch_size = 1 if args.budget == "smoke" else 4 if args.budget == "fast" else 6
+    extra_seed_trials = _read_seed_trials(Path(args.seed_trials_file)) if args.seed_trials_file else []
     if args.budget == "smoke":
         rl_episodes = 0
     started_at = (_read_json(status_path) or {}).get("started_at", _ts()) if args.resume else _ts()
@@ -302,7 +324,14 @@ def main() -> None:
         rl_episodes=rl_episodes,
         started_at=started_at,
     )
-    _append_campaign_log(log_path, f"campaign_started budget={args.budget} resume={args.resume}")
+    launcher_pid = int(os.environ.get("ZENQUANT_LOOP_LAUNCHER_PID", "0") or 0) or None
+    campaign_pid = os.getpid()
+    _update_status(
+        status_path,
+        launcher_pid=launcher_pid,
+        campaign_pid=campaign_pid,
+    )
+    _append_campaign_log(log_path, f"campaign_started budget={args.budget} resume={args.resume} pid={campaign_pid}")
 
     try:
         if importlib.util.find_spec("optuna") is None:
@@ -674,6 +703,7 @@ def main() -> None:
                 ranking_timeout_s: float | None,
                 ranking_top_n: int,
                 ranking_candidate_timeout_s: float | None,
+                seed_trials: list[dict[str, Any]] | None = None,
             ) -> tuple[dict[str, Any] | None, list[dict[str, Any]], dict[str, Any]]:
                 result = run_optuna_search(
                     evaluator,
@@ -686,6 +716,10 @@ def main() -> None:
                     ranking_timeout_s=ranking_timeout_s,
                     ranking_top_n=ranking_top_n,
                     ranking_candidate_timeout_s=ranking_candidate_timeout_s,
+                    seed_trials=seed_trials,
+                    stage1_parallel_mode=stage1_parallel_mode,
+                    stage1_max_workers=stage1_max_workers,
+                    stage1_batch_size=stage1_batch_size,
                 )
                 if len(result) == 2:
                     best_params, ranked = result
@@ -718,6 +752,7 @@ def main() -> None:
                     ranking_timeout_s=600.0 if args.budget == "smoke" else None,
                     ranking_top_n=smoke_ranking_top_n,
                     ranking_candidate_timeout_s=smoke_ranking_candidate_timeout_s,
+                    seed_trials=extra_seed_trials,
                 )
             except SearchStageTimeoutError as exc:
                 _write_minimal_stage1_checkpoint(
@@ -788,6 +823,7 @@ def main() -> None:
                         ranking_timeout_s=360.0,
                         ranking_top_n=1,
                         ranking_candidate_timeout_s=360.0,
+                        seed_trials=extra_seed_trials,
                     )
                 except SearchStageTimeoutError as exc:
                     _append_campaign_log(log_path, f"stage1_optuna_search fallback_5m_failed reason={exc}")
@@ -1088,7 +1124,11 @@ def main() -> None:
                 _stage2_timeout_check()
                 event = heartbeat.get("event", "stage2_progress")
                 subphase = "stage2_full_verdict"
-                if event in {"stage2_prepare_variants_started", "stage2_prepare_variants_progress"}:
+                if event in {
+                    "stage2_prepare_variants_started",
+                    "stage2_prepare_variants_progress",
+                    "stage2_prepare_variant_unit_completed",
+                }:
                     subphase = "stage2_prepare_variants"
                 elif event in {
                     "stage2_compare_windows_started",
@@ -1106,7 +1146,12 @@ def main() -> None:
                 stage2_state["completed"] = completed
                 stage2_state["total"] = total
                 stage2_state["last_progress_at"] = datetime.now(UTC).timestamp()
-                stage2_state["last_unit"] = heartbeat.get("window_label") or heartbeat.get("variant") or event
+                stage2_state["last_unit"] = (
+                    heartbeat.get("unit")
+                    or heartbeat.get("window_label")
+                    or heartbeat.get("variant")
+                    or event
+                )
                 _update_status(
                     status_path,
                     phase="stage2_full_verdict",
@@ -1121,11 +1166,10 @@ def main() -> None:
                     full_training_decision="defer_full_training",
                     full_training_blockers=["smoke_campaign_incomplete"],
                 )
-                if event != "stage2_prepare_variants_progress" or completed == total:
-                    _append_campaign_log(
-                        log_path,
-                        f"{subphase} event={event} completed={completed}/{total} unit={stage2_state['last_unit']}",
-                    )
+                _append_campaign_log(
+                    log_path,
+                    f"{subphase} event={event} completed={completed}/{total} unit={stage2_state['last_unit']}",
+                )
 
             _update_status(
                 status_path,

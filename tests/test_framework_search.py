@@ -815,8 +815,17 @@ class SearchReportSerializationTests(unittest.TestCase):
                 "validation_reports": [],
             }
 
+        def _fake_evaluate_variant(_variant, *, fast, progress_callback=None):
+            del fast
+            if progress_callback is not None:
+                progress_callback(1, "dev")
+                progress_callback(2, "2023-08")
+                progress_callback(3, "worst_windows")
+                progress_callback(4, "validation_bundle")
+            return summary
+
         with (
-            patch.object(FrameworkEvaluator, "_evaluate_variant", side_effect=[summary, summary, summary]),
+            patch.object(FrameworkEvaluator, "_evaluate_variant", side_effect=_fake_evaluate_variant),
             patch("zenquant.research.framework_search._build_comparison_payload", side_effect=_fake_build),
         ):
             evaluator = FrameworkEvaluator(HistoricalBacktestConfig(), split_spec=default_btc_split_spec())
@@ -837,6 +846,7 @@ class SearchReportSerializationTests(unittest.TestCase):
         self.assertEqual(report.comparison_payload["report_mode"], "summary_only")
         events = [str(item["event"]) for item in heartbeats]
         self.assertIn("stage2_prepare_variants_started", events)
+        self.assertIn("stage2_prepare_variant_unit_completed", events)
         self.assertIn("stage2_compare_windows_started", events)
         self.assertIn("comparison_window_completed", events)
         self.assertIn("stage2_rank_variants_completed", events)

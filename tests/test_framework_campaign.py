@@ -44,6 +44,148 @@ class FrameworkCampaignTests(unittest.TestCase):
         self.assertFalse(payload["full_training_allowed"])
         self.assertEqual(payload["full_training_decision"], "defer_full_training")
 
+    def test_campaign_reads_seed_trials_file(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp) / "results"
+            seed_file = Path(tmp) / "seeds.json"
+            seed_file.write_text(json.dumps([{"w_momentum": 0.3}]), encoding="utf-8")
+
+            captured: dict[str, object] = {}
+
+            class FakeEvaluator:
+                def __init__(self, *_args, **_kwargs) -> None:
+                    self._base_config = type(
+                        "BaseConfig",
+                        (),
+                        {
+                            "execution_timeframe": CAMPAIGN.Timeframe.TF_5M,
+                            "context_timeframe": CAMPAIGN.Timeframe.TF_1H,
+                        },
+                    )()
+                    self.readiness = {"promotion_ready": False, "blocked_by": "not_promotion_ready"}
+                    self.search_param_grid = {"w_momentum": [0.2, 0.3]}
+                    self.search_space_profile = {
+                        "profile": "baseline_anchored_train_only",
+                        "search_space_mode": "baseline_anchored_train_only",
+                        "baseline_anchored_search": True,
+                        "baseline_anchor_variant": "paulwei_baseline",
+                        "direction_weight_policy": {
+                            "correlation_constrained": True,
+                            "capped_direction_signal": "crowding_signal",
+                            "demoted_signal": "funding_alpha_signal",
+                            "demoted_signal_role": "state",
+                        },
+                    }
+                    self._deribit_status = {"enabled": True, "observation_ready": False, "research_ready": False}
+                    self._training_window_coverage = {"fast_windows": ["overall_recent"]}
+                    self.training_input_contract = {
+                        "primary_truth_source": "binance",
+                        "execution_framework": {
+                            "five_min_feature_aggregation_enabled": True,
+                            "five_min_direct_execution_enabled": True,
+                            "one_hour_bars_available": True,
+                            "four_hour_bars_available": True,
+                        },
+                        "state_feature_sources": {
+                            "hyperliquid_in_state_features": True,
+                            "deribit_in_state_features": True,
+                            "etf_flow_in_state_features": True,
+                            "cme_positioning_in_state_features": True,
+                        },
+                        "signal_stack_contract": {"direction_state_execution_split_enabled": True},
+                    }
+
+                def _evaluate_variant(self, *_args, **_kwargs):
+                    return CandidateSummary(
+                        variant="current",
+                        robust_score=1.0,
+                        selection_split="train",
+                        dev_sharpe=1.0,
+                        dev_pnl=10.0,
+                        dev_drawdown=0.1,
+                        avg_dev_sharpe=1.0,
+                        avg_dev_ratio=1.0,
+                        worst_dev_sharpe=0.5,
+                        weak_window_sharpe=0.2,
+                        negative_dev_worst_windows=0,
+                        promotion_candidate=False,
+                    )
+
+                def final_report(self, **_kwargs):
+                    return SearchReport(
+                        created_at="2026-04-11T00:00:00+00:00",
+                        symbol="BTCUSDT",
+                        readiness={"promotion_ready": False, "blocked_by": "not_promotion_ready", "detail": "missing", "data_ready": False},
+                        deribit_status={"enabled": True, "observation_ready": False, "research_ready": False},
+                        split_contract={"version": "btc_temporal_v2_train_selection_only", "windows": {"train": {}, "dev": {}, "test": {}}},
+                        training_window_coverage={},
+                        training_input_contract=self.training_input_contract,
+                        search_status={"search_space_profile": self.search_space_profile},
+                        current=CandidateSummary(
+                            variant="current",
+                            robust_score=1.0,
+                            selection_split="train",
+                            dev_sharpe=1.0,
+                            dev_pnl=10.0,
+                            dev_drawdown=0.1,
+                            avg_dev_sharpe=1.0,
+                            avg_dev_ratio=1.0,
+                            worst_dev_sharpe=0.5,
+                            weak_window_sharpe=0.2,
+                            negative_dev_worst_windows=0,
+                            promotion_candidate=False,
+                        ),
+                        paulwei_baseline=CandidateSummary(
+                            variant="paulwei_baseline",
+                            robust_score=1.0,
+                            selection_split="train",
+                            dev_sharpe=1.0,
+                            dev_pnl=10.0,
+                            dev_drawdown=0.1,
+                            avg_dev_sharpe=1.0,
+                            avg_dev_ratio=1.0,
+                            worst_dev_sharpe=0.5,
+                            weak_window_sharpe=0.2,
+                            negative_dev_worst_windows=0,
+                            promotion_candidate=False,
+                        ),
+                        optuna_best=None,
+                        rl_best=None,
+                        best_variant="current",
+                        best_score=1.0,
+                        best_params=None,
+                        comparison_payload={},
+                        smoke_completed=True,
+                    )
+
+            def fake_run_optuna_search(*_args, **kwargs):
+                captured["seed_trials"] = kwargs.get("seed_trials")
+                return {"w_momentum": 0.3}, [], {"train_candidate_diagnostics": {}, "empty_shortlist_reason": None}
+
+            argv = [
+                "run_framework_campaign.py",
+                "--output-dir",
+                str(out),
+                "--seed-trials-file",
+                str(seed_file),
+            ]
+            with (
+                patch.object(sys, "argv", argv),
+                patch.dict("os.environ", {"ZENQUANT_LOOP_LAUNCHER_PID": "4242"}, clear=False),
+                patch("importlib.util.find_spec", return_value=object()),
+                patch.object(CAMPAIGN, "FrameworkEvaluator", FakeEvaluator),
+                patch.object(CAMPAIGN, "run_optuna_search", side_effect=fake_run_optuna_search),
+                patch.object(CAMPAIGN, "write_search_report"),
+                patch.object(CAMPAIGN, "build_markdown_report", return_value="# ok"),
+            ):
+                CAMPAIGN.main()
+
+            status = json.loads((out / "campaign_status.json").read_text(encoding="utf-8"))
+
+        self.assertEqual(captured["seed_trials"], [{"w_momentum": 0.3}])
+        self.assertEqual(status["launcher_pid"], 4242)
+        self.assertIsInstance(status["campaign_pid"], int)
+
     def test_campaign_resumes_from_stage1_checkpoint(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             out = Path(tmp) / "results"

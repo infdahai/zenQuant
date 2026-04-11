@@ -67,6 +67,18 @@ def _etf_flow_source_metadata(macro_dir: Path) -> dict[str, Any]:
     }
 
 
+def _dedupe_seed_trials(seed_trials: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    deduped: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for trial in seed_trials:
+        key = json.dumps(trial, sort_keys=True, separators=(",", ":"))
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(dict(trial))
+    return deduped
+
+
 def _window_has_timeframe_rows(
     root_dir: Path,
     symbol: str,
@@ -598,17 +610,46 @@ class FrameworkEvaluator:
             self.candidate_variant(optuna_params, name="optuna_tuned", label="Optuna Tuned") if optuna_params else None
         )
         rl_variant = self.candidate_variant(rl_params, name="rl_tuned", label="RL Tuned") if rl_params else None
+        variant_specs = [
+            ("current", self._current_variant),
+            ("paulwei_baseline", self._paulwei_variant),
+            *([("optuna_tuned", optuna_variant)] if optuna_variant is not None else []),
+            *([("rl_tuned", rl_variant)] if rl_variant is not None else []),
+        ]
+        prepare_total_units = max(1, len(variant_specs) * 4)
+
+        def _variant_progress(variant_name: str, variant_index: int):
+            def _emit(step_completed: int, unit: str) -> None:
+                if status_callback is None:
+                    return
+                status_callback(
+                    event="stage2_prepare_variant_unit_completed",
+                    variant=variant_name,
+                    unit=unit,
+                    completed_units=(variant_index * 4) + step_completed,
+                    total_units=prepare_total_units,
+                )
+            return _emit
+
         if status_callback is not None:
-            status_callback(event="stage2_prepare_variants_started", completed_units=0, total_units=4)
-        current_summary = self._evaluate_variant(self._current_variant, fast=not full)
+            status_callback(event="stage2_prepare_variants_started", completed_units=0, total_units=prepare_total_units)
+        current_summary = self._evaluate_variant(
+            self._current_variant,
+            fast=not full,
+            progress_callback=_variant_progress("current", 0),
+        )
         if status_callback is not None:
             status_callback(
                 event="stage2_prepare_variants_progress",
                 variant="current",
-                completed_units=1,
-                total_units=4,
+                completed_units=4,
+                total_units=prepare_total_units,
             )
-        paulwei_summary = self._evaluate_variant(self._paulwei_variant, fast=not full)
+        paulwei_summary = self._evaluate_variant(
+            self._paulwei_variant,
+            fast=not full,
+            progress_callback=_variant_progress("paulwei_baseline", 1),
+        )
         summaries = {
             "current": current_summary,
             "paulwei_baseline": paulwei_summary,
@@ -617,26 +658,35 @@ class FrameworkEvaluator:
             status_callback(
                 event="stage2_prepare_variants_progress",
                 variant="paulwei_baseline",
-                completed_units=2,
-                total_units=4,
+                completed_units=8,
+                total_units=prepare_total_units,
             )
         if optuna_variant is not None:
-            summaries["optuna_tuned"] = self._evaluate_variant(optuna_variant, fast=not full)
+            summaries["optuna_tuned"] = self._evaluate_variant(
+                optuna_variant,
+                fast=not full,
+                progress_callback=_variant_progress("optuna_tuned", 2),
+            )
             if status_callback is not None:
                 status_callback(
                     event="stage2_prepare_variants_progress",
                     variant="optuna_tuned",
-                    completed_units=3,
-                    total_units=4,
+                    completed_units=12,
+                    total_units=prepare_total_units,
                 )
         if rl_variant is not None:
-            summaries["rl_tuned"] = self._evaluate_variant(rl_variant, fast=not full)
+            rl_index = 3 if optuna_variant is not None else 2
+            summaries["rl_tuned"] = self._evaluate_variant(
+                rl_variant,
+                fast=not full,
+                progress_callback=_variant_progress("rl_tuned", rl_index),
+            )
             if status_callback is not None:
                 status_callback(
                     event="stage2_prepare_variants_progress",
                     variant="rl_tuned",
-                    completed_units=4,
-                    total_units=4,
+                    completed_units=prepare_total_units,
+                    total_units=prepare_total_units,
                 )
 
         best_name, best_summary = max(summaries.items(), key=lambda item: item[1].robust_score)
@@ -711,10 +761,18 @@ class FrameworkEvaluator:
             smoke_completed=full,
         )
 
-    def _evaluate_variant(self, variant: VariantSpec, *, fast: bool) -> CandidateSummary:
+    def _evaluate_variant(
+        self,
+        variant: VariantSpec,
+        *,
+        fast: bool,
+        progress_callback: Any | None = None,
+    ) -> CandidateSummary:
         cache_key = (self._variant_key(variant), fast)
         cached = self._summary_cache.get(cache_key)
         if cached is not None:
+            if progress_callback is not None:
+                progress_callback(4, "cached")
             return cached
         windows = self._dev_windows
         wf_windows = self._fast_dev_wf_windows if fast else self._full_dev_wf_windows
@@ -725,14 +783,22 @@ class FrameworkEvaluator:
             start_ns=dev_window.start_ns,
             end_ns=dev_window.end_ns,
         )
+        if progress_callback is not None:
+            progress_callback(1, "dev")
         weak_window = next(window for window in windows if window.label == "2023-08")
         weak_result = self._run_variant_backtest_cached(variant, start_ns=weak_window.start_ns, end_ns=weak_window.end_ns)
+        if progress_callback is not None:
+            progress_callback(2, "2023-08")
         worst_periods = [window for window in windows if window.label not in {"dev", "2023-08"}]
         worst_results = [
             self._run_variant_backtest_cached(variant, start_ns=window.start_ns, end_ns=window.end_ns)
             for window in worst_periods
         ]
+        if progress_callback is not None:
+            progress_callback(3, "worst_windows")
         wf_metrics = self._run_validation_bundle_cached(variant, wf_windows)
+        if progress_callback is not None:
+            progress_callback(4, "validation_bundle")
         negative_worst_windows = sum(1 for result in worst_results if result.sharpe < 0)
 
         baseline = None
@@ -1026,6 +1092,10 @@ def run_optuna_search(
     ranking_timeout_s: float | None = None,
     ranking_top_n: int | None = None,
     ranking_candidate_timeout_s: float | None = None,
+    seed_trials: list[dict[str, Any]] | None = None,
+    stage1_parallel_mode: str = "serial",
+    stage1_max_workers: int | None = None,
+    stage1_batch_size: int = 1,
 ) -> tuple[dict[str, Any] | None, list[dict[str, Any]], dict[str, Any]]:
     try:
         import optuna  # noqa: F401
@@ -1041,6 +1111,14 @@ def run_optuna_search(
             "empty_shortlist_reason": "all_negative_primary_metric",
         }
     effective_execution_timeframe = search_execution_timeframe or evaluator._base_config.execution_timeframe
+    resolved_seed_trials = (
+        baseline_anchor_seed_trials()[:n_trials]
+        if evaluator.search_space_profile.get("baseline_anchored_search", False)
+        else []
+    )
+    if seed_trials:
+        resolved_seed_trials.extend(dict(trial) for trial in seed_trials)
+    resolved_seed_trials = _dedupe_seed_trials(resolved_seed_trials)[:n_trials]
     worker_config = CampaignConfig(
         data_root=evaluator._base_config.root_dir,
         symbol=evaluator._base_config.symbol,
@@ -1052,11 +1130,7 @@ def run_optuna_search(
         search_space=SearchSpace(strategy_params=evaluator.search_param_grid),
         sweep_mode="bayesian",
         n_trials=n_trials,
-        seed_trials=(
-            baseline_anchor_seed_trials()[:n_trials]
-            if evaluator.search_space_profile.get("baseline_anchored_search", False)
-            else []
-        ),
+        seed_trials=resolved_seed_trials,
         wf_splits=[],
         top_n_for_validation=ranking_top_n if ranking_top_n is not None else min(5, max(1, n_trials)),
         robustness_seeds=[],
@@ -1066,6 +1140,9 @@ def run_optuna_search(
         status_callback=status_callback,
         trial_timeout_s=trial_timeout_s,
         stage_total_timeout_s=stage_total_timeout_s,
+        stage1_parallel_mode=stage1_parallel_mode,
+        stage1_max_workers=stage1_max_workers,
+        stage1_batch_size=stage1_batch_size,
     )
     sweep = run_search_stage(worker_config)
     ranking_started_at = datetime.now(UTC).timestamp()

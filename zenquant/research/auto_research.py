@@ -33,7 +33,7 @@ import json
 import math
 import os
 import time
-from concurrent.futures import ProcessPoolExecutor, as_completed
+from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, as_completed, wait
 from concurrent.futures import TimeoutError as FutureTimeoutError
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
@@ -149,6 +149,9 @@ class CampaignConfig:
     status_callback: Any | None = None
     trial_timeout_s: float | None = None
     stage_total_timeout_s: float | None = None
+    stage1_parallel_mode: str = "serial"
+    stage1_max_workers: int | None = None
+    stage1_batch_size: int = 1
 
 
 # ── Results ───────────────────────────────────────────────────
@@ -276,6 +279,14 @@ def _run_backtest_worker(
 def _max_workers() -> int:
     cpu_count = os.cpu_count() or 4
     return max(1, min(cpu_count - 2, 8))
+
+
+def _best_trial_snapshot(study: Any) -> tuple[float | None, dict[str, Any] | None]:
+    best_trials = [trial for trial in study.trials if getattr(trial, "value", None) is not None]
+    if not best_trials:
+        return None, None
+    best_trial = max(best_trials, key=lambda trial: float(trial.value))
+    return float(best_trial.value), dict(best_trial.params)
 
 
 class Campaign:
@@ -488,6 +499,8 @@ class Campaign:
 
         # Collect all results for ranking
         all_results: list[dict[str, Any]] = []
+        split = self._config.split_spec
+        assert split is not None
 
         def objective(trial: optuna.Trial) -> float:
             trial_number = trial.number + 1
@@ -507,8 +520,6 @@ class Campaign:
             for key, values in all_params.items():
                 params[key] = trial.suggest_categorical(key, values)
 
-            split = self._config.split_spec
-            assert split is not None
             args = (
                 params,
                 str(self._config.data_root),
@@ -551,21 +562,114 @@ class Campaign:
         for params in self._config.seed_trials[:n_trials]:
             study.enqueue_trial(dict(params))
 
-        def _trial_callback(study: Any, trial: Any) -> None:
-            if self._config.status_callback is None:
-                return
-            best_params = dict(study.best_trial.params) if study.best_trial is not None else None
-            self._config.status_callback(
-                event="trial_completed",
-                current_trial=trial.number + 1,
-                completed_trials=len(all_results),
-                total_trials=n_trials,
-                best_value_so_far=study.best_value if study.best_trial is not None else None,
-                best_params_so_far=best_params,
-                runtime_s=time.time() - start,
-            )
+        if self._config.stage1_parallel_mode == "cpu_parallel" and n_trials > 1:
+            max_workers = self._config.stage1_max_workers or self._workers
+            batch_size = max(1, min(self._config.stage1_batch_size, max_workers))
+            completed_trials = 0
+            launched_trials = 0
 
-        study.optimize(objective, n_trials=n_trials, n_jobs=1, callbacks=[_trial_callback])
+            with ProcessPoolExecutor(max_workers=max_workers) as pool:
+                pending: dict[Any, tuple[Any, int, dict[str, Any], float]] = {}
+
+                while completed_trials < n_trials:
+                    if self._config.stage_total_timeout_s is not None and (time.time() - start) > self._config.stage_total_timeout_s:
+                        pool.shutdown(wait=False, cancel_futures=True)
+                        raise SearchStageTimeoutError(
+                            f"stage1_optuna_timeout: no completed result within {self._config.stage_total_timeout_s:.0f}s"
+                        )
+
+                    while launched_trials < n_trials and len(pending) < batch_size:
+                        trial = study.ask()
+                        trial_number = trial.number + 1
+                        started_trial_at = time.time()
+                        if self._config.status_callback is not None:
+                            self._config.status_callback(
+                                event="trial_started",
+                                current_trial=trial_number,
+                                completed_trials=completed_trials,
+                                total_trials=n_trials,
+                                runtime_s=started_trial_at - start,
+                            )
+                        params: dict[str, Any] = {}
+                        for key, values in all_params.items():
+                            params[key] = trial.suggest_categorical(key, values)
+                        args = (
+                            params,
+                            str(self._config.data_root),
+                            self._config.symbol,
+                            self._config.starting_equity,
+                            self._config.execution_timeframe.value,
+                            self._config.bias_timeframe.value,
+                            self._config.direction_timeframe.value,
+                            self._config.context_timeframe.value if self._config.context_timeframe else None,
+                            split.train.start_ns,
+                            split.train.end_ns,
+                            None,
+                        )
+                        future = pool.submit(_run_backtest_worker, args)
+                        pending[future] = (trial, trial_number, params, started_trial_at)
+                        launched_trials += 1
+
+                    if not pending:
+                        break
+
+                    done, _ = wait(list(pending.keys()), timeout=1.0, return_when=FIRST_COMPLETED)
+                    if not done:
+                        if self._config.trial_timeout_s is not None:
+                            timed_out = [
+                                (future, meta)
+                                for future, meta in pending.items()
+                                if (time.time() - meta[3]) > self._config.trial_timeout_s
+                            ]
+                            if timed_out:
+                                pool.shutdown(wait=False, cancel_futures=True)
+                                trial_number = timed_out[0][1][1]
+                                raise SearchStageTimeoutError(
+                                    f"stage1_optuna_timeout: trial {trial_number} exceeded {self._config.trial_timeout_s:.0f}s"
+                                )
+                        continue
+
+                    for future in done:
+                        trial, trial_number, params, _started = pending.pop(future)
+                        try:
+                            _, metrics = future.result()
+                        except Exception:
+                            study.tell(trial, state=optuna.trial.TrialState.FAIL)
+                            raise
+
+                        self._tracker.record(params, metrics, tags=["sweep", "bayesian"])
+                        all_results.append({"params": params, "metrics": metrics})
+                        primary = metrics.get(self._config.primary_metric, 0)
+                        study.tell(trial, primary)
+                        completed_trials += 1
+
+                        if self._config.status_callback is not None:
+                            best_value, best_params = _best_trial_snapshot(study)
+                            self._config.status_callback(
+                                event="trial_completed",
+                                current_trial=trial_number,
+                                completed_trials=completed_trials,
+                                total_trials=n_trials,
+                                best_value_so_far=best_value,
+                                best_params_so_far=best_params,
+                                runtime_s=time.time() - start,
+                            )
+        else:
+            def _trial_callback(study: Any, trial: Any) -> None:
+                if self._config.status_callback is None:
+                    return
+                best_value, best_params = _best_trial_snapshot(study)
+                self._config.status_callback(
+                    event="trial_completed",
+                    current_trial=trial.number + 1,
+                    completed_trials=len(all_results),
+                    total_trials=n_trials,
+                    best_value_so_far=best_value,
+                    best_params_so_far=best_params,
+                    runtime_s=time.time() - start,
+                )
+
+            study.optimize(objective, n_trials=n_trials, n_jobs=1, callbacks=[_trial_callback])
 
         eligible_results = [
             item for item in all_results if int(item["metrics"].get("trade_count", 0) or 0) >= self._config.minimum_train_trade_count
