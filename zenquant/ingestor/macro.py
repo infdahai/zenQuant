@@ -10,21 +10,74 @@ All data is stored as Parquet for deterministic replay.
 
 from __future__ import annotations
 
+import csv
+import json
+import os
+import re
 import time
 from datetime import UTC, datetime
+from html import unescape
+from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any
+from urllib.error import HTTPError, URLError
+from urllib.parse import urlencode
+from urllib.request import Request, urlopen
 
-import requests
+try:
+    import requests
+except ModuleNotFoundError:
+    class _CompatResponse:
+        def __init__(self, status_code: int, text: str) -> None:
+            self.status_code = status_code
+            self.text = text
+
+        def raise_for_status(self) -> None:
+            if self.status_code >= 400:
+                raise HTTPError("", self.status_code, self.text, hdrs=None, fp=None)
+
+        def json(self) -> Any:
+            return json.loads(self.text)
+
+    class _RequestsCompat:
+        @staticmethod
+        def get(
+            url: str,
+            params: dict[str, Any] | None = None,
+            timeout: int = 10,
+            headers: dict[str, str] | None = None,
+        ) -> _CompatResponse:
+            final_url = f"{url}?{urlencode(params)}" if params else url
+            request = Request(final_url, headers=headers or {})
+            try:
+                with urlopen(request, timeout=timeout) as response:
+                    status_code = getattr(response, "status", 200)
+                    text = response.read().decode("utf-8")
+                return _CompatResponse(status_code, text)
+            except HTTPError as exc:
+                body = exc.read().decode("utf-8", errors="ignore") if exc.fp is not None else str(exc)
+                return _CompatResponse(exc.code, body)
+            except URLError as exc:
+                raise RuntimeError(str(exc)) from exc
+
+    requests = _RequestsCompat()
 
 REQUEST_TIMEOUT = 10
 REQUEST_DELAY = 0.5
+DEFAULT_BTC_ETF_FLOW_FARSIDE_URL = "https://farside.co.uk/bitcoin-etf-flow-all-data/"
+DEFAULT_BITBO_ETF_FLOW_URL = "https://bitbo.io/treasuries/etf-flows/"
+DEFAULT_COINGECKO_BTC_MARKET_CHART_URL = "https://api.coingecko.com/api/v3/coins/bitcoin/market_chart"
+DEFAULT_HTTP_HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/135.0 Safari/537.36",
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "Accept-Language": "en-US,en;q=0.9",
+}
 
 
 def _get(url: str, params: dict[str, Any] | None = None) -> Any:
     """GET with timeout and basic error handling."""
     try:
-        resp = requests.get(url, params=params, timeout=REQUEST_TIMEOUT)
+        resp = requests.get(url, params=params, timeout=REQUEST_TIMEOUT, headers=DEFAULT_HTTP_HEADERS)
         resp.raise_for_status()
         return resp.json()
     except Exception as e:
@@ -48,6 +101,312 @@ def _save_parquet(records: list[dict], output_path: Path) -> int:
     output_path.parent.mkdir(parents=True, exist_ok=True)
     df.to_parquet(output_path, index=False)
     return len(records)
+
+
+def _write_etf_flow_metadata(output_dir: Path, metadata: dict[str, Any]) -> None:
+    metadata_path = output_dir / "btc_etf_netflow" / "metadata.json"
+    metadata_path.parent.mkdir(parents=True, exist_ok=True)
+    metadata_path.write_text(json.dumps(metadata, indent=2), encoding="utf-8")
+
+
+def read_btc_etf_flow_metadata(output_dir: Path) -> dict[str, Any]:
+    metadata_path = output_dir / "btc_etf_netflow" / "metadata.json"
+    if not metadata_path.exists():
+        return {
+            "etf_flow_source": None,
+            "etf_flow_source_confidence": "missing",
+            "etf_flow_last_success_at": None,
+        }
+    payload = json.loads(metadata_path.read_text(encoding="utf-8"))
+    return {
+        "etf_flow_source": payload.get("etf_flow_source"),
+        "etf_flow_source_confidence": payload.get("etf_flow_source_confidence", "unknown"),
+        "etf_flow_last_success_at": payload.get("etf_flow_last_success_at"),
+    }
+
+
+def _parse_btc_etf_flow_rows(rows: list[dict[str, str]]) -> list[dict[str, float | int]]:
+    parsed: list[dict[str, float | int]] = []
+    for row in rows:
+        lower = {str(k).strip().lower(): v for k, v in row.items()}
+        date_value = lower.get("date") or lower.get("day")
+        if not date_value:
+            continue
+        try:
+            date_part = str(date_value).strip().split(" ")[0]
+            ts_ns = int(datetime.fromisoformat(date_part).replace(tzinfo=UTC).timestamp() * 1_000_000_000)
+        except Exception:
+            continue
+
+        netflow_raw = (
+            lower.get("netflow")
+            or lower.get("net_flow")
+            or lower.get("net flow")
+            or lower.get("net_inflow")
+            or lower.get("net inflow")
+        )
+        if netflow_raw is None:
+            total = 0.0
+            found_component = False
+            for key, value in lower.items():
+                if key in {"date", "day", "total", "netflow", "net_flow", "net flow"}:
+                    continue
+                if not value:
+                    continue
+                try:
+                    total += float(str(value).replace(",", ""))
+                    found_component = True
+                except ValueError:
+                    continue
+            if not found_component:
+                continue
+            netflow = total
+        else:
+            try:
+                netflow = float(str(netflow_raw).replace(",", ""))
+            except ValueError:
+                continue
+
+        parsed.append({"ts_ns": ts_ns, "value": round(netflow * 1_000_000.0, 2)})
+    return parsed
+
+
+def _safe_float(value: Any) -> float | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    if not text or text in {"-", "—", "–", "nan", "None", "null"}:
+        return None
+    text = text.replace("$", "").replace(",", "").replace("%", "").replace("(", "-").replace(")", "")
+    match = re.search(r"-?\d+(?:\.\d+)?", text)
+    if not match:
+        return None
+    try:
+        return float(match.group(0))
+    except ValueError:
+        return None
+
+
+class _SimpleHtmlTableParser(HTMLParser):
+    def __init__(self) -> None:
+        super().__init__()
+        self.tables: list[list[list[str]]] = []
+        self._current_table: list[list[str]] | None = None
+        self._current_row: list[str] | None = None
+        self._current_cell: list[str] | None = None
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        del attrs
+        if tag == "table":
+            self._current_table = []
+        elif tag == "tr" and self._current_table is not None:
+            self._current_row = []
+        elif tag in {"th", "td"} and self._current_row is not None:
+            self._current_cell = []
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag in {"th", "td"} and self._current_cell is not None and self._current_row is not None:
+            self._current_row.append(unescape("".join(self._current_cell)).strip())
+            self._current_cell = None
+        elif tag == "tr" and self._current_row is not None and self._current_table is not None:
+            if any(cell for cell in self._current_row):
+                self._current_table.append(self._current_row)
+            self._current_row = None
+        elif tag == "table" and self._current_table is not None:
+            if self._current_table:
+                self.tables.append(self._current_table)
+            self._current_table = None
+
+    def handle_data(self, data: str) -> None:
+        if self._current_cell is not None:
+            self._current_cell.append(data)
+
+
+def _parse_farside_html_table(html: str) -> list[dict[str, float | int]]:
+    if "Just a moment" in html or "Enable JavaScript and cookies to continue" in html:
+        return []
+    parser = _SimpleHtmlTableParser()
+    parser.feed(html)
+    for table in parser.tables:
+        if not table:
+            continue
+        header = [cell.strip().lower() for cell in table[0]]
+        if "date" not in header:
+            continue
+        date_idx = header.index("date")
+        total_idx = next((idx for idx, cell in enumerate(header) if cell in {"total", "net flow", "netflow"}), None)
+        if total_idx is None:
+            continue
+        rows: list[dict[str, str]] = []
+        for row in table[1:]:
+            if date_idx >= len(row) or total_idx >= len(row):
+                continue
+            rows.append({"date": row[date_idx], "netflow": row[total_idx]})
+        parsed = _parse_btc_etf_flow_rows(rows)
+        if parsed:
+            return parsed
+    return []
+
+
+def _load_binance_daily_close_map(parquet_path: Path) -> dict[int, float]:
+    if not parquet_path.exists():
+        return {}
+    import pyarrow.parquet as pq
+
+    table = pq.read_table(parquet_path, columns=["open_time_ns", "close"])
+    timestamps = table.column("open_time_ns").to_pylist()
+    closes = table.column("close").to_pylist()
+    return {int(ts): float(close) for ts, close in zip(timestamps, closes, strict=False)}
+
+
+def _fetch_coingecko_daily_close_map(days: int = 120) -> dict[int, float]:
+    payload = _get(
+        DEFAULT_COINGECKO_BTC_MARKET_CHART_URL,
+        {"vs_currency": "usd", "days": days, "interval": "daily"},
+    )
+    if not isinstance(payload, dict):
+        return {}
+    prices = payload.get("prices")
+    if not isinstance(prices, list):
+        return {}
+    mapping: dict[int, float] = {}
+    for item in prices:
+        if not isinstance(item, list) or len(item) < 2:
+            continue
+        try:
+            ts_ms = int(item[0])
+            dt = datetime.fromtimestamp(ts_ms / 1000, tz=UTC).replace(hour=0, minute=0, second=0, microsecond=0)
+            mapping[int(dt.timestamp() * 1_000_000_000)] = float(item[1])
+        except Exception:
+            continue
+    return mapping
+
+
+def _parse_bitbo_etf_flows_html(
+    html: str,
+    *,
+    binance_daily_close: dict[int, float],
+) -> list[dict[str, float | int]]:
+    parser = _SimpleHtmlTableParser()
+    parser.feed(html)
+    for table in parser.tables:
+        if not table:
+            continue
+        header = [cell.strip() for cell in table[0]]
+        lower_header = [cell.lower() for cell in header]
+        if "date" not in lower_header or "totals" not in lower_header:
+            continue
+        date_idx = lower_header.index("date")
+        total_idx = lower_header.index("totals")
+        parsed: list[dict[str, float | int]] = []
+        for row in table[1:]:
+            if date_idx >= len(row) or total_idx >= len(row):
+                continue
+            try:
+                dt = datetime.strptime(row[date_idx].strip(), "%b %d, %Y").replace(tzinfo=UTC)
+            except ValueError:
+                continue
+            btc_flow = _safe_float(row[total_idx])
+            if btc_flow is None:
+                continue
+            ts_ns = int(dt.timestamp() * 1_000_000_000)
+            close = binance_daily_close.get(ts_ns)
+            if close is None:
+                continue
+            parsed.append({"ts_ns": ts_ns, "value": round(btc_flow * close, 2)})
+        if parsed:
+            return sorted(parsed, key=lambda item: int(item["ts_ns"]))
+    return []
+
+
+def _fetch_btc_etf_from_farside_html(source_url: str) -> list[dict[str, float | int]]:
+    response = requests.get(source_url, headers=DEFAULT_HTTP_HEADERS, timeout=REQUEST_TIMEOUT)
+    response.raise_for_status()
+    return _parse_farside_html_table(response.text)
+
+
+def _fetch_btc_etf_from_bitbo(source_url: str, *, binance_daily_close: dict[int, float]) -> list[dict[str, float | int]]:
+    response = requests.get(source_url, headers=DEFAULT_HTTP_HEADERS, timeout=REQUEST_TIMEOUT)
+    response.raise_for_status()
+    return _parse_bitbo_etf_flows_html(response.text, binance_daily_close=binance_daily_close)
+
+
+def fetch_btc_etf_netflow(output_dir: Path, csv_path: Path | None = None, csv_url: str | None = None) -> int:
+    """Fetch or import BTC spot ETF aggregate daily net flow.
+
+    Values are stored in USD under ``btc_etf_netflow/data.parquet``.
+    Source priority:
+      1. local CSV
+      2. Bitbo ETF flows
+      3. Farside HTML fallback
+    """
+    source_path = csv_path or (
+        Path(os.environ["ZENQUANT_BTC_ETF_FLOW_CSV"]) if os.getenv("ZENQUANT_BTC_ETF_FLOW_CSV") else None
+    )
+    bitbo_url = os.getenv("ZENQUANT_BTC_ETF_FLOW_BITBO_URL") or DEFAULT_BITBO_ETF_FLOW_URL
+    farside_url = csv_url or os.getenv("ZENQUANT_BTC_ETF_FLOW_CSV_URL") or os.getenv("ZENQUANT_BTC_ETF_FLOW_FARSIDE_URL") or DEFAULT_BTC_ETF_FLOW_FARSIDE_URL
+    local_daily_close = _load_binance_daily_close_map(
+        Path(os.getenv("ZENQUANT_BINANCE_BTC_1D_PATH", "data/raw/binance/klines/BTCUSDT/1d/data.parquet"))
+    )
+    records: list[dict[str, float | int]] = []
+    metadata = {
+        "etf_flow_source": None,
+        "etf_flow_source_confidence": "missing",
+        "etf_flow_last_success_at": None,
+        "etf_flow_source_detail": None,
+    }
+    if source_path is not None and source_path.exists():
+        rows = list(csv.DictReader(source_path.read_text(encoding="utf-8").splitlines()))
+        records = _parse_btc_etf_flow_rows(rows)
+        metadata.update(
+            {
+                "etf_flow_source": "local_csv",
+                "etf_flow_source_confidence": "high" if records else "missing",
+                "etf_flow_source_detail": str(source_path),
+            }
+        )
+    if not records:
+        try:
+            daily_close_map = dict(_fetch_coingecko_daily_close_map())
+            daily_close_map.update(local_daily_close)
+            records = _fetch_btc_etf_from_bitbo(bitbo_url, binance_daily_close=daily_close_map)
+            metadata.update(
+                {
+                    "etf_flow_source": "bitbo_etf_flows",
+                    "etf_flow_source_confidence": "medium" if records else "missing",
+                    "etf_flow_source_detail": bitbo_url,
+                }
+            )
+        except Exception as e:
+            print(f"  ETF flow Bitbo fallback failed {bitbo_url}: {e}")
+    if not records:
+        try:
+            records = _fetch_btc_etf_from_farside_html(farside_url)
+            metadata.update(
+                {
+                    "etf_flow_source": "farside_html",
+                    "etf_flow_source_confidence": "medium" if records else "missing",
+                    "etf_flow_source_detail": farside_url,
+                }
+            )
+        except Exception as e:
+            print(f"  ETF flow Farside fallback failed {farside_url}: {e}")
+
+    if not records:
+        _write_etf_flow_metadata(output_dir, metadata)
+        print("  No valid BTC ETF flow records")
+        return 0
+
+    output_path = output_dir / "btc_etf_netflow" / "data.parquet"
+    saved = _save_parquet(records, output_path)
+    metadata["etf_flow_last_success_at"] = datetime.now(UTC).isoformat()
+    _write_etf_flow_metadata(output_dir, metadata)
+    print(f"  Saved {saved} records to {output_path}")
+    return saved
+
+
+def import_btc_etf_netflow(output_dir: Path, csv_path: Path) -> int:
+    return fetch_btc_etf_netflow(output_dir, csv_path=csv_path)
 
 
 def fetch_fear_greed(output_dir: Path, limit: int = 365) -> int:
@@ -259,6 +618,8 @@ def run_all(output_dir: Path = Path("data/raw/macro"), days: int = 365) -> None:
     time.sleep(REQUEST_DELAY)
 
     total += fetch_active_addresses(output_dir, days=days)
+    time.sleep(REQUEST_DELAY)
+    total += fetch_btc_etf_netflow(output_dir)
     time.sleep(REQUEST_DELAY)
 
     total += fetch_transaction_count(output_dir, days=days)

@@ -20,6 +20,8 @@ from pathlib import Path
 import pyarrow as pa
 import pyarrow.parquet as pq
 
+from zenquant.ingestor.macro import fetch_btc_etf_netflow
+
 # yfinance tickers for each macro series
 SERIES = {
     "vix": "^VIX",  # CBOE Volatility Index
@@ -31,7 +33,6 @@ SERIES = {
     "ndx": "^NDX",  # Nasdaq 100 Index (direct)
     "gold": "GLD",  # Gold ETF
 }
-
 
 def download_yfinance(output_dir: Path, years: int = 7) -> None:
     """Download all yfinance-based macro series."""
@@ -91,6 +92,8 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Download macro indicator data")
     parser.add_argument("--output", type=Path, default=Path("data/raw/macro"))
     parser.add_argument("--years", type=int, default=7)
+    parser.add_argument("--btc-etf-flow-csv", type=Path, default=None)
+    parser.add_argument("--btc-etf-flow-url", type=str, default=None)
     args = parser.parse_args()
 
     print("Macro Data Download")
@@ -99,6 +102,9 @@ def main() -> None:
     print("=" * 50)
 
     download_yfinance(args.output, years=args.years)
+    if args.btc_etf_flow_csv is not None or args.btc_etf_flow_url is not None:
+        print("  Importing btc_etf_netflow...")
+        fetch_btc_etf_netflow(args.output, csv_path=args.btc_etf_flow_csv, csv_url=args.btc_etf_flow_url)
 
     print("\nDone.")
 

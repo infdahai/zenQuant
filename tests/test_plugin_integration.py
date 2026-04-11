@@ -127,8 +127,8 @@ class TestRegistryLoadsRealPlugins(unittest.TestCase):
         profile, registry = build_from_profile(PROFILE_PATH, plugin_root=PLUGIN_ROOT)
 
         self.assertEqual(
-            len(registry.signals), 9
-        )  # 9 active (macro_regime + vol_mr + cross_asset_flow disabled after IC review)
+            len(registry.signals), 11
+        )  # 11 active including etf_flow_state_signal + cme_positioning_state_signal
         self.assertEqual(len(registry.filters), 2)
         self.assertEqual(len(registry.sizers), 4)  # winning_position_sizer disabled
         self.assertEqual(len(registry.exits), 5)

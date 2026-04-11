@@ -82,6 +82,7 @@ class IndicatorEngineConfig:
     # NOTE: target_vol values are ANNUALIZED to match realized_vol output
     # which is scaled by sqrt(365 * bars_per_day).  BTC ~60-80% ann, ETH ~70-90%.
     target_vol_1h: float = 0.55
+    target_vol_5m: float = 0.45
     target_vol_4h: float = 0.60
     target_vol_1d: float = 0.50
     # Swing structure: N-bar pivot lookback (confirmed after N bars on each side)
@@ -286,6 +287,7 @@ class IndicatorEngine:
         self._ob_index_by_cutoff[index_key][candle.symbol] = ob_liq_z
 
         target_vol = {
+            Timeframe.TF_5M: self._config.target_vol_5m,
             Timeframe.TF_1H: self._config.target_vol_1h,
             Timeframe.TF_4H: self._config.target_vol_4h,
             Timeframe.TF_1D: self._config.target_vol_1d,
@@ -319,6 +321,21 @@ class IndicatorEngine:
                 # Cross-sectional macro factors (individual, not composite)
                 "ndx_z": macro_snap.ndx_z,
                 "gold_z": macro_snap.gold_z,
+                "btc_etf_netflow": macro_snap.btc_etf_netflow,
+                "btc_etf_netflow_z": macro_snap.btc_etf_netflow_z,
+                "btc_etf_flow_3d": macro_snap.btc_etf_flow_3d,
+                "btc_etf_flow_5d": macro_snap.btc_etf_flow_5d,
+                "btc_etf_flow_accel": macro_snap.btc_etf_flow_accel,
+                "btc_etf_positive_streak": macro_snap.btc_etf_positive_streak,
+                "btc_etf_negative_streak": macro_snap.btc_etf_negative_streak,
+                "cme_asset_mgr_net": macro_snap.cme_asset_mgr_net,
+                "cme_asset_mgr_net_z": macro_snap.cme_asset_mgr_net_z,
+                "cme_lev_money_net": macro_snap.cme_lev_money_net,
+                "cme_lev_money_net_z": macro_snap.cme_lev_money_net_z,
+                "cme_dealer_net": macro_snap.cme_dealer_net,
+                "cme_dealer_net_z": macro_snap.cme_dealer_net_z,
+                "cme_total_oi": macro_snap.cme_total_oi,
+                "cme_total_oi_z": macro_snap.cme_total_oi_z,
             }
             for flag in macro_snap.quality_flags:
                 if flag not in quality_flags:
@@ -651,7 +668,9 @@ def _realized_vol(candles: list[Candle], window: int, timeframe: Timeframe) -> f
         return 0.0
     mean_ret = sum(returns) / len(returns)
     variance = sum((value - mean_ret) ** 2 for value in returns) / (len(returns) - 1)
-    bar_per_day = {Timeframe.TF_1H: 24, Timeframe.TF_4H: 6, Timeframe.TF_1D: 1}.get(timeframe, 6)
+    bar_per_day = {Timeframe.TF_5M: 288, Timeframe.TF_1H: 24, Timeframe.TF_4H: 6, Timeframe.TF_1D: 1}.get(
+        timeframe, 6
+    )
     annualizer = math.sqrt(365 * bar_per_day)
     return max(0.0, math.sqrt(max(0.0, variance)) * annualizer)
 
