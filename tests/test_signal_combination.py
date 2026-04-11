@@ -12,6 +12,7 @@ class SignalCombinationAuditTests(unittest.TestCase):
     def test_infer_signal_role_uses_expected_grouping(self) -> None:
         self.assertEqual(infer_signal_role("multi_momentum_signal"), "direction")
         self.assertEqual(infer_signal_role("options_vol_signal"), "state")
+        self.assertEqual(infer_signal_role("etf_flow_state_signal"), "state")
         self.assertEqual(infer_signal_role("liquidity_signal"), "execution_modifier")
 
     def test_audit_normalizes_direction_weights_and_flags_redundancy(self) -> None:

@@ -58,6 +58,98 @@ def build_replay_toggles(params: dict[str, Any]) -> tuple[bool, bool]:
     return liquidation_data_enabled, liquidation_data_enabled and state_overlay_enabled
 
 
+def baseline_anchored_param_grid(*, include_liquidation_toggles: bool = False) -> dict[str, list[float]]:
+    grid: dict[str, list[float]] = {
+        "dd_step_1_long": [0.12, 0.15, 0.18],
+        "dd_step_1_short": [0.06, 0.08, 0.10],
+        "vpin_threshold": [0.08, 0.10],
+        "vol_shock_threshold": [0.90, 0.95, 1.00],
+        "target_vol_4h": [0.80, 0.95, 1.10],
+        "max_leverage": [4.5, 6.0],
+        "pyramid_initial_pct": [0.25, 0.30],
+        "pyramid_add_pct": [0.15, 0.20, 0.30],
+        "pyramid_short_initial_pct": [0.15, 0.20],
+        "pyramid_short_add_pct": [0.10, 0.16, 0.20],
+        "pyramid_spacing_atr": [0.50, 0.75, 1.00],
+        "exit_unwind_pct": [0.30, 0.35, 0.40],
+        "dca_max_adverse_atr": [2.5, 3.0],
+        "dca_spacing_atr": [0.75, 1.25, 1.75],
+        "dca_size_decay": [0.60, 0.75, 0.90],
+        "flip_min_confidence": [0.50, 0.60, 0.70],
+    }
+    if include_liquidation_toggles:
+        grid.update(
+            {
+                "liquidation_data_enabled": [0.0, 1.0],
+                "state_liquidation_overlay_enabled": [0.0, 1.0],
+                "liq_risk_guard_enabled": [0.0, 1.0],
+                "liq_risk_guard_threshold": [1.8, 2.2],
+                "liq_risk_guard_mult": [0.65, 0.75],
+            }
+        )
+    return grid
+
+
+def baseline_anchor_params() -> dict[str, float]:
+    return {
+        "dd_step_1_long": 0.15,
+        "dd_step_1_short": 0.08,
+        "vpin_threshold": 0.10,
+        "vol_shock_threshold": 0.95,
+        "target_vol_4h": 1.10,
+        "max_leverage": 6.0,
+        "pyramid_initial_pct": 0.30,
+        "pyramid_add_pct": 0.30,
+        "pyramid_short_initial_pct": 0.20,
+        "pyramid_short_add_pct": 0.20,
+        "pyramid_spacing_atr": 0.50,
+        "exit_unwind_pct": 0.30,
+        "dca_max_adverse_atr": 3.0,
+        "dca_spacing_atr": 0.75,
+        "dca_size_decay": 0.75,
+        "flip_min_confidence": 0.50,
+    }
+
+
+def baseline_anchor_seed_trials() -> list[dict[str, float]]:
+    baseline = baseline_anchor_params()
+    return [
+        dict(baseline),
+        {
+            **baseline,
+            "max_leverage": 4.5,
+            "target_vol_4h": 0.95,
+        },
+        {
+            **baseline,
+            "pyramid_add_pct": 0.15,
+            "pyramid_short_add_pct": 0.16,
+            "pyramid_spacing_atr": 0.75,
+        },
+        {
+            **baseline,
+            "exit_unwind_pct": 0.35,
+            "flip_min_confidence": 0.60,
+            "dca_spacing_atr": 1.25,
+        },
+        {
+            **baseline,
+            "dd_step_1_long": 0.18,
+            "dd_step_1_short": 0.10,
+            "dca_size_decay": 0.60,
+            "pyramid_spacing_atr": 1.00,
+        },
+        {
+            **baseline,
+            "max_leverage": 4.5,
+            "pyramid_add_pct": 0.15,
+            "pyramid_short_add_pct": 0.10,
+            "exit_unwind_pct": 0.40,
+            "flip_min_confidence": 0.70,
+        },
+    ]
+
+
 def core_param_grid(*, include_liquidation_toggles: bool = False) -> dict[str, list[float]]:
     grid: dict[str, list[float]] = {
         "dd_step_1_long": [0.12, 0.15, 0.18],
@@ -90,20 +182,47 @@ def core_param_grid(*, include_liquidation_toggles: bool = False) -> dict[str, l
     return grid
 
 
-def search_space_profile(*, include_liquidation_toggles: bool = False) -> dict[str, Any]:
+def param_grid_for_mode(
+    *,
+    mode: str = "execution_first_v2_correlation_constrained",
+    include_liquidation_toggles: bool = False,
+) -> dict[str, list[float]]:
+    if mode == "baseline_anchored_train_only":
+        return baseline_anchored_param_grid(include_liquidation_toggles=include_liquidation_toggles)
+    return core_param_grid(include_liquidation_toggles=include_liquidation_toggles)
+
+
+def search_space_profile(
+    *,
+    include_liquidation_toggles: bool = False,
+    mode: str = "execution_first_v2_correlation_constrained",
+) -> dict[str, Any]:
+    baseline_anchored = mode == "baseline_anchored_train_only"
     return {
         "profile": (
-            "execution_first_v2_correlation_constrained"
+            "baseline_anchored_train_only"
+            if baseline_anchored
+            else "execution_first_v2_correlation_constrained"
             if not include_liquidation_toggles
             else "execution_first_v2_correlation_constrained_liquidation"
         ),
+        "search_space_mode": mode,
+        "baseline_anchored_search": baseline_anchored,
+        "baseline_anchor_variant": "paulwei_baseline",
         "include_liquidation_toggles": include_liquidation_toggles,
         "direction_weight_policy": {
             "correlation_constrained": True,
             "primary_direction_signal": "multi_momentum_signal",
             "narrow_direction_signals": ["crash_reversal_signal", "cvd_signal"],
-            "redundant_pair": ["funding_alpha_signal", "crowding_signal"],
-            "frozen_or_capped_signal": "crowding_signal",
+            "direction_axes": [
+                "multi_momentum_signal",
+                "crash_reversal_signal",
+                "cvd_signal",
+                "crowding_signal",
+            ],
+            "capped_direction_signal": "crowding_signal",
+            "demoted_signal": "funding_alpha_signal",
+            "demoted_signal_role": "state",
         },
-        "param_count": len(core_param_grid(include_liquidation_toggles=include_liquidation_toggles)),
+        "param_count": len(param_grid_for_mode(mode=mode, include_liquidation_toggles=include_liquidation_toggles)),
     }
