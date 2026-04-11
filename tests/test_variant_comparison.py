@@ -186,6 +186,127 @@ class VariantComparisonTests(unittest.TestCase):
         self.assertIsNone(baseline_run["comparison_to_baseline"])
         self.assertEqual(len(payload["validation_reports"]), 2)
 
+    def test_compare_variants_summary_only_strips_heavy_diagnostics(self) -> None:
+        @dataclass
+        class FakeMetrics:
+            sharpe: float = 1.2
+            net_pnl: float = 100.0
+            max_drawdown: float = 0.1
+            profit_factor: float = 1.4
+            trade_count: int = 10
+            win_rate: float = 0.5
+
+        @dataclass
+        class FakeDiagnostics:
+            playbook_counts: dict[str, int]
+            risk_flag_counts: dict[str, int]
+            actionable_exit_counts: dict[str, int]
+
+        @dataclass
+        class FakeCycle:
+            cycle_position: float = 0.0
+            cycle_peak_distance: float = 0.0
+            cycle_trough_distance: float = 0.0
+            cycle_momentum: float = 0.0
+            cycle_confidence: float = 0.0
+
+        @dataclass
+        class FakeState:
+            timeframe: str = "4h"
+            directional_state: str = "bull"
+            regime: str = "trend"
+
+        @dataclass
+        class FakePlaybook:
+            timeframe: str = "4h"
+            playbook_id: str = "BULL_CONTINUATION"
+
+        class FakeResult:
+            metrics = FakeMetrics()
+            diagnostics = FakeDiagnostics({"BULL_CONTINUATION": 1}, {"OK": 1}, {"NONE": 1})
+            cycle_context = FakeCycle()
+
+        class FakeRunner:
+            def __init__(self) -> None:
+                self._market_states = [FakeState()]
+                self._playbooks = [FakePlaybook()]
+
+        with patch("zenquant.research.comparison._run_variant_backtest", return_value=(FakeRunner(), FakeResult())):
+            payload = compare_variants(
+                HistoricalBacktestConfig(root_dir=Path("data/raw/binance"), symbol="BTCUSDT"),
+                windows=[split_window_spec(default_btc_split_spec(), "dev")],
+                walk_forward_windows=[],
+                split_spec=default_btc_split_spec(),
+                comparison_split="dev",
+                report_mode="summary_only",
+            )
+
+        self.assertEqual(payload["report_mode"], "summary_only")
+        run = payload["window_reports"][0]
+        self.assertIn("metrics", run)
+        self.assertNotIn("diagnostics", run)
+        self.assertNotIn("cycle_context", run)
+        self.assertEqual(payload["validation_reports"][0]["windows"], [])
+
+    def test_compare_variants_smoke_minimal_emits_heartbeat_and_skips_validation_windows(self) -> None:
+        @dataclass
+        class FakeMetrics:
+            sharpe: float = 1.0
+            net_pnl: float = 10.0
+            max_drawdown: float = 0.1
+            profit_factor: float = 1.1
+            trade_count: int = 2
+            win_rate: float = 0.5
+
+        @dataclass
+        class FakeDiagnostics:
+            playbook_counts: dict[str, int]
+            risk_flag_counts: dict[str, int]
+            actionable_exit_counts: dict[str, int]
+
+        @dataclass
+        class FakeCycle:
+            cycle_position: float = 0.0
+            cycle_peak_distance: float = 0.0
+            cycle_trough_distance: float = 0.0
+            cycle_momentum: float = 0.0
+            cycle_confidence: float = 0.0
+
+        class FakeResult:
+            metrics = FakeMetrics()
+            diagnostics = FakeDiagnostics({"BULL_CONTINUATION": 1}, {"OK": 1}, {"NONE": 1})
+            cycle_context = FakeCycle()
+
+        class FakeRunner:
+            def __init__(self) -> None:
+                self._market_states = []
+                self._playbooks = []
+
+        heartbeats: list[dict[str, object]] = []
+
+        def _status_callback(**payload: object) -> None:
+            heartbeats.append(payload)
+
+        with patch("zenquant.research.comparison._run_variant_backtest", return_value=(FakeRunner(), FakeResult())):
+            payload = compare_variants(
+                HistoricalBacktestConfig(root_dir=Path("data/raw/binance"), symbol="BTCUSDT"),
+                windows=[split_window_spec(default_btc_split_spec(), "dev")],
+                walk_forward_windows=[split_window_spec(default_btc_split_spec(), "dev")],
+                split_spec=default_btc_split_spec(),
+                comparison_split="dev",
+                report_mode="summary_only",
+                comparison_compute_mode="smoke_minimal",
+                status_callback=_status_callback,
+            )
+
+        self.assertEqual(payload["comparison_compute_mode"], "smoke_minimal")
+        self.assertEqual(len(payload["validation_reports"]), 2)
+        self.assertTrue(all(item["windows"] == [] for item in payload["validation_reports"]))
+        events = [str(item["event"]) for item in heartbeats]
+        self.assertIn("comparison_window_completed", events)
+        self.assertIn("comparison_validation_completed", events)
+        self.assertIn("comparison_ranking_completed", events)
+
 
 if __name__ == "__main__":
     unittest.main()

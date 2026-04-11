@@ -28,7 +28,7 @@ def _ns(year: int, month: int, day: int) -> int:
 
 def default_btc_split_spec() -> DatasetSplitSpec:
     return DatasetSplitSpec(
-        version="btc_temporal_v1",
+        version="btc_temporal_v2_train_selection_only",
         asset="BTC",
         train=SplitWindow("train", _ns(2020, 1, 1), _ns(2024, 1, 1)),
         dev=SplitWindow("dev", _ns(2024, 1, 1), _ns(2026, 1, 1)),
@@ -40,6 +40,7 @@ def split_summary_json(spec: DatasetSplitSpec) -> dict[str, object]:
     return {
         "version": spec.version,
         "asset": spec.asset,
+        "selection_policy": "train_only_search_dev_diagnostics_test_acceptance",
         "train": asdict(spec.train),
         "dev": asdict(spec.dev),
         "test": asdict(spec.test),

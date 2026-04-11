@@ -283,7 +283,7 @@ class TestSearchSpace(unittest.TestCase):
         captured: list[tuple[int | None, int | None]] = []
 
         def fake_worker(args):
-            captured.append((args[4], args[5]))
+            captured.append((args[8], args[9]))
             return args[0], {
                 "sharpe": 1.0,
                 "sortino": 1.0,
@@ -334,7 +334,7 @@ class TestSearchSpace(unittest.TestCase):
         captured: list[tuple[int | None, int | None]] = []
 
         def fake_worker(args):
-            captured.append((args[4], args[5]))
+            captured.append((args[8], args[9]))
             return args[0], {
                 "sharpe": 1.0,
                 "sortino": 1.0,
@@ -385,7 +385,7 @@ class TestSearchSpace(unittest.TestCase):
         captured: list[tuple[int | None, int | None]] = []
 
         def fake_worker(args):
-            captured.append((args[4], args[5]))
+            captured.append((args[8], args[9]))
             return args[0], {
                 "sharpe": 1.0,
                 "sortino": 1.0,
@@ -448,7 +448,7 @@ class TestSearchSpace(unittest.TestCase):
             report = campaign.run()
 
         self.assertFalse(report.authoritative_promote_path)
-        self.assertEqual(report.split_contract_version, "btc_temporal_v1")
+        self.assertEqual(report.split_contract_version, "btc_temporal_v2_train_selection_only")
         self.assertFalse(report.test_evaluated)
 
     def test_bayesian_search_is_not_rejected_by_theoretical_grid_size(self) -> None:

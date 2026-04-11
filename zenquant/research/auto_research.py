@@ -34,19 +34,35 @@ import math
 import os
 import time
 from concurrent.futures import ProcessPoolExecutor, as_completed
+from concurrent.futures import TimeoutError as FutureTimeoutError
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
 from itertools import product
 from pathlib import Path
 from typing import Any
 
+from zenquant.domain import Timeframe
 from zenquant.historical import HistoricalBacktest, HistoricalBacktestConfig
 from zenquant.historical.perturbation import PerturbationConfig
-from zenquant.strategy import (
-    ARCStrategyConfig,
-    ExitEngineConfig,
-    PlaybookEngineConfig,
+from zenquant.research.framework_params import (
+    build_execution_config as _shared_build_execution_config,
 )
+from zenquant.research.framework_params import (
+    build_indicator_config as _shared_build_indicator_config,
+)
+from zenquant.research.framework_params import (
+    build_replay_toggles as _shared_build_replay_toggles,
+)
+from zenquant.research.framework_params import (
+    build_risk_config as _shared_build_risk_config,
+)
+from zenquant.research.framework_params import (
+    build_signal_weight_overrides as _shared_build_signal_weight_overrides,
+)
+from zenquant.research.framework_params import (
+    build_strategy_config as _shared_build_strategy_config,
+)
+from zenquant.strategy import ARCStrategyConfig, ExitEngineConfig, PlaybookEngineConfig
 
 from .experiment import ExperimentTracker
 from .promoter import (
@@ -60,6 +76,10 @@ from .promoter import (
 from .splits import DatasetSplitSpec, default_btc_split_spec, split_summary_json
 
 # ── Configuration ─────────────────────────────────────────────
+
+
+class SearchStageTimeoutError(RuntimeError):
+    """Raised when a search stage exceeds its allowed runtime budget."""
 
 
 @dataclass(slots=True)
@@ -93,6 +113,10 @@ class CampaignConfig:
     symbol: str = "BTCUSDT"
     starting_equity: float = 100_000.0
     split_spec: DatasetSplitSpec | None = None
+    execution_timeframe: Timeframe = Timeframe.TF_5M
+    bias_timeframe: Timeframe = Timeframe.TF_1D
+    direction_timeframe: Timeframe = Timeframe.TF_4H
+    context_timeframe: Timeframe | None = Timeframe.TF_1H
 
     # Search
     search_space: SearchSpace = field(default_factory=SearchSpace)
@@ -100,10 +124,12 @@ class CampaignConfig:
     sweep_mode: str = "grid"
     # Number of Optuna trials (only used when sweep_mode="bayesian")
     n_trials: int = 50
+    seed_trials: list[dict[str, Any]] = field(default_factory=list)
 
     # Walk-forward validation
     wf_splits: list[WalkForwardSplit] = field(default_factory=list)
     top_n_for_validation: int = 3
+    minimum_train_trade_count: int = 20
 
     # Robustness
     robustness_seeds: list[int] = field(default_factory=lambda: [42, 123, 456, 789, 1024])
@@ -120,6 +146,9 @@ class CampaignConfig:
     campaign_label: str = ""
     primary_metric: str = "sharpe"
     verbose: bool = True
+    status_callback: Any | None = None
+    trial_timeout_s: float | None = None
+    stage_total_timeout_s: float | None = None
 
 
 # ── Results ───────────────────────────────────────────────────
@@ -133,6 +162,8 @@ class SweepResult:
     results: list[dict[str, Any]]
     top_n: list[dict[str, Any]]
     runtime_s: float
+    train_candidate_diagnostics: dict[str, Any] = field(default_factory=dict)
+    empty_shortlist_reason: str | None = None
 
 
 @dataclass(slots=True)
@@ -172,19 +203,59 @@ class CampaignReport:
 
 
 def _run_backtest_worker(
-    args: tuple[dict[str, Any], str, str, float, int | None, int | None, dict[str, Any] | None],
+    args: tuple[
+        dict[str, Any],
+        str,
+        str,
+        float,
+        str,
+        str,
+        str,
+        str | None,
+        int | None,
+        int | None,
+        dict[str, Any] | None,
+    ],
 ) -> tuple[dict[str, Any], dict[str, float]]:
     """Run one backtest in a subprocess.  Module-level for pickling."""
-    params, root_dir, symbol, equity, start_ns, end_ns, perturbation_dict = args
-    strategy_config = _build_strategy_config(params)
+    (
+        params,
+        root_dir,
+        symbol,
+        equity,
+        execution_timeframe,
+        bias_timeframe,
+        direction_timeframe,
+        context_timeframe,
+        start_ns,
+        end_ns,
+        perturbation_dict,
+    ) = args
+    resolved_execution_timeframe = Timeframe(execution_timeframe)
+    strategy_config = _build_strategy_config(params, execution_timeframe=resolved_execution_timeframe)
+    risk_config = _shared_build_risk_config(params)
+    execution_cfg = _shared_build_execution_config(params)
+    indicator_cfg = _shared_build_indicator_config(params)
+    signal_weight_overrides = _shared_build_signal_weight_overrides(params)
+    liquidation_data_enabled, state_liquidation_overlay_enabled = _shared_build_replay_toggles(params)
     perturbation = PerturbationConfig(**perturbation_dict) if perturbation_dict else None
     config = HistoricalBacktestConfig(
         root_dir=Path(root_dir),
         symbol=symbol,
         starting_equity=equity,
+        execution_timeframe=resolved_execution_timeframe,
+        bias_timeframe=Timeframe(bias_timeframe),
+        direction_timeframe=Timeframe(direction_timeframe),
+        context_timeframe=Timeframe(context_timeframe) if context_timeframe else None,
         start_ns=start_ns,
         end_ns=end_ns,
         strategy_config=strategy_config,
+        risk_config=risk_config,
+        execution_config=execution_cfg,
+        indicator_config=indicator_cfg,
+        signal_weight_overrides=signal_weight_overrides,
+        liquidation_data_enabled=liquidation_data_enabled,
+        state_liquidation_overlay_enabled=state_liquidation_overlay_enabled,
         perturbation=perturbation,
     )
     bt = HistoricalBacktest(config)
@@ -298,6 +369,35 @@ class Campaign:
             return self._run_optuna_sweep()
         return self._run_grid_sweep()
 
+    def _train_candidate_diagnostics(
+        self,
+        results: list[dict[str, Any]],
+        eligible_results: list[dict[str, Any]],
+    ) -> tuple[dict[str, Any], str | None]:
+        raw_trial_count = len(results)
+        raw_nonzero_trade_trials = sum(1 for item in results if int(item["metrics"].get("trade_count", 0) or 0) > 0)
+        eligible_trade_count_trials = len(eligible_results)
+        max_train_trade_count = max((int(item["metrics"].get("trade_count", 0) or 0) for item in results), default=0)
+        max_train_sharpe = max((float(item["metrics"].get("sharpe", 0.0) or 0.0) for item in results), default=0.0)
+        empty_shortlist_reason = None
+        if not eligible_results:
+            if raw_nonzero_trade_trials == 0:
+                empty_shortlist_reason = "all_zero_trade"
+            elif max_train_trade_count < self._config.minimum_train_trade_count:
+                empty_shortlist_reason = "below_min_trade_threshold"
+            else:
+                empty_shortlist_reason = "all_negative_primary_metric"
+        return (
+            {
+                "raw_trial_count": raw_trial_count,
+                "raw_nonzero_trade_trials": raw_nonzero_trade_trials,
+                "eligible_trade_count_trials": eligible_trade_count_trials,
+                "max_train_trade_count": max_train_trade_count,
+                "max_train_sharpe": round(max_train_sharpe, 6),
+            },
+            empty_shortlist_reason,
+        )
+
     def _run_grid_sweep(self) -> SweepResult:
         start = time.time()
         param_grid = _build_param_grid(self._config.search_space)
@@ -315,6 +415,10 @@ class Campaign:
                 str(self._config.data_root),
                 self._config.symbol,
                 self._config.starting_equity,
+                self._config.execution_timeframe.value,
+                self._config.bias_timeframe.value,
+                self._config.direction_timeframe.value,
+                self._config.context_timeframe.value if self._config.context_timeframe else None,
                 split.train.start_ns,
                 split.train.end_ns,
                 None,  # perturbation
@@ -328,19 +432,31 @@ class Campaign:
         for params, metrics in results:
             self._tracker.record(params, metrics, tags=["sweep"])
 
+        ranked_results = [{"params": p, "metrics": m} for p, m in results]
+        eligible_results = [
+            item for item in ranked_results if int(item["metrics"].get("trade_count", 0) or 0) >= self._config.minimum_train_trade_count
+        ]
         # Rank
         sorted_results = sorted(
-            [{"params": p, "metrics": m} for p, m in results],
+            eligible_results,
             key=lambda x: x["metrics"].get(self._config.primary_metric, 0),
             reverse=True,
         )
         top_n = sorted_results[: self._config.top_n_for_validation]
+        if len(eligible_results) != len(ranked_results):
+            self._log(
+                f"Filtered {len(ranked_results) - len(eligible_results)} low-trade sweep candidates "
+                f"(min_train_trade_count={self._config.minimum_train_trade_count})"
+            )
 
+        diagnostics, empty_shortlist_reason = self._train_candidate_diagnostics(ranked_results, eligible_results)
         return SweepResult(
             total_combinations=len(param_grid),
             results=sorted_results,
             top_n=top_n,
             runtime_s=time.time() - start,
+            train_candidate_diagnostics=diagnostics,
+            empty_shortlist_reason=empty_shortlist_reason,
         )
 
     def _run_optuna_sweep(self) -> SweepResult:
@@ -374,6 +490,19 @@ class Campaign:
         all_results: list[dict[str, Any]] = []
 
         def objective(trial: optuna.Trial) -> float:
+            trial_number = trial.number + 1
+            started_trial_at = time.time()
+            if self._config.stage_total_timeout_s is not None and started_trial_at - start > self._config.stage_total_timeout_s:
+                raise SearchStageTimeoutError(
+                    f"stage1_optuna_timeout: no completed result within {self._config.stage_total_timeout_s:.0f}s"
+                )
+            if self._config.status_callback is not None:
+                self._config.status_callback(
+                    event="trial_started",
+                    current_trial=trial_number,
+                    total_trials=n_trials,
+                    runtime_s=started_trial_at - start,
+                )
             params: dict[str, Any] = {}
             for key, values in all_params.items():
                 params[key] = trial.suggest_categorical(key, values)
@@ -385,11 +514,26 @@ class Campaign:
                 str(self._config.data_root),
                 self._config.symbol,
                 self._config.starting_equity,
+                self._config.execution_timeframe.value,
+                self._config.bias_timeframe.value,
+                self._config.direction_timeframe.value,
+                self._config.context_timeframe.value if self._config.context_timeframe else None,
                 split.train.start_ns,
                 split.train.end_ns,
                 None,
             )
-            _, metrics = _run_backtest_worker(args)
+            if self._config.trial_timeout_s is not None:
+                with ProcessPoolExecutor(max_workers=1) as pool:
+                    future = pool.submit(_run_backtest_worker, args)
+                    try:
+                        _, metrics = future.result(timeout=self._config.trial_timeout_s)
+                    except FutureTimeoutError as exc:
+                        pool.shutdown(wait=False, cancel_futures=True)
+                        raise SearchStageTimeoutError(
+                            f"stage1_optuna_timeout: trial {trial_number} exceeded {self._config.trial_timeout_s:.0f}s"
+                        ) from exc
+            else:
+                _, metrics = _run_backtest_worker(args)
 
             self._tracker.record(params, metrics, tags=["sweep", "bayesian"])
             all_results.append({"params": params, "metrics": metrics})
@@ -404,25 +548,53 @@ class Campaign:
             direction="maximize",
             sampler=optuna.samplers.TPESampler(seed=42),
         )
-        study.optimize(objective, n_trials=n_trials, n_jobs=1)
+        for params in self._config.seed_trials[:n_trials]:
+            study.enqueue_trial(dict(params))
 
+        def _trial_callback(study: Any, trial: Any) -> None:
+            if self._config.status_callback is None:
+                return
+            best_params = dict(study.best_trial.params) if study.best_trial is not None else None
+            self._config.status_callback(
+                event="trial_completed",
+                current_trial=trial.number + 1,
+                completed_trials=len(all_results),
+                total_trials=n_trials,
+                best_value_so_far=study.best_value if study.best_trial is not None else None,
+                best_params_so_far=best_params,
+                runtime_s=time.time() - start,
+            )
+
+        study.optimize(objective, n_trials=n_trials, n_jobs=1, callbacks=[_trial_callback])
+
+        eligible_results = [
+            item for item in all_results if int(item["metrics"].get("trade_count", 0) or 0) >= self._config.minimum_train_trade_count
+        ]
         # Sort all evaluated results
         sorted_results = sorted(
-            all_results,
+            eligible_results,
             key=lambda x: x["metrics"].get(self._config.primary_metric, 0),
             reverse=True,
         )
         top_n = sorted_results[: self._config.top_n_for_validation]
+        if len(eligible_results) != len(all_results):
+            self._log(
+                f"Filtered {len(all_results) - len(eligible_results)} low-trade bayesian candidates "
+                f"(min_train_trade_count={self._config.minimum_train_trade_count})"
+            )
 
         self._log(
             f"Bayesian sweep complete: best {self._config.primary_metric} = {study.best_value:.4f} in {n_trials} trials"
         )
 
+        diagnostics, empty_shortlist_reason = self._train_candidate_diagnostics(all_results, eligible_results)
         return SweepResult(
             total_combinations=n_trials,
             results=sorted_results,
             top_n=top_n,
             runtime_s=time.time() - start,
+            train_candidate_diagnostics=diagnostics,
+            empty_shortlist_reason=empty_shortlist_reason,
         )
 
     # ── Stage 2: Walk-Forward ──────────────────────────────
@@ -438,6 +610,10 @@ class Campaign:
                     str(self._config.data_root),
                     self._config.symbol,
                     self._config.starting_equity,
+                    self._config.execution_timeframe.value,
+                    self._config.bias_timeframe.value,
+                    self._config.direction_timeframe.value,
+                    self._config.context_timeframe.value if self._config.context_timeframe else None,
                     split.val_start_ns,
                     split.val_end_ns,
                     None,
@@ -511,6 +687,10 @@ class Campaign:
                     str(cfg.data_root),
                     cfg.symbol,
                     cfg.starting_equity,
+                    cfg.execution_timeframe.value,
+                    cfg.bias_timeframe.value,
+                    cfg.direction_timeframe.value,
+                    cfg.context_timeframe.value if cfg.context_timeframe else None,
                     split.dev.start_ns,
                     split.dev.end_ns,
                     perturbation,
@@ -667,12 +847,15 @@ def _build_param_grid(space: SearchSpace) -> list[dict[str, Any]]:
     return [dict(zip(keys, combo)) for combo in product(*value_lists)]
 
 
-def _build_strategy_config(params: dict[str, Any]) -> ARCStrategyConfig:
-    """Build ARCStrategyConfig from a flat parameter dict."""
+def _build_strategy_config(
+    params: dict[str, Any],
+    *,
+    execution_timeframe: Timeframe = Timeframe.TF_5M,
+) -> ARCStrategyConfig:
+    """Build ARCStrategyConfig from shared mapping plus legacy playbook aliases."""
+    config = _shared_build_strategy_config(params)
     playbook_kwargs: dict[str, Any] = {}
     exit_kwargs: dict[str, Any] = {}
-    strategy_kwargs: dict[str, Any] = {}
-
     for key, value in params.items():
         if key == "preserve_capital_risk":
             playbook_kwargs["preserve_capital_transition_risk"] = value
@@ -684,17 +867,23 @@ def _build_strategy_config(params: dict[str, Any]) -> ARCStrategyConfig:
             playbook_kwargs["range_max_leverage"] = value
         elif key == "exit_transition_risk":
             exit_kwargs["transition_risk_exit_threshold"] = value
-        elif key == "target_vol_4h":
-            strategy_kwargs["target_vol_4h"] = value
-        elif key == "target_vol_1d":
-            strategy_kwargs["target_vol_1d"] = value
-        elif key == "trailing_stop_atr_mult":
-            strategy_kwargs["trailing_stop_atr_mult"] = value
-
+    existing_playbook = vars(config.playbook_config) if config.playbook_config is not None else {}
+    existing_exit = vars(config.exit_config) if config.exit_config is not None else {}
     return ARCStrategyConfig(
-        playbook_config=PlaybookEngineConfig(**playbook_kwargs) if playbook_kwargs else None,
-        exit_config=ExitEngineConfig(**exit_kwargs) if exit_kwargs else None,
-        **strategy_kwargs,
+        **{
+            **asdict(config),
+            "execution_timeframe": execution_timeframe,
+            "playbook_config": (
+                PlaybookEngineConfig(**{**existing_playbook, **playbook_kwargs})
+                if config.playbook_config is not None or playbook_kwargs
+                else None
+            ),
+            "exit_config": (
+                ExitEngineConfig(**{**existing_exit, **exit_kwargs})
+                if config.exit_config is not None or exit_kwargs
+                else None
+            ),
+        }
     )
 
 
@@ -706,6 +895,7 @@ def _config_to_dict(config: CampaignConfig) -> dict[str, Any]:
         "starting_equity": config.starting_equity,
         "split_contract": split_summary_json(config.split_spec or default_btc_split_spec()),
         "search_space": asdict(config.search_space),
+        "seed_trials": config.seed_trials,
         "wf_splits": [asdict(s) for s in config.wf_splits],
         "top_n_for_validation": config.top_n_for_validation,
         "robustness_seeds": config.robustness_seeds,

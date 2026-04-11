@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import random
+import time
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
@@ -11,6 +12,7 @@ import gymnasium as gym
 import numpy as np
 from gymnasium import spaces
 
+from zenquant.domain import Timeframe
 from zenquant.execution import ExecutionKernelConfig
 from zenquant.historical import HistoricalBacktest, HistoricalBacktestConfig
 from zenquant.indicator import IndicatorEngineConfig
@@ -80,6 +82,8 @@ TRAIN_WINDOWS = _train_windows(default_btc_split_spec())
 
 def build_strategy_config(params: dict[str, float]) -> ARCStrategyConfig:
     return ARCStrategyConfig(
+        execution_timeframe=Timeframe.TF_5M,
+        target_vol_5m=params.get("target_vol_5m", 0.70),
         target_vol_4h=params.get("target_vol_4h", 1.10),
         target_vol_1d=1.30,
         max_leverage=params.get("max_leverage", 6.0),
@@ -162,7 +166,10 @@ class ParamTunerEnv(gym.Env):
         super().__init__()
         self._param_grid = param_grid or PARAM_GRID
         self._split_spec = split_spec or default_btc_split_spec()
-        self._base_config = base_config or HistoricalBacktestConfig()
+        self._base_config = base_config or HistoricalBacktestConfig(
+            execution_timeframe=Timeframe.TF_5M,
+            context_timeframe=Timeframe.TF_1H,
+        )
         self._train_windows = _train_windows(self._split_spec)
 
         self._param_names = list(self._param_grid.keys())
@@ -209,6 +216,10 @@ class ParamTunerEnv(gym.Env):
             symbol=self._base_config.symbol,
             portfolio_symbol=self._base_config.portfolio_symbol,
             starting_equity=self._base_config.starting_equity,
+            execution_timeframe=self._base_config.execution_timeframe,
+            bias_timeframe=self._base_config.bias_timeframe,
+            direction_timeframe=self._base_config.direction_timeframe,
+            context_timeframe=self._base_config.context_timeframe,
             start_ns=start_ns,
             end_ns=end_ns,
             profile_path=self._base_config.profile_path,
@@ -256,6 +267,10 @@ def _evaluate_dev_candidate(
         symbol=base_config.symbol,
         portfolio_symbol=base_config.portfolio_symbol,
         starting_equity=base_config.starting_equity,
+        execution_timeframe=base_config.execution_timeframe,
+        bias_timeframe=base_config.bias_timeframe,
+        direction_timeframe=base_config.direction_timeframe,
+        context_timeframe=base_config.context_timeframe,
         start_ns=split_spec.dev.start_ns,
         end_ns=split_spec.dev.end_ns,
         profile_path=base_config.profile_path,
@@ -297,14 +312,36 @@ def train_tuner(
     param_grid: dict[str, list[float]] | None = None,
     split_spec: DatasetSplitSpec | None = None,
     base_config: HistoricalBacktestConfig | None = None,
-    selection_split: str = "dev",
+    selection_split: str = "train",
+    status_callback: Any | None = None,
+    total_timeout_s: float | None = None,
 ) -> dict[str, Any]:
-    """Train RL candidate explorer and return train/dev-ranked candidate summary."""
+    """Train RL candidate explorer and return a train-ranked candidate summary."""
     from stable_baselines3 import PPO
+    from stable_baselines3.common.callbacks import BaseCallback
 
     resolved_split = split_spec or default_btc_split_spec()
-    resolved_base = base_config or HistoricalBacktestConfig()
+    resolved_base = base_config or HistoricalBacktestConfig(
+        execution_timeframe=Timeframe.TF_5M,
+        context_timeframe=Timeframe.TF_1H,
+    )
+    started_at = time.time()
     env = ParamTunerEnv(param_grid=param_grid, split_spec=resolved_split, base_config=resolved_base)
+
+    class _ProgressCallback(BaseCallback):
+        def _on_step(self) -> bool:
+            completed_units = min(int(total_timesteps), max(0, int(self.num_timesteps)))
+            if status_callback is not None:
+                status_callback(
+                    event="rl_progress",
+                    completed_steps=completed_units,
+                    total_steps=int(total_timesteps),
+                    runtime_s=time.time() - started_at,
+                )
+            if total_timeout_s is not None and (time.time() - started_at) > total_timeout_s:
+                raise TimeoutError(f"stage1_rl_timeout: exceeded {total_timeout_s:.0f}s")
+            return True
+
     model = PPO(
         "MlpPolicy",
         env,
@@ -314,31 +351,48 @@ def train_tuner(
         n_epochs=4,
         learning_rate=3e-4,
     )
-    model.learn(total_timesteps=total_timesteps)
+    model.learn(total_timesteps=total_timesteps, callback=_ProgressCallback())
 
     results = env._results
     if not results:
         return {
             "best_params": {},
             "best_score": -10.0,
-            "candidate_source": "rl_train_dev_shortlist",
+            "candidate_source": "rl_train_shortlist",
             "train_metrics": {},
             "dev_metrics": {},
             "search_status": {
                 "selection_split": selection_split,
                 "episodes_completed": 0,
                 "train_only_search": True,
-                "dev_only_ranking": True,
+                "dev_only_ranking": False,
+                "dev_diagnostics_only": True,
             },
         }
 
+    if status_callback is not None:
+        status_callback(
+            event="rl_rank_dev_started",
+            completed_steps=min(len(results), int(total_timesteps)),
+            total_steps=int(total_timesteps),
+            runtime_s=time.time() - started_at,
+        )
     best_train = max(results, key=lambda item: item.candidate_score)
-    dev_metrics = _evaluate_dev_candidate(best_train.params, base_config=resolved_base, split_spec=resolved_split)
+    dev_metrics: dict[str, Any] = {}
+    if status_callback is not None:
+        status_callback(
+            event="rl_completed",
+            completed_steps=min(len(results), int(total_timesteps)),
+            total_steps=int(total_timesteps),
+            runtime_s=time.time() - started_at,
+            best_params_so_far=best_train.params,
+            best_value_so_far=best_train.candidate_score,
+        )
     return {
         "best_params": best_train.params,
-        "best_score": dev_metrics["score"],
+        "best_score": best_train.candidate_score,
         "best_sharpe": best_train.sharpe,
-        "candidate_source": "rl_train_dev_shortlist",
+        "candidate_source": "rl_train_shortlist",
         "train_metrics": {
             "selection_split": "train",
             "sharpe": best_train.sharpe,
@@ -351,8 +405,9 @@ def train_tuner(
         "all_results": [(result.sharpe, result.params) for result in sorted(results, key=lambda item: -item.candidate_score)[:10]],
         "search_status": {
             "selection_split": selection_split,
-            "episodes_completed": len(results),
+            "episodes_completed": min(len(results), int(total_timesteps)),
             "train_only_search": True,
-            "dev_only_ranking": selection_split == "dev",
+            "dev_only_ranking": False,
+            "dev_diagnostics_only": True,
         },
     }

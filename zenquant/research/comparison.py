@@ -180,6 +180,9 @@ def compare_variants(
     walk_forward_windows: list[WindowSpec] | None = None,
     split_spec: DatasetSplitSpec | None = None,
     comparison_split: str = "dev",
+    report_mode: str = "full_diagnostics",
+    comparison_compute_mode: str = "full",
+    status_callback: Any | None = None,
 ) -> dict[str, Any]:
     """Run one deterministic comparison bundle and return a JSON-ready payload."""
     variant_specs = variants if variants is not None else default_variant_specs()
@@ -192,11 +195,15 @@ def compare_variants(
         if walk_forward_windows is not None
         else default_walk_forward_windows(split_spec=resolved_split_spec, comparison_split=comparison_split)
     )
+    if comparison_compute_mode == "smoke_minimal":
+        wf_windows = []
 
     report: dict[str, Any] = {
         "created_at": datetime.now(UTC).isoformat(),
         "symbol": base_config.symbol,
         "portfolio_symbol": base_config.portfolio_symbol,
+        "report_mode": report_mode,
+        "comparison_compute_mode": comparison_compute_mode,
         "variants": [asdict(variant) for variant in variant_specs],
         "windows": [asdict(window) for window in comparison_windows],
         "window_reports": [],
@@ -204,11 +211,34 @@ def compare_variants(
         "split_scope": "train_dev_only" if comparison_split == "dev" else "frozen_test_acceptance",
     }
 
+    include_diagnostics = report_mode == "full_diagnostics"
+    total_window_units = len(variant_specs) * len(comparison_windows)
+    total_validation_units = len(variant_specs) * len(wf_windows)
+    total_ranking_units = max(1, len(variant_specs))
+    total_units = total_window_units + total_validation_units + total_ranking_units
+    completed_units = 0
     window_runs_by_variant: dict[str, list[dict[str, Any]]] = {}
     for variant in variant_specs:
         variant_runs: list[dict[str, Any]] = []
         for window in comparison_windows:
-            variant_runs.append(_run_window(base_config, variant, window))
+            run = _run_window(base_config, variant, window)
+            if not include_diagnostics:
+                run = {
+                    "variant": run["variant"],
+                    "window_label": run["window_label"],
+                    "metrics": run["metrics"],
+                    "win_rate": run["win_rate"],
+                }
+            variant_runs.append(run)
+            completed_units += 1
+            if status_callback is not None:
+                status_callback(
+                    event="comparison_window_completed",
+                    variant=variant.name,
+                    window_label=window.label,
+                    completed_units=completed_units,
+                    total_units=total_units,
+                )
         window_runs_by_variant[variant.name] = variant_runs
         report["window_reports"].extend(variant_runs)
 
@@ -221,8 +251,21 @@ def compare_variants(
         run["comparison_to_baseline"] = _comparison_delta(run, baseline_variant) if baseline_variant else None
 
     for variant in variant_specs:
-        validation = _run_walk_forward_validation(base_config, variant, wf_windows)
+        validation = _run_walk_forward_validation(
+            base_config,
+            variant,
+            wf_windows,
+            include_windows=include_diagnostics,
+        )
         report["validation_reports"].append(validation)
+        completed_units += len(wf_windows)
+        if status_callback is not None:
+            status_callback(
+                event="comparison_validation_completed",
+                variant=variant.name,
+                completed_units=completed_units,
+                total_units=total_units,
+            )
 
     baseline_validation = next(
         (item for item in report["validation_reports"] if item["variant"] == "paulwei_baseline"),
@@ -232,6 +275,24 @@ def compare_variants(
         validation["comparison_to_baseline"] = (
             None if validation["variant"] == "paulwei_baseline" else _validation_delta(validation, baseline_validation)
         )
+
+    ranked_variants = sorted(
+        report["validation_reports"],
+        key=lambda item: float(item.get("avg_test_sharpe", 0.0)),
+        reverse=True,
+    )
+    if not ranked_variants:
+        ranked_variants = [{"variant": variant.name} for variant in variant_specs]
+    for rank, validation in enumerate(ranked_variants, start=1):
+        completed_units += 1
+        if status_callback is not None:
+            status_callback(
+                event="comparison_ranking_completed",
+                variant=validation["variant"],
+                rank=rank,
+                completed_units=min(completed_units, total_units),
+                total_units=total_units,
+            )
 
     return report
 
@@ -364,25 +425,29 @@ def filtered_worst_period_windows(
 
 def _run_window(base_config: HistoricalBacktestConfig, variant: VariantSpec, window: WindowSpec) -> dict[str, Any]:
     runner, result = _run_variant_backtest(base_config, variant, start_ns=window.start_ns, end_ns=window.end_ns)
-    states = [state for state in runner._market_states if state.timeframe == base_config.execution_timeframe]
-    playbooks = [playbook for playbook in runner._playbooks if playbook.timeframe == base_config.execution_timeframe]
-    return {
+    payload = {
         "variant": variant.name,
         "window_label": window.label,
         "metrics": asdict(result.metrics),
-        "diagnostics": asdict(result.diagnostics),
-        "cycle_context": asdict(result.cycle_context),
-        "directional_state_distribution": _normalized_counter(state.directional_state for state in states),
-        "regime_distribution": _normalized_counter(state.regime for state in states),
-        "playbook_usage": _normalized_counter(playbook.playbook_id for playbook in playbooks),
         "win_rate": result.metrics.win_rate,
     }
+    states = [state for state in runner._market_states if state.timeframe == base_config.execution_timeframe]
+    playbooks = [playbook for playbook in runner._playbooks if playbook.timeframe == base_config.execution_timeframe]
+    payload["diagnostics"] = asdict(result.diagnostics)
+    payload["cycle_context"] = asdict(result.cycle_context)
+    payload["directional_state_distribution"] = _normalized_counter(state.directional_state for state in states)
+    payload["regime_distribution"] = _normalized_counter(state.regime for state in states)
+    payload["playbook_usage"] = _normalized_counter(playbook.playbook_id for playbook in playbooks)
+    del runner
+    return payload
 
 
 def _run_walk_forward_validation(
     base_config: HistoricalBacktestConfig,
     variant: VariantSpec,
     windows: list[WindowSpec],
+    *,
+    include_windows: bool = True,
 ) -> dict[str, Any]:
     if not windows:
         return {
@@ -415,14 +480,15 @@ def _run_walk_forward_validation(
                 "oos_ratio": round(ratio, 4),
             }
         )
-    return {
+    payload = {
         "variant": variant.name,
-        "windows": results,
         "avg_train_sharpe": round(sum(item["train_sharpe"] for item in results) / len(results), 4),
         "avg_test_sharpe": round(sum(item["test_sharpe"] for item in results) / len(results), 4),
         "avg_oos_ratio": round(sum(item["oos_ratio"] for item in results) / len(results), 4),
         "worst_test_sharpe": round(min(item["test_sharpe"] for item in results), 4),
     }
+    payload["windows"] = results if include_windows else []
+    return payload
 
 
 def _run_variant_backtest(
@@ -466,11 +532,13 @@ def _normalized_counter(values: Any) -> dict[str, float]:
 
 def _comparison_delta(current: dict[str, Any], baseline: dict[str, Any]) -> dict[str, Any]:
     metrics_keys = ("sharpe", "net_pnl", "max_drawdown", "profit_factor", "trade_count")
-    return {
+    payload = {
         "metrics_delta": {
             key: round(float(current["metrics"][key]) - float(baseline["metrics"][key]), 6) for key in metrics_keys
         },
-        "diagnostics_diff": {
+    }
+    if "diagnostics" in current and "diagnostics" in baseline:
+        payload["diagnostics_diff"] = {
             "playbook_counts": _counter_diff(
                 current["diagnostics"]["playbook_counts"],
                 baseline["diagnostics"]["playbook_counts"],
@@ -483,8 +551,8 @@ def _comparison_delta(current: dict[str, Any], baseline: dict[str, Any]) -> dict
                 current["diagnostics"]["actionable_exit_counts"],
                 baseline["diagnostics"]["actionable_exit_counts"],
             ),
-        },
-    }
+        }
+    return payload
 
 
 def _validation_delta(current: dict[str, Any], baseline: dict[str, Any] | None) -> dict[str, Any] | None:
