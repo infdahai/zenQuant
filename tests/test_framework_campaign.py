@@ -23,6 +23,11 @@ CAMPAIGN = _load_module("framework_campaign_module", "scripts/run_framework_camp
 
 
 class FrameworkCampaignTests(unittest.TestCase):
+    def test_resolved_budget_uses_tighter_fast_and_high_rl_defaults(self) -> None:
+        self.assertEqual(CAMPAIGN._resolved_budget("smoke", None, None), (5, 5))
+        self.assertEqual(CAMPAIGN._resolved_budget("fast", None, None), (50, 20))
+        self.assertEqual(CAMPAIGN._resolved_budget("high", None, None), (150, 60))
+
     def test_campaign_blocks_when_optuna_missing(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             out = Path(tmp) / "results"
@@ -43,6 +48,108 @@ class FrameworkCampaignTests(unittest.TestCase):
         self.assertEqual(payload["blocked_by"], "optuna_unavailable")
         self.assertFalse(payload["full_training_allowed"])
         self.assertEqual(payload["full_training_decision"], "defer_full_training")
+
+    def test_campaign_fast_uses_non_full_stage2_budget(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp) / "results"
+            captured: dict[str, object] = {}
+
+            class FakeEvaluator:
+                def __init__(self, *_args, **_kwargs) -> None:
+                    self._base_config = type(
+                        "BaseConfig",
+                        (),
+                        {"execution_timeframe": CAMPAIGN.Timeframe.TF_5M, "context_timeframe": CAMPAIGN.Timeframe.TF_1H},
+                    )()
+                    self.readiness = {"promotion_ready": False, "blocked_by": "not_promotion_ready"}
+                    self.search_param_grid = {"w_momentum": [0.2, 0.3]}
+                    self.search_space_profile = {"profile": "execution_first_v2_correlation_constrained"}
+                    self._deribit_status = {"enabled": True, "observation_ready": False, "research_ready": False}
+                    self._training_window_coverage = {"fast_windows": ["overall_recent"]}
+                    self.training_input_contract = {
+                        "primary_truth_source": "binance",
+                        "execution_framework": {
+                            "five_min_feature_aggregation_enabled": True,
+                            "five_min_direct_execution_enabled": True,
+                            "one_hour_bars_available": True,
+                            "four_hour_bars_available": True,
+                        },
+                        "state_feature_sources": {
+                            "hyperliquid_in_state_features": True,
+                            "deribit_in_state_features": True,
+                            "etf_flow_in_state_features": True,
+                            "cme_positioning_in_state_features": True,
+                        },
+                        "signal_stack_contract": {"direction_state_execution_split_enabled": True},
+                    }
+
+                def final_report(self, **kwargs):
+                    captured.update(kwargs)
+                    return SearchReport(
+                        created_at="2026-04-11T00:00:00+00:00",
+                        symbol="BTCUSDT",
+                        readiness={"promotion_ready": False, "blocked_by": "not_promotion_ready", "data_ready": False, "detail": "missing"},
+                        deribit_status=self._deribit_status,
+                        split_contract={"version": "btc_temporal_v2_train_selection_only", "windows": {"train": {}, "dev": {}, "test": {}}},
+                        training_window_coverage={"fast_windows": ["overall_recent"]},
+                        training_input_contract=self.training_input_contract,
+                        search_status={"search_outcome": "candidate_found"},
+                        current=CandidateSummary(
+                            variant="current",
+                            robust_score=1.0,
+                            selection_split="dev",
+                            dev_sharpe=1.0,
+                            dev_pnl=10.0,
+                            dev_drawdown=0.1,
+                            avg_dev_sharpe=1.0,
+                            avg_dev_ratio=1.0,
+                            worst_dev_sharpe=0.5,
+                            weak_window_sharpe=0.2,
+                            negative_dev_worst_windows=0,
+                            promotion_candidate=False,
+                        ),
+                        paulwei_baseline=CandidateSummary(
+                            variant="paulwei_baseline",
+                            robust_score=1.0,
+                            selection_split="dev",
+                            dev_sharpe=1.0,
+                            dev_pnl=10.0,
+                            dev_drawdown=0.1,
+                            avg_dev_sharpe=1.0,
+                            avg_dev_ratio=1.0,
+                            worst_dev_sharpe=0.5,
+                            weak_window_sharpe=0.2,
+                            negative_dev_worst_windows=0,
+                            promotion_candidate=False,
+                        ),
+                        optuna_best=None,
+                        rl_best=None,
+                        best_variant="current",
+                        best_score=1.0,
+                        best_params=None,
+                        comparison_payload={},
+                    )
+
+            def _fake_run_optuna_search(*_args, **kwargs):
+                callback = kwargs["status_callback"]
+                callback(event="trial_completed", current_trial=1, completed_trials=1, total_trials=1, runtime_s=1.0)
+                return {"w_momentum": 0.3}, [{"params": {"w_momentum": 0.3}, "metrics": {"trade_count": 10, "sharpe": 1.0}}], {
+                    "train_candidate_diagnostics": {"raw_trial_count": 1},
+                    "empty_shortlist_reason": None,
+                }
+
+            argv = ["run_framework_campaign.py", "--output-dir", str(out), "--budget", "fast", "--development-dev-gate"]
+            with (
+                patch.object(sys, "argv", argv),
+                patch("importlib.util.find_spec", return_value=object()),
+                patch.object(CAMPAIGN, "FrameworkEvaluator", FakeEvaluator),
+                patch.object(CAMPAIGN, "run_optuna_search", side_effect=_fake_run_optuna_search),
+                patch.object(CAMPAIGN, "train_tuner", return_value=None),
+            ):
+                CAMPAIGN.main()
+
+        self.assertFalse(bool(captured["full"]))
+        self.assertFalse(bool(captured["full_stage2_executed_this_round"]))
 
     def test_campaign_reads_seed_trials_file(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -281,7 +388,7 @@ class FrameworkCampaignTests(unittest.TestCase):
 
                     return Report()
 
-            argv = ["run_framework_campaign.py", "--output-dir", str(out), "--resume"]
+            argv = ["run_framework_campaign.py", "--output-dir", str(out), "--resume", "--development-dev-gate"]
             with (
                 patch.object(sys, "argv", argv),
                 patch("importlib.util.find_spec", return_value=object()),
@@ -341,7 +448,7 @@ class FrameworkCampaignTests(unittest.TestCase):
                 encoding="utf-8",
             )
 
-            argv = ["run_framework_campaign.py", "--output-dir", str(out), "--resume"]
+            argv = ["run_framework_campaign.py", "--output-dir", str(out), "--resume", "--development-dev-gate"]
             with patch.object(sys, "argv", argv):
                 CAMPAIGN.main()
 
@@ -372,7 +479,7 @@ class FrameworkCampaignTests(unittest.TestCase):
                 encoding="utf-8",
             )
 
-            argv = ["run_framework_campaign.py", "--output-dir", str(out), "--resume"]
+            argv = ["run_framework_campaign.py", "--output-dir", str(out), "--resume", "--development-dev-gate"]
             with patch.object(sys, "argv", argv):
                 CAMPAIGN.main()
 
@@ -540,7 +647,7 @@ class FrameworkCampaignTests(unittest.TestCase):
                 }
                 Path(path).write_text(json.dumps(payload), encoding="utf-8")
 
-            argv = ["run_framework_campaign.py", "--output-dir", str(out), "--resume"]
+            argv = ["run_framework_campaign.py", "--output-dir", str(out), "--resume", "--development-dev-gate"]
             with (
                 patch.object(sys, "argv", argv),
                 patch("importlib.util.find_spec", return_value=object()),
@@ -701,6 +808,90 @@ class FrameworkCampaignTests(unittest.TestCase):
         self.assertEqual(stage1_payload["search_status"]["rl_episodes_completed"], 0)
         self.assertEqual(stage1_payload["search_status"]["failure_reason"], "stage1_rl_sidecar_failed")
         self.assertEqual(status["status"], "completed")
+
+    def test_campaign_fast_stage1_finalize_stays_train_only(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp) / "results"
+
+            class FakeEvaluator:
+                def __init__(self, *_args, **_kwargs) -> None:
+                    self._base_config = type(
+                        "BaseConfig",
+                        (),
+                        {"execution_timeframe": CAMPAIGN.Timeframe.TF_5M, "context_timeframe": CAMPAIGN.Timeframe.TF_1H},
+                    )()
+                    self.readiness = {"promotion_ready": False, "blocked_by": "not_promotion_ready"}
+                    self.search_param_grid = {"w_momentum": [0.2, 0.3]}
+                    self.search_space_profile = {
+                        "profile": "execution_first_v2_correlation_constrained",
+                        "direction_weight_policy": {
+                            "correlation_constrained": True,
+                            "capped_direction_signal": "crowding_signal",
+                            "demoted_signal": "funding_alpha_signal",
+                            "demoted_signal_role": "state",
+                        },
+                    }
+                    self._deribit_status = {"enabled": True, "observation_ready": False, "research_ready": False}
+                    self._training_window_coverage = {"fast_windows": ["overall_recent"]}
+                    self.training_input_contract = {
+                        "primary_truth_source": "binance",
+                        "execution_framework": {
+                            "five_min_feature_aggregation_enabled": True,
+                            "five_min_direct_execution_enabled": True,
+                            "one_hour_bars_available": True,
+                            "four_hour_bars_available": True,
+                        },
+                        "state_feature_sources": {
+                            "hyperliquid_in_state_features": True,
+                            "deribit_in_state_features": True,
+                            "etf_flow_in_state_features": True,
+                            "cme_positioning_in_state_features": True,
+                        },
+                        "signal_stack_contract": {"direction_state_execution_split_enabled": True},
+                    }
+
+                def _evaluate_variant(self, *_args, **_kwargs):
+                    raise AssertionError("stage1_finalize_should_not_touch_dev_variants")
+
+            def _fake_run_optuna_search(*_args, **kwargs):
+                callback = kwargs["status_callback"]
+                callback(event="trial_completed", current_trial=1, completed_trials=1, total_trials=5, runtime_s=1.0)
+                callback(event="ranking_candidate_completed", current_candidate=1, completed_candidates=1, total_candidates=1, runtime_s=2.0)
+                return {
+                    "w_momentum": 0.3,
+                }, [
+                    {
+                        "params": {"w_momentum": 0.3},
+                        "summary": {
+                            "variant": "optuna_tuned",
+                            "robust_score": 1.2,
+                            "selection_split": "train",
+                            "dev_sharpe": 1.0,
+                            "dev_pnl": 10.0,
+                            "dev_drawdown": 0.1,
+                            "avg_dev_sharpe": 1.0,
+                            "avg_dev_ratio": 1.0,
+                            "worst_dev_sharpe": 0.5,
+                            "weak_window_sharpe": 0.2,
+                            "negative_dev_worst_windows": 0,
+                            "promotion_candidate": False,
+                        },
+                    }
+                ], {"train_candidate_diagnostics": {"raw_trial_count": 1}, "empty_shortlist_reason": None}
+
+            argv = ["run_framework_campaign.py", "--output-dir", str(out), "--budget", "fast"]
+            with (
+                patch.object(sys, "argv", argv),
+                patch("importlib.util.find_spec", return_value=object()),
+                patch.object(CAMPAIGN, "FrameworkEvaluator", FakeEvaluator),
+                patch.object(CAMPAIGN, "run_optuna_search", side_effect=_fake_run_optuna_search),
+                patch.object(CAMPAIGN, "train_tuner", return_value=None),
+            ):
+                CAMPAIGN.main()
+
+            stage1_payload = json.loads((out / "checkpoints" / "stage1_search.json").read_text(encoding="utf-8"))
+
+        self.assertEqual(stage1_payload["search_status"]["full_training_blockers"], ["development_stage1_train_only"])
 
     def test_campaign_smoke_falls_back_to_5m_search_after_empty_1h_shortlist(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -880,6 +1071,261 @@ class FrameworkCampaignTests(unittest.TestCase):
         self.assertEqual(stage1_payload["search_status"]["baseline_anchor_variant"], "paulwei_baseline")
         self.assertIn("fallback_to_5m", log_text)
         self.assertEqual(status["status"], "completed")
+        self.assertNotEqual(status["blocked_by"], "campaign_exception")
+
+    def test_campaign_smoke_stage1_skips_heavy_baseline_evaluation(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp) / "results"
+
+            class FakeEvaluator:
+                def __init__(self, *_args, **_kwargs) -> None:
+                    self._base_config = type(
+                        "BaseConfig",
+                        (),
+                        {"execution_timeframe": CAMPAIGN.Timeframe.TF_5M, "context_timeframe": CAMPAIGN.Timeframe.TF_1H},
+                    )()
+                    self.readiness = {"promotion_ready": False, "blocked_by": "not_promotion_ready"}
+                    self.search_param_grid = {"w_momentum": [0.2, 0.3]}
+                    self.search_space_profile = {"direction_weight_policy": {}}
+                    self._deribit_status = {"enabled": True, "observation_ready": False, "research_ready": False}
+                    self._training_window_coverage = {"fast_windows": ["overall_recent"]}
+                    self.training_input_contract = {
+                        "primary_truth_source": "binance",
+                        "execution_framework": {
+                            "five_min_feature_aggregation_enabled": True,
+                            "five_min_direct_execution_enabled": True,
+                            "one_hour_bars_available": True,
+                            "four_hour_bars_available": True,
+                        },
+                        "state_feature_sources": {
+                            "hyperliquid_in_state_features": True,
+                            "deribit_in_state_features": False,
+                            "etf_flow_in_state_features": False,
+                            "cme_positioning_in_state_features": False,
+                        },
+                        "signal_stack_contract": {"direction_state_execution_split_enabled": True},
+                    }
+
+                def _evaluate_variant(self, *_args, **_kwargs):
+                    raise AssertionError("smoke stage1 should not evaluate heavy baseline summaries")
+
+                def final_report(self, **_kwargs):
+                    return SearchReport(
+                        created_at="2026-04-10T00:00:00+00:00",
+                        symbol="BTCUSDT",
+                        readiness={"promotion_ready": False, "blocked_by": "not_promotion_ready"},
+                        deribit_status=self._deribit_status,
+                        split_contract={"version": "btc_temporal_v2_train_selection_only"},
+                        training_window_coverage={"fast_windows": ["overall_recent"]},
+                        training_input_contract=self.training_input_contract,
+                        search_status={"search_space_profile": self.search_space_profile},
+                        current=CandidateSummary(
+                            variant="current",
+                            robust_score=1.0,
+                            selection_split="dev",
+                            dev_sharpe=1.0,
+                            dev_pnl=1.0,
+                            dev_drawdown=0.1,
+                            avg_dev_sharpe=1.0,
+                            avg_dev_ratio=1.0,
+                            worst_dev_sharpe=0.1,
+                            weak_window_sharpe=0.1,
+                            negative_dev_worst_windows=0,
+                            promotion_candidate=False,
+                        ),
+                        paulwei_baseline=CandidateSummary(
+                            variant="paulwei_baseline",
+                            robust_score=1.0,
+                            selection_split="dev",
+                            dev_sharpe=1.0,
+                            dev_pnl=1.0,
+                            dev_drawdown=0.1,
+                            avg_dev_sharpe=1.0,
+                            avg_dev_ratio=1.0,
+                            worst_dev_sharpe=0.1,
+                            weak_window_sharpe=0.1,
+                            negative_dev_worst_windows=0,
+                            promotion_candidate=False,
+                        ),
+                        optuna_best=CandidateSummary(
+                            variant="optuna_tuned",
+                            robust_score=1.0,
+                            selection_split="train",
+                            dev_sharpe=1.0,
+                            dev_pnl=1.0,
+                            dev_drawdown=0.1,
+                            avg_dev_sharpe=1.0,
+                            avg_dev_ratio=1.0,
+                            worst_dev_sharpe=0.1,
+                            weak_window_sharpe=0.1,
+                            negative_dev_worst_windows=0,
+                            promotion_candidate=False,
+                        ),
+                        rl_best=None,
+                        best_variant="optuna_tuned",
+                        best_score=1.0,
+                        best_params={"w_momentum": 0.3},
+                        comparison_payload={"comparison_compute_mode": "smoke_minimal"},
+                        report_mode="fast",
+                        report_degraded_due_to_memory=False,
+                        smoke_completed=True,
+                    )
+
+            def _fake_run_optuna_search(*_args, **kwargs):
+                callback = kwargs["status_callback"]
+                callback(event="trial_completed", current_trial=1, completed_trials=1, total_trials=5, runtime_s=1.0)
+                callback(event="ranking_candidate_completed", current_candidate=1, completed_candidates=1, total_candidates=1, runtime_s=2.0)
+                return {"w_momentum": 0.3}, [{"params": {"w_momentum": 0.3}, "summary": {"robust_score": 1.0}}], {
+                    "train_candidate_diagnostics": {"raw_trial_count": 1},
+                    "empty_shortlist_reason": None,
+                }
+
+            argv = ["run_framework_campaign.py", "--output-dir", str(out), "--budget", "smoke"]
+            with (
+                patch.object(sys, "argv", argv),
+                patch("importlib.util.find_spec", return_value=object()),
+                patch.object(CAMPAIGN, "FrameworkEvaluator", FakeEvaluator),
+                patch.object(CAMPAIGN, "run_optuna_search", side_effect=_fake_run_optuna_search),
+                patch.object(CAMPAIGN, "write_search_report"),
+                patch.object(CAMPAIGN, "build_markdown_report", return_value="# ok"),
+                patch.object(CAMPAIGN, "generate_signal_combination_audit", return_value=None),
+                patch.object(CAMPAIGN, "_resolved_budget", return_value=(5, 0)),
+            ):
+                CAMPAIGN.main()
+
+            stage1_payload = json.loads((out / "checkpoints" / "stage1_search.json").read_text(encoding="utf-8"))
+
+        self.assertIn("development_stage1_train_only", stage1_payload["search_status"]["full_training_blockers"])
+
+    def test_campaign_smoke_no_candidate_does_not_crash_in_stage1_finalize(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp) / "results"
+
+            class FakeEvaluator:
+                def __init__(self, *_args, **_kwargs) -> None:
+                    self._base_config = type(
+                        "BaseConfig",
+                        (),
+                        {"execution_timeframe": CAMPAIGN.Timeframe.TF_5M, "context_timeframe": CAMPAIGN.Timeframe.TF_1H},
+                    )()
+                    self.readiness = {"promotion_ready": False, "blocked_by": "not_promotion_ready"}
+                    self.search_param_grid = {"w_momentum": [0.2, 0.3]}
+                    self.search_space_profile = {"direction_weight_policy": {}}
+                    self._deribit_status = {"enabled": True, "observation_ready": False, "research_ready": False}
+                    self._training_window_coverage = {"fast_windows": ["overall_recent"]}
+                    self.training_input_contract = {
+                        "primary_truth_source": "binance",
+                        "execution_framework": {
+                            "five_min_feature_aggregation_enabled": True,
+                            "five_min_direct_execution_enabled": True,
+                            "one_hour_bars_available": True,
+                            "four_hour_bars_available": True,
+                        },
+                        "state_feature_sources": {
+                            "hyperliquid_in_state_features": True,
+                            "deribit_in_state_features": False,
+                            "etf_flow_in_state_features": False,
+                            "cme_positioning_in_state_features": False,
+                        },
+                        "signal_stack_contract": {"direction_state_execution_split_enabled": True},
+                    }
+
+                def final_report(self, **_kwargs):
+                    return SearchReport(
+                        created_at="2026-04-10T00:00:00+00:00",
+                        symbol="BTCUSDT",
+                        readiness={"promotion_ready": False, "blocked_by": "not_promotion_ready"},
+                        deribit_status=self._deribit_status,
+                        split_contract={"version": "btc_temporal_v2_train_selection_only"},
+                        training_window_coverage={"fast_windows": ["overall_recent"]},
+                        training_input_contract=self.training_input_contract,
+                        search_status={"search_space_profile": self.search_space_profile},
+                        current=CandidateSummary(
+                            variant="current",
+                            robust_score=1.0,
+                            selection_split="dev",
+                            dev_sharpe=1.0,
+                            dev_pnl=1.0,
+                            dev_drawdown=0.1,
+                            avg_dev_sharpe=1.0,
+                            avg_dev_ratio=1.0,
+                            worst_dev_sharpe=0.1,
+                            weak_window_sharpe=0.1,
+                            negative_dev_worst_windows=0,
+                            promotion_candidate=False,
+                        ),
+                        paulwei_baseline=CandidateSummary(
+                            variant="paulwei_baseline",
+                            robust_score=1.0,
+                            selection_split="dev",
+                            dev_sharpe=1.0,
+                            dev_pnl=1.0,
+                            dev_drawdown=0.1,
+                            avg_dev_sharpe=1.0,
+                            avg_dev_ratio=1.0,
+                            worst_dev_sharpe=0.1,
+                            weak_window_sharpe=0.1,
+                            negative_dev_worst_windows=0,
+                            promotion_candidate=False,
+                        ),
+                        optuna_best=None,
+                        rl_best=None,
+                        best_variant="paulwei_baseline",
+                        best_score=0.0,
+                        best_params=None,
+                        comparison_payload={"comparison_compute_mode": "smoke_minimal"},
+                        report_mode="fast",
+                        report_degraded_due_to_memory=False,
+                        smoke_completed=True,
+                    )
+
+            def _fake_run_optuna_search(*_args, **kwargs):
+                callback = kwargs["status_callback"]
+                search_execution_timeframe = kwargs["search_execution_timeframe"]
+                if search_execution_timeframe == CAMPAIGN.Timeframe.TF_1H:
+                    for idx in range(1, 6):
+                        callback(event="trial_completed", current_trial=idx, completed_trials=idx, total_trials=5, runtime_s=float(idx))
+                    return None, [], {
+                        "train_candidate_diagnostics": {
+                            "raw_trial_count": 5,
+                            "raw_nonzero_trade_trials": 0,
+                            "eligible_trade_count_trials": 0,
+                            "max_train_trade_count": 0,
+                            "max_train_sharpe": 0.0,
+                        },
+                        "empty_shortlist_reason": "all_zero_trade",
+                    }
+                callback(event="trial_completed", current_trial=1, completed_trials=1, total_trials=1, runtime_s=1.0)
+                return None, [], {
+                    "train_candidate_diagnostics": {
+                        "raw_trial_count": 1,
+                        "raw_nonzero_trade_trials": 0,
+                        "eligible_trade_count_trials": 0,
+                        "max_train_trade_count": 0,
+                        "max_train_sharpe": 0.0,
+                    },
+                    "empty_shortlist_reason": "all_zero_trade",
+                }
+
+            argv = ["run_framework_campaign.py", "--output-dir", str(out), "--budget", "smoke"]
+            with (
+                patch.object(sys, "argv", argv),
+                patch("importlib.util.find_spec", return_value=object()),
+                patch.object(CAMPAIGN, "FrameworkEvaluator", FakeEvaluator),
+                patch.object(CAMPAIGN, "run_optuna_search", side_effect=_fake_run_optuna_search),
+                patch.object(CAMPAIGN, "write_search_report"),
+                patch.object(CAMPAIGN, "build_markdown_report", return_value="# ok"),
+                patch.object(CAMPAIGN, "generate_signal_combination_audit", return_value=None),
+                patch.object(CAMPAIGN, "_resolved_budget", return_value=(5, 0)),
+            ):
+                CAMPAIGN.main()
+
+            status = json.loads((out / "campaign_status.json").read_text(encoding="utf-8"))
+            stage1_payload = json.loads((out / "checkpoints" / "stage1_search.json").read_text(encoding="utf-8"))
+
+        self.assertEqual(status["status"], "completed")
+        self.assertNotEqual(status["blocked_by"], "campaign_exception")
+        self.assertEqual(stage1_payload["search_status"]["search_outcome"], "empty")
 
 
 if __name__ == "__main__":

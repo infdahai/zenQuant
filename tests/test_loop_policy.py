@@ -44,10 +44,11 @@ class LoopPolicyTests(unittest.TestCase):
         self.assertGreater(len(plan.explore_seed_trials), 0)
         self.assertGreater(len(plan.all_seed_trials), 0)
 
-    def test_gate_pass_stops_loop(self) -> None:
+    def test_candidate_ready_for_handoff_stops_loop(self) -> None:
         final_report = {
-            "post_smoke_scenario": {"scenario": "scenario_a_full_training_allowed"},
-            "full_training_assessment": {"ready": True, "blockers": []},
+            "post_smoke_scenario": {"scenario": "scenario_b_hostile_window_failure"},
+            "candidate_ready_for_handoff": True,
+            "handoff_blockers": [],
         }
 
         plan = plan_next_iteration(
@@ -59,8 +60,8 @@ class LoopPolicyTests(unittest.TestCase):
         )
 
         self.assertTrue(plan.stop)
-        self.assertEqual(plan.stop_reason, "gate_passed")
-        self.assertTrue(plan.should_open_fast_or_full_training)
+        self.assertEqual(plan.stop_reason, "candidate_ready_for_handoff")
+        self.assertFalse(plan.should_open_fast_or_full_training)
 
     def test_fast_progression_unlocks_after_smoke_round_four(self) -> None:
         final_report = {

@@ -20,6 +20,10 @@ from zenquant.research.splits import DatasetSplitSpec, SplitWindow, default_btc_
 from zenquant.risk import RiskOverlayConfig
 from zenquant.strategy import ARCStrategyConfig
 
+
+class RLBudgetReached(RuntimeError):
+    """Internal control signal used to stop SB3 exactly at the requested budget."""
+
 PARAM_GRID = {
     "dd_step_1_long": [0.10, 0.15, 0.20],
     "dd_step_1_short": [0.05, 0.08, 0.12],
@@ -330,28 +334,36 @@ def train_tuner(
 
     class _ProgressCallback(BaseCallback):
         def _on_step(self) -> bool:
-            completed_units = min(int(total_timesteps), max(0, int(self.num_timesteps)))
+            actual_steps = max(0, int(self.num_timesteps))
+            completed_units = min(int(total_timesteps), actual_steps)
             if status_callback is not None:
                 status_callback(
                     event="rl_progress",
                     completed_steps=completed_units,
+                    actual_steps=actual_steps,
+                    requested_steps=int(total_timesteps),
                     total_steps=int(total_timesteps),
                     runtime_s=time.time() - started_at,
                 )
             if total_timeout_s is not None and (time.time() - started_at) > total_timeout_s:
                 raise TimeoutError(f"stage1_rl_timeout: exceeded {total_timeout_s:.0f}s")
+            if actual_steps >= int(total_timesteps):
+                raise RLBudgetReached("stage1_rl_budget_reached")
             return True
 
     model = PPO(
         "MlpPolicy",
         env,
         verbose=verbose,
-        n_steps=16,
-        batch_size=8,
-        n_epochs=4,
+        n_steps=8,
+        batch_size=4,
+        n_epochs=2,
         learning_rate=3e-4,
     )
-    model.learn(total_timesteps=total_timesteps, callback=_ProgressCallback())
+    try:
+        model.learn(total_timesteps=total_timesteps, callback=_ProgressCallback())
+    except RLBudgetReached:
+        pass
 
     results = env._results
     if not results:
@@ -374,6 +386,8 @@ def train_tuner(
         status_callback(
             event="rl_rank_dev_started",
             completed_steps=min(len(results), int(total_timesteps)),
+            actual_steps=min(len(results), int(total_timesteps)),
+            requested_steps=int(total_timesteps),
             total_steps=int(total_timesteps),
             runtime_s=time.time() - started_at,
         )
@@ -383,6 +397,8 @@ def train_tuner(
         status_callback(
             event="rl_completed",
             completed_steps=min(len(results), int(total_timesteps)),
+            actual_steps=min(len(results), int(total_timesteps)),
+            requested_steps=int(total_timesteps),
             total_steps=int(total_timesteps),
             runtime_s=time.time() - started_at,
             best_params_so_far=best_train.params,

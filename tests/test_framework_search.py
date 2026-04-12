@@ -23,9 +23,11 @@ from zenquant.research.framework_search import (
     CandidateSummary,
     FrameworkEvaluator,
     SearchReport,
+    ValidationBundleTimeoutError,
     _assess_full_training_readiness,
     _candidate_score,
     _classify_post_smoke_scenario,
+    _run_validation_bundle,
     run_optuna_search,
     write_search_report,
 )
@@ -745,8 +747,8 @@ class SearchReportSerializationTests(unittest.TestCase):
         self.assertIn("full_training_ready", payload["final_verdict"])
         self.assertEqual(payload["final_verdict"]["etf_flow_source"], "bitbo_etf_flows")
         self.assertEqual(payload["campaign_execution_contract"]["etf_flow_source_confidence"], "medium")
-        self.assertEqual(payload["full_training_assessment"]["decision"], "defer_full_training")
-        self.assertIn("smoke_campaign_incomplete", payload["full_training_assessment"]["blockers"])
+        self.assertEqual(payload["full_training_assessment"]["decision"], "defer_handoff")
+        self.assertIn("handoff_blockers", payload)
 
     def test_run_optuna_search_uses_train_only_autoresearch_candidates(self) -> None:
         @dataclass
@@ -815,8 +817,9 @@ class SearchReportSerializationTests(unittest.TestCase):
                 "validation_reports": [],
             }
 
-        def _fake_evaluate_variant(_variant, *, fast, progress_callback=None):
+        def _fake_evaluate_variant(_variant, *, fast, lightweight=False, progress_callback=None):
             del fast
+            del lightweight
             if progress_callback is not None:
                 progress_callback(1, "dev")
                 progress_callback(2, "2023-08")
@@ -838,6 +841,9 @@ class SearchReportSerializationTests(unittest.TestCase):
                 include_comparison_payload=True,
                 status_callback=_status_callback,
                 comparison_compute_mode="smoke_minimal",
+                evaluation_role="development",
+                test_access_allowed=False,
+                dev_gate_used_this_round=True,
             )
 
         self.assertEqual(len(build_calls), 1)
@@ -850,6 +856,27 @@ class SearchReportSerializationTests(unittest.TestCase):
         self.assertIn("stage2_compare_windows_started", events)
         self.assertIn("comparison_window_completed", events)
         self.assertIn("stage2_rank_variants_completed", events)
+        prepare_units = [
+            int(item["completed_units"])
+            for item in heartbeats
+            if item.get("event") == "stage2_prepare_variant_unit_completed"
+        ]
+        self.assertIn(4, prepare_units)
+        self.assertTrue(any(unit > 4 for unit in prepare_units))
+        self.assertEqual(report.evaluation_role, "development")
+
+    def test_development_report_rejects_test_evaluation(self) -> None:
+        evaluator = FrameworkEvaluator(HistoricalBacktestConfig(), split_spec=default_btc_split_spec())
+        with self.assertRaisesRegex(ValueError, "development path must not evaluate test"):
+            evaluator.final_report(
+                optuna_params=None,
+                rl_params=None,
+                search_status={},
+                full=False,
+                evaluate_test=True,
+                evaluation_role="development",
+                test_access_allowed=False,
+            )
 
     def test_train_tuner_caps_episode_progress_to_requested_budget(self) -> None:
         heartbeats: list[dict[str, object]] = []
@@ -889,6 +916,8 @@ class SearchReportSerializationTests(unittest.TestCase):
         progress_events = [item for item in heartbeats if item["event"] == "rl_progress"]
         self.assertTrue(progress_events)
         self.assertEqual(progress_events[-1]["completed_steps"], 5)
+        self.assertEqual(progress_events[-1]["actual_steps"], 7)
+        self.assertEqual(progress_events[-1]["requested_steps"], 5)
         self.assertEqual(result["search_status"]["episodes_completed"], 5)
         self.assertEqual(result["search_status"]["selection_split"], "train")
         self.assertFalse(result["search_status"]["dev_only_ranking"])
@@ -920,6 +949,246 @@ class SearchReportSerializationTests(unittest.TestCase):
                     ranking_top_n=1,
                     ranking_candidate_timeout_s=0.0,
                 )
+
+    def test_evaluate_variant_lightweight_skips_validation_bundle(self) -> None:
+        evaluator = FrameworkEvaluator(HistoricalBacktestConfig(), split_spec=default_btc_split_spec())
+        variant = evaluator._current_variant
+
+        def _snapshot(sharpe: float, pnl: float, dd: float):
+            return type(
+                "Snapshot",
+                (),
+                {
+                    "sharpe": sharpe,
+                    "net_pnl": pnl,
+                    "max_drawdown": dd,
+                    "win_rate": 0.5,
+                },
+            )()
+
+        with (
+            patch.object(
+                evaluator,
+                "_run_variant_backtest_cached",
+                side_effect=[
+                    _snapshot(1.0, 10.0, 0.1),
+                    _snapshot(0.4, 5.0, 0.08),
+                    _snapshot(-0.2, -1.0, 0.12),
+                    _snapshot(0.1, 1.0, 0.09),
+                ],
+            ),
+            patch.object(evaluator, "_run_validation_bundle_cached", side_effect=AssertionError("should_not_run")),
+            patch.object(
+                evaluator,
+                "_get_paulwei_fast_summary",
+                return_value=CandidateSummary(
+                    variant="paulwei_baseline",
+                    robust_score=0.5,
+                    selection_split="dev",
+                    dev_sharpe=0.5,
+                    dev_pnl=5.0,
+                    dev_drawdown=0.1,
+                    avg_dev_sharpe=0.5,
+                    avg_dev_ratio=1.0,
+                    worst_dev_sharpe=0.1,
+                    weak_window_sharpe=0.1,
+                    negative_dev_worst_windows=0,
+                    promotion_candidate=False,
+                ),
+            ),
+        ):
+            summary = evaluator._evaluate_variant(variant, fast=True, lightweight=True)
+
+        self.assertEqual(summary.selection_split, "dev")
+        self.assertAlmostEqual(summary.avg_dev_sharpe, 0.4)
+        self.assertAlmostEqual(summary.worst_dev_sharpe, -0.2)
+
+    def test_evaluate_variant_degrades_tuned_candidate_on_validation_timeout(self) -> None:
+        evaluator = FrameworkEvaluator(HistoricalBacktestConfig(), split_spec=default_btc_split_spec())
+        variant = evaluator.candidate_variant({"w_momentum": 0.3}, name="optuna_tuned", label="Optuna Tuned")
+
+        def _snapshot(sharpe: float, pnl: float, dd: float):
+            return type(
+                "Snapshot",
+                (),
+                {
+                    "sharpe": sharpe,
+                    "net_pnl": pnl,
+                    "max_drawdown": dd,
+                    "win_rate": 0.5,
+                },
+            )()
+
+        with (
+            patch.object(
+                evaluator,
+                "_run_variant_backtest_cached",
+                side_effect=[
+                    _snapshot(1.1, 10.0, 0.09),
+                    _snapshot(0.6, 5.0, 0.08),
+                    _snapshot(0.2, -1.0, 0.09),
+                    _snapshot(0.1, 1.0, 0.09),
+                ],
+            ),
+            patch.object(
+                evaluator,
+                "_get_paulwei_fast_summary",
+                return_value=CandidateSummary(
+                    variant="paulwei_baseline",
+                    robust_score=0.5,
+                    selection_split="dev",
+                    dev_sharpe=0.5,
+                    dev_pnl=5.0,
+                    dev_drawdown=0.12,
+                    avg_dev_sharpe=0.5,
+                    avg_dev_ratio=1.0,
+                    worst_dev_sharpe=0.1,
+                    weak_window_sharpe=0.1,
+                    negative_dev_worst_windows=0,
+                    promotion_candidate=False,
+                ),
+            ),
+            patch.object(
+                evaluator,
+                "_run_validation_bundle_cached",
+                side_effect=ValidationBundleTimeoutError(
+                    variant="optuna_tuned",
+                    window_label="wf_1",
+                    leg="train",
+                    timeout_s=240.0,
+                ),
+            ),
+        ):
+            summary = evaluator._evaluate_variant(variant, fast=True, lightweight=False)
+
+        self.assertEqual(summary.blocked_by, "validation_timeout")
+        self.assertFalse(summary.promotion_candidate)
+        self.assertEqual(summary.promotion_failure_reason, "validation_timeout")
+        self.assertEqual(summary.robust_score, -10.0)
+
+    def test_evaluate_variant_prevalidation_rejection_skips_validation_bundle(self) -> None:
+        evaluator = FrameworkEvaluator(HistoricalBacktestConfig(), split_spec=default_btc_split_spec())
+        variant = evaluator.candidate_variant({"w_momentum": 0.3}, name="optuna_tuned", label="Optuna Tuned")
+
+        def _snapshot(sharpe: float, pnl: float, dd: float):
+            return type(
+                "Snapshot",
+                (),
+                {
+                    "sharpe": sharpe,
+                    "net_pnl": pnl,
+                    "max_drawdown": dd,
+                    "win_rate": 0.5,
+                },
+            )()
+
+        baseline = CandidateSummary(
+            variant="paulwei_baseline",
+            robust_score=0.8,
+            selection_split="dev",
+            dev_sharpe=1.0,
+            dev_pnl=5.0,
+            dev_drawdown=0.08,
+            avg_dev_sharpe=0.9,
+            avg_dev_ratio=1.0,
+            worst_dev_sharpe=0.2,
+            weak_window_sharpe=0.1,
+            negative_dev_worst_windows=0,
+            promotion_candidate=False,
+        )
+
+        with (
+            patch.object(
+                evaluator,
+                "_run_variant_backtest_cached",
+                side_effect=[
+                    _snapshot(0.3, 10.0, 0.14),
+                    _snapshot(0.1, 5.0, 0.10),
+                    _snapshot(-0.2, -1.0, 0.12),
+                    _snapshot(-0.1, 1.0, 0.09),
+                ],
+            ),
+            patch.object(evaluator, "_get_paulwei_fast_summary", return_value=baseline),
+            patch.object(evaluator, "_run_validation_bundle_cached", side_effect=AssertionError("should_not_run")),
+        ):
+            summary = evaluator._evaluate_variant(variant, fast=True, lightweight=False)
+
+        self.assertEqual(summary.blocked_by, "pre_validation_rejection")
+        self.assertFalse(summary.promotion_candidate)
+        self.assertEqual(summary.promotion_failure_reason, "pre_validation_rejection")
+        self.assertEqual(summary.robust_score, -8.0)
+
+    def test_run_validation_bundle_emits_leg_progress(self) -> None:
+        windows = [
+            type("Window", (), {"label": "wf_a", "start_ns": 100, "end_ns": 200})(),
+            type("Window", (), {"label": "wf_b", "start_ns": 200, "end_ns": 300})(),
+        ]
+        variant = type("Variant", (), {"name": "optuna_tuned"})()
+        events: list[tuple[str, str]] = []
+
+        def _fake_run(_variant, *, start_ns, end_ns):
+            del start_ns, end_ns
+            return BacktestSnapshot(sharpe=1.0, net_pnl=10.0, max_drawdown=0.1, win_rate=0.5)
+
+        metrics = _run_validation_bundle(
+            HistoricalBacktestConfig(),
+            variant,
+            windows,
+            run_backtest=_fake_run,
+            progress_callback=lambda event, label: events.append((event, label)),
+        )
+
+        self.assertEqual(metrics["avg_test_sharpe"], 1.0)
+        self.assertIn(("validation_train_started", "wf_a"), events)
+        self.assertIn(("validation_train_completed", "wf_a"), events)
+        self.assertIn(("validation_test_started", "wf_a"), events)
+        self.assertIn(("validation_test_completed", "wf_b"), events)
+
+    def test_evaluate_variant_lightweight_uses_lightweight_paulwei_baseline(self) -> None:
+        evaluator = FrameworkEvaluator(HistoricalBacktestConfig(), split_spec=default_btc_split_spec())
+        current_variant = evaluator._current_variant
+        heartbeats: list[tuple[int, str]] = []
+
+        def _snapshot(sharpe: float, pnl: float, dd: float):
+            return type(
+                "Snapshot",
+                (),
+                {
+                    "sharpe": sharpe,
+                    "net_pnl": pnl,
+                    "max_drawdown": dd,
+                    "win_rate": 0.5,
+                },
+            )()
+
+        with (
+            patch.object(
+                evaluator,
+                "_run_variant_backtest_cached",
+                side_effect=[
+                    _snapshot(1.0, 10.0, 0.1),
+                    _snapshot(0.4, 5.0, 0.08),
+                    _snapshot(-0.2, -1.0, 0.12),
+                    _snapshot(0.1, 1.0, 0.09),
+                    _snapshot(0.8, 8.0, 0.11),
+                    _snapshot(0.3, 3.0, 0.07),
+                    _snapshot(-0.1, -1.0, 0.10),
+                    _snapshot(0.0, 0.0, 0.09),
+                ],
+            ),
+            patch.object(evaluator, "_run_validation_bundle_cached", side_effect=AssertionError("should_not_run")),
+        ):
+            summary = evaluator._evaluate_variant(
+                current_variant,
+                fast=True,
+                lightweight=True,
+                progress_callback=lambda step, unit: heartbeats.append((step, unit)),
+            )
+
+        self.assertEqual(summary.selection_split, "dev")
+        self.assertEqual(heartbeats[-1], (4, "lightweight_summary"))
+        self.assertIsNotNone(evaluator._paulwei_fast_lightweight)
+        self.assertIsNone(evaluator._paulwei_fast_full)
 
 
 if __name__ == "__main__":

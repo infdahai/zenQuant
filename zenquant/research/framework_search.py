@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import json
+import os
+from concurrent.futures import ProcessPoolExecutor
+from concurrent.futures import TimeoutError as FutureTimeoutError
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from hashlib import sha1
@@ -100,6 +103,59 @@ def _window_has_timeframe_rows(
     return bool(rows)
 
 
+def _run_variant_backtest_snapshot(
+    base_config: HistoricalBacktestConfig,
+    variant: VariantSpec,
+    *,
+    start_ns: int | None,
+    end_ns: int | None,
+) -> BacktestSnapshot:
+    _, result = _run_variant_backtest(base_config, variant, start_ns=start_ns, end_ns=end_ns)
+    return BacktestSnapshot(
+        sharpe=result.metrics.sharpe,
+        net_pnl=result.metrics.net_pnl,
+        max_drawdown=result.metrics.max_drawdown,
+        win_rate=result.metrics.win_rate,
+    )
+
+
+def _run_variant_backtest_with_timeout(
+    base_config: HistoricalBacktestConfig,
+    variant: VariantSpec,
+    *,
+    start_ns: int | None,
+    end_ns: int | None,
+    timeout_s: float,
+    pool: ProcessPoolExecutor | None = None,
+) -> BacktestSnapshot:
+    if pool is not None:
+        future = pool.submit(
+            _run_variant_backtest_snapshot,
+            base_config,
+            variant,
+            start_ns=start_ns,
+            end_ns=end_ns,
+        )
+        try:
+            return future.result(timeout=timeout_s)
+        except FutureTimeoutError as exc:
+            future.cancel()
+            raise TimeoutError(f"variant_backtest_timeout:{timeout_s:.0f}s") from exc
+    with ProcessPoolExecutor(max_workers=1) as local_pool:
+        future = local_pool.submit(
+            _run_variant_backtest_snapshot,
+            base_config,
+            variant,
+            start_ns=start_ns,
+            end_ns=end_ns,
+        )
+        try:
+            return future.result(timeout=timeout_s)
+        except FutureTimeoutError as exc:
+            future.cancel()
+            raise TimeoutError(f"variant_backtest_timeout:{timeout_s:.0f}s") from exc
+
+
 @dataclass(slots=True, frozen=True)
 class CandidateSummary:
     variant: str
@@ -155,6 +211,30 @@ class SearchReport:
     report_degraded_due_to_memory: bool = False
     smoke_completed: bool = False
     signal_audit_summary: dict[str, Any] | None = None
+    evaluation_role: str = "development"
+    test_access_allowed: bool = False
+    candidate_ready_for_handoff: bool = False
+    candidate_frozen_id: str | None = None
+    frozen_params: dict[str, Any] | None = None
+    handoff_blockers: list[str] | None = None
+    dev_gate_summary: dict[str, Any] | None = None
+    dev_gate_used_this_round: bool = True
+    dev_gate_last_round: int | None = None
+    dev_gate_interval: int | None = None
+    full_stage2_executed_this_round: bool = True
+
+
+class ValidationBundleTimeoutError(RuntimeError):
+    """Raised when a development validation leg exceeds its replay budget."""
+
+    def __init__(self, *, variant: str, window_label: str, leg: str, timeout_s: float) -> None:
+        super().__init__(
+            f"validation_timeout: variant={variant} window={window_label} leg={leg} timeout_s={timeout_s:.0f}"
+        )
+        self.variant = variant
+        self.window_label = window_label
+        self.leg = leg
+        self.timeout_s = timeout_s
 
 
 def _best_tuned_candidate(report: SearchReport) -> CandidateSummary | None:
@@ -162,6 +242,33 @@ def _best_tuned_candidate(report: SearchReport) -> CandidateSummary | None:
     if not tuned:
         return None
     return max(tuned, key=lambda candidate: candidate.robust_score)
+
+
+def _candidate_frozen_id(best_variant: str, best_params: dict[str, Any] | None) -> str | None:
+    if not best_params:
+        return None
+    payload = json.dumps(
+        {
+            "variant": best_variant,
+            "params": best_params,
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return sha1(payload.encode("utf-8")).hexdigest()[:12]
+
+
+def _assess_candidate_handoff_readiness(report: SearchReport) -> dict[str, Any]:
+    dev_gate_summary = _assess_full_training_readiness(report, smoke_completed=report.smoke_completed)
+    blockers = list(dev_gate_summary.get("blockers", []))
+    return {
+        "ready": not blockers,
+        "decision": "handoff_to_acceptance" if not blockers else "defer_handoff",
+        "blockers": blockers,
+        "warnings": list(dev_gate_summary.get("warnings", [])),
+        "best_tuned_variant": dev_gate_summary.get("best_tuned_variant"),
+        "gates": dict(dev_gate_summary.get("gates", {})),
+    }
 
 
 def _assess_full_training_readiness(
@@ -435,17 +542,22 @@ class FrameworkEvaluator:
         }
         self._backtest_cache: dict[tuple[str, int | None, int | None], BacktestSnapshot] = {}
         self._validation_cache: dict[tuple[str, tuple[str, ...]], dict[str, float]] = {}
-        self._summary_cache: dict[tuple[str, bool], CandidateSummary] = {}
-        self._dev_windows = [
-            *default_comparison_windows(self._split_spec, "dev"),
-            *filtered_worst_period_windows(self._split_spec, "dev"),
-        ]
+        self._summary_cache: dict[tuple[str, bool, bool], CandidateSummary] = {}
+        self._validation_pool: ProcessPoolExecutor | None = None
+        self._validation_pool_workers = 1
+        self._dev_windows = default_comparison_windows(self._split_spec, "dev")
         self._test_windows = [
             *default_comparison_windows(self._split_spec, "test"),
             *filtered_worst_period_windows(self._split_spec, "test"),
         ]
         self._fast_dev_wf_windows = default_walk_forward_windows(split_spec=self._split_spec, comparison_split="dev")[:2]
         self._full_dev_wf_windows = default_walk_forward_windows(split_spec=self._split_spec, comparison_split="dev")
+        cpu_budget = max(1, (os.cpu_count() or 2) - 2)
+        self._compute_profiles = {
+            "smoke": {"workers": 1, "wf_windows": 0, "replay_timeout_s": 120.0},
+            "fast": {"workers": min(2, cpu_budget), "wf_windows": len(self._fast_dev_wf_windows), "replay_timeout_s": 180.0},
+            "high": {"workers": min(4, cpu_budget), "wf_windows": len(self._full_dev_wf_windows), "replay_timeout_s": 360.0},
+        }
         self._current_variant = default_variant_specs()[0]
         self._paulwei_variant = default_variant_specs()[1]
         self._deribit_status = asdict(collect_deribit_status(base_config.options_dir, "BTC"))
@@ -531,8 +643,22 @@ class FrameworkEvaluator:
             include_liquidation_toggles=self._readiness["promotion_ready"],
             mode=search_space_mode,
         )
-        self._paulwei_fast: CandidateSummary | None = None
+        self._paulwei_fast_lightweight: CandidateSummary | None = None
+        self._paulwei_fast_full: CandidateSummary | None = None
         self._current_fast: CandidateSummary | None = None
+
+    def _compute_profile(self, *, fast: bool, lightweight: bool) -> dict[str, Any]:
+        if lightweight:
+            return self._compute_profiles["smoke"]
+        return self._compute_profiles["fast" if fast else "high"]
+
+    def _get_validation_pool(self, *, workers: int) -> ProcessPoolExecutor:
+        if self._validation_pool is None or self._validation_pool_workers != workers:
+            if self._validation_pool is not None:
+                self._validation_pool.shutdown(wait=False, cancel_futures=True)
+            self._validation_pool = ProcessPoolExecutor(max_workers=max(1, workers))
+            self._validation_pool_workers = max(1, workers)
+        return self._validation_pool
 
     @property
     def readiness(self) -> dict[str, Any]:
@@ -605,7 +731,17 @@ class FrameworkEvaluator:
         include_comparison_payload: bool = True,
         status_callback: Any | None = None,
         comparison_compute_mode: str = "full",
+        evaluation_role: str = "development",
+        test_access_allowed: bool = False,
+        dev_gate_used_this_round: bool = True,
+        dev_gate_last_round: int | None = None,
+        dev_gate_interval: int | None = None,
+        full_stage2_executed_this_round: bool = True,
     ) -> SearchReport:
+        if evaluation_role != "acceptance" and evaluate_test:
+            raise ValueError("development path must not evaluate test")
+        if evaluation_role == "acceptance" and not test_access_allowed:
+            raise ValueError("acceptance role requires test access")
         optuna_variant = (
             self.candidate_variant(optuna_params, name="optuna_tuned", label="Optuna Tuned") if optuna_params else None
         )
@@ -617,10 +753,20 @@ class FrameworkEvaluator:
             *([("rl_tuned", rl_variant)] if rl_variant is not None else []),
         ]
         prepare_total_units = max(1, len(variant_specs) * 4)
+        lightweight_prepare = comparison_compute_mode == "smoke_minimal"
 
         def _variant_progress(variant_name: str, variant_index: int):
-            def _emit(step_completed: int, unit: str) -> None:
+            def _emit(step_completed: int | str, unit: str) -> None:
                 if status_callback is None:
+                    return
+                if isinstance(step_completed, str):
+                    status_callback(
+                        event="stage2_prepare_variant_validation_progress",
+                        variant=variant_name,
+                        unit=f"{step_completed}:{unit}",
+                        completed_units=(variant_index * 4) + 3,
+                        total_units=prepare_total_units,
+                    )
                     return
                 status_callback(
                     event="stage2_prepare_variant_unit_completed",
@@ -636,6 +782,7 @@ class FrameworkEvaluator:
         current_summary = self._evaluate_variant(
             self._current_variant,
             fast=not full,
+            lightweight=lightweight_prepare,
             progress_callback=_variant_progress("current", 0),
         )
         if status_callback is not None:
@@ -648,6 +795,7 @@ class FrameworkEvaluator:
         paulwei_summary = self._evaluate_variant(
             self._paulwei_variant,
             fast=not full,
+            lightweight=lightweight_prepare,
             progress_callback=_variant_progress("paulwei_baseline", 1),
         )
         summaries = {
@@ -665,6 +813,7 @@ class FrameworkEvaluator:
             summaries["optuna_tuned"] = self._evaluate_variant(
                 optuna_variant,
                 fast=not full,
+                lightweight=lightweight_prepare,
                 progress_callback=_variant_progress("optuna_tuned", 2),
             )
             if status_callback is not None:
@@ -679,6 +828,7 @@ class FrameworkEvaluator:
             summaries["rl_tuned"] = self._evaluate_variant(
                 rl_variant,
                 fast=not full,
+                lightweight=lightweight_prepare,
                 progress_callback=_variant_progress("rl_tuned", rl_index),
             )
             if status_callback is not None:
@@ -737,7 +887,7 @@ class FrameworkEvaluator:
             )
         if status_callback is not None:
             status_callback(event="stage2_rank_variants_completed", variant=best_name)
-        return SearchReport(
+        provisional_report = SearchReport(
             created_at=datetime.now(UTC).isoformat(),
             symbol=self._base_config.symbol,
             readiness=dict(self._readiness),
@@ -759,6 +909,51 @@ class FrameworkEvaluator:
             report_mode=report_mode if full else "fast",
             report_degraded_due_to_memory=report_degraded_due_to_memory if full else False,
             smoke_completed=full,
+            evaluation_role=evaluation_role,
+            test_access_allowed=test_access_allowed,
+            dev_gate_used_this_round=dev_gate_used_this_round,
+            dev_gate_last_round=dev_gate_last_round,
+            dev_gate_interval=dev_gate_interval,
+            full_stage2_executed_this_round=full_stage2_executed_this_round,
+        )
+        handoff_summary = _assess_candidate_handoff_readiness(provisional_report)
+        frozen_id = _candidate_frozen_id(provisional_report.best_variant, provisional_report.best_params)
+        return SearchReport(
+            created_at=provisional_report.created_at,
+            symbol=provisional_report.symbol,
+            readiness=provisional_report.readiness,
+            deribit_status=provisional_report.deribit_status,
+            split_contract=provisional_report.split_contract,
+            training_window_coverage=provisional_report.training_window_coverage,
+            training_input_contract=provisional_report.training_input_contract,
+            search_status=provisional_report.search_status,
+            current=provisional_report.current,
+            paulwei_baseline=provisional_report.paulwei_baseline,
+            optuna_best=provisional_report.optuna_best,
+            rl_best=provisional_report.rl_best,
+            best_variant=provisional_report.best_variant,
+            best_score=provisional_report.best_score,
+            best_params=provisional_report.best_params,
+            comparison_payload=provisional_report.comparison_payload,
+            test_comparison_payload=provisional_report.test_comparison_payload,
+            test_evaluated=provisional_report.test_evaluated,
+            report_mode=provisional_report.report_mode,
+            report_degraded_due_to_memory=provisional_report.report_degraded_due_to_memory,
+            smoke_completed=provisional_report.smoke_completed,
+            signal_audit_summary=provisional_report.signal_audit_summary,
+            evaluation_role=provisional_report.evaluation_role,
+            test_access_allowed=provisional_report.test_access_allowed,
+            candidate_ready_for_handoff=handoff_summary["ready"] if dev_gate_used_this_round else False,
+            candidate_frozen_id=frozen_id if dev_gate_used_this_round and handoff_summary["ready"] else None,
+            frozen_params=provisional_report.best_params if dev_gate_used_this_round and handoff_summary["ready"] else None,
+            handoff_blockers=(
+                [] if handoff_summary["ready"] else handoff_summary["blockers"]
+            ) if dev_gate_used_this_round else ["dev_gate_not_run_this_round"],
+            dev_gate_summary=handoff_summary if dev_gate_used_this_round else None,
+            dev_gate_used_this_round=dev_gate_used_this_round,
+            dev_gate_last_round=dev_gate_last_round,
+            dev_gate_interval=dev_gate_interval,
+            full_stage2_executed_this_round=full_stage2_executed_this_round,
         )
 
     def _evaluate_variant(
@@ -766,9 +961,10 @@ class FrameworkEvaluator:
         variant: VariantSpec,
         *,
         fast: bool,
+        lightweight: bool = False,
         progress_callback: Any | None = None,
     ) -> CandidateSummary:
-        cache_key = (self._variant_key(variant), fast)
+        cache_key = (self._variant_key(variant), fast, lightweight)
         cached = self._summary_cache.get(cache_key)
         if cached is not None:
             if progress_callback is not None:
@@ -794,16 +990,82 @@ class FrameworkEvaluator:
             self._run_variant_backtest_cached(variant, start_ns=window.start_ns, end_ns=window.end_ns)
             for window in worst_periods
         ]
-        if progress_callback is not None:
-            progress_callback(3, "worst_windows")
-        wf_metrics = self._run_validation_bundle_cached(variant, wf_windows)
-        if progress_callback is not None:
-            progress_callback(4, "validation_bundle")
         negative_worst_windows = sum(1 for result in worst_results if result.sharpe < 0)
-
         baseline = None
         if variant.name != "paulwei_baseline":
-            baseline = self._get_paulwei_fast_summary()
+            baseline = self._get_paulwei_fast_summary(lightweight=lightweight)
+        if progress_callback is not None:
+            progress_callback(3, "worst_windows")
+        if lightweight:
+            window_sharpes = [dev_result.sharpe, weak_result.sharpe, *(result.sharpe for result in worst_results)]
+            wf_metrics = {
+                "avg_test_sharpe": sum(window_sharpes) / len(window_sharpes) if window_sharpes else 0.0,
+                "avg_oos_ratio": 1.0,
+                "worst_test_sharpe": min(window_sharpes) if window_sharpes else 0.0,
+            }
+        else:
+            if variant.name not in {"current", "paulwei_baseline"} and baseline is not None:
+                if (
+                    dev_result.sharpe < baseline.dev_sharpe - 0.25
+                    or negative_worst_windows > baseline.negative_dev_worst_windows
+                    or dev_result.max_drawdown > baseline.dev_drawdown + 0.04
+                ):
+                    summary = CandidateSummary(
+                        variant=variant.name,
+                        robust_score=-8.0,
+                        selection_split="dev",
+                        dev_sharpe=dev_result.sharpe,
+                        dev_pnl=dev_result.net_pnl,
+                        dev_drawdown=dev_result.max_drawdown,
+                        avg_dev_sharpe=dev_result.sharpe,
+                        avg_dev_ratio=0.0,
+                        worst_dev_sharpe=min(
+                            [dev_result.sharpe, weak_result.sharpe, *(result.sharpe for result in worst_results)]
+                        ),
+                        weak_window_sharpe=weak_result.sharpe,
+                        negative_dev_worst_windows=negative_worst_windows,
+                        promotion_candidate=False,
+                        blocked_by="pre_validation_rejection",
+                        failed_gate_metrics=None,
+                        promotion_failure_reason="pre_validation_rejection",
+                    )
+                    if progress_callback is not None:
+                        progress_callback(4, "pre_validation_rejection")
+                    self._summary_cache[cache_key] = summary
+                    return summary
+            profile = self._compute_profile(fast=fast, lightweight=lightweight)
+            try:
+                wf_metrics = self._run_validation_bundle_cached(
+                    variant,
+                    wf_windows,
+                    progress_callback=progress_callback,
+                    replay_timeout_s=float(profile["replay_timeout_s"]),
+                    replay_pool=self._get_validation_pool(workers=int(profile["workers"])),
+                )
+            except ValidationBundleTimeoutError:
+                if variant.name in {"current", "paulwei_baseline"}:
+                    raise
+                summary = CandidateSummary(
+                    variant=variant.name,
+                    robust_score=-10.0,
+                    selection_split="dev",
+                    dev_sharpe=dev_result.sharpe,
+                    dev_pnl=dev_result.net_pnl,
+                    dev_drawdown=dev_result.max_drawdown,
+                    avg_dev_sharpe=-5.0,
+                    avg_dev_ratio=0.0,
+                    worst_dev_sharpe=-5.0,
+                    weak_window_sharpe=weak_result.sharpe,
+                    negative_dev_worst_windows=len(worst_results),
+                    promotion_candidate=False,
+                    blocked_by="validation_timeout",
+                    failed_gate_metrics=None,
+                    promotion_failure_reason="validation_timeout",
+                )
+                if progress_callback is not None:
+                    progress_callback(4, "validation_timeout")
+                self._summary_cache[cache_key] = summary
+                return summary
         score = _candidate_score(
             avg_test_sharpe=wf_metrics["avg_test_sharpe"],
             worst_test_sharpe=wf_metrics["worst_test_sharpe"],
@@ -840,6 +1102,8 @@ class FrameworkEvaluator:
             failed_gate_metrics=gate_metrics,
             promotion_failure_reason=failure_reason,
         )
+        if progress_callback is not None:
+            progress_callback(4, "lightweight_summary" if lightweight else "validation_bundle")
         self._summary_cache[cache_key] = summary
         return summary
 
@@ -888,12 +1152,28 @@ class FrameworkEvaluator:
         self._backtest_cache[key] = snapshot
         return snapshot
 
-    def _run_validation_bundle_cached(self, variant: VariantSpec, windows: list[WindowSpec]) -> dict[str, float]:
-        key = (self._variant_key(variant), tuple(window.label for window in windows))
+    def _run_validation_bundle_cached(
+        self,
+        variant: VariantSpec,
+        windows: list[WindowSpec],
+        *,
+        progress_callback: Any | None = None,
+        replay_timeout_s: float | None = None,
+        replay_pool: ProcessPoolExecutor | None = None,
+    ) -> dict[str, float]:
+        key = (self._variant_key(variant), tuple(window.label for window in windows), bool(replay_timeout_s))
         cached = self._validation_cache.get(key)
         if cached is not None:
             return cached
-        result = _run_validation_bundle(self._base_config, variant, windows, run_backtest=self._run_variant_backtest_cached)
+        result = _run_validation_bundle(
+            self._base_config,
+            variant,
+            windows,
+            run_backtest=self._run_variant_backtest_cached,
+            progress_callback=progress_callback,
+            replay_timeout_s=replay_timeout_s,
+            replay_pool=replay_pool,
+        )
         self._validation_cache[key] = result
         return result
 
@@ -902,10 +1182,22 @@ class FrameworkEvaluator:
         payload = json.dumps(asdict(variant), sort_keys=True, default=str)
         return sha1(payload.encode("utf-8")).hexdigest()
 
-    def _get_paulwei_fast_summary(self) -> CandidateSummary:
-        if self._paulwei_fast is None:
-            self._paulwei_fast = self._evaluate_variant(self._paulwei_variant, fast=True)
-        return self._paulwei_fast
+    def _get_paulwei_fast_summary(self, *, lightweight: bool = False) -> CandidateSummary:
+        if lightweight:
+            if self._paulwei_fast_lightweight is None:
+                self._paulwei_fast_lightweight = self._evaluate_variant(
+                    self._paulwei_variant,
+                    fast=True,
+                    lightweight=True,
+                )
+            return self._paulwei_fast_lightweight
+        if self._paulwei_fast_full is None:
+            self._paulwei_fast_full = self._evaluate_variant(
+                self._paulwei_variant,
+                fast=True,
+                lightweight=False,
+            )
+        return self._paulwei_fast_full
 
     @staticmethod
     def _comparison_report_mode(
@@ -926,6 +1218,9 @@ def _run_validation_bundle(
     windows: list[WindowSpec],
     *,
     run_backtest: Any = None,
+    progress_callback: Any | None = None,
+    replay_timeout_s: float | None = None,
+    replay_pool: ProcessPoolExecutor | None = None,
 ) -> dict[str, float]:
     if not windows:
         return {"avg_test_sharpe": 0.0, "avg_oos_ratio": 0.0, "worst_test_sharpe": 0.0}
@@ -946,8 +1241,51 @@ def _run_validation_bundle(
         train_end = window.start_ns
         assert train_end is not None
         train_start = _shift_months(train_end, -24)
-        train_result = run(variant, start_ns=train_start, end_ns=train_end)
-        test_result = run(variant, start_ns=window.start_ns, end_ns=window.end_ns)
+        if progress_callback is not None:
+            progress_callback("validation_train_started", window.label)
+        try:
+            if replay_timeout_s is not None:
+                train_result = _run_variant_backtest_with_timeout(
+                    base_config,
+                    variant,
+                    start_ns=train_start,
+                    end_ns=train_end,
+                    timeout_s=replay_timeout_s,
+                    pool=replay_pool,
+                )
+            else:
+                train_result = run(variant, start_ns=train_start, end_ns=train_end)
+        except TimeoutError as exc:
+            raise ValidationBundleTimeoutError(
+                variant=variant.name,
+                window_label=window.label,
+                leg="train",
+                timeout_s=replay_timeout_s or 0.0,
+            ) from exc
+        if progress_callback is not None:
+            progress_callback("validation_train_completed", window.label)
+            progress_callback("validation_test_started", window.label)
+        try:
+            if replay_timeout_s is not None:
+                test_result = _run_variant_backtest_with_timeout(
+                    base_config,
+                    variant,
+                    start_ns=window.start_ns,
+                    end_ns=window.end_ns,
+                    timeout_s=replay_timeout_s,
+                    pool=replay_pool,
+                )
+            else:
+                test_result = run(variant, start_ns=window.start_ns, end_ns=window.end_ns)
+        except TimeoutError as exc:
+            raise ValidationBundleTimeoutError(
+                variant=variant.name,
+                window_label=window.label,
+                leg="test",
+                timeout_s=replay_timeout_s or 0.0,
+            ) from exc
+        if progress_callback is not None:
+            progress_callback("validation_test_completed", window.label)
         ratio = test_result.sharpe / train_result.sharpe if abs(train_result.sharpe) > 0.01 else 0.0
         test_sharpes.append(test_result.sharpe)
         ratios.append(ratio)
@@ -1196,13 +1534,34 @@ def run_optuna_search(
 
 
 def build_markdown_report(report: SearchReport) -> str:
-    full_training_assessment = _assess_full_training_readiness(
-        report,
-        smoke_completed=report.smoke_completed,
+    full_training_assessment = (
+        _assess_full_training_readiness(
+            report,
+            smoke_completed=report.smoke_completed,
+        )
+        if report.evaluation_role == "acceptance"
+        else {
+            "decision": "acceptance_required" if report.candidate_ready_for_handoff else "defer_handoff",
+            "ready": False,
+            "blockers": list(report.handoff_blockers or []),
+            "recommended_budget": None,
+        }
     )
-    post_smoke_scenario = _classify_post_smoke_scenario(
-        report,
-        full_training_assessment=full_training_assessment,
+    post_smoke_scenario = (
+        {
+            "scenario": "scenario_development_handoff_ready" if report.candidate_ready_for_handoff else "scenario_development_train_iteration",
+            "category": "development_handoff" if report.candidate_ready_for_handoff else "train_iteration",
+            "should_open_full_training": False,
+            "next_action": "handoff_frozen_candidate_to_acceptance"
+            if report.candidate_ready_for_handoff
+            else "continue_train_search_until_dev_gate",
+            "blockers": list(report.handoff_blockers or []),
+        }
+        if report.evaluation_role == "development"
+        else _classify_post_smoke_scenario(
+            report,
+            full_training_assessment=full_training_assessment,
+        )
     )
     framework_diagnosis = _build_framework_diagnosis(report)
     lines = [
@@ -1212,7 +1571,10 @@ def build_markdown_report(report: SearchReport) -> str:
         f"- symbol: `{report.symbol}`",
         f"- best_variant: `{report.best_variant}`",
         f"- best_score: `{report.best_score}`",
+        f"- evaluation_role: `{report.evaluation_role}`",
         f"- test_evaluated: `{report.test_evaluated}`",
+        f"- candidate_ready_for_handoff: `{report.candidate_ready_for_handoff}`",
+        f"- candidate_frozen_id: `{report.candidate_frozen_id}`",
         "",
         "## Readiness",
         "",
@@ -1250,16 +1612,19 @@ def build_markdown_report(report: SearchReport) -> str:
         f"- search_space_profile: `{report.search_status.get('search_space_profile')}`",
         f"- train_candidate_diagnostics: `{report.search_status.get('train_candidate_diagnostics')}`",
         f"- empty_shortlist_reason: `{report.search_status.get('empty_shortlist_reason')}`",
+        f"- dev_gate_used_this_round: `{report.dev_gate_used_this_round}`",
+        f"- dev_gate_last_round: `{report.dev_gate_last_round}`",
+        f"- dev_gate_interval: `{report.dev_gate_interval}`",
         "",
     ]
     lines.extend(
         [
-            "## Full Training Assessment",
+            "## Development Handoff",
             "",
             f"- decision: `{full_training_assessment['decision']}`",
-            f"- ready: `{full_training_assessment['ready']}`",
+            f"- ready: `{report.candidate_ready_for_handoff}`",
             f"- blockers: `{full_training_assessment['blockers']}`",
-            f"- recommended_budget: `{full_training_assessment['recommended_budget']}`",
+            f"- frozen_params: `{report.frozen_params}`",
             "",
             "## Post-Smoke Scenario",
             "",
@@ -1327,13 +1692,36 @@ def write_search_report(path: Path, report: SearchReport) -> None:
         "baseline_anchor_variant",
         search_profile.get("baseline_anchor_variant"),
     )
-    full_training_assessment = _assess_full_training_readiness(
-        report,
-        smoke_completed=report.smoke_completed,
+    full_training_assessment = (
+        _assess_full_training_readiness(
+            report,
+            smoke_completed=report.smoke_completed,
+        )
+        if report.evaluation_role == "acceptance"
+        else {
+            "ready": False,
+            "decision": "acceptance_required" if report.candidate_ready_for_handoff else "defer_handoff",
+            "blockers": list(report.handoff_blockers or []),
+            "warnings": [],
+            "gates": (report.dev_gate_summary or {}).get("gates", {}),
+            "best_tuned_variant": report.best_variant if report.candidate_ready_for_handoff else None,
+        }
     )
-    post_smoke_scenario = _classify_post_smoke_scenario(
-        report,
-        full_training_assessment=full_training_assessment,
+    post_smoke_scenario = (
+        {
+            "scenario": "scenario_development_handoff_ready" if report.candidate_ready_for_handoff else "scenario_development_train_iteration",
+            "category": "development_handoff" if report.candidate_ready_for_handoff else "train_iteration",
+            "should_open_full_training": False,
+            "next_action": "handoff_frozen_candidate_to_acceptance"
+            if report.candidate_ready_for_handoff
+            else "continue_train_search_until_dev_gate",
+            "blockers": list(report.handoff_blockers or []),
+        }
+        if report.evaluation_role == "development"
+        else _classify_post_smoke_scenario(
+            report,
+            full_training_assessment=full_training_assessment,
+        )
     )
     framework_diagnosis = _build_framework_diagnosis(report)
     best_summary = next(
@@ -1357,7 +1745,7 @@ def write_search_report(path: Path, report: SearchReport) -> None:
     payload["full_training_assessment"] = full_training_assessment
     payload["post_smoke_scenario"] = post_smoke_scenario
     payload["framework_diagnosis"] = framework_diagnosis
-    payload["full_training_allowed"] = full_training_assessment["ready"]
+    payload["full_training_allowed"] = full_training_assessment["ready"] if report.evaluation_role == "acceptance" else False
     payload["full_training_decision"] = full_training_assessment["decision"]
     payload["full_training_blockers"] = full_training_assessment["blockers"]
     payload["search_space_mode"] = search_space_mode
@@ -1366,6 +1754,17 @@ def write_search_report(path: Path, report: SearchReport) -> None:
     payload["stage1_execution_mode"] = report.search_status.get("stage1_execution_mode")
     payload["train_candidate_diagnostics"] = report.search_status.get("train_candidate_diagnostics")
     payload["empty_shortlist_reason"] = report.search_status.get("empty_shortlist_reason")
+    payload["evaluation_role"] = report.evaluation_role
+    payload["test_access_allowed"] = report.test_access_allowed
+    payload["candidate_ready_for_handoff"] = report.candidate_ready_for_handoff
+    payload["candidate_frozen_id"] = report.candidate_frozen_id
+    payload["frozen_params"] = report.frozen_params
+    payload["handoff_blockers"] = report.handoff_blockers
+    payload["dev_gate_summary"] = report.dev_gate_summary
+    payload["dev_gate_used_this_round"] = report.dev_gate_used_this_round
+    payload["dev_gate_last_round"] = report.dev_gate_last_round
+    payload["dev_gate_interval"] = report.dev_gate_interval
+    payload["full_stage2_executed_this_round"] = report.full_stage2_executed_this_round
     payload["campaign_execution_contract"] = {
         "stage1_execution_mode": report.search_status.get("stage1_execution_mode"),
         "authoritative_verdict_execution_mode": report.search_status.get("authoritative_verdict_execution_mode"),
@@ -1418,9 +1817,12 @@ def write_search_report(path: Path, report: SearchReport) -> None:
         )
     payload["final_verdict"] = {
         "best_variant": report.best_variant,
-        "candidate_ready_for_test": bool(best_summary.promotion_candidate) if best_summary and not report.test_evaluated else False,
+        "candidate_ready_for_test": report.candidate_ready_for_handoff,
+        "candidate_ready_for_handoff": report.candidate_ready_for_handoff,
+        "candidate_frozen_id": report.candidate_frozen_id,
         "promote_to_paper_live_candidate": bool(best_summary.promotion_candidate) if best_summary and report.test_evaluated else False,
         "test_evaluated": report.test_evaluated,
+        "evaluation_role": report.evaluation_role,
         "report_mode": report.report_mode,
         "report_degraded_due_to_memory": report.report_degraded_due_to_memory,
         "blocked_by": payload["readiness"]["blocked_by"],
@@ -1454,7 +1856,7 @@ def write_search_report(path: Path, report: SearchReport) -> None:
             if not payload["deribit_status"]["research_ready"]
             else "none"
         ),
-        "full_training_ready": full_training_assessment["ready"],
+        "full_training_ready": full_training_assessment["ready"] if report.evaluation_role == "acceptance" else False,
         "full_training_decision": full_training_assessment["decision"],
         "full_training_blockers": full_training_assessment["blockers"],
         "post_smoke_scenario": post_smoke_scenario["scenario"],

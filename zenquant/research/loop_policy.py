@@ -191,19 +191,19 @@ def plan_next_iteration(
     del anchor_ratio, exploit_ratio, explore_ratio
 
     scenario = ((final_report.get("post_smoke_scenario") or {}).get("scenario")) or ""
-    blockers = set((final_report.get("full_training_assessment") or {}).get("blockers") or [])
-    full_training_allowed = bool((final_report.get("full_training_assessment") or {}).get("ready", False))
+    blockers = set(final_report.get("handoff_blockers") or (final_report.get("full_training_assessment") or {}).get("blockers") or [])
+    candidate_ready_for_handoff = bool(final_report.get("candidate_ready_for_handoff", False))
 
-    if full_training_allowed or scenario == "scenario_a_full_training_allowed":
+    if candidate_ready_for_handoff:
         return LoopIterationPlan(
             stop=True,
-            stop_reason="gate_passed",
+            stop_reason="candidate_ready_for_handoff",
             next_budget=current_budget,
-            adaptation_policy="gate_passed",
+            adaptation_policy="candidate_ready_for_handoff",
             anchor_seed_trials=[],
             exploit_seed_trials=[],
             explore_seed_trials=[],
-            should_open_fast_or_full_training=True,
+            should_open_fast_or_full_training=False,
             loop_progression_blocked=False,
         )
 

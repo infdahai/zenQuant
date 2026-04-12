@@ -10,6 +10,7 @@ import os
 import shutil
 import traceback
 from datetime import UTC, datetime
+from hashlib import sha1
 from pathlib import Path
 from typing import Any
 
@@ -106,7 +107,17 @@ def _initialize_running_status(
         "split_contract": split_summary_json(default_btc_split_spec()),
         "split_contract_version": default_btc_split_spec().version,
         "authoritative_promote_path": True,
+        "evaluation_role": "development",
+        "test_access_allowed": False,
         "test_evaluated": False,
+        "candidate_ready_for_handoff": False,
+        "candidate_frozen_id": None,
+        "frozen_params": None,
+        "handoff_blockers": [],
+        "dev_gate_used_this_round": False,
+        "dev_gate_last_round": None,
+        "dev_gate_interval": None,
+        "full_stage2_executed_this_round": False,
         "invalidated_reason": None,
         "full_training_allowed": False,
         "full_training_decision": "defer_full_training",
@@ -150,8 +161,8 @@ def _initialize_running_status(
 def _resolved_budget(budget: str, optuna_trials: int | None, rl_episodes: int | None) -> tuple[int, int]:
     defaults = {
         "smoke": (5, 5),
-        "fast": (50, 50),
-        "high": (150, 100),
+        "fast": (50, 20),
+        "high": (150, 60),
     }
     default_optuna, default_rl = defaults[budget]
     return optuna_trials or default_optuna, rl_episodes or default_rl
@@ -212,6 +223,119 @@ def _placeholder_summary(name: str) -> CandidateSummary:
         failed_gate_metrics=None,
         promotion_failure_reason=None,
     )
+
+
+def _candidate_frozen_id(best_variant: str, best_params: dict[str, Any] | None) -> str | None:
+    if not best_params:
+        return None
+    payload = json.dumps({"variant": best_variant, "params": best_params}, sort_keys=True, separators=(",", ":"))
+    return sha1(payload.encode("utf-8")).hexdigest()[:12]
+
+
+def _write_development_iteration_report(
+    *,
+    output_dir: Path,
+    split_spec: Any,
+    base_config: HistoricalBacktestConfig,
+    evaluator: FrameworkEvaluator,
+    stage1_payload: dict[str, Any],
+) -> dict[str, Any]:
+    search_status = dict(stage1_payload.get("search_status") or {})
+    optuna_params = stage1_payload.get("optuna_params")
+    rl_params = stage1_payload.get("rl_params")
+    best_variant = "optuna_tuned" if optuna_params else "rl_tuned" if rl_params else "paulwei_baseline"
+    best_params = optuna_params if optuna_params is not None else rl_params
+    frozen_id = _candidate_frozen_id(best_variant, best_params)
+    candidate_exists = best_params is not None
+    handoff_blockers = ["dev_gate_not_run_this_round"] if candidate_exists else ["no_tuned_candidate_from_smoke"]
+    payload = {
+        "created_at": _ts(),
+        "symbol": base_config.symbol,
+        "best_variant": best_variant,
+        "best_score": float(search_status.get("stage1_best_score", 0.0) or 0.0),
+        "evaluation_role": "development",
+        "test_access_allowed": False,
+        "test_evaluated": False,
+        "candidate_ready_for_handoff": False,
+        "candidate_frozen_id": None,
+        "frozen_params": None,
+        "handoff_blockers": handoff_blockers,
+        "dev_gate_summary": None,
+        "dev_gate_used_this_round": False,
+        "dev_gate_last_round": search_status.get("dev_gate_last_round"),
+        "dev_gate_interval": search_status.get("dev_gate_interval"),
+        "full_stage2_executed_this_round": False,
+        "readiness": evaluator.readiness,
+        "deribit_status": evaluator._deribit_status,
+        "split_contract": split_summary_json(split_spec),
+        "training_window_coverage": evaluator._training_window_coverage,
+        "training_input_contract": evaluator.training_input_contract,
+        "search_status": search_status,
+        "optuna_tuned": stage1_payload.get("optuna_trials_payload", [{}])[0].get("summary") if stage1_payload.get("optuna_trials_payload") else None,
+        "rl_tuned": (stage1_payload.get("rl_result") or {}).get("summary"),
+        "train_candidate_diagnostics": search_status.get("train_candidate_diagnostics"),
+        "empty_shortlist_reason": search_status.get("empty_shortlist_reason"),
+        "full_training_assessment": {
+            "ready": False,
+            "decision": "defer_handoff",
+            "blockers": handoff_blockers,
+            "warnings": [],
+        },
+        "full_training_allowed": False,
+        "full_training_decision": "defer_handoff",
+        "full_training_blockers": handoff_blockers,
+        "post_smoke_scenario": {
+            "scenario": "scenario_development_train_iteration" if candidate_exists else "scenario_b_no_tuned_candidate",
+            "category": "train_iteration" if candidate_exists else "search_candidate_quality",
+            "should_open_full_training": False,
+            "next_action": "continue_train_search_until_dev_gate" if candidate_exists else "tighten_train_search_and_rerun_smoke",
+            "blockers": handoff_blockers,
+        },
+        "final_verdict": {
+            "best_variant": best_variant,
+            "candidate_ready_for_test": False,
+            "candidate_ready_for_handoff": False,
+            "candidate_frozen_id": None,
+            "promote_to_paper_live_candidate": False,
+            "test_evaluated": False,
+            "evaluation_role": "development",
+            "blocked_by": evaluator.readiness.get("blocked_by"),
+        },
+    }
+    final_json = output_dir / "framework_optimization.json"
+    final_md = output_dir / "framework_optimization.md"
+    _write_json(final_json, payload)
+    final_md.write_text(
+        "\n".join(
+            [
+                "# Framework Optimization",
+                "",
+                "- evaluation_role: `development`",
+                "- dev_gate_used_this_round: `False`",
+                f"- best_variant: `{best_variant}`",
+                "- candidate_ready_for_handoff: `False`",
+                f"- candidate_preview_frozen_id: `{frozen_id}`",
+                f"- handoff_blockers: `{handoff_blockers}`",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    return {
+        "created_at": payload["created_at"],
+        "best_variant": best_variant,
+        "best_score": payload["best_score"],
+        "report_mode": "train_only",
+        "report_degraded_due_to_memory": False,
+        "test_evaluated": False,
+        "evaluation_role": "development",
+        "test_access_allowed": False,
+        "candidate_ready_for_handoff": False,
+        "candidate_frozen_id": None,
+        "json_path": str(final_json),
+        "md_path": str(final_md),
+        "full_training_assessment": payload["full_training_assessment"],
+        "post_smoke_scenario": payload["post_smoke_scenario"],
+    }
 
 
 def _archive_prior_outputs(output_dir: Path) -> None:
@@ -288,6 +412,9 @@ def main() -> None:
     parser.add_argument("--liquidation-dir", default="data/raw/merged_liquidations/aggregated")
     parser.add_argument("--resume", action="store_true")
     parser.add_argument("--seed-trials-file", default=None)
+    parser.add_argument("--development-dev-gate", action="store_true")
+    parser.add_argument("--dev-gate-last-round", type=int, default=None)
+    parser.add_argument("--dev-gate-interval", type=int, default=None)
     args = parser.parse_args()
 
     output_dir = Path(args.output_dir)
@@ -330,6 +457,11 @@ def main() -> None:
         status_path,
         launcher_pid=launcher_pid,
         campaign_pid=campaign_pid,
+        evaluation_role="development",
+        test_access_allowed=False,
+        dev_gate_used_this_round=bool(args.development_dev_gate),
+        dev_gate_last_round=args.dev_gate_last_round,
+        dev_gate_interval=args.dev_gate_interval,
     )
     _append_campaign_log(log_path, f"campaign_started budget={args.budget} resume={args.resume} pid={campaign_pid}")
 
@@ -392,6 +524,12 @@ def main() -> None:
             report_mode="fast",
             report_degraded_due_to_memory=False,
             smoke_completed=False,
+            evaluation_role="development",
+            test_access_allowed=False,
+            dev_gate_used_this_round=bool(args.development_dev_gate),
+            dev_gate_last_round=args.dev_gate_last_round,
+            dev_gate_interval=args.dev_gate_interval,
+            full_stage2_executed_this_round=bool(args.development_dev_gate),
         )
         interim_training_assessment = _assess_full_training_readiness(interim_report, smoke_completed=False)
         interim_diagnosis = _build_framework_diagnosis(interim_report)
@@ -455,7 +593,7 @@ def main() -> None:
             stage1_execution_mode = "1h_context_only" if args.budget == "smoke" else "5m_enabled"
             smoke_ranking_top_n = 1 if args.budget == "smoke" else min(5, optuna_trials)
             smoke_rl_timeout_s = 600.0 if args.budget == "smoke" else None
-            smoke_ranking_candidate_timeout_s = 240.0 if args.budget == "smoke" else None
+            smoke_ranking_candidate_timeout_s = 30.0 if args.budget == "smoke" else None
             stage1_state: dict[str, Any] = {
                 "optuna_params": None,
                 "optuna_trials_payload": [],
@@ -532,6 +670,11 @@ def main() -> None:
                         "train_only_search": True,
                         "dev_only_ranking": False,
                         "dev_diagnostics_only": True,
+                        "evaluation_role": "development",
+                        "test_access_allowed": False,
+                        "dev_gate_used_this_round": bool(args.development_dev_gate),
+                        "dev_gate_last_round": args.dev_gate_last_round,
+                        "dev_gate_interval": args.dev_gate_interval,
                         "search_outcome": search_outcome,
                         "train_candidate_diagnostics": dict(stage1_state.get("train_candidate_diagnostics") or {}),
                         "empty_shortlist_reason": stage1_state.get("empty_shortlist_reason"),
@@ -570,6 +713,8 @@ def main() -> None:
 
             def _stage1_heartbeat(**heartbeat: Any) -> None:
                 current_trial = int(heartbeat.get("current_trial", heartbeat.get("current_candidate", 0)) or 0)
+                actual_steps = int(heartbeat.get("actual_steps", heartbeat.get("completed_steps", 0)) or 0)
+                requested_steps = int(heartbeat.get("requested_steps", heartbeat.get("total_steps", 0)) or 0)
                 completed_trials = int(
                     heartbeat.get("completed_trials", heartbeat.get("completed_candidates", heartbeat.get("completed_steps", 0)))
                     or 0
@@ -620,6 +765,8 @@ def main() -> None:
                     stage1_subphase=subphase,
                     stage1_progress_completed=normalized_completed,
                     stage1_progress_total=normalized_total,
+                    stage1_actual_steps=actual_steps if subphase == "stage1_rl" else None,
+                    stage1_requested_steps=requested_steps if subphase == "stage1_rl" else None,
                     stage1_last_progress_at=_ts(),
                     stage1_last_completed_unit=event,
                     stage1_failure_reason=None,
@@ -649,9 +796,12 @@ def main() -> None:
                     "rl_completed",
                     "stage1_finalize",
                 }:
+                    suffix = ""
+                    if event in {"rl_progress", "rl_completed"}:
+                        suffix = f" actual={actual_steps} requested={requested_steps or normalized_total}"
                     _append_campaign_log(
                         log_path,
-                        f"{subphase} event={event} completed={normalized_completed}/{normalized_total}",
+                        f"{subphase} event={event} completed={normalized_completed}/{normalized_total}{suffix}",
                     )
                 if event in {"trial_completed", "ranking_candidate_completed", "rl_progress", "rl_completed"}:
                     _persist_stage1_partial(
@@ -748,8 +898,8 @@ def main() -> None:
                     search_execution_timeframe=Timeframe.TF_1H if args.budget == "smoke" else evaluator._base_config.execution_timeframe,
                     search_context_timeframe=Timeframe.TF_1H if args.budget == "smoke" else evaluator._base_config.context_timeframe,
                     trial_timeout_s=720.0 if args.budget == "smoke" else None,
-                    stage_total_timeout_s=1800.0 if args.budget == "smoke" else None,
-                    ranking_timeout_s=600.0 if args.budget == "smoke" else None,
+                    stage_total_timeout_s=900.0 if args.budget == "smoke" else None,
+                    ranking_timeout_s=120.0 if args.budget == "smoke" else None,
                     ranking_top_n=smoke_ranking_top_n,
                     ranking_candidate_timeout_s=smoke_ranking_candidate_timeout_s,
                     seed_trials=extra_seed_trials,
@@ -986,51 +1136,28 @@ def main() -> None:
                 stage1_payload["search_status"]["full_training_allowed"] = False
                 stage1_payload["search_status"]["full_training_decision"] = "defer_full_training"
                 stage1_payload["search_status"]["full_training_blockers"] = [
-                    "smoke_campaign_incomplete",
-                    "deribit_observation_not_ready",
-                    "no_tuned_candidate_from_smoke",
+                    "development_stage1_train_only",
+                    "no_train_candidate_from_stage1",
                 ]
                 stage1_best_score = 0.0
             else:
-                stage1_report = SearchReport(
-                    created_at=_ts(),
-                    symbol=base_config.symbol,
-                    readiness=evaluator.readiness,
-                    deribit_status=evaluator._deribit_status,
-                    split_contract=split_summary_json(split_spec),
-                    training_window_coverage=evaluator._training_window_coverage,
-                    training_input_contract=evaluator.training_input_contract,
-                    search_status=stage1_payload["search_status"],
-                    current=evaluator._evaluate_variant(evaluator._current_variant, fast=True),
-                    paulwei_baseline=evaluator._evaluate_variant(evaluator._paulwei_variant, fast=True),
-                    optuna_best=optuna_summary,
-                    rl_best=rl_summary,
-                    best_variant=(
-                        "optuna_tuned"
-                        if optuna_summary and (not rl_summary or optuna_summary.robust_score >= rl_summary.robust_score)
-                        else "rl_tuned"
-                        if rl_summary
-                        else "paulwei_baseline"
-                    ),
-                    best_score=max(
-                        [
-                            summary.robust_score
-                            for summary in (optuna_summary, rl_summary)
-                            if summary is not None
-                        ],
-                        default=0.0,
-                    ),
-                    best_params=optuna_params if optuna_summary is not None else rl_params,
-                    comparison_payload={},
-                    report_mode="fast",
-                    report_degraded_due_to_memory=False,
-                    smoke_completed=False,
+                stage1_assessment = {
+                    "ready": False,
+                    "decision": "defer_full_training",
+                    "blockers": ["development_stage1_train_only"],
+                }
+                stage1_best_score = max(
+                    [
+                        summary.robust_score
+                        for summary in (optuna_summary, rl_summary)
+                        if summary is not None
+                    ],
+                    default=0.0,
                 )
-                stage1_assessment = _assess_full_training_readiness(stage1_report, smoke_completed=False)
                 stage1_payload["search_status"]["full_training_allowed"] = stage1_assessment["ready"]
                 stage1_payload["search_status"]["full_training_decision"] = stage1_assessment["decision"]
                 stage1_payload["search_status"]["full_training_blockers"] = stage1_assessment["blockers"]
-                stage1_best_score = stage1_report.best_score
+            stage1_payload["search_status"]["stage1_best_score"] = stage1_best_score
             if stage1_state["rl_failure_reason"]:
                 stage1_payload["search_status"]["failure_reason"] = "stage1_rl_sidecar_failed"
                 stage1_payload["search_status"]["failure_detail"] = stage1_state["rl_failure_reason"]
@@ -1106,10 +1233,10 @@ def main() -> None:
 
             def _stage2_timeout_check() -> None:
                 now = datetime.now(UTC).timestamp()
-                total_timeout = 900.0 if args.budget == "smoke" else 3600.0
+                total_timeout = 600.0 if args.budget == "smoke" else 3600.0
                 current_subphase = (_read_json(status_path) or {}).get("stage2_subphase")
                 if args.budget == "smoke":
-                    no_progress_timeout = 840.0 if current_subphase == "stage2_prepare_variants" else 300.0
+                    no_progress_timeout = 240.0 if current_subphase == "stage2_prepare_variants" else 180.0
                 else:
                     no_progress_timeout = 900.0
                 if (now - stage2_started_at) > total_timeout:
@@ -1128,6 +1255,7 @@ def main() -> None:
                     "stage2_prepare_variants_started",
                     "stage2_prepare_variants_progress",
                     "stage2_prepare_variant_unit_completed",
+                    "stage2_prepare_variant_validation_progress",
                 }:
                     subphase = "stage2_prepare_variants"
                 elif event in {
@@ -1188,7 +1316,26 @@ def main() -> None:
             _append_campaign_log(log_path, "stage2_full_verdict started")
             smoke_stage2 = args.budget == "smoke"
             try:
-                if stage1_payload.get("search_status", {}).get("search_outcome") == "empty":
+                if not args.development_dev_gate:
+                    final_report_payload = _write_development_iteration_report(
+                        output_dir=output_dir,
+                        split_spec=split_spec,
+                        base_config=base_config,
+                        evaluator=evaluator,
+                        stage1_payload=stage1_payload,
+                    )
+                    report = None
+                    _write_json(stage2_path, final_report_payload)
+                    _stage2_heartbeat(
+                        event="stage2_write_artifacts_completed",
+                        completed_units=1,
+                        total_units=1,
+                    )
+                    _append_campaign_log(
+                        log_path,
+                        f"stage2_full_verdict complete best_variant={final_report_payload.get('best_variant')}",
+                    )
+                elif stage1_payload.get("search_status", {}).get("search_outcome") == "empty":
                     report = SearchReport(
                         created_at=_ts(),
                         symbol=base_config.symbol,
@@ -1209,18 +1356,31 @@ def main() -> None:
                         report_mode="fast",
                         report_degraded_due_to_memory=False,
                         smoke_completed=True,
+                        evaluation_role="development",
+                        test_access_allowed=False,
+                        dev_gate_used_this_round=True,
+                        dev_gate_last_round=args.dev_gate_last_round,
+                        dev_gate_interval=args.dev_gate_interval,
+                        full_stage2_executed_this_round=True,
                     )
                     _stage2_heartbeat(event="stage2_prepare_variants_progress", variant="no_tuned_candidate", completed_units=4, total_units=4)
                 else:
+                    full_stage2_budget = args.budget == "high"
                     report = evaluator.final_report(
                         optuna_params=stage1_payload.get("optuna_params"),
                         rl_params=stage1_payload.get("rl_params"),
                         search_status=stage1_payload.get("search_status"),
-                        full=not smoke_stage2,
-                        evaluate_test=not smoke_stage2,
+                        full=full_stage2_budget,
+                        evaluate_test=False,
                         include_comparison_payload=True,
                         status_callback=_stage2_heartbeat,
                         comparison_compute_mode="smoke_minimal" if smoke_stage2 else "full",
+                        evaluation_role="development",
+                        test_access_allowed=False,
+                        dev_gate_used_this_round=True,
+                        dev_gate_last_round=args.dev_gate_last_round,
+                        dev_gate_interval=args.dev_gate_interval,
+                        full_stage2_executed_this_round=full_stage2_budget,
                     )
                 _stage2_timeout_check()
             except SearchStageTimeoutError as exc:
@@ -1235,49 +1395,54 @@ def main() -> None:
                 )
                 _append_campaign_log(log_path, f"stage2_full_verdict failed reason={exc}")
                 raise
-            if smoke_stage2:
+            if args.development_dev_gate and smoke_stage2:
                 report.smoke_completed = True
-            _stage2_heartbeat(event="stage2_rank_variants_completed", completed_units=stage2_state["completed"], total_units=stage2_state["total"])
-            _append_campaign_log(log_path, "stage2_signal_audit started")
-            report.signal_audit_summary = generate_signal_combination_audit(
-                data_root=base_config.root_dir,
-                symbol=base_config.symbol,
-                output_dir=output_dir.parent / "signal_combination",
-                profile_path=base_config.profile_path or Path("config/profiles/default.toml"),
-            )
-            _stage2_heartbeat(
-                event="stage2_write_artifacts_started",
-                completed_units=stage2_state["completed"] + 1,
-                total_units=max(stage2_state["total"] + 2, 2),
-            )
-            final_json = output_dir / "framework_optimization.json"
-            final_md = output_dir / "framework_optimization.md"
-            write_search_report(final_json, report)
-            final_md.write_text(build_markdown_report(report), encoding="utf-8")
-            final_json_payload = _read_json(final_json) or {}
-            final_report_payload = {
-                "created_at": _ts(),
-                "best_variant": report.best_variant,
-                "best_score": report.best_score,
-                "report_mode": report.report_mode,
-                "report_degraded_due_to_memory": bool(getattr(report, "report_degraded_due_to_memory", False)),
-                "test_evaluated": bool(getattr(report, "test_evaluated", False)),
-                "json_path": str(final_json),
-                "md_path": str(final_md),
-                "signal_audit_summary": report.signal_audit_summary,
-                "full_training_assessment": final_json_payload.get("full_training_assessment"),
-                "post_smoke_scenario": final_json_payload.get("post_smoke_scenario"),
-            }
-            _write_json(stage2_path, final_report_payload)
-            _stage2_heartbeat(
-                event="stage2_write_artifacts_completed",
-                completed_units=stage2_state["total"],
-                total_units=stage2_state["total"],
-            )
-            _append_campaign_log(
-                log_path,
-                f"stage2_full_verdict complete best_variant={final_report_payload.get('best_variant')}",
-            )
+            if args.development_dev_gate:
+                _stage2_heartbeat(event="stage2_rank_variants_completed", completed_units=stage2_state["completed"], total_units=stage2_state["total"])
+                _append_campaign_log(log_path, "stage2_signal_audit started")
+                report.signal_audit_summary = generate_signal_combination_audit(
+                    data_root=base_config.root_dir,
+                    symbol=base_config.symbol,
+                    output_dir=output_dir.parent / "signal_combination",
+                    profile_path=base_config.profile_path or Path("config/profiles/default.toml"),
+                )
+                _stage2_heartbeat(
+                    event="stage2_write_artifacts_started",
+                    completed_units=stage2_state["completed"] + 1,
+                    total_units=max(stage2_state["total"] + 2, 2),
+                )
+                final_json = output_dir / "framework_optimization.json"
+                final_md = output_dir / "framework_optimization.md"
+                write_search_report(final_json, report)
+                final_md.write_text(build_markdown_report(report), encoding="utf-8")
+                final_json_payload = _read_json(final_json) or {}
+                final_report_payload = {
+                    "created_at": _ts(),
+                    "best_variant": report.best_variant,
+                    "best_score": report.best_score,
+                    "report_mode": report.report_mode,
+                    "report_degraded_due_to_memory": bool(getattr(report, "report_degraded_due_to_memory", False)),
+                    "test_evaluated": bool(getattr(report, "test_evaluated", False)),
+                    "evaluation_role": "development",
+                    "test_access_allowed": False,
+                    "candidate_ready_for_handoff": bool(final_json_payload.get("candidate_ready_for_handoff", False)),
+                    "candidate_frozen_id": final_json_payload.get("candidate_frozen_id"),
+                    "json_path": str(final_json),
+                    "md_path": str(final_md),
+                    "signal_audit_summary": report.signal_audit_summary,
+                    "full_training_assessment": final_json_payload.get("full_training_assessment"),
+                    "post_smoke_scenario": final_json_payload.get("post_smoke_scenario"),
+                }
+                _write_json(stage2_path, final_report_payload)
+                _stage2_heartbeat(
+                    event="stage2_write_artifacts_completed",
+                    completed_units=stage2_state["total"],
+                    total_units=stage2_state["total"],
+                )
+                _append_campaign_log(
+                    log_path,
+                    f"stage2_full_verdict complete best_variant={final_report_payload.get('best_variant')}",
+                )
 
         post_smoke_scenario = final_report_payload.get("post_smoke_scenario") or {}
         _update_status(
@@ -1289,13 +1454,25 @@ def main() -> None:
             best_score=final_report_payload.get("best_score"),
             report_mode=final_report_payload.get("report_mode"),
             report_degraded_due_to_memory=bool(final_report_payload.get("report_degraded_due_to_memory", False)),
+            evaluation_role="development",
+            test_access_allowed=False,
             test_evaluated=bool(final_report_payload.get("test_evaluated")),
+            candidate_ready_for_handoff=bool(final_report_payload.get("candidate_ready_for_handoff", False)),
+            candidate_frozen_id=final_report_payload.get("candidate_frozen_id"),
+            frozen_params=(_read_json(Path(str(final_report_payload.get("json_path")))) or {}).get("frozen_params")
+            if final_report_payload.get("json_path")
+            else None,
+            handoff_blockers=((final_report_payload.get("full_training_assessment") or {}).get("blockers", [])),
+            dev_gate_used_this_round=bool(args.development_dev_gate),
+            dev_gate_last_round=args.dev_gate_last_round,
+            dev_gate_interval=args.dev_gate_interval,
+            full_stage2_executed_this_round=bool(args.development_dev_gate),
             json_path=final_report_payload.get("json_path"),
             md_path=final_report_payload.get("md_path"),
             resume_supported=True,
-            full_training_allowed=bool((final_report_payload.get("full_training_assessment") or {}).get("ready", False)),
+            full_training_allowed=False,
             full_training_decision=(final_report_payload.get("full_training_assessment") or {}).get(
-                "decision", "defer_full_training"
+                "decision", "defer_handoff"
             ),
             full_training_blockers=(final_report_payload.get("full_training_assessment") or {}).get("blockers", []),
             post_smoke_scenario=post_smoke_scenario.get("scenario"),
