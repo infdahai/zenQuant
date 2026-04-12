@@ -41,6 +41,21 @@ vix_extreme_threshold = 1.5
 dxy_strong_threshold = 1.5
 yield_stress_threshold = 2.0
 
+[signals.etf_flow_state_signal]
+enabled = true  # Auto-neutral when no ETF flow data is available.
+weight = 0.10
+positive_flow_z_threshold = 0.75
+negative_flow_z_threshold = -0.75
+positive_streak_threshold = 3
+negative_streak_threshold = 3
+
+[signals.cme_positioning_state_signal]
+enabled = true  # Auto-neutral when no CME COT data is available.
+weight = 0.08
+crowded_long_threshold = 1.4
+crowded_short_threshold = -1.4
+oi_stretch_threshold = 1.2
+
 [signals.options_vol_signal]
 enabled = true  # Auto-neutral when no data (atm_iv_z==0 → returns 0). Activates when Deribit snapshots ≥ 30.
 weight = 0.15

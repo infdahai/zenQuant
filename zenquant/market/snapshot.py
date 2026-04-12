@@ -31,7 +31,7 @@ class SnapshotBuilderConfig:
     depth_levels: int = 5
     book_stale_ms: int = 15 * 60 * 1_000
     funding_oi_stale_ms: int = 4 * 60 * 60 * 1_000
-    timeframes: tuple[Timeframe, ...] = (Timeframe.TF_4H, Timeframe.TF_1D)
+    timeframes: tuple[Timeframe, ...] = (Timeframe.TF_5M, Timeframe.TF_1H, Timeframe.TF_4H, Timeframe.TF_1D)
 
 
 @dataclass(slots=True)

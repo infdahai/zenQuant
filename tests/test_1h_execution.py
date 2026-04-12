@@ -20,6 +20,12 @@ from zenquant.strategy import ARCStrategyConfig
 
 
 class TimeframeEnumTests(unittest.TestCase):
+    def test_5m_value(self) -> None:
+        self.assertEqual(Timeframe.TF_5M.value, "5m")
+
+    def test_5m_seconds(self) -> None:
+        self.assertEqual(Timeframe.TF_5M.seconds, 300)
+
     def test_1h_value(self) -> None:
         self.assertEqual(Timeframe.TF_1H.value, "1h")
 
@@ -91,6 +97,35 @@ class DualLayerBacktestTests(unittest.TestCase):
 
             # 1H should have ~4-6x the bars of 4H
             self.assertGreater(r1h.metrics.total_bars, r4h.metrics.total_bars * 3)
+
+    def test_three_layer_runs_with_five_min_execution(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            layout = HistoricalDatasetLayout(root_dir=root)
+            write_parquet_rows(layout.kline_path("BTCUSDT", "1d", "2024-01"), _daily_rows(30))
+            write_parquet_rows(layout.kline_path("BTCUSDT", "4h", "2024-01"), _four_hour_rows(30))
+            write_parquet_rows(layout.kline_path("BTCUSDT", "1h", "2024-01"), _one_hour_rows(30))
+            write_parquet_rows(layout.kline_path("BTCUSDT", "5m", "2024-01"), _five_min_rows(10))
+            write_parquet_rows(layout.funding_path("BTCUSDT", "2024-01"), _funding_rows(30))
+            write_parquet_rows(
+                layout.open_interest_path("BTCUSDT", "4h", "2024-01"),
+                _open_interest_rows(30),
+            )
+
+            backtest = HistoricalBacktest(
+                HistoricalBacktestConfig(
+                    root_dir=root,
+                    symbol="BTCUSDT",
+                    execution_timeframe=Timeframe.TF_5M,
+                    context_timeframe=Timeframe.TF_1H,
+                    strategy_config=ARCStrategyConfig(execution_timeframe=Timeframe.TF_5M),
+                )
+            )
+            result = backtest.run()
+
+            self.assertGreater(result.total_indicator_packs, 0)
+            self.assertGreater(result.metrics.total_bars, 500)
+            self.assertTrue(all(target.timeframe == Timeframe.TF_5M for target in backtest._targets))
 
 
 # ── Synthetic data generators ──
@@ -181,6 +216,36 @@ def _one_hour_rows(days: int = 30) -> list[HistoricalKlineRow]:
                 close=round(close, 4),
                 volume=round(8 + (idx % 5) * 0.5, 4),
                 trade_count=30 + (idx % 20),
+            )
+        )
+    return rows
+
+
+def _five_min_rows(days: int = 10) -> list[HistoricalKlineRow]:
+    base_ns = int(datetime(2024, 1, 1, tzinfo=UTC).timestamp() * 1_000_000_000)
+    interval_ns = 5 * 60 * 1_000_000_000
+    rows: list[HistoricalKlineRow] = []
+    for idx in range(days * 24 * 12):
+        trend = 42_000 + (idx * 0.3125)
+        wave = math.sin(idx / 12.0) * 18 + math.sin(idx / 3.5) * 6
+        close = trend + wave + 1.2
+        open_px = trend + math.sin((idx - 1) / 12.0) * 18 + math.sin((idx - 1) / 3.5) * 6
+        high = max(open_px, close) + 4
+        low = min(open_px, close) - 4
+        open_time_ns = base_ns + (idx * interval_ns)
+        close_time_ns = open_time_ns + interval_ns
+        rows.append(
+            HistoricalKlineRow(
+                symbol="BTCUSDT",
+                timeframe="5m",
+                open_time_ns=open_time_ns,
+                close_time_ns=close_time_ns,
+                open=round(open_px, 4),
+                high=round(high, 4),
+                low=round(low, 4),
+                close=round(close, 4),
+                volume=round(1.2 + (idx % 7) * 0.08, 4),
+                trade_count=8 + (idx % 5),
             )
         )
     return rows

@@ -6,13 +6,14 @@ from typing import Any
 
 
 class Timeframe(StrEnum):
+    TF_5M = "5m"
     TF_1H = "1h"
     TF_4H = "4h"
     TF_1D = "1d"
 
     @property
     def seconds(self) -> int:
-        return {"1h": 3600, "4h": 14400, "1d": 86400}[self.value]
+        return {"5m": 300, "1h": 3600, "4h": 14400, "1d": 86400}[self.value]
 
 
 @dataclass(slots=True, frozen=True)

@@ -12,7 +12,7 @@ from zenquant.infra import EventBus
 class BarClockConfig:
     """Timeframes that should produce confirmed bar-close events."""
 
-    timeframes: tuple[Timeframe, ...] = (Timeframe.TF_4H, Timeframe.TF_1D)
+    timeframes: tuple[Timeframe, ...] = (Timeframe.TF_5M, Timeframe.TF_1H, Timeframe.TF_4H, Timeframe.TF_1D)
 
 
 @dataclass(slots=True)

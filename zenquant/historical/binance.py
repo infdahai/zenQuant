@@ -59,7 +59,7 @@ class BinanceHistoricalDownloader:
         symbol: str,
         year: int,
         month: int,
-        timeframes: tuple[str, ...] = ("1h", "4h", "1d"),
+        timeframes: tuple[str, ...] = ("5m", "1h", "4h", "1d"),
     ) -> dict[str, Path]:
         """Download a single month of history for the requested symbol.
 

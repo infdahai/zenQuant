@@ -57,6 +57,8 @@ class BinancePerpStreamConfig:
     request_timeout_s: float = 6.0
     reconnect_backoff_s: float = 3.0
     bootstrap_enabled: bool = True
+    bootstrap_5m_bars: int = 144
+    bootstrap_1h_bars: int = 120
     bootstrap_4h_bars: int = 90
     bootstrap_1d_bars: int = 90
     bootstrap_funding_points: int = 500
@@ -103,7 +105,7 @@ class BinancePerpStreamClient:
             await asyncio.gather(*tasks, return_exceptions=True)
 
     async def bootstrap_history(self) -> None:
-        """Warm recent 4h/1d indicator context before live streaming starts."""
+        """Warm recent 5m/1h/4h/1d indicator context before live streaming starts."""
         if not self._config.bootstrap_enabled:
             return
         for symbol in self._config.symbols:
@@ -182,6 +184,18 @@ class BinancePerpStreamClient:
             limit=self._config.bootstrap_1d_bars,
             timeout_s=self._config.request_timeout_s,
         )
+        five_min_rows = _fetch_recent_klines(
+            exch_symbol,
+            timeframe="5m",
+            limit=self._config.bootstrap_5m_bars,
+            timeout_s=self._config.request_timeout_s,
+        )
+        one_hour_rows = _fetch_recent_klines(
+            exch_symbol,
+            timeframe="1h",
+            limit=self._config.bootstrap_1h_bars,
+            timeout_s=self._config.request_timeout_s,
+        )
         four_hour_rows = _fetch_recent_klines(
             exch_symbol,
             timeframe="4h",
@@ -201,7 +215,7 @@ class BinancePerpStreamClient:
         )
 
         candles: list[dict[str, Any]] = []
-        for timeframe, rows in (("1d", daily_rows), ("4h", four_hour_rows)):
+        for timeframe, rows in (("1d", daily_rows), ("4h", four_hour_rows), ("1h", one_hour_rows), ("5m", five_min_rows)):
             for row in rows:
                 row["event_timeframe"] = timeframe
                 candles.append(row)
@@ -229,11 +243,13 @@ class BinancePerpStreamClient:
             self._publish_bootstrap_bar(symbol=symbol, row=row, funding_row=funding_row, oi_row=oi_row)
 
         logger.info(
-            "bootstrapped %s with %d historical bars (%d 1d, %d 4h)",
+            "bootstrapped %s with %d historical bars (%d 1d, %d 4h, %d 1h, %d 5m)",
             symbol,
             len(candles),
             len(daily_rows),
             len(four_hour_rows),
+            len(one_hour_rows),
+            len(five_min_rows),
         )
 
     def _publish_bootstrap_bar(
@@ -435,6 +451,8 @@ class BinancePerpStreamClient:
                     f"{token}@aggTrade",
                     f"{token}@markPrice@{self._config.mark_price_update_s}s",
                     f"{token}@depth{self._config.depth_levels}@{self._config.depth_update_ms}ms",
+                    f"{token}@kline_5m",
+                    f"{token}@kline_1h",
                     f"{token}@kline_4h",
                     f"{token}@kline_1d",
                 ]
@@ -460,6 +478,10 @@ def _timeframe_from_stream(value: str) -> Timeframe | None:
     token = value.lower()
     if token == "4h":
         return Timeframe.TF_4H
+    if token == "1h":
+        return Timeframe.TF_1H
+    if token == "5m":
+        return Timeframe.TF_5M
     if token == "1d":
         return Timeframe.TF_1D
     return None
@@ -651,5 +673,10 @@ def _bootstrap_staleness_ms(
 
 
 def _bootstrap_timeframe_priority(value: str) -> int:
-    """Keep 1d bootstrap bars ahead of 4h bars sharing the same cutoff."""
-    return 0 if value == Timeframe.TF_1D.value else 1
+    """Keep higher-timeframe bootstrap bars ahead of lower-timeframe bars."""
+    return {
+        Timeframe.TF_1D.value: 0,
+        Timeframe.TF_4H.value: 1,
+        Timeframe.TF_1H.value: 2,
+        Timeframe.TF_5M.value: 3,
+    }.get(value, 1)

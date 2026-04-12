@@ -31,6 +31,8 @@ class RealTimeIngestorConfig:
         request_timeout_s: Timeout for bootstrap/polling REST requests.
         reconnect_backoff_s: Delay before reconnecting after stream failure.
         bootstrap_enabled: Whether startup should warm indicator context first.
+        bootstrap_5m_bars: Closed 5m bars fetched for live warmup.
+        bootstrap_1h_bars: Closed 1h bars fetched for live warmup.
         bootstrap_4h_bars: Closed 4h bars fetched for live warmup.
         bootstrap_1d_bars: Closed 1d bars fetched for live warmup.
         bootstrap_funding_points: Historical funding samples used for warmup.
@@ -46,6 +48,8 @@ class RealTimeIngestorConfig:
     request_timeout_s: float = 6.0
     reconnect_backoff_s: float = 3.0
     bootstrap_enabled: bool = True
+    bootstrap_5m_bars: int = 144
+    bootstrap_1h_bars: int = 120
     bootstrap_4h_bars: int = 90
     bootstrap_1d_bars: int = 90
     bootstrap_funding_points: int = 500
@@ -69,6 +73,8 @@ class RealTimeIngestor:
                 request_timeout_s=runtime_config.request_timeout_s,
                 reconnect_backoff_s=runtime_config.reconnect_backoff_s,
                 bootstrap_enabled=runtime_config.bootstrap_enabled,
+                bootstrap_5m_bars=runtime_config.bootstrap_5m_bars,
+                bootstrap_1h_bars=runtime_config.bootstrap_1h_bars,
                 bootstrap_4h_bars=runtime_config.bootstrap_4h_bars,
                 bootstrap_1d_bars=runtime_config.bootstrap_1d_bars,
                 bootstrap_funding_points=runtime_config.bootstrap_funding_points,

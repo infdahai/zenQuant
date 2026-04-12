@@ -20,7 +20,8 @@ class SplitContractTests(unittest.TestCase):
         self.assertLess(spec.dev.end_ns, spec.test.start_ns + 1)
 
         payload = split_summary_json(spec)
-        self.assertEqual(payload["version"], "btc_temporal_v1")
+        self.assertEqual(payload["version"], "btc_temporal_v2_train_selection_only")
+        self.assertEqual(payload["selection_policy"], "train_only_search_dev_diagnostics_test_acceptance")
         self.assertIn("windows", payload)
 
     def test_default_walk_forward_windows_stay_inside_dev(self) -> None:
@@ -102,7 +103,7 @@ class ResearchDisciplineTests(unittest.TestCase):
         candidate = CandidateSummary(
             variant="current",
             robust_score=1.0,
-            selection_split="dev",
+            selection_split="train",
             dev_sharpe=1.0,
             dev_pnl=10.0,
             dev_drawdown=0.1,
@@ -121,7 +122,7 @@ class ResearchDisciplineTests(unittest.TestCase):
             report = evaluator.final_report(optuna_params=None, rl_params=None, search_status={}, full=False, evaluate_test=False)
 
         self.assertFalse(report.test_evaluated)
-        self.assertEqual(report.split_contract["version"], "btc_temporal_v1")
+        self.assertEqual(report.split_contract["version"], "btc_temporal_v2_train_selection_only")
         self.assertIn("train_window", report.training_window_coverage)
 
 

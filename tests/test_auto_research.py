@@ -2,6 +2,7 @@
 
 import tempfile
 import unittest
+from concurrent.futures import Future
 from pathlib import Path
 from unittest.mock import patch
 
@@ -26,6 +27,29 @@ from zenquant.research.promoter import (
     RobustnessResult,
 )
 from zenquant.research.splits import default_btc_split_spec
+
+
+class _ImmediateExecutor:
+    def __init__(self, *args, **kwargs) -> None:
+        del args, kwargs
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        del exc_type, exc, tb
+        return False
+
+    def submit(self, fn, *args, **kwargs):
+        future = Future()
+        try:
+            future.set_result(fn(*args, **kwargs))
+        except Exception as exc:  # pragma: no cover
+            future.set_exception(exc)
+        return future
+
+    def shutdown(self, *args, **kwargs) -> None:
+        del args, kwargs
 
 
 class TestParamsHash(unittest.TestCase):
@@ -283,7 +307,7 @@ class TestSearchSpace(unittest.TestCase):
         captured: list[tuple[int | None, int | None]] = []
 
         def fake_worker(args):
-            captured.append((args[4], args[5]))
+            captured.append((args[8], args[9]))
             return args[0], {
                 "sharpe": 1.0,
                 "sortino": 1.0,
@@ -334,7 +358,7 @@ class TestSearchSpace(unittest.TestCase):
         captured: list[tuple[int | None, int | None]] = []
 
         def fake_worker(args):
-            captured.append((args[4], args[5]))
+            captured.append((args[8], args[9]))
             return args[0], {
                 "sharpe": 1.0,
                 "sortino": 1.0,
@@ -385,7 +409,7 @@ class TestSearchSpace(unittest.TestCase):
         captured: list[tuple[int | None, int | None]] = []
 
         def fake_worker(args):
-            captured.append((args[4], args[5]))
+            captured.append((args[8], args[9]))
             return args[0], {
                 "sharpe": 1.0,
                 "sortino": 1.0,
@@ -448,7 +472,7 @@ class TestSearchSpace(unittest.TestCase):
             report = campaign.run()
 
         self.assertFalse(report.authoritative_promote_path)
-        self.assertEqual(report.split_contract_version, "btc_temporal_v1")
+        self.assertEqual(report.split_contract_version, "btc_temporal_v2_train_selection_only")
         self.assertFalse(report.test_evaluated)
 
     def test_bayesian_search_is_not_rejected_by_theoretical_grid_size(self) -> None:
@@ -477,6 +501,51 @@ class TestSearchSpace(unittest.TestCase):
 
         campaign = Campaign(config)
         self.assertEqual(campaign._config.sweep_mode, "bayesian")
+
+    def test_bayesian_parallel_stage_reports_monotonic_completed_trials(self) -> None:
+        spec = default_btc_split_spec()
+        heartbeats: list[dict[str, object]] = []
+
+        def fake_worker(args):
+            params = args[0]
+            score = float(params["bull_leverage"])
+            return params, {
+                "sharpe": score,
+                "sortino": score,
+                "net_pnl": score * 1000.0,
+                "max_drawdown": 0.1,
+                "win_rate": 0.5,
+                "profit_factor": 1.0,
+                "trade_count": 25,
+                "fee_drag_pct": 0.01,
+            }
+
+        config = CampaignConfig(
+            split_spec=spec,
+            search_space=SearchSpace(strategy_params={"bull_leverage": [2.5, 3.0, 3.5, 4.0]}),
+            sweep_mode="bayesian",
+            n_trials=4,
+            wf_splits=[],
+            robustness_seeds=[],
+            verbose=False,
+            status_callback=lambda **payload: heartbeats.append(payload),
+            stage1_parallel_mode="cpu_parallel",
+            stage1_max_workers=2,
+            stage1_batch_size=2,
+            seed_trials=[{"bull_leverage": 2.5}, {"bull_leverage": 3.0}],
+        )
+
+        with (
+            patch("zenquant.research.auto_research._run_backtest_worker", fake_worker),
+            patch("zenquant.research.auto_research.ProcessPoolExecutor", _ImmediateExecutor),
+            patch("zenquant.research.auto_research._max_workers", return_value=2),
+        ):
+            sweep = run_search_stage(config)
+
+        completed = [int(item["completed_trials"]) for item in heartbeats if item.get("event") == "trial_completed"]
+        self.assertEqual(completed, sorted(completed))
+        self.assertEqual(completed[-1], 4)
+        self.assertEqual(sweep.total_combinations, 4)
 
 
 if __name__ == "__main__":

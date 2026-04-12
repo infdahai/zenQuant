@@ -24,6 +24,8 @@ class MacroDataStoreTests(unittest.TestCase):
         vix: list[tuple[int, float]] | None = None,
         dxy: list[tuple[int, float]] | None = None,
         yields: list[tuple[int, float]] | None = None,
+        etf_flow: list[tuple[int, float]] | None = None,
+        cme_cot: list[dict] | None = None,
     ) -> MacroDataStore:
         macro_dir = Path(tmpdir)
         if vix:
@@ -32,9 +34,14 @@ class MacroDataStoreTests(unittest.TestCase):
             _write_parquet(macro_dir / "dxy" / "data.parquet", [{"ts_ns": t, "value": v} for t, v in dxy])
         if yields:
             _write_parquet(macro_dir / "treasury_10y" / "data.parquet", [{"ts_ns": t, "value": v} for t, v in yields])
+        if etf_flow:
+            _write_parquet(macro_dir / "btc_etf_netflow" / "data.parquet", [{"ts_ns": t, "value": v} for t, v in etf_flow])
+        if cme_cot:
+            _write_parquet(Path(tmpdir) / "cftc" / "cot_btc.parquet", cme_cot)
         store = MacroDataStore(
             MacroDataStoreConfig(
                 macro_dir=macro_dir,
+                cftc_path=Path(tmpdir) / "cftc" / "cot_btc.parquet",
                 z_window=60,
                 robust_z_min_samples=5,
             )
@@ -142,6 +149,37 @@ class MacroDataStoreTests(unittest.TestCase):
             self.assertIsNotNone(snap.vix)
             self.assertIsNotNone(snap.dxy)
             self.assertIsNotNone(snap.yield_10y)
+
+    def test_etf_flow_features(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            flows = [
+                (1 * DAY_NS, 100_000_000.0),
+                (2 * DAY_NS, 120_000_000.0),
+                (3 * DAY_NS, -50_000_000.0),
+                (4 * DAY_NS, -75_000_000.0),
+                (5 * DAY_NS, -25_000_000.0),
+            ]
+            store = self._make_store(tmpdir, etf_flow=flows)
+
+            snap = store.lookup(5 * DAY_NS)
+            self.assertAlmostEqual(snap.btc_etf_netflow, -25_000_000.0)
+            self.assertAlmostEqual(snap.btc_etf_flow_3d, -150_000_000.0)
+            self.assertAlmostEqual(snap.btc_etf_flow_5d, 70_000_000.0)
+            self.assertEqual(snap.btc_etf_negative_streak, 3)
+
+    def test_cme_positioning_features(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            cot_rows = [
+                {"report_date_ns": 1 * DAY_NS, "asset_mgr_net": 1000.0, "leveraged_net": -500.0, "dealer_net": -100.0, "total_oi": 10_000.0},
+                {"report_date_ns": 8 * DAY_NS, "asset_mgr_net": 1200.0, "leveraged_net": -700.0, "dealer_net": -200.0, "total_oi": 11_000.0},
+                {"report_date_ns": 15 * DAY_NS, "asset_mgr_net": 1800.0, "leveraged_net": 900.0, "dealer_net": -300.0, "total_oi": 14_000.0},
+            ]
+            store = self._make_store(tmpdir, cme_cot=cot_rows)
+
+            snap = store.lookup(15 * DAY_NS)
+            self.assertAlmostEqual(snap.cme_asset_mgr_net, 1800.0)
+            self.assertAlmostEqual(snap.cme_lev_money_net, 900.0)
+            self.assertAlmostEqual(snap.cme_total_oi, 14_000.0)
 
 
 if __name__ == "__main__":
