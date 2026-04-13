@@ -567,7 +567,7 @@ class FrameworkEvaluator:
                 "workers": 1,
                 "wf_windows": 0,
                 "compare_windows": len(self._fast_dev_compare_windows),
-                "compare_workers": 1,
+                "compare_workers": min(2, cpu_budget),
                 "compare_validation_workers": 1,
                 "compare_validation_leg_timeout_s": 90.0,
                 "compare_validation_variant_budget_s": 180.0,

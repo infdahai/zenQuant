@@ -173,6 +173,63 @@ def _resolved_budget(budget: str, optuna_trials: int | None, rl_episodes: int | 
     return optuna_trials or default_optuna, rl_episodes or default_rl
 
 
+def _stage2_budget_profile(budget: str) -> dict[str, Any]:
+    profiles = {
+        "smoke": {
+            "total": 780.0,
+            "subphases": {
+                "stage2_prepare_variants": 420.0,
+                "stage2_compare_windows": 360.0,
+                "stage2_compare_validation": 180.0,
+                "stage2_rank_variants": 120.0,
+                "stage2_write_artifacts": 120.0,
+            },
+            "no_progress": {
+                "stage2_prepare_variants": 300.0,
+                "stage2_compare_windows": 240.0,
+                "stage2_compare_validation": 180.0,
+                "stage2_rank_variants": 120.0,
+                "stage2_write_artifacts": 120.0,
+            },
+        },
+        "fast": {
+            "total": 3600.0,
+            "subphases": {
+                "stage2_prepare_variants": 1200.0,
+                "stage2_compare_windows": 900.0,
+                "stage2_compare_validation": 900.0,
+                "stage2_rank_variants": 300.0,
+                "stage2_write_artifacts": 300.0,
+            },
+            "no_progress": {
+                "stage2_prepare_variants": 600.0,
+                "stage2_compare_windows": 300.0,
+                "stage2_compare_validation": 300.0,
+                "stage2_rank_variants": 180.0,
+                "stage2_write_artifacts": 180.0,
+            },
+        },
+        "high": {
+            "total": 3600.0,
+            "subphases": {
+                "stage2_prepare_variants": 1800.0,
+                "stage2_compare_windows": 1800.0,
+                "stage2_compare_validation": 1800.0,
+                "stage2_rank_variants": 600.0,
+                "stage2_write_artifacts": 600.0,
+            },
+            "no_progress": {
+                "stage2_prepare_variants": 900.0,
+                "stage2_compare_windows": 600.0,
+                "stage2_compare_validation": 600.0,
+                "stage2_rank_variants": 300.0,
+                "stage2_write_artifacts": 300.0,
+            },
+        },
+    }
+    return profiles[budget]
+
+
 def _state_data_confidence(
     *,
     etf_flow: bool,
@@ -1293,59 +1350,7 @@ def main() -> None:
                 "subphase_started_at": stage2_started_at,
             }
 
-            stage2_budgets = {
-                "smoke": {
-                    "total": 780.0,
-                    "subphases": {
-                        "stage2_prepare_variants": 420.0,
-                        "stage2_compare_windows": 180.0,
-                        "stage2_compare_validation": 180.0,
-                        "stage2_rank_variants": 120.0,
-                        "stage2_write_artifacts": 120.0,
-                    },
-                    "no_progress": {
-                        "stage2_prepare_variants": 300.0,
-                        "stage2_compare_windows": 180.0,
-                        "stage2_compare_validation": 180.0,
-                        "stage2_rank_variants": 120.0,
-                        "stage2_write_artifacts": 120.0,
-                    },
-                },
-                "fast": {
-                    "total": 3600.0,
-                    "subphases": {
-                        "stage2_prepare_variants": 1200.0,
-                        "stage2_compare_windows": 900.0,
-                        "stage2_compare_validation": 900.0,
-                        "stage2_rank_variants": 300.0,
-                        "stage2_write_artifacts": 300.0,
-                    },
-                    "no_progress": {
-                        "stage2_prepare_variants": 600.0,
-                        "stage2_compare_windows": 300.0,
-                        "stage2_compare_validation": 300.0,
-                        "stage2_rank_variants": 180.0,
-                        "stage2_write_artifacts": 180.0,
-                    },
-                },
-                "high": {
-                    "total": 3600.0,
-                    "subphases": {
-                        "stage2_prepare_variants": 1800.0,
-                        "stage2_compare_windows": 1800.0,
-                        "stage2_compare_validation": 1800.0,
-                        "stage2_rank_variants": 600.0,
-                        "stage2_write_artifacts": 600.0,
-                    },
-                    "no_progress": {
-                        "stage2_prepare_variants": 900.0,
-                        "stage2_compare_windows": 600.0,
-                        "stage2_compare_validation": 600.0,
-                        "stage2_rank_variants": 300.0,
-                        "stage2_write_artifacts": 300.0,
-                    },
-                },
-            }
+            stage2_budgets = {level: _stage2_budget_profile(level) for level in ("smoke", "fast", "high")}
             budget_key = "smoke" if args.budget == "smoke" else ("high" if args.budget == "high" else "fast")
 
             def _stage2_timeout_check() -> None:

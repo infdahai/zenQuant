@@ -967,6 +967,16 @@ class SearchReportSerializationTests(unittest.TestCase):
             evaluator._compute_profiles["fast"]["compare_validation_workers"],
         )
 
+    def test_compute_profiles_raise_smoke_compare_workers_without_expanding_windows(self) -> None:
+        evaluator = FrameworkEvaluator(HistoricalBacktestConfig(), split_spec=default_btc_split_spec())
+
+        self.assertEqual(evaluator._compute_profiles["smoke"]["compare_workers"], 2)
+        self.assertEqual(
+            evaluator._compute_profiles["smoke"]["compare_windows"],
+            len(evaluator._fast_dev_compare_windows),
+        )
+        self.assertEqual([window.label for window in evaluator._fast_dev_compare_windows[:2]], ["dev", "2023-08"])
+
     def test_development_report_rejects_test_evaluation(self) -> None:
         evaluator = FrameworkEvaluator(HistoricalBacktestConfig(), split_spec=default_btc_split_spec())
         with self.assertRaisesRegex(ValueError, "development path must not evaluate test"):

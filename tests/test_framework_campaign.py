@@ -28,6 +28,14 @@ class FrameworkCampaignTests(unittest.TestCase):
         self.assertEqual(CAMPAIGN._resolved_budget("fast", None, None), (50, 20))
         self.assertEqual(CAMPAIGN._resolved_budget("high", None, None), (150, 60))
 
+    def test_stage2_budget_profile_relaxes_smoke_compare_windows_only(self) -> None:
+        smoke = CAMPAIGN._stage2_budget_profile("smoke")
+
+        self.assertEqual(smoke["subphases"]["stage2_prepare_variants"], 420.0)
+        self.assertEqual(smoke["subphases"]["stage2_compare_windows"], 360.0)
+        self.assertEqual(smoke["no_progress"]["stage2_compare_windows"], 240.0)
+        self.assertEqual(smoke["subphases"]["stage2_compare_validation"], 180.0)
+
     def test_campaign_blocks_when_optuna_missing(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             out = Path(tmp) / "results"
