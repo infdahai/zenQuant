@@ -9,6 +9,7 @@ import json
 import os
 import shutil
 import traceback
+from dataclasses import replace
 from datetime import UTC, datetime
 from hashlib import sha1
 from pathlib import Path
@@ -145,6 +146,13 @@ def _initialize_running_status(
         "stage1_avg_metrics_finalize_s": 0.0,
         "stage1_avg_diagnostics_finalize_s": 0.0,
         "stage1_terminated_early_rate": 0.0,
+        "rl_budget_mode": None,
+        "rl_wall_clock_elapsed_s": 0.0,
+        "rl_stop_reason": None,
+        "rl_active_envs": 0,
+        "rl_avg_episode_runtime_s": 0.0,
+        "rl_cache_hit_rate": 0.0,
+        "rl_avg_event_loop_s": 0.0,
         "stage1_last_progress_at": None,
         "stage1_last_completed_unit": None,
         "stage1_failure_reason": None,
@@ -481,7 +489,6 @@ def main() -> None:
     parser.add_argument("--development-dev-gate", action="store_true")
     parser.add_argument("--dev-gate-last-round", type=int, default=None)
     parser.add_argument("--dev-gate-interval", type=int, default=None)
-    parser.add_argument("--fast-enable-rl", action="store_true")
     parser.add_argument(
         "--fast-worker-profile",
         choices=("fast_low", "fast_default", "fast_high_cpu"),
@@ -524,8 +531,8 @@ def main() -> None:
     stage1_target_inflight = 1 if args.budget == "smoke" else stage1_max_workers
     stage1_batch_size = 1 if args.budget == "smoke" else 4 if args.budget == "fast" else 6
     extra_seed_trials = _read_seed_trials(Path(args.seed_trials_file)) if args.seed_trials_file else []
-    enable_stage1_rl = args.budget == "high" or (args.budget == "fast" and args.fast_enable_rl)
-    if args.budget == "smoke" or not enable_stage1_rl:
+    enable_stage1_rl = args.budget in {"fast", "high"}
+    if args.budget == "smoke":
         rl_episodes = 0
     started_at = (_read_json(status_path) or {}).get("started_at", _ts()) if args.resume else _ts()
     _initialize_running_status(
@@ -835,6 +842,17 @@ def main() -> None:
                     subphase = "stage1_rl"
                     normalized_total = max(0, rl_episodes)
                     normalized_completed = min(max(0, completed_trials), normalized_total)
+                    if event in {"rl_progress", "rl_completed"}:
+                        stage1_state["rl_timing_count"] = int(stage1_state.get("rl_timing_count", 0) or 0) + 1
+                        stage1_state["rl_episode_runtime_sum_s"] = float(stage1_state.get("rl_episode_runtime_sum_s", 0.0) or 0.0) + float(
+                            heartbeat.get("rl_avg_episode_runtime_s", 0.0) or 0.0
+                        )
+                        stage1_state["rl_cache_hit_sum"] = float(stage1_state.get("rl_cache_hit_sum", 0.0) or 0.0) + float(
+                            heartbeat.get("rl_cache_hit_rate", 0.0) or 0.0
+                        )
+                        stage1_state["rl_event_loop_sum_s"] = float(stage1_state.get("rl_event_loop_sum_s", 0.0) or 0.0) + float(
+                            heartbeat.get("rl_avg_event_loop_s", 0.0) or 0.0
+                        )
                 elif event == "stage1_finalize":
                     subphase = "stage1_finalize"
                 running_event = event in {"trial_running", "scheduler_tick"}
@@ -873,6 +891,7 @@ def main() -> None:
                     stage1_state["stage1_underfilled"] = bool(stage1_underfilled)
                     stage1_state["stage1_underfilled_reason"] = stage1_underfilled_reason
                 timing_count = int(stage1_state.get("timing_count", 0) or 0)
+                rl_timing_count = int(stage1_state.get("rl_timing_count", 0) or 0)
                 _update_status(
                     status_path,
                     phase=subphase,
@@ -941,6 +960,25 @@ def main() -> None:
                     stage1_terminated_early_rate=(
                         round(float(stage1_state.get("terminated_early_sum", 0.0) or 0.0) / timing_count, 4)
                         if timing_count > 0
+                        else None
+                    ),
+                    rl_budget_mode=heartbeat.get("rl_budget_mode") if subphase == "stage1_rl" else None,
+                    rl_wall_clock_elapsed_s=heartbeat.get("rl_wall_clock_elapsed_s") if subphase == "stage1_rl" else None,
+                    rl_stop_reason=heartbeat.get("rl_stop_reason") if subphase == "stage1_rl" else None,
+                    rl_active_envs=heartbeat.get("rl_active_envs") if subphase == "stage1_rl" else None,
+                    rl_avg_episode_runtime_s=(
+                        round(float(stage1_state.get("rl_episode_runtime_sum_s", 0.0) or 0.0) / rl_timing_count, 4)
+                        if rl_timing_count > 0
+                        else None
+                    ),
+                    rl_cache_hit_rate=(
+                        round(float(stage1_state.get("rl_cache_hit_sum", 0.0) or 0.0) / rl_timing_count, 4)
+                        if rl_timing_count > 0
+                        else None
+                    ),
+                    rl_avg_event_loop_s=(
+                        round(float(stage1_state.get("rl_event_loop_sum_s", 0.0) or 0.0) / rl_timing_count, 4)
+                        if rl_timing_count > 0
                         else None
                     ),
                     stage1_best_value_so_far=heartbeat.get("best_value_so_far"),
@@ -1189,6 +1227,31 @@ def main() -> None:
             )
             rl_result = None
             if rl_episodes > 0:
+                rl_base_config = (
+                    replace(
+                        base_config,
+                        research_compute_mode="lightweight_train_search",
+                        profiling_enabled=True,
+                        early_stop_enabled=True,
+                        early_stop_trade_check_ratio=0.25,
+                        early_stop_min_trade_count=20,
+                        early_stop_trade_floor_ratio=0.25,
+                        early_stop_max_drawdown=0.35,
+                        trial_runtime_budget_s=90.0,
+                    )
+                    if args.budget == "fast"
+                    else replace(
+                        base_config,
+                        research_compute_mode="authoritative",
+                        profiling_enabled=True,
+                        early_stop_enabled=False,
+                        trial_runtime_budget_s=None,
+                    )
+                )
+                rl_budget_mode = "wall_clock_primary" if args.budget == "fast" else "episode_primary"
+                rl_wall_clock_budget_s = 180.0 if args.budget == "fast" else smoke_rl_timeout_s
+                rl_max_episodes = min(12, rl_episodes) if args.budget == "fast" else rl_episodes
+                rl_n_envs = 3 if args.budget == "fast" else 1
                 _update_status(
                     status_path,
                     phase="stage1_rl",
@@ -1222,23 +1285,30 @@ def main() -> None:
                     full_training_blockers=interim_training_assessment["blockers"],
                     stage1_subphase="stage1_rl",
                     stage1_progress_completed=0,
-                    stage1_progress_total=rl_episodes,
+                    stage1_progress_total=rl_max_episodes,
                     stage1_last_progress_at=_ts(),
                     stage1_last_completed_unit="ranking_completed",
+                    rl_budget_mode=rl_budget_mode,
+                    rl_active_envs=rl_n_envs,
                     train_candidate_diagnostics=dict(stage1_state.get("train_candidate_diagnostics") or {}),
                     empty_shortlist_reason=stage1_state.get("empty_shortlist_reason"),
                 )
                 _append_campaign_log(log_path, "stage1_rl started")
                 try:
                     rl_result = train_tuner(
-                        total_timesteps=rl_episodes,
+                        total_timesteps=rl_max_episodes,
                         verbose=0,
                         param_grid=evaluator.search_param_grid,
                         split_spec=split_spec,
-                        base_config=base_config,
+                        base_config=rl_base_config,
                         selection_split="train",
                         status_callback=_stage1_heartbeat,
-                        total_timeout_s=smoke_rl_timeout_s,
+                        total_timeout_s=rl_wall_clock_budget_s,
+                        budget_mode=rl_budget_mode,
+                        wall_clock_budget_s=rl_wall_clock_budget_s,
+                        max_episodes=rl_max_episodes,
+                        n_envs=rl_n_envs,
+                        seed_params=optuna_params if args.budget == "fast" else None,
                     )
                 except Exception as exc:
                     stage1_state["rl_failure_reason"] = str(exc)
@@ -1272,8 +1342,6 @@ def main() -> None:
                 skip_reason = (
                     "budget=smoke"
                     if args.budget == "smoke"
-                    else "budget=fast_disabled"
-                    if args.budget == "fast"
                     else "budget=disabled"
                 )
                 _append_campaign_log(log_path, f"stage1_rl skipped {skip_reason}")

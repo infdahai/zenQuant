@@ -159,6 +159,7 @@ class CampaignConfig:
     stage1_batch_size: int = 1
     research_compute_mode: str = "authoritative"
     enable_early_stop: bool = False
+    trial_runtime_budget_s: float | None = None
 
 
 # ── Results ───────────────────────────────────────────────────
@@ -288,6 +289,7 @@ def _run_backtest_worker(args: tuple[Any, ...]) -> tuple[dict[str, Any], dict[st
         profiling_enabled=True,
         early_stop_enabled=enable_early_stop and research_compute_mode == "lightweight_train_search",
         early_stop_min_trade_count=20,
+        trial_runtime_budget_s=float(args[13]) if len(args) > 13 and args[13] is not None else None,
         perturbation=perturbation,
         replay_context=replay_context,
     )
@@ -481,6 +483,7 @@ class Campaign:
                 None,  # perturbation
                 self._config.research_compute_mode,
                 self._config.enable_early_stop,
+                self._config.trial_runtime_budget_s,
             )
             for params in param_grid
         ]
@@ -659,6 +662,7 @@ class Campaign:
                             None,
                             self._config.research_compute_mode,
                             self._config.enable_early_stop,
+                            self._config.trial_runtime_budget_s,
                         )
                         future = pool.submit(_run_backtest_worker, args)
                         pending[future] = (trial, trial_number, params, started_trial_at)
@@ -759,6 +763,11 @@ class Campaign:
                                 replay_context_build_s=metrics.get("replay_context_build_s", 0.0),
                                 event_publish_run_s=metrics.get("event_publish_run_s", 0.0),
                                 cache_hit=metrics.get("cache_hit", 0.0),
+                                event_loop_total_s=metrics.get("event_loop_total_s", 0.0),
+                                metrics_finalize_s=metrics.get("metrics_finalize_s", 0.0),
+                                diagnostics_finalize_s=metrics.get("diagnostics_finalize_s", 0.0),
+                                terminated_early=metrics.get("terminated_early", 0.0),
+                                processed_event_ratio=metrics.get("processed_event_ratio", 0.0),
                             )
         else:
             def _trial_callback(study: Any, trial: Any) -> None:
@@ -829,6 +838,7 @@ class Campaign:
                     None,
                     "authoritative",
                     False,
+                    None,
                 )
                 all_args.append((params, args))
 
@@ -908,6 +918,7 @@ class Campaign:
                     perturbation,
                     "authoritative",
                     False,
+                    None,
                 )
                 all_args.append((key, seed, args))
 

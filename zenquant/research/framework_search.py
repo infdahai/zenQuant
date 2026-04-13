@@ -1552,6 +1552,7 @@ def run_optuna_search(
         stage1_batch_size=stage1_batch_size,
         research_compute_mode="lightweight_train_search",
         enable_early_stop=True,
+        trial_runtime_budget_s=120.0 if effective_execution_timeframe == Timeframe.TF_5M else 60.0,
     )
     sweep = run_search_stage(worker_config)
     ranking_started_at = datetime.now(UTC).timestamp()

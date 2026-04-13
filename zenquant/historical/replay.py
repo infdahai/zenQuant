@@ -111,7 +111,8 @@ class HistoricalBacktestConfig:
     profiling_enabled: bool = False
     # Deterministic early-stop controls for lightweight train search only.
     early_stop_enabled: bool = False
-    early_stop_trade_check_ratio: float = 0.7
+    trial_runtime_budget_s: float | None = None
+    early_stop_trade_check_ratio: float = 0.25
     early_stop_min_trade_count: int = 20
     early_stop_trade_floor_ratio: float = 0.25
     early_stop_max_drawdown: float = 0.35
@@ -281,6 +282,13 @@ class HistoricalBacktest:
             self._publish_event(event)
             processed_events += 1
             if (
+                self._config.trial_runtime_budget_s is not None
+                and (datetime.now(UTC).timestamp() - event_loop_started_at) > self._config.trial_runtime_budget_s
+            ):
+                terminated_early = True
+                termination_reason = "trial_runtime_budget_exceeded"
+                break
+            if (
                 self._config.early_stop_enabled
                 and self._lightweight_train_search
                 and execution_events_total > 0
@@ -348,11 +356,17 @@ class HistoricalBacktest:
         if processed_ratio < float(self._config.early_stop_trade_check_ratio):
             return False, None
         current_trade_count = len(self._reports)
+        if processed_ratio >= 0.75:
+            floor_ratio = max(float(self._config.early_stop_trade_floor_ratio), 0.25)
+        elif processed_ratio >= 0.50:
+            floor_ratio = max(float(self._config.early_stop_trade_floor_ratio) * 0.7, 0.15)
+        else:
+            floor_ratio = max(float(self._config.early_stop_trade_floor_ratio) * 0.35, 0.05)
         trade_floor = max(
             1,
             math.floor(
                 float(self._config.early_stop_min_trade_count)
-                * float(self._config.early_stop_trade_floor_ratio)
+                * floor_ratio
             ),
         )
         if current_trade_count < trade_floor:
