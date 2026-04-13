@@ -279,6 +279,80 @@ class FrameworkLoopScriptTests(unittest.TestCase):
         self.assertEqual(loop_status["loop_state"], "failed")
         self.assertEqual(loop_status["stop_reason"], "campaign_round_failed:1")
 
+    def test_launch_round_short_circuits_on_authoritative_failed_status(self) -> None:
+        class FakeProcess:
+            pid = 54321
+
+            def __init__(self) -> None:
+                self._terminated = False
+
+            def poll(self):
+                return 1 if self._terminated else None
+
+            def wait(self, timeout=None):
+                del timeout
+                self._terminated = True
+                return 1
+
+            def terminate(self):
+                self._terminated = True
+
+            def kill(self):
+                self._terminated = True
+
+        with tempfile.TemporaryDirectory() as tmp:
+            loop_dir = Path(tmp)
+            run_dir = loop_dir / "runs" / "round_001"
+            loop_status_path = loop_dir / "loop_status.json"
+            loop_log_path = loop_dir / "loop.log"
+            args = Namespace(
+                root="data/raw/binance",
+                symbol="BTCUSDT",
+                liquidation_dir="data/raw/merged_liquidations/aggregated",
+                poll_interval=0.0,
+            )
+            run_dir.mkdir(parents=True, exist_ok=True)
+            (run_dir / "campaign_status.json").write_text(
+                json.dumps(
+                    {
+                        "phase": "stage1_optuna_search",
+                        "status": "failed",
+                        "failure_reason": "stage1_optuna_timeout: trial 1 exceeded 240s",
+                        "blocked_by": "stage1_optuna_timeout",
+                        "full_training_blockers": ["smoke_campaign_incomplete"],
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            with (
+                mock.patch.object(LOOP.subprocess, "Popen", return_value=FakeProcess()),
+                mock.patch.object(LOOP, "_write_training_monitor", return_value={}),
+                self.assertRaisesRegex(RuntimeError, "campaign_round_failed"),
+            ):
+                LOOP._launch_round(
+                    args,
+                    run_dir=run_dir,
+                    budget="smoke",
+                    seed_trials=[],
+                    loop_status_path=loop_status_path,
+                    loop_log_path=loop_log_path,
+                    round_index=1,
+                    max_rounds=8,
+                    adaptation_policy="initial_baseline_anchored",
+                    resume=False,
+                    development_dev_gate=True,
+                    dev_gate_last_round=None,
+                    dev_gate_interval=3,
+                )
+
+            loop_status = json.loads(loop_status_path.read_text(encoding="utf-8"))
+            loop_log = loop_log_path.read_text(encoding="utf-8")
+
+        self.assertEqual(loop_status["loop_state"], "failed")
+        self.assertEqual(loop_status["stop_reason"], "campaign_round_failed:1")
+        self.assertIn("round_failed round=1 budget=smoke exit_code=1", loop_log)
+
     def test_launch_round_rejects_when_campaign_lock_is_active(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             loop_dir = Path(tmp)

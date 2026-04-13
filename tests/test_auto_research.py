@@ -3,6 +3,7 @@
 import tempfile
 import unittest
 from concurrent.futures import Future
+from concurrent.futures import TimeoutError as FutureTimeoutError
 from pathlib import Path
 from unittest.mock import patch
 
@@ -11,6 +12,7 @@ from zenquant.research.auto_research import (
     Campaign,
     CampaignConfig,
     SearchSpace,
+    SearchStageTimeoutError,
     ValidationResult,
     WalkForwardSplit,
     _build_param_grid,
@@ -253,6 +255,49 @@ class TestPromotionGate(unittest.TestCase):
         )
         verdict = gate.evaluate(candidate)
         self.assertIn("drawdown_regression", verdict.failed_gates)
+
+
+class TestTimeoutCleanup(unittest.TestCase):
+    def test_bayesian_serial_timeout_shuts_down_pool_without_waiting(self) -> None:
+        spec = default_btc_split_spec()
+        shutdown_calls: list[tuple[bool, bool]] = []
+
+        class _TimeoutFuture:
+            def result(self, timeout=None):
+                del timeout
+                raise FutureTimeoutError()
+
+            def cancel(self):
+                return True
+
+        class _TimeoutExecutor:
+            def submit(self, fn, *args, **kwargs):
+                del fn, args, kwargs
+                return _TimeoutFuture()
+
+            def shutdown(self, wait=False, cancel_futures=False):
+                shutdown_calls.append((wait, cancel_futures))
+
+        config = CampaignConfig(
+            split_spec=spec,
+            search_space=SearchSpace(strategy_params={"bull_leverage": [2.5]}),
+            sweep_mode="bayesian",
+            n_trials=1,
+            wf_splits=[],
+            robustness_seeds=[],
+            verbose=False,
+            trial_timeout_s=1.0,
+        )
+
+        with (
+            patch("zenquant.research.auto_research.ProcessPoolExecutor", return_value=_TimeoutExecutor()),
+            self.assertRaises(SearchStageTimeoutError),
+        ):
+            run_search_stage(config)
+
+        self.assertTrue(shutdown_calls)
+        self.assertTrue(all(wait is False for wait, _ in shutdown_calls))
+        self.assertTrue(all(cancel_futures is True for _, cancel_futures in shutdown_calls))
 
 
 class TestSearchSpace(unittest.TestCase):

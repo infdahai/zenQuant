@@ -1343,7 +1343,10 @@ class FrameworkCampaignTests(unittest.TestCase):
             log_text = (out / "campaign.log").read_text(encoding="utf-8")
 
         self.assertTrue(stage1_payload["search_status"]["optuna_candidate_found"])
-        self.assertEqual(stage1_payload["search_status"]["optuna_trials_completed"], 5)
+        self.assertEqual(stage1_payload["search_status"]["stage1_primary_optuna_trials_completed"], 5)
+        self.assertEqual(stage1_payload["search_status"]["stage1_primary_optuna_trials_total"], 5)
+        self.assertEqual(stage1_payload["search_status"]["stage1_fallback_optuna_trials_completed"], 1)
+        self.assertEqual(stage1_payload["search_status"]["stage1_fallback_optuna_trials_total"], 1)
         self.assertIn("auto_research_train_only_5m_fallback", stage1_payload["search_status"]["candidate_sources"])
         self.assertEqual(stage1_payload["search_status"]["search_space_mode"], "baseline_anchored_train_only")
         self.assertTrue(stage1_payload["search_status"]["baseline_anchored_search"])
@@ -1604,7 +1607,92 @@ class FrameworkCampaignTests(unittest.TestCase):
 
         self.assertEqual(status["status"], "completed")
         self.assertNotEqual(status["blocked_by"], "campaign_exception")
-        self.assertEqual(stage1_payload["search_status"]["search_outcome"], "empty")
+
+    def test_campaign_smoke_fallback_timeout_records_split_progress_fields(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp) / "results"
+
+            class FakeEvaluator:
+                def __init__(self, *_args, **_kwargs) -> None:
+                    self._base_config = type(
+                        "BaseConfig",
+                        (),
+                        {"execution_timeframe": CAMPAIGN.Timeframe.TF_5M, "context_timeframe": CAMPAIGN.Timeframe.TF_1H},
+                    )()
+                    self.readiness = {"promotion_ready": False, "blocked_by": "not_promotion_ready"}
+                    self.search_param_grid = {"w_momentum": [0.2, 0.3]}
+                    self.search_space_profile = {"direction_weight_policy": {}}
+                    self._deribit_status = {"enabled": True, "observation_ready": False, "research_ready": False}
+                    self._training_window_coverage = {"fast_windows": ["overall_recent"]}
+                    self.training_input_contract = {
+                        "primary_truth_source": "binance",
+                        "execution_framework": {
+                            "five_min_feature_aggregation_enabled": True,
+                            "five_min_direct_execution_enabled": True,
+                            "one_hour_bars_available": True,
+                            "four_hour_bars_available": True,
+                        },
+                        "state_feature_sources": {
+                            "hyperliquid_in_state_features": True,
+                            "deribit_in_state_features": True,
+                            "etf_flow_in_state_features": True,
+                            "cme_positioning_in_state_features": True,
+                        },
+                        "signal_stack_contract": {"direction_state_execution_split_enabled": True},
+                    }
+
+            def _fake_run_optuna_search(*_args, **kwargs):
+                callback = kwargs["status_callback"]
+                if kwargs["search_execution_timeframe"] == CAMPAIGN.Timeframe.TF_1H:
+                    for idx in range(1, 6):
+                        callback(event="trial_completed", current_trial=idx, completed_trials=idx, total_trials=5, runtime_s=float(idx))
+                    return None, [], {
+                        "train_candidate_diagnostics": {
+                            "raw_trial_count": 5,
+                            "raw_nonzero_trade_trials": 0,
+                            "eligible_trade_count_trials": 0,
+                            "max_train_trade_count": 0,
+                            "max_train_sharpe": 0.0,
+                        },
+                        "empty_shortlist_reason": "all_zero_trade",
+                    }
+                callback(
+                    event="trial_running",
+                    current_trial=1,
+                    completed_trials=0,
+                    total_trials=1,
+                    runtime_s=123.0,
+                    pending_trials=1,
+                    max_workers=1,
+                    target_inflight=1,
+                    active_workers_estimate=1,
+                    scheduler_mode="serial_timeout_guarded",
+                    underfilled=False,
+                    underfilled_reason=None,
+                )
+                raise CAMPAIGN.SearchStageTimeoutError("stage1_optuna_timeout: trial 1 exceeded 240s")
+
+            argv = ["run_framework_campaign.py", "--output-dir", str(out), "--budget", "smoke"]
+            with (
+                patch.object(sys, "argv", argv),
+                patch("importlib.util.find_spec", return_value=object()),
+                patch.object(CAMPAIGN, "FrameworkEvaluator", FakeEvaluator),
+                patch.object(CAMPAIGN, "run_optuna_search", side_effect=_fake_run_optuna_search),
+                self.assertRaises(CAMPAIGN.SearchStageTimeoutError),
+            ):
+                CAMPAIGN.main()
+
+            status = json.loads((out / "campaign_status.json").read_text(encoding="utf-8"))
+
+        self.assertEqual(status["status"], "failed")
+        self.assertEqual(status["blocked_by"], "stage1_optuna_timeout")
+        self.assertEqual(status["stage1_search_mode"], "fallback_5m")
+        self.assertEqual(status["stage1_primary_optuna_trials_completed"], 5)
+        self.assertEqual(status["stage1_primary_optuna_trials_total"], 5)
+        self.assertEqual(status["stage1_fallback_optuna_trials_completed"], 0)
+        self.assertEqual(status["stage1_fallback_optuna_trials_total"], 1)
+        self.assertGreater(status["stage1_runtime_s"], 0.0)
+        self.assertEqual(status["stage1_last_completed_unit"], "trial_running")
 
 
 if __name__ == "__main__":
