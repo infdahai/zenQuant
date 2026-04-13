@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import math
 from collections import Counter, defaultdict
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -104,6 +104,17 @@ class HistoricalBacktestConfig:
     state_liquidation_overlay_enabled: bool = True
     # Plugin profile path (default.toml, etc.)
     profile_path: Path | None = Path("config/profiles/default.toml")
+    # Research-only compute mode. Authoritative mode preserves the full path
+    # used by stage2/acceptance; lightweight mode is only for stage1 search.
+    research_compute_mode: str = "authoritative"
+    # Optional profiling for research-time hot path diagnosis.
+    profiling_enabled: bool = False
+    # Deterministic early-stop controls for lightweight train search only.
+    early_stop_enabled: bool = False
+    early_stop_trade_check_ratio: float = 0.7
+    early_stop_min_trade_count: int = 20
+    early_stop_trade_floor_ratio: float = 0.25
+    early_stop_max_drawdown: float = 0.35
     replay_context: ReplayContext | None = None
 
 
@@ -118,6 +129,10 @@ class HistoricalBacktestResult:
     total_reports: int
     final_equity: float
     cycle_context: BacktestCycleContext
+    profiling: dict[str, float] = field(default_factory=dict)
+    terminated_early: bool = False
+    termination_reason: str | None = None
+    processed_event_ratio: float = 1.0
 
 
 @dataclass(slots=True)
@@ -145,6 +160,8 @@ class HistoricalBacktest:
 
     def __init__(self, config: HistoricalBacktestConfig | None = None) -> None:
         self._config = config or HistoricalBacktestConfig()
+        self._lightweight_train_search = self._config.research_compute_mode == "lightweight_train_search"
+        self._profiling_enabled = bool(self._config.profiling_enabled or self._lightweight_train_search)
         self.bus = InMemoryJetStream()
         self.bus.add_stream(StreamConfig(name="STREAM_MARKET_DATA", subjects=["md.>"]))
         self.bus.add_stream(StreamConfig(name="STREAM_CLOCK", subjects=["clock.>"]))
@@ -224,14 +241,15 @@ class HistoricalBacktest:
         self._funding_index = -1
         self._open_interest_index = -1
 
-        self.bus.subscribe("indicator.>", self._collect_indicator)
-        self.bus.subscribe("state.market.>", self._collect_market_state)
-        self.bus.subscribe("strategy.bias.1d.>", self._collect_bias)
-        self.bus.subscribe("strategy.playbook.>", self._collect_playbook)
-        self.bus.subscribe("strategy.sizing.>", self._collect_sizing)
-        self.bus.subscribe("strategy.exit.>", self._collect_exit)
-        self.bus.subscribe("strategy.position_state.>", self._collect_position_state)
-        self.bus.subscribe("intent.target_position.final.>", self._collect_target)
+        if not self._lightweight_train_search:
+            self.bus.subscribe("indicator.>", self._collect_indicator)
+            self.bus.subscribe("state.market.>", self._collect_market_state)
+            self.bus.subscribe("strategy.bias.1d.>", self._collect_bias)
+            self.bus.subscribe("strategy.playbook.>", self._collect_playbook)
+            self.bus.subscribe("strategy.sizing.>", self._collect_sizing)
+            self.bus.subscribe("strategy.exit.>", self._collect_exit)
+            self.bus.subscribe("strategy.position_state.>", self._collect_position_state)
+            self.bus.subscribe("intent.target_position.final.>", self._collect_target)
         self.bus.subscribe("exec.order.report", self._collect_report)
         self.bus.subscribe("risk.snapshot", self._collect_risk_snapshot)
 
@@ -251,11 +269,56 @@ class HistoricalBacktest:
             )
         if self._config.perturbation is not None:
             events = perturb_events(events, self._config.perturbation)
+        profiling: dict[str, float] = {}
+        processed_events = 0
+        execution_events_total = sum(
+            1 for event in events if event["event_timeframe"] == self._config.execution_timeframe.value
+        )
+        terminated_early = False
+        termination_reason: str | None = None
+        event_loop_started_at = datetime.now(UTC).timestamp()
         for event in events:
             self._publish_event(event)
+            processed_events += 1
+            if (
+                self._config.early_stop_enabled
+                and self._lightweight_train_search
+                and execution_events_total > 0
+                and event["event_timeframe"] == self._config.execution_timeframe.value
+            ):
+                should_stop, reason = self._should_early_stop(
+                    processed_events=processed_events,
+                    total_events=len(events),
+                    execution_events_total=execution_events_total,
+                )
+                if should_stop:
+                    terminated_early = True
+                    termination_reason = reason
+                    break
+        event_loop_finished_at = datetime.now(UTC).timestamp()
 
-        metrics = self._build_metrics(events)
-        diagnostics = self._build_diagnostics()
+        metrics_started_at = datetime.now(UTC).timestamp()
+        processed = events[:processed_events]
+        metrics = self._build_metrics(processed)
+        metrics_finished_at = datetime.now(UTC).timestamp()
+        diagnostics_started_at = metrics_finished_at
+        diagnostics = self._build_diagnostics() if not self._lightweight_train_search else BacktestDiagnostics(
+            playbook_counts={},
+            actionable_exit_counts={},
+            risk_flag_counts={},
+            top_target_reason_codes={},
+        )
+        diagnostics_finished_at = datetime.now(UTC).timestamp()
+        cycle_started_at = diagnostics_finished_at
+        cycle_context = self._build_cycle_context(processed)
+        cycle_finished_at = datetime.now(UTC).timestamp()
+        if self._profiling_enabled:
+            profiling = {
+                "event_loop_total_s": round(event_loop_finished_at - event_loop_started_at, 6),
+                "metrics_finalize_s": round(metrics_finished_at - metrics_started_at, 6),
+                "diagnostics_finalize_s": round(diagnostics_finished_at - diagnostics_started_at, 6),
+                "cycle_context_finalize_s": round(cycle_finished_at - cycle_started_at, 6),
+            }
         return HistoricalBacktestResult(
             metrics=metrics,
             diagnostics=diagnostics,
@@ -263,8 +326,42 @@ class HistoricalBacktest:
             total_targets=len(self._targets),
             total_reports=len(self._reports),
             final_equity=self.risk_overlay.equity,
-            cycle_context=self._build_cycle_context(events),
+            cycle_context=cycle_context,
+            profiling=profiling,
+            terminated_early=terminated_early,
+            termination_reason=termination_reason,
+            processed_event_ratio=(
+                round(processed_events / max(1, len(events)), 6)
+                if events
+                else 1.0
+            ),
         )
+
+    def _should_early_stop(
+        self,
+        *,
+        processed_events: int,
+        total_events: int,
+        execution_events_total: int,
+    ) -> tuple[bool, str | None]:
+        processed_ratio = processed_events / max(1, total_events)
+        if processed_ratio < float(self._config.early_stop_trade_check_ratio):
+            return False, None
+        current_trade_count = len(self._reports)
+        trade_floor = max(
+            1,
+            math.floor(
+                float(self._config.early_stop_min_trade_count)
+                * float(self._config.early_stop_trade_floor_ratio)
+            ),
+        )
+        if current_trade_count < trade_floor:
+            return True, "trade_count_too_low_for_processed_ratio"
+        if self._risk_snapshots:
+            max_drawdown, _ = _max_drawdown(self._risk_snapshots)
+            if max_drawdown >= float(self._config.early_stop_max_drawdown):
+                return True, "drawdown_hard_fail"
+        return False, None
 
     def _load_events(self) -> list[dict[str, Any]]:
         """Load candles and auxiliary market series in replay order."""

@@ -157,6 +157,8 @@ class CampaignConfig:
     stage1_max_workers: int | None = None
     stage1_target_inflight: int | None = None
     stage1_batch_size: int = 1
+    research_compute_mode: str = "authoritative"
+    enable_early_stop: bool = False
 
 
 # ── Results ───────────────────────────────────────────────────
@@ -210,36 +212,22 @@ class CampaignReport:
 # ── Orchestrator ──────────────────────────────────────────────
 
 
-def _run_backtest_worker(
-    args: tuple[
-        dict[str, Any],
-        str,
-        str,
-        float,
-        str,
-        str,
-        str,
-        str | None,
-        int | None,
-        int | None,
-        dict[str, Any] | None,
-    ],
-) -> tuple[dict[str, Any], dict[str, float]]:
+def _run_backtest_worker(args: tuple[Any, ...]) -> tuple[dict[str, Any], dict[str, float]]:
     """Run one backtest in a subprocess.  Module-level for pickling."""
     worker_started_at = time.time()
-    (
-        params,
-        root_dir,
-        symbol,
-        equity,
-        execution_timeframe,
-        bias_timeframe,
-        direction_timeframe,
-        context_timeframe,
-        start_ns,
-        end_ns,
-        perturbation_dict,
-    ) = args
+    params = args[0]
+    root_dir = args[1]
+    symbol = args[2]
+    equity = args[3]
+    execution_timeframe = args[4]
+    bias_timeframe = args[5]
+    direction_timeframe = args[6]
+    context_timeframe = args[7]
+    start_ns = args[8]
+    end_ns = args[9]
+    perturbation_dict = args[10] if len(args) > 10 else None
+    research_compute_mode = str(args[11]) if len(args) > 11 else "authoritative"
+    enable_early_stop = bool(args[12]) if len(args) > 12 else False
     resolved_execution_timeframe = Timeframe(execution_timeframe)
     strategy_config = _build_strategy_config(params, execution_timeframe=resolved_execution_timeframe)
     risk_config = _shared_build_risk_config(params)
@@ -274,6 +262,7 @@ def _run_backtest_worker(
                 start_ns=start_ns,
                 end_ns=end_ns,
                 liquidation_data_enabled=liquidation_data_enabled,
+                research_compute_mode=research_compute_mode,
             )
         )
         _WORKER_REPLAY_CONTEXT_CACHE[context_key] = replay_context
@@ -295,6 +284,10 @@ def _run_backtest_worker(
         signal_weight_overrides=signal_weight_overrides,
         liquidation_data_enabled=liquidation_data_enabled,
         state_liquidation_overlay_enabled=state_liquidation_overlay_enabled,
+        research_compute_mode=research_compute_mode,
+        profiling_enabled=True,
+        early_stop_enabled=enable_early_stop and research_compute_mode == "lightweight_train_search",
+        early_stop_min_trade_count=20,
         perturbation=perturbation,
         replay_context=replay_context,
     )
@@ -321,6 +314,11 @@ def _run_backtest_worker(
         "metrics_build_s": round(max(0.0, run_finished_at - run_started_at), 6),
         "trial_runtime_s": round(run_finished_at - worker_started_at, 6),
         "config_build_s": round(build_done_at - context_build_started_at - replay_context_build_s, 6),
+        "event_loop_total_s": round(float(result.profiling.get("event_loop_total_s", 0.0) or 0.0), 6),
+        "metrics_finalize_s": round(float(result.profiling.get("metrics_finalize_s", 0.0) or 0.0), 6),
+        "diagnostics_finalize_s": round(float(result.profiling.get("diagnostics_finalize_s", 0.0) or 0.0), 6),
+        "terminated_early": 1.0 if result.terminated_early else 0.0,
+        "processed_event_ratio": round(float(result.processed_event_ratio or 0.0), 6),
     }
 
 
@@ -481,6 +479,8 @@ class Campaign:
                 split.train.start_ns,
                 split.train.end_ns,
                 None,  # perturbation
+                self._config.research_compute_mode,
+                self._config.enable_early_stop,
             )
             for params in param_grid
         ]
@@ -580,6 +580,8 @@ class Campaign:
                 split.train.start_ns,
                 split.train.end_ns,
                 None,
+                self._config.research_compute_mode,
+                self._config.enable_early_stop,
             )
             if self._config.trial_timeout_s is not None:
                 with ProcessPoolExecutor(max_workers=1) as pool:
@@ -655,6 +657,8 @@ class Campaign:
                             split.train.start_ns,
                             split.train.end_ns,
                             None,
+                            self._config.research_compute_mode,
+                            self._config.enable_early_stop,
                         )
                         future = pool.submit(_run_backtest_worker, args)
                         pending[future] = (trial, trial_number, params, started_trial_at)
@@ -823,6 +827,8 @@ class Campaign:
                     split.val_start_ns,
                     split.val_end_ns,
                     None,
+                    "authoritative",
+                    False,
                 )
                 all_args.append((params, args))
 
@@ -900,6 +906,8 @@ class Campaign:
                     split.dev.start_ns,
                     split.dev.end_ns,
                     perturbation,
+                    "authoritative",
+                    False,
                 )
                 all_args.append((key, seed, args))
 

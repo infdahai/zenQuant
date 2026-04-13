@@ -141,6 +141,10 @@ def _initialize_running_status(
         "stage1_avg_context_build_s": 0.0,
         "stage1_avg_replay_run_s": 0.0,
         "stage1_cache_hit_rate": 0.0,
+        "stage1_avg_event_loop_s": 0.0,
+        "stage1_avg_metrics_finalize_s": 0.0,
+        "stage1_avg_diagnostics_finalize_s": 0.0,
+        "stage1_terminated_early_rate": 0.0,
         "stage1_last_progress_at": None,
         "stage1_last_completed_unit": None,
         "stage1_failure_reason": None,
@@ -477,6 +481,12 @@ def main() -> None:
     parser.add_argument("--development-dev-gate", action="store_true")
     parser.add_argument("--dev-gate-last-round", type=int, default=None)
     parser.add_argument("--dev-gate-interval", type=int, default=None)
+    parser.add_argument("--fast-enable-rl", action="store_true")
+    parser.add_argument(
+        "--fast-worker-profile",
+        choices=("fast_low", "fast_default", "fast_high_cpu"),
+        default="fast_default",
+    )
     args = parser.parse_args()
 
     output_dir = Path(args.output_dir)
@@ -500,11 +510,22 @@ def main() -> None:
 
     optuna_trials, rl_episodes = _resolved_budget(args.budget, args.optuna_trials, args.rl_episodes)
     stage1_parallel_mode = "serial" if args.budget == "smoke" else "cpu_parallel"
-    stage1_max_workers = None if args.budget == "smoke" else max(1, min((os.cpu_count() or 4) - 2, 6 if args.budget == "fast" else 8))
+    if args.budget == "smoke":
+        stage1_max_workers = None
+    elif args.budget == "fast":
+        fast_worker_cap = {
+            "fast_low": 4,
+            "fast_default": 6,
+            "fast_high_cpu": 8,
+        }[args.fast_worker_profile]
+        stage1_max_workers = max(1, min((os.cpu_count() or 4) - 2, fast_worker_cap))
+    else:
+        stage1_max_workers = max(1, min((os.cpu_count() or 4) - 2, 8))
     stage1_target_inflight = 1 if args.budget == "smoke" else stage1_max_workers
     stage1_batch_size = 1 if args.budget == "smoke" else 4 if args.budget == "fast" else 6
     extra_seed_trials = _read_seed_trials(Path(args.seed_trials_file)) if args.seed_trials_file else []
-    if args.budget == "smoke":
+    enable_stage1_rl = args.budget == "high" or (args.budget == "fast" and args.fast_enable_rl)
+    if args.budget == "smoke" or not enable_stage1_rl:
         rl_episodes = 0
     started_at = (_read_json(status_path) or {}).get("started_at", _ts()) if args.resume else _ts()
     _initialize_running_status(
@@ -571,7 +592,11 @@ def main() -> None:
                 "baseline_anchor_variant": resolved_baseline_anchor_variant,
                 "liquidation_in_search": evaluator.readiness["promotion_ready"],
                 "liquidation_blocked_by": None if evaluator.readiness["promotion_ready"] else "not_promotion_ready",
-                "stage1_execution_mode": "1h_context_only" if args.budget == "smoke" else "5m_enabled",
+                "stage1_execution_mode": (
+                    "1h_context_only"
+                    if args.budget == "smoke"
+                    else "5m_lightweight_train_search"
+                ),
                 "authoritative_verdict_execution_mode": "5m_enabled",
                 "macro_state_sources": [],
                 "state_data_confidence": "minimal",
@@ -653,7 +678,7 @@ def main() -> None:
         stage1_path = checkpoint_dir / "stage1_search.json"
         stage1_payload = _read_json(stage1_path) if args.resume else None
         if stage1_payload is None:
-            stage1_execution_mode = "1h_context_only" if args.budget == "smoke" else "5m_enabled"
+            stage1_execution_mode = "1h_context_only" if args.budget == "smoke" else "5m_lightweight_train_search"
             smoke_ranking_top_n = 1 if args.budget == "smoke" else min(5, optuna_trials)
             smoke_rl_timeout_s = 600.0 if args.budget == "smoke" else None
             smoke_ranking_candidate_timeout_s = 30.0 if args.budget == "smoke" else None
@@ -832,6 +857,18 @@ def main() -> None:
                     stage1_state["cache_hit_sum"] = float(stage1_state.get("cache_hit_sum", 0.0) or 0.0) + float(
                         heartbeat.get("cache_hit", 0.0) or 0.0
                     )
+                    stage1_state["event_loop_sum_s"] = float(stage1_state.get("event_loop_sum_s", 0.0) or 0.0) + float(
+                        heartbeat.get("event_loop_total_s", 0.0) or 0.0
+                    )
+                    stage1_state["metrics_finalize_sum_s"] = float(stage1_state.get("metrics_finalize_sum_s", 0.0) or 0.0) + float(
+                        heartbeat.get("metrics_finalize_s", 0.0) or 0.0
+                    )
+                    stage1_state["diagnostics_finalize_sum_s"] = float(stage1_state.get("diagnostics_finalize_sum_s", 0.0) or 0.0) + float(
+                        heartbeat.get("diagnostics_finalize_s", 0.0) or 0.0
+                    )
+                    stage1_state["terminated_early_sum"] = float(stage1_state.get("terminated_early_sum", 0.0) or 0.0) + float(
+                        heartbeat.get("terminated_early", 0.0) or 0.0
+                    )
                 if subphase == "stage1_optuna_search" and running_event:
                     stage1_state["stage1_underfilled"] = bool(stage1_underfilled)
                     stage1_state["stage1_underfilled_reason"] = stage1_underfilled_reason
@@ -883,6 +920,26 @@ def main() -> None:
                     ),
                     stage1_cache_hit_rate=(
                         round(float(stage1_state.get("cache_hit_sum", 0.0) or 0.0) / timing_count, 4)
+                        if timing_count > 0
+                        else None
+                    ),
+                    stage1_avg_event_loop_s=(
+                        round(float(stage1_state.get("event_loop_sum_s", 0.0) or 0.0) / timing_count, 4)
+                        if timing_count > 0
+                        else None
+                    ),
+                    stage1_avg_metrics_finalize_s=(
+                        round(float(stage1_state.get("metrics_finalize_sum_s", 0.0) or 0.0) / timing_count, 4)
+                        if timing_count > 0
+                        else None
+                    ),
+                    stage1_avg_diagnostics_finalize_s=(
+                        round(float(stage1_state.get("diagnostics_finalize_sum_s", 0.0) or 0.0) / timing_count, 4)
+                        if timing_count > 0
+                        else None
+                    ),
+                    stage1_terminated_early_rate=(
+                        round(float(stage1_state.get("terminated_early_sum", 0.0) or 0.0) / timing_count, 4)
                         if timing_count > 0
                         else None
                     ),
@@ -1212,7 +1269,14 @@ def main() -> None:
                     _append_campaign_log(log_path, f"stage1_rl non_blocking_failure reason={exc}")
                     rl_result = None
             else:
-                _append_campaign_log(log_path, "stage1_rl skipped budget=smoke")
+                skip_reason = (
+                    "budget=smoke"
+                    if args.budget == "smoke"
+                    else "budget=fast_disabled"
+                    if args.budget == "fast"
+                    else "budget=disabled"
+                )
+                _append_campaign_log(log_path, f"stage1_rl skipped {skip_reason}")
             rl_params = rl_result.get("best_params") if rl_result else None
             stage1_state["rl_result"] = rl_result
             stage1_state["rl_params"] = rl_params

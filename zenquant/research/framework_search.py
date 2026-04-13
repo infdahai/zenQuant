@@ -1550,6 +1550,8 @@ def run_optuna_search(
         stage1_max_workers=stage1_max_workers,
         stage1_target_inflight=stage1_target_inflight,
         stage1_batch_size=stage1_batch_size,
+        research_compute_mode="lightweight_train_search",
+        enable_early_stop=True,
     )
     sweep = run_search_stage(worker_config)
     ranking_started_at = datetime.now(UTC).timestamp()
