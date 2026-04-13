@@ -69,6 +69,7 @@ class RLTunerConfigTests(unittest.TestCase):
 
         class FakeResult:
             metrics = FakeMetrics()
+            terminated_early = False
 
         class FakeBacktest:
             def __init__(self, config: HistoricalBacktestConfig) -> None:
@@ -108,6 +109,45 @@ class RLTunerConfigTests(unittest.TestCase):
         self.assertAlmostEqual(config.execution_config.dca_size_decay, 0.6)
         self.assertAlmostEqual(config.execution_config.exit_unwind_pct, 0.4)
         self.assertAlmostEqual(config.execution_config.flip_min_confidence, 0.7)
+
+    def test_env_backtest_respects_research_compute_mode(self) -> None:
+        captured: dict[str, HistoricalBacktestConfig] = {}
+
+        class FakeMetrics:
+            sharpe = 1.0
+            net_pnl = 10.0
+            max_drawdown = 0.1
+            trade_count = 25
+
+        class FakeResult:
+            metrics = FakeMetrics()
+            terminated_early = False
+
+        class FakeBacktest:
+            def __init__(self, config: HistoricalBacktestConfig) -> None:
+                captured["config"] = config
+
+            def run(self):
+                return FakeResult()
+
+        env = rl_tuner.ParamTunerEnv(
+            split_spec=default_btc_split_spec(),
+            base_config=HistoricalBacktestConfig(
+                execution_timeframe=rl_tuner.Timeframe.TF_5M,
+                context_timeframe=rl_tuner.Timeframe.TF_1H,
+                research_compute_mode="lightweight_train_search",
+                profiling_enabled=True,
+                early_stop_enabled=True,
+                trial_runtime_budget_s=90.0,
+            ),
+        )
+
+        with patch.object(rl_tuner, "HistoricalBacktest", FakeBacktest):
+            env._run_backtest({}, rl_tuner.TRAIN_WINDOWS[0])
+
+        self.assertEqual(captured["config"].research_compute_mode, "lightweight_train_search")
+        self.assertTrue(captured["config"].early_stop_enabled)
+        self.assertEqual(captured["config"].trial_runtime_budget_s, 90.0)
 
 
 class RLTuneCliTests(unittest.TestCase):

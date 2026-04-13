@@ -302,7 +302,7 @@ class FrameworkCampaignTests(unittest.TestCase):
         self.assertAlmostEqual(payload["stage1_avg_metrics_finalize_s"], 0.3)
         self.assertAlmostEqual(payload["stage1_terminated_early_rate"], 1.0)
 
-    def test_campaign_fast_skips_rl_by_default(self) -> None:
+    def test_campaign_fast_runs_lightweight_rl_by_default(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             out = Path(tmp) / "results"
 
@@ -389,22 +389,46 @@ class FrameworkCampaignTests(unittest.TestCase):
                     "empty_shortlist_reason": None,
                 }
 
+            captured_train_tuner: dict[str, object] = {}
+
+            def _fake_train_tuner(*_args, **kwargs):
+                captured_train_tuner.update(kwargs)
+                return {
+                    "best_params": {"w_momentum": 0.3},
+                    "best_score": 1.2,
+                    "candidate_source": "rl_train_shortlist",
+                    "train_metrics": {"selection_split": "train", "sharpe": 1.2, "trade_count": 25},
+                    "dev_metrics": {},
+                    "search_status": {
+                        "episodes_completed": 6,
+                        "budget_mode": "wall_clock_primary",
+                        "wall_clock_elapsed_s": 12.0,
+                        "stop_reason": "wall_clock_budget_reached",
+                        "active_envs": 3,
+                        "avg_episode_runtime_s": 2.0,
+                    },
+                }
+
             argv = ["run_framework_campaign.py", "--output-dir", str(out), "--budget", "fast"]
             with (
                 patch.object(sys, "argv", argv),
                 patch("importlib.util.find_spec", return_value=object()),
                 patch.object(CAMPAIGN, "FrameworkEvaluator", FakeEvaluator),
                 patch.object(CAMPAIGN, "run_optuna_search", side_effect=_fake_run_optuna_search),
-                patch.object(CAMPAIGN, "train_tuner") as train_tuner,
+                patch.object(CAMPAIGN, "train_tuner", side_effect=_fake_train_tuner),
             ):
                 CAMPAIGN.main()
 
             payload = json.loads((out / "campaign_status.json").read_text(encoding="utf-8"))
             campaign_log = (out / "campaign.log").read_text(encoding="utf-8")
 
-        train_tuner.assert_not_called()
-        self.assertIn("stage1_rl skipped budget=fast_disabled", campaign_log)
+        self.assertIn("stage1_rl started", campaign_log)
         self.assertEqual(payload["optuna_trials_completed"], 1)
+        self.assertEqual(captured_train_tuner["budget_mode"], "wall_clock_primary")
+        self.assertEqual(captured_train_tuner["n_envs"], 3)
+        self.assertEqual(captured_train_tuner["max_episodes"], 12)
+        self.assertEqual(captured_train_tuner["seed_params"], {"w_momentum": 0.3})
+        self.assertEqual(captured_train_tuner["base_config"].research_compute_mode, "lightweight_train_search")
 
     def test_campaign_reads_seed_trials_file(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
