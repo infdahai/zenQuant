@@ -594,7 +594,13 @@ class TestSearchSpace(unittest.TestCase):
         self.assertEqual(len(trial_started), 4)
         self.assertTrue(all(int(item["target_inflight"]) == 4 for item in trial_started))
         self.assertTrue(any(int(item["pending_trials"]) >= 2 for item in trial_started))
-        self.assertTrue(any(bool(item["underfilled"]) for item in trial_started[:-1]))
+        self.assertTrue(all(not bool(item["underfilled"]) for item in trial_started))
+        trial_completed = [item for item in heartbeats if item.get("event") == "trial_completed"]
+        self.assertTrue(all(not bool(item["underfilled"]) for item in trial_completed))
+        self.assertTrue(all("trial_runtime_s" in item for item in trial_completed))
+        self.assertTrue(all("replay_context_build_s" in item for item in trial_completed))
+        self.assertTrue(all("event_publish_run_s" in item for item in trial_completed))
+        self.assertTrue(all("cache_hit" in item for item in trial_completed))
         self.assertEqual(sweep.total_combinations, 4)
 
     def test_run_backtest_worker_reuses_worker_local_replay_context(self) -> None:

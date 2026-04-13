@@ -459,6 +459,11 @@ def _write_training_monitor(loop_dir: Path) -> dict[str, Any]:
         snapshot["stage1_underfilled_candidate"] = sustained_underfilled_candidate
         snapshot["stage1_underfilled_started_at"] = started_at
         snapshot["stage1_underfilled_duration_s"] = round(underfilled_duration_s, 2)
+        snapshot["stage1_underfilled"] = bool(
+            sustained_underfilled_candidate and underfilled_duration_s >= 15.0
+        )
+        if not snapshot["stage1_underfilled"]:
+            snapshot["stage1_underfilled_reason"] = None
     alerts: list[str] = []
     if stalled and stalled_reason is not None:
         alerts.append(stalled_reason)

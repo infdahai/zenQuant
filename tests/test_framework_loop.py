@@ -730,7 +730,7 @@ class FrameworkLoopScriptTests(unittest.TestCase):
         self.assertEqual(payload["stage1_max_workers"], 6)
         self.assertEqual(payload["stage1_target_inflight"], 6)
         self.assertEqual(payload["stage1_scheduler_mode"], "work_conserving")
-        self.assertTrue(payload["stage1_underfilled"])
+        self.assertFalse(payload["stage1_underfilled"])
         self.assertTrue(payload["stage1_underfilled_candidate"])
         self.assertFalse(payload["cpu_underutilized"])
         self.assertIsNone(payload["cpu_underutilized_reason"])

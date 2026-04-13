@@ -621,6 +621,7 @@ class Campaign:
             )
             completed_trials = 0
             launched_trials = 0
+            last_running_heartbeat_at = 0.0
 
             with ProcessPoolExecutor(max_workers=max_workers) as pool:
                 pending: dict[Any, tuple[Any, int, dict[str, Any], float]] = {}
@@ -639,25 +640,6 @@ class Campaign:
                         trial = study.ask()
                         trial_number = trial.number + 1
                         started_trial_at = time.time()
-                        if self._config.status_callback is not None:
-                            self._config.status_callback(
-                                event="trial_started",
-                                current_trial=trial_number,
-                                completed_trials=completed_trials,
-                                total_trials=n_trials,
-                                runtime_s=started_trial_at - start,
-                                pending_trials=len(pending),
-                                max_workers=max_workers,
-                                target_inflight=target_inflight,
-                                active_workers_estimate=len(pending),
-                                scheduler_mode="work_conserving",
-                                underfilled=launched_trials < n_trials and len(pending) < target_inflight,
-                                underfilled_reason=(
-                                    "work_available_below_target_inflight"
-                                    if launched_trials < n_trials and len(pending) < target_inflight
-                                    else None
-                                ),
-                            )
                         params: dict[str, Any] = {}
                         for key, values in all_params.items():
                             params[key] = trial.suggest_categorical(key, values)
@@ -677,12 +659,53 @@ class Campaign:
                         future = pool.submit(_run_backtest_worker, args)
                         pending[future] = (trial, trial_number, params, started_trial_at)
                         launched_trials += 1
+                        if self._config.status_callback is not None:
+                            best_value, best_params = _best_trial_snapshot(study)
+                            self._config.status_callback(
+                                event="trial_started",
+                                current_trial=trial_number,
+                                completed_trials=completed_trials,
+                                total_trials=n_trials,
+                                best_value_so_far=best_value,
+                                best_params_so_far=best_params,
+                                runtime_s=time.time() - start,
+                                pending_trials=len(pending),
+                                max_workers=max_workers,
+                                target_inflight=target_inflight,
+                                active_workers_estimate=len(pending),
+                                scheduler_mode="work_conserving",
+                                underfilled=False,
+                                underfilled_reason=None,
+                            )
 
                     if not pending:
                         break
 
                     done, _ = wait(list(pending.keys()), timeout=1.0, return_when=FIRST_COMPLETED)
                     if not done:
+                        if self._config.status_callback is not None and (time.time() - last_running_heartbeat_at) >= 5.0:
+                            best_value, best_params = _best_trial_snapshot(study)
+                            self._config.status_callback(
+                                event="trial_running",
+                                current_trial=launched_trials,
+                                completed_trials=completed_trials,
+                                total_trials=n_trials,
+                                best_value_so_far=best_value,
+                                best_params_so_far=best_params,
+                                runtime_s=time.time() - start,
+                                pending_trials=len(pending),
+                                max_workers=max_workers,
+                                target_inflight=target_inflight,
+                                active_workers_estimate=len(pending),
+                                scheduler_mode="work_conserving",
+                                underfilled=launched_trials < n_trials and len(pending) < target_inflight,
+                                underfilled_reason=(
+                                    "work_available_below_target_inflight"
+                                    if launched_trials < n_trials and len(pending) < target_inflight
+                                    else None
+                                ),
+                            )
+                            last_running_heartbeat_at = time.time()
                         if self._config.trial_timeout_s is not None:
                             timed_out = [
                                 (future, meta)
@@ -726,12 +749,12 @@ class Campaign:
                                 target_inflight=target_inflight,
                                 active_workers_estimate=len(pending),
                                 scheduler_mode="work_conserving",
-                                underfilled=launched_trials < n_trials and len(pending) < target_inflight,
-                                underfilled_reason=(
-                                    "work_available_below_target_inflight"
-                                    if launched_trials < n_trials and len(pending) < target_inflight
-                                    else None
-                                ),
+                                underfilled=False,
+                                underfilled_reason=None,
+                                trial_runtime_s=metrics.get("trial_runtime_s", 0.0),
+                                replay_context_build_s=metrics.get("replay_context_build_s", 0.0),
+                                event_publish_run_s=metrics.get("event_publish_run_s", 0.0),
+                                cache_hit=metrics.get("cache_hit", 0.0),
                             )
         else:
             def _trial_callback(study: Any, trial: Any) -> None:

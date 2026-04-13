@@ -795,7 +795,8 @@ def main() -> None:
                 )
                 stage1_active_workers_estimate = int(heartbeat.get("active_workers_estimate", pending_trials) or 0)
                 stage1_scheduler_mode = heartbeat.get("scheduler_mode")
-                stage1_underfilled = bool(heartbeat.get("underfilled"))
+                raw_stage1_underfilled = heartbeat.get("underfilled")
+                stage1_underfilled = bool(raw_stage1_underfilled) if raw_stage1_underfilled is not None else None
                 stage1_underfilled_reason = heartbeat.get("underfilled_reason")
                 event = heartbeat.get("event")
                 subphase = "stage1_optuna_search"
@@ -811,6 +812,8 @@ def main() -> None:
                     normalized_completed = min(max(0, completed_trials), normalized_total)
                 elif event == "stage1_finalize":
                     subphase = "stage1_finalize"
+                running_event = event in {"trial_running", "scheduler_tick"}
+                completion_event = event == "trial_completed"
                 if subphase == "stage1_optuna_search" and event == "trial_completed":
                     stage1_state["optuna_trials_completed"] = max(
                         int(stage1_state.get("optuna_trials_completed", 0) or 0),
@@ -829,6 +832,9 @@ def main() -> None:
                     stage1_state["cache_hit_sum"] = float(stage1_state.get("cache_hit_sum", 0.0) or 0.0) + float(
                         heartbeat.get("cache_hit", 0.0) or 0.0
                     )
+                if subphase == "stage1_optuna_search" and running_event:
+                    stage1_state["stage1_underfilled"] = bool(stage1_underfilled)
+                    stage1_state["stage1_underfilled_reason"] = stage1_underfilled_reason
                 timing_count = int(stage1_state.get("timing_count", 0) or 0)
                 _update_status(
                     status_path,
@@ -844,32 +850,40 @@ def main() -> None:
                     stage1_execution_mode=stage1_execution_mode,
                     authoritative_verdict_execution_mode="5m_enabled",
                     stage1_current_trial=current_trial,
-                    stage1_last_trial_at=_ts() if heartbeat.get("event") == "trial_completed" else None,
+                    stage1_last_trial_at=_ts() if completion_event else None,
                     stage1_pending_trials=pending_trials if subphase == "stage1_optuna_search" else None,
                     stage1_max_workers=heartbeat_max_workers if subphase == "stage1_optuna_search" else None,
                     stage1_target_inflight=heartbeat_target_inflight if subphase == "stage1_optuna_search" else None,
                     stage1_active_workers_estimate=stage1_active_workers_estimate if subphase == "stage1_optuna_search" else None,
                     stage1_scheduler_mode=stage1_scheduler_mode if subphase == "stage1_optuna_search" else None,
-                    stage1_underfilled=stage1_underfilled if subphase == "stage1_optuna_search" else None,
-                    stage1_underfilled_reason=stage1_underfilled_reason if subphase == "stage1_optuna_search" else None,
+                    stage1_underfilled=(
+                        bool(stage1_state.get("stage1_underfilled", False))
+                        if subphase == "stage1_optuna_search"
+                        else None
+                    ),
+                    stage1_underfilled_reason=(
+                        stage1_state.get("stage1_underfilled_reason")
+                        if subphase == "stage1_optuna_search"
+                        else None
+                    ),
                     stage1_avg_trial_runtime_s=(
                         round(float(stage1_state.get("trial_runtime_sum_s", 0.0) or 0.0) / timing_count, 4)
-                        if subphase == "stage1_optuna_search" and timing_count > 0
+                        if timing_count > 0
                         else None
                     ),
                     stage1_avg_context_build_s=(
                         round(float(stage1_state.get("context_build_sum_s", 0.0) or 0.0) / timing_count, 4)
-                        if subphase == "stage1_optuna_search" and timing_count > 0
+                        if timing_count > 0
                         else None
                     ),
                     stage1_avg_replay_run_s=(
                         round(float(stage1_state.get("replay_run_sum_s", 0.0) or 0.0) / timing_count, 4)
-                        if subphase == "stage1_optuna_search" and timing_count > 0
+                        if timing_count > 0
                         else None
                     ),
                     stage1_cache_hit_rate=(
                         round(float(stage1_state.get("cache_hit_sum", 0.0) or 0.0) / timing_count, 4)
-                        if subphase == "stage1_optuna_search" and timing_count > 0
+                        if timing_count > 0
                         else None
                     ),
                     stage1_best_value_so_far=heartbeat.get("best_value_so_far"),
@@ -883,7 +897,13 @@ def main() -> None:
                     stage1_actual_steps=actual_steps if subphase == "stage1_rl" else None,
                     stage1_requested_steps=requested_steps if subphase == "stage1_rl" else None,
                     stage1_last_progress_at=_ts(),
-                    stage1_last_completed_unit=event,
+                    stage1_last_completed_unit=(
+                        "trial_completed"
+                        if completion_event
+                        else "trial_running"
+                        if running_event
+                        else event
+                    ),
                     stage1_failure_reason=None,
                     search_space_profile=resolved_search_space_profile,
                     search_space_mode=resolved_search_space_mode,
