@@ -1044,9 +1044,15 @@ class FrameworkEvaluator:
         negative_worst_windows = sum(1 for result in worst_results if result.sharpe < 0)
         baseline = None
         if variant.name != "paulwei_baseline":
+            if progress_callback is not None and lightweight:
+                progress_callback("baseline_summary_started", "lightweight")
             baseline = self._get_paulwei_fast_summary(lightweight=lightweight)
+            if progress_callback is not None and lightweight:
+                progress_callback("baseline_summary_completed", "lightweight")
         if progress_callback is not None:
             progress_callback(3, "worst_windows")
+            if lightweight:
+                progress_callback("summary_scoring_started", "lightweight")
         if lightweight:
             window_sharpes = [dev_result.sharpe, weak_result.sharpe, *(result.sharpe for result in worst_results)]
             wf_metrics = {
@@ -1154,6 +1160,8 @@ class FrameworkEvaluator:
             promotion_failure_reason=failure_reason,
         )
         if progress_callback is not None:
+            if lightweight:
+                progress_callback("summary_scoring_completed", "lightweight")
             progress_callback(4, "lightweight_summary" if lightweight else "validation_bundle")
         self._summary_cache[cache_key] = summary
         return summary

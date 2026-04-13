@@ -1295,16 +1295,16 @@ def main() -> None:
 
             stage2_budgets = {
                 "smoke": {
-                    "total": 600.0,
+                    "total": 780.0,
                     "subphases": {
-                        "stage2_prepare_variants": 240.0,
+                        "stage2_prepare_variants": 420.0,
                         "stage2_compare_windows": 180.0,
                         "stage2_compare_validation": 180.0,
                         "stage2_rank_variants": 120.0,
                         "stage2_write_artifacts": 120.0,
                     },
                     "no_progress": {
-                        "stage2_prepare_variants": 240.0,
+                        "stage2_prepare_variants": 300.0,
                         "stage2_compare_windows": 180.0,
                         "stage2_compare_validation": 180.0,
                         "stage2_rank_variants": 120.0,

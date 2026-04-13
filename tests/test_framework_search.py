@@ -856,8 +856,12 @@ class SearchReportSerializationTests(unittest.TestCase):
             if progress_callback is not None:
                 progress_callback(1, "dev")
                 progress_callback(2, "2023-08")
+                progress_callback("baseline_summary_started", "lightweight")
+                progress_callback("baseline_summary_completed", "lightweight")
                 progress_callback(3, "worst_windows")
-                progress_callback(4, "validation_bundle")
+                progress_callback("summary_scoring_started", "lightweight")
+                progress_callback("summary_scoring_completed", "lightweight")
+                progress_callback(4, "lightweight_summary")
             return summary
 
         with (
@@ -886,6 +890,7 @@ class SearchReportSerializationTests(unittest.TestCase):
         events = [str(item["event"]) for item in heartbeats]
         self.assertIn("stage2_prepare_variants_started", events)
         self.assertIn("stage2_prepare_variant_unit_completed", events)
+        self.assertIn("stage2_prepare_variant_validation_progress", events)
         self.assertIn("stage2_compare_windows_started", events)
         self.assertIn("comparison_window_completed", events)
         self.assertIn("stage2_rank_variants_completed", events)
@@ -896,6 +901,13 @@ class SearchReportSerializationTests(unittest.TestCase):
         ]
         self.assertIn(4, prepare_units)
         self.assertTrue(any(unit > 4 for unit in prepare_units))
+        prepare_detail_units = [
+            str(item["unit"])
+            for item in heartbeats
+            if item.get("event") == "stage2_prepare_variant_validation_progress"
+        ]
+        self.assertTrue(any(unit.startswith("baseline_summary_started:") for unit in prepare_detail_units))
+        self.assertTrue(any(unit.startswith("summary_scoring_completed:") for unit in prepare_detail_units))
         self.assertEqual(report.evaluation_role, "development")
 
     def test_final_report_uses_fast_compare_window_profile_and_workers(self) -> None:
