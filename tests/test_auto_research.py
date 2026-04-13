@@ -7,6 +7,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from zenquant.research.auto_research import (
+    _WORKER_REPLAY_CONTEXT_CACHE,
     Campaign,
     CampaignConfig,
     SearchSpace,
@@ -14,6 +15,7 @@ from zenquant.research.auto_research import (
     WalkForwardSplit,
     _build_param_grid,
     _build_strategy_config,
+    _run_backtest_worker,
     run_dev_robustness_stage,
     run_dev_validation_stage,
     run_search_stage,
@@ -546,6 +548,116 @@ class TestSearchSpace(unittest.TestCase):
         self.assertEqual(completed, sorted(completed))
         self.assertEqual(completed[-1], 4)
         self.assertEqual(sweep.total_combinations, 4)
+
+    def test_bayesian_parallel_stage_uses_target_inflight_not_batch_size(self) -> None:
+        spec = default_btc_split_spec()
+        heartbeats: list[dict[str, object]] = []
+
+        def fake_worker(args):
+            params = args[0]
+            score = float(params["bull_leverage"])
+            return params, {
+                "sharpe": score,
+                "sortino": score,
+                "net_pnl": score * 1000.0,
+                "max_drawdown": 0.1,
+                "win_rate": 0.5,
+                "profit_factor": 1.0,
+                "trade_count": 25,
+                "fee_drag_pct": 0.01,
+            }
+
+        config = CampaignConfig(
+            split_spec=spec,
+            search_space=SearchSpace(strategy_params={"bull_leverage": [2.5, 3.0, 3.5, 4.0]}),
+            sweep_mode="bayesian",
+            n_trials=4,
+            wf_splits=[],
+            robustness_seeds=[],
+            verbose=False,
+            status_callback=lambda **payload: heartbeats.append(payload),
+            stage1_parallel_mode="cpu_parallel",
+            stage1_max_workers=4,
+            stage1_target_inflight=4,
+            stage1_batch_size=2,
+            seed_trials=[{"bull_leverage": 2.5}, {"bull_leverage": 3.0}],
+        )
+
+        with (
+            patch("zenquant.research.auto_research._run_backtest_worker", fake_worker),
+            patch("zenquant.research.auto_research.ProcessPoolExecutor", _ImmediateExecutor),
+            patch("zenquant.research.auto_research._max_workers", return_value=4),
+        ):
+            sweep = run_search_stage(config)
+
+        trial_started = [item for item in heartbeats if item.get("event") == "trial_started"]
+        self.assertEqual(len(trial_started), 4)
+        self.assertTrue(all(int(item["target_inflight"]) == 4 for item in trial_started))
+        self.assertTrue(any(int(item["pending_trials"]) >= 2 for item in trial_started))
+        self.assertTrue(any(bool(item["underfilled"]) for item in trial_started[:-1]))
+        self.assertEqual(sweep.total_combinations, 4)
+
+    def test_run_backtest_worker_reuses_worker_local_replay_context(self) -> None:
+        _WORKER_REPLAY_CONTEXT_CACHE.clear()
+
+        class FakeMetrics:
+            sharpe = 1.0
+            sortino = 1.0
+            net_pnl = 10.0
+            max_drawdown = 0.1
+            win_rate = 0.5
+            profit_factor = 1.0
+            trade_count = 5
+            fee_drag_pct = 0.01
+
+        class FakeResult:
+            metrics = FakeMetrics()
+
+        class FakeBacktest:
+            def __init__(self, _config) -> None:
+                self._config = _config
+
+            def run(self):
+                return FakeResult()
+
+        class FakeContext:
+            def __init__(self) -> None:
+                self.funding_rows = []
+                self.open_interest_rows = []
+                self.aggtrades = {}
+                self.events = []
+                self.macro_store = type("Store", (), {"loaded": False})()
+                self.options_store = type("Store", (), {"loaded": False})()
+                self.hf_store = type("Store", (), {"loaded": False})()
+                self.cot_store = type("Store", (), {"loaded": False})()
+                self.liquidation_store = type("Store", (), {"loaded": False})()
+                self.eth_store = type("Store", (), {"loaded": False})()
+                self.basis_store = type("Store", (), {"loaded": False})()
+
+        args = (
+            {"bull_leverage": 2.5},
+            "data/raw/binance",
+            "BTCUSDT",
+            100000.0,
+            "5m",
+            "1d",
+            "4h",
+            "1h",
+            None,
+            None,
+            None,
+        )
+
+        with (
+            patch("zenquant.research.auto_research._build_replay_context", return_value=FakeContext()) as build_context,
+            patch("zenquant.research.auto_research.HistoricalBacktest", FakeBacktest),
+        ):
+            _, first = _run_backtest_worker(args)
+            _, second = _run_backtest_worker(args)
+
+        self.assertEqual(build_context.call_count, 1)
+        self.assertEqual(first["cache_hit"], 0.0)
+        self.assertEqual(second["cache_hit"], 1.0)
 
 
 if __name__ == "__main__":

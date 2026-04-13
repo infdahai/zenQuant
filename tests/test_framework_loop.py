@@ -354,6 +354,124 @@ class FrameworkLoopScriptTests(unittest.TestCase):
         self.assertEqual(projected[0]["vol_shock_threshold"], 0.9)
         self.assertEqual(projected[0]["flip_min_confidence"], 0.55)
 
+    def test_read_seed_trials_rejects_non_list_payload(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            seed_file = Path(tmp) / "seed_trials.json"
+            seed_file.write_text(json.dumps({"bad": True}), encoding="utf-8")
+
+            with self.assertRaisesRegex(ValueError, "must contain a JSON list"):
+                LOOP._read_seed_trials(seed_file)
+
+    def test_main_rejects_resume_with_initial_seed_trials_file(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            loop_dir = Path(tmp) / "framework_optimization_loop"
+            seed_file = Path(tmp) / "seed_trials.json"
+            seed_file.write_text("[]", encoding="utf-8")
+
+            with (
+                mock.patch(
+                    "sys.argv",
+                    [
+                        "run_framework_research_loop.py",
+                        "--output-dir",
+                        str(loop_dir),
+                        "--resume",
+                        "--initial-seed-trials-file",
+                        str(seed_file),
+                    ],
+                ),
+                self.assertRaises(SystemExit) as exc,
+            ):
+                LOOP.main()
+
+        self.assertEqual(str(exc.exception), "--resume and --initial-seed-trials-file are mutually exclusive")
+
+    def test_main_uses_initial_seed_trials_for_first_round(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            loop_dir = Path(tmp) / "framework_optimization_loop"
+            campaign_root = loop_dir / "runs"
+            seed_file = Path(tmp) / "seed_trials.json"
+            seed_payload = [
+                {
+                    "vol_shock_threshold": 0.95,
+                    "flip_min_confidence": 0.5,
+                }
+            ]
+            seed_file.write_text(json.dumps(seed_payload), encoding="utf-8")
+            captured: dict[str, object] = {}
+
+            def fake_launch_round(
+                args,
+                *,
+                run_dir,
+                budget,
+                seed_trials,
+                loop_status_path,
+                loop_log_path,
+                round_index,
+                max_rounds,
+                adaptation_policy,
+                resume,
+                development_dev_gate,
+                dev_gate_last_round,
+                dev_gate_interval,
+            ):
+                captured["seed_trials"] = seed_trials
+                captured["round_index"] = round_index
+                return (
+                    {
+                        "post_smoke_scenario": {
+                            "scenario": "scenario_development_train_iteration",
+                            "category": "train_iteration",
+                            "should_open_full_training": False,
+                            "next_action": "continue_train_search_until_dev_gate",
+                            "blockers": ["x"],
+                        },
+                        "full_training_assessment": {"allowed": False, "blockers": ["x"], "warnings": []},
+                        "best_variant": "current",
+                        "best_score": 0.0,
+                        "train_candidate_diagnostics": {"max_train_sharpe": 0.0},
+                        "candidate_ready_for_handoff": False,
+                        "candidate_frozen_id": None,
+                        "dev_gate_used_this_round": False,
+                    },
+                    {"search_status": {"stage1_best_score": 0.0}},
+                    {"phase": "stage3_complete", "status": "completed", "campaign_pid": 123},
+                )
+
+            def fake_plan_next_iteration(**kwargs):
+                return Namespace(
+                    next_budget="fast",
+                    adaptation_policy="steady_state",
+                    all_seed_trials=[],
+                    loop_progression_blocked=False,
+                    should_open_fast_or_full_training=False,
+                    stop=True,
+                    stop_reason="done",
+                )
+
+            with (
+                mock.patch(
+                    "sys.argv",
+                    [
+                        "run_framework_research_loop.py",
+                        "--output-dir",
+                        str(loop_dir),
+                        "--campaign-output-root",
+                        str(campaign_root),
+                        "--initial-seed-trials-file",
+                        str(seed_file),
+                    ],
+                ),
+                mock.patch.object(LOOP, "_launch_round", side_effect=fake_launch_round),
+                mock.patch.object(LOOP, "plan_next_iteration", side_effect=fake_plan_next_iteration),
+                mock.patch.object(LOOP, "_write_training_monitor", return_value={}),
+            ):
+                LOOP.main()
+
+        self.assertEqual(captured["round_index"], 1)
+        self.assertEqual(captured["seed_trials"], seed_payload)
+
     def test_write_handoff_candidate_pointer(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             loop_dir = Path(tmp)
@@ -427,6 +545,7 @@ class FrameworkLoopScriptTests(unittest.TestCase):
                         "phase": "stage2_full_verdict",
                         "status": "running",
                         "optuna_trials_completed": 10,
+                        "stage1_optuna_trials_total": 50,
                         "stage1_progress_total": 50,
                         "stage2_subphase": "stage2_prepare_variants",
                         "stage2_progress_completed": 2,
@@ -442,9 +561,238 @@ class FrameworkLoopScriptTests(unittest.TestCase):
 
         self.assertEqual(payload["current_round"], 2)
         self.assertEqual(payload["cpu_expected_mode"], "parallel_expected")
+        self.assertEqual(payload["optuna_trials_total"], 50)
         self.assertEqual(payload["best_train_score_so_far"], 0.5)
         self.assertEqual(payload["prevalidation_rejection_rate"], 1.0)
         self.assertEqual(payload["recent_rounds"][0]["round"], 1)
+
+    def test_write_training_monitor_marks_compare_windows_parallel_expected(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            loop_dir = Path(tmp)
+            run_dir = loop_dir / "runs" / "round_005"
+            run_dir.mkdir(parents=True, exist_ok=True)
+            (loop_dir / "loop.lock").write_text(json.dumps({"started_at": "2026-04-12T00:00:00+00:00"}), encoding="utf-8")
+            (loop_dir / "loop_status.json").write_text(
+                json.dumps(
+                    {
+                        "loop_state": "campaign_running",
+                        "current_round": 5,
+                        "current_budget": "fast",
+                        "current_phase": "stage2_full_verdict",
+                        "current_status": "running",
+                        "current_run_dir": str(run_dir),
+                        "current_campaign_pid": 222,
+                        "loop_pid": 111,
+                        "round_runtime_s": 120.0,
+                        "stage1_runtime_s": 60.0,
+                        "stage2_runtime_s": 40.0,
+                        "updated_at": "2026-04-12T00:02:00+00:00",
+                    }
+                ),
+                encoding="utf-8",
+            )
+            (run_dir / "campaign_status.json").write_text(
+                json.dumps(
+                    {
+                        "phase": "stage2_full_verdict",
+                        "status": "running",
+                        "optuna_trials_completed": 50,
+                        "stage1_optuna_trials_total": 50,
+                        "stage2_subphase": "stage2_compare_windows",
+                        "stage2_progress_completed": 8,
+                        "stage2_progress_total": 24,
+                        "stage2_compare_window_units_completed": 8,
+                        "stage2_compare_window_units_total": 24,
+                        "updated_at": "2026-04-12T00:02:05+00:00",
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            with mock.patch.object(LOOP, "_process_metrics", return_value=(160.0, 3)):
+                payload = LOOP._write_training_monitor(loop_dir)
+
+        self.assertEqual(payload["cpu_expected_mode"], "parallel_expected")
+        self.assertEqual(payload["compare_window_units_completed"], 8)
+        self.assertEqual(payload["compare_window_units_total"], 24)
+
+    def test_write_training_monitor_tracks_compare_validation_fields(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            loop_dir = Path(tmp)
+            run_dir = loop_dir / "runs" / "round_005"
+            run_dir.mkdir(parents=True, exist_ok=True)
+            (loop_dir / "loop.lock").write_text(json.dumps({"started_at": "2026-04-12T00:00:00+00:00"}), encoding="utf-8")
+            (loop_dir / "loop_status.json").write_text(
+                json.dumps(
+                    {
+                        "loop_state": "campaign_running",
+                        "current_round": 5,
+                        "current_budget": "fast",
+                        "current_phase": "stage2_full_verdict",
+                        "current_status": "running",
+                        "current_run_dir": str(run_dir),
+                        "current_campaign_pid": 222,
+                        "loop_pid": 111,
+                        "round_runtime_s": 120.0,
+                        "stage1_runtime_s": 60.0,
+                        "stage2_runtime_s": 40.0,
+                        "updated_at": "2026-04-12T00:02:00+00:00",
+                    }
+                ),
+                encoding="utf-8",
+            )
+            (run_dir / "campaign_status.json").write_text(
+                json.dumps(
+                    {
+                        "phase": "stage2_full_verdict",
+                        "status": "running",
+                        "optuna_trials_completed": 50,
+                        "stage1_optuna_trials_total": 50,
+                        "stage2_subphase": "stage2_compare_validation",
+                        "stage2_progress_completed": 14,
+                        "stage2_progress_total": 24,
+                        "stage2_compare_window_units_completed": 12,
+                        "stage2_compare_window_units_total": 12,
+                        "stage2_compare_validation_units_completed": 2,
+                        "stage2_compare_validation_units_total": 8,
+                        "stage2_compare_workers": 2,
+                        "stage2_compare_validation_workers": 2,
+                        "updated_at": "2026-04-12T00:02:05+00:00",
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            with mock.patch.object(LOOP, "_process_metrics", return_value=(160.0, 3)):
+                payload = LOOP._write_training_monitor(loop_dir)
+
+        self.assertEqual(payload["cpu_expected_mode"], "parallel_expected")
+        self.assertEqual(payload["compare_validation_units_completed"], 2)
+        self.assertEqual(payload["compare_validation_units_total"], 8)
+        self.assertEqual(payload["stage2_compare_workers"], 2)
+        self.assertEqual(payload["stage2_compare_validation_workers"], 2)
+
+    def test_write_training_monitor_includes_stage1_scheduler_fields(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            loop_dir = Path(tmp)
+            run_dir = loop_dir / "runs" / "round_005"
+            run_dir.mkdir(parents=True, exist_ok=True)
+            (loop_dir / "loop.lock").write_text(json.dumps({"started_at": "2026-04-12T00:00:00+00:00"}), encoding="utf-8")
+            (loop_dir / "loop_status.json").write_text(
+                json.dumps(
+                    {
+                        "loop_state": "campaign_running",
+                        "current_round": 5,
+                        "current_budget": "fast",
+                        "current_phase": "stage1_optuna_search",
+                        "current_status": "running",
+                        "current_run_dir": str(run_dir),
+                        "current_campaign_pid": 222,
+                        "loop_pid": 111,
+                        "round_runtime_s": 120.0,
+                        "stage1_runtime_s": 90.0,
+                        "updated_at": "2026-04-12T00:02:00+00:00",
+                    }
+                ),
+                encoding="utf-8",
+            )
+            (run_dir / "campaign_status.json").write_text(
+                json.dumps(
+                    {
+                        "phase": "stage1_optuna_search",
+                        "status": "running",
+                        "optuna_trials_completed": 32,
+                        "stage1_optuna_trials_total": 50,
+                        "stage1_progress_completed": 32,
+                        "stage1_progress_total": 50,
+                        "stage1_pending_trials": 4,
+                        "stage1_max_workers": 6,
+                        "stage1_target_inflight": 6,
+                        "stage1_active_workers_estimate": 4,
+                        "stage1_scheduler_mode": "work_conserving",
+                        "stage1_underfilled": True,
+                        "stage1_underfilled_reason": "work_available_below_target_inflight",
+                        "stage1_underfilled_started_at": "2026-04-12T00:02:09+00:00",
+                        "stage1_underfilled_duration_s": 0.0,
+                        "updated_at": "2026-04-12T00:02:05+00:00",
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            with (
+                mock.patch.object(LOOP, "_process_metrics", return_value=(90.0, 3)),
+                mock.patch.object(LOOP, "_ts", return_value="2026-04-12T00:02:10+00:00"),
+            ):
+                payload = LOOP._write_training_monitor(loop_dir)
+
+        self.assertEqual(payload["stage1_pending_trials"], 4)
+        self.assertEqual(payload["stage1_max_workers"], 6)
+        self.assertEqual(payload["stage1_target_inflight"], 6)
+        self.assertEqual(payload["stage1_scheduler_mode"], "work_conserving")
+        self.assertTrue(payload["stage1_underfilled"])
+        self.assertTrue(payload["stage1_underfilled_candidate"])
+        self.assertFalse(payload["cpu_underutilized"])
+        self.assertIsNone(payload["cpu_underutilized_reason"])
+        self.assertEqual(payload["stage1_underfilled_duration_s"], 1.0)
+
+    def test_write_training_monitor_marks_stage1_parallelism_not_materializing_after_sustained_window(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            loop_dir = Path(tmp)
+            run_dir = loop_dir / "runs" / "round_005"
+            run_dir.mkdir(parents=True, exist_ok=True)
+            (loop_dir / "loop.lock").write_text(json.dumps({"started_at": "2026-04-12T00:00:00+00:00"}), encoding="utf-8")
+            (loop_dir / "loop_status.json").write_text(
+                json.dumps(
+                    {
+                        "loop_state": "campaign_running",
+                        "current_round": 5,
+                        "current_budget": "fast",
+                        "current_phase": "stage1_optuna_search",
+                        "current_status": "running",
+                        "current_run_dir": str(run_dir),
+                        "current_campaign_pid": 222,
+                        "loop_pid": 111,
+                        "round_runtime_s": 120.0,
+                        "stage1_runtime_s": 90.0,
+                        "updated_at": "2026-04-12T00:02:00+00:00",
+                    }
+                ),
+                encoding="utf-8",
+            )
+            (run_dir / "campaign_status.json").write_text(
+                json.dumps(
+                    {
+                        "phase": "stage1_optuna_search",
+                        "status": "running",
+                        "optuna_trials_completed": 32,
+                        "stage1_optuna_trials_total": 50,
+                        "stage1_progress_completed": 32,
+                        "stage1_progress_total": 50,
+                        "stage1_pending_trials": 4,
+                        "stage1_max_workers": 6,
+                        "stage1_target_inflight": 6,
+                        "stage1_active_workers_estimate": 4,
+                        "stage1_scheduler_mode": "work_conserving",
+                        "stage1_underfilled": True,
+                        "stage1_underfilled_reason": "work_available_below_target_inflight",
+                        "stage1_underfilled_started_at": "2026-04-12T00:01:50+00:00",
+                        "stage1_underfilled_duration_s": 0.0,
+                        "updated_at": "2026-04-12T00:02:05+00:00",
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            with (
+                mock.patch.object(LOOP, "_process_metrics", return_value=(90.0, 3)),
+                mock.patch.object(LOOP, "_ts", return_value="2026-04-12T00:02:10+00:00"),
+            ):
+                payload = LOOP._write_training_monitor(loop_dir)
+
+        self.assertTrue(payload["cpu_underutilized"])
+        self.assertEqual(payload["cpu_underutilized_reason"], "stage1_parallelism_not_materializing")
+        self.assertEqual(payload["stage1_underfilled_duration_s"], 20.0)
 
     def test_launch_round_logs_runtime_progress_fields(self) -> None:
         class FakeProcess:

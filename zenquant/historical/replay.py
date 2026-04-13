@@ -104,6 +104,7 @@ class HistoricalBacktestConfig:
     state_liquidation_overlay_enabled: bool = True
     # Plugin profile path (default.toml, etc.)
     profile_path: Path | None = Path("config/profiles/default.toml")
+    replay_context: ReplayContext | None = None
 
 
 @dataclass(slots=True)
@@ -117,6 +118,21 @@ class HistoricalBacktestResult:
     total_reports: int
     final_equity: float
     cycle_context: BacktestCycleContext
+
+
+@dataclass(slots=True)
+class ReplayContext:
+    funding_rows: list[dict[str, Any]]
+    open_interest_rows: list[dict[str, Any]]
+    aggtrades: dict[str, dict[int, dict[str, Any]]]
+    events: list[dict[str, Any]]
+    macro_store: MacroDataStore
+    options_store: OptionsDataStore
+    hf_store: HFFeatureStore
+    cot_store: CotDataStore
+    liquidation_store: LiquidationDataStore
+    eth_store: EthDataStore
+    basis_store: BasisDataStore
 
 
 class HistoricalBacktest:
@@ -137,41 +153,14 @@ class HistoricalBacktest:
         self.bus.add_stream(StreamConfig(name="STREAM_EXEC", subjects=["exec.>"]))
 
         self.indicator_store = IndicatorStore()
-        # Load macro data if available
-        self._macro_store = MacroDataStore(MacroDataStoreConfig(macro_dir=self._config.macro_dir))
-        self._macro_store.load()
-        # Load options data if available
-        self._options_store = OptionsDataStore(
-            OptionsDataStoreConfig(options_dir=self._config.options_dir, currency="BTC")
-        )
-        self._options_store.load()
-        # Load HF (5min) features if available
-        hf_dir = self._config.root_dir / "klines" / self._config.symbol / "5m"
-        self._hf_store = HFFeatureStore(HFFeatureStoreConfig(data_dir=hf_dir))
-        self._hf_store.load()
-        # Load CFTC COT data if available
-        self._cot_store = CotDataStore(CotStoreConfig(cot_path=self._config.cot_path))
-        self._cot_store.load()
-        # Load liquidation data if available
-        self._liquidation_store = LiquidationDataStore(
-            LiquidationStoreConfig(liquidation_dir=self._config.liquidation_dir)
-        )
-        self._liquidation_store.load()
-        # Load ETH data for cross-asset Transfer Entropy
-        self._eth_store = EthDataStore(
-            EthStoreConfig(
-                eth_kline_path=self._config.root_dir / "klines" / "ETHUSDT" / "4h",
-            )
-        )
-        self._eth_store.load()
-        # Load spot-perp basis data if available
-        self._basis_store = BasisDataStore(
-            BasisStoreConfig(
-                spot_dir=Path("data/raw/binance_spot/klines") / self._config.symbol / "4h",
-                perp_dir=self._config.root_dir / "klines" / self._config.symbol / "4h",
-            )
-        )
-        self._basis_store.load()
+        self._replay_context = self._config.replay_context or _build_replay_context(self._config)
+        self._macro_store = self._replay_context.macro_store
+        self._options_store = self._replay_context.options_store
+        self._hf_store = self._replay_context.hf_store
+        self._cot_store = self._replay_context.cot_store
+        self._liquidation_store = self._replay_context.liquidation_store
+        self._eth_store = self._replay_context.eth_store
+        self._basis_store = self._replay_context.basis_store
         self.indicator_engine = IndicatorEngine(
             bus=self.bus,
             store=self.indicator_store,
@@ -279,76 +268,12 @@ class HistoricalBacktest:
 
     def _load_events(self) -> list[dict[str, Any]]:
         """Load candles and auxiliary market series in replay order."""
-        self._funding_rows = read_parquet_rows(
-            str(self._config.root_dir / "funding" / self._config.symbol / "*.parquet"),
-            where_sql=_time_filter_sql(self._config.start_ns, self._config.end_ns, column="funding_time_ns"),
-            params=_time_filter_params(self._config.start_ns, self._config.end_ns),
-            order_by="funding_time_ns ASC",
-        )
-        self._open_interest_rows = read_parquet_rows(
-            str(
-                self._config.root_dir
-                / "open_interest"
-                / self._config.symbol
-                / self._config.open_interest_timeframe
-                / "*.parquet"
-            ),
-            where_sql=_time_filter_sql(self._config.start_ns, self._config.end_ns, column="ts_ns"),
-            params=_time_filter_params(self._config.start_ns, self._config.end_ns),
-            order_by="ts_ns ASC",
-        )
-        # Load pre-aggregated aggTrades (real order flow CVD)
-        self._aggtrades: dict[str, dict[int, dict[str, Any]]] = {}
-        for tf_label in ("4h", "1h", "5m"):
-            agg_glob = str(self._config.root_dir / "aggtrades" / self._config.symbol / tf_label / "*.parquet")
-            agg_rows = read_parquet_rows(agg_glob, order_by="ts_ns ASC")
-            if agg_rows:
-                bucket = {}
-                for agg_row in agg_rows:
-                    bucket[int(agg_row["ts_ns"])] = agg_row
-                self._aggtrades[tf_label] = bucket
-                print(f"  Loaded {len(bucket)} {tf_label} aggTrades buckets (real CVD)")
-
+        self._funding_rows = self._replay_context.funding_rows
+        self._open_interest_rows = self._replay_context.open_interest_rows
+        self._aggtrades = self._replay_context.aggtrades
         self._funding_index = -1
         self._open_interest_index = -1
-
-        candles: list[dict[str, Any]] = []
-        loaded_rows: dict[Timeframe, list[dict[str, Any]]] = {}
-        # Build unique set of timeframes to load (bias → direction → context → execution)
-        timeframes_to_load: list[Timeframe] = [self._config.bias_timeframe]
-        if self._config.direction_timeframe not in timeframes_to_load:
-            timeframes_to_load.append(self._config.direction_timeframe)
-        if self._config.context_timeframe and self._config.context_timeframe not in timeframes_to_load:
-            timeframes_to_load.append(self._config.context_timeframe)
-        if self._config.execution_timeframe not in timeframes_to_load:
-            timeframes_to_load.append(self._config.execution_timeframe)
-
-        for timeframe in timeframes_to_load:
-            rows = read_parquet_rows(
-                str(self._config.root_dir / "klines" / self._config.symbol / timeframe.value / "*.parquet"),
-                where_sql=_time_filter_sql(self._config.start_ns, self._config.end_ns, column="close_time_ns"),
-                params=_time_filter_params(self._config.start_ns, self._config.end_ns),
-                order_by="close_time_ns ASC",
-            )
-            loaded_rows[timeframe] = rows
-            if not rows and timeframe == Timeframe.TF_1H and self._config.execution_timeframe == Timeframe.TF_5M:
-                five_min_rows = loaded_rows.get(Timeframe.TF_5M)
-                if five_min_rows is None:
-                    five_min_rows = read_parquet_rows(
-                        str(self._config.root_dir / "klines" / self._config.symbol / Timeframe.TF_5M.value / "*.parquet"),
-                        where_sql=_time_filter_sql(self._config.start_ns, self._config.end_ns, column="close_time_ns"),
-                        params=_time_filter_params(self._config.start_ns, self._config.end_ns),
-                        order_by="close_time_ns ASC",
-                    )
-                    loaded_rows[Timeframe.TF_5M] = five_min_rows
-                rows = _aggregate_five_min_rows_to_one_hour(five_min_rows)
-                loaded_rows[timeframe] = rows
-            for row in loaded_rows[timeframe]:
-                row["event_timeframe"] = timeframe.value
-                candles.append(row)
-
-        candles.sort(key=lambda item: (int(item["close_time_ns"]), _timeframe_priority(str(item["event_timeframe"]))))
-        return candles
+        return self._replay_context.events
 
     def _publish_event(self, row: dict[str, Any]) -> None:
         """Publish the same core event families the live runtime consumes."""
@@ -1124,3 +1049,95 @@ def _aggregate_five_min_rows_to_one_hour(rows: list[dict[str, Any]]) -> list[dic
             }
         )
     return aggregated
+
+
+def _build_replay_context(config: HistoricalBacktestConfig) -> ReplayContext:
+    macro_store = MacroDataStore(MacroDataStoreConfig(macro_dir=config.macro_dir))
+    macro_store.load()
+    options_store = OptionsDataStore(OptionsDataStoreConfig(options_dir=config.options_dir, currency="BTC"))
+    options_store.load()
+    hf_dir = config.root_dir / "klines" / config.symbol / "5m"
+    hf_store = HFFeatureStore(HFFeatureStoreConfig(data_dir=hf_dir))
+    hf_store.load()
+    cot_store = CotDataStore(CotStoreConfig(cot_path=config.cot_path))
+    cot_store.load()
+    liquidation_store = LiquidationDataStore(LiquidationStoreConfig(liquidation_dir=config.liquidation_dir))
+    liquidation_store.load()
+    eth_store = EthDataStore(EthStoreConfig(eth_kline_path=config.root_dir / "klines" / "ETHUSDT" / "4h"))
+    eth_store.load()
+    basis_store = BasisDataStore(
+        BasisStoreConfig(
+            spot_dir=Path("data/raw/binance_spot/klines") / config.symbol / "4h",
+            perp_dir=config.root_dir / "klines" / config.symbol / "4h",
+        )
+    )
+    basis_store.load()
+
+    funding_rows = read_parquet_rows(
+        str(config.root_dir / "funding" / config.symbol / "*.parquet"),
+        where_sql=_time_filter_sql(config.start_ns, config.end_ns, column="funding_time_ns"),
+        params=_time_filter_params(config.start_ns, config.end_ns),
+        order_by="funding_time_ns ASC",
+    )
+    open_interest_rows = read_parquet_rows(
+        str(config.root_dir / "open_interest" / config.symbol / config.open_interest_timeframe / "*.parquet"),
+        where_sql=_time_filter_sql(config.start_ns, config.end_ns, column="ts_ns"),
+        params=_time_filter_params(config.start_ns, config.end_ns),
+        order_by="ts_ns ASC",
+    )
+    aggtrades: dict[str, dict[int, dict[str, Any]]] = {}
+    for tf_label in ("4h", "1h", "5m"):
+        agg_glob = str(config.root_dir / "aggtrades" / config.symbol / tf_label / "*.parquet")
+        agg_rows = read_parquet_rows(agg_glob, order_by="ts_ns ASC")
+        if agg_rows:
+            aggtrades[tf_label] = {int(row["ts_ns"]): row for row in agg_rows}
+
+    candles: list[dict[str, Any]] = []
+    loaded_rows: dict[Timeframe, list[dict[str, Any]]] = {}
+    timeframes_to_load: list[Timeframe] = [config.bias_timeframe]
+    if config.direction_timeframe not in timeframes_to_load:
+        timeframes_to_load.append(config.direction_timeframe)
+    if config.context_timeframe and config.context_timeframe not in timeframes_to_load:
+        timeframes_to_load.append(config.context_timeframe)
+    if config.execution_timeframe not in timeframes_to_load:
+        timeframes_to_load.append(config.execution_timeframe)
+
+    for timeframe in timeframes_to_load:
+        rows = read_parquet_rows(
+            str(config.root_dir / "klines" / config.symbol / timeframe.value / "*.parquet"),
+            where_sql=_time_filter_sql(config.start_ns, config.end_ns, column="close_time_ns"),
+            params=_time_filter_params(config.start_ns, config.end_ns),
+            order_by="close_time_ns ASC",
+        )
+        loaded_rows[timeframe] = rows
+        if not rows and timeframe == Timeframe.TF_1H and config.execution_timeframe == Timeframe.TF_5M:
+            five_min_rows = loaded_rows.get(Timeframe.TF_5M)
+            if five_min_rows is None:
+                five_min_rows = read_parquet_rows(
+                    str(config.root_dir / "klines" / config.symbol / Timeframe.TF_5M.value / "*.parquet"),
+                    where_sql=_time_filter_sql(config.start_ns, config.end_ns, column="close_time_ns"),
+                    params=_time_filter_params(config.start_ns, config.end_ns),
+                    order_by="close_time_ns ASC",
+                )
+                loaded_rows[Timeframe.TF_5M] = five_min_rows
+            rows = _aggregate_five_min_rows_to_one_hour(five_min_rows)
+            loaded_rows[timeframe] = rows
+        for row in loaded_rows[timeframe]:
+            enriched = dict(row)
+            enriched["event_timeframe"] = timeframe.value
+            candles.append(enriched)
+
+    candles.sort(key=lambda item: (int(item["close_time_ns"]), _timeframe_priority(str(item["event_timeframe"]))))
+    return ReplayContext(
+        funding_rows=funding_rows,
+        open_interest_rows=open_interest_rows,
+        aggtrades=aggtrades,
+        events=candles,
+        macro_store=macro_store,
+        options_store=options_store,
+        hf_store=hf_store,
+        cot_store=cot_store,
+        liquidation_store=liquidation_store,
+        eth_store=eth_store,
+        basis_store=basis_store,
+    )

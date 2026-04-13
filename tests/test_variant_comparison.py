@@ -14,7 +14,12 @@ from zenquant.historical import (
     HistoricalOpenInterestRow,
     write_parquet_rows,
 )
-from zenquant.research.comparison import compare_variants, split_window_spec
+from zenquant.research.comparison import (
+    ComparisonValidationTimeoutError,
+    compare_variants,
+    default_variant_specs,
+    split_window_spec,
+)
 from zenquant.research.splits import default_btc_split_spec
 
 
@@ -109,6 +114,93 @@ def _open_interest_rows(days: int = 90) -> list[HistoricalOpenInterestRow]:
 
 
 class VariantComparisonTests(unittest.TestCase):
+    def test_compare_variants_parallel_window_execution_preserves_output_order(self) -> None:
+        class FakeFuture:
+            def __init__(self, payload: dict[str, object]) -> None:
+                self.payload = payload
+
+            def result(self) -> dict[str, object]:
+                return self.payload
+
+            def __hash__(self) -> int:
+                return id(self)
+
+        class FakeExecutor:
+            def __init__(self, *_, **__) -> None:
+                self.futures: list[FakeFuture] = []
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb) -> bool:
+                return False
+
+            def submit(self, fn, base_config, variant, window):
+                del fn
+                del base_config
+                future = FakeFuture(
+                    {
+                        "variant": variant.name,
+                        "window_label": window.label,
+                        "metrics": {
+                            "sharpe": 1.0 if variant.name == "current" else 0.5,
+                            "net_pnl": 10.0,
+                            "max_drawdown": 0.1,
+                            "profit_factor": 1.1,
+                            "trade_count": 2,
+                        },
+                        "win_rate": 0.5,
+                        "diagnostics": {
+                            "playbook_counts": {},
+                            "risk_flag_counts": {},
+                            "actionable_exit_counts": {},
+                        },
+                        "cycle_context": {
+                            "cycle_position": 0.0,
+                            "cycle_peak_distance": 0.0,
+                            "cycle_trough_distance": 0.0,
+                            "cycle_momentum": 0.0,
+                            "cycle_confidence": 0.0,
+                        },
+                        "directional_state_distribution": {},
+                        "regime_distribution": {},
+                        "playbook_usage": {},
+                    }
+                )
+                self.futures.append(future)
+                return future
+
+        heartbeats: list[dict[str, object]] = []
+
+        with (
+            patch("zenquant.research.comparison.ProcessPoolExecutor", return_value=FakeExecutor()),
+            patch("zenquant.research.comparison.as_completed", side_effect=lambda futures: list(reversed(list(futures)))),
+        ):
+            payload = compare_variants(
+                HistoricalBacktestConfig(root_dir=Path("data/raw/binance"), symbol="BTCUSDT"),
+                windows=[
+                    split_window_spec(default_btc_split_spec(), "dev"),
+                    split_window_spec(default_btc_split_spec(), "dev"),
+                ],
+                walk_forward_windows=[],
+                split_spec=default_btc_split_spec(),
+                comparison_split="dev",
+                window_workers=2,
+                status_callback=lambda **item: heartbeats.append(item),
+            )
+
+        ordered_pairs = [(item["variant"], item["window_label"]) for item in payload["window_reports"]]
+        self.assertEqual(
+            ordered_pairs,
+            [
+                ("current", "dev"),
+                ("current", "dev"),
+                ("paulwei_baseline", "dev"),
+                ("paulwei_baseline", "dev"),
+            ],
+        )
+        self.assertGreaterEqual(sum(1 for item in heartbeats if item.get("event") == "comparison_window_completed"), 4)
+
     def test_compare_variants_returns_required_report_fields(self) -> None:
         @dataclass
         class FakeMetrics:
@@ -306,6 +398,115 @@ class VariantComparisonTests(unittest.TestCase):
         self.assertIn("comparison_window_completed", events)
         self.assertIn("comparison_validation_completed", events)
         self.assertIn("comparison_ranking_completed", events)
+
+    def test_compare_variants_emits_validation_leg_heartbeats(self) -> None:
+        heartbeats: list[dict[str, object]] = []
+
+        with (
+            patch("zenquant.research.comparison._run_window", return_value={"variant": "current", "window_label": "dev", "metrics": {"sharpe": 1.0, "net_pnl": 10.0, "max_drawdown": 0.1, "profit_factor": 1.1, "trade_count": 2}, "win_rate": 0.5, "diagnostics": {"playbook_counts": {}, "risk_flag_counts": {}, "actionable_exit_counts": {}}, "cycle_context": {}, "directional_state_distribution": {}, "regime_distribution": {}, "playbook_usage": {}}),
+            patch(
+                "zenquant.research.comparison._run_validation_leg",
+                return_value={"sharpe": 1.0, "net_pnl": 5.0, "max_drawdown": 0.1},
+            ),
+        ):
+            compare_variants(
+                HistoricalBacktestConfig(root_dir=Path("data/raw/binance"), symbol="BTCUSDT"),
+                windows=[split_window_spec(default_btc_split_spec(), "dev")],
+                walk_forward_windows=[split_window_spec(default_btc_split_spec(), "dev")],
+                split_spec=default_btc_split_spec(),
+                comparison_split="dev",
+                status_callback=lambda **item: heartbeats.append(item),
+                validation_workers=1,
+            )
+
+        events = [str(item["event"]) for item in heartbeats]
+        self.assertIn("comparison_validation_started", events)
+        self.assertIn("comparison_validation_window_train_started", events)
+        self.assertIn("comparison_validation_window_train_completed", events)
+        self.assertIn("comparison_validation_window_test_started", events)
+        self.assertIn("comparison_validation_window_test_completed", events)
+
+    def test_compare_variants_degrades_tuned_candidate_on_validation_timeout(self) -> None:
+        calls = {"count": 0}
+
+        def _fake_validation(*args, **kwargs):
+            variant = args[1]
+            if variant.name == "optuna_tuned":
+                raise ComparisonValidationTimeoutError(
+                    variant=variant.name,
+                    window_label="wf_1",
+                    leg="train",
+                    completed_units=0,
+                    message="comparison_validation_timeout: variant=optuna_tuned wf=wf_1 leg=train",
+                )
+            calls["count"] += 1
+            return (
+                {
+                    "variant": variant.name,
+                    "windows": [],
+                    "avg_train_sharpe": 1.0,
+                    "avg_test_sharpe": 1.0,
+                    "avg_oos_ratio": 1.0,
+                    "worst_test_sharpe": 1.0,
+                },
+                kwargs["completed_units"],
+            )
+
+        with (
+            patch("zenquant.research.comparison._run_window", return_value={"variant": "current", "window_label": "dev", "metrics": {"sharpe": 1.0, "net_pnl": 10.0, "max_drawdown": 0.1, "profit_factor": 1.1, "trade_count": 2}, "win_rate": 0.5, "diagnostics": {"playbook_counts": {}, "risk_flag_counts": {}, "actionable_exit_counts": {}}, "cycle_context": {}, "directional_state_distribution": {}, "regime_distribution": {}, "playbook_usage": {}}),
+            patch("zenquant.research.comparison._run_walk_forward_validation", side_effect=_fake_validation),
+        ):
+            payload = compare_variants(
+                HistoricalBacktestConfig(root_dir=Path("data/raw/binance"), symbol="BTCUSDT"),
+                variants=[
+                    *default_variant_specs(),
+                    type(default_variant_specs()[0])(name="optuna_tuned", label="Optuna Tuned"),
+                ],
+                windows=[split_window_spec(default_btc_split_spec(), "dev")],
+                walk_forward_windows=[split_window_spec(default_btc_split_spec(), "dev")],
+                split_spec=default_btc_split_spec(),
+                comparison_split="dev",
+            )
+
+        degraded = next(item for item in payload["validation_reports"] if item["variant"] == "optuna_tuned")
+        self.assertEqual(degraded["avg_test_sharpe"], -10.0)
+        self.assertIn("comparison_error", degraded)
+
+    def test_compare_variants_raises_on_baseline_validation_timeout(self) -> None:
+        def _fake_validation(*args, **kwargs):
+            variant = args[1]
+            if variant.name == "paulwei_baseline":
+                raise ComparisonValidationTimeoutError(
+                    variant=variant.name,
+                    window_label="wf_1",
+                    leg="train",
+                    completed_units=0,
+                    message="comparison_validation_timeout: variant=paulwei_baseline wf=wf_1 leg=train",
+                )
+            return (
+                {
+                    "variant": variant.name,
+                    "windows": [],
+                    "avg_train_sharpe": 1.0,
+                    "avg_test_sharpe": 1.0,
+                    "avg_oos_ratio": 1.0,
+                    "worst_test_sharpe": 1.0,
+                },
+                kwargs["completed_units"],
+            )
+
+        with (
+            patch("zenquant.research.comparison._run_window", return_value={"variant": "current", "window_label": "dev", "metrics": {"sharpe": 1.0, "net_pnl": 10.0, "max_drawdown": 0.1, "profit_factor": 1.1, "trade_count": 2}, "win_rate": 0.5, "diagnostics": {"playbook_counts": {}, "risk_flag_counts": {}, "actionable_exit_counts": {}}, "cycle_context": {}, "directional_state_distribution": {}, "regime_distribution": {}, "playbook_usage": {}}),
+            patch("zenquant.research.comparison._run_walk_forward_validation", side_effect=_fake_validation),
+            self.assertRaises(ComparisonValidationTimeoutError),
+        ):
+            compare_variants(
+                HistoricalBacktestConfig(root_dir=Path("data/raw/binance"), symbol="BTCUSDT"),
+                windows=[split_window_spec(default_btc_split_spec(), "dev")],
+                walk_forward_windows=[split_window_spec(default_btc_split_spec(), "dev")],
+                split_spec=default_btc_split_spec(),
+                comparison_split="dev",
+            )
 
 
 if __name__ == "__main__":

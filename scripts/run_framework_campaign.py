@@ -89,6 +89,7 @@ def _initialize_running_status(
         "status": "running",
         "budget": budget,
         "optuna_trials_requested": optuna_trials,
+        "stage1_optuna_trials_total": optuna_trials,
         "rl_episodes_requested": rl_episodes,
         "optuna_trials_completed": 0,
         "rl_episodes_completed": 0,
@@ -136,6 +137,10 @@ def _initialize_running_status(
         "stage1_subphase": None,
         "stage1_progress_completed": 0,
         "stage1_progress_total": 0,
+        "stage1_avg_trial_runtime_s": 0.0,
+        "stage1_avg_context_build_s": 0.0,
+        "stage1_avg_replay_run_s": 0.0,
+        "stage1_cache_hit_rate": 0.0,
         "stage1_last_progress_at": None,
         "stage1_last_completed_unit": None,
         "stage1_failure_reason": None,
@@ -439,6 +444,7 @@ def main() -> None:
     optuna_trials, rl_episodes = _resolved_budget(args.budget, args.optuna_trials, args.rl_episodes)
     stage1_parallel_mode = "serial" if args.budget == "smoke" else "cpu_parallel"
     stage1_max_workers = None if args.budget == "smoke" else max(1, min((os.cpu_count() or 4) - 2, 6 if args.budget == "fast" else 8))
+    stage1_target_inflight = 1 if args.budget == "smoke" else stage1_max_workers
     stage1_batch_size = 1 if args.budget == "smoke" else 4 if args.budget == "fast" else 6
     extra_seed_trials = _read_seed_trials(Path(args.seed_trials_file)) if args.seed_trials_file else []
     if args.budget == "smoke":
@@ -637,6 +643,7 @@ def main() -> None:
                         "budget": args.budget,
                         "optuna_available": True,
                         "optuna_trials_requested": optuna_trials,
+                        "stage1_optuna_trials_total": optuna_trials,
                         "rl_episodes_requested": rl_episodes,
                         "optuna_trials_completed": optuna_trials_completed,
                         "rl_episodes_completed": rl_episodes_completed,
@@ -724,6 +731,15 @@ def main() -> None:
                 )
                 runtime_s = round(float(heartbeat.get("runtime_s", 0.0) or 0.0), 2)
                 slow_trial = runtime_s >= 180.0 and current_trial > 0
+                pending_trials = int(heartbeat.get("pending_trials", 0) or 0)
+                heartbeat_max_workers = int(heartbeat.get("max_workers", stage1_max_workers or 1) or 1)
+                heartbeat_target_inflight = int(
+                    heartbeat.get("target_inflight", stage1_target_inflight or heartbeat_max_workers) or heartbeat_max_workers
+                )
+                stage1_active_workers_estimate = int(heartbeat.get("active_workers_estimate", pending_trials) or 0)
+                stage1_scheduler_mode = heartbeat.get("scheduler_mode")
+                stage1_underfilled = bool(heartbeat.get("underfilled"))
+                stage1_underfilled_reason = heartbeat.get("underfilled_reason")
                 event = heartbeat.get("event")
                 subphase = "stage1_optuna_search"
                 normalized_completed = completed_trials
@@ -743,10 +759,25 @@ def main() -> None:
                         int(stage1_state.get("optuna_trials_completed", 0) or 0),
                         normalized_completed,
                     )
+                    stage1_state["timing_count"] = int(stage1_state.get("timing_count", 0) or 0) + 1
+                    stage1_state["trial_runtime_sum_s"] = float(stage1_state.get("trial_runtime_sum_s", 0.0) or 0.0) + float(
+                        heartbeat.get("trial_runtime_s", 0.0) or 0.0
+                    )
+                    stage1_state["context_build_sum_s"] = float(stage1_state.get("context_build_sum_s", 0.0) or 0.0) + float(
+                        heartbeat.get("replay_context_build_s", 0.0) or 0.0
+                    )
+                    stage1_state["replay_run_sum_s"] = float(stage1_state.get("replay_run_sum_s", 0.0) or 0.0) + float(
+                        heartbeat.get("event_publish_run_s", 0.0) or 0.0
+                    )
+                    stage1_state["cache_hit_sum"] = float(stage1_state.get("cache_hit_sum", 0.0) or 0.0) + float(
+                        heartbeat.get("cache_hit", 0.0) or 0.0
+                    )
+                timing_count = int(stage1_state.get("timing_count", 0) or 0)
                 _update_status(
                     status_path,
                     phase=subphase,
                     status="running",
+                    stage1_optuna_trials_total=optuna_trials,
                     optuna_trials_completed=(
                         int(stage1_state.get("optuna_trials_completed", 0) or 0)
                         if subphase != "stage1_optuna_search"
@@ -757,6 +788,33 @@ def main() -> None:
                     authoritative_verdict_execution_mode="5m_enabled",
                     stage1_current_trial=current_trial,
                     stage1_last_trial_at=_ts() if heartbeat.get("event") == "trial_completed" else None,
+                    stage1_pending_trials=pending_trials if subphase == "stage1_optuna_search" else None,
+                    stage1_max_workers=heartbeat_max_workers if subphase == "stage1_optuna_search" else None,
+                    stage1_target_inflight=heartbeat_target_inflight if subphase == "stage1_optuna_search" else None,
+                    stage1_active_workers_estimate=stage1_active_workers_estimate if subphase == "stage1_optuna_search" else None,
+                    stage1_scheduler_mode=stage1_scheduler_mode if subphase == "stage1_optuna_search" else None,
+                    stage1_underfilled=stage1_underfilled if subphase == "stage1_optuna_search" else None,
+                    stage1_underfilled_reason=stage1_underfilled_reason if subphase == "stage1_optuna_search" else None,
+                    stage1_avg_trial_runtime_s=(
+                        round(float(stage1_state.get("trial_runtime_sum_s", 0.0) or 0.0) / timing_count, 4)
+                        if subphase == "stage1_optuna_search" and timing_count > 0
+                        else None
+                    ),
+                    stage1_avg_context_build_s=(
+                        round(float(stage1_state.get("context_build_sum_s", 0.0) or 0.0) / timing_count, 4)
+                        if subphase == "stage1_optuna_search" and timing_count > 0
+                        else None
+                    ),
+                    stage1_avg_replay_run_s=(
+                        round(float(stage1_state.get("replay_run_sum_s", 0.0) or 0.0) / timing_count, 4)
+                        if subphase == "stage1_optuna_search" and timing_count > 0
+                        else None
+                    ),
+                    stage1_cache_hit_rate=(
+                        round(float(stage1_state.get("cache_hit_sum", 0.0) or 0.0) / timing_count, 4)
+                        if subphase == "stage1_optuna_search" and timing_count > 0
+                        else None
+                    ),
                     stage1_best_value_so_far=heartbeat.get("best_value_so_far"),
                     stage1_best_params_so_far=heartbeat.get("best_params_so_far"),
                     stage1_runtime_s=runtime_s,
@@ -869,6 +927,7 @@ def main() -> None:
                     seed_trials=seed_trials,
                     stage1_parallel_mode=stage1_parallel_mode,
                     stage1_max_workers=stage1_max_workers,
+                    stage1_target_inflight=stage1_target_inflight,
                     stage1_batch_size=stage1_batch_size,
                 )
                 if len(result) == 2:
@@ -1175,6 +1234,7 @@ def main() -> None:
             phase="stage1_search",
             status="running",
             optuna_trials_completed=int(stage1_payload["search_status"]["optuna_trials_completed"]),
+            stage1_optuna_trials_total=optuna_trials,
             rl_episodes_completed=int(stage1_payload["search_status"]["rl_episodes_completed"]),
             liquidation_in_search=stage1_payload["search_status"].get("liquidation_in_search"),
             liquidation_blocked_by=stage1_payload["search_status"].get("liquidation_blocked_by"),
@@ -1229,21 +1289,80 @@ def main() -> None:
                 "total": 0,
                 "last_progress_at": stage2_started_at,
                 "last_unit": None,
+                "current_subphase": "stage2_prepare_variants",
+                "subphase_started_at": stage2_started_at,
             }
+
+            stage2_budgets = {
+                "smoke": {
+                    "total": 600.0,
+                    "subphases": {
+                        "stage2_prepare_variants": 240.0,
+                        "stage2_compare_windows": 180.0,
+                        "stage2_compare_validation": 180.0,
+                        "stage2_rank_variants": 120.0,
+                        "stage2_write_artifacts": 120.0,
+                    },
+                    "no_progress": {
+                        "stage2_prepare_variants": 240.0,
+                        "stage2_compare_windows": 180.0,
+                        "stage2_compare_validation": 180.0,
+                        "stage2_rank_variants": 120.0,
+                        "stage2_write_artifacts": 120.0,
+                    },
+                },
+                "fast": {
+                    "total": 3600.0,
+                    "subphases": {
+                        "stage2_prepare_variants": 1200.0,
+                        "stage2_compare_windows": 900.0,
+                        "stage2_compare_validation": 900.0,
+                        "stage2_rank_variants": 300.0,
+                        "stage2_write_artifacts": 300.0,
+                    },
+                    "no_progress": {
+                        "stage2_prepare_variants": 600.0,
+                        "stage2_compare_windows": 300.0,
+                        "stage2_compare_validation": 300.0,
+                        "stage2_rank_variants": 180.0,
+                        "stage2_write_artifacts": 180.0,
+                    },
+                },
+                "high": {
+                    "total": 3600.0,
+                    "subphases": {
+                        "stage2_prepare_variants": 1800.0,
+                        "stage2_compare_windows": 1800.0,
+                        "stage2_compare_validation": 1800.0,
+                        "stage2_rank_variants": 600.0,
+                        "stage2_write_artifacts": 600.0,
+                    },
+                    "no_progress": {
+                        "stage2_prepare_variants": 900.0,
+                        "stage2_compare_windows": 600.0,
+                        "stage2_compare_validation": 600.0,
+                        "stage2_rank_variants": 300.0,
+                        "stage2_write_artifacts": 300.0,
+                    },
+                },
+            }
+            budget_key = "smoke" if args.budget == "smoke" else ("high" if args.budget == "high" else "fast")
 
             def _stage2_timeout_check() -> None:
                 now = datetime.now(UTC).timestamp()
-                total_timeout = 600.0 if args.budget == "smoke" else 3600.0
-                current_subphase = (_read_json(status_path) or {}).get("stage2_subphase")
-                if args.budget == "smoke":
-                    no_progress_timeout = 240.0 if current_subphase == "stage2_prepare_variants" else 180.0
-                else:
-                    no_progress_timeout = 900.0
+                current_subphase = stage2_state.get("current_subphase") or (_read_json(status_path) or {}).get("stage2_subphase")
+                total_timeout = float(stage2_budgets[budget_key]["total"])
+                subphase_timeout = float(stage2_budgets[budget_key]["subphases"].get(current_subphase, total_timeout))
+                no_progress_timeout = float(stage2_budgets[budget_key]["no_progress"].get(current_subphase, subphase_timeout))
                 if (now - stage2_started_at) > total_timeout:
                     raise SearchStageTimeoutError("stage2_total_timeout")
+                if (now - float(stage2_state.get("subphase_started_at") or stage2_started_at)) > subphase_timeout:
+                    raise SearchStageTimeoutError(
+                        f"{current_subphase}_total_timeout: last_unit={stage2_state['last_unit']}"
+                    )
                 if (now - stage2_state["last_progress_at"]) > no_progress_timeout:
                     raise SearchStageTimeoutError(
-                        f"stage2_no_progress_timeout: subphase={( _read_json(status_path) or {}).get('stage2_subphase')} "
+                        f"{current_subphase}_no_progress_timeout: subphase={( _read_json(status_path) or {}).get('stage2_subphase')} "
                         f"last_unit={stage2_state['last_unit']}"
                     )
 
@@ -1261,19 +1380,32 @@ def main() -> None:
                 elif event in {
                     "stage2_compare_windows_started",
                     "comparison_window_completed",
-                    "comparison_validation_completed",
                 }:
                     subphase = "stage2_compare_windows"
+                elif event in {
+                    "comparison_validation_started",
+                    "comparison_validation_window_train_started",
+                    "comparison_validation_window_train_completed",
+                    "comparison_validation_window_test_started",
+                    "comparison_validation_window_test_completed",
+                    "comparison_validation_completed",
+                }:
+                    subphase = "stage2_compare_validation"
                 elif event in {"comparison_ranking_completed", "stage2_rank_variants_completed"}:
                     subphase = "stage2_rank_variants"
                 elif event in {"stage2_write_artifacts_started", "stage2_write_artifacts_completed"}:
                     subphase = "stage2_write_artifacts"
 
+                now_ts = datetime.now(UTC).timestamp()
+                if stage2_state.get("current_subphase") != subphase:
+                    stage2_state["current_subphase"] = subphase
+                    stage2_state["subphase_started_at"] = now_ts
+
                 completed = int(heartbeat.get("completed_units", stage2_state["completed"]) or 0)
                 total = int(heartbeat.get("total_units", stage2_state["total"]) or 0)
                 stage2_state["completed"] = completed
                 stage2_state["total"] = total
-                stage2_state["last_progress_at"] = datetime.now(UTC).timestamp()
+                stage2_state["last_progress_at"] = now_ts
                 stage2_state["last_unit"] = (
                     heartbeat.get("unit")
                     or heartbeat.get("window_label")
@@ -1289,6 +1421,24 @@ def main() -> None:
                     stage2_progress_total=total,
                     stage2_last_progress_at=_ts(),
                     stage2_last_completed_unit=stage2_state["last_unit"],
+                    stage2_compare_window_units_completed=heartbeat.get(
+                        "compare_window_units_completed",
+                        heartbeat.get("window_units_completed"),
+                    ),
+                    stage2_compare_window_units_total=heartbeat.get(
+                        "compare_window_units_total",
+                        heartbeat.get("window_units_total"),
+                    ),
+                    stage2_compare_validation_units_completed=heartbeat.get(
+                        "compare_validation_units_completed",
+                        heartbeat.get("validation_units_completed"),
+                    ),
+                    stage2_compare_validation_units_total=heartbeat.get(
+                        "compare_validation_units_total",
+                        heartbeat.get("validation_units_total"),
+                    ),
+                    stage2_compare_workers=heartbeat.get("compare_workers"),
+                    stage2_compare_validation_workers=heartbeat.get("validation_workers"),
                     stage2_failure_reason=None,
                     full_training_allowed=False,
                     full_training_decision="defer_full_training",

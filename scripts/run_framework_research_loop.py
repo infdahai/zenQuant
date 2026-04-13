@@ -34,6 +34,22 @@ def _write_json(path: Path, payload: Any) -> None:
     path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
 
 
+def _read_seed_trials(path: Path | None) -> list[dict[str, Any]]:
+    if path is None:
+        return []
+    payload = _read_json(path)
+    if payload is None:
+        raise ValueError(f"initial_seed_trials_file_not_found:{path}")
+    if not isinstance(payload, list):
+        raise ValueError("initial_seed_trials_file must contain a JSON list")
+    resolved: list[dict[str, Any]] = []
+    for item in payload:
+        if not isinstance(item, dict):
+            raise ValueError("initial_seed_trials_file entries must be JSON objects")
+        resolved.append(dict(item))
+    return resolved
+
+
 def _append_log(path: Path, message: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("a", encoding="utf-8") as handle:
@@ -162,6 +178,7 @@ def _current_campaign_snapshot(run_dir: Path) -> dict[str, Any]:
         "phase": status.get("phase"),
         "status": status.get("status"),
         "optuna_trials_completed": status.get("optuna_trials_completed"),
+        "stage1_optuna_trials_total": status.get("stage1_optuna_trials_total"),
         "rl_episodes_completed": status.get("rl_episodes_completed"),
         "rl_episodes_requested": status.get("rl_episodes_requested"),
         "stage1_runtime_s": status.get("stage1_runtime_s"),
@@ -172,10 +189,29 @@ def _current_campaign_snapshot(run_dir: Path) -> dict[str, Any]:
         "stage1_requested_steps": status.get("stage1_requested_steps"),
         "stage1_best_value_so_far": status.get("stage1_best_value_so_far"),
         "stage1_subphase": status.get("stage1_subphase"),
+        "stage1_pending_trials": status.get("stage1_pending_trials"),
+        "stage1_max_workers": status.get("stage1_max_workers"),
+        "stage1_target_inflight": status.get("stage1_target_inflight"),
+        "stage1_active_workers_estimate": status.get("stage1_active_workers_estimate"),
+        "stage1_scheduler_mode": status.get("stage1_scheduler_mode"),
+        "stage1_underfilled": status.get("stage1_underfilled"),
+        "stage1_underfilled_reason": status.get("stage1_underfilled_reason"),
+        "stage1_underfilled_started_at": status.get("stage1_underfilled_started_at"),
+        "stage1_underfilled_duration_s": status.get("stage1_underfilled_duration_s"),
+        "stage1_avg_trial_runtime_s": status.get("stage1_avg_trial_runtime_s"),
+        "stage1_avg_context_build_s": status.get("stage1_avg_context_build_s"),
+        "stage1_avg_replay_run_s": status.get("stage1_avg_replay_run_s"),
+        "stage1_cache_hit_rate": status.get("stage1_cache_hit_rate"),
         "stage2_subphase": status.get("stage2_subphase"),
         "stage2_progress_completed": status.get("stage2_progress_completed"),
         "stage2_progress_total": status.get("stage2_progress_total"),
         "stage2_last_completed_unit": status.get("stage2_last_completed_unit"),
+        "stage2_compare_window_units_completed": status.get("stage2_compare_window_units_completed"),
+        "stage2_compare_window_units_total": status.get("stage2_compare_window_units_total"),
+        "stage2_compare_validation_units_completed": status.get("stage2_compare_validation_units_completed"),
+        "stage2_compare_validation_units_total": status.get("stage2_compare_validation_units_total"),
+        "stage2_compare_workers": status.get("stage2_compare_workers"),
+        "stage2_compare_validation_workers": status.get("stage2_compare_validation_workers"),
         "failure_reason": status.get("failure_reason"),
         "blocked_by": status.get("blocked_by"),
         "full_training_allowed": status.get("full_training_allowed"),
@@ -270,7 +306,9 @@ def _cpu_expected_mode(*, budget: str | None, phase: str | None, stage2_subphase
     if phase == "stage2_full_verdict" and stage2_subphase == "stage2_prepare_variants":
         return "parallel_expected" if budget in {"fast", "high"} else "single_core_expected"
     if phase == "stage2_full_verdict" and stage2_subphase == "stage2_compare_windows":
-        return "single_core_expected"
+        return "parallel_expected" if budget in {"fast", "high"} else "single_core_expected"
+    if phase == "stage2_full_verdict" and stage2_subphase == "stage2_compare_validation":
+        return "parallel_expected" if budget in {"fast", "high"} else "single_core_expected"
     return "single_core_expected"
 
 
@@ -342,6 +380,17 @@ def _write_training_monitor(loop_dir: Path) -> dict[str, Any]:
     stage1_total = _safe_int(snapshot.get("stage1_progress_total"))
     stage2_completed = _safe_int(snapshot.get("stage2_progress_completed"))
     stage2_total = _safe_int(snapshot.get("stage2_progress_total"))
+    compare_window_units_completed = _safe_int(snapshot.get("stage2_compare_window_units_completed"))
+    compare_window_units_total = _safe_int(snapshot.get("stage2_compare_window_units_total"))
+    compare_validation_units_completed = _safe_int(snapshot.get("stage2_compare_validation_units_completed"))
+    compare_validation_units_total = _safe_int(snapshot.get("stage2_compare_validation_units_total"))
+    optuna_trials_total = _safe_int(snapshot.get("stage1_optuna_trials_total") or snapshot.get("optuna_trials_requested"))
+    stage1_pending_trials = _safe_int(snapshot.get("stage1_pending_trials"))
+    stage1_max_workers = _safe_int(snapshot.get("stage1_max_workers"))
+    stage1_target_inflight = _safe_int(snapshot.get("stage1_target_inflight"))
+    stage1_active_workers_estimate = _safe_int(snapshot.get("stage1_active_workers_estimate"))
+    underfilled_started_at = snapshot.get("stage1_underfilled_started_at")
+    underfilled_duration_s = _safe_float(snapshot.get("stage1_underfilled_duration_s"))
     stage1_runtime_s = _safe_float(loop_status.get("stage1_runtime_s"))
     stage2_runtime_s = _safe_float(loop_status.get("stage2_runtime_s"))
     current_phase = str(loop_status.get("current_phase") or "")
@@ -375,10 +424,41 @@ def _write_training_monitor(loop_dir: Path) -> dict[str, Any]:
     stalled_reason = None
     if stalled:
         stalled_reason = f"heartbeat_stale:{int(freshness or 0)}s"
-    cpu_underutilized = expected_mode == "parallel_expected" and cpu_utilization_estimate < 120.0
+    stage1_work_conserving = current_phase.startswith("stage1") and snapshot.get("stage1_scheduler_mode") == "work_conserving"
+    cpu_underutilized = False if stage1_work_conserving else (
+        expected_mode == "parallel_expected" and cpu_utilization_estimate < 120.0
+    )
     cpu_underutilized_reason = None
     if cpu_underutilized:
-        cpu_underutilized_reason = f"{current_phase or 'unknown_phase'}:{snapshot.get('stage2_subphase') or snapshot.get('stage1_subphase') or 'unknown_subphase'}"
+        cpu_underutilized_reason = (
+            f"{current_phase or 'unknown_phase'}:{snapshot.get('stage2_subphase') or snapshot.get('stage1_subphase') or 'unknown_subphase'}"
+        )
+    if stage1_work_conserving:
+        sustained_underfilled_candidate = (
+            stage1_target_inflight >= 2
+            and stage1_completed < stage1_total
+            and stage1_pending_trials <= max(0, stage1_target_inflight - 2)
+            and stage1_active_workers_estimate <= max(0, stage1_target_inflight - 2)
+            and cpu_utilization_estimate < max(120.0, 80.0 * stage1_target_inflight)
+            and not stalled
+        )
+        started_at = underfilled_started_at
+        if sustained_underfilled_candidate and not started_at:
+            started_at = _ts()
+        if not sustained_underfilled_candidate:
+            started_at = None
+            underfilled_duration_s = 0.0
+        elif started_at:
+            underfilled_duration_s = _seconds_between(started_at, _ts()) or 0.0
+        if (
+            sustained_underfilled_candidate
+            and underfilled_duration_s >= 15.0
+        ):
+            cpu_underutilized = True
+            cpu_underutilized_reason = "stage1_parallelism_not_materializing"
+        snapshot["stage1_underfilled_candidate"] = sustained_underfilled_candidate
+        snapshot["stage1_underfilled_started_at"] = started_at
+        snapshot["stage1_underfilled_duration_s"] = round(underfilled_duration_s, 2)
     alerts: list[str] = []
     if stalled and stalled_reason is not None:
         alerts.append(stalled_reason)
@@ -402,11 +482,38 @@ def _write_training_monitor(loop_dir: Path) -> dict[str, Any]:
         "stage1_runtime_s": loop_status.get("stage1_runtime_s"),
         "stage2_runtime_s": loop_status.get("stage2_runtime_s"),
         "optuna_trials_completed": snapshot.get("optuna_trials_completed"),
-        "optuna_trials_total": snapshot.get("stage1_progress_total"),
+        "optuna_trials_total": optuna_trials_total,
         "rl_steps_completed": snapshot.get("stage1_actual_steps") or snapshot.get("rl_episodes_completed"),
         "rl_steps_requested": snapshot.get("stage1_requested_steps") or snapshot.get("rl_episodes_requested"),
+        "stage1_pending_trials": stage1_pending_trials,
+        "stage1_max_workers": stage1_max_workers,
+        "stage1_target_inflight": stage1_target_inflight,
+        "stage1_active_workers_estimate": stage1_active_workers_estimate,
+        "stage1_scheduler_mode": snapshot.get("stage1_scheduler_mode"),
+        "stage1_underfilled": bool(snapshot.get("stage1_underfilled")),
+        "stage1_underfilled_reason": snapshot.get("stage1_underfilled_reason"),
+        "stage1_underfilled_candidate": bool(snapshot.get("stage1_underfilled_candidate")),
+        "stage1_underfilled_started_at": snapshot.get("stage1_underfilled_started_at"),
+        "stage1_underfilled_duration_s": snapshot.get("stage1_underfilled_duration_s"),
+        "stage1_avg_trial_runtime_s": snapshot.get("stage1_avg_trial_runtime_s"),
+        "stage1_avg_context_build_s": snapshot.get("stage1_avg_context_build_s"),
+        "stage1_avg_replay_run_s": snapshot.get("stage1_avg_replay_run_s"),
+        "stage1_cache_hit_rate": snapshot.get("stage1_cache_hit_rate"),
         "stage2_progress_completed": snapshot.get("stage2_progress_completed"),
         "stage2_progress_total": snapshot.get("stage2_progress_total"),
+        "compare_window_units_completed": compare_window_units_completed,
+        "compare_window_units_total": compare_window_units_total,
+        "compare_validation_units_completed": compare_validation_units_completed,
+        "compare_validation_units_total": compare_validation_units_total,
+        "stage2_compare_workers": snapshot.get("stage2_compare_workers"),
+        "stage2_compare_validation_workers": snapshot.get("stage2_compare_validation_workers"),
+        "stage2_subphase_eta_seconds": _eta_seconds(
+            completed=stage2_completed,
+            total=stage2_total,
+            runtime_s=stage2_runtime_s,
+        )
+        if current_phase == "stage2_full_verdict"
+        else None,
         "round_eta_seconds": round_eta_seconds,
         "campaign_eta_seconds": round_eta_seconds,
         "heartbeat_freshness_seconds": freshness,
@@ -416,6 +523,12 @@ def _write_training_monitor(loop_dir: Path) -> dict[str, Any]:
         "cpu_utilization_estimate": cpu_utilization_estimate,
         "cpu_underutilized": cpu_underutilized,
         "cpu_underutilized_reason": cpu_underutilized_reason,
+        "stage2_compare_stalled": bool(
+            stalled and snapshot.get("stage2_subphase") in {"stage2_compare_windows", "stage2_compare_validation"}
+        ),
+        "stage2_compare_stalled_reason": (
+            stalled_reason if snapshot.get("stage2_subphase") in {"stage2_compare_windows", "stage2_compare_validation"} else None
+        ),
         "active_process_count": active_process_count,
         "slowest_subphase": snapshot.get("stage2_subphase") or snapshot.get("stage1_subphase"),
         "best_train_score_so_far": round(best_train_score_so_far, 4),
@@ -748,7 +861,11 @@ def main() -> None:
     parser.add_argument("--explore-ratio", type=float, default=0.4)
     parser.add_argument("--poll-interval", type=float, default=5.0)
     parser.add_argument("--resume", action="store_true")
+    parser.add_argument("--initial-seed-trials-file", default=None)
     args = parser.parse_args()
+
+    if args.resume and args.initial_seed_trials_file:
+        raise SystemExit("--resume and --initial-seed-trials-file are mutually exclusive")
 
     loop_dir = Path(args.output_dir)
     campaign_root = Path(args.campaign_output_root) if args.campaign_output_root else loop_dir / "runs"
@@ -805,6 +922,11 @@ def main() -> None:
                 mode=_mode_for_budget(current_budget),
             )
             adaptation_policy = str(previous_record.get("next_adaptation_policy", adaptation_policy))
+        elif args.initial_seed_trials_file:
+            seed_trials = project_seed_trials_to_mode(
+                _read_seed_trials(Path(args.initial_seed_trials_file)),
+                mode=_mode_for_budget(current_budget),
+            )
 
         _update_loop_status(
             loop_status_path,

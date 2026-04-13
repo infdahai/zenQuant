@@ -777,6 +777,39 @@ class SearchReportSerializationTests(unittest.TestCase):
         self.assertIn("train_candidate_diagnostics", diagnostics)
         run_stage.assert_called_once()
 
+    def test_run_optuna_search_passes_stage1_target_inflight(self) -> None:
+        @dataclass
+        class FakeSweep:
+            total_combinations: int
+            results: list[dict]
+            top_n: list[dict]
+            runtime_s: float
+
+        with patch(
+            "zenquant.research.framework_search.run_search_stage",
+            return_value=FakeSweep(
+                total_combinations=1,
+                results=[],
+                top_n=[{"params": {"w_momentum": 0.45}, "metrics": {"sharpe": 1.2, "score": 1.2}}],
+                runtime_s=0.1,
+            ),
+        ) as run_stage:
+            evaluator = FrameworkEvaluator(HistoricalBacktestConfig(), split_spec=default_btc_split_spec())
+            run_optuna_search(
+                evaluator,
+                n_trials=5,
+                stage1_parallel_mode="cpu_parallel",
+                stage1_max_workers=6,
+                stage1_target_inflight=6,
+                stage1_batch_size=4,
+            )
+
+        config = run_stage.call_args.args[0]
+        self.assertEqual(config.stage1_parallel_mode, "cpu_parallel")
+        self.assertEqual(config.stage1_max_workers, 6)
+        self.assertEqual(config.stage1_target_inflight, 6)
+        self.assertEqual(config.stage1_batch_size, 4)
+
     def test_final_report_passes_smoke_minimal_comparison_mode_and_heartbeat(self) -> None:
         summary = CandidateSummary(
             variant="current",
@@ -864,6 +897,63 @@ class SearchReportSerializationTests(unittest.TestCase):
         self.assertIn(4, prepare_units)
         self.assertTrue(any(unit > 4 for unit in prepare_units))
         self.assertEqual(report.evaluation_role, "development")
+
+    def test_final_report_uses_fast_compare_window_profile_and_workers(self) -> None:
+        summary = CandidateSummary(
+            variant="current",
+            robust_score=1.0,
+            selection_split="dev",
+            dev_sharpe=1.0,
+            dev_pnl=10.0,
+            dev_drawdown=0.1,
+            avg_dev_sharpe=1.0,
+            avg_dev_ratio=1.0,
+            worst_dev_sharpe=0.5,
+            weak_window_sharpe=0.2,
+            negative_dev_worst_windows=0,
+            promotion_candidate=False,
+            promotion_failure_reason="avg_test_sharpe",
+        )
+        build_calls: list[dict[str, object]] = []
+
+        def _fake_build(*_args, **kwargs):
+            build_calls.append(kwargs)
+            return {
+                "report_mode": kwargs["report_mode"],
+                "comparison_compute_mode": kwargs["comparison_compute_mode"],
+                "window_reports": [],
+                "validation_reports": [],
+            }
+
+        with (
+            patch.object(FrameworkEvaluator, "_evaluate_variant", return_value=summary),
+            patch("zenquant.research.framework_search._build_comparison_payload", side_effect=_fake_build),
+        ):
+            evaluator = FrameworkEvaluator(HistoricalBacktestConfig(), split_spec=default_btc_split_spec())
+            self.assertEqual(
+                [window.label for window in evaluator._fast_dev_compare_windows[:2]],
+                ["dev", "2023-08"],
+            )
+            evaluator.final_report(
+                optuna_params={"w_momentum": 0.3},
+                rl_params=None,
+                search_status={"stage1_execution_mode": "1h_context_only"},
+                full=False,
+                evaluate_test=False,
+                include_comparison_payload=True,
+                comparison_compute_mode="full",
+                evaluation_role="development",
+                test_access_allowed=False,
+                dev_gate_used_this_round=True,
+            )
+
+        self.assertEqual(len(build_calls), 1)
+        self.assertEqual(len(build_calls[0]["windows"]), len(evaluator._fast_dev_compare_windows))
+        self.assertEqual(build_calls[0]["window_workers"], evaluator._compute_profiles["fast"]["compare_workers"])
+        self.assertEqual(
+            build_calls[0]["validation_workers"],
+            evaluator._compute_profiles["fast"]["compare_validation_workers"],
+        )
 
     def test_development_report_rejects_test_evaluation(self) -> None:
         evaluator = FrameworkEvaluator(HistoricalBacktestConfig(), split_spec=default_btc_split_spec())

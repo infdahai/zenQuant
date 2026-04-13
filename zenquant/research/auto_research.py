@@ -44,6 +44,7 @@ from typing import Any
 from zenquant.domain import Timeframe
 from zenquant.historical import HistoricalBacktest, HistoricalBacktestConfig
 from zenquant.historical.perturbation import PerturbationConfig
+from zenquant.historical.replay import ReplayContext, _build_replay_context
 from zenquant.research.framework_params import (
     build_execution_config as _shared_build_execution_config,
 )
@@ -80,6 +81,9 @@ from .splits import DatasetSplitSpec, default_btc_split_spec, split_summary_json
 
 class SearchStageTimeoutError(RuntimeError):
     """Raised when a search stage exceeds its allowed runtime budget."""
+
+
+_WORKER_REPLAY_CONTEXT_CACHE: dict[tuple[Any, ...], ReplayContext] = {}
 
 
 @dataclass(slots=True)
@@ -151,6 +155,7 @@ class CampaignConfig:
     stage_total_timeout_s: float | None = None
     stage1_parallel_mode: str = "serial"
     stage1_max_workers: int | None = None
+    stage1_target_inflight: int | None = None
     stage1_batch_size: int = 1
 
 
@@ -221,6 +226,7 @@ def _run_backtest_worker(
     ],
 ) -> tuple[dict[str, Any], dict[str, float]]:
     """Run one backtest in a subprocess.  Module-level for pickling."""
+    worker_started_at = time.time()
     (
         params,
         root_dir,
@@ -242,6 +248,36 @@ def _run_backtest_worker(
     signal_weight_overrides = _shared_build_signal_weight_overrides(params)
     liquidation_data_enabled, state_liquidation_overlay_enabled = _shared_build_replay_toggles(params)
     perturbation = PerturbationConfig(**perturbation_dict) if perturbation_dict else None
+    context_key = (
+        root_dir,
+        symbol,
+        execution_timeframe,
+        bias_timeframe,
+        direction_timeframe,
+        context_timeframe,
+        start_ns,
+        end_ns,
+        liquidation_data_enabled,
+    )
+    replay_context = _WORKER_REPLAY_CONTEXT_CACHE.get(context_key)
+    context_build_started_at = time.time()
+    cache_hit = replay_context is not None
+    if replay_context is None:
+        replay_context = _build_replay_context(
+            HistoricalBacktestConfig(
+                root_dir=Path(root_dir),
+                symbol=symbol,
+                execution_timeframe=resolved_execution_timeframe,
+                bias_timeframe=Timeframe(bias_timeframe),
+                direction_timeframe=Timeframe(direction_timeframe),
+                context_timeframe=Timeframe(context_timeframe) if context_timeframe else None,
+                start_ns=start_ns,
+                end_ns=end_ns,
+                liquidation_data_enabled=liquidation_data_enabled,
+            )
+        )
+        _WORKER_REPLAY_CONTEXT_CACHE[context_key] = replay_context
+    replay_context_build_s = time.time() - context_build_started_at
     config = HistoricalBacktestConfig(
         root_dir=Path(root_dir),
         symbol=symbol,
@@ -260,9 +296,13 @@ def _run_backtest_worker(
         liquidation_data_enabled=liquidation_data_enabled,
         state_liquidation_overlay_enabled=state_liquidation_overlay_enabled,
         perturbation=perturbation,
+        replay_context=replay_context,
     )
+    build_done_at = time.time()
     bt = HistoricalBacktest(config)
+    run_started_at = time.time()
     result = bt.run()
+    run_finished_at = time.time()
     m = result.metrics
     return params, {
         "sharpe": m.sharpe,
@@ -273,6 +313,14 @@ def _run_backtest_worker(
         "profit_factor": m.profit_factor,
         "trade_count": m.trade_count,
         "fee_drag_pct": m.fee_drag_pct,
+        "cache_hit": 1.0 if cache_hit else 0.0,
+        "replay_context_build_s": round(replay_context_build_s, 6),
+        "store_load_s": round(replay_context_build_s, 6),
+        "event_load_s": round(replay_context_build_s, 6),
+        "event_publish_run_s": round(run_finished_at - run_started_at, 6),
+        "metrics_build_s": round(max(0.0, run_finished_at - run_started_at), 6),
+        "trial_runtime_s": round(run_finished_at - worker_started_at, 6),
+        "config_build_s": round(build_done_at - context_build_started_at - replay_context_build_s, 6),
     }
 
 
@@ -564,7 +612,13 @@ class Campaign:
 
         if self._config.stage1_parallel_mode == "cpu_parallel" and n_trials > 1:
             max_workers = self._config.stage1_max_workers or self._workers
-            batch_size = max(1, min(self._config.stage1_batch_size, max_workers))
+            target_inflight = max(
+                1,
+                min(
+                    self._config.stage1_target_inflight or max_workers,
+                    max_workers,
+                ),
+            )
             completed_trials = 0
             launched_trials = 0
 
@@ -578,7 +632,10 @@ class Campaign:
                             f"stage1_optuna_timeout: no completed result within {self._config.stage_total_timeout_s:.0f}s"
                         )
 
-                    while launched_trials < n_trials and len(pending) < batch_size:
+                    while (
+                        launched_trials < n_trials
+                        and len(pending) < target_inflight
+                    ):
                         trial = study.ask()
                         trial_number = trial.number + 1
                         started_trial_at = time.time()
@@ -589,6 +646,17 @@ class Campaign:
                                 completed_trials=completed_trials,
                                 total_trials=n_trials,
                                 runtime_s=started_trial_at - start,
+                                pending_trials=len(pending),
+                                max_workers=max_workers,
+                                target_inflight=target_inflight,
+                                active_workers_estimate=len(pending),
+                                scheduler_mode="work_conserving",
+                                underfilled=launched_trials < n_trials and len(pending) < target_inflight,
+                                underfilled_reason=(
+                                    "work_available_below_target_inflight"
+                                    if launched_trials < n_trials and len(pending) < target_inflight
+                                    else None
+                                ),
                             )
                         params: dict[str, Any] = {}
                         for key, values in all_params.items():
@@ -653,6 +721,17 @@ class Campaign:
                                 best_value_so_far=best_value,
                                 best_params_so_far=best_params,
                                 runtime_s=time.time() - start,
+                                pending_trials=len(pending),
+                                max_workers=max_workers,
+                                target_inflight=target_inflight,
+                                active_workers_estimate=len(pending),
+                                scheduler_mode="work_conserving",
+                                underfilled=launched_trials < n_trials and len(pending) < target_inflight,
+                                underfilled_reason=(
+                                    "work_available_below_target_inflight"
+                                    if launched_trials < n_trials and len(pending) < target_inflight
+                                    else None
+                                ),
                             )
         else:
             def _trial_callback(study: Any, trial: Any) -> None:

@@ -31,7 +31,9 @@ from zenquant.research.comparison import (
     default_variant_specs,
     default_walk_forward_windows,
     filtered_worst_period_windows,
+    fixed_2023_08_window,
     paulwei_risk_baseline,
+    split_window_spec,
 )
 from zenquant.research.framework_params import (
     baseline_anchor_seed_trials,
@@ -545,7 +547,14 @@ class FrameworkEvaluator:
         self._summary_cache: dict[tuple[str, bool, bool], CandidateSummary] = {}
         self._validation_pool: ProcessPoolExecutor | None = None
         self._validation_pool_workers = 1
-        self._dev_windows = default_comparison_windows(self._split_spec, "dev")
+        self._full_dev_compare_windows = default_comparison_windows(self._split_spec, "dev")
+        worst_dev_windows = filtered_worst_period_windows(self._split_spec, "dev")
+        self._fast_dev_compare_windows = [
+            split_window_spec(self._split_spec, "dev"),
+            fixed_2023_08_window(),
+            *([worst_dev_windows[-1]] if worst_dev_windows else []),
+        ]
+        self._dev_windows = list(self._full_dev_compare_windows)
         self._test_windows = [
             *default_comparison_windows(self._split_spec, "test"),
             *filtered_worst_period_windows(self._split_spec, "test"),
@@ -554,16 +563,44 @@ class FrameworkEvaluator:
         self._full_dev_wf_windows = default_walk_forward_windows(split_spec=self._split_spec, comparison_split="dev")
         cpu_budget = max(1, (os.cpu_count() or 2) - 2)
         self._compute_profiles = {
-            "smoke": {"workers": 1, "wf_windows": 0, "replay_timeout_s": 120.0},
-            "fast": {"workers": min(2, cpu_budget), "wf_windows": len(self._fast_dev_wf_windows), "replay_timeout_s": 180.0},
-            "high": {"workers": min(4, cpu_budget), "wf_windows": len(self._full_dev_wf_windows), "replay_timeout_s": 360.0},
+            "smoke": {
+                "workers": 1,
+                "wf_windows": 0,
+                "compare_windows": len(self._fast_dev_compare_windows),
+                "compare_workers": 1,
+                "compare_validation_workers": 1,
+                "compare_validation_leg_timeout_s": 90.0,
+                "compare_validation_variant_budget_s": 180.0,
+                "replay_timeout_s": 120.0,
+            },
+            "fast": {
+                "workers": min(2, cpu_budget),
+                "wf_windows": len(self._fast_dev_wf_windows),
+                "compare_windows": len(self._fast_dev_compare_windows),
+                "compare_workers": min(2, cpu_budget),
+                "compare_validation_workers": min(2, cpu_budget),
+                "compare_validation_leg_timeout_s": 180.0,
+                "compare_validation_variant_budget_s": 480.0,
+                "replay_timeout_s": 180.0,
+            },
+            "high": {
+                "workers": min(4, cpu_budget),
+                "wf_windows": len(self._full_dev_wf_windows),
+                "compare_windows": len(self._full_dev_compare_windows),
+                "compare_workers": min(4, cpu_budget),
+                "compare_validation_workers": min(4, cpu_budget),
+                "compare_validation_leg_timeout_s": 360.0,
+                "compare_validation_variant_budget_s": 1200.0,
+                "replay_timeout_s": 360.0,
+            },
         }
         self._current_variant = default_variant_specs()[0]
         self._paulwei_variant = default_variant_specs()[1]
         self._deribit_status = asdict(collect_deribit_status(base_config.options_dir, "BTC"))
         self._training_window_coverage = {
             "train_window": split_summary_json(self._split_spec)["windows"]["train"],
-            "dev_windows": [window.label for window in self._dev_windows],
+            "dev_windows": [window.label for window in self._full_dev_compare_windows],
+            "fast_dev_compare_windows": [window.label for window in self._fast_dev_compare_windows],
             "dev_walk_forward_windows": [window.label for window in self._full_dev_wf_windows],
             "test_windows": [window.label for window in self._test_windows],
         }
@@ -853,22 +890,36 @@ class FrameworkEvaluator:
         ]
         report_mode, report_degraded_due_to_memory = self._comparison_report_mode(
             variant_count=len([variant for variant in variants if variant is not None]),
-            window_count=len(self._dev_windows),
+            window_count=len(self._full_dev_compare_windows if full else self._fast_dev_compare_windows),
             walk_forward_window_count=len(self._full_dev_wf_windows if full else self._fast_dev_wf_windows),
         )
         comparison_payload: dict[str, Any] = {}
         if include_comparison_payload:
+            comparison_profile = self._compute_profiles["high" if full else ("smoke" if comparison_compute_mode == "smoke_minimal" else "fast")]
             if status_callback is not None:
-                status_callback(event="stage2_compare_windows_started")
+                status_callback(
+                    event="stage2_compare_windows_started",
+                    compare_workers=int(comparison_profile["compare_workers"]),
+                    validation_workers=int(comparison_profile["compare_validation_workers"]),
+                    window_units_total=len([variant for variant in variants if variant is not None])
+                    * len(self._full_dev_compare_windows if full else self._fast_dev_compare_windows),
+                    validation_units_total=len([variant for variant in variants if variant is not None])
+                    * len(self._full_dev_wf_windows if full else self._fast_dev_wf_windows)
+                    * 2,
+                )
             comparison_payload = _build_comparison_payload(
                 self._base_config,
                 variants=[variant for variant in variants if variant is not None],
-                windows=self._dev_windows,
+                windows=self._full_dev_compare_windows if full else self._fast_dev_compare_windows,
                 walk_forward_windows=self._full_dev_wf_windows if full else self._fast_dev_wf_windows,
                 split_spec=self._split_spec,
                 comparison_split="dev",
                 report_mode=report_mode,
                 comparison_compute_mode=comparison_compute_mode,
+                window_workers=int(comparison_profile["compare_workers"]),
+                validation_workers=int(comparison_profile["compare_validation_workers"]),
+                validation_leg_timeout_s=float(comparison_profile["compare_validation_leg_timeout_s"]),
+                validation_variant_budget_s=float(comparison_profile["compare_validation_variant_budget_s"]),
                 status_callback=status_callback,
             )
             comparison_payload["liquidation_readiness"] = dict(self._readiness)
@@ -1373,6 +1424,10 @@ def _build_comparison_payload(
     comparison_split: str,
     report_mode: str = "full_diagnostics",
     comparison_compute_mode: str = "full",
+    window_workers: int = 1,
+    validation_workers: int = 1,
+    validation_leg_timeout_s: float | None = None,
+    validation_variant_budget_s: float | None = None,
     status_callback: Any | None = None,
 ) -> dict[str, Any]:
     from zenquant.research.comparison import compare_variants
@@ -1386,6 +1441,10 @@ def _build_comparison_payload(
         comparison_split=comparison_split,
         report_mode=report_mode,
         comparison_compute_mode=comparison_compute_mode,
+        window_workers=window_workers,
+        validation_workers=validation_workers,
+        validation_leg_timeout_s=validation_leg_timeout_s,
+        validation_variant_budget_s=validation_variant_budget_s,
         status_callback=status_callback,
     )
 
@@ -1433,6 +1492,7 @@ def run_optuna_search(
     seed_trials: list[dict[str, Any]] | None = None,
     stage1_parallel_mode: str = "serial",
     stage1_max_workers: int | None = None,
+    stage1_target_inflight: int | None = None,
     stage1_batch_size: int = 1,
 ) -> tuple[dict[str, Any] | None, list[dict[str, Any]], dict[str, Any]]:
     try:
@@ -1480,6 +1540,7 @@ def run_optuna_search(
         stage_total_timeout_s=stage_total_timeout_s,
         stage1_parallel_mode=stage1_parallel_mode,
         stage1_max_workers=stage1_max_workers,
+        stage1_target_inflight=stage1_target_inflight,
         stage1_batch_size=stage1_batch_size,
     )
     sweep = run_search_stage(worker_config)
