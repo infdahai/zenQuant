@@ -307,9 +307,11 @@ class TestSearchSpace(unittest.TestCase):
             verbose=False,
         )
         captured: list[tuple[int | None, int | None]] = []
+        captured_modes: list[tuple[str | None, bool | None]] = []
 
         def fake_worker(args):
             captured.append((args[8], args[9]))
+            captured_modes.append((args[11], args[12]))
             return args[0], {
                 "sharpe": 1.0,
                 "sortino": 1.0,
@@ -332,6 +334,8 @@ class TestSearchSpace(unittest.TestCase):
         for start_ns, end_ns in captured:
             self.assertEqual(start_ns, config.split_spec.train.start_ns)
             self.assertEqual(end_ns, config.split_spec.train.end_ns)
+        self.assertTrue(captured_modes)
+        self.assertEqual(captured_modes[0], ("authoritative", False))
 
     def test_run_dev_validation_stage_uses_dev_windows_only(self) -> None:
         spec = default_btc_split_spec()
@@ -618,6 +622,16 @@ class TestSearchSpace(unittest.TestCase):
 
         class FakeResult:
             metrics = FakeMetrics()
+            terminated_early = True
+            termination_reason = "trade_count_too_low_for_processed_ratio"
+            processed_event_ratio = 0.75
+
+            def __init__(self) -> None:
+                self.profiling = {
+                    "event_loop_total_s": 1.1,
+                    "metrics_finalize_s": 0.2,
+                    "diagnostics_finalize_s": 0.0,
+                }
 
         class FakeBacktest:
             def __init__(self, _config) -> None:
@@ -664,6 +678,9 @@ class TestSearchSpace(unittest.TestCase):
         self.assertEqual(build_context.call_count, 1)
         self.assertEqual(first["cache_hit"], 0.0)
         self.assertEqual(second["cache_hit"], 1.0)
+        self.assertEqual(second["terminated_early"], 1.0)
+        self.assertEqual(second["processed_event_ratio"], 0.75)
+        self.assertEqual(second["event_loop_total_s"], 1.1)
 
 
 if __name__ == "__main__":
