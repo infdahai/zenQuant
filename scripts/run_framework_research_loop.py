@@ -206,6 +206,11 @@ def _current_campaign_snapshot(run_dir: Path) -> dict[str, Any]:
         "stage1_avg_metrics_finalize_s": status.get("stage1_avg_metrics_finalize_s"),
         "stage1_avg_diagnostics_finalize_s": status.get("stage1_avg_diagnostics_finalize_s"),
         "stage1_terminated_early_rate": status.get("stage1_terminated_early_rate"),
+        "stage1_search_mode": status.get("stage1_search_mode"),
+        "stage1_primary_optuna_trials_completed": status.get("stage1_primary_optuna_trials_completed"),
+        "stage1_primary_optuna_trials_total": status.get("stage1_primary_optuna_trials_total"),
+        "stage1_fallback_optuna_trials_completed": status.get("stage1_fallback_optuna_trials_completed"),
+        "stage1_fallback_optuna_trials_total": status.get("stage1_fallback_optuna_trials_total"),
         "rl_budget_mode": status.get("rl_budget_mode"),
         "rl_wall_clock_elapsed_s": status.get("rl_wall_clock_elapsed_s"),
         "rl_stop_reason": status.get("rl_stop_reason"),
@@ -230,6 +235,16 @@ def _current_campaign_snapshot(run_dir: Path) -> dict[str, Any]:
         "post_smoke_scenario": status.get("post_smoke_scenario"),
         "campaign_updated_at": status.get("updated_at"),
     }
+
+
+def _campaign_failed_authoritatively(snapshot: dict[str, Any]) -> bool:
+    return bool(
+        snapshot.get("status") == "failed"
+        and (
+            snapshot.get("failure_reason")
+            or snapshot.get("blocked_by")
+        )
+    )
 
 
 def _parse_ts(value: Any) -> datetime | None:
@@ -519,6 +534,11 @@ def _write_training_monitor(loop_dir: Path) -> dict[str, Any]:
         "stage1_avg_metrics_finalize_s": snapshot.get("stage1_avg_metrics_finalize_s"),
         "stage1_avg_diagnostics_finalize_s": snapshot.get("stage1_avg_diagnostics_finalize_s"),
         "stage1_terminated_early_rate": snapshot.get("stage1_terminated_early_rate"),
+        "stage1_search_mode": snapshot.get("stage1_search_mode"),
+        "stage1_primary_optuna_trials_completed": snapshot.get("stage1_primary_optuna_trials_completed"),
+        "stage1_primary_optuna_trials_total": snapshot.get("stage1_primary_optuna_trials_total"),
+        "stage1_fallback_optuna_trials_completed": snapshot.get("stage1_fallback_optuna_trials_completed"),
+        "stage1_fallback_optuna_trials_total": snapshot.get("stage1_fallback_optuna_trials_total"),
         "rl_budget_mode": snapshot.get("rl_budget_mode"),
         "rl_wall_clock_elapsed_s": snapshot.get("rl_wall_clock_elapsed_s"),
         "rl_stop_reason": snapshot.get("rl_stop_reason"),
@@ -734,6 +754,7 @@ def _launch_round(
     last_progress_log_at = 0.0
     last_progress_signature: tuple[Any, ...] | None = None
     stage2_started_at: float | None = None
+    authoritative_failure_snapshot: dict[str, Any] | None = None
     try:
         while True:
             snapshot = _current_campaign_snapshot(run_dir)
@@ -790,10 +811,47 @@ def _launch_round(
                 )
                 last_progress_signature = progress_signature
                 last_progress_log_at = now
+            if _campaign_failed_authoritatively(snapshot):
+                authoritative_failure_snapshot = snapshot
+                _update_loop_status(
+                    loop_status_path,
+                    current_round=round_index,
+                    max_rounds=max_rounds,
+                    current_budget=budget,
+                    current_run_dir=str(run_dir),
+                    current_phase=snapshot.get("phase"),
+                    current_status=snapshot.get("status"),
+                    current_blockers=snapshot.get("full_training_blockers"),
+                    current_scenario=snapshot.get("post_smoke_scenario"),
+                    adaptation_policy=adaptation_policy,
+                    seed_trial_count=len(seed_trials),
+                    current_campaign_pid=process.pid,
+                    round_runtime_s=round_runtime_s,
+                    stage1_runtime_s=stage1_runtime_s,
+                    stage2_runtime_s=stage2_runtime_s,
+                    loop_state="failed",
+                    stop_reason=f"campaign_round_failed:{round_index}",
+                )
+                _write_training_monitor(loop_status_path.parent)
+                _append_log(
+                    loop_log_path,
+                    (
+                        f"round_failed round={round_index} budget={budget} exit_code=1 "
+                        f"phase={snapshot.get('phase')} status={snapshot.get('status')}"
+                    ),
+                )
+                break
             if process.poll() is not None:
                 break
             time.sleep(max(1.0, float(args.poll_interval)))
 
+        if authoritative_failure_snapshot is not None and process.poll() is None:
+            process.terminate()
+            try:
+                process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait(timeout=5)
         exit_code = process.wait()
         final_report, stage1_payload, campaign_status = _load_round_artifacts(run_dir)
     finally:
@@ -806,14 +864,7 @@ def _launch_round(
                 process.wait(timeout=5)
         _release_lock(campaign_lock_path, owner_pid=process.pid)
     if exit_code != 0:
-        snapshot = _current_campaign_snapshot(run_dir)
-        _append_log(
-            loop_log_path,
-            (
-                f"round_failed round={round_index} budget={budget} exit_code={exit_code} "
-                f"phase={snapshot.get('phase')} status={snapshot.get('status')}"
-            ),
-        )
+        snapshot = authoritative_failure_snapshot or _current_campaign_snapshot(run_dir)
         _update_loop_status(
             loop_status_path,
             current_round=round_index,

@@ -86,6 +86,21 @@ class SearchStageTimeoutError(RuntimeError):
 _WORKER_REPLAY_CONTEXT_CACHE: dict[tuple[Any, ...], ReplayContext] = {}
 
 
+def _shutdown_pool_quickly(pool: ProcessPoolExecutor | None, futures: list[Any] | None = None) -> None:
+    if futures:
+        for future in futures:
+            try:
+                future.cancel()
+            except Exception:
+                pass
+    if pool is None:
+        return
+    try:
+        pool.shutdown(wait=False, cancel_futures=True)
+    except Exception:
+        pass
+
+
 @dataclass(slots=True)
 class SearchSpace:
     """Parameter search space definition.
@@ -560,13 +575,6 @@ class Campaign:
                 raise SearchStageTimeoutError(
                     f"stage1_optuna_timeout: no completed result within {self._config.stage_total_timeout_s:.0f}s"
                 )
-            if self._config.status_callback is not None:
-                self._config.status_callback(
-                    event="trial_started",
-                    current_trial=trial_number,
-                    total_trials=n_trials,
-                    runtime_s=started_trial_at - start,
-                )
             params: dict[str, Any] = {}
             for key, values in all_params.items():
                 params[key] = trial.suggest_categorical(key, values)
@@ -585,17 +593,61 @@ class Campaign:
                 None,
                 self._config.research_compute_mode,
                 self._config.enable_early_stop,
+                self._config.trial_runtime_budget_s,
             )
             if self._config.trial_timeout_s is not None:
-                with ProcessPoolExecutor(max_workers=1) as pool:
+                pool: ProcessPoolExecutor | None = None
+                future = None
+                last_running_heartbeat_at = 0.0
+                try:
+                    pool = ProcessPoolExecutor(max_workers=1)
                     future = pool.submit(_run_backtest_worker, args)
-                    try:
-                        _, metrics = future.result(timeout=self._config.trial_timeout_s)
-                    except FutureTimeoutError as exc:
-                        pool.shutdown(wait=False, cancel_futures=True)
-                        raise SearchStageTimeoutError(
-                            f"stage1_optuna_timeout: trial {trial_number} exceeded {self._config.trial_timeout_s:.0f}s"
-                        ) from exc
+                    if self._config.status_callback is not None:
+                        self._config.status_callback(
+                            event="trial_started",
+                            current_trial=trial_number,
+                            completed_trials=len(all_results),
+                            total_trials=n_trials,
+                            runtime_s=time.time() - start,
+                            pending_trials=1,
+                            max_workers=1,
+                            target_inflight=1,
+                            active_workers_estimate=1,
+                            scheduler_mode="serial_timeout_guarded",
+                            underfilled=False,
+                            underfilled_reason=None,
+                        )
+                    while True:
+                        try:
+                            _, metrics = future.result(timeout=1.0)
+                            break
+                        except FutureTimeoutError:
+                            elapsed_s = time.time() - started_trial_at
+                            if self._config.status_callback is not None and (
+                                time.time() - last_running_heartbeat_at
+                            ) >= 5.0:
+                                self._config.status_callback(
+                                    event="trial_running",
+                                    current_trial=trial_number,
+                                    completed_trials=len(all_results),
+                                    total_trials=n_trials,
+                                    runtime_s=time.time() - start,
+                                    pending_trials=1,
+                                    max_workers=1,
+                                    target_inflight=1,
+                                    active_workers_estimate=1,
+                                    scheduler_mode="serial_timeout_guarded",
+                                    underfilled=False,
+                                    underfilled_reason=None,
+                                )
+                                last_running_heartbeat_at = time.time()
+                            if elapsed_s > self._config.trial_timeout_s:
+                                _shutdown_pool_quickly(pool, [future])
+                                raise SearchStageTimeoutError(
+                                    f"stage1_optuna_timeout: trial {trial_number} exceeded {self._config.trial_timeout_s:.0f}s"
+                                ) from None
+                finally:
+                    _shutdown_pool_quickly(pool, [future] if future is not None else None)
             else:
                 _, metrics = _run_backtest_worker(args)
 
@@ -628,12 +680,13 @@ class Campaign:
             launched_trials = 0
             last_running_heartbeat_at = 0.0
 
-            with ProcessPoolExecutor(max_workers=max_workers) as pool:
-                pending: dict[Any, tuple[Any, int, dict[str, Any], float]] = {}
-
+            pool: ProcessPoolExecutor | None = None
+            pending: dict[Any, tuple[Any, int, dict[str, Any], float]] = {}
+            try:
+                pool = ProcessPoolExecutor(max_workers=max_workers)
                 while completed_trials < n_trials:
                     if self._config.stage_total_timeout_s is not None and (time.time() - start) > self._config.stage_total_timeout_s:
-                        pool.shutdown(wait=False, cancel_futures=True)
+                        _shutdown_pool_quickly(pool, list(pending.keys()))
                         raise SearchStageTimeoutError(
                             f"stage1_optuna_timeout: no completed result within {self._config.stage_total_timeout_s:.0f}s"
                         )
@@ -721,7 +774,7 @@ class Campaign:
                                 if (time.time() - meta[3]) > self._config.trial_timeout_s
                             ]
                             if timed_out:
-                                pool.shutdown(wait=False, cancel_futures=True)
+                                _shutdown_pool_quickly(pool, [item[0] for item in timed_out])
                                 trial_number = timed_out[0][1][1]
                                 raise SearchStageTimeoutError(
                                     f"stage1_optuna_timeout: trial {trial_number} exceeded {self._config.trial_timeout_s:.0f}s"
@@ -769,6 +822,8 @@ class Campaign:
                                 terminated_early=metrics.get("terminated_early", 0.0),
                                 processed_event_ratio=metrics.get("processed_event_ratio", 0.0),
                             )
+            finally:
+                _shutdown_pool_quickly(pool, list(pending.keys()))
         else:
             def _trial_callback(study: Any, trial: Any) -> None:
                 if self._config.status_callback is None:

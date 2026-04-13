@@ -136,6 +136,11 @@ def _initialize_running_status(
         "stage1_slow_trial": False,
         "stage1_slow_reason": None,
         "stage1_subphase": None,
+        "stage1_search_mode": "primary_1h" if budget == "smoke" else "primary_5m",
+        "stage1_primary_optuna_trials_completed": 0,
+        "stage1_primary_optuna_trials_total": optuna_trials,
+        "stage1_fallback_optuna_trials_completed": 0,
+        "stage1_fallback_optuna_trials_total": 0,
         "stage1_progress_completed": 0,
         "stage1_progress_total": 0,
         "stage1_avg_trial_runtime_s": 0.0,
@@ -693,6 +698,10 @@ def main() -> None:
                 "optuna_params": None,
                 "optuna_trials_payload": [],
                 "optuna_trials_completed": 0,
+                "primary_optuna_trials_completed": 0,
+                "primary_optuna_trials_total": optuna_trials,
+                "fallback_optuna_trials_completed": 0,
+                "fallback_optuna_trials_total": 0,
                 "train_candidate_diagnostics": {
                     "raw_trial_count": 0,
                     "raw_nonzero_trade_trials": 0,
@@ -705,6 +714,7 @@ def main() -> None:
                 "rl_params": None,
                 "rl_failure_reason": None,
                 "used_5m_fallback": False,
+                "stage1_search_mode": "primary_1h" if args.budget == "smoke" else "primary_5m",
             }
 
             def _write_minimal_stage1_checkpoint(
@@ -738,6 +748,11 @@ def main() -> None:
                         "rl_episodes_completed": rl_episodes_completed,
                         "optuna_candidate_found": optuna_params is not None,
                         "rl_candidate_found": rl_params is not None,
+                        "stage1_search_mode": stage1_state.get("stage1_search_mode"),
+                        "stage1_primary_optuna_trials_completed": stage1_state.get("primary_optuna_trials_completed", 0),
+                        "stage1_primary_optuna_trials_total": stage1_state.get("primary_optuna_trials_total", optuna_trials),
+                        "stage1_fallback_optuna_trials_completed": stage1_state.get("fallback_optuna_trials_completed", 0),
+                        "stage1_fallback_optuna_trials_total": stage1_state.get("fallback_optuna_trials_total", 0),
                         "liquidation_in_search": evaluator.readiness["promotion_ready"],
                         "liquidation_blocked_by": None if evaluator.readiness["promotion_ready"] else "not_promotion_ready",
                         "search_space_profile": resolved_search_space_profile,
@@ -862,6 +877,16 @@ def main() -> None:
                         int(stage1_state.get("optuna_trials_completed", 0) or 0),
                         normalized_completed,
                     )
+                    if stage1_state.get("stage1_search_mode") == "fallback_5m":
+                        stage1_state["fallback_optuna_trials_completed"] = max(
+                            int(stage1_state.get("fallback_optuna_trials_completed", 0) or 0),
+                            normalized_completed,
+                        )
+                    else:
+                        stage1_state["primary_optuna_trials_completed"] = max(
+                            int(stage1_state.get("primary_optuna_trials_completed", 0) or 0),
+                            normalized_completed,
+                        )
                     stage1_state["timing_count"] = int(stage1_state.get("timing_count", 0) or 0) + 1
                     stage1_state["trial_runtime_sum_s"] = float(stage1_state.get("trial_runtime_sum_s", 0.0) or 0.0) + float(
                         heartbeat.get("trial_runtime_s", 0.0) or 0.0
@@ -896,7 +921,16 @@ def main() -> None:
                     status_path,
                     phase=subphase,
                     status="running",
-                    stage1_optuna_trials_total=optuna_trials,
+                    stage1_optuna_trials_total=(
+                        stage1_state.get("fallback_optuna_trials_total", 1)
+                        if stage1_state.get("stage1_search_mode") == "fallback_5m"
+                        else optuna_trials
+                    ),
+                    stage1_search_mode=stage1_state.get("stage1_search_mode", "primary_1h" if args.budget == "smoke" else "primary_5m"),
+                    stage1_primary_optuna_trials_completed=stage1_state.get("primary_optuna_trials_completed", 0),
+                    stage1_primary_optuna_trials_total=stage1_state.get("primary_optuna_trials_total", optuna_trials),
+                    stage1_fallback_optuna_trials_completed=stage1_state.get("fallback_optuna_trials_completed", 0),
+                    stage1_fallback_optuna_trials_total=stage1_state.get("fallback_optuna_trials_total", 0),
                     optuna_trials_completed=(
                         int(stage1_state.get("optuna_trials_completed", 0) or 0)
                         if subphase != "stage1_optuna_search"
@@ -1177,8 +1211,14 @@ def main() -> None:
                 )
                 _append_campaign_log(log_path, f"stage1_optuna_search failed reason={exc}")
                 raise
+            stage1_state["primary_optuna_trials_completed"] = int(stage1_state.get("optuna_trials_completed", 0) or 0)
+            stage1_state["primary_optuna_trials_total"] = optuna_trials
             if args.budget == "smoke" and optuna_params is None and not optuna_trials_payload:
                 stage1_state["used_5m_fallback"] = True
+                stage1_state["stage1_search_mode"] = "fallback_5m"
+                stage1_state["fallback_optuna_trials_completed"] = 0
+                stage1_state["fallback_optuna_trials_total"] = 1
+                stage1_state["optuna_trials_completed"] = 0
                 stage1_execution_mode = "1h_context_only_with_5m_fallback"
                 _append_campaign_log(
                     log_path,
@@ -1188,11 +1228,25 @@ def main() -> None:
                     status_path,
                     phase="stage1_optuna_search",
                     status="running",
+                    stage1_optuna_trials_total=1,
                     stage1_execution_mode=stage1_execution_mode,
                     stage1_subphase="stage1_optuna_search",
+                    stage1_search_mode="fallback_5m",
+                    stage1_primary_optuna_trials_completed=stage1_state.get("primary_optuna_trials_completed", 0),
+                    stage1_primary_optuna_trials_total=stage1_state.get("primary_optuna_trials_total", optuna_trials),
+                    stage1_fallback_optuna_trials_completed=0,
+                    stage1_fallback_optuna_trials_total=1,
                     stage1_last_progress_at=_ts(),
                     stage1_last_completed_unit="fallback_to_5m_search",
-                    optuna_trials_completed=int(stage1_state.get("optuna_trials_completed", 0) or 0),
+                    optuna_trials_completed=0,
+                    stage1_progress_completed=0,
+                    stage1_progress_total=1,
+                    stage1_current_trial=0,
+                    stage1_pending_trials=0,
+                    stage1_max_workers=1,
+                    stage1_target_inflight=1,
+                    stage1_active_workers_estimate=0,
+                    stage1_scheduler_mode="serial_timeout_guarded",
                 )
                 try:
                     optuna_params, optuna_trials_payload, optuna_diagnostics = _run_stage1_optuna_search(
@@ -1206,11 +1260,32 @@ def main() -> None:
                         ranking_candidate_timeout_s=360.0,
                         seed_trials=extra_seed_trials,
                     )
+                    stage1_state["fallback_optuna_trials_completed"] = int(stage1_state.get("optuna_trials_completed", 0) or 0)
                 except SearchStageTimeoutError as exc:
                     _append_campaign_log(log_path, f"stage1_optuna_search fallback_5m_failed reason={exc}")
+                    _update_status(
+                        status_path,
+                        stage1_optuna_trials_total=1,
+                        stage1_search_mode="fallback_5m",
+                        stage1_primary_optuna_trials_completed=stage1_state.get("primary_optuna_trials_completed", 0),
+                        stage1_primary_optuna_trials_total=stage1_state.get("primary_optuna_trials_total", optuna_trials),
+                        stage1_fallback_optuna_trials_completed=stage1_state.get("fallback_optuna_trials_completed", 0),
+                        stage1_fallback_optuna_trials_total=1,
+                        stage1_failure_reason=str(exc),
+                    )
                     raise
                 except Exception as exc:
                     _append_campaign_log(log_path, f"stage1_optuna_search fallback_5m_failed reason={exc}")
+                    _update_status(
+                        status_path,
+                        stage1_optuna_trials_total=1,
+                        stage1_search_mode="fallback_5m",
+                        stage1_primary_optuna_trials_completed=stage1_state.get("primary_optuna_trials_completed", 0),
+                        stage1_primary_optuna_trials_total=stage1_state.get("primary_optuna_trials_total", optuna_trials),
+                        stage1_fallback_optuna_trials_completed=stage1_state.get("fallback_optuna_trials_completed", 0),
+                        stage1_fallback_optuna_trials_total=1,
+                        stage1_failure_reason=str(exc),
+                    )
                     raise
             stage1_state["train_candidate_diagnostics"] = dict(optuna_diagnostics.get("train_candidate_diagnostics") or {})
             stage1_state["empty_shortlist_reason"] = optuna_diagnostics.get("empty_shortlist_reason")
