@@ -84,6 +84,14 @@ def _training_history_path(loop_dir: Path) -> Path:
     return loop_dir / "training_history.jsonl"
 
 
+def _candidate_checkpoint_path(run_dir: Path) -> Path:
+    return run_dir / "checkpoints" / "candidate_checkpoint.json"
+
+
+def _default_split_contract_version() -> str:
+    return "btc_temporal_v2_train_selection_only"
+
+
 def _set_current_round_pointer(loop_dir: Path, run_dir: Path) -> None:
     pointer = loop_dir / "current_round"
     if pointer.exists() or pointer.is_symlink():
@@ -230,6 +238,11 @@ def _current_campaign_snapshot(run_dir: Path) -> dict[str, Any]:
         "stage2_compare_validation_workers": status.get("stage2_compare_validation_workers"),
         "failure_reason": status.get("failure_reason"),
         "blocked_by": status.get("blocked_by"),
+        "candidate_checkpoint_written": status.get("candidate_checkpoint_written"),
+        "candidate_checkpoint_status": status.get("candidate_checkpoint_status"),
+        "candidate_checkpoint_variant": status.get("candidate_checkpoint_variant"),
+        "candidate_checkpoint_score": status.get("candidate_checkpoint_score"),
+        "candidate_checkpoint_origin_phase": status.get("candidate_checkpoint_origin_phase"),
         "full_training_allowed": status.get("full_training_allowed"),
         "full_training_blockers": status.get("full_training_blockers"),
         "post_smoke_scenario": status.get("post_smoke_scenario"),
@@ -385,6 +398,96 @@ def _recent_rounds(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
             }
         )
     return recent
+
+
+def _candidate_checkpoint_invalidated_reason(payload: dict[str, Any], *, budget: str) -> str | None:
+    if payload.get("checkpoint_status") == "invalidated":
+        return str(payload.get("invalidated_reason") or "candidate_checkpoint_invalidated")
+    if payload.get("train_only_search") is False:
+        return "checkpoint_not_train_only_search"
+    if payload.get("split_contract_version") not in {None, _default_split_contract_version()}:
+        return "split_contract_mismatch"
+    expected_mode = _mode_for_budget(budget)
+    candidate_mode = payload.get("search_space_mode")
+    if candidate_mode and candidate_mode != expected_mode:
+        return "candidate_search_space_mismatch"
+    params = payload.get("params")
+    if not isinstance(params, dict) or not params:
+        return "candidate_unusable"
+    if payload.get("checkpoint_status") not in {"usable", "degraded"}:
+        return "candidate_unusable"
+    return None
+
+
+def _load_candidate_checkpoint(run_dir: Path, *, budget: str) -> dict[str, Any] | None:
+    payload = _read_json(_candidate_checkpoint_path(run_dir))
+    if not isinstance(payload, dict):
+        return None
+    invalidated_reason = _candidate_checkpoint_invalidated_reason(payload, budget=budget)
+    if invalidated_reason is not None:
+        payload = dict(payload)
+        payload["checkpoint_status"] = "invalidated"
+        payload["invalidated_reason"] = invalidated_reason
+        _write_json(_candidate_checkpoint_path(run_dir), payload)
+        return None
+    return payload
+
+
+def _select_candidate_checkpoint(
+    loop_dir: Path,
+    *,
+    campaign_root: Path,
+    budget: str,
+    previous_record: dict[str, Any] | None,
+) -> dict[str, Any] | None:
+    records = _recent_history_records(loop_dir)
+    preferred_run_dirs: list[Path] = []
+    if previous_record and previous_record.get("run_dir"):
+        preferred_run_dirs.append(Path(str(previous_record["run_dir"])))
+    for item in reversed(records):
+        run_dir = item.get("run_dir")
+        if isinstance(run_dir, str):
+            preferred_run_dirs.append(Path(run_dir))
+    for run_dir in sorted(campaign_root.glob("round_*"), reverse=True):
+        preferred_run_dirs.append(run_dir)
+    seen: set[str] = set()
+    usable: list[dict[str, Any]] = []
+    for run_dir in preferred_run_dirs:
+        key = str(run_dir)
+        if key in seen:
+            continue
+        seen.add(key)
+        payload = _load_candidate_checkpoint(run_dir, budget=budget)
+        if payload is not None:
+            usable.append(payload)
+    if not usable:
+        return None
+    latest_run_dir = str(previous_record.get("run_dir")) if previous_record and previous_record.get("run_dir") else None
+    for payload in usable:
+        if latest_run_dir and payload.get("round") == previous_record.get("round"):
+            return payload
+    return max(
+        usable,
+        key=lambda item: _safe_float(((item.get("selected_checkpoint_candidate") or {}).get("score")) or item.get("stage1_best_score")),
+    )
+
+
+def _merge_seed_trials_with_candidate(
+    seed_trials: list[dict[str, Any]],
+    candidate_checkpoint: dict[str, Any] | None,
+) -> list[dict[str, Any]]:
+    merged: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    candidate_params = candidate_checkpoint.get("params") if isinstance(candidate_checkpoint, dict) else None
+    for item in ([candidate_params] if isinstance(candidate_params, dict) and candidate_params else []) + list(seed_trials):
+        if not isinstance(item, dict) or not item:
+            continue
+        key = json.dumps(item, sort_keys=True, separators=(",", ":"))
+        if key in seen:
+            continue
+        seen.add(key)
+        merged.append(dict(item))
+    return merged
 
 
 def _write_training_monitor(loop_dir: Path) -> dict[str, Any]:
@@ -546,6 +649,11 @@ def _write_training_monitor(loop_dir: Path) -> dict[str, Any]:
         "rl_avg_episode_runtime_s": snapshot.get("rl_avg_episode_runtime_s"),
         "rl_cache_hit_rate": snapshot.get("rl_cache_hit_rate"),
         "rl_avg_event_loop_s": snapshot.get("rl_avg_event_loop_s"),
+        "candidate_checkpoint_written": bool(snapshot.get("candidate_checkpoint_written")),
+        "candidate_checkpoint_status": snapshot.get("candidate_checkpoint_status"),
+        "candidate_checkpoint_variant": snapshot.get("candidate_checkpoint_variant"),
+        "candidate_checkpoint_score": snapshot.get("candidate_checkpoint_score"),
+        "candidate_checkpoint_origin_phase": snapshot.get("candidate_checkpoint_origin_phase"),
         "stage2_progress_completed": snapshot.get("stage2_progress_completed"),
         "stage2_progress_total": snapshot.get("stage2_progress_total"),
         "compare_window_units_completed": compare_window_units_completed,
@@ -995,8 +1103,14 @@ def main() -> None:
         if previous_record is not None:
             current_budget = str(previous_record.get("next_budget", current_budget))
             previous_budget = str(previous_record.get("budget", current_budget))
+            candidate_checkpoint = _select_candidate_checkpoint(
+                loop_dir,
+                campaign_root=campaign_root,
+                budget=current_budget,
+                previous_record=previous_record,
+            )
             seed_trials = project_seed_trials_to_mode(
-                list(previous_record.get("next_seed_trials") or []),
+                _merge_seed_trials_with_candidate(list(previous_record.get("next_seed_trials") or []), candidate_checkpoint),
                 mode=_mode_for_budget(current_budget),
             )
             adaptation_policy = str(previous_record.get("next_adaptation_policy", adaptation_policy))

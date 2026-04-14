@@ -9,7 +9,7 @@ import json
 import os
 import shutil
 import traceback
-from dataclasses import replace
+from dataclasses import asdict, replace
 from datetime import UTC, datetime
 from hashlib import sha1
 from pathlib import Path
@@ -175,6 +175,11 @@ def _initialize_running_status(
         "stage2_failure_reason": None,
         "train_candidate_diagnostics": None,
         "empty_shortlist_reason": None,
+        "candidate_checkpoint_written": False,
+        "candidate_checkpoint_status": None,
+        "candidate_checkpoint_variant": None,
+        "candidate_checkpoint_score": None,
+        "candidate_checkpoint_origin_phase": None,
     }
     _write_json(path, payload)
     return payload
@@ -309,6 +314,100 @@ def _candidate_frozen_id(best_variant: str, best_params: dict[str, Any] | None) 
         return None
     payload = json.dumps({"variant": best_variant, "params": best_params}, sort_keys=True, separators=(",", ":"))
     return sha1(payload.encode("utf-8")).hexdigest()[:12]
+
+
+def _round_index_from_output_dir(output_dir: Path) -> int | None:
+    name = output_dir.name
+    if not name.startswith("round_"):
+        return None
+    suffix = name.removeprefix("round_")
+    return int(suffix) if suffix.isdigit() else None
+
+
+def _candidate_checkpoint_path(output_dir: Path) -> Path:
+    return output_dir / "checkpoints" / "candidate_checkpoint.json"
+
+
+def _candidate_checkpoint_payload(
+    *,
+    round_index: int | None,
+    budget: str,
+    split_contract_version: str,
+    search_space_mode: str | None,
+    stage1_execution_mode: str | None,
+    train_only_search: bool | None,
+    train_candidate_diagnostics: dict[str, Any] | None,
+    stage1_best_score: float | None,
+    stage1_best_params_so_far: dict[str, Any] | None,
+    optuna_summary: dict[str, Any] | None,
+    rl_summary: dict[str, Any] | None,
+    optuna_params: dict[str, Any] | None,
+    rl_params: dict[str, Any] | None,
+    checkpoint_status: str,
+    blocked_by: str | None,
+    failure_reason: str | None,
+    origin_phase: str,
+    invalidated_reason: str | None = None,
+) -> dict[str, Any] | None:
+    candidates: list[dict[str, Any]] = []
+    if isinstance(optuna_params, dict) and optuna_params:
+        candidates.append(
+            {
+                "candidate_source": "optuna",
+                "candidate_variant": "optuna_tuned",
+                "params": dict(optuna_params),
+                "summary": dict(optuna_summary or {}),
+                "score": float((optuna_summary or {}).get("robust_score", stage1_best_score or 0.0) or 0.0),
+            }
+        )
+    if isinstance(rl_params, dict) and rl_params:
+        candidates.append(
+            {
+                "candidate_source": "rl",
+                "candidate_variant": "rl_tuned",
+                "params": dict(rl_params),
+                "summary": dict(rl_summary or {}),
+                "score": float((rl_summary or {}).get("robust_score", stage1_best_score or 0.0) or 0.0),
+            }
+        )
+    if not candidates:
+        return None
+    selected = max(candidates, key=lambda item: item["score"])
+    return {
+        "created_at": _ts(),
+        "round": round_index,
+        "budget": budget,
+        "split_contract_version": split_contract_version,
+        "search_space_mode": search_space_mode,
+        "stage1_execution_mode": stage1_execution_mode,
+        "train_only_search": train_only_search,
+        "candidate_source": selected["candidate_source"],
+        "candidate_variant": selected["candidate_variant"],
+        "params": selected["params"],
+        "train_candidate_diagnostics": dict(train_candidate_diagnostics or {}),
+        "stage1_best_score": stage1_best_score,
+        "stage1_best_params_so_far": dict(stage1_best_params_so_far or selected["params"]),
+        "optuna_summary": dict(optuna_summary or {}) or None,
+        "rl_summary": dict(rl_summary or {}) or None,
+        "selected_checkpoint_candidate": {
+            "candidate_source": selected["candidate_source"],
+            "candidate_variant": selected["candidate_variant"],
+            "score": selected["score"],
+        },
+        "checkpoint_status": checkpoint_status,
+        "blocked_by": blocked_by,
+        "failure_reason": failure_reason,
+        "origin_phase": origin_phase,
+        "invalidated_reason": invalidated_reason,
+    }
+
+
+def _write_candidate_checkpoint(output_dir: Path, payload: dict[str, Any] | None) -> dict[str, Any] | None:
+    if payload is None:
+        return None
+    path = _candidate_checkpoint_path(output_dir)
+    _write_json(path, payload)
+    return payload
 
 
 def _write_development_iteration_report(
@@ -689,6 +788,7 @@ def main() -> None:
 
         stage1_path = checkpoint_dir / "stage1_search.json"
         stage1_payload = _read_json(stage1_path) if args.resume else None
+        written_candidate_checkpoint = _read_json(_candidate_checkpoint_path(output_dir))
         if stage1_payload is None:
             stage1_execution_mode = "1h_context_only" if args.budget == "smoke" else "5m_lightweight_train_search"
             smoke_ranking_top_n = 1 if args.budget == "smoke" else min(5, optuna_trials)
@@ -1501,6 +1601,32 @@ def main() -> None:
                 stage1_payload["search_status"]["full_training_decision"] = stage1_assessment["decision"]
                 stage1_payload["search_status"]["full_training_blockers"] = stage1_assessment["blockers"]
             stage1_payload["search_status"]["stage1_best_score"] = stage1_best_score
+            candidate_checkpoint_payload = _candidate_checkpoint_payload(
+                round_index=_round_index_from_output_dir(output_dir),
+                budget=args.budget,
+                split_contract_version=split_spec.version,
+                search_space_mode=stage1_payload["search_status"].get("search_space_mode"),
+                stage1_execution_mode=stage1_payload["search_status"].get("stage1_execution_mode"),
+                train_only_search=stage1_payload["search_status"].get("train_only_search"),
+                train_candidate_diagnostics=stage1_payload["search_status"].get("train_candidate_diagnostics"),
+                stage1_best_score=stage1_best_score,
+                stage1_best_params_so_far=stage1_payload.get("optuna_params") or stage1_payload.get("rl_params"),
+                optuna_summary=asdict(optuna_summary) if optuna_summary is not None else None,
+                rl_summary=asdict(rl_summary) if rl_summary is not None else None,
+                optuna_params=stage1_payload.get("optuna_params"),
+                rl_params=stage1_payload.get("rl_params"),
+                checkpoint_status="usable",
+                blocked_by=None,
+                failure_reason=stage1_payload["search_status"].get("failure_reason"),
+                origin_phase="stage1",
+            )
+            written_candidate_checkpoint = _write_candidate_checkpoint(output_dir, candidate_checkpoint_payload)
+            if written_candidate_checkpoint is not None:
+                _append_campaign_log(
+                    log_path,
+                    "candidate_checkpoint_written "
+                    f"variant={written_candidate_checkpoint.get('candidate_variant')} origin=stage1",
+                )
             if stage1_state["rl_failure_reason"]:
                 stage1_payload["search_status"]["failure_reason"] = "stage1_rl_sidecar_failed"
                 stage1_payload["search_status"]["failure_detail"] = stage1_state["rl_failure_reason"]
@@ -1562,6 +1688,11 @@ def main() -> None:
             stage1_last_completed_unit=stage1_payload["search_status"].get("search_outcome"),
             train_candidate_diagnostics=stage1_payload["search_status"].get("train_candidate_diagnostics"),
             empty_shortlist_reason=stage1_payload["search_status"].get("empty_shortlist_reason"),
+            candidate_checkpoint_written=written_candidate_checkpoint is not None,
+            candidate_checkpoint_status=(written_candidate_checkpoint or {}).get("checkpoint_status"),
+            candidate_checkpoint_variant=(written_candidate_checkpoint or {}).get("candidate_variant"),
+            candidate_checkpoint_score=((written_candidate_checkpoint or {}).get("selected_checkpoint_candidate") or {}).get("score"),
+            candidate_checkpoint_origin_phase=(written_candidate_checkpoint or {}).get("origin_phase"),
         )
 
         stage2_path = checkpoint_dir / "stage2_full_report.json"
@@ -1766,6 +1897,26 @@ def main() -> None:
                     )
                 _stage2_timeout_check()
             except SearchStageTimeoutError as exc:
+                existing_checkpoint = written_candidate_checkpoint if isinstance(written_candidate_checkpoint, dict) else None
+                if existing_checkpoint is not None:
+                    failure_reason = str(exc)
+                    degraded_blockers = {"prepare_timeout", "pre_validation_rejection", "validation_timeout", "compare_timeout"}
+                    degraded_reason = next((item for item in degraded_blockers if item in failure_reason), None)
+                    updated_payload = dict(existing_checkpoint)
+                    updated_payload["created_at"] = _ts()
+                    updated_payload["checkpoint_status"] = "degraded" if degraded_reason else updated_payload.get("checkpoint_status", "usable")
+                    updated_payload["blocked_by"] = degraded_reason
+                    updated_payload["failure_reason"] = failure_reason
+                    updated_payload["origin_phase"] = (
+                        "stage2_prepare"
+                        if "stage2_prepare" in failure_reason or degraded_reason == "prepare_timeout"
+                        else "stage2_compare"
+                    )
+                    written_candidate_checkpoint = _write_candidate_checkpoint(output_dir, updated_payload)
+                    _append_campaign_log(
+                        log_path,
+                        f"candidate_checkpoint_updated blocked_by={updated_payload.get('blocked_by') or 'none'}",
+                    )
                 _update_status(
                     status_path,
                     phase="stage2_full_verdict",
@@ -1774,6 +1925,11 @@ def main() -> None:
                     failure_reason="stage2_runtime_or_search_issue",
                     failure_detail=str(exc),
                     stage2_failure_reason=str(exc),
+                    candidate_checkpoint_written=written_candidate_checkpoint is not None,
+                    candidate_checkpoint_status=(written_candidate_checkpoint or {}).get("checkpoint_status"),
+                    candidate_checkpoint_variant=(written_candidate_checkpoint or {}).get("candidate_variant"),
+                    candidate_checkpoint_score=((written_candidate_checkpoint or {}).get("selected_checkpoint_candidate") or {}).get("score"),
+                    candidate_checkpoint_origin_phase=(written_candidate_checkpoint or {}).get("origin_phase"),
                 )
                 _append_campaign_log(log_path, f"stage2_full_verdict failed reason={exc}")
                 raise
@@ -1815,6 +1971,31 @@ def main() -> None:
                     "full_training_assessment": final_json_payload.get("full_training_assessment"),
                     "post_smoke_scenario": final_json_payload.get("post_smoke_scenario"),
                 }
+                existing_checkpoint = written_candidate_checkpoint if isinstance(written_candidate_checkpoint, dict) else None
+                if existing_checkpoint is not None:
+                    report_variant = existing_checkpoint.get("candidate_variant")
+                    report_summary = None
+                    if report_variant == "optuna_tuned" and report.optuna_best is not None:
+                        report_summary = asdict(report.optuna_best)
+                    elif report_variant == "rl_tuned" and report.rl_best is not None:
+                        report_summary = asdict(report.rl_best)
+                    blocked_by = report_summary.get("blocked_by") if isinstance(report_summary, dict) else None
+                    updated_payload = dict(existing_checkpoint)
+                    updated_payload["created_at"] = _ts()
+                    updated_payload["checkpoint_status"] = "degraded" if blocked_by else "usable"
+                    updated_payload["blocked_by"] = blocked_by
+                    updated_payload["failure_reason"] = report_summary.get("promotion_failure_reason") if isinstance(report_summary, dict) else None
+                    updated_payload["origin_phase"] = "stage2_prepare" if blocked_by in {"prepare_timeout", "pre_validation_rejection"} else "stage2_compare"
+                    if isinstance(report_summary, dict):
+                        if report_variant == "optuna_tuned":
+                            updated_payload["optuna_summary"] = dict(report_summary)
+                        elif report_variant == "rl_tuned":
+                            updated_payload["rl_summary"] = dict(report_summary)
+                    written_candidate_checkpoint = _write_candidate_checkpoint(output_dir, updated_payload)
+                    _append_campaign_log(
+                        log_path,
+                        f"candidate_checkpoint_updated blocked_by={blocked_by or 'none'}",
+                    )
                 _write_json(stage2_path, final_report_payload)
                 _stage2_heartbeat(
                     event="stage2_write_artifacts_completed",
@@ -1861,18 +2042,39 @@ def main() -> None:
             post_smoke_category=post_smoke_scenario.get("category"),
             post_smoke_next_action=post_smoke_scenario.get("next_action"),
             stage2_subphase="stage3_complete",
+            candidate_checkpoint_written=written_candidate_checkpoint is not None,
+            candidate_checkpoint_status=(written_candidate_checkpoint or {}).get("checkpoint_status"),
+            candidate_checkpoint_variant=(written_candidate_checkpoint or {}).get("candidate_variant"),
+            candidate_checkpoint_score=((written_candidate_checkpoint or {}).get("selected_checkpoint_candidate") or {}).get("score"),
+            candidate_checkpoint_origin_phase=(written_candidate_checkpoint or {}).get("origin_phase"),
         )
         _append_campaign_log(log_path, f"campaign_completed scenario={post_smoke_scenario.get('scenario')}")
         print(json.dumps(_read_json(status_path), indent=2))
     except SearchStageTimeoutError as exc:
         reason = str(exc)
         blocked_by = "stage1_optuna_timeout" if "stage1" in reason else "stage_runtime_or_search_issue"
+        if isinstance(locals().get("written_candidate_checkpoint"), dict):
+            updated_payload = dict(written_candidate_checkpoint)
+            updated_payload["created_at"] = _ts()
+            updated_payload["failure_reason"] = reason
+            if not updated_payload.get("origin_phase"):
+                updated_payload["origin_phase"] = "stage1"
+            written_candidate_checkpoint = _write_candidate_checkpoint(output_dir, updated_payload)
+            _append_campaign_log(
+                log_path,
+                f"candidate_checkpoint_updated blocked_by={updated_payload.get('blocked_by') or 'none'}",
+            )
         _update_status(
             status_path,
             status="failed",
             blocked_by=blocked_by,
             failure_reason=reason,
             detail=reason,
+            candidate_checkpoint_written=isinstance(locals().get("written_candidate_checkpoint"), dict),
+            candidate_checkpoint_status=(locals().get("written_candidate_checkpoint") or {}).get("checkpoint_status"),
+            candidate_checkpoint_variant=(locals().get("written_candidate_checkpoint") or {}).get("candidate_variant"),
+            candidate_checkpoint_score=(((locals().get("written_candidate_checkpoint") or {}).get("selected_checkpoint_candidate")) or {}).get("score"),
+            candidate_checkpoint_origin_phase=(locals().get("written_candidate_checkpoint") or {}).get("origin_phase"),
         )
         _append_campaign_log(log_path, f"campaign_failed timeout={reason}")
         raise
