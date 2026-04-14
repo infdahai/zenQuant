@@ -239,6 +239,18 @@ class ValidationBundleTimeoutError(RuntimeError):
         self.timeout_s = timeout_s
 
 
+class PrepareVariantTimeoutError(RuntimeError):
+    """Raised when a lightweight stage2 prepare window exceeds its budget."""
+
+    def __init__(self, *, variant: str, window_label: str, timeout_s: float) -> None:
+        super().__init__(
+            f"stage2_prepare_variant_timeout: variant={variant} window={window_label} timeout_s={timeout_s:.0f}"
+        )
+        self.variant = variant
+        self.window_label = window_label
+        self.timeout_s = timeout_s
+
+
 def _best_tuned_candidate(report: SearchReport) -> CandidateSummary | None:
     tuned = [candidate for candidate in (report.optuna_best, report.rl_best) if candidate is not None]
     if not tuned:
@@ -554,6 +566,8 @@ class FrameworkEvaluator:
             fixed_2023_08_window(),
             *([worst_dev_windows[-1]] if worst_dev_windows else []),
         ]
+        self._fast_dev_prepare_windows = list(self._fast_dev_compare_windows)
+        self._full_dev_prepare_windows = list(self._full_dev_compare_windows)
         self._dev_windows = list(self._full_dev_compare_windows)
         self._test_windows = [
             *default_comparison_windows(self._split_spec, "test"),
@@ -571,6 +585,8 @@ class FrameworkEvaluator:
                 "compare_validation_workers": 1,
                 "compare_validation_leg_timeout_s": 90.0,
                 "compare_validation_variant_budget_s": 180.0,
+                "prepare_window_timeout_s": 90.0,
+                "prepare_variant_budget_s": 240.0,
                 "replay_timeout_s": 120.0,
             },
             "fast": {
@@ -581,6 +597,8 @@ class FrameworkEvaluator:
                 "compare_validation_workers": min(2, cpu_budget),
                 "compare_validation_leg_timeout_s": 180.0,
                 "compare_validation_variant_budget_s": 480.0,
+                "prepare_window_timeout_s": 180.0,
+                "prepare_variant_budget_s": 420.0,
                 "replay_timeout_s": 180.0,
             },
             "high": {
@@ -591,6 +609,8 @@ class FrameworkEvaluator:
                 "compare_validation_workers": min(4, cpu_budget),
                 "compare_validation_leg_timeout_s": 360.0,
                 "compare_validation_variant_budget_s": 1200.0,
+                "prepare_window_timeout_s": 360.0,
+                "prepare_variant_budget_s": 1200.0,
                 "replay_timeout_s": 360.0,
             },
         }
@@ -686,8 +706,43 @@ class FrameworkEvaluator:
 
     def _compute_profile(self, *, fast: bool, lightweight: bool) -> dict[str, Any]:
         if lightweight:
-            return self._compute_profiles["smoke"]
+            return self._compute_profiles["smoke" if not fast else "fast"]
         return self._compute_profiles["fast" if fast else "high"]
+
+    def _prepare_windows(self, *, fast: bool, lightweight: bool) -> list[WindowSpec]:
+        if lightweight:
+            return list(self._fast_dev_prepare_windows if fast else self._full_dev_prepare_windows)
+        return list(self._dev_windows)
+
+    def _run_prepare_backtest_cached(
+        self,
+        variant: VariantSpec,
+        window: WindowSpec,
+        *,
+        timeout_s: float,
+        replay_pool: ProcessPoolExecutor | None,
+    ) -> BacktestSnapshot:
+        key = (self._variant_key(variant), window.start_ns, window.end_ns)
+        cached = self._backtest_cache.get(key)
+        if cached is not None:
+            return cached
+        try:
+            snapshot = _run_variant_backtest_with_timeout(
+                self._base_config,
+                variant,
+                start_ns=window.start_ns,
+                end_ns=window.end_ns,
+                timeout_s=timeout_s,
+                pool=replay_pool,
+            )
+        except TimeoutError as exc:
+            raise PrepareVariantTimeoutError(
+                variant=variant.name,
+                window_label=window.label,
+                timeout_s=timeout_s,
+            ) from exc
+        self._backtest_cache[key] = snapshot
+        return snapshot
 
     def _get_validation_pool(self, *, workers: int) -> ProcessPoolExecutor:
         if self._validation_pool is None or self._validation_pool_workers != workers:
@@ -1021,36 +1076,130 @@ class FrameworkEvaluator:
             if progress_callback is not None:
                 progress_callback(4, "cached")
             return cached
-        windows = self._dev_windows
+        profile = self._compute_profile(fast=fast, lightweight=lightweight)
+        windows = self._prepare_windows(fast=fast, lightweight=lightweight)
         wf_windows = self._fast_dev_wf_windows if fast else self._full_dev_wf_windows
+        prepare_started_at = datetime.now(UTC).timestamp()
+        prepare_window_timeout_s = float(profile["prepare_window_timeout_s"])
+        prepare_variant_budget_s = float(profile["prepare_variant_budget_s"])
 
-        dev_window = next(window for window in windows if window.label == "dev")
-        dev_result = self._run_variant_backtest_cached(
-            variant,
-            start_ns=dev_window.start_ns,
-            end_ns=dev_window.end_ns,
-        )
+        def _prepare_budget_guard(window_label: str) -> None:
+            if not lightweight:
+                return
+            elapsed_s = datetime.now(UTC).timestamp() - prepare_started_at
+            if elapsed_s > prepare_variant_budget_s:
+                raise PrepareVariantTimeoutError(
+                    variant=variant.name,
+                    window_label=window_label,
+                    timeout_s=prepare_variant_budget_s,
+                )
+
+        try:
+            dev_window = next(window for window in windows if window.label == "dev")
+            if lightweight:
+                dev_result = self._run_prepare_backtest_cached(
+                    variant,
+                    dev_window,
+                    timeout_s=prepare_window_timeout_s,
+                    replay_pool=self._get_validation_pool(workers=1),
+                )
+            else:
+                dev_result = self._run_variant_backtest_cached(
+                    variant,
+                    start_ns=dev_window.start_ns,
+                    end_ns=dev_window.end_ns,
+                )
+            if progress_callback is not None:
+                progress_callback(1, "dev")
+            weak_window = next(window for window in windows if window.label == "2023-08")
+            _prepare_budget_guard(weak_window.label)
+            if lightweight:
+                weak_result = self._run_prepare_backtest_cached(
+                    variant,
+                    weak_window,
+                    timeout_s=prepare_window_timeout_s,
+                    replay_pool=self._get_validation_pool(workers=1),
+                )
+            else:
+                weak_result = self._run_variant_backtest_cached(
+                    variant,
+                    start_ns=weak_window.start_ns,
+                    end_ns=weak_window.end_ns,
+                )
+            if progress_callback is not None:
+                progress_callback(2, "2023-08")
+            worst_periods = [window for window in windows if window.label not in {"dev", "2023-08"}]
+            worst_results: list[BacktestSnapshot] = []
+            for window in worst_periods:
+                _prepare_budget_guard(window.label)
+                if lightweight:
+                    result = self._run_prepare_backtest_cached(
+                        variant,
+                        window,
+                        timeout_s=prepare_window_timeout_s,
+                        replay_pool=self._get_validation_pool(workers=1),
+                    )
+                    if progress_callback is not None:
+                        progress_callback("worst_window", window.label)
+                else:
+                    result = self._run_variant_backtest_cached(
+                        variant,
+                        start_ns=window.start_ns,
+                        end_ns=window.end_ns,
+                    )
+                worst_results.append(result)
+            negative_worst_windows = sum(1 for result in worst_results if result.sharpe < 0)
+            baseline = None
+            if variant.name != "paulwei_baseline":
+                if progress_callback is not None and lightweight:
+                    progress_callback("baseline_summary_started", "lightweight")
+                baseline = self._get_paulwei_fast_summary(
+                    lightweight=lightweight,
+                    progress_callback=(
+                        (
+                            lambda step_completed, unit: progress_callback(
+                                (
+                                    f"baseline_{step_completed}"
+                                    if isinstance(step_completed, str)
+                                    else f"baseline_step_{step_completed}"
+                                ),
+                                unit,
+                            )
+                        )
+                        if progress_callback is not None and lightweight
+                        else None
+                    ),
+                )
+                if progress_callback is not None and lightweight:
+                    progress_callback("baseline_summary_completed", "lightweight")
+        except PrepareVariantTimeoutError as exc:
+            if variant.name in {"current", "paulwei_baseline"}:
+                raise SearchStageTimeoutError(
+                    f"stage2_prepare_variant_timeout: variant={variant.name} window={exc.window_label}"
+                ) from exc
+            summary = CandidateSummary(
+                variant=variant.name,
+                robust_score=-9.0,
+                selection_split="dev",
+                dev_sharpe=0.0,
+                dev_pnl=0.0,
+                dev_drawdown=1.0,
+                avg_dev_sharpe=-5.0,
+                avg_dev_ratio=0.0,
+                worst_dev_sharpe=-5.0,
+                weak_window_sharpe=-5.0,
+                negative_dev_worst_windows=1,
+                promotion_candidate=False,
+                blocked_by="prepare_timeout",
+                failed_gate_metrics=None,
+                promotion_failure_reason="prepare_timeout",
+            )
+            if progress_callback is not None:
+                progress_callback(4, "prepare_timeout")
+            self._summary_cache[cache_key] = summary
+            return summary
         if progress_callback is not None:
-            progress_callback(1, "dev")
-        weak_window = next(window for window in windows if window.label == "2023-08")
-        weak_result = self._run_variant_backtest_cached(variant, start_ns=weak_window.start_ns, end_ns=weak_window.end_ns)
-        if progress_callback is not None:
-            progress_callback(2, "2023-08")
-        worst_periods = [window for window in windows if window.label not in {"dev", "2023-08"}]
-        worst_results = [
-            self._run_variant_backtest_cached(variant, start_ns=window.start_ns, end_ns=window.end_ns)
-            for window in worst_periods
-        ]
-        negative_worst_windows = sum(1 for result in worst_results if result.sharpe < 0)
-        baseline = None
-        if variant.name != "paulwei_baseline":
-            if progress_callback is not None and lightweight:
-                progress_callback("baseline_summary_started", "lightweight")
-            baseline = self._get_paulwei_fast_summary(lightweight=lightweight)
-            if progress_callback is not None and lightweight:
-                progress_callback("baseline_summary_completed", "lightweight")
-        if progress_callback is not None:
-            progress_callback(3, "worst_windows")
+            progress_callback(3, "worst_windows_completed")
             if lightweight:
                 progress_callback("summary_scoring_started", "lightweight")
         if lightweight:
@@ -1090,7 +1239,6 @@ class FrameworkEvaluator:
                         progress_callback(4, "pre_validation_rejection")
                     self._summary_cache[cache_key] = summary
                     return summary
-            profile = self._compute_profile(fast=fast, lightweight=lightweight)
             try:
                 wf_metrics = self._run_validation_bundle_cached(
                     variant,
@@ -1123,6 +1271,36 @@ class FrameworkEvaluator:
                     progress_callback(4, "validation_timeout")
                 self._summary_cache[cache_key] = summary
                 return summary
+        try:
+            _prepare_budget_guard("summary_scoring")
+        except PrepareVariantTimeoutError as exc:
+            if variant.name in {"current", "paulwei_baseline"}:
+                raise SearchStageTimeoutError(
+                    f"stage2_prepare_variant_timeout: variant={variant.name} window=summary_scoring"
+                ) from exc
+            summary = CandidateSummary(
+                variant=variant.name,
+                robust_score=-9.0,
+                selection_split="dev",
+                dev_sharpe=dev_result.sharpe,
+                dev_pnl=dev_result.net_pnl,
+                dev_drawdown=dev_result.max_drawdown,
+                avg_dev_sharpe=dev_result.sharpe,
+                avg_dev_ratio=0.0,
+                worst_dev_sharpe=min(
+                    [dev_result.sharpe, weak_result.sharpe, *(result.sharpe for result in worst_results)]
+                ),
+                weak_window_sharpe=weak_result.sharpe,
+                negative_dev_worst_windows=negative_worst_windows,
+                promotion_candidate=False,
+                blocked_by="prepare_timeout",
+                failed_gate_metrics=None,
+                promotion_failure_reason="prepare_timeout",
+            )
+            if progress_callback is not None:
+                progress_callback(4, "prepare_timeout")
+            self._summary_cache[cache_key] = summary
+            return summary
         score = _candidate_score(
             avg_test_sharpe=wf_metrics["avg_test_sharpe"],
             worst_test_sharpe=wf_metrics["worst_test_sharpe"],
@@ -1241,13 +1419,19 @@ class FrameworkEvaluator:
         payload = json.dumps(asdict(variant), sort_keys=True, default=str)
         return sha1(payload.encode("utf-8")).hexdigest()
 
-    def _get_paulwei_fast_summary(self, *, lightweight: bool = False) -> CandidateSummary:
+    def _get_paulwei_fast_summary(
+        self,
+        *,
+        lightweight: bool = False,
+        progress_callback: Any | None = None,
+    ) -> CandidateSummary:
         if lightweight:
             if self._paulwei_fast_lightweight is None:
                 self._paulwei_fast_lightweight = self._evaluate_variant(
                     self._paulwei_variant,
                     fast=True,
                     lightweight=True,
+                    progress_callback=progress_callback,
                 )
             return self._paulwei_fast_lightweight
         if self._paulwei_fast_full is None:
@@ -1255,6 +1439,7 @@ class FrameworkEvaluator:
                 self._paulwei_variant,
                 fast=True,
                 lightweight=False,
+                progress_callback=progress_callback,
             )
         return self._paulwei_fast_full
 
