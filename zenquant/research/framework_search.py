@@ -845,7 +845,7 @@ class FrameworkEvaluator:
             *([("rl_tuned", rl_variant)] if rl_variant is not None else []),
         ]
         prepare_total_units = max(1, len(variant_specs) * 4)
-        lightweight_prepare = comparison_compute_mode == "smoke_minimal"
+        lightweight_prepare = evaluation_role == "development" and not full
 
         def _variant_progress(variant_name: str, variant_index: int):
             def _emit(step_completed: int | str, unit: str) -> None:
