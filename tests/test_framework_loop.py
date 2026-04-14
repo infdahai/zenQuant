@@ -546,6 +546,103 @@ class FrameworkLoopScriptTests(unittest.TestCase):
         self.assertEqual(captured["round_index"], 1)
         self.assertEqual(captured["seed_trials"], seed_payload)
 
+    def test_resume_prefers_candidate_checkpoint_for_seed_warm_start(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            loop_dir = Path(tmp) / "framework_optimization_loop"
+            campaign_root = loop_dir / "runs"
+            previous_run_dir = campaign_root / "round_004"
+            (previous_run_dir / "checkpoints").mkdir(parents=True, exist_ok=True)
+            (loop_dir / "loop_history.json").write_text(
+                json.dumps(
+                    [
+                        {
+                            "round": 4,
+                            "budget": "smoke",
+                            "run_dir": str(previous_run_dir),
+                            "post_smoke_scenario": "scenario_development_train_iteration",
+                            "full_training_blockers": [],
+                            "adaptation_policy": "hostile_window_defensive",
+                            "next_budget": "fast",
+                            "next_seed_trials": [{"vol_shock_threshold": 0.95, "flip_min_confidence": 0.5}],
+                            "next_adaptation_policy": "hostile_window_defensive",
+                        }
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            (previous_run_dir / "checkpoints" / "candidate_checkpoint.json").write_text(
+                json.dumps(
+                    {
+                        "round": 4,
+                        "checkpoint_status": "usable",
+                        "split_contract_version": "btc_temporal_v2_train_selection_only",
+                        "search_space_mode": "execution_first_v2_correlation_constrained",
+                        "train_only_search": True,
+                        "candidate_variant": "optuna_tuned",
+                        "params": {"w_momentum": 0.21, "flip_min_confidence": 0.61},
+                        "selected_checkpoint_candidate": {"score": 1.7},
+                    }
+                ),
+                encoding="utf-8",
+            )
+            captured: dict[str, object] = {}
+
+            def fake_launch_round(
+                args,
+                *,
+                run_dir,
+                budget,
+                seed_trials,
+                loop_status_path,
+                loop_log_path,
+                round_index,
+                max_rounds,
+                adaptation_policy,
+                resume,
+                development_dev_gate,
+                dev_gate_last_round,
+                dev_gate_interval,
+            ):
+                del args, run_dir, budget, loop_status_path, loop_log_path, round_index, max_rounds, adaptation_policy, resume, development_dev_gate, dev_gate_last_round, dev_gate_interval
+                captured["seed_trials"] = seed_trials
+                return (
+                    {
+                        "post_smoke_scenario": {"scenario": "done", "category": "train_iteration", "should_open_full_training": False, "next_action": "stop", "blockers": []},
+                        "full_training_assessment": {"allowed": False, "blockers": [], "warnings": []},
+                        "best_variant": "current",
+                        "best_score": 0.0,
+                        "train_candidate_diagnostics": {"max_train_sharpe": 0.0},
+                        "candidate_ready_for_handoff": False,
+                        "candidate_frozen_id": None,
+                        "dev_gate_used_this_round": False,
+                    },
+                    {"search_status": {"stage1_best_score": 0.0}},
+                    {"phase": "stage3_complete", "status": "completed", "campaign_pid": 123},
+                )
+
+            def fake_plan_next_iteration(**kwargs):
+                return Namespace(
+                    next_budget="fast",
+                    adaptation_policy="steady_state",
+                    all_seed_trials=[],
+                    loop_progression_blocked=False,
+                    should_open_fast_or_full_training=False,
+                    stop=True,
+                    stop_reason="done",
+                )
+
+            with (
+                mock.patch("sys.argv", ["run_framework_research_loop.py", "--output-dir", str(loop_dir), "--campaign-output-root", str(campaign_root), "--resume"]),
+                mock.patch.object(LOOP, "_launch_round", side_effect=fake_launch_round),
+                mock.patch.object(LOOP, "plan_next_iteration", side_effect=fake_plan_next_iteration),
+                mock.patch.object(LOOP, "_write_training_monitor", return_value={}),
+            ):
+                LOOP.main()
+
+        self.assertEqual(captured["seed_trials"][0]["w_momentum"], 0.21)
+        self.assertEqual(captured["seed_trials"][0]["flip_min_confidence"], 0.65)
+        self.assertEqual(captured["seed_trials"][1]["vol_shock_threshold"], 0.9)
+
     def test_write_handoff_candidate_pointer(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             loop_dir = Path(tmp)
@@ -621,6 +718,11 @@ class FrameworkLoopScriptTests(unittest.TestCase):
                         "optuna_trials_completed": 10,
                         "stage1_optuna_trials_total": 50,
                         "stage1_progress_total": 50,
+                        "candidate_checkpoint_written": True,
+                        "candidate_checkpoint_status": "usable",
+                        "candidate_checkpoint_variant": "optuna_tuned",
+                        "candidate_checkpoint_score": 1.3,
+                        "candidate_checkpoint_origin_phase": "stage1",
                         "stage2_subphase": "stage2_prepare_variants",
                         "stage2_progress_completed": 2,
                         "stage2_progress_total": 16,
@@ -639,6 +741,9 @@ class FrameworkLoopScriptTests(unittest.TestCase):
         self.assertEqual(payload["best_train_score_so_far"], 0.5)
         self.assertEqual(payload["prevalidation_rejection_rate"], 1.0)
         self.assertEqual(payload["recent_rounds"][0]["round"], 1)
+        self.assertTrue(payload["candidate_checkpoint_written"])
+        self.assertEqual(payload["candidate_checkpoint_status"], "usable")
+        self.assertEqual(payload["candidate_checkpoint_variant"], "optuna_tuned")
 
     def test_write_training_monitor_marks_compare_windows_parallel_expected(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

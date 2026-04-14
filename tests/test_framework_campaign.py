@@ -953,6 +953,74 @@ class FrameworkCampaignTests(unittest.TestCase):
         self.assertTrue(final_json_exists)
         self.assertTrue(final_md_exists)
 
+    def test_campaign_writes_candidate_checkpoint_when_stage2_fails(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp) / "results"
+
+            class FakeEvaluator:
+                def __init__(self, *_args, **_kwargs) -> None:
+                    self._base_config = type(
+                        "BaseConfig",
+                        (),
+                        {"execution_timeframe": CAMPAIGN.Timeframe.TF_5M, "context_timeframe": CAMPAIGN.Timeframe.TF_1H},
+                    )()
+                    self.readiness = {"promotion_ready": False, "blocked_by": "not_promotion_ready"}
+                    self.search_param_grid = {"w_momentum": [0.2, 0.3]}
+                    self.search_space_profile = {"profile": "execution_first_v2_correlation_constrained"}
+                    self._deribit_status = {"enabled": True, "observation_ready": False, "research_ready": False}
+                    self._training_window_coverage = {"fast_windows": ["overall_recent"]}
+                    self.training_input_contract = {
+                        "primary_truth_source": "binance",
+                        "execution_framework": {
+                            "five_min_feature_aggregation_enabled": True,
+                            "five_min_direct_execution_enabled": True,
+                            "one_hour_bars_available": True,
+                            "four_hour_bars_available": True,
+                        },
+                        "state_feature_sources": {
+                            "hyperliquid_in_state_features": True,
+                            "deribit_in_state_features": True,
+                            "etf_flow_in_state_features": True,
+                            "cme_positioning_in_state_features": True,
+                        },
+                        "signal_stack_contract": {"direction_state_execution_split_enabled": True},
+                    }
+
+                def final_report(self, **_kwargs):
+                    raise CAMPAIGN.SearchStageTimeoutError(
+                        "stage2_prepare_variant_timeout: variant=optuna_tuned window=2024-11 DD blocked_by=prepare_timeout"
+                    )
+
+            def _fake_run_optuna_search(*_args, **kwargs):
+                callback = kwargs["status_callback"]
+                callback(event="trial_completed", current_trial=1, completed_trials=1, total_trials=1, runtime_s=1.0)
+                return {"w_momentum": 0.3}, [{"params": {"w_momentum": 0.3}, "summary": {"robust_score": 1.25}}], {
+                    "train_candidate_diagnostics": {"raw_trial_count": 1},
+                    "empty_shortlist_reason": None,
+                }
+
+            argv = ["run_framework_campaign.py", "--output-dir", str(out), "--budget", "fast", "--development-dev-gate"]
+            with (
+                patch.object(sys, "argv", argv),
+                patch("importlib.util.find_spec", return_value=object()),
+                patch.object(CAMPAIGN, "FrameworkEvaluator", FakeEvaluator),
+                patch.object(CAMPAIGN, "run_optuna_search", side_effect=_fake_run_optuna_search),
+                patch.object(CAMPAIGN, "train_tuner", return_value=None),
+                self.assertRaises(CAMPAIGN.SearchStageTimeoutError),
+            ):
+                CAMPAIGN.main()
+
+            checkpoint = json.loads((out / "checkpoints" / "candidate_checkpoint.json").read_text(encoding="utf-8"))
+            status = json.loads((out / "campaign_status.json").read_text(encoding="utf-8"))
+
+        self.assertEqual(checkpoint["candidate_variant"], "optuna_tuned")
+        self.assertEqual(checkpoint["checkpoint_status"], "degraded")
+        self.assertEqual(checkpoint["blocked_by"], "prepare_timeout")
+        self.assertIn("stage2_prepare_variant_timeout", checkpoint["failure_reason"])
+        self.assertTrue(status["candidate_checkpoint_written"])
+        self.assertEqual(status["candidate_checkpoint_status"], "degraded")
+        self.assertEqual(status["candidate_checkpoint_variant"], "optuna_tuned")
+
     def test_campaign_writes_partial_stage1_checkpoint_before_rl_failure(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             out = Path(tmp) / "results"
