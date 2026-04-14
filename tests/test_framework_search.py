@@ -969,6 +969,60 @@ class SearchReportSerializationTests(unittest.TestCase):
             evaluator._compute_profiles["fast"]["compare_validation_workers"],
         )
 
+    def test_final_report_uses_lightweight_prepare_for_fast_but_not_high(self) -> None:
+        captured: list[tuple[bool, bool, str]] = []
+
+        def _fake_evaluate_variant(self, variant, *, fast, lightweight=False, progress_callback=None):
+            del progress_callback
+            captured.append((fast, lightweight, variant.name))
+            return CandidateSummary(
+                variant=variant.name,
+                robust_score=1.0 if variant.name == "current" else 0.5,
+                selection_split="dev",
+                dev_sharpe=1.0,
+                dev_pnl=10.0,
+                dev_drawdown=0.1,
+                avg_dev_sharpe=1.0,
+                avg_dev_ratio=1.0,
+                worst_dev_sharpe=0.5,
+                weak_window_sharpe=0.2,
+                negative_dev_worst_windows=0,
+                promotion_candidate=False,
+            )
+
+        with patch.object(FrameworkEvaluator, "_evaluate_variant", new=_fake_evaluate_variant):
+            evaluator = FrameworkEvaluator(HistoricalBacktestConfig(), split_spec=default_btc_split_spec())
+            evaluator.final_report(
+                optuna_params=None,
+                rl_params=None,
+                search_status={"stage1_execution_mode": "5m_lightweight_train_search"},
+                full=False,
+                evaluate_test=False,
+                include_comparison_payload=False,
+                comparison_compute_mode="full",
+                evaluation_role="development",
+                test_access_allowed=False,
+                dev_gate_used_this_round=True,
+            )
+            fast_calls = list(captured)
+            captured.clear()
+            evaluator.final_report(
+                optuna_params=None,
+                rl_params=None,
+                search_status={"stage1_execution_mode": "5m_lightweight_train_search"},
+                full=True,
+                evaluate_test=False,
+                include_comparison_payload=False,
+                comparison_compute_mode="full",
+                evaluation_role="development",
+                test_access_allowed=False,
+                dev_gate_used_this_round=True,
+            )
+            high_calls = list(captured)
+
+        self.assertTrue(all(fast and lightweight for fast, lightweight, _ in fast_calls))
+        self.assertTrue(all((not fast) and (not lightweight) for fast, lightweight, _ in high_calls))
+
     def test_compute_profiles_raise_smoke_compare_workers_without_expanding_windows(self) -> None:
         evaluator = FrameworkEvaluator(HistoricalBacktestConfig(), split_spec=default_btc_split_spec())
 
