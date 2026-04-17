@@ -1731,13 +1731,15 @@ def run_optuna_search(
         status_callback=status_callback,
         trial_timeout_s=trial_timeout_s,
         stage_total_timeout_s=stage_total_timeout_s,
+        stage_wall_clock_budget_s=720.0 if effective_execution_timeframe == Timeframe.TF_5M else None,
+        min_completed_trials=24 if effective_execution_timeframe == Timeframe.TF_5M else 0,
         stage1_parallel_mode=stage1_parallel_mode,
         stage1_max_workers=stage1_max_workers,
         stage1_target_inflight=stage1_target_inflight,
         stage1_batch_size=stage1_batch_size,
         research_compute_mode="lightweight_train_search",
         enable_early_stop=True,
-        trial_runtime_budget_s=120.0 if effective_execution_timeframe == Timeframe.TF_5M else 60.0,
+        trial_runtime_budget_s=90.0 if effective_execution_timeframe == Timeframe.TF_5M else 60.0,
     )
     sweep = run_search_stage(worker_config)
     ranking_started_at = datetime.now(UTC).timestamp()
@@ -1786,6 +1788,8 @@ def run_optuna_search(
     diagnostics = {
         "train_candidate_diagnostics": dict(getattr(sweep, "train_candidate_diagnostics", {}) or {}),
         "empty_shortlist_reason": getattr(sweep, "empty_shortlist_reason", None),
+        "stage1_budget_mode": getattr(sweep, "budget_mode", "trial_count_primary"),
+        "stage1_stop_reason": getattr(sweep, "stop_reason", "trial_budget_reached"),
     }
     return (best["params"] if best else None), ranked, diagnostics
 

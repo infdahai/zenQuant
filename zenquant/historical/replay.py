@@ -8,6 +8,7 @@ risk, and execution behavior stays auditable across modes.
 from __future__ import annotations
 
 import math
+import time
 from collections import Counter, defaultdict
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -116,6 +117,8 @@ class HistoricalBacktestConfig:
     early_stop_min_trade_count: int = 20
     early_stop_trade_floor_ratio: float = 0.25
     early_stop_max_drawdown: float = 0.35
+    early_stop_mid_trade_floor_ratio: float = 0.35
+    early_stop_late_trade_floor_ratio: float = 0.6
     replay_context: ReplayContext | None = None
 
 
@@ -172,6 +175,7 @@ class HistoricalBacktest:
 
         self.indicator_store = IndicatorStore()
         self._replay_context = self._config.replay_context or _build_replay_context(self._config)
+        self._profiling_totals: defaultdict[str, float] = defaultdict(float)
         self._macro_store = self._replay_context.macro_store
         self._options_store = self._replay_context.options_store
         self._hf_store = self._replay_context.hf_store
@@ -179,7 +183,7 @@ class HistoricalBacktest:
         self._liquidation_store = self._replay_context.liquidation_store
         self._eth_store = self._replay_context.eth_store
         self._basis_store = self._replay_context.basis_store
-        self.indicator_engine = IndicatorEngine(
+        self._subscribe_with_profile("indicator_step_total_s", lambda: IndicatorEngine(
             bus=self.bus,
             store=self.indicator_store,
             config=self._config.indicator_config
@@ -195,11 +199,11 @@ class HistoricalBacktest:
                 if self._config.liquidation_data_enabled and self._liquidation_store.loaded
                 else None
             ),
-        )
-        self.risk_overlay = RiskOverlay(
+        ))
+        self.risk_overlay = self._subscribe_with_profile("risk_step_total_s", lambda: RiskOverlay(
             bus=self.bus,
             config=self._config.risk_config or RiskOverlayConfig(starting_equity=self._config.starting_equity),
-        )
+        ))
         # Load plugin registry if profile path provided
         plugin_registry = None
         if self._config.profile_path and self._config.profile_path.exists():
@@ -208,21 +212,21 @@ class HistoricalBacktest:
             # Apply RL tuner weight overrides (dynamic, bypass default.toml)
             if self._config.signal_weight_overrides and plugin_registry is not None:
                 plugin_registry.weight_overrides = dict(self._config.signal_weight_overrides)
-        self.strategy_engine = ARCStrategyEngine(
+        self.strategy_engine = self._subscribe_with_profile("strategy_step_total_s", lambda: ARCStrategyEngine(
             bus=self.bus,
             config=self._config.strategy_config,
             plugin_registry=plugin_registry,
-        )
-        self.state_engine = StateEngine(
+        ))
+        self.state_engine = self._subscribe_with_profile("state_step_total_s", lambda: StateEngine(
             bus=self.bus,
             config=StateEngineConfig(enable_liquidation_overlay=self._config.state_liquidation_overlay_enabled),
-        )
-        self.execution_kernel = ExecutionKernel(
+        ))
+        self.execution_kernel = self._subscribe_with_profile("execution_step_total_s", lambda: ExecutionKernel(
             bus=self.bus,
             gateway=SimulatedGateway(),
             risk_overlay=self.risk_overlay,
             config=self._config.execution_config,
-        )
+        ))
 
         self._indicators: list[IndicatorPack] = []
         self._market_states: list[MarketState] = []
@@ -323,6 +327,11 @@ class HistoricalBacktest:
         if self._profiling_enabled:
             profiling = {
                 "event_loop_total_s": round(event_loop_finished_at - event_loop_started_at, 6),
+                "indicator_step_total_s": round(float(self._profiling_totals.get("indicator_step_total_s", 0.0) or 0.0), 6),
+                "strategy_step_total_s": round(float(self._profiling_totals.get("strategy_step_total_s", 0.0) or 0.0), 6),
+                "risk_step_total_s": round(float(self._profiling_totals.get("risk_step_total_s", 0.0) or 0.0), 6),
+                "execution_step_total_s": round(float(self._profiling_totals.get("execution_step_total_s", 0.0) or 0.0), 6),
+                "accounting_step_total_s": round(float(self._profiling_totals.get("accounting_step_total_s", 0.0) or 0.0), 6),
                 "metrics_finalize_s": round(metrics_finished_at - metrics_started_at, 6),
                 "diagnostics_finalize_s": round(diagnostics_finished_at - diagnostics_started_at, 6),
                 "cycle_context_finalize_s": round(cycle_finished_at - cycle_started_at, 6),
@@ -357,11 +366,11 @@ class HistoricalBacktest:
             return False, None
         current_trade_count = len(self._reports)
         if processed_ratio >= 0.75:
-            floor_ratio = max(float(self._config.early_stop_trade_floor_ratio), 0.25)
+            floor_ratio = max(float(self._config.early_stop_late_trade_floor_ratio), 0.35)
         elif processed_ratio >= 0.50:
-            floor_ratio = max(float(self._config.early_stop_trade_floor_ratio) * 0.7, 0.15)
+            floor_ratio = max(float(self._config.early_stop_mid_trade_floor_ratio), 0.2)
         else:
-            floor_ratio = max(float(self._config.early_stop_trade_floor_ratio) * 0.35, 0.05)
+            floor_ratio = max(float(self._config.early_stop_trade_floor_ratio), 0.1)
         trade_floor = max(
             1,
             math.floor(
@@ -369,6 +378,8 @@ class HistoricalBacktest:
                 * floor_ratio
             ),
         )
+        if processed_ratio >= 0.50 and current_trade_count == 0:
+            return True, "no_trade_progress"
         if current_trade_count < trade_floor:
             return True, "trade_count_too_low_for_processed_ratio"
         if self._risk_snapshots:
@@ -376,6 +387,27 @@ class HistoricalBacktest:
             if max_drawdown >= float(self._config.early_stop_max_drawdown):
                 return True, "drawdown_hard_fail"
         return False, None
+
+    def _subscribe_with_profile(self, bucket: str, factory: Any) -> Any:
+        if not self._profiling_enabled:
+            return factory()
+        original_subscribe = self.bus.subscribe
+
+        def profiled_subscribe(subject_pattern: str, handler: Any) -> None:
+            def wrapped(subject: str, payload: Any) -> None:
+                started_at = time.perf_counter()
+                try:
+                    handler(subject, payload)
+                finally:
+                    self._profiling_totals[bucket] += time.perf_counter() - started_at
+
+            original_subscribe(subject_pattern, wrapped)
+
+        self.bus.subscribe = profiled_subscribe
+        try:
+            return factory()
+        finally:
+            self.bus.subscribe = original_subscribe
 
     def _load_events(self) -> list[dict[str, Any]]:
         """Load candles and auxiliary market series in replay order."""
@@ -463,6 +495,7 @@ class HistoricalBacktest:
             ),
         )
         if timeframe == self._config.execution_timeframe:
+            accounting_started_at = time.perf_counter()
             self._execution_rows.append(dict(row))
             # Accumulate funding costs on open positions
             if funding_row is not None:
@@ -473,6 +506,8 @@ class HistoricalBacktest:
                     funding_time_ns=int(funding_row.get("funding_time_ns", cutoff_ns)),
                     cutoff_ns=cutoff_ns,
                 )
+            if self._profiling_enabled:
+                self._profiling_totals["accounting_step_total_s"] += time.perf_counter() - accounting_started_at
 
     def _latest_funding(self, cutoff_ns: int) -> dict[str, Any] | None:
         while (

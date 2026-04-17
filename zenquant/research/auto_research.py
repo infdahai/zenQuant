@@ -168,6 +168,8 @@ class CampaignConfig:
     status_callback: Any | None = None
     trial_timeout_s: float | None = None
     stage_total_timeout_s: float | None = None
+    stage_wall_clock_budget_s: float | None = None
+    min_completed_trials: int = 0
     stage1_parallel_mode: str = "serial"
     stage1_max_workers: int | None = None
     stage1_target_inflight: int | None = None
@@ -190,6 +192,8 @@ class SweepResult:
     runtime_s: float
     train_candidate_diagnostics: dict[str, Any] = field(default_factory=dict)
     empty_shortlist_reason: str | None = None
+    budget_mode: str = "trial_count_primary"
+    stop_reason: str = "trial_budget_reached"
 
 
 @dataclass(slots=True)
@@ -332,6 +336,11 @@ def _run_backtest_worker(args: tuple[Any, ...]) -> tuple[dict[str, Any], dict[st
         "trial_runtime_s": round(run_finished_at - worker_started_at, 6),
         "config_build_s": round(build_done_at - context_build_started_at - replay_context_build_s, 6),
         "event_loop_total_s": round(float(result.profiling.get("event_loop_total_s", 0.0) or 0.0), 6),
+        "indicator_step_total_s": round(float(result.profiling.get("indicator_step_total_s", 0.0) or 0.0), 6),
+        "strategy_step_total_s": round(float(result.profiling.get("strategy_step_total_s", 0.0) or 0.0), 6),
+        "risk_step_total_s": round(float(result.profiling.get("risk_step_total_s", 0.0) or 0.0), 6),
+        "execution_step_total_s": round(float(result.profiling.get("execution_step_total_s", 0.0) or 0.0), 6),
+        "accounting_step_total_s": round(float(result.profiling.get("accounting_step_total_s", 0.0) or 0.0), 6),
         "metrics_finalize_s": round(float(result.profiling.get("metrics_finalize_s", 0.0) or 0.0), 6),
         "diagnostics_finalize_s": round(float(result.profiling.get("diagnostics_finalize_s", 0.0) or 0.0), 6),
         "terminated_early": 1.0 if result.terminated_early else 0.0,
@@ -534,6 +543,8 @@ class Campaign:
             runtime_s=time.time() - start,
             train_candidate_diagnostics=diagnostics,
             empty_shortlist_reason=empty_shortlist_reason,
+            budget_mode="trial_count_primary",
+            stop_reason="trial_budget_reached",
         )
 
     def _run_optuna_sweep(self) -> SweepResult:
@@ -679,12 +690,45 @@ class Campaign:
             completed_trials = 0
             launched_trials = 0
             last_running_heartbeat_at = 0.0
+            budget_mode = "wall_clock_primary" if self._config.stage_wall_clock_budget_s is not None else "trial_count_primary"
+            stop_reason = "trial_budget_reached"
 
             pool: ProcessPoolExecutor | None = None
             pending: dict[Any, tuple[Any, int, dict[str, Any], float]] = {}
             try:
                 pool = ProcessPoolExecutor(max_workers=max_workers)
                 while completed_trials < n_trials:
+                    elapsed_stage_s = time.time() - start
+                    if self._config.stage_wall_clock_budget_s is not None and elapsed_stage_s >= self._config.stage_wall_clock_budget_s:
+                        if completed_trials >= max(1, self._config.min_completed_trials):
+                            _shutdown_pool_quickly(pool, list(pending.keys()))
+                            pending.clear()
+                            stop_reason = "wall_clock_budget_reached"
+                            if self._config.status_callback is not None:
+                                best_value, best_params = _best_trial_snapshot(study)
+                                self._config.status_callback(
+                                    event="stage1_budget_reached",
+                                    current_trial=launched_trials,
+                                    completed_trials=completed_trials,
+                                    total_trials=n_trials,
+                                    best_value_so_far=best_value,
+                                    best_params_so_far=best_params,
+                                    runtime_s=elapsed_stage_s,
+                                    pending_trials=0,
+                                    max_workers=max_workers,
+                                    target_inflight=target_inflight,
+                                    active_workers_estimate=0,
+                                    scheduler_mode="work_conserving",
+                                    underfilled=False,
+                                    underfilled_reason=None,
+                                    stage1_budget_mode=budget_mode,
+                                    stage1_stop_reason=stop_reason,
+                                )
+                            break
+                        _shutdown_pool_quickly(pool, list(pending.keys()))
+                        raise SearchStageTimeoutError(
+                            f"stage1_optuna_budget_shortfall: completed {completed_trials}/{max(1, self._config.min_completed_trials)} within {self._config.stage_wall_clock_budget_s:.0f}s"
+                        )
                     if self._config.stage_total_timeout_s is not None and (time.time() - start) > self._config.stage_total_timeout_s:
                         _shutdown_pool_quickly(pool, list(pending.keys()))
                         raise SearchStageTimeoutError(
@@ -737,6 +781,8 @@ class Campaign:
                                 scheduler_mode="work_conserving",
                                 underfilled=False,
                                 underfilled_reason=None,
+                                stage1_budget_mode=budget_mode,
+                                stage1_stop_reason=stop_reason,
                             )
 
                     if not pending:
@@ -765,6 +811,8 @@ class Campaign:
                                     if launched_trials < n_trials and len(pending) < target_inflight
                                     else None
                                 ),
+                                stage1_budget_mode=budget_mode,
+                                stage1_stop_reason=stop_reason,
                             )
                             last_running_heartbeat_at = time.time()
                         if self._config.trial_timeout_s is not None:
@@ -819,8 +867,15 @@ class Campaign:
                                 event_loop_total_s=metrics.get("event_loop_total_s", 0.0),
                                 metrics_finalize_s=metrics.get("metrics_finalize_s", 0.0),
                                 diagnostics_finalize_s=metrics.get("diagnostics_finalize_s", 0.0),
+                                indicator_step_total_s=metrics.get("indicator_step_total_s", 0.0),
+                                strategy_step_total_s=metrics.get("strategy_step_total_s", 0.0),
+                                risk_step_total_s=metrics.get("risk_step_total_s", 0.0),
+                                execution_step_total_s=metrics.get("execution_step_total_s", 0.0),
+                                accounting_step_total_s=metrics.get("accounting_step_total_s", 0.0),
                                 terminated_early=metrics.get("terminated_early", 0.0),
                                 processed_event_ratio=metrics.get("processed_event_ratio", 0.0),
+                                stage1_budget_mode=budget_mode,
+                                stage1_stop_reason=stop_reason,
                             )
             finally:
                 _shutdown_pool_quickly(pool, list(pending.keys()))
@@ -869,6 +924,8 @@ class Campaign:
             runtime_s=time.time() - start,
             train_candidate_diagnostics=diagnostics,
             empty_shortlist_reason=empty_shortlist_reason,
+            budget_mode=budget_mode if self._config.stage1_parallel_mode == "cpu_parallel" and n_trials > 1 else "trial_count_primary",
+            stop_reason=stop_reason if self._config.stage1_parallel_mode == "cpu_parallel" and n_trials > 1 else "trial_budget_reached",
         )
 
     # ── Stage 2: Walk-Forward ──────────────────────────────
