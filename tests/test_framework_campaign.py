@@ -274,11 +274,20 @@ class FrameworkCampaignTests(unittest.TestCase):
                     event_loop_total_s=2.0,
                     metrics_finalize_s=0.3,
                     diagnostics_finalize_s=0.0,
+                    indicator_step_total_s=0.4,
+                    strategy_step_total_s=0.5,
+                    risk_step_total_s=0.2,
+                    execution_step_total_s=0.6,
+                    accounting_step_total_s=0.1,
                     terminated_early=1.0,
+                    stage1_budget_mode="wall_clock_primary",
+                    stage1_stop_reason="wall_clock_budget_reached",
                 )
                 return {"w_momentum": 0.3}, [{"params": {"w_momentum": 0.3}, "metrics": {"trade_count": 10, "sharpe": 1.0}}], {
                     "train_candidate_diagnostics": {"raw_trial_count": 1},
                     "empty_shortlist_reason": None,
+                    "stage1_budget_mode": "wall_clock_primary",
+                    "stage1_stop_reason": "wall_clock_budget_reached",
                 }
 
             argv = ["run_framework_campaign.py", "--output-dir", str(out), "--budget", "fast", "--development-dev-gate"]
@@ -300,7 +309,14 @@ class FrameworkCampaignTests(unittest.TestCase):
         self.assertAlmostEqual(payload["stage1_cache_hit_rate"], 1.0)
         self.assertAlmostEqual(payload["stage1_avg_event_loop_s"], 2.0)
         self.assertAlmostEqual(payload["stage1_avg_metrics_finalize_s"], 0.3)
+        self.assertAlmostEqual(payload["stage1_avg_indicator_step_s"], 0.4)
+        self.assertAlmostEqual(payload["stage1_avg_strategy_step_s"], 0.5)
+        self.assertAlmostEqual(payload["stage1_avg_risk_step_s"], 0.2)
+        self.assertAlmostEqual(payload["stage1_avg_execution_step_s"], 0.6)
+        self.assertAlmostEqual(payload["stage1_avg_accounting_step_s"], 0.1)
         self.assertAlmostEqual(payload["stage1_terminated_early_rate"], 1.0)
+        self.assertEqual(payload["stage1_budget_mode"], "wall_clock_primary")
+        self.assertEqual(payload["stage1_stop_reason"], "wall_clock_budget_reached")
 
     def test_campaign_fast_runs_lightweight_rl_by_default(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

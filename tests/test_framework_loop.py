@@ -723,6 +723,13 @@ class FrameworkLoopScriptTests(unittest.TestCase):
                         "candidate_checkpoint_variant": "optuna_tuned",
                         "candidate_checkpoint_score": 1.3,
                         "candidate_checkpoint_origin_phase": "stage1",
+                        "stage1_budget_mode": "wall_clock_primary",
+                        "stage1_stop_reason": "wall_clock_budget_reached",
+                        "stage1_avg_indicator_step_s": 0.4,
+                        "stage1_avg_strategy_step_s": 0.5,
+                        "stage1_avg_risk_step_s": 0.2,
+                        "stage1_avg_execution_step_s": 0.6,
+                        "stage1_avg_accounting_step_s": 0.1,
                         "stage2_subphase": "stage2_prepare_variants",
                         "stage2_progress_completed": 2,
                         "stage2_progress_total": 16,
@@ -744,6 +751,10 @@ class FrameworkLoopScriptTests(unittest.TestCase):
         self.assertTrue(payload["candidate_checkpoint_written"])
         self.assertEqual(payload["candidate_checkpoint_status"], "usable")
         self.assertEqual(payload["candidate_checkpoint_variant"], "optuna_tuned")
+        self.assertEqual(payload["stage1_budget_mode"], "wall_clock_primary")
+        self.assertEqual(payload["stage1_stop_reason"], "wall_clock_budget_reached")
+        self.assertEqual(payload["stage1_avg_indicator_step_s"], 0.4)
+        self.assertEqual(payload["stage1_avg_execution_step_s"], 0.6)
 
     def test_write_training_monitor_marks_compare_windows_parallel_expected(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

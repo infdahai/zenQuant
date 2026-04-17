@@ -56,6 +56,11 @@ class _ImmediateExecutor:
         del args, kwargs
 
 
+def _wait_done_immediately(fs, timeout=None, return_when=None):
+    del timeout, return_when
+    return set(fs), set()
+
+
 class TestParamsHash(unittest.TestCase):
     def test_deterministic(self) -> None:
         p = {"a": 1, "b": 2.0}
@@ -298,6 +303,67 @@ class TestTimeoutCleanup(unittest.TestCase):
         self.assertTrue(shutdown_calls)
         self.assertTrue(all(wait is False for wait, _ in shutdown_calls))
         self.assertTrue(all(cancel_futures is True for _, cancel_futures in shutdown_calls))
+
+    def test_bayesian_cpu_parallel_respects_wall_clock_budget(self) -> None:
+        spec = default_btc_split_spec()
+        clock_values = iter([0.0, 1.0, 2.0, 12.0, 13.0, 14.0, 15.0])
+
+        def fake_time():
+            return next(clock_values)
+
+        def fake_worker(args):
+            return args[0], {
+                "sharpe": 1.0,
+                "sortino": 1.0,
+                "net_pnl": 1.0,
+                "max_drawdown": 0.1,
+                "win_rate": 0.5,
+                "profit_factor": 1.0,
+                "trade_count": 25,
+                "fee_drag_pct": 0.01,
+                "trial_runtime_s": 3.0,
+                "replay_context_build_s": 0.2,
+                "event_publish_run_s": 2.7,
+                "cache_hit": 1.0,
+                "event_loop_total_s": 2.5,
+                "indicator_step_total_s": 0.5,
+                "strategy_step_total_s": 0.6,
+                "risk_step_total_s": 0.4,
+                "execution_step_total_s": 0.7,
+                "accounting_step_total_s": 0.1,
+                "metrics_finalize_s": 0.1,
+                "diagnostics_finalize_s": 0.0,
+                "terminated_early": 1.0,
+                "processed_event_ratio": 0.55,
+            }
+
+        config = CampaignConfig(
+            split_spec=spec,
+            search_space=SearchSpace(strategy_params={"bull_leverage": [2.5, 3.0, 3.5]}),
+            sweep_mode="bayesian",
+            n_trials=3,
+            wf_splits=[],
+            robustness_seeds=[],
+            verbose=False,
+            stage1_parallel_mode="cpu_parallel",
+            stage1_max_workers=1,
+            stage1_target_inflight=1,
+            stage_wall_clock_budget_s=10.0,
+            min_completed_trials=1,
+        )
+
+        with (
+            patch("zenquant.research.auto_research.ProcessPoolExecutor", _ImmediateExecutor),
+            patch("zenquant.research.auto_research.wait", _wait_done_immediately),
+            patch("zenquant.research.auto_research.time.time", side_effect=fake_time),
+            patch("zenquant.research.auto_research._run_backtest_worker", side_effect=fake_worker),
+        ):
+            sweep = run_search_stage(config)
+
+        self.assertEqual(sweep.stop_reason, "wall_clock_budget_reached")
+        self.assertEqual(sweep.budget_mode, "wall_clock_primary")
+        self.assertEqual(sweep.total_combinations, 3)
+        self.assertGreaterEqual(len(sweep.results), 1)
 
 
 class TestSearchSpace(unittest.TestCase):
