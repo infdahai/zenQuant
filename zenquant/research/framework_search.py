@@ -35,6 +35,7 @@ from zenquant.research.comparison import (
     paulwei_risk_baseline,
     split_window_spec,
 )
+from zenquant.research.data_source_review import load_source_admission_review
 from zenquant.research.framework_params import (
     baseline_anchor_seed_trials,
     build_execution_config,
@@ -46,6 +47,7 @@ from zenquant.research.framework_params import (
     param_grid_for_mode,
     search_space_profile,
 )
+from zenquant.research.source_independence import load_source_independence_audit
 from zenquant.research.splits import DatasetSplitSpec, default_btc_split_spec, split_summary_json
 
 
@@ -69,6 +71,71 @@ def _etf_flow_source_metadata(macro_dir: Path) -> dict[str, Any]:
         "etf_flow_source": payload.get("etf_flow_source"),
         "etf_flow_source_confidence": payload.get("etf_flow_source_confidence", "unknown"),
         "etf_flow_last_success_at": payload.get("etf_flow_last_success_at"),
+    }
+
+
+def _mvrv_source_metadata(macro_dir: Path) -> dict[str, Any]:
+    metadata_path = macro_dir / "btc_mvrv" / "metadata.json"
+    if not metadata_path.exists():
+        return {
+            "mvrv_source": None,
+            "mvrv_source_confidence": "missing",
+            "mvrv_last_success_at": None,
+        }
+    try:
+        payload = json.loads(metadata_path.read_text(encoding="utf-8"))
+    except Exception:
+        return {
+            "mvrv_source": None,
+            "mvrv_source_confidence": "unknown",
+            "mvrv_last_success_at": None,
+        }
+    return {
+        "mvrv_source": payload.get("btc_mvrv_source"),
+        "mvrv_source_confidence": payload.get("btc_mvrv_source_confidence", "unknown"),
+        "mvrv_last_success_at": payload.get("btc_mvrv_last_success_at"),
+    }
+
+
+def _admission_contract(source_name: str) -> dict[str, Any]:
+    review = load_source_admission_review(source_name)
+    if not review:
+        return {
+            "review_present": False,
+            "tier_decision": None,
+            "time_granularity": None,
+            "research_ready": False,
+            "use_for_research_only": False,
+            "exclude_from_promote_truth": True,
+            "blocked_by": "admission_review_missing",
+        }
+    return {
+        "review_present": True,
+        "tier_decision": review.get("tier_decision"),
+        "time_granularity": review.get("time_granularity"),
+        "research_ready": bool(review.get("research_ready")),
+        "use_for_research_only": bool(review.get("use_for_research_only")),
+        "exclude_from_promote_truth": bool(review.get("exclude_from_promote_truth")),
+        "blocked_by": review.get("blocked_by"),
+    }
+
+
+def _independence_contract(source_name: str) -> dict[str, Any]:
+    review = load_source_independence_audit(source_name)
+    if not review:
+        return {
+            "review_present": False,
+            "allowed_in_state_features": False,
+            "use_for_research_only": False,
+            "blocked_by": "independence_review_missing",
+            "max_abs_correlation": None,
+        }
+    return {
+        "review_present": True,
+        "allowed_in_state_features": bool(review.get("allowed_in_state_features")),
+        "use_for_research_only": bool(review.get("use_for_research_only")),
+        "blocked_by": review.get("blocked_by"),
+        "max_abs_correlation": review.get("max_abs_correlation"),
     }
 
 
@@ -317,6 +384,10 @@ def _assess_full_training_readiness(
         data_warnings.append("deribit_observation_not_ready")
     if not state_sources.get("etf_flow_in_state_features"):
         data_warnings.append("etf_flow_state_features_unavailable")
+    if not state_sources.get("mvrv_in_state_features"):
+        data_warnings.append("mvrv_state_features_unavailable")
+    if not state_sources.get("deribit_block_flow_in_state_features"):
+        data_warnings.append("deribit_block_flow_state_features_unavailable")
     if report.search_status.get("liquidation_in_search") and not report.readiness.get("promotion_ready"):
         data_failures.append("liquidation_search_enabled_before_promotion_ready")
 
@@ -660,6 +731,12 @@ class FrameworkEvaluator:
             }
         )
         etf_flow_metadata = _etf_flow_source_metadata(base_config.macro_dir)
+        mvrv_metadata = _mvrv_source_metadata(base_config.macro_dir)
+        hyperliquid_admission = _admission_contract("hyperliquid")
+        mvrv_admission = _admission_contract("mvrv")
+        mvrv_independence = _independence_contract("btc_mvrv")
+        deribit_block_admission = _admission_contract("deribit_block_flow")
+        deribit_block_independence = _independence_contract("deribit_block_flow")
         self._training_input_contract = {
             "primary_truth_source": "binance",
             "execution_framework": {
@@ -679,10 +756,48 @@ class FrameworkEvaluator:
                     self._deribit_status["enabled"] and self._deribit_status["snapshot_count_7d"] > 0
                 ),
                 "hyperliquid_in_state_features": bool(self._readiness["data_ready"]),
+                "hyperliquid_admission_review_present": hyperliquid_admission["review_present"],
+                "hyperliquid_tier_decision": hyperliquid_admission["tier_decision"],
                 "etf_flow_in_state_features": (base_config.macro_dir / "btc_etf_netflow" / "data.parquet").exists(),
                 "etf_flow_source": etf_flow_metadata["etf_flow_source"],
                 "etf_flow_source_confidence": etf_flow_metadata["etf_flow_source_confidence"],
                 "etf_flow_last_success_at": etf_flow_metadata["etf_flow_last_success_at"],
+                "mvrv_in_state_features": bool(
+                    (base_config.macro_dir / "btc_mvrv" / "data.parquet").exists()
+                    and mvrv_admission["review_present"]
+                    and mvrv_admission["research_ready"]
+                    and mvrv_independence["review_present"]
+                    and mvrv_independence["allowed_in_state_features"]
+                    and mvrv_admission["tier_decision"] in {"tier2_research_only_feature", "tier3_promoted_state_signal"}
+                ),
+                "mvrv_source": mvrv_metadata["mvrv_source"],
+                "mvrv_source_confidence": mvrv_metadata["mvrv_source_confidence"],
+                "mvrv_last_success_at": mvrv_metadata["mvrv_last_success_at"],
+                "mvrv_admission_review_present": mvrv_admission["review_present"],
+                "mvrv_tier_decision": mvrv_admission["tier_decision"],
+                "mvrv_time_granularity": mvrv_admission["time_granularity"],
+                "mvrv_use_for_research_only": mvrv_admission["use_for_research_only"],
+                "mvrv_exclude_from_promote_truth": mvrv_admission["exclude_from_promote_truth"],
+                "mvrv_independence_review_present": mvrv_independence["review_present"],
+                "mvrv_independence_allowed": mvrv_independence["allowed_in_state_features"],
+                "mvrv_max_abs_correlation": mvrv_independence["max_abs_correlation"],
+                "mvrv_blocked_by": mvrv_independence["blocked_by"] or mvrv_admission["blocked_by"],
+                "deribit_block_flow_in_state_features": bool(
+                    deribit_block_admission["review_present"]
+                    and deribit_block_admission["research_ready"]
+                    and deribit_block_independence["review_present"]
+                    and deribit_block_independence["allowed_in_state_features"]
+                    and deribit_block_admission["tier_decision"]
+                    in {"tier2_research_only_feature", "tier3_promoted_state_signal"}
+                ),
+                "deribit_block_flow_admission_review_present": deribit_block_admission["review_present"],
+                "deribit_block_flow_tier_decision": deribit_block_admission["tier_decision"],
+                "deribit_block_flow_independence_review_present": deribit_block_independence["review_present"],
+                "deribit_block_flow_independence_allowed": deribit_block_independence["allowed_in_state_features"],
+                "deribit_block_flow_max_abs_correlation": deribit_block_independence["max_abs_correlation"],
+                "deribit_block_flow_blocked_by": (
+                    deribit_block_independence["blocked_by"] or deribit_block_admission["blocked_by"]
+                ),
                 "cme_positioning_in_state_features": (Path("data/raw/cftc") / "cot_btc.parquet").exists(),
                 "liquidation_in_search": bool(self._readiness["promotion_ready"]),
             },
