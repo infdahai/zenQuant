@@ -147,6 +147,8 @@ uv run python scripts/backfill_hyperliquid_history.py --coin BTC --output data/r
 uv run python scripts/collect_hyperliquid_liquidations.py --coin BTC --output data/raw/hyperliquid/liquidations
 uv run python scripts/merge_liquidation_sources.py --symbol BTCUSDT --output data/raw/merged_liquidations --input data/raw/hyperliquid/liquidations
 uv run python scripts/data_readiness_status.py --binance-root data/raw/binance --symbol BTCUSDT --deribit-root data/raw/deribit_options --hyperliquid-root data/raw/hyperliquid/liquidations --merged-root data/raw/merged_liquidations --output-dir results/data_readiness
+uv run zenquant-forward-collect
+uv run zenquant-forward-collect --health-only
 uv run python scripts/review_hyperliquid_admission.py --symbol BTCUSDT --binance-root data/raw/binance --merged-root data/raw/merged_liquidations --hyperliquid-root data/raw/hyperliquid/liquidations --deribit-root data/raw/deribit_options --output-dir results/data_source_review
 uv run python scripts/run_framework_campaign.py --root data/raw/binance --symbol BTCUSDT --liquidation-dir data/raw/merged_liquidations/aggregated --output-dir results/framework_optimization --budget high
 ```
@@ -170,6 +172,21 @@ uv run python scripts/run_framework_campaign.py --root data/raw/binance --symbol
 - `data_readiness_status.py`：
   - 必须生成 `results/data_readiness/data_readiness.json` 和 `results/data_readiness/data_readiness.md`
   - 必须显式给出 Deribit / Binance liquidation / Hyperliquid / merged liquidation 的唯一状态
+- `zenquant-forward-collect`：
+  - 必须按顺序执行 Deribit collect → Deribit block flow collect → Hyperliquid collect → merge → readiness refresh
+  - 必须生成 `results/data_readiness/forward_collection_latest.json`
+- `zenquant-forward-collect --health-only`：
+  - 必须只检查状态文件 freshness 和 blocker，不依赖进程存活
+  - 必须生成 `results/data_readiness/forward_collection_health.json`
+- `review_mvrv_admission.py`：
+  - 必须生成 `results/data_source_review/mvrv_admission_review.json` 和 `results/data_source_review/mvrv_admission_review.md`
+  - 必须固定：
+    - `tier_decision=tier2_research_only_feature`
+    - `time_granularity=1d`
+    - `use_for_research_only=true`
+- `review_deribit_block_flow_admission.py`：
+  - 必须生成 `results/data_source_review/deribit_block_flow_admission_review.json` 和 `results/data_source_review/deribit_block_flow_admission_review.md`
+  - 不得把公开 block/combo flow 表述为账户级 truth
 - `review_hyperliquid_admission.py`：
   - 必须生成 `results/data_source_review/hyperliquid_admission_review.json` 和 `results/data_source_review/hyperliquid_admission_review.md`
   - 必须显式写明：
@@ -203,6 +220,9 @@ uv run python scripts/run_framework_campaign.py --root data/raw/binance --symbol
 - 脚本级验证结果
 - 是否满足进入 `paper-live` 条件
 - 若 blocked，必须写明 blocker 名称
+- 若做前瞻数据守护验收，还必须记录：
+  - `zenquant-forward-collect` 最近一次成功时间
+  - `zenquant-forward-collect --health-only` 当前 freshness / blocker 结果
 
 ---
 
