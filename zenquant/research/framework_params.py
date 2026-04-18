@@ -58,6 +58,55 @@ def build_replay_toggles(params: dict[str, Any]) -> tuple[bool, bool]:
     return liquidation_data_enabled, liquidation_data_enabled and state_overlay_enabled
 
 
+def hostile_constraint_violations(params: dict[str, Any]) -> list[str]:
+    """Return deterministic hostile-window guardrail violations for execution-first tuning."""
+
+    violations: list[str] = []
+    if {"target_vol_4h", "max_leverage"} <= params.keys():
+        target_vol_4h = float(params.get("target_vol_4h", 0.0) or 0.0)
+        max_leverage = float(params.get("max_leverage", 0.0) or 0.0)
+    else:
+        target_vol_4h = max_leverage = None
+    if {"pyramid_add_pct", "pyramid_short_add_pct"} <= params.keys():
+        pyramid_add_pct = float(params.get("pyramid_add_pct", 0.0) or 0.0)
+        pyramid_short_add_pct = float(params.get("pyramid_short_add_pct", 0.0) or 0.0)
+    else:
+        pyramid_add_pct = pyramid_short_add_pct = None
+    if {"dca_spacing_atr", "dca_size_decay"} <= params.keys():
+        dca_spacing_atr = float(params.get("dca_spacing_atr", 0.0) or 0.0)
+        dca_size_decay = float(params.get("dca_size_decay", 0.0) or 0.0)
+    else:
+        dca_spacing_atr = dca_size_decay = None
+    flip_min_confidence = (
+        float(params.get("flip_min_confidence", 0.0) or 0.0) if "flip_min_confidence" in params else None
+    )
+
+    if target_vol_4h is not None and max_leverage is not None and target_vol_4h >= 1.10 and max_leverage > 4.5:
+        violations.append("high_target_vol_with_excess_leverage")
+    if (
+        pyramid_add_pct is not None
+        and pyramid_short_add_pct is not None
+        and pyramid_add_pct >= 0.30
+        and pyramid_short_add_pct > 0.12
+    ):
+        violations.append("aggressive_long_and_short_pyramiding")
+    if dca_spacing_atr is not None and dca_size_decay is not None and dca_spacing_atr <= 0.75 and dca_size_decay <= 0.75:
+        violations.append("tight_dca_spacing_with_heavy_inventory_reloading")
+    if (
+        flip_min_confidence is not None
+        and pyramid_add_pct is not None
+        and pyramid_short_add_pct is not None
+        and flip_min_confidence <= 0.55
+        and (pyramid_add_pct >= 0.20 or pyramid_short_add_pct >= 0.12)
+    ):
+        violations.append("low_flip_confidence_with_fast_inventory_expansion")
+    return violations
+
+
+def is_hostile_aware_param_combo(params: dict[str, Any]) -> bool:
+    return not hostile_constraint_violations(params)
+
+
 def baseline_anchored_param_grid(*, include_liquidation_toggles: bool = False) -> dict[str, list[float]]:
     grid: dict[str, list[float]] = {
         "dd_step_1_long": [0.12, 0.15, 0.18],
@@ -223,6 +272,15 @@ def search_space_profile(
             "capped_direction_signal": "crowding_signal",
             "demoted_signal": "funding_alpha_signal",
             "demoted_signal_role": "state",
+        },
+        "hostile_window_guardrails": {
+            "enabled": True,
+            "constraints": [
+                "high_target_vol_with_excess_leverage",
+                "aggressive_long_and_short_pyramiding",
+                "tight_dca_spacing_with_heavy_inventory_reloading",
+                "low_flip_confidence_with_fast_inventory_expansion",
+            ],
         },
         "param_count": len(param_grid_for_mode(mode=mode, include_liquidation_toggles=include_liquidation_toggles)),
     }

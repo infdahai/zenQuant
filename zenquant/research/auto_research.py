@@ -63,6 +63,9 @@ from zenquant.research.framework_params import (
 from zenquant.research.framework_params import (
     build_strategy_config as _shared_build_strategy_config,
 )
+from zenquant.research.framework_params import (
+    hostile_constraint_violations as _hostile_constraint_violations,
+)
 from zenquant.strategy import ARCStrategyConfig, ExitEngineConfig, PlaybookEngineConfig
 
 from .experiment import ExperimentTracker
@@ -99,6 +102,69 @@ def _shutdown_pool_quickly(pool: ProcessPoolExecutor | None, futures: list[Any] 
         pool.shutdown(wait=False, cancel_futures=True)
     except Exception:
         pass
+
+
+def _hostile_proxy_diagnostics(params: dict[str, Any], metrics: dict[str, float]) -> dict[str, float]:
+    """Train-only hostile stability proxy for stage1 ranking."""
+
+    sharpe = float(metrics.get("sharpe", 0.0) or 0.0)
+    max_drawdown = float(metrics.get("max_drawdown", 0.0) or 0.0)
+    profit_factor = float(metrics.get("profit_factor", 0.0) or 0.0)
+    fee_drag_pct = float(metrics.get("fee_drag_pct", 0.0) or 0.0)
+    trade_count = float(metrics.get("trade_count", 0.0) or 0.0)
+    terminated_early = float(metrics.get("terminated_early", 0.0) or 0.0)
+
+    target_vol_4h = float(params.get("target_vol_4h", 0.0) or 0.0)
+    max_leverage = float(params.get("max_leverage", 0.0) or 0.0)
+    pyramid_initial_pct = float(params.get("pyramid_initial_pct", 0.0) or 0.0)
+    pyramid_add_pct = float(params.get("pyramid_add_pct", 0.0) or 0.0)
+    pyramid_short_initial_pct = float(params.get("pyramid_short_initial_pct", 0.0) or 0.0)
+    pyramid_short_add_pct = float(params.get("pyramid_short_add_pct", 0.0) or 0.0)
+    dca_spacing_atr = float(params.get("dca_spacing_atr", 0.0) or 0.0)
+    dca_size_decay = float(params.get("dca_size_decay", 0.0) or 0.0)
+    flip_min_confidence = float(params.get("flip_min_confidence", 0.0) or 0.0)
+
+    execution_fragility_score = round(
+        max(0.0, target_vol_4h - 0.95) * 4.0
+        + max(0.0, max_leverage - 4.5) * 0.7
+        + max(0.0, pyramid_add_pct - 0.20) * 4.0
+        + max(0.0, pyramid_short_add_pct - 0.12) * 4.5
+        + max(0.0, 0.65 - flip_min_confidence) * 5.0,
+        6,
+    )
+    inventory_path_dependence_score = round(
+        max(0.0, pyramid_initial_pct - 0.25) * 3.0
+        + max(0.0, pyramid_short_initial_pct - 0.15) * 3.5
+        + max(0.0, 1.25 - dca_spacing_atr) * 1.4
+        + max(0.0, 0.75 - dca_size_decay) * 4.0,
+        6,
+    )
+    churn_penalty = max(0.0, (trade_count - 3200.0) / 500.0)
+    fragility_penalty = (
+        0.60 * execution_fragility_score
+        + 0.55 * inventory_path_dependence_score
+        + 3.0 * max(0.0, max_drawdown - 0.10)
+        + 1.2 * max(0.0, 1.0 - profit_factor)
+        + 0.9 * max(0.0, fee_drag_pct - 0.30)
+        + 0.35 * churn_penalty
+        + 0.5 * terminated_early
+    )
+    hostile_proxy_score = round(
+        sharpe
+        + 0.15 * profit_factor
+        - fragility_penalty,
+        6,
+    )
+    return {
+        "execution_fragility_score": execution_fragility_score,
+        "inventory_path_dependence_score": inventory_path_dependence_score,
+        "hostile_proxy_score": hostile_proxy_score,
+        "stage1_score": hostile_proxy_score,
+    }
+
+
+def _stage1_sort_metric(metrics: dict[str, Any], primary_metric: str) -> float:
+    return float(metrics.get("stage1_score", metrics.get("hostile_proxy_score", metrics.get(primary_metric, 0.0))) or 0.0)
 
 
 @dataclass(slots=True)
@@ -318,7 +384,7 @@ def _run_backtest_worker(args: tuple[Any, ...]) -> tuple[dict[str, Any], dict[st
     result = bt.run()
     run_finished_at = time.time()
     m = result.metrics
-    return params, {
+    metrics = {
         "sharpe": m.sharpe,
         "sortino": m.sortino,
         "net_pnl": m.net_pnl,
@@ -346,6 +412,9 @@ def _run_backtest_worker(args: tuple[Any, ...]) -> tuple[dict[str, Any], dict[st
         "terminated_early": 1.0 if result.terminated_early else 0.0,
         "processed_event_ratio": round(float(result.processed_event_ratio or 0.0), 6),
     }
+    metrics.update(_hostile_proxy_diagnostics(params, metrics))
+    metrics["hostile_constraint_violation_count"] = float(len(_hostile_constraint_violations(params)))
+    return params, metrics
 
 
 def _max_workers() -> int:
@@ -462,6 +531,18 @@ class Campaign:
         eligible_trade_count_trials = len(eligible_results)
         max_train_trade_count = max((int(item["metrics"].get("trade_count", 0) or 0) for item in results), default=0)
         max_train_sharpe = max((float(item["metrics"].get("sharpe", 0.0) or 0.0) for item in results), default=0.0)
+        max_hostile_proxy_score = max(
+            (float(item["metrics"].get("hostile_proxy_score", 0.0) or 0.0) for item in results),
+            default=0.0,
+        )
+        min_execution_fragility_score = min(
+            (float(item["metrics"].get("execution_fragility_score", 0.0) or 0.0) for item in eligible_results),
+            default=0.0,
+        )
+        min_inventory_path_dependence_score = min(
+            (float(item["metrics"].get("inventory_path_dependence_score", 0.0) or 0.0) for item in eligible_results),
+            default=0.0,
+        )
         empty_shortlist_reason = None
         if not eligible_results:
             if raw_nonzero_trade_trials == 0:
@@ -477,13 +558,18 @@ class Campaign:
                 "eligible_trade_count_trials": eligible_trade_count_trials,
                 "max_train_trade_count": max_train_trade_count,
                 "max_train_sharpe": round(max_train_sharpe, 6),
+                "max_hostile_proxy_score": round(max_hostile_proxy_score, 6),
+                "min_execution_fragility_score": round(min_execution_fragility_score, 6),
+                "min_inventory_path_dependence_score": round(min_inventory_path_dependence_score, 6),
             },
             empty_shortlist_reason,
         )
 
     def _run_grid_sweep(self) -> SweepResult:
         start = time.time()
-        param_grid = _build_param_grid(self._config.search_space)
+        param_grid = [
+            params for params in _build_param_grid(self._config.search_space) if not _hostile_constraint_violations(params)
+        ]
         if not param_grid:
             return SweepResult(total_combinations=0, results=[], top_n=[], runtime_s=0)
 
@@ -525,7 +611,7 @@ class Campaign:
         # Rank
         sorted_results = sorted(
             eligible_results,
-            key=lambda x: x["metrics"].get(self._config.primary_metric, 0),
+            key=lambda x: _stage1_sort_metric(x["metrics"], self._config.primary_metric),
             reverse=True,
         )
         top_n = sorted_results[: self._config.top_n_for_validation]
@@ -589,6 +675,21 @@ class Campaign:
             params: dict[str, Any] = {}
             for key, values in all_params.items():
                 params[key] = trial.suggest_categorical(key, values)
+            constraint_violations = _hostile_constraint_violations(params)
+            if constraint_violations:
+                metrics = {
+                    "sharpe": -10.0,
+                    "trade_count": 0,
+                    "hostile_proxy_score": -10.0,
+                    "stage1_score": -10.0,
+                    "execution_fragility_score": 10.0,
+                    "inventory_path_dependence_score": 10.0,
+                    "constraint_violations": constraint_violations,
+                }
+                self._tracker.record(params, metrics, tags=["sweep", "bayesian", "constraint_filtered"])
+                all_results.append({"params": params, "metrics": metrics})
+                trial.set_user_attr("constraint_violations", constraint_violations)
+                raise optuna.TrialPruned(f"constraint_filtered:{','.join(constraint_violations)}")
 
             args = (
                 params,
@@ -665,7 +766,7 @@ class Campaign:
             self._tracker.record(params, metrics, tags=["sweep", "bayesian"])
             all_results.append({"params": params, "metrics": metrics})
 
-            primary = metrics.get(self._config.primary_metric, 0)
+            primary = _stage1_sort_metric(metrics, self._config.primary_metric)
             return primary
 
         # Suppress Optuna's verbose logging
@@ -745,6 +846,26 @@ class Campaign:
                         params: dict[str, Any] = {}
                         for key, values in all_params.items():
                             params[key] = trial.suggest_categorical(key, values)
+                        constraint_violations = _hostile_constraint_violations(params)
+                        if constraint_violations:
+                            metrics = {
+                                "sharpe": -10.0,
+                                "trade_count": 0,
+                                "hostile_proxy_score": -10.0,
+                                "stage1_score": -10.0,
+                                "execution_fragility_score": 10.0,
+                                "inventory_path_dependence_score": 10.0,
+                                "constraint_violations": constraint_violations,
+                            }
+                            self._tracker.record(params, metrics, tags=["sweep", "bayesian", "constraint_filtered"])
+                            all_results.append({"params": params, "metrics": metrics})
+                            launched_trials += 1
+                            completed_trials += 1
+                            study.tell(
+                                trial,
+                                state=optuna.trial.TrialState.PRUNED,
+                            )
+                            continue
                         args = (
                             params,
                             str(self._config.data_root),
@@ -839,7 +960,7 @@ class Campaign:
 
                         self._tracker.record(params, metrics, tags=["sweep", "bayesian"])
                         all_results.append({"params": params, "metrics": metrics})
-                        primary = metrics.get(self._config.primary_metric, 0)
+                        primary = _stage1_sort_metric(metrics, self._config.primary_metric)
                         study.tell(trial, primary)
                         completed_trials += 1
 
@@ -874,6 +995,9 @@ class Campaign:
                                 accounting_step_total_s=metrics.get("accounting_step_total_s", 0.0),
                                 terminated_early=metrics.get("terminated_early", 0.0),
                                 processed_event_ratio=metrics.get("processed_event_ratio", 0.0),
+                                hostile_proxy_score=metrics.get("hostile_proxy_score", 0.0),
+                                execution_fragility_score=metrics.get("execution_fragility_score", 0.0),
+                                inventory_path_dependence_score=metrics.get("inventory_path_dependence_score", 0.0),
                                 stage1_budget_mode=budget_mode,
                                 stage1_stop_reason=stop_reason,
                             )
@@ -902,7 +1026,7 @@ class Campaign:
         # Sort all evaluated results
         sorted_results = sorted(
             eligible_results,
-            key=lambda x: x["metrics"].get(self._config.primary_metric, 0),
+            key=lambda x: _stage1_sort_metric(x["metrics"], self._config.primary_metric),
             reverse=True,
         )
         top_n = sorted_results[: self._config.top_n_for_validation]

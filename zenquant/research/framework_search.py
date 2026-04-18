@@ -390,6 +390,38 @@ def _best_tuned_candidate(report: SearchReport) -> CandidateSummary | None:
     return max(tuned, key=lambda candidate: candidate.robust_score)
 
 
+def _hostile_regression_summary(report: SearchReport) -> dict[str, Any]:
+    tuned = _best_tuned_candidate(report)
+    baseline = report.paulwei_baseline
+    if tuned is None:
+        return {
+            "dev_primary_improved": False,
+            "hostile_window_regressed": False,
+            "hostile_regression_driver": None,
+        }
+
+    dev_primary_improved = tuned.dev_sharpe > baseline.dev_sharpe
+    hostile_window_regressed = (
+        tuned.worst_dev_sharpe < baseline.worst_dev_sharpe
+        or tuned.negative_dev_worst_windows > baseline.negative_dev_worst_windows
+    )
+    hostile_regression_driver = None
+    if hostile_window_regressed:
+        if tuned.weak_window_sharpe < baseline.weak_window_sharpe:
+            hostile_regression_driver = "weak_window_2023_08"
+        elif tuned.negative_dev_worst_windows > baseline.negative_dev_worst_windows:
+            hostile_regression_driver = "worst_dd_window"
+        elif tuned.avg_dev_sharpe < baseline.avg_dev_sharpe:
+            hostile_regression_driver = "walk_forward_regression"
+        else:
+            hostile_regression_driver = "hostile_window_regression"
+    return {
+        "dev_primary_improved": dev_primary_improved,
+        "hostile_window_regressed": hostile_window_regressed,
+        "hostile_regression_driver": hostile_regression_driver,
+    }
+
+
 def _candidate_frozen_id(best_variant: str, best_params: dict[str, Any] | None) -> str | None:
     if not best_params:
         return None
@@ -582,6 +614,7 @@ def _classify_post_smoke_scenario(
 def _build_framework_diagnosis(report: SearchReport) -> dict[str, Any]:
     tuned = _best_tuned_candidate(report)
     baseline = report.paulwei_baseline
+    hostile_regression = _hostile_regression_summary(report)
     signal_audit = report.signal_audit_summary or {}
     summary = signal_audit.get("summary", {})
     redundant_pairs = summary.get("high_correlation_pairs", [])
@@ -627,6 +660,9 @@ def _build_framework_diagnosis(report: SearchReport) -> dict[str, Any]:
                 "paulwei_worst_dev_sharpe": baseline.worst_dev_sharpe,
                 "tuned_worst_dev_sharpe": tuned.worst_dev_sharpe if tuned is not None else None,
                 "tuned_negative_worst_windows": tuned.negative_dev_worst_windows if tuned is not None else None,
+                "dev_primary_improved": hostile_regression["dev_primary_improved"],
+                "hostile_window_regressed": hostile_regression["hostile_window_regressed"],
+                "hostile_regression_driver": hostile_regression["hostile_regression_driver"],
             },
             "problem": "The current weakness remains hostile-window quality, not average opportunity capture.",
         },
@@ -663,6 +699,9 @@ def _build_framework_diagnosis(report: SearchReport) -> dict[str, Any]:
             "Keep liquidation out of promote search until promotion_ready becomes true.",
             "Open full training only if the best tuned candidate stops regressing on worst_dev_sharpe and negative worst windows.",
         ],
+        "dev_primary_improved": hostile_regression["dev_primary_improved"],
+        "hostile_window_regressed": hostile_regression["hostile_window_regressed"],
+        "hostile_regression_driver": hostile_regression["hostile_regression_driver"],
     }
 
 
@@ -1887,6 +1926,9 @@ def run_optuna_search(
                 "eligible_trade_count_trials": 0,
                 "max_train_trade_count": 0,
                 "max_train_sharpe": 0.0,
+                "max_hostile_proxy_score": 0.0,
+                "min_execution_fragility_score": 0.0,
+                "min_inventory_path_dependence_score": 0.0,
             },
             "empty_shortlist_reason": "all_negative_primary_metric",
         }
@@ -2088,6 +2130,9 @@ def build_markdown_report(report: SearchReport) -> str:
             "## Framework Diagnosis",
             "",
             f"- current_state: `{framework_diagnosis['current_state']}`",
+            f"- dev_primary_improved: `{framework_diagnosis['dev_primary_improved']}`",
+            f"- hostile_window_regressed: `{framework_diagnosis['hostile_window_regressed']}`",
+            f"- hostile_regression_driver: `{framework_diagnosis['hostile_regression_driver']}`",
             f"- future_architecture_direction: `{framework_diagnosis['future_architecture_direction']}`",
             f"- recommended_next_steps: `{framework_diagnosis['recommended_next_steps']}`",
             "",
@@ -2180,6 +2225,7 @@ def write_search_report(path: Path, report: SearchReport) -> None:
         )
     )
     framework_diagnosis = _build_framework_diagnosis(report)
+    hostile_regression = _hostile_regression_summary(report)
     best_summary = next(
         (
             item
@@ -2201,6 +2247,9 @@ def write_search_report(path: Path, report: SearchReport) -> None:
     payload["full_training_assessment"] = full_training_assessment
     payload["post_smoke_scenario"] = post_smoke_scenario
     payload["framework_diagnosis"] = framework_diagnosis
+    payload["dev_primary_improved"] = hostile_regression["dev_primary_improved"]
+    payload["hostile_window_regressed"] = hostile_regression["hostile_window_regressed"]
+    payload["hostile_regression_driver"] = hostile_regression["hostile_regression_driver"]
     payload["full_training_allowed"] = full_training_assessment["ready"] if report.evaluation_role == "acceptance" else False
     payload["full_training_decision"] = full_training_assessment["decision"]
     payload["full_training_blockers"] = full_training_assessment["blockers"]
@@ -2305,6 +2354,9 @@ def write_search_report(path: Path, report: SearchReport) -> None:
         "verdict_kind": verdict_kind,
         "comparison_to_current": comparison_to_current,
         "comparison_to_paulwei_baseline": comparison_to_paulwei,
+        "dev_primary_improved": hostile_regression["dev_primary_improved"],
+        "hostile_window_regressed": hostile_regression["hostile_window_regressed"],
+        "hostile_regression_driver": hostile_regression["hostile_regression_driver"],
         "next_data_priority": (
             "liquidation_history"
             if not payload["readiness"]["promotion_ready"]

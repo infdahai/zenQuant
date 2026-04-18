@@ -834,6 +834,9 @@ def main() -> None:
                     "eligible_trade_count_trials": 0,
                     "max_train_trade_count": 0,
                     "max_train_sharpe": 0.0,
+                    "max_hostile_proxy_score": 0.0,
+                    "min_execution_fragility_score": 0.0,
+                    "min_inventory_path_dependence_score": 0.0,
                 },
                 "empty_shortlist_reason": None,
                 "rl_result": None,
@@ -1327,6 +1330,27 @@ def main() -> None:
                             ),
                             "max_train_sharpe": max(
                                 (float((item.get("train_metrics") or item.get("metrics") or {}).get("sharpe", 0.0) or 0.0) for item in ranked),
+                                default=0.0,
+                            ),
+                            "max_hostile_proxy_score": max(
+                                (
+                                    float((item.get("train_metrics") or item.get("metrics") or {}).get("hostile_proxy_score", 0.0) or 0.0)
+                                    for item in ranked
+                                ),
+                                default=0.0,
+                            ),
+                            "min_execution_fragility_score": min(
+                                (
+                                    float((item.get("train_metrics") or item.get("metrics") or {}).get("execution_fragility_score", 0.0) or 0.0)
+                                    for item in ranked
+                                ),
+                                default=0.0,
+                            ),
+                            "min_inventory_path_dependence_score": min(
+                                (
+                                    float((item.get("train_metrics") or item.get("metrics") or {}).get("inventory_path_dependence_score", 0.0) or 0.0)
+                                    for item in ranked
+                                ),
                                 default=0.0,
                             ),
                         },
