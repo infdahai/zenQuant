@@ -310,11 +310,14 @@ class FrameworkEvaluatorTests(unittest.TestCase):
                 )
 
         state_sources = evaluator.training_input_contract["state_feature_sources"]
+        signal_contract = evaluator.training_input_contract["signal_independence_contract"]
         self.assertTrue(state_sources["mvrv_in_state_features"])
         self.assertTrue(state_sources["mvrv_admission_review_present"])
         self.assertTrue(state_sources["mvrv_independence_review_present"])
         self.assertEqual(state_sources["mvrv_tier_decision"], "tier2_research_only_feature")
         self.assertEqual(state_sources["mvrv_time_granularity"], "1d")
+        self.assertFalse(signal_contract["audit_present"])
+        self.assertEqual(signal_contract["blocked_by"], "active_signal_independence_missing")
 
     def test_liquidation_candidate_is_blocked_when_history_missing(self) -> None:
         fake_summary = CandidateSummary(
@@ -553,6 +556,12 @@ class SearchReportSerializationTests(unittest.TestCase):
                     "hyperliquid_in_state_features": True,
                     "etf_flow_in_state_features": True,
                 },
+                "signal_independence_contract": {
+                    "audit_present": True,
+                    "direction_layer_clean": True,
+                    "state_layer_clean": True,
+                    "blocked_by": None,
+                },
             },
             search_status={
                 "search_space_profile": search_space_profile(),
@@ -635,6 +644,12 @@ class SearchReportSerializationTests(unittest.TestCase):
                     "deribit_in_state_features": True,
                     "etf_flow_in_state_features": True,
                 },
+                "signal_independence_contract": {
+                    "audit_present": True,
+                    "direction_layer_clean": True,
+                    "state_layer_clean": True,
+                    "blocked_by": None,
+                },
             },
             search_status={"search_space_profile": {"direction_weight_policy": {"correlation_constrained": True, "capped_direction_signal": "crowding_signal", "demoted_signal": "funding_alpha_signal", "demoted_signal_role": "state"}}},
             current=CandidateSummary(
@@ -712,6 +727,12 @@ class SearchReportSerializationTests(unittest.TestCase):
                     "hyperliquid_in_state_features": True,
                     "deribit_in_state_features": True,
                     "etf_flow_in_state_features": True,
+                },
+                "signal_independence_contract": {
+                    "audit_present": True,
+                    "direction_layer_clean": True,
+                    "state_layer_clean": True,
+                    "blocked_by": None,
                 },
             },
             search_status={"search_space_profile": {"direction_weight_policy": {"correlation_constrained": True, "capped_direction_signal": "crowding_signal", "demoted_signal": "funding_alpha_signal", "demoted_signal_role": "state"}}},
@@ -799,6 +820,12 @@ class SearchReportSerializationTests(unittest.TestCase):
                     "etf_flow_last_success_at": "2026-04-10T00:00:00+00:00",
                 },
                 "signal_stack_contract": {"direction_state_execution_split_enabled": True},
+                "signal_independence_contract": {
+                    "audit_present": True,
+                    "direction_layer_clean": True,
+                    "state_layer_clean": True,
+                    "blocked_by": None,
+                },
             },
             search_status={
                 "optuna_available": False,
@@ -853,6 +880,7 @@ class SearchReportSerializationTests(unittest.TestCase):
         self.assertIn("full_training_allowed", payload)
         self.assertIn("full_training_blockers", payload)
         self.assertIn("full_training_decision", payload)
+        self.assertIn("signal_independence_contract", payload["training_input_contract"])
         self.assertEqual(payload["search_space_mode"], "baseline_anchored_train_only")
         self.assertTrue(payload["baseline_anchored_search"])
         self.assertEqual(payload["baseline_anchor_variant"], "paulwei_baseline")
