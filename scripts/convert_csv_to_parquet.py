@@ -6,6 +6,14 @@ from pathlib import Path
 import pandas as pd
 
 
+def _normalize_exchange_timestamp(value: int | float) -> int:
+    """Normalize exchange timestamps to milliseconds before ns conversion."""
+    parsed = int(value)
+    if parsed >= 1_000_000_000_000_000:
+        return parsed // 1000
+    return parsed
+
+
 def csv_to_parquet(csv_dir: Path, output_dir: Path, data_type: str):
     """Convert all CSV files in directory to Parquet."""
     csv_files = list(csv_dir.glob("*.csv"))
@@ -55,6 +63,8 @@ def csv_to_parquet(csv_dir: Path, output_dir: Path, data_type: str):
 
     # Convert timestamps to nanoseconds
     if data_type == "klines":
+        combined["open_time"] = combined["open_time"].map(_normalize_exchange_timestamp)
+        combined["close_time"] = combined["close_time"].map(_normalize_exchange_timestamp)
         combined["open_time_ns"] = combined["open_time"] * 1_000_000
         combined["close_time_ns"] = combined["close_time"] * 1_000_000
     elif data_type == "funding":
