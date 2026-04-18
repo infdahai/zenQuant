@@ -46,6 +46,8 @@ class MacroSnapshot:
     ndx_z: float
     gold: float | None  # Gold (GLD)
     gold_z: float
+    btc_mvrv: float | None
+    btc_mvrv_z: float
     btc_etf_netflow: float | None
     btc_etf_netflow_z: float
     btc_etf_flow_3d: float
@@ -94,6 +96,7 @@ class MacroDataStore:
             # New: individual macro factors for cross-sectional analysis
             "ndx": self._config.macro_dir / "ndx" / "data.parquet",  # Nasdaq 100
             "gold": self._config.macro_dir / "gold" / "data.parquet",  # Gold (GLD)
+            "btc_mvrv": self._config.macro_dir / "btc_mvrv" / "data.parquet",
             "btc_etf_netflow": self._config.macro_dir / "btc_etf_netflow" / "data.parquet",
         }
 
@@ -156,6 +159,7 @@ class MacroDataStore:
         iwm, iwm_z = self._lookup_one("iwm", cutoff_time_ns)
         ndx, ndx_z = self._lookup_one("ndx", cutoff_time_ns)
         gold, gold_z = self._lookup_one("gold", cutoff_time_ns)
+        btc_mvrv, btc_mvrv_z = self._lookup_one("btc_mvrv", cutoff_time_ns)
         btc_etf_netflow, btc_etf_netflow_z = self._lookup_one("btc_etf_netflow", cutoff_time_ns)
         btc_etf_flow_3d = self._rolling_sum("btc_etf_netflow", cutoff_time_ns, window=3)
         btc_etf_flow_5d = self._rolling_sum("btc_etf_netflow", cutoff_time_ns, window=5)
@@ -191,6 +195,8 @@ class MacroDataStore:
             ndx_z=ndx_z,
             gold=gold,
             gold_z=gold_z,
+            btc_mvrv=btc_mvrv,
+            btc_mvrv_z=btc_mvrv_z,
             btc_etf_netflow=btc_etf_netflow,
             btc_etf_netflow_z=btc_etf_netflow_z,
             btc_etf_flow_3d=btc_etf_flow_3d,

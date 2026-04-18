@@ -20,7 +20,7 @@ from pathlib import Path
 import pyarrow as pa
 import pyarrow.parquet as pq
 
-from zenquant.ingestor.macro import fetch_btc_etf_netflow
+from zenquant.ingestor.macro import fetch_btc_etf_netflow, fetch_btc_mvrv
 
 # yfinance tickers for each macro series
 SERIES = {
@@ -94,6 +94,8 @@ def main() -> None:
     parser.add_argument("--years", type=int, default=7)
     parser.add_argument("--btc-etf-flow-csv", type=Path, default=None)
     parser.add_argument("--btc-etf-flow-url", type=str, default=None)
+    parser.add_argument("--btc-mvrv-csv", type=Path, default=None)
+    parser.add_argument("--btc-mvrv-url", type=str, default=None)
     args = parser.parse_args()
 
     print("Macro Data Download")
@@ -105,6 +107,9 @@ def main() -> None:
     if args.btc_etf_flow_csv is not None or args.btc_etf_flow_url is not None:
         print("  Importing btc_etf_netflow...")
         fetch_btc_etf_netflow(args.output, csv_path=args.btc_etf_flow_csv, csv_url=args.btc_etf_flow_url)
+    if args.btc_mvrv_csv is not None or args.btc_mvrv_url is not None:
+        print("  Importing btc_mvrv...")
+        fetch_btc_mvrv(args.output, csv_path=args.btc_mvrv_csv, csv_url=args.btc_mvrv_url)
 
     print("\nDone.")
 
