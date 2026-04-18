@@ -27,6 +27,7 @@ optimize = ["optuna>=4.0.0"]
 zenquant-backtest = "zenquant.app.backtest:main"
 zenquant-demo = "zenquant.app.demo:main"
 zenquant-history-sync = "zenquant.app.history_sync:main"
+zenquant-forward-collect = "zenquant.app.forward_data_collect:main"
 zenquant-live-export = "zenquant.app.live_export:main"
 zenquant-live-scorecard = "zenquant.app.paper_live_scorecard:main"
 zenquant-live-validate = "zenquant.app.live_validate:main"

@@ -2,6 +2,15 @@
 
 from .basis_store import BasisDataStore, BasisSnapshot, BasisStoreConfig
 from .cot_store import CotDataStore, CotSnapshot, CotStoreConfig
+from .deribit_block_flow import (
+    DeribitBlockFlowRow,
+    DeribitBlockFlowStatus,
+    collect_deribit_block_flow_status,
+    fetch_public_block_rfq_trades,
+    fetch_public_option_trades,
+    save_block_flow_rows,
+    write_deribit_block_flow_status,
+)
 from .liquidation_store import LiquidationDataStore, LiquidationSnapshot, LiquidationStoreConfig
 from .macro_store import MacroDataStore, MacroDataStoreConfig, MacroSnapshot
 from .options_store import OptionsDataStore, OptionsDataStoreConfig, OptionsSnapshot
@@ -13,6 +22,8 @@ __all__ = [
     "CotDataStore",
     "CotSnapshot",
     "CotStoreConfig",
+    "DeribitBlockFlowRow",
+    "DeribitBlockFlowStatus",
     "LiquidationDataStore",
     "LiquidationSnapshot",
     "LiquidationStoreConfig",
@@ -22,4 +33,9 @@ __all__ = [
     "OptionsDataStore",
     "OptionsDataStoreConfig",
     "OptionsSnapshot",
+    "collect_deribit_block_flow_status",
+    "fetch_public_block_rfq_trades",
+    "fetch_public_option_trades",
+    "save_block_flow_rows",
+    "write_deribit_block_flow_status",
 ]
