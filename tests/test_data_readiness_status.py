@@ -6,6 +6,7 @@ import unittest
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
+from zenquant.data.deribit_block_flow import DeribitBlockFlowRow, save_block_flow_rows, write_deribit_block_flow_status
 from zenquant.data.deribit_status import write_deribit_status
 from zenquant.data.liquidation_pipeline import (
     LiquidationEvent,
@@ -38,6 +39,7 @@ class DataReadinessStatusTests(unittest.TestCase):
             root = Path(tmp)
             binance_root = root / "binance"
             deribit_root = root / "deribit"
+            deribit_block_flow_root = root / "block_flow"
             hyperliquid_root = root / "hyperliquid"
             merged_root = root / "merged"
 
@@ -68,6 +70,34 @@ class DataReadinessStatusTests(unittest.TestCase):
                 ts = recent - timedelta(hours=index * 4)
                 (target / f"options_chain_{ts.strftime('%Y%m%dT%H%M%SZ')}.parquet").write_text("ok", encoding="utf-8")
             write_deribit_status(deribit_root)
+            save_block_flow_rows(
+                [
+                    DeribitBlockFlowRow(
+                        ts_ns=int(recent.timestamp() * 1_000_000_000),
+                        trade_id="t1",
+                        block_trade_id=None,
+                        combo_id=None,
+                        combo_trade_id=None,
+                        instrument_name="BTC-24APR26-72000-C",
+                        option_type="c",
+                        expiry_ts_ms=1776988800000,
+                        strike=72000.0,
+                        direction="buy",
+                        amount=3.0,
+                        price=0.0525,
+                        index_price=66930.31,
+                        mark_price=0.05253883,
+                        iv=45.91,
+                        liquidity=None,
+                        is_block_trade=False,
+                        is_combo_leg=False,
+                        leg_count=1,
+                        source="public_option_trade",
+                    )
+                ],
+                deribit_block_flow_root,
+            )
+            write_deribit_block_flow_status(deribit_block_flow_root)
 
             hyperliquid_root.mkdir(parents=True, exist_ok=True)
             (hyperliquid_root / "_collector_status.json").write_text(
@@ -115,12 +145,14 @@ class DataReadinessStatusTests(unittest.TestCase):
                 binance_root=binance_root,
                 symbol="BTCUSDT",
                 deribit_root=deribit_root,
+                deribit_block_flow_root=deribit_block_flow_root,
                 hyperliquid_root=hyperliquid_root,
                 merged_root=merged_root,
             )
 
         self.assertEqual(payload["deribit_status"]["status"], "partial")
         self.assertEqual(payload["deribit_status"]["next_action"], "keep_collector_running")
+        self.assertEqual(payload["deribit_block_flow_status"]["status"], "completed")
         self.assertEqual(payload["binance_liquidation_status"]["blocked_by"], "missing_liquidation_history")
         self.assertEqual(payload["binance_liquidation_status"]["next_action"], "ingest_binance_liquidation_history")
         self.assertTrue(payload["hyperliquid_status"]["backfill_ready_min"])
