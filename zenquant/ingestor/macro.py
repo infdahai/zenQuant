@@ -125,6 +125,28 @@ def read_btc_etf_flow_metadata(output_dir: Path) -> dict[str, Any]:
     }
 
 
+def _write_btc_mvrv_metadata(output_dir: Path, metadata: dict[str, Any]) -> None:
+    metadata_path = output_dir / "btc_mvrv" / "metadata.json"
+    metadata_path.parent.mkdir(parents=True, exist_ok=True)
+    metadata_path.write_text(json.dumps(metadata, indent=2), encoding="utf-8")
+
+
+def read_btc_mvrv_metadata(output_dir: Path) -> dict[str, Any]:
+    metadata_path = output_dir / "btc_mvrv" / "metadata.json"
+    if not metadata_path.exists():
+        return {
+            "btc_mvrv_source": None,
+            "btc_mvrv_source_confidence": "missing",
+            "btc_mvrv_last_success_at": None,
+        }
+    payload = json.loads(metadata_path.read_text(encoding="utf-8"))
+    return {
+        "btc_mvrv_source": payload.get("btc_mvrv_source"),
+        "btc_mvrv_source_confidence": payload.get("btc_mvrv_source_confidence", "unknown"),
+        "btc_mvrv_last_success_at": payload.get("btc_mvrv_last_success_at"),
+    }
+
+
 def _parse_btc_etf_flow_rows(rows: list[dict[str, str]]) -> list[dict[str, float | int]]:
     parsed: list[dict[str, float | int]] = []
     for row in rows:
@@ -169,6 +191,49 @@ def _parse_btc_etf_flow_rows(rows: list[dict[str, str]]) -> list[dict[str, float
 
         parsed.append({"ts_ns": ts_ns, "value": round(netflow * 1_000_000.0, 2)})
     return parsed
+
+
+def _parse_btc_mvrv_rows(rows: list[dict[str, str]]) -> list[dict[str, float | int]]:
+    parsed: list[dict[str, float | int]] = []
+    for row in rows:
+        lower = {str(k).strip().lower(): v for k, v in row.items()}
+        date_value = lower.get("date") or lower.get("day") or lower.get("timestamp") or lower.get("time")
+        if not date_value:
+            continue
+        ts_ns: int | None = None
+        date_text = str(date_value).strip()
+        try:
+            if date_text.isdigit():
+                raw = int(date_text)
+                ts_ns = raw * 1_000_000_000 if raw < 10_000_000_000 else raw * 1_000_000
+            else:
+                date_part = date_text.split(" ")[0]
+                ts_ns = int(datetime.fromisoformat(date_part).replace(tzinfo=UTC).timestamp() * 1_000_000_000)
+        except Exception:
+            continue
+        mvrv_raw = (
+            lower.get("mvrv")
+            or lower.get("mvrv_ratio")
+            or lower.get("value")
+            or lower.get("mv_rv")
+            or lower.get("mvrv zscore")
+        )
+        if mvrv_raw is None:
+            continue
+        parsed_value = _safe_float(mvrv_raw)
+        if parsed_value is None:
+            continue
+        parsed.append({"ts_ns": ts_ns, "value": round(parsed_value, 6)})
+    parsed.sort(key=lambda item: int(item["ts_ns"]))
+    deduped: list[dict[str, float | int]] = []
+    seen: set[int] = set()
+    for item in parsed:
+        ts_ns = int(item["ts_ns"])
+        if ts_ns in seen:
+            continue
+        seen.add(ts_ns)
+        deduped.append(item)
+    return deduped
 
 
 def _safe_float(value: Any) -> float | None:
@@ -407,6 +472,61 @@ def fetch_btc_etf_netflow(output_dir: Path, csv_path: Path | None = None, csv_ur
 
 def import_btc_etf_netflow(output_dir: Path, csv_path: Path) -> int:
     return fetch_btc_etf_netflow(output_dir, csv_path=csv_path)
+
+
+def fetch_btc_mvrv(output_dir: Path, csv_path: Path | None = None, csv_url: str | None = None) -> int:
+    """Fetch or import BTC MVRV daily history.
+
+    Source priority:
+      1. local CSV
+      2. remote CSV URL
+    """
+    source_path = csv_path or (Path(os.environ["ZENQUANT_BTC_MVRV_CSV"]) if os.getenv("ZENQUANT_BTC_MVRV_CSV") else None)
+    source_url = csv_url or os.getenv("ZENQUANT_BTC_MVRV_CSV_URL")
+    metadata = {
+        "btc_mvrv_source": None,
+        "btc_mvrv_source_confidence": "missing",
+        "btc_mvrv_last_success_at": None,
+        "btc_mvrv_source_detail": None,
+    }
+    rows: list[dict[str, float | int]] = []
+    if source_path is not None and source_path.exists():
+        rows = _parse_btc_mvrv_rows(list(csv.DictReader(source_path.read_text(encoding="utf-8").splitlines())))
+        metadata.update(
+            {
+                "btc_mvrv_source": "local_csv",
+                "btc_mvrv_source_confidence": "high" if rows else "missing",
+                "btc_mvrv_source_detail": str(source_path),
+            }
+        )
+    if not rows and source_url:
+        try:
+            response = requests.get(source_url, timeout=REQUEST_TIMEOUT, headers=DEFAULT_HTTP_HEADERS)
+            response.raise_for_status()
+            rows = _parse_btc_mvrv_rows(list(csv.DictReader(response.text.splitlines())))
+            metadata.update(
+                {
+                    "btc_mvrv_source": "remote_csv",
+                    "btc_mvrv_source_confidence": "medium" if rows else "missing",
+                    "btc_mvrv_source_detail": source_url,
+                }
+            )
+        except Exception as exc:
+            print(f"  BTC MVRV fetch failed {source_url}: {exc}")
+    if not rows:
+        _write_btc_mvrv_metadata(output_dir, metadata)
+        print("  No valid BTC MVRV records")
+        return 0
+    output_path = output_dir / "btc_mvrv" / "data.parquet"
+    saved = _save_parquet(rows, output_path)
+    metadata["btc_mvrv_last_success_at"] = datetime.now(UTC).isoformat()
+    _write_btc_mvrv_metadata(output_dir, metadata)
+    print(f"  Saved {saved} records to {output_path}")
+    return saved
+
+
+def import_btc_mvrv(output_dir: Path, csv_path: Path) -> int:
+    return fetch_btc_mvrv(output_dir, csv_path=csv_path)
 
 
 def fetch_fear_greed(output_dir: Path, limit: int = 365) -> int:

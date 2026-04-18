@@ -34,6 +34,22 @@ def _write_json(path: Path, payload: Any) -> None:
     path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
 
 
+def _read_seed_trials(path: Path | None) -> list[dict[str, Any]]:
+    if path is None:
+        return []
+    payload = _read_json(path)
+    if payload is None:
+        raise ValueError(f"initial_seed_trials_file_not_found:{path}")
+    if not isinstance(payload, list):
+        raise ValueError("initial_seed_trials_file must contain a JSON list")
+    resolved: list[dict[str, Any]] = []
+    for item in payload:
+        if not isinstance(item, dict):
+            raise ValueError("initial_seed_trials_file entries must be JSON objects")
+        resolved.append(dict(item))
+    return resolved
+
+
 def _append_log(path: Path, message: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("a", encoding="utf-8") as handle:
@@ -66,6 +82,14 @@ def _training_monitor_path(loop_dir: Path) -> Path:
 
 def _training_history_path(loop_dir: Path) -> Path:
     return loop_dir / "training_history.jsonl"
+
+
+def _candidate_checkpoint_path(run_dir: Path) -> Path:
+    return run_dir / "checkpoints" / "candidate_checkpoint.json"
+
+
+def _default_split_contract_version() -> str:
+    return "btc_temporal_v2_train_selection_only"
 
 
 def _set_current_round_pointer(loop_dir: Path, run_dir: Path) -> None:
@@ -162,6 +186,7 @@ def _current_campaign_snapshot(run_dir: Path) -> dict[str, Any]:
         "phase": status.get("phase"),
         "status": status.get("status"),
         "optuna_trials_completed": status.get("optuna_trials_completed"),
+        "stage1_optuna_trials_total": status.get("stage1_optuna_trials_total"),
         "rl_episodes_completed": status.get("rl_episodes_completed"),
         "rl_episodes_requested": status.get("rl_episodes_requested"),
         "stage1_runtime_s": status.get("stage1_runtime_s"),
@@ -172,17 +197,74 @@ def _current_campaign_snapshot(run_dir: Path) -> dict[str, Any]:
         "stage1_requested_steps": status.get("stage1_requested_steps"),
         "stage1_best_value_so_far": status.get("stage1_best_value_so_far"),
         "stage1_subphase": status.get("stage1_subphase"),
+        "stage1_pending_trials": status.get("stage1_pending_trials"),
+        "stage1_max_workers": status.get("stage1_max_workers"),
+        "stage1_target_inflight": status.get("stage1_target_inflight"),
+        "stage1_active_workers_estimate": status.get("stage1_active_workers_estimate"),
+        "stage1_scheduler_mode": status.get("stage1_scheduler_mode"),
+        "stage1_underfilled": status.get("stage1_underfilled"),
+        "stage1_underfilled_reason": status.get("stage1_underfilled_reason"),
+        "stage1_underfilled_started_at": status.get("stage1_underfilled_started_at"),
+        "stage1_underfilled_duration_s": status.get("stage1_underfilled_duration_s"),
+        "stage1_avg_trial_runtime_s": status.get("stage1_avg_trial_runtime_s"),
+        "stage1_avg_context_build_s": status.get("stage1_avg_context_build_s"),
+        "stage1_avg_replay_run_s": status.get("stage1_avg_replay_run_s"),
+        "stage1_cache_hit_rate": status.get("stage1_cache_hit_rate"),
+        "stage1_avg_event_loop_s": status.get("stage1_avg_event_loop_s"),
+        "stage1_avg_metrics_finalize_s": status.get("stage1_avg_metrics_finalize_s"),
+        "stage1_avg_diagnostics_finalize_s": status.get("stage1_avg_diagnostics_finalize_s"),
+        "stage1_terminated_early_rate": status.get("stage1_terminated_early_rate"),
+        "stage1_budget_mode": status.get("stage1_budget_mode"),
+        "stage1_stop_reason": status.get("stage1_stop_reason"),
+        "stage1_avg_indicator_step_s": status.get("stage1_avg_indicator_step_s"),
+        "stage1_avg_strategy_step_s": status.get("stage1_avg_strategy_step_s"),
+        "stage1_avg_risk_step_s": status.get("stage1_avg_risk_step_s"),
+        "stage1_avg_execution_step_s": status.get("stage1_avg_execution_step_s"),
+        "stage1_avg_accounting_step_s": status.get("stage1_avg_accounting_step_s"),
+        "stage1_search_mode": status.get("stage1_search_mode"),
+        "stage1_primary_optuna_trials_completed": status.get("stage1_primary_optuna_trials_completed"),
+        "stage1_primary_optuna_trials_total": status.get("stage1_primary_optuna_trials_total"),
+        "stage1_fallback_optuna_trials_completed": status.get("stage1_fallback_optuna_trials_completed"),
+        "stage1_fallback_optuna_trials_total": status.get("stage1_fallback_optuna_trials_total"),
+        "rl_budget_mode": status.get("rl_budget_mode"),
+        "rl_wall_clock_elapsed_s": status.get("rl_wall_clock_elapsed_s"),
+        "rl_stop_reason": status.get("rl_stop_reason"),
+        "rl_active_envs": status.get("rl_active_envs"),
+        "rl_avg_episode_runtime_s": status.get("rl_avg_episode_runtime_s"),
+        "rl_cache_hit_rate": status.get("rl_cache_hit_rate"),
+        "rl_avg_event_loop_s": status.get("rl_avg_event_loop_s"),
         "stage2_subphase": status.get("stage2_subphase"),
         "stage2_progress_completed": status.get("stage2_progress_completed"),
         "stage2_progress_total": status.get("stage2_progress_total"),
         "stage2_last_completed_unit": status.get("stage2_last_completed_unit"),
+        "stage2_compare_window_units_completed": status.get("stage2_compare_window_units_completed"),
+        "stage2_compare_window_units_total": status.get("stage2_compare_window_units_total"),
+        "stage2_compare_validation_units_completed": status.get("stage2_compare_validation_units_completed"),
+        "stage2_compare_validation_units_total": status.get("stage2_compare_validation_units_total"),
+        "stage2_compare_workers": status.get("stage2_compare_workers"),
+        "stage2_compare_validation_workers": status.get("stage2_compare_validation_workers"),
         "failure_reason": status.get("failure_reason"),
         "blocked_by": status.get("blocked_by"),
+        "candidate_checkpoint_written": status.get("candidate_checkpoint_written"),
+        "candidate_checkpoint_status": status.get("candidate_checkpoint_status"),
+        "candidate_checkpoint_variant": status.get("candidate_checkpoint_variant"),
+        "candidate_checkpoint_score": status.get("candidate_checkpoint_score"),
+        "candidate_checkpoint_origin_phase": status.get("candidate_checkpoint_origin_phase"),
         "full_training_allowed": status.get("full_training_allowed"),
         "full_training_blockers": status.get("full_training_blockers"),
         "post_smoke_scenario": status.get("post_smoke_scenario"),
         "campaign_updated_at": status.get("updated_at"),
     }
+
+
+def _campaign_failed_authoritatively(snapshot: dict[str, Any]) -> bool:
+    return bool(
+        snapshot.get("status") == "failed"
+        and (
+            snapshot.get("failure_reason")
+            or snapshot.get("blocked_by")
+        )
+    )
 
 
 def _parse_ts(value: Any) -> datetime | None:
@@ -270,7 +352,9 @@ def _cpu_expected_mode(*, budget: str | None, phase: str | None, stage2_subphase
     if phase == "stage2_full_verdict" and stage2_subphase == "stage2_prepare_variants":
         return "parallel_expected" if budget in {"fast", "high"} else "single_core_expected"
     if phase == "stage2_full_verdict" and stage2_subphase == "stage2_compare_windows":
-        return "single_core_expected"
+        return "parallel_expected" if budget in {"fast", "high"} else "single_core_expected"
+    if phase == "stage2_full_verdict" and stage2_subphase == "stage2_compare_validation":
+        return "parallel_expected" if budget in {"fast", "high"} else "single_core_expected"
     return "single_core_expected"
 
 
@@ -323,6 +407,96 @@ def _recent_rounds(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return recent
 
 
+def _candidate_checkpoint_invalidated_reason(payload: dict[str, Any], *, budget: str) -> str | None:
+    if payload.get("checkpoint_status") == "invalidated":
+        return str(payload.get("invalidated_reason") or "candidate_checkpoint_invalidated")
+    if payload.get("train_only_search") is False:
+        return "checkpoint_not_train_only_search"
+    if payload.get("split_contract_version") not in {None, _default_split_contract_version()}:
+        return "split_contract_mismatch"
+    expected_mode = _mode_for_budget(budget)
+    candidate_mode = payload.get("search_space_mode")
+    if candidate_mode and candidate_mode != expected_mode:
+        return "candidate_search_space_mismatch"
+    params = payload.get("params")
+    if not isinstance(params, dict) or not params:
+        return "candidate_unusable"
+    if payload.get("checkpoint_status") not in {"usable", "degraded"}:
+        return "candidate_unusable"
+    return None
+
+
+def _load_candidate_checkpoint(run_dir: Path, *, budget: str) -> dict[str, Any] | None:
+    payload = _read_json(_candidate_checkpoint_path(run_dir))
+    if not isinstance(payload, dict):
+        return None
+    invalidated_reason = _candidate_checkpoint_invalidated_reason(payload, budget=budget)
+    if invalidated_reason is not None:
+        payload = dict(payload)
+        payload["checkpoint_status"] = "invalidated"
+        payload["invalidated_reason"] = invalidated_reason
+        _write_json(_candidate_checkpoint_path(run_dir), payload)
+        return None
+    return payload
+
+
+def _select_candidate_checkpoint(
+    loop_dir: Path,
+    *,
+    campaign_root: Path,
+    budget: str,
+    previous_record: dict[str, Any] | None,
+) -> dict[str, Any] | None:
+    records = _recent_history_records(loop_dir)
+    preferred_run_dirs: list[Path] = []
+    if previous_record and previous_record.get("run_dir"):
+        preferred_run_dirs.append(Path(str(previous_record["run_dir"])))
+    for item in reversed(records):
+        run_dir = item.get("run_dir")
+        if isinstance(run_dir, str):
+            preferred_run_dirs.append(Path(run_dir))
+    for run_dir in sorted(campaign_root.glob("round_*"), reverse=True):
+        preferred_run_dirs.append(run_dir)
+    seen: set[str] = set()
+    usable: list[dict[str, Any]] = []
+    for run_dir in preferred_run_dirs:
+        key = str(run_dir)
+        if key in seen:
+            continue
+        seen.add(key)
+        payload = _load_candidate_checkpoint(run_dir, budget=budget)
+        if payload is not None:
+            usable.append(payload)
+    if not usable:
+        return None
+    latest_run_dir = str(previous_record.get("run_dir")) if previous_record and previous_record.get("run_dir") else None
+    for payload in usable:
+        if latest_run_dir and payload.get("round") == previous_record.get("round"):
+            return payload
+    return max(
+        usable,
+        key=lambda item: _safe_float(((item.get("selected_checkpoint_candidate") or {}).get("score")) or item.get("stage1_best_score")),
+    )
+
+
+def _merge_seed_trials_with_candidate(
+    seed_trials: list[dict[str, Any]],
+    candidate_checkpoint: dict[str, Any] | None,
+) -> list[dict[str, Any]]:
+    merged: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    candidate_params = candidate_checkpoint.get("params") if isinstance(candidate_checkpoint, dict) else None
+    for item in ([candidate_params] if isinstance(candidate_params, dict) and candidate_params else []) + list(seed_trials):
+        if not isinstance(item, dict) or not item:
+            continue
+        key = json.dumps(item, sort_keys=True, separators=(",", ":"))
+        if key in seen:
+            continue
+        seen.add(key)
+        merged.append(dict(item))
+    return merged
+
+
 def _write_training_monitor(loop_dir: Path) -> dict[str, Any]:
     loop_status = _read_json(loop_dir / "loop_status.json") or {}
     records = _recent_history_records(loop_dir)
@@ -342,6 +516,17 @@ def _write_training_monitor(loop_dir: Path) -> dict[str, Any]:
     stage1_total = _safe_int(snapshot.get("stage1_progress_total"))
     stage2_completed = _safe_int(snapshot.get("stage2_progress_completed"))
     stage2_total = _safe_int(snapshot.get("stage2_progress_total"))
+    compare_window_units_completed = _safe_int(snapshot.get("stage2_compare_window_units_completed"))
+    compare_window_units_total = _safe_int(snapshot.get("stage2_compare_window_units_total"))
+    compare_validation_units_completed = _safe_int(snapshot.get("stage2_compare_validation_units_completed"))
+    compare_validation_units_total = _safe_int(snapshot.get("stage2_compare_validation_units_total"))
+    optuna_trials_total = _safe_int(snapshot.get("stage1_optuna_trials_total") or snapshot.get("optuna_trials_requested"))
+    stage1_pending_trials = _safe_int(snapshot.get("stage1_pending_trials"))
+    stage1_max_workers = _safe_int(snapshot.get("stage1_max_workers"))
+    stage1_target_inflight = _safe_int(snapshot.get("stage1_target_inflight"))
+    stage1_active_workers_estimate = _safe_int(snapshot.get("stage1_active_workers_estimate"))
+    underfilled_started_at = snapshot.get("stage1_underfilled_started_at")
+    underfilled_duration_s = _safe_float(snapshot.get("stage1_underfilled_duration_s"))
     stage1_runtime_s = _safe_float(loop_status.get("stage1_runtime_s"))
     stage2_runtime_s = _safe_float(loop_status.get("stage2_runtime_s"))
     current_phase = str(loop_status.get("current_phase") or "")
@@ -375,10 +560,46 @@ def _write_training_monitor(loop_dir: Path) -> dict[str, Any]:
     stalled_reason = None
     if stalled:
         stalled_reason = f"heartbeat_stale:{int(freshness or 0)}s"
-    cpu_underutilized = expected_mode == "parallel_expected" and cpu_utilization_estimate < 120.0
+    stage1_work_conserving = current_phase.startswith("stage1") and snapshot.get("stage1_scheduler_mode") == "work_conserving"
+    cpu_underutilized = False if stage1_work_conserving else (
+        expected_mode == "parallel_expected" and cpu_utilization_estimate < 120.0
+    )
     cpu_underutilized_reason = None
     if cpu_underutilized:
-        cpu_underutilized_reason = f"{current_phase or 'unknown_phase'}:{snapshot.get('stage2_subphase') or snapshot.get('stage1_subphase') or 'unknown_subphase'}"
+        cpu_underutilized_reason = (
+            f"{current_phase or 'unknown_phase'}:{snapshot.get('stage2_subphase') or snapshot.get('stage1_subphase') or 'unknown_subphase'}"
+        )
+    if stage1_work_conserving:
+        sustained_underfilled_candidate = (
+            stage1_target_inflight >= 2
+            and stage1_completed < stage1_total
+            and stage1_pending_trials <= max(0, stage1_target_inflight - 2)
+            and stage1_active_workers_estimate <= max(0, stage1_target_inflight - 2)
+            and cpu_utilization_estimate < max(120.0, 80.0 * stage1_target_inflight)
+            and not stalled
+        )
+        started_at = underfilled_started_at
+        if sustained_underfilled_candidate and not started_at:
+            started_at = _ts()
+        if not sustained_underfilled_candidate:
+            started_at = None
+            underfilled_duration_s = 0.0
+        elif started_at:
+            underfilled_duration_s = _seconds_between(started_at, _ts()) or 0.0
+        if (
+            sustained_underfilled_candidate
+            and underfilled_duration_s >= 15.0
+        ):
+            cpu_underutilized = True
+            cpu_underutilized_reason = "stage1_parallelism_not_materializing"
+        snapshot["stage1_underfilled_candidate"] = sustained_underfilled_candidate
+        snapshot["stage1_underfilled_started_at"] = started_at
+        snapshot["stage1_underfilled_duration_s"] = round(underfilled_duration_s, 2)
+        snapshot["stage1_underfilled"] = bool(
+            sustained_underfilled_candidate and underfilled_duration_s >= 15.0
+        )
+        if not snapshot["stage1_underfilled"]:
+            snapshot["stage1_underfilled_reason"] = None
     alerts: list[str] = []
     if stalled and stalled_reason is not None:
         alerts.append(stalled_reason)
@@ -402,11 +623,66 @@ def _write_training_monitor(loop_dir: Path) -> dict[str, Any]:
         "stage1_runtime_s": loop_status.get("stage1_runtime_s"),
         "stage2_runtime_s": loop_status.get("stage2_runtime_s"),
         "optuna_trials_completed": snapshot.get("optuna_trials_completed"),
-        "optuna_trials_total": snapshot.get("stage1_progress_total"),
+        "optuna_trials_total": optuna_trials_total,
         "rl_steps_completed": snapshot.get("stage1_actual_steps") or snapshot.get("rl_episodes_completed"),
         "rl_steps_requested": snapshot.get("stage1_requested_steps") or snapshot.get("rl_episodes_requested"),
+        "stage1_pending_trials": stage1_pending_trials,
+        "stage1_max_workers": stage1_max_workers,
+        "stage1_target_inflight": stage1_target_inflight,
+        "stage1_active_workers_estimate": stage1_active_workers_estimate,
+        "stage1_scheduler_mode": snapshot.get("stage1_scheduler_mode"),
+        "stage1_underfilled": bool(snapshot.get("stage1_underfilled")),
+        "stage1_underfilled_reason": snapshot.get("stage1_underfilled_reason"),
+        "stage1_underfilled_candidate": bool(snapshot.get("stage1_underfilled_candidate")),
+        "stage1_underfilled_started_at": snapshot.get("stage1_underfilled_started_at"),
+        "stage1_underfilled_duration_s": snapshot.get("stage1_underfilled_duration_s"),
+        "stage1_avg_trial_runtime_s": snapshot.get("stage1_avg_trial_runtime_s"),
+        "stage1_avg_context_build_s": snapshot.get("stage1_avg_context_build_s"),
+        "stage1_avg_replay_run_s": snapshot.get("stage1_avg_replay_run_s"),
+        "stage1_cache_hit_rate": snapshot.get("stage1_cache_hit_rate"),
+        "stage1_avg_event_loop_s": snapshot.get("stage1_avg_event_loop_s"),
+        "stage1_avg_metrics_finalize_s": snapshot.get("stage1_avg_metrics_finalize_s"),
+        "stage1_avg_diagnostics_finalize_s": snapshot.get("stage1_avg_diagnostics_finalize_s"),
+        "stage1_terminated_early_rate": snapshot.get("stage1_terminated_early_rate"),
+        "stage1_budget_mode": snapshot.get("stage1_budget_mode"),
+        "stage1_stop_reason": snapshot.get("stage1_stop_reason"),
+        "stage1_avg_indicator_step_s": snapshot.get("stage1_avg_indicator_step_s"),
+        "stage1_avg_strategy_step_s": snapshot.get("stage1_avg_strategy_step_s"),
+        "stage1_avg_risk_step_s": snapshot.get("stage1_avg_risk_step_s"),
+        "stage1_avg_execution_step_s": snapshot.get("stage1_avg_execution_step_s"),
+        "stage1_avg_accounting_step_s": snapshot.get("stage1_avg_accounting_step_s"),
+        "stage1_search_mode": snapshot.get("stage1_search_mode"),
+        "stage1_primary_optuna_trials_completed": snapshot.get("stage1_primary_optuna_trials_completed"),
+        "stage1_primary_optuna_trials_total": snapshot.get("stage1_primary_optuna_trials_total"),
+        "stage1_fallback_optuna_trials_completed": snapshot.get("stage1_fallback_optuna_trials_completed"),
+        "stage1_fallback_optuna_trials_total": snapshot.get("stage1_fallback_optuna_trials_total"),
+        "rl_budget_mode": snapshot.get("rl_budget_mode"),
+        "rl_wall_clock_elapsed_s": snapshot.get("rl_wall_clock_elapsed_s"),
+        "rl_stop_reason": snapshot.get("rl_stop_reason"),
+        "rl_active_envs": snapshot.get("rl_active_envs"),
+        "rl_avg_episode_runtime_s": snapshot.get("rl_avg_episode_runtime_s"),
+        "rl_cache_hit_rate": snapshot.get("rl_cache_hit_rate"),
+        "rl_avg_event_loop_s": snapshot.get("rl_avg_event_loop_s"),
+        "candidate_checkpoint_written": bool(snapshot.get("candidate_checkpoint_written")),
+        "candidate_checkpoint_status": snapshot.get("candidate_checkpoint_status"),
+        "candidate_checkpoint_variant": snapshot.get("candidate_checkpoint_variant"),
+        "candidate_checkpoint_score": snapshot.get("candidate_checkpoint_score"),
+        "candidate_checkpoint_origin_phase": snapshot.get("candidate_checkpoint_origin_phase"),
         "stage2_progress_completed": snapshot.get("stage2_progress_completed"),
         "stage2_progress_total": snapshot.get("stage2_progress_total"),
+        "compare_window_units_completed": compare_window_units_completed,
+        "compare_window_units_total": compare_window_units_total,
+        "compare_validation_units_completed": compare_validation_units_completed,
+        "compare_validation_units_total": compare_validation_units_total,
+        "stage2_compare_workers": snapshot.get("stage2_compare_workers"),
+        "stage2_compare_validation_workers": snapshot.get("stage2_compare_validation_workers"),
+        "stage2_subphase_eta_seconds": _eta_seconds(
+            completed=stage2_completed,
+            total=stage2_total,
+            runtime_s=stage2_runtime_s,
+        )
+        if current_phase == "stage2_full_verdict"
+        else None,
         "round_eta_seconds": round_eta_seconds,
         "campaign_eta_seconds": round_eta_seconds,
         "heartbeat_freshness_seconds": freshness,
@@ -416,6 +692,12 @@ def _write_training_monitor(loop_dir: Path) -> dict[str, Any]:
         "cpu_utilization_estimate": cpu_utilization_estimate,
         "cpu_underutilized": cpu_underutilized,
         "cpu_underutilized_reason": cpu_underutilized_reason,
+        "stage2_compare_stalled": bool(
+            stalled and snapshot.get("stage2_subphase") in {"stage2_compare_windows", "stage2_compare_validation"}
+        ),
+        "stage2_compare_stalled_reason": (
+            stalled_reason if snapshot.get("stage2_subphase") in {"stage2_compare_windows", "stage2_compare_validation"} else None
+        ),
         "active_process_count": active_process_count,
         "slowest_subphase": snapshot.get("stage2_subphase") or snapshot.get("stage1_subphase"),
         "best_train_score_so_far": round(best_train_score_so_far, 4),
@@ -594,6 +876,7 @@ def _launch_round(
     last_progress_log_at = 0.0
     last_progress_signature: tuple[Any, ...] | None = None
     stage2_started_at: float | None = None
+    authoritative_failure_snapshot: dict[str, Any] | None = None
     try:
         while True:
             snapshot = _current_campaign_snapshot(run_dir)
@@ -650,10 +933,47 @@ def _launch_round(
                 )
                 last_progress_signature = progress_signature
                 last_progress_log_at = now
+            if _campaign_failed_authoritatively(snapshot):
+                authoritative_failure_snapshot = snapshot
+                _update_loop_status(
+                    loop_status_path,
+                    current_round=round_index,
+                    max_rounds=max_rounds,
+                    current_budget=budget,
+                    current_run_dir=str(run_dir),
+                    current_phase=snapshot.get("phase"),
+                    current_status=snapshot.get("status"),
+                    current_blockers=snapshot.get("full_training_blockers"),
+                    current_scenario=snapshot.get("post_smoke_scenario"),
+                    adaptation_policy=adaptation_policy,
+                    seed_trial_count=len(seed_trials),
+                    current_campaign_pid=process.pid,
+                    round_runtime_s=round_runtime_s,
+                    stage1_runtime_s=stage1_runtime_s,
+                    stage2_runtime_s=stage2_runtime_s,
+                    loop_state="failed",
+                    stop_reason=f"campaign_round_failed:{round_index}",
+                )
+                _write_training_monitor(loop_status_path.parent)
+                _append_log(
+                    loop_log_path,
+                    (
+                        f"round_failed round={round_index} budget={budget} exit_code=1 "
+                        f"phase={snapshot.get('phase')} status={snapshot.get('status')}"
+                    ),
+                )
+                break
             if process.poll() is not None:
                 break
             time.sleep(max(1.0, float(args.poll_interval)))
 
+        if authoritative_failure_snapshot is not None and process.poll() is None:
+            process.terminate()
+            try:
+                process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait(timeout=5)
         exit_code = process.wait()
         final_report, stage1_payload, campaign_status = _load_round_artifacts(run_dir)
     finally:
@@ -666,14 +986,7 @@ def _launch_round(
                 process.wait(timeout=5)
         _release_lock(campaign_lock_path, owner_pid=process.pid)
     if exit_code != 0:
-        snapshot = _current_campaign_snapshot(run_dir)
-        _append_log(
-            loop_log_path,
-            (
-                f"round_failed round={round_index} budget={budget} exit_code={exit_code} "
-                f"phase={snapshot.get('phase')} status={snapshot.get('status')}"
-            ),
-        )
+        snapshot = authoritative_failure_snapshot or _current_campaign_snapshot(run_dir)
         _update_loop_status(
             loop_status_path,
             current_round=round_index,
@@ -748,7 +1061,11 @@ def main() -> None:
     parser.add_argument("--explore-ratio", type=float, default=0.4)
     parser.add_argument("--poll-interval", type=float, default=5.0)
     parser.add_argument("--resume", action="store_true")
+    parser.add_argument("--initial-seed-trials-file", default=None)
     args = parser.parse_args()
+
+    if args.resume and args.initial_seed_trials_file:
+        raise SystemExit("--resume and --initial-seed-trials-file are mutually exclusive")
 
     loop_dir = Path(args.output_dir)
     campaign_root = Path(args.campaign_output_root) if args.campaign_output_root else loop_dir / "runs"
@@ -800,11 +1117,22 @@ def main() -> None:
         if previous_record is not None:
             current_budget = str(previous_record.get("next_budget", current_budget))
             previous_budget = str(previous_record.get("budget", current_budget))
+            candidate_checkpoint = _select_candidate_checkpoint(
+                loop_dir,
+                campaign_root=campaign_root,
+                budget=current_budget,
+                previous_record=previous_record,
+            )
             seed_trials = project_seed_trials_to_mode(
-                list(previous_record.get("next_seed_trials") or []),
+                _merge_seed_trials_with_candidate(list(previous_record.get("next_seed_trials") or []), candidate_checkpoint),
                 mode=_mode_for_budget(current_budget),
             )
             adaptation_policy = str(previous_record.get("next_adaptation_policy", adaptation_policy))
+        elif args.initial_seed_trials_file:
+            seed_trials = project_seed_trials_to_mode(
+                _read_seed_trials(Path(args.initial_seed_trials_file)),
+                mode=_mode_for_budget(current_budget),
+            )
 
         _update_loop_status(
             loop_status_path,

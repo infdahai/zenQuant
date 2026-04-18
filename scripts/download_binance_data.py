@@ -8,6 +8,7 @@ Usage:
     uv run python scripts/download_binance_data.py --days 2500
     uv run python scripts/download_binance_data.py --symbol ETHUSDT --days 2000
     uv run python scripts/download_binance_data.py --days 90  # Quick update
+    uv run python scripts/download_binance_data.py --symbol BTCUSDT --start-date 2019-12-31
 """
 
 import argparse
@@ -37,10 +38,16 @@ def download_and_extract(url: str, output_path: Path, extract_dir: Path) -> bool
         return False
 
 
-def download_binance_data(days: int = 2500, symbol: str = "BTCUSDT") -> tuple[int, int]:
+def download_binance_data(
+    days: int = 2500,
+    symbol: str = "BTCUSDT",
+    *,
+    start_date: datetime | None = None,
+    end_date: datetime | None = None,
+) -> tuple[int, int]:
     """Download Binance futures data using monthly + daily archives."""
-    end_date = datetime.now()
-    start_date = end_date - timedelta(days=days)
+    end_date = end_date or datetime.now()
+    start_date = start_date or (end_date - timedelta(days=days))
 
     base_dir = Path("data/raw/binance")
     timeframes = ["1h", "4h", "1d"]
@@ -140,7 +147,11 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Download Binance futures historical data")
     parser.add_argument("--days", type=int, default=2500)
     parser.add_argument("--symbol", default="BTCUSDT")
+    parser.add_argument("--start-date", type=str, default=None)
+    parser.add_argument("--end-date", type=str, default=None)
     args = parser.parse_args()
 
-    s, f = download_binance_data(days=args.days, symbol=args.symbol)
+    start = datetime.fromisoformat(args.start_date) if args.start_date else None
+    end = datetime.fromisoformat(args.end_date) if args.end_date else None
+    s, f = download_binance_data(days=args.days, symbol=args.symbol, start_date=start, end_date=end)
     sys.exit(0 if s > 0 else 1)

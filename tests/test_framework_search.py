@@ -22,7 +22,9 @@ from zenquant.research.framework_search import (
     BacktestSnapshot,
     CandidateSummary,
     FrameworkEvaluator,
+    PrepareVariantTimeoutError,
     SearchReport,
+    SearchStageTimeoutError,
     ValidationBundleTimeoutError,
     _assess_full_training_readiness,
     _candidate_score,
@@ -175,6 +177,7 @@ class FrameworkEvaluatorTests(unittest.TestCase):
             with (
                 patch("zenquant.research.framework_search.liquidation_readiness") as readiness_mock,
                 patch("zenquant.research.framework_search.collect_deribit_status") as deribit_mock,
+                patch("zenquant.research.framework_search.load_source_admission_review", return_value={}),
             ):
                 readiness_mock.return_value = Readiness()
                 deribit_mock.return_value = DeribitStatus()
@@ -192,6 +195,126 @@ class FrameworkEvaluatorTests(unittest.TestCase):
         self.assertTrue(execution_contract["five_min_feature_aggregation_enabled"])
         self.assertTrue(execution_contract["one_hour_bars_available"])
         self.assertEqual(execution_contract["one_hour_bars_source"], "derived_from_5m")
+
+    def test_training_input_contract_only_admits_mvrv_with_review(self) -> None:
+        @dataclass
+        class Readiness:
+            total_bars: int = 100
+            nonzero_bars: int = 10
+            nonstale_bars: int = 10
+            extreme_bars: int = 1
+            max_total_liq_usd: float = 1_000_000.0
+            data_ready: bool = True
+            promotion_ready: bool = False
+            blocked_by: str = "not_promotion_ready"
+            detail: str = "ok"
+
+        @dataclass
+        class DeribitStatus:
+            enabled: bool = True
+            observation_ready: bool = False
+            research_ready: bool = False
+            snapshot_count_7d: int = 0
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "binance"
+            macro_root = Path(tmp) / "macro"
+            split = default_btc_split_spec()
+            train_start = split.train.start_ns
+            write_parquet_rows(
+                root / "klines" / "BTCUSDT" / "5m" / "data.parquet",
+                [
+                    HistoricalKlineRow(
+                        symbol="BTCUSDT",
+                        timeframe="5m",
+                        open_time_ns=train_start,
+                        close_time_ns=train_start + Timeframe.TF_5M.seconds * 1_000_000_000 - 1_000_000,
+                        open=100.0,
+                        high=101.0,
+                        low=99.0,
+                        close=100.5,
+                        volume=1.0,
+                        trade_count=1,
+                    )
+                ],
+            )
+            write_parquet_rows(
+                root / "klines" / "BTCUSDT" / "4h" / "data.parquet",
+                [
+                    HistoricalKlineRow(
+                        symbol="BTCUSDT",
+                        timeframe="4h",
+                        open_time_ns=train_start,
+                        close_time_ns=train_start + Timeframe.TF_4H.seconds * 1_000_000_000 - 1_000_000,
+                        open=100.0,
+                        high=101.0,
+                        low=99.0,
+                        close=100.5,
+                        volume=1.0,
+                        trade_count=1,
+                    )
+                ],
+            )
+            (macro_root / "btc_mvrv").mkdir(parents=True, exist_ok=True)
+            (macro_root / "btc_mvrv" / "data.parquet").write_text("placeholder", encoding="utf-8")
+            (macro_root / "btc_mvrv" / "metadata.json").write_text(
+                json.dumps(
+                    {
+                        "btc_mvrv_source": "local_csv",
+                        "btc_mvrv_source_confidence": "high",
+                        "btc_mvrv_last_success_at": "2026-04-18T00:00:00+00:00",
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            def _review(name: str):
+                if name == "mvrv":
+                    return {
+                        "tier_decision": "tier2_research_only_feature",
+                        "time_granularity": "1d",
+                        "research_ready": True,
+                        "use_for_research_only": True,
+                        "exclude_from_promote_truth": True,
+                        "blocked_by": None,
+                    }
+                return {}
+
+            def _independence(name: str):
+                if name == "btc_mvrv":
+                    return {
+                        "allowed_in_state_features": True,
+                        "use_for_research_only": True,
+                        "blocked_by": None,
+                        "max_abs_correlation": 0.41,
+                    }
+                return {}
+
+            with (
+                patch("zenquant.research.framework_search.liquidation_readiness") as readiness_mock,
+                patch("zenquant.research.framework_search.collect_deribit_status") as deribit_mock,
+                patch("zenquant.research.framework_search.load_source_admission_review", side_effect=_review),
+                patch("zenquant.research.framework_search.load_source_independence_audit", side_effect=_independence),
+            ):
+                readiness_mock.return_value = Readiness()
+                deribit_mock.return_value = DeribitStatus()
+                evaluator = FrameworkEvaluator(
+                    HistoricalBacktestConfig(
+                        root_dir=root,
+                        macro_dir=macro_root,
+                        symbol="BTCUSDT",
+                        execution_timeframe=Timeframe.TF_5M,
+                        direction_timeframe=Timeframe.TF_4H,
+                        context_timeframe=Timeframe.TF_1H,
+                    )
+                )
+
+        state_sources = evaluator.training_input_contract["state_feature_sources"]
+        self.assertTrue(state_sources["mvrv_in_state_features"])
+        self.assertTrue(state_sources["mvrv_admission_review_present"])
+        self.assertTrue(state_sources["mvrv_independence_review_present"])
+        self.assertEqual(state_sources["mvrv_tier_decision"], "tier2_research_only_feature")
+        self.assertEqual(state_sources["mvrv_time_granularity"], "1d")
 
     def test_liquidation_candidate_is_blocked_when_history_missing(self) -> None:
         fake_summary = CandidateSummary(
@@ -777,6 +900,39 @@ class SearchReportSerializationTests(unittest.TestCase):
         self.assertIn("train_candidate_diagnostics", diagnostics)
         run_stage.assert_called_once()
 
+    def test_run_optuna_search_passes_stage1_target_inflight(self) -> None:
+        @dataclass
+        class FakeSweep:
+            total_combinations: int
+            results: list[dict]
+            top_n: list[dict]
+            runtime_s: float
+
+        with patch(
+            "zenquant.research.framework_search.run_search_stage",
+            return_value=FakeSweep(
+                total_combinations=1,
+                results=[],
+                top_n=[{"params": {"w_momentum": 0.45}, "metrics": {"sharpe": 1.2, "score": 1.2}}],
+                runtime_s=0.1,
+            ),
+        ) as run_stage:
+            evaluator = FrameworkEvaluator(HistoricalBacktestConfig(), split_spec=default_btc_split_spec())
+            run_optuna_search(
+                evaluator,
+                n_trials=5,
+                stage1_parallel_mode="cpu_parallel",
+                stage1_max_workers=6,
+                stage1_target_inflight=6,
+                stage1_batch_size=4,
+            )
+
+        config = run_stage.call_args.args[0]
+        self.assertEqual(config.stage1_parallel_mode, "cpu_parallel")
+        self.assertEqual(config.stage1_max_workers, 6)
+        self.assertEqual(config.stage1_target_inflight, 6)
+        self.assertEqual(config.stage1_batch_size, 4)
+
     def test_final_report_passes_smoke_minimal_comparison_mode_and_heartbeat(self) -> None:
         summary = CandidateSummary(
             variant="current",
@@ -823,8 +979,12 @@ class SearchReportSerializationTests(unittest.TestCase):
             if progress_callback is not None:
                 progress_callback(1, "dev")
                 progress_callback(2, "2023-08")
+                progress_callback("baseline_summary_started", "lightweight")
+                progress_callback("baseline_summary_completed", "lightweight")
                 progress_callback(3, "worst_windows")
-                progress_callback(4, "validation_bundle")
+                progress_callback("summary_scoring_started", "lightweight")
+                progress_callback("summary_scoring_completed", "lightweight")
+                progress_callback(4, "lightweight_summary")
             return summary
 
         with (
@@ -853,6 +1013,7 @@ class SearchReportSerializationTests(unittest.TestCase):
         events = [str(item["event"]) for item in heartbeats]
         self.assertIn("stage2_prepare_variants_started", events)
         self.assertIn("stage2_prepare_variant_unit_completed", events)
+        self.assertIn("stage2_prepare_variant_validation_progress", events)
         self.assertIn("stage2_compare_windows_started", events)
         self.assertIn("comparison_window_completed", events)
         self.assertIn("stage2_rank_variants_completed", events)
@@ -863,7 +1024,135 @@ class SearchReportSerializationTests(unittest.TestCase):
         ]
         self.assertIn(4, prepare_units)
         self.assertTrue(any(unit > 4 for unit in prepare_units))
+        prepare_detail_units = [
+            str(item["unit"])
+            for item in heartbeats
+            if item.get("event") == "stage2_prepare_variant_validation_progress"
+        ]
+        self.assertTrue(any(unit.startswith("baseline_summary_started:") for unit in prepare_detail_units))
+        self.assertTrue(any(unit.startswith("summary_scoring_completed:") for unit in prepare_detail_units))
         self.assertEqual(report.evaluation_role, "development")
+
+    def test_final_report_uses_fast_compare_window_profile_and_workers(self) -> None:
+        summary = CandidateSummary(
+            variant="current",
+            robust_score=1.0,
+            selection_split="dev",
+            dev_sharpe=1.0,
+            dev_pnl=10.0,
+            dev_drawdown=0.1,
+            avg_dev_sharpe=1.0,
+            avg_dev_ratio=1.0,
+            worst_dev_sharpe=0.5,
+            weak_window_sharpe=0.2,
+            negative_dev_worst_windows=0,
+            promotion_candidate=False,
+            promotion_failure_reason="avg_test_sharpe",
+        )
+        build_calls: list[dict[str, object]] = []
+
+        def _fake_build(*_args, **kwargs):
+            build_calls.append(kwargs)
+            return {
+                "report_mode": kwargs["report_mode"],
+                "comparison_compute_mode": kwargs["comparison_compute_mode"],
+                "window_reports": [],
+                "validation_reports": [],
+            }
+
+        with (
+            patch.object(FrameworkEvaluator, "_evaluate_variant", return_value=summary),
+            patch("zenquant.research.framework_search._build_comparison_payload", side_effect=_fake_build),
+        ):
+            evaluator = FrameworkEvaluator(HistoricalBacktestConfig(), split_spec=default_btc_split_spec())
+            self.assertEqual(
+                [window.label for window in evaluator._fast_dev_compare_windows[:2]],
+                ["dev", "2023-08"],
+            )
+            evaluator.final_report(
+                optuna_params={"w_momentum": 0.3},
+                rl_params=None,
+                search_status={"stage1_execution_mode": "1h_context_only"},
+                full=False,
+                evaluate_test=False,
+                include_comparison_payload=True,
+                comparison_compute_mode="full",
+                evaluation_role="development",
+                test_access_allowed=False,
+                dev_gate_used_this_round=True,
+            )
+
+        self.assertEqual(len(build_calls), 1)
+        self.assertEqual(len(build_calls[0]["windows"]), len(evaluator._fast_dev_compare_windows))
+        self.assertEqual(build_calls[0]["window_workers"], evaluator._compute_profiles["fast"]["compare_workers"])
+        self.assertEqual(
+            build_calls[0]["validation_workers"],
+            evaluator._compute_profiles["fast"]["compare_validation_workers"],
+        )
+
+    def test_final_report_uses_lightweight_prepare_for_fast_but_not_high(self) -> None:
+        captured: list[tuple[bool, bool, str]] = []
+
+        def _fake_evaluate_variant(self, variant, *, fast, lightweight=False, progress_callback=None):
+            del progress_callback
+            captured.append((fast, lightweight, variant.name))
+            return CandidateSummary(
+                variant=variant.name,
+                robust_score=1.0 if variant.name == "current" else 0.5,
+                selection_split="dev",
+                dev_sharpe=1.0,
+                dev_pnl=10.0,
+                dev_drawdown=0.1,
+                avg_dev_sharpe=1.0,
+                avg_dev_ratio=1.0,
+                worst_dev_sharpe=0.5,
+                weak_window_sharpe=0.2,
+                negative_dev_worst_windows=0,
+                promotion_candidate=False,
+            )
+
+        with patch.object(FrameworkEvaluator, "_evaluate_variant", new=_fake_evaluate_variant):
+            evaluator = FrameworkEvaluator(HistoricalBacktestConfig(), split_spec=default_btc_split_spec())
+            evaluator.final_report(
+                optuna_params=None,
+                rl_params=None,
+                search_status={"stage1_execution_mode": "5m_lightweight_train_search"},
+                full=False,
+                evaluate_test=False,
+                include_comparison_payload=False,
+                comparison_compute_mode="full",
+                evaluation_role="development",
+                test_access_allowed=False,
+                dev_gate_used_this_round=True,
+            )
+            fast_calls = list(captured)
+            captured.clear()
+            evaluator.final_report(
+                optuna_params=None,
+                rl_params=None,
+                search_status={"stage1_execution_mode": "5m_lightweight_train_search"},
+                full=True,
+                evaluate_test=False,
+                include_comparison_payload=False,
+                comparison_compute_mode="full",
+                evaluation_role="development",
+                test_access_allowed=False,
+                dev_gate_used_this_round=True,
+            )
+            high_calls = list(captured)
+
+        self.assertTrue(all(fast and lightweight for fast, lightweight, _ in fast_calls))
+        self.assertTrue(all((not fast) and (not lightweight) for fast, lightweight, _ in high_calls))
+
+    def test_compute_profiles_raise_smoke_compare_workers_without_expanding_windows(self) -> None:
+        evaluator = FrameworkEvaluator(HistoricalBacktestConfig(), split_spec=default_btc_split_spec())
+
+        self.assertEqual(evaluator._compute_profiles["smoke"]["compare_workers"], 2)
+        self.assertEqual(
+            evaluator._compute_profiles["smoke"]["compare_windows"],
+            len(evaluator._fast_dev_compare_windows),
+        )
+        self.assertEqual([window.label for window in evaluator._fast_dev_compare_windows[:2]], ["dev", "2023-08"])
 
     def test_development_report_rejects_test_evaluation(self) -> None:
         evaluator = FrameworkEvaluator(HistoricalBacktestConfig(), split_spec=default_btc_split_spec())
@@ -969,12 +1258,11 @@ class SearchReportSerializationTests(unittest.TestCase):
         with (
             patch.object(
                 evaluator,
-                "_run_variant_backtest_cached",
+                "_run_prepare_backtest_cached",
                 side_effect=[
                     _snapshot(1.0, 10.0, 0.1),
                     _snapshot(0.4, 5.0, 0.08),
                     _snapshot(-0.2, -1.0, 0.12),
-                    _snapshot(0.1, 1.0, 0.09),
                 ],
             ),
             patch.object(evaluator, "_run_validation_bundle_cached", side_effect=AssertionError("should_not_run")),
@@ -1002,6 +1290,154 @@ class SearchReportSerializationTests(unittest.TestCase):
         self.assertEqual(summary.selection_split, "dev")
         self.assertAlmostEqual(summary.avg_dev_sharpe, 0.4)
         self.assertAlmostEqual(summary.worst_dev_sharpe, -0.2)
+        self.assertEqual([window.label for window in evaluator._prepare_windows(fast=True, lightweight=True)], ["dev", "2023-08", "2024-11 DD"])
+
+    def test_evaluate_variant_lightweight_emits_worst_window_progress(self) -> None:
+        evaluator = FrameworkEvaluator(HistoricalBacktestConfig(), split_spec=default_btc_split_spec())
+        variant = evaluator._current_variant
+        heartbeats: list[tuple[object, str]] = []
+
+        def _snapshot(sharpe: float):
+            return type(
+                "Snapshot",
+                (),
+                {
+                    "sharpe": sharpe,
+                    "net_pnl": sharpe * 10.0,
+                    "max_drawdown": 0.1,
+                    "win_rate": 0.5,
+                },
+            )()
+
+        with (
+            patch.object(
+                evaluator,
+                "_run_prepare_backtest_cached",
+                side_effect=[
+                    _snapshot(1.0),
+                    _snapshot(0.4),
+                    _snapshot(-0.2),
+                ],
+            ),
+            patch.object(
+                evaluator,
+                "_get_paulwei_fast_summary",
+                return_value=CandidateSummary(
+                    variant="paulwei_baseline",
+                    robust_score=0.5,
+                    selection_split="dev",
+                    dev_sharpe=0.5,
+                    dev_pnl=5.0,
+                    dev_drawdown=0.1,
+                    avg_dev_sharpe=0.5,
+                    avg_dev_ratio=1.0,
+                    worst_dev_sharpe=0.1,
+                    weak_window_sharpe=0.1,
+                    negative_dev_worst_windows=0,
+                    promotion_candidate=False,
+                ),
+            ),
+        ):
+            evaluator._evaluate_variant(
+                variant,
+                fast=True,
+                lightweight=True,
+                progress_callback=lambda step, unit: heartbeats.append((step, unit)),
+            )
+
+        self.assertIn(("worst_window", "2024-11 DD"), heartbeats)
+        self.assertIn((3, "worst_windows_completed"), heartbeats)
+
+    def test_evaluate_variant_lightweight_timeout_degrades_tuned_candidate(self) -> None:
+        evaluator = FrameworkEvaluator(HistoricalBacktestConfig(), split_spec=default_btc_split_spec())
+        variant = evaluator.candidate_variant({"w_momentum": 0.3}, name="optuna_tuned", label="Optuna Tuned")
+
+        def _snapshot(sharpe: float):
+            return type(
+                "Snapshot",
+                (),
+                {
+                    "sharpe": sharpe,
+                    "net_pnl": sharpe * 10.0,
+                    "max_drawdown": 0.1,
+                    "win_rate": 0.5,
+                },
+            )()
+
+        with (
+            patch.object(
+                evaluator,
+                "_run_prepare_backtest_cached",
+                side_effect=[
+                    _snapshot(1.0),
+                    _snapshot(0.4),
+                    PrepareVariantTimeoutError(
+                        variant="optuna_tuned",
+                        window_label="2024-11 DD",
+                        timeout_s=180.0,
+                    ),
+                ],
+            ),
+            patch.object(
+                evaluator,
+                "_get_paulwei_fast_summary",
+                return_value=CandidateSummary(
+                    variant="paulwei_baseline",
+                    robust_score=0.5,
+                    selection_split="dev",
+                    dev_sharpe=0.5,
+                    dev_pnl=5.0,
+                    dev_drawdown=0.1,
+                    avg_dev_sharpe=0.5,
+                    avg_dev_ratio=1.0,
+                    worst_dev_sharpe=0.1,
+                    weak_window_sharpe=0.1,
+                    negative_dev_worst_windows=0,
+                    promotion_candidate=False,
+                ),
+            ),
+        ):
+            summary = evaluator._evaluate_variant(variant, fast=True, lightweight=True)
+
+        self.assertEqual(summary.blocked_by, "prepare_timeout")
+        self.assertFalse(summary.promotion_candidate)
+        self.assertEqual(summary.promotion_failure_reason, "prepare_timeout")
+
+    def test_evaluate_variant_lightweight_timeout_fails_current_with_precise_reason(self) -> None:
+        evaluator = FrameworkEvaluator(HistoricalBacktestConfig(), split_spec=default_btc_split_spec())
+
+        def _snapshot(sharpe: float):
+            return type(
+                "Snapshot",
+                (),
+                {
+                    "sharpe": sharpe,
+                    "net_pnl": sharpe * 10.0,
+                    "max_drawdown": 0.1,
+                    "win_rate": 0.5,
+                },
+            )()
+
+        with (
+            patch.object(
+                evaluator,
+                "_run_prepare_backtest_cached",
+                side_effect=[
+                    _snapshot(1.0),
+                    _snapshot(0.4),
+                    PrepareVariantTimeoutError(
+                        variant="current",
+                        window_label="2024-11 DD",
+                        timeout_s=180.0,
+                    ),
+                ],
+            ),
+            self.assertRaisesRegex(
+                SearchStageTimeoutError,
+                r"stage2_prepare_variant_timeout: variant=current window=2024-11 DD",
+            ),
+        ):
+                evaluator._evaluate_variant(evaluator._current_variant, fast=True, lightweight=True)
 
     def test_evaluate_variant_degrades_tuned_candidate_on_validation_timeout(self) -> None:
         evaluator = FrameworkEvaluator(HistoricalBacktestConfig(), split_spec=default_btc_split_spec())
@@ -1164,16 +1600,14 @@ class SearchReportSerializationTests(unittest.TestCase):
         with (
             patch.object(
                 evaluator,
-                "_run_variant_backtest_cached",
+                "_run_prepare_backtest_cached",
                 side_effect=[
                     _snapshot(1.0, 10.0, 0.1),
                     _snapshot(0.4, 5.0, 0.08),
                     _snapshot(-0.2, -1.0, 0.12),
-                    _snapshot(0.1, 1.0, 0.09),
                     _snapshot(0.8, 8.0, 0.11),
                     _snapshot(0.3, 3.0, 0.07),
                     _snapshot(-0.1, -1.0, 0.10),
-                    _snapshot(0.0, 0.0, 0.09),
                 ],
             ),
             patch.object(evaluator, "_run_validation_bundle_cached", side_effect=AssertionError("should_not_run")),

@@ -8,8 +8,9 @@ risk, and execution behavior stays auditable across modes.
 from __future__ import annotations
 
 import math
+import time
 from collections import Counter, defaultdict
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -104,6 +105,21 @@ class HistoricalBacktestConfig:
     state_liquidation_overlay_enabled: bool = True
     # Plugin profile path (default.toml, etc.)
     profile_path: Path | None = Path("config/profiles/default.toml")
+    # Research-only compute mode. Authoritative mode preserves the full path
+    # used by stage2/acceptance; lightweight mode is only for stage1 search.
+    research_compute_mode: str = "authoritative"
+    # Optional profiling for research-time hot path diagnosis.
+    profiling_enabled: bool = False
+    # Deterministic early-stop controls for lightweight train search only.
+    early_stop_enabled: bool = False
+    trial_runtime_budget_s: float | None = None
+    early_stop_trade_check_ratio: float = 0.25
+    early_stop_min_trade_count: int = 20
+    early_stop_trade_floor_ratio: float = 0.25
+    early_stop_max_drawdown: float = 0.35
+    early_stop_mid_trade_floor_ratio: float = 0.35
+    early_stop_late_trade_floor_ratio: float = 0.6
+    replay_context: ReplayContext | None = None
 
 
 @dataclass(slots=True)
@@ -117,6 +133,25 @@ class HistoricalBacktestResult:
     total_reports: int
     final_equity: float
     cycle_context: BacktestCycleContext
+    profiling: dict[str, float] = field(default_factory=dict)
+    terminated_early: bool = False
+    termination_reason: str | None = None
+    processed_event_ratio: float = 1.0
+
+
+@dataclass(slots=True)
+class ReplayContext:
+    funding_rows: list[dict[str, Any]]
+    open_interest_rows: list[dict[str, Any]]
+    aggtrades: dict[str, dict[int, dict[str, Any]]]
+    events: list[dict[str, Any]]
+    macro_store: MacroDataStore
+    options_store: OptionsDataStore
+    hf_store: HFFeatureStore
+    cot_store: CotDataStore
+    liquidation_store: LiquidationDataStore
+    eth_store: EthDataStore
+    basis_store: BasisDataStore
 
 
 class HistoricalBacktest:
@@ -129,6 +164,8 @@ class HistoricalBacktest:
 
     def __init__(self, config: HistoricalBacktestConfig | None = None) -> None:
         self._config = config or HistoricalBacktestConfig()
+        self._lightweight_train_search = self._config.research_compute_mode == "lightweight_train_search"
+        self._profiling_enabled = bool(self._config.profiling_enabled or self._lightweight_train_search)
         self.bus = InMemoryJetStream()
         self.bus.add_stream(StreamConfig(name="STREAM_MARKET_DATA", subjects=["md.>"]))
         self.bus.add_stream(StreamConfig(name="STREAM_CLOCK", subjects=["clock.>"]))
@@ -137,42 +174,16 @@ class HistoricalBacktest:
         self.bus.add_stream(StreamConfig(name="STREAM_EXEC", subjects=["exec.>"]))
 
         self.indicator_store = IndicatorStore()
-        # Load macro data if available
-        self._macro_store = MacroDataStore(MacroDataStoreConfig(macro_dir=self._config.macro_dir))
-        self._macro_store.load()
-        # Load options data if available
-        self._options_store = OptionsDataStore(
-            OptionsDataStoreConfig(options_dir=self._config.options_dir, currency="BTC")
-        )
-        self._options_store.load()
-        # Load HF (5min) features if available
-        hf_dir = self._config.root_dir / "klines" / self._config.symbol / "5m"
-        self._hf_store = HFFeatureStore(HFFeatureStoreConfig(data_dir=hf_dir))
-        self._hf_store.load()
-        # Load CFTC COT data if available
-        self._cot_store = CotDataStore(CotStoreConfig(cot_path=self._config.cot_path))
-        self._cot_store.load()
-        # Load liquidation data if available
-        self._liquidation_store = LiquidationDataStore(
-            LiquidationStoreConfig(liquidation_dir=self._config.liquidation_dir)
-        )
-        self._liquidation_store.load()
-        # Load ETH data for cross-asset Transfer Entropy
-        self._eth_store = EthDataStore(
-            EthStoreConfig(
-                eth_kline_path=self._config.root_dir / "klines" / "ETHUSDT" / "4h",
-            )
-        )
-        self._eth_store.load()
-        # Load spot-perp basis data if available
-        self._basis_store = BasisDataStore(
-            BasisStoreConfig(
-                spot_dir=Path("data/raw/binance_spot/klines") / self._config.symbol / "4h",
-                perp_dir=self._config.root_dir / "klines" / self._config.symbol / "4h",
-            )
-        )
-        self._basis_store.load()
-        self.indicator_engine = IndicatorEngine(
+        self._replay_context = self._config.replay_context or _build_replay_context(self._config)
+        self._profiling_totals: defaultdict[str, float] = defaultdict(float)
+        self._macro_store = self._replay_context.macro_store
+        self._options_store = self._replay_context.options_store
+        self._hf_store = self._replay_context.hf_store
+        self._cot_store = self._replay_context.cot_store
+        self._liquidation_store = self._replay_context.liquidation_store
+        self._eth_store = self._replay_context.eth_store
+        self._basis_store = self._replay_context.basis_store
+        self._subscribe_with_profile("indicator_step_total_s", lambda: IndicatorEngine(
             bus=self.bus,
             store=self.indicator_store,
             config=self._config.indicator_config
@@ -188,11 +199,11 @@ class HistoricalBacktest:
                 if self._config.liquidation_data_enabled and self._liquidation_store.loaded
                 else None
             ),
-        )
-        self.risk_overlay = RiskOverlay(
+        ))
+        self.risk_overlay = self._subscribe_with_profile("risk_step_total_s", lambda: RiskOverlay(
             bus=self.bus,
             config=self._config.risk_config or RiskOverlayConfig(starting_equity=self._config.starting_equity),
-        )
+        ))
         # Load plugin registry if profile path provided
         plugin_registry = None
         if self._config.profile_path and self._config.profile_path.exists():
@@ -201,21 +212,21 @@ class HistoricalBacktest:
             # Apply RL tuner weight overrides (dynamic, bypass default.toml)
             if self._config.signal_weight_overrides and plugin_registry is not None:
                 plugin_registry.weight_overrides = dict(self._config.signal_weight_overrides)
-        self.strategy_engine = ARCStrategyEngine(
+        self.strategy_engine = self._subscribe_with_profile("strategy_step_total_s", lambda: ARCStrategyEngine(
             bus=self.bus,
             config=self._config.strategy_config,
             plugin_registry=plugin_registry,
-        )
-        self.state_engine = StateEngine(
+        ))
+        self.state_engine = self._subscribe_with_profile("state_step_total_s", lambda: StateEngine(
             bus=self.bus,
             config=StateEngineConfig(enable_liquidation_overlay=self._config.state_liquidation_overlay_enabled),
-        )
-        self.execution_kernel = ExecutionKernel(
+        ))
+        self.execution_kernel = self._subscribe_with_profile("execution_step_total_s", lambda: ExecutionKernel(
             bus=self.bus,
             gateway=SimulatedGateway(),
             risk_overlay=self.risk_overlay,
             config=self._config.execution_config,
-        )
+        ))
 
         self._indicators: list[IndicatorPack] = []
         self._market_states: list[MarketState] = []
@@ -235,14 +246,15 @@ class HistoricalBacktest:
         self._funding_index = -1
         self._open_interest_index = -1
 
-        self.bus.subscribe("indicator.>", self._collect_indicator)
-        self.bus.subscribe("state.market.>", self._collect_market_state)
-        self.bus.subscribe("strategy.bias.1d.>", self._collect_bias)
-        self.bus.subscribe("strategy.playbook.>", self._collect_playbook)
-        self.bus.subscribe("strategy.sizing.>", self._collect_sizing)
-        self.bus.subscribe("strategy.exit.>", self._collect_exit)
-        self.bus.subscribe("strategy.position_state.>", self._collect_position_state)
-        self.bus.subscribe("intent.target_position.final.>", self._collect_target)
+        if not self._lightweight_train_search:
+            self.bus.subscribe("indicator.>", self._collect_indicator)
+            self.bus.subscribe("state.market.>", self._collect_market_state)
+            self.bus.subscribe("strategy.bias.1d.>", self._collect_bias)
+            self.bus.subscribe("strategy.playbook.>", self._collect_playbook)
+            self.bus.subscribe("strategy.sizing.>", self._collect_sizing)
+            self.bus.subscribe("strategy.exit.>", self._collect_exit)
+            self.bus.subscribe("strategy.position_state.>", self._collect_position_state)
+            self.bus.subscribe("intent.target_position.final.>", self._collect_target)
         self.bus.subscribe("exec.order.report", self._collect_report)
         self.bus.subscribe("risk.snapshot", self._collect_risk_snapshot)
 
@@ -262,11 +274,68 @@ class HistoricalBacktest:
             )
         if self._config.perturbation is not None:
             events = perturb_events(events, self._config.perturbation)
+        profiling: dict[str, float] = {}
+        processed_events = 0
+        execution_events_total = sum(
+            1 for event in events if event["event_timeframe"] == self._config.execution_timeframe.value
+        )
+        terminated_early = False
+        termination_reason: str | None = None
+        event_loop_started_at = datetime.now(UTC).timestamp()
         for event in events:
             self._publish_event(event)
+            processed_events += 1
+            if (
+                self._config.trial_runtime_budget_s is not None
+                and (datetime.now(UTC).timestamp() - event_loop_started_at) > self._config.trial_runtime_budget_s
+            ):
+                terminated_early = True
+                termination_reason = "trial_runtime_budget_exceeded"
+                break
+            if (
+                self._config.early_stop_enabled
+                and self._lightweight_train_search
+                and execution_events_total > 0
+                and event["event_timeframe"] == self._config.execution_timeframe.value
+            ):
+                should_stop, reason = self._should_early_stop(
+                    processed_events=processed_events,
+                    total_events=len(events),
+                    execution_events_total=execution_events_total,
+                )
+                if should_stop:
+                    terminated_early = True
+                    termination_reason = reason
+                    break
+        event_loop_finished_at = datetime.now(UTC).timestamp()
 
-        metrics = self._build_metrics(events)
-        diagnostics = self._build_diagnostics()
+        metrics_started_at = datetime.now(UTC).timestamp()
+        processed = events[:processed_events]
+        metrics = self._build_metrics(processed)
+        metrics_finished_at = datetime.now(UTC).timestamp()
+        diagnostics_started_at = metrics_finished_at
+        diagnostics = self._build_diagnostics() if not self._lightweight_train_search else BacktestDiagnostics(
+            playbook_counts={},
+            actionable_exit_counts={},
+            risk_flag_counts={},
+            top_target_reason_codes={},
+        )
+        diagnostics_finished_at = datetime.now(UTC).timestamp()
+        cycle_started_at = diagnostics_finished_at
+        cycle_context = self._build_cycle_context(processed)
+        cycle_finished_at = datetime.now(UTC).timestamp()
+        if self._profiling_enabled:
+            profiling = {
+                "event_loop_total_s": round(event_loop_finished_at - event_loop_started_at, 6),
+                "indicator_step_total_s": round(float(self._profiling_totals.get("indicator_step_total_s", 0.0) or 0.0), 6),
+                "strategy_step_total_s": round(float(self._profiling_totals.get("strategy_step_total_s", 0.0) or 0.0), 6),
+                "risk_step_total_s": round(float(self._profiling_totals.get("risk_step_total_s", 0.0) or 0.0), 6),
+                "execution_step_total_s": round(float(self._profiling_totals.get("execution_step_total_s", 0.0) or 0.0), 6),
+                "accounting_step_total_s": round(float(self._profiling_totals.get("accounting_step_total_s", 0.0) or 0.0), 6),
+                "metrics_finalize_s": round(metrics_finished_at - metrics_started_at, 6),
+                "diagnostics_finalize_s": round(diagnostics_finished_at - diagnostics_started_at, 6),
+                "cycle_context_finalize_s": round(cycle_finished_at - cycle_started_at, 6),
+            }
         return HistoricalBacktestResult(
             metrics=metrics,
             diagnostics=diagnostics,
@@ -274,81 +343,80 @@ class HistoricalBacktest:
             total_targets=len(self._targets),
             total_reports=len(self._reports),
             final_equity=self.risk_overlay.equity,
-            cycle_context=self._build_cycle_context(events),
+            cycle_context=cycle_context,
+            profiling=profiling,
+            terminated_early=terminated_early,
+            termination_reason=termination_reason,
+            processed_event_ratio=(
+                round(processed_events / max(1, len(events)), 6)
+                if events
+                else 1.0
+            ),
         )
+
+    def _should_early_stop(
+        self,
+        *,
+        processed_events: int,
+        total_events: int,
+        execution_events_total: int,
+    ) -> tuple[bool, str | None]:
+        processed_ratio = processed_events / max(1, total_events)
+        if processed_ratio < float(self._config.early_stop_trade_check_ratio):
+            return False, None
+        current_trade_count = len(self._reports)
+        if processed_ratio >= 0.75:
+            floor_ratio = max(float(self._config.early_stop_late_trade_floor_ratio), 0.35)
+        elif processed_ratio >= 0.50:
+            floor_ratio = max(float(self._config.early_stop_mid_trade_floor_ratio), 0.2)
+        else:
+            floor_ratio = max(float(self._config.early_stop_trade_floor_ratio), 0.1)
+        trade_floor = max(
+            1,
+            math.floor(
+                float(self._config.early_stop_min_trade_count)
+                * floor_ratio
+            ),
+        )
+        if processed_ratio >= 0.50 and current_trade_count == 0:
+            return True, "no_trade_progress"
+        if current_trade_count < trade_floor:
+            return True, "trade_count_too_low_for_processed_ratio"
+        if self._risk_snapshots:
+            max_drawdown, _ = _max_drawdown(self._risk_snapshots)
+            if max_drawdown >= float(self._config.early_stop_max_drawdown):
+                return True, "drawdown_hard_fail"
+        return False, None
+
+    def _subscribe_with_profile(self, bucket: str, factory: Any) -> Any:
+        if not self._profiling_enabled:
+            return factory()
+        original_subscribe = self.bus.subscribe
+
+        def profiled_subscribe(subject_pattern: str, handler: Any) -> None:
+            def wrapped(subject: str, payload: Any) -> None:
+                started_at = time.perf_counter()
+                try:
+                    handler(subject, payload)
+                finally:
+                    self._profiling_totals[bucket] += time.perf_counter() - started_at
+
+            original_subscribe(subject_pattern, wrapped)
+
+        self.bus.subscribe = profiled_subscribe
+        try:
+            return factory()
+        finally:
+            self.bus.subscribe = original_subscribe
 
     def _load_events(self) -> list[dict[str, Any]]:
         """Load candles and auxiliary market series in replay order."""
-        self._funding_rows = read_parquet_rows(
-            str(self._config.root_dir / "funding" / self._config.symbol / "*.parquet"),
-            where_sql=_time_filter_sql(self._config.start_ns, self._config.end_ns, column="funding_time_ns"),
-            params=_time_filter_params(self._config.start_ns, self._config.end_ns),
-            order_by="funding_time_ns ASC",
-        )
-        self._open_interest_rows = read_parquet_rows(
-            str(
-                self._config.root_dir
-                / "open_interest"
-                / self._config.symbol
-                / self._config.open_interest_timeframe
-                / "*.parquet"
-            ),
-            where_sql=_time_filter_sql(self._config.start_ns, self._config.end_ns, column="ts_ns"),
-            params=_time_filter_params(self._config.start_ns, self._config.end_ns),
-            order_by="ts_ns ASC",
-        )
-        # Load pre-aggregated aggTrades (real order flow CVD)
-        self._aggtrades: dict[str, dict[int, dict[str, Any]]] = {}
-        for tf_label in ("4h", "1h", "5m"):
-            agg_glob = str(self._config.root_dir / "aggtrades" / self._config.symbol / tf_label / "*.parquet")
-            agg_rows = read_parquet_rows(agg_glob, order_by="ts_ns ASC")
-            if agg_rows:
-                bucket = {}
-                for agg_row in agg_rows:
-                    bucket[int(agg_row["ts_ns"])] = agg_row
-                self._aggtrades[tf_label] = bucket
-                print(f"  Loaded {len(bucket)} {tf_label} aggTrades buckets (real CVD)")
-
+        self._funding_rows = self._replay_context.funding_rows
+        self._open_interest_rows = self._replay_context.open_interest_rows
+        self._aggtrades = self._replay_context.aggtrades
         self._funding_index = -1
         self._open_interest_index = -1
-
-        candles: list[dict[str, Any]] = []
-        loaded_rows: dict[Timeframe, list[dict[str, Any]]] = {}
-        # Build unique set of timeframes to load (bias → direction → context → execution)
-        timeframes_to_load: list[Timeframe] = [self._config.bias_timeframe]
-        if self._config.direction_timeframe not in timeframes_to_load:
-            timeframes_to_load.append(self._config.direction_timeframe)
-        if self._config.context_timeframe and self._config.context_timeframe not in timeframes_to_load:
-            timeframes_to_load.append(self._config.context_timeframe)
-        if self._config.execution_timeframe not in timeframes_to_load:
-            timeframes_to_load.append(self._config.execution_timeframe)
-
-        for timeframe in timeframes_to_load:
-            rows = read_parquet_rows(
-                str(self._config.root_dir / "klines" / self._config.symbol / timeframe.value / "*.parquet"),
-                where_sql=_time_filter_sql(self._config.start_ns, self._config.end_ns, column="close_time_ns"),
-                params=_time_filter_params(self._config.start_ns, self._config.end_ns),
-                order_by="close_time_ns ASC",
-            )
-            loaded_rows[timeframe] = rows
-            if not rows and timeframe == Timeframe.TF_1H and self._config.execution_timeframe == Timeframe.TF_5M:
-                five_min_rows = loaded_rows.get(Timeframe.TF_5M)
-                if five_min_rows is None:
-                    five_min_rows = read_parquet_rows(
-                        str(self._config.root_dir / "klines" / self._config.symbol / Timeframe.TF_5M.value / "*.parquet"),
-                        where_sql=_time_filter_sql(self._config.start_ns, self._config.end_ns, column="close_time_ns"),
-                        params=_time_filter_params(self._config.start_ns, self._config.end_ns),
-                        order_by="close_time_ns ASC",
-                    )
-                    loaded_rows[Timeframe.TF_5M] = five_min_rows
-                rows = _aggregate_five_min_rows_to_one_hour(five_min_rows)
-                loaded_rows[timeframe] = rows
-            for row in loaded_rows[timeframe]:
-                row["event_timeframe"] = timeframe.value
-                candles.append(row)
-
-        candles.sort(key=lambda item: (int(item["close_time_ns"]), _timeframe_priority(str(item["event_timeframe"]))))
-        return candles
+        return self._replay_context.events
 
     def _publish_event(self, row: dict[str, Any]) -> None:
         """Publish the same core event families the live runtime consumes."""
@@ -427,6 +495,7 @@ class HistoricalBacktest:
             ),
         )
         if timeframe == self._config.execution_timeframe:
+            accounting_started_at = time.perf_counter()
             self._execution_rows.append(dict(row))
             # Accumulate funding costs on open positions
             if funding_row is not None:
@@ -437,6 +506,8 @@ class HistoricalBacktest:
                     funding_time_ns=int(funding_row.get("funding_time_ns", cutoff_ns)),
                     cutoff_ns=cutoff_ns,
                 )
+            if self._profiling_enabled:
+                self._profiling_totals["accounting_step_total_s"] += time.perf_counter() - accounting_started_at
 
     def _latest_funding(self, cutoff_ns: int) -> dict[str, Any] | None:
         while (
@@ -1124,3 +1195,95 @@ def _aggregate_five_min_rows_to_one_hour(rows: list[dict[str, Any]]) -> list[dic
             }
         )
     return aggregated
+
+
+def _build_replay_context(config: HistoricalBacktestConfig) -> ReplayContext:
+    macro_store = MacroDataStore(MacroDataStoreConfig(macro_dir=config.macro_dir))
+    macro_store.load()
+    options_store = OptionsDataStore(OptionsDataStoreConfig(options_dir=config.options_dir, currency="BTC"))
+    options_store.load()
+    hf_dir = config.root_dir / "klines" / config.symbol / "5m"
+    hf_store = HFFeatureStore(HFFeatureStoreConfig(data_dir=hf_dir))
+    hf_store.load()
+    cot_store = CotDataStore(CotStoreConfig(cot_path=config.cot_path))
+    cot_store.load()
+    liquidation_store = LiquidationDataStore(LiquidationStoreConfig(liquidation_dir=config.liquidation_dir))
+    liquidation_store.load()
+    eth_store = EthDataStore(EthStoreConfig(eth_kline_path=config.root_dir / "klines" / "ETHUSDT" / "4h"))
+    eth_store.load()
+    basis_store = BasisDataStore(
+        BasisStoreConfig(
+            spot_dir=Path("data/raw/binance_spot/klines") / config.symbol / "4h",
+            perp_dir=config.root_dir / "klines" / config.symbol / "4h",
+        )
+    )
+    basis_store.load()
+
+    funding_rows = read_parquet_rows(
+        str(config.root_dir / "funding" / config.symbol / "*.parquet"),
+        where_sql=_time_filter_sql(config.start_ns, config.end_ns, column="funding_time_ns"),
+        params=_time_filter_params(config.start_ns, config.end_ns),
+        order_by="funding_time_ns ASC",
+    )
+    open_interest_rows = read_parquet_rows(
+        str(config.root_dir / "open_interest" / config.symbol / config.open_interest_timeframe / "*.parquet"),
+        where_sql=_time_filter_sql(config.start_ns, config.end_ns, column="ts_ns"),
+        params=_time_filter_params(config.start_ns, config.end_ns),
+        order_by="ts_ns ASC",
+    )
+    aggtrades: dict[str, dict[int, dict[str, Any]]] = {}
+    for tf_label in ("4h", "1h", "5m"):
+        agg_glob = str(config.root_dir / "aggtrades" / config.symbol / tf_label / "*.parquet")
+        agg_rows = read_parquet_rows(agg_glob, order_by="ts_ns ASC")
+        if agg_rows:
+            aggtrades[tf_label] = {int(row["ts_ns"]): row for row in agg_rows}
+
+    candles: list[dict[str, Any]] = []
+    loaded_rows: dict[Timeframe, list[dict[str, Any]]] = {}
+    timeframes_to_load: list[Timeframe] = [config.bias_timeframe]
+    if config.direction_timeframe not in timeframes_to_load:
+        timeframes_to_load.append(config.direction_timeframe)
+    if config.context_timeframe and config.context_timeframe not in timeframes_to_load:
+        timeframes_to_load.append(config.context_timeframe)
+    if config.execution_timeframe not in timeframes_to_load:
+        timeframes_to_load.append(config.execution_timeframe)
+
+    for timeframe in timeframes_to_load:
+        rows = read_parquet_rows(
+            str(config.root_dir / "klines" / config.symbol / timeframe.value / "*.parquet"),
+            where_sql=_time_filter_sql(config.start_ns, config.end_ns, column="close_time_ns"),
+            params=_time_filter_params(config.start_ns, config.end_ns),
+            order_by="close_time_ns ASC",
+        )
+        loaded_rows[timeframe] = rows
+        if not rows and timeframe == Timeframe.TF_1H and config.execution_timeframe == Timeframe.TF_5M:
+            five_min_rows = loaded_rows.get(Timeframe.TF_5M)
+            if five_min_rows is None:
+                five_min_rows = read_parquet_rows(
+                    str(config.root_dir / "klines" / config.symbol / Timeframe.TF_5M.value / "*.parquet"),
+                    where_sql=_time_filter_sql(config.start_ns, config.end_ns, column="close_time_ns"),
+                    params=_time_filter_params(config.start_ns, config.end_ns),
+                    order_by="close_time_ns ASC",
+                )
+                loaded_rows[Timeframe.TF_5M] = five_min_rows
+            rows = _aggregate_five_min_rows_to_one_hour(five_min_rows)
+            loaded_rows[timeframe] = rows
+        for row in loaded_rows[timeframe]:
+            enriched = dict(row)
+            enriched["event_timeframe"] = timeframe.value
+            candles.append(enriched)
+
+    candles.sort(key=lambda item: (int(item["close_time_ns"]), _timeframe_priority(str(item["event_timeframe"]))))
+    return ReplayContext(
+        funding_rows=funding_rows,
+        open_interest_rows=open_interest_rows,
+        aggtrades=aggtrades,
+        events=candles,
+        macro_store=macro_store,
+        options_store=options_store,
+        hf_store=hf_store,
+        cot_store=cot_store,
+        liquidation_store=liquidation_store,
+        eth_store=eth_store,
+        basis_store=basis_store,
+    )

@@ -29,6 +29,9 @@ uv run python scripts/run_research_pipeline.py --root data/raw/binance --symbol 
 # Export a labeled research dataset from live/paper PostgreSQL audit logs
 uv run zenquant-live-export --dsn "$ZENQUANT_PG_DSN" --symbol BTCUSDT_PERP --label paper-live
 
+# Run one forward data collection cycle for Deribit + Hyperliquid + merge + readiness
+uv run zenquant-forward-collect
+
 # View dashboard
 open http://127.0.0.1:8090
 ```
@@ -97,6 +100,24 @@ uv run python scripts/compare_variants.py --root data/raw/binance --symbol BTCUS
 uv run python scripts/walk_forward_eval.py
 uv run python scripts/adversarial_stress.py --historical --split dev
 ```
+
+## Forward Data Collection
+
+Forward-looking research inputs are collected by an hourly cron-friendly chain, not by the research loop itself.
+
+- `uv run zenquant-forward-collect`
+  - runs Deribit collection, Hyperliquid collection, liquidation merge, and readiness refresh in order
+  - updates `results/data_readiness/forward_collection_latest.json`
+- `uv run zenquant-forward-collect --health-only`
+  - checks freshness of `_collector_status.json`, merged liquidation output, and `results/data_readiness/data_readiness.json`
+  - updates `results/data_readiness/forward_collection_health.json`
+
+Use the collector command on a fixed hourly schedule. Do not treat `zenquant-web --mode live` as the only forward-data collector.
+
+Reference docs:
+
+- [`docs/FORWARD_COLLECTION_AUTOMATION.md`](/Users/disaster/workspace/code/zenQuant/docs/FORWARD_COLLECTION_AUTOMATION.md)
+- [`docs/HISTORICAL_EXTENSION_2016.md`](/Users/disaster/workspace/code/zenQuant/docs/HISTORICAL_EXTENSION_2016.md)
 
 ---
 

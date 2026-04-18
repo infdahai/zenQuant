@@ -6,6 +6,7 @@ import random
 import time
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from multiprocessing import Manager
 from typing import Any
 
 import gymnasium as gym
@@ -166,9 +167,11 @@ class ParamTunerEnv(gym.Env):
         param_grid: dict[str, list[float]] | None = None,
         split_spec: DatasetSplitSpec | None = None,
         base_config: HistoricalBacktestConfig | None = None,
+        shared_results: Any | None = None,
+        seed_params: dict[str, float] | None = None,
     ) -> None:
         super().__init__()
-        self._param_grid = param_grid or PARAM_GRID
+        self._param_grid = _resolve_param_grid(param_grid or PARAM_GRID, seed_params=seed_params)
         self._split_spec = split_spec or default_btc_split_spec()
         self._base_config = base_config or HistoricalBacktestConfig(
             execution_timeframe=Timeframe.TF_5M,
@@ -185,6 +188,7 @@ class ParamTunerEnv(gym.Env):
         )
         self._last_obs = np.zeros(6, dtype=np.float32)
         self._results: list[TunerResult] = []
+        self._shared_results = shared_results
 
     def reset(self, *, seed: int | None = None, options: dict | None = None) -> tuple[np.ndarray, dict]:
         super().reset(seed=seed)
@@ -198,6 +202,17 @@ class ParamTunerEnv(gym.Env):
         train_window = random.choice(self._train_windows)
         result = self._run_backtest(params, train_window)
         self._results.append(result)
+        if self._shared_results is not None:
+            self._shared_results.append(
+                {
+                    "params": dict(result.params),
+                    "sharpe": float(result.sharpe),
+                    "pnl": float(result.pnl),
+                    "max_dd": float(result.max_dd),
+                    "trades": int(result.trades),
+                    "candidate_score": float(result.candidate_score),
+                }
+            )
 
         reward = result.candidate_score
         self._last_obs = np.array(
@@ -236,6 +251,14 @@ class ParamTunerEnv(gym.Env):
             signal_weight_overrides=build_signal_weight_overrides(params),
             liquidation_data_enabled=self._base_config.liquidation_data_enabled,
             state_liquidation_overlay_enabled=self._base_config.state_liquidation_overlay_enabled,
+            research_compute_mode=self._base_config.research_compute_mode,
+            profiling_enabled=self._base_config.profiling_enabled,
+            early_stop_enabled=self._base_config.early_stop_enabled,
+            early_stop_trade_check_ratio=self._base_config.early_stop_trade_check_ratio,
+            early_stop_min_trade_count=self._base_config.early_stop_min_trade_count,
+            early_stop_trade_floor_ratio=self._base_config.early_stop_trade_floor_ratio,
+            early_stop_max_drawdown=self._base_config.early_stop_max_drawdown,
+            trial_runtime_budget_s=self._base_config.trial_runtime_budget_s,
         )
         try:
             result = HistoricalBacktest(config).run()
@@ -248,6 +271,8 @@ class ParamTunerEnv(gym.Env):
                 - max(0.0, max_dd - 0.10) * 12.0
                 - (1.0 if trades < 20 else 0.0)
             )
+            if result.terminated_early:
+                candidate_score -= 1.5
             return TunerResult(
                 params=params,
                 sharpe=sharpe,
@@ -258,6 +283,31 @@ class ParamTunerEnv(gym.Env):
             )
         except Exception:
             return TunerResult(params=params, sharpe=-5.0, pnl=0.0, max_dd=1.0, trades=0, candidate_score=-10.0)
+
+
+def _resolve_param_grid(
+    param_grid: dict[str, list[float]],
+    *,
+    seed_params: dict[str, float] | None,
+) -> dict[str, list[float]]:
+    if not seed_params:
+        return dict(param_grid)
+    refined: dict[str, list[float]] = {}
+    for name, values in param_grid.items():
+        if name not in seed_params:
+            refined[name] = list(values)
+            continue
+        ordered = list(values)
+        try:
+            center_index = ordered.index(seed_params[name])
+        except ValueError:
+            refined[name] = ordered
+            continue
+        lo = max(0, center_index - 1)
+        hi = min(len(ordered), center_index + 2)
+        narrowed = ordered[lo:hi]
+        refined[name] = narrowed or ordered
+    return refined
 
 
 def _evaluate_dev_candidate(
@@ -319,10 +369,16 @@ def train_tuner(
     selection_split: str = "train",
     status_callback: Any | None = None,
     total_timeout_s: float | None = None,
+    budget_mode: str = "episode_primary",
+    wall_clock_budget_s: float | None = None,
+    max_episodes: int | None = None,
+    n_envs: int = 1,
+    seed_params: dict[str, float] | None = None,
 ) -> dict[str, Any]:
     """Train RL candidate explorer and return a train-ranked candidate summary."""
     from stable_baselines3 import PPO
     from stable_baselines3.common.callbacks import BaseCallback
+    from stable_baselines3.common.vec_env import DummyVecEnv, SubprocVecEnv
 
     resolved_split = split_spec or default_btc_split_spec()
     resolved_base = base_config or HistoricalBacktestConfig(
@@ -330,25 +386,51 @@ def train_tuner(
         context_timeframe=Timeframe.TF_1H,
     )
     started_at = time.time()
-    env = ParamTunerEnv(param_grid=param_grid, split_spec=resolved_split, base_config=resolved_base)
+    resolved_budget_mode = str(budget_mode or "episode_primary")
+    resolved_wall_clock_budget_s = (
+        float(wall_clock_budget_s)
+        if wall_clock_budget_s is not None
+        else float(total_timeout_s)
+        if total_timeout_s is not None
+        else None
+    )
+    resolved_max_episodes = int(max_episodes or total_timesteps)
+    resolved_n_envs = max(1, int(n_envs))
+    manager = Manager()
+    shared_results = manager.list()
+
+    def _make_env() -> Any:
+        return ParamTunerEnv(
+            param_grid=param_grid,
+            split_spec=resolved_split,
+            base_config=resolved_base,
+            shared_results=shared_results,
+            seed_params=seed_params,
+        )
+
+    env_fns = [_make_env for _ in range(resolved_n_envs)]
+    env = DummyVecEnv(env_fns) if resolved_n_envs == 1 else SubprocVecEnv(env_fns, start_method="spawn")
 
     class _ProgressCallback(BaseCallback):
         def _on_step(self) -> bool:
             actual_steps = max(0, int(self.num_timesteps))
-            completed_units = min(int(total_timesteps), actual_steps)
+            episodes_completed = min(len(shared_results), resolved_max_episodes)
             if status_callback is not None:
                 status_callback(
                     event="rl_progress",
-                    completed_steps=completed_units,
-                    actual_steps=actual_steps,
-                    requested_steps=int(total_timesteps),
-                    total_steps=int(total_timesteps),
+                    completed_steps=episodes_completed,
+                    actual_steps=episodes_completed,
+                    requested_steps=resolved_max_episodes,
+                    total_steps=resolved_max_episodes,
                     runtime_s=time.time() - started_at,
+                    rl_budget_mode=resolved_budget_mode,
+                    rl_wall_clock_elapsed_s=time.time() - started_at,
+                    rl_active_envs=resolved_n_envs,
                 )
-            if total_timeout_s is not None and (time.time() - started_at) > total_timeout_s:
-                raise TimeoutError(f"stage1_rl_timeout: exceeded {total_timeout_s:.0f}s")
-            if actual_steps >= int(total_timesteps):
-                raise RLBudgetReached("stage1_rl_budget_reached")
+            if resolved_wall_clock_budget_s is not None and (time.time() - started_at) > resolved_wall_clock_budget_s:
+                raise RLBudgetReached("wall_clock_budget_reached")
+            if episodes_completed >= resolved_max_episodes:
+                raise RLBudgetReached("episode_budget_reached")
             return True
 
     model = PPO(
@@ -356,16 +438,31 @@ def train_tuner(
         env,
         verbose=verbose,
         n_steps=8,
-        batch_size=4,
+        batch_size=max(4, 4 * resolved_n_envs),
         n_epochs=2,
         learning_rate=3e-4,
     )
+    stop_reason = "completed"
     try:
-        model.learn(total_timesteps=total_timesteps, callback=_ProgressCallback())
-    except RLBudgetReached:
+        model.learn(total_timesteps=max(total_timesteps, resolved_max_episodes * resolved_n_envs), callback=_ProgressCallback())
+    except RLBudgetReached as exc:
+        stop_reason = str(exc)
         pass
+    finally:
+        env.close()
 
-    results = env._results
+    results = [
+        TunerResult(
+            params=dict(item["params"]),
+            sharpe=float(item["sharpe"]),
+            pnl=float(item["pnl"]),
+            max_dd=float(item["max_dd"]),
+            trades=int(item["trades"]),
+            candidate_score=float(item["candidate_score"]),
+        )
+        for item in list(shared_results)
+    ]
+    manager.shutdown()
     if not results:
         return {
             "best_params": {},
@@ -376,6 +473,10 @@ def train_tuner(
             "search_status": {
                 "selection_split": selection_split,
                 "episodes_completed": 0,
+                "budget_mode": resolved_budget_mode,
+                "wall_clock_elapsed_s": round(time.time() - started_at, 4),
+                "stop_reason": stop_reason,
+                "active_envs": resolved_n_envs,
                 "train_only_search": True,
                 "dev_only_ranking": False,
                 "dev_diagnostics_only": True,
@@ -385,24 +486,35 @@ def train_tuner(
     if status_callback is not None:
         status_callback(
             event="rl_rank_dev_started",
-            completed_steps=min(len(results), int(total_timesteps)),
-            actual_steps=min(len(results), int(total_timesteps)),
-            requested_steps=int(total_timesteps),
-            total_steps=int(total_timesteps),
+            completed_steps=min(len(results), resolved_max_episodes),
+            actual_steps=min(len(results), resolved_max_episodes),
+            requested_steps=resolved_max_episodes,
+            total_steps=resolved_max_episodes,
             runtime_s=time.time() - started_at,
+            rl_budget_mode=resolved_budget_mode,
+            rl_wall_clock_elapsed_s=time.time() - started_at,
+            rl_active_envs=resolved_n_envs,
         )
     best_train = max(results, key=lambda item: item.candidate_score)
     dev_metrics: dict[str, Any] = {}
+    avg_episode_runtime_s = round((time.time() - started_at) / max(1, len(results)), 4)
     if status_callback is not None:
         status_callback(
             event="rl_completed",
-            completed_steps=min(len(results), int(total_timesteps)),
-            actual_steps=min(len(results), int(total_timesteps)),
-            requested_steps=int(total_timesteps),
-            total_steps=int(total_timesteps),
+            completed_steps=min(len(results), resolved_max_episodes),
+            actual_steps=min(len(results), resolved_max_episodes),
+            requested_steps=resolved_max_episodes,
+            total_steps=resolved_max_episodes,
             runtime_s=time.time() - started_at,
             best_params_so_far=best_train.params,
             best_value_so_far=best_train.candidate_score,
+            rl_budget_mode=resolved_budget_mode,
+            rl_wall_clock_elapsed_s=time.time() - started_at,
+            rl_stop_reason=stop_reason,
+            rl_active_envs=resolved_n_envs,
+            rl_avg_episode_runtime_s=avg_episode_runtime_s,
+            rl_cache_hit_rate=1.0 if resolved_base.research_compute_mode == "lightweight_train_search" else 0.0,
+            rl_avg_event_loop_s=0.0,
         )
     return {
         "best_params": best_train.params,
@@ -421,7 +533,12 @@ def train_tuner(
         "all_results": [(result.sharpe, result.params) for result in sorted(results, key=lambda item: -item.candidate_score)[:10]],
         "search_status": {
             "selection_split": selection_split,
-            "episodes_completed": min(len(results), int(total_timesteps)),
+            "episodes_completed": min(len(results), resolved_max_episodes),
+            "budget_mode": resolved_budget_mode,
+            "wall_clock_elapsed_s": round(time.time() - started_at, 4),
+            "stop_reason": stop_reason,
+            "active_envs": resolved_n_envs,
+            "avg_episode_runtime_s": avg_episode_runtime_s,
             "train_only_search": True,
             "dev_only_ranking": False,
             "dev_diagnostics_only": True,

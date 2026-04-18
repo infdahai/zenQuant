@@ -7,6 +7,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from unittest.mock import patch
 
+from zenquant.data.deribit_block_flow import DeribitBlockFlowRow, save_block_flow_rows, write_deribit_block_flow_status
 from zenquant.data.deribit_status import write_deribit_status
 from zenquant.data.liquidation_pipeline import (
     LiquidationEvent,
@@ -26,6 +27,8 @@ def _load_module(name: str, path: str):
 
 
 REVIEW = _load_module("review_hyperliquid_admission_module", "scripts/review_hyperliquid_admission.py")
+MVRV_REVIEW = _load_module("review_mvrv_admission_module", "scripts/review_mvrv_admission.py")
+BLOCK_FLOW_REVIEW = _load_module("review_deribit_block_flow_admission_module", "scripts/review_deribit_block_flow_admission.py")
 
 
 def _ts(year: int, month: int, day: int, hour: int) -> int:
@@ -96,6 +99,100 @@ class DataSourceReviewTests(unittest.TestCase):
         self.assertEqual(payload["source_tiers"]["hyperliquid_public_proxy"], "tier2_supplemental")
         self.assertTrue(payload["recommendation"]["collect_continue"])
         self.assertTrue(payload["recommendation"]["exclude_from_promote_truth"])
+        self.assertEqual(payload["tier_decision"], "tier2_research_only_feature")
+        self.assertEqual(payload["time_granularity"], "4h")
+
+    def test_mvrv_review_emits_daily_research_only_contract(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            macro_root = root / "macro"
+            output_dir = root / "review"
+            (macro_root / "btc_mvrv").mkdir(parents=True, exist_ok=True)
+            (macro_root / "btc_mvrv" / "data.parquet").write_text("placeholder", encoding="utf-8")
+            (macro_root / "btc_mvrv" / "metadata.json").write_text(
+                json.dumps(
+                    {
+                        "btc_mvrv_source": "local_csv",
+                        "btc_mvrv_source_confidence": "high",
+                        "btc_mvrv_last_success_at": "2026-04-18T00:00:00+00:00",
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            argv = [
+                "review_mvrv_admission.py",
+                "--symbol",
+                "BTCUSDT",
+                "--macro-root",
+                str(macro_root),
+                "--output-dir",
+                str(output_dir),
+            ]
+            with patch.object(sys, "argv", argv):
+                MVRV_REVIEW.main()
+
+            payload = json.loads((output_dir / "mvrv_admission_review.json").read_text(encoding="utf-8"))
+
+        self.assertEqual(payload["source_name"], "btc_mvrv")
+        self.assertEqual(payload["time_granularity"], "1d")
+        self.assertEqual(payload["tier_decision"], "tier2_research_only_feature")
+        self.assertTrue(payload["use_for_research_only"])
+        self.assertTrue(payload["exclude_from_promote_truth"])
+
+    def test_deribit_block_flow_review_emits_research_only_contract(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            flow_root = root / "deribit_block_flow"
+            output_dir = root / "review"
+            now_ns = int(datetime.now(UTC).timestamp() * 1_000_000_000)
+            save_block_flow_rows(
+                [
+                    DeribitBlockFlowRow(
+                        ts_ns=now_ns,
+                        trade_id="t1",
+                        block_trade_id="b1",
+                        combo_id=None,
+                        combo_trade_id=None,
+                        instrument_name="BTC-25SEP26-72000-C",
+                        option_type="call",
+                        expiry_ts_ms=None,
+                        strike=72000.0,
+                        direction="buy",
+                        amount=1000.0,
+                        price=0.05,
+                        index_price=70000.0,
+                        mark_price=0.04,
+                        iv=0.45,
+                        liquidity="T",
+                        is_block_trade=True,
+                        is_combo_leg=False,
+                        leg_count=1,
+                        source="public_option_trade",
+                    )
+                ],
+                flow_root,
+            )
+            write_deribit_block_flow_status(flow_root)
+
+            argv = [
+                "review_deribit_block_flow_admission.py",
+                "--symbol",
+                "BTCUSDT",
+                "--deribit-block-flow-root",
+                str(flow_root),
+                "--output-dir",
+                str(output_dir),
+            ]
+            with patch.object(sys, "argv", argv):
+                BLOCK_FLOW_REVIEW.main()
+
+            payload = json.loads((output_dir / "deribit_block_flow_admission_review.json").read_text(encoding="utf-8"))
+
+        self.assertEqual(payload["source_name"], "deribit_block_flow")
+        self.assertEqual(payload["time_granularity"], "1d")
+        self.assertTrue(payload["use_for_research_only"])
+        self.assertTrue(payload["exclude_from_promote_truth"])
 
 
 if __name__ == "__main__":

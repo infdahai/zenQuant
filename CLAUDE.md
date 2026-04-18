@@ -31,6 +31,8 @@
 - 数据完成度：
   - `results/data_readiness/data_readiness.json`
   - `results/data_readiness/data_readiness.md`
+  - `results/data_readiness/forward_collection_latest.json`
+  - `results/data_readiness/forward_collection_health.json`
 - 调优 campaign：
   - `results/framework_optimization/campaign_status.json`
 - 调优最终报告：
@@ -60,3 +62,4 @@
 - 不把 Hyperliquid public 数据表述成 venue-native liquidation truth；它是 liquidation-compatible proxy。
 - liquidation 未 `promotion_ready` 时，不把它纳入正式 promote 级搜索空间。
 - 在出现新的 promote candidate 之前，不把 tuned winner 当默认 live 候选。
+- `research loop` 不负责未来数据积累；前瞻数据靠 `zenquant-forward-collect` 的定时运行来刷新 Deribit / Hyperliquid / merged readiness。

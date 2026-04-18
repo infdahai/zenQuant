@@ -4,7 +4,12 @@ import unittest
 from pathlib import Path
 from unittest.mock import Mock, patch
 
-from zenquant.ingestor.macro import fetch_btc_etf_netflow, read_btc_etf_flow_metadata
+from zenquant.ingestor.macro import (
+    fetch_btc_etf_netflow,
+    fetch_btc_mvrv,
+    read_btc_etf_flow_metadata,
+    read_btc_mvrv_metadata,
+)
 
 
 class BtcEtfFlowIngestorTests(unittest.TestCase):
@@ -123,6 +128,40 @@ class BtcEtfFlowIngestorTests(unittest.TestCase):
             self.assertTrue(metadata_path.exists())
             metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
             self.assertEqual(metadata["etf_flow_source_confidence"], "missing")
+
+
+class BtcMvrvIngestorTests(unittest.TestCase):
+    def test_local_csv_has_priority_and_writes_metadata(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            output_dir = Path(tmp)
+            csv_path = output_dir / "mvrv.csv"
+            csv_path.write_text(
+                "date,mvrv_ratio\n2016-01-01,0.82\n2016-01-02,0.85\n",
+                encoding="utf-8",
+            )
+
+            saved = fetch_btc_mvrv(output_dir, csv_path=csv_path)
+
+            self.assertEqual(saved, 2)
+            metadata = read_btc_mvrv_metadata(output_dir)
+            self.assertEqual(metadata["btc_mvrv_source"], "local_csv")
+            self.assertEqual(metadata["btc_mvrv_source_confidence"], "high")
+
+    @patch("zenquant.ingestor.macro.requests.get")
+    def test_remote_csv_fallback_writes_metadata(self, mock_get: Mock) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            output_dir = Path(tmp)
+            response = Mock()
+            response.raise_for_status.return_value = None
+            response.text = "date,value\n2016-01-01,0.9\n2016-01-02,0.95\n"
+            mock_get.return_value = response
+
+            saved = fetch_btc_mvrv(output_dir, csv_url="https://example.com/mvrv.csv")
+
+            self.assertEqual(saved, 2)
+            metadata = read_btc_mvrv_metadata(output_dir)
+            self.assertEqual(metadata["btc_mvrv_source"], "remote_csv")
+            self.assertEqual(metadata["btc_mvrv_source_confidence"], "medium")
 
 
 if __name__ == "__main__":

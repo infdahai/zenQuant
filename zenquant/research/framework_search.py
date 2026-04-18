@@ -31,8 +31,11 @@ from zenquant.research.comparison import (
     default_variant_specs,
     default_walk_forward_windows,
     filtered_worst_period_windows,
+    fixed_2023_08_window,
     paulwei_risk_baseline,
+    split_window_spec,
 )
+from zenquant.research.data_source_review import load_source_admission_review
 from zenquant.research.framework_params import (
     baseline_anchor_seed_trials,
     build_execution_config,
@@ -44,6 +47,7 @@ from zenquant.research.framework_params import (
     param_grid_for_mode,
     search_space_profile,
 )
+from zenquant.research.source_independence import load_source_independence_audit
 from zenquant.research.splits import DatasetSplitSpec, default_btc_split_spec, split_summary_json
 
 
@@ -67,6 +71,71 @@ def _etf_flow_source_metadata(macro_dir: Path) -> dict[str, Any]:
         "etf_flow_source": payload.get("etf_flow_source"),
         "etf_flow_source_confidence": payload.get("etf_flow_source_confidence", "unknown"),
         "etf_flow_last_success_at": payload.get("etf_flow_last_success_at"),
+    }
+
+
+def _mvrv_source_metadata(macro_dir: Path) -> dict[str, Any]:
+    metadata_path = macro_dir / "btc_mvrv" / "metadata.json"
+    if not metadata_path.exists():
+        return {
+            "mvrv_source": None,
+            "mvrv_source_confidence": "missing",
+            "mvrv_last_success_at": None,
+        }
+    try:
+        payload = json.loads(metadata_path.read_text(encoding="utf-8"))
+    except Exception:
+        return {
+            "mvrv_source": None,
+            "mvrv_source_confidence": "unknown",
+            "mvrv_last_success_at": None,
+        }
+    return {
+        "mvrv_source": payload.get("btc_mvrv_source"),
+        "mvrv_source_confidence": payload.get("btc_mvrv_source_confidence", "unknown"),
+        "mvrv_last_success_at": payload.get("btc_mvrv_last_success_at"),
+    }
+
+
+def _admission_contract(source_name: str) -> dict[str, Any]:
+    review = load_source_admission_review(source_name)
+    if not review:
+        return {
+            "review_present": False,
+            "tier_decision": None,
+            "time_granularity": None,
+            "research_ready": False,
+            "use_for_research_only": False,
+            "exclude_from_promote_truth": True,
+            "blocked_by": "admission_review_missing",
+        }
+    return {
+        "review_present": True,
+        "tier_decision": review.get("tier_decision"),
+        "time_granularity": review.get("time_granularity"),
+        "research_ready": bool(review.get("research_ready")),
+        "use_for_research_only": bool(review.get("use_for_research_only")),
+        "exclude_from_promote_truth": bool(review.get("exclude_from_promote_truth")),
+        "blocked_by": review.get("blocked_by"),
+    }
+
+
+def _independence_contract(source_name: str) -> dict[str, Any]:
+    review = load_source_independence_audit(source_name)
+    if not review:
+        return {
+            "review_present": False,
+            "allowed_in_state_features": False,
+            "use_for_research_only": False,
+            "blocked_by": "independence_review_missing",
+            "max_abs_correlation": None,
+        }
+    return {
+        "review_present": True,
+        "allowed_in_state_features": bool(review.get("allowed_in_state_features")),
+        "use_for_research_only": bool(review.get("use_for_research_only")),
+        "blocked_by": review.get("blocked_by"),
+        "max_abs_correlation": review.get("max_abs_correlation"),
     }
 
 
@@ -237,6 +306,18 @@ class ValidationBundleTimeoutError(RuntimeError):
         self.timeout_s = timeout_s
 
 
+class PrepareVariantTimeoutError(RuntimeError):
+    """Raised when a lightweight stage2 prepare window exceeds its budget."""
+
+    def __init__(self, *, variant: str, window_label: str, timeout_s: float) -> None:
+        super().__init__(
+            f"stage2_prepare_variant_timeout: variant={variant} window={window_label} timeout_s={timeout_s:.0f}"
+        )
+        self.variant = variant
+        self.window_label = window_label
+        self.timeout_s = timeout_s
+
+
 def _best_tuned_candidate(report: SearchReport) -> CandidateSummary | None:
     tuned = [candidate for candidate in (report.optuna_best, report.rl_best) if candidate is not None]
     if not tuned:
@@ -303,6 +384,10 @@ def _assess_full_training_readiness(
         data_warnings.append("deribit_observation_not_ready")
     if not state_sources.get("etf_flow_in_state_features"):
         data_warnings.append("etf_flow_state_features_unavailable")
+    if not state_sources.get("mvrv_in_state_features"):
+        data_warnings.append("mvrv_state_features_unavailable")
+    if not state_sources.get("deribit_block_flow_in_state_features"):
+        data_warnings.append("deribit_block_flow_state_features_unavailable")
     if report.search_status.get("liquidation_in_search") and not report.readiness.get("promotion_ready"):
         data_failures.append("liquidation_search_enabled_before_promotion_ready")
 
@@ -545,7 +630,16 @@ class FrameworkEvaluator:
         self._summary_cache: dict[tuple[str, bool, bool], CandidateSummary] = {}
         self._validation_pool: ProcessPoolExecutor | None = None
         self._validation_pool_workers = 1
-        self._dev_windows = default_comparison_windows(self._split_spec, "dev")
+        self._full_dev_compare_windows = default_comparison_windows(self._split_spec, "dev")
+        worst_dev_windows = filtered_worst_period_windows(self._split_spec, "dev")
+        self._fast_dev_compare_windows = [
+            split_window_spec(self._split_spec, "dev"),
+            fixed_2023_08_window(),
+            *([worst_dev_windows[-1]] if worst_dev_windows else []),
+        ]
+        self._fast_dev_prepare_windows = list(self._fast_dev_compare_windows)
+        self._full_dev_prepare_windows = list(self._full_dev_compare_windows)
+        self._dev_windows = list(self._full_dev_compare_windows)
         self._test_windows = [
             *default_comparison_windows(self._split_spec, "test"),
             *filtered_worst_period_windows(self._split_spec, "test"),
@@ -554,16 +648,50 @@ class FrameworkEvaluator:
         self._full_dev_wf_windows = default_walk_forward_windows(split_spec=self._split_spec, comparison_split="dev")
         cpu_budget = max(1, (os.cpu_count() or 2) - 2)
         self._compute_profiles = {
-            "smoke": {"workers": 1, "wf_windows": 0, "replay_timeout_s": 120.0},
-            "fast": {"workers": min(2, cpu_budget), "wf_windows": len(self._fast_dev_wf_windows), "replay_timeout_s": 180.0},
-            "high": {"workers": min(4, cpu_budget), "wf_windows": len(self._full_dev_wf_windows), "replay_timeout_s": 360.0},
+            "smoke": {
+                "workers": 1,
+                "wf_windows": 0,
+                "compare_windows": len(self._fast_dev_compare_windows),
+                "compare_workers": min(2, cpu_budget),
+                "compare_validation_workers": 1,
+                "compare_validation_leg_timeout_s": 90.0,
+                "compare_validation_variant_budget_s": 180.0,
+                "prepare_window_timeout_s": 90.0,
+                "prepare_variant_budget_s": 240.0,
+                "replay_timeout_s": 120.0,
+            },
+            "fast": {
+                "workers": min(2, cpu_budget),
+                "wf_windows": len(self._fast_dev_wf_windows),
+                "compare_windows": len(self._fast_dev_compare_windows),
+                "compare_workers": min(2, cpu_budget),
+                "compare_validation_workers": min(2, cpu_budget),
+                "compare_validation_leg_timeout_s": 180.0,
+                "compare_validation_variant_budget_s": 480.0,
+                "prepare_window_timeout_s": 180.0,
+                "prepare_variant_budget_s": 420.0,
+                "replay_timeout_s": 180.0,
+            },
+            "high": {
+                "workers": min(4, cpu_budget),
+                "wf_windows": len(self._full_dev_wf_windows),
+                "compare_windows": len(self._full_dev_compare_windows),
+                "compare_workers": min(4, cpu_budget),
+                "compare_validation_workers": min(4, cpu_budget),
+                "compare_validation_leg_timeout_s": 360.0,
+                "compare_validation_variant_budget_s": 1200.0,
+                "prepare_window_timeout_s": 360.0,
+                "prepare_variant_budget_s": 1200.0,
+                "replay_timeout_s": 360.0,
+            },
         }
         self._current_variant = default_variant_specs()[0]
         self._paulwei_variant = default_variant_specs()[1]
         self._deribit_status = asdict(collect_deribit_status(base_config.options_dir, "BTC"))
         self._training_window_coverage = {
             "train_window": split_summary_json(self._split_spec)["windows"]["train"],
-            "dev_windows": [window.label for window in self._dev_windows],
+            "dev_windows": [window.label for window in self._full_dev_compare_windows],
+            "fast_dev_compare_windows": [window.label for window in self._fast_dev_compare_windows],
             "dev_walk_forward_windows": [window.label for window in self._full_dev_wf_windows],
             "test_windows": [window.label for window in self._test_windows],
         }
@@ -603,6 +731,12 @@ class FrameworkEvaluator:
             }
         )
         etf_flow_metadata = _etf_flow_source_metadata(base_config.macro_dir)
+        mvrv_metadata = _mvrv_source_metadata(base_config.macro_dir)
+        hyperliquid_admission = _admission_contract("hyperliquid")
+        mvrv_admission = _admission_contract("mvrv")
+        mvrv_independence = _independence_contract("btc_mvrv")
+        deribit_block_admission = _admission_contract("deribit_block_flow")
+        deribit_block_independence = _independence_contract("deribit_block_flow")
         self._training_input_contract = {
             "primary_truth_source": "binance",
             "execution_framework": {
@@ -622,10 +756,48 @@ class FrameworkEvaluator:
                     self._deribit_status["enabled"] and self._deribit_status["snapshot_count_7d"] > 0
                 ),
                 "hyperliquid_in_state_features": bool(self._readiness["data_ready"]),
+                "hyperliquid_admission_review_present": hyperliquid_admission["review_present"],
+                "hyperliquid_tier_decision": hyperliquid_admission["tier_decision"],
                 "etf_flow_in_state_features": (base_config.macro_dir / "btc_etf_netflow" / "data.parquet").exists(),
                 "etf_flow_source": etf_flow_metadata["etf_flow_source"],
                 "etf_flow_source_confidence": etf_flow_metadata["etf_flow_source_confidence"],
                 "etf_flow_last_success_at": etf_flow_metadata["etf_flow_last_success_at"],
+                "mvrv_in_state_features": bool(
+                    (base_config.macro_dir / "btc_mvrv" / "data.parquet").exists()
+                    and mvrv_admission["review_present"]
+                    and mvrv_admission["research_ready"]
+                    and mvrv_independence["review_present"]
+                    and mvrv_independence["allowed_in_state_features"]
+                    and mvrv_admission["tier_decision"] in {"tier2_research_only_feature", "tier3_promoted_state_signal"}
+                ),
+                "mvrv_source": mvrv_metadata["mvrv_source"],
+                "mvrv_source_confidence": mvrv_metadata["mvrv_source_confidence"],
+                "mvrv_last_success_at": mvrv_metadata["mvrv_last_success_at"],
+                "mvrv_admission_review_present": mvrv_admission["review_present"],
+                "mvrv_tier_decision": mvrv_admission["tier_decision"],
+                "mvrv_time_granularity": mvrv_admission["time_granularity"],
+                "mvrv_use_for_research_only": mvrv_admission["use_for_research_only"],
+                "mvrv_exclude_from_promote_truth": mvrv_admission["exclude_from_promote_truth"],
+                "mvrv_independence_review_present": mvrv_independence["review_present"],
+                "mvrv_independence_allowed": mvrv_independence["allowed_in_state_features"],
+                "mvrv_max_abs_correlation": mvrv_independence["max_abs_correlation"],
+                "mvrv_blocked_by": mvrv_independence["blocked_by"] or mvrv_admission["blocked_by"],
+                "deribit_block_flow_in_state_features": bool(
+                    deribit_block_admission["review_present"]
+                    and deribit_block_admission["research_ready"]
+                    and deribit_block_independence["review_present"]
+                    and deribit_block_independence["allowed_in_state_features"]
+                    and deribit_block_admission["tier_decision"]
+                    in {"tier2_research_only_feature", "tier3_promoted_state_signal"}
+                ),
+                "deribit_block_flow_admission_review_present": deribit_block_admission["review_present"],
+                "deribit_block_flow_tier_decision": deribit_block_admission["tier_decision"],
+                "deribit_block_flow_independence_review_present": deribit_block_independence["review_present"],
+                "deribit_block_flow_independence_allowed": deribit_block_independence["allowed_in_state_features"],
+                "deribit_block_flow_max_abs_correlation": deribit_block_independence["max_abs_correlation"],
+                "deribit_block_flow_blocked_by": (
+                    deribit_block_independence["blocked_by"] or deribit_block_admission["blocked_by"]
+                ),
                 "cme_positioning_in_state_features": (Path("data/raw/cftc") / "cot_btc.parquet").exists(),
                 "liquidation_in_search": bool(self._readiness["promotion_ready"]),
             },
@@ -649,8 +821,43 @@ class FrameworkEvaluator:
 
     def _compute_profile(self, *, fast: bool, lightweight: bool) -> dict[str, Any]:
         if lightweight:
-            return self._compute_profiles["smoke"]
+            return self._compute_profiles["smoke" if not fast else "fast"]
         return self._compute_profiles["fast" if fast else "high"]
+
+    def _prepare_windows(self, *, fast: bool, lightweight: bool) -> list[WindowSpec]:
+        if lightweight:
+            return list(self._fast_dev_prepare_windows if fast else self._full_dev_prepare_windows)
+        return list(self._dev_windows)
+
+    def _run_prepare_backtest_cached(
+        self,
+        variant: VariantSpec,
+        window: WindowSpec,
+        *,
+        timeout_s: float,
+        replay_pool: ProcessPoolExecutor | None,
+    ) -> BacktestSnapshot:
+        key = (self._variant_key(variant), window.start_ns, window.end_ns)
+        cached = self._backtest_cache.get(key)
+        if cached is not None:
+            return cached
+        try:
+            snapshot = _run_variant_backtest_with_timeout(
+                self._base_config,
+                variant,
+                start_ns=window.start_ns,
+                end_ns=window.end_ns,
+                timeout_s=timeout_s,
+                pool=replay_pool,
+            )
+        except TimeoutError as exc:
+            raise PrepareVariantTimeoutError(
+                variant=variant.name,
+                window_label=window.label,
+                timeout_s=timeout_s,
+            ) from exc
+        self._backtest_cache[key] = snapshot
+        return snapshot
 
     def _get_validation_pool(self, *, workers: int) -> ProcessPoolExecutor:
         if self._validation_pool is None or self._validation_pool_workers != workers:
@@ -753,7 +960,7 @@ class FrameworkEvaluator:
             *([("rl_tuned", rl_variant)] if rl_variant is not None else []),
         ]
         prepare_total_units = max(1, len(variant_specs) * 4)
-        lightweight_prepare = comparison_compute_mode == "smoke_minimal"
+        lightweight_prepare = evaluation_role == "development" and not full
 
         def _variant_progress(variant_name: str, variant_index: int):
             def _emit(step_completed: int | str, unit: str) -> None:
@@ -853,22 +1060,36 @@ class FrameworkEvaluator:
         ]
         report_mode, report_degraded_due_to_memory = self._comparison_report_mode(
             variant_count=len([variant for variant in variants if variant is not None]),
-            window_count=len(self._dev_windows),
+            window_count=len(self._full_dev_compare_windows if full else self._fast_dev_compare_windows),
             walk_forward_window_count=len(self._full_dev_wf_windows if full else self._fast_dev_wf_windows),
         )
         comparison_payload: dict[str, Any] = {}
         if include_comparison_payload:
+            comparison_profile = self._compute_profiles["high" if full else ("smoke" if comparison_compute_mode == "smoke_minimal" else "fast")]
             if status_callback is not None:
-                status_callback(event="stage2_compare_windows_started")
+                status_callback(
+                    event="stage2_compare_windows_started",
+                    compare_workers=int(comparison_profile["compare_workers"]),
+                    validation_workers=int(comparison_profile["compare_validation_workers"]),
+                    window_units_total=len([variant for variant in variants if variant is not None])
+                    * len(self._full_dev_compare_windows if full else self._fast_dev_compare_windows),
+                    validation_units_total=len([variant for variant in variants if variant is not None])
+                    * len(self._full_dev_wf_windows if full else self._fast_dev_wf_windows)
+                    * 2,
+                )
             comparison_payload = _build_comparison_payload(
                 self._base_config,
                 variants=[variant for variant in variants if variant is not None],
-                windows=self._dev_windows,
+                windows=self._full_dev_compare_windows if full else self._fast_dev_compare_windows,
                 walk_forward_windows=self._full_dev_wf_windows if full else self._fast_dev_wf_windows,
                 split_spec=self._split_spec,
                 comparison_split="dev",
                 report_mode=report_mode,
                 comparison_compute_mode=comparison_compute_mode,
+                window_workers=int(comparison_profile["compare_workers"]),
+                validation_workers=int(comparison_profile["compare_validation_workers"]),
+                validation_leg_timeout_s=float(comparison_profile["compare_validation_leg_timeout_s"]),
+                validation_variant_budget_s=float(comparison_profile["compare_validation_variant_budget_s"]),
                 status_callback=status_callback,
             )
             comparison_payload["liquidation_readiness"] = dict(self._readiness)
@@ -970,32 +1191,132 @@ class FrameworkEvaluator:
             if progress_callback is not None:
                 progress_callback(4, "cached")
             return cached
-        windows = self._dev_windows
+        profile = self._compute_profile(fast=fast, lightweight=lightweight)
+        windows = self._prepare_windows(fast=fast, lightweight=lightweight)
         wf_windows = self._fast_dev_wf_windows if fast else self._full_dev_wf_windows
+        prepare_started_at = datetime.now(UTC).timestamp()
+        prepare_window_timeout_s = float(profile["prepare_window_timeout_s"])
+        prepare_variant_budget_s = float(profile["prepare_variant_budget_s"])
 
-        dev_window = next(window for window in windows if window.label == "dev")
-        dev_result = self._run_variant_backtest_cached(
-            variant,
-            start_ns=dev_window.start_ns,
-            end_ns=dev_window.end_ns,
-        )
+        def _prepare_budget_guard(window_label: str) -> None:
+            if not lightweight:
+                return
+            elapsed_s = datetime.now(UTC).timestamp() - prepare_started_at
+            if elapsed_s > prepare_variant_budget_s:
+                raise PrepareVariantTimeoutError(
+                    variant=variant.name,
+                    window_label=window_label,
+                    timeout_s=prepare_variant_budget_s,
+                )
+
+        try:
+            dev_window = next(window for window in windows if window.label == "dev")
+            if lightweight:
+                dev_result = self._run_prepare_backtest_cached(
+                    variant,
+                    dev_window,
+                    timeout_s=prepare_window_timeout_s,
+                    replay_pool=self._get_validation_pool(workers=1),
+                )
+            else:
+                dev_result = self._run_variant_backtest_cached(
+                    variant,
+                    start_ns=dev_window.start_ns,
+                    end_ns=dev_window.end_ns,
+                )
+            if progress_callback is not None:
+                progress_callback(1, "dev")
+            weak_window = next(window for window in windows if window.label == "2023-08")
+            _prepare_budget_guard(weak_window.label)
+            if lightweight:
+                weak_result = self._run_prepare_backtest_cached(
+                    variant,
+                    weak_window,
+                    timeout_s=prepare_window_timeout_s,
+                    replay_pool=self._get_validation_pool(workers=1),
+                )
+            else:
+                weak_result = self._run_variant_backtest_cached(
+                    variant,
+                    start_ns=weak_window.start_ns,
+                    end_ns=weak_window.end_ns,
+                )
+            if progress_callback is not None:
+                progress_callback(2, "2023-08")
+            worst_periods = [window for window in windows if window.label not in {"dev", "2023-08"}]
+            worst_results: list[BacktestSnapshot] = []
+            for window in worst_periods:
+                _prepare_budget_guard(window.label)
+                if lightweight:
+                    result = self._run_prepare_backtest_cached(
+                        variant,
+                        window,
+                        timeout_s=prepare_window_timeout_s,
+                        replay_pool=self._get_validation_pool(workers=1),
+                    )
+                    if progress_callback is not None:
+                        progress_callback("worst_window", window.label)
+                else:
+                    result = self._run_variant_backtest_cached(
+                        variant,
+                        start_ns=window.start_ns,
+                        end_ns=window.end_ns,
+                    )
+                worst_results.append(result)
+            negative_worst_windows = sum(1 for result in worst_results if result.sharpe < 0)
+            baseline = None
+            if variant.name != "paulwei_baseline":
+                if progress_callback is not None and lightweight:
+                    progress_callback("baseline_summary_started", "lightweight")
+                baseline = self._get_paulwei_fast_summary(
+                    lightweight=lightweight,
+                    progress_callback=(
+                        (
+                            lambda step_completed, unit: progress_callback(
+                                (
+                                    f"baseline_{step_completed}"
+                                    if isinstance(step_completed, str)
+                                    else f"baseline_step_{step_completed}"
+                                ),
+                                unit,
+                            )
+                        )
+                        if progress_callback is not None and lightweight
+                        else None
+                    ),
+                )
+                if progress_callback is not None and lightweight:
+                    progress_callback("baseline_summary_completed", "lightweight")
+        except PrepareVariantTimeoutError as exc:
+            if variant.name in {"current", "paulwei_baseline"}:
+                raise SearchStageTimeoutError(
+                    f"stage2_prepare_variant_timeout: variant={variant.name} window={exc.window_label}"
+                ) from exc
+            summary = CandidateSummary(
+                variant=variant.name,
+                robust_score=-9.0,
+                selection_split="dev",
+                dev_sharpe=0.0,
+                dev_pnl=0.0,
+                dev_drawdown=1.0,
+                avg_dev_sharpe=-5.0,
+                avg_dev_ratio=0.0,
+                worst_dev_sharpe=-5.0,
+                weak_window_sharpe=-5.0,
+                negative_dev_worst_windows=1,
+                promotion_candidate=False,
+                blocked_by="prepare_timeout",
+                failed_gate_metrics=None,
+                promotion_failure_reason="prepare_timeout",
+            )
+            if progress_callback is not None:
+                progress_callback(4, "prepare_timeout")
+            self._summary_cache[cache_key] = summary
+            return summary
         if progress_callback is not None:
-            progress_callback(1, "dev")
-        weak_window = next(window for window in windows if window.label == "2023-08")
-        weak_result = self._run_variant_backtest_cached(variant, start_ns=weak_window.start_ns, end_ns=weak_window.end_ns)
-        if progress_callback is not None:
-            progress_callback(2, "2023-08")
-        worst_periods = [window for window in windows if window.label not in {"dev", "2023-08"}]
-        worst_results = [
-            self._run_variant_backtest_cached(variant, start_ns=window.start_ns, end_ns=window.end_ns)
-            for window in worst_periods
-        ]
-        negative_worst_windows = sum(1 for result in worst_results if result.sharpe < 0)
-        baseline = None
-        if variant.name != "paulwei_baseline":
-            baseline = self._get_paulwei_fast_summary(lightweight=lightweight)
-        if progress_callback is not None:
-            progress_callback(3, "worst_windows")
+            progress_callback(3, "worst_windows_completed")
+            if lightweight:
+                progress_callback("summary_scoring_started", "lightweight")
         if lightweight:
             window_sharpes = [dev_result.sharpe, weak_result.sharpe, *(result.sharpe for result in worst_results)]
             wf_metrics = {
@@ -1033,7 +1354,6 @@ class FrameworkEvaluator:
                         progress_callback(4, "pre_validation_rejection")
                     self._summary_cache[cache_key] = summary
                     return summary
-            profile = self._compute_profile(fast=fast, lightweight=lightweight)
             try:
                 wf_metrics = self._run_validation_bundle_cached(
                     variant,
@@ -1066,6 +1386,36 @@ class FrameworkEvaluator:
                     progress_callback(4, "validation_timeout")
                 self._summary_cache[cache_key] = summary
                 return summary
+        try:
+            _prepare_budget_guard("summary_scoring")
+        except PrepareVariantTimeoutError as exc:
+            if variant.name in {"current", "paulwei_baseline"}:
+                raise SearchStageTimeoutError(
+                    f"stage2_prepare_variant_timeout: variant={variant.name} window=summary_scoring"
+                ) from exc
+            summary = CandidateSummary(
+                variant=variant.name,
+                robust_score=-9.0,
+                selection_split="dev",
+                dev_sharpe=dev_result.sharpe,
+                dev_pnl=dev_result.net_pnl,
+                dev_drawdown=dev_result.max_drawdown,
+                avg_dev_sharpe=dev_result.sharpe,
+                avg_dev_ratio=0.0,
+                worst_dev_sharpe=min(
+                    [dev_result.sharpe, weak_result.sharpe, *(result.sharpe for result in worst_results)]
+                ),
+                weak_window_sharpe=weak_result.sharpe,
+                negative_dev_worst_windows=negative_worst_windows,
+                promotion_candidate=False,
+                blocked_by="prepare_timeout",
+                failed_gate_metrics=None,
+                promotion_failure_reason="prepare_timeout",
+            )
+            if progress_callback is not None:
+                progress_callback(4, "prepare_timeout")
+            self._summary_cache[cache_key] = summary
+            return summary
         score = _candidate_score(
             avg_test_sharpe=wf_metrics["avg_test_sharpe"],
             worst_test_sharpe=wf_metrics["worst_test_sharpe"],
@@ -1103,6 +1453,8 @@ class FrameworkEvaluator:
             promotion_failure_reason=failure_reason,
         )
         if progress_callback is not None:
+            if lightweight:
+                progress_callback("summary_scoring_completed", "lightweight")
             progress_callback(4, "lightweight_summary" if lightweight else "validation_bundle")
         self._summary_cache[cache_key] = summary
         return summary
@@ -1182,13 +1534,19 @@ class FrameworkEvaluator:
         payload = json.dumps(asdict(variant), sort_keys=True, default=str)
         return sha1(payload.encode("utf-8")).hexdigest()
 
-    def _get_paulwei_fast_summary(self, *, lightweight: bool = False) -> CandidateSummary:
+    def _get_paulwei_fast_summary(
+        self,
+        *,
+        lightweight: bool = False,
+        progress_callback: Any | None = None,
+    ) -> CandidateSummary:
         if lightweight:
             if self._paulwei_fast_lightweight is None:
                 self._paulwei_fast_lightweight = self._evaluate_variant(
                     self._paulwei_variant,
                     fast=True,
                     lightweight=True,
+                    progress_callback=progress_callback,
                 )
             return self._paulwei_fast_lightweight
         if self._paulwei_fast_full is None:
@@ -1196,6 +1554,7 @@ class FrameworkEvaluator:
                 self._paulwei_variant,
                 fast=True,
                 lightweight=False,
+                progress_callback=progress_callback,
             )
         return self._paulwei_fast_full
 
@@ -1373,6 +1732,10 @@ def _build_comparison_payload(
     comparison_split: str,
     report_mode: str = "full_diagnostics",
     comparison_compute_mode: str = "full",
+    window_workers: int = 1,
+    validation_workers: int = 1,
+    validation_leg_timeout_s: float | None = None,
+    validation_variant_budget_s: float | None = None,
     status_callback: Any | None = None,
 ) -> dict[str, Any]:
     from zenquant.research.comparison import compare_variants
@@ -1386,6 +1749,10 @@ def _build_comparison_payload(
         comparison_split=comparison_split,
         report_mode=report_mode,
         comparison_compute_mode=comparison_compute_mode,
+        window_workers=window_workers,
+        validation_workers=validation_workers,
+        validation_leg_timeout_s=validation_leg_timeout_s,
+        validation_variant_budget_s=validation_variant_budget_s,
         status_callback=status_callback,
     )
 
@@ -1433,6 +1800,7 @@ def run_optuna_search(
     seed_trials: list[dict[str, Any]] | None = None,
     stage1_parallel_mode: str = "serial",
     stage1_max_workers: int | None = None,
+    stage1_target_inflight: int | None = None,
     stage1_batch_size: int = 1,
 ) -> tuple[dict[str, Any] | None, list[dict[str, Any]], dict[str, Any]]:
     try:
@@ -1478,9 +1846,15 @@ def run_optuna_search(
         status_callback=status_callback,
         trial_timeout_s=trial_timeout_s,
         stage_total_timeout_s=stage_total_timeout_s,
+        stage_wall_clock_budget_s=720.0 if effective_execution_timeframe == Timeframe.TF_5M else None,
+        min_completed_trials=24 if effective_execution_timeframe == Timeframe.TF_5M else 0,
         stage1_parallel_mode=stage1_parallel_mode,
         stage1_max_workers=stage1_max_workers,
+        stage1_target_inflight=stage1_target_inflight,
         stage1_batch_size=stage1_batch_size,
+        research_compute_mode="lightweight_train_search",
+        enable_early_stop=True,
+        trial_runtime_budget_s=90.0 if effective_execution_timeframe == Timeframe.TF_5M else 60.0,
     )
     sweep = run_search_stage(worker_config)
     ranking_started_at = datetime.now(UTC).timestamp()
@@ -1529,6 +1903,8 @@ def run_optuna_search(
     diagnostics = {
         "train_candidate_diagnostics": dict(getattr(sweep, "train_candidate_diagnostics", {}) or {}),
         "empty_shortlist_reason": getattr(sweep, "empty_shortlist_reason", None),
+        "stage1_budget_mode": getattr(sweep, "budget_mode", "trial_count_primary"),
+        "stage1_stop_reason": getattr(sweep, "stop_reason", "trial_budget_reached"),
     }
     return (best["params"] if best else None), ranked, diagnostics
 

@@ -321,6 +321,8 @@ class IndicatorEngine:
                 # Cross-sectional macro factors (individual, not composite)
                 "ndx_z": macro_snap.ndx_z,
                 "gold_z": macro_snap.gold_z,
+                "btc_mvrv": macro_snap.btc_mvrv,
+                "btc_mvrv_z": macro_snap.btc_mvrv_z,
                 "btc_etf_netflow": macro_snap.btc_etf_netflow,
                 "btc_etf_netflow_z": macro_snap.btc_etf_netflow_z,
                 "btc_etf_flow_3d": macro_snap.btc_etf_flow_3d,
