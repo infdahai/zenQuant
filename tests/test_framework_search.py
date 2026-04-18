@@ -177,6 +177,7 @@ class FrameworkEvaluatorTests(unittest.TestCase):
             with (
                 patch("zenquant.research.framework_search.liquidation_readiness") as readiness_mock,
                 patch("zenquant.research.framework_search.collect_deribit_status") as deribit_mock,
+                patch("zenquant.research.framework_search.load_source_admission_review", return_value={}),
             ):
                 readiness_mock.return_value = Readiness()
                 deribit_mock.return_value = DeribitStatus()
@@ -194,6 +195,126 @@ class FrameworkEvaluatorTests(unittest.TestCase):
         self.assertTrue(execution_contract["five_min_feature_aggregation_enabled"])
         self.assertTrue(execution_contract["one_hour_bars_available"])
         self.assertEqual(execution_contract["one_hour_bars_source"], "derived_from_5m")
+
+    def test_training_input_contract_only_admits_mvrv_with_review(self) -> None:
+        @dataclass
+        class Readiness:
+            total_bars: int = 100
+            nonzero_bars: int = 10
+            nonstale_bars: int = 10
+            extreme_bars: int = 1
+            max_total_liq_usd: float = 1_000_000.0
+            data_ready: bool = True
+            promotion_ready: bool = False
+            blocked_by: str = "not_promotion_ready"
+            detail: str = "ok"
+
+        @dataclass
+        class DeribitStatus:
+            enabled: bool = True
+            observation_ready: bool = False
+            research_ready: bool = False
+            snapshot_count_7d: int = 0
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "binance"
+            macro_root = Path(tmp) / "macro"
+            split = default_btc_split_spec()
+            train_start = split.train.start_ns
+            write_parquet_rows(
+                root / "klines" / "BTCUSDT" / "5m" / "data.parquet",
+                [
+                    HistoricalKlineRow(
+                        symbol="BTCUSDT",
+                        timeframe="5m",
+                        open_time_ns=train_start,
+                        close_time_ns=train_start + Timeframe.TF_5M.seconds * 1_000_000_000 - 1_000_000,
+                        open=100.0,
+                        high=101.0,
+                        low=99.0,
+                        close=100.5,
+                        volume=1.0,
+                        trade_count=1,
+                    )
+                ],
+            )
+            write_parquet_rows(
+                root / "klines" / "BTCUSDT" / "4h" / "data.parquet",
+                [
+                    HistoricalKlineRow(
+                        symbol="BTCUSDT",
+                        timeframe="4h",
+                        open_time_ns=train_start,
+                        close_time_ns=train_start + Timeframe.TF_4H.seconds * 1_000_000_000 - 1_000_000,
+                        open=100.0,
+                        high=101.0,
+                        low=99.0,
+                        close=100.5,
+                        volume=1.0,
+                        trade_count=1,
+                    )
+                ],
+            )
+            (macro_root / "btc_mvrv").mkdir(parents=True, exist_ok=True)
+            (macro_root / "btc_mvrv" / "data.parquet").write_text("placeholder", encoding="utf-8")
+            (macro_root / "btc_mvrv" / "metadata.json").write_text(
+                json.dumps(
+                    {
+                        "btc_mvrv_source": "local_csv",
+                        "btc_mvrv_source_confidence": "high",
+                        "btc_mvrv_last_success_at": "2026-04-18T00:00:00+00:00",
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            def _review(name: str):
+                if name == "mvrv":
+                    return {
+                        "tier_decision": "tier2_research_only_feature",
+                        "time_granularity": "1d",
+                        "research_ready": True,
+                        "use_for_research_only": True,
+                        "exclude_from_promote_truth": True,
+                        "blocked_by": None,
+                    }
+                return {}
+
+            def _independence(name: str):
+                if name == "btc_mvrv":
+                    return {
+                        "allowed_in_state_features": True,
+                        "use_for_research_only": True,
+                        "blocked_by": None,
+                        "max_abs_correlation": 0.41,
+                    }
+                return {}
+
+            with (
+                patch("zenquant.research.framework_search.liquidation_readiness") as readiness_mock,
+                patch("zenquant.research.framework_search.collect_deribit_status") as deribit_mock,
+                patch("zenquant.research.framework_search.load_source_admission_review", side_effect=_review),
+                patch("zenquant.research.framework_search.load_source_independence_audit", side_effect=_independence),
+            ):
+                readiness_mock.return_value = Readiness()
+                deribit_mock.return_value = DeribitStatus()
+                evaluator = FrameworkEvaluator(
+                    HistoricalBacktestConfig(
+                        root_dir=root,
+                        macro_dir=macro_root,
+                        symbol="BTCUSDT",
+                        execution_timeframe=Timeframe.TF_5M,
+                        direction_timeframe=Timeframe.TF_4H,
+                        context_timeframe=Timeframe.TF_1H,
+                    )
+                )
+
+        state_sources = evaluator.training_input_contract["state_feature_sources"]
+        self.assertTrue(state_sources["mvrv_in_state_features"])
+        self.assertTrue(state_sources["mvrv_admission_review_present"])
+        self.assertTrue(state_sources["mvrv_independence_review_present"])
+        self.assertEqual(state_sources["mvrv_tier_decision"], "tier2_research_only_feature")
+        self.assertEqual(state_sources["mvrv_time_granularity"], "1d")
 
     def test_liquidation_candidate_is_blocked_when_history_missing(self) -> None:
         fake_summary = CandidateSummary(
