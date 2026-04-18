@@ -295,6 +295,30 @@ class FrameworkEvaluatorTests(unittest.TestCase):
                 patch("zenquant.research.framework_search.collect_deribit_status") as deribit_mock,
                 patch("zenquant.research.framework_search.load_source_admission_review", side_effect=_review),
                 patch("zenquant.research.framework_search.load_source_independence_audit", side_effect=_independence),
+                patch(
+                    "zenquant.research.framework_search._active_signal_independence_contract",
+                    return_value={
+                        "audit_present": False,
+                        "redundant_pairs": [],
+                        "role_overlap_pairs": [],
+                        "direction_layer_clean": False,
+                        "state_layer_clean": False,
+                        "blocked_by": "active_signal_independence_missing",
+                    },
+                ),
+                patch(
+                    "zenquant.research.framework_search.load_historical_extension_candidate_contract",
+                    return_value={
+                        "candidate_source_type": "spot",
+                        "candidate_name": "binance_spot_2017_plus",
+                        "ready": False,
+                        "formal_train_truth": False,
+                        "blocked_by": ["spot_perp_truth_boundary"],
+                        "candidate_window_start": "2017-08-17T00:00:00+00:00",
+                        "candidate_window_end": "2026-04-17T00:00:00+00:00",
+                        "source_boundary": "spot candidate only",
+                    },
+                ),
             ):
                 readiness_mock.return_value = Readiness()
                 deribit_mock.return_value = DeribitStatus()
@@ -318,6 +342,11 @@ class FrameworkEvaluatorTests(unittest.TestCase):
         self.assertEqual(state_sources["mvrv_time_granularity"], "1d")
         self.assertFalse(signal_contract["audit_present"])
         self.assertEqual(signal_contract["blocked_by"], "active_signal_independence_missing")
+        historical_contract = evaluator.training_input_contract["historical_extension_candidate_contract"]
+        self.assertTrue(historical_contract["present"])
+        self.assertEqual(historical_contract["source"], "spot")
+        self.assertFalse(historical_contract["ready"])
+        self.assertIn("spot_perp_truth_boundary", historical_contract["blocked_by"])
 
     def test_liquidation_candidate_is_blocked_when_history_missing(self) -> None:
         fake_summary = CandidateSummary(
