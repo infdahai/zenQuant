@@ -788,6 +788,22 @@ def main() -> None:
             macro_state_sources=macro_state_sources,
             state_data_confidence=state_data_confidence,
             signal_independence_contract=evaluator.training_input_contract.get("signal_independence_contract"),
+            historical_extension_candidate_present=evaluator.training_input_contract.get(
+                "historical_extension_candidate_contract",
+                {},
+            ).get("present", False),
+            historical_extension_candidate_source=evaluator.training_input_contract.get(
+                "historical_extension_candidate_contract",
+                {},
+            ).get("source"),
+            historical_extension_candidate_ready=evaluator.training_input_contract.get(
+                "historical_extension_candidate_contract",
+                {},
+            ).get("ready", False),
+            historical_extension_candidate_blocked_by=evaluator.training_input_contract.get(
+                "historical_extension_candidate_contract",
+                {},
+            ).get("blocked_by"),
         )
         _append_campaign_log(
             log_path,

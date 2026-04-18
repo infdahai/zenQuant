@@ -47,6 +47,7 @@ from zenquant.research.framework_params import (
     param_grid_for_mode,
     search_space_profile,
 )
+from zenquant.research.historical_extension import load_historical_extension_candidate_contract
 from zenquant.research.source_independence import load_source_independence_audit
 from zenquant.research.splits import DatasetSplitSpec, default_btc_split_spec, split_summary_json
 
@@ -172,6 +173,34 @@ def _active_signal_independence_contract(
         "direction_layer_clean": bool(summary.get("direction_layer_clean")),
         "state_layer_clean": bool(summary.get("state_layer_clean")),
         "blocked_by": blocked_by or None,
+    }
+
+
+def _historical_extension_candidate_contract() -> dict[str, Any]:
+    review = load_historical_extension_candidate_contract()
+    if not review:
+        return {
+            "present": False,
+            "source": None,
+            "candidate_name": None,
+            "ready": False,
+            "formal_train_truth": False,
+            "blocked_by": ["historical_extension_candidate_missing"],
+            "candidate_window_start": None,
+            "candidate_window_end": None,
+            "source_boundary": None,
+        }
+    blocked_by = review.get("blocked_by") or []
+    return {
+        "present": True,
+        "source": review.get("candidate_source_type"),
+        "candidate_name": review.get("candidate_name"),
+        "ready": bool(review.get("ready")),
+        "formal_train_truth": bool(review.get("formal_train_truth")),
+        "blocked_by": blocked_by,
+        "candidate_window_start": review.get("candidate_window_start"),
+        "candidate_window_end": review.get("candidate_window_end"),
+        "source_boundary": review.get("source_boundary"),
     }
 
 
@@ -779,8 +808,10 @@ class FrameworkEvaluator:
         deribit_block_admission = _admission_contract("deribit_block_flow")
         deribit_block_independence = _independence_contract("deribit_block_flow")
         active_signal_independence = _active_signal_independence_contract()
+        historical_extension_candidate = _historical_extension_candidate_contract()
         self._training_input_contract = {
             "primary_truth_source": "binance",
+            "historical_extension_candidate_contract": historical_extension_candidate,
             "execution_framework": {
                 "primary_timeframe": "4h",
                 "entry_optimization_timeframe": "1h",
@@ -2009,6 +2040,7 @@ def build_markdown_report(report: SearchReport) -> str:
         "## Training Inputs",
         "",
         f"- primary_truth_source: `{report.training_input_contract.get('primary_truth_source')}`",
+        f"- historical_extension_candidate_contract: `{report.training_input_contract.get('historical_extension_candidate_contract')}`",
         f"- execution_framework: `{report.training_input_contract.get('execution_framework')}`",
         f"- state_feature_sources: `{report.training_input_contract.get('state_feature_sources')}`",
         f"- signal_stack_contract: `{report.training_input_contract.get('signal_stack_contract')}`",
