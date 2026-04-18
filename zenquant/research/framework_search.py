@@ -139,6 +139,42 @@ def _independence_contract(source_name: str) -> dict[str, Any]:
     }
 
 
+def _active_signal_independence_contract(
+    review_dir: Path = Path("results/signal_combination"),
+) -> dict[str, Any]:
+    path = review_dir / "active_signal_independence.json"
+    if not path.exists():
+        return {
+            "audit_present": False,
+            "redundant_pairs": [],
+            "role_overlap_pairs": [],
+            "direction_layer_clean": False,
+            "state_layer_clean": False,
+            "blocked_by": "active_signal_independence_missing",
+        }
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return {
+            "audit_present": False,
+            "redundant_pairs": [],
+            "role_overlap_pairs": [],
+            "direction_layer_clean": False,
+            "state_layer_clean": False,
+            "blocked_by": "active_signal_independence_unreadable",
+        }
+    summary = payload.get("summary", {})
+    blocked_by = list(summary.get("blocked_by", []))
+    return {
+        "audit_present": True,
+        "redundant_pairs": summary.get("same_role_redundant_pairs", []),
+        "role_overlap_pairs": summary.get("cross_role_overlap_pairs", []),
+        "direction_layer_clean": bool(summary.get("direction_layer_clean")),
+        "state_layer_clean": bool(summary.get("state_layer_clean")),
+        "blocked_by": blocked_by or None,
+    }
+
+
 def _dedupe_seed_trials(seed_trials: list[dict[str, Any]]) -> list[dict[str, Any]]:
     deduped: list[dict[str, Any]] = []
     seen: set[str] = set()
@@ -359,6 +395,7 @@ def _assess_full_training_readiness(
 ) -> dict[str, Any]:
     execution_contract = report.training_input_contract.get("execution_framework", {})
     state_sources = report.training_input_contract.get("state_feature_sources", {})
+    signal_independence_contract = report.training_input_contract.get("signal_independence_contract", {})
     search_profile = report.search_status.get("search_space_profile") or {}
     direction_policy = search_profile.get("direction_weight_policy", {})
     baseline = report.paulwei_baseline
@@ -388,6 +425,8 @@ def _assess_full_training_readiness(
         data_warnings.append("mvrv_state_features_unavailable")
     if not state_sources.get("deribit_block_flow_in_state_features"):
         data_warnings.append("deribit_block_flow_state_features_unavailable")
+    if not signal_independence_contract.get("audit_present"):
+        data_warnings.append("active_signal_independence_missing")
     if report.search_status.get("liquidation_in_search") and not report.readiness.get("promotion_ready"):
         data_failures.append("liquidation_search_enabled_before_promotion_ready")
 
@@ -411,6 +450,8 @@ def _assess_full_training_readiness(
         search_failures.append("redundant_pair_constraint_missing")
     if direction_policy.get("demoted_signal_role") != "state":
         search_failures.append("redundant_pair_constraint_missing")
+    if signal_independence_contract.get("audit_present") and not signal_independence_contract.get("direction_layer_clean", False):
+        search_failures.append("direction_signal_independence_unclean")
 
     blockers = [*system_failures, *data_failures, *model_failures, *search_failures]
     return {
@@ -737,6 +778,7 @@ class FrameworkEvaluator:
         mvrv_independence = _independence_contract("btc_mvrv")
         deribit_block_admission = _admission_contract("deribit_block_flow")
         deribit_block_independence = _independence_contract("deribit_block_flow")
+        active_signal_independence = _active_signal_independence_contract()
         self._training_input_contract = {
             "primary_truth_source": "binance",
             "execution_framework": {
@@ -806,6 +848,7 @@ class FrameworkEvaluator:
                 "state_signals_do_not_vote_direction": True,
                 "execution_modifiers_do_not_flip_direction": True,
             },
+            "signal_independence_contract": active_signal_independence,
         }
         self._search_param_grid = param_grid_for_mode(
             mode=search_space_mode,
@@ -1969,6 +2012,7 @@ def build_markdown_report(report: SearchReport) -> str:
         f"- execution_framework: `{report.training_input_contract.get('execution_framework')}`",
         f"- state_feature_sources: `{report.training_input_contract.get('state_feature_sources')}`",
         f"- signal_stack_contract: `{report.training_input_contract.get('signal_stack_contract')}`",
+        f"- signal_independence_contract: `{report.training_input_contract.get('signal_independence_contract')}`",
         f"- etf_flow_source: `{report.search_status.get('etf_flow_source')}`",
         f"- etf_flow_source_confidence: `{report.search_status.get('etf_flow_source_confidence')}`",
         f"- etf_flow_last_success_at: `{report.search_status.get('etf_flow_last_success_at')}`",
@@ -2024,9 +2068,13 @@ def build_markdown_report(report: SearchReport) -> str:
                 "",
                 f"- active_signal_count: `{report.signal_audit_summary.get('active_signal_count')}`",
                 f"- redundant_pair_count: `{report.signal_audit_summary.get('redundant_pair_count')}`",
+                f"- same_role_redundant_pair_count: `{report.signal_audit_summary.get('same_role_redundant_pair_count')}`",
+                f"- cross_role_overlap_pair_count: `{report.signal_audit_summary.get('cross_role_overlap_pair_count')}`",
                 f"- recommended_actions: `{report.signal_audit_summary.get('recommended_actions')}`",
                 f"- top_direction_weights: `{report.signal_audit_summary.get('top_direction_weights')}`",
                 f"- json_path: `{report.signal_audit_summary.get('json_path')}`",
+                f"- active_stack_json_path: `{report.signal_audit_summary.get('active_stack_json_path')}`",
+                f"- candidate_inventory_json_path: `{report.signal_audit_summary.get('candidate_inventory_json_path')}`",
                 "",
             ]
         )

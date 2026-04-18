@@ -746,6 +746,8 @@ def main() -> None:
                 ("hyperliquid", state_sources["hyperliquid_in_state_features"]),
                 ("deribit", state_sources["deribit_in_state_features"]),
                 ("etf_flow", state_sources["etf_flow_in_state_features"]),
+                ("mvrv", state_sources.get("mvrv_in_state_features", False)),
+                ("deribit_block_flow", state_sources.get("deribit_block_flow_in_state_features", False)),
                 ("cme_positioning", state_sources.get("cme_positioning_in_state_features", False)),
             )
             if enabled
@@ -785,6 +787,7 @@ def main() -> None:
             etf_flow_last_success_at=state_sources.get("etf_flow_last_success_at"),
             macro_state_sources=macro_state_sources,
             state_data_confidence=state_data_confidence,
+            signal_independence_contract=evaluator.training_input_contract.get("signal_independence_contract"),
         )
         _append_campaign_log(
             log_path,

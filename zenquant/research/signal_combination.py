@@ -47,7 +47,31 @@ class SignalCombinationAudit:
     role_groups: dict[str, list[str]]
     pairwise_correlation_matrix: dict[str, dict[str, float]]
     redundant_pairs: list[dict[str, Any]]
+    same_role_redundant_pairs: list[dict[str, Any]]
+    cross_role_overlap_pairs: list[dict[str, Any]]
     signals: list[SignalAuditEntry]
+    summary: dict[str, Any]
+
+
+@dataclass(slots=True, frozen=True)
+class SignalCandidateEntry:
+    name: str
+    role: str
+    enabled_in_default: bool
+    has_data_dependency: bool
+    dependency_status: str
+    audit_status: str
+    blocked_by: str | None
+    dependency_detail: str
+    recommendation: str
+
+
+@dataclass(slots=True, frozen=True)
+class SignalCandidateInventory:
+    generated_at: str
+    symbol: str
+    profile_path: str
+    candidates: list[SignalCandidateEntry]
     summary: dict[str, Any]
 
 
@@ -112,6 +136,27 @@ def _clamp(value: float, low: float, high: float) -> float:
     return max(low, min(high, value))
 
 
+def _signal_data_dependency(signal_name: str, *, macro_root: Path, data_root: Path) -> tuple[bool, str, str | None, str]:
+    if signal_name == "etf_flow_state_signal":
+        exists = (macro_root / "btc_etf_netflow" / "data.parquet").exists()
+        return True, "ready" if exists else "missing", None if exists else "btc_etf_netflow_missing", "btc_etf_netflow"
+    if signal_name == "cme_positioning_state_signal":
+        exists = (data_root / "cftc" / "cot_btc.parquet").exists() or (Path("data/raw/cftc") / "cot_btc.parquet").exists()
+        return True, "ready" if exists else "missing", None if exists else "cme_positioning_missing", "cme_cot"
+    if signal_name == "options_vol_signal":
+        exists = (data_root / "deribit_options" / "_collector_status.json").exists() or (Path("data/raw/deribit_options") / "_collector_status.json").exists()
+        return True, "ready" if exists else "missing", None if exists else "deribit_options_missing", "deribit_options"
+    if signal_name == "macro_regime_signal":
+        macro_names = ("vix", "dxy", "tlt")
+        ready = all((macro_root / name / "data.parquet").exists() for name in macro_names)
+        return True, "ready" if ready else "partial", None if ready else "macro_regime_inputs_incomplete", ",".join(macro_names)
+    if signal_name == "cross_asset_flow_signal":
+        return True, "missing", "eth_flow_dependency_missing", "eth_to_btc_transfer_entropy"
+    if signal_name == "vacuum_signal":
+        return True, "partial", "live_only_execution_dependency", "live_execution_conditions"
+    return False, "native", None, "btc_primary_truth"
+
+
 def _state_dict(state: Any) -> dict[str, Any]:
     return {
         "regime": state.regime,
@@ -143,20 +188,29 @@ def build_signal_combination_audit(
 
     pairwise: dict[str, dict[str, float]] = {name: {} for name in active_signals}
     redundant_pairs: list[dict[str, Any]] = []
+    same_role_redundant_pairs: list[dict[str, Any]] = []
+    cross_role_overlap_pairs: list[dict[str, Any]] = []
     for left in active_signals:
         for right in active_signals:
             corr = _pearson_corr(signal_series[left], signal_series[right]) if left != right else 1.0
             pairwise[left][right] = round(corr, 4)
             if left < right and abs(corr) >= corr_threshold:
-                redundant_pairs.append(
-                    {
-                        "left": left,
-                        "right": right,
-                        "correlation": round(corr, 4),
-                        "shared_role": infer_signal_role(left) == infer_signal_role(right),
-                    }
-                )
+                pair = {
+                    "left": left,
+                    "right": right,
+                    "correlation": round(corr, 4),
+                    "left_role": infer_signal_role(left),
+                    "right_role": infer_signal_role(right),
+                    "shared_role": infer_signal_role(left) == infer_signal_role(right),
+                }
+                redundant_pairs.append(pair)
+                if pair["shared_role"]:
+                    same_role_redundant_pairs.append(pair)
+                else:
+                    cross_role_overlap_pairs.append(pair)
     redundant_pairs.sort(key=lambda item: abs(item["correlation"]), reverse=True)
+    same_role_redundant_pairs.sort(key=lambda item: abs(item["correlation"]), reverse=True)
+    cross_role_overlap_pairs.sort(key=lambda item: abs(item["correlation"]), reverse=True)
 
     direction_raw_weights: dict[str, float] = {}
     entries: list[SignalAuditEntry] = []
@@ -270,6 +324,24 @@ def build_signal_combination_audit(
         "state_signal_count": len(role_groups["state"]),
         "execution_modifier_count": len(role_groups["execution_modifier"]),
         "redundant_pair_count": len(redundant_pairs),
+        "same_role_redundant_pair_count": len(same_role_redundant_pairs),
+        "cross_role_overlap_pair_count": len(cross_role_overlap_pairs),
+        "direction_layer_clean": not any(
+            pair["left_role"] == "direction" and pair["right_role"] == "direction" for pair in same_role_redundant_pairs
+        ),
+        "state_layer_clean": not any(
+            pair["left_role"] == "state" and pair["right_role"] == "state" for pair in same_role_redundant_pairs
+        ),
+        "blocked_by": [
+            "direction_same_role_redundancy"
+            for pair in same_role_redundant_pairs
+            if pair["left_role"] == "direction" and pair["right_role"] == "direction"
+        ]
+        + [
+            "state_same_role_redundancy"
+            for pair in same_role_redundant_pairs
+            if pair["left_role"] == "state" and pair["right_role"] == "state"
+        ],
         "recommended_actions": {
             action: sum(1 for item in finalized if item.recommended_weight_adjustment == action)
             for action in ("keep", "downweight", "research_only", "disable")
@@ -284,6 +356,8 @@ def build_signal_combination_audit(
             if item.role == "direction"
         ][:5],
         "high_correlation_pairs": redundant_pairs[:5],
+        "same_role_redundant_pairs": same_role_redundant_pairs[:5],
+        "cross_role_overlap_pairs": cross_role_overlap_pairs[:5],
     }
     return SignalCombinationAudit(
         generated_at=datetime.now(UTC).isoformat(),
@@ -293,6 +367,8 @@ def build_signal_combination_audit(
         role_groups={role: sorted(names) for role, names in role_groups.items()},
         pairwise_correlation_matrix=pairwise,
         redundant_pairs=redundant_pairs,
+        same_role_redundant_pairs=same_role_redundant_pairs,
+        cross_role_overlap_pairs=cross_role_overlap_pairs,
         signals=finalized,
         summary=summary,
     )
@@ -307,6 +383,10 @@ def build_markdown_audit(audit: SignalCombinationAudit) -> str:
         f"- profile_path: `{audit.profile_path}`",
         f"- active_signal_count: `{audit.summary['active_signal_count']}`",
         f"- redundant_pair_count: `{audit.summary['redundant_pair_count']}`",
+        f"- same_role_redundant_pair_count: `{audit.summary['same_role_redundant_pair_count']}`",
+        f"- cross_role_overlap_pair_count: `{audit.summary['cross_role_overlap_pair_count']}`",
+        f"- direction_layer_clean: `{audit.summary['direction_layer_clean']}`",
+        f"- state_layer_clean: `{audit.summary['state_layer_clean']}`",
         "",
         "## Role Groups",
         "",
@@ -335,6 +415,59 @@ def build_markdown_audit(audit: SignalCombinationAudit) -> str:
             ]
         )
     return "\n".join(lines)
+
+
+def build_signal_candidate_inventory(
+    *,
+    symbol: str,
+    profile_path: Path,
+    plugin_root: Path,
+    macro_root: Path = Path("data/raw/macro"),
+    data_root: Path = Path("data/raw"),
+) -> SignalCandidateInventory:
+    _, registry = build_from_profile(profile_path, plugin_root=plugin_root)
+    enabled_in_default = set(registry.signal_weights)
+    candidates: list[SignalCandidateEntry] = []
+    for path in sorted((plugin_root / "signals").glob("*.py")):
+        if path.name == "__init__.py":
+            continue
+        signal_name = path.stem
+        role = infer_signal_role(signal_name)
+        has_dependency, dependency_status, blocked_by, dependency_detail = _signal_data_dependency(
+            signal_name,
+            macro_root=macro_root,
+            data_root=data_root,
+        )
+        enabled = signal_name in enabled_in_default
+        audit_status = "active_audited" if enabled else "research_candidate"
+        recommendation = "active_stack" if enabled else ("observation_only" if blocked_by else "research_candidate")
+        candidates.append(
+            SignalCandidateEntry(
+                name=signal_name,
+                role=role,
+                enabled_in_default=enabled,
+                has_data_dependency=has_dependency,
+                dependency_status=dependency_status,
+                audit_status=audit_status,
+                blocked_by=blocked_by,
+                dependency_detail=dependency_detail,
+                recommendation=recommendation,
+            )
+        )
+    summary = {
+        "candidate_count": len(candidates),
+        "enabled_in_default_count": sum(1 for item in candidates if item.enabled_in_default),
+        "blocked_candidate_count": sum(1 for item in candidates if item.blocked_by is not None),
+        "research_candidate_count": sum(1 for item in candidates if item.recommendation == "research_candidate"),
+        "observation_only_count": sum(1 for item in candidates if item.recommendation == "observation_only"),
+    }
+    return SignalCandidateInventory(
+        generated_at=datetime.now(UTC).isoformat(),
+        symbol=symbol,
+        profile_path=str(profile_path),
+        candidates=candidates,
+        summary=summary,
+    )
 
 
 def analyze_signal_independence(
@@ -404,11 +537,49 @@ def generate_signal_combination_audit(
     output_dir.mkdir(parents=True, exist_ok=True)
     json_path = output_dir / "signal_independence.json"
     md_path = output_dir / "signal_independence.md"
+    active_json_path = output_dir / "active_signal_independence.json"
+    active_md_path = output_dir / "active_signal_independence.md"
     json_path.write_text(json.dumps(asdict(audit), indent=2), encoding="utf-8")
     md_path.write_text(build_markdown_audit(audit), encoding="utf-8")
+    active_json_path.write_text(json.dumps(asdict(audit), indent=2), encoding="utf-8")
+    active_md_path.write_text(build_markdown_audit(audit), encoding="utf-8")
+    inventory = build_signal_candidate_inventory(
+        symbol=symbol,
+        profile_path=profile_path,
+        plugin_root=plugin_root,
+    )
+    candidate_json_path = output_dir / "signal_candidate_inventory.json"
+    candidate_md_path = output_dir / "signal_candidate_inventory.md"
+    candidate_json_path.write_text(json.dumps(asdict(inventory), indent=2), encoding="utf-8")
+    candidate_md_path.write_text(
+        "\n".join(
+            [
+                "# Signal Candidate Inventory",
+                "",
+                f"- generated_at: `{inventory.generated_at}`",
+                f"- candidate_count: `{inventory.summary['candidate_count']}`",
+                f"- enabled_in_default_count: `{inventory.summary['enabled_in_default_count']}`",
+                f"- blocked_candidate_count: `{inventory.summary['blocked_candidate_count']}`",
+                "",
+                "## Candidates",
+                "",
+                *[
+                    f"- {item.name}: role=`{item.role}` enabled_in_default=`{item.enabled_in_default}` "
+                    f"audit_status=`{item.audit_status}` blocked_by=`{item.blocked_by}` "
+                    f"recommendation=`{item.recommendation}` dependency=`{item.dependency_detail}`"
+                    for item in inventory.candidates
+                ],
+            ]
+        ),
+        encoding="utf-8",
+    )
     return {
         **audit.summary,
         "generated_at": audit.generated_at,
         "json_path": str(json_path),
         "md_path": str(md_path),
+        "active_stack_json_path": str(active_json_path),
+        "active_stack_md_path": str(active_md_path),
+        "candidate_inventory_json_path": str(candidate_json_path),
+        "candidate_inventory_md_path": str(candidate_md_path),
     }
