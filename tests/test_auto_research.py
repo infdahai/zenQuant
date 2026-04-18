@@ -17,7 +17,9 @@ from zenquant.research.auto_research import (
     WalkForwardSplit,
     _build_param_grid,
     _build_strategy_config,
+    _hostile_proxy_diagnostics,
     _run_backtest_worker,
+    _stage1_sort_metric,
     run_dev_robustness_stage,
     run_dev_validation_stage,
     run_search_stage,
@@ -242,6 +244,68 @@ class TestPromotionGate(unittest.TestCase):
         self.assertIn("robustness", verdict.failed_gates)
         # WF passes, so decision is REVIEW (not REJECT)
         self.assertEqual(verdict.decision, "REVIEW")
+
+
+class TestStage1HostileProxy(unittest.TestCase):
+    def test_hostile_proxy_penalizes_aggressive_execution_profile(self) -> None:
+        stable = _hostile_proxy_diagnostics(
+            {
+                "target_vol_4h": 0.95,
+                "max_leverage": 4.5,
+                "pyramid_initial_pct": 0.25,
+                "pyramid_add_pct": 0.20,
+                "pyramid_short_initial_pct": 0.15,
+                "pyramid_short_add_pct": 0.12,
+                "dca_spacing_atr": 1.25,
+                "dca_size_decay": 0.75,
+                "flip_min_confidence": 0.65,
+            },
+            {
+                "sharpe": 2.0,
+                "max_drawdown": 0.10,
+                "profit_factor": 1.1,
+                "fee_drag_pct": 0.2,
+                "trade_count": 2800,
+                "terminated_early": 0.0,
+            },
+        )
+        aggressive = _hostile_proxy_diagnostics(
+            {
+                "target_vol_4h": 1.10,
+                "max_leverage": 6.0,
+                "pyramid_initial_pct": 0.30,
+                "pyramid_add_pct": 0.30,
+                "pyramid_short_initial_pct": 0.20,
+                "pyramid_short_add_pct": 0.16,
+                "dca_spacing_atr": 0.75,
+                "dca_size_decay": 0.60,
+                "flip_min_confidence": 0.55,
+            },
+            {
+                "sharpe": 2.0,
+                "max_drawdown": 0.10,
+                "profit_factor": 1.1,
+                "fee_drag_pct": 0.2,
+                "trade_count": 2800,
+                "terminated_early": 0.0,
+            },
+        )
+
+        self.assertLess(aggressive["hostile_proxy_score"], stable["hostile_proxy_score"])
+        self.assertGreater(aggressive["execution_fragility_score"], stable["execution_fragility_score"])
+        self.assertGreater(
+            aggressive["inventory_path_dependence_score"],
+            stable["inventory_path_dependence_score"],
+        )
+
+    def test_stage1_sort_metric_prefers_hostile_proxy_score_over_raw_sharpe(self) -> None:
+        strong_sharpe = {"sharpe": 3.0, "hostile_proxy_score": 0.2}
+        safer_profile = {"sharpe": 2.0, "hostile_proxy_score": 1.5}
+
+        self.assertLess(
+            _stage1_sort_metric(strong_sharpe, "sharpe"),
+            _stage1_sort_metric(safer_profile, "sharpe"),
+        )
 
     def test_drawdown_regression_gate(self) -> None:
         gate = PromotionGate(

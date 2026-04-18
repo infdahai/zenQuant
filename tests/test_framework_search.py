@@ -16,6 +16,8 @@ from zenquant.research.framework_params import (
     baseline_anchored_param_grid,
     build_replay_toggles,
     core_param_grid,
+    hostile_constraint_violations,
+    is_hostile_aware_param_combo,
     search_space_profile,
 )
 from zenquant.research.framework_search import (
@@ -29,7 +31,9 @@ from zenquant.research.framework_search import (
     _assess_full_training_readiness,
     _candidate_score,
     _classify_post_smoke_scenario,
+    _hostile_regression_summary,
     _run_validation_bundle,
+    build_markdown_report,
     run_optuna_search,
     write_search_report,
 )
@@ -75,6 +79,39 @@ class FrameworkParamTests(unittest.TestCase):
         self.assertEqual(profile["direction_weight_policy"]["capped_direction_signal"], "crowding_signal")
         self.assertEqual(profile["direction_weight_policy"]["demoted_signal"], "funding_alpha_signal")
         self.assertEqual(profile["direction_weight_policy"]["demoted_signal_role"], "state")
+        self.assertTrue(profile["hostile_window_guardrails"]["enabled"])
+
+    def test_hostile_constraint_violations_reject_aggressive_combo(self) -> None:
+        params = {
+            "target_vol_4h": 1.10,
+            "max_leverage": 6.0,
+            "pyramid_add_pct": 0.30,
+            "pyramid_short_add_pct": 0.16,
+            "dca_spacing_atr": 0.75,
+            "dca_size_decay": 0.60,
+            "flip_min_confidence": 0.55,
+        }
+
+        violations = hostile_constraint_violations(params)
+
+        self.assertIn("high_target_vol_with_excess_leverage", violations)
+        self.assertIn("aggressive_long_and_short_pyramiding", violations)
+        self.assertIn("tight_dca_spacing_with_heavy_inventory_reloading", violations)
+        self.assertFalse(is_hostile_aware_param_combo(params))
+
+    def test_hostile_constraint_violations_allow_moderate_combo(self) -> None:
+        params = {
+            "target_vol_4h": 0.95,
+            "max_leverage": 4.5,
+            "pyramid_add_pct": 0.20,
+            "pyramid_short_add_pct": 0.12,
+            "dca_spacing_atr": 1.25,
+            "dca_size_decay": 0.75,
+            "flip_min_confidence": 0.65,
+        }
+
+        self.assertEqual(hostile_constraint_violations(params), [])
+        self.assertTrue(is_hostile_aware_param_combo(params))
 
     def test_baseline_anchored_grid_contains_paulwei_anchor_values(self) -> None:
         grid = baseline_anchored_param_grid()
@@ -652,6 +689,137 @@ class SearchReportSerializationTests(unittest.TestCase):
 
         self.assertEqual(scenario["scenario"], "scenario_b_hostile_window_failure")
         self.assertEqual(scenario["next_action"], "continue_execution_first_hostile_window_optimization")
+
+    def test_hostile_regression_summary_identifies_weak_window_driver(self) -> None:
+        report = SearchReport(
+            created_at="2026-04-10T00:00:00+00:00",
+            symbol="BTCUSDT",
+            readiness={"promotion_ready": False, "blocked_by": "not_promotion_ready"},
+            deribit_status={"observation_ready": True, "enabled": True, "research_ready": True},
+            split_contract=split_summary_json(default_btc_split_spec()),
+            training_window_coverage={},
+            training_input_contract={},
+            search_status={},
+            current=CandidateSummary(
+                variant="current",
+                robust_score=0.8,
+                selection_split="dev",
+                dev_sharpe=2.0,
+                dev_pnl=100.0,
+                dev_drawdown=0.20,
+                avg_dev_sharpe=2.0,
+                avg_dev_ratio=1.0,
+                worst_dev_sharpe=-0.4,
+                weak_window_sharpe=-0.4,
+                negative_dev_worst_windows=0,
+                promotion_candidate=True,
+            ),
+            paulwei_baseline=CandidateSummary(
+                variant="paulwei_baseline",
+                robust_score=0.8,
+                selection_split="dev",
+                dev_sharpe=2.0,
+                dev_pnl=100.0,
+                dev_drawdown=0.20,
+                avg_dev_sharpe=2.0,
+                avg_dev_ratio=1.0,
+                worst_dev_sharpe=-0.4,
+                weak_window_sharpe=-0.4,
+                negative_dev_worst_windows=0,
+                promotion_candidate=True,
+            ),
+            optuna_best=CandidateSummary(
+                variant="optuna_tuned",
+                robust_score=0.7,
+                selection_split="dev",
+                dev_sharpe=2.8,
+                dev_pnl=110.0,
+                dev_drawdown=0.15,
+                avg_dev_sharpe=-1.0,
+                avg_dev_ratio=1.0,
+                worst_dev_sharpe=-6.0,
+                weak_window_sharpe=-6.0,
+                negative_dev_worst_windows=0,
+                promotion_candidate=False,
+            ),
+            rl_best=None,
+            best_variant="current",
+            best_score=0.8,
+            best_params=None,
+            comparison_payload={},
+        )
+
+        summary = _hostile_regression_summary(report)
+
+        self.assertTrue(summary["dev_primary_improved"])
+        self.assertTrue(summary["hostile_window_regressed"])
+        self.assertEqual(summary["hostile_regression_driver"], "weak_window_2023_08")
+
+    def test_build_markdown_report_includes_hostile_regression_fields(self) -> None:
+        report = SearchReport(
+            created_at="2026-04-10T00:00:00+00:00",
+            symbol="BTCUSDT",
+            readiness={"promotion_ready": False, "blocked_by": "not_promotion_ready", "data_ready": True, "detail": "ok"},
+            deribit_status={"observation_ready": True, "enabled": True, "research_ready": True},
+            split_contract=split_summary_json(default_btc_split_spec()),
+            training_window_coverage={},
+            training_input_contract={"state_feature_sources": {}, "signal_stack_contract": {}, "signal_independence_contract": {}},
+            search_status={"search_space_profile": search_space_profile()},
+            current=CandidateSummary(
+                variant="current",
+                robust_score=0.8,
+                selection_split="dev",
+                dev_sharpe=2.0,
+                dev_pnl=100.0,
+                dev_drawdown=0.20,
+                avg_dev_sharpe=2.0,
+                avg_dev_ratio=1.0,
+                worst_dev_sharpe=-0.4,
+                weak_window_sharpe=-0.4,
+                negative_dev_worst_windows=0,
+                promotion_candidate=True,
+            ),
+            paulwei_baseline=CandidateSummary(
+                variant="paulwei_baseline",
+                robust_score=0.8,
+                selection_split="dev",
+                dev_sharpe=2.0,
+                dev_pnl=100.0,
+                dev_drawdown=0.20,
+                avg_dev_sharpe=2.0,
+                avg_dev_ratio=1.0,
+                worst_dev_sharpe=-0.4,
+                weak_window_sharpe=-0.4,
+                negative_dev_worst_windows=0,
+                promotion_candidate=True,
+            ),
+            optuna_best=CandidateSummary(
+                variant="optuna_tuned",
+                robust_score=0.7,
+                selection_split="dev",
+                dev_sharpe=2.8,
+                dev_pnl=110.0,
+                dev_drawdown=0.15,
+                avg_dev_sharpe=-1.0,
+                avg_dev_ratio=1.0,
+                worst_dev_sharpe=-6.0,
+                weak_window_sharpe=-6.0,
+                negative_dev_worst_windows=0,
+                promotion_candidate=False,
+                promotion_failure_reason="worst_test_sharpe",
+            ),
+            rl_best=None,
+            best_variant="current",
+            best_score=0.8,
+            best_params=None,
+            comparison_payload={},
+        )
+
+        markdown = build_markdown_report(report)
+
+        self.assertIn("dev_primary_improved", markdown)
+        self.assertIn("hostile_window_regressed", markdown)
+        self.assertIn("hostile_regression_driver", markdown)
 
     def test_full_training_readiness_treats_deribit_as_warning_not_hard_blocker(self) -> None:
         report = SearchReport(
