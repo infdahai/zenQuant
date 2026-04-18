@@ -24,6 +24,7 @@ class MacroDataStoreTests(unittest.TestCase):
         vix: list[tuple[int, float]] | None = None,
         dxy: list[tuple[int, float]] | None = None,
         yields: list[tuple[int, float]] | None = None,
+        btc_mvrv: list[tuple[int, float]] | None = None,
         etf_flow: list[tuple[int, float]] | None = None,
         cme_cot: list[dict] | None = None,
     ) -> MacroDataStore:
@@ -34,6 +35,8 @@ class MacroDataStoreTests(unittest.TestCase):
             _write_parquet(macro_dir / "dxy" / "data.parquet", [{"ts_ns": t, "value": v} for t, v in dxy])
         if yields:
             _write_parquet(macro_dir / "treasury_10y" / "data.parquet", [{"ts_ns": t, "value": v} for t, v in yields])
+        if btc_mvrv:
+            _write_parquet(macro_dir / "btc_mvrv" / "data.parquet", [{"ts_ns": t, "value": v} for t, v in btc_mvrv])
         if etf_flow:
             _write_parquet(macro_dir / "btc_etf_netflow" / "data.parquet", [{"ts_ns": t, "value": v} for t, v in etf_flow])
         if cme_cot:
@@ -112,6 +115,8 @@ class MacroDataStoreTests(unittest.TestCase):
             self.assertAlmostEqual(snap.vix_z, 0.0)
             self.assertIsNone(snap.dxy)
             self.assertAlmostEqual(snap.dxy_z, 0.0)
+            self.assertIsNone(snap.btc_mvrv)
+            self.assertAlmostEqual(snap.btc_mvrv_z, 0.0)
             self.assertEqual(snap.quality_flags, [])
 
     def test_weekend_forward_fill(self) -> None:
@@ -166,6 +171,16 @@ class MacroDataStoreTests(unittest.TestCase):
             self.assertAlmostEqual(snap.btc_etf_flow_3d, -150_000_000.0)
             self.assertAlmostEqual(snap.btc_etf_flow_5d, 70_000_000.0)
             self.assertEqual(snap.btc_etf_negative_streak, 3)
+
+    def test_btc_mvrv_lookup_and_zscore(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            series = [(i * DAY_NS, 0.8 + i * 0.05) for i in range(1, 21)]
+            series.append((21 * DAY_NS, 2.8))
+            store = self._make_store(tmpdir, btc_mvrv=series)
+
+            snap = store.lookup(21 * DAY_NS)
+            self.assertAlmostEqual(snap.btc_mvrv, 2.8)
+            self.assertGreater(snap.btc_mvrv_z, 2.0)
 
     def test_cme_positioning_features(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
