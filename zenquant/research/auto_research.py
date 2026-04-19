@@ -1036,9 +1036,15 @@ class Campaign:
                 f"(min_train_trade_count={self._config.minimum_train_trade_count})"
             )
 
-        self._log(
-            f"Bayesian sweep complete: best {self._config.primary_metric} = {study.best_value:.4f} in {n_trials} trials"
-        )
+        best_value, _ = _best_trial_snapshot(study)
+        if best_value is None:
+            self._log(
+                f"Bayesian sweep complete: no completed trials in {n_trials} trials"
+            )
+        else:
+            self._log(
+                f"Bayesian sweep complete: best {self._config.primary_metric} = {best_value:.4f} in {n_trials} trials"
+            )
 
         diagnostics, empty_shortlist_reason = self._train_candidate_diagnostics(all_results, eligible_results)
         return SweepResult(
