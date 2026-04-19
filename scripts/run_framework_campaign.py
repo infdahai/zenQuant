@@ -828,17 +828,19 @@ def main() -> None:
                 "primary_optuna_trials_total": optuna_trials,
                 "fallback_optuna_trials_completed": 0,
                 "fallback_optuna_trials_total": 0,
-                "train_candidate_diagnostics": {
-                    "raw_trial_count": 0,
-                    "raw_nonzero_trade_trials": 0,
-                    "eligible_trade_count_trials": 0,
-                    "max_train_trade_count": 0,
-                    "max_train_sharpe": 0.0,
-                    "max_hostile_proxy_score": 0.0,
-                    "min_execution_fragility_score": 0.0,
-                    "min_inventory_path_dependence_score": 0.0,
-                },
-                "empty_shortlist_reason": None,
+        "train_candidate_diagnostics": {
+            "raw_trial_count": 0,
+            "raw_nonzero_trade_trials": 0,
+            "eligible_trade_count_trials": 0,
+            "max_train_trade_count": 0,
+            "max_train_sharpe": 0.0,
+            "max_hostile_proxy_score": 0.0,
+            "hostile_proxy_penalty_applied": 0.0,
+            "min_execution_fragility_score": 0.0,
+            "min_inventory_path_dependence_score": 0.0,
+        },
+        "empty_shortlist_reason": None,
+        "no_tuned_candidate_reason": None,
                 "rl_result": None,
                 "rl_params": None,
                 "rl_failure_reason": None,
@@ -920,6 +922,7 @@ def main() -> None:
                         "search_outcome": search_outcome,
                         "train_candidate_diagnostics": dict(stage1_state.get("train_candidate_diagnostics") or {}),
                         "empty_shortlist_reason": stage1_state.get("empty_shortlist_reason"),
+                        "no_tuned_candidate_reason": stage1_state.get("no_tuned_candidate_reason"),
                         "failure_reason": failure_reason,
                         "failure_detail": failure_detail,
                     },
@@ -1230,6 +1233,7 @@ def main() -> None:
                     state_data_confidence=state_data_confidence,
                     train_candidate_diagnostics=dict(stage1_state.get("train_candidate_diagnostics") or {}),
                     empty_shortlist_reason=stage1_state.get("empty_shortlist_reason"),
+                    no_tuned_candidate_reason=stage1_state.get("no_tuned_candidate_reason"),
                 )
                 if event in {
                     "trial_completed",
@@ -1283,6 +1287,7 @@ def main() -> None:
                 state_data_confidence=state_data_confidence,
                 train_candidate_diagnostics=dict(stage1_state.get("train_candidate_diagnostics") or {}),
                 empty_shortlist_reason=stage1_state.get("empty_shortlist_reason"),
+                no_tuned_candidate_reason=stage1_state.get("no_tuned_candidate_reason"),
             )
             _append_campaign_log(log_path, "stage1_optuna_search started")
 
@@ -1339,6 +1344,19 @@ def main() -> None:
                                 ),
                                 default=0.0,
                             ),
+                            "hostile_proxy_penalty_applied": max(
+                                (
+                                    float(
+                                        (item.get("train_metrics") or item.get("metrics") or {}).get(
+                                            "hostile_proxy_penalty_applied",
+                                            0.0,
+                                        )
+                                        or 0.0
+                                    )
+                                    for item in ranked
+                                ),
+                                default=0.0,
+                            ),
                             "min_execution_fragility_score": min(
                                 (
                                     float((item.get("train_metrics") or item.get("metrics") or {}).get("execution_fragility_score", 0.0) or 0.0)
@@ -1355,6 +1373,7 @@ def main() -> None:
                             ),
                         },
                         "empty_shortlist_reason": None if ranked else "all_negative_primary_metric",
+                        "no_tuned_candidate_reason": None if ranked else "all_negative_primary_metric",
                     }
                     return best_params, ranked, diagnostics
                 return result
@@ -1489,6 +1508,7 @@ def main() -> None:
                     raise
             stage1_state["train_candidate_diagnostics"] = dict(optuna_diagnostics.get("train_candidate_diagnostics") or {})
             stage1_state["empty_shortlist_reason"] = optuna_diagnostics.get("empty_shortlist_reason")
+            stage1_state["no_tuned_candidate_reason"] = optuna_diagnostics.get("no_tuned_candidate_reason")
             stage1_state["stage1_budget_mode"] = optuna_diagnostics.get("stage1_budget_mode", stage1_state.get("stage1_budget_mode"))
             stage1_state["stage1_stop_reason"] = optuna_diagnostics.get("stage1_stop_reason", stage1_state.get("stage1_stop_reason"))
             stage1_state["optuna_params"] = optuna_params
@@ -1575,6 +1595,7 @@ def main() -> None:
                     rl_active_envs=rl_n_envs,
                     train_candidate_diagnostics=dict(stage1_state.get("train_candidate_diagnostics") or {}),
                     empty_shortlist_reason=stage1_state.get("empty_shortlist_reason"),
+                    no_tuned_candidate_reason=stage1_state.get("no_tuned_candidate_reason"),
                 )
                 _append_campaign_log(log_path, "stage1_rl started")
                 try:
@@ -1805,6 +1826,7 @@ def main() -> None:
             stage1_avg_accounting_step_s=_read_json(status_path).get("stage1_avg_accounting_step_s") if _read_json(status_path) else None,
             train_candidate_diagnostics=stage1_payload["search_status"].get("train_candidate_diagnostics"),
             empty_shortlist_reason=stage1_payload["search_status"].get("empty_shortlist_reason"),
+            no_tuned_candidate_reason=stage1_payload["search_status"].get("no_tuned_candidate_reason"),
             candidate_checkpoint_written=written_candidate_checkpoint is not None,
             candidate_checkpoint_status=(written_candidate_checkpoint or {}).get("checkpoint_status"),
             candidate_checkpoint_variant=(written_candidate_checkpoint or {}).get("candidate_variant"),

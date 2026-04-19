@@ -422,6 +422,24 @@ def _hostile_regression_summary(report: SearchReport) -> dict[str, Any]:
     }
 
 
+def _no_tuned_candidate_reason(report: SearchReport) -> str | None:
+    explicit_reason = report.search_status.get("no_tuned_candidate_reason")
+    if explicit_reason:
+        return str(explicit_reason)
+    if report.optuna_best is None and report.rl_best is None:
+        empty_shortlist_reason = report.search_status.get("empty_shortlist_reason")
+        if empty_shortlist_reason:
+            return str(empty_shortlist_reason)
+        return "empty_train_shortlist"
+    for candidate in [report.optuna_best, report.rl_best]:
+        if candidate is None:
+            continue
+        blocked_by = candidate.blocked_by
+        if blocked_by in {"pre_validation_rejection", "prepare_timeout"}:
+            return "prevalidation_rejected"
+    return None
+
+
 def _candidate_frozen_id(best_variant: str, best_params: dict[str, Any] | None) -> str | None:
     if not best_params:
         return None
@@ -1927,10 +1945,12 @@ def run_optuna_search(
                 "max_train_trade_count": 0,
                 "max_train_sharpe": 0.0,
                 "max_hostile_proxy_score": 0.0,
+                "hostile_proxy_penalty_applied": 0.0,
                 "min_execution_fragility_score": 0.0,
                 "min_inventory_path_dependence_score": 0.0,
             },
             "empty_shortlist_reason": "all_negative_primary_metric",
+            "no_tuned_candidate_reason": "all_negative_primary_metric",
         }
     effective_execution_timeframe = search_execution_timeframe or evaluator._base_config.execution_timeframe
     resolved_seed_trials = (
@@ -2019,6 +2039,7 @@ def run_optuna_search(
     diagnostics = {
         "train_candidate_diagnostics": dict(getattr(sweep, "train_candidate_diagnostics", {}) or {}),
         "empty_shortlist_reason": getattr(sweep, "empty_shortlist_reason", None),
+        "no_tuned_candidate_reason": (getattr(sweep, "train_candidate_diagnostics", {}) or {}).get("no_tuned_candidate_reason"),
         "stage1_budget_mode": getattr(sweep, "budget_mode", "trial_count_primary"),
         "stage1_stop_reason": getattr(sweep, "stop_reason", "trial_budget_reached"),
     }
@@ -2106,6 +2127,7 @@ def build_markdown_report(report: SearchReport) -> str:
         f"- search_space_profile: `{report.search_status.get('search_space_profile')}`",
         f"- train_candidate_diagnostics: `{report.search_status.get('train_candidate_diagnostics')}`",
         f"- empty_shortlist_reason: `{report.search_status.get('empty_shortlist_reason')}`",
+        f"- no_tuned_candidate_reason: `{report.search_status.get('no_tuned_candidate_reason')}`",
         f"- dev_gate_used_this_round: `{report.dev_gate_used_this_round}`",
         f"- dev_gate_last_round: `{report.dev_gate_last_round}`",
         f"- dev_gate_interval: `{report.dev_gate_interval}`",
@@ -2226,6 +2248,7 @@ def write_search_report(path: Path, report: SearchReport) -> None:
     )
     framework_diagnosis = _build_framework_diagnosis(report)
     hostile_regression = _hostile_regression_summary(report)
+    no_tuned_candidate_reason = _no_tuned_candidate_reason(report)
     best_summary = next(
         (
             item
@@ -2250,6 +2273,7 @@ def write_search_report(path: Path, report: SearchReport) -> None:
     payload["dev_primary_improved"] = hostile_regression["dev_primary_improved"]
     payload["hostile_window_regressed"] = hostile_regression["hostile_window_regressed"]
     payload["hostile_regression_driver"] = hostile_regression["hostile_regression_driver"]
+    payload["no_tuned_candidate_reason"] = no_tuned_candidate_reason
     payload["full_training_allowed"] = full_training_assessment["ready"] if report.evaluation_role == "acceptance" else False
     payload["full_training_decision"] = full_training_assessment["decision"]
     payload["full_training_blockers"] = full_training_assessment["blockers"]
@@ -2351,7 +2375,10 @@ def write_search_report(path: Path, report: SearchReport) -> None:
         "etf_flow_last_success_at": payload["search_status"].get("etf_flow_last_success_at"),
         "train_candidate_diagnostics": payload["search_status"].get("train_candidate_diagnostics"),
         "empty_shortlist_reason": payload["search_status"].get("empty_shortlist_reason"),
+        "no_tuned_candidate_reason": no_tuned_candidate_reason,
         "verdict_kind": verdict_kind,
+        "candidate_generation_failed": report.optuna_best is None and report.rl_best is None,
+        "candidate_generation_failure_driver": no_tuned_candidate_reason if report.optuna_best is None and report.rl_best is None else None,
         "comparison_to_current": comparison_to_current,
         "comparison_to_paulwei_baseline": comparison_to_paulwei,
         "dev_primary_improved": hostile_regression["dev_primary_improved"],

@@ -81,23 +81,24 @@ def hostile_constraint_violations(params: dict[str, Any]) -> list[str]:
         float(params.get("flip_min_confidence", 0.0) or 0.0) if "flip_min_confidence" in params else None
     )
 
-    if target_vol_4h is not None and max_leverage is not None and target_vol_4h >= 1.10 and max_leverage > 4.5:
+    if target_vol_4h is not None and max_leverage is not None and target_vol_4h >= 0.95 and max_leverage > 4.5:
         violations.append("high_target_vol_with_excess_leverage")
     if (
         pyramid_add_pct is not None
         and pyramid_short_add_pct is not None
-        and pyramid_add_pct >= 0.30
+        and pyramid_add_pct >= 0.20
         and pyramid_short_add_pct > 0.12
     ):
         violations.append("aggressive_long_and_short_pyramiding")
-    if dca_spacing_atr is not None and dca_size_decay is not None and dca_spacing_atr <= 0.75 and dca_size_decay <= 0.75:
+    if dca_spacing_atr is not None and dca_size_decay is not None and dca_spacing_atr <= 0.75 and dca_size_decay <= 0.60:
         violations.append("tight_dca_spacing_with_heavy_inventory_reloading")
     if (
         flip_min_confidence is not None
-        and pyramid_add_pct is not None
-        and pyramid_short_add_pct is not None
-        and flip_min_confidence <= 0.55
-        and (pyramid_add_pct >= 0.20 or pyramid_short_add_pct >= 0.12)
+        and flip_min_confidence <= 0.60
+        and (
+            float(params.get("pyramid_initial_pct", 0.0) or 0.0) >= 0.30
+            or (pyramid_add_pct is not None and pyramid_add_pct >= 0.20)
+        )
     ):
         violations.append("low_flip_confidence_with_fast_inventory_expansion")
     return violations

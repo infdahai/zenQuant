@@ -140,7 +140,7 @@ def _hostile_proxy_diagnostics(params: dict[str, Any], metrics: dict[str, float]
         6,
     )
     churn_penalty = max(0.0, (trade_count - 3200.0) / 500.0)
-    fragility_penalty = (
+    raw_fragility_penalty = (
         0.60 * execution_fragility_score
         + 0.55 * inventory_path_dependence_score
         + 3.0 * max(0.0, max_drawdown - 0.10)
@@ -149,15 +149,23 @@ def _hostile_proxy_diagnostics(params: dict[str, Any], metrics: dict[str, float]
         + 0.35 * churn_penalty
         + 0.5 * terminated_early
     )
+    if raw_fragility_penalty <= 1.0:
+        hostile_proxy_penalty_applied = 0.35 * raw_fragility_penalty
+    elif raw_fragility_penalty <= 2.5:
+        hostile_proxy_penalty_applied = 0.35 + (raw_fragility_penalty - 1.0) * 0.85
+    else:
+        hostile_proxy_penalty_applied = 1.625 + (raw_fragility_penalty - 2.5) * 1.25
+    hostile_proxy_penalty_applied = round(hostile_proxy_penalty_applied, 6)
     hostile_proxy_score = round(
         sharpe
         + 0.15 * profit_factor
-        - fragility_penalty,
+        - hostile_proxy_penalty_applied,
         6,
     )
     return {
         "execution_fragility_score": execution_fragility_score,
         "inventory_path_dependence_score": inventory_path_dependence_score,
+        "hostile_proxy_penalty_applied": hostile_proxy_penalty_applied,
         "hostile_proxy_score": hostile_proxy_score,
         "stage1_score": hostile_proxy_score,
     }
@@ -165,6 +173,12 @@ def _hostile_proxy_diagnostics(params: dict[str, Any], metrics: dict[str, float]
 
 def _stage1_sort_metric(metrics: dict[str, Any], primary_metric: str) -> float:
     return float(metrics.get("stage1_score", metrics.get("hostile_proxy_score", metrics.get(primary_metric, 0.0))) or 0.0)
+
+
+def _has_nonzero_alpha(metrics: dict[str, Any]) -> bool:
+    sharpe = float(metrics.get("sharpe", 0.0) or 0.0)
+    net_pnl = float(metrics.get("net_pnl", 0.0) or 0.0)
+    return sharpe > 0.0 or net_pnl > 0.0
 
 
 @dataclass(slots=True)
@@ -535,6 +549,10 @@ class Campaign:
             (float(item["metrics"].get("hostile_proxy_score", 0.0) or 0.0) for item in results),
             default=0.0,
         )
+        max_hostile_proxy_penalty_applied = max(
+            (float(item["metrics"].get("hostile_proxy_penalty_applied", 0.0) or 0.0) for item in results),
+            default=0.0,
+        )
         min_execution_fragility_score = min(
             (float(item["metrics"].get("execution_fragility_score", 0.0) or 0.0) for item in eligible_results),
             default=0.0,
@@ -559,6 +577,7 @@ class Campaign:
                 "max_train_trade_count": max_train_trade_count,
                 "max_train_sharpe": round(max_train_sharpe, 6),
                 "max_hostile_proxy_score": round(max_hostile_proxy_score, 6),
+                "hostile_proxy_penalty_applied": round(max_hostile_proxy_penalty_applied, 6),
                 "min_execution_fragility_score": round(min_execution_fragility_score, 6),
                 "min_inventory_path_dependence_score": round(min_inventory_path_dependence_score, 6),
             },
@@ -608,9 +627,22 @@ class Campaign:
         eligible_results = [
             item for item in ranked_results if int(item["metrics"].get("trade_count", 0) or 0) >= self._config.minimum_train_trade_count
         ]
+        alpha_positive_results = [item for item in eligible_results if _has_nonzero_alpha(item["metrics"])]
+        proxy_shortlisted = [
+            item
+            for item in alpha_positive_results
+            if float(item["metrics"].get("hostile_proxy_score", 0.0) or 0.0) >= -3.0
+        ]
+        if not proxy_shortlisted and alpha_positive_results:
+            proxy_shortlisted = [
+                max(
+                    alpha_positive_results,
+                    key=lambda item: _stage1_sort_metric(item["metrics"], self._config.primary_metric),
+                )
+            ]
         # Rank
         sorted_results = sorted(
-            eligible_results,
+            proxy_shortlisted,
             key=lambda x: _stage1_sort_metric(x["metrics"], self._config.primary_metric),
             reverse=True,
         )
@@ -620,8 +652,15 @@ class Campaign:
                 f"Filtered {len(ranked_results) - len(eligible_results)} low-trade sweep candidates "
                 f"(min_train_trade_count={self._config.minimum_train_trade_count})"
             )
-
-        diagnostics, empty_shortlist_reason = self._train_candidate_diagnostics(ranked_results, eligible_results)
+        diagnostics, empty_shortlist_reason = self._train_candidate_diagnostics(ranked_results, sorted_results)
+        if empty_shortlist_reason is None and eligible_results and alpha_positive_results and not [
+            item for item in alpha_positive_results if float(item["metrics"].get("hostile_proxy_score", 0.0) or 0.0) >= -3.0
+        ]:
+            diagnostics["no_tuned_candidate_reason"] = "proxy_penalized_out"
+        elif empty_shortlist_reason is not None:
+            diagnostics["no_tuned_candidate_reason"] = empty_shortlist_reason
+        else:
+            diagnostics["no_tuned_candidate_reason"] = None
         return SweepResult(
             total_combinations=len(param_grid),
             results=sorted_results,
@@ -1023,9 +1062,22 @@ class Campaign:
         eligible_results = [
             item for item in all_results if int(item["metrics"].get("trade_count", 0) or 0) >= self._config.minimum_train_trade_count
         ]
+        alpha_positive_results = [item for item in eligible_results if _has_nonzero_alpha(item["metrics"])]
+        shortlist_results = [
+            item
+            for item in alpha_positive_results
+            if float(item["metrics"].get("hostile_proxy_score", 0.0) or 0.0) >= -3.0
+        ]
+        if not shortlist_results and alpha_positive_results:
+            shortlist_results = [
+                max(
+                    alpha_positive_results,
+                    key=lambda item: _stage1_sort_metric(item["metrics"], self._config.primary_metric),
+                )
+            ]
         # Sort all evaluated results
         sorted_results = sorted(
-            eligible_results,
+            shortlist_results,
             key=lambda x: _stage1_sort_metric(x["metrics"], self._config.primary_metric),
             reverse=True,
         )
@@ -1035,6 +1087,10 @@ class Campaign:
                 f"Filtered {len(all_results) - len(eligible_results)} low-trade bayesian candidates "
                 f"(min_train_trade_count={self._config.minimum_train_trade_count})"
             )
+        if alpha_positive_results and not [
+            item for item in alpha_positive_results if float(item["metrics"].get("hostile_proxy_score", 0.0) or 0.0) >= -3.0
+        ]:
+            self._log("Bayesian sweep retained top alpha-positive candidate after proxy compression")
 
         best_value, _ = _best_trial_snapshot(study)
         if best_value is None:
@@ -1046,7 +1102,15 @@ class Campaign:
                 f"Bayesian sweep complete: best {self._config.primary_metric} = {best_value:.4f} in {n_trials} trials"
             )
 
-        diagnostics, empty_shortlist_reason = self._train_candidate_diagnostics(all_results, eligible_results)
+        diagnostics, empty_shortlist_reason = self._train_candidate_diagnostics(all_results, sorted_results)
+        if empty_shortlist_reason is None and eligible_results and alpha_positive_results and not [
+            item for item in alpha_positive_results if float(item["metrics"].get("hostile_proxy_score", 0.0) or 0.0) >= -3.0
+        ]:
+            diagnostics["no_tuned_candidate_reason"] = "proxy_penalized_out"
+        elif empty_shortlist_reason is not None:
+            diagnostics["no_tuned_candidate_reason"] = empty_shortlist_reason
+        else:
+            diagnostics["no_tuned_candidate_reason"] = None
         return SweepResult(
             total_combinations=n_trials,
             results=sorted_results,
