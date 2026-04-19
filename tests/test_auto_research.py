@@ -429,6 +429,43 @@ class TestTimeoutCleanup(unittest.TestCase):
         self.assertEqual(sweep.total_combinations, 3)
         self.assertGreaterEqual(len(sweep.results), 1)
 
+    def test_bayesian_stage_handles_all_pruned_trials_without_crashing(self) -> None:
+        spec = default_btc_split_spec()
+
+        config = CampaignConfig(
+            split_spec=spec,
+            search_space=SearchSpace(strategy_params={"bull_leverage": [2.5]}),
+            sweep_mode="bayesian",
+            n_trials=3,
+            wf_splits=[],
+            robustness_seeds=[],
+            verbose=False,
+        )
+
+        def fake_worker(args):
+            del args
+            return {}, {
+                "sharpe": 1.0,
+                "sortino": 1.0,
+                "net_pnl": 1.0,
+                "max_drawdown": 0.1,
+                "win_rate": 0.5,
+                "profit_factor": 1.0,
+                "trade_count": 0,
+                "fee_drag_pct": 0.01,
+            }
+
+        with (
+            patch("zenquant.research.auto_research._run_backtest_worker", side_effect=fake_worker),
+            patch("zenquant.research.auto_research._max_workers", return_value=1),
+        ):
+            sweep = run_search_stage(config)
+
+        self.assertEqual(sweep.total_combinations, 1)
+        self.assertEqual(sweep.results, [])
+        self.assertEqual(sweep.top_n, [])
+        self.assertEqual(sweep.train_candidate_diagnostics["raw_trial_count"], 1)
+
 
 class TestSearchSpace(unittest.TestCase):
     def test_empty_grid(self) -> None:
