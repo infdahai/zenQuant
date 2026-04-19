@@ -1660,6 +1660,7 @@ class FrameworkCampaignTests(unittest.TestCase):
                             "max_train_sharpe": 0.0,
                         },
                         "empty_shortlist_reason": "all_zero_trade",
+                        "no_tuned_candidate_reason": "all_zero_trade",
                     }
                 callback(event="trial_completed", current_trial=1, completed_trials=1, total_trials=1, runtime_s=1.0)
                 return None, [], {
@@ -1671,6 +1672,7 @@ class FrameworkCampaignTests(unittest.TestCase):
                         "max_train_sharpe": 0.0,
                     },
                     "empty_shortlist_reason": "all_zero_trade",
+                    "no_tuned_candidate_reason": "all_zero_trade",
                 }
 
             argv = ["run_framework_campaign.py", "--output-dir", str(out), "--budget", "smoke"]
@@ -1691,6 +1693,8 @@ class FrameworkCampaignTests(unittest.TestCase):
 
         self.assertEqual(status["status"], "completed")
         self.assertNotEqual(status["blocked_by"], "campaign_exception")
+        self.assertEqual(status["no_tuned_candidate_reason"], "all_zero_trade")
+        self.assertEqual(stage1_payload["search_status"]["no_tuned_candidate_reason"], "all_zero_trade")
 
     def test_campaign_smoke_fallback_timeout_records_split_progress_fields(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

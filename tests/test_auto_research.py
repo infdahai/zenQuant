@@ -25,6 +25,7 @@ from zenquant.research.auto_research import (
     run_search_stage,
 )
 from zenquant.research.experiment import ExperimentTracker, params_hash
+from zenquant.research.framework_params import hostile_constraint_violations
 from zenquant.research.promoter import (
     BaselineMetrics,
     CandidateMetrics,
@@ -297,6 +298,10 @@ class TestStage1HostileProxy(unittest.TestCase):
             aggressive["inventory_path_dependence_score"],
             stable["inventory_path_dependence_score"],
         )
+        self.assertGreater(
+            aggressive["hostile_proxy_penalty_applied"],
+            stable["hostile_proxy_penalty_applied"],
+        )
 
     def test_stage1_sort_metric_prefers_hostile_proxy_score_over_raw_sharpe(self) -> None:
         strong_sharpe = {"sharpe": 3.0, "hostile_proxy_score": 0.2}
@@ -306,6 +311,25 @@ class TestStage1HostileProxy(unittest.TestCase):
             _stage1_sort_metric(strong_sharpe, "sharpe"),
             _stage1_sort_metric(safer_profile, "sharpe"),
         )
+
+    def test_hostile_guardrails_flag_new_execution_fragility_combos(self) -> None:
+        violations = hostile_constraint_violations(
+            {
+                "target_vol_4h": 0.95,
+                "max_leverage": 6.0,
+                "pyramid_initial_pct": 0.30,
+                "pyramid_add_pct": 0.20,
+                "pyramid_short_add_pct": 0.16,
+                "dca_spacing_atr": 0.75,
+                "dca_size_decay": 0.60,
+                "flip_min_confidence": 0.60,
+            }
+        )
+
+        self.assertIn("high_target_vol_with_excess_leverage", violations)
+        self.assertIn("aggressive_long_and_short_pyramiding", violations)
+        self.assertIn("tight_dca_spacing_with_heavy_inventory_reloading", violations)
+        self.assertIn("low_flip_confidence_with_fast_inventory_expansion", violations)
 
     def test_drawdown_regression_gate(self) -> None:
         gate = PromotionGate(

@@ -1047,6 +1047,7 @@ class SearchReportSerializationTests(unittest.TestCase):
                 "stage1_execution_mode": "1h_context_only_with_5m_fallback",
                 "train_candidate_diagnostics": {"raw_trial_count": 5, "raw_nonzero_trade_trials": 1},
                 "empty_shortlist_reason": None,
+                "no_tuned_candidate_reason": "proxy_penalized_out",
             },
             current=summary,
             paulwei_baseline=summary,
@@ -1084,11 +1085,18 @@ class SearchReportSerializationTests(unittest.TestCase):
         self.assertEqual(payload["stage1_execution_mode"], "1h_context_only_with_5m_fallback")
         self.assertEqual(payload["train_candidate_diagnostics"]["raw_trial_count"], 5)
         self.assertIsNone(payload["empty_shortlist_reason"])
+        self.assertEqual(payload["no_tuned_candidate_reason"], "proxy_penalized_out")
         self.assertIsNone(payload["optuna_tuned"])
         self.assertIsNone(payload["rl_tuned"])
         self.assertTrue(payload["training_input_contract"]["signal_stack_contract"]["direction_state_execution_split_enabled"])
         self.assertTrue(payload["training_input_contract"]["execution_framework"]["five_min_direct_execution_enabled"])
         self.assertEqual(payload["final_verdict"]["best_variant"], "current")
+        self.assertTrue(payload["final_verdict"]["candidate_generation_failed"])
+        self.assertEqual(
+            payload["final_verdict"]["candidate_generation_failure_driver"],
+            "proxy_penalized_out",
+        )
+        self.assertEqual(payload["final_verdict"]["no_tuned_candidate_reason"], "proxy_penalized_out")
         self.assertIn("promotion_failure_reason", payload["final_verdict"])
         self.assertIn("search_space_profile", payload["final_verdict"])
         self.assertIn("comparison_to_paulwei_baseline", payload["final_verdict"])
