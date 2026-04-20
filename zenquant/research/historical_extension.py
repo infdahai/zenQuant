@@ -32,12 +32,20 @@ class HistoricalExtensionCandidateContract:
     candidate_name: str
     candidate_source_type: str
     primary_truth_source: str
+    layered_train_enabled: bool
     formal_train_truth: bool
+    historical_extension_mode: str
+    train_truth_legs: list[dict[str, Any]]
+    dev_truth_source: str
+    test_truth_source: str
+    mixed_era_declared: bool
+    full_unified_truth: bool
     candidate_window_start: str | None
     candidate_window_end: str | None
     timeframes: dict[str, TimeframeCoverage]
     allowed_uses: list[str]
     blocked_by: list[str]
+    spot_train_leg_blocked_by: list[str]
     ready: bool
     source_boundary: str
     next_action: str
@@ -104,6 +112,7 @@ def build_historical_extension_candidate_contract(
         blocked_by.append("spot_timeframe_gap")
     blocked_by.extend(
         [
+            "full_unified_truth_blocked",
             "spot_perp_truth_boundary",
             "funding_history_not_available_pre_2020",
             "open_interest_history_not_available_pre_2020",
@@ -115,6 +124,11 @@ def build_historical_extension_candidate_contract(
         blocked_by.append("futures_1h_missing")
     elif (_date_floor(futures_one_hour.start_at) or "9999-12-31") > "2020-01-01":
         blocked_by.append("futures_1h_incomplete_current_truth")
+    spot_train_leg_blocked_by = [
+        reason
+        for reason in blocked_by
+        if reason not in {"full_unified_truth_blocked", "spot_perp_truth_boundary"}
+    ]
 
     return HistoricalExtensionCandidateContract(
         generated_at=datetime.now(UTC).isoformat(),
@@ -122,7 +136,27 @@ def build_historical_extension_candidate_contract(
         candidate_name="binance_spot_2017_plus",
         candidate_source_type="spot",
         primary_truth_source="binance_futures_2020_plus",
-        formal_train_truth=False,
+        layered_train_enabled=True,
+        formal_train_truth=True,
+        historical_extension_mode="layered_spot_then_futures",
+        train_truth_legs=[
+            {
+                "name": "pre_2020_spot_train",
+                "source": "spot",
+                "start_at": candidate_window_start,
+                "end_at": "2019-12-31T23:59:59.999000+00:00",
+            },
+            {
+                "name": "post_2020_futures_train",
+                "source": "futures",
+                "start_at": "2020-01-01T00:00:00+00:00",
+                "end_at": None,
+            },
+        ],
+        dev_truth_source="futures_only",
+        test_truth_source="futures_only",
+        mixed_era_declared=True,
+        full_unified_truth=False,
         candidate_window_start=candidate_window_start,
         candidate_window_end=candidate_window_end,
         timeframes=spot_coverages,
@@ -131,14 +165,17 @@ def build_historical_extension_candidate_contract(
             "slow_macro_signal_validation",
             "train_candidate_replay_contract_review",
             "pre_train_stress_tests",
+            "layered_train_pre_2020_spot_leg",
         ],
         blocked_by=blocked_by,
-        ready=False,
+        spot_train_leg_blocked_by=spot_train_leg_blocked_by,
+        ready=not any(reason in {"spot_timeframe_gap", "futures_1h_missing", "futures_1h_incomplete_current_truth"} for reason in spot_train_leg_blocked_by),
         source_boundary=(
             "Candidate history uses Binance spot data from 2017-08 onward. "
-            "Formal train truth remains Binance futures from 2020 onward."
+            "Formal train truth is layered: pre-2020 train leg uses spot, while "
+            "post-2020 train/dev/test execution truth remains Binance futures."
         ),
-        next_action="keep_as_train_candidate_until_parity_review",
+        next_action="use_as_layered_train_leg_until_full_unified_truth_review",
     )
 
 
@@ -160,16 +197,34 @@ def write_historical_extension_candidate_contract(
         f"- candidate_name: `{contract.candidate_name}`",
         f"- candidate_source_type: `{contract.candidate_source_type}`",
         f"- primary_truth_source: `{contract.primary_truth_source}`",
+        f"- layered_train_enabled: `{contract.layered_train_enabled}`",
         f"- formal_train_truth: `{contract.formal_train_truth}`",
+        f"- historical_extension_mode: `{contract.historical_extension_mode}`",
+        f"- dev_truth_source: `{contract.dev_truth_source}`",
+        f"- test_truth_source: `{contract.test_truth_source}`",
+        f"- mixed_era_declared: `{contract.mixed_era_declared}`",
+        f"- full_unified_truth: `{contract.full_unified_truth}`",
         f"- candidate_window_start: `{contract.candidate_window_start}`",
         f"- candidate_window_end: `{contract.candidate_window_end}`",
         f"- ready: `{contract.ready}`",
         f"- blocked_by: `{contract.blocked_by}`",
+        f"- spot_train_leg_blocked_by: `{contract.spot_train_leg_blocked_by}`",
         f"- next_action: `{contract.next_action}`",
         "",
-        "## Timeframes",
+        "## Train Truth Legs",
         "",
     ]
+    for leg in contract.train_truth_legs:
+        lines.append(
+            f"- `{leg['name']}` source=`{leg['source']}` start=`{leg['start_at']}` end=`{leg['end_at']}`"
+        )
+    lines.extend(
+        [
+            "",
+        "## Timeframes",
+        "",
+        ]
+    )
     for coverage in contract.timeframes.values():
         lines.extend(
             [

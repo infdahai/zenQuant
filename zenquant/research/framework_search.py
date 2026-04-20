@@ -184,8 +184,16 @@ def _historical_extension_candidate_contract() -> dict[str, Any]:
             "source": None,
             "candidate_name": None,
             "ready": False,
+            "layered_train_enabled": False,
+            "historical_extension_mode": None,
             "formal_train_truth": False,
+            "train_truth_legs": [],
+            "dev_truth_source": "futures_only",
+            "test_truth_source": "futures_only",
+            "mixed_era_declared": False,
+            "full_unified_truth": False,
             "blocked_by": ["historical_extension_candidate_missing"],
+            "spot_train_leg_blocked_by": ["historical_extension_candidate_missing"],
             "candidate_window_start": None,
             "candidate_window_end": None,
             "source_boundary": None,
@@ -196,8 +204,16 @@ def _historical_extension_candidate_contract() -> dict[str, Any]:
         "source": review.get("candidate_source_type"),
         "candidate_name": review.get("candidate_name"),
         "ready": bool(review.get("ready")),
+        "layered_train_enabled": bool(review.get("layered_train_enabled")),
+        "historical_extension_mode": review.get("historical_extension_mode"),
         "formal_train_truth": bool(review.get("formal_train_truth")),
+        "train_truth_legs": list(review.get("train_truth_legs") or []),
+        "dev_truth_source": review.get("dev_truth_source", "futures_only"),
+        "test_truth_source": review.get("test_truth_source", "futures_only"),
+        "mixed_era_declared": bool(review.get("mixed_era_declared")),
+        "full_unified_truth": bool(review.get("full_unified_truth")),
         "blocked_by": blocked_by,
+        "spot_train_leg_blocked_by": list(review.get("spot_train_leg_blocked_by") or blocked_by),
         "candidate_window_start": review.get("candidate_window_start"),
         "candidate_window_end": review.get("candidate_window_end"),
         "source_boundary": review.get("source_boundary"),
@@ -235,6 +251,90 @@ def _window_has_timeframe_rows(
         order_by="close_time_ns ASC",
     )
     return bool(rows)
+
+
+def _iso_to_ns(value: str | None) -> int | None:
+    if not value:
+        return None
+    return int(datetime.fromisoformat(value).timestamp() * 1_000_000_000)
+
+
+def _spot_train_leg(contract: dict[str, Any]) -> dict[str, Any] | None:
+    for leg in list(contract.get("train_truth_legs") or []):
+        if leg.get("name") == "pre_2020_spot_train":
+            return dict(leg)
+    return None
+
+
+def _spot_train_leg_snapshot(
+    evaluator: FrameworkEvaluator,
+    params: dict[str, Any],
+    contract: dict[str, Any],
+) -> BacktestSnapshot | None:
+    leg = _spot_train_leg(contract)
+    if not leg or not contract.get("layered_train_enabled"):
+        return None
+    if contract.get("spot_train_leg_blocked_by"):
+        blocking = {
+            "spot_timeframe_gap",
+            "futures_1h_missing",
+            "futures_1h_incomplete_current_truth",
+        }
+        if any(reason in blocking for reason in list(contract.get("spot_train_leg_blocked_by") or [])):
+            return None
+    variant = evaluator.candidate_variant(params, name="spot_train_candidate", label="Spot Train Candidate")
+    spot_root_dir = evaluator._base_config.root_dir.parent / "binance_spot"
+    spot_config = HistoricalBacktestConfig(
+        root_dir=spot_root_dir,
+        symbol=evaluator._base_config.symbol,
+        portfolio_symbol=evaluator._base_config.portfolio_symbol,
+        starting_equity=evaluator._base_config.starting_equity,
+        execution_timeframe=evaluator._base_config.execution_timeframe,
+        bias_timeframe=evaluator._base_config.bias_timeframe,
+        direction_timeframe=evaluator._base_config.direction_timeframe,
+        context_timeframe=evaluator._base_config.context_timeframe,
+        macro_dir=evaluator._base_config.macro_dir,
+        options_dir=evaluator._base_config.options_dir,
+        cot_path=evaluator._base_config.cot_path,
+        liquidation_dir=evaluator._base_config.liquidation_dir,
+        profile_path=evaluator._base_config.profile_path,
+        research_compute_mode=evaluator._base_config.research_compute_mode,
+        strategy_config=variant.strategy_config,
+        risk_config=variant.risk_config,
+        execution_config=variant.execution_config,
+        signal_weight_overrides=variant.signal_weight_overrides,
+        indicator_config=variant.indicator_config,
+        liquidation_data_enabled=False,
+        state_liquidation_overlay_enabled=False,
+    )
+    return _run_variant_backtest_snapshot(
+        spot_config,
+        variant,
+        start_ns=_iso_to_ns(leg.get("start_at")),
+        end_ns=_iso_to_ns(leg.get("end_at")),
+    )
+
+
+def _combine_train_leg_metrics(
+    futures_metrics: dict[str, Any],
+    spot_snapshot: BacktestSnapshot | None,
+) -> tuple[dict[str, Any], dict[str, Any] | None, float]:
+    futures_sharpe = float(futures_metrics.get("sharpe", 0.0) or 0.0)
+    futures_score = float(futures_metrics.get("score", futures_sharpe) or futures_sharpe)
+    if spot_snapshot is None:
+        return dict(futures_metrics), None, futures_score
+    spot_metrics = {
+        "sharpe": round(float(spot_snapshot.sharpe), 6),
+        "net_pnl": round(float(spot_snapshot.net_pnl), 6),
+        "max_drawdown": round(float(spot_snapshot.max_drawdown), 6),
+        "win_rate": round(float(spot_snapshot.win_rate), 6),
+    }
+    spot_sharpe = float(spot_snapshot.sharpe)
+    combined_score = round(min(futures_sharpe, spot_sharpe) + 0.25 * ((futures_sharpe + spot_sharpe) / 2.0), 6)
+    combined_metrics = dict(futures_metrics)
+    combined_metrics["score"] = combined_score
+    combined_metrics["combined_train_score"] = combined_score
+    return combined_metrics, spot_metrics, combined_score
 
 
 def _run_variant_backtest_snapshot(
@@ -868,6 +968,12 @@ class FrameworkEvaluator:
         historical_extension_candidate = _historical_extension_candidate_contract()
         self._training_input_contract = {
             "primary_truth_source": "binance",
+            "historical_extension_train_enabled": bool(historical_extension_candidate.get("layered_train_enabled")),
+            "historical_extension_mode": historical_extension_candidate.get("historical_extension_mode"),
+            "train_truth_legs": list(historical_extension_candidate.get("train_truth_legs") or []),
+            "dev_truth_source": historical_extension_candidate.get("dev_truth_source", "futures_only"),
+            "test_truth_source": historical_extension_candidate.get("test_truth_source", "futures_only"),
+            "mixed_era_declared": bool(historical_extension_candidate.get("mixed_era_declared")),
             "historical_extension_candidate_contract": historical_extension_candidate,
             "execution_framework": {
                 "primary_timeframe": "4h",
@@ -1996,6 +2102,7 @@ def run_optuna_search(
     ranking_started_at = datetime.now(UTC).timestamp()
     ranked: list[dict[str, Any]] = []
     total_candidates = len(sweep.top_n)
+    historical_extension_contract = evaluator.training_input_contract.get("historical_extension_candidate_contract", {})
     for index, candidate in enumerate(sweep.top_n, start=1):
         if ranking_timeout_s is not None and (datetime.now(UTC).timestamp() - ranking_started_at) > ranking_timeout_s:
             raise SearchStageTimeoutError(
@@ -2014,11 +2121,24 @@ def run_optuna_search(
             raise SearchStageTimeoutError(
                 f"stage1_dev_validation_no_progress_timeout: candidate {index}/{total_candidates}"
             )
-        summary = CandidateSummary(**_train_candidate_summary_payload(candidate))
+        combined_metrics, spot_train_leg_metrics, combined_train_score = _combine_train_leg_metrics(
+            dict(candidate.get("metrics", {})),
+            _spot_train_leg_snapshot(evaluator, params, historical_extension_contract),
+        )
+        candidate_payload = dict(candidate)
+        candidate_payload["metrics"] = combined_metrics
+        summary = CandidateSummary(**_train_candidate_summary_payload(candidate_payload))
         ranked.append(
             {
                 "params": params,
-                "train_metrics": candidate["metrics"],
+                "train_metrics": combined_metrics,
+                "spot_train_leg_metrics": spot_train_leg_metrics,
+                "futures_train_leg_metrics": dict(candidate.get("metrics", {})),
+                "combined_train_diagnostics": {
+                    "combined_train_score": combined_train_score,
+                    "mixed_era_declared": bool(historical_extension_contract.get("mixed_era_declared")),
+                    "historical_extension_mode": historical_extension_contract.get("historical_extension_mode"),
+                },
                 "summary": asdict(summary),
                 "candidate_source": "auto_research_train_only",
                 "split_contract_version": evaluator._split_spec.version,
@@ -2042,6 +2162,12 @@ def run_optuna_search(
         "no_tuned_candidate_reason": (getattr(sweep, "train_candidate_diagnostics", {}) or {}).get("no_tuned_candidate_reason"),
         "stage1_budget_mode": getattr(sweep, "budget_mode", "trial_count_primary"),
         "stage1_stop_reason": getattr(sweep, "stop_reason", "trial_budget_reached"),
+        "historical_extension_train_enabled": bool(historical_extension_contract.get("layered_train_enabled")),
+        "historical_extension_mode": historical_extension_contract.get("historical_extension_mode"),
+        "mixed_era_declared": bool(historical_extension_contract.get("mixed_era_declared")),
+        "train_truth_legs": list(historical_extension_contract.get("train_truth_legs") or []),
+        "spot_train_leg_blocked_by": list(historical_extension_contract.get("spot_train_leg_blocked_by") or []),
+        "full_unified_truth": bool(historical_extension_contract.get("full_unified_truth")),
     }
     return (best["params"] if best else None), ranked, diagnostics
 
@@ -2128,6 +2254,11 @@ def build_markdown_report(report: SearchReport) -> str:
         f"- train_candidate_diagnostics: `{report.search_status.get('train_candidate_diagnostics')}`",
         f"- empty_shortlist_reason: `{report.search_status.get('empty_shortlist_reason')}`",
         f"- no_tuned_candidate_reason: `{report.search_status.get('no_tuned_candidate_reason')}`",
+        f"- historical_extension_train_enabled: `{report.search_status.get('historical_extension_train_enabled')}`",
+        f"- historical_extension_mode: `{report.search_status.get('historical_extension_mode')}`",
+        f"- mixed_era_declared: `{report.search_status.get('mixed_era_declared')}`",
+        f"- train_truth_legs: `{report.search_status.get('train_truth_legs')}`",
+        f"- spot_train_leg_blocked_by: `{report.search_status.get('spot_train_leg_blocked_by')}`",
         f"- dev_gate_used_this_round: `{report.dev_gate_used_this_round}`",
         f"- dev_gate_last_round: `{report.dev_gate_last_round}`",
         f"- dev_gate_interval: `{report.dev_gate_interval}`",
@@ -2283,6 +2414,11 @@ def write_search_report(path: Path, report: SearchReport) -> None:
     payload["stage1_execution_mode"] = report.search_status.get("stage1_execution_mode")
     payload["train_candidate_diagnostics"] = report.search_status.get("train_candidate_diagnostics")
     payload["empty_shortlist_reason"] = report.search_status.get("empty_shortlist_reason")
+    payload["historical_extension_train_enabled"] = report.training_input_contract.get("historical_extension_train_enabled")
+    payload["historical_extension_mode"] = report.training_input_contract.get("historical_extension_mode")
+    payload["mixed_era_declared"] = report.training_input_contract.get("mixed_era_declared")
+    payload["train_truth_legs"] = report.training_input_contract.get("train_truth_legs")
+    payload["full_unified_truth"] = report.training_input_contract.get("historical_extension_candidate_contract", {}).get("full_unified_truth")
     payload["evaluation_role"] = report.evaluation_role
     payload["test_access_allowed"] = report.test_access_allowed
     payload["candidate_ready_for_handoff"] = report.candidate_ready_for_handoff
@@ -2307,6 +2443,12 @@ def write_search_report(path: Path, report: SearchReport) -> None:
         "etf_flow_last_success_at": report.search_status.get("etf_flow_last_success_at"),
         "train_candidate_diagnostics": report.search_status.get("train_candidate_diagnostics"),
         "empty_shortlist_reason": report.search_status.get("empty_shortlist_reason"),
+        "historical_extension_train_enabled": report.search_status.get("historical_extension_train_enabled"),
+        "historical_extension_mode": report.search_status.get("historical_extension_mode"),
+        "mixed_era_declared": report.search_status.get("mixed_era_declared"),
+        "train_truth_legs": report.search_status.get("train_truth_legs"),
+        "spot_train_leg_blocked_by": report.search_status.get("spot_train_leg_blocked_by"),
+        "full_unified_truth": report.search_status.get("full_unified_truth"),
     }
     payload["historical_leaderboard"] = [
         asdict(report.current),
@@ -2375,6 +2517,12 @@ def write_search_report(path: Path, report: SearchReport) -> None:
         "etf_flow_last_success_at": payload["search_status"].get("etf_flow_last_success_at"),
         "train_candidate_diagnostics": payload["search_status"].get("train_candidate_diagnostics"),
         "empty_shortlist_reason": payload["search_status"].get("empty_shortlist_reason"),
+        "historical_extension_train_enabled": payload["training_input_contract"].get("historical_extension_train_enabled"),
+        "historical_extension_mode": payload["training_input_contract"].get("historical_extension_mode"),
+        "mixed_era_declared": payload["training_input_contract"].get("mixed_era_declared"),
+        "train_truth_legs": payload["training_input_contract"].get("train_truth_legs"),
+        "full_unified_truth": payload["training_input_contract"].get("historical_extension_candidate_contract", {}).get("full_unified_truth"),
+        "spot_train_leg_blocked_by": payload["training_input_contract"].get("historical_extension_candidate_contract", {}).get("spot_train_leg_blocked_by"),
         "no_tuned_candidate_reason": no_tuned_candidate_reason,
         "verdict_kind": verdict_kind,
         "candidate_generation_failed": report.optuna_best is None and report.rl_best is None,

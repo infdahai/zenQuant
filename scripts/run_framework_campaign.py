@@ -804,6 +804,14 @@ def main() -> None:
                 "historical_extension_candidate_contract",
                 {},
             ).get("blocked_by"),
+            historical_extension_train_enabled=evaluator.training_input_contract.get("historical_extension_train_enabled", False),
+            historical_extension_mode=evaluator.training_input_contract.get("historical_extension_mode"),
+            mixed_era_declared=evaluator.training_input_contract.get("mixed_era_declared", False),
+            train_truth_legs=evaluator.training_input_contract.get("train_truth_legs", []),
+            full_unified_truth=evaluator.training_input_contract.get("historical_extension_candidate_contract", {}).get(
+                "full_unified_truth",
+                False,
+            ),
         )
         _append_campaign_log(
             log_path,
@@ -905,6 +913,17 @@ def main() -> None:
                         "authoritative_verdict_execution_mode": "5m_enabled",
                         "macro_state_sources": macro_state_sources,
                         "state_data_confidence": state_data_confidence,
+                        "historical_extension_train_enabled": evaluator.training_input_contract.get(
+                            "historical_extension_train_enabled",
+                            False,
+                        ),
+                        "historical_extension_mode": evaluator.training_input_contract.get("historical_extension_mode"),
+                        "mixed_era_declared": evaluator.training_input_contract.get("mixed_era_declared", False),
+                        "train_truth_legs": evaluator.training_input_contract.get("train_truth_legs", []),
+                        "full_unified_truth": evaluator.training_input_contract.get(
+                            "historical_extension_candidate_contract",
+                            {},
+                        ).get("full_unified_truth", False),
                         "split_contract_version": split_spec.version,
                         "candidate_sources": [
                             "auto_research_train_only",
