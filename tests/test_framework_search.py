@@ -349,8 +349,19 @@ class FrameworkEvaluatorTests(unittest.TestCase):
                         "candidate_source_type": "spot",
                         "candidate_name": "binance_spot_2017_plus",
                         "ready": False,
-                        "formal_train_truth": False,
+                        "layered_train_enabled": True,
+                        "historical_extension_mode": "layered_spot_then_futures",
+                        "formal_train_truth": True,
+                        "train_truth_legs": [
+                            {"name": "pre_2020_spot_train", "source": "spot"},
+                            {"name": "post_2020_futures_train", "source": "futures"},
+                        ],
+                        "dev_truth_source": "futures_only",
+                        "test_truth_source": "futures_only",
+                        "mixed_era_declared": True,
+                        "full_unified_truth": False,
                         "blocked_by": ["spot_perp_truth_boundary"],
+                        "spot_train_leg_blocked_by": [],
                         "candidate_window_start": "2017-08-17T00:00:00+00:00",
                         "candidate_window_end": "2026-04-17T00:00:00+00:00",
                         "source_boundary": "spot candidate only",
@@ -384,6 +395,10 @@ class FrameworkEvaluatorTests(unittest.TestCase):
         self.assertEqual(historical_contract["source"], "spot")
         self.assertFalse(historical_contract["ready"])
         self.assertIn("spot_perp_truth_boundary", historical_contract["blocked_by"])
+        self.assertTrue(evaluator.training_input_contract["historical_extension_train_enabled"])
+        self.assertEqual(evaluator.training_input_contract["historical_extension_mode"], "layered_spot_then_futures")
+        self.assertTrue(evaluator.training_input_contract["mixed_era_declared"])
+        self.assertEqual(len(evaluator.training_input_contract["train_truth_legs"]), 2)
 
     def test_liquidation_candidate_is_blocked_when_history_missing(self) -> None:
         fake_summary = CandidateSummary(
@@ -1003,6 +1018,19 @@ class SearchReportSerializationTests(unittest.TestCase):
             training_window_coverage={"fast_windows": ["overall_recent"]},
             training_input_contract={
                 "primary_truth_source": "binance",
+                "historical_extension_train_enabled": True,
+                "historical_extension_mode": "layered_spot_then_futures",
+                "train_truth_legs": [
+                    {"name": "pre_2020_spot_train", "source": "spot"},
+                    {"name": "post_2020_futures_train", "source": "futures"},
+                ],
+                "dev_truth_source": "futures_only",
+                "test_truth_source": "futures_only",
+                "mixed_era_declared": True,
+                "historical_extension_candidate_contract": {
+                    "full_unified_truth": False,
+                    "spot_train_leg_blocked_by": ["execution_parity_not_verified_pre_2020"],
+                },
                 "execution_framework": {
                     "five_min_feature_aggregation_enabled": True,
                     "five_min_direct_execution_enabled": True,
@@ -1048,6 +1076,15 @@ class SearchReportSerializationTests(unittest.TestCase):
                 "train_candidate_diagnostics": {"raw_trial_count": 5, "raw_nonzero_trade_trials": 1},
                 "empty_shortlist_reason": None,
                 "no_tuned_candidate_reason": "proxy_penalized_out",
+                "historical_extension_train_enabled": True,
+                "historical_extension_mode": "layered_spot_then_futures",
+                "mixed_era_declared": True,
+                "train_truth_legs": [
+                    {"name": "pre_2020_spot_train", "source": "spot"},
+                    {"name": "post_2020_futures_train", "source": "futures"},
+                ],
+                "spot_train_leg_blocked_by": ["execution_parity_not_verified_pre_2020"],
+                "full_unified_truth": False,
             },
             current=summary,
             paulwei_baseline=summary,
@@ -1086,6 +1123,10 @@ class SearchReportSerializationTests(unittest.TestCase):
         self.assertEqual(payload["train_candidate_diagnostics"]["raw_trial_count"], 5)
         self.assertIsNone(payload["empty_shortlist_reason"])
         self.assertEqual(payload["no_tuned_candidate_reason"], "proxy_penalized_out")
+        self.assertTrue(payload["historical_extension_train_enabled"])
+        self.assertEqual(payload["historical_extension_mode"], "layered_spot_then_futures")
+        self.assertTrue(payload["mixed_era_declared"])
+        self.assertFalse(payload["full_unified_truth"])
         self.assertIsNone(payload["optuna_tuned"])
         self.assertIsNone(payload["rl_tuned"])
         self.assertTrue(payload["training_input_contract"]["signal_stack_contract"]["direction_state_execution_split_enabled"])
@@ -1103,6 +1144,8 @@ class SearchReportSerializationTests(unittest.TestCase):
         self.assertIn("full_training_ready", payload["final_verdict"])
         self.assertEqual(payload["final_verdict"]["etf_flow_source"], "bitbo_etf_flows")
         self.assertEqual(payload["campaign_execution_contract"]["etf_flow_source_confidence"], "medium")
+        self.assertEqual(payload["final_verdict"]["historical_extension_mode"], "layered_spot_then_futures")
+        self.assertFalse(payload["final_verdict"]["full_unified_truth"])
         self.assertEqual(payload["full_training_assessment"]["decision"], "defer_handoff")
         self.assertIn("handoff_blockers", payload)
 
@@ -1165,6 +1208,74 @@ class SearchReportSerializationTests(unittest.TestCase):
         self.assertEqual(config.stage1_max_workers, 6)
         self.assertEqual(config.stage1_target_inflight, 6)
         self.assertEqual(config.stage1_batch_size, 4)
+
+    def test_run_optuna_search_applies_spot_train_leg_weakest_leg_constraint(self) -> None:
+        @dataclass
+        class FakeSweep:
+            total_combinations: int
+            results: list[dict]
+            top_n: list[dict]
+            runtime_s: float
+            train_candidate_diagnostics: dict
+            empty_shortlist_reason: str | None = None
+            budget_mode: str = "trial_count_primary"
+            stop_reason: str = "trial_budget_reached"
+
+        snapshots = [
+            BacktestSnapshot(sharpe=0.1, net_pnl=10.0, max_drawdown=0.2, win_rate=0.4),
+            BacktestSnapshot(sharpe=1.5, net_pnl=20.0, max_drawdown=0.1, win_rate=0.6),
+        ]
+
+        with (
+            patch(
+                "zenquant.research.framework_search.run_search_stage",
+                return_value=FakeSweep(
+                    total_combinations=2,
+                    results=[],
+                    top_n=[
+                        {"params": {"w_momentum": 0.3}, "metrics": {"sharpe": 2.0, "score": 2.0, "net_pnl": 5.0, "max_drawdown": 0.1}},
+                        {"params": {"w_momentum": 0.45}, "metrics": {"sharpe": 1.6, "score": 1.6, "net_pnl": 5.0, "max_drawdown": 0.1}},
+                    ],
+                    runtime_s=0.1,
+                    train_candidate_diagnostics={"raw_trial_count": 2},
+                ),
+            ),
+            patch(
+                "zenquant.research.framework_search._spot_train_leg_snapshot",
+                side_effect=snapshots,
+            ),
+            patch(
+                "zenquant.research.framework_search.load_historical_extension_candidate_contract",
+                return_value={
+                    "candidate_source_type": "spot",
+                    "candidate_name": "binance_spot_2017_plus",
+                    "ready": True,
+                    "layered_train_enabled": True,
+                    "historical_extension_mode": "layered_spot_then_futures",
+                    "formal_train_truth": True,
+                    "train_truth_legs": [
+                        {"name": "pre_2020_spot_train", "source": "spot"},
+                        {"name": "post_2020_futures_train", "source": "futures"},
+                    ],
+                    "dev_truth_source": "futures_only",
+                    "test_truth_source": "futures_only",
+                    "mixed_era_declared": True,
+                    "full_unified_truth": False,
+                    "blocked_by": ["spot_perp_truth_boundary"],
+                    "spot_train_leg_blocked_by": [],
+                    "candidate_window_start": "2017-08-17T00:00:00+00:00",
+                    "candidate_window_end": "2026-04-17T00:00:00+00:00",
+                    "source_boundary": "layered spot train leg",
+                },
+            ),
+        ):
+            evaluator = FrameworkEvaluator(HistoricalBacktestConfig(), split_spec=default_btc_split_spec())
+            best, ranked, diagnostics = run_optuna_search(evaluator, n_trials=5)
+
+        self.assertEqual(best, {"w_momentum": 0.45})
+        self.assertEqual(ranked[0]["params"], {"w_momentum": 0.45})
+        self.assertIn("spot_train_leg_metrics", ranked[0])
+        self.assertEqual(diagnostics["historical_extension_mode"], "layered_spot_then_futures")
 
     def test_final_report_passes_smoke_minimal_comparison_mode_and_heartbeat(self) -> None:
         summary = CandidateSummary(
