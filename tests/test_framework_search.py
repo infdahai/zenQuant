@@ -1434,6 +1434,69 @@ class SearchReportSerializationTests(unittest.TestCase):
         self.assertTrue(any(unit.startswith("summary_scoring_completed:") for unit in prepare_detail_units))
         self.assertEqual(report.evaluation_role, "development")
 
+    def test_evaluate_variant_reports_cache_reuse_progress(self) -> None:
+        evaluator = FrameworkEvaluator(HistoricalBacktestConfig(), split_spec=default_btc_split_spec())
+        cached_summary = CandidateSummary(
+            variant="current",
+            robust_score=1.0,
+            selection_split="dev",
+            dev_sharpe=1.0,
+            dev_pnl=10.0,
+            dev_drawdown=0.1,
+            avg_dev_sharpe=1.0,
+            avg_dev_ratio=1.0,
+            worst_dev_sharpe=0.5,
+            weak_window_sharpe=0.2,
+            negative_dev_worst_windows=0,
+            promotion_candidate=False,
+        )
+        variant = evaluator._current_variant
+        evaluator._summary_cache[(evaluator._variant_key(variant), True, True)] = cached_summary
+        progress: list[tuple[object, str]] = []
+
+        summary = evaluator._evaluate_variant(
+            variant,
+            fast=True,
+            lightweight=True,
+            progress_callback=lambda step_completed, unit: progress.append((step_completed, unit)),
+        )
+
+        self.assertIs(summary, cached_summary)
+        self.assertIn(("cache_hit", "summary_cache"), progress)
+        self.assertIn(("replay_reused", "summary_cache"), progress)
+        self.assertIn((4, "cached"), progress)
+
+    def test_evaluate_variant_reports_cache_miss_progress(self) -> None:
+        evaluator = FrameworkEvaluator(HistoricalBacktestConfig(), split_spec=default_btc_split_spec())
+        variant = evaluator._current_variant
+        progress: list[tuple[object, str]] = []
+
+        with patch.object(
+            evaluator,
+            "_run_prepare_backtest_cached",
+            return_value=BacktestSnapshot(
+                sharpe=1.0,
+                net_pnl=10.0,
+                max_drawdown=0.1,
+                win_rate=0.5,
+                sortino=1.2,
+                profit_factor=1.1,
+                turnover_per_day=0.5,
+                fee_drag_pct=0.05,
+            ),
+        ):
+            summary = evaluator._evaluate_variant(
+                variant,
+                fast=True,
+                lightweight=True,
+                progress_callback=lambda step_completed, unit: progress.append((step_completed, unit)),
+            )
+
+        self.assertEqual(summary.variant, "current")
+        self.assertIn(("cache_miss", "summary_cache"), progress)
+        self.assertIn(("cache_miss", "window_snapshot:dev"), progress)
+        self.assertIn(("cache_miss", "window_snapshot:2023-08"), progress)
+
     def test_final_report_uses_fast_compare_window_profile_and_workers(self) -> None:
         summary = CandidateSummary(
             variant="current",

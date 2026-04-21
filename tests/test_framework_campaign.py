@@ -279,6 +279,15 @@ class FrameworkCampaignTests(unittest.TestCase):
                     risk_step_total_s=0.2,
                     execution_step_total_s=0.6,
                     accounting_step_total_s=0.1,
+                    replay_context_cache_hit_rate=1.0,
+                    event_list_cache_hit_rate=1.0,
+                    indicator_layer_timing={
+                        "core_execution_indicators_s": 0.2,
+                        "structural_momentum_layer_s": 0.1,
+                        "slow_feature_enrichment_layer_s": 0.1,
+                    },
+                    indicator_fast_path_enabled=True,
+                    slow_enrichment_deferred=False,
                     terminated_early=1.0,
                     stage1_budget_mode="wall_clock_primary",
                     stage1_stop_reason="wall_clock_budget_reached",
@@ -315,6 +324,16 @@ class FrameworkCampaignTests(unittest.TestCase):
         self.assertAlmostEqual(payload["stage1_avg_execution_step_s"], 0.6)
         self.assertAlmostEqual(payload["stage1_avg_accounting_step_s"], 0.1)
         self.assertAlmostEqual(payload["stage1_terminated_early_rate"], 1.0)
+        self.assertEqual(payload["trial_replay_cache_hit_rate"], 1.0)
+        self.assertEqual(payload["replay_context_cache_hit_rate"], 1.0)
+        self.assertEqual(payload["stage1_cpu_hotspot_summary"]["dominant_step"], "execution")
+        self.assertAlmostEqual(payload["stage1_indicator_hotspot_summary"]["indicator_share_of_replay"], 0.1905, places=4)
+        self.assertEqual(
+            payload["stage1_indicator_hotspot_summary"]["dominant_indicator_layer"],
+            "core_execution_indicators_s",
+        )
+        self.assertTrue(payload["indicator_fast_path_enabled"])
+        self.assertFalse(payload["slow_enrichment_deferred"])
         self.assertEqual(payload["stage1_budget_mode"], "wall_clock_primary")
         self.assertEqual(payload["stage1_stop_reason"], "wall_clock_budget_reached")
 
@@ -409,6 +428,24 @@ class FrameworkCampaignTests(unittest.TestCase):
 
             def _fake_train_tuner(*_args, **kwargs):
                 captured_train_tuner.update(kwargs)
+                kwargs["status_callback"](
+                    event="rl_completed",
+                    completed_steps=6,
+                    actual_steps=6,
+                    requested_steps=12,
+                    total_steps=12,
+                    runtime_s=12.0,
+                    rl_budget_mode="wall_clock_primary",
+                    rl_wall_clock_elapsed_s=12.0,
+                    rl_stop_reason="wall_clock_budget_reached",
+                    rl_active_envs=3,
+                    rl_avg_episode_runtime_s=2.0,
+                    rl_cache_hit_rate=1.0,
+                    rl_avg_event_loop_s=0.0,
+                    rl_device="mps",
+                    rl_device_resolved_from="auto",
+                    rl_device_fallback_reason=None,
+                )
                 return {
                     "best_params": {"w_momentum": 0.3},
                     "best_score": 1.2,
@@ -445,6 +482,42 @@ class FrameworkCampaignTests(unittest.TestCase):
         self.assertEqual(captured_train_tuner["max_episodes"], 12)
         self.assertEqual(captured_train_tuner["seed_params"], {"w_momentum": 0.3})
         self.assertEqual(captured_train_tuner["base_config"].research_compute_mode, "lightweight_train_search")
+        self.assertEqual(payload["rl_device"], "mps")
+        self.assertEqual(payload["rl_device_resolved_from"], "auto")
+        self.assertIsNone(payload["rl_device_fallback_reason"])
+
+    def test_update_stage2_prepare_cache_metrics_tracks_hits_and_reuse(self) -> None:
+        state = {
+            "prepare_variant_cache_hits": 0,
+            "prepare_variant_replay_reused": 0,
+            "prepare_variant_cache_observations": 0,
+        }
+
+        CAMPAIGN._update_stage2_prepare_cache_metrics(
+            state,
+            event="stage2_prepare_variant_validation_progress",
+            unit_label="cache_hit:summary_cache",
+        )
+        CAMPAIGN._update_stage2_prepare_cache_metrics(
+            state,
+            event="stage2_prepare_variant_validation_progress",
+            unit_label="replay_reused:summary_cache",
+        )
+        CAMPAIGN._update_stage2_prepare_cache_metrics(
+            state,
+            event="stage2_prepare_variant_validation_progress",
+            unit_label="baseline_summary_started:lightweight",
+        )
+        CAMPAIGN._update_stage2_prepare_cache_metrics(
+            state,
+            event="stage2_prepare_variant_validation_progress",
+            unit_label="cache_miss:window_snapshot:dev",
+        )
+
+        self.assertEqual(state["prepare_variant_cache_hits"], 1)
+        self.assertEqual(state["prepare_variant_replay_reused"], 3)
+        self.assertEqual(state["prepare_variant_cache_observations"], 4)
+        self.assertEqual(state["prepare_variant_miss_reasons"], {"window_snapshot:dev": 1})
 
     def test_campaign_reads_seed_trials_file(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
