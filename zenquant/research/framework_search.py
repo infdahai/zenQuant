@@ -98,6 +98,30 @@ def _mvrv_source_metadata(macro_dir: Path) -> dict[str, Any]:
     }
 
 
+def _repo_root() -> Path:
+    return Path(__file__).resolve().parents[2]
+
+
+def _public_baseline_reference() -> dict[str, Any] | None:
+    path = _repo_root() / "results" / "paulwei_research" / "variant_comparison_review.json"
+    if not path.exists():
+        return None
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+    return (
+        payload.get("variant_window_summary", {})
+        .get("paulwei_public_archive_baseline")
+    )
+
+
+def _safe_metric(metrics: dict[str, Any] | None, key: str) -> float:
+    if not isinstance(metrics, dict):
+        return 0.0
+    return float(metrics.get(key, 0.0) or 0.0)
+
+
 def _admission_contract(source_name: str) -> dict[str, Any]:
     review = load_source_admission_review(source_name)
     if not review:
@@ -350,6 +374,10 @@ def _run_variant_backtest_snapshot(
         net_pnl=result.metrics.net_pnl,
         max_drawdown=result.metrics.max_drawdown,
         win_rate=result.metrics.win_rate,
+        sortino=getattr(result.metrics, "sortino", 0.0),
+        profit_factor=getattr(result.metrics, "profit_factor", 0.0),
+        turnover_per_day=getattr(result.metrics, "turnover_per_day", 0.0),
+        fee_drag_pct=getattr(result.metrics, "fee_drag_pct", 0.0),
     )
 
 
@@ -411,6 +439,17 @@ class CandidateSummary:
     blocked_by: str | None = None
     failed_gate_metrics: dict[str, bool] | None = None
     promotion_failure_reason: str | None = None
+    sortino: float = 0.0
+    profit_factor: float = 0.0
+    turnover_per_day: float = 0.0
+    fee_drag_pct: float = 0.0
+    baseline_gate_pass_current: bool = False
+    baseline_gate_pass_public: bool = False
+    gap_to_current: dict[str, float] | None = None
+    gap_to_paulwei_public: dict[str, float] | None = None
+    candidate_score: float = 0.0
+    weakest_window_penalty: float = 0.0
+    hostile_fragility_penalty: float = 0.0
 
 
 @dataclass(slots=True, frozen=True)
@@ -419,6 +458,10 @@ class BacktestSnapshot:
     net_pnl: float
     max_drawdown: float
     win_rate: float
+    sortino: float = 0.0
+    profit_factor: float = 0.0
+    turnover_per_day: float = 0.0
+    fee_drag_pct: float = 0.0
 
 
 @dataclass(slots=True)
@@ -492,7 +535,7 @@ def _best_tuned_candidate(report: SearchReport) -> CandidateSummary | None:
 
 def _hostile_regression_summary(report: SearchReport) -> dict[str, Any]:
     tuned = _best_tuned_candidate(report)
-    baseline = report.paulwei_baseline
+    baseline = report.current
     if tuned is None:
         return {
             "dev_primary_improved": False,
@@ -577,7 +620,7 @@ def _assess_full_training_readiness(
     signal_independence_contract = report.training_input_contract.get("signal_independence_contract", {})
     search_profile = report.search_status.get("search_space_profile") or {}
     direction_policy = search_profile.get("direction_weight_policy", {})
-    baseline = report.paulwei_baseline
+    baseline = report.current
     tuned = _best_tuned_candidate(report)
 
     system_failures: list[str] = []
@@ -731,7 +774,7 @@ def _classify_post_smoke_scenario(
 
 def _build_framework_diagnosis(report: SearchReport) -> dict[str, Any]:
     tuned = _best_tuned_candidate(report)
-    baseline = report.paulwei_baseline
+    baseline = report.current
     hostile_regression = _hostile_regression_summary(report)
     signal_audit = report.signal_audit_summary or {}
     summary = signal_audit.get("summary", {})
@@ -775,7 +818,7 @@ def _build_framework_diagnosis(report: SearchReport) -> dict[str, Any]:
             "category": "hostile_window_stability",
             "severity": "critical",
             "evidence": {
-                "paulwei_worst_dev_sharpe": baseline.worst_dev_sharpe,
+                "current_worst_dev_sharpe": baseline.worst_dev_sharpe,
                 "tuned_worst_dev_sharpe": tuned.worst_dev_sharpe if tuned is not None else None,
                 "tuned_negative_worst_windows": tuned.negative_dev_worst_windows if tuned is not None else None,
                 "dev_primary_improved": hostile_regression["dev_primary_improved"],
@@ -1052,6 +1095,7 @@ class FrameworkEvaluator:
             include_liquidation_toggles=self._readiness["promotion_ready"],
             mode=search_space_mode,
         )
+        self._public_baseline_reference = _public_baseline_reference()
         self._paulwei_fast_lightweight: CandidateSummary | None = None
         self._paulwei_fast_full: CandidateSummary | None = None
         self._current_fast: CandidateSummary | None = None
@@ -1502,10 +1546,10 @@ class FrameworkEvaluator:
                 worst_results.append(result)
             negative_worst_windows = sum(1 for result in worst_results if result.sharpe < 0)
             baseline = None
-            if variant.name != "paulwei_baseline":
+            if variant.name != "current":
                 if progress_callback is not None and lightweight:
                     progress_callback("baseline_summary_started", "lightweight")
-                baseline = self._get_paulwei_fast_summary(
+                baseline = self._get_current_fast_summary(
                     lightweight=lightweight,
                     progress_callback=(
                         (
@@ -1566,7 +1610,7 @@ class FrameworkEvaluator:
                 if (
                     dev_result.sharpe < baseline.dev_sharpe - 0.25
                     or negative_worst_windows > baseline.negative_dev_worst_windows
-                    or dev_result.max_drawdown > baseline.dev_drawdown + 0.04
+                    or dev_result.max_drawdown > baseline.dev_drawdown * 1.05
                 ):
                     summary = CandidateSummary(
                         variant=variant.name,
@@ -1586,6 +1630,10 @@ class FrameworkEvaluator:
                         blocked_by="pre_validation_rejection",
                         failed_gate_metrics=None,
                         promotion_failure_reason="pre_validation_rejection",
+                        sortino=getattr(dev_result, "sortino", 0.0),
+                        profit_factor=getattr(dev_result, "profit_factor", 0.0),
+                        turnover_per_day=getattr(dev_result, "turnover_per_day", 0.0),
+                        fee_drag_pct=getattr(dev_result, "fee_drag_pct", 0.0),
                     )
                     if progress_callback is not None:
                         progress_callback(4, "pre_validation_rejection")
@@ -1663,6 +1711,10 @@ class FrameworkEvaluator:
             overall_drawdown=dev_result.max_drawdown,
             negative_worst_windows=negative_worst_windows,
             baseline=baseline,
+            overall_sortino=getattr(dev_result, "sortino", 0.0),
+            overall_profit_factor=getattr(dev_result, "profit_factor", 0.0),
+            turnover_per_day=getattr(dev_result, "turnover_per_day", 0.0),
+            fee_drag_pct=getattr(dev_result, "fee_drag_pct", 0.0),
         )
         gate_metrics, failure_reason = _promotion_diagnostics(
             avg_test_sharpe=wf_metrics["avg_test_sharpe"],
@@ -1672,7 +1724,7 @@ class FrameworkEvaluator:
             baseline=baseline,
         )
         promote = all(gate_metrics.values())
-        summary = CandidateSummary(
+        provisional = CandidateSummary(
             variant=variant.name,
             robust_score=round(score, 4),
             selection_split="dev",
@@ -1688,11 +1740,43 @@ class FrameworkEvaluator:
             blocked_by=None,
             failed_gate_metrics=gate_metrics,
             promotion_failure_reason=failure_reason,
+            sortino=getattr(dev_result, "sortino", 0.0),
+            profit_factor=getattr(dev_result, "profit_factor", 0.0),
+            turnover_per_day=getattr(dev_result, "turnover_per_day", 0.0),
+            fee_drag_pct=getattr(dev_result, "fee_drag_pct", 0.0),
+        )
+        gap_to_current = _gap_to_candidate(provisional, baseline) if baseline is not None else None
+        gap_to_public = _gap_to_public_reference(provisional, self._public_baseline_reference)
+        weakest_window_penalty = round(max(0.0, (baseline.worst_dev_sharpe - provisional.worst_dev_sharpe) if baseline is not None else 0.0), 4)
+        hostile_fragility_penalty = round(
+            1.75 * weakest_window_penalty
+            + 1.10 * max(0, negative_worst_windows - (baseline.negative_dev_worst_windows if baseline is not None else 0)),
+            4,
+        )
+        summary = CandidateSummary(
+            **{
+                **asdict(provisional),
+                "baseline_gate_pass_current": _baseline_gate_current(provisional, baseline) if baseline is not None else True,
+                "baseline_gate_pass_public": _baseline_gate_public(
+                    provisional,
+                    baseline if baseline is not None else provisional,
+                    self._public_baseline_reference,
+                ),
+                "gap_to_current": gap_to_current,
+                "gap_to_paulwei_public": gap_to_public,
+                "candidate_score": round(score, 4),
+                "weakest_window_penalty": weakest_window_penalty,
+                "hostile_fragility_penalty": hostile_fragility_penalty,
+            }
         )
         if progress_callback is not None:
             if lightweight:
                 progress_callback("summary_scoring_completed", "lightweight")
             progress_callback(4, "lightweight_summary" if lightweight else "validation_bundle")
+        if lightweight and variant.name == "current":
+            self._current_fast = summary
+            if self._paulwei_fast_lightweight is None:
+                self._paulwei_fast_lightweight = summary
         self._summary_cache[cache_key] = summary
         return summary
 
@@ -1737,6 +1821,10 @@ class FrameworkEvaluator:
             net_pnl=result.metrics.net_pnl,
             max_drawdown=result.metrics.max_drawdown,
             win_rate=result.metrics.win_rate,
+            sortino=getattr(result.metrics, "sortino", 0.0),
+            profit_factor=getattr(result.metrics, "profit_factor", 0.0),
+            turnover_per_day=getattr(result.metrics, "turnover_per_day", 0.0),
+            fee_drag_pct=getattr(result.metrics, "fee_drag_pct", 0.0),
         )
         self._backtest_cache[key] = snapshot
         return snapshot
@@ -1795,6 +1883,36 @@ class FrameworkEvaluator:
             )
         return self._paulwei_fast_full
 
+    def _get_current_fast_summary(
+        self,
+        *,
+        lightweight: bool = False,
+        progress_callback: Any | None = None,
+    ) -> CandidateSummary:
+        if lightweight:
+            if self._current_fast is None:
+                self._current_fast = self._evaluate_variant(
+                    self._current_variant,
+                    fast=True,
+                    lightweight=True,
+                    progress_callback=progress_callback,
+                )
+            if self._paulwei_fast_lightweight is None:
+                self._paulwei_fast_lightweight = self._current_fast
+            return self._current_fast
+        if self._current_fast is not None and not lightweight:
+            return self._current_fast
+        if self._current_fast is None:
+            # Current and the frozen PaulWei baseline are currently identical in
+            # authoritative evaluation, so reuse the existing baseline summary
+            # until they diverge again. This preserves the hard gate target
+            # without forcing an extra cached replay path.
+            self._current_fast = self._get_paulwei_fast_summary(
+                lightweight=lightweight,
+                progress_callback=progress_callback,
+            )
+        return self._current_fast
+
     @staticmethod
     def _comparison_report_mode(
         *,
@@ -1828,6 +1946,10 @@ def _run_validation_bundle(
                 net_pnl=result.metrics.net_pnl,
                 max_drawdown=result.metrics.max_drawdown,
                 win_rate=result.metrics.win_rate,
+                sortino=getattr(result.metrics, "sortino", 0.0),
+                profit_factor=getattr(result.metrics, "profit_factor", 0.0),
+                turnover_per_day=getattr(result.metrics, "turnover_per_day", 0.0),
+                fee_drag_pct=getattr(result.metrics, "fee_drag_pct", 0.0),
             )
     else:
         run = run_backtest
@@ -1892,6 +2014,75 @@ def _run_validation_bundle(
     }
 
 
+def _gap_to_candidate(candidate: CandidateSummary, baseline: CandidateSummary) -> dict[str, float]:
+    return {
+        "dev_sharpe_gap": round(candidate.dev_sharpe - baseline.dev_sharpe, 4),
+        "worst_dev_sharpe_gap": round(candidate.worst_dev_sharpe - baseline.worst_dev_sharpe, 4),
+        "dev_drawdown_gap": round(candidate.dev_drawdown - baseline.dev_drawdown, 6),
+        "hostile_2023_08_gap": round(candidate.weak_window_sharpe - baseline.weak_window_sharpe, 4),
+        "hostile_2024_11_gap": round(candidate.worst_dev_sharpe - baseline.worst_dev_sharpe, 4),
+        "turnover_gap": round(candidate.turnover_per_day - baseline.turnover_per_day, 2),
+        "fee_drag_gap": round(candidate.fee_drag_pct - baseline.fee_drag_pct, 6),
+    }
+
+
+def _gap_to_public_reference(candidate: CandidateSummary, public_reference: dict[str, Any] | None) -> dict[str, float] | None:
+    if not isinstance(public_reference, dict):
+        return None
+    dev_metrics = public_reference.get("dev_metrics", {})
+    hostile_windows = public_reference.get("hostile_windows", {})
+    hostile_sharpes = [
+        _safe_metric(hostile_windows.get("2023-08"), "sharpe"),
+        _safe_metric(hostile_windows.get("2024-11 DD"), "sharpe"),
+    ]
+    hostile_bundle = sum(hostile_sharpes) / len([item for item in hostile_sharpes if item != 0.0]) if any(hostile_sharpes) else 0.0
+    candidate_hostile_bundle = (candidate.weak_window_sharpe + candidate.worst_dev_sharpe) / 2.0
+    return {
+        "dev_sharpe_gap": round(candidate.dev_sharpe - _safe_metric(dev_metrics, "sharpe"), 4),
+        "hostile_bundle_gap": round(candidate_hostile_bundle - hostile_bundle, 4),
+        "dev_drawdown_gap": round(candidate.dev_drawdown - _safe_metric(dev_metrics, "max_drawdown"), 6),
+        "turnover_gap": round(candidate.turnover_per_day - _safe_metric(dev_metrics, "turnover_per_day"), 2),
+        "fee_drag_gap": round(candidate.fee_drag_pct - _safe_metric(dev_metrics, "fee_drag_pct"), 6),
+    }
+
+
+def _baseline_gate_current(candidate: CandidateSummary, baseline: CandidateSummary, *, drawdown_hard_multiplier: float = 1.05) -> bool:
+    return (
+        candidate.worst_dev_sharpe >= baseline.worst_dev_sharpe
+        and candidate.negative_dev_worst_windows <= baseline.negative_dev_worst_windows
+        and candidate.dev_drawdown <= baseline.dev_drawdown * drawdown_hard_multiplier
+    )
+
+
+def _baseline_gate_public(
+    candidate: CandidateSummary,
+    current: CandidateSummary,
+    public_reference: dict[str, Any] | None,
+    *,
+    fee_drag_tolerance: float = 1.15,
+    turnover_tolerance: float = 1.20,
+) -> bool:
+    if not isinstance(public_reference, dict):
+        return False
+    dev_metrics = public_reference.get("dev_metrics", {})
+    hostile_regressed = bool(public_reference.get("hostile_window_regressed"))
+    return (
+        not hostile_regressed
+        and candidate.fee_drag_pct <= max(current.fee_drag_pct * fee_drag_tolerance, _safe_metric(dev_metrics, "fee_drag_pct"))
+        and candidate.turnover_per_day <= max(
+            current.turnover_per_day * turnover_tolerance,
+            _safe_metric(dev_metrics, "turnover_per_day"),
+        )
+        and candidate.dev_drawdown <= _safe_metric(dev_metrics, "max_drawdown")
+    )
+
+
+def _normalized_delta(delta: float, *, scale: float) -> float:
+    if scale <= 0:
+        return 0.0
+    return max(-1.0, min(1.0, delta / scale))
+
+
 def _candidate_score(
     *,
     avg_test_sharpe: float,
@@ -1903,23 +2094,57 @@ def _candidate_score(
     overall_drawdown: float,
     negative_worst_windows: int,
     baseline: CandidateSummary | None,
+    overall_sortino: float = 0.0,
+    overall_profit_factor: float = 0.0,
+    turnover_per_day: float = 0.0,
+    fee_drag_pct: float = 0.0,
 ) -> float:
     capped_oos_ratio = max(-1.0, min(2.0, avg_oos_ratio))
-    score = (
-        0.34 * avg_test_sharpe
-        + 0.28 * worst_test_sharpe
-        + 0.08 * capped_oos_ratio
-        + 0.05 * overall_sharpe
-        + 0.04 * weak_window_sharpe
-        + 0.01 * (overall_pnl / 1_000_000.0)
-        - 3.0 * max(0.0, overall_drawdown - 0.10)
-        - 1.25 * negative_worst_windows
+    if baseline is None:
+        return round(
+            0.35 * overall_sharpe
+            + 0.20 * worst_test_sharpe
+            + 0.10 * weak_window_sharpe
+            + 0.10 * overall_sortino
+            + 0.10 * overall_profit_factor
+            + 0.05 * capped_oos_ratio
+            + 0.01 * (overall_pnl / 1_000_000.0)
+            - 2.5 * overall_drawdown
+            - 1.25 * negative_worst_windows,
+            4,
+        )
+
+    hostile_window_sharpe_bundle = (weak_window_sharpe + worst_test_sharpe) / 2.0
+    baseline_hostile_bundle = (baseline.weak_window_sharpe + baseline.worst_dev_sharpe) / 2.0
+    drawdown_penalty = max(0.0, overall_drawdown - baseline.dev_drawdown)
+    turnover_penalty = max(0.0, turnover_per_day - baseline.turnover_per_day)
+    fee_drag_penalty = max(0.0, fee_drag_pct - baseline.fee_drag_pct)
+    weakest_window_penalty = max(0.0, baseline.worst_dev_sharpe - worst_test_sharpe)
+    hostile_fragility_penalty = (
+        1.75 * weakest_window_penalty
+        + 1.10 * max(0, negative_worst_windows - baseline.negative_dev_worst_windows)
     )
-    if baseline is not None:
-        score -= 10.0 * max(0.0, overall_drawdown - (baseline.dev_drawdown + 0.03))
-        score -= 4.5 * max(0.0, baseline.worst_dev_sharpe - worst_test_sharpe)
-        score -= 2.0 * max(0, negative_worst_windows - baseline.negative_dev_worst_windows)
-    return score
+
+    score = (
+        0.35 * _normalized_delta(overall_sharpe - baseline.dev_sharpe, scale=max(1.0, abs(baseline.dev_sharpe)))
+        + 0.25 * _normalized_delta(worst_test_sharpe - baseline.worst_dev_sharpe, scale=max(1.0, abs(baseline.worst_dev_sharpe)))
+        + 0.15 * _normalized_delta(
+            hostile_window_sharpe_bundle - baseline_hostile_bundle,
+            scale=max(1.0, abs(baseline_hostile_bundle)),
+        )
+        + 0.10 * _normalized_delta(overall_sortino - baseline.sortino, scale=max(1.0, abs(baseline.sortino)))
+        + 0.10 * _normalized_delta(
+            overall_profit_factor - baseline.profit_factor,
+            scale=max(1.0, abs(baseline.profit_factor)),
+        )
+        + 0.05 * capped_oos_ratio
+        + 0.01 * (overall_pnl / 1_000_000.0)
+        - 0.20 * _normalized_delta(drawdown_penalty, scale=max(0.01, baseline.dev_drawdown))
+        - 0.10 * _normalized_delta(turnover_penalty, scale=max(1.0, baseline.turnover_per_day))
+        - 0.10 * _normalized_delta(fee_drag_penalty, scale=max(0.001, baseline.fee_drag_pct))
+        - hostile_fragility_penalty
+    )
+    return round(score, 4)
 
 
 def _promotion_diagnostics(
@@ -1941,8 +2166,8 @@ def _promotion_diagnostics(
     gate_metrics = {
         "avg_test_sharpe": avg_test_sharpe >= baseline.avg_dev_sharpe,
         "worst_test_sharpe": worst_test_sharpe >= baseline.worst_dev_sharpe,
-        "overall_drawdown": overall_drawdown <= baseline.dev_drawdown + 0.03,
-        "drawdown_preferred_band": overall_drawdown <= baseline.dev_drawdown + 0.03,
+        "overall_drawdown": overall_drawdown <= baseline.dev_drawdown * 1.05,
+        "drawdown_preferred_band": overall_drawdown <= baseline.dev_drawdown * 1.05,
         "negative_worst_windows": negative_worst_windows <= baseline.negative_dev_worst_windows,
     }
     for key in ("worst_test_sharpe", "overall_drawdown", "negative_worst_windows", "avg_test_sharpe"):
@@ -2458,11 +2683,12 @@ def write_search_report(path: Path, report: SearchReport) -> None:
     ]
     comparison_to_current = None
     comparison_to_paulwei = None
+    comparison_to_public = None
     if best_summary is not None:
         comparison_to_current = {
             "variant": best_summary.variant,
-            "drawdown_within_hard_cap": best_summary.dev_drawdown <= report.current.dev_drawdown + 0.03,
-            "drawdown_within_preferred_band": best_summary.dev_drawdown <= report.current.dev_drawdown + 0.03,
+            "drawdown_within_hard_cap": best_summary.dev_drawdown <= report.current.dev_drawdown * 1.05,
+            "drawdown_within_preferred_band": best_summary.dev_drawdown <= report.current.dev_drawdown * 1.05,
             "worst_dev_sharpe_not_worse": best_summary.worst_dev_sharpe >= report.current.worst_dev_sharpe,
             "negative_worst_windows_not_worse": (
                 best_summary.negative_dev_worst_windows <= report.current.negative_dev_worst_windows
@@ -2479,6 +2705,12 @@ def write_search_report(path: Path, report: SearchReport) -> None:
                 best_summary.negative_dev_worst_windows <= report.paulwei_baseline.negative_dev_worst_windows
             ),
         }
+        if best_summary.gap_to_paulwei_public is not None:
+            comparison_to_public = {
+                "variant": best_summary.variant,
+                "baseline_gate_pass_public": best_summary.baseline_gate_pass_public,
+                "gap_to_paulwei_public": best_summary.gap_to_paulwei_public,
+            }
     verdict_kind = "blocked_by_data_readiness" if payload["readiness"]["blocked_by"] else "promote_candidate_found"
     if best_summary is not None and not best_summary.promotion_candidate:
         verdict_kind = (
@@ -2529,9 +2761,17 @@ def write_search_report(path: Path, report: SearchReport) -> None:
         "candidate_generation_failure_driver": no_tuned_candidate_reason if report.optuna_best is None and report.rl_best is None else None,
         "comparison_to_current": comparison_to_current,
         "comparison_to_paulwei_baseline": comparison_to_paulwei,
+        "comparison_to_paulwei_public": comparison_to_public,
         "dev_primary_improved": hostile_regression["dev_primary_improved"],
         "hostile_window_regressed": hostile_regression["hostile_window_regressed"],
         "hostile_regression_driver": hostile_regression["hostile_regression_driver"],
+        "baseline_gate_pass_current": best_summary.baseline_gate_pass_current if best_summary else False,
+        "baseline_gate_pass_public": best_summary.baseline_gate_pass_public if best_summary else False,
+        "gap_to_current": best_summary.gap_to_current if best_summary else None,
+        "gap_to_paulwei_public": best_summary.gap_to_paulwei_public if best_summary else None,
+        "candidate_score": best_summary.candidate_score if best_summary else None,
+        "weakest_window_penalty": best_summary.weakest_window_penalty if best_summary else None,
+        "hostile_fragility_penalty": best_summary.hostile_fragility_penalty if best_summary else None,
         "next_data_priority": (
             "liquidation_history"
             if not payload["readiness"]["promotion_ready"]

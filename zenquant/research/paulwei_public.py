@@ -967,6 +967,12 @@ def build_variant_comparison_review(
         "baseline_family": ["current", "paulwei_baseline", "paulwei_public_archive_baseline"],
         "window_set": [item.get("label") for item in comparison_payload.get("windows", [])],
         "variant_window_summary": summary,
+        "baseline_tiers": {
+            "gate_baseline": "current",
+            "compat_baseline": "paulwei_baseline",
+            "stretch_baseline": "paulwei_public_archive_baseline",
+            "current_and_legacy_same_tier": current_dev == legacy_dev,
+        },
         "pk_summary": {
             "public_vs_current": {
                 "dev_sharpe_delta": round(
@@ -996,6 +1002,8 @@ def build_variant_comparison_review(
             "mapping_confidence": mapping.get("mapping_confidence"),
         },
         "recommendation": {
+            "gate_baseline": "current",
+            "stretch_baseline": "paulwei_public_archive_baseline",
             "best_research_baseline": "paulwei_public_archive_baseline"
             if float(public_dev.get("sharpe", 0.0) or 0.0) > float(legacy_dev.get("sharpe", 0.0) or 0.0)
             else "paulwei_baseline",
