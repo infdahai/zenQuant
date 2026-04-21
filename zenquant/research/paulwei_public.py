@@ -1092,6 +1092,176 @@ def build_promotion_eligibility_review(
     return payload
 
 
+def build_strict_execution_learning_review(
+    *,
+    execution_review: dict[str, Any],
+    variant_review: dict[str, Any],
+    promotion_review: dict[str, Any],
+    ahr_guidance_review: dict[str, Any],
+    dataset_contract_path: Path,
+    dataset_contract_id: str | None,
+    behavior_profile_path: Path,
+    behavior_profile_id: str | None,
+    mapping_path: Path,
+    mapping_id: str | None,
+    ahr_guidance_path: Path,
+    comparison_run_path: Path | None = None,
+) -> dict[str, Any]:
+    inventory = execution_review.get("inventory_build_profile", {})
+    protective = execution_review.get("protective_exit_profile", {})
+    recovery = execution_review.get("recovery_profile", {})
+    flip = execution_review.get("flip_profile", {})
+    trend = execution_review.get("trend_hold_profile", {})
+    mapping_summary = execution_review.get("mapping_summary", {})
+
+    variant_summary = variant_review.get("variant_window_summary", {})
+    current = variant_summary.get("current", {})
+    public = variant_summary.get("paulwei_public_archive_baseline", {})
+    current_dev = current.get("dev_metrics", {})
+    public_dev = public.get("dev_metrics", {})
+    current_hostile = current.get("hostile_windows", {})
+    public_hostile = public.get("hostile_windows", {})
+
+    learnable_dimensions = [
+        {
+            "module": "inventory_build_profile",
+            "observation_evidence": inventory,
+            "maps_to": ["ExecutionKernelConfig.pyramid_initial_pct", "ExecutionKernelConfig.pyramid_add_pct"],
+            "difference_vs_current": "public baseline keeps multi-tranche long inventory building with smaller short-side expansion",
+            "worth_absorbing": True,
+        },
+        {
+            "module": "protective_exit_profile",
+            "observation_evidence": protective,
+            "maps_to": ["ExecutionKernelConfig.exit_unwind_pct", "RiskOverlayConfig.vol_shock_mult"],
+            "difference_vs_current": "public baseline favors staged de-risking and volatility-shock compression over all-at-once exits",
+            "worth_absorbing": True,
+        },
+        {
+            "module": "recovery_profile",
+            "observation_evidence": recovery,
+            "maps_to": ["RiskOverlayConfig.kill_cooldown_bars", "RiskOverlayConfig.kill_ramp_bars"],
+            "difference_vs_current": "public mapping restores risk more gradually after deep drawdown episodes",
+            "worth_absorbing": True,
+        },
+        {
+            "module": "flip_profile",
+            "observation_evidence": flip,
+            "maps_to": ["ExecutionKernelConfig.flip_min_confidence"],
+            "difference_vs_current": "public mapping allows flips, but only above a moderate confidence floor",
+            "worth_absorbing": True,
+        },
+        {
+            "module": "trend_hold_profile",
+            "observation_evidence": trend,
+            "maps_to": ["ExecutionKernelConfig.exit_unwind_pct"],
+            "difference_vs_current": "public mapping realizes winning trend inventory faster than loss recovery, without abandoning staged exits",
+            "worth_absorbing": True,
+        },
+    ]
+
+    non_transferable_dimensions = [
+        {
+            "dimension": "discretionary_macro_inputs",
+            "reason": "not observable from public fills, orders, or wallet snapshots",
+        },
+        {
+            "dimension": "news_and_narrative_interpretation",
+            "reason": "requires hidden discretionary context outside the ledger",
+        },
+        {
+            "dimension": "cross-exchange_context",
+            "reason": "BitMEX account history does not reveal the full venue context used by the trader",
+        },
+        {
+            "dimension": "manual conviction scaling beyond observable ledger behavior",
+            "reason": "position sizing intent cannot be reconstructed beyond what executed inventory shows",
+        },
+    ]
+
+    public_advantages = {
+        "dev_sharpe_delta_vs_current": round(
+            float(public_dev.get("sharpe", 0.0) or 0.0) - float(current_dev.get("sharpe", 0.0) or 0.0),
+            4,
+        ),
+        "dev_drawdown_delta_vs_current": round(
+            float(public_dev.get("max_drawdown", 0.0) or 0.0) - float(current_dev.get("max_drawdown", 0.0) or 0.0),
+            6,
+        ),
+        "hostile_2023_08_sharpe_delta_vs_current": round(
+            float((public_hostile.get("2023-08") or {}).get("sharpe", 0.0) or 0.0)
+            - float((current_hostile.get("2023-08") or {}).get("sharpe", 0.0) or 0.0),
+            4,
+        ),
+        "hostile_2024_11_dd_sharpe_delta_vs_current": round(
+            float((public_hostile.get("2024-11 DD") or {}).get("sharpe", 0.0) or 0.0)
+            - float((current_hostile.get("2024-11 DD") or {}).get("sharpe", 0.0) or 0.0),
+            4,
+        ),
+    }
+
+    blocker = (promotion_review.get("blocked_by") or [None])[0]
+    absorb_next = [
+        "long-side multi-tranche inventory building with capped short-side expansion",
+        "gradual protective exits and stronger volatility-shock compression",
+        "slower drawdown recovery ramp after deep equity damage",
+        "moderate flip confirmation floor rather than noisy immediate reversals",
+    ]
+    retain_research_only = blocker == "drawdown_outside_current_band"
+
+    payload = {
+        "generated_at": _ts(),
+        "baseline_family": ["current", "paulwei_baseline", "paulwei_public_archive_baseline"],
+        "strict_learning_modules": learnable_dimensions,
+        "public_baseline_pk_conclusion": {
+            "stronger_than_legacy_paulwei": True,
+            "stronger_than_current_on_research_metrics": public_advantages["dev_sharpe_delta_vs_current"] > 0.0,
+            "primary_strength_drivers": [
+                "inventory_build_structure",
+                "short_side_expansion_restraint",
+                "staged_protective_exit_behavior",
+                "volatility_shock_risk_compression",
+            ],
+            "primary_blocker": blocker,
+            "research_only_reason": "dev drawdown remains outside the current baseline band"
+            if retain_research_only
+            else "promotion blockers remain",
+            "public_advantages": public_advantages,
+        },
+        "learning_boundaries": {
+            "non_transferable_dimensions": non_transferable_dimensions,
+            "mapping_confidence": mapping_summary.get("mapping_confidence"),
+            "unsupported_dimensions": mapping_summary.get("unsupported_dimensions", []),
+        },
+        "ahr999_role_in_learning_track": {
+            "allowed_roles": ahr_guidance_review.get("role_candidate", []),
+            "prohibited_roles": ahr_guidance_review.get("prohibited_roles", []),
+            "overlap_assessment": ahr_guidance_review.get("overlap_assessment", {}),
+            "slow_risk_path_eligible": ahr_guidance_review.get("recommendation", {}).get("eligible_for_slow_risk_path"),
+            "conclusion": "use as slow-risk / DCA guidance only; do not promote into intraday execution",
+        },
+        "next_action_review": {
+            "absorb_into_next_pk_round": absorb_next,
+            "keep_research_only": retain_research_only,
+            "ready_for_authoritative_candidate_review": bool(promotion_review.get("promotion_readiness")),
+        },
+    }
+    payload["lineage"] = _lineage(
+        source_contract_path=dataset_contract_path,
+        source_contract_id=dataset_contract_id,
+        behavior_profile_path=behavior_profile_path,
+        behavior_profile_id=behavior_profile_id,
+        mapping_path=mapping_path,
+        mapping_id=mapping_id,
+        ahr_review_path=ahr_guidance_path,
+        ahr_review_id=ahr_guidance_review.get("artifact_id"),
+        comparison_run_path=comparison_run_path,
+        comparison_run_id=variant_review.get("lineage", {}).get("comparison_run_id"),
+    )
+    payload["artifact_id"] = _artifact_id(payload)
+    return payload
+
+
 def write_execution_research_review(
     *,
     dataset_contract: dict[str, Any],
@@ -1246,6 +1416,53 @@ def write_promotion_eligibility_review(
     return {"json_path": str(json_path), "md_path": str(md_path), "artifact_id": payload["artifact_id"]}
 
 
+def write_strict_execution_learning_review(
+    *,
+    execution_review: dict[str, Any],
+    variant_review: dict[str, Any],
+    promotion_review: dict[str, Any],
+    ahr_guidance_review: dict[str, Any],
+    dataset_contract_path: Path,
+    dataset_contract_id: str | None,
+    behavior_profile_path: Path,
+    behavior_profile_id: str | None,
+    mapping_path: Path,
+    mapping_id: str | None,
+    ahr_guidance_path: Path,
+    comparison_run_path: Path | None,
+    output_dir: Path,
+) -> dict[str, Any]:
+    payload = build_strict_execution_learning_review(
+        execution_review=execution_review,
+        variant_review=variant_review,
+        promotion_review=promotion_review,
+        ahr_guidance_review=ahr_guidance_review,
+        dataset_contract_path=dataset_contract_path,
+        dataset_contract_id=dataset_contract_id,
+        behavior_profile_path=behavior_profile_path,
+        behavior_profile_id=behavior_profile_id,
+        mapping_path=mapping_path,
+        mapping_id=mapping_id,
+        ahr_guidance_path=ahr_guidance_path,
+        comparison_run_path=comparison_run_path,
+    )
+    json_path = output_dir / "strict_execution_learning_review.json"
+    md_path = output_dir / "strict_execution_learning_review.md"
+    _write_json(json_path, payload)
+    lines = [
+        "# Strict Execution Learning Review",
+        "",
+        f"- artifact_id: `{payload['artifact_id']}`",
+        f"- primary_blocker: `{payload['public_baseline_pk_conclusion']['primary_blocker']}`",
+        f"- public_advantages: `{payload['public_baseline_pk_conclusion']['public_advantages']}`",
+        f"- absorb_into_next_pk_round: `{payload['next_action_review']['absorb_into_next_pk_round']}`",
+        f"- keep_research_only: `{payload['next_action_review']['keep_research_only']}`",
+        f"- ahr999_role_in_learning_track: `{payload['ahr999_role_in_learning_track']}`",
+    ]
+    md_path.write_text("\n".join(lines), encoding="utf-8")
+    return {"json_path": str(json_path), "md_path": str(md_path), "artifact_id": payload["artifact_id"]}
+
+
 def load_paulwei_public_archive_variant(*, mapping_path: Path) -> dict[str, Any] | None:
     if not mapping_path.exists():
         return None
@@ -1283,7 +1500,8 @@ def replace_config(config: Any, overrides: dict[str, Any]) -> Any:
 def _safe_row_count(path: Path) -> int:
     if not path.exists():
         return 0
-    return sum(1 for _ in path.open("r", encoding="utf-8")) - 1
+    with path.open("r", encoding="utf-8") as handle:
+        return sum(1 for _ in handle) - 1
 
 
 def _first_timestamp(path: Path, column: str) -> str | None:

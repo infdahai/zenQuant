@@ -18,6 +18,7 @@ from zenquant.research.paulwei_public import (
     write_execution_research_review,
     write_paulwei_dataset_contract,
     write_promotion_eligibility_review,
+    write_strict_execution_learning_review,
     write_variant_comparison_review,
 )
 from zenquant.research.splits import default_btc_split_spec
@@ -69,6 +70,7 @@ def main() -> None:
 
     comparison_info = None
     promotion_info = None
+    strict_learning_info = None
     if not args.skip_compare:
         comparison_payload = compare_variants(
             HistoricalBacktestConfig(
@@ -107,6 +109,21 @@ def main() -> None:
             comparison_run_path=comparison_payload_path,
             output_dir=args.output_dir,
         )
+        strict_learning_info = write_strict_execution_learning_review(
+            execution_review=_read_json(args.output_dir / "execution_research_review.json"),
+            variant_review=_read_json(args.output_dir / "variant_comparison_review.json"),
+            promotion_review=_read_json(args.output_dir / "promotion_eligibility_review.json"),
+            ahr_guidance_review=_read_json(args.output_dir / "ahr999_execution_guidance_review.json"),
+            dataset_contract_path=args.output_dir / "paulwei_dataset_contract.json",
+            dataset_contract_id=contract.get("artifact_id"),
+            behavior_profile_path=args.output_dir / "behavior_profile.json",
+            behavior_profile_id=behavior.get("artifact_id"),
+            mapping_path=args.output_dir / "baseline_mapping.json",
+            mapping_id=mapping.get("artifact_id"),
+            ahr_guidance_path=args.output_dir / "ahr999_execution_guidance_review.json",
+            comparison_run_path=comparison_payload_path,
+            output_dir=args.output_dir,
+        )
 
     print(
         json.dumps(
@@ -119,6 +136,7 @@ def main() -> None:
                 "ahr999_execution_guidance_review": ahr_guidance,
                 "variant_comparison_review": comparison_info,
                 "promotion_eligibility_review": promotion_info,
+                "strict_execution_learning_review": strict_learning_info,
             },
             indent=2,
         )
