@@ -618,6 +618,57 @@ class SearchReportSerializationTests(unittest.TestCase):
         )
         self.assertLess(abs(absurd_ratio - normal_ratio), 0.2)
 
+    def test_candidate_score_penalizes_turnover_and_fee_drag(self) -> None:
+        baseline = CandidateSummary(
+            variant="baseline",
+            robust_score=1.0,
+            selection_split="dev",
+            dev_sharpe=2.0,
+            dev_pnl=100.0,
+            dev_drawdown=0.10,
+            avg_dev_sharpe=2.0,
+            avg_dev_ratio=1.0,
+            worst_dev_sharpe=1.0,
+            weak_window_sharpe=1.0,
+            negative_dev_worst_windows=0,
+            promotion_candidate=True,
+            sortino=2.5,
+            profit_factor=1.5,
+            turnover_per_day=1000.0,
+            fee_drag_pct=0.01,
+        )
+        cleaner = _candidate_score(
+            avg_test_sharpe=2.1,
+            worst_test_sharpe=1.1,
+            avg_oos_ratio=1.0,
+            overall_sharpe=2.05,
+            overall_pnl=200_000.0,
+            weak_window_sharpe=1.0,
+            overall_drawdown=0.10,
+            negative_worst_windows=0,
+            baseline=baseline,
+            overall_sortino=2.6,
+            overall_profit_factor=1.6,
+            turnover_per_day=1050.0,
+            fee_drag_pct=0.012,
+        )
+        expensive = _candidate_score(
+            avg_test_sharpe=2.1,
+            worst_test_sharpe=1.1,
+            avg_oos_ratio=1.0,
+            overall_sharpe=2.05,
+            overall_pnl=200_000.0,
+            weak_window_sharpe=1.0,
+            overall_drawdown=0.10,
+            negative_worst_windows=0,
+            baseline=baseline,
+            overall_sortino=2.6,
+            overall_profit_factor=1.6,
+            turnover_per_day=2500.0,
+            fee_drag_pct=0.05,
+        )
+        self.assertGreater(cleaner, expensive)
+
     def test_post_smoke_scenario_classifies_hostile_window_failure(self) -> None:
         report = SearchReport(
             created_at="2026-04-10T00:00:00+00:00",
@@ -1141,7 +1192,13 @@ class SearchReportSerializationTests(unittest.TestCase):
         self.assertIn("promotion_failure_reason", payload["final_verdict"])
         self.assertIn("search_space_profile", payload["final_verdict"])
         self.assertIn("comparison_to_paulwei_baseline", payload["final_verdict"])
+        self.assertIn("comparison_to_paulwei_public", payload["final_verdict"])
         self.assertIn("full_training_ready", payload["final_verdict"])
+        self.assertIn("baseline_gate_pass_current", payload["final_verdict"])
+        self.assertIn("gap_to_current", payload["final_verdict"])
+        self.assertIn("candidate_score", payload["final_verdict"])
+        self.assertIn("weakest_window_penalty", payload["final_verdict"])
+        self.assertIn("hostile_fragility_penalty", payload["final_verdict"])
         self.assertEqual(payload["final_verdict"]["etf_flow_source"], "bitbo_etf_flows")
         self.assertEqual(payload["campaign_execution_contract"]["etf_flow_source_confidence"], "medium")
         self.assertEqual(payload["final_verdict"]["historical_extension_mode"], "layered_spot_then_futures")

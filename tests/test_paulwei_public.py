@@ -283,4 +283,7 @@ class PaulWeiPublicResearchTests(unittest.TestCase):
                 variant_review["recommendation"]["best_research_baseline"],
                 "paulwei_public_archive_baseline",
             )
+            self.assertEqual(variant_review["baseline_tiers"]["gate_baseline"], "current")
+            self.assertEqual(variant_review["baseline_tiers"]["stretch_baseline"], "paulwei_public_archive_baseline")
+            self.assertTrue(variant_review["baseline_tiers"]["current_and_legacy_same_tier"])
             self.assertTrue(promotion_review["promotion_readiness"])
