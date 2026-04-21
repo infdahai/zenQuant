@@ -423,6 +423,16 @@ def _run_backtest_worker(args: tuple[Any, ...]) -> tuple[dict[str, Any], dict[st
         "accounting_step_total_s": round(float(result.profiling.get("accounting_step_total_s", 0.0) or 0.0), 6),
         "metrics_finalize_s": round(float(result.profiling.get("metrics_finalize_s", 0.0) or 0.0), 6),
         "diagnostics_finalize_s": round(float(result.profiling.get("diagnostics_finalize_s", 0.0) or 0.0), 6),
+        "indicator_layer_timing": dict(result.profiling.get("indicator_layer_timing", {}) or {}),
+        "indicator_fast_path_enabled": bool(result.profiling.get("indicator_fast_path_enabled", False)),
+        "slow_enrichment_deferred": bool(result.profiling.get("slow_enrichment_deferred", False)),
+        "replay_context_cache_hit_rate": round(1.0 if cache_hit else 0.0, 6),
+        "raw_source_rows_cache_hit_rate": round(
+            float(result.profiling.get("raw_source_rows_cache_hit_rate", 0.0) or 0.0),
+            6,
+        ),
+        "event_list_cache_hit_rate": round(float(result.profiling.get("event_list_cache_hit_rate", 0.0) or 0.0), 6),
+        "store_cache_hit_rate": round(float(result.profiling.get("store_cache_hit_rate", 0.0) or 0.0), 6),
         "terminated_early": 1.0 if result.terminated_early else 0.0,
         "processed_event_ratio": round(float(result.processed_event_ratio or 0.0), 6),
     }

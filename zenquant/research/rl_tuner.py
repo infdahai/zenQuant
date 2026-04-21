@@ -25,6 +25,27 @@ from zenquant.strategy import ARCStrategyConfig
 class RLBudgetReached(RuntimeError):
     """Internal control signal used to stop SB3 exactly at the requested budget."""
 
+
+def _resolve_torch_device(device_preference: str = "auto") -> tuple[str, str, bool, str | None]:
+    preference = str(device_preference or "auto").lower()
+    if preference not in {"auto", "mps", "cpu"}:
+        raise ValueError(f"Unsupported RL device preference: {device_preference}")
+    try:
+        import torch
+    except Exception:
+        return "cpu", preference, False, "torch_unavailable"
+
+    mps_allowed = bool(torch.backends.mps.is_built() and torch.backends.mps.is_available())
+    if preference == "cpu":
+        return "cpu", preference, mps_allowed, None
+    if preference == "mps":
+        if mps_allowed:
+            return "mps", preference, True, None
+        return "cpu", preference, False, "mps_unavailable"
+    if mps_allowed:
+        return "mps", preference, True, None
+    return "cpu", preference, False, "mps_unavailable"
+
 PARAM_GRID = {
     "dd_step_1_long": [0.10, 0.15, 0.20],
     "dd_step_1_short": [0.05, 0.08, 0.12],
@@ -374,6 +395,7 @@ def train_tuner(
     max_episodes: int | None = None,
     n_envs: int = 1,
     seed_params: dict[str, float] | None = None,
+    device_preference: str = "auto",
 ) -> dict[str, Any]:
     """Train RL candidate explorer and return a train-ranked candidate summary."""
     from stable_baselines3 import PPO
@@ -396,6 +418,7 @@ def train_tuner(
     )
     resolved_max_episodes = int(max_episodes or total_timesteps)
     resolved_n_envs = max(1, int(n_envs))
+    resolved_device, resolved_from, mps_allowed, fallback_reason = _resolve_torch_device(device_preference)
     manager = Manager()
     shared_results = manager.list()
 
@@ -426,6 +449,10 @@ def train_tuner(
                     rl_budget_mode=resolved_budget_mode,
                     rl_wall_clock_elapsed_s=time.time() - started_at,
                     rl_active_envs=resolved_n_envs,
+                    rl_device=resolved_device,
+                    rl_device_resolved_from=resolved_from,
+                    rl_device_fallback_reason=fallback_reason,
+                    mps_allowed=mps_allowed,
                 )
             if resolved_wall_clock_budget_s is not None and (time.time() - started_at) > resolved_wall_clock_budget_s:
                 raise RLBudgetReached("wall_clock_budget_reached")
@@ -433,15 +460,34 @@ def train_tuner(
                 raise RLBudgetReached("episode_budget_reached")
             return True
 
-    model = PPO(
-        "MlpPolicy",
-        env,
-        verbose=verbose,
-        n_steps=8,
-        batch_size=max(4, 4 * resolved_n_envs),
-        n_epochs=2,
-        learning_rate=3e-4,
-    )
+    try:
+        model = PPO(
+            "MlpPolicy",
+            env,
+            verbose=verbose,
+            n_steps=8,
+            batch_size=max(4, 4 * resolved_n_envs),
+            n_epochs=2,
+            learning_rate=3e-4,
+            device=resolved_device,
+        )
+    except Exception as exc:
+        if resolved_device != "mps":
+            env.close()
+            manager.shutdown()
+            raise
+        fallback_reason = f"mps_init_error:{exc.__class__.__name__}"
+        resolved_device = "cpu"
+        model = PPO(
+            "MlpPolicy",
+            env,
+            verbose=verbose,
+            n_steps=8,
+            batch_size=max(4, 4 * resolved_n_envs),
+            n_epochs=2,
+            learning_rate=3e-4,
+            device=resolved_device,
+        )
     stop_reason = "completed"
     try:
         model.learn(total_timesteps=max(total_timesteps, resolved_max_episodes * resolved_n_envs), callback=_ProgressCallback())
@@ -477,6 +523,10 @@ def train_tuner(
                 "wall_clock_elapsed_s": round(time.time() - started_at, 4),
                 "stop_reason": stop_reason,
                 "active_envs": resolved_n_envs,
+                "rl_device": resolved_device,
+                "rl_device_resolved_from": resolved_from,
+                "rl_device_fallback_reason": fallback_reason,
+                "mps_allowed": mps_allowed,
                 "train_only_search": True,
                 "dev_only_ranking": False,
                 "dev_diagnostics_only": True,
@@ -515,6 +565,10 @@ def train_tuner(
             rl_avg_episode_runtime_s=avg_episode_runtime_s,
             rl_cache_hit_rate=1.0 if resolved_base.research_compute_mode == "lightweight_train_search" else 0.0,
             rl_avg_event_loop_s=0.0,
+            rl_device=resolved_device,
+            rl_device_resolved_from=resolved_from,
+            rl_device_fallback_reason=fallback_reason,
+            mps_allowed=mps_allowed,
         )
     return {
         "best_params": best_train.params,
@@ -539,6 +593,10 @@ def train_tuner(
             "stop_reason": stop_reason,
             "active_envs": resolved_n_envs,
             "avg_episode_runtime_s": avg_episode_runtime_s,
+            "rl_device": resolved_device,
+            "rl_device_resolved_from": resolved_from,
+            "rl_device_fallback_reason": fallback_reason,
+            "mps_allowed": mps_allowed,
             "train_only_search": True,
             "dev_only_ranking": False,
             "dev_diagnostics_only": True,

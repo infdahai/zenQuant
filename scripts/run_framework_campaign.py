@@ -165,6 +165,18 @@ def _initialize_running_status(
         "rl_avg_episode_runtime_s": 0.0,
         "rl_cache_hit_rate": 0.0,
         "rl_avg_event_loop_s": 0.0,
+        "rl_device": None,
+        "rl_device_resolved_from": None,
+        "rl_device_fallback_reason": None,
+        "stage1_cpu_hotspot_summary": None,
+        "stage1_indicator_hotspot_summary": None,
+        "trial_replay_cache_hit_rate": 0.0,
+        "replay_context_cache_hit_rate": 0.0,
+        "window_snapshot_cache_hit_rate": 0.0,
+        "validation_cache_hit_rate": 0.0,
+        "stage2_prepare_variant_cache_hits": 0,
+        "stage2_prepare_variant_replay_reused": 0,
+        "stage2_prepare_variant_miss_reasons": {},
         "stage1_last_progress_at": None,
         "stage1_last_completed_unit": None,
         "stage1_failure_reason": None,
@@ -272,6 +284,61 @@ def _state_data_confidence(
     if ready_count >= 2:
         return "partial"
     return "minimal"
+
+
+def _stage1_cpu_hotspot_summary(stage1_state: dict[str, Any], *, timing_count: int) -> dict[str, Any] | None:
+    if timing_count <= 0:
+        return None
+    step_avgs = {
+        "indicator": float(stage1_state.get("indicator_step_sum_s", 0.0) or 0.0) / timing_count,
+        "strategy": float(stage1_state.get("strategy_step_sum_s", 0.0) or 0.0) / timing_count,
+        "risk": float(stage1_state.get("risk_step_sum_s", 0.0) or 0.0) / timing_count,
+        "execution": float(stage1_state.get("execution_step_sum_s", 0.0) or 0.0) / timing_count,
+        "accounting": float(stage1_state.get("accounting_step_sum_s", 0.0) or 0.0) / timing_count,
+    }
+    dominant_step, dominant_avg = max(step_avgs.items(), key=lambda item: item[1])
+    replay_avg = float(stage1_state.get("replay_run_sum_s", 0.0) or 0.0) / timing_count
+    return {
+        "dominant_step": dominant_step,
+        "dominant_step_avg_s": round(dominant_avg, 4),
+        "replay_run_avg_s": round(replay_avg, 4),
+        "dominant_step_share_of_replay": round((dominant_avg / replay_avg) if replay_avg > 0 else 0.0, 4),
+    }
+
+
+def _stage1_indicator_hotspot_summary(stage1_state: dict[str, Any], *, timing_count: int) -> dict[str, Any] | None:
+    if timing_count <= 0:
+        return None
+    indicator_avg = float(stage1_state.get("indicator_step_sum_s", 0.0) or 0.0) / timing_count
+    replay_avg = float(stage1_state.get("replay_run_sum_s", 0.0) or 0.0) / timing_count
+    summary = {
+        "indicator_step_avg_s": round(indicator_avg, 4),
+        "replay_run_avg_s": round(replay_avg, 4),
+        "indicator_share_of_replay": round((indicator_avg / replay_avg) if replay_avg > 0 else 0.0, 4),
+    }
+    layer_totals = dict(stage1_state.get("indicator_layer_timing_totals") or {})
+    if layer_totals:
+        dominant_layer, dominant_total = max(layer_totals.items(), key=lambda item: float(item[1] or 0.0))
+        summary["dominant_indicator_layer"] = dominant_layer
+        summary["dominant_indicator_layer_avg_s"] = round(float(dominant_total or 0.0) / timing_count, 4)
+    return summary
+
+
+def _update_stage2_prepare_cache_metrics(stage2_state: dict[str, Any], *, event: str, unit_label: str) -> None:
+    if event != "stage2_prepare_variant_validation_progress":
+        return
+    stage2_state["prepare_variant_cache_observations"] = int(
+        stage2_state.get("prepare_variant_cache_observations", 0) or 0
+    ) + 1
+    if unit_label.startswith("cache_hit:"):
+        stage2_state["prepare_variant_cache_hits"] = int(stage2_state.get("prepare_variant_cache_hits", 0) or 0) + 1
+    if unit_label.startswith(("cache_hit:", "replay_reused:", "baseline_summary_")):
+        stage2_state["prepare_variant_replay_reused"] = int(stage2_state.get("prepare_variant_replay_reused", 0) or 0) + 1
+    if unit_label.startswith("cache_miss:"):
+        reason = unit_label.split("cache_miss:", 1)[1] or "unknown"
+        miss_reasons = dict(stage2_state.get("prepare_variant_miss_reasons") or {})
+        miss_reasons[reason] = int(miss_reasons.get(reason, 0) or 0) + 1
+        stage2_state["prepare_variant_miss_reasons"] = miss_reasons
 
 
 def _resolved_search_space_contract(
@@ -1012,6 +1079,10 @@ def main() -> None:
                     subphase = "stage1_rl"
                     normalized_total = max(0, rl_episodes)
                     normalized_completed = min(max(0, completed_trials), normalized_total)
+                    if heartbeat.get("rl_device") is not None:
+                        stage1_state["rl_device"] = heartbeat.get("rl_device")
+                        stage1_state["rl_device_resolved_from"] = heartbeat.get("rl_device_resolved_from")
+                        stage1_state["rl_device_fallback_reason"] = heartbeat.get("rl_device_fallback_reason")
                     if event in {"rl_progress", "rl_completed"}:
                         stage1_state["rl_timing_count"] = int(stage1_state.get("rl_timing_count", 0) or 0) + 1
                         stage1_state["rl_episode_runtime_sum_s"] = float(stage1_state.get("rl_episode_runtime_sum_s", 0.0) or 0.0) + float(
@@ -1082,6 +1153,27 @@ def main() -> None:
                     stage1_state["accounting_step_sum_s"] = float(stage1_state.get("accounting_step_sum_s", 0.0) or 0.0) + float(
                         heartbeat.get("accounting_step_total_s", 0.0) or 0.0
                     )
+                    stage1_state["replay_context_cache_hit_sum"] = float(
+                        stage1_state.get("replay_context_cache_hit_sum", 0.0) or 0.0
+                    ) + float(heartbeat.get("replay_context_cache_hit_rate", 0.0) or 0.0)
+                    stage1_state["raw_source_rows_cache_hit_sum"] = float(
+                        stage1_state.get("raw_source_rows_cache_hit_sum", 0.0) or 0.0
+                    ) + float(heartbeat.get("raw_source_rows_cache_hit_rate", 0.0) or 0.0)
+                    stage1_state["event_list_cache_hit_sum"] = float(
+                        stage1_state.get("event_list_cache_hit_sum", 0.0) or 0.0
+                    ) + float(heartbeat.get("event_list_cache_hit_rate", 0.0) or 0.0)
+                    layer_timing = dict(heartbeat.get("indicator_layer_timing", {}) or {})
+                    if layer_timing:
+                        layer_totals = dict(stage1_state.get("indicator_layer_timing_totals") or {})
+                        for layer_name, layer_value in layer_timing.items():
+                            layer_totals[layer_name] = float(layer_totals.get(layer_name, 0.0) or 0.0) + float(
+                                layer_value or 0.0
+                            )
+                        stage1_state["indicator_layer_timing_totals"] = layer_totals
+                    if "indicator_fast_path_enabled" in heartbeat:
+                        stage1_state["indicator_fast_path_enabled"] = bool(heartbeat.get("indicator_fast_path_enabled"))
+                    if "slow_enrichment_deferred" in heartbeat:
+                        stage1_state["slow_enrichment_deferred"] = bool(heartbeat.get("slow_enrichment_deferred"))
                 if subphase == "stage1_optuna_search" and running_event:
                     stage1_state["stage1_underfilled"] = bool(stage1_underfilled)
                     stage1_state["stage1_underfilled_reason"] = stage1_underfilled_reason
@@ -1091,6 +1183,8 @@ def main() -> None:
                     stage1_state["stage1_stop_reason"] = stage1_stop_reason
                 timing_count = int(stage1_state.get("timing_count", 0) or 0)
                 rl_timing_count = int(stage1_state.get("rl_timing_count", 0) or 0)
+                cpu_hotspot_summary = _stage1_cpu_hotspot_summary(stage1_state, timing_count=timing_count)
+                indicator_hotspot_summary = _stage1_indicator_hotspot_summary(stage1_state, timing_count=timing_count)
                 _update_status(
                     status_path,
                     phase=subphase,
@@ -1147,6 +1241,16 @@ def main() -> None:
                     ),
                     stage1_cache_hit_rate=(
                         round(float(stage1_state.get("cache_hit_sum", 0.0) or 0.0) / timing_count, 4)
+                        if timing_count > 0
+                        else None
+                    ),
+                    trial_replay_cache_hit_rate=(
+                        round(float(stage1_state.get("cache_hit_sum", 0.0) or 0.0) / timing_count, 4)
+                        if timing_count > 0
+                        else None
+                    ),
+                    replay_context_cache_hit_rate=(
+                        round(float(stage1_state.get("replay_context_cache_hit_sum", 0.0) or 0.0) / timing_count, 4)
                         if timing_count > 0
                         else None
                     ),
@@ -1216,6 +1320,13 @@ def main() -> None:
                         if rl_timing_count > 0
                         else None
                     ),
+                    rl_device=stage1_state.get("rl_device"),
+                    rl_device_resolved_from=stage1_state.get("rl_device_resolved_from"),
+                    rl_device_fallback_reason=stage1_state.get("rl_device_fallback_reason"),
+                    stage1_cpu_hotspot_summary=cpu_hotspot_summary,
+                    stage1_indicator_hotspot_summary=indicator_hotspot_summary,
+                    indicator_fast_path_enabled=stage1_state.get("indicator_fast_path_enabled"),
+                    slow_enrichment_deferred=stage1_state.get("slow_enrichment_deferred"),
                     stage1_best_value_so_far=heartbeat.get("best_value_so_far"),
                     stage1_best_params_so_far=heartbeat.get("best_params_so_far"),
                     stage1_runtime_s=runtime_s,
@@ -1864,6 +1975,9 @@ def main() -> None:
                 "last_unit": None,
                 "current_subphase": "stage2_prepare_variants",
                 "subphase_started_at": stage2_started_at,
+                "prepare_variant_cache_hits": 0,
+                "prepare_variant_replay_reused": 0,
+                "prepare_variant_cache_observations": 0,
             }
 
             stage2_budgets = {level: _stage2_budget_profile(level) for level in ("smoke", "fast", "high")}
@@ -1933,6 +2047,8 @@ def main() -> None:
                     or heartbeat.get("variant")
                     or event
                 )
+                unit_label = str(stage2_state["last_unit"] or "")
+                _update_stage2_prepare_cache_metrics(stage2_state, event=event, unit_label=unit_label)
                 _update_status(
                     status_path,
                     phase="stage2_full_verdict",
@@ -1960,6 +2076,27 @@ def main() -> None:
                     ),
                     stage2_compare_workers=heartbeat.get("compare_workers"),
                     stage2_compare_validation_workers=heartbeat.get("validation_workers"),
+                    stage2_prepare_variant_cache_hits=stage2_state.get("prepare_variant_cache_hits", 0),
+                    stage2_prepare_variant_replay_reused=stage2_state.get("prepare_variant_replay_reused", 0),
+                    stage2_prepare_variant_miss_reasons=stage2_state.get("prepare_variant_miss_reasons", {}),
+                    window_snapshot_cache_hit_rate=(
+                        round(
+                            float(stage2_state.get("prepare_variant_cache_hits", 0) or 0)
+                            / max(1, int(stage2_state.get("prepare_variant_cache_observations", 0) or 0)),
+                            4,
+                        )
+                        if int(stage2_state.get("prepare_variant_cache_observations", 0) or 0) > 0
+                        else 0.0
+                    ),
+                    validation_cache_hit_rate=(
+                        round(
+                            float(stage2_state.get("prepare_variant_cache_hits", 0) or 0)
+                            / max(1, int(stage2_state.get("prepare_variant_cache_observations", 0) or 0)),
+                            4,
+                        )
+                        if int(stage2_state.get("prepare_variant_cache_observations", 0) or 0) > 0
+                        else 0.0
+                    ),
                     stage2_failure_reason=None,
                     full_training_allowed=False,
                     full_training_decision="defer_full_training",
@@ -2112,6 +2249,26 @@ def main() -> None:
                 write_search_report(final_json, report)
                 final_md.write_text(build_markdown_report(report), encoding="utf-8")
                 final_json_payload = _read_json(final_json) or {}
+                final_json_payload["stage2_prepare_variant_cache_hits"] = stage2_state.get("prepare_variant_cache_hits", 0)
+                final_json_payload["stage2_prepare_variant_replay_reused"] = stage2_state.get(
+                    "prepare_variant_replay_reused",
+                    0,
+                )
+                final_json_payload["stage2_prepare_variant_miss_reasons"] = stage2_state.get(
+                    "prepare_variant_miss_reasons",
+                    {},
+                )
+                final_json_payload["validation_cache_hit_rate"] = (
+                    round(
+                        float(stage2_state.get("prepare_variant_cache_hits", 0) or 0)
+                        / max(1, int(stage2_state.get("prepare_variant_cache_observations", 0) or 0)),
+                        4,
+                    )
+                    if int(stage2_state.get("prepare_variant_cache_observations", 0) or 0) > 0
+                    else 0.0
+                )
+                final_json_payload["window_snapshot_cache_hit_rate"] = final_json_payload["validation_cache_hit_rate"]
+                _write_json(final_json, final_json_payload)
                 final_report_payload = {
                     "created_at": _ts(),
                     "best_variant": report.best_variant,

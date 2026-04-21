@@ -1470,8 +1470,12 @@ class FrameworkEvaluator:
         cached = self._summary_cache.get(cache_key)
         if cached is not None:
             if progress_callback is not None:
+                progress_callback("cache_hit", "summary_cache")
+                progress_callback("replay_reused", "summary_cache")
                 progress_callback(4, "cached")
             return cached
+        if progress_callback is not None:
+            progress_callback("cache_miss", "summary_cache")
         profile = self._compute_profile(fast=fast, lightweight=lightweight)
         windows = self._prepare_windows(fast=fast, lightweight=lightweight)
         wf_windows = self._fast_dev_wf_windows if fast else self._full_dev_wf_windows
@@ -1493,6 +1497,12 @@ class FrameworkEvaluator:
         try:
             dev_window = next(window for window in windows if window.label == "dev")
             if lightweight:
+                if progress_callback is not None:
+                    dev_key = (self._variant_key(variant), dev_window.start_ns, dev_window.end_ns)
+                    progress_callback(
+                        "cache_hit" if dev_key in self._backtest_cache else "cache_miss",
+                        "window_snapshot:dev",
+                    )
                 dev_result = self._run_prepare_backtest_cached(
                     variant,
                     dev_window,
@@ -1510,6 +1520,12 @@ class FrameworkEvaluator:
             weak_window = next(window for window in windows if window.label == "2023-08")
             _prepare_budget_guard(weak_window.label)
             if lightweight:
+                if progress_callback is not None:
+                    weak_key = (self._variant_key(variant), weak_window.start_ns, weak_window.end_ns)
+                    progress_callback(
+                        "cache_hit" if weak_key in self._backtest_cache else "cache_miss",
+                        "window_snapshot:2023-08",
+                    )
                 weak_result = self._run_prepare_backtest_cached(
                     variant,
                     weak_window,
@@ -1529,6 +1545,12 @@ class FrameworkEvaluator:
             for window in worst_periods:
                 _prepare_budget_guard(window.label)
                 if lightweight:
+                    if progress_callback is not None:
+                        worst_key = (self._variant_key(variant), window.start_ns, window.end_ns)
+                        progress_callback(
+                            "cache_hit" if worst_key in self._backtest_cache else "cache_miss",
+                            f"window_snapshot:{window.label}",
+                        )
                     result = self._run_prepare_backtest_cached(
                         variant,
                         window,
@@ -1548,6 +1570,11 @@ class FrameworkEvaluator:
             baseline = None
             if variant.name != "current":
                 if progress_callback is not None and lightweight:
+                    current_summary_key = (self._variant_key(self._current_variant), True, lightweight)
+                    progress_callback(
+                        "cache_hit" if current_summary_key in self._summary_cache else "cache_miss",
+                        "baseline_summary",
+                    )
                     progress_callback("baseline_summary_started", "lightweight")
                 baseline = self._get_current_fast_summary(
                     lightweight=lightweight,
@@ -1841,6 +1868,9 @@ class FrameworkEvaluator:
         key = (self._variant_key(variant), tuple(window.label for window in windows), bool(replay_timeout_s))
         cached = self._validation_cache.get(key)
         if cached is not None:
+            if progress_callback is not None:
+                progress_callback("cache_hit", "validation_bundle")
+                progress_callback("replay_reused", "validation_bundle")
             return cached
         result = _run_validation_bundle(
             self._base_config,
@@ -1897,10 +1927,16 @@ class FrameworkEvaluator:
                     lightweight=True,
                     progress_callback=progress_callback,
                 )
+            elif progress_callback is not None:
+                progress_callback("cache_hit", "current_fast_summary")
+                progress_callback("replay_reused", "current_fast_summary")
             if self._paulwei_fast_lightweight is None:
                 self._paulwei_fast_lightweight = self._current_fast
             return self._current_fast
         if self._current_fast is not None and not lightweight:
+            if progress_callback is not None:
+                progress_callback("cache_hit", "current_fast_summary")
+                progress_callback("replay_reused", "current_fast_summary")
             return self._current_fast
         if self._current_fast is None:
             # Current and the frozen PaulWei baseline are currently identical in
