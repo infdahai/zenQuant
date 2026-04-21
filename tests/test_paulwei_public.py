@@ -10,8 +10,12 @@ import pandas as pd
 from zenquant.research.comparison import public_archive_variant_specs
 from zenquant.research.paulwei_public import (
     build_ahr999_alignment,
+    build_ahr999_execution_guidance_review,
     build_behavior_profile,
+    build_execution_research_review,
     build_paulwei_dataset_contract,
+    build_promotion_eligibility_review,
+    build_variant_comparison_review,
     ingest_paulwei_public_dataset,
     write_baseline_mapping,
 )
@@ -188,3 +192,95 @@ class PaulWeiPublicResearchTests(unittest.TestCase):
             self.assertIn("correlation_to_mvrv", alignment)
             self.assertEqual(variants[-1].name, "paulwei_public_archive_baseline")
             self.assertEqual(len(variants), 3)
+
+    def test_execution_guidance_and_promotion_reviews(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            data_root = Path(tmp) / "paulwei"
+            spot_root = Path(tmp) / "spot"
+            macro_root = Path(tmp) / "macro"
+            output = Path(tmp) / "results"
+            output.mkdir(parents=True, exist_ok=True)
+            _build_public_source(data_root)
+            _write_spot_daily(spot_root / "klines" / "BTCUSDT" / "1d" / "data.parquet")
+            _write_mvrv(macro_root / "btc_mvrv" / "data.parquet")
+
+            dataset_contract = build_paulwei_dataset_contract(data_root=data_root)
+            dataset_contract_path = output / "paulwei_dataset_contract.json"
+            dataset_contract_path.write_text(json.dumps(dataset_contract), encoding="utf-8")
+            profile, _ = build_behavior_profile(data_root=data_root, spot_root=spot_root)
+            behavior_profile_path = output / "behavior_profile.json"
+            behavior_profile_path.write_text(json.dumps(profile), encoding="utf-8")
+            write_baseline_mapping(behavior_profile=profile, output_dir=output)
+            mapping = json.loads((output / "baseline_mapping.json").read_text(encoding="utf-8"))
+            alignment = build_ahr999_alignment(data_root=data_root, spot_root=spot_root, macro_root=macro_root)
+            ahr_alignment_path = output / "ahr999_alignment.json"
+            ahr_alignment_path.write_text(json.dumps(alignment), encoding="utf-8")
+
+            execution_review = build_execution_research_review(
+                dataset_contract=dataset_contract,
+                behavior_profile=profile,
+                mapping=mapping,
+                dataset_contract_path=dataset_contract_path,
+                behavior_profile_path=behavior_profile_path,
+                mapping_path=output / "baseline_mapping.json",
+            )
+            ahr_guidance = build_ahr999_execution_guidance_review(
+                alignment=alignment,
+                dataset_contract_path=dataset_contract_path,
+                dataset_contract_id=dataset_contract.get("artifact_id"),
+                behavior_profile_path=behavior_profile_path,
+                behavior_profile_id=profile.get("artifact_id"),
+                mapping_path=output / "baseline_mapping.json",
+                mapping_id=mapping.get("artifact_id"),
+                ahr_alignment_path=ahr_alignment_path,
+            )
+            comparison_payload = {
+                "windows": [
+                    {"label": "dev"},
+                    {"label": "2023-08"},
+                    {"label": "2024-11 DD"},
+                ],
+                "window_reports": [
+                    {"variant": "current", "window_label": "dev", "metrics": {"sharpe": 4.0, "max_drawdown": 0.10}},
+                    {"variant": "current", "window_label": "2023-08", "metrics": {"sharpe": 4.2, "max_drawdown": 0.05}},
+                    {"variant": "current", "window_label": "2024-11 DD", "metrics": {"sharpe": 5.0, "max_drawdown": 0.03}},
+                    {"variant": "paulwei_baseline", "window_label": "dev", "metrics": {"sharpe": 4.0, "max_drawdown": 0.10}},
+                    {"variant": "paulwei_baseline", "window_label": "2023-08", "metrics": {"sharpe": 4.0, "max_drawdown": 0.05}},
+                    {"variant": "paulwei_baseline", "window_label": "2024-11 DD", "metrics": {"sharpe": 4.8, "max_drawdown": 0.04}},
+                    {"variant": "paulwei_public_archive_baseline", "window_label": "dev", "metrics": {"sharpe": 4.3, "max_drawdown": 0.11}},
+                    {"variant": "paulwei_public_archive_baseline", "window_label": "2023-08", "metrics": {"sharpe": 4.1, "max_drawdown": 0.05}},
+                    {"variant": "paulwei_public_archive_baseline", "window_label": "2024-11 DD", "metrics": {"sharpe": 5.2, "max_drawdown": 0.031}},
+                ],
+            }
+            comparison_payload_path = output / "variant_comparison_payload.json"
+            comparison_payload_path.write_text(json.dumps(comparison_payload), encoding="utf-8")
+            variant_review = build_variant_comparison_review(
+                comparison_payload=comparison_payload,
+                mapping=mapping,
+                dataset_contract_path=dataset_contract_path,
+                dataset_contract_id=dataset_contract.get("artifact_id"),
+                behavior_profile_path=behavior_profile_path,
+                behavior_profile_id=profile.get("artifact_id"),
+                mapping_path=output / "baseline_mapping.json",
+                comparison_run_path=comparison_payload_path,
+            )
+            promotion_review = build_promotion_eligibility_review(
+                variant_review=variant_review,
+                mapping=mapping,
+                dataset_contract_path=dataset_contract_path,
+                dataset_contract_id=dataset_contract.get("artifact_id"),
+                behavior_profile_path=behavior_profile_path,
+                behavior_profile_id=profile.get("artifact_id"),
+                mapping_path=output / "baseline_mapping.json",
+                ahr_guidance_path=ahr_alignment_path,
+                ahr_guidance_id=ahr_guidance.get("artifact_id"),
+                comparison_run_path=comparison_payload_path,
+            )
+
+            self.assertIn("inventory_build_profile", execution_review)
+            self.assertIn("zone_guidance", ahr_guidance)
+            self.assertEqual(
+                variant_review["recommendation"]["best_research_baseline"],
+                "paulwei_public_archive_baseline",
+            )
+            self.assertTrue(promotion_review["promotion_readiness"])
