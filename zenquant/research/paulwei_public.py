@@ -12,10 +12,12 @@ not as primary trading truth. It can:
 
 from __future__ import annotations
 
+import hashlib
 import itertools
 import json
 import math
 import shutil
+import subprocess
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -54,6 +56,66 @@ def _write_json(path: Path, payload: dict[str, Any]) -> None:
 
 def _read_json(path: Path) -> dict[str, Any]:
     return json.loads(path.read_text(encoding="utf-8"))
+
+
+def _artifact_id(payload: dict[str, Any]) -> str:
+    encoded = json.dumps(payload, sort_keys=True, default=_json_default).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()[:16]
+
+
+def _path_sha256(path: Path) -> str | None:
+    if not path.exists():
+        return None
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _git_commit() -> str | None:
+    try:
+        proc = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+    except Exception:
+        return None
+    return proc.stdout.strip() or None
+
+
+def _lineage(
+    *,
+    source_contract_path: Path,
+    source_contract_id: str | None,
+    behavior_profile_path: Path | None = None,
+    behavior_profile_id: str | None = None,
+    mapping_path: Path | None = None,
+    mapping_id: str | None = None,
+    ahr_review_path: Path | None = None,
+    ahr_review_id: str | None = None,
+    comparison_run_path: Path | None = None,
+    comparison_run_id: str | None = None,
+    split_contract_id: str = "btc_temporal_v2_train_selection_only",
+) -> dict[str, Any]:
+    return {
+        "source_contract_id": source_contract_id,
+        "source_contract_sha256": _path_sha256(source_contract_path),
+        "behavior_profile_id": behavior_profile_id,
+        "behavior_profile_sha256": _path_sha256(behavior_profile_path) if behavior_profile_path else None,
+        "mapping_id": mapping_id,
+        "mapping_sha256": _path_sha256(mapping_path) if mapping_path else None,
+        "ahr_review_id": ahr_review_id,
+        "ahr_review_sha256": _path_sha256(ahr_review_path) if ahr_review_path else None,
+        "comparison_run_id": comparison_run_id,
+        "comparison_run_sha256": _path_sha256(comparison_run_path) if comparison_run_path else None,
+        "split_contract_id": split_contract_id,
+        "formula_hash": "unavailable_outside_replay_context",
+        "code_commit": _git_commit(),
+        "generated_at": _ts(),
+    }
 
 
 def _parse_ts(series: pd.Series) -> pd.Series:
@@ -163,6 +225,7 @@ def build_paulwei_dataset_contract(*, data_root: Path) -> dict[str, Any]:
 
 def write_paulwei_dataset_contract(*, data_root: Path, output_dir: Path) -> dict[str, Any]:
     payload = build_paulwei_dataset_contract(data_root=data_root)
+    payload["artifact_id"] = _artifact_id(payload)
     json_path = output_dir / "paulwei_dataset_contract.json"
     md_path = output_dir / "paulwei_dataset_contract.md"
     _write_json(json_path, payload)
@@ -188,7 +251,12 @@ def write_paulwei_dataset_contract(*, data_root: Path, output_dir: Path) -> dict
     md_lines.extend(["", "## Allowed Uses", ""])
     md_lines.extend(f"- `{item}`" for item in payload["allowed_uses"])
     md_path.write_text("\n".join(md_lines), encoding="utf-8")
-    return {"json_path": str(json_path), "md_path": str(md_path), "ready": payload["ready"]}
+    return {
+        "json_path": str(json_path),
+        "md_path": str(md_path),
+        "ready": payload["ready"],
+        "artifact_id": payload["artifact_id"],
+    }
 
 
 def load_paulwei_frames(*, data_root: Path) -> dict[str, pd.DataFrame]:
@@ -343,14 +411,63 @@ def build_behavior_profile(*, data_root: Path, spot_root: Path) -> tuple[dict[st
                 "yearly_btc_notional_share": yearly_btc_share,
             }
         )
+        inventory_build_profile = {
+            "median_entry_tranches": round(float(episodes["add_events"].add(1).median()), 4),
+            "median_peak_abs_position": _median_nonnull(episodes["peak_abs_position"]),
+            "median_add_interval_hours": _median_nonnull(episodes["median_add_interval_hours"]),
+            "long_short_add_asymmetry": round(
+                float(
+                    episodes.loc[episodes["side"] == "long", "add_events"].mean()
+                    - episodes.loc[episodes["side"] == "short", "add_events"].mean()
+                ),
+                4,
+            )
+            if {"long", "short"}.issubset(set(episodes["side"].unique()))
+            else None,
+        }
+        protective_exit_profile = {
+            "protective_reduce_share": round(float((episodes["reduce_events"] > 0).mean()), 4),
+            "flip_exit_share": round(float(episodes["flip_exit"].mean()), 4),
+            "extreme_vol_protective_action_share": None,
+        }
+        recovery_profile = {
+            "max_drawdown_pct": None,
+            "drawdown_episode_count_over_10pct": None,
+            "median_recovery_days": None,
+            "kill_recovery_style": "gradual_ramp_after_cooldown",
+        }
+        flip_profile = {
+            "position_switches_per_30d": profile["position_switches_per_30d"],
+            "flip_exit_share": round(float(episodes["flip_exit"].mean()), 4),
+            "suggested_min_confidence_band": [0.55, 0.6],
+        }
+        trend_hold_profile = {
+            "long_episode_share": profile["long_episode_share"],
+            "win_median_hold_hours": profile["win_median_hold_hours"],
+            "loss_median_hold_hours": profile["loss_median_hold_hours"],
+            "trend_hold_bias": "longer_hold_for_positive_trend_continuations"
+            if (profile["win_median_hold_hours"] or 0.0) >= (profile["loss_median_hold_hours"] or 0.0)
+            else "faster_profit_realization_than_loss_recovery",
+        }
+        profile["inventory_build_profile"] = inventory_build_profile
+        profile["protective_exit_profile"] = protective_exit_profile
+        profile["recovery_profile"] = recovery_profile
+        profile["flip_profile"] = flip_profile
+        profile["trend_hold_profile"] = trend_hold_profile
 
     if not equity_curve.empty:
         dd_stats = _drawdown_profile(equity_curve)
         profile["drawdown_profile"] = dd_stats
+        if "recovery_profile" in profile:
+            profile["recovery_profile"].update(dd_stats)
 
     vol_alignment = _extreme_vol_alignment(episodes=episodes, spot_root=spot_root)
     if vol_alignment:
         profile["extreme_vol_alignment"] = vol_alignment
+        if "protective_exit_profile" in profile:
+            profile["protective_exit_profile"]["extreme_vol_protective_action_share"] = vol_alignment.get(
+                "protective_action_share"
+            )
 
     return profile, episodes
 
@@ -359,7 +476,7 @@ def build_baseline_mapping(*, behavior_profile: dict[str, Any]) -> dict[str, Any
     from zenquant.research.comparison import paulwei_execution_baseline, paulwei_risk_baseline
 
     base_risk = paulwei_risk_baseline()
-    base_exec = paulwei_execution_baseline()
+    paulwei_execution_baseline()
     execution_rules: dict[str, Any] = {}
     risk_rules: dict[str, Any] = {}
     strategy_rules: dict[str, Any] = {}
@@ -395,10 +512,110 @@ def build_baseline_mapping(*, behavior_profile: dict[str, Any]) -> dict[str, Any
     risk_rules["kill_ramp_bars"] = int(min(36, max(18, round(recovery_days * 4))))
     risk_rules["vol_shock_mult"] = 0.35 if protective_share >= 0.5 else 0.40
 
+    execution_mapping = {
+        "pyramid_initial_pct": {
+            "value": execution_rules["pyramid_initial_pct"],
+            "source_evidence": {"median_adds_per_episode": median_adds},
+            "mapping_rationale": "Higher add cadence supports chunked entry rather than one-shot sizing.",
+            "mapping_confidence": "medium",
+            "expected_behavioral_effect": "retain multi-tranche build style on long entries",
+        },
+        "pyramid_add_pct": {
+            "value": execution_rules["pyramid_add_pct"],
+            "source_evidence": {"median_adds_per_episode": median_adds},
+            "mapping_rationale": "Observed repeat add behavior warrants keeping aggressive add capacity on winning builds.",
+            "mapping_confidence": "medium",
+            "expected_behavioral_effect": "allow continuation adds before inventory cap",
+        },
+        "pyramid_short_initial_pct": {
+            "value": execution_rules["pyramid_short_initial_pct"],
+            "source_evidence": {"long_episode_share": long_share},
+            "mapping_rationale": "Long bias in the ledger argues for slightly smaller initial short inventory.",
+            "mapping_confidence": "medium",
+            "expected_behavioral_effect": "reduce initial short aggressiveness vs long side",
+        },
+        "pyramid_short_add_pct": {
+            "value": execution_rules["pyramid_short_add_pct"],
+            "source_evidence": {"long_episode_share": long_share},
+            "mapping_rationale": "Public archive shows materially lower short-side expansion than long-side expansion.",
+            "mapping_confidence": "medium",
+            "expected_behavioral_effect": "cap short-side add speed",
+        },
+        "exit_unwind_pct": {
+            "value": execution_rules["exit_unwind_pct"],
+            "source_evidence": {"median_reduces_per_episode": median_reduces},
+            "mapping_rationale": "Frequent staged reductions support a gradual unwind configuration.",
+            "mapping_confidence": "medium",
+            "expected_behavioral_effect": "favor partial exits over all-at-once liquidation",
+        },
+        "flip_min_confidence": {
+            "value": execution_rules["flip_min_confidence"],
+            "source_evidence": {"position_switches_per_30d": switch_rate},
+            "mapping_rationale": "Observed flip frequency is active but not hyper-reactive; confirmation should stay above a neutral threshold.",
+            "mapping_confidence": "medium",
+            "expected_behavioral_effect": "permit flips while avoiding overly noisy reversals",
+        },
+    }
+    risk_mapping = {
+        "dd_step_1_long": {
+            "value": risk_rules["dd_step_1_long"],
+            "source_evidence": {"baseline": "retain known-good PaulWei long DD step"},
+            "mapping_rationale": "No ledger evidence supports loosening the first long drawdown guard.",
+            "mapping_confidence": "high",
+            "expected_behavioral_effect": "preserve early long-side risk compression",
+        },
+        "dd_step_1_short": {
+            "value": risk_rules["dd_step_1_short"],
+            "source_evidence": {"long_episode_share": long_share},
+            "mapping_rationale": "Long-dominant ledger history supports tighter first-step short drawdown control.",
+            "mapping_confidence": "medium",
+            "expected_behavioral_effect": "contain short-side stress earlier",
+        },
+        "kill_switch_drawdown": {
+            "value": risk_rules["kill_switch_drawdown"],
+            "source_evidence": {"max_drawdown_pct": max_dd},
+            "mapping_rationale": "Observed drawdown depth argues for preserving a hard stop near legacy PaulWei levels.",
+            "mapping_confidence": "medium",
+            "expected_behavioral_effect": "force capital preservation before severe equity impairment",
+        },
+        "kill_cooldown_bars": {
+            "value": risk_rules["kill_cooldown_bars"],
+            "source_evidence": {"median_recovery_days": recovery_days},
+            "mapping_rationale": "Recovery cadence implies a longer cooldown before re-risking after major damage.",
+            "mapping_confidence": "medium",
+            "expected_behavioral_effect": "avoid immediate re-risk after drawdown shock",
+        },
+        "kill_ramp_bars": {
+            "value": risk_rules["kill_ramp_bars"],
+            "source_evidence": {"median_recovery_days": recovery_days},
+            "mapping_rationale": "If recovery is gradual, risk ramp should also be gradual.",
+            "mapping_confidence": "medium",
+            "expected_behavioral_effect": "slowly restore risk after kill-switch recovery",
+        },
+        "vol_shock_mult": {
+            "value": risk_rules["vol_shock_mult"],
+            "source_evidence": {"extreme_vol_protective_action_share": protective_share},
+            "mapping_rationale": "High protective-action share during high-vol episodes supports a stronger volatility shock haircut.",
+            "mapping_confidence": "medium",
+            "expected_behavioral_effect": "compress leverage faster during volatility shocks",
+        },
+    }
+    unsupported_mapping = [
+        {
+            "dimension": item,
+            "reason": "Not inferable from public ledger behavior without inventing hidden discretionary logic.",
+        }
+        for item in unsupported
+    ]
+
     mapping = {
         "generated_at": _ts(),
         "mapping_source": "paulwei_public_archive_behavior_profile",
         "evidence_window": behavior_profile.get("dataset_window", {}),
+        "execution_mapping": execution_mapping,
+        "risk_mapping": risk_mapping,
+        "strategy_mapping": strategy_rules,
+        "unsupported_mapping": unsupported_mapping,
         "derived_execution_rules": execution_rules,
         "derived_risk_rules": risk_rules,
         "derived_strategy_rules": strategy_rules,
@@ -428,7 +645,8 @@ def build_ahr999_alignment(*, data_root: Path, spot_root: Path, macro_root: Path
     return {
         "generated_at": _ts(),
         "ready": True,
-        "role_candidate": ["regime_prior", "risk_filter", "explainability_context"],
+        "role_candidate": ["regime_prior", "risk_budget_modifier", "dca_guidance_signal", "explainability_context"],
+        "prohibited_roles": ["intraday_trigger", "execution_signal", "direction_vote"],
         "blocked_by": [],
         "ahr999_formula": {
             "dca_component": "200d geometric mean of BTC close",
@@ -457,6 +675,7 @@ def build_ahr999_alignment(*, data_root: Path, spot_root: Path, macro_root: Path
 def write_behavior_profile(*, data_root: Path, spot_root: Path, output_dir: Path) -> dict[str, Any]:
     profile, episodes = build_behavior_profile(data_root=data_root, spot_root=spot_root)
     output_dir.mkdir(parents=True, exist_ok=True)
+    profile["artifact_id"] = _artifact_id(profile)
     json_path = output_dir / "behavior_profile.json"
     md_path = output_dir / "behavior_profile.md"
     catalog_path = output_dir / "trade_episode_catalog.csv"
@@ -482,11 +701,13 @@ def write_behavior_profile(*, data_root: Path, spot_root: Path, output_dir: Path
         "md_path": str(md_path),
         "catalog_path": str(catalog_path),
         "episode_count": len(episodes),
+        "artifact_id": profile["artifact_id"],
     }
 
 
 def write_baseline_mapping(*, behavior_profile: dict[str, Any], output_dir: Path) -> dict[str, Any]:
     mapping = build_baseline_mapping(behavior_profile=behavior_profile)
+    mapping["artifact_id"] = _artifact_id(mapping)
     json_path = output_dir / "baseline_mapping.json"
     md_path = output_dir / "baseline_mapping.md"
     _write_json(json_path, mapping)
@@ -500,11 +721,12 @@ def write_baseline_mapping(*, behavior_profile: dict[str, Any], output_dir: Path
         f"- unsupported_dimensions: `{mapping['unsupported_dimensions']}`",
     ]
     md_path.write_text("\n".join(lines), encoding="utf-8")
-    return {"json_path": str(json_path), "md_path": str(md_path)}
+    return {"json_path": str(json_path), "md_path": str(md_path), "artifact_id": mapping["artifact_id"]}
 
 
 def write_ahr999_alignment(*, data_root: Path, spot_root: Path, macro_root: Path, output_dir: Path) -> dict[str, Any]:
     payload = build_ahr999_alignment(data_root=data_root, spot_root=spot_root, macro_root=macro_root)
+    payload["artifact_id"] = _artifact_id(payload)
     json_path = output_dir / "ahr999_alignment.json"
     md_path = output_dir / "ahr999_alignment.md"
     _write_json(json_path, payload)
@@ -517,7 +739,503 @@ def write_ahr999_alignment(*, data_root: Path, spot_root: Path, macro_root: Path
         f"- recommendation: `{payload.get('recommendation')}`",
     ]
     md_path.write_text("\n".join(lines), encoding="utf-8")
-    return {"json_path": str(json_path), "md_path": str(md_path), "ready": payload.get("ready", False)}
+    return {
+        "json_path": str(json_path),
+        "md_path": str(md_path),
+        "ready": payload.get("ready", False),
+        "artifact_id": payload["artifact_id"],
+    }
+
+
+def build_execution_research_review(
+    *,
+    dataset_contract: dict[str, Any],
+    behavior_profile: dict[str, Any],
+    mapping: dict[str, Any],
+    dataset_contract_path: Path,
+    behavior_profile_path: Path,
+    mapping_path: Path,
+) -> dict[str, Any]:
+    payload = {
+        "generated_at": _ts(),
+        "baseline_family": [
+            "current",
+            "paulwei_baseline",
+            "paulwei_public_archive_baseline",
+        ],
+        "research_target": "baseline_pk_plus_execution_philosophy_transfer",
+        "inventory_build_profile": behavior_profile.get("inventory_build_profile", {}),
+        "protective_exit_profile": behavior_profile.get("protective_exit_profile", {}),
+        "recovery_profile": behavior_profile.get("recovery_profile", {}),
+        "flip_profile": behavior_profile.get("flip_profile", {}),
+        "trend_hold_profile": behavior_profile.get("trend_hold_profile", {}),
+        "mapping_summary": {
+            "mapping_confidence": mapping.get("mapping_confidence"),
+            "execution_mapping_keys": sorted((mapping.get("execution_mapping") or {}).keys()),
+            "risk_mapping_keys": sorted((mapping.get("risk_mapping") or {}).keys()),
+            "unsupported_dimensions": mapping.get("unsupported_dimensions", []),
+        },
+        "cache_topology": {
+            "ledger_behavior_cache": {
+                "keyed_by": ["source_contract_id", "source_contract_sha256", "code_commit"],
+                "purpose": "reuse deterministic ledger-to-episode reconstruction",
+            },
+            "slow_signal_review_cache": {
+                "keyed_by": ["mapping_id", "ahr_review_id", "split_contract_id"],
+                "purpose": "reuse slow-risk guidance reviews without mutating execution truth",
+            },
+            "baseline_comparison_cache": {
+                "keyed_by": ["mapping_id", "split_contract_id", "code_commit"],
+                "purpose": "reuse comparison outputs for the same mapping and split contract",
+            },
+        },
+        "scheduler_contract": {
+            "tasks": [
+                "paulwei_behavior_refresh",
+                "paulwei_mapping_refresh",
+                "ahr999_guidance_refresh",
+                "paulwei_variant_compare",
+                "paulwei_promotion_review",
+            ],
+            "mode": "single_machine_research_track",
+            "promote_truth_side_effects": False,
+        },
+        "recommendation": {
+            "track_status": "research_only",
+            "intended_use": [
+                "execution_philosophy_learning",
+                "baseline_pk",
+                "slow_risk_alignment_study",
+            ],
+            "not_allowed": [
+                "primary_truth_source",
+                "signal_label_supervision",
+                "intraday_execution_trigger",
+            ],
+        },
+    }
+    payload["lineage"] = _lineage(
+        source_contract_path=dataset_contract_path,
+        source_contract_id=dataset_contract.get("artifact_id"),
+        behavior_profile_path=behavior_profile_path,
+        behavior_profile_id=behavior_profile.get("artifact_id"),
+        mapping_path=mapping_path,
+        mapping_id=mapping.get("artifact_id"),
+    )
+    payload["artifact_id"] = _artifact_id(payload)
+    return payload
+
+
+def build_ahr999_execution_guidance_review(
+    *,
+    alignment: dict[str, Any],
+    dataset_contract_path: Path,
+    dataset_contract_id: str | None,
+    behavior_profile_path: Path,
+    behavior_profile_id: str | None,
+    mapping_path: Path,
+    mapping_id: str | None,
+    ahr_alignment_path: Path,
+) -> dict[str, Any]:
+    zone_guidance = {
+        "accumulation": {
+            "dca_intensity": "high",
+            "dca_budget_multiplier": 1.25,
+            "long_risk_budget_modifier": 1.10,
+            "guidance": "Prefer aggressive accumulation cadence when broader quality filters allow risk.",
+        },
+        "dca": {
+            "dca_intensity": "normal",
+            "dca_budget_multiplier": 1.0,
+            "long_risk_budget_modifier": 1.0,
+            "guidance": "Maintain standard DCA cadence and neutral long-risk budget.",
+        },
+        "overheated": {
+            "dca_intensity": "low",
+            "dca_budget_multiplier": 0.25,
+            "long_risk_budget_modifier": 0.75,
+            "guidance": "Slow DCA materially and avoid expanding slow-risk budgets into overheated zones.",
+        },
+    }
+    mvrv_corr = alignment.get("correlation_to_mvrv", {}).get("pearson_corr")
+    cycle_corr = alignment.get("correlation_to_cycle_position", {}).get("pearson_corr")
+    overlap = {
+        "to_mvrv": mvrv_corr,
+        "to_cycle_position": cycle_corr,
+        "overlap_conclusion": "high_but_not_alias"
+        if mvrv_corr is not None and abs(float(mvrv_corr)) < 0.85
+        else "too_close_to_existing_slow_overlays",
+    }
+    worth_review = bool(
+        alignment.get("recommendation", {}).get("worth_admission_review")
+        and overlap["overlap_conclusion"] == "high_but_not_alias"
+    )
+    payload = {
+        "generated_at": _ts(),
+        "role_candidate": ["regime_prior", "risk_budget_modifier", "dca_guidance_signal", "explainability_context"],
+        "prohibited_roles": ["intraday_trigger", "execution_signal", "direction_vote"],
+        "zone_thresholds": alignment.get("zone_thresholds", {}),
+        "zone_guidance": zone_guidance,
+        "zone_behavior_alignment": alignment.get("zone_behavior_alignment", {}),
+        "overlap_assessment": overlap,
+        "admission_review": {
+            "worth_admission_review": worth_review,
+            "allowed_if_admitted": ["risk_budget_modifier", "dca_guidance_signal", "regime_prior"],
+            "blocked_if_only_alias": ["independent_feature_source", "intraday_trigger"],
+        },
+        "recommendation": {
+            "use_for_research_only": True,
+            "eligible_for_slow_risk_path": worth_review,
+            "do_not_use_as_intraday_trigger": True,
+        },
+    }
+    payload["lineage"] = _lineage(
+        source_contract_path=dataset_contract_path,
+        source_contract_id=dataset_contract_id,
+        behavior_profile_path=behavior_profile_path,
+        behavior_profile_id=behavior_profile_id,
+        mapping_path=mapping_path,
+        mapping_id=mapping_id,
+        ahr_review_path=ahr_alignment_path,
+        ahr_review_id=alignment.get("artifact_id"),
+    )
+    payload["artifact_id"] = _artifact_id(payload)
+    return payload
+
+
+def build_variant_comparison_review(
+    *,
+    comparison_payload: dict[str, Any],
+    mapping: dict[str, Any],
+    dataset_contract_path: Path,
+    dataset_contract_id: str | None,
+    behavior_profile_path: Path,
+    behavior_profile_id: str | None,
+    mapping_path: Path,
+    comparison_run_path: Path | None = None,
+) -> dict[str, Any]:
+    reports = comparison_payload.get("window_reports", [])
+    variants = sorted({str(item.get("variant")) for item in reports})
+    summary: dict[str, Any] = {}
+    for variant in variants:
+        variant_reports = {str(item.get("window_label")): item for item in reports if item.get("variant") == variant}
+        dev = variant_reports.get("dev", {})
+        hostile_labels = [label for label in variant_reports if label != "dev"]
+        hostile_runs = [variant_reports[label] for label in hostile_labels]
+        worst_hostile_sharpe = min(
+            [float(item.get("metrics", {}).get("sharpe", 0.0) or 0.0) for item in hostile_runs],
+            default=None,
+        )
+        hostile_driver = None
+        if hostile_runs:
+            hostile_driver = min(
+                hostile_runs,
+                key=lambda item: float(item.get("metrics", {}).get("sharpe", 0.0) or 0.0),
+            ).get("window_label")
+        summary[variant] = {
+            "dev_metrics": dev.get("metrics", {}),
+            "hostile_windows": {
+                item.get("window_label"): item.get("metrics", {})
+                for item in hostile_runs
+            },
+            "worst_window_sharpe": worst_hostile_sharpe,
+            "hostile_window_regressed": None,
+            "hostile_regression_driver": hostile_driver,
+        }
+
+    current = summary.get("current", {})
+    legacy = summary.get("paulwei_baseline", {})
+    public = summary.get("paulwei_public_archive_baseline", {})
+    public_dev = public.get("dev_metrics", {})
+    current_dev = current.get("dev_metrics", {})
+    legacy_dev = legacy.get("dev_metrics", {})
+    hostile_regressed = False
+    hostile_driver = public.get("hostile_regression_driver")
+    for label, metrics in (public.get("hostile_windows") or {}).items():
+        current_metrics = (current.get("hostile_windows") or {}).get(label, {})
+        if (
+            float(metrics.get("sharpe", 0.0) or 0.0) < float(current_metrics.get("sharpe", 0.0) or 0.0) - 0.25
+            or float(metrics.get("max_drawdown", 0.0) or 0.0) > float(current_metrics.get("max_drawdown", 0.0) or 0.0) + 0.03
+        ):
+            hostile_regressed = True
+            hostile_driver = label
+            break
+    summary.setdefault("paulwei_public_archive_baseline", {})["hostile_window_regressed"] = hostile_regressed
+
+    payload = {
+        "generated_at": _ts(),
+        "baseline_family": ["current", "paulwei_baseline", "paulwei_public_archive_baseline"],
+        "window_set": [item.get("label") for item in comparison_payload.get("windows", [])],
+        "variant_window_summary": summary,
+        "pk_summary": {
+            "public_vs_current": {
+                "dev_sharpe_delta": round(
+                    float(public_dev.get("sharpe", 0.0) or 0.0) - float(current_dev.get("sharpe", 0.0) or 0.0),
+                    4,
+                ),
+                "dev_drawdown_delta": round(
+                    float(public_dev.get("max_drawdown", 0.0) or 0.0)
+                    - float(current_dev.get("max_drawdown", 0.0) or 0.0),
+                    6,
+                ),
+            },
+            "public_vs_paulwei_baseline": {
+                "dev_sharpe_delta": round(
+                    float(public_dev.get("sharpe", 0.0) or 0.0) - float(legacy_dev.get("sharpe", 0.0) or 0.0),
+                    4,
+                ),
+                "dev_drawdown_delta": round(
+                    float(public_dev.get("max_drawdown", 0.0) or 0.0)
+                    - float(legacy_dev.get("max_drawdown", 0.0) or 0.0),
+                    6,
+                ),
+            },
+        },
+        "mapping_constraints": {
+            "unsupported_dimensions": mapping.get("unsupported_dimensions", []),
+            "mapping_confidence": mapping.get("mapping_confidence"),
+        },
+        "recommendation": {
+            "best_research_baseline": "paulwei_public_archive_baseline"
+            if float(public_dev.get("sharpe", 0.0) or 0.0) > float(legacy_dev.get("sharpe", 0.0) or 0.0)
+            else "paulwei_baseline",
+            "hostile_window_regressed": hostile_regressed,
+            "hostile_regression_driver": hostile_driver,
+        },
+    }
+    payload["lineage"] = _lineage(
+        source_contract_path=dataset_contract_path,
+        source_contract_id=dataset_contract_id,
+        behavior_profile_path=behavior_profile_path,
+        behavior_profile_id=behavior_profile_id,
+        mapping_path=mapping_path,
+        mapping_id=mapping.get("artifact_id"),
+        comparison_run_path=comparison_run_path,
+        comparison_run_id=_artifact_id(comparison_payload),
+    )
+    payload["artifact_id"] = _artifact_id(payload)
+    return payload
+
+
+def build_promotion_eligibility_review(
+    *,
+    variant_review: dict[str, Any],
+    mapping: dict[str, Any],
+    dataset_contract_path: Path,
+    dataset_contract_id: str | None,
+    behavior_profile_path: Path,
+    behavior_profile_id: str | None,
+    mapping_path: Path,
+    ahr_guidance_path: Path,
+    ahr_guidance_id: str | None,
+    comparison_run_path: Path | None = None,
+) -> dict[str, Any]:
+    public_summary = variant_review.get("variant_window_summary", {}).get("paulwei_public_archive_baseline", {})
+    current_summary = variant_review.get("variant_window_summary", {}).get("current", {})
+    legacy_summary = variant_review.get("variant_window_summary", {}).get("paulwei_baseline", {})
+    public_dev = public_summary.get("dev_metrics", {})
+    current_dev = current_summary.get("dev_metrics", {})
+    legacy_dev = legacy_summary.get("dev_metrics", {})
+    blocked_by: list[str] = []
+    if float(public_dev.get("sharpe", 0.0) or 0.0) <= float(current_dev.get("sharpe", 0.0) or 0.0):
+        blocked_by.append("no_dev_sharpe_advantage_vs_current")
+    if float(public_dev.get("sharpe", 0.0) or 0.0) <= float(legacy_dev.get("sharpe", 0.0) or 0.0):
+        blocked_by.append("no_dev_sharpe_advantage_vs_paulwei_baseline")
+    if float(public_dev.get("max_drawdown", 0.0) or 0.0) > float(current_dev.get("max_drawdown", 0.0) or 0.0) + 0.03:
+        blocked_by.append("drawdown_outside_current_band")
+    if bool(variant_review.get("recommendation", {}).get("hostile_window_regressed")):
+        blocked_by.append("hostile_window_regressed")
+    if len(mapping.get("unsupported_dimensions", [])) > 4:
+        blocked_by.append("unsupported_mapping_too_large")
+
+    payload = {
+        "generated_at": _ts(),
+        "baseline_family": ["current", "paulwei_baseline", "paulwei_public_archive_baseline"],
+        "promotion_readiness": len(blocked_by) == 0,
+        "blocked_by": blocked_by,
+        "current_best_research_baseline": variant_review.get("recommendation", {}).get("best_research_baseline"),
+        "variant_roles": {
+            "current": "authoritative_default_baseline",
+            "paulwei_baseline": "frozen_manual_execution_risk_baseline",
+            "paulwei_public_archive_baseline": "research_only_mapped_public_ledger_baseline",
+        },
+        "decision": {
+            "status": "authoritative_candidate_review"
+            if len(blocked_by) == 0
+            else "research_only",
+            "reason": "eligible_for_authoritative_candidate_review"
+            if len(blocked_by) == 0
+            else "insufficient_stability_or_explanatory_confidence",
+        },
+    }
+    payload["lineage"] = _lineage(
+        source_contract_path=dataset_contract_path,
+        source_contract_id=dataset_contract_id,
+        behavior_profile_path=behavior_profile_path,
+        behavior_profile_id=behavior_profile_id,
+        mapping_path=mapping_path,
+        mapping_id=mapping.get("artifact_id"),
+        ahr_review_path=ahr_guidance_path,
+        ahr_review_id=ahr_guidance_id,
+        comparison_run_path=comparison_run_path,
+        comparison_run_id=variant_review.get("lineage", {}).get("comparison_run_id"),
+    )
+    payload["artifact_id"] = _artifact_id(payload)
+    return payload
+
+
+def write_execution_research_review(
+    *,
+    dataset_contract: dict[str, Any],
+    behavior_profile: dict[str, Any],
+    mapping: dict[str, Any],
+    dataset_contract_path: Path,
+    behavior_profile_path: Path,
+    mapping_path: Path,
+    output_dir: Path,
+) -> dict[str, Any]:
+    payload = build_execution_research_review(
+        dataset_contract=dataset_contract,
+        behavior_profile=behavior_profile,
+        mapping=mapping,
+        dataset_contract_path=dataset_contract_path,
+        behavior_profile_path=behavior_profile_path,
+        mapping_path=mapping_path,
+    )
+    json_path = output_dir / "execution_research_review.json"
+    md_path = output_dir / "execution_research_review.md"
+    _write_json(json_path, payload)
+    lines = [
+        "# PaulWei Execution Research Review",
+        "",
+        f"- artifact_id: `{payload['artifact_id']}`",
+        f"- research_target: `{payload['research_target']}`",
+        f"- mapping_confidence: `{payload['mapping_summary']['mapping_confidence']}`",
+        f"- inventory_build_profile: `{payload['inventory_build_profile']}`",
+        f"- protective_exit_profile: `{payload['protective_exit_profile']}`",
+        f"- recovery_profile: `{payload['recovery_profile']}`",
+        f"- flip_profile: `{payload['flip_profile']}`",
+        f"- trend_hold_profile: `{payload['trend_hold_profile']}`",
+    ]
+    md_path.write_text("\n".join(lines), encoding="utf-8")
+    return {"json_path": str(json_path), "md_path": str(md_path), "artifact_id": payload["artifact_id"]}
+
+
+def write_ahr999_execution_guidance_review(
+    *,
+    alignment: dict[str, Any],
+    dataset_contract_path: Path,
+    dataset_contract_id: str | None,
+    behavior_profile_path: Path,
+    behavior_profile_id: str | None,
+    mapping_path: Path,
+    mapping_id: str | None,
+    ahr_alignment_path: Path,
+    output_dir: Path,
+) -> dict[str, Any]:
+    payload = build_ahr999_execution_guidance_review(
+        alignment=alignment,
+        dataset_contract_path=dataset_contract_path,
+        dataset_contract_id=dataset_contract_id,
+        behavior_profile_path=behavior_profile_path,
+        behavior_profile_id=behavior_profile_id,
+        mapping_path=mapping_path,
+        mapping_id=mapping_id,
+        ahr_alignment_path=ahr_alignment_path,
+    )
+    json_path = output_dir / "ahr999_execution_guidance_review.json"
+    md_path = output_dir / "ahr999_execution_guidance_review.md"
+    _write_json(json_path, payload)
+    lines = [
+        "# AHR999 Execution Guidance Review",
+        "",
+        f"- artifact_id: `{payload['artifact_id']}`",
+        f"- role_candidate: `{payload['role_candidate']}`",
+        f"- overlap_assessment: `{payload['overlap_assessment']}`",
+        f"- admission_review: `{payload['admission_review']}`",
+        f"- zone_guidance: `{payload['zone_guidance']}`",
+    ]
+    md_path.write_text("\n".join(lines), encoding="utf-8")
+    return {"json_path": str(json_path), "md_path": str(md_path), "artifact_id": payload["artifact_id"]}
+
+
+def write_variant_comparison_review(
+    *,
+    comparison_payload: dict[str, Any],
+    mapping: dict[str, Any],
+    dataset_contract_path: Path,
+    dataset_contract_id: str | None,
+    behavior_profile_path: Path,
+    behavior_profile_id: str | None,
+    mapping_path: Path,
+    comparison_run_path: Path | None,
+    output_dir: Path,
+) -> dict[str, Any]:
+    payload = build_variant_comparison_review(
+        comparison_payload=comparison_payload,
+        mapping=mapping,
+        dataset_contract_path=dataset_contract_path,
+        dataset_contract_id=dataset_contract_id,
+        behavior_profile_path=behavior_profile_path,
+        behavior_profile_id=behavior_profile_id,
+        mapping_path=mapping_path,
+        comparison_run_path=comparison_run_path,
+    )
+    json_path = output_dir / "variant_comparison_review.json"
+    md_path = output_dir / "variant_comparison_review.md"
+    _write_json(json_path, payload)
+    lines = [
+        "# Variant Comparison Review",
+        "",
+        f"- artifact_id: `{payload['artifact_id']}`",
+        f"- baseline_family: `{payload['baseline_family']}`",
+        f"- pk_summary: `{payload['pk_summary']}`",
+        f"- recommendation: `{payload['recommendation']}`",
+    ]
+    md_path.write_text("\n".join(lines), encoding="utf-8")
+    return {"json_path": str(json_path), "md_path": str(md_path), "artifact_id": payload["artifact_id"]}
+
+
+def write_promotion_eligibility_review(
+    *,
+    variant_review: dict[str, Any],
+    mapping: dict[str, Any],
+    dataset_contract_path: Path,
+    dataset_contract_id: str | None,
+    behavior_profile_path: Path,
+    behavior_profile_id: str | None,
+    mapping_path: Path,
+    ahr_guidance_path: Path,
+    ahr_guidance_id: str | None,
+    comparison_run_path: Path | None,
+    output_dir: Path,
+) -> dict[str, Any]:
+    payload = build_promotion_eligibility_review(
+        variant_review=variant_review,
+        mapping=mapping,
+        dataset_contract_path=dataset_contract_path,
+        dataset_contract_id=dataset_contract_id,
+        behavior_profile_path=behavior_profile_path,
+        behavior_profile_id=behavior_profile_id,
+        mapping_path=mapping_path,
+        ahr_guidance_path=ahr_guidance_path,
+        ahr_guidance_id=ahr_guidance_id,
+        comparison_run_path=comparison_run_path,
+    )
+    json_path = output_dir / "promotion_eligibility_review.json"
+    md_path = output_dir / "promotion_eligibility_review.md"
+    _write_json(json_path, payload)
+    lines = [
+        "# Promotion Eligibility Review",
+        "",
+        f"- artifact_id: `{payload['artifact_id']}`",
+        f"- promotion_readiness: `{payload['promotion_readiness']}`",
+        f"- blocked_by: `{payload['blocked_by']}`",
+        f"- current_best_research_baseline: `{payload['current_best_research_baseline']}`",
+        f"- decision: `{payload['decision']}`",
+    ]
+    md_path.write_text("\n".join(lines), encoding="utf-8")
+    return {"json_path": str(json_path), "md_path": str(md_path), "artifact_id": payload["artifact_id"]}
 
 
 def load_paulwei_public_archive_variant(*, mapping_path: Path) -> dict[str, Any] | None:
