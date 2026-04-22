@@ -460,8 +460,10 @@ class FrameworkCampaignTests(unittest.TestCase):
                 }
 
             captured_train_tuner: dict[str, object] = {}
+            progress_payload: dict[str, object] = {}
 
             def _fake_train_tuner(*_args, **kwargs):
+                nonlocal progress_payload
                 captured_train_tuner.update(kwargs)
                 kwargs["status_callback"](
                     event="rl_init_completed",
@@ -488,6 +490,28 @@ class FrameworkCampaignTests(unittest.TestCase):
                     rl_cleanup_completed=True,
                     rl_cleanup_warnings=[],
                 )
+                kwargs["status_callback"](
+                    event="rl_progress",
+                    completed_steps=2,
+                    actual_steps=2,
+                    requested_steps=12,
+                    total_steps=12,
+                    runtime_s=6.0,
+                    rl_budget_mode="wall_clock_primary",
+                    rl_wall_clock_elapsed_s=6.0,
+                    rl_active_envs=1,
+                    rl_avg_episode_runtime_s=3.0,
+                    rl_cache_hit_rate=0.0,
+                    rl_avg_event_loop_s=0.0,
+                    rl_device="cpu",
+                    rl_device_resolved_from="cpu",
+                    rl_device_fallback_reason=None,
+                    rl_device_preference="cpu",
+                    rl_execution_mode="single_env_cpu_guarded",
+                    rl_vec_env_type="dummy_vec_env",
+                    rl_platform_guard_applied=True,
+                )
+                progress_payload = json.loads((out / "campaign_status.json").read_text(encoding="utf-8"))
                 kwargs["status_callback"](
                     event="rl_completed",
                     completed_steps=6,
@@ -577,6 +601,10 @@ class FrameworkCampaignTests(unittest.TestCase):
         self.assertEqual(payload["rl_execution_mode"], "single_env_cpu_guarded")
         self.assertEqual(payload["rl_vec_env_type"], "dummy_vec_env")
         self.assertTrue(payload["rl_platform_guard_applied"])
+        self.assertTrue(progress_payload["rl_init_completed"])
+        self.assertFalse(progress_payload["rl_first_progress_seen"])
+        self.assertEqual(progress_payload["rl_init_timeout_s"], 30.0)
+        self.assertEqual(progress_payload["rl_first_progress_timeout_s"], 45.0)
 
     def test_update_stage2_prepare_cache_metrics_tracks_hits_and_reuse(self) -> None:
         state = {
@@ -1215,7 +1243,7 @@ class FrameworkCampaignTests(unittest.TestCase):
         self.assertEqual(status["candidate_checkpoint_variant"], "optuna_tuned")
         self.assertEqual(status["stage2_mp_start_method"], "spawn")
         self.assertEqual(status["validation_pool_mode"], "process_pool_spawn")
-        self.assertEqual(status["stage2_prepare_failure_driver"], "stage2_prepare_timeout")
+        self.assertEqual(status["stage2_prepare_failure_driver"], "stage2_prepare_worker_unresponsive")
         self.assertFalse(status["stage2_prepare_deadlock_suspected"])
 
     def test_campaign_marks_stage2_deadlock_after_rl_mps_timeout(self) -> None:
@@ -1300,6 +1328,93 @@ class FrameworkCampaignTests(unittest.TestCase):
         self.assertTrue(status["rl_cleanup_completed"])
         self.assertTrue(status["stage2_prepare_deadlock_suspected"])
         self.assertEqual(status["stage2_prepare_failure_driver"], "stage2_prepare_deadlock_after_rl_mps")
+
+    def test_campaign_stage2_watchdog_fails_closed_without_heartbeat(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp) / "results"
+
+            class FakeEvaluator:
+                def __init__(self, *_args, **_kwargs) -> None:
+                    self._base_config = type(
+                        "BaseConfig",
+                        (),
+                        {"execution_timeframe": CAMPAIGN.Timeframe.TF_5M, "context_timeframe": CAMPAIGN.Timeframe.TF_1H},
+                    )()
+                    self.readiness = {"promotion_ready": False, "blocked_by": "not_promotion_ready"}
+                    self.search_param_grid = {"w_momentum": [0.2, 0.3]}
+                    self.search_space_profile = {"profile": "execution_first_v2_correlation_constrained"}
+                    self._deribit_status = {"enabled": True, "observation_ready": False, "research_ready": False}
+                    self._training_window_coverage = {"fast_windows": ["overall_recent"]}
+                    self.stage2_runtime_contract = {
+                        "stage2_mp_start_method": "spawn",
+                        "validation_pool_mode": "process_pool_spawn",
+                    }
+                    self.training_input_contract = {
+                        "primary_truth_source": "binance",
+                        "execution_framework": {
+                            "five_min_feature_aggregation_enabled": True,
+                            "five_min_direct_execution_enabled": True,
+                            "one_hour_bars_available": True,
+                            "four_hour_bars_available": True,
+                        },
+                        "state_feature_sources": {
+                            "hyperliquid_in_state_features": True,
+                            "deribit_in_state_features": True,
+                            "etf_flow_in_state_features": True,
+                            "cme_positioning_in_state_features": True,
+                        },
+                        "signal_stack_contract": {"direction_state_execution_split_enabled": True},
+                    }
+
+                def final_report(self, **_kwargs):
+                    __import__("time").sleep(0.2)
+                    return None
+
+            def _fake_run_optuna_search(*_args, **kwargs):
+                callback = kwargs["status_callback"]
+                callback(event="trial_completed", current_trial=1, completed_trials=1, total_trials=1, runtime_s=1.0)
+                return {"w_momentum": 0.3}, [{"params": {"w_momentum": 0.3}, "summary": {"robust_score": 1.25}}], {
+                    "train_candidate_diagnostics": {"raw_trial_count": 1},
+                    "empty_shortlist_reason": None,
+                }
+
+            def _tight_stage2_budget(_level: str):
+                return {
+                    "total": 1.0,
+                    "subphases": {
+                        "stage2_prepare_variants": 1.0,
+                        "stage2_compare_windows": 1.0,
+                        "stage2_compare_validation": 1.0,
+                        "stage2_rank_variants": 1.0,
+                        "stage2_write_artifacts": 1.0,
+                    },
+                    "no_progress": {
+                        "stage2_prepare_variants": 0.05,
+                        "stage2_compare_windows": 0.05,
+                        "stage2_compare_validation": 0.05,
+                        "stage2_rank_variants": 0.05,
+                        "stage2_write_artifacts": 0.05,
+                    },
+                }
+
+            argv = ["run_framework_campaign.py", "--output-dir", str(out), "--budget", "fast", "--development-dev-gate"]
+            with (
+                patch.object(sys, "argv", argv),
+                patch("importlib.util.find_spec", return_value=object()),
+                patch.object(CAMPAIGN, "FrameworkEvaluator", FakeEvaluator),
+                patch.object(CAMPAIGN, "run_optuna_search", side_effect=_fake_run_optuna_search),
+                patch.object(CAMPAIGN, "train_tuner", return_value=None),
+                patch.object(CAMPAIGN, "_stage2_budget_profile", side_effect=_tight_stage2_budget),
+                self.assertRaises(CAMPAIGN.SearchStageTimeoutError),
+            ):
+                CAMPAIGN.main()
+
+            status = json.loads((out / "campaign_status.json").read_text(encoding="utf-8"))
+
+        self.assertEqual(status["status"], "failed")
+        self.assertIn("stage2_prepare_variants_no_progress_timeout", status["stage2_failure_reason"])
+        self.assertEqual(status["stage2_prepare_failure_driver"], "stage2_prepare_worker_unresponsive")
+        self.assertEqual(status["stage2_prepare_last_active_unit"], None)
 
     def test_campaign_marks_stage2_runtime_exception_failed_before_final_report(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

@@ -4,11 +4,14 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 import importlib.util
 import json
 import os
 import shutil
+import signal
 import sys
+import threading
 import traceback
 from dataclasses import asdict, replace
 from datetime import UTC, datetime
@@ -76,6 +79,37 @@ def _append_campaign_log(path: Path, message: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("a", encoding="utf-8") as handle:
         handle.write(f"[{_ts()}] {message}\n")
+
+
+@contextlib.contextmanager
+def _stage2_watchdog(initial_timeout_s: float | None) -> Any:
+    if initial_timeout_s is None or initial_timeout_s <= 0:
+        yield lambda *_args, **_kwargs: None
+        return
+    if threading.current_thread() is not threading.main_thread():
+        yield lambda *_args, **_kwargs: None
+        return
+
+    timeout_detail = {"detail": "stage2_prepare_variants_no_progress_timeout"}
+    previous_handler = signal.getsignal(signal.SIGALRM)
+
+    def _handle_timeout(_signum: int, _frame: Any) -> None:
+        raise SearchStageTimeoutError(str(timeout_detail["detail"]))
+
+    def _reset(timeout_s: float | None, detail: str) -> None:
+        timeout_detail["detail"] = detail
+        if timeout_s is None or timeout_s <= 0:
+            signal.setitimer(signal.ITIMER_REAL, 0.0)
+            return
+        signal.setitimer(signal.ITIMER_REAL, float(timeout_s))
+
+    signal.signal(signal.SIGALRM, _handle_timeout)
+    _reset(initial_timeout_s, timeout_detail["detail"])
+    try:
+        yield _reset
+    finally:
+        signal.setitimer(signal.ITIMER_REAL, 0.0)
+        signal.signal(signal.SIGALRM, previous_handler)
 
 
 def _best_effort_bootstrap_failure_status(
@@ -1190,14 +1224,22 @@ def main() -> None:
                         stage1_state["rl_device_preference"] = heartbeat.get("rl_device_preference")
                         stage1_state["rl_execution_mode"] = heartbeat.get("rl_execution_mode")
                         stage1_state["rl_vec_env_type"] = heartbeat.get("rl_vec_env_type")
-                        stage1_state["rl_platform_guard_applied"] = bool(heartbeat.get("rl_platform_guard_applied"))
-                        stage1_state["rl_init_completed"] = bool(heartbeat.get("rl_init_completed"))
-                        stage1_state["rl_first_progress_seen"] = bool(heartbeat.get("rl_first_progress_seen"))
-                        stage1_state["rl_init_timeout_s"] = heartbeat.get("rl_init_timeout_s")
-                        stage1_state["rl_first_progress_timeout_s"] = heartbeat.get("rl_first_progress_timeout_s")
-                        stage1_state["rl_failure_driver"] = heartbeat.get("rl_failure_driver")
-                        stage1_state["rl_cleanup_completed"] = heartbeat.get("rl_cleanup_completed")
-                        stage1_state["rl_cleanup_warnings"] = list(heartbeat.get("rl_cleanup_warnings") or [])
+                        if heartbeat.get("rl_platform_guard_applied") is not None:
+                            stage1_state["rl_platform_guard_applied"] = bool(heartbeat.get("rl_platform_guard_applied"))
+                        if heartbeat.get("rl_init_completed") is not None:
+                            stage1_state["rl_init_completed"] = bool(heartbeat.get("rl_init_completed"))
+                        if heartbeat.get("rl_first_progress_seen") is not None:
+                            stage1_state["rl_first_progress_seen"] = bool(heartbeat.get("rl_first_progress_seen"))
+                        if heartbeat.get("rl_init_timeout_s") is not None:
+                            stage1_state["rl_init_timeout_s"] = heartbeat.get("rl_init_timeout_s")
+                        if heartbeat.get("rl_first_progress_timeout_s") is not None:
+                            stage1_state["rl_first_progress_timeout_s"] = heartbeat.get("rl_first_progress_timeout_s")
+                        if "rl_failure_driver" in heartbeat:
+                            stage1_state["rl_failure_driver"] = heartbeat.get("rl_failure_driver")
+                        if "rl_cleanup_completed" in heartbeat:
+                            stage1_state["rl_cleanup_completed"] = heartbeat.get("rl_cleanup_completed")
+                        if heartbeat.get("rl_cleanup_warnings") is not None:
+                            stage1_state["rl_cleanup_warnings"] = list(heartbeat.get("rl_cleanup_warnings") or [])
                     if event in {"rl_progress", "rl_completed"}:
                         stage1_state["rl_timing_count"] = int(stage1_state.get("rl_timing_count", 0) or 0) + 1
                         stage1_state["rl_episode_runtime_sum_s"] = float(stage1_state.get("rl_episode_runtime_sum_s", 0.0) or 0.0) + float(
@@ -2150,6 +2192,9 @@ def main() -> None:
             stage2_budgets = {level: _stage2_budget_profile(level) for level in ("smoke", "fast", "high")}
             budget_key = "smoke" if args.budget == "smoke" else ("high" if args.budget == "high" else "fast")
 
+            def stage2_watchdog_reset(*_args: Any, **_kwargs: Any) -> None:
+                return None
+
             def _stage2_timeout_check() -> None:
                 now = datetime.now(UTC).timestamp()
                 current_subphase = stage2_state.get("current_subphase") or (_read_json(status_path) or {}).get("stage2_subphase")
@@ -2216,10 +2261,20 @@ def main() -> None:
                 )
                 unit_label = str(stage2_state["last_unit"] or "")
                 _update_stage2_prepare_cache_metrics(stage2_state, event=event, unit_label=unit_label)
+                no_progress_timeout = float(
+                    stage2_budgets[budget_key]["no_progress"].get(
+                        subphase,
+                        stage2_budgets[budget_key]["subphases"].get(subphase, stage2_budgets[budget_key]["total"]),
+                    )
+                )
                 if subphase == "stage2_prepare_variants":
                     stage2_state["prepare_timeout_s"] = float(
                         stage2_budgets[budget_key]["no_progress"].get("stage2_prepare_variants", 0.0)
                     )
+                stage2_watchdog_reset(
+                    no_progress_timeout,
+                    f"{subphase}_no_progress_timeout: subphase={subphase} last_unit={stage2_state['last_unit']}",
+                )
                 _update_status(
                     status_path,
                     phase="stage2_full_verdict",
@@ -2309,72 +2364,77 @@ def main() -> None:
             _append_campaign_log(log_path, "stage2_full_verdict started")
             smoke_stage2 = args.budget == "smoke"
             try:
-                if not args.development_dev_gate:
-                    final_report_payload = _write_development_iteration_report(
-                        output_dir=output_dir,
-                        split_spec=split_spec,
-                        base_config=base_config,
-                        evaluator=evaluator,
-                        stage1_payload=stage1_payload,
-                    )
-                    report = None
-                    _write_json(stage2_path, final_report_payload)
-                    _stage2_heartbeat(
-                        event="stage2_write_artifacts_completed",
-                        completed_units=1,
-                        total_units=1,
-                    )
-                    _append_campaign_log(
-                        log_path,
-                        f"stage2_full_verdict complete best_variant={final_report_payload.get('best_variant')}",
-                    )
-                elif stage1_payload.get("search_status", {}).get("search_outcome") == "empty":
-                    report = SearchReport(
-                        created_at=_ts(),
-                        symbol=base_config.symbol,
-                        readiness=evaluator.readiness,
-                        deribit_status=evaluator._deribit_status,
-                        split_contract=split_summary_json(split_spec),
-                        training_window_coverage=evaluator._training_window_coverage,
-                        training_input_contract=evaluator.training_input_contract,
-                        search_status=stage1_payload.get("search_status"),
-                        current=_placeholder_summary("current"),
-                        paulwei_baseline=_placeholder_summary("paulwei_baseline"),
-                        optuna_best=None,
-                        rl_best=None,
-                        best_variant="paulwei_baseline",
-                        best_score=0.0,
-                        best_params=None,
-                        comparison_payload={},
-                        report_mode="fast",
-                        report_degraded_due_to_memory=False,
-                        smoke_completed=True,
-                        evaluation_role="development",
-                        test_access_allowed=False,
-                        dev_gate_used_this_round=True,
-                        dev_gate_last_round=args.dev_gate_last_round,
-                        dev_gate_interval=args.dev_gate_interval,
-                        full_stage2_executed_this_round=True,
-                    )
-                    _stage2_heartbeat(event="stage2_prepare_variants_progress", variant="no_tuned_candidate", completed_units=4, total_units=4)
-                else:
-                    full_stage2_budget = args.budget == "high"
-                    report = evaluator.final_report(
-                        optuna_params=stage1_payload.get("optuna_params"),
-                        rl_params=stage1_payload.get("rl_params"),
-                        search_status=stage1_payload.get("search_status"),
-                        full=full_stage2_budget,
-                        evaluate_test=False,
-                        include_comparison_payload=True,
-                        status_callback=_stage2_heartbeat,
-                        comparison_compute_mode="smoke_minimal" if smoke_stage2 else "full",
-                        evaluation_role="development",
-                        test_access_allowed=False,
-                        dev_gate_used_this_round=True,
-                        dev_gate_last_round=args.dev_gate_last_round,
-                        dev_gate_interval=args.dev_gate_interval,
-                        full_stage2_executed_this_round=full_stage2_budget,
-                    )
+                initial_no_progress_timeout = float(
+                    stage2_budgets[budget_key]["no_progress"].get("stage2_prepare_variants", 0.0)
+                )
+                with _stage2_watchdog(initial_no_progress_timeout) as _reset_stage2_watchdog:
+                    stage2_watchdog_reset = _reset_stage2_watchdog
+                    if not args.development_dev_gate:
+                        final_report_payload = _write_development_iteration_report(
+                            output_dir=output_dir,
+                            split_spec=split_spec,
+                            base_config=base_config,
+                            evaluator=evaluator,
+                            stage1_payload=stage1_payload,
+                        )
+                        report = None
+                        _write_json(stage2_path, final_report_payload)
+                        _stage2_heartbeat(
+                            event="stage2_write_artifacts_completed",
+                            completed_units=1,
+                            total_units=1,
+                        )
+                        _append_campaign_log(
+                            log_path,
+                            f"stage2_full_verdict complete best_variant={final_report_payload.get('best_variant')}",
+                        )
+                    elif stage1_payload.get("search_status", {}).get("search_outcome") == "empty":
+                        report = SearchReport(
+                            created_at=_ts(),
+                            symbol=base_config.symbol,
+                            readiness=evaluator.readiness,
+                            deribit_status=evaluator._deribit_status,
+                            split_contract=split_summary_json(split_spec),
+                            training_window_coverage=evaluator._training_window_coverage,
+                            training_input_contract=evaluator.training_input_contract,
+                            search_status=stage1_payload.get("search_status"),
+                            current=_placeholder_summary("current"),
+                            paulwei_baseline=_placeholder_summary("paulwei_baseline"),
+                            optuna_best=None,
+                            rl_best=None,
+                            best_variant="paulwei_baseline",
+                            best_score=0.0,
+                            best_params=None,
+                            comparison_payload={},
+                            report_mode="fast",
+                            report_degraded_due_to_memory=False,
+                            smoke_completed=True,
+                            evaluation_role="development",
+                            test_access_allowed=False,
+                            dev_gate_used_this_round=True,
+                            dev_gate_last_round=args.dev_gate_last_round,
+                            dev_gate_interval=args.dev_gate_interval,
+                            full_stage2_executed_this_round=True,
+                        )
+                        _stage2_heartbeat(event="stage2_prepare_variants_progress", variant="no_tuned_candidate", completed_units=4, total_units=4)
+                    else:
+                        full_stage2_budget = args.budget == "high"
+                        report = evaluator.final_report(
+                            optuna_params=stage1_payload.get("optuna_params"),
+                            rl_params=stage1_payload.get("rl_params"),
+                            search_status=stage1_payload.get("search_status"),
+                            full=full_stage2_budget,
+                            evaluate_test=False,
+                            include_comparison_payload=True,
+                            status_callback=_stage2_heartbeat,
+                            comparison_compute_mode="smoke_minimal" if smoke_stage2 else "full",
+                            evaluation_role="development",
+                            test_access_allowed=False,
+                            dev_gate_used_this_round=True,
+                            dev_gate_last_round=args.dev_gate_last_round,
+                            dev_gate_interval=args.dev_gate_interval,
+                            full_stage2_executed_this_round=full_stage2_budget,
+                        )
                 _stage2_timeout_check()
             except SearchStageTimeoutError as exc:
                 existing_checkpoint = written_candidate_checkpoint if isinstance(written_candidate_checkpoint, dict) else None
