@@ -3,6 +3,8 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
+import pandas as pd
+
 from zenquant.domain import IndicatorPack, MarketState, Timeframe
 from zenquant.execution import ExecutionGateway, ExecutionKernel
 from zenquant.historical import HistoricalBacktest, HistoricalBacktestConfig
@@ -12,12 +14,120 @@ from zenquant.indicator import IndicatorEngine, IndicatorStore
 from zenquant.infra import DeterministicReplayer, InMemoryJetStream, StreamConfig
 from zenquant.ingestor import SyntheticIngestor, SyntheticIngestorConfig
 from zenquant.market import BarClockService, SnapshotBuilder
+from zenquant.research.microstructure import write_microstructure_sidecar_features
 from zenquant.risk import RiskOverlay
 from zenquant.state import StateEngine
 from zenquant.strategy import ARCStrategyEngine
 
 
 class ReplayTests(unittest.TestCase):
+    def test_historical_replay_injects_microstructure_sidecar_when_enabled(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            four_hour_dir = root / "klines" / "BTCUSDT" / "4h"
+            one_day_dir = root / "klines" / "BTCUSDT" / "1d"
+            sidecar_raw = root / "microstructure_raw"
+            sidecar_root = root / "microstructure_sidecar"
+            sidecar_raw.mkdir(parents=True, exist_ok=True)
+
+            start_ns = 1_700_000_000_000_000_000
+            four_hour_ns = Timeframe.TF_4H.seconds * 1_000_000_000
+            day_ns = Timeframe.TF_1D.seconds * 1_000_000_000
+            write_parquet_rows(
+                four_hour_dir / "data.parquet",
+                [
+                    HistoricalKlineRow(
+                        symbol="BTCUSDT",
+                        timeframe="4h",
+                        open_time_ns=start_ns,
+                        close_time_ns=start_ns + four_hour_ns - 1_000_000,
+                        open=50_000.0,
+                        high=50_200.0,
+                        low=49_900.0,
+                        close=50_100.0,
+                        volume=100.0,
+                        trade_count=20,
+                    )
+                ],
+            )
+            write_parquet_rows(
+                one_day_dir / "data.parquet",
+                [
+                    HistoricalKlineRow(
+                        symbol="BTCUSDT",
+                        timeframe="1d",
+                        open_time_ns=start_ns,
+                        close_time_ns=start_ns + day_ns - 1_000_000,
+                        open=49_800.0,
+                        high=50_400.0,
+                        low=49_500.0,
+                        close=50_100.0,
+                        volume=400.0,
+                        trade_count=80,
+                    )
+                ],
+            )
+
+            snapshots = []
+            trades = []
+            for idx in range(6):
+                ts_ns = start_ns + idx * 1_000_000_000
+                bid = 50_000.0 + idx
+                ask = bid + 1.0
+                snapshots.append(
+                    {
+                        "ts_ns": ts_ns,
+                        "venue": "bybit",
+                        "symbol": "BTCUSDT",
+                        "sequence": idx,
+                        "bid_prices": f"[{bid}, {bid - 1.0}]",
+                        "bid_sizes": f"[{10.0 + idx}, {8.0 + idx}]",
+                        "ask_prices": f"[{ask}, {ask + 1.0}]",
+                        "ask_sizes": f"[{9.0 + idx}, {7.0 + idx}]",
+                    }
+                )
+                trades.append(
+                    {
+                        "ts_ns": ts_ns + 100_000_000,
+                        "venue": "bybit",
+                        "symbol": "BTCUSDT",
+                        "price": bid + 0.5,
+                        "size": 1.0 + idx * 0.1,
+                        "side": "buy" if idx % 2 == 0 else "sell",
+                    }
+                )
+            pd.DataFrame(snapshots).to_parquet(sidecar_raw / "snapshots.parquet", index=False)
+            pd.DataFrame(trades).to_parquet(sidecar_raw / "trades.parquet", index=False)
+            write_microstructure_sidecar_features(
+                data_root=sidecar_raw,
+                venue="bybit",
+                symbol="BTCUSDT",
+                depth=20,
+                cadence_ms=1000,
+                feature_output_root=sidecar_root,
+            )
+
+            with patch("zenquant.historical.replay.HFFeatureStore.load", return_value=None):
+                replay = HistoricalBacktest(
+                    HistoricalBacktestConfig(
+                        root_dir=root,
+                        symbol="BTCUSDT",
+                        execution_timeframe=Timeframe.TF_4H,
+                        direction_timeframe=Timeframe.TF_4H,
+                        start_ns=start_ns,
+                        end_ns=start_ns + four_hour_ns,
+                        microstructure_sidecar_enabled=True,
+                        microstructure_sidecar_dir=sidecar_root / "bybit" / "BTCUSDT" / "1000ms",
+                    )
+                )
+                replay.run()
+
+        self.assertTrue(replay._indicators)
+        pack = replay._indicators[-1]
+        self.assertIn("ms_toxicity_proxy", pack.values)
+        self.assertTrue(bool(pack.values["ms_sidecar_ready"]))
+        self.assertFalse(bool(pack.values["ms_sidecar_stale"]))
+
     def test_replay_context_cache_stats_report_reuse(self) -> None:
         with TemporaryDirectory() as tmp:
             root = Path(tmp)
