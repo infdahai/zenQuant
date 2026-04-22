@@ -44,6 +44,7 @@
   - 只允许以 `IndicatorPack.values.ms_*` 风险字段形式回输
   - 当前允许路径：`risk_overlay_input` / 后续 `execution_modifier`
   - 当前禁止路径：`framework_search` 主候选排序、direction vote、promoted truth
+  - 当前正式 verdict 见 [`MICROSTRUCTURE_SIDECAR_VERDICT_2026_04_22.md`](/Users/disaster/workspace/code/zenQuant/docs/MICROSTRUCTURE_SIDECAR_VERDICT_2026_04_22.md)
 - 数据源分层固定为：
   - `Binance liquidation = Tier 1 primary truth`
   - `Hyperliquid public proxy = Tier 2 supplemental`
@@ -128,6 +129,7 @@
 - microstructure sidecar 当前仍为 `research-only`
   - 当前只批准 `Bybit artifact -> risk_overlay research integration -> Hyperliquid cross-check`
   - 未批准进入 direction path，也未批准进入主训练候选路径
+  - 当前实现已经进入 `IndicatorPack.values` enrichment 与 `RiskOverlay` research path，不应再表述为“尚未接入运行路径”
 
 ### 1.5 当前历史结论
 
