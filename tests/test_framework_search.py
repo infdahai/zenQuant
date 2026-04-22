@@ -1,5 +1,6 @@
 import importlib.util
 import json
+import multiprocessing as mp
 import sys
 import tempfile
 import unittest
@@ -1496,6 +1497,45 @@ class SearchReportSerializationTests(unittest.TestCase):
         self.assertIn(("cache_miss", "summary_cache"), progress)
         self.assertIn(("cache_miss", "window_snapshot:dev"), progress)
         self.assertIn(("cache_miss", "window_snapshot:2023-08"), progress)
+
+    def test_stage2_runtime_contract_uses_spawn_on_darwin(self) -> None:
+        fake_variants = [type("Variant", (), {"name": "current"})(), type("Variant", (), {"name": "paulwei_baseline"})()]
+        with (
+            patch("zenquant.research.framework_search.sys.platform", "darwin"),
+            patch("zenquant.research.framework_search.default_variant_specs", return_value=fake_variants),
+        ):
+            evaluator = FrameworkEvaluator(HistoricalBacktestConfig(), split_spec=default_btc_split_spec())
+
+        self.assertEqual(
+            evaluator.stage2_runtime_contract,
+            {
+                "stage2_mp_start_method": "spawn",
+                "validation_pool_mode": "process_pool_spawn",
+            },
+        )
+
+    def test_get_validation_pool_uses_explicit_mp_context(self) -> None:
+        fake_variants = [type("Variant", (), {"name": "current"})(), type("Variant", (), {"name": "paulwei_baseline"})()]
+        executor_calls: list[dict[str, object]] = []
+
+        class FakeExecutor:
+            def __init__(self, **kwargs) -> None:
+                executor_calls.append(kwargs)
+
+            def shutdown(self, **_kwargs) -> None:
+                return None
+
+        with (
+            patch("zenquant.research.framework_search.default_variant_specs", return_value=fake_variants),
+            patch("zenquant.research.framework_search.ProcessPoolExecutor", FakeExecutor),
+        ):
+            evaluator = FrameworkEvaluator(HistoricalBacktestConfig(), split_spec=default_btc_split_spec())
+            evaluator._stage2_mp_start_method = "spawn"
+            evaluator._validation_pool = None
+            evaluator._get_validation_pool(workers=2)
+
+        self.assertEqual(executor_calls[0]["max_workers"], 2)
+        self.assertEqual(executor_calls[0]["mp_context"].get_start_method(), mp.get_context("spawn").get_start_method())
 
     def test_final_report_uses_fast_compare_window_profile_and_workers(self) -> None:
         summary = CandidateSummary(
