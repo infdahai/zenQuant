@@ -256,7 +256,7 @@ class FrameworkLoopScriptTests(unittest.TestCase):
             with (
                 mock.patch.object(LOOP.subprocess, "Popen", return_value=FakeProcess()),
                 mock.patch.object(LOOP, "_write_training_monitor", return_value={}),
-                self.assertRaisesRegex(RuntimeError, "campaign_round_failed"),
+                self.assertRaisesRegex(RuntimeError, "campaign_failed_before_final_report"),
             ):
                 LOOP._launch_round(
                     args,
@@ -277,7 +277,7 @@ class FrameworkLoopScriptTests(unittest.TestCase):
             loop_status = json.loads(loop_status_path.read_text(encoding="utf-8"))
 
         self.assertEqual(loop_status["loop_state"], "failed")
-        self.assertEqual(loop_status["stop_reason"], "campaign_round_failed:1")
+        self.assertEqual(loop_status["stop_reason"], "campaign_failed_before_final_report:1")
 
     def test_launch_round_short_circuits_on_authoritative_failed_status(self) -> None:
         class FakeProcess:
@@ -328,7 +328,7 @@ class FrameworkLoopScriptTests(unittest.TestCase):
             with (
                 mock.patch.object(LOOP.subprocess, "Popen", return_value=FakeProcess()),
                 mock.patch.object(LOOP, "_write_training_monitor", return_value={}),
-                self.assertRaisesRegex(RuntimeError, "campaign_round_failed"),
+                self.assertRaisesRegex(RuntimeError, "stage1_optuna_timeout"),
             ):
                 LOOP._launch_round(
                     args,
@@ -350,8 +350,62 @@ class FrameworkLoopScriptTests(unittest.TestCase):
             loop_log = loop_log_path.read_text(encoding="utf-8")
 
         self.assertEqual(loop_status["loop_state"], "failed")
-        self.assertEqual(loop_status["stop_reason"], "campaign_round_failed:1")
+        self.assertEqual(loop_status["stop_reason"], "stage1_optuna_timeout: trial 1 exceeded 240s:1")
         self.assertIn("round_failed round=1 budget=smoke exit_code=1", loop_log)
+
+    def test_launch_round_classifies_bootstrap_failure_before_status(self) -> None:
+        class FakeProcess:
+            pid = 65432
+
+            def poll(self):
+                return 1
+
+            def wait(self, timeout=None):
+                del timeout
+                return 1
+
+        with tempfile.TemporaryDirectory() as tmp:
+            loop_dir = Path(tmp)
+            run_dir = loop_dir / "runs" / "round_001"
+            loop_status_path = loop_dir / "loop_status.json"
+            loop_log_path = loop_dir / "loop.log"
+            args = Namespace(
+                root="data/raw/binance",
+                symbol="BTCUSDT",
+                liquidation_dir="data/raw/merged_liquidations/aggregated",
+                poll_interval=0.0,
+            )
+            run_dir.mkdir(parents=True, exist_ok=True)
+
+            with (
+                mock.patch.object(LOOP.subprocess, "Popen", return_value=FakeProcess()),
+                mock.patch.object(LOOP, "_write_training_monitor", return_value={}),
+                self.assertRaisesRegex(RuntimeError, "campaign_bootstrap_failed_before_status"),
+            ):
+                LOOP._launch_round(
+                    args,
+                    run_dir=run_dir,
+                    budget="fast",
+                    seed_trials=[],
+                    loop_status_path=loop_status_path,
+                    loop_log_path=loop_log_path,
+                    round_index=1,
+                    max_rounds=8,
+                    adaptation_policy="hostile_window_defensive",
+                    resume=False,
+                    development_dev_gate=True,
+                    dev_gate_last_round=None,
+                    dev_gate_interval=3,
+                )
+
+            loop_status = json.loads(loop_status_path.read_text(encoding="utf-8"))
+            launcher_log_exists = (run_dir / "campaign_launcher.log").exists()
+            campaign_status_exists = (run_dir / "campaign_status.json").exists()
+
+        self.assertEqual(loop_status["loop_state"], "failed")
+        self.assertEqual(loop_status["stop_reason"], "campaign_bootstrap_failed_before_status:1")
+        self.assertFalse(campaign_status_exists)
+        self.assertTrue(launcher_log_exists)
 
     def test_launch_round_rejects_when_campaign_lock_is_active(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -458,7 +512,37 @@ class FrameworkLoopScriptTests(unittest.TestCase):
             ):
                 LOOP.main()
 
-        self.assertEqual(str(exc.exception), "--resume and --initial-seed-trials-file are mutually exclusive")
+        self.assertEqual(
+            str(exc.exception),
+            "--resume, --initial-seed-trials-file, and --initial-candidate-checkpoint-file are mutually exclusive",
+        )
+
+    def test_main_rejects_resume_with_initial_candidate_checkpoint_file(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            loop_dir = Path(tmp) / "framework_optimization_loop"
+            checkpoint_file = Path(tmp) / "candidate_checkpoint.json"
+            checkpoint_file.write_text("{}", encoding="utf-8")
+
+            with (
+                mock.patch(
+                    "sys.argv",
+                    [
+                        "run_framework_research_loop.py",
+                        "--output-dir",
+                        str(loop_dir),
+                        "--resume",
+                        "--initial-candidate-checkpoint-file",
+                        str(checkpoint_file),
+                    ],
+                ),
+                self.assertRaises(SystemExit) as exc,
+            ):
+                LOOP.main()
+
+        self.assertEqual(
+            str(exc.exception),
+            "--resume, --initial-seed-trials-file, and --initial-candidate-checkpoint-file are mutually exclusive",
+        )
 
     def test_main_uses_initial_seed_trials_for_first_round(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -545,6 +629,117 @@ class FrameworkLoopScriptTests(unittest.TestCase):
 
         self.assertEqual(captured["round_index"], 1)
         self.assertEqual(captured["seed_trials"], seed_payload)
+
+    def test_main_merges_external_candidate_checkpoint_into_first_round_seeds(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            loop_dir = Path(tmp) / "framework_optimization_loop"
+            campaign_root = loop_dir / "runs"
+            seed_file = Path(tmp) / "seed_trials.json"
+            checkpoint_file = Path(tmp) / "candidate_checkpoint.json"
+            seed_file.write_text(
+                json.dumps(
+                    [
+                        {
+                            "vol_shock_threshold": 0.95,
+                            "flip_min_confidence": 0.5,
+                        }
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            checkpoint_file.write_text(
+                json.dumps(
+                    {
+                        "round": 2,
+                        "checkpoint_status": "usable",
+                        "split_contract_version": "btc_temporal_v2_train_selection_only",
+                        "search_space_mode": "baseline_anchored_train_only",
+                        "train_only_search": True,
+                        "candidate_variant": "optuna_tuned",
+                        "params": {"w_momentum": 0.21, "flip_min_confidence": 0.61},
+                        "selected_checkpoint_candidate": {"score": 1.7},
+                    }
+                ),
+                encoding="utf-8",
+            )
+            captured: dict[str, object] = {}
+
+            def fake_launch_round(
+                args,
+                *,
+                run_dir,
+                budget,
+                seed_trials,
+                loop_status_path,
+                loop_log_path,
+                round_index,
+                max_rounds,
+                adaptation_policy,
+                resume,
+                development_dev_gate,
+                dev_gate_last_round,
+                dev_gate_interval,
+            ):
+                del args, run_dir, budget, loop_status_path, loop_log_path, max_rounds, adaptation_policy, resume, development_dev_gate, dev_gate_last_round, dev_gate_interval
+                captured["round_index"] = round_index
+                captured["seed_trials"] = seed_trials
+                return (
+                    {
+                        "post_smoke_scenario": {
+                            "scenario": "scenario_development_train_iteration",
+                            "category": "train_iteration",
+                            "should_open_full_training": False,
+                            "next_action": "continue_train_search_until_dev_gate",
+                            "blockers": ["x"],
+                        },
+                        "full_training_assessment": {"allowed": False, "blockers": ["x"], "warnings": []},
+                        "best_variant": "current",
+                        "best_score": 0.0,
+                        "train_candidate_diagnostics": {"max_train_sharpe": 0.0},
+                        "candidate_ready_for_handoff": False,
+                        "candidate_frozen_id": None,
+                        "dev_gate_used_this_round": False,
+                    },
+                    {"search_status": {"stage1_best_score": 0.0}},
+                    {"phase": "stage3_complete", "status": "completed", "campaign_pid": 123},
+                )
+
+            def fake_plan_next_iteration(**kwargs):
+                return Namespace(
+                    next_budget="fast",
+                    adaptation_policy="steady_state",
+                    all_seed_trials=[],
+                    loop_progression_blocked=False,
+                    should_open_fast_or_full_training=False,
+                    stop=True,
+                    stop_reason="done",
+                )
+
+            with (
+                mock.patch(
+                    "sys.argv",
+                    [
+                        "run_framework_research_loop.py",
+                        "--output-dir",
+                        str(loop_dir),
+                        "--campaign-output-root",
+                        str(campaign_root),
+                        "--initial-seed-trials-file",
+                        str(seed_file),
+                        "--initial-candidate-checkpoint-file",
+                        str(checkpoint_file),
+                    ],
+                ),
+                mock.patch.object(LOOP, "_launch_round", side_effect=fake_launch_round),
+                mock.patch.object(LOOP, "plan_next_iteration", side_effect=fake_plan_next_iteration),
+                mock.patch.object(LOOP, "_write_training_monitor", return_value={}),
+            ):
+                LOOP.main()
+
+        self.assertEqual(captured["round_index"], 1)
+        self.assertEqual(captured["seed_trials"][0]["w_momentum"], 0.21)
+        self.assertEqual(captured["seed_trials"][0]["flip_min_confidence"], 0.6)
+        self.assertEqual(captured["seed_trials"][1]["vol_shock_threshold"], 0.95)
 
     def test_resume_prefers_candidate_checkpoint_for_seed_warm_start(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
