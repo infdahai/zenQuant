@@ -8,6 +8,7 @@ import importlib.util
 import json
 import os
 import shutil
+import sys
 import traceback
 from dataclasses import asdict, replace
 from datetime import UTC, datetime
@@ -75,6 +76,51 @@ def _append_campaign_log(path: Path, message: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("a", encoding="utf-8") as handle:
         handle.write(f"[{_ts()}] {message}\n")
+
+
+def _best_effort_bootstrap_failure_status(
+    *,
+    status_path: Path,
+    log_path: Path,
+    budget: str,
+    optuna_trials: int,
+    rl_episodes: int,
+    started_at: str,
+    output_dir: Path,
+    failure_reason: str,
+    detail: str,
+) -> None:
+    if not status_path.exists():
+        _write_json(
+            status_path,
+            {
+                "phase": "stage0_readiness",
+                "status": "failed",
+                "budget": budget,
+                "optuna_trials_requested": optuna_trials,
+                "stage1_optuna_trials_total": optuna_trials,
+                "rl_episodes_requested": rl_episodes,
+                "optuna_trials_completed": 0,
+                "rl_episodes_completed": 0,
+                "started_at": started_at,
+                "updated_at": _ts(),
+                "resume_supported": True,
+                "full_training_allowed": False,
+                "full_training_decision": "defer_full_training",
+                "full_training_blockers": ["smoke_campaign_incomplete"],
+            },
+        )
+    _update_status(
+        status_path,
+        status="failed",
+        blocked_by="campaign_bootstrap_exception",
+        failure_reason=failure_reason,
+        detail=detail,
+        campaign_pid=os.getpid(),
+        launcher_pid=int(os.environ.get("ZENQUANT_LOOP_LAUNCHER_PID", "0") or 0) or None,
+        campaign_launcher_log_path=str(output_dir / "campaign_launcher.log"),
+    )
+    _append_campaign_log(log_path, f"campaign_failed campaign_bootstrap_exception reason={failure_reason}")
 
 
 def _initialize_running_status(
@@ -168,6 +214,19 @@ def _initialize_running_status(
         "rl_device": None,
         "rl_device_resolved_from": None,
         "rl_device_fallback_reason": None,
+        "rl_device_preference": None,
+        "rl_execution_mode": None,
+        "rl_vec_env_type": None,
+        "rl_platform_guard_applied": False,
+        "rl_init_completed": False,
+        "rl_first_progress_seen": False,
+        "rl_init_timeout_s": None,
+        "rl_first_progress_timeout_s": None,
+        "rl_failure_driver": None,
+        "rl_cleanup_completed": None,
+        "rl_cleanup_warnings": [],
+        "stage2_mp_start_method": None,
+        "validation_pool_mode": None,
         "stage1_cpu_hotspot_summary": None,
         "stage1_indicator_hotspot_summary": None,
         "trial_replay_cache_hit_rate": 0.0,
@@ -192,6 +251,10 @@ def _initialize_running_status(
         "stage2_last_progress_at": None,
         "stage2_last_completed_unit": None,
         "stage2_failure_reason": None,
+        "stage2_prepare_timeout_s": None,
+        "stage2_prepare_deadlock_suspected": False,
+        "stage2_prepare_failure_driver": None,
+        "stage2_prepare_last_active_unit": None,
         "train_candidate_diagnostics": None,
         "empty_shortlist_reason": None,
         "candidate_checkpoint_written": False,
@@ -339,6 +402,24 @@ def _update_stage2_prepare_cache_metrics(stage2_state: dict[str, Any], *, event:
         miss_reasons = dict(stage2_state.get("prepare_variant_miss_reasons") or {})
         miss_reasons[reason] = int(miss_reasons.get(reason, 0) or 0) + 1
         stage2_state["prepare_variant_miss_reasons"] = miss_reasons
+
+
+def _stage2_failure_driver(
+    failure_reason: str,
+    *,
+    rl_device: str | None,
+    stage2_mp_start_method: str | None,
+) -> tuple[bool, str]:
+    normalized = str(failure_reason or "")
+    if "stage2_prepare" not in normalized:
+        return False, "stage2_prepare_timeout" if "timeout" in normalized else "stage2_runtime_or_search_issue"
+    if rl_device == "mps" and stage2_mp_start_method == "spawn":
+        return True, "stage2_prepare_deadlock_after_rl_mps"
+    if "no_progress_timeout" in normalized:
+        return True, "stage2_prepare_worker_unresponsive"
+    if "timeout" in normalized:
+        return False, "stage2_prepare_timeout"
+    return False, "stage2_runtime_or_search_issue"
 
 
 def _resolved_search_space_contract(
@@ -675,66 +756,69 @@ def main() -> None:
     args = parser.parse_args()
 
     output_dir = Path(args.output_dir)
-    if not args.resume:
-        _archive_prior_outputs(output_dir)
-    else:
-        invalidated_reason = _resume_invalidated_reason(
-            output_dir,
-            split_spec_version=default_btc_split_spec().version,
-        )
-        if invalidated_reason is not None:
-            _invalidate_resume_state(output_dir, output_dir / "campaign_status.json", reason=invalidated_reason)
-            print("blocked_by=invalidated_checkpoint")
-            print(f"invalidated_reason={invalidated_reason}")
-            return
-    output_dir.mkdir(parents=True, exist_ok=True)
-    checkpoint_dir = output_dir / "checkpoints"
-    checkpoint_dir.mkdir(parents=True, exist_ok=True)
     status_path = output_dir / "campaign_status.json"
     log_path = output_dir / "campaign.log"
-
     optuna_trials, rl_episodes = _resolved_budget(args.budget, args.optuna_trials, args.rl_episodes)
-    stage1_parallel_mode = "serial" if args.budget == "smoke" else "cpu_parallel"
-    if args.budget == "smoke":
-        stage1_max_workers = None
-    elif args.budget == "fast":
-        fast_worker_cap = {
-            "fast_low": 4,
-            "fast_default": 6,
-            "fast_high_cpu": 8,
-        }[args.fast_worker_profile]
-        stage1_max_workers = max(1, min((os.cpu_count() or 4) - 2, fast_worker_cap))
-    else:
-        stage1_max_workers = max(1, min((os.cpu_count() or 4) - 2, 8))
-    stage1_target_inflight = 1 if args.budget == "smoke" else stage1_max_workers
-    stage1_batch_size = 1 if args.budget == "smoke" else 4 if args.budget == "fast" else 6
-    extra_seed_trials = _read_seed_trials(Path(args.seed_trials_file)) if args.seed_trials_file else []
-    enable_stage1_rl = args.budget in {"fast", "high"}
-    if args.budget == "smoke":
-        rl_episodes = 0
     started_at = (_read_json(status_path) or {}).get("started_at", _ts()) if args.resume else _ts()
-    _initialize_running_status(
-        status_path,
-        budget=args.budget,
-        optuna_trials=optuna_trials,
-        rl_episodes=rl_episodes,
-        started_at=started_at,
-    )
-    launcher_pid = int(os.environ.get("ZENQUANT_LOOP_LAUNCHER_PID", "0") or 0) or None
-    campaign_pid = os.getpid()
-    _update_status(
-        status_path,
-        launcher_pid=launcher_pid,
-        campaign_pid=campaign_pid,
-        evaluation_role="development",
-        test_access_allowed=False,
-        dev_gate_used_this_round=bool(args.development_dev_gate),
-        dev_gate_last_round=args.dev_gate_last_round,
-        dev_gate_interval=args.dev_gate_interval,
-    )
-    _append_campaign_log(log_path, f"campaign_started budget={args.budget} resume={args.resume} pid={campaign_pid}")
+    bootstrap_guard_armed = True
 
     try:
+        if not args.resume:
+            _archive_prior_outputs(output_dir)
+        else:
+            invalidated_reason = _resume_invalidated_reason(
+                output_dir,
+                split_spec_version=default_btc_split_spec().version,
+            )
+            if invalidated_reason is not None:
+                _invalidate_resume_state(output_dir, output_dir / "campaign_status.json", reason=invalidated_reason)
+                print("blocked_by=invalidated_checkpoint")
+                print(f"invalidated_reason={invalidated_reason}")
+                return
+        output_dir.mkdir(parents=True, exist_ok=True)
+        checkpoint_dir = output_dir / "checkpoints"
+        checkpoint_dir.mkdir(parents=True, exist_ok=True)
+
+        stage1_parallel_mode = "serial" if args.budget == "smoke" else "cpu_parallel"
+        if args.budget == "smoke":
+            stage1_max_workers = None
+        elif args.budget == "fast":
+            fast_worker_cap = {
+                "fast_low": 4,
+                "fast_default": 6,
+                "fast_high_cpu": 8,
+            }[args.fast_worker_profile]
+            stage1_max_workers = max(1, min((os.cpu_count() or 4) - 2, fast_worker_cap))
+        else:
+            stage1_max_workers = max(1, min((os.cpu_count() or 4) - 2, 8))
+        stage1_target_inflight = 1 if args.budget == "smoke" else stage1_max_workers
+        stage1_batch_size = 1 if args.budget == "smoke" else 4 if args.budget == "fast" else 6
+        extra_seed_trials = _read_seed_trials(Path(args.seed_trials_file)) if args.seed_trials_file else []
+        enable_stage1_rl = args.budget in {"fast", "high"}
+        if args.budget == "smoke":
+            rl_episodes = 0
+        _initialize_running_status(
+            status_path,
+            budget=args.budget,
+            optuna_trials=optuna_trials,
+            rl_episodes=rl_episodes,
+            started_at=started_at,
+        )
+        launcher_pid = int(os.environ.get("ZENQUANT_LOOP_LAUNCHER_PID", "0") or 0) or None
+        campaign_pid = os.getpid()
+        _update_status(
+            status_path,
+            launcher_pid=launcher_pid,
+            campaign_pid=campaign_pid,
+            evaluation_role="development",
+            test_access_allowed=False,
+            dev_gate_used_this_round=bool(args.development_dev_gate),
+            dev_gate_last_round=args.dev_gate_last_round,
+            dev_gate_interval=args.dev_gate_interval,
+        )
+        _append_campaign_log(log_path, f"campaign_started budget={args.budget} resume={args.resume} pid={campaign_pid}")
+        bootstrap_guard_armed = False
+
         if importlib.util.find_spec("optuna") is None:
             _update_status(
                 status_path,
@@ -890,12 +974,20 @@ def main() -> None:
         stage1_path = checkpoint_dir / "stage1_search.json"
         stage1_payload = _read_json(stage1_path) if args.resume else None
         written_candidate_checkpoint = _read_json(_candidate_checkpoint_path(output_dir))
+        stage1_state: dict[str, Any] = dict((stage1_payload or {}).get("search_status") or {})
+        stage1_state.setdefault("rl_device", None)
+        stage1_state.setdefault("rl_cleanup_completed", None)
+        stage1_state.setdefault("rl_cleanup_warnings", [])
+        stage1_state.setdefault("rl_failure_reason", None)
+        stage1_state.setdefault("train_candidate_diagnostics", {})
+        stage1_state.setdefault("empty_shortlist_reason", None)
+        stage1_state.setdefault("no_tuned_candidate_reason", None)
         if stage1_payload is None:
             stage1_execution_mode = "1h_context_only" if args.budget == "smoke" else "5m_lightweight_train_search"
             smoke_ranking_top_n = 1 if args.budget == "smoke" else min(5, optuna_trials)
             smoke_rl_timeout_s = 600.0 if args.budget == "smoke" else None
             smoke_ranking_candidate_timeout_s = 30.0 if args.budget == "smoke" else None
-            stage1_state: dict[str, Any] = {
+            stage1_state = {
                 "optuna_params": None,
                 "optuna_trials_payload": [],
                 "optuna_trials_completed": 0,
@@ -1075,7 +1167,7 @@ def main() -> None:
                     subphase = "stage1_dev_validation"
                 elif event in {"robustness_seed_started", "robustness_seed_completed"}:
                     subphase = "stage1_dev_robustness"
-                elif event in {"rl_progress", "rl_rank_dev_started", "rl_completed"}:
+                elif event in {"rl_init_completed", "rl_progress", "rl_rank_dev_started", "rl_completed"}:
                     subphase = "stage1_rl"
                     normalized_total = max(0, rl_episodes)
                     normalized_completed = min(max(0, completed_trials), normalized_total)
@@ -1083,6 +1175,17 @@ def main() -> None:
                         stage1_state["rl_device"] = heartbeat.get("rl_device")
                         stage1_state["rl_device_resolved_from"] = heartbeat.get("rl_device_resolved_from")
                         stage1_state["rl_device_fallback_reason"] = heartbeat.get("rl_device_fallback_reason")
+                        stage1_state["rl_device_preference"] = heartbeat.get("rl_device_preference")
+                        stage1_state["rl_execution_mode"] = heartbeat.get("rl_execution_mode")
+                        stage1_state["rl_vec_env_type"] = heartbeat.get("rl_vec_env_type")
+                        stage1_state["rl_platform_guard_applied"] = bool(heartbeat.get("rl_platform_guard_applied"))
+                        stage1_state["rl_init_completed"] = bool(heartbeat.get("rl_init_completed"))
+                        stage1_state["rl_first_progress_seen"] = bool(heartbeat.get("rl_first_progress_seen"))
+                        stage1_state["rl_init_timeout_s"] = heartbeat.get("rl_init_timeout_s")
+                        stage1_state["rl_first_progress_timeout_s"] = heartbeat.get("rl_first_progress_timeout_s")
+                        stage1_state["rl_failure_driver"] = heartbeat.get("rl_failure_driver")
+                        stage1_state["rl_cleanup_completed"] = heartbeat.get("rl_cleanup_completed")
+                        stage1_state["rl_cleanup_warnings"] = list(heartbeat.get("rl_cleanup_warnings") or [])
                     if event in {"rl_progress", "rl_completed"}:
                         stage1_state["rl_timing_count"] = int(stage1_state.get("rl_timing_count", 0) or 0) + 1
                         stage1_state["rl_episode_runtime_sum_s"] = float(stage1_state.get("rl_episode_runtime_sum_s", 0.0) or 0.0) + float(
@@ -1323,6 +1426,17 @@ def main() -> None:
                     rl_device=stage1_state.get("rl_device"),
                     rl_device_resolved_from=stage1_state.get("rl_device_resolved_from"),
                     rl_device_fallback_reason=stage1_state.get("rl_device_fallback_reason"),
+                    rl_device_preference=stage1_state.get("rl_device_preference"),
+                    rl_execution_mode=stage1_state.get("rl_execution_mode"),
+                    rl_vec_env_type=stage1_state.get("rl_vec_env_type"),
+                    rl_platform_guard_applied=stage1_state.get("rl_platform_guard_applied"),
+                    rl_init_completed=stage1_state.get("rl_init_completed"),
+                    rl_first_progress_seen=stage1_state.get("rl_first_progress_seen"),
+                    rl_init_timeout_s=stage1_state.get("rl_init_timeout_s"),
+                    rl_first_progress_timeout_s=stage1_state.get("rl_first_progress_timeout_s"),
+                    rl_failure_driver=stage1_state.get("rl_failure_driver"),
+                    rl_cleanup_completed=stage1_state.get("rl_cleanup_completed"),
+                    rl_cleanup_warnings=stage1_state.get("rl_cleanup_warnings"),
                     stage1_cpu_hotspot_summary=cpu_hotspot_summary,
                     stage1_indicator_hotspot_summary=indicator_hotspot_summary,
                     indicator_fast_path_enabled=stage1_state.get("indicator_fast_path_enabled"),
@@ -1685,6 +1799,18 @@ def main() -> None:
                 rl_wall_clock_budget_s = 180.0 if args.budget == "fast" else smoke_rl_timeout_s
                 rl_max_episodes = min(12, rl_episodes) if args.budget == "fast" else rl_episodes
                 rl_n_envs = 3 if args.budget == "fast" else 1
+                rl_device_preference = "auto"
+                rl_execution_mode = "default"
+                rl_vec_env_type = "subproc_vec_env" if rl_n_envs > 1 else "dummy_vec_env"
+                rl_platform_guard_applied = False
+                rl_init_timeout_s = 30.0 if args.budget == "fast" else 60.0
+                rl_first_progress_timeout_s = 45.0 if args.budget == "fast" else 90.0
+                if args.budget == "fast" and sys.platform == "darwin":
+                    rl_n_envs = 1
+                    rl_device_preference = "cpu"
+                    rl_execution_mode = "single_env_cpu_guarded"
+                    rl_vec_env_type = "dummy_vec_env"
+                    rl_platform_guard_applied = True
                 _update_status(
                     status_path,
                     phase="stage1_rl",
@@ -1723,6 +1849,15 @@ def main() -> None:
                     stage1_last_completed_unit="ranking_completed",
                     rl_budget_mode=rl_budget_mode,
                     rl_active_envs=rl_n_envs,
+                    rl_device_preference=rl_device_preference,
+                    rl_execution_mode=rl_execution_mode,
+                    rl_vec_env_type=rl_vec_env_type,
+                    rl_platform_guard_applied=rl_platform_guard_applied,
+                    rl_init_completed=False,
+                    rl_first_progress_seen=False,
+                    rl_init_timeout_s=rl_init_timeout_s,
+                    rl_first_progress_timeout_s=rl_first_progress_timeout_s,
+                    rl_failure_driver=None,
                     train_candidate_diagnostics=dict(stage1_state.get("train_candidate_diagnostics") or {}),
                     empty_shortlist_reason=stage1_state.get("empty_shortlist_reason"),
                     no_tuned_candidate_reason=stage1_state.get("no_tuned_candidate_reason"),
@@ -1743,9 +1878,13 @@ def main() -> None:
                         max_episodes=rl_max_episodes,
                         n_envs=rl_n_envs,
                         seed_params=optuna_params if args.budget == "fast" else None,
+                        device_preference=rl_device_preference,
+                        init_timeout_s=rl_init_timeout_s,
+                        first_progress_timeout_s=rl_first_progress_timeout_s,
                     )
                 except Exception as exc:
                     stage1_state["rl_failure_reason"] = str(exc)
+                    rl_failure_driver = str(exc)
                     stage1_payload = _write_minimal_stage1_checkpoint(
                         search_outcome="partial",
                         optuna_params=optuna_params,
@@ -1766,12 +1905,26 @@ def main() -> None:
                         failure_detail=str(exc),
                         stage1_subphase="stage1_rl",
                         stage1_failure_reason="stage1_rl_sidecar_failed",
+                        rl_failure_driver=rl_failure_driver,
+                        rl_platform_guard_applied=rl_platform_guard_applied,
+                        rl_device_preference=rl_device_preference,
+                        rl_execution_mode=rl_execution_mode,
+                        rl_vec_env_type=rl_vec_env_type,
+                        rl_init_timeout_s=rl_init_timeout_s,
+                        rl_first_progress_timeout_s=rl_first_progress_timeout_s,
                         full_training_allowed=False,
                         full_training_decision="defer_full_training",
                         full_training_blockers=["smoke_campaign_incomplete", "stage1_rl_sidecar_failed"],
                     )
                     _append_campaign_log(log_path, f"stage1_rl non_blocking_failure reason={exc}")
                     rl_result = None
+                rl_search_status = dict((rl_result or {}).get("search_status") or {})
+                if rl_search_status.get("rl_device") is not None:
+                    stage1_state["rl_device"] = rl_search_status.get("rl_device")
+                    stage1_state["rl_device_resolved_from"] = rl_search_status.get("rl_device_resolved_from")
+                    stage1_state["rl_device_fallback_reason"] = rl_search_status.get("rl_device_fallback_reason")
+                    stage1_state["rl_cleanup_completed"] = rl_search_status.get("rl_cleanup_completed")
+                    stage1_state["rl_cleanup_warnings"] = list(rl_search_status.get("rl_cleanup_warnings") or [])
             else:
                 skip_reason = (
                     "budget=smoke"
@@ -1967,6 +2120,7 @@ def main() -> None:
         stage2_path = checkpoint_dir / "stage2_full_report.json"
         final_report_payload = _read_json(stage2_path) if args.resume else None
         if final_report_payload is None:
+            stage2_runtime_contract = dict(getattr(evaluator, "stage2_runtime_contract", {}) or {})
             stage2_started_at = datetime.now(UTC).timestamp()
             stage2_state = {
                 "completed": 0,
@@ -1978,6 +2132,7 @@ def main() -> None:
                 "prepare_variant_cache_hits": 0,
                 "prepare_variant_replay_reused": 0,
                 "prepare_variant_cache_observations": 0,
+                "prepare_timeout_s": None,
             }
 
             stage2_budgets = {level: _stage2_budget_profile(level) for level in ("smoke", "fast", "high")}
@@ -2049,6 +2204,10 @@ def main() -> None:
                 )
                 unit_label = str(stage2_state["last_unit"] or "")
                 _update_stage2_prepare_cache_metrics(stage2_state, event=event, unit_label=unit_label)
+                if subphase == "stage2_prepare_variants":
+                    stage2_state["prepare_timeout_s"] = float(
+                        stage2_budgets[budget_key]["no_progress"].get("stage2_prepare_variants", 0.0)
+                    )
                 _update_status(
                     status_path,
                     phase="stage2_full_verdict",
@@ -2076,6 +2235,12 @@ def main() -> None:
                     ),
                     stage2_compare_workers=heartbeat.get("compare_workers"),
                     stage2_compare_validation_workers=heartbeat.get("validation_workers"),
+                    stage2_prepare_timeout_s=stage2_state.get("prepare_timeout_s"),
+                    stage2_prepare_last_active_unit=(
+                        stage2_state["last_unit"] if subphase == "stage2_prepare_variants" else None
+                    ),
+                    stage2_mp_start_method=stage2_runtime_contract.get("stage2_mp_start_method"),
+                    validation_pool_mode=stage2_runtime_contract.get("validation_pool_mode"),
                     stage2_prepare_variant_cache_hits=stage2_state.get("prepare_variant_cache_hits", 0),
                     stage2_prepare_variant_replay_reused=stage2_state.get("prepare_variant_replay_reused", 0),
                     stage2_prepare_variant_miss_reasons=stage2_state.get("prepare_variant_miss_reasons", {}),
@@ -2098,6 +2263,8 @@ def main() -> None:
                         else 0.0
                     ),
                     stage2_failure_reason=None,
+                    stage2_prepare_deadlock_suspected=False,
+                    stage2_prepare_failure_driver=None,
                     full_training_allowed=False,
                     full_training_decision="defer_full_training",
                     full_training_blockers=["smoke_campaign_incomplete"],
@@ -2120,6 +2287,12 @@ def main() -> None:
                 stage2_last_progress_at=_ts(),
                 stage2_last_completed_unit=None,
                 stage2_failure_reason=None,
+                stage2_prepare_timeout_s=float(stage2_budgets[budget_key]["no_progress"].get("stage2_prepare_variants", 0.0)),
+                stage2_prepare_last_active_unit=None,
+                stage2_prepare_deadlock_suspected=False,
+                stage2_prepare_failure_driver=None,
+                stage2_mp_start_method=stage2_runtime_contract.get("stage2_mp_start_method"),
+                validation_pool_mode=stage2_runtime_contract.get("validation_pool_mode"),
             )
             _append_campaign_log(log_path, "stage2_full_verdict started")
             smoke_stage2 = args.budget == "smoke"
@@ -2193,6 +2366,11 @@ def main() -> None:
                 _stage2_timeout_check()
             except SearchStageTimeoutError as exc:
                 existing_checkpoint = written_candidate_checkpoint if isinstance(written_candidate_checkpoint, dict) else None
+                deadlock_suspected, failure_driver = _stage2_failure_driver(
+                    str(exc),
+                    rl_device=stage1_state.get("rl_device"),
+                    stage2_mp_start_method=stage2_runtime_contract.get("stage2_mp_start_method"),
+                )
                 if existing_checkpoint is not None:
                     failure_reason = str(exc)
                     degraded_blockers = {"prepare_timeout", "pre_validation_rejection", "validation_timeout", "compare_timeout"}
@@ -2220,6 +2398,15 @@ def main() -> None:
                     failure_reason="stage2_runtime_or_search_issue",
                     failure_detail=str(exc),
                     stage2_failure_reason=str(exc),
+                    stage2_prepare_deadlock_suspected=deadlock_suspected,
+                    stage2_prepare_failure_driver=failure_driver,
+                    stage2_prepare_last_active_unit=stage2_state.get("last_unit"),
+                    stage2_prepare_timeout_s=stage2_state.get("prepare_timeout_s"),
+                    stage2_mp_start_method=stage2_runtime_contract.get("stage2_mp_start_method"),
+                    validation_pool_mode=stage2_runtime_contract.get("validation_pool_mode"),
+                    rl_device=stage1_state.get("rl_device"),
+                    rl_cleanup_completed=stage1_state.get("rl_cleanup_completed"),
+                    rl_cleanup_warnings=stage1_state.get("rl_cleanup_warnings"),
                     candidate_checkpoint_written=written_candidate_checkpoint is not None,
                     candidate_checkpoint_status=(written_candidate_checkpoint or {}).get("checkpoint_status"),
                     candidate_checkpoint_variant=(written_candidate_checkpoint or {}).get("candidate_variant"),
@@ -2268,6 +2455,13 @@ def main() -> None:
                     else 0.0
                 )
                 final_json_payload["window_snapshot_cache_hit_rate"] = final_json_payload["validation_cache_hit_rate"]
+                final_json_payload["stage2_mp_start_method"] = stage2_runtime_contract.get("stage2_mp_start_method")
+                final_json_payload["validation_pool_mode"] = stage2_runtime_contract.get("validation_pool_mode")
+                final_json_payload["stage2_prepare_timeout_s"] = stage2_state.get("prepare_timeout_s")
+                final_json_payload["stage2_prepare_last_active_unit"] = stage2_state.get("last_unit")
+                final_json_payload["rl_device"] = stage1_state.get("rl_device")
+                final_json_payload["rl_cleanup_completed"] = stage1_state.get("rl_cleanup_completed")
+                final_json_payload["rl_cleanup_warnings"] = stage1_state.get("rl_cleanup_warnings")
                 _write_json(final_json, final_json_payload)
                 final_report_payload = {
                     "created_at": _ts(),
@@ -2394,13 +2588,28 @@ def main() -> None:
         _append_campaign_log(log_path, f"campaign_failed timeout={reason}")
         raise
     except Exception:
-        _update_status(
-            status_path,
-            status="failed",
-            blocked_by="campaign_exception",
-            detail=traceback.format_exc(limit=10),
-        )
-        _append_campaign_log(log_path, "campaign_failed campaign_exception")
+        failure_reason = f"{type(sys.exc_info()[1]).__name__}: {sys.exc_info()[1]}"
+        if bootstrap_guard_armed:
+            _best_effort_bootstrap_failure_status(
+                status_path=status_path,
+                log_path=log_path,
+                budget=args.budget,
+                optuna_trials=optuna_trials,
+                rl_episodes=rl_episodes,
+                started_at=started_at,
+                output_dir=output_dir,
+                failure_reason=failure_reason,
+                detail=traceback.format_exc(limit=10),
+            )
+        else:
+            _update_status(
+                status_path,
+                status="failed",
+                blocked_by="campaign_exception",
+                failure_reason=failure_reason,
+                detail=traceback.format_exc(limit=10),
+            )
+            _append_campaign_log(log_path, "campaign_failed campaign_exception")
         raise
 
 
