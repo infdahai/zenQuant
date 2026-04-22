@@ -8,6 +8,7 @@ import os
 import sys
 from concurrent.futures import ProcessPoolExecutor
 from concurrent.futures import TimeoutError as FutureTimeoutError
+from concurrent.futures.process import BrokenProcessPool
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from hashlib import sha1
@@ -530,6 +531,42 @@ class PrepareVariantTimeoutError(RuntimeError):
         self.variant = variant
         self.window_label = window_label
         self.timeout_s = timeout_s
+
+
+class PrepareVariantRuntimeError(RuntimeError):
+    """Raised when a lightweight stage2 prepare window fails for a non-timeout runtime reason."""
+
+    def __init__(self, *, variant: str, window_label: str, driver: str, detail: str) -> None:
+        super().__init__(
+            f"stage2_prepare_variant_runtime_failure: variant={variant} window={window_label} driver={driver} detail={detail}"
+        )
+        self.variant = variant
+        self.window_label = window_label
+        self.driver = driver
+        self.detail = detail
+
+
+class ValidationBundleRuntimeError(RuntimeError):
+    """Raised when a development validation leg fails for a non-timeout runtime reason."""
+
+    def __init__(self, *, variant: str, window_label: str, leg: str, driver: str, detail: str) -> None:
+        super().__init__(
+            f"validation_runtime_failure: variant={variant} window={window_label} leg={leg} driver={driver} detail={detail}"
+        )
+        self.variant = variant
+        self.window_label = window_label
+        self.leg = leg
+        self.driver = driver
+        self.detail = detail
+
+
+def _runtime_failure_driver(exc: Exception) -> str:
+    if isinstance(exc, BrokenProcessPool):
+        return "validation_pool_broken"
+    normalized = str(exc or "").lower()
+    if "terminated abruptly" in normalized or "child process" in normalized or "process pool" in normalized:
+        return "child_process_exited"
+    return "runtime_exception"
 
 
 def _best_tuned_candidate(report: SearchReport) -> CandidateSummary | None:
@@ -1147,6 +1184,13 @@ class FrameworkEvaluator:
                 window_label=window.label,
                 timeout_s=timeout_s,
             ) from exc
+        except Exception as exc:
+            raise PrepareVariantRuntimeError(
+                variant=variant.name,
+                window_label=window.label,
+                driver=_runtime_failure_driver(exc),
+                detail=f"{type(exc).__name__}: {exc}",
+            ) from exc
         self._backtest_cache[key] = snapshot
         return snapshot
 
@@ -1646,6 +1690,33 @@ class FrameworkEvaluator:
                 progress_callback(4, "prepare_timeout")
             self._summary_cache[cache_key] = summary
             return summary
+        except PrepareVariantRuntimeError as exc:
+            if variant.name in {"current", "paulwei_baseline"}:
+                raise RuntimeError(
+                    f"stage2_prepare_variant_runtime_failure: variant={variant.name} window={exc.window_label} "
+                    f"driver={exc.driver} detail={exc.detail}"
+                ) from exc
+            summary = CandidateSummary(
+                variant=variant.name,
+                robust_score=-9.0,
+                selection_split="dev",
+                dev_sharpe=0.0,
+                dev_pnl=0.0,
+                dev_drawdown=1.0,
+                avg_dev_sharpe=-5.0,
+                avg_dev_ratio=0.0,
+                worst_dev_sharpe=-5.0,
+                weak_window_sharpe=-5.0,
+                negative_dev_worst_windows=1,
+                promotion_candidate=False,
+                blocked_by="prepare_runtime_failure",
+                failed_gate_metrics=None,
+                promotion_failure_reason="prepare_runtime_failure",
+            )
+            if progress_callback is not None:
+                progress_callback(4, "prepare_runtime_failure")
+            self._summary_cache[cache_key] = summary
+            return summary
         if progress_callback is not None:
             progress_callback(3, "worst_windows_completed")
             if lightweight:
@@ -1721,6 +1792,33 @@ class FrameworkEvaluator:
                 )
                 if progress_callback is not None:
                     progress_callback(4, "validation_timeout")
+                self._summary_cache[cache_key] = summary
+                return summary
+            except ValidationBundleRuntimeError as exc:
+                if variant.name in {"current", "paulwei_baseline"}:
+                    raise RuntimeError(
+                        f"validation_runtime_failure: variant={variant.name} window={exc.window_label} "
+                        f"leg={exc.leg} driver={exc.driver} detail={exc.detail}"
+                    ) from exc
+                summary = CandidateSummary(
+                    variant=variant.name,
+                    robust_score=-10.0,
+                    selection_split="dev",
+                    dev_sharpe=dev_result.sharpe,
+                    dev_pnl=dev_result.net_pnl,
+                    dev_drawdown=dev_result.max_drawdown,
+                    avg_dev_sharpe=-5.0,
+                    avg_dev_ratio=0.0,
+                    worst_dev_sharpe=-5.0,
+                    weak_window_sharpe=weak_result.sharpe,
+                    negative_dev_worst_windows=len(worst_results),
+                    promotion_candidate=False,
+                    blocked_by="validation_runtime_failure",
+                    failed_gate_metrics=None,
+                    promotion_failure_reason="validation_runtime_failure",
+                )
+                if progress_callback is not None:
+                    progress_callback(4, "validation_runtime_failure")
                 self._summary_cache[cache_key] = summary
                 return summary
         try:
@@ -2041,6 +2139,14 @@ def _run_validation_bundle(
                 leg="train",
                 timeout_s=replay_timeout_s or 0.0,
             ) from exc
+        except Exception as exc:
+            raise ValidationBundleRuntimeError(
+                variant=variant.name,
+                window_label=window.label,
+                leg="train",
+                driver=_runtime_failure_driver(exc),
+                detail=f"{type(exc).__name__}: {exc}",
+            ) from exc
         if progress_callback is not None:
             progress_callback("validation_train_completed", window.label)
             progress_callback("validation_test_started", window.label)
@@ -2062,6 +2168,14 @@ def _run_validation_bundle(
                 window_label=window.label,
                 leg="test",
                 timeout_s=replay_timeout_s or 0.0,
+            ) from exc
+        except Exception as exc:
+            raise ValidationBundleRuntimeError(
+                variant=variant.name,
+                window_label=window.label,
+                leg="test",
+                driver=_runtime_failure_driver(exc),
+                detail=f"{type(exc).__name__}: {exc}",
             ) from exc
         if progress_callback is not None:
             progress_callback("validation_test_completed", window.label)

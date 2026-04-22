@@ -411,8 +411,20 @@ def _stage2_failure_driver(
     stage2_mp_start_method: str | None,
 ) -> tuple[bool, str]:
     normalized = str(failure_reason or "")
+    if "summary_scoring" in normalized and "exception" in normalized:
+        return False, "stage2_prepare_summary_scoring_exception"
+    if "validation_pool_broken" in normalized:
+        return False, "stage2_prepare_pool_broken" if "stage2_prepare" in normalized else "stage2_compare_pool_broken"
+    if "child_process_exited" in normalized:
+        return False, (
+            "stage2_prepare_child_process_exited" if "stage2_prepare" in normalized else "stage2_compare_child_process_exited"
+        )
+    if "validation_runtime_failure" in normalized:
+        return False, "stage2_compare_runtime_exception"
+    if "stage2_prepare_variant_runtime_failure" in normalized:
+        return False, "stage2_prepare_runtime_exception"
     if "stage2_prepare" not in normalized:
-        return False, "stage2_prepare_timeout" if "timeout" in normalized else "stage2_runtime_or_search_issue"
+        return False, "stage2_compare_timeout" if "timeout" in normalized else "stage2_runtime_or_search_issue"
     if rl_device == "mps" and stage2_mp_start_method == "spawn":
         return True, "stage2_prepare_deadlock_after_rl_mps"
     if "no_progress_timeout" in normalized:
