@@ -6,7 +6,7 @@
 
 - 开发负责人完成当前功能、验证与运行闭环
 - 测试负责人按本文件执行并记录结果
-- 测试通过后，系统可直接进入 `paper-live`
+- 只有在 `framework_optimization.json.final_verdict` 满足历史准入条件后，系统才具备进入 `paper-live` 的资格
 
 本文件是测试负责人与 `paper-live` 操作人的唯一入口。研究型文档仅作内部参考，不作为交付依据。
 
@@ -39,6 +39,11 @@
 - `liq_state_overlay` 与 `liq_risk_guard` 已接入，但当前保持 `research-gated`
 - Deribit 已切换为独立 collector + status 契约，状态以 `scripts/deribit_collector_status.py` 与 `data/raw/deribit_options/BTC/_collector_status.json` 为准
 - Hyperliquid 公共数据入口已存在，用于补充 liquidation proxy 历史与前瞻采集；当前默认视为研究数据，不直接改变 live contract
+- microstructure sidecar 当前已具备 research pipeline，并已批准进入 `risk_overlay` research path
+  - 第一版主样本固定为 `Bybit BTCUSDT L2`
+  - 只允许以 `IndicatorPack.values.ms_*` 风险字段形式回输
+  - 当前允许路径：`risk_overlay_input` / 后续 `execution_modifier`
+  - 当前禁止路径：`framework_search` 主候选排序、direction vote、promoted truth
 - 数据源分层固定为：
   - `Binance liquidation = Tier 1 primary truth`
   - `Hyperliquid public proxy = Tier 2 supplemental`
@@ -48,10 +53,18 @@
 - 旧调优结果若来自旧 split 制度或触碰过当前 `test`，必须标记为 `invalidated`，不得继续作为 tuned winner 使用
 - `scripts/run_framework_campaign.py` 是唯一权威 clean tuning 入口；`scripts/run_auto_research.py` 仅用于 internal/dev research
 - `results/data_source_review/hyperliquid_admission_review.json` 是 Hyperliquid 准入与角色判断的唯一研究产物
+- 第二阶段 CPU 热路径改动已经完成并拆成原子提交；当前新增的 benchmark 诊断与 stage2 复用统计已经进入研究路径
+- benchmark 旧目录的失败原因已固定为 `stage1 benchmark run ended without authoritative terminal state`
+- rerun benchmark 已完成，正式结论以 [`results/perf_stage2_benchmark_fast_rerun/perf_stage2_benchmark_review.json`](/Users/disaster/workspace/code/zenQuant/results/perf_stage2_benchmark_fast_rerun/perf_stage2_benchmark_review.json) 为准：
+  - `stage2 reuse visible`
+  - `indicator hot path not yet improved`
+  - 当前改动更接近“先把复用与诊断接通”，而不是已经拿到全面 runtime 改善
+- PaulWei 严格学习结论已形成正式研究产物 [`results/paulwei_research/strict_execution_learning_review.json`](/Users/disaster/workspace/code/zenQuant/results/paulwei_research/strict_execution_learning_review.json)
+- `AHR999` 当前只允许进入 slow-risk / DCA guidance 研究路径，不进入 intraday execution
 
 ### 1.3 当前信号体系
 
-当前默认 profile 已建模 `12` 个方向信号，其中默认启用 `9` 个，默认禁用 `3` 个。测试负责人应以 [`config/profiles/default.toml`](/Users/disaster/workspace/code/zenQuant/config/profiles/default.toml) 为唯一配置事实源，不要继续沿用旧的 `6-7` 个 signal 表。
+当前默认 profile 已建模 `14` 个方向信号，其中默认启用 `11` 个，默认禁用 `3` 个。测试负责人应以 [`config/profiles/default.toml`](/Users/disaster/workspace/code/zenQuant/config/profiles/default.toml) 为唯一配置事实源，不要继续沿用旧的 `6-7` 个 signal 表或旧的 `12/9/3` 摘要。
 
 默认启用信号：
 
@@ -61,6 +74,8 @@
 | `cvd_signal` | `0.25` | 订单流确认 | Active |
 | `liquidity_signal` | `0.20` | 流动性失衡/反身性 | Active |
 | `crowding_signal` | `0.10` | 拥挤修正 | Active |
+| `etf_flow_state_signal` | `0.10` | ETF 流向状态 | Active, no-data auto-neutral |
+| `cme_positioning_state_signal` | `0.08` | CME 持仓拥挤状态 | Active, no-data auto-neutral |
 | `options_vol_signal` | `0.15` | 期权曲面状态 | Active, no-data auto-neutral |
 | `perp_carry_stress_signal` | `0.08` | perp carry / 杠杆压力 | Active |
 | `vol_structure_signal` | `0.08` | 波动结构 / 执行节奏 | Active |
@@ -77,10 +92,10 @@
 
 测试口径：
 
-- 当前完整方向信号宇宙是 `12` 个已建模 signals
-- 默认 live / replay 路径当前启用的是 `9` 个 active signals
+- 当前完整方向信号宇宙是 `14` 个已建模 signals
+- 默认 live / replay 路径当前启用的是 `11` 个 active signals
 - `options_vol_signal` 在 Deribit 数据不足时会自动中性化，不等于 disabled
-- liquidation 当前属于 state / risk / execution overlay，不作为独立方向插件计入这 `12` 个方向信号
+- liquidation 当前属于 state / risk / execution overlay，不作为独立方向插件计入这 `14` 个方向信号
 
 ### 1.4 当前边界
 
@@ -88,6 +103,31 @@
 - 这意味着 comparison framework 已验证，但尚未证明收益层面已稳定优于 PaulWei
 - liquidation 当前不是 promoted alpha
 - 若无可用历史 liquidation 数据，研究结果必须输出 `insufficient_data`
+- `paulwei_public_archive_baseline` 当前虽然强于旧 `paulwei_baseline`，但仍保持 `research-only`
+- 当前主 blocker 是 `drawdown_outside_current_band`，不是 hostile window 回退
+- PaulWei 可迁移的主要增量只限：
+  - 多 tranche 建仓但短侧扩张更克制
+  - staged protective exits
+  - drawdown 后更慢的 cooldown / ramp
+  - moderate flip confirmation floor
+  - 高波动期更强的风险压缩
+- 不可迁移维度固定为：
+  - discretionary macro inputs
+  - news / narrative interpretation
+  - cross-exchange context
+  - 不可观测 conviction scaling
+- `AHR999` 当前允许角色固定为：
+  - `regime_prior`
+  - `risk_budget_modifier`
+  - `dca_guidance_signal`
+  - `explainability_context`
+- `AHR999` 当前禁止角色固定为：
+  - `intraday_trigger`
+  - `execution_signal`
+  - `direction_vote`
+- microstructure sidecar 当前仍为 `research-only`
+  - 当前只批准 `Bybit artifact -> risk_overlay research integration -> Hyperliquid cross-check`
+  - 未批准进入 direction path，也未批准进入主训练候选路径
 
 ### 1.5 当前历史结论
 
@@ -102,16 +142,34 @@
 - liquidation research 当前结论必须是：
   - `data_ready=false` 时为 `insufficient_data`
   - 不得假阳性 promote
+- `v27 round_003` 当前不是活跃训练，而是一个 `stale_running_state`
+  - [`results/framework_optimization_loop_v27/loop_status.json`](/Users/disaster/workspace/code/zenQuant/results/framework_optimization_loop_v27/loop_status.json) 仍显示 `campaign_running`
+  - [`results/framework_optimization_loop_v27/runs/round_003/campaign_status.json`](/Users/disaster/workspace/code/zenQuant/results/framework_optimization_loop_v27/runs/round_003/campaign_status.json) 停在 `stage2_prepare_variants progress=12/16`
+  - 但对应 `run_framework_*` / campaign 进程已经不存在
+  - 该状态应解释为 `terminal_state_not_written`，不得解释为“仍在后台继续训练”
+- benchmark rerun 的正式结论是：
+  - clean completion
+  - stage2 reuse visible
+  - indicator hot path not yet improved
+- PaulWei / AHR999 当前正式研究结论以以下 artifact 为准：
+  - [`results/paulwei_research/strict_execution_learning_review.json`](/Users/disaster/workspace/code/zenQuant/results/paulwei_research/strict_execution_learning_review.json)
+  - [`results/paulwei_research/promotion_eligibility_review.json`](/Users/disaster/workspace/code/zenQuant/results/paulwei_research/promotion_eligibility_review.json)
+  - [`results/paulwei_research/ahr999_execution_guidance_review.json`](/Users/disaster/workspace/code/zenQuant/results/paulwei_research/ahr999_execution_guidance_review.json)
 
 ### 1.6 当前是否可进入 `paper-live`
 
-结论：**只有在冻结 `test` 历史验收通过后，才可以进入 `paper-live`；进入后仍不等于已经完成 paper-live validation。**
+结论：**当前还不能把版本表述为 `eligible_for_paper_live`。只有在 `results/framework_optimization/framework_optimization.json` 的 `final_verdict` 同时满足 `test_evaluated=true`、`promote_to_paper_live_candidate=true` 且没有 blocker 时，才可以进入 `paper-live`；进入后仍不等于已经完成 paper-live validation。**
 
 进入依据：
 
 - 历史主策略门禁已具备可接受稳定性
 - 风险、回放一致性、审计链路已存在
 - liquidation 研究不作为本轮 blocker
+- 但当前 `framework_optimization.json.final_verdict` 仍是：
+  - `candidate_ready_for_test = true`
+  - `test_evaluated = false`
+  - `promote_to_paper_live_candidate = false`
+  - `blocked_by = not_promotion_ready`
 
 ---
 
@@ -150,6 +208,7 @@ uv run python scripts/data_readiness_status.py --binance-root data/raw/binance -
 uv run zenquant-forward-collect
 uv run zenquant-forward-collect --health-only
 uv run python scripts/review_hyperliquid_admission.py --symbol BTCUSDT --binance-root data/raw/binance --merged-root data/raw/merged_liquidations --hyperliquid-root data/raw/hyperliquid/liquidations --deribit-root data/raw/deribit_options --output-dir results/data_source_review
+uv run python scripts/review_perf_stage2_benchmark.py
 uv run python scripts/run_framework_campaign.py --root data/raw/binance --symbol BTCUSDT --liquidation-dir data/raw/merged_liquidations/aggregated --output-dir results/framework_optimization --budget high
 ```
 
@@ -194,10 +253,17 @@ uv run python scripts/run_framework_campaign.py --root data/raw/binance --symbol
     - `admit_as_primary=false`
     - `collect_continue=true`
     - `exclude_from_promote_truth=true`
+- `review_perf_stage2_benchmark.py`：
+  - 必须生成 `results/perf_stage2_benchmark_fast_rerun/perf_stage2_benchmark_review.json` 和 `results/perf_stage2_benchmark_fast_rerun/perf_stage2_benchmark_review.md`
+  - 必须显式写明旧 benchmark 的 root cause 是 `stage1 benchmark run ended without authoritative terminal state`
+  - 必须显式区分：
+    - `stage2 reuse visible`
+    - `indicator hot path not yet improved`
 - `run_framework_campaign.py`：
   - 必须先生成 `results/framework_optimization/campaign_status.json`
   - 若长跑未完成，状态必须是 `running` 或 `blocked`
-  - 只有完成后才应生成最新的 `framework_optimization.json` 和 `framework_optimization.md`
+  - `campaign_status=completed` 仅表示 campaign 流程完成，不等于已经通过最终历史准入
+  - 最终历史准入只能看 `results/framework_optimization/framework_optimization.json` 的 `final_verdict`
 
 ### 2.3 Stop-Ship 条件
 
@@ -384,12 +450,16 @@ uv run zenquant-live-scorecard \
 
 ### 5.1 测试通过后何时允许直接启动 `paper-live`
 
-同时满足以下条件即可直接启动：
+同时满足以下条件，才可以把候选表述为 `eligible_for_paper_live` 并直接启动：
 
 - 第 2 节所有关键测试通过
 - 第 2 节脚本级验证通过
 - live runtime 与 live validation 入口可用
 - 本文档所列启动命令、导出命令和停机规则均已可执行
+- `results/framework_optimization/framework_optimization.json` 中：
+  - `final_verdict.test_evaluated = true`
+  - `final_verdict.promote_to_paper_live_candidate = true`
+  - `final_verdict.blocked_by = null`
 
 ### 5.2 运行中必须停止的情况
 

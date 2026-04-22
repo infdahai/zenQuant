@@ -1,5 +1,7 @@
 # GAN-Style Development Workflow
 
+**Document role**: Workflow example
+
 > Note: 本文档保留的是 `2023-08` failure 的历史案例，用于说明 Generator / Discriminator 的协作流程，不代表当前仓库状态。当前验证结果见 [`HISTORICAL_VALIDATION_2026_04_07.md`](/Users/disaster/workspace/code/zenQuant/docs/HISTORICAL_VALIDATION_2026_04_07.md)。
 
 ## Role Separation (Generator vs Discriminator)

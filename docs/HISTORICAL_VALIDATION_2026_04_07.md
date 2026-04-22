@@ -1,5 +1,7 @@
 # 历史有效性验证记录（2026-04-07）
 
+**Document role**: Historical record
+
 本文档记录 [`LIVE_VALIDATION_HANDOFF_SPEC.md`](/Users/disaster/workspace/code/zenQuant/docs/LIVE_VALIDATION_HANDOFF_SPEC.md) 中历史验证部分的一次完整执行结果，作为测试负责人封板时的仓库内审计记录。
 
 ## 范围
