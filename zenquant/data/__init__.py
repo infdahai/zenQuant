@@ -13,6 +13,7 @@ from .deribit_block_flow import (
 )
 from .liquidation_store import LiquidationDataStore, LiquidationSnapshot, LiquidationStoreConfig
 from .macro_store import MacroDataStore, MacroDataStoreConfig, MacroSnapshot
+from .microstructure_store import MicrostructureFeatureStore, MicrostructureFeatureStoreConfig
 from .options_store import OptionsDataStore, OptionsDataStoreConfig, OptionsSnapshot
 
 __all__ = [
@@ -30,6 +31,8 @@ __all__ = [
     "MacroDataStore",
     "MacroDataStoreConfig",
     "MacroSnapshot",
+    "MicrostructureFeatureStore",
+    "MicrostructureFeatureStoreConfig",
     "OptionsDataStore",
     "OptionsDataStoreConfig",
     "OptionsSnapshot",

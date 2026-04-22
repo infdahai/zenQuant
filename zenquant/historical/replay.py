@@ -24,6 +24,8 @@ from zenquant.data import (
     LiquidationStoreConfig,
     MacroDataStore,
     MacroDataStoreConfig,
+    MicrostructureFeatureStore,
+    MicrostructureFeatureStoreConfig,
     OptionsDataStore,
     OptionsDataStoreConfig,
 )
@@ -94,6 +96,8 @@ class HistoricalBacktestConfig:
     perturbation: PerturbationConfig | None = None
     # Macro data directory (VIX, DXY, Treasury yields)
     macro_dir: Path = Path("data/raw/macro")
+    microstructure_sidecar_enabled: bool = False
+    microstructure_sidecar_dir: Path = Path("data/raw/microstructure_sidecar/bybit/BTCUSDT/1000ms")
     # Options data directory (Deribit IV, skew, term structure)
     options_dir: Path = Path("data/raw/deribit_options")
     # CFTC COT data path
@@ -189,6 +193,15 @@ class HistoricalBacktest:
         self._liquidation_store = self._replay_context.liquidation_store
         self._eth_store = self._replay_context.eth_store
         self._basis_store = self._replay_context.basis_store
+        microstructure_store: MicrostructureFeatureStore | None = None
+        if self._config.microstructure_sidecar_enabled:
+            microstructure_store = MicrostructureFeatureStore(
+                MicrostructureFeatureStoreConfig(
+                    data_dir=self._config.microstructure_sidecar_dir,
+                    max_staleness_ns=self._config.execution_timeframe.seconds * 1_000_000_000,
+                )
+            )
+            microstructure_store.load()
         self.indicator_engine = self._subscribe_with_profile("indicator_step_total_s", lambda: IndicatorEngine(
             bus=self.bus,
             store=self.indicator_store,
@@ -205,6 +218,7 @@ class HistoricalBacktest:
                 if self._config.liquidation_data_enabled and self._liquidation_store.loaded
                 else None
             ),
+            microstructure_store=microstructure_store if microstructure_store and microstructure_store.loaded else None,
         ))
         self.risk_overlay = self._subscribe_with_profile("risk_step_total_s", lambda: RiskOverlay(
             bus=self.bus,

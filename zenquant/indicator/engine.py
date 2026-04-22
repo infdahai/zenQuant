@@ -13,6 +13,7 @@ import time
 from collections import defaultdict, deque
 from dataclasses import dataclass
 
+from zenquant.data import MicrostructureFeatureStore
 from zenquant.domain import (
     Candle,
     IndicatorCoverage,
@@ -130,6 +131,7 @@ class IndicatorEngine:
         basis_store: object | None = None,
         eth_store: object | None = None,
         liquidation_store: object | None = None,
+        microstructure_store: MicrostructureFeatureStore | None = None,
     ) -> None:
         self._bus = bus
         self._store = store
@@ -141,12 +143,14 @@ class IndicatorEngine:
         self._basis_store = basis_store  # BasisDataStore (optional, spot-perp premium)
         self._eth_store = eth_store  # EthDataStore (optional, cross-asset TE)
         self._liquidation_store = liquidation_store  # LiquidationDataStore (optional, aggregated force-order data)
+        self._microstructure_store = microstructure_store
         self._btc_returns_buffer: list[float] = []  # Rolling BTC returns for TE
         self._formula_hash = _formula_hash(
             self._config,
             has_macro=macro_store is not None,
             has_options=options_store is not None,
             has_liquidation=liquidation_store is not None,
+            has_microstructure=microstructure_store is not None,
         )
 
         self._pending: dict[tuple[str, Timeframe, int], _PendingPoint] = {}
@@ -259,6 +263,7 @@ class IndicatorEngine:
             structure_state=structure_values["structure_state"],
         )
         self._layer_timing_totals.slow_feature_enrichment_layer_s += time.perf_counter() - slow_started_at
+        microstructure_values = self._lookup_microstructure_sidecar(candle.bar_end_ns)
 
         index_key = (candle.timeframe, candle.bar_end_ns)
         self._ob_index_by_cutoff[index_key][candle.symbol] = float(core_values["ob_liq_z"])
@@ -310,6 +315,7 @@ class IndicatorEngine:
                 # Phase 2 additions
                 **structure_values,
                 **slow_values,
+                **microstructure_values,
             },
             components=components,
         )
@@ -622,7 +628,13 @@ class IndicatorEngine:
             },
             "indicator_fast_path_enabled": self._indicator_fast_path_enabled,
             "slow_enrichment_deferred": False,
+            "microstructure_sidecar_enabled": self._microstructure_store is not None,
         }
+
+    def _lookup_microstructure_sidecar(self, cutoff_time_ns: int) -> dict[str, object]:
+        if self._microstructure_store is None:
+            return {}
+        return self._microstructure_store.lookup_risk_overlay_values(cutoff_time_ns)
 
     def _is_full_symbol_coverage(self, symbols_for_bar: dict[str, float]) -> bool:
         expected = self._config.expected_symbols
@@ -688,6 +700,7 @@ def _formula_hash(
     has_macro: bool = False,
     has_options: bool = False,
     has_liquidation: bool = False,
+    has_microstructure: bool = False,
 ) -> str:
     """Fingerprint the indicator formula so decisions stay auditable across versions."""
     formula = (
@@ -705,6 +718,7 @@ def _formula_hash(
         f"macro={'vix,dxy,yield_10y' if has_macro else 'none'};"
         f"options={'atm_iv,skew,term' if has_options else 'none'};"
         f"liquidation={'total,imbalance,max_single' if has_liquidation else 'none'};"
+        f"microstructure={'risk_overlay_sidecar' if has_microstructure else 'none'};"
         f"cycle=200ma;ou_kappa=vol_window"
     )
     return f"sha256:{hashlib.sha256(formula.encode('utf-8')).hexdigest()}"
