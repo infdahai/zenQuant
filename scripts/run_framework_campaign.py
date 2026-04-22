@@ -2415,6 +2415,55 @@ def main() -> None:
                 )
                 _append_campaign_log(log_path, f"stage2_full_verdict failed reason={exc}")
                 raise
+            except Exception as exc:
+                existing_checkpoint = written_candidate_checkpoint if isinstance(written_candidate_checkpoint, dict) else None
+                failure_detail = f"{type(exc).__name__}: {exc}"
+                deadlock_suspected, failure_driver = _stage2_failure_driver(
+                    failure_detail,
+                    rl_device=stage1_state.get("rl_device"),
+                    stage2_mp_start_method=stage2_runtime_contract.get("stage2_mp_start_method"),
+                )
+                if existing_checkpoint is not None:
+                    updated_payload = dict(existing_checkpoint)
+                    updated_payload["created_at"] = _ts()
+                    updated_payload["checkpoint_status"] = "degraded"
+                    updated_payload["blocked_by"] = "stage_runtime_or_search_issue"
+                    updated_payload["failure_reason"] = failure_detail
+                    updated_payload["origin_phase"] = (
+                        "stage2_prepare"
+                        if stage2_state.get("subphase") == "stage2_prepare_variants"
+                        else "stage2_compare"
+                    )
+                    written_candidate_checkpoint = _write_candidate_checkpoint(output_dir, updated_payload)
+                    _append_campaign_log(
+                        log_path,
+                        "candidate_checkpoint_updated blocked_by=stage_runtime_or_search_issue",
+                    )
+                _update_status(
+                    status_path,
+                    phase="stage2_full_verdict",
+                    status="failed",
+                    blocked_by="stage_runtime_or_search_issue",
+                    failure_reason="stage2_runtime_or_search_issue",
+                    failure_detail=failure_detail,
+                    stage2_failure_reason=failure_detail,
+                    stage2_prepare_deadlock_suspected=deadlock_suspected,
+                    stage2_prepare_failure_driver=failure_driver,
+                    stage2_prepare_last_active_unit=stage2_state.get("last_unit"),
+                    stage2_prepare_timeout_s=stage2_state.get("prepare_timeout_s"),
+                    stage2_mp_start_method=stage2_runtime_contract.get("stage2_mp_start_method"),
+                    validation_pool_mode=stage2_runtime_contract.get("validation_pool_mode"),
+                    rl_device=stage1_state.get("rl_device"),
+                    rl_cleanup_completed=stage1_state.get("rl_cleanup_completed"),
+                    rl_cleanup_warnings=stage1_state.get("rl_cleanup_warnings"),
+                    candidate_checkpoint_written=written_candidate_checkpoint is not None,
+                    candidate_checkpoint_status=(written_candidate_checkpoint or {}).get("checkpoint_status"),
+                    candidate_checkpoint_variant=(written_candidate_checkpoint or {}).get("candidate_variant"),
+                    candidate_checkpoint_score=((written_candidate_checkpoint or {}).get("selected_checkpoint_candidate") or {}).get("score"),
+                    candidate_checkpoint_origin_phase=(written_candidate_checkpoint or {}).get("origin_phase"),
+                )
+                _append_campaign_log(log_path, f"stage2_full_verdict failed exception={failure_detail}")
+                raise
             if args.development_dev_gate and smoke_stage2:
                 report.smoke_completed = True
             if args.development_dev_gate:
@@ -2588,6 +2637,14 @@ def main() -> None:
         _append_campaign_log(log_path, f"campaign_failed timeout={reason}")
         raise
     except Exception:
+        existing_status = _read_json(status_path) or {}
+        if existing_status.get("status") == "failed" and existing_status.get("blocked_by") in {
+            "stage_runtime_or_search_issue",
+            "stage1_rl_sidecar_failed",
+            "campaign_bootstrap_exception",
+        }:
+            _append_campaign_log(log_path, "campaign_failed preserved_failed_status")
+            raise
         failure_reason = f"{type(sys.exc_info()[1]).__name__}: {sys.exc_info()[1]}"
         if bootstrap_guard_armed:
             _best_effort_bootstrap_failure_status(
