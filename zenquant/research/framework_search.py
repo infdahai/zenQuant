@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import json
+import multiprocessing as mp
 import os
+import sys
 from concurrent.futures import ProcessPoolExecutor
 from concurrent.futures import TimeoutError as FutureTimeoutError
 from dataclasses import asdict, dataclass
@@ -389,6 +391,7 @@ def _run_variant_backtest_with_timeout(
     end_ns: int | None,
     timeout_s: float,
     pool: ProcessPoolExecutor | None = None,
+    mp_start_method: str | None = None,
 ) -> BacktestSnapshot:
     if pool is not None:
         future = pool.submit(
@@ -403,7 +406,10 @@ def _run_variant_backtest_with_timeout(
         except FutureTimeoutError as exc:
             future.cancel()
             raise TimeoutError(f"variant_backtest_timeout:{timeout_s:.0f}s") from exc
-    with ProcessPoolExecutor(max_workers=1) as local_pool:
+    executor_kwargs: dict[str, Any] = {"max_workers": 1}
+    if mp_start_method:
+        executor_kwargs["mp_context"] = mp.get_context(mp_start_method)
+    with ProcessPoolExecutor(**executor_kwargs) as local_pool:
         future = local_pool.submit(
             _run_variant_backtest_snapshot,
             base_config,
@@ -900,6 +906,7 @@ class FrameworkEvaluator:
         self._summary_cache: dict[tuple[str, bool, bool], CandidateSummary] = {}
         self._validation_pool: ProcessPoolExecutor | None = None
         self._validation_pool_workers = 1
+        self._validation_pool_start_method: str | None = None
         self._full_dev_compare_windows = default_comparison_windows(self._split_spec, "dev")
         worst_dev_windows = filtered_worst_period_windows(self._split_spec, "dev")
         self._fast_dev_compare_windows = [
@@ -1099,6 +1106,8 @@ class FrameworkEvaluator:
         self._paulwei_fast_lightweight: CandidateSummary | None = None
         self._paulwei_fast_full: CandidateSummary | None = None
         self._current_fast: CandidateSummary | None = None
+        self._stage2_mp_start_method = "spawn" if sys.platform == "darwin" else None
+        self._validation_pool_mode = "process_pool_spawn" if self._stage2_mp_start_method else "process_pool_default"
 
     def _compute_profile(self, *, fast: bool, lightweight: bool) -> dict[str, Any]:
         if lightweight:
@@ -1130,6 +1139,7 @@ class FrameworkEvaluator:
                 end_ns=window.end_ns,
                 timeout_s=timeout_s,
                 pool=replay_pool,
+                mp_start_method=self._stage2_mp_start_method,
             )
         except TimeoutError as exc:
             raise PrepareVariantTimeoutError(
@@ -1141,12 +1151,27 @@ class FrameworkEvaluator:
         return snapshot
 
     def _get_validation_pool(self, *, workers: int) -> ProcessPoolExecutor:
-        if self._validation_pool is None or self._validation_pool_workers != workers:
+        if (
+            self._validation_pool is None
+            or self._validation_pool_workers != workers
+            or self._validation_pool_start_method != self._stage2_mp_start_method
+        ):
             if self._validation_pool is not None:
                 self._validation_pool.shutdown(wait=False, cancel_futures=True)
-            self._validation_pool = ProcessPoolExecutor(max_workers=max(1, workers))
+            executor_kwargs: dict[str, Any] = {"max_workers": max(1, workers)}
+            if self._stage2_mp_start_method:
+                executor_kwargs["mp_context"] = mp.get_context(self._stage2_mp_start_method)
+            self._validation_pool = ProcessPoolExecutor(**executor_kwargs)
             self._validation_pool_workers = max(1, workers)
+            self._validation_pool_start_method = self._stage2_mp_start_method
         return self._validation_pool
+
+    @property
+    def stage2_runtime_contract(self) -> dict[str, Any]:
+        return {
+            "stage2_mp_start_method": self._stage2_mp_start_method or "default",
+            "validation_pool_mode": self._validation_pool_mode,
+        }
 
     @property
     def readiness(self) -> dict[str, Any]:

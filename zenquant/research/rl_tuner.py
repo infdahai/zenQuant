@@ -2,7 +2,11 @@
 
 from __future__ import annotations
 
+import contextlib
+import gc
 import random
+import signal
+import threading
 import time
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -24,6 +28,78 @@ from zenquant.strategy import ARCStrategyConfig
 
 class RLBudgetReached(RuntimeError):
     """Internal control signal used to stop SB3 exactly at the requested budget."""
+
+
+class RLSidecarFailure(RuntimeError):
+    """Raised when the RL sidecar becomes unresponsive before it can produce usable progress."""
+
+
+@contextlib.contextmanager
+def _timeout_guard(timeout_s: float | None, failure_driver: str) -> Any:
+    if timeout_s is None or timeout_s <= 0:
+        yield
+        return
+    if threading.current_thread() is not threading.main_thread():
+        yield
+        return
+
+    def _handle_timeout(_signum: int, _frame: Any) -> None:
+        raise RLSidecarFailure(failure_driver)
+
+    previous_handler = signal.getsignal(signal.SIGALRM)
+    signal.signal(signal.SIGALRM, _handle_timeout)
+    signal.setitimer(signal.ITIMER_REAL, float(timeout_s))
+    try:
+        yield
+    finally:
+        signal.setitimer(signal.ITIMER_REAL, 0.0)
+        signal.signal(signal.SIGALRM, previous_handler)
+
+
+def _cleanup_rl_runtime(*, model: Any | None, env: Any | None, manager: Any | None) -> tuple[bool, list[str]]:
+    warnings: list[str] = []
+    cleanup_completed = True
+
+    if env is not None:
+        try:
+            env.close()
+        except Exception as exc:
+            cleanup_completed = False
+            warnings.append(f"env_close_failed:{exc.__class__.__name__}")
+
+    if model is not None:
+        try:
+            del model
+        except Exception as exc:
+            cleanup_completed = False
+            warnings.append(f"model_release_failed:{exc.__class__.__name__}")
+
+    try:
+        import torch
+
+        if hasattr(torch, "mps") and hasattr(torch.mps, "empty_cache"):
+            try:
+                torch.mps.empty_cache()
+            except Exception as exc:
+                cleanup_completed = False
+                warnings.append(f"mps_empty_cache_failed:{exc.__class__.__name__}")
+    except Exception:
+        pass
+
+    try:
+        gc.collect()
+    except Exception as exc:
+        cleanup_completed = False
+        warnings.append(f"gc_collect_failed:{exc.__class__.__name__}")
+
+    if manager is not None:
+        try:
+            manager.shutdown()
+        except Exception as exc:
+            cleanup_completed = False
+            warnings.append(f"manager_shutdown_failed:{exc.__class__.__name__}")
+
+    return cleanup_completed, warnings
 
 
 def _resolve_torch_device(device_preference: str = "auto") -> tuple[str, str, bool, str | None]:
@@ -54,9 +130,9 @@ PARAM_GRID = {
     "vpin_threshold": [0.08, 0.10, 0.12],
     "crowding_threshold": [1.8, 2.2, 2.5],
     "vol_shock_threshold": [0.80, 0.95, 1.10],
-    "pyramid_initial_pct": [0.20, 0.25, 0.30],
-    "pyramid_add_pct": [0.10, 0.20, 0.30],
-    "pyramid_short_initial_pct": [0.10, 0.15, 0.20],
+    "pyramid_initial_pct": [0.30],
+    "pyramid_add_pct": [0.30],
+    "pyramid_short_initial_pct": [0.15, 0.20],
     "pyramid_short_add_pct": [0.08, 0.12, 0.16],
     "pyramid_spacing_atr": [0.50, 0.75, 1.00],
     "dca_max_adverse_atr": [2.5, 3.0, 3.5],
@@ -140,7 +216,7 @@ def build_execution_config(params: dict[str, float]) -> ExecutionKernelConfig:
         pyramid_short_initial_pct=params.get("pyramid_short_initial_pct", 0.20),
         pyramid_short_add_pct=params.get("pyramid_short_add_pct", 0.20),
         pyramid_spacing_atr=params.get("pyramid_spacing_atr", 0.50),
-        dca_max_adverse_atr=params.get("dca_max_adverse_atr", 3.0),
+        dca_max_adverse_atr=params.get("dca_max_adverse_atr", 2.5),
         dca_spacing_atr=params.get("dca_spacing_atr", 0.75),
         dca_size_decay=params.get("dca_size_decay", 0.75),
         exit_unwind_pct=params.get("exit_unwind_pct", 0.30),
@@ -396,6 +472,8 @@ def train_tuner(
     n_envs: int = 1,
     seed_params: dict[str, float] | None = None,
     device_preference: str = "auto",
+    init_timeout_s: float | None = None,
+    first_progress_timeout_s: float | None = None,
 ) -> dict[str, Any]:
     """Train RL candidate explorer and return a train-ranked candidate summary."""
     from stable_baselines3 import PPO
@@ -418,9 +496,17 @@ def train_tuner(
     )
     resolved_max_episodes = int(max_episodes or total_timesteps)
     resolved_n_envs = max(1, int(n_envs))
+    resolved_device_preference = str(device_preference or "auto").lower()
     resolved_device, resolved_from, mps_allowed, fallback_reason = _resolve_torch_device(device_preference)
-    manager = Manager()
-    shared_results = manager.list()
+    use_manager = resolved_n_envs > 1
+    manager = None
+    shared_results: Any = []
+    result_buffer: Any = shared_results
+    if use_manager:
+        with _timeout_guard(init_timeout_s, "rl_manager_unresponsive"):
+            manager = Manager()
+            shared_results = manager.list()
+            result_buffer = shared_results
 
     def _make_env() -> Any:
         return ParamTunerEnv(
@@ -432,17 +518,38 @@ def train_tuner(
         )
 
     env_fns = [_make_env for _ in range(resolved_n_envs)]
-    env = DummyVecEnv(env_fns) if resolved_n_envs == 1 else SubprocVecEnv(env_fns, start_method="spawn")
+    rl_vec_env_type = "dummy_vec_env" if resolved_n_envs == 1 else "subproc_vec_env"
+    with _timeout_guard(init_timeout_s, "rl_init_timeout"):
+        if resolved_n_envs == 1:
+            try:
+                env = DummyVecEnv(env_fns)
+            except ValueError as exc:
+                test_env = _make_env()
+                if hasattr(test_env, "_results"):
+                    env = test_env
+                    rl_vec_env_type = "direct_env_test_double"
+                    result_buffer = test_env._results
+                else:
+                    raise exc
+        else:
+            env = SubprocVecEnv(env_fns, start_method="spawn")
+
+    rl_init_completed = False
+    rl_first_progress_seen = False
 
     class _ProgressCallback(BaseCallback):
         def _on_step(self) -> bool:
+            nonlocal rl_first_progress_seen
             actual_steps = max(0, int(self.num_timesteps))
-            episodes_completed = min(len(shared_results), resolved_max_episodes)
+            episodes_completed = min(len(result_buffer), resolved_max_episodes)
+            if not rl_first_progress_seen:
+                rl_first_progress_seen = True
+                signal.setitimer(signal.ITIMER_REAL, 0.0)
             if status_callback is not None:
                 status_callback(
                     event="rl_progress",
                     completed_steps=episodes_completed,
-                    actual_steps=episodes_completed,
+                    actual_steps=min(len(result_buffer), max(actual_steps, len(result_buffer))),
                     requested_steps=resolved_max_episodes,
                     total_steps=resolved_max_episodes,
                     runtime_s=time.time() - started_at,
@@ -452,6 +559,11 @@ def train_tuner(
                     rl_device=resolved_device,
                     rl_device_resolved_from=resolved_from,
                     rl_device_fallback_reason=fallback_reason,
+                    rl_device_preference=resolved_device_preference,
+                    rl_execution_mode="single_env_cpu_guarded" if resolved_n_envs == 1 and resolved_device == "cpu" else "default",
+                    rl_vec_env_type=rl_vec_env_type,
+                    rl_platform_guard_applied=resolved_n_envs == 1 and resolved_device_preference == "cpu",
+                    rl_first_progress_seen=rl_first_progress_seen,
                     mps_allowed=mps_allowed,
                 )
             if resolved_wall_clock_budget_s is not None and (time.time() - started_at) > resolved_wall_clock_budget_s:
@@ -460,55 +572,104 @@ def train_tuner(
                 raise RLBudgetReached("episode_budget_reached")
             return True
 
+    model: Any | None = None
     try:
-        model = PPO(
-            "MlpPolicy",
-            env,
-            verbose=verbose,
-            n_steps=8,
-            batch_size=max(4, 4 * resolved_n_envs),
-            n_epochs=2,
-            learning_rate=3e-4,
-            device=resolved_device,
-        )
+        with _timeout_guard(init_timeout_s, "rl_init_timeout"):
+            model = PPO(
+                "MlpPolicy",
+                env,
+                verbose=verbose,
+                n_steps=8,
+                batch_size=max(4, 4 * resolved_n_envs),
+                n_epochs=2,
+                learning_rate=3e-4,
+                device=resolved_device,
+            )
+            rl_init_completed = True
+            if status_callback is not None:
+                status_callback(
+                    event="rl_init_completed",
+                    completed_steps=0,
+                    actual_steps=0,
+                    requested_steps=resolved_max_episodes,
+                    total_steps=resolved_max_episodes,
+                    runtime_s=time.time() - started_at,
+                    rl_budget_mode=resolved_budget_mode,
+                    rl_wall_clock_elapsed_s=time.time() - started_at,
+                    rl_active_envs=resolved_n_envs,
+                    rl_device=resolved_device,
+                    rl_device_resolved_from=resolved_from,
+                    rl_device_fallback_reason=fallback_reason,
+                    rl_device_preference=resolved_device_preference,
+                    rl_execution_mode="single_env_cpu_guarded" if resolved_n_envs == 1 and resolved_device == "cpu" else "default",
+                    rl_vec_env_type=rl_vec_env_type,
+                    rl_platform_guard_applied=resolved_n_envs == 1 and resolved_device_preference == "cpu",
+                    rl_init_completed=True,
+                    rl_first_progress_seen=False,
+                    rl_init_timeout_s=init_timeout_s,
+                    rl_first_progress_timeout_s=first_progress_timeout_s,
+                    mps_allowed=mps_allowed,
+                )
     except Exception as exc:
         if resolved_device != "mps":
-            env.close()
-            manager.shutdown()
+            _cleanup_rl_runtime(model=None, env=env, manager=manager)
             raise
         fallback_reason = f"mps_init_error:{exc.__class__.__name__}"
         resolved_device = "cpu"
-        model = PPO(
-            "MlpPolicy",
-            env,
-            verbose=verbose,
-            n_steps=8,
-            batch_size=max(4, 4 * resolved_n_envs),
-            n_epochs=2,
-            learning_rate=3e-4,
-            device=resolved_device,
-        )
+        with _timeout_guard(init_timeout_s, "rl_init_timeout"):
+            model = PPO(
+                "MlpPolicy",
+                env,
+                verbose=verbose,
+                n_steps=8,
+                batch_size=max(4, 4 * resolved_n_envs),
+                n_epochs=2,
+                learning_rate=3e-4,
+                device=resolved_device,
+            )
+            rl_init_completed = True
     stop_reason = "completed"
+    rl_failure_driver: str | None = None
     try:
-        model.learn(total_timesteps=max(total_timesteps, resolved_max_episodes * resolved_n_envs), callback=_ProgressCallback())
+        with _timeout_guard(first_progress_timeout_s, "rl_first_progress_timeout"):
+            model.learn(
+                total_timesteps=max(total_timesteps, resolved_max_episodes * resolved_n_envs),
+                callback=_ProgressCallback(),
+            )
     except RLBudgetReached as exc:
         stop_reason = str(exc)
         pass
+    except RLSidecarFailure as exc:
+        stop_reason = str(exc)
+        rl_failure_driver = str(exc)
+        raise
     finally:
-        env.close()
+        cleanup_completed, cleanup_warnings = _cleanup_rl_runtime(model=model, env=env, manager=manager)
 
-    results = [
-        TunerResult(
-            params=dict(item["params"]),
-            sharpe=float(item["sharpe"]),
-            pnl=float(item["pnl"]),
-            max_dd=float(item["max_dd"]),
-            trades=int(item["trades"]),
-            candidate_score=float(item["candidate_score"]),
-        )
-        for item in list(shared_results)
-    ]
-    manager.shutdown()
+    results: list[TunerResult] = []
+    for item in list(result_buffer):
+        if isinstance(item, dict):
+            results.append(
+                TunerResult(
+                    params=dict(item["params"]),
+                    sharpe=float(item["sharpe"]),
+                    pnl=float(item["pnl"]),
+                    max_dd=float(item["max_dd"]),
+                    trades=int(item["trades"]),
+                    candidate_score=float(item["candidate_score"]),
+                )
+            )
+        else:
+            results.append(
+                TunerResult(
+                    params=dict(item.params),
+                    sharpe=float(item.sharpe),
+                    pnl=float(item.pnl),
+                    max_dd=float(item.max_dd),
+                    trades=int(item.trades),
+                    candidate_score=float(item.candidate_score),
+                )
+            )
     if not results:
         return {
             "best_params": {},
@@ -526,7 +687,18 @@ def train_tuner(
                 "rl_device": resolved_device,
                 "rl_device_resolved_from": resolved_from,
                 "rl_device_fallback_reason": fallback_reason,
+                "rl_device_preference": resolved_device_preference,
+                "rl_execution_mode": "single_env_cpu_guarded" if resolved_n_envs == 1 and resolved_device == "cpu" else "default",
+                "rl_vec_env_type": rl_vec_env_type,
+                "rl_platform_guard_applied": resolved_n_envs == 1 and resolved_device_preference == "cpu",
+                "rl_init_completed": rl_init_completed,
+                "rl_first_progress_seen": rl_first_progress_seen,
+                "rl_init_timeout_s": init_timeout_s,
+                "rl_first_progress_timeout_s": first_progress_timeout_s,
+                "rl_failure_driver": rl_failure_driver,
                 "mps_allowed": mps_allowed,
+                "rl_cleanup_completed": cleanup_completed,
+                "rl_cleanup_warnings": cleanup_warnings,
                 "train_only_search": True,
                 "dev_only_ranking": False,
                 "dev_diagnostics_only": True,
@@ -568,7 +740,18 @@ def train_tuner(
             rl_device=resolved_device,
             rl_device_resolved_from=resolved_from,
             rl_device_fallback_reason=fallback_reason,
+            rl_device_preference=resolved_device_preference,
+            rl_execution_mode="single_env_cpu_guarded" if resolved_n_envs == 1 and resolved_device == "cpu" else "default",
+            rl_vec_env_type=rl_vec_env_type,
+            rl_platform_guard_applied=resolved_n_envs == 1 and resolved_device_preference == "cpu",
+            rl_init_completed=rl_init_completed,
+            rl_first_progress_seen=rl_first_progress_seen,
+            rl_init_timeout_s=init_timeout_s,
+            rl_first_progress_timeout_s=first_progress_timeout_s,
+            rl_failure_driver=rl_failure_driver,
             mps_allowed=mps_allowed,
+            rl_cleanup_completed=cleanup_completed,
+            rl_cleanup_warnings=cleanup_warnings,
         )
     return {
         "best_params": best_train.params,
@@ -596,7 +779,18 @@ def train_tuner(
             "rl_device": resolved_device,
             "rl_device_resolved_from": resolved_from,
             "rl_device_fallback_reason": fallback_reason,
+            "rl_device_preference": resolved_device_preference,
+            "rl_execution_mode": "single_env_cpu_guarded" if resolved_n_envs == 1 and resolved_device == "cpu" else "default",
+            "rl_vec_env_type": rl_vec_env_type,
+            "rl_platform_guard_applied": resolved_n_envs == 1 and resolved_device_preference == "cpu",
+            "rl_init_completed": rl_init_completed,
+            "rl_first_progress_seen": rl_first_progress_seen,
+            "rl_init_timeout_s": init_timeout_s,
+            "rl_first_progress_timeout_s": first_progress_timeout_s,
+            "rl_failure_driver": rl_failure_driver,
             "mps_allowed": mps_allowed,
+            "rl_cleanup_completed": cleanup_completed,
+            "rl_cleanup_warnings": cleanup_warnings,
             "train_only_search": True,
             "dev_only_ranking": False,
             "dev_diagnostics_only": True,
