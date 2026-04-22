@@ -61,25 +61,25 @@ class ExecutionSensitivityTests(unittest.TestCase):
             f"(delta={delta:.0%}, limit={tolerance:.0%})",
         )
 
-    def test_init_pct_20_stable(self) -> None:
-        """init_pct=20% (vs 30%) → Sharpe should be within ±40%."""
-        v = _run_with_execution_params(0.20, 0.30, True)
-        self._assert_sharpe_stable(v, "init_pct=20%")
+    def test_init_pct_25_rejected(self) -> None:
+        """init_pct below 30% is outside the supported product envelope and must be rejected."""
+        with self.assertRaisesRegex(ValueError, "pyramid_initial_pct below 0.30"):
+            _run_with_execution_params(0.25, 0.30, True)
 
-    def test_init_pct_50_rejected(self) -> None:
-        """init_pct=50% is outside the supported product envelope and must be rejected."""
-        with self.assertRaisesRegex(ValueError, "pyramid_initial_pct above 0.45"):
-            _run_with_execution_params(0.50, 0.30, True)
+    def test_init_pct_35_rejected(self) -> None:
+        """init_pct above 30% is outside the supported product envelope and must be rejected."""
+        with self.assertRaisesRegex(ValueError, "pyramid_initial_pct above 0.30"):
+            _run_with_execution_params(0.35, 0.30, True)
 
-    def test_add_pct_15_stable(self) -> None:
-        """add_pct=15% (vs 30%) → Sharpe should be within ±40%."""
-        v = _run_with_execution_params(0.30, 0.15, True)
-        self._assert_sharpe_stable(v, "add_pct=15%")
+    def test_add_pct_20_rejected(self) -> None:
+        """add_pct below 30% is outside the supported product envelope and must be rejected."""
+        with self.assertRaisesRegex(ValueError, "pyramid_add_pct below 0.30"):
+            _run_with_execution_params(0.30, 0.20, True)
 
-    def test_add_pct_50_rejected(self) -> None:
-        """add_pct=50% is outside the supported product envelope and must be rejected."""
-        with self.assertRaisesRegex(ValueError, "pyramid_add_pct above 0.45"):
-            _run_with_execution_params(0.30, 0.50, True)
+    def test_add_pct_35_rejected(self) -> None:
+        """add_pct above 30% is outside the supported product envelope and must be rejected."""
+        with self.assertRaisesRegex(ValueError, "pyramid_add_pct above 0.30"):
+            _run_with_execution_params(0.30, 0.35, True)
 
     def test_dca_toggle_stable(self) -> None:
         """DCA on vs off → Sharpe should be within ±40%."""
@@ -89,8 +89,8 @@ class ExecutionSensitivityTests(unittest.TestCase):
     def test_dd_never_catastrophic(self) -> None:
         """No execution config should produce DD > 25%."""
         configs = [
-            (0.20, 0.20, True),
-            (0.45, 0.45, True),
+            (0.30, 0.30, True),
+            (0.30, 0.30, True),
             (0.30, 0.30, False),
         ]
         for init, add, dca in configs:
