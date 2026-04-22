@@ -9,9 +9,11 @@ from __future__ import annotations
 
 import hashlib
 import math
+import time
 from collections import defaultdict, deque
 from dataclasses import dataclass
 
+from zenquant.data import MicrostructureFeatureStore
 from zenquant.domain import (
     Candle,
     IndicatorCoverage,
@@ -102,6 +104,13 @@ class _PendingPoint:
     snapshot: MarketSnapshot | None = None
 
 
+@dataclass(slots=True)
+class _IndicatorLayerProfile:
+    core_execution_indicators_s: float = 0.0
+    structural_momentum_layer_s: float = 0.0
+    slow_feature_enrichment_layer_s: float = 0.0
+
+
 class IndicatorEngine:
     """Build the canonical indicator pack consumed by strategy and dashboard.
 
@@ -122,6 +131,7 @@ class IndicatorEngine:
         basis_store: object | None = None,
         eth_store: object | None = None,
         liquidation_store: object | None = None,
+        microstructure_store: MicrostructureFeatureStore | None = None,
     ) -> None:
         self._bus = bus
         self._store = store
@@ -133,12 +143,14 @@ class IndicatorEngine:
         self._basis_store = basis_store  # BasisDataStore (optional, spot-perp premium)
         self._eth_store = eth_store  # EthDataStore (optional, cross-asset TE)
         self._liquidation_store = liquidation_store  # LiquidationDataStore (optional, aggregated force-order data)
+        self._microstructure_store = microstructure_store
         self._btc_returns_buffer: list[float] = []  # Rolling BTC returns for TE
         self._formula_hash = _formula_hash(
             self._config,
             has_macro=macro_store is not None,
             has_options=options_store is not None,
             has_liquidation=liquidation_store is not None,
+            has_microstructure=microstructure_store is not None,
         )
 
         self._pending: dict[tuple[str, Timeframe, int], _PendingPoint] = {}
@@ -181,10 +193,17 @@ class IndicatorEngine:
         self._overall_by_cutoff: dict[tuple[Timeframe, int], float] = {}
         # Daily close prices for 200MA cycle position (per symbol)
         self._daily_closes: dict[str, deque[float]] = defaultdict(lambda: deque(maxlen=250))
+        self._daily_close_200: dict[str, deque[float]] = defaultdict(lambda: deque(maxlen=200))
+        self._daily_close_sums: dict[str, float] = defaultdict(float)
         # Structure state history for directional consistency
         self._structure_states: dict[tuple[str, Timeframe], deque[str]] = defaultdict(
             lambda: deque(maxlen=120)  # ~20 days of 4H bars
         )
+        self._structure_state_counts: dict[tuple[str, Timeframe], dict[str, int]] = defaultdict(
+            lambda: {"UPTREND": 0, "DOWNTREND": 0}
+        )
+        self._layer_timing_totals = _IndicatorLayerProfile()
+        self._indicator_fast_path_enabled = True
 
         self._bus.subscribe("md.candle.>", self._on_candle)
         self._bus.subscribe("md.snapshot.>", self._on_snapshot)
@@ -216,75 +235,38 @@ class IndicatorEngine:
         snapshot = pending.snapshot
         history_key = (candle.symbol, candle.timeframe)
         self._candles[history_key].append(candle)
-
-        ob_raw = _ob_imbalance(snapshot.bid_depth, snapshot.ask_depth)
-        ob_series = self._ob_values[history_key]
-        ob_series.append(ob_raw)
-        ob_liq_z = _robust_z(list(ob_series), ob_raw, min_samples=self._config.robust_z_min_samples)
-
-        funding_value = snapshot.funding_oi_weighted if snapshot.funding_oi_weighted is not None else 0.0
-        funding_series = self._funding_values[history_key]
-        funding_series.append(funding_value)
-        funding_oi_z = _robust_z(
-            list(funding_series),
-            funding_value,
-            min_samples=self._config.robust_z_min_samples,
-        )
-
-        cvd_series = self._cvd_values[history_key]
-        cvd_series.append(snapshot.cvd_delta)
-        cvd_slope = _slope(list(cvd_series))
-
         candles = list(self._candles[history_key])
-        realized_vol = _realized_vol(candles, window=self._config.vol_window, timeframe=candle.timeframe)
-        atr = _atr(candles, window=self._config.atr_window)
 
-        # --- Phase 2: Swing structure detection ---
-        new_pivots = _detect_pivots(candles, lookback=self._config.pivot_lookback)
-        swing_points = self._swing_points[history_key]
-        for sp in new_pivots:
-            # Avoid duplicates (same bar_end_ns + is_high)
-            if not swing_points or (
-                sp.bar_end_ns != swing_points[-1].bar_end_ns or sp.is_high != swing_points[-1].is_high
-            ):
-                swing_points.append(sp)
-        prev_structure = self._last_swing_structure.get(history_key)
-        swing_struct = _classify_structure(
-            symbol=candle.symbol,
-            timeframe=candle.timeframe,
-            cutoff_time_ns=candle.bar_end_ns,
-            swing_points=list(swing_points),
-            prev_structure=prev_structure,
-            pivot_lookback=self._config.pivot_lookback,
+        core_started_at = time.perf_counter()
+        core_values = self._compute_core_execution_indicators(
+            history_key=history_key,
+            candle=candle,
+            snapshot=snapshot,
+            candles=candles,
         )
-        self._last_swing_structure[history_key] = swing_struct
+        self._layer_timing_totals.core_execution_indicators_s += time.perf_counter() - core_started_at
 
-        # Directional consistency: ratio of |UPTREND - DOWNTREND| / total
-        self._structure_states[history_key].append(swing_struct.structure_state)
-        _sh = self._structure_states[history_key]
-        _up = sum(1 for s in _sh if s == "UPTREND")
-        _dn = sum(1 for s in _sh if s == "DOWNTREND")
-        directional_consistency = abs(_up - _dn) / max(_up + _dn, 1)
+        structure_started_at = time.perf_counter()
+        structure_values = self._compute_structural_momentum_layer(
+            history_key=history_key,
+            candle=candle,
+            candles=candles,
+        )
+        self._layer_timing_totals.structural_momentum_layer_s += time.perf_counter() - structure_started_at
 
-        # --- Phase 2: Momentum ROC z-score ---
-        roc_raw = _rate_of_change(candles, lookback=self._config.roc_lookback)
-        roc_series = self._roc_values[history_key]
-        roc_series.append(roc_raw)
-        momentum_roc_z = _robust_z(list(roc_series), roc_raw, min_samples=self._config.robust_z_min_samples)
-
-        # --- Multi-horizon momentum z-score ---
-        horizon_zscores: list[float] = []
-        for h in self._config.roc_horizons:
-            h_roc = _rate_of_change(candles, lookback=h)
-            h_key = (history_key[0], history_key[1], h)
-            h_series = self._roc_horizon_values[h_key]
-            h_series.append(h_roc)
-            h_z = _robust_z(list(h_series), h_roc, min_samples=self._config.robust_z_min_samples)
-            horizon_zscores.append(h_z)
-        multi_momentum_z = sum(horizon_zscores) / len(horizon_zscores) if horizon_zscores else 0.0
+        slow_started_at = time.perf_counter()
+        slow_values, quality_flags = self._compute_slow_feature_enrichment(
+            history_key=history_key,
+            candle=candle,
+            snapshot=snapshot,
+            candles=candles,
+            structure_state=structure_values["structure_state"],
+        )
+        self._layer_timing_totals.slow_feature_enrichment_layer_s += time.perf_counter() - slow_started_at
+        microstructure_values = self._lookup_microstructure_sidecar(candle.bar_end_ns)
 
         index_key = (candle.timeframe, candle.bar_end_ns)
-        self._ob_index_by_cutoff[index_key][candle.symbol] = ob_liq_z
+        self._ob_index_by_cutoff[index_key][candle.symbol] = float(core_values["ob_liq_z"])
 
         target_vol = {
             Timeframe.TF_5M: self._config.target_vol_5m,
@@ -293,183 +275,13 @@ class IndicatorEngine:
             Timeframe.TF_1D: self._config.target_vol_1d,
         }.get(candle.timeframe, self._config.target_vol_4h)
         zen_pulse, components, weights = _zen_pulse(
-            ob_liq_z=ob_liq_z,
-            cvd_slope=cvd_slope,
-            funding_oi_z=funding_oi_z,
-            realized_vol=realized_vol,
+            ob_liq_z=float(core_values["ob_liq_z"]),
+            cvd_slope=float(core_values["cvd_slope"]),
+            funding_oi_z=float(core_values["funding_oi_z"]),
+            realized_vol=float(core_values["realized_vol"]),
             target_vol=target_vol,
-            quality_flags=snapshot.quality_flags,
+            quality_flags=quality_flags,
         )
-
-        quality_flags = sorted(set(snapshot.quality_flags)) if snapshot.quality_flags else ["OK"]
-
-        # Inject macro indicator values if store is available
-        macro_values: dict[str, object] = {}
-        if self._macro_store is not None and hasattr(self._macro_store, "lookup"):
-            macro_snap = self._macro_store.lookup(candle.bar_end_ns)
-            macro_values = {
-                "vix": macro_snap.vix,
-                "vix_z": macro_snap.vix_z,
-                "dxy": macro_snap.dxy,
-                "dxy_z": macro_snap.dxy_z,
-                "yield_10y": macro_snap.yield_10y,
-                "yield_10y_z": macro_snap.yield_10y_z,
-                "tlt": macro_snap.tlt,
-                "tlt_z": macro_snap.tlt_z,
-                "qqq_z": macro_snap.qqq_z,
-                "iwm_z": macro_snap.iwm_z,
-                # Cross-sectional macro factors (individual, not composite)
-                "ndx_z": macro_snap.ndx_z,
-                "gold_z": macro_snap.gold_z,
-                "btc_mvrv": macro_snap.btc_mvrv,
-                "btc_mvrv_z": macro_snap.btc_mvrv_z,
-                "btc_etf_netflow": macro_snap.btc_etf_netflow,
-                "btc_etf_netflow_z": macro_snap.btc_etf_netflow_z,
-                "btc_etf_flow_3d": macro_snap.btc_etf_flow_3d,
-                "btc_etf_flow_5d": macro_snap.btc_etf_flow_5d,
-                "btc_etf_flow_accel": macro_snap.btc_etf_flow_accel,
-                "btc_etf_positive_streak": macro_snap.btc_etf_positive_streak,
-                "btc_etf_negative_streak": macro_snap.btc_etf_negative_streak,
-                "cme_asset_mgr_net": macro_snap.cme_asset_mgr_net,
-                "cme_asset_mgr_net_z": macro_snap.cme_asset_mgr_net_z,
-                "cme_lev_money_net": macro_snap.cme_lev_money_net,
-                "cme_lev_money_net_z": macro_snap.cme_lev_money_net_z,
-                "cme_dealer_net": macro_snap.cme_dealer_net,
-                "cme_dealer_net_z": macro_snap.cme_dealer_net_z,
-                "cme_total_oi": macro_snap.cme_total_oi,
-                "cme_total_oi_z": macro_snap.cme_total_oi_z,
-            }
-            for flag in macro_snap.quality_flags:
-                if flag not in quality_flags:
-                    quality_flags.append(flag)
-            quality_flags = sorted(set(quality_flags))
-
-        # Inject options indicator values if store is available
-        if self._options_store is not None and hasattr(self._options_store, "lookup"):
-            options_snap = self._options_store.lookup(candle.bar_end_ns)
-            options_values = {
-                "atm_iv_30d": options_snap.atm_iv_30d,
-                "atm_iv_z": options_snap.atm_iv_z,
-                "term_structure_slope": options_snap.term_structure_slope,
-                "term_slope_z": options_snap.term_slope_z,
-                "put_call_skew_25d": options_snap.put_call_skew_25d,
-                "skew_z": options_snap.skew_z,
-                "skew_velocity": options_snap.skew_velocity,
-                "gex_net": options_snap.net_gex,
-                "gex_regime": options_snap.gex_regime,
-                "gamma_wall_strike": options_snap.gamma_wall_strike,
-            }
-            macro_values.update(options_values)
-            for flag in options_snap.quality_flags:
-                if flag not in quality_flags:
-                    quality_flags.append(flag)
-            quality_flags = sorted(set(quality_flags))
-
-        # Accumulate daily closes for 200MA cycle position
-        if candle.timeframe is Timeframe.TF_1D:
-            self._daily_closes[candle.symbol].append(candle.close)
-        # Compute cycle_position = current_price / MA_200
-        daily_closes = self._daily_closes.get(candle.symbol)
-        if daily_closes and len(daily_closes) >= 200:
-            ma_200 = sum(list(daily_closes)[-200:]) / 200
-            cycle_position = candle.close / ma_200 if ma_200 > 0 else 1.0
-        else:
-            cycle_position = 1.0  # Neutral when insufficient data
-        macro_values["cycle_position"] = round(cycle_position, 4)
-        macro_values["directional_consistency"] = round(directional_consistency, 4)
-
-        # OU process: mean-reversion speed κ and fragility ratio
-        ou_kappa = _ou_kappa(candles, window=self._config.vol_window)
-        total_depth = snapshot.bid_depth + snapshot.ask_depth
-        fragility_ratio = (ou_kappa / total_depth) if total_depth > 1e-9 else 0.0
-        macro_values["ou_kappa"] = round(ou_kappa, 6)
-        macro_values["fragility_ratio"] = round(fragility_ratio, 6)
-
-        # Future Basis proxy: funding_oi_weighted captures leveraged demand direction
-        # Positive = longs pay shorts (bullish demand), negative = shorts pay longs
-        # Already available as funding_oi_z in the pack, but raw value useful for thresholds
-        macro_values["funding_oi_raw"] = round(funding_value, 6)
-
-        # Volume ratio: current volume / 20-bar average
-        vol_values = [c.volume for c in candles[-21:]] if len(candles) >= 21 else []
-        if len(vol_values) >= 2:
-            vol_avg = sum(vol_values[:-1]) / len(vol_values[:-1])
-            volume_ratio = candle.volume / vol_avg if vol_avg > 0 else 1.0
-        else:
-            volume_ratio = 1.0
-        macro_values["volume_ratio"] = round(volume_ratio, 2)
-        macro_values["open"] = candle.open
-
-        # Vol ratio: short-term RV / long-term RV (vol spike detection)
-        rv_60 = _realized_vol(candles, window=60, timeframe=candle.timeframe)
-        vol_ratio_rv = realized_vol / rv_60 if rv_60 > 0.01 else 1.0
-        macro_values["vol_ratio_rv"] = round(vol_ratio_rv, 3)
-
-        # Inject 5min HF features (rv_hf is strongest factor, IC=+0.248)
-        if self._hf_store is not None and hasattr(self._hf_store, "lookup"):
-            if candle.timeframe == Timeframe.TF_1H and hasattr(self._hf_store, "lookup_1h"):
-                hf = self._hf_store.lookup_1h(candle.bar_end_ns)
-                macro_values["rv_hf_1h"] = hf.realized_vol_hf
-                macro_values["consistency_1h"] = hf.intra_bar_consistency
-                macro_values["volume_front_ratio_1h"] = hf.volume_front_ratio
-            else:
-                hf = self._hf_store.lookup(candle.bar_end_ns)
-            macro_values["rv_hf"] = hf.realized_vol_hf
-            macro_values["intra_bar_max_dd"] = hf.intra_bar_max_dd
-
-        # Inject CFTC COT institutional positioning (weekly, slow signal)
-        if self._cot_store is not None and hasattr(self._cot_store, "lookup"):
-            cot = self._cot_store.lookup(candle.bar_end_ns)
-            macro_values["cot_asset_mgr_z"] = cot.asset_mgr_z
-            macro_values["cot_leveraged_z"] = cot.leveraged_z
-
-        # Inject spot-perp basis (whale flow detection)
-        if self._basis_store is not None and hasattr(self._basis_store, "lookup"):
-            basis = self._basis_store.lookup(candle.bar_end_ns)
-            macro_values["basis_pct"] = basis.basis_pct
-            macro_values["basis_z"] = basis.basis_z
-
-        # Inject ETH→BTC Transfer Entropy (cross-asset information flow)
-        if self._eth_store is not None and hasattr(self._eth_store, "get_returns_before"):
-            # Track BTC returns for TE computation
-            btc_ret = 0.0
-            if len(self._candles.get((candle.symbol, candle.timeframe), [])) >= 2:
-                prev = list(self._candles[(candle.symbol, candle.timeframe)])[-2]
-                if prev.close > 0:
-                    btc_ret = (candle.close - prev.close) / prev.close
-            self._btc_returns_buffer.append(btc_ret)
-            if len(self._btc_returns_buffer) > 200:
-                self._btc_returns_buffer = self._btc_returns_buffer[-200:]
-
-            eth_returns = self._eth_store.get_returns_before(candle.bar_end_ns, window=120)
-            if len(eth_returns) >= 60 and len(self._btc_returns_buffer) >= 60:
-                from zenquant.research.transfer_entropy import transfer_entropy
-
-                n = min(len(eth_returns), len(self._btc_returns_buffer))
-                te = transfer_entropy(eth_returns[-n:], self._btc_returns_buffer[-n:])
-                macro_values["te_eth_to_btc"] = round(te, 4)
-                # ETH momentum for direction
-                if len(eth_returns) >= 6:
-                    macro_values["eth_momentum"] = sum(eth_returns[-6:])
-
-        # Liquidation data is aggregated venue pressure, not tick-precise execution truth.
-        if self._liquidation_store is not None and hasattr(self._liquidation_store, "lookup"):
-            liq = self._liquidation_store.lookup(candle.bar_end_ns)
-            total_liq = max(0.0, float(liq.total_liq_usd))
-            max_single = max(0.0, float(liq.max_single_liq_usd))
-            macro_values["liq_total_usd"] = total_liq
-            macro_values["liq_long_usd"] = float(liq.long_liq_usd)
-            macro_values["liq_short_usd"] = float(liq.short_liq_usd)
-            macro_values["liq_imbalance"] = float(liq.liq_imbalance)
-            macro_values["liq_intensity_z"] = float(liq.liq_intensity_z)
-            macro_values["liq_imbalance_z"] = float(liq.liq_imbalance_z)
-            macro_values["liq_max_single_usd"] = max_single
-            macro_values["liq_max_single_share"] = (max_single / total_liq) if total_liq > 0 else 0.0
-            macro_values["liq_stale"] = "LIQ_STALE" in liq.quality_flags
-            for flag in liq.quality_flags:
-                if flag not in quality_flags:
-                    quality_flags.append(flag)
-            quality_flags = sorted(set(quality_flags))
 
         pack = IndicatorPack(
             ts_ns=candle.bar_end_ns,
@@ -485,14 +297,14 @@ class IndicatorEngine:
                 staleness_ms=snapshot.staleness_ms,
             ),
             values={
-                "realized_vol": realized_vol,
-                "atr": atr,
-                "ob_liq_z": ob_liq_z,
+                "realized_vol": core_values["realized_vol"],
+                "atr": core_values["atr"],
+                "ob_liq_z": core_values["ob_liq_z"],
                 "overall_ob_liq_z": 0.0,
-                "cvd_slope": cvd_slope,
+                "cvd_slope": core_values["cvd_slope"],
                 "vpin": snapshot.vpin,
                 "large_trade_count": snapshot.large_trade_count,
-                "funding_oi_z": funding_oi_z,
+                "funding_oi_z": core_values["funding_oi_z"],
                 "funding_oi_weighted": snapshot.funding_oi_weighted,
                 "last_price": snapshot.last_price,
                 "zen_pulse": zen_pulse,
@@ -501,15 +313,9 @@ class IndicatorEngine:
                 "venue_count": snapshot.venue_count,
                 "oi_coverage": snapshot.oi_coverage,
                 # Phase 2 additions
-                "structure_state": swing_struct.structure_state,
-                "structure_break": swing_struct.structure_break,
-                "last_swing_high": swing_struct.last_swing_high,
-                "last_swing_low": swing_struct.last_swing_low,
-                "bars_since_break": swing_struct.bars_since_break,
-                "momentum_roc": roc_raw,
-                "momentum_roc_z": momentum_roc_z,
-                "multi_momentum_z": multi_momentum_z,
-                **macro_values,
+                **structure_values,
+                **slow_values,
+                **microstructure_values,
             },
             components=components,
         )
@@ -517,7 +323,7 @@ class IndicatorEngine:
         # publish unconditionally before the overall_ob_liq_z gate.
         self._bus.publish(
             f"indicator.structure.{pack.timeframe.value}.{pack.symbol}",
-            swing_struct,
+            self._last_swing_structure[history_key],
         )
 
         overall_known = self._overall_by_cutoff.get(index_key)
@@ -536,6 +342,299 @@ class IndicatorEngine:
         self._pending.pop(key, None)
         self._gc_pending(candle.timeframe, candle.bar_end_ns)
         self._gc_ob_index(candle.timeframe, candle.bar_end_ns)
+
+    def _compute_core_execution_indicators(
+        self,
+        *,
+        history_key: tuple[str, Timeframe],
+        candle: Candle,
+        snapshot: MarketSnapshot,
+        candles: list[Candle],
+    ) -> dict[str, float]:
+        ob_raw = _ob_imbalance(snapshot.bid_depth, snapshot.ask_depth)
+        ob_series = self._ob_values[history_key]
+        ob_series.append(ob_raw)
+        ob_liq_z = _robust_z(list(ob_series), ob_raw, min_samples=self._config.robust_z_min_samples)
+
+        funding_value = snapshot.funding_oi_weighted if snapshot.funding_oi_weighted is not None else 0.0
+        funding_series = self._funding_values[history_key]
+        funding_series.append(funding_value)
+        funding_oi_z = _robust_z(
+            list(funding_series),
+            funding_value,
+            min_samples=self._config.robust_z_min_samples,
+        )
+
+        cvd_series = self._cvd_values[history_key]
+        cvd_series.append(snapshot.cvd_delta)
+        cvd_slope = _slope(list(cvd_series))
+
+        return {
+            "realized_vol": _realized_vol(candles, window=self._config.vol_window, timeframe=candle.timeframe),
+            "atr": _atr(candles, window=self._config.atr_window),
+            "ob_liq_z": ob_liq_z,
+            "cvd_slope": cvd_slope,
+            "funding_oi_z": funding_oi_z,
+            "funding_value": funding_value,
+        }
+
+    def _compute_structural_momentum_layer(
+        self,
+        *,
+        history_key: tuple[str, Timeframe],
+        candle: Candle,
+        candles: list[Candle],
+    ) -> dict[str, float | bool | str]:
+        new_pivots = _detect_pivots(candles, lookback=self._config.pivot_lookback)
+        swing_points = self._swing_points[history_key]
+        for sp in new_pivots:
+            if not swing_points or (
+                sp.bar_end_ns != swing_points[-1].bar_end_ns or sp.is_high != swing_points[-1].is_high
+            ):
+                swing_points.append(sp)
+        prev_structure = self._last_swing_structure.get(history_key)
+        swing_struct = _classify_structure(
+            symbol=candle.symbol,
+            timeframe=candle.timeframe,
+            cutoff_time_ns=candle.bar_end_ns,
+            swing_points=list(swing_points),
+            prev_structure=prev_structure,
+            pivot_lookback=self._config.pivot_lookback,
+        )
+        self._last_swing_structure[history_key] = swing_struct
+
+        self._update_structure_state_counts(history_key, swing_struct.structure_state)
+        counts = self._structure_state_counts[history_key]
+        directional_consistency = abs(counts["UPTREND"] - counts["DOWNTREND"]) / max(
+            counts["UPTREND"] + counts["DOWNTREND"],
+            1,
+        )
+
+        roc_raw = _rate_of_change(candles, lookback=self._config.roc_lookback)
+        roc_series = self._roc_values[history_key]
+        roc_series.append(roc_raw)
+        momentum_roc_z = _robust_z(list(roc_series), roc_raw, min_samples=self._config.robust_z_min_samples)
+
+        horizon_zscores: list[float] = []
+        for h in self._config.roc_horizons:
+            h_roc = _rate_of_change(candles, lookback=h)
+            h_key = (history_key[0], history_key[1], h)
+            h_series = self._roc_horizon_values[h_key]
+            h_series.append(h_roc)
+            h_z = _robust_z(list(h_series), h_roc, min_samples=self._config.robust_z_min_samples)
+            horizon_zscores.append(h_z)
+        multi_momentum_z = sum(horizon_zscores) / len(horizon_zscores) if horizon_zscores else 0.0
+
+        return {
+            "structure_state": swing_struct.structure_state,
+            "structure_break": swing_struct.structure_break,
+            "last_swing_high": swing_struct.last_swing_high,
+            "last_swing_low": swing_struct.last_swing_low,
+            "bars_since_break": swing_struct.bars_since_break,
+            "directional_consistency": round(directional_consistency, 4),
+            "momentum_roc": roc_raw,
+            "momentum_roc_z": momentum_roc_z,
+            "multi_momentum_z": multi_momentum_z,
+        }
+
+    def _compute_slow_feature_enrichment(
+        self,
+        *,
+        history_key: tuple[str, Timeframe],
+        candle: Candle,
+        snapshot: MarketSnapshot,
+        candles: list[Candle],
+        structure_state: str,
+    ) -> tuple[dict[str, object], list[str]]:
+        quality_flags = sorted(set(snapshot.quality_flags)) if snapshot.quality_flags else ["OK"]
+        macro_values: dict[str, object] = {}
+
+        if self._macro_store is not None and hasattr(self._macro_store, "lookup"):
+            macro_snap = self._macro_store.lookup(candle.bar_end_ns)
+            macro_values.update(
+                {
+                    "vix": macro_snap.vix,
+                    "vix_z": macro_snap.vix_z,
+                    "dxy": macro_snap.dxy,
+                    "dxy_z": macro_snap.dxy_z,
+                    "yield_10y": macro_snap.yield_10y,
+                    "yield_10y_z": macro_snap.yield_10y_z,
+                    "tlt": macro_snap.tlt,
+                    "tlt_z": macro_snap.tlt_z,
+                    "qqq_z": macro_snap.qqq_z,
+                    "iwm_z": macro_snap.iwm_z,
+                    "ndx_z": macro_snap.ndx_z,
+                    "gold_z": macro_snap.gold_z,
+                    "btc_mvrv": macro_snap.btc_mvrv,
+                    "btc_mvrv_z": macro_snap.btc_mvrv_z,
+                    "btc_etf_netflow": macro_snap.btc_etf_netflow,
+                    "btc_etf_netflow_z": macro_snap.btc_etf_netflow_z,
+                    "btc_etf_flow_3d": macro_snap.btc_etf_flow_3d,
+                    "btc_etf_flow_5d": macro_snap.btc_etf_flow_5d,
+                    "btc_etf_flow_accel": macro_snap.btc_etf_flow_accel,
+                    "btc_etf_positive_streak": macro_snap.btc_etf_positive_streak,
+                    "btc_etf_negative_streak": macro_snap.btc_etf_negative_streak,
+                    "cme_asset_mgr_net": macro_snap.cme_asset_mgr_net,
+                    "cme_asset_mgr_net_z": macro_snap.cme_asset_mgr_net_z,
+                    "cme_lev_money_net": macro_snap.cme_lev_money_net,
+                    "cme_lev_money_net_z": macro_snap.cme_lev_money_net_z,
+                    "cme_dealer_net": macro_snap.cme_dealer_net,
+                    "cme_dealer_net_z": macro_snap.cme_dealer_net_z,
+                    "cme_total_oi": macro_snap.cme_total_oi,
+                    "cme_total_oi_z": macro_snap.cme_total_oi_z,
+                }
+            )
+            quality_flags = sorted(set([*quality_flags, *macro_snap.quality_flags]))
+
+        if self._options_store is not None and hasattr(self._options_store, "lookup"):
+            options_snap = self._options_store.lookup(candle.bar_end_ns)
+            macro_values.update(
+                {
+                    "atm_iv_30d": options_snap.atm_iv_30d,
+                    "atm_iv_z": options_snap.atm_iv_z,
+                    "term_structure_slope": options_snap.term_structure_slope,
+                    "term_slope_z": options_snap.term_slope_z,
+                    "put_call_skew_25d": options_snap.put_call_skew_25d,
+                    "skew_z": options_snap.skew_z,
+                    "skew_velocity": options_snap.skew_velocity,
+                    "gex_net": options_snap.net_gex,
+                    "gex_regime": options_snap.gex_regime,
+                    "gamma_wall_strike": options_snap.gamma_wall_strike,
+                }
+            )
+            quality_flags = sorted(set([*quality_flags, *options_snap.quality_flags]))
+
+        cycle_position = self._update_cycle_position(symbol=candle.symbol, timeframe=candle.timeframe, close=candle.close)
+        macro_values["cycle_position"] = round(cycle_position, 4)
+
+        ou_kappa = _ou_kappa(candles, window=self._config.vol_window)
+        total_depth = snapshot.bid_depth + snapshot.ask_depth
+        fragility_ratio = (ou_kappa / total_depth) if total_depth > 1e-9 else 0.0
+        macro_values["ou_kappa"] = round(ou_kappa, 6)
+        macro_values["fragility_ratio"] = round(fragility_ratio, 6)
+        macro_values["funding_oi_raw"] = round(
+            snapshot.funding_oi_weighted if snapshot.funding_oi_weighted is not None else 0.0,
+            6,
+        )
+        volume_ratio = 1.0
+        if len(candles) >= 21:
+            trailing_volumes = [bar.volume for bar in candles[-21:]]
+            vol_avg = sum(trailing_volumes[:-1]) / max(1, len(trailing_volumes) - 1)
+            volume_ratio = candle.volume / vol_avg if vol_avg > 0 else 1.0
+        macro_values["volume_ratio"] = round(volume_ratio, 2)
+        macro_values["open"] = candle.open
+
+        realized_vol = _realized_vol(candles, window=self._config.vol_window, timeframe=candle.timeframe)
+        rv_60 = _realized_vol(candles, window=60, timeframe=candle.timeframe)
+        vol_ratio_rv = realized_vol / rv_60 if rv_60 > 0.01 else 1.0
+        macro_values["vol_ratio_rv"] = round(vol_ratio_rv, 3)
+
+        if self._hf_store is not None and hasattr(self._hf_store, "lookup"):
+            if candle.timeframe == Timeframe.TF_1H and hasattr(self._hf_store, "lookup_1h"):
+                hf = self._hf_store.lookup_1h(candle.bar_end_ns)
+                macro_values["rv_hf_1h"] = hf.realized_vol_hf
+                macro_values["consistency_1h"] = hf.intra_bar_consistency
+                macro_values["volume_front_ratio_1h"] = hf.volume_front_ratio
+            else:
+                hf = self._hf_store.lookup(candle.bar_end_ns)
+            macro_values["rv_hf"] = hf.realized_vol_hf
+            macro_values["intra_bar_max_dd"] = hf.intra_bar_max_dd
+
+        if self._cot_store is not None and hasattr(self._cot_store, "lookup"):
+            cot = self._cot_store.lookup(candle.bar_end_ns)
+            macro_values["cot_asset_mgr_z"] = cot.asset_mgr_z
+            macro_values["cot_leveraged_z"] = cot.leveraged_z
+
+        if self._basis_store is not None and hasattr(self._basis_store, "lookup"):
+            basis = self._basis_store.lookup(candle.bar_end_ns)
+            macro_values["basis_pct"] = basis.basis_pct
+            macro_values["basis_z"] = basis.basis_z
+
+        if self._eth_store is not None and hasattr(self._eth_store, "get_returns_before"):
+            btc_ret = 0.0
+            if len(candles) >= 2:
+                prev = candles[-2]
+                if prev.close > 0:
+                    btc_ret = (candle.close - prev.close) / prev.close
+            self._btc_returns_buffer.append(btc_ret)
+            if len(self._btc_returns_buffer) > 200:
+                self._btc_returns_buffer = self._btc_returns_buffer[-200:]
+
+            eth_returns = self._eth_store.get_returns_before(candle.bar_end_ns, window=120)
+            if len(eth_returns) >= 60 and len(self._btc_returns_buffer) >= 60:
+                from zenquant.research.transfer_entropy import transfer_entropy
+
+                n = min(len(eth_returns), len(self._btc_returns_buffer))
+                te = transfer_entropy(eth_returns[-n:], self._btc_returns_buffer[-n:])
+                macro_values["te_eth_to_btc"] = round(te, 4)
+                if len(eth_returns) >= 6:
+                    macro_values["eth_momentum"] = sum(eth_returns[-6:])
+
+        if self._liquidation_store is not None and hasattr(self._liquidation_store, "lookup"):
+            liq = self._liquidation_store.lookup(candle.bar_end_ns)
+            total_liq = max(0.0, float(liq.total_liq_usd))
+            max_single = max(0.0, float(liq.max_single_liq_usd))
+            macro_values.update(
+                {
+                    "liq_total_usd": total_liq,
+                    "liq_long_usd": float(liq.long_liq_usd),
+                    "liq_short_usd": float(liq.short_liq_usd),
+                    "liq_imbalance": float(liq.liq_imbalance),
+                    "liq_intensity_z": float(liq.liq_intensity_z),
+                    "liq_imbalance_z": float(liq.liq_imbalance_z),
+                    "liq_max_single_usd": max_single,
+                    "liq_max_single_share": (max_single / total_liq) if total_liq > 0 else 0.0,
+                    "liq_stale": "LIQ_STALE" in liq.quality_flags,
+                }
+            )
+            quality_flags = sorted(set([*quality_flags, *liq.quality_flags]))
+
+        return macro_values, quality_flags
+
+    def _update_cycle_position(self, *, symbol: str, timeframe: Timeframe, close: float) -> float:
+        if timeframe is Timeframe.TF_1D:
+            self._daily_closes[symbol].append(close)
+            trailing_200 = self._daily_close_200[symbol]
+            if len(trailing_200) == trailing_200.maxlen:
+                self._daily_close_sums[symbol] -= trailing_200[0]
+            trailing_200.append(close)
+            self._daily_close_sums[symbol] += close
+        trailing_200 = self._daily_close_200.get(symbol)
+        if trailing_200 and len(trailing_200) >= 200:
+            ma_200 = self._daily_close_sums[symbol] / 200
+            return close / ma_200 if ma_200 > 0 else 1.0
+        return 1.0
+
+    def _update_structure_state_counts(self, history_key: tuple[str, Timeframe], state: str) -> None:
+        states = self._structure_states[history_key]
+        counts = self._structure_state_counts[history_key]
+        if len(states) == states.maxlen:
+            dropped = states[0]
+            if dropped in counts:
+                counts[dropped] = max(0, counts[dropped] - 1)
+        states.append(state)
+        if state in counts:
+            counts[state] = counts.get(state, 0) + 1
+
+    def profiling_snapshot(self) -> dict[str, object]:
+        return {
+            "indicator_layer_timing": {
+                "core_execution_indicators_s": round(self._layer_timing_totals.core_execution_indicators_s, 6),
+                "structural_momentum_layer_s": round(self._layer_timing_totals.structural_momentum_layer_s, 6),
+                "slow_feature_enrichment_layer_s": round(
+                    self._layer_timing_totals.slow_feature_enrichment_layer_s,
+                    6,
+                ),
+            },
+            "indicator_fast_path_enabled": self._indicator_fast_path_enabled,
+            "slow_enrichment_deferred": False,
+            "microstructure_sidecar_enabled": self._microstructure_store is not None,
+        }
+
+    def _lookup_microstructure_sidecar(self, cutoff_time_ns: int) -> dict[str, object]:
+        if self._microstructure_store is None:
+            return {}
+        return self._microstructure_store.lookup_risk_overlay_values(cutoff_time_ns)
 
     def _is_full_symbol_coverage(self, symbols_for_bar: dict[str, float]) -> bool:
         expected = self._config.expected_symbols
@@ -601,6 +700,7 @@ def _formula_hash(
     has_macro: bool = False,
     has_options: bool = False,
     has_liquidation: bool = False,
+    has_microstructure: bool = False,
 ) -> str:
     """Fingerprint the indicator formula so decisions stay auditable across versions."""
     formula = (
@@ -618,6 +718,7 @@ def _formula_hash(
         f"macro={'vix,dxy,yield_10y' if has_macro else 'none'};"
         f"options={'atm_iv,skew,term' if has_options else 'none'};"
         f"liquidation={'total,imbalance,max_single' if has_liquidation else 'none'};"
+        f"microstructure={'risk_overlay_sidecar' if has_microstructure else 'none'};"
         f"cycle=200ma;ou_kappa=vol_window"
     )
     return f"sha256:{hashlib.sha256(formula.encode('utf-8')).hexdigest()}"

@@ -23,12 +23,69 @@ Current conclusion:
 - `walk_forward_eval.py` is now treated as a `train -> dev` selection-layer check
 - `adversarial_stress.py --historical --split dev|test` is split-aware
 - `current` and `paulwei_baseline` are still identical on the current historical path, so the framework is validated but no superior promoted variant has been established yet
+- `v27 round_003` should currently be read as a `stale_running_state`, not as an actively computing training run
+- the completed stage2 rerun benchmark shows `stage2 reuse visible`, but `indicator hot path not yet improved`
+- `paulwei_public_archive_baseline` is stronger than the legacy PaulWei baseline on research metrics, but remains `research-only` because of `drawdown_outside_current_band`
+- `AHR999` is currently admissible only for slow-risk / DCA guidance, not for intraday execution
 
 Use the handoff spec for re-run commands, paper-live startup, and acceptance criteria. Treat this file as a summary, not as the source of truth for test contracts.
 
+Current promotion / paper-live status:
+
+- authoritative handoff entrypoint: [`LIVE_VALIDATION_HANDOFF_SPEC.md`](/Users/disaster/workspace/code/zenQuant/docs/LIVE_VALIDATION_HANDOFF_SPEC.md)
+- historical promote truth: [`results/framework_optimization/framework_optimization.json`](/Users/disaster/workspace/code/zenQuant/results/framework_optimization/framework_optimization.json)
+- current `final_verdict` status:
+  - `candidate_ready_for_test = true`
+  - `test_evaluated = false`
+  - `promote_to_paper_live_candidate = false`
+  - `blocked_by = not_promotion_ready`
+
+This means the current repo state should be described as:
+
+- historically promising
+- operationally ready for continued research / paper-live preparation
+- not yet `eligible_for_paper_live` under the authoritative final verdict
+
+### Performance / Audit Snapshot (2026-04-21)
+
+Primary audit artifacts:
+
+- stale loop state:
+  - [`results/framework_optimization_loop_v27/loop_status.json`](/Users/disaster/workspace/code/zenQuant/results/framework_optimization_loop_v27/loop_status.json)
+  - [`results/framework_optimization_loop_v27/runs/round_003/campaign_status.json`](/Users/disaster/workspace/code/zenQuant/results/framework_optimization_loop_v27/runs/round_003/campaign_status.json)
+- benchmark review:
+  - [`results/perf_stage2_benchmark_fast_rerun/perf_stage2_benchmark_review.json`](/Users/disaster/workspace/code/zenQuant/results/perf_stage2_benchmark_fast_rerun/perf_stage2_benchmark_review.json)
+- PaulWei strict learning:
+  - [`results/paulwei_research/strict_execution_learning_review.json`](/Users/disaster/workspace/code/zenQuant/results/paulwei_research/strict_execution_learning_review.json)
+  - [`results/paulwei_research/promotion_eligibility_review.json`](/Users/disaster/workspace/code/zenQuant/results/paulwei_research/promotion_eligibility_review.json)
+  - [`results/paulwei_research/ahr999_execution_guidance_review.json`](/Users/disaster/workspace/code/zenQuant/results/paulwei_research/ahr999_execution_guidance_review.json)
+
+Audit interpretation:
+
+- The old benchmark failure was not a strategy regression. The root cause is fixed as `stage1 benchmark run ended without authoritative terminal state`.
+- The rerun benchmark completed cleanly and made `stage2` cache reuse measurable, but did not yet reduce the indicator hot path.
+- The PaulWei public archive line is now auditable as a strict execution-learning track:
+  - learnable: tranche building, staged de-risking, slower recovery ramp, moderate flip confirmation, stronger volatility compression
+  - non-transferable: discretionary macro, news/narrative, cross-exchange context, hidden conviction scaling
+- The public archive baseline is still not promotable because drawdown remains outside the `current` band.
+
 ---
 
-## Current Performance (v2.0 + Pyramid, 2026-04-04)
+## Historical Snapshot (Archived Context, Not Current Truth)
+
+The following sections are preserved as historical research context. They are not the current tester / operator contract and must not be used as the authoritative answer to:
+
+- whether the current candidate is promotable
+- whether the current version is eligible for `paper-live`
+- what the current default profile exactly contains
+
+Current truth for those questions lives in:
+
+- [`LIVE_VALIDATION_HANDOFF_SPEC.md`](/Users/disaster/workspace/code/zenQuant/docs/LIVE_VALIDATION_HANDOFF_SPEC.md)
+- [`results/framework_optimization/framework_optimization.json`](/Users/disaster/workspace/code/zenQuant/results/framework_optimization/framework_optimization.json)
+- [`config/profiles/default.toml`](/Users/disaster/workspace/code/zenQuant/config/profiles/default.toml)
+
+### Archived Performance Snapshot (v2.0 + Pyramid, 2026-04-04)
 
 **Architecture**: confidence × weight × value + pyramid execution + equity risk overlay
 
@@ -71,7 +128,7 @@ Use the handoff spec for re-run commands, paper-live startup, and acceptance cri
 
 ---
 
-## Signal IC Analysis (Train Set, 12,766 bars)
+### Archived Signal IC Analysis (Train Set, 12,766 bars)
 
 | Signal | IC | Verdict |
 |--------|-----|---------|
@@ -87,7 +144,7 @@ Use the handoff spec for re-run commands, paper-live startup, and acceptance cri
 
 ---
 
-## Key Architecture Decisions
+### Archived Architecture Decisions
 
 1. **Confidence-weighted direction** — Signals self-regulate via confidence; no manual regime classification needed
 2. **Pyramid execution** — 30% initial, +30% on profit, don't add on loss (PaulWei pattern)
@@ -97,7 +154,7 @@ Use the handoff spec for re-run commands, paper-live startup, and acceptance cri
 
 ---
 
-## Overfitting Assessment
+### Archived Overfitting Assessment
 
 - Train/Test Sharpe: 1.53 / 1.74 (test > train → not classical overfitting)
 - 50+ experiments on 12,766 bars → implicit multiple testing risk
@@ -106,7 +163,7 @@ Use the handoff spec for re-run commands, paper-live startup, and acceptance cri
 
 ---
 
-## Validation Infrastructure
+### Archived Validation Infrastructure
 
 | Layer | Tool | Status |
 |-------|------|--------|
@@ -121,3 +178,16 @@ Use the handoff spec for re-run commands, paper-live startup, and acceptance cri
 | Factor health | tests/test_factor_health.py | Gate 0 |
 | Paper trading | scripts/paper_trade.py | Needs stable network |
 | HF features | zenquant/indicator/hf_features.py | Awaiting 5min data |
+## Microstructure sidecar status
+
+- current role: `research-only`
+- first approved venue/sample: `Bybit BTCUSDT L2`
+- approved integration order:
+  - artifact generation
+  - risk overlay research path
+  - Hyperliquid cross-check
+  - optional execution modifier expansion
+- not approved:
+  - direction vote
+  - promoted truth
+  - `framework_search.py` candidate ranking

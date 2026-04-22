@@ -14,6 +14,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import os
 import signal
 import sys
 import time
@@ -38,7 +39,14 @@ async def run_paper_trading(symbol: str = "BTCUSDT", duration_hours: float = 24.
     # Initialize pipeline components directly (not ZenQuantPipeline which includes SyntheticIngestor)
     from pathlib import Path as _Path
 
-    from zenquant.data import CotDataStore, CotStoreConfig, MacroDataStore, MacroDataStoreConfig
+    from zenquant.data import (
+        CotDataStore,
+        CotStoreConfig,
+        MacroDataStore,
+        MacroDataStoreConfig,
+        MicrostructureFeatureStore,
+        MicrostructureFeatureStoreConfig,
+    )
     from zenquant.execution import ExecutionKernel, SimulatedGateway
     from zenquant.indicator import IndicatorEngine, IndicatorEngineConfig, IndicatorStore
     from zenquant.indicator.hf_features import HFFeatureStore, HFFeatureStoreConfig
@@ -64,6 +72,20 @@ async def run_paper_trading(symbol: str = "BTCUSDT", duration_hours: float = 24.
     hf_dir = _Path("data/raw/binance/klines") / symbol / "5m"
     hf_store = HFFeatureStore(HFFeatureStoreConfig(data_dir=hf_dir))
     hf_store.load()
+    microstructure_store = None
+    if os.getenv("ZENQUANT_MICROSTRUCTURE_SIDECAR_ENABLED", "").lower() in {"1", "true", "yes"}:
+        microstructure_store = MicrostructureFeatureStore(
+            MicrostructureFeatureStoreConfig(
+                data_dir=_Path(
+                    os.getenv(
+                        "ZENQUANT_MICROSTRUCTURE_SIDECAR_DIR",
+                        "data/raw/microstructure_sidecar/bybit/BTCUSDT/1000ms",
+                    )
+                ),
+                max_staleness_ns=Timeframe.TF_4H.seconds * 1_000_000_000,
+            )
+        )
+        microstructure_store.load()
 
     # Wire components (ordering matters: snapshot → clock → indicator → risk → strategy → state → execution)
     SnapshotBuilder(bus=bus)
@@ -77,6 +99,7 @@ async def run_paper_trading(symbol: str = "BTCUSDT", duration_hours: float = 24.
         macro_store=macro_store if macro_store.loaded else None,
         hf_store=hf_store if hf_store.loaded else None,
         cot_store=cot_store if cot_store.loaded else None,
+        microstructure_store=microstructure_store if microstructure_store and microstructure_store.loaded else None,
     )
 
     risk_overlay = RiskOverlay(bus=bus)

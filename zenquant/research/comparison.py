@@ -165,6 +165,26 @@ def default_variant_specs() -> list[VariantSpec]:
     ]
 
 
+def public_archive_variant_specs(*, mapping_path: Path) -> list[VariantSpec]:
+    """Return default variants plus the optional PaulWei public-archive baseline."""
+    from zenquant.research.paulwei_public import paulwei_public_archive_variant_spec
+
+    variants = list(default_variant_specs())
+    payload = paulwei_public_archive_variant_spec(mapping_path=mapping_path)
+    if payload is None:
+        return variants
+    variants.append(
+        VariantSpec(
+            name=str(payload["name"]),
+            label=str(payload["label"]),
+            risk_config=payload.get("risk_config"),
+            execution_config=payload.get("execution_config"),
+            strategy_config=payload.get("strategy_config"),
+        )
+    )
+    return variants
+
+
 def liquidation_research_variant_specs() -> list[VariantSpec]:
     baseline_risk = paulwei_risk_baseline()
     return [

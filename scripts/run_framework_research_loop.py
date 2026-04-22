@@ -50,6 +50,20 @@ def _read_seed_trials(path: Path | None) -> list[dict[str, Any]]:
     return resolved
 
 
+def _read_external_candidate_checkpoint(path: Path | None, *, budget: str) -> dict[str, Any] | None:
+    if path is None:
+        return None
+    payload = _read_json(path)
+    if payload is None:
+        raise ValueError(f"initial_candidate_checkpoint_file_not_found:{path}")
+    if not isinstance(payload, dict):
+        raise ValueError("initial_candidate_checkpoint_file must contain a JSON object")
+    invalidated_reason = _candidate_checkpoint_invalidated_reason(payload, budget=budget)
+    if invalidated_reason is not None:
+        raise ValueError(f"initial_candidate_checkpoint_invalid:{invalidated_reason}")
+    return dict(payload)
+
+
 def _append_log(path: Path, message: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("a", encoding="utf-8") as handle:
@@ -62,6 +76,10 @@ def _round_dir(root: Path, round_index: int) -> Path:
 
 def _seed_file(run_dir: Path) -> Path:
     return run_dir / "seed_trials.json"
+
+
+def _campaign_launcher_log_file(run_dir: Path) -> Path:
+    return run_dir / "campaign_launcher.log"
 
 
 def _loop_lock_file(loop_dir: Path) -> Path:
@@ -255,6 +273,18 @@ def _current_campaign_snapshot(run_dir: Path) -> dict[str, Any]:
         "post_smoke_scenario": status.get("post_smoke_scenario"),
         "campaign_updated_at": status.get("updated_at"),
     }
+
+
+def _campaign_status_path(run_dir: Path) -> Path:
+    return run_dir / "campaign_status.json"
+
+
+def _campaign_final_report_path(run_dir: Path) -> Path:
+    return run_dir / "framework_optimization.json"
+
+
+def _campaign_bootstrap_state(run_dir: Path) -> tuple[bool, bool]:
+    return _campaign_status_path(run_dir).exists(), _campaign_final_report_path(run_dir).exists()
 
 
 def _campaign_failed_authoritatively(snapshot: dict[str, Any]) -> bool:
@@ -798,7 +828,10 @@ def _launch_round(
 ) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
     run_dir.mkdir(parents=True, exist_ok=True)
     campaign_lock_path = _campaign_lock_file(run_dir)
+    launcher_log_path = _campaign_launcher_log_file(run_dir)
+    launcher_log_handle = launcher_log_path.open("w", encoding="utf-8")
     round_started_at = time.time()
+    campaign_startup_timeout_s = 30.0
     seed_trials_file: Path | None = None
     if seed_trials:
         seed_trials_file = _seed_file(run_dir)
@@ -864,7 +897,7 @@ def _launch_round(
             "ZENQUANT_LOOP_LAUNCHER_PID": str(os.getpid()),
             "ZENQUANT_LOOP_RUN_DIR": str(run_dir.resolve()),
         },
-        stdout=subprocess.DEVNULL,
+        stdout=launcher_log_handle,
         stderr=subprocess.STDOUT,
     )
     lock_payload["pid"] = process.pid
@@ -877,9 +910,18 @@ def _launch_round(
     last_progress_signature: tuple[Any, ...] | None = None
     stage2_started_at: float | None = None
     authoritative_failure_snapshot: dict[str, Any] | None = None
+    campaign_bootstrap_completed = False
+    campaign_bootstrap_failure_driver: str | None = None
     try:
         while True:
             snapshot = _current_campaign_snapshot(run_dir)
+            has_campaign_status, has_final_report = _campaign_bootstrap_state(run_dir)
+            if has_campaign_status and not campaign_bootstrap_completed:
+                campaign_bootstrap_completed = True
+                _append_log(
+                    loop_log_path,
+                    f"campaign_bootstrap_completed round={round_index} budget={budget}",
+                )
             if snapshot.get("phase") == "stage2_full_verdict" and stage2_started_at is None:
                 stage2_started_at = time.time()
             round_runtime_s = round(time.time() - round_started_at, 2)
@@ -902,6 +944,10 @@ def _launch_round(
                 stage1_runtime_s=stage1_runtime_s,
                 stage2_runtime_s=stage2_runtime_s,
                 loop_state="campaign_running",
+                campaign_startup_timeout_s=campaign_startup_timeout_s,
+                campaign_bootstrap_completed=campaign_bootstrap_completed,
+                campaign_bootstrap_failure_driver=campaign_bootstrap_failure_driver,
+                campaign_launcher_log_path=str(launcher_log_path),
             )
             _write_training_monitor(loop_status_path.parent)
             progress_signature = (
@@ -933,6 +979,26 @@ def _launch_round(
                 )
                 last_progress_signature = progress_signature
                 last_progress_log_at = now
+            if (
+                not campaign_bootstrap_completed
+                and (time.time() - round_started_at) >= campaign_startup_timeout_s
+                and process.poll() is None
+            ):
+                campaign_bootstrap_failure_driver = "campaign_startup_timeout"
+                _append_log(
+                    loop_log_path,
+                    (
+                        f"round_failed round={round_index} budget={budget} "
+                        f"failure_driver={campaign_bootstrap_failure_driver}"
+                    ),
+                )
+                process.terminate()
+                try:
+                    process.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+                    process.wait(timeout=5)
+                break
             if _campaign_failed_authoritatively(snapshot):
                 authoritative_failure_snapshot = snapshot
                 _update_loop_status(
@@ -964,6 +1030,8 @@ def _launch_round(
                 )
                 break
             if process.poll() is not None:
+                if not campaign_bootstrap_completed:
+                    campaign_bootstrap_failure_driver = "campaign_bootstrap_failed_before_status"
                 break
             time.sleep(max(1.0, float(args.poll_interval)))
 
@@ -985,8 +1053,24 @@ def _launch_round(
                 process.kill()
                 process.wait(timeout=5)
         _release_lock(campaign_lock_path, owner_pid=process.pid)
+        launcher_log_handle.close()
     if exit_code != 0:
         snapshot = authoritative_failure_snapshot or _current_campaign_snapshot(run_dir)
+        has_campaign_status, has_final_report = _campaign_bootstrap_state(run_dir)
+        failure_driver = campaign_bootstrap_failure_driver
+        if failure_driver is None:
+            if authoritative_failure_snapshot is not None:
+                failure_driver = str(
+                    snapshot.get("failure_reason")
+                    or snapshot.get("blocked_by")
+                    or "campaign_round_failed"
+                )
+            elif not has_campaign_status:
+                failure_driver = "campaign_bootstrap_failed_before_status"
+            elif not has_final_report:
+                failure_driver = "campaign_failed_before_final_report"
+            else:
+                failure_driver = str(snapshot.get("failure_reason") or snapshot.get("blocked_by") or "campaign_round_failed")
         _update_loop_status(
             loop_status_path,
             current_round=round_index,
@@ -1004,12 +1088,40 @@ def _launch_round(
             stage1_runtime_s=round(float(snapshot.get("stage1_runtime_s") or 0.0), 2),
             stage2_runtime_s=round(time.time() - stage2_started_at, 2) if stage2_started_at is not None else 0.0,
             loop_state="failed",
-            stop_reason=f"campaign_round_failed:{round_index}",
+            stop_reason=f"{failure_driver}:{round_index}",
+            campaign_startup_timeout_s=campaign_startup_timeout_s,
+            campaign_bootstrap_completed=campaign_bootstrap_completed,
+            campaign_bootstrap_failure_driver=failure_driver,
+            campaign_launcher_log_path=str(launcher_log_path),
         )
         _write_training_monitor(loop_status_path.parent)
-        raise RuntimeError(f"campaign_round_failed exit_code={exit_code} run_dir={run_dir}")
+        raise RuntimeError(f"{failure_driver} exit_code={exit_code} run_dir={run_dir}")
     if not final_report:
-        raise RuntimeError(f"campaign_round_missing_final_report run_dir={run_dir}")
+        _update_loop_status(
+            loop_status_path,
+            current_round=round_index,
+            max_rounds=max_rounds,
+            current_budget=budget,
+            current_run_dir=str(run_dir),
+            current_phase=(campaign_status or {}).get("phase"),
+            current_status=(campaign_status or {}).get("status"),
+            current_blockers=(campaign_status or {}).get("full_training_blockers"),
+            current_scenario=(campaign_status or {}).get("post_smoke_scenario"),
+            adaptation_policy=adaptation_policy,
+            seed_trial_count=len(seed_trials),
+            current_campaign_pid=process.pid,
+            round_runtime_s=round(time.time() - round_started_at, 2),
+            stage1_runtime_s=round(float((campaign_status or {}).get("stage1_runtime_s") or 0.0), 2),
+            stage2_runtime_s=round(time.time() - stage2_started_at, 2) if stage2_started_at is not None else 0.0,
+            loop_state="failed",
+            stop_reason=f"campaign_missing_final_report:{round_index}",
+            campaign_startup_timeout_s=campaign_startup_timeout_s,
+            campaign_bootstrap_completed=campaign_bootstrap_completed,
+            campaign_bootstrap_failure_driver="campaign_missing_final_report",
+            campaign_launcher_log_path=str(launcher_log_path),
+        )
+        _write_training_monitor(loop_status_path.parent)
+        raise RuntimeError(f"campaign_missing_final_report run_dir={run_dir}")
     _write_training_monitor(loop_status_path.parent)
     return final_report, stage1_payload, campaign_status
 
@@ -1062,10 +1174,11 @@ def main() -> None:
     parser.add_argument("--poll-interval", type=float, default=5.0)
     parser.add_argument("--resume", action="store_true")
     parser.add_argument("--initial-seed-trials-file", default=None)
+    parser.add_argument("--initial-candidate-checkpoint-file", default=None)
     args = parser.parse_args()
 
-    if args.resume and args.initial_seed_trials_file:
-        raise SystemExit("--resume and --initial-seed-trials-file are mutually exclusive")
+    if args.resume and (args.initial_seed_trials_file or args.initial_candidate_checkpoint_file):
+        raise SystemExit("--resume, --initial-seed-trials-file, and --initial-candidate-checkpoint-file are mutually exclusive")
 
     loop_dir = Path(args.output_dir)
     campaign_root = Path(args.campaign_output_root) if args.campaign_output_root else loop_dir / "runs"
@@ -1129,8 +1242,24 @@ def main() -> None:
             )
             adaptation_policy = str(previous_record.get("next_adaptation_policy", adaptation_policy))
         elif args.initial_seed_trials_file:
+            external_candidate_checkpoint = _read_external_candidate_checkpoint(
+                Path(args.initial_candidate_checkpoint_file) if args.initial_candidate_checkpoint_file else None,
+                budget=current_budget,
+            )
             seed_trials = project_seed_trials_to_mode(
-                _read_seed_trials(Path(args.initial_seed_trials_file)),
+                _merge_seed_trials_with_candidate(
+                    _read_seed_trials(Path(args.initial_seed_trials_file)),
+                    external_candidate_checkpoint,
+                ),
+                mode=_mode_for_budget(current_budget),
+            )
+        elif args.initial_candidate_checkpoint_file:
+            external_candidate_checkpoint = _read_external_candidate_checkpoint(
+                Path(args.initial_candidate_checkpoint_file),
+                budget=current_budget,
+            )
+            seed_trials = project_seed_trials_to_mode(
+                _merge_seed_trials_with_candidate([], external_candidate_checkpoint),
                 mode=_mode_for_budget(current_budget),
             )
 

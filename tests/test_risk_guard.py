@@ -221,6 +221,78 @@ class VPINTests(unittest.TestCase):
         self.assertTrue(decisions)
         self.assertNotIn("VPIN_TOXIC", decisions[-1].flags)
 
+
+class MicrostructureRiskGuardTests(unittest.TestCase):
+    def test_microstructure_toxicity_reduces_risk(self) -> None:
+        bus = InMemoryJetStream()
+        overlay = RiskOverlay(bus=bus)
+        decisions = []
+        bus.subscribe("risk.overlay.decision", lambda _, p: decisions.append(p))
+
+        bus.publish(
+            "indicator.pack.v1.4h.BTCUSDT_PERP",
+            _make_pack(
+                {
+                    "ms_sidecar_ready": True,
+                    "ms_sidecar_stale": False,
+                    "ms_toxicity_proxy": 3.5,
+                    "ms_liquidity_vacuum_score": 0.0,
+                    "ms_spread_bps": 0.5,
+                }
+            ),
+        )
+        bus.publish("intent.target_position.arc.BTCUSDT_PERP", _make_target())
+
+        self.assertIn("MICROSTRUCTURE_TOXIC", decisions[-1].flags)
+        self.assertLess(decisions[-1].lev_cap, 6.0)
+
+    def test_microstructure_severe_spread_forces_reduce_only(self) -> None:
+        bus = InMemoryJetStream()
+        overlay = RiskOverlay(bus=bus)
+        decisions = []
+        bus.subscribe("risk.overlay.decision", lambda _, p: decisions.append(p))
+
+        bus.publish(
+            "indicator.pack.v1.4h.BTCUSDT_PERP",
+            _make_pack(
+                {
+                    "ms_sidecar_ready": True,
+                    "ms_sidecar_stale": False,
+                    "ms_toxicity_proxy": 0.0,
+                    "ms_liquidity_vacuum_score": 0.0,
+                    "ms_spread_bps": 9.0,
+                }
+            ),
+        )
+        bus.publish("intent.target_position.arc.BTCUSDT_PERP", _make_target())
+
+        self.assertIn("MICROSTRUCTURE_SPREAD_STRESS", decisions[-1].flags)
+        self.assertTrue(decisions[-1].reduce_only)
+
+    def test_microstructure_stale_sidecar_is_fail_open(self) -> None:
+        bus = InMemoryJetStream()
+        overlay = RiskOverlay(bus=bus)
+        decisions = []
+        bus.subscribe("risk.overlay.decision", lambda _, p: decisions.append(p))
+
+        bus.publish(
+            "indicator.pack.v1.4h.BTCUSDT_PERP",
+            _make_pack(
+                {
+                    "ms_sidecar_ready": False,
+                    "ms_sidecar_stale": True,
+                    "ms_toxicity_proxy": 10.0,
+                    "ms_liquidity_vacuum_score": 10.0,
+                    "ms_spread_bps": 10.0,
+                }
+            ),
+        )
+        bus.publish("intent.target_position.arc.BTCUSDT_PERP", _make_target())
+
+        self.assertNotIn("MICROSTRUCTURE_TOXIC", decisions[-1].flags)
+        self.assertNotIn("MICROSTRUCTURE_LIQUIDITY_VACUUM", decisions[-1].flags)
+        self.assertNotIn("MICROSTRUCTURE_SPREAD_STRESS", decisions[-1].flags)
+
     # ── Boundary tests (GAN discriminator feedback) ──
     def test_vpin_exact_threshold_no_flag(self) -> None:
         """VPIN at exact threshold (0.10) should NOT trigger (logic uses > not >=)."""

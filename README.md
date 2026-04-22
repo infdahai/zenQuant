@@ -67,7 +67,7 @@ What each layer is allowed to do:
 - `train` learns parameters and produces candidates
 - `dev` ranks candidates, runs weak-window checks, and runs robustness selection
 - `test` is final historical acceptance only
-- `paper-live` starts only after `test` passes
+- `paper-live` starts only after `test` passes and `framework_optimization.json.final_verdict` marks the candidate eligible
 
 Reference: [`docs/DATASET_SPLIT_POLICY.md`](/Users/disaster/workspace/code/zenQuant/docs/DATASET_SPLIT_POLICY.md)
 
@@ -89,7 +89,7 @@ The current BTC strategy has passed the repo's handoff validation path for histo
 
 - Handoff spec: [`docs/LIVE_VALIDATION_HANDOFF_SPEC.md`](/Users/disaster/workspace/code/zenQuant/docs/LIVE_VALIDATION_HANDOFF_SPEC.md)
 - Latest execution record: [`docs/HISTORICAL_VALIDATION_2026_04_07.md`](/Users/disaster/workspace/code/zenQuant/docs/HISTORICAL_VALIDATION_2026_04_07.md)
-- Current historical conclusion under the old mixed validation stack remains useful evidence, but final promotion now requires the stricter `train/dev/test` contract above.
+- Current historical conclusion under the old mixed validation stack remains useful evidence, but final promotion now requires the stricter `train/dev/test` contract above and a positive `framework_optimization.json.final_verdict`.
 
 Minimal re-check commands:
 
@@ -106,10 +106,10 @@ uv run python scripts/adversarial_stress.py --historical --split dev
 Forward-looking research inputs are collected by an hourly cron-friendly chain, not by the research loop itself.
 
 - `uv run zenquant-forward-collect`
-  - runs Deribit collection, Hyperliquid collection, liquidation merge, and readiness refresh in order
+  - runs Deribit collection, Deribit block flow collection, Hyperliquid collection, liquidation merge, and readiness refresh in order
   - updates `results/data_readiness/forward_collection_latest.json`
 - `uv run zenquant-forward-collect --health-only`
-  - checks freshness of `_collector_status.json`, merged liquidation output, and `results/data_readiness/data_readiness.json`
+  - checks freshness of `_collector_status.json`, Deribit block flow status, merged liquidation output, and `results/data_readiness/data_readiness.json`
   - updates `results/data_readiness/forward_collection_health.json`
 
 Use the collector command on a fixed hourly schedule. Do not treat `zenquant-web --mode live` as the only forward-data collector.
@@ -371,7 +371,7 @@ Use this path for:
 - training on observed production behavior
 
 Current repo status:
-- paper-live can be started after the handoff gates pass
+- paper-live can be started only after the handoff gates pass and `results/framework_optimization/framework_optimization.json.final_verdict` marks the candidate eligible
 - paper-live validation is **not yet complete** until the sustained run and formal export/review finish
 - use the handoff spec as the single tester/operator contract
 

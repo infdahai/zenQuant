@@ -1,6 +1,8 @@
 import json
 import tempfile
+import types
 import unittest
+from collections.abc import Callable
 from pathlib import Path
 from unittest.mock import patch
 
@@ -12,6 +14,42 @@ from zenquant.research.splits import default_btc_split_spec
 
 
 class RLTunerConfigTests(unittest.TestCase):
+    def test_resolve_torch_device_auto_prefers_mps(self) -> None:
+        fake_torch = types.SimpleNamespace(
+            backends=types.SimpleNamespace(
+                mps=types.SimpleNamespace(
+                    is_available=lambda: True,
+                    is_built=lambda: True,
+                )
+            )
+        )
+
+        with patch.dict("sys.modules", {"torch": fake_torch}):
+            resolved, resolved_from, mps_allowed, fallback_reason = rl_tuner._resolve_torch_device("auto")
+
+        self.assertEqual(resolved, "mps")
+        self.assertEqual(resolved_from, "auto")
+        self.assertTrue(mps_allowed)
+        self.assertIsNone(fallback_reason)
+
+    def test_resolve_torch_device_falls_back_when_mps_unavailable(self) -> None:
+        fake_torch = types.SimpleNamespace(
+            backends=types.SimpleNamespace(
+                mps=types.SimpleNamespace(
+                    is_available=lambda: False,
+                    is_built=lambda: True,
+                )
+            )
+        )
+
+        with patch.dict("sys.modules", {"torch": fake_torch}):
+            resolved, resolved_from, mps_allowed, fallback_reason = rl_tuner._resolve_torch_device("auto")
+
+        self.assertEqual(resolved, "cpu")
+        self.assertEqual(resolved_from, "auto")
+        self.assertFalse(mps_allowed)
+        self.assertEqual(fallback_reason, "mps_unavailable")
+
     def test_signal_weight_builder_caps_redundant_funding_crowding_pair(self) -> None:
         weights = rl_tuner.build_signal_weight_overrides(
             {
@@ -30,8 +68,8 @@ class RLTunerConfigTests(unittest.TestCase):
     def test_execution_builder_keeps_paulwei_philosophy_fixed(self) -> None:
         config = rl_tuner.build_execution_config(
             {
-                "pyramid_initial_pct": 0.4,
-                "pyramid_add_pct": 0.45,
+                "pyramid_initial_pct": 0.30,
+                "pyramid_add_pct": 0.30,
                 "pyramid_short_initial_pct": 0.15,
                 "pyramid_short_add_pct": 0.12,
                 "pyramid_spacing_atr": 1.0,
@@ -47,8 +85,8 @@ class RLTunerConfigTests(unittest.TestCase):
         self.assertTrue(config.dca_on_loss_long)
         self.assertTrue(config.gradual_exit_enabled)
         self.assertTrue(config.adaptive_pyramid_enabled)
-        self.assertAlmostEqual(config.pyramid_initial_pct, 0.4)
-        self.assertAlmostEqual(config.pyramid_add_pct, 0.45)
+        self.assertAlmostEqual(config.pyramid_initial_pct, 0.30)
+        self.assertAlmostEqual(config.pyramid_add_pct, 0.30)
         self.assertAlmostEqual(config.pyramid_short_initial_pct, 0.15)
         self.assertAlmostEqual(config.pyramid_short_add_pct, 0.12)
         self.assertAlmostEqual(config.pyramid_spacing_atr, 1.0)
@@ -80,8 +118,8 @@ class RLTunerConfigTests(unittest.TestCase):
 
         env = rl_tuner.ParamTunerEnv(split_spec=default_btc_split_spec())
         params = {
-            "pyramid_initial_pct": 0.4,
-            "pyramid_add_pct": 0.15,
+            "pyramid_initial_pct": 0.30,
+            "pyramid_add_pct": 0.30,
             "pyramid_short_initial_pct": 0.15,
             "pyramid_short_add_pct": 0.12,
             "pyramid_spacing_atr": 1.0,
@@ -99,8 +137,8 @@ class RLTunerConfigTests(unittest.TestCase):
         config = captured["config"]
         self.assertIsNotNone(config.execution_config)
         assert config.execution_config is not None
-        self.assertAlmostEqual(config.execution_config.pyramid_initial_pct, 0.4)
-        self.assertAlmostEqual(config.execution_config.pyramid_add_pct, 0.15)
+        self.assertAlmostEqual(config.execution_config.pyramid_initial_pct, 0.30)
+        self.assertAlmostEqual(config.execution_config.pyramid_add_pct, 0.30)
         self.assertAlmostEqual(config.execution_config.pyramid_short_initial_pct, 0.15)
         self.assertAlmostEqual(config.execution_config.pyramid_short_add_pct, 0.12)
         self.assertAlmostEqual(config.execution_config.pyramid_spacing_atr, 1.0)
@@ -148,6 +186,119 @@ class RLTunerConfigTests(unittest.TestCase):
         self.assertEqual(captured["config"].research_compute_mode, "lightweight_train_search")
         self.assertTrue(captured["config"].early_stop_enabled)
         self.assertEqual(captured["config"].trial_runtime_budget_s, 90.0)
+
+    def test_train_tuner_reports_mps_device_metadata(self) -> None:
+        heartbeats: list[dict[str, object]] = []
+
+        class FakeManager:
+            def __init__(self) -> None:
+                self._shared = [
+                    {
+                        "params": {"w_momentum": 0.45},
+                        "sharpe": 1.25,
+                        "pnl": 123.0,
+                        "max_dd": 0.09,
+                        "trades": 24,
+                        "candidate_score": 1.2,
+                    }
+                ]
+
+            def list(self):
+                return self._shared
+
+            def shutdown(self) -> None:
+                return None
+
+        class FakeVecEnv:
+            def __init__(self, env_fns: list[Callable[..., object]], *args, **kwargs) -> None:
+                self.env_fns = env_fns
+
+            def close(self) -> None:
+                return None
+
+        class FakePPO:
+            def __init__(self, *_args, device: str, **_kwargs) -> None:
+                self.device = device
+
+            def learn(self, total_timesteps: int, callback) -> None:
+                callback.num_timesteps = total_timesteps
+                callback._on_step()
+
+        with (
+            patch.object(rl_tuner, "_resolve_torch_device", return_value=("mps", "auto", True, None)),
+            patch.object(rl_tuner, "Manager", return_value=FakeManager()),
+            patch("stable_baselines3.PPO", FakePPO),
+            patch("stable_baselines3.common.vec_env.DummyVecEnv", FakeVecEnv),
+            patch("stable_baselines3.common.vec_env.SubprocVecEnv", FakeVecEnv),
+        ):
+            payload = rl_tuner.train_tuner(
+                total_timesteps=1,
+                max_episodes=1,
+                n_envs=2,
+                status_callback=lambda **kwargs: heartbeats.append(kwargs),
+            )
+
+        self.assertEqual(payload["search_status"]["rl_device"], "mps")
+        self.assertEqual(payload["search_status"]["rl_device_resolved_from"], "auto")
+        self.assertIsNone(payload["search_status"]["rl_device_fallback_reason"])
+        self.assertTrue(payload["search_status"]["rl_cleanup_completed"])
+        self.assertEqual(payload["search_status"]["rl_cleanup_warnings"], [])
+        completed = [item for item in heartbeats if item.get("event") == "rl_completed"]
+        self.assertEqual(completed[-1]["rl_device"], "mps")
+        self.assertTrue(completed[-1]["rl_cleanup_completed"])
+
+    def test_train_tuner_falls_back_to_cpu_on_mps_init_error(self) -> None:
+        class FakeManager:
+            def __init__(self) -> None:
+                self._shared = [
+                    {
+                        "params": {"w_momentum": 0.30},
+                        "sharpe": 0.8,
+                        "pnl": 50.0,
+                        "max_dd": 0.1,
+                        "trades": 18,
+                        "candidate_score": 0.75,
+                    }
+                ]
+
+            def list(self):
+                return self._shared
+
+            def shutdown(self) -> None:
+                return None
+
+        class FakeVecEnv:
+            def __init__(self, env_fns: list[Callable[..., object]], *args, **kwargs) -> None:
+                self.env_fns = env_fns
+
+            def close(self) -> None:
+                return None
+
+        class FakePPO:
+            def __init__(self, *_args, device: str, **_kwargs) -> None:
+                if device == "mps":
+                    raise RuntimeError("mps init failed")
+                self.device = device
+
+            def learn(self, total_timesteps: int, callback) -> None:
+                callback.num_timesteps = total_timesteps
+                callback._on_step()
+
+        with (
+            patch.object(rl_tuner, "_resolve_torch_device", return_value=("mps", "auto", True, None)),
+            patch.object(rl_tuner, "Manager", return_value=FakeManager()),
+            patch("stable_baselines3.PPO", FakePPO),
+            patch("stable_baselines3.common.vec_env.DummyVecEnv", FakeVecEnv),
+            patch("stable_baselines3.common.vec_env.SubprocVecEnv", FakeVecEnv),
+        ):
+            payload = rl_tuner.train_tuner(total_timesteps=1, max_episodes=1, n_envs=2)
+
+        self.assertEqual(payload["search_status"]["rl_device"], "cpu")
+        self.assertEqual(
+            payload["search_status"]["rl_device_fallback_reason"],
+            "mps_init_error:RuntimeError",
+        )
+        self.assertTrue(payload["search_status"]["rl_cleanup_completed"])
 
 
 class RLTuneCliTests(unittest.TestCase):

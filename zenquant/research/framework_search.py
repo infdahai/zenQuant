@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import json
+import multiprocessing as mp
 import os
+import sys
 from concurrent.futures import ProcessPoolExecutor
 from concurrent.futures import TimeoutError as FutureTimeoutError
 from dataclasses import asdict, dataclass
@@ -98,6 +100,30 @@ def _mvrv_source_metadata(macro_dir: Path) -> dict[str, Any]:
     }
 
 
+def _repo_root() -> Path:
+    return Path(__file__).resolve().parents[2]
+
+
+def _public_baseline_reference() -> dict[str, Any] | None:
+    path = _repo_root() / "results" / "paulwei_research" / "variant_comparison_review.json"
+    if not path.exists():
+        return None
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+    return (
+        payload.get("variant_window_summary", {})
+        .get("paulwei_public_archive_baseline")
+    )
+
+
+def _safe_metric(metrics: dict[str, Any] | None, key: str) -> float:
+    if not isinstance(metrics, dict):
+        return 0.0
+    return float(metrics.get(key, 0.0) or 0.0)
+
+
 def _admission_contract(source_name: str) -> dict[str, Any]:
     review = load_source_admission_review(source_name)
     if not review:
@@ -184,8 +210,16 @@ def _historical_extension_candidate_contract() -> dict[str, Any]:
             "source": None,
             "candidate_name": None,
             "ready": False,
+            "layered_train_enabled": False,
+            "historical_extension_mode": None,
             "formal_train_truth": False,
+            "train_truth_legs": [],
+            "dev_truth_source": "futures_only",
+            "test_truth_source": "futures_only",
+            "mixed_era_declared": False,
+            "full_unified_truth": False,
             "blocked_by": ["historical_extension_candidate_missing"],
+            "spot_train_leg_blocked_by": ["historical_extension_candidate_missing"],
             "candidate_window_start": None,
             "candidate_window_end": None,
             "source_boundary": None,
@@ -196,8 +230,16 @@ def _historical_extension_candidate_contract() -> dict[str, Any]:
         "source": review.get("candidate_source_type"),
         "candidate_name": review.get("candidate_name"),
         "ready": bool(review.get("ready")),
+        "layered_train_enabled": bool(review.get("layered_train_enabled")),
+        "historical_extension_mode": review.get("historical_extension_mode"),
         "formal_train_truth": bool(review.get("formal_train_truth")),
+        "train_truth_legs": list(review.get("train_truth_legs") or []),
+        "dev_truth_source": review.get("dev_truth_source", "futures_only"),
+        "test_truth_source": review.get("test_truth_source", "futures_only"),
+        "mixed_era_declared": bool(review.get("mixed_era_declared")),
+        "full_unified_truth": bool(review.get("full_unified_truth")),
         "blocked_by": blocked_by,
+        "spot_train_leg_blocked_by": list(review.get("spot_train_leg_blocked_by") or blocked_by),
         "candidate_window_start": review.get("candidate_window_start"),
         "candidate_window_end": review.get("candidate_window_end"),
         "source_boundary": review.get("source_boundary"),
@@ -237,6 +279,90 @@ def _window_has_timeframe_rows(
     return bool(rows)
 
 
+def _iso_to_ns(value: str | None) -> int | None:
+    if not value:
+        return None
+    return int(datetime.fromisoformat(value).timestamp() * 1_000_000_000)
+
+
+def _spot_train_leg(contract: dict[str, Any]) -> dict[str, Any] | None:
+    for leg in list(contract.get("train_truth_legs") or []):
+        if leg.get("name") == "pre_2020_spot_train":
+            return dict(leg)
+    return None
+
+
+def _spot_train_leg_snapshot(
+    evaluator: FrameworkEvaluator,
+    params: dict[str, Any],
+    contract: dict[str, Any],
+) -> BacktestSnapshot | None:
+    leg = _spot_train_leg(contract)
+    if not leg or not contract.get("layered_train_enabled"):
+        return None
+    if contract.get("spot_train_leg_blocked_by"):
+        blocking = {
+            "spot_timeframe_gap",
+            "futures_1h_missing",
+            "futures_1h_incomplete_current_truth",
+        }
+        if any(reason in blocking for reason in list(contract.get("spot_train_leg_blocked_by") or [])):
+            return None
+    variant = evaluator.candidate_variant(params, name="spot_train_candidate", label="Spot Train Candidate")
+    spot_root_dir = evaluator._base_config.root_dir.parent / "binance_spot"
+    spot_config = HistoricalBacktestConfig(
+        root_dir=spot_root_dir,
+        symbol=evaluator._base_config.symbol,
+        portfolio_symbol=evaluator._base_config.portfolio_symbol,
+        starting_equity=evaluator._base_config.starting_equity,
+        execution_timeframe=evaluator._base_config.execution_timeframe,
+        bias_timeframe=evaluator._base_config.bias_timeframe,
+        direction_timeframe=evaluator._base_config.direction_timeframe,
+        context_timeframe=evaluator._base_config.context_timeframe,
+        macro_dir=evaluator._base_config.macro_dir,
+        options_dir=evaluator._base_config.options_dir,
+        cot_path=evaluator._base_config.cot_path,
+        liquidation_dir=evaluator._base_config.liquidation_dir,
+        profile_path=evaluator._base_config.profile_path,
+        research_compute_mode=evaluator._base_config.research_compute_mode,
+        strategy_config=variant.strategy_config,
+        risk_config=variant.risk_config,
+        execution_config=variant.execution_config,
+        signal_weight_overrides=variant.signal_weight_overrides,
+        indicator_config=variant.indicator_config,
+        liquidation_data_enabled=False,
+        state_liquidation_overlay_enabled=False,
+    )
+    return _run_variant_backtest_snapshot(
+        spot_config,
+        variant,
+        start_ns=_iso_to_ns(leg.get("start_at")),
+        end_ns=_iso_to_ns(leg.get("end_at")),
+    )
+
+
+def _combine_train_leg_metrics(
+    futures_metrics: dict[str, Any],
+    spot_snapshot: BacktestSnapshot | None,
+) -> tuple[dict[str, Any], dict[str, Any] | None, float]:
+    futures_sharpe = float(futures_metrics.get("sharpe", 0.0) or 0.0)
+    futures_score = float(futures_metrics.get("score", futures_sharpe) or futures_sharpe)
+    if spot_snapshot is None:
+        return dict(futures_metrics), None, futures_score
+    spot_metrics = {
+        "sharpe": round(float(spot_snapshot.sharpe), 6),
+        "net_pnl": round(float(spot_snapshot.net_pnl), 6),
+        "max_drawdown": round(float(spot_snapshot.max_drawdown), 6),
+        "win_rate": round(float(spot_snapshot.win_rate), 6),
+    }
+    spot_sharpe = float(spot_snapshot.sharpe)
+    combined_score = round(min(futures_sharpe, spot_sharpe) + 0.25 * ((futures_sharpe + spot_sharpe) / 2.0), 6)
+    combined_metrics = dict(futures_metrics)
+    combined_metrics["score"] = combined_score
+    combined_metrics["combined_train_score"] = combined_score
+    return combined_metrics, spot_metrics, combined_score
+
+
 def _run_variant_backtest_snapshot(
     base_config: HistoricalBacktestConfig,
     variant: VariantSpec,
@@ -250,6 +376,10 @@ def _run_variant_backtest_snapshot(
         net_pnl=result.metrics.net_pnl,
         max_drawdown=result.metrics.max_drawdown,
         win_rate=result.metrics.win_rate,
+        sortino=getattr(result.metrics, "sortino", 0.0),
+        profit_factor=getattr(result.metrics, "profit_factor", 0.0),
+        turnover_per_day=getattr(result.metrics, "turnover_per_day", 0.0),
+        fee_drag_pct=getattr(result.metrics, "fee_drag_pct", 0.0),
     )
 
 
@@ -261,6 +391,7 @@ def _run_variant_backtest_with_timeout(
     end_ns: int | None,
     timeout_s: float,
     pool: ProcessPoolExecutor | None = None,
+    mp_start_method: str | None = None,
 ) -> BacktestSnapshot:
     if pool is not None:
         future = pool.submit(
@@ -275,7 +406,10 @@ def _run_variant_backtest_with_timeout(
         except FutureTimeoutError as exc:
             future.cancel()
             raise TimeoutError(f"variant_backtest_timeout:{timeout_s:.0f}s") from exc
-    with ProcessPoolExecutor(max_workers=1) as local_pool:
+    executor_kwargs: dict[str, Any] = {"max_workers": 1}
+    if mp_start_method:
+        executor_kwargs["mp_context"] = mp.get_context(mp_start_method)
+    with ProcessPoolExecutor(**executor_kwargs) as local_pool:
         future = local_pool.submit(
             _run_variant_backtest_snapshot,
             base_config,
@@ -311,6 +445,17 @@ class CandidateSummary:
     blocked_by: str | None = None
     failed_gate_metrics: dict[str, bool] | None = None
     promotion_failure_reason: str | None = None
+    sortino: float = 0.0
+    profit_factor: float = 0.0
+    turnover_per_day: float = 0.0
+    fee_drag_pct: float = 0.0
+    baseline_gate_pass_current: bool = False
+    baseline_gate_pass_public: bool = False
+    gap_to_current: dict[str, float] | None = None
+    gap_to_paulwei_public: dict[str, float] | None = None
+    candidate_score: float = 0.0
+    weakest_window_penalty: float = 0.0
+    hostile_fragility_penalty: float = 0.0
 
 
 @dataclass(slots=True, frozen=True)
@@ -319,6 +464,10 @@ class BacktestSnapshot:
     net_pnl: float
     max_drawdown: float
     win_rate: float
+    sortino: float = 0.0
+    profit_factor: float = 0.0
+    turnover_per_day: float = 0.0
+    fee_drag_pct: float = 0.0
 
 
 @dataclass(slots=True)
@@ -392,7 +541,7 @@ def _best_tuned_candidate(report: SearchReport) -> CandidateSummary | None:
 
 def _hostile_regression_summary(report: SearchReport) -> dict[str, Any]:
     tuned = _best_tuned_candidate(report)
-    baseline = report.paulwei_baseline
+    baseline = report.current
     if tuned is None:
         return {
             "dev_primary_improved": False,
@@ -420,6 +569,24 @@ def _hostile_regression_summary(report: SearchReport) -> dict[str, Any]:
         "hostile_window_regressed": hostile_window_regressed,
         "hostile_regression_driver": hostile_regression_driver,
     }
+
+
+def _no_tuned_candidate_reason(report: SearchReport) -> str | None:
+    explicit_reason = report.search_status.get("no_tuned_candidate_reason")
+    if explicit_reason:
+        return str(explicit_reason)
+    if report.optuna_best is None and report.rl_best is None:
+        empty_shortlist_reason = report.search_status.get("empty_shortlist_reason")
+        if empty_shortlist_reason:
+            return str(empty_shortlist_reason)
+        return "empty_train_shortlist"
+    for candidate in [report.optuna_best, report.rl_best]:
+        if candidate is None:
+            continue
+        blocked_by = candidate.blocked_by
+        if blocked_by in {"pre_validation_rejection", "prepare_timeout"}:
+            return "prevalidation_rejected"
+    return None
 
 
 def _candidate_frozen_id(best_variant: str, best_params: dict[str, Any] | None) -> str | None:
@@ -459,7 +626,7 @@ def _assess_full_training_readiness(
     signal_independence_contract = report.training_input_contract.get("signal_independence_contract", {})
     search_profile = report.search_status.get("search_space_profile") or {}
     direction_policy = search_profile.get("direction_weight_policy", {})
-    baseline = report.paulwei_baseline
+    baseline = report.current
     tuned = _best_tuned_candidate(report)
 
     system_failures: list[str] = []
@@ -613,7 +780,7 @@ def _classify_post_smoke_scenario(
 
 def _build_framework_diagnosis(report: SearchReport) -> dict[str, Any]:
     tuned = _best_tuned_candidate(report)
-    baseline = report.paulwei_baseline
+    baseline = report.current
     hostile_regression = _hostile_regression_summary(report)
     signal_audit = report.signal_audit_summary or {}
     summary = signal_audit.get("summary", {})
@@ -657,7 +824,7 @@ def _build_framework_diagnosis(report: SearchReport) -> dict[str, Any]:
             "category": "hostile_window_stability",
             "severity": "critical",
             "evidence": {
-                "paulwei_worst_dev_sharpe": baseline.worst_dev_sharpe,
+                "current_worst_dev_sharpe": baseline.worst_dev_sharpe,
                 "tuned_worst_dev_sharpe": tuned.worst_dev_sharpe if tuned is not None else None,
                 "tuned_negative_worst_windows": tuned.negative_dev_worst_windows if tuned is not None else None,
                 "dev_primary_improved": hostile_regression["dev_primary_improved"],
@@ -739,6 +906,7 @@ class FrameworkEvaluator:
         self._summary_cache: dict[tuple[str, bool, bool], CandidateSummary] = {}
         self._validation_pool: ProcessPoolExecutor | None = None
         self._validation_pool_workers = 1
+        self._validation_pool_start_method: str | None = None
         self._full_dev_compare_windows = default_comparison_windows(self._split_spec, "dev")
         worst_dev_windows = filtered_worst_period_windows(self._split_spec, "dev")
         self._fast_dev_compare_windows = [
@@ -850,6 +1018,12 @@ class FrameworkEvaluator:
         historical_extension_candidate = _historical_extension_candidate_contract()
         self._training_input_contract = {
             "primary_truth_source": "binance",
+            "historical_extension_train_enabled": bool(historical_extension_candidate.get("layered_train_enabled")),
+            "historical_extension_mode": historical_extension_candidate.get("historical_extension_mode"),
+            "train_truth_legs": list(historical_extension_candidate.get("train_truth_legs") or []),
+            "dev_truth_source": historical_extension_candidate.get("dev_truth_source", "futures_only"),
+            "test_truth_source": historical_extension_candidate.get("test_truth_source", "futures_only"),
+            "mixed_era_declared": bool(historical_extension_candidate.get("mixed_era_declared")),
             "historical_extension_candidate_contract": historical_extension_candidate,
             "execution_framework": {
                 "primary_timeframe": "4h",
@@ -928,9 +1102,12 @@ class FrameworkEvaluator:
             include_liquidation_toggles=self._readiness["promotion_ready"],
             mode=search_space_mode,
         )
+        self._public_baseline_reference = _public_baseline_reference()
         self._paulwei_fast_lightweight: CandidateSummary | None = None
         self._paulwei_fast_full: CandidateSummary | None = None
         self._current_fast: CandidateSummary | None = None
+        self._stage2_mp_start_method = "spawn" if sys.platform == "darwin" else None
+        self._validation_pool_mode = "process_pool_spawn" if self._stage2_mp_start_method else "process_pool_default"
 
     def _compute_profile(self, *, fast: bool, lightweight: bool) -> dict[str, Any]:
         if lightweight:
@@ -962,6 +1139,7 @@ class FrameworkEvaluator:
                 end_ns=window.end_ns,
                 timeout_s=timeout_s,
                 pool=replay_pool,
+                mp_start_method=self._stage2_mp_start_method,
             )
         except TimeoutError as exc:
             raise PrepareVariantTimeoutError(
@@ -973,12 +1151,27 @@ class FrameworkEvaluator:
         return snapshot
 
     def _get_validation_pool(self, *, workers: int) -> ProcessPoolExecutor:
-        if self._validation_pool is None or self._validation_pool_workers != workers:
+        if (
+            self._validation_pool is None
+            or self._validation_pool_workers != workers
+            or self._validation_pool_start_method != self._stage2_mp_start_method
+        ):
             if self._validation_pool is not None:
                 self._validation_pool.shutdown(wait=False, cancel_futures=True)
-            self._validation_pool = ProcessPoolExecutor(max_workers=max(1, workers))
+            executor_kwargs: dict[str, Any] = {"max_workers": max(1, workers)}
+            if self._stage2_mp_start_method:
+                executor_kwargs["mp_context"] = mp.get_context(self._stage2_mp_start_method)
+            self._validation_pool = ProcessPoolExecutor(**executor_kwargs)
             self._validation_pool_workers = max(1, workers)
+            self._validation_pool_start_method = self._stage2_mp_start_method
         return self._validation_pool
+
+    @property
+    def stage2_runtime_contract(self) -> dict[str, Any]:
+        return {
+            "stage2_mp_start_method": self._stage2_mp_start_method or "default",
+            "validation_pool_mode": self._validation_pool_mode,
+        }
 
     @property
     def readiness(self) -> dict[str, Any]:
@@ -1302,8 +1495,12 @@ class FrameworkEvaluator:
         cached = self._summary_cache.get(cache_key)
         if cached is not None:
             if progress_callback is not None:
+                progress_callback("cache_hit", "summary_cache")
+                progress_callback("replay_reused", "summary_cache")
                 progress_callback(4, "cached")
             return cached
+        if progress_callback is not None:
+            progress_callback("cache_miss", "summary_cache")
         profile = self._compute_profile(fast=fast, lightweight=lightweight)
         windows = self._prepare_windows(fast=fast, lightweight=lightweight)
         wf_windows = self._fast_dev_wf_windows if fast else self._full_dev_wf_windows
@@ -1325,6 +1522,12 @@ class FrameworkEvaluator:
         try:
             dev_window = next(window for window in windows if window.label == "dev")
             if lightweight:
+                if progress_callback is not None:
+                    dev_key = (self._variant_key(variant), dev_window.start_ns, dev_window.end_ns)
+                    progress_callback(
+                        "cache_hit" if dev_key in self._backtest_cache else "cache_miss",
+                        "window_snapshot:dev",
+                    )
                 dev_result = self._run_prepare_backtest_cached(
                     variant,
                     dev_window,
@@ -1342,6 +1545,12 @@ class FrameworkEvaluator:
             weak_window = next(window for window in windows if window.label == "2023-08")
             _prepare_budget_guard(weak_window.label)
             if lightweight:
+                if progress_callback is not None:
+                    weak_key = (self._variant_key(variant), weak_window.start_ns, weak_window.end_ns)
+                    progress_callback(
+                        "cache_hit" if weak_key in self._backtest_cache else "cache_miss",
+                        "window_snapshot:2023-08",
+                    )
                 weak_result = self._run_prepare_backtest_cached(
                     variant,
                     weak_window,
@@ -1361,6 +1570,12 @@ class FrameworkEvaluator:
             for window in worst_periods:
                 _prepare_budget_guard(window.label)
                 if lightweight:
+                    if progress_callback is not None:
+                        worst_key = (self._variant_key(variant), window.start_ns, window.end_ns)
+                        progress_callback(
+                            "cache_hit" if worst_key in self._backtest_cache else "cache_miss",
+                            f"window_snapshot:{window.label}",
+                        )
                     result = self._run_prepare_backtest_cached(
                         variant,
                         window,
@@ -1378,10 +1593,15 @@ class FrameworkEvaluator:
                 worst_results.append(result)
             negative_worst_windows = sum(1 for result in worst_results if result.sharpe < 0)
             baseline = None
-            if variant.name != "paulwei_baseline":
+            if variant.name != "current":
                 if progress_callback is not None and lightweight:
+                    current_summary_key = (self._variant_key(self._current_variant), True, lightweight)
+                    progress_callback(
+                        "cache_hit" if current_summary_key in self._summary_cache else "cache_miss",
+                        "baseline_summary",
+                    )
                     progress_callback("baseline_summary_started", "lightweight")
-                baseline = self._get_paulwei_fast_summary(
+                baseline = self._get_current_fast_summary(
                     lightweight=lightweight,
                     progress_callback=(
                         (
@@ -1442,7 +1662,7 @@ class FrameworkEvaluator:
                 if (
                     dev_result.sharpe < baseline.dev_sharpe - 0.25
                     or negative_worst_windows > baseline.negative_dev_worst_windows
-                    or dev_result.max_drawdown > baseline.dev_drawdown + 0.04
+                    or dev_result.max_drawdown > baseline.dev_drawdown * 1.05
                 ):
                     summary = CandidateSummary(
                         variant=variant.name,
@@ -1462,6 +1682,10 @@ class FrameworkEvaluator:
                         blocked_by="pre_validation_rejection",
                         failed_gate_metrics=None,
                         promotion_failure_reason="pre_validation_rejection",
+                        sortino=getattr(dev_result, "sortino", 0.0),
+                        profit_factor=getattr(dev_result, "profit_factor", 0.0),
+                        turnover_per_day=getattr(dev_result, "turnover_per_day", 0.0),
+                        fee_drag_pct=getattr(dev_result, "fee_drag_pct", 0.0),
                     )
                     if progress_callback is not None:
                         progress_callback(4, "pre_validation_rejection")
@@ -1539,6 +1763,10 @@ class FrameworkEvaluator:
             overall_drawdown=dev_result.max_drawdown,
             negative_worst_windows=negative_worst_windows,
             baseline=baseline,
+            overall_sortino=getattr(dev_result, "sortino", 0.0),
+            overall_profit_factor=getattr(dev_result, "profit_factor", 0.0),
+            turnover_per_day=getattr(dev_result, "turnover_per_day", 0.0),
+            fee_drag_pct=getattr(dev_result, "fee_drag_pct", 0.0),
         )
         gate_metrics, failure_reason = _promotion_diagnostics(
             avg_test_sharpe=wf_metrics["avg_test_sharpe"],
@@ -1548,7 +1776,7 @@ class FrameworkEvaluator:
             baseline=baseline,
         )
         promote = all(gate_metrics.values())
-        summary = CandidateSummary(
+        provisional = CandidateSummary(
             variant=variant.name,
             robust_score=round(score, 4),
             selection_split="dev",
@@ -1564,11 +1792,43 @@ class FrameworkEvaluator:
             blocked_by=None,
             failed_gate_metrics=gate_metrics,
             promotion_failure_reason=failure_reason,
+            sortino=getattr(dev_result, "sortino", 0.0),
+            profit_factor=getattr(dev_result, "profit_factor", 0.0),
+            turnover_per_day=getattr(dev_result, "turnover_per_day", 0.0),
+            fee_drag_pct=getattr(dev_result, "fee_drag_pct", 0.0),
+        )
+        gap_to_current = _gap_to_candidate(provisional, baseline) if baseline is not None else None
+        gap_to_public = _gap_to_public_reference(provisional, self._public_baseline_reference)
+        weakest_window_penalty = round(max(0.0, (baseline.worst_dev_sharpe - provisional.worst_dev_sharpe) if baseline is not None else 0.0), 4)
+        hostile_fragility_penalty = round(
+            1.75 * weakest_window_penalty
+            + 1.10 * max(0, negative_worst_windows - (baseline.negative_dev_worst_windows if baseline is not None else 0)),
+            4,
+        )
+        summary = CandidateSummary(
+            **{
+                **asdict(provisional),
+                "baseline_gate_pass_current": _baseline_gate_current(provisional, baseline) if baseline is not None else True,
+                "baseline_gate_pass_public": _baseline_gate_public(
+                    provisional,
+                    baseline if baseline is not None else provisional,
+                    self._public_baseline_reference,
+                ),
+                "gap_to_current": gap_to_current,
+                "gap_to_paulwei_public": gap_to_public,
+                "candidate_score": round(score, 4),
+                "weakest_window_penalty": weakest_window_penalty,
+                "hostile_fragility_penalty": hostile_fragility_penalty,
+            }
         )
         if progress_callback is not None:
             if lightweight:
                 progress_callback("summary_scoring_completed", "lightweight")
             progress_callback(4, "lightweight_summary" if lightweight else "validation_bundle")
+        if lightweight and variant.name == "current":
+            self._current_fast = summary
+            if self._paulwei_fast_lightweight is None:
+                self._paulwei_fast_lightweight = summary
         self._summary_cache[cache_key] = summary
         return summary
 
@@ -1613,6 +1873,10 @@ class FrameworkEvaluator:
             net_pnl=result.metrics.net_pnl,
             max_drawdown=result.metrics.max_drawdown,
             win_rate=result.metrics.win_rate,
+            sortino=getattr(result.metrics, "sortino", 0.0),
+            profit_factor=getattr(result.metrics, "profit_factor", 0.0),
+            turnover_per_day=getattr(result.metrics, "turnover_per_day", 0.0),
+            fee_drag_pct=getattr(result.metrics, "fee_drag_pct", 0.0),
         )
         self._backtest_cache[key] = snapshot
         return snapshot
@@ -1629,6 +1893,9 @@ class FrameworkEvaluator:
         key = (self._variant_key(variant), tuple(window.label for window in windows), bool(replay_timeout_s))
         cached = self._validation_cache.get(key)
         if cached is not None:
+            if progress_callback is not None:
+                progress_callback("cache_hit", "validation_bundle")
+                progress_callback("replay_reused", "validation_bundle")
             return cached
         result = _run_validation_bundle(
             self._base_config,
@@ -1671,6 +1938,42 @@ class FrameworkEvaluator:
             )
         return self._paulwei_fast_full
 
+    def _get_current_fast_summary(
+        self,
+        *,
+        lightweight: bool = False,
+        progress_callback: Any | None = None,
+    ) -> CandidateSummary:
+        if lightweight:
+            if self._current_fast is None:
+                self._current_fast = self._evaluate_variant(
+                    self._current_variant,
+                    fast=True,
+                    lightweight=True,
+                    progress_callback=progress_callback,
+                )
+            elif progress_callback is not None:
+                progress_callback("cache_hit", "current_fast_summary")
+                progress_callback("replay_reused", "current_fast_summary")
+            if self._paulwei_fast_lightweight is None:
+                self._paulwei_fast_lightweight = self._current_fast
+            return self._current_fast
+        if self._current_fast is not None and not lightweight:
+            if progress_callback is not None:
+                progress_callback("cache_hit", "current_fast_summary")
+                progress_callback("replay_reused", "current_fast_summary")
+            return self._current_fast
+        if self._current_fast is None:
+            # Current and the frozen PaulWei baseline are currently identical in
+            # authoritative evaluation, so reuse the existing baseline summary
+            # until they diverge again. This preserves the hard gate target
+            # without forcing an extra cached replay path.
+            self._current_fast = self._get_paulwei_fast_summary(
+                lightweight=lightweight,
+                progress_callback=progress_callback,
+            )
+        return self._current_fast
+
     @staticmethod
     def _comparison_report_mode(
         *,
@@ -1704,6 +2007,10 @@ def _run_validation_bundle(
                 net_pnl=result.metrics.net_pnl,
                 max_drawdown=result.metrics.max_drawdown,
                 win_rate=result.metrics.win_rate,
+                sortino=getattr(result.metrics, "sortino", 0.0),
+                profit_factor=getattr(result.metrics, "profit_factor", 0.0),
+                turnover_per_day=getattr(result.metrics, "turnover_per_day", 0.0),
+                fee_drag_pct=getattr(result.metrics, "fee_drag_pct", 0.0),
             )
     else:
         run = run_backtest
@@ -1768,6 +2075,75 @@ def _run_validation_bundle(
     }
 
 
+def _gap_to_candidate(candidate: CandidateSummary, baseline: CandidateSummary) -> dict[str, float]:
+    return {
+        "dev_sharpe_gap": round(candidate.dev_sharpe - baseline.dev_sharpe, 4),
+        "worst_dev_sharpe_gap": round(candidate.worst_dev_sharpe - baseline.worst_dev_sharpe, 4),
+        "dev_drawdown_gap": round(candidate.dev_drawdown - baseline.dev_drawdown, 6),
+        "hostile_2023_08_gap": round(candidate.weak_window_sharpe - baseline.weak_window_sharpe, 4),
+        "hostile_2024_11_gap": round(candidate.worst_dev_sharpe - baseline.worst_dev_sharpe, 4),
+        "turnover_gap": round(candidate.turnover_per_day - baseline.turnover_per_day, 2),
+        "fee_drag_gap": round(candidate.fee_drag_pct - baseline.fee_drag_pct, 6),
+    }
+
+
+def _gap_to_public_reference(candidate: CandidateSummary, public_reference: dict[str, Any] | None) -> dict[str, float] | None:
+    if not isinstance(public_reference, dict):
+        return None
+    dev_metrics = public_reference.get("dev_metrics", {})
+    hostile_windows = public_reference.get("hostile_windows", {})
+    hostile_sharpes = [
+        _safe_metric(hostile_windows.get("2023-08"), "sharpe"),
+        _safe_metric(hostile_windows.get("2024-11 DD"), "sharpe"),
+    ]
+    hostile_bundle = sum(hostile_sharpes) / len([item for item in hostile_sharpes if item != 0.0]) if any(hostile_sharpes) else 0.0
+    candidate_hostile_bundle = (candidate.weak_window_sharpe + candidate.worst_dev_sharpe) / 2.0
+    return {
+        "dev_sharpe_gap": round(candidate.dev_sharpe - _safe_metric(dev_metrics, "sharpe"), 4),
+        "hostile_bundle_gap": round(candidate_hostile_bundle - hostile_bundle, 4),
+        "dev_drawdown_gap": round(candidate.dev_drawdown - _safe_metric(dev_metrics, "max_drawdown"), 6),
+        "turnover_gap": round(candidate.turnover_per_day - _safe_metric(dev_metrics, "turnover_per_day"), 2),
+        "fee_drag_gap": round(candidate.fee_drag_pct - _safe_metric(dev_metrics, "fee_drag_pct"), 6),
+    }
+
+
+def _baseline_gate_current(candidate: CandidateSummary, baseline: CandidateSummary, *, drawdown_hard_multiplier: float = 1.05) -> bool:
+    return (
+        candidate.worst_dev_sharpe >= baseline.worst_dev_sharpe
+        and candidate.negative_dev_worst_windows <= baseline.negative_dev_worst_windows
+        and candidate.dev_drawdown <= baseline.dev_drawdown * drawdown_hard_multiplier
+    )
+
+
+def _baseline_gate_public(
+    candidate: CandidateSummary,
+    current: CandidateSummary,
+    public_reference: dict[str, Any] | None,
+    *,
+    fee_drag_tolerance: float = 1.15,
+    turnover_tolerance: float = 1.20,
+) -> bool:
+    if not isinstance(public_reference, dict):
+        return False
+    dev_metrics = public_reference.get("dev_metrics", {})
+    hostile_regressed = bool(public_reference.get("hostile_window_regressed"))
+    return (
+        not hostile_regressed
+        and candidate.fee_drag_pct <= max(current.fee_drag_pct * fee_drag_tolerance, _safe_metric(dev_metrics, "fee_drag_pct"))
+        and candidate.turnover_per_day <= max(
+            current.turnover_per_day * turnover_tolerance,
+            _safe_metric(dev_metrics, "turnover_per_day"),
+        )
+        and candidate.dev_drawdown <= _safe_metric(dev_metrics, "max_drawdown")
+    )
+
+
+def _normalized_delta(delta: float, *, scale: float) -> float:
+    if scale <= 0:
+        return 0.0
+    return max(-1.0, min(1.0, delta / scale))
+
+
 def _candidate_score(
     *,
     avg_test_sharpe: float,
@@ -1779,23 +2155,57 @@ def _candidate_score(
     overall_drawdown: float,
     negative_worst_windows: int,
     baseline: CandidateSummary | None,
+    overall_sortino: float = 0.0,
+    overall_profit_factor: float = 0.0,
+    turnover_per_day: float = 0.0,
+    fee_drag_pct: float = 0.0,
 ) -> float:
     capped_oos_ratio = max(-1.0, min(2.0, avg_oos_ratio))
-    score = (
-        0.34 * avg_test_sharpe
-        + 0.28 * worst_test_sharpe
-        + 0.08 * capped_oos_ratio
-        + 0.05 * overall_sharpe
-        + 0.04 * weak_window_sharpe
-        + 0.01 * (overall_pnl / 1_000_000.0)
-        - 3.0 * max(0.0, overall_drawdown - 0.10)
-        - 1.25 * negative_worst_windows
+    if baseline is None:
+        return round(
+            0.35 * overall_sharpe
+            + 0.20 * worst_test_sharpe
+            + 0.10 * weak_window_sharpe
+            + 0.10 * overall_sortino
+            + 0.10 * overall_profit_factor
+            + 0.05 * capped_oos_ratio
+            + 0.01 * (overall_pnl / 1_000_000.0)
+            - 2.5 * overall_drawdown
+            - 1.25 * negative_worst_windows,
+            4,
+        )
+
+    hostile_window_sharpe_bundle = (weak_window_sharpe + worst_test_sharpe) / 2.0
+    baseline_hostile_bundle = (baseline.weak_window_sharpe + baseline.worst_dev_sharpe) / 2.0
+    drawdown_penalty = max(0.0, overall_drawdown - baseline.dev_drawdown)
+    turnover_penalty = max(0.0, turnover_per_day - baseline.turnover_per_day)
+    fee_drag_penalty = max(0.0, fee_drag_pct - baseline.fee_drag_pct)
+    weakest_window_penalty = max(0.0, baseline.worst_dev_sharpe - worst_test_sharpe)
+    hostile_fragility_penalty = (
+        1.75 * weakest_window_penalty
+        + 1.10 * max(0, negative_worst_windows - baseline.negative_dev_worst_windows)
     )
-    if baseline is not None:
-        score -= 10.0 * max(0.0, overall_drawdown - (baseline.dev_drawdown + 0.03))
-        score -= 4.5 * max(0.0, baseline.worst_dev_sharpe - worst_test_sharpe)
-        score -= 2.0 * max(0, negative_worst_windows - baseline.negative_dev_worst_windows)
-    return score
+
+    score = (
+        0.35 * _normalized_delta(overall_sharpe - baseline.dev_sharpe, scale=max(1.0, abs(baseline.dev_sharpe)))
+        + 0.25 * _normalized_delta(worst_test_sharpe - baseline.worst_dev_sharpe, scale=max(1.0, abs(baseline.worst_dev_sharpe)))
+        + 0.15 * _normalized_delta(
+            hostile_window_sharpe_bundle - baseline_hostile_bundle,
+            scale=max(1.0, abs(baseline_hostile_bundle)),
+        )
+        + 0.10 * _normalized_delta(overall_sortino - baseline.sortino, scale=max(1.0, abs(baseline.sortino)))
+        + 0.10 * _normalized_delta(
+            overall_profit_factor - baseline.profit_factor,
+            scale=max(1.0, abs(baseline.profit_factor)),
+        )
+        + 0.05 * capped_oos_ratio
+        + 0.01 * (overall_pnl / 1_000_000.0)
+        - 0.20 * _normalized_delta(drawdown_penalty, scale=max(0.01, baseline.dev_drawdown))
+        - 0.10 * _normalized_delta(turnover_penalty, scale=max(1.0, baseline.turnover_per_day))
+        - 0.10 * _normalized_delta(fee_drag_penalty, scale=max(0.001, baseline.fee_drag_pct))
+        - hostile_fragility_penalty
+    )
+    return round(score, 4)
 
 
 def _promotion_diagnostics(
@@ -1817,8 +2227,8 @@ def _promotion_diagnostics(
     gate_metrics = {
         "avg_test_sharpe": avg_test_sharpe >= baseline.avg_dev_sharpe,
         "worst_test_sharpe": worst_test_sharpe >= baseline.worst_dev_sharpe,
-        "overall_drawdown": overall_drawdown <= baseline.dev_drawdown + 0.03,
-        "drawdown_preferred_band": overall_drawdown <= baseline.dev_drawdown + 0.03,
+        "overall_drawdown": overall_drawdown <= baseline.dev_drawdown * 1.05,
+        "drawdown_preferred_band": overall_drawdown <= baseline.dev_drawdown * 1.05,
         "negative_worst_windows": negative_worst_windows <= baseline.negative_dev_worst_windows,
     }
     for key in ("worst_test_sharpe", "overall_drawdown", "negative_worst_windows", "avg_test_sharpe"):
@@ -1927,10 +2337,12 @@ def run_optuna_search(
                 "max_train_trade_count": 0,
                 "max_train_sharpe": 0.0,
                 "max_hostile_proxy_score": 0.0,
+                "hostile_proxy_penalty_applied": 0.0,
                 "min_execution_fragility_score": 0.0,
                 "min_inventory_path_dependence_score": 0.0,
             },
             "empty_shortlist_reason": "all_negative_primary_metric",
+            "no_tuned_candidate_reason": "all_negative_primary_metric",
         }
     effective_execution_timeframe = search_execution_timeframe or evaluator._base_config.execution_timeframe
     resolved_seed_trials = (
@@ -1976,6 +2388,7 @@ def run_optuna_search(
     ranking_started_at = datetime.now(UTC).timestamp()
     ranked: list[dict[str, Any]] = []
     total_candidates = len(sweep.top_n)
+    historical_extension_contract = evaluator.training_input_contract.get("historical_extension_candidate_contract", {})
     for index, candidate in enumerate(sweep.top_n, start=1):
         if ranking_timeout_s is not None and (datetime.now(UTC).timestamp() - ranking_started_at) > ranking_timeout_s:
             raise SearchStageTimeoutError(
@@ -1994,11 +2407,24 @@ def run_optuna_search(
             raise SearchStageTimeoutError(
                 f"stage1_dev_validation_no_progress_timeout: candidate {index}/{total_candidates}"
             )
-        summary = CandidateSummary(**_train_candidate_summary_payload(candidate))
+        combined_metrics, spot_train_leg_metrics, combined_train_score = _combine_train_leg_metrics(
+            dict(candidate.get("metrics", {})),
+            _spot_train_leg_snapshot(evaluator, params, historical_extension_contract),
+        )
+        candidate_payload = dict(candidate)
+        candidate_payload["metrics"] = combined_metrics
+        summary = CandidateSummary(**_train_candidate_summary_payload(candidate_payload))
         ranked.append(
             {
                 "params": params,
-                "train_metrics": candidate["metrics"],
+                "train_metrics": combined_metrics,
+                "spot_train_leg_metrics": spot_train_leg_metrics,
+                "futures_train_leg_metrics": dict(candidate.get("metrics", {})),
+                "combined_train_diagnostics": {
+                    "combined_train_score": combined_train_score,
+                    "mixed_era_declared": bool(historical_extension_contract.get("mixed_era_declared")),
+                    "historical_extension_mode": historical_extension_contract.get("historical_extension_mode"),
+                },
                 "summary": asdict(summary),
                 "candidate_source": "auto_research_train_only",
                 "split_contract_version": evaluator._split_spec.version,
@@ -2019,8 +2445,15 @@ def run_optuna_search(
     diagnostics = {
         "train_candidate_diagnostics": dict(getattr(sweep, "train_candidate_diagnostics", {}) or {}),
         "empty_shortlist_reason": getattr(sweep, "empty_shortlist_reason", None),
+        "no_tuned_candidate_reason": (getattr(sweep, "train_candidate_diagnostics", {}) or {}).get("no_tuned_candidate_reason"),
         "stage1_budget_mode": getattr(sweep, "budget_mode", "trial_count_primary"),
         "stage1_stop_reason": getattr(sweep, "stop_reason", "trial_budget_reached"),
+        "historical_extension_train_enabled": bool(historical_extension_contract.get("layered_train_enabled")),
+        "historical_extension_mode": historical_extension_contract.get("historical_extension_mode"),
+        "mixed_era_declared": bool(historical_extension_contract.get("mixed_era_declared")),
+        "train_truth_legs": list(historical_extension_contract.get("train_truth_legs") or []),
+        "spot_train_leg_blocked_by": list(historical_extension_contract.get("spot_train_leg_blocked_by") or []),
+        "full_unified_truth": bool(historical_extension_contract.get("full_unified_truth")),
     }
     return (best["params"] if best else None), ranked, diagnostics
 
@@ -2106,6 +2539,12 @@ def build_markdown_report(report: SearchReport) -> str:
         f"- search_space_profile: `{report.search_status.get('search_space_profile')}`",
         f"- train_candidate_diagnostics: `{report.search_status.get('train_candidate_diagnostics')}`",
         f"- empty_shortlist_reason: `{report.search_status.get('empty_shortlist_reason')}`",
+        f"- no_tuned_candidate_reason: `{report.search_status.get('no_tuned_candidate_reason')}`",
+        f"- historical_extension_train_enabled: `{report.search_status.get('historical_extension_train_enabled')}`",
+        f"- historical_extension_mode: `{report.search_status.get('historical_extension_mode')}`",
+        f"- mixed_era_declared: `{report.search_status.get('mixed_era_declared')}`",
+        f"- train_truth_legs: `{report.search_status.get('train_truth_legs')}`",
+        f"- spot_train_leg_blocked_by: `{report.search_status.get('spot_train_leg_blocked_by')}`",
         f"- dev_gate_used_this_round: `{report.dev_gate_used_this_round}`",
         f"- dev_gate_last_round: `{report.dev_gate_last_round}`",
         f"- dev_gate_interval: `{report.dev_gate_interval}`",
@@ -2226,6 +2665,7 @@ def write_search_report(path: Path, report: SearchReport) -> None:
     )
     framework_diagnosis = _build_framework_diagnosis(report)
     hostile_regression = _hostile_regression_summary(report)
+    no_tuned_candidate_reason = _no_tuned_candidate_reason(report)
     best_summary = next(
         (
             item
@@ -2250,6 +2690,7 @@ def write_search_report(path: Path, report: SearchReport) -> None:
     payload["dev_primary_improved"] = hostile_regression["dev_primary_improved"]
     payload["hostile_window_regressed"] = hostile_regression["hostile_window_regressed"]
     payload["hostile_regression_driver"] = hostile_regression["hostile_regression_driver"]
+    payload["no_tuned_candidate_reason"] = no_tuned_candidate_reason
     payload["full_training_allowed"] = full_training_assessment["ready"] if report.evaluation_role == "acceptance" else False
     payload["full_training_decision"] = full_training_assessment["decision"]
     payload["full_training_blockers"] = full_training_assessment["blockers"]
@@ -2259,6 +2700,11 @@ def write_search_report(path: Path, report: SearchReport) -> None:
     payload["stage1_execution_mode"] = report.search_status.get("stage1_execution_mode")
     payload["train_candidate_diagnostics"] = report.search_status.get("train_candidate_diagnostics")
     payload["empty_shortlist_reason"] = report.search_status.get("empty_shortlist_reason")
+    payload["historical_extension_train_enabled"] = report.training_input_contract.get("historical_extension_train_enabled")
+    payload["historical_extension_mode"] = report.training_input_contract.get("historical_extension_mode")
+    payload["mixed_era_declared"] = report.training_input_contract.get("mixed_era_declared")
+    payload["train_truth_legs"] = report.training_input_contract.get("train_truth_legs")
+    payload["full_unified_truth"] = report.training_input_contract.get("historical_extension_candidate_contract", {}).get("full_unified_truth")
     payload["evaluation_role"] = report.evaluation_role
     payload["test_access_allowed"] = report.test_access_allowed
     payload["candidate_ready_for_handoff"] = report.candidate_ready_for_handoff
@@ -2283,6 +2729,12 @@ def write_search_report(path: Path, report: SearchReport) -> None:
         "etf_flow_last_success_at": report.search_status.get("etf_flow_last_success_at"),
         "train_candidate_diagnostics": report.search_status.get("train_candidate_diagnostics"),
         "empty_shortlist_reason": report.search_status.get("empty_shortlist_reason"),
+        "historical_extension_train_enabled": report.search_status.get("historical_extension_train_enabled"),
+        "historical_extension_mode": report.search_status.get("historical_extension_mode"),
+        "mixed_era_declared": report.search_status.get("mixed_era_declared"),
+        "train_truth_legs": report.search_status.get("train_truth_legs"),
+        "spot_train_leg_blocked_by": report.search_status.get("spot_train_leg_blocked_by"),
+        "full_unified_truth": report.search_status.get("full_unified_truth"),
     }
     payload["historical_leaderboard"] = [
         asdict(report.current),
@@ -2292,11 +2744,12 @@ def write_search_report(path: Path, report: SearchReport) -> None:
     ]
     comparison_to_current = None
     comparison_to_paulwei = None
+    comparison_to_public = None
     if best_summary is not None:
         comparison_to_current = {
             "variant": best_summary.variant,
-            "drawdown_within_hard_cap": best_summary.dev_drawdown <= report.current.dev_drawdown + 0.03,
-            "drawdown_within_preferred_band": best_summary.dev_drawdown <= report.current.dev_drawdown + 0.03,
+            "drawdown_within_hard_cap": best_summary.dev_drawdown <= report.current.dev_drawdown * 1.05,
+            "drawdown_within_preferred_band": best_summary.dev_drawdown <= report.current.dev_drawdown * 1.05,
             "worst_dev_sharpe_not_worse": best_summary.worst_dev_sharpe >= report.current.worst_dev_sharpe,
             "negative_worst_windows_not_worse": (
                 best_summary.negative_dev_worst_windows <= report.current.negative_dev_worst_windows
@@ -2313,6 +2766,12 @@ def write_search_report(path: Path, report: SearchReport) -> None:
                 best_summary.negative_dev_worst_windows <= report.paulwei_baseline.negative_dev_worst_windows
             ),
         }
+        if best_summary.gap_to_paulwei_public is not None:
+            comparison_to_public = {
+                "variant": best_summary.variant,
+                "baseline_gate_pass_public": best_summary.baseline_gate_pass_public,
+                "gap_to_paulwei_public": best_summary.gap_to_paulwei_public,
+            }
     verdict_kind = "blocked_by_data_readiness" if payload["readiness"]["blocked_by"] else "promote_candidate_found"
     if best_summary is not None and not best_summary.promotion_candidate:
         verdict_kind = (
@@ -2351,12 +2810,29 @@ def write_search_report(path: Path, report: SearchReport) -> None:
         "etf_flow_last_success_at": payload["search_status"].get("etf_flow_last_success_at"),
         "train_candidate_diagnostics": payload["search_status"].get("train_candidate_diagnostics"),
         "empty_shortlist_reason": payload["search_status"].get("empty_shortlist_reason"),
+        "historical_extension_train_enabled": payload["training_input_contract"].get("historical_extension_train_enabled"),
+        "historical_extension_mode": payload["training_input_contract"].get("historical_extension_mode"),
+        "mixed_era_declared": payload["training_input_contract"].get("mixed_era_declared"),
+        "train_truth_legs": payload["training_input_contract"].get("train_truth_legs"),
+        "full_unified_truth": payload["training_input_contract"].get("historical_extension_candidate_contract", {}).get("full_unified_truth"),
+        "spot_train_leg_blocked_by": payload["training_input_contract"].get("historical_extension_candidate_contract", {}).get("spot_train_leg_blocked_by"),
+        "no_tuned_candidate_reason": no_tuned_candidate_reason,
         "verdict_kind": verdict_kind,
+        "candidate_generation_failed": report.optuna_best is None and report.rl_best is None,
+        "candidate_generation_failure_driver": no_tuned_candidate_reason if report.optuna_best is None and report.rl_best is None else None,
         "comparison_to_current": comparison_to_current,
         "comparison_to_paulwei_baseline": comparison_to_paulwei,
+        "comparison_to_paulwei_public": comparison_to_public,
         "dev_primary_improved": hostile_regression["dev_primary_improved"],
         "hostile_window_regressed": hostile_regression["hostile_window_regressed"],
         "hostile_regression_driver": hostile_regression["hostile_regression_driver"],
+        "baseline_gate_pass_current": best_summary.baseline_gate_pass_current if best_summary else False,
+        "baseline_gate_pass_public": best_summary.baseline_gate_pass_public if best_summary else False,
+        "gap_to_current": best_summary.gap_to_current if best_summary else None,
+        "gap_to_paulwei_public": best_summary.gap_to_paulwei_public if best_summary else None,
+        "candidate_score": best_summary.candidate_score if best_summary else None,
+        "weakest_window_penalty": best_summary.weakest_window_penalty if best_summary else None,
+        "hostile_fragility_penalty": best_summary.hostile_fragility_penalty if best_summary else None,
         "next_data_priority": (
             "liquidation_history"
             if not payload["readiness"]["promotion_ready"]

@@ -24,6 +24,8 @@ from zenquant.data import (
     LiquidationStoreConfig,
     MacroDataStore,
     MacroDataStoreConfig,
+    MicrostructureFeatureStore,
+    MicrostructureFeatureStoreConfig,
     OptionsDataStore,
     OptionsDataStoreConfig,
 )
@@ -94,6 +96,8 @@ class HistoricalBacktestConfig:
     perturbation: PerturbationConfig | None = None
     # Macro data directory (VIX, DXY, Treasury yields)
     macro_dir: Path = Path("data/raw/macro")
+    microstructure_sidecar_enabled: bool = False
+    microstructure_sidecar_dir: Path = Path("data/raw/microstructure_sidecar/bybit/BTCUSDT/1000ms")
     # Options data directory (Deribit IV, skew, term structure)
     options_dir: Path = Path("data/raw/deribit_options")
     # CFTC COT data path
@@ -152,6 +156,12 @@ class ReplayContext:
     liquidation_store: LiquidationDataStore
     eth_store: EthDataStore
     basis_store: BasisDataStore
+    cache_stats: dict[str, Any] = field(default_factory=dict)
+
+
+_STORE_CACHE: dict[tuple[Any, ...], object] = {}
+_RAW_ROWS_CACHE: dict[tuple[Any, ...], list[dict[str, Any]]] = {}
+_EVENT_LIST_CACHE: dict[tuple[Any, ...], list[dict[str, Any]]] = {}
 
 
 class HistoricalBacktest:
@@ -183,7 +193,16 @@ class HistoricalBacktest:
         self._liquidation_store = self._replay_context.liquidation_store
         self._eth_store = self._replay_context.eth_store
         self._basis_store = self._replay_context.basis_store
-        self._subscribe_with_profile("indicator_step_total_s", lambda: IndicatorEngine(
+        microstructure_store: MicrostructureFeatureStore | None = None
+        if self._config.microstructure_sidecar_enabled:
+            microstructure_store = MicrostructureFeatureStore(
+                MicrostructureFeatureStoreConfig(
+                    data_dir=self._config.microstructure_sidecar_dir,
+                    max_staleness_ns=self._config.execution_timeframe.seconds * 1_000_000_000,
+                )
+            )
+            microstructure_store.load()
+        self.indicator_engine = self._subscribe_with_profile("indicator_step_total_s", lambda: IndicatorEngine(
             bus=self.bus,
             store=self.indicator_store,
             config=self._config.indicator_config
@@ -199,6 +218,7 @@ class HistoricalBacktest:
                 if self._config.liquidation_data_enabled and self._liquidation_store.loaded
                 else None
             ),
+            microstructure_store=microstructure_store if microstructure_store and microstructure_store.loaded else None,
         ))
         self.risk_overlay = self._subscribe_with_profile("risk_step_total_s", lambda: RiskOverlay(
             bus=self.bus,
@@ -336,6 +356,8 @@ class HistoricalBacktest:
                 "diagnostics_finalize_s": round(diagnostics_finished_at - diagnostics_started_at, 6),
                 "cycle_context_finalize_s": round(cycle_finished_at - cycle_started_at, 6),
             }
+            profiling.update(self._replay_context.cache_stats)
+            profiling.update(self.indicator_engine.profiling_snapshot())
         return HistoricalBacktestResult(
             metrics=metrics,
             diagnostics=diagnostics,
@@ -982,6 +1004,46 @@ def _proxy_cvd_delta(row: dict[str, Any]) -> float:
     return 0.0
 
 
+def _load_store_cached(factory_key: tuple[Any, ...], factory: Any) -> tuple[object, bool]:
+    cached = _STORE_CACHE.get(factory_key)
+    if cached is not None:
+        return cached, True
+    store = factory()
+    _STORE_CACHE[factory_key] = store
+    return store, False
+
+
+def _read_rows_cached(
+    *,
+    cache_key: tuple[Any, ...],
+    path_glob: str,
+    order_by: str,
+    where_sql: str = "",
+    params: tuple[Any, ...] = (),
+) -> tuple[list[dict[str, Any]], bool]:
+    cached = _RAW_ROWS_CACHE.get(cache_key)
+    if cached is not None:
+        return cached, True
+    rows = read_parquet_rows(path_glob, where_sql=where_sql, params=params, order_by=order_by)
+    _RAW_ROWS_CACHE[cache_key] = rows
+    return rows, False
+
+
+def _filter_rows_by_time(
+    rows: list[dict[str, Any]],
+    *,
+    column: str,
+    start_ns: int | None,
+    end_ns: int | None,
+) -> list[dict[str, Any]]:
+    filtered = rows
+    if start_ns is not None:
+        filtered = [row for row in filtered if int(row[column]) >= start_ns]
+    if end_ns is not None:
+        filtered = [row for row in filtered if int(row[column]) <= end_ns]
+    return filtered
+
+
 def _aux_staleness_ms(
     cutoff_ns: int,
     funding_row: dict[str, Any] | None,
@@ -1198,48 +1260,123 @@ def _aggregate_five_min_rows_to_one_hour(rows: list[dict[str, Any]]) -> list[dic
 
 
 def _build_replay_context(config: HistoricalBacktestConfig) -> ReplayContext:
-    macro_store = MacroDataStore(MacroDataStoreConfig(macro_dir=config.macro_dir))
-    macro_store.load()
-    options_store = OptionsDataStore(OptionsDataStoreConfig(options_dir=config.options_dir, currency="BTC"))
-    options_store.load()
-    hf_dir = config.root_dir / "klines" / config.symbol / "5m"
-    hf_store = HFFeatureStore(HFFeatureStoreConfig(data_dir=hf_dir))
-    hf_store.load()
-    cot_store = CotDataStore(CotStoreConfig(cot_path=config.cot_path))
-    cot_store.load()
-    liquidation_store = LiquidationDataStore(LiquidationStoreConfig(liquidation_dir=config.liquidation_dir))
-    liquidation_store.load()
-    eth_store = EthDataStore(EthStoreConfig(eth_kline_path=config.root_dir / "klines" / "ETHUSDT" / "4h"))
-    eth_store.load()
-    basis_store = BasisDataStore(
-        BasisStoreConfig(
-            spot_dir=Path("data/raw/binance_spot/klines") / config.symbol / "4h",
-            perp_dir=config.root_dir / "klines" / config.symbol / "4h",
-        )
-    )
-    basis_store.load()
+    cache_stats: dict[str, Any] = {
+        "store_cache_hits": 0,
+        "store_cache_requests": 0,
+        "raw_source_rows_cache_hits": 0,
+        "raw_source_rows_cache_requests": 0,
+        "event_list_cache_hit": False,
+        "event_list_cache_hit_rate": 0.0,
+        "raw_source_rows_cache_hit_rate": 0.0,
+    }
 
-    funding_rows = read_parquet_rows(
-        str(config.root_dir / "funding" / config.symbol / "*.parquet"),
-        where_sql=_time_filter_sql(config.start_ns, config.end_ns, column="funding_time_ns"),
-        params=_time_filter_params(config.start_ns, config.end_ns),
+    macro_store, macro_store_hit = _load_store_cached(
+        ("macro_store", str(config.macro_dir)),
+        lambda: MacroDataStore(MacroDataStoreConfig(macro_dir=config.macro_dir)),
+    )
+    cache_stats["store_cache_requests"] += 1
+    cache_stats["store_cache_hits"] += int(macro_store_hit)
+    options_store, options_store_hit = _load_store_cached(
+        ("options_store", str(config.options_dir), "BTC"),
+        lambda: OptionsDataStore(OptionsDataStoreConfig(options_dir=config.options_dir, currency="BTC")),
+    )
+    cache_stats["store_cache_requests"] += 1
+    cache_stats["store_cache_hits"] += int(options_store_hit)
+    hf_dir = config.root_dir / "klines" / config.symbol / "5m"
+    hf_store, hf_store_hit = _load_store_cached(
+        ("hf_store", str(hf_dir)),
+        lambda: HFFeatureStore(HFFeatureStoreConfig(data_dir=hf_dir)),
+    )
+    cache_stats["store_cache_requests"] += 1
+    cache_stats["store_cache_hits"] += int(hf_store_hit)
+    cot_store, cot_store_hit = _load_store_cached(
+        ("cot_store", str(config.cot_path)),
+        lambda: CotDataStore(CotStoreConfig(cot_path=config.cot_path)),
+    )
+    cache_stats["store_cache_requests"] += 1
+    cache_stats["store_cache_hits"] += int(cot_store_hit)
+    liquidation_store, liquidation_store_hit = _load_store_cached(
+        ("liquidation_store", str(config.liquidation_dir)),
+        lambda: LiquidationDataStore(LiquidationStoreConfig(liquidation_dir=config.liquidation_dir)),
+    )
+    cache_stats["store_cache_requests"] += 1
+    cache_stats["store_cache_hits"] += int(liquidation_store_hit)
+    eth_store, eth_store_hit = _load_store_cached(
+        ("eth_store", str(config.root_dir / "klines" / "ETHUSDT" / "4h")),
+        lambda: EthDataStore(EthStoreConfig(eth_kline_path=config.root_dir / "klines" / "ETHUSDT" / "4h")),
+    )
+    cache_stats["store_cache_requests"] += 1
+    cache_stats["store_cache_hits"] += int(eth_store_hit)
+    basis_store, basis_store_hit = _load_store_cached(
+        (
+            "basis_store",
+            str(Path("data/raw/binance_spot/klines") / config.symbol / "4h"),
+            str(config.root_dir / "klines" / config.symbol / "4h"),
+        ),
+        lambda: BasisDataStore(
+            BasisStoreConfig(
+                spot_dir=Path("data/raw/binance_spot/klines") / config.symbol / "4h",
+                perp_dir=config.root_dir / "klines" / config.symbol / "4h",
+            )
+        ),
+    )
+    cache_stats["store_cache_requests"] += 1
+    cache_stats["store_cache_hits"] += int(basis_store_hit)
+
+    if not getattr(macro_store, "loaded", False):
+        macro_store.load()
+    if not getattr(options_store, "loaded", False):
+        options_store.load()
+    if not getattr(hf_store, "loaded", False):
+        hf_store.load()
+    if not getattr(cot_store, "loaded", False):
+        cot_store.load()
+    if not getattr(liquidation_store, "loaded", False):
+        liquidation_store.load()
+    if not getattr(eth_store, "loaded", False):
+        eth_store.load()
+    if not getattr(basis_store, "loaded", False):
+        basis_store.load()
+
+    funding_rows_raw, funding_rows_hit = _read_rows_cached(
+        cache_key=("funding_rows", str(config.root_dir), config.symbol),
+        path_glob=str(config.root_dir / "funding" / config.symbol / "*.parquet"),
         order_by="funding_time_ns ASC",
     )
-    open_interest_rows = read_parquet_rows(
-        str(config.root_dir / "open_interest" / config.symbol / config.open_interest_timeframe / "*.parquet"),
-        where_sql=_time_filter_sql(config.start_ns, config.end_ns, column="ts_ns"),
-        params=_time_filter_params(config.start_ns, config.end_ns),
+    cache_stats["raw_source_rows_cache_requests"] += 1
+    cache_stats["raw_source_rows_cache_hits"] += int(funding_rows_hit)
+    funding_rows = _filter_rows_by_time(
+        funding_rows_raw,
+        column="funding_time_ns",
+        start_ns=config.start_ns,
+        end_ns=config.end_ns,
+    )
+    open_interest_rows_raw, open_interest_rows_hit = _read_rows_cached(
+        cache_key=("open_interest_rows", str(config.root_dir), config.symbol, config.open_interest_timeframe),
+        path_glob=str(config.root_dir / "open_interest" / config.symbol / config.open_interest_timeframe / "*.parquet"),
         order_by="ts_ns ASC",
+    )
+    cache_stats["raw_source_rows_cache_requests"] += 1
+    cache_stats["raw_source_rows_cache_hits"] += int(open_interest_rows_hit)
+    open_interest_rows = _filter_rows_by_time(
+        open_interest_rows_raw,
+        column="ts_ns",
+        start_ns=config.start_ns,
+        end_ns=config.end_ns,
     )
     aggtrades: dict[str, dict[int, dict[str, Any]]] = {}
     for tf_label in ("4h", "1h", "5m"):
         agg_glob = str(config.root_dir / "aggtrades" / config.symbol / tf_label / "*.parquet")
-        agg_rows = read_parquet_rows(agg_glob, order_by="ts_ns ASC")
+        agg_rows, agg_rows_hit = _read_rows_cached(
+            cache_key=("aggtrades_rows", str(config.root_dir), config.symbol, tf_label),
+            path_glob=agg_glob,
+            order_by="ts_ns ASC",
+        )
+        cache_stats["raw_source_rows_cache_requests"] += 1
+        cache_stats["raw_source_rows_cache_hits"] += int(agg_rows_hit)
         if agg_rows:
             aggtrades[tf_label] = {int(row["ts_ns"]): row for row in agg_rows}
 
-    candles: list[dict[str, Any]] = []
-    loaded_rows: dict[Timeframe, list[dict[str, Any]]] = {}
     timeframes_to_load: list[Timeframe] = [config.bias_timeframe]
     if config.direction_timeframe not in timeframes_to_load:
         timeframes_to_load.append(config.direction_timeframe)
@@ -1247,33 +1384,67 @@ def _build_replay_context(config: HistoricalBacktestConfig) -> ReplayContext:
         timeframes_to_load.append(config.context_timeframe)
     if config.execution_timeframe not in timeframes_to_load:
         timeframes_to_load.append(config.execution_timeframe)
-
-    for timeframe in timeframes_to_load:
-        rows = read_parquet_rows(
-            str(config.root_dir / "klines" / config.symbol / timeframe.value / "*.parquet"),
-            where_sql=_time_filter_sql(config.start_ns, config.end_ns, column="close_time_ns"),
-            params=_time_filter_params(config.start_ns, config.end_ns),
-            order_by="close_time_ns ASC",
-        )
-        loaded_rows[timeframe] = rows
-        if not rows and timeframe == Timeframe.TF_1H and config.execution_timeframe == Timeframe.TF_5M:
-            five_min_rows = loaded_rows.get(Timeframe.TF_5M)
-            if five_min_rows is None:
-                five_min_rows = read_parquet_rows(
-                    str(config.root_dir / "klines" / config.symbol / Timeframe.TF_5M.value / "*.parquet"),
-                    where_sql=_time_filter_sql(config.start_ns, config.end_ns, column="close_time_ns"),
-                    params=_time_filter_params(config.start_ns, config.end_ns),
-                    order_by="close_time_ns ASC",
-                )
-                loaded_rows[Timeframe.TF_5M] = five_min_rows
-            rows = _aggregate_five_min_rows_to_one_hour(five_min_rows)
+    event_cache_key = (
+        str(config.root_dir),
+        config.symbol,
+        tuple(sorted(tf.value for tf in timeframes_to_load)),
+        config.start_ns,
+        config.end_ns,
+    )
+    candles = _EVENT_LIST_CACHE.get(event_cache_key)
+    cache_stats["event_list_cache_hit"] = candles is not None
+    if candles is None:
+        candles = []
+        loaded_rows: dict[Timeframe, list[dict[str, Any]]] = {}
+        for timeframe in timeframes_to_load:
+            raw_rows, raw_rows_hit = _read_rows_cached(
+                cache_key=("kline_rows", str(config.root_dir), config.symbol, timeframe.value),
+                path_glob=str(config.root_dir / "klines" / config.symbol / timeframe.value / "*.parquet"),
+                order_by="close_time_ns ASC",
+            )
+            cache_stats["raw_source_rows_cache_requests"] += 1
+            cache_stats["raw_source_rows_cache_hits"] += int(raw_rows_hit)
+            rows = _filter_rows_by_time(
+                raw_rows,
+                column="close_time_ns",
+                start_ns=config.start_ns,
+                end_ns=config.end_ns,
+            )
             loaded_rows[timeframe] = rows
-        for row in loaded_rows[timeframe]:
-            enriched = dict(row)
-            enriched["event_timeframe"] = timeframe.value
-            candles.append(enriched)
-
-    candles.sort(key=lambda item: (int(item["close_time_ns"]), _timeframe_priority(str(item["event_timeframe"]))))
+            if not rows and timeframe == Timeframe.TF_1H and config.execution_timeframe == Timeframe.TF_5M:
+                five_min_rows = loaded_rows.get(Timeframe.TF_5M)
+                if five_min_rows is None:
+                    five_min_raw_rows, five_min_rows_hit = _read_rows_cached(
+                        cache_key=("kline_rows", str(config.root_dir), config.symbol, Timeframe.TF_5M.value),
+                        path_glob=str(config.root_dir / "klines" / config.symbol / Timeframe.TF_5M.value / "*.parquet"),
+                        order_by="close_time_ns ASC",
+                    )
+                    cache_stats["raw_source_rows_cache_requests"] += 1
+                    cache_stats["raw_source_rows_cache_hits"] += int(five_min_rows_hit)
+                    five_min_rows = _filter_rows_by_time(
+                        five_min_raw_rows,
+                        column="close_time_ns",
+                        start_ns=config.start_ns,
+                        end_ns=config.end_ns,
+                    )
+                    loaded_rows[Timeframe.TF_5M] = five_min_rows
+                rows = _aggregate_five_min_rows_to_one_hour(five_min_rows)
+                loaded_rows[timeframe] = rows
+            for row in loaded_rows[timeframe]:
+                enriched = dict(row)
+                enriched["event_timeframe"] = timeframe.value
+                candles.append(enriched)
+        candles.sort(key=lambda item: (int(item["close_time_ns"]), _timeframe_priority(str(item["event_timeframe"]))))
+        _EVENT_LIST_CACHE[event_cache_key] = candles
+    cache_stats["event_list_cache_hit_rate"] = 1.0 if cache_stats["event_list_cache_hit"] else 0.0
+    cache_stats["raw_source_rows_cache_hit_rate"] = round(
+        float(cache_stats["raw_source_rows_cache_hits"]) / max(1, int(cache_stats["raw_source_rows_cache_requests"])),
+        4,
+    )
+    cache_stats["store_cache_hit_rate"] = round(
+        float(cache_stats["store_cache_hits"]) / max(1, int(cache_stats["store_cache_requests"])),
+        4,
+    )
     return ReplayContext(
         funding_rows=funding_rows,
         open_interest_rows=open_interest_rows,
@@ -1286,4 +1457,5 @@ def _build_replay_context(config: HistoricalBacktestConfig) -> ReplayContext:
         liquidation_store=liquidation_store,
         eth_store=eth_store,
         basis_store=basis_store,
+        cache_stats=cache_stats,
     )

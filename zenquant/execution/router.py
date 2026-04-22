@@ -52,13 +52,14 @@ class ExecutionKernelConfig:
     dca_size_decay: float = 0.75  # later DCA tranches get smaller
     max_long_inventory_tranches: int = 6
     max_short_inventory_tranches: int = 4
+    max_long_dca_tranches: int = 2
     # Mirror entry slices on non-urgent exits.
     gradual_exit_enabled: bool = True
     exit_unwind_pct: float = 0.30  # reduce 30% of remaining per bar
     exit_unwind_min_pct: float = 0.20
     exit_unwind_max_pct: float = 0.50
     # Stop adding when price moves too far from entry.
-    dca_max_adverse_atr: float = 3.0
+    dca_max_adverse_atr: float = 2.5
     # Direction flip: immediately flatten + open opposite in one bar
     flip_immediate: bool = True
     flip_min_confidence: float = 0.5  # min regime_confidence to allow flip
@@ -67,14 +68,22 @@ class ExecutionKernelConfig:
     exit_fraction: float = 1.0
 
     def __post_init__(self) -> None:
-        if self.pyramid_initial_pct > 0.45:
-            raise ValueError("pyramid_initial_pct above 0.45")
-        if self.pyramid_add_pct > 0.45:
-            raise ValueError("pyramid_add_pct above 0.45")
-        if self.pyramid_short_initial_pct > 0.35:
-            raise ValueError("pyramid_short_initial_pct above 0.35")
-        if self.pyramid_short_add_pct > 0.35:
-            raise ValueError("pyramid_short_add_pct above 0.35")
+        if self.pyramid_initial_pct < 0.30:
+            raise ValueError("pyramid_initial_pct below 0.30")
+        if self.pyramid_initial_pct > 0.30:
+            raise ValueError("pyramid_initial_pct above 0.30")
+        if self.pyramid_add_pct < 0.30:
+            raise ValueError("pyramid_add_pct below 0.30")
+        if self.pyramid_add_pct > 0.30:
+            raise ValueError("pyramid_add_pct above 0.30")
+        if self.pyramid_short_initial_pct < 0.15:
+            raise ValueError("pyramid_short_initial_pct below 0.15")
+        if self.pyramid_short_initial_pct > 0.20:
+            raise ValueError("pyramid_short_initial_pct above 0.20")
+        if self.pyramid_short_add_pct < 0.10:
+            raise ValueError("pyramid_short_add_pct below 0.10")
+        if self.pyramid_short_add_pct > 0.20:
+            raise ValueError("pyramid_short_add_pct above 0.20")
         if not 0.0 < self.exit_unwind_pct <= 0.60:
             raise ValueError("exit_unwind_pct must be within (0.0, 0.60]")
         if self.pyramid_spacing_atr <= 0.0:
@@ -87,6 +96,10 @@ class ExecutionKernelConfig:
             raise ValueError("max_long_inventory_tranches must be >= 1")
         if self.max_short_inventory_tranches < 1:
             raise ValueError("max_short_inventory_tranches must be >= 1")
+        if self.max_long_dca_tranches < 1:
+            raise ValueError("max_long_dca_tranches must be >= 1")
+        if self.max_long_dca_tranches > self.max_long_inventory_tranches:
+            raise ValueError("max_long_dca_tranches must be <= max_long_inventory_tranches")
 
 
 class ExecutionKernel:
@@ -249,7 +262,8 @@ class ExecutionKernel:
                     trade_qty = 0  # Fully positioned
             elif not is_short and self._config.dca_on_loss_long:
                 # PaulWei DCA: 做多亏损时也加仓 (conviction — 越跌越买)
-                # But at reduced size (half of normal add)
+                # But keep it slower and inventory-capped so loss-side adds do not
+                # become the dominant source of fragility.
                 filled = self._pyramid_filled_pct.get(symbol, 1.0)
                 adverse_move_atr = -self._signed_move_atr(
                     reference_price=last_fill_px,
@@ -258,7 +272,8 @@ class ExecutionKernel:
                     atr=payload.atr,
                 )
                 spacing_ok = payload.atr <= 0 or adverse_move_atr >= self._config.dca_spacing_atr
-                if filled < 1.0 and tranche_count < max_tranches and spacing_ok:
+                dca_tranche_cap = min(max_tranches, self._config.max_long_dca_tranches)
+                if filled < 1.0 and tranche_count < dca_tranche_cap and spacing_ok:
                     dca_base = self._adaptive_speed(
                         payload.realized_vol,
                         add_pct * 0.5 * (self._config.dca_size_decay ** max(0, tranche_count - 1)),
@@ -266,7 +281,7 @@ class ExecutionKernel:
                         self._config.dca_max_speed,
                     )
                     # Distance gating: scale/block DCA when price too far from entry
-                    if self._config.adaptive_pyramid_enabled and entry_px > 0 and payload.atr > 0:
+                    if entry_px > 0 and payload.atr > 0:
                         adverse_distance = abs(mark_price - entry_px) / payload.atr
                         if adverse_distance > self._config.dca_max_adverse_atr:
                             trade_qty = 0

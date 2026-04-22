@@ -89,6 +89,8 @@ Important:
 - paper trading is complete only after a sustained `2 weeks` run and at least one formal `paper-live` export/review
 - current repo evidence should be treated as partial progress, not final validation
 - tester/operator handoff is defined only by [`LIVE_VALIDATION_HANDOFF_SPEC.md`](/Users/disaster/workspace/code/zenQuant/docs/LIVE_VALIDATION_HANDOFF_SPEC.md)
+- do not treat `campaign_status=completed` as paper-live eligibility
+- only [`results/framework_optimization/framework_optimization.json`](/Users/disaster/workspace/code/zenQuant/results/framework_optimization/framework_optimization.json) `final_verdict` can mark a candidate `eligible_for_paper_live`
 
 ### Dashboard
 

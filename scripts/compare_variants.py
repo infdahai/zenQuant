@@ -16,6 +16,7 @@ from zenquant.research.comparison import (
     compare_variants,
     default_comparison_windows,
     filtered_worst_period_windows,
+    public_archive_variant_specs,
 )
 from zenquant.research.splits import default_btc_split_spec
 
@@ -28,6 +29,8 @@ def main() -> None:
     parser.add_argument("--split", choices=("dev", "test"), default="dev")
     parser.add_argument("--include-worst-periods", action="store_true")
     parser.add_argument("--skip-walk-forward", action="store_true")
+    parser.add_argument("--include-paulwei-public-baseline", action="store_true")
+    parser.add_argument("--paulwei-mapping-path", default="results/paulwei_research/baseline_mapping.json")
     args = parser.parse_args()
 
     split_spec = default_btc_split_spec()
@@ -39,12 +42,19 @@ def main() -> None:
                 windows.append(window)
                 seen.add(window.label)
 
+    variants = (
+        public_archive_variant_specs(mapping_path=Path(args.paulwei_mapping_path))
+        if args.include_paulwei_public_baseline
+        else None
+    )
+
     payload = compare_variants(
         HistoricalBacktestConfig(
             root_dir=Path(args.root),
             symbol=args.symbol,
             portfolio_symbol=f"{args.symbol}_PERP",
         ),
+        variants=variants,
         windows=windows,
         walk_forward_windows=[] if args.skip_walk_forward else None,
         split_spec=split_spec,

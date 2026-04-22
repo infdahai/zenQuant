@@ -60,6 +60,13 @@ class RiskOverlayConfig:
     # COT crowding
     cot_crowding_threshold: float = 2.5
     cot_crowding_mult: float = 0.70
+    carry_stress_threshold: float = 0.45
+    carry_stress_mult: float = 0.85
+    leverage_pressure_threshold: float = 0.45
+    leverage_pressure_mult: float = 0.85
+    vol_term_expansion_threshold: float = 1.30
+    vol_of_vol_threshold: float = 0.12
+    vol_term_stress_mult: float = 0.85
     # Overheated market
     overheated_cycle_threshold: float = 1.3
     overheated_funding_threshold: float = 1.5
@@ -89,6 +96,15 @@ class RiskOverlayConfig:
     liq_transition_guard_mult: float = 0.80
     liq_imbalance_threshold: float = 0.20
     enable_liq_risk_guard: bool = True
+    # Microstructure sidecar research-only guard
+    enable_microstructure_risk_guard: bool = True
+    microstructure_toxicity_threshold: float = 3.0
+    microstructure_severe_toxicity_threshold: float = 6.0
+    microstructure_liquidity_vacuum_threshold: float = 2.5
+    microstructure_spread_stress_threshold_bps: float = 4.0
+    microstructure_severe_spread_threshold_bps: float = 8.0
+    microstructure_guard_mult: float = 0.80
+    microstructure_severe_guard_mult: float = 0.60
     # Kill switch recovery (Claude Code "fallback model" pattern)
     kill_recovery_threshold: float = 0.12  # DD must recover below this to start recovery
     kill_cooldown_bars: int = 36  # 36 bars = 6 days at 4H (cooldown before re-entry)
@@ -283,6 +299,26 @@ class RiskOverlay:
                 lev_cap *= self._config.cot_crowding_mult
                 flags.append("COT_CROWDING")
 
+            carry_stress_score = float(indicator.values.get("carry_stress_score", 0.0) or 0.0)
+            leverage_pressure_score = float(indicator.values.get("leverage_pressure_score", 0.0) or 0.0)
+            rv_term_ratio = float(indicator.values.get("rv_term_ratio", 1.0) or 1.0)
+            vol_of_vol = float(indicator.values.get("vol_of_vol", 0.0) or 0.0)
+            if target.target_qty > 0 and carry_stress_score >= self._config.carry_stress_threshold:
+                lev_cap *= self._config.carry_stress_mult
+                flags.append("PERP_CARRY_STRESS_LONG")
+            elif target.target_qty < 0 and carry_stress_score <= -self._config.carry_stress_threshold:
+                lev_cap *= self._config.carry_stress_mult
+                flags.append("PERP_CARRY_STRESS_SHORT")
+            if leverage_pressure_score >= self._config.leverage_pressure_threshold:
+                lev_cap *= self._config.leverage_pressure_mult
+                flags.append("LEVERAGE_PRESSURE")
+            if (
+                rv_term_ratio >= self._config.vol_term_expansion_threshold
+                and vol_of_vol >= self._config.vol_of_vol_threshold
+            ):
+                lev_cap *= self._config.vol_term_stress_mult
+                flags.append("VOL_TERM_STRESS")
+
             # High position sizing: cycle_position + funding as "overheated" detector
             # PaulWei pattern: reduce size at highs, not stop trading
             # VPIN toxic flow: high informed trading probability → reduce exposure
@@ -339,6 +375,33 @@ class RiskOverlay:
                 ):
                     lev_cap *= self._config.liq_transition_guard_mult
                     flags.append("LIQ_TRANSITION_GUARD")
+
+            ms_ready = bool(indicator.values.get("ms_sidecar_ready", False))
+            ms_stale = bool(indicator.values.get("ms_sidecar_stale", True))
+            if self._config.enable_microstructure_risk_guard and ms_ready and not ms_stale:
+                ms_toxicity = float(indicator.values.get("ms_toxicity_proxy", 0.0) or 0.0)
+                ms_liquidity_vacuum = float(indicator.values.get("ms_liquidity_vacuum_score", 0.0) or 0.0)
+                ms_spread_bps = float(indicator.values.get("ms_spread_bps", 0.0) or 0.0)
+
+                if ms_toxicity >= self._config.microstructure_toxicity_threshold:
+                    lev_cap *= self._config.microstructure_guard_mult
+                    flags.append("MICROSTRUCTURE_TOXIC")
+                if ms_liquidity_vacuum >= self._config.microstructure_liquidity_vacuum_threshold:
+                    lev_cap *= self._config.microstructure_guard_mult
+                    flags.append("MICROSTRUCTURE_LIQUIDITY_VACUUM")
+                if ms_spread_bps >= self._config.microstructure_spread_stress_threshold_bps:
+                    lev_cap *= self._config.microstructure_guard_mult
+                    flags.append("MICROSTRUCTURE_SPREAD_STRESS")
+                if (
+                    ms_toxicity >= self._config.microstructure_severe_toxicity_threshold
+                    or ms_spread_bps >= self._config.microstructure_severe_spread_threshold_bps
+                ):
+                    lev_cap *= self._config.microstructure_severe_guard_mult
+                    reduce_only = True
+                    if "MICROSTRUCTURE_TOXIC" not in flags and ms_toxicity >= self._config.microstructure_severe_toxicity_threshold:
+                        flags.append("MICROSTRUCTURE_TOXIC")
+                    if "MICROSTRUCTURE_SPREAD_STRESS" not in flags and ms_spread_bps >= self._config.microstructure_severe_spread_threshold_bps:
+                        flags.append("MICROSTRUCTURE_SPREAD_STRESS")
 
             cycle_pos = float(indicator.values.get("cycle_position", 1.0) or 1.0)
             if (

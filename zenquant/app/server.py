@@ -36,6 +36,7 @@ from zenquant.app.paper_live_scorecard import (
     build_runtime_scorecard,
     load_scorecard_history_payloads,
 )
+from zenquant.data import MicrostructureFeatureStore, MicrostructureFeatureStoreConfig
 from zenquant.domain import (
     Candle,
     DeribitRiskPack,
@@ -122,6 +123,7 @@ class ZenQuantWebRuntime:
         self.state = DashboardStateStore()
         self.state.on_runtime_status({"mode": self._runtime_mode})
         self.indicator_store = IndicatorStore()
+        microstructure_store = self._build_microstructure_store()
 
         if self._runtime_mode == "live":
             # Live mode trusts exchange-confirmed bar closes, so it does not
@@ -134,6 +136,7 @@ class ZenQuantWebRuntime:
                 bus=self.bus,
                 store=self.indicator_store,
                 config=indicator_config,
+                microstructure_store=microstructure_store,
             )
             self.execution_gateway = SimulatedGateway()
             self.ingestor = RealTimeIngestor(
@@ -155,7 +158,11 @@ class ZenQuantWebRuntime:
             # Demo mode keeps the original synthetic path for local iteration.
             self.snapshot_builder = SnapshotBuilder(bus=self.bus)
             self.bar_clock = BarClockService(bus=self.bus)
-            self.indicator_engine = IndicatorEngine(bus=self.bus, store=self.indicator_store)
+            self.indicator_engine = IndicatorEngine(
+                bus=self.bus,
+                store=self.indicator_store,
+                microstructure_store=microstructure_store,
+            )
             self.execution_gateway = ExecutionGateway()
             self.ingestor = SyntheticIngestor(bus=self.bus, config=SyntheticIngestorConfig(seed=11))
             self._event_iterator = self.ingestor.iter_events(
@@ -171,6 +178,24 @@ class ZenQuantWebRuntime:
             self._initialize_trading_chain()
 
         self._subscribe_all()
+
+    def _build_microstructure_store(self) -> MicrostructureFeatureStore | None:
+        if os.getenv("ZENQUANT_MICROSTRUCTURE_SIDECAR_ENABLED", "").lower() not in {"1", "true", "yes"}:
+            return None
+        data_dir = Path(
+            os.getenv(
+                "ZENQUANT_MICROSTRUCTURE_SIDECAR_DIR",
+                "data/raw/microstructure_sidecar/bybit/BTCUSDT/1000ms",
+            )
+        )
+        store = MicrostructureFeatureStore(
+            MicrostructureFeatureStoreConfig(
+                data_dir=data_dir,
+                max_staleness_ns=Timeframe.TF_4H.seconds * 1_000_000_000,
+            )
+        )
+        store.load()
+        return store if store.loaded else None
 
     def _subscribe_all(self) -> None:
         """Subscribe to all event bus topics for dashboard state updates."""

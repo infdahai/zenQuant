@@ -635,7 +635,7 @@ class DCADistanceGatingTests(unittest.TestCase):
         bus = InMemoryJetStream()
         risk = RiskOverlay(bus)
         config = ExecutionKernelConfig(
-            adaptive_pyramid_enabled=True,  # distance gating requires adaptive
+            adaptive_pyramid_enabled=True,
             dca_max_adverse_atr=3.0,
             pyramid_target_vol=0.60,
         )
@@ -853,14 +853,26 @@ class ExecutionConfigBoundsTests(unittest.TestCase):
     def test_rejects_initial_pct_above_supported_range(self) -> None:
         from zenquant.execution.router import ExecutionKernelConfig
 
-        with self.assertRaisesRegex(ValueError, "pyramid_initial_pct above 0.45"):
-            ExecutionKernelConfig(pyramid_initial_pct=0.50)
+        with self.assertRaisesRegex(ValueError, "pyramid_initial_pct above 0.30"):
+            ExecutionKernelConfig(pyramid_initial_pct=0.35)
+
+    def test_rejects_initial_pct_below_supported_range(self) -> None:
+        from zenquant.execution.router import ExecutionKernelConfig
+
+        with self.assertRaisesRegex(ValueError, "pyramid_initial_pct below 0.30"):
+            ExecutionKernelConfig(pyramid_initial_pct=0.25)
 
     def test_rejects_add_pct_above_supported_range(self) -> None:
         from zenquant.execution.router import ExecutionKernelConfig
 
-        with self.assertRaisesRegex(ValueError, "pyramid_add_pct above 0.45"):
-            ExecutionKernelConfig(pyramid_add_pct=0.50)
+        with self.assertRaisesRegex(ValueError, "pyramid_add_pct above 0.30"):
+            ExecutionKernelConfig(pyramid_add_pct=0.35)
+
+    def test_rejects_add_pct_below_supported_range(self) -> None:
+        from zenquant.execution.router import ExecutionKernelConfig
+
+        with self.assertRaisesRegex(ValueError, "pyramid_add_pct below 0.30"):
+            ExecutionKernelConfig(pyramid_add_pct=0.20)
 
     def test_rejects_invalid_dca_decay(self) -> None:
         from zenquant.execution.router import ExecutionKernelConfig

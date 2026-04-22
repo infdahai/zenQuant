@@ -1,5 +1,7 @@
 # Cycle-Aware Testing for BTC Strategies
 
+**Document role**: Planning / roadmap
+
 **Author**: Testing Lead (Discriminator)  
 **Date**: 2026-04-05  
 **Status**: 📋 PLANNING (Implementation scheduled 2026 Q3)
