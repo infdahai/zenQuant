@@ -1,7 +1,15 @@
 import unittest
 
-from zenquant.domain import EventMeta, MarkPriceUpdate, OrderBookLevel, OrderBookSnapshot, TargetPosition, Timeframe
-from zenquant.execution import ExecutionGateway, ExecutionKernel, SimulatedGateway
+from zenquant.domain import (
+    EventMeta,
+    MarkPriceUpdate,
+    OrderBookLevel,
+    OrderBookSnapshot,
+    RiskSnapshot,
+    TargetPosition,
+    Timeframe,
+)
+from zenquant.execution import ExecutionGateway, ExecutionKernel, ExecutionKernelConfig, SimulatedGateway
 from zenquant.infra import InMemoryJetStream
 from zenquant.risk import RiskOverlay
 
@@ -739,7 +747,15 @@ class DCADistanceGatingTests(unittest.TestCase):
 class FlipExecutionTests(unittest.TestCase):
     """Verify direction flip: flatten + open opposite in one bar."""
 
-    def _setup(self, flip_immediate: bool = True):
+    def _setup(
+        self,
+        flip_immediate: bool = True,
+        squeeze_flip_flatten_only_enabled: bool = False,
+        squeeze_flip_cooldown_enabled: bool = False,
+        squeeze_conditional_cooldown_enabled: bool = False,
+        squeeze_conditional_cooldown_toxic_only: bool = False,
+        squeeze_cooldown_cancel_on_non_squeeze_enabled: bool = False,
+    ):
         from zenquant.execution.router import ExecutionKernelConfig
 
         bus = InMemoryJetStream()
@@ -748,6 +764,13 @@ class FlipExecutionTests(unittest.TestCase):
             flip_immediate=flip_immediate,
             adaptive_pyramid_enabled=False,
             gradual_exit_enabled=True,
+            squeeze_flip_flatten_only_enabled=squeeze_flip_flatten_only_enabled,
+            squeeze_flip_cooldown_enabled=squeeze_flip_cooldown_enabled,
+            squeeze_flip_cooldown_bars=2,
+            squeeze_conditional_cooldown_enabled=squeeze_conditional_cooldown_enabled,
+            squeeze_conditional_cooldown_drawdown_threshold=0.025,
+            squeeze_conditional_cooldown_toxic_only=squeeze_conditional_cooldown_toxic_only,
+            squeeze_cooldown_cancel_on_non_squeeze_enabled=squeeze_cooldown_cancel_on_non_squeeze_enabled,
         )
         kernel = ExecutionKernel(bus, SimulatedGateway(), risk, config=config)
         reports = []
@@ -772,10 +795,398 @@ class FlipExecutionTests(unittest.TestCase):
             target_qty=qty,
             target_leverage=2.0,
             reduce_only=kwargs.get("reduce_only", False),
-            regime="TREND",
-            regime_confidence=0.9,
+            regime=kwargs.get("regime", "TREND"),
+            regime_confidence=kwargs.get("regime_confidence", 0.9),
             reason_codes=reason_codes or ["TEST"],
+            realized_vol=kwargs.get("realized_vol", 0.0),
         )
+
+    def test_hostile_router_restrains_panic_short_without_changing_default(self) -> None:
+        bus = InMemoryJetStream()
+        risk = RiskOverlay(bus)
+        kernel = ExecutionKernel(
+            bus,
+            ExecutionGateway(),
+            risk,
+            config=ExecutionKernelConfig(hostile_behavior_router_enabled=True),
+        )
+        reports = []
+        bus.subscribe("exec.order.report", lambda _subject, payload: reports.append(payload))
+        kernel._last_price["BTCUSDT_PERP"] = 40000.0
+
+        bus.publish(
+            "intent.target_position.final.BTCUSDT_PERP",
+            self._target(
+                qty=-1.0,
+                intent_id="panic-short",
+                cutoff_ns=10,
+                regime="STRESS",
+                regime_confidence=0.55,
+                realized_vol=1.1,
+            ),
+        )
+
+        self.assertEqual(len(reports), 1)
+        self.assertEqual(reports[0].side, -1)
+        self.assertAlmostEqual(reports[0].filled_qty, 0.10, places=4)
+
+    def test_hostile_router_keeps_bearish_grind_short_speed(self) -> None:
+        bus = InMemoryJetStream()
+        risk = RiskOverlay(bus)
+        kernel = ExecutionKernel(
+            bus,
+            ExecutionGateway(),
+            risk,
+            config=ExecutionKernelConfig(hostile_behavior_router_enabled=True),
+        )
+        reports = []
+        bus.subscribe("exec.order.report", lambda _subject, payload: reports.append(payload))
+        kernel._last_price["BTCUSDT_PERP"] = 40000.0
+
+        bus.publish(
+            "intent.target_position.final.BTCUSDT_PERP",
+            self._target(
+                qty=-1.0,
+                intent_id="grind-short",
+                cutoff_ns=11,
+                regime="TREND",
+                regime_confidence=0.8,
+                realized_vol=0.6,
+            ),
+        )
+
+        self.assertEqual(len(reports), 1)
+        self.assertEqual(reports[0].side, -1)
+        self.assertAlmostEqual(reports[0].filled_qty, 0.2, places=4)
+
+    def test_squeeze_flip_flatten_only_closes_short_without_opening_long(self) -> None:
+        bus, kernel, reports = self._setup(squeeze_flip_flatten_only_enabled=True)
+        orders = []
+        bus.subscribe("exec.order.submit", lambda _, payload: orders.append(payload))
+
+        bus.publish("intent.target_position.final.BTCUSDT_PERP", self._target(qty=-1.0, intent_id="entry", cutoff_ns=2))
+        short_qty = reports[0].filled_qty
+
+        bus.publish(
+            "intent.target_position.final.BTCUSDT_PERP",
+            self._target(
+                qty=1.0,
+                intent_id="squeeze-flip",
+                cutoff_ns=3,
+                reason_codes=["BIAS_QUALITY_DEGRADED", "PLAYBOOK_RANGE_LIGHT", "TREND_LONG"],
+            ),
+        )
+
+        self.assertEqual(len(reports), 2)
+        self.assertEqual(reports[1].side, 1)
+        self.assertAlmostEqual(reports[1].filled_qty, short_qty, places=4)
+        self.assertTrue(orders[-1].reduce_only)
+        self.assertEqual(kernel.positions["BTCUSDT_PERP"], 0.0)
+
+    def test_squeeze_flip_flatten_only_leaves_non_degraded_flip_unchanged(self) -> None:
+        bus, kernel, reports = self._setup(squeeze_flip_flatten_only_enabled=True)
+
+        bus.publish("intent.target_position.final.BTCUSDT_PERP", self._target(qty=-1.0, intent_id="entry", cutoff_ns=2))
+        short_qty = reports[0].filled_qty
+        bus.publish(
+            "intent.target_position.final.BTCUSDT_PERP",
+            self._target(qty=1.0, intent_id="clean-flip", cutoff_ns=3, reason_codes=["TREND_LONG"]),
+        )
+
+        self.assertEqual(len(reports), 3)
+        self.assertEqual(reports[1].side, 1)
+        self.assertAlmostEqual(reports[1].filled_qty, short_qty, places=4)
+        self.assertEqual(reports[2].side, 1)
+        self.assertGreater(kernel.positions["BTCUSDT_PERP"], 0.0)
+
+    def test_squeeze_flip_flatten_only_does_not_change_flat_exit(self) -> None:
+        bus, kernel, reports = self._setup(squeeze_flip_flatten_only_enabled=True)
+
+        bus.publish("intent.target_position.final.BTCUSDT_PERP", self._target(qty=-1.0, intent_id="entry", cutoff_ns=2))
+        short_qty = reports[0].filled_qty
+        bus.publish(
+            "intent.target_position.final.BTCUSDT_PERP",
+            self._target(
+                qty=0.0,
+                intent_id="flat-exit",
+                cutoff_ns=3,
+                reduce_only=True,
+                reason_codes=["EXIT_TRAILING_STOP", "BIAS_QUALITY_DEGRADED"],
+            ),
+        )
+
+        self.assertEqual(len(reports), 2)
+        self.assertEqual(reports[1].side, 1)
+        self.assertAlmostEqual(reports[1].filled_qty, short_qty, places=4)
+        self.assertEqual(kernel.positions["BTCUSDT_PERP"], 0.0)
+
+    def test_squeeze_flip_cooldown_blocks_two_long_reentries_after_flatten(self) -> None:
+        bus, kernel, reports = self._setup(squeeze_flip_cooldown_enabled=True)
+        orders = []
+        bus.subscribe("exec.order.submit", lambda _, payload: orders.append(payload))
+
+        bus.publish("intent.target_position.final.BTCUSDT_PERP", self._target(qty=-1.0, intent_id="entry", cutoff_ns=2))
+        short_qty = reports[0].filled_qty
+        bus.publish(
+            "intent.target_position.final.BTCUSDT_PERP",
+            self._target(
+                qty=1.0,
+                intent_id="squeeze-flip",
+                cutoff_ns=3,
+                reason_codes=["BIAS_QUALITY_DEGRADED", "PLAYBOOK_RANGE_LIGHT", "TREND_LONG"],
+            ),
+        )
+
+        self.assertEqual(len(reports), 2)
+        self.assertEqual(reports[1].side, 1)
+        self.assertAlmostEqual(reports[1].filled_qty, short_qty, places=4)
+        self.assertTrue(orders[-1].reduce_only)
+        self.assertEqual(kernel.positions["BTCUSDT_PERP"], 0.0)
+
+        bus.publish(
+            "intent.target_position.final.BTCUSDT_PERP",
+            self._target(qty=1.0, intent_id="cooldown-1", cutoff_ns=4, reason_codes=["TREND_LONG"]),
+        )
+        bus.publish(
+            "intent.target_position.final.BTCUSDT_PERP",
+            self._target(qty=1.0, intent_id="cooldown-2", cutoff_ns=5, reason_codes=["TREND_LONG"]),
+        )
+
+        self.assertEqual(len(reports), 2)
+        self.assertEqual(kernel.positions["BTCUSDT_PERP"], 0.0)
+
+        bus.publish(
+            "intent.target_position.final.BTCUSDT_PERP",
+            self._target(qty=1.0, intent_id="post-cooldown", cutoff_ns=6, reason_codes=["TREND_LONG"]),
+        )
+
+        self.assertEqual(len(reports), 3)
+        self.assertEqual(reports[2].side, 1)
+        self.assertGreater(kernel.positions["BTCUSDT_PERP"], 0.0)
+
+    def test_squeeze_flip_cooldown_leaves_non_degraded_flip_unchanged(self) -> None:
+        bus, kernel, reports = self._setup(squeeze_flip_cooldown_enabled=True)
+
+        bus.publish("intent.target_position.final.BTCUSDT_PERP", self._target(qty=-1.0, intent_id="entry", cutoff_ns=2))
+        short_qty = reports[0].filled_qty
+        bus.publish(
+            "intent.target_position.final.BTCUSDT_PERP",
+            self._target(qty=1.0, intent_id="clean-flip", cutoff_ns=3, reason_codes=["TREND_LONG"]),
+        )
+
+        self.assertEqual(len(reports), 3)
+        self.assertEqual(reports[1].side, 1)
+        self.assertAlmostEqual(reports[1].filled_qty, short_qty, places=4)
+        self.assertEqual(reports[2].side, 1)
+        self.assertGreater(kernel.positions["BTCUSDT_PERP"], 0.0)
+
+    def test_conditional_squeeze_cooldown_requires_drawdown_or_toxic_reason(self) -> None:
+        bus, kernel, reports = self._setup(squeeze_conditional_cooldown_enabled=True)
+
+        bus.publish("intent.target_position.final.BTCUSDT_PERP", self._target(qty=-1.0, intent_id="entry", cutoff_ns=2))
+        short_qty = reports[0].filled_qty
+        bus.publish(
+            "risk.snapshot",
+            RiskSnapshot(
+                portfolio="arc",
+                ts_ns=3,
+                equity=100000.0,
+                high_water_mark=100000.0,
+                drawdown=0.01,
+                lev_cap=1.0,
+                reduce_only_mode=False,
+                flags=["OK"],
+            ),
+        )
+        bus.publish(
+            "intent.target_position.final.BTCUSDT_PERP",
+            self._target(
+                qty=1.0,
+                intent_id="clean-low-dd",
+                cutoff_ns=3,
+                reason_codes=["BIAS_QUALITY_DEGRADED", "PLAYBOOK_RANGE_LIGHT", "TREND_LONG"],
+            ),
+        )
+
+        self.assertEqual(len(reports), 3)
+        self.assertEqual(reports[1].side, 1)
+        self.assertAlmostEqual(reports[1].filled_qty, short_qty, places=4)
+        self.assertGreater(kernel.positions["BTCUSDT_PERP"], 0.0)
+
+    def test_conditional_squeeze_cooldown_blocks_reentry_when_drawdown_is_elevated(self) -> None:
+        bus, kernel, reports = self._setup(squeeze_conditional_cooldown_enabled=True)
+        orders = []
+        bus.subscribe("exec.order.submit", lambda _, payload: orders.append(payload))
+
+        bus.publish("intent.target_position.final.BTCUSDT_PERP", self._target(qty=-1.0, intent_id="entry", cutoff_ns=2))
+        short_qty = reports[0].filled_qty
+        bus.publish(
+            "risk.snapshot",
+            RiskSnapshot(
+                portfolio="arc",
+                ts_ns=3,
+                equity=97000.0,
+                high_water_mark=100000.0,
+                drawdown=0.03,
+                lev_cap=1.0,
+                reduce_only_mode=False,
+                flags=["OK"],
+            ),
+        )
+        bus.publish(
+            "intent.target_position.final.BTCUSDT_PERP",
+            self._target(
+                qty=1.0,
+                intent_id="squeeze-high-dd",
+                cutoff_ns=3,
+                reason_codes=["BIAS_QUALITY_DEGRADED", "PLAYBOOK_RANGE_LIGHT", "TREND_LONG"],
+            ),
+        )
+
+        self.assertEqual(len(reports), 2)
+        self.assertEqual(reports[1].side, 1)
+        self.assertAlmostEqual(reports[1].filled_qty, short_qty, places=4)
+        self.assertTrue(orders[-1].reduce_only)
+        self.assertEqual(kernel.positions["BTCUSDT_PERP"], 0.0)
+
+        bus.publish(
+            "intent.target_position.final.BTCUSDT_PERP",
+            self._target(qty=1.0, intent_id="cooldown-1", cutoff_ns=4, reason_codes=["TREND_LONG"]),
+        )
+        bus.publish(
+            "intent.target_position.final.BTCUSDT_PERP",
+            self._target(qty=1.0, intent_id="cooldown-2", cutoff_ns=5, reason_codes=["TREND_LONG"]),
+        )
+        self.assertEqual(len(reports), 2)
+
+        bus.publish(
+            "intent.target_position.final.BTCUSDT_PERP",
+            self._target(qty=1.0, intent_id="post-cooldown", cutoff_ns=6, reason_codes=["TREND_LONG"]),
+        )
+        self.assertEqual(len(reports), 3)
+        self.assertGreater(kernel.positions["BTCUSDT_PERP"], 0.0)
+
+    def test_squeeze_cooldown_can_cancel_when_state_leaves_squeeze(self) -> None:
+        bus, kernel, reports = self._setup(
+            squeeze_conditional_cooldown_enabled=True,
+            squeeze_cooldown_cancel_on_non_squeeze_enabled=True,
+        )
+
+        bus.publish("intent.target_position.final.BTCUSDT_PERP", self._target(qty=-1.0, intent_id="entry", cutoff_ns=2))
+        short_qty = reports[0].filled_qty
+        bus.publish(
+            "risk.snapshot",
+            RiskSnapshot(
+                portfolio="arc",
+                ts_ns=3,
+                equity=93000.0,
+                high_water_mark=100000.0,
+                drawdown=0.07,
+                lev_cap=1.0,
+                reduce_only_mode=False,
+                flags=["OK"],
+            ),
+        )
+        bus.publish(
+            "intent.target_position.final.BTCUSDT_PERP",
+            self._target(
+                qty=1.0,
+                intent_id="squeeze",
+                cutoff_ns=3,
+                reason_codes=["BIAS_QUALITY_DEGRADED", "PLAYBOOK_RANGE_LIGHT", "TREND_LONG"],
+            ),
+        )
+
+        self.assertEqual(len(reports), 2)
+        self.assertAlmostEqual(reports[1].filled_qty, short_qty, places=4)
+        self.assertEqual(kernel.positions["BTCUSDT_PERP"], 0.0)
+
+        bus.publish(
+            "intent.target_position.final.BTCUSDT_PERP",
+            self._target(
+                qty=1.0,
+                intent_id="chop-long",
+                cutoff_ns=4,
+                regime="RANGE",
+                regime_confidence=0.45,
+                reason_codes=["TREND_LONG"],
+            ),
+        )
+
+        self.assertEqual(len(reports), 3)
+        self.assertGreater(kernel.positions["BTCUSDT_PERP"], 0.0)
+
+    def test_toxic_only_squeeze_cooldown_ignores_plain_drawdown(self) -> None:
+        bus, kernel, reports = self._setup(
+            squeeze_conditional_cooldown_enabled=True,
+            squeeze_conditional_cooldown_toxic_only=True,
+        )
+
+        bus.publish("intent.target_position.final.BTCUSDT_PERP", self._target(qty=-1.0, intent_id="entry", cutoff_ns=2))
+        short_qty = reports[0].filled_qty
+        bus.publish(
+            "risk.snapshot",
+            RiskSnapshot(
+                portfolio="arc",
+                ts_ns=3,
+                equity=95000.0,
+                high_water_mark=100000.0,
+                drawdown=0.05,
+                lev_cap=1.0,
+                reduce_only_mode=False,
+                flags=["OK"],
+            ),
+        )
+        bus.publish(
+            "intent.target_position.final.BTCUSDT_PERP",
+            self._target(
+                qty=1.0,
+                intent_id="plain-dd",
+                cutoff_ns=3,
+                reason_codes=["BIAS_QUALITY_DEGRADED", "PLAYBOOK_RANGE_LIGHT", "TREND_LONG"],
+            ),
+        )
+
+        self.assertEqual(len(reports), 3)
+        self.assertEqual(reports[1].side, 1)
+        self.assertAlmostEqual(reports[1].filled_qty, short_qty, places=4)
+        self.assertGreater(kernel.positions["BTCUSDT_PERP"], 0.0)
+
+    def test_toxic_only_squeeze_cooldown_triggers_on_explicit_toxic_reason(self) -> None:
+        bus, kernel, reports = self._setup(
+            squeeze_conditional_cooldown_enabled=True,
+            squeeze_conditional_cooldown_toxic_only=True,
+        )
+
+        bus.publish("intent.target_position.final.BTCUSDT_PERP", self._target(qty=-1.0, intent_id="entry", cutoff_ns=2))
+        short_qty = reports[0].filled_qty
+        bus.publish(
+            "risk.snapshot",
+            RiskSnapshot(
+                portfolio="arc",
+                ts_ns=3,
+                equity=99000.0,
+                high_water_mark=100000.0,
+                drawdown=0.01,
+                lev_cap=1.0,
+                reduce_only_mode=False,
+                flags=["OK"],
+            ),
+        )
+        bus.publish(
+            "intent.target_position.final.BTCUSDT_PERP",
+            self._target(
+                qty=1.0,
+                intent_id="toxic",
+                cutoff_ns=3,
+                reason_codes=["BIAS_QUALITY_DEGRADED", "PLAYBOOK_RANGE_LIGHT", "VPIN_TOXIC", "TREND_LONG"],
+            ),
+        )
+
+        self.assertEqual(len(reports), 2)
+        self.assertEqual(reports[1].side, 1)
+        self.assertAlmostEqual(reports[1].filled_qty, short_qty, places=4)
+        self.assertEqual(kernel.positions["BTCUSDT_PERP"], 0.0)
 
     def test_flip_long_to_short_one_bar(self) -> None:
         """Long→Short completes in 1 bar: close long + open short."""

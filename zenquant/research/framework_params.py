@@ -140,6 +140,73 @@ def baseline_anchored_param_grid(*, include_liquidation_toggles: bool = False) -
     return grid
 
 
+def baseline_anchored_defensive_param_grid(*, include_liquidation_toggles: bool = False) -> dict[str, list[float]]:
+    grid: dict[str, list[float]] = {
+        "dd_step_1_long": [0.15, 0.18],
+        "dd_step_1_short": [0.08, 0.10],
+        "vpin_threshold": [0.10],
+        "vol_shock_threshold": [0.95, 1.00],
+        "target_vol_4h": [1.10],
+        "max_leverage": [4.5, 6.0],
+        "pyramid_initial_pct": [0.30],
+        "pyramid_add_pct": [0.30],
+        "pyramid_short_initial_pct": [0.15, 0.20],
+        "pyramid_short_add_pct": [0.10, 0.12, 0.16],
+        "pyramid_spacing_atr": [0.75, 1.00],
+        "exit_unwind_pct": [0.30, 0.35],
+        "dca_max_adverse_atr": [2.5],
+        "dca_spacing_atr": [0.75, 1.25, 1.75],
+        "dca_size_decay": [0.75, 0.90],
+        "flip_min_confidence": [0.50, 0.60, 0.70],
+    }
+    if include_liquidation_toggles:
+        grid.update(
+            {
+                "liquidation_data_enabled": [0.0],
+                "state_liquidation_overlay_enabled": [0.0],
+                "liq_risk_guard_enabled": [0.0],
+                "liq_risk_guard_threshold": [1.8],
+                "liq_risk_guard_mult": [0.65],
+            }
+        )
+    return grid
+
+
+def baseline_anchored_2023_08_hostile_repair_param_grid(
+    *,
+    include_liquidation_toggles: bool = False,
+) -> dict[str, list[float]]:
+    grid: dict[str, list[float]] = {
+        "dd_step_1_long": [0.18],
+        "dd_step_1_short": [0.10],
+        "vpin_threshold": [0.10],
+        "vol_shock_threshold": [1.00],
+        "target_vol_4h": [1.10],
+        "max_leverage": [4.5],
+        "pyramid_initial_pct": [0.30],
+        "pyramid_add_pct": [0.30],
+        "pyramid_short_initial_pct": [0.15],
+        "pyramid_short_add_pct": [0.10, 0.12],
+        "pyramid_spacing_atr": [1.00],
+        "exit_unwind_pct": [0.35],
+        "dca_max_adverse_atr": [2.5],
+        "dca_spacing_atr": [1.25, 1.75],
+        "dca_size_decay": [0.75, 0.90],
+        "flip_min_confidence": [0.60, 0.70],
+    }
+    if include_liquidation_toggles:
+        grid.update(
+            {
+                "liquidation_data_enabled": [0.0],
+                "state_liquidation_overlay_enabled": [0.0],
+                "liq_risk_guard_enabled": [0.0],
+                "liq_risk_guard_threshold": [1.8],
+                "liq_risk_guard_mult": [0.65],
+            }
+        )
+    return grid
+
+
 def baseline_anchor_params() -> dict[str, float]:
     return {
         "dd_step_1_long": 0.15,
@@ -238,6 +305,12 @@ def param_grid_for_mode(
     mode: str = "execution_first_v2_correlation_constrained",
     include_liquidation_toggles: bool = False,
 ) -> dict[str, list[float]]:
+    if mode == "baseline_anchored_2023_08_hostile_repair":
+        return baseline_anchored_2023_08_hostile_repair_param_grid(
+            include_liquidation_toggles=include_liquidation_toggles
+        )
+    if mode == "baseline_anchored_defensive_candidate_existence":
+        return baseline_anchored_defensive_param_grid(include_liquidation_toggles=include_liquidation_toggles)
     if mode == "baseline_anchored_train_only":
         return baseline_anchored_param_grid(include_liquidation_toggles=include_liquidation_toggles)
     return core_param_grid(include_liquidation_toggles=include_liquidation_toggles)
@@ -248,10 +321,14 @@ def search_space_profile(
     include_liquidation_toggles: bool = False,
     mode: str = "execution_first_v2_correlation_constrained",
 ) -> dict[str, Any]:
-    baseline_anchored = mode == "baseline_anchored_train_only"
+    baseline_anchored = mode in {
+        "baseline_anchored_train_only",
+        "baseline_anchored_defensive_candidate_existence",
+        "baseline_anchored_2023_08_hostile_repair",
+    }
     return {
         "profile": (
-            "baseline_anchored_train_only"
+            mode
             if baseline_anchored
             else "execution_first_v2_correlation_constrained"
             if not include_liquidation_toggles
@@ -260,6 +337,7 @@ def search_space_profile(
         "search_space_mode": mode,
         "baseline_anchored_search": baseline_anchored,
         "baseline_anchor_variant": "paulwei_baseline",
+        "hostile_window_focus": "weak_window_2023_08" if mode == "baseline_anchored_2023_08_hostile_repair" else None,
         "include_liquidation_toggles": include_liquidation_toggles,
         "direction_weight_policy": {
             "correlation_constrained": True,

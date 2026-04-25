@@ -1,5 +1,6 @@
 """Deterministic research pipeline helpers built on the main replay kernel."""
 
+from .attribution import build_decision_attribution_ledger, classify_hostile_micro_state
 from .auto_research import (
     Campaign,
     CampaignConfig,
@@ -13,7 +14,9 @@ from .auto_research import (
 from .comparison import (
     VariantSpec,
     WindowSpec,
+    behavior_candidate_existence_variant_specs,
     build_markdown_summary,
+    build_risk_architecture_profile,
     compare_variants,
     default_variant_specs,
     fixed_2023_08_window,
@@ -32,6 +35,16 @@ from .promoter import (
     PromotionVerdict,
     RobustnessResult,
 )
+from .regime_objective import (
+    RegimeBucketSpec,
+    build_regime_objective_markdown,
+    build_regime_objective_verdict,
+    compare_regime_objective_candidate_rankings,
+    score_regime_objective_candidate_generation,
+    train_regime_bucket_specs,
+    train_regime_windows,
+    validate_train_regime_buckets,
+)
 from .rl_tuner import ParamTunerEnv, train_tuner
 from .splits import DatasetSplitSpec, SplitWindow, default_btc_split_spec, split_summary_json
 
@@ -48,6 +61,7 @@ __all__ = [
     "PromotionCriteria",
     "PromotionGate",
     "PromotionVerdict",
+    "RegimeBucketSpec",
     "ResearchRunArtifact",
     "ResearchRunConfig",
     "RobustnessResult",
@@ -56,7 +70,14 @@ __all__ = [
     "VariantSpec",
     "WalkForwardSplit",
     "WindowSpec",
+    "behavior_candidate_existence_variant_specs",
+    "build_decision_attribution_ledger",
     "build_markdown_summary",
+    "build_regime_objective_markdown",
+    "build_regime_objective_verdict",
+    "build_risk_architecture_profile",
+    "classify_hostile_micro_state",
+    "compare_regime_objective_candidate_rankings",
     "compare_variants",
     "default_btc_split_spec",
     "default_variant_specs",
@@ -68,7 +89,11 @@ __all__ = [
     "run_dev_validation_stage",
     "run_research_pipeline",
     "run_search_stage",
+    "score_regime_objective_candidate_generation",
     "split_summary_json",
+    "train_regime_bucket_specs",
+    "train_regime_windows",
     "train_tuner",
+    "validate_train_regime_buckets",
     "windows_from_worst_periods",
 ]

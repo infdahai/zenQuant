@@ -51,6 +51,7 @@ from zenquant.research.framework_params import (
     search_space_profile,
 )
 from zenquant.research.historical_extension import load_historical_extension_candidate_contract
+from zenquant.research.regime_objective import score_regime_objective_candidate_generation
 from zenquant.research.source_independence import load_source_independence_audit
 from zenquant.research.splits import DatasetSplitSpec, default_btc_split_spec, split_summary_json
 
@@ -113,10 +114,7 @@ def _public_baseline_reference() -> dict[str, Any] | None:
         payload = json.loads(path.read_text(encoding="utf-8"))
     except Exception:
         return None
-    return (
-        payload.get("variant_window_summary", {})
-        .get("paulwei_public_archive_baseline")
-    )
+    return payload.get("variant_window_summary", {}).get("paulwei_public_archive_baseline")
 
 
 def _safe_metric(metrics: dict[str, Any] | None, key: str) -> float:
@@ -259,6 +257,25 @@ def _dedupe_seed_trials(seed_trials: list[dict[str, Any]]) -> list[dict[str, Any
     return deduped
 
 
+def _project_seed_trials_to_search_grid(
+    seed_trials: list[dict[str, Any]],
+    *,
+    search_grid: dict[str, list[float]],
+) -> list[dict[str, Any]]:
+    projected: list[dict[str, Any]] = []
+    for trial in seed_trials:
+        normalized: dict[str, Any] = {}
+        for key, value in dict(trial).items():
+            choices = search_grid.get(key)
+            if not choices:
+                continue
+            target = float(value)
+            normalized[key] = min((float(item) for item in choices), key=lambda item: abs(item - target))
+        if normalized:
+            projected.append(normalized)
+    return _dedupe_seed_trials(projected)
+
+
 def _window_has_timeframe_rows(
     root_dir: Path,
     symbol: str,
@@ -269,11 +286,7 @@ def _window_has_timeframe_rows(
 ) -> bool:
     rows = read_parquet_rows(
         str(root_dir / "klines" / symbol / timeframe.value / "*.parquet"),
-        where_sql=(
-            "close_time_ns >= ? AND close_time_ns < ?"
-            if start_ns is not None and end_ns is not None
-            else ""
-        ),
+        where_sql=("close_time_ns >= ? AND close_time_ns < ?" if start_ns is not None and end_ns is not None else ""),
         params=((start_ns, end_ns) if start_ns is not None and end_ns is not None else ()),
         order_by="close_time_ns ASC",
     )
@@ -715,7 +728,9 @@ def _assess_full_training_readiness(
         search_failures.append("redundant_pair_constraint_missing")
     if direction_policy.get("demoted_signal_role") != "state":
         search_failures.append("redundant_pair_constraint_missing")
-    if signal_independence_contract.get("audit_present") and not signal_independence_contract.get("direction_layer_clean", False):
+    if signal_independence_contract.get("audit_present") and not signal_independence_contract.get(
+        "direction_layer_clean", False
+    ):
         search_failures.append("direction_signal_independence_unclean")
 
     blockers = [*system_failures, *data_failures, *model_failures, *search_failures]
@@ -740,7 +755,9 @@ def _classify_post_smoke_scenario(
     *,
     full_training_assessment: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    assessment = full_training_assessment or _assess_full_training_readiness(report, smoke_completed=report.smoke_completed)
+    assessment = full_training_assessment or _assess_full_training_readiness(
+        report, smoke_completed=report.smoke_completed
+    )
     blockers = list(assessment.get("blockers", []))
     model_failures = set(assessment.get("gates", {}).get("model_gate", {}).get("failures", []))
     data_failures = set(assessment.get("gates", {}).get("data_gate", {}).get("failures", []))
@@ -958,7 +975,9 @@ class FrameworkEvaluator:
             *default_comparison_windows(self._split_spec, "test"),
             *filtered_worst_period_windows(self._split_spec, "test"),
         ]
-        self._fast_dev_wf_windows = default_walk_forward_windows(split_spec=self._split_spec, comparison_split="dev")[:2]
+        self._fast_dev_wf_windows = default_walk_forward_windows(split_spec=self._split_spec, comparison_split="dev")[
+            :2
+        ]
         self._full_dev_wf_windows = default_walk_forward_windows(split_spec=self._split_spec, comparison_split="dev")
         cpu_budget = max(1, (os.cpu_count() or 2) - 2)
         self._compute_profiles = {
@@ -1040,7 +1059,9 @@ class FrameworkEvaluator:
                 "five_min_train_available": five_min_train_available,
                 "one_hour_train_direct_available": one_hour_train_direct,
                 "one_hour_train_available": one_hour_train_available,
-                "one_hour_train_source": "native_1h" if one_hour_train_direct else ("derived_from_5m" if one_hour_train_available else "missing"),
+                "one_hour_train_source": "native_1h"
+                if one_hour_train_direct
+                else ("derived_from_5m" if one_hour_train_available else "missing"),
                 "four_hour_train_available": four_hour_train_available,
             }
         )
@@ -1069,7 +1090,9 @@ class FrameworkEvaluator:
                 "five_min_feature_aggregation_enabled": five_min_train_available,
                 "one_hour_bars_available": one_hour_train_available,
                 "one_hour_bars_source": (
-                    "native_1h" if one_hour_train_direct else ("derived_from_5m" if one_hour_train_available else "missing")
+                    "native_1h"
+                    if one_hour_train_direct
+                    else ("derived_from_5m" if one_hour_train_available else "missing")
                 ),
                 "four_hour_bars_available": four_hour_train_available,
                 "five_min_direct_execution_enabled": base_config.execution_timeframe == Timeframe.TF_5M,
@@ -1091,7 +1114,8 @@ class FrameworkEvaluator:
                     and mvrv_admission["research_ready"]
                     and mvrv_independence["review_present"]
                     and mvrv_independence["allowed_in_state_features"]
-                    and mvrv_admission["tier_decision"] in {"tier2_research_only_feature", "tier3_promoted_state_signal"}
+                    and mvrv_admission["tier_decision"]
+                    in {"tier2_research_only_feature", "tier3_promoted_state_signal"}
                 ),
                 "mvrv_source": mvrv_metadata["mvrv_source"],
                 "mvrv_source_confidence": mvrv_metadata["mvrv_source_confidence"],
@@ -1268,10 +1292,9 @@ class FrameworkEvaluator:
         requested_liq_guard = bool(round(float(params.get("liq_risk_guard_enabled", 0.0))))
         variant = self.candidate_variant(params, name=name, label=label)
         summary = self._evaluate_variant(variant, fast=fast)
-        if (
-            (requested_liquidation or requested_state_overlay or requested_liq_guard)
-            and not self._readiness["data_ready"]
-        ):
+        if (requested_liquidation or requested_state_overlay or requested_liq_guard) and not self._readiness[
+            "data_ready"
+        ]:
             summary = CandidateSummary(
                 **{**asdict(summary), "promotion_candidate": False, "blocked_by": self._readiness["blocked_by"]}
             )
@@ -1332,6 +1355,7 @@ class FrameworkEvaluator:
                     completed_units=(variant_index * 4) + step_completed,
                     total_units=prepare_total_units,
                 )
+
             return _emit
 
         if status_callback is not None:
@@ -1399,7 +1423,11 @@ class FrameworkEvaluator:
         best_name, best_summary = max(summaries.items(), key=lambda item: item[1].robust_score)
         evaluated_best_summary = best_summary
         if evaluate_test:
-            best_variant_spec = next(variant for variant in [self._current_variant, self._paulwei_variant, optuna_variant, rl_variant] if variant is not None and variant.name == best_name)
+            best_variant_spec = next(
+                variant
+                for variant in [self._current_variant, self._paulwei_variant, optuna_variant, rl_variant]
+                if variant is not None and variant.name == best_name
+            )
             evaluated_best_summary = self._evaluate_test_acceptance(best_variant_spec, best_summary)
             summaries[best_name] = evaluated_best_summary
         variants = [
@@ -1415,7 +1443,9 @@ class FrameworkEvaluator:
         )
         comparison_payload: dict[str, Any] = {}
         if include_comparison_payload:
-            comparison_profile = self._compute_profiles["high" if full else ("smoke" if comparison_compute_mode == "smoke_minimal" else "fast")]
+            comparison_profile = self._compute_profiles[
+                "high" if full else ("smoke" if comparison_compute_mode == "smoke_minimal" else "fast")
+            ]
             if status_callback is not None:
                 status_callback(
                     event="stage2_compare_windows_started",
@@ -1473,7 +1503,11 @@ class FrameworkEvaluator:
             rl_best=summaries.get("rl_tuned"),
             best_variant=best_name,
             best_score=evaluated_best_summary.robust_score,
-            best_params=optuna_params if best_name == "optuna_tuned" else rl_params if best_name == "rl_tuned" else None,
+            best_params=optuna_params
+            if best_name == "optuna_tuned"
+            else rl_params
+            if best_name == "rl_tuned"
+            else None,
             comparison_payload=comparison_payload,
             test_comparison_payload=test_payload,
             test_evaluated=evaluate_test,
@@ -1516,10 +1550,12 @@ class FrameworkEvaluator:
             test_access_allowed=provisional_report.test_access_allowed,
             candidate_ready_for_handoff=handoff_summary["ready"] if dev_gate_used_this_round else False,
             candidate_frozen_id=frozen_id if dev_gate_used_this_round and handoff_summary["ready"] else None,
-            frozen_params=provisional_report.best_params if dev_gate_used_this_round and handoff_summary["ready"] else None,
-            handoff_blockers=(
-                [] if handoff_summary["ready"] else handoff_summary["blockers"]
-            ) if dev_gate_used_this_round else ["dev_gate_not_run_this_round"],
+            frozen_params=provisional_report.best_params
+            if dev_gate_used_this_round and handoff_summary["ready"]
+            else None,
+            handoff_blockers=([] if handoff_summary["ready"] else handoff_summary["blockers"])
+            if dev_gate_used_this_round
+            else ["dev_gate_not_run_this_round"],
             dev_gate_summary=handoff_summary if dev_gate_used_this_round else None,
             dev_gate_used_this_round=dev_gate_used_this_round,
             dev_gate_last_round=dev_gate_last_round,
@@ -1897,16 +1933,21 @@ class FrameworkEvaluator:
         )
         gap_to_current = _gap_to_candidate(provisional, baseline) if baseline is not None else None
         gap_to_public = _gap_to_public_reference(provisional, self._public_baseline_reference)
-        weakest_window_penalty = round(max(0.0, (baseline.worst_dev_sharpe - provisional.worst_dev_sharpe) if baseline is not None else 0.0), 4)
+        weakest_window_penalty = round(
+            max(0.0, (baseline.worst_dev_sharpe - provisional.worst_dev_sharpe) if baseline is not None else 0.0), 4
+        )
         hostile_fragility_penalty = round(
             1.75 * weakest_window_penalty
-            + 1.10 * max(0, negative_worst_windows - (baseline.negative_dev_worst_windows if baseline is not None else 0)),
+            + 1.10
+            * max(0, negative_worst_windows - (baseline.negative_dev_worst_windows if baseline is not None else 0)),
             4,
         )
         summary = CandidateSummary(
             **{
                 **asdict(provisional),
-                "baseline_gate_pass_current": _baseline_gate_current(provisional, baseline) if baseline is not None else True,
+                "baseline_gate_pass_current": _baseline_gate_current(provisional, baseline)
+                if baseline is not None
+                else True,
                 "baseline_gate_pass_public": _baseline_gate_public(
                     provisional,
                     baseline if baseline is not None else provisional,
@@ -1932,7 +1973,9 @@ class FrameworkEvaluator:
 
     def _evaluate_test_acceptance(self, variant: VariantSpec, summary: CandidateSummary) -> CandidateSummary:
         test_window = next(window for window in self._test_windows if window.label == "test")
-        test_result = self._run_variant_backtest_cached(variant, start_ns=test_window.start_ns, end_ns=test_window.end_ns)
+        test_result = self._run_variant_backtest_cached(
+            variant, start_ns=test_window.start_ns, end_ns=test_window.end_ns
+        )
         worst_test_windows = [window for window in self._test_windows if window.label != "test"]
         worst_failures = 0
         for window in worst_test_windows:
@@ -1995,6 +2038,8 @@ class FrameworkEvaluator:
                 progress_callback("cache_hit", "validation_bundle")
                 progress_callback("replay_reused", "validation_bundle")
             return cached
+        if progress_callback is not None:
+            progress_callback("cache_miss", "validation_bundle")
         result = _run_validation_bundle(
             self._base_config,
             variant,
@@ -2098,6 +2143,7 @@ def _run_validation_bundle(
     if not windows:
         return {"avg_test_sharpe": 0.0, "avg_oos_ratio": 0.0, "worst_test_sharpe": 0.0}
     if run_backtest is None:
+
         def run(v: VariantSpec, start_ns: int | None, end_ns: int | None) -> BacktestSnapshot:
             _, result = _run_variant_backtest(base_config, v, start_ns=start_ns, end_ns=end_ns)
             return BacktestSnapshot(
@@ -2201,7 +2247,9 @@ def _gap_to_candidate(candidate: CandidateSummary, baseline: CandidateSummary) -
     }
 
 
-def _gap_to_public_reference(candidate: CandidateSummary, public_reference: dict[str, Any] | None) -> dict[str, float] | None:
+def _gap_to_public_reference(
+    candidate: CandidateSummary, public_reference: dict[str, Any] | None
+) -> dict[str, float] | None:
     if not isinstance(public_reference, dict):
         return None
     dev_metrics = public_reference.get("dev_metrics", {})
@@ -2210,7 +2258,9 @@ def _gap_to_public_reference(candidate: CandidateSummary, public_reference: dict
         _safe_metric(hostile_windows.get("2023-08"), "sharpe"),
         _safe_metric(hostile_windows.get("2024-11 DD"), "sharpe"),
     ]
-    hostile_bundle = sum(hostile_sharpes) / len([item for item in hostile_sharpes if item != 0.0]) if any(hostile_sharpes) else 0.0
+    hostile_bundle = (
+        sum(hostile_sharpes) / len([item for item in hostile_sharpes if item != 0.0]) if any(hostile_sharpes) else 0.0
+    )
     candidate_hostile_bundle = (candidate.weak_window_sharpe + candidate.worst_dev_sharpe) / 2.0
     return {
         "dev_sharpe_gap": round(candidate.dev_sharpe - _safe_metric(dev_metrics, "sharpe"), 4),
@@ -2221,7 +2271,9 @@ def _gap_to_public_reference(candidate: CandidateSummary, public_reference: dict
     }
 
 
-def _baseline_gate_current(candidate: CandidateSummary, baseline: CandidateSummary, *, drawdown_hard_multiplier: float = 1.05) -> bool:
+def _baseline_gate_current(
+    candidate: CandidateSummary, baseline: CandidateSummary, *, drawdown_hard_multiplier: float = 1.05
+) -> bool:
     return (
         candidate.worst_dev_sharpe >= baseline.worst_dev_sharpe
         and candidate.negative_dev_worst_windows <= baseline.negative_dev_worst_windows
@@ -2243,8 +2295,10 @@ def _baseline_gate_public(
     hostile_regressed = bool(public_reference.get("hostile_window_regressed"))
     return (
         not hostile_regressed
-        and candidate.fee_drag_pct <= max(current.fee_drag_pct * fee_drag_tolerance, _safe_metric(dev_metrics, "fee_drag_pct"))
-        and candidate.turnover_per_day <= max(
+        and candidate.fee_drag_pct
+        <= max(current.fee_drag_pct * fee_drag_tolerance, _safe_metric(dev_metrics, "fee_drag_pct"))
+        and candidate.turnover_per_day
+        <= max(
             current.turnover_per_day * turnover_tolerance,
             _safe_metric(dev_metrics, "turnover_per_day"),
         )
@@ -2295,20 +2349,29 @@ def _candidate_score(
     turnover_penalty = max(0.0, turnover_per_day - baseline.turnover_per_day)
     fee_drag_penalty = max(0.0, fee_drag_pct - baseline.fee_drag_pct)
     weakest_window_penalty = max(0.0, baseline.worst_dev_sharpe - worst_test_sharpe)
-    hostile_fragility_penalty = (
-        1.75 * weakest_window_penalty
-        + 1.10 * max(0, negative_worst_windows - baseline.negative_dev_worst_windows)
+    hostile_fragility_penalty = 1.75 * weakest_window_penalty + 1.10 * max(
+        0, negative_worst_windows - baseline.negative_dev_worst_windows
     )
 
     score = (
         0.35 * _normalized_delta(overall_sharpe - baseline.dev_sharpe, scale=max(1.0, abs(baseline.dev_sharpe)))
-        + 0.25 * _normalized_delta(worst_test_sharpe - baseline.worst_dev_sharpe, scale=max(1.0, abs(baseline.worst_dev_sharpe)))
-        + 0.15 * _normalized_delta(
+        + 0.22
+        * _normalized_delta(
+            worst_test_sharpe - baseline.worst_dev_sharpe, scale=max(1.0, abs(baseline.worst_dev_sharpe))
+        )
+        + 0.20
+        * _normalized_delta(
             hostile_window_sharpe_bundle - baseline_hostile_bundle,
             scale=max(1.0, abs(baseline_hostile_bundle)),
         )
+        + 0.08
+        * _normalized_delta(
+            weak_window_sharpe - baseline.weak_window_sharpe,
+            scale=max(1.0, abs(baseline.weak_window_sharpe)),
+        )
         + 0.10 * _normalized_delta(overall_sortino - baseline.sortino, scale=max(1.0, abs(baseline.sortino)))
-        + 0.10 * _normalized_delta(
+        + 0.10
+        * _normalized_delta(
             overall_profit_factor - baseline.profit_factor,
             scale=max(1.0, abs(baseline.profit_factor)),
         )
@@ -2349,6 +2412,32 @@ def _promotion_diagnostics(
         if not gate_metrics[key]:
             return gate_metrics, key
     return gate_metrics, None
+
+
+def _stage1_fail_fast_reason(
+    candidate: CandidateSummary,
+    *,
+    baseline: CandidateSummary,
+    current: CandidateSummary,
+) -> str | None:
+    hostile_anchor = baseline if baseline.worst_dev_sharpe >= current.worst_dev_sharpe else current
+    turnover_anchor = max(baseline.turnover_per_day, current.turnover_per_day)
+    fee_drag_anchor = max(baseline.fee_drag_pct, current.fee_drag_pct)
+    if candidate.weak_window_sharpe < hostile_anchor.weak_window_sharpe - 0.25:
+        return "weak_window_2023_08_fail_fast"
+    if candidate.worst_dev_sharpe < hostile_anchor.worst_dev_sharpe - 0.25:
+        return "worst_dev_sharpe_fail_fast"
+    if candidate.fee_drag_pct > max(0.02, fee_drag_anchor * 1.35):
+        return "fee_drag_fail_fast"
+    if candidate.turnover_per_day > max(turnover_anchor * 1.35, turnover_anchor + 250.0):
+        return "turnover_fail_fast"
+    if (
+        candidate.profit_factor < 1.0
+        and candidate.turnover_per_day > max(turnover_anchor * 1.15, turnover_anchor + 100.0)
+        and candidate.fee_drag_pct > max(0.015, fee_drag_anchor * 1.15)
+    ):
+        return "profit_factor_churn_fail_fast"
+    return None
 
 
 def _shift_months(ts_ns: int, months: int) -> int:
@@ -2396,7 +2485,7 @@ def _build_comparison_payload(
 
 def _train_candidate_summary_payload(candidate: dict[str, Any]) -> dict[str, Any]:
     metrics = dict(candidate.get("metrics", {}))
-    score = float(metrics.get("score", metrics.get("sharpe", 0.0)) or 0.0)
+    score = float(metrics.get("regime_objective_score", metrics.get("score", metrics.get("sharpe", 0.0))) or 0.0)
     sharpe = float(metrics.get("sharpe", 0.0) or 0.0)
     pnl = float(metrics.get("net_pnl", metrics.get("pnl", 0.0)) or 0.0)
     drawdown = float(metrics.get("max_drawdown", 0.0) or 0.0)
@@ -2443,21 +2532,25 @@ def run_optuna_search(
     try:
         import optuna  # noqa: F401
     except ImportError:
-        return None, [], {
-            "train_candidate_diagnostics": {
-                "raw_trial_count": 0,
-                "raw_nonzero_trade_trials": 0,
-                "eligible_trade_count_trials": 0,
-                "max_train_trade_count": 0,
-                "max_train_sharpe": 0.0,
-                "max_hostile_proxy_score": 0.0,
-                "hostile_proxy_penalty_applied": 0.0,
-                "min_execution_fragility_score": 0.0,
-                "min_inventory_path_dependence_score": 0.0,
+        return (
+            None,
+            [],
+            {
+                "train_candidate_diagnostics": {
+                    "raw_trial_count": 0,
+                    "raw_nonzero_trade_trials": 0,
+                    "eligible_trade_count_trials": 0,
+                    "max_train_trade_count": 0,
+                    "max_train_sharpe": 0.0,
+                    "max_hostile_proxy_score": 0.0,
+                    "hostile_proxy_penalty_applied": 0.0,
+                    "min_execution_fragility_score": 0.0,
+                    "min_inventory_path_dependence_score": 0.0,
+                },
+                "empty_shortlist_reason": "all_negative_primary_metric",
+                "no_tuned_candidate_reason": "all_negative_primary_metric",
             },
-            "empty_shortlist_reason": "all_negative_primary_metric",
-            "no_tuned_candidate_reason": "all_negative_primary_metric",
-        }
+        )
     effective_execution_timeframe = search_execution_timeframe or evaluator._base_config.execution_timeframe
     resolved_seed_trials = (
         baseline_anchor_seed_trials()[:n_trials]
@@ -2466,7 +2559,10 @@ def run_optuna_search(
     )
     if seed_trials:
         resolved_seed_trials.extend(dict(trial) for trial in seed_trials)
-    resolved_seed_trials = _dedupe_seed_trials(resolved_seed_trials)[:n_trials]
+    resolved_seed_trials = _project_seed_trials_to_search_grid(
+        resolved_seed_trials,
+        search_grid=evaluator.search_param_grid,
+    )[:n_trials]
     worker_config = CampaignConfig(
         data_root=evaluator._base_config.root_dir,
         symbol=evaluator._base_config.symbol,
@@ -2503,6 +2599,16 @@ def run_optuna_search(
     ranked: list[dict[str, Any]] = []
     total_candidates = len(sweep.top_n)
     historical_extension_contract = evaluator.training_input_contract.get("historical_extension_candidate_contract", {})
+    stage1_fail_fast_enabled = any(
+        "hostile_proxy_score" in dict(candidate.get("metrics", {}))
+        or "weak_window_sharpe" in dict(candidate.get("metrics", {}))
+        for candidate in sweep.top_n
+    )
+    current_lightweight = evaluator._get_current_fast_summary(lightweight=True) if stage1_fail_fast_enabled else None
+    paulwei_lightweight = evaluator._get_paulwei_fast_summary(lightweight=True) if stage1_fail_fast_enabled else None
+    hostile_proxy_penalized_count = 0
+    fail_fast_rejection_count = 0
+    fail_fast_reason_counts: dict[str, int] = {}
     for index, candidate in enumerate(sweep.top_n, start=1):
         if ranking_timeout_s is not None and (datetime.now(UTC).timestamp() - ranking_started_at) > ranking_timeout_s:
             raise SearchStageTimeoutError(
@@ -2525,9 +2631,55 @@ def run_optuna_search(
             dict(candidate.get("metrics", {})),
             _spot_train_leg_snapshot(evaluator, params, historical_extension_contract),
         )
+        regime_objective = score_regime_objective_candidate_generation(
+            combined_metrics,
+            baseline_metrics=dict(candidate.get("baseline_train_metrics", {}) or {}),
+        )
+        regime_score = float(regime_objective["regime_objective_score"])
+        stage1_score = min(regime_score, combined_train_score)
+        combined_metrics["regime_objective_raw_score"] = regime_score
+        combined_metrics["regime_objective_score"] = stage1_score
+        combined_metrics["stage1_score"] = stage1_score
+        train_hostile_proxy_score = float(combined_metrics.get("hostile_proxy_score", 0.0) or 0.0)
+        if train_hostile_proxy_score < -3.0:
+            hostile_proxy_penalized_count += 1
         candidate_payload = dict(candidate)
         candidate_payload["metrics"] = combined_metrics
-        summary = CandidateSummary(**_train_candidate_summary_payload(candidate_payload))
+        train_summary = CandidateSummary(**_train_candidate_summary_payload(candidate_payload))
+        if stage1_fail_fast_enabled and paulwei_lightweight is not None and current_lightweight is not None:
+            dev_screen = evaluator._evaluate_variant(
+                evaluator.candidate_variant(params, name="optuna_candidate", label="Optuna Candidate"),
+                fast=True,
+                lightweight=True,
+            )
+            fail_fast_reason = _stage1_fail_fast_reason(
+                dev_screen,
+                baseline=paulwei_lightweight,
+                current=current_lightweight,
+            )
+            lightweight_dev_summary = asdict(dev_screen)
+        else:
+            fail_fast_reason = None
+            lightweight_dev_summary = None
+        if not regime_objective["allow_dev_diagnostic_review"]:
+            fail_fast_reason = "regime_objective_train_bucket_fail_fast"
+            lightweight_dev_summary = None
+        if fail_fast_reason is not None:
+            fail_fast_rejection_count += 1
+            fail_fast_reason_counts[fail_fast_reason] = int(fail_fast_reason_counts.get(fail_fast_reason, 0) or 0) + 1
+            if status_callback is not None:
+                status_callback(
+                    event="ranking_candidate_completed",
+                    current_candidate=index,
+                    total_candidates=total_candidates,
+                    completed_candidates=index,
+                    best_value_so_far=max((item["summary"]["robust_score"] for item in ranked), default=None),
+                    best_params_so_far=max(ranked, key=lambda item: item["summary"]["robust_score"])["params"]
+                    if ranked
+                    else None,
+                    runtime_s=datetime.now(UTC).timestamp() - ranking_started_at,
+                )
+            continue
         ranked.append(
             {
                 "params": params,
@@ -2536,10 +2688,13 @@ def run_optuna_search(
                 "futures_train_leg_metrics": dict(candidate.get("metrics", {})),
                 "combined_train_diagnostics": {
                     "combined_train_score": combined_train_score,
+                    "regime_objective": regime_objective,
                     "mixed_era_declared": bool(historical_extension_contract.get("mixed_era_declared")),
                     "historical_extension_mode": historical_extension_contract.get("historical_extension_mode"),
+                    "stage1_fail_fast_reason": None,
                 },
-                "summary": asdict(summary),
+                "summary": asdict(train_summary),
+                "lightweight_dev_summary": lightweight_dev_summary,
                 "candidate_source": "auto_research_train_only",
                 "split_contract_version": evaluator._split_spec.version,
             }
@@ -2551,7 +2706,9 @@ def run_optuna_search(
                 total_candidates=total_candidates,
                 completed_candidates=index,
                 best_value_so_far=max((item["summary"]["robust_score"] for item in ranked), default=None),
-                best_params_so_far=max(ranked, key=lambda item: item["summary"]["robust_score"])["params"] if ranked else None,
+                best_params_so_far=max(ranked, key=lambda item: item["summary"]["robust_score"])["params"]
+                if ranked
+                else None,
                 runtime_s=datetime.now(UTC).timestamp() - ranking_started_at,
             )
     ranked.sort(key=lambda item: item["summary"]["robust_score"], reverse=True)
@@ -2559,7 +2716,9 @@ def run_optuna_search(
     diagnostics = {
         "train_candidate_diagnostics": dict(getattr(sweep, "train_candidate_diagnostics", {}) or {}),
         "empty_shortlist_reason": getattr(sweep, "empty_shortlist_reason", None),
-        "no_tuned_candidate_reason": (getattr(sweep, "train_candidate_diagnostics", {}) or {}).get("no_tuned_candidate_reason"),
+        "no_tuned_candidate_reason": (getattr(sweep, "train_candidate_diagnostics", {}) or {}).get(
+            "no_tuned_candidate_reason"
+        ),
         "stage1_budget_mode": getattr(sweep, "budget_mode", "trial_count_primary"),
         "stage1_stop_reason": getattr(sweep, "stop_reason", "trial_budget_reached"),
         "historical_extension_train_enabled": bool(historical_extension_contract.get("layered_train_enabled")),
@@ -2569,10 +2728,32 @@ def run_optuna_search(
         "spot_train_leg_blocked_by": list(historical_extension_contract.get("spot_train_leg_blocked_by") or []),
         "full_unified_truth": bool(historical_extension_contract.get("full_unified_truth")),
     }
+    weak_window_fail_fast_count = int(fail_fast_reason_counts.get("weak_window_2023_08_fail_fast", 0) or 0)
+    diagnostics["train_candidate_diagnostics"]["stage1_fail_fast_rejection_count"] = fail_fast_rejection_count
+    diagnostics["train_candidate_diagnostics"]["stage1_fail_fast_reasons"] = fail_fast_reason_counts
+    diagnostics["train_candidate_diagnostics"]["hostile_proxy_penalized_count"] = hostile_proxy_penalized_count
+    diagnostics["train_candidate_diagnostics"]["regime_objective_enabled"] = True
+    diagnostics["train_candidate_diagnostics"]["regime_objective_rejection_count"] = int(
+        fail_fast_reason_counts.get("regime_objective_train_bucket_fail_fast", 0) or 0
+    )
+    diagnostics["train_candidate_diagnostics"]["weak_window_2023_08_fail_fast_count"] = weak_window_fail_fast_count
+    diagnostics["train_candidate_diagnostics"]["weak_window_2023_08_fail_fast_triggered"] = (
+        weak_window_fail_fast_count > 0
+    )
+    diagnostics["train_candidate_diagnostics"]["candidate_existence_recovered"] = bool(best is not None)
+    if best is None and diagnostics["empty_shortlist_reason"] is None and fail_fast_rejection_count > 0:
+        diagnostics["empty_shortlist_reason"] = "stage1_fail_fast_rejected"
+        diagnostics["no_tuned_candidate_reason"] = "stage1_fail_fast_rejected"
+        diagnostics["train_candidate_diagnostics"]["candidate_existence_recovered"] = False
     return (best["params"] if best else None), ranked, diagnostics
 
 
 def build_markdown_report(report: SearchReport) -> str:
+    readiness = dict(report.readiness or {})
+    readiness.setdefault("data_ready", False)
+    readiness.setdefault("promotion_ready", False)
+    readiness.setdefault("blocked_by", "not_promotion_ready")
+    readiness.setdefault("detail", "")
     full_training_assessment = (
         _assess_full_training_readiness(
             report,
@@ -2588,7 +2769,9 @@ def build_markdown_report(report: SearchReport) -> str:
     )
     post_smoke_scenario = (
         {
-            "scenario": "scenario_development_handoff_ready" if report.candidate_ready_for_handoff else "scenario_development_train_iteration",
+            "scenario": "scenario_development_handoff_ready"
+            if report.candidate_ready_for_handoff
+            else "scenario_development_train_iteration",
             "category": "development_handoff" if report.candidate_ready_for_handoff else "train_iteration",
             "should_open_full_training": False,
             "next_action": "handoff_frozen_candidate_to_acceptance"
@@ -2617,10 +2800,10 @@ def build_markdown_report(report: SearchReport) -> str:
         "",
         "## Readiness",
         "",
-        f"- liquidation_data_ready: `{report.readiness['data_ready']}`",
-        f"- liquidation_promotion_ready: `{report.readiness['promotion_ready']}`",
-        f"- blocked_by: `{report.readiness['blocked_by']}`",
-        f"- detail: `{report.readiness['detail']}`",
+        f"- liquidation_data_ready: `{readiness['data_ready']}`",
+        f"- liquidation_promotion_ready: `{readiness['promotion_ready']}`",
+        f"- blocked_by: `{readiness['blocked_by']}`",
+        f"- detail: `{readiness['detail']}`",
         f"- deribit_enabled: `{report.deribit_status['enabled']}`",
         f"- deribit_observation_ready: `{report.deribit_status['observation_ready']}`",
         f"- deribit_research_ready: `{report.deribit_status['research_ready']}`",
@@ -2763,7 +2946,9 @@ def write_search_report(path: Path, report: SearchReport) -> None:
     )
     post_smoke_scenario = (
         {
-            "scenario": "scenario_development_handoff_ready" if report.candidate_ready_for_handoff else "scenario_development_train_iteration",
+            "scenario": "scenario_development_handoff_ready"
+            if report.candidate_ready_for_handoff
+            else "scenario_development_train_iteration",
             "category": "development_handoff" if report.candidate_ready_for_handoff else "train_iteration",
             "should_open_full_training": False,
             "next_action": "handoff_frozen_candidate_to_acceptance"
@@ -2805,7 +2990,14 @@ def write_search_report(path: Path, report: SearchReport) -> None:
     payload["hostile_window_regressed"] = hostile_regression["hostile_window_regressed"]
     payload["hostile_regression_driver"] = hostile_regression["hostile_regression_driver"]
     payload["no_tuned_candidate_reason"] = no_tuned_candidate_reason
-    payload["full_training_allowed"] = full_training_assessment["ready"] if report.evaluation_role == "acceptance" else False
+    payload["candidate_existence_recovered"] = bool(
+        report.optuna_best is not None
+        and no_tuned_candidate_reason not in {"all_negative_primary_metric", "stage1_fail_fast_rejected"}
+        and not hostile_regression["hostile_window_regressed"]
+    )
+    payload["full_training_allowed"] = (
+        full_training_assessment["ready"] if report.evaluation_role == "acceptance" else False
+    )
     payload["full_training_decision"] = full_training_assessment["decision"]
     payload["full_training_blockers"] = full_training_assessment["blockers"]
     payload["search_space_mode"] = search_space_mode
@@ -2814,11 +3006,15 @@ def write_search_report(path: Path, report: SearchReport) -> None:
     payload["stage1_execution_mode"] = report.search_status.get("stage1_execution_mode")
     payload["train_candidate_diagnostics"] = report.search_status.get("train_candidate_diagnostics")
     payload["empty_shortlist_reason"] = report.search_status.get("empty_shortlist_reason")
-    payload["historical_extension_train_enabled"] = report.training_input_contract.get("historical_extension_train_enabled")
+    payload["historical_extension_train_enabled"] = report.training_input_contract.get(
+        "historical_extension_train_enabled"
+    )
     payload["historical_extension_mode"] = report.training_input_contract.get("historical_extension_mode")
     payload["mixed_era_declared"] = report.training_input_contract.get("mixed_era_declared")
     payload["train_truth_legs"] = report.training_input_contract.get("train_truth_legs")
-    payload["full_unified_truth"] = report.training_input_contract.get("historical_extension_candidate_contract", {}).get("full_unified_truth")
+    payload["full_unified_truth"] = report.training_input_contract.get(
+        "historical_extension_candidate_contract", {}
+    ).get("full_unified_truth")
     payload["evaluation_role"] = report.evaluation_role
     payload["test_access_allowed"] = report.test_access_allowed
     payload["candidate_ready_for_handoff"] = report.candidate_ready_for_handoff
@@ -2898,7 +3094,9 @@ def write_search_report(path: Path, report: SearchReport) -> None:
         "candidate_ready_for_test": report.candidate_ready_for_handoff,
         "candidate_ready_for_handoff": report.candidate_ready_for_handoff,
         "candidate_frozen_id": report.candidate_frozen_id,
-        "promote_to_paper_live_candidate": bool(best_summary.promotion_candidate) if best_summary and report.test_evaluated else False,
+        "promote_to_paper_live_candidate": bool(best_summary.promotion_candidate)
+        if best_summary and report.test_evaluated
+        else False,
         "test_evaluated": report.test_evaluated,
         "evaluation_role": report.evaluation_role,
         "report_mode": report.report_mode,
@@ -2924,16 +3122,24 @@ def write_search_report(path: Path, report: SearchReport) -> None:
         "etf_flow_last_success_at": payload["search_status"].get("etf_flow_last_success_at"),
         "train_candidate_diagnostics": payload["search_status"].get("train_candidate_diagnostics"),
         "empty_shortlist_reason": payload["search_status"].get("empty_shortlist_reason"),
-        "historical_extension_train_enabled": payload["training_input_contract"].get("historical_extension_train_enabled"),
+        "historical_extension_train_enabled": payload["training_input_contract"].get(
+            "historical_extension_train_enabled"
+        ),
         "historical_extension_mode": payload["training_input_contract"].get("historical_extension_mode"),
         "mixed_era_declared": payload["training_input_contract"].get("mixed_era_declared"),
         "train_truth_legs": payload["training_input_contract"].get("train_truth_legs"),
-        "full_unified_truth": payload["training_input_contract"].get("historical_extension_candidate_contract", {}).get("full_unified_truth"),
-        "spot_train_leg_blocked_by": payload["training_input_contract"].get("historical_extension_candidate_contract", {}).get("spot_train_leg_blocked_by"),
+        "full_unified_truth": payload["training_input_contract"]
+        .get("historical_extension_candidate_contract", {})
+        .get("full_unified_truth"),
+        "spot_train_leg_blocked_by": payload["training_input_contract"]
+        .get("historical_extension_candidate_contract", {})
+        .get("spot_train_leg_blocked_by"),
         "no_tuned_candidate_reason": no_tuned_candidate_reason,
         "verdict_kind": verdict_kind,
         "candidate_generation_failed": report.optuna_best is None and report.rl_best is None,
-        "candidate_generation_failure_driver": no_tuned_candidate_reason if report.optuna_best is None and report.rl_best is None else None,
+        "candidate_generation_failure_driver": no_tuned_candidate_reason
+        if report.optuna_best is None and report.rl_best is None
+        else None,
         "comparison_to_current": comparison_to_current,
         "comparison_to_paulwei_baseline": comparison_to_paulwei,
         "comparison_to_paulwei_public": comparison_to_public,
@@ -2960,4 +3166,26 @@ def write_search_report(path: Path, report: SearchReport) -> None:
         "post_smoke_scenario": post_smoke_scenario["scenario"],
         "post_smoke_next_action": post_smoke_scenario["next_action"],
     }
+    rl_only_candidate = report.optuna_best is None and report.rl_best is not None
+    payload["promotion_path_status"] = "open" if payload["candidate_existence_recovered"] else "blocked"
+    payload["failure_class"] = (
+        "hostile_window_quality_failure"
+        if not payload["candidate_existence_recovered"]
+        and (hostile_regression["hostile_regression_driver"] == "weak_window_2023_08" or rl_only_candidate)
+        else None
+    )
+    payload["primary_driver"] = (
+        hostile_regression["hostile_regression_driver"] if payload["failure_class"] is not None else None
+    )
+    payload["loop_stop_reason"] = (
+        "search_space_exhausted_without_candidate"
+        if payload["promotion_path_status"] == "blocked"
+        and payload["failure_class"] == "hostile_window_quality_failure"
+        else None
+    )
+    payload["final_verdict"]["promotion_path_status"] = payload["promotion_path_status"]
+    payload["final_verdict"]["failure_class"] = payload["failure_class"]
+    payload["final_verdict"]["primary_driver"] = payload["primary_driver"]
+    payload["final_verdict"]["candidate_existence_recovered"] = payload["candidate_existence_recovered"]
+    payload["final_verdict"]["loop_stop_reason"] = payload["loop_stop_reason"]
     path.write_text(json.dumps(payload, indent=2), encoding="utf-8")

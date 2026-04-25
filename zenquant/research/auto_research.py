@@ -590,6 +590,10 @@ class Campaign:
                 "hostile_proxy_penalty_applied": round(max_hostile_proxy_penalty_applied, 6),
                 "min_execution_fragility_score": round(min_execution_fragility_score, 6),
                 "min_inventory_path_dependence_score": round(min_inventory_path_dependence_score, 6),
+                "stage1_fail_fast_rejection_count": 0,
+                "stage1_fail_fast_reasons": {},
+                "hostile_proxy_penalized_count": 0,
+                "candidate_existence_recovered": False,
             },
             empty_shortlist_reason,
         )
@@ -671,6 +675,13 @@ class Campaign:
             diagnostics["no_tuned_candidate_reason"] = empty_shortlist_reason
         else:
             diagnostics["no_tuned_candidate_reason"] = None
+        diagnostics["hostile_proxy_penalized_count"] = sum(
+            1 for item in alpha_positive_results if float(item["metrics"].get("hostile_proxy_score", 0.0) or 0.0) < -3.0
+        )
+        diagnostics["candidate_existence_recovered"] = bool(
+            diagnostics["no_tuned_candidate_reason"] not in {None, "all_negative_primary_metric"}
+            or bool(sorted_results)
+        )
         return SweepResult(
             total_combinations=len(param_grid),
             results=sorted_results,
@@ -1121,6 +1132,13 @@ class Campaign:
             diagnostics["no_tuned_candidate_reason"] = empty_shortlist_reason
         else:
             diagnostics["no_tuned_candidate_reason"] = None
+        diagnostics["hostile_proxy_penalized_count"] = sum(
+            1 for item in alpha_positive_results if float(item["metrics"].get("hostile_proxy_score", 0.0) or 0.0) < -3.0
+        )
+        diagnostics["candidate_existence_recovered"] = bool(
+            diagnostics["no_tuned_candidate_reason"] not in {None, "all_negative_primary_metric"}
+            or bool(sorted_results)
+        )
         return SweepResult(
             total_combinations=n_trials,
             results=sorted_results,

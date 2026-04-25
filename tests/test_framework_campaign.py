@@ -23,6 +23,38 @@ CAMPAIGN = _load_module("framework_campaign_module", "scripts/run_framework_camp
 
 
 class FrameworkCampaignTests(unittest.TestCase):
+    def test_default_research_hypothesis_spec_targets_execution_inventory_rethink(self) -> None:
+        payload = CAMPAIGN._load_research_hypothesis_spec()
+
+        self.assertEqual(payload["research_direction"], "execution/inventory architecture rethink")
+        self.assertEqual(payload["closed_predecessor"], "baseline_anchored_2023_08_hostile_repair")
+        self.assertTrue(payload["minimal_falsification_plan"]["single_minimal_falsification_only"])
+        self.assertIn(
+            "baseline_anchored_2023_08_hostile_repair",
+            payload["not_allowed_repeats"],
+        )
+
+    def test_campaign_blocks_when_research_hypothesis_spec_missing(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp) / "results"
+            argv = [
+                "run_framework_campaign.py",
+                "--output-dir",
+                str(out),
+            ]
+            missing_path = Path(tmp) / "missing_hypothesis.json"
+            with (
+                patch.object(sys, "argv", argv),
+                patch.object(CAMPAIGN, "_default_research_hypothesis_spec_path", return_value=missing_path),
+            ):
+                CAMPAIGN.main()
+
+            payload = json.loads((out / "campaign_status.json").read_text(encoding="utf-8"))
+
+        self.assertEqual(payload["status"], "blocked")
+        self.assertEqual(payload["blocked_by"], "research_hypothesis_spec_missing")
+        self.assertEqual(payload["research_hypothesis_spec_path"], str(missing_path))
+
     def test_resolved_budget_uses_tighter_fast_and_high_rl_defaults(self) -> None:
         self.assertEqual(CAMPAIGN._resolved_budget("smoke", None, None), (5, 5))
         self.assertEqual(CAMPAIGN._resolved_budget("fast", None, None), (50, 20))
@@ -185,6 +217,424 @@ class FrameworkCampaignTests(unittest.TestCase):
 
         self.assertFalse(bool(captured["full"]))
         self.assertFalse(bool(captured["full_stage2_executed_this_round"]))
+
+    def test_campaign_accepts_explicit_fast_anchored_search_space_mode(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp) / "results"
+            captured: dict[str, object] = {}
+
+            class FakeEvaluator:
+                def __init__(self, *_args, **kwargs) -> None:
+                    captured["search_space_mode"] = kwargs["search_space_mode"]
+                    self._base_config = type(
+                        "BaseConfig",
+                        (),
+                        {"execution_timeframe": CAMPAIGN.Timeframe.TF_5M, "context_timeframe": CAMPAIGN.Timeframe.TF_1H},
+                    )()
+                    self.readiness = {"promotion_ready": False, "blocked_by": "not_promotion_ready"}
+                    self.search_param_grid = {"w_momentum": [0.2, 0.3]}
+                    self.search_space_profile = {
+                        "profile": "baseline_anchored_defensive_candidate_existence",
+                        "search_space_mode": "baseline_anchored_defensive_candidate_existence",
+                        "baseline_anchored_search": True,
+                        "baseline_anchor_variant": "paulwei_baseline",
+                    }
+                    self._deribit_status = {"enabled": True, "observation_ready": False, "research_ready": False}
+                    self._training_window_coverage = {"fast_windows": ["overall_recent"]}
+                    self.stage2_runtime_contract = {"stage2_mp_start_method": "spawn", "validation_pool_mode": "process_pool_spawn"}
+                    self.training_input_contract = {
+                        "primary_truth_source": "binance",
+                        "execution_framework": {
+                            "five_min_feature_aggregation_enabled": True,
+                            "five_min_direct_execution_enabled": True,
+                            "one_hour_bars_available": True,
+                            "four_hour_bars_available": True,
+                        },
+                        "state_feature_sources": {
+                            "hyperliquid_in_state_features": True,
+                            "deribit_in_state_features": True,
+                            "etf_flow_in_state_features": True,
+                            "cme_positioning_in_state_features": True,
+                        },
+                        "signal_stack_contract": {"direction_state_execution_split_enabled": True},
+                    }
+
+                def final_report(self, **_kwargs):
+                    return SearchReport(
+                        created_at="2026-04-11T00:00:00+00:00",
+                        symbol="BTCUSDT",
+                        readiness={"promotion_ready": False, "blocked_by": "not_promotion_ready"},
+                        deribit_status=self._deribit_status,
+                        split_contract={"version": "btc_temporal_v2_train_selection_only", "windows": {"train": {}, "dev": {}, "test": {}}},
+                        training_window_coverage={"fast_windows": ["overall_recent"]},
+                        training_input_contract=self.training_input_contract,
+                        search_status=self.search_space_profile,
+                        current=CandidateSummary(
+                            variant="current",
+                            robust_score=1.0,
+                            selection_split="dev",
+                            dev_sharpe=1.0,
+                            dev_pnl=10.0,
+                            dev_drawdown=0.1,
+                            avg_dev_sharpe=1.0,
+                            avg_dev_ratio=1.0,
+                            worst_dev_sharpe=0.5,
+                            weak_window_sharpe=0.2,
+                            negative_dev_worst_windows=0,
+                            promotion_candidate=False,
+                        ),
+                        paulwei_baseline=CandidateSummary(
+                            variant="paulwei_baseline",
+                            robust_score=1.0,
+                            selection_split="dev",
+                            dev_sharpe=1.0,
+                            dev_pnl=10.0,
+                            dev_drawdown=0.1,
+                            avg_dev_sharpe=1.0,
+                            avg_dev_ratio=1.0,
+                            worst_dev_sharpe=0.5,
+                            weak_window_sharpe=0.2,
+                            negative_dev_worst_windows=0,
+                            promotion_candidate=False,
+                        ),
+                        optuna_best=None,
+                        rl_best=None,
+                        best_variant="current",
+                        best_score=1.0,
+                        best_params=None,
+                        comparison_payload={},
+                    )
+
+            argv = [
+                "run_framework_campaign.py",
+                "--output-dir",
+                str(out),
+                "--budget",
+                "fast",
+                "--search-space-mode",
+                "baseline_anchored_defensive_candidate_existence",
+                "--development-dev-gate",
+            ]
+            with (
+                patch.object(sys, "argv", argv),
+                patch("importlib.util.find_spec", return_value=object()),
+                patch.object(CAMPAIGN, "FrameworkEvaluator", FakeEvaluator),
+                patch.object(
+                    CAMPAIGN,
+                    "run_optuna_search",
+                    return_value=(
+                        {"w_momentum": 0.3},
+                        [{"params": {"w_momentum": 0.3}, "summary": {"robust_score": 1.0}}],
+                        {"train_candidate_diagnostics": {"raw_trial_count": 1}, "empty_shortlist_reason": None},
+                    ),
+                ),
+                patch.object(CAMPAIGN, "train_tuner", return_value=None),
+            ):
+                CAMPAIGN.main()
+
+        self.assertEqual(captured["search_space_mode"], "baseline_anchored_defensive_candidate_existence")
+
+    def test_campaign_accepts_targeted_hostile_repair_search_space_mode(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp) / "results"
+            captured: dict[str, str] = {}
+
+            class FakeEvaluator:
+                def __init__(self, *_args, **kwargs) -> None:
+                    captured["search_space_mode"] = kwargs["search_space_mode"]
+                    self._base_config = type(
+                        "BaseConfig",
+                        (),
+                        {"execution_timeframe": CAMPAIGN.Timeframe.TF_5M, "context_timeframe": CAMPAIGN.Timeframe.TF_1H},
+                    )()
+                    self.readiness = {"promotion_ready": False, "blocked_by": "not_promotion_ready"}
+                    self.search_param_grid = {"w_momentum": [0.2, 0.3]}
+                    self.search_space_profile = {
+                        "profile": "baseline_anchored_2023_08_hostile_repair",
+                        "search_space_mode": "baseline_anchored_2023_08_hostile_repair",
+                        "baseline_anchored_search": True,
+                        "baseline_anchor_variant": "paulwei_baseline",
+                        "hostile_window_focus": "weak_window_2023_08",
+                    }
+                    self._deribit_status = {"enabled": True, "observation_ready": False, "research_ready": False}
+                    self._training_window_coverage = {"fast_windows": ["overall_recent"]}
+                    self.stage2_runtime_contract = {}
+                    self.training_input_contract = {
+                        "primary_truth_source": "binance",
+                        "execution_framework": {
+                            "five_min_feature_aggregation_enabled": True,
+                            "five_min_direct_execution_enabled": True,
+                            "one_hour_bars_available": True,
+                            "four_hour_bars_available": True,
+                        },
+                        "state_feature_sources": {
+                            "hyperliquid_in_state_features": True,
+                            "deribit_in_state_features": True,
+                            "etf_flow_in_state_features": True,
+                            "cme_positioning_in_state_features": True,
+                        },
+                        "signal_stack_contract": {"direction_state_execution_split_enabled": True},
+                    }
+
+                def final_report(self, **_kwargs):
+                    return SearchReport(
+                        created_at="2026-04-10T00:00:00+00:00",
+                        symbol="BTCUSDT",
+                        readiness={"promotion_ready": False, "blocked_by": "not_promotion_ready"},
+                        deribit_status=self._deribit_status,
+                        split_contract={
+                            "version": "btc_temporal_v2_train_selection_only",
+                            "windows": {"train": {}, "dev": {}, "test": {}},
+                        },
+                        training_window_coverage={"fast_windows": ["overall_recent"]},
+                        training_input_contract=self.training_input_contract,
+                        search_status={
+                            "search_outcome": "empty",
+                            "search_space_mode": "baseline_anchored_2023_08_hostile_repair",
+                            "baseline_anchored_search": True,
+                            "baseline_anchor_variant": "paulwei_baseline",
+                            "train_candidate_diagnostics": {
+                                "weak_window_2023_08_fail_fast_count": 1,
+                                "weak_window_2023_08_fail_fast_triggered": True,
+                            },
+                            "candidate_existence_goal_met": False,
+                        },
+                        current=CandidateSummary(
+                            variant="current",
+                            robust_score=1.0,
+                            selection_split="dev",
+                            dev_sharpe=1.0,
+                            dev_pnl=10.0,
+                            dev_drawdown=0.1,
+                            avg_dev_sharpe=1.0,
+                            avg_dev_ratio=1.0,
+                            worst_dev_sharpe=0.5,
+                            weak_window_sharpe=0.2,
+                            negative_dev_worst_windows=0,
+                            promotion_candidate=False,
+                        ),
+                        paulwei_baseline=CandidateSummary(
+                            variant="paulwei_baseline",
+                            robust_score=1.0,
+                            selection_split="dev",
+                            dev_sharpe=1.0,
+                            dev_pnl=10.0,
+                            dev_drawdown=0.1,
+                            avg_dev_sharpe=1.0,
+                            avg_dev_ratio=1.0,
+                            worst_dev_sharpe=0.5,
+                            weak_window_sharpe=0.2,
+                            negative_dev_worst_windows=0,
+                            promotion_candidate=False,
+                        ),
+                        optuna_best=None,
+                        rl_best=None,
+                        best_variant="current",
+                        best_score=1.0,
+                        best_params=None,
+                        comparison_payload={},
+                    )
+
+            argv = [
+                "run_framework_campaign.py",
+                "--output-dir",
+                str(out),
+                "--budget",
+                "fast",
+                "--search-space-mode",
+                "baseline_anchored_2023_08_hostile_repair",
+                "--development-dev-gate",
+            ]
+            with (
+                patch.object(sys, "argv", argv),
+                patch("importlib.util.find_spec", return_value=object()),
+                patch.object(CAMPAIGN, "FrameworkEvaluator", FakeEvaluator),
+                patch.object(
+                    CAMPAIGN,
+                    "run_optuna_search",
+                    return_value=(
+                        None,
+                        [],
+                        {
+                            "train_candidate_diagnostics": {
+                                "raw_trial_count": 1,
+                                "weak_window_2023_08_fail_fast_count": 1,
+                                "weak_window_2023_08_fail_fast_triggered": True,
+                            },
+                            "empty_shortlist_reason": "stage1_fail_fast_rejected",
+                            "no_tuned_candidate_reason": "stage1_fail_fast_rejected",
+                        },
+                    ),
+                ),
+                patch.object(CAMPAIGN, "train_tuner", return_value=None),
+                patch.object(CAMPAIGN, "write_search_report"),
+                patch.object(CAMPAIGN, "build_markdown_report", return_value="# ok"),
+                patch.object(CAMPAIGN, "generate_signal_combination_audit", return_value=None),
+                patch.object(CAMPAIGN, "_resolved_budget", return_value=(5, 0)),
+            ):
+                CAMPAIGN.main()
+
+            status = json.loads((out / "campaign_status.json").read_text(encoding="utf-8"))
+
+        self.assertEqual(captured["search_space_mode"], "baseline_anchored_2023_08_hostile_repair")
+        self.assertEqual(status["search_space_mode"], "baseline_anchored_2023_08_hostile_repair")
+
+    def test_campaign_stage3_status_reuses_final_report_terminal_fields(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp) / "results"
+
+            class FakeEvaluator:
+                def __init__(self, *_args, **_kwargs) -> None:
+                    self._base_config = type(
+                        "BaseConfig",
+                        (),
+                        {"execution_timeframe": CAMPAIGN.Timeframe.TF_5M, "context_timeframe": CAMPAIGN.Timeframe.TF_1H},
+                    )()
+                    self.readiness = {"promotion_ready": False, "blocked_by": "not_promotion_ready"}
+                    self.search_param_grid = {"w_momentum": [0.2, 0.3]}
+                    self.search_space_profile = {
+                        "profile": "baseline_anchored_2023_08_hostile_repair",
+                        "search_space_mode": "baseline_anchored_2023_08_hostile_repair",
+                        "baseline_anchored_search": True,
+                        "baseline_anchor_variant": "paulwei_baseline",
+                    }
+                    self._deribit_status = {"enabled": True, "observation_ready": False, "research_ready": False}
+                    self._training_window_coverage = {"fast_windows": ["overall_recent"]}
+                    self.stage2_runtime_contract = {}
+                    self.training_input_contract = {
+                        "primary_truth_source": "binance",
+                        "execution_framework": {
+                            "five_min_feature_aggregation_enabled": True,
+                            "five_min_direct_execution_enabled": True,
+                            "one_hour_bars_available": True,
+                            "four_hour_bars_available": True,
+                        },
+                        "state_feature_sources": {
+                            "hyperliquid_in_state_features": True,
+                            "deribit_in_state_features": True,
+                            "etf_flow_in_state_features": True,
+                            "cme_positioning_in_state_features": True,
+                        },
+                        "signal_stack_contract": {"direction_state_execution_split_enabled": True},
+                    }
+
+                def final_report(self, **_kwargs):
+                    return SearchReport(
+                        created_at="2026-04-10T00:00:00+00:00",
+                        symbol="BTCUSDT",
+                        readiness={"promotion_ready": False, "blocked_by": "not_promotion_ready"},
+                        deribit_status=self._deribit_status,
+                        split_contract={
+                            "version": "btc_temporal_v2_train_selection_only",
+                            "windows": {"train": {}, "dev": {}, "test": {}},
+                        },
+                        training_window_coverage={"fast_windows": ["overall_recent"]},
+                        training_input_contract=self.training_input_contract,
+                        search_status={
+                            "search_outcome": "empty",
+                            "search_space_mode": "baseline_anchored_2023_08_hostile_repair",
+                            "baseline_anchored_search": True,
+                            "baseline_anchor_variant": "paulwei_baseline",
+                            "optuna_candidate_found": False,
+                            "rl_candidate_found": True,
+                            "train_candidate_diagnostics": {"candidate_existence_recovered": False},
+                        },
+                        current=CandidateSummary(
+                            variant="current",
+                            robust_score=1.0,
+                            selection_split="dev",
+                            dev_sharpe=1.0,
+                            dev_pnl=10.0,
+                            dev_drawdown=0.1,
+                            avg_dev_sharpe=1.0,
+                            avg_dev_ratio=1.0,
+                            worst_dev_sharpe=0.5,
+                            weak_window_sharpe=0.2,
+                            negative_dev_worst_windows=0,
+                            promotion_candidate=False,
+                        ),
+                        paulwei_baseline=CandidateSummary(
+                            variant="paulwei_baseline",
+                            robust_score=1.0,
+                            selection_split="dev",
+                            dev_sharpe=1.0,
+                            dev_pnl=10.0,
+                            dev_drawdown=0.1,
+                            avg_dev_sharpe=1.0,
+                            avg_dev_ratio=1.0,
+                            worst_dev_sharpe=0.5,
+                            weak_window_sharpe=0.2,
+                            negative_dev_worst_windows=0,
+                            promotion_candidate=False,
+                        ),
+                        optuna_best=None,
+                        rl_best=CandidateSummary(
+                            variant="rl_tuned",
+                            robust_score=-1.0,
+                            selection_split="dev",
+                            dev_sharpe=2.0,
+                            dev_pnl=10.0,
+                            dev_drawdown=0.1,
+                            avg_dev_sharpe=2.0,
+                            avg_dev_ratio=1.0,
+                            worst_dev_sharpe=-20.0,
+                            weak_window_sharpe=-20.0,
+                            negative_dev_worst_windows=0,
+                            promotion_candidate=False,
+                            promotion_failure_reason="worst_test_sharpe",
+                        ),
+                        best_variant="current",
+                        best_score=1.0,
+                        best_params=None,
+                        comparison_payload={},
+                    )
+
+            argv = [
+                "run_framework_campaign.py",
+                "--output-dir",
+                str(out),
+                "--budget",
+                "fast",
+                "--search-space-mode",
+                "baseline_anchored_2023_08_hostile_repair",
+                "--development-dev-gate",
+            ]
+            with (
+                patch.object(sys, "argv", argv),
+                patch("importlib.util.find_spec", return_value=object()),
+                patch.object(CAMPAIGN, "FrameworkEvaluator", FakeEvaluator),
+                patch.object(
+                    CAMPAIGN,
+                    "run_optuna_search",
+                    return_value=(
+                        None,
+                        [],
+                        {
+                            "train_candidate_diagnostics": {"candidate_existence_recovered": False},
+                            "empty_shortlist_reason": "all_negative_primary_metric",
+                            "no_tuned_candidate_reason": "all_negative_primary_metric",
+                        },
+                    ),
+                ),
+                patch.object(CAMPAIGN, "train_tuner", return_value={"best_params": {"x": 1}, "search_status": {"episodes_completed": 1}}),
+                patch.object(CAMPAIGN, "build_markdown_report", return_value="# ok"),
+                patch.object(CAMPAIGN, "generate_signal_combination_audit", return_value=None),
+            ):
+                CAMPAIGN.main()
+
+            status = json.loads((out / "campaign_status.json").read_text(encoding="utf-8"))
+            final_report = json.loads((out / "framework_optimization.json").read_text(encoding="utf-8"))
+            closure = json.loads((out / "research_closure.json").read_text(encoding="utf-8"))
+
+        self.assertEqual(status["promotion_path_status"], final_report["promotion_path_status"])
+        self.assertEqual(status["failure_class"], final_report["failure_class"])
+        self.assertEqual(status["primary_driver"], final_report["primary_driver"])
+        self.assertEqual(status["loop_stop_reason"], final_report["loop_stop_reason"])
+        self.assertEqual(status["primary_driver"], "weak_window_2023_08")
+        self.assertEqual(status["loop_stop_reason"], "search_space_exhausted_without_candidate")
+        self.assertTrue(status["research_closure_json_path"].endswith("research_closure.json"))
+        self.assertEqual(closure["closure_classification"], "VALID_RUN_NEGATIVE")
+        self.assertEqual(closure["promotion_path_status"], "blocked")
 
     def test_campaign_stage1_heartbeat_records_running_and_timing_fields(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

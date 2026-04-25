@@ -36,7 +36,8 @@ from zenquant.infra import EventBus
 
 logger = logging.getLogger(__name__)
 
-BINANCE_FSTREAM_WS = "wss://fstream.binance.com/stream"
+BINANCE_FSTREAM_PUBLIC_WS = "wss://fstream.binance.com/public/stream"
+BINANCE_FSTREAM_MARKET_WS = "wss://fstream.binance.com/market/stream"
 BINANCE_FSTREAM_REST = "https://fapi.binance.com"
 
 
@@ -79,7 +80,7 @@ class BinancePerpStreamClient:
         self._seq: dict[str, int] = {}
         self._tasks: list[asyncio.Task[None]] = []
         self._running = False
-        self._ws: ClientConnection | None = None
+        self._websockets: list[ClientConnection] = []
 
     async def start(self) -> None:
         """Start websocket streaming and open-interest polling tasks."""
@@ -98,9 +99,10 @@ class BinancePerpStreamClient:
         self._tasks.clear()
         for task in tasks:
             task.cancel()
-        if self._ws is not None:
-            await self._ws.close()
-            self._ws = None
+        websockets = list(self._websockets)
+        self._websockets.clear()
+        for websocket in websockets:
+            await websocket.close()
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
 
@@ -121,12 +123,19 @@ class BinancePerpStreamClient:
                 logger.exception("bootstrap warmup failed for %s; continuing with live stream", symbol)
 
     async def _run_market_stream(self) -> None:
-        """Maintain the combined websocket stream and reconnect on failure."""
+        """Maintain Binance futures websocket streams and reconnect on failure."""
+        await asyncio.gather(
+            self._run_combined_stream(self._public_stream_url(), label="public"),
+            self._run_combined_stream(self._regular_market_stream_url(), label="market"),
+        )
+
+    async def _run_combined_stream(self, url: str, *, label: str) -> None:
+        """Maintain one combined websocket stream and reconnect on failure."""
         while self._running:
             try:
-                async with connect(self._stream_url(), ping_interval=20, ping_timeout=20) as websocket:
-                    self._ws = websocket
-                    logger.info("connected to Binance futures market stream")
+                async with connect(url, ping_interval=20, ping_timeout=20) as websocket:
+                    self._websockets.append(websocket)
+                    logger.info("connected to Binance futures %s stream", label)
                     async for message in websocket:
                         if not self._running:
                             break
@@ -134,9 +143,9 @@ class BinancePerpStreamClient:
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
-                logger.warning("binance market stream disconnected: %s", exc)
+                logger.warning("binance %s stream disconnected: %s", label, exc)
             finally:
-                self._ws = None
+                self._websockets = [item for item in self._websockets if item is not locals().get("websocket")]
             if self._running:
                 await asyncio.sleep(self._config.reconnect_backoff_s)
 
@@ -215,7 +224,12 @@ class BinancePerpStreamClient:
         )
 
         candles: list[dict[str, Any]] = []
-        for timeframe, rows in (("1d", daily_rows), ("4h", four_hour_rows), ("1h", one_hour_rows), ("5m", five_min_rows)):
+        for timeframe, rows in (
+            ("1d", daily_rows),
+            ("4h", four_hour_rows),
+            ("1h", one_hour_rows),
+            ("5m", five_min_rows),
+        ):
             for row in rows:
                 row["event_timeframe"] = timeframe
                 candles.append(row)
@@ -438,8 +452,23 @@ class BinancePerpStreamClient:
             ),
         )
 
-    def _stream_url(self) -> str:
-        """Build the combined-stream URL for the configured symbols."""
+    def _public_stream_url(self) -> str:
+        """Build the high-frequency public market-data stream URL."""
+        streams: list[str] = []
+        for symbol in self._config.symbols:
+            exch_symbol = _to_binance_symbol(symbol)
+            if exch_symbol is None:
+                continue
+            token = exch_symbol.lower()
+            streams.extend(
+                [
+                    f"{token}@depth{self._config.depth_levels}@{self._config.depth_update_ms}ms",
+                ]
+            )
+        return _combined_stream_url(BINANCE_FSTREAM_PUBLIC_WS, streams)
+
+    def _regular_market_stream_url(self) -> str:
+        """Build the regular market-data stream URL."""
         streams: list[str] = []
         for symbol in self._config.symbols:
             exch_symbol = _to_binance_symbol(symbol)
@@ -450,15 +479,17 @@ class BinancePerpStreamClient:
                 [
                     f"{token}@aggTrade",
                     f"{token}@markPrice@{self._config.mark_price_update_s}s",
-                    f"{token}@depth{self._config.depth_levels}@{self._config.depth_update_ms}ms",
                     f"{token}@kline_5m",
                     f"{token}@kline_1h",
                     f"{token}@kline_4h",
                     f"{token}@kline_1d",
                 ]
             )
-        joined = "/".join(streams)
-        return f"{BINANCE_FSTREAM_WS}?streams={joined}"
+        return _combined_stream_url(BINANCE_FSTREAM_MARKET_WS, streams)
+
+    def _stream_url(self) -> str:
+        """Build the regular market stream URL for backward-compatible tests."""
+        return self._regular_market_stream_url()
 
     def _meta(self, symbol: str, event_time_ns: int) -> EventMeta:
         """Attach deterministic per-symbol stream sequence numbers to events."""
@@ -471,6 +502,11 @@ class BinancePerpStreamClient:
             symbol=symbol,
             stream_seq=current,
         )
+
+
+def _combined_stream_url(base_url: str, streams: list[str]) -> str:
+    joined = "/".join(streams)
+    return f"{base_url}?streams={joined}"
 
 
 def _timeframe_from_stream(value: str) -> Timeframe | None:

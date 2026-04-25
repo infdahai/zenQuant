@@ -122,6 +122,7 @@ def _resolve_torch_device(device_preference: str = "auto") -> tuple[str, str, bo
         return "mps", preference, True, None
     return "cpu", preference, False, "mps_unavailable"
 
+
 PARAM_GRID = {
     "dd_step_1_long": [0.10, 0.15, 0.20],
     "dd_step_1_short": [0.05, 0.08, 0.12],
@@ -147,6 +148,7 @@ PARAM_GRID = {
 _FUNDING_WEIGHT_CAP = 0.12
 _CROWDING_WEIGHT_CAP = 0.05
 _CORRELATED_PAIR_COMBINED_CAP = 0.14
+
 
 @dataclass(slots=True, frozen=True)
 class TunerResult:
@@ -191,6 +193,7 @@ def build_strategy_config(params: dict[str, float]) -> ARCStrategyConfig:
         max_leverage=params.get("max_leverage", 6.0),
         trailing_stop_atr_mult=params.get("trailing_stop_atr_mult", 2.5),
         bias_max_age_bars=int(params.get("bias_max_age_bars", 8)),
+        enable_adaptive_signal_weights=bool(round(float(params.get("enable_adaptive_signal_weights", 0.0)))),
     )
 
 
@@ -292,10 +295,7 @@ class ParamTunerEnv(gym.Env):
         return self._last_obs, {}
 
     def step(self, action: np.ndarray) -> tuple[np.ndarray, float, bool, bool, dict]:
-        params = {
-            name: self._param_choices[index][action[index]]
-            for index, name in enumerate(self._param_names)
-        }
+        params = {name: self._param_choices[index][action[index]] for index, name in enumerate(self._param_names)}
         train_window = random.choice(self._train_windows)
         result = self._run_backtest(params, train_window)
         self._results.append(result)
@@ -363,11 +363,7 @@ class ParamTunerEnv(gym.Env):
             pnl = result.metrics.net_pnl
             max_dd = result.metrics.max_drawdown
             trades = result.metrics.trade_count
-            candidate_score = (
-                sharpe
-                - max(0.0, max_dd - 0.10) * 12.0
-                - (1.0 if trades < 20 else 0.0)
-            )
+            candidate_score = sharpe - max(0.0, max_dd - 0.10) * 12.0 - (1.0 if trades < 20 else 0.0)
             if result.terminated_early:
                 candidate_score -= 1.5
             return TunerResult(
@@ -560,7 +556,9 @@ def train_tuner(
                     rl_device_resolved_from=resolved_from,
                     rl_device_fallback_reason=fallback_reason,
                     rl_device_preference=resolved_device_preference,
-                    rl_execution_mode="single_env_cpu_guarded" if resolved_n_envs == 1 and resolved_device == "cpu" else "default",
+                    rl_execution_mode="single_env_cpu_guarded"
+                    if resolved_n_envs == 1 and resolved_device == "cpu"
+                    else "default",
                     rl_vec_env_type=rl_vec_env_type,
                     rl_platform_guard_applied=resolved_n_envs == 1 and resolved_device_preference == "cpu",
                     rl_first_progress_seen=rl_first_progress_seen,
@@ -601,7 +599,9 @@ def train_tuner(
                     rl_device_resolved_from=resolved_from,
                     rl_device_fallback_reason=fallback_reason,
                     rl_device_preference=resolved_device_preference,
-                    rl_execution_mode="single_env_cpu_guarded" if resolved_n_envs == 1 and resolved_device == "cpu" else "default",
+                    rl_execution_mode="single_env_cpu_guarded"
+                    if resolved_n_envs == 1 and resolved_device == "cpu"
+                    else "default",
                     rl_vec_env_type=rl_vec_env_type,
                     rl_platform_guard_applied=resolved_n_envs == 1 and resolved_device_preference == "cpu",
                     rl_init_completed=True,
@@ -688,7 +688,9 @@ def train_tuner(
                 "rl_device_resolved_from": resolved_from,
                 "rl_device_fallback_reason": fallback_reason,
                 "rl_device_preference": resolved_device_preference,
-                "rl_execution_mode": "single_env_cpu_guarded" if resolved_n_envs == 1 and resolved_device == "cpu" else "default",
+                "rl_execution_mode": "single_env_cpu_guarded"
+                if resolved_n_envs == 1 and resolved_device == "cpu"
+                else "default",
                 "rl_vec_env_type": rl_vec_env_type,
                 "rl_platform_guard_applied": resolved_n_envs == 1 and resolved_device_preference == "cpu",
                 "rl_init_completed": rl_init_completed,
@@ -741,7 +743,9 @@ def train_tuner(
             rl_device_resolved_from=resolved_from,
             rl_device_fallback_reason=fallback_reason,
             rl_device_preference=resolved_device_preference,
-            rl_execution_mode="single_env_cpu_guarded" if resolved_n_envs == 1 and resolved_device == "cpu" else "default",
+            rl_execution_mode="single_env_cpu_guarded"
+            if resolved_n_envs == 1 and resolved_device == "cpu"
+            else "default",
             rl_vec_env_type=rl_vec_env_type,
             rl_platform_guard_applied=resolved_n_envs == 1 and resolved_device_preference == "cpu",
             rl_init_completed=rl_init_completed,
@@ -767,7 +771,9 @@ def train_tuner(
             "score": best_train.candidate_score,
         },
         "dev_metrics": dev_metrics,
-        "all_results": [(result.sharpe, result.params) for result in sorted(results, key=lambda item: -item.candidate_score)[:10]],
+        "all_results": [
+            (result.sharpe, result.params) for result in sorted(results, key=lambda item: -item.candidate_score)[:10]
+        ],
         "search_status": {
             "selection_split": selection_split,
             "episodes_completed": min(len(results), resolved_max_episodes),
@@ -780,7 +786,9 @@ def train_tuner(
             "rl_device_resolved_from": resolved_from,
             "rl_device_fallback_reason": fallback_reason,
             "rl_device_preference": resolved_device_preference,
-            "rl_execution_mode": "single_env_cpu_guarded" if resolved_n_envs == 1 and resolved_device == "cpu" else "default",
+            "rl_execution_mode": "single_env_cpu_guarded"
+            if resolved_n_envs == 1 and resolved_device == "cpu"
+            else "default",
             "rl_vec_env_type": rl_vec_env_type,
             "rl_platform_guard_applied": resolved_n_envs == 1 and resolved_device_preference == "cpu",
             "rl_init_completed": rl_init_completed,

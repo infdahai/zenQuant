@@ -3,6 +3,7 @@
 import unittest
 
 from zenquant.domain import (
+    ExecutionReport,
     IndicatorCoverage,
     IndicatorPack,
     TargetPosition,
@@ -43,6 +44,19 @@ def _make_target(qty: float = 1.0, reduce_only: bool = False) -> TargetPosition:
         regime="TREND",
         regime_confidence=0.9,
         reason_codes=["TEST"],
+    )
+
+
+def _fill(qty: float, price: float = 40000.0) -> ExecutionReport:
+    return ExecutionReport(
+        client_order_id="fill",
+        symbol="BTCUSDT_PERP",
+        side=1 if qty > 0 else -1,
+        status="FILLED",
+        filled_qty=abs(qty),
+        avg_price=price,
+        fee=0.0,
+        transaction_time_ns=1,
     )
 
 
@@ -98,6 +112,67 @@ class KillSwitchTests(unittest.TestCase):
 
         self.assertTrue(decisions)
         self.assertIn("KILL_SWITCH", decisions[-1].flags)
+
+    def test_kill_switch_does_not_recover_on_cooldown_without_drawdown_recovery(self) -> None:
+        bus = InMemoryJetStream()
+        overlay = RiskOverlay(bus=bus, config=RiskOverlayConfig(kill_cooldown_bars=2, kill_ramp_bars=2))
+        decisions = []
+        bus.subscribe("risk.overlay.decision", lambda _, p: decisions.append(p))
+
+        overlay.apply_fee(31_000.0)
+        bus.publish("indicator.pack.v1.4h.BTCUSDT_PERP", _make_pack())
+        for idx in range(4):
+            bus.publish("intent.target_position.arc.BTCUSDT_PERP", _make_target(qty=1.0))
+
+        self.assertIn("KILL_SWITCH", decisions[-1].flags)
+        self.assertNotIn("KILL_RECOVERED", decisions[-1].flags)
+
+    def test_kill_switch_ramps_after_recovery_threshold(self) -> None:
+        bus = InMemoryJetStream()
+        overlay = RiskOverlay(bus=bus, config=RiskOverlayConfig(kill_cooldown_bars=2, kill_ramp_bars=2))
+        decisions = []
+        bus.subscribe("risk.overlay.decision", lambda _, p: decisions.append(p))
+
+        overlay.apply_fee(31_000.0)
+        bus.publish("indicator.pack.v1.4h.BTCUSDT_PERP", _make_pack())
+        bus.publish("intent.target_position.arc.BTCUSDT_PERP", _make_target(qty=1.0))
+        overlay._cash = 89_000.0
+        overlay._equity = 89_000.0
+        bus.publish("intent.target_position.arc.BTCUSDT_PERP", _make_target(qty=1.0))
+        bus.publish("intent.target_position.arc.BTCUSDT_PERP", _make_target(qty=1.0))
+
+        self.assertIn("KILL_RECOVERY_RAMP", decisions[-2].flags)
+        self.assertIn("KILL_RECOVERED", decisions[-1].flags)
+
+    def test_kill_switch_recovery_waits_for_cooldown_even_if_drawdown_recovers(self) -> None:
+        bus = InMemoryJetStream()
+        overlay = RiskOverlay(bus=bus, config=RiskOverlayConfig(kill_cooldown_bars=4, kill_ramp_bars=2))
+        decisions = []
+        bus.subscribe("risk.overlay.decision", lambda _, p: decisions.append(p))
+
+        overlay.apply_fee(31_000.0)
+        bus.publish("indicator.pack.v1.4h.BTCUSDT_PERP", _make_pack())
+        bus.publish("intent.target_position.arc.BTCUSDT_PERP", _make_target(qty=1.0))
+        overlay._cash = 89_000.0
+        overlay._equity = 89_000.0
+        bus.publish("intent.target_position.arc.BTCUSDT_PERP", _make_target(qty=1.0))
+
+        self.assertIn("KILL_SWITCH", decisions[-1].flags)
+        self.assertNotIn("KILL_RECOVERY_RAMP", decisions[-1].flags)
+
+    def test_reduce_only_crossing_target_flattens_instead_of_holding_current_position(self) -> None:
+        bus = InMemoryJetStream()
+        overlay = RiskOverlay(bus=bus)
+        final_targets = []
+        bus.subscribe("intent.target_position.final.>", lambda _, p: final_targets.append(p))
+
+        bus.publish("exec.order.report", _fill(1.0))
+        bus.publish("indicator.pack.v1.4h.BTCUSDT_PERP", _make_pack())
+        bus.publish("intent.target_position.arc.BTCUSDT_PERP", _make_target(qty=-1.0, reduce_only=True))
+
+        self.assertTrue(final_targets)
+        self.assertEqual(final_targets[-1].target_qty, 0.0)
+        self.assertTrue(final_targets[-1].reduce_only)
 
 
 class VolShockTests(unittest.TestCase):
