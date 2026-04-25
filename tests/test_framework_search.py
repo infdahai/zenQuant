@@ -1479,6 +1479,10 @@ class SearchReportSerializationTests(unittest.TestCase):
             {"regime_objective_train_bucket_fail_fast": 1},
         )
         self.assertEqual(diagnostics["train_candidate_diagnostics"]["regime_objective_rejection_count"], 1)
+        rejected = diagnostics["train_candidate_diagnostics"]["rejected_candidate_diagnostics"]
+        self.assertEqual(rejected[0]["params"], {"w_momentum": 0.3})
+        self.assertEqual(rejected[0]["stage1_fail_fast_reason"], "regime_objective_train_bucket_fail_fast")
+        self.assertFalse(rejected[0]["regime_objective"]["allow_dev_diagnostic_review"])
 
     def test_run_optuna_search_passes_stage1_target_inflight(self) -> None:
         @dataclass

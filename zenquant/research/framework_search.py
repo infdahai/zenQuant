@@ -2609,6 +2609,7 @@ def run_optuna_search(
     hostile_proxy_penalized_count = 0
     fail_fast_rejection_count = 0
     fail_fast_reason_counts: dict[str, int] = {}
+    rejected_candidate_diagnostics: list[dict[str, Any]] = []
     for index, candidate in enumerate(sweep.top_n, start=1):
         if ranking_timeout_s is not None and (datetime.now(UTC).timestamp() - ranking_started_at) > ranking_timeout_s:
             raise SearchStageTimeoutError(
@@ -2667,6 +2668,16 @@ def run_optuna_search(
         if fail_fast_reason is not None:
             fail_fast_rejection_count += 1
             fail_fast_reason_counts[fail_fast_reason] = int(fail_fast_reason_counts.get(fail_fast_reason, 0) or 0) + 1
+            rejected_candidate_diagnostics.append(
+                {
+                    "params": params,
+                    "train_metrics": combined_metrics,
+                    "summary": asdict(train_summary),
+                    "stage1_fail_fast_reason": fail_fast_reason,
+                    "regime_objective": regime_objective,
+                    "lightweight_dev_summary": lightweight_dev_summary,
+                }
+            )
             if status_callback is not None:
                 status_callback(
                     event="ranking_candidate_completed",
@@ -2731,6 +2742,7 @@ def run_optuna_search(
     weak_window_fail_fast_count = int(fail_fast_reason_counts.get("weak_window_2023_08_fail_fast", 0) or 0)
     diagnostics["train_candidate_diagnostics"]["stage1_fail_fast_rejection_count"] = fail_fast_rejection_count
     diagnostics["train_candidate_diagnostics"]["stage1_fail_fast_reasons"] = fail_fast_reason_counts
+    diagnostics["train_candidate_diagnostics"]["rejected_candidate_diagnostics"] = rejected_candidate_diagnostics[:5]
     diagnostics["train_candidate_diagnostics"]["hostile_proxy_penalized_count"] = hostile_proxy_penalized_count
     diagnostics["train_candidate_diagnostics"]["regime_objective_enabled"] = True
     diagnostics["train_candidate_diagnostics"]["regime_objective_rejection_count"] = int(
