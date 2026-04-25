@@ -1,0 +1,102 @@
+{
+  "research_line_id": "train_only_regime_objective_redesign",
+  "predecessor_research_line_id": "execution_inventory_architecture_rethink_v1",
+  "predecessor_verdict": "reject_and_switch_hypothesis",
+  "research_direction": "train-only regime objective redesign",
+  "current_status": {
+    "phase": "regime_objective_preflight",
+    "production_status": "research_only_not_promoted",
+    "objective": "falsification_and_objective_design_not_optimization",
+    "asset_scope": "BTC_only",
+    "legacy_path_status": "production_default_preserved",
+    "plugin_path_status": "research_only_unless_explicitly_promoted",
+    "test_split_policy": "final_acceptance_only_no_training_feedback",
+    "same_family_execution_inventory_work_status": "stopped"
+  },
+  "hypothesis": "Candidate selection is currently too aggregate-score oriented; a fixed train-only regime objective should reject candidates that improve full-train Sharpe while damaging hostile grind, crash/transition, chop, or late-cycle recovery buckets.",
+  "market_behavior_to_fix": "Aggregate improvement hiding hostile-window or weak-window degradation before dev diagnostics.",
+  "regime_buckets": [
+    "train_full",
+    "train_hostile_grind_2022_10",
+    "train_transition_drawdown_2023_05",
+    "train_neutral_chop_2023_08",
+    "train_late_cycle_recovery_2023_11"
+  ],
+  "execution_sequence": [
+    {
+      "step": "plan_recording",
+      "required_output": "this_json_records_the_active_train_only_regime_objective_direction"
+    },
+    {
+      "step": "objective_gate_implementation",
+      "required_outputs": [
+        "zenquant/research/regime_objective.py",
+        "scripts/check_regime_objective_candidate.py",
+        "tests/test_regime_objective_redesign.py"
+      ]
+    },
+    {
+      "step": "minimal_train_only_check",
+      "command": "uv run python scripts/check_regime_objective_candidate.py",
+      "allowed_outputs": [
+        "results/regime_objective_redesign/comparison.json",
+        "results/regime_objective_redesign/comparison.md",
+        "results/regime_objective_redesign/regime_objective_check.json",
+        "results/regime_objective_redesign/regime_objective_check.md"
+      ]
+    },
+    {
+      "step": "focused_validation",
+      "required_tests": [
+        "tests/test_regime_objective_redesign.py",
+        "tests/test_framework_search.py",
+        "tests/test_split_discipline.py",
+        "tests/test_execution_inventory_architecture.py",
+        "tests/test_behavior_candidate_robustness.py"
+      ]
+    }
+  ],
+  "active_gate": {
+    "gate_id": "train_only_regime_objective",
+    "allowed_verdict_values": [
+      "allow_dev_diagnostic_review",
+      "reject_regime_objective"
+    ],
+    "can_authorize_full_training": false,
+    "can_authorize_promotion": false,
+    "can_touch_test_split": false
+  },
+  "stop_conditions": {
+    "reject_regime_objective": "do_not_open_dev_diagnostic_review_for_this_candidate",
+    "allow_dev_diagnostic_review": "review_dev_diagnostics_only_no_promotion_claim",
+    "test_split_touched": "invalidate_result_for_training_or_candidate_selection",
+    "dev_used_for_bucket_selection": "invalidate_result_for_training_or_candidate_selection",
+    "parity_or_golden_regression": "fix_regression_before_any_research_verdict"
+  },
+  "next_allowed_stage": {
+    "if_rejected": "revise_train_bucket_objective_or_candidate_generation_hypothesis",
+    "if_allowed": "dev_diagnostic_review_only",
+    "not_allowed": "automatic_full_training_or_paper_live_promotion"
+  },
+  "explicitly_disallowed_actions": [
+    "new_optuna_search_before_regime_objective_gate",
+    "new_rl_search_before_regime_objective_gate",
+    "multi_round_campaign_before_regime_objective_gate",
+    "same_family_execution_inventory_campaign",
+    "test_feedback_into_training_or_candidate_selection",
+    "liquidation_promote_path",
+    "microstructure_direction_alpha_path",
+    "multi_asset_expansion",
+    "plugin_path_promotion_without_stronger_parity_tests",
+    "paper_live_eligibility_claim_without_final_historical_acceptance"
+  ],
+  "success_criteria": {
+    "all_buckets_inside_train_split": true,
+    "hostile_or_weak_bucket_degradation_rejected": true,
+    "aggregate_sharpe_only_improvement_rejected": true,
+    "fee_drag_not_structurally_worse": true,
+    "turnover_not_structurally_worse": true,
+    "test_evaluated": false,
+    "promotion_allowed": false
+  }
+}
