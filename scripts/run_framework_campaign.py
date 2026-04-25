@@ -1939,6 +1939,7 @@ def main() -> None:
                 )
                 _append_campaign_log(log_path, f"stage1_optuna_search failed reason={exc}")
                 raise
+            primary_optuna_diagnostics = dict(optuna_diagnostics or {})
             stage1_state["primary_optuna_trials_completed"] = int(stage1_state.get("optuna_trials_completed", 0) or 0)
             stage1_state["primary_optuna_trials_total"] = optuna_trials
             if args.budget == "smoke" and optuna_params is None and not optuna_trials_payload:
@@ -1989,6 +1990,31 @@ def main() -> None:
                         seed_trials=extra_seed_trials,
                     )
                     stage1_state["fallback_optuna_trials_completed"] = int(stage1_state.get("optuna_trials_completed", 0) or 0)
+                    fallback_optuna_diagnostics = dict(optuna_diagnostics or {})
+                    if optuna_params is None and not optuna_trials_payload:
+                        primary_train_diagnostics = dict(
+                            primary_optuna_diagnostics.get("train_candidate_diagnostics") or {}
+                        )
+                        fallback_train_diagnostics = dict(
+                            fallback_optuna_diagnostics.get("train_candidate_diagnostics") or {}
+                        )
+                        merged_train_diagnostics = dict(fallback_train_diagnostics)
+                        merged_train_diagnostics["primary_search_diagnostics"] = primary_train_diagnostics
+                        merged_train_diagnostics["fallback_search_diagnostics"] = fallback_train_diagnostics
+                        merged_train_diagnostics["primary_empty_shortlist_reason"] = primary_optuna_diagnostics.get(
+                            "empty_shortlist_reason"
+                        )
+                        merged_train_diagnostics["fallback_empty_shortlist_reason"] = fallback_optuna_diagnostics.get(
+                            "empty_shortlist_reason"
+                        )
+                        optuna_diagnostics = {
+                            **fallback_optuna_diagnostics,
+                            "train_candidate_diagnostics": merged_train_diagnostics,
+                            "empty_shortlist_reason": "primary_and_fallback_empty",
+                            "no_tuned_candidate_reason": "primary_and_fallback_empty",
+                            "primary_empty_shortlist_reason": primary_optuna_diagnostics.get("empty_shortlist_reason"),
+                            "fallback_empty_shortlist_reason": fallback_optuna_diagnostics.get("empty_shortlist_reason"),
+                        }
                 except SearchStageTimeoutError as exc:
                     _append_campaign_log(log_path, f"stage1_optuna_search fallback_5m_failed reason={exc}")
                     _update_status(

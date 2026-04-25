@@ -2596,8 +2596,13 @@ class FrameworkCampaignTests(unittest.TestCase):
 
         self.assertEqual(status["status"], "completed")
         self.assertNotEqual(status["blocked_by"], "campaign_exception")
-        self.assertEqual(status["no_tuned_candidate_reason"], "all_zero_trade")
-        self.assertEqual(stage1_payload["search_status"]["no_tuned_candidate_reason"], "all_zero_trade")
+        self.assertEqual(status["no_tuned_candidate_reason"], "primary_and_fallback_empty")
+        self.assertEqual(stage1_payload["search_status"]["no_tuned_candidate_reason"], "primary_and_fallback_empty")
+        diagnostics = stage1_payload["search_status"]["train_candidate_diagnostics"]
+        self.assertEqual(diagnostics["primary_empty_shortlist_reason"], "all_zero_trade")
+        self.assertEqual(diagnostics["fallback_empty_shortlist_reason"], "all_zero_trade")
+        self.assertEqual(diagnostics["primary_search_diagnostics"]["raw_trial_count"], 5)
+        self.assertEqual(diagnostics["fallback_search_diagnostics"]["raw_trial_count"], 1)
 
     def test_campaign_smoke_fallback_timeout_records_split_progress_fields(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
