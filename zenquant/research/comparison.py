@@ -8,6 +8,7 @@ from collections import Counter
 from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, as_completed, wait
 from dataclasses import asdict, dataclass, replace
 from datetime import UTC, datetime
+from functools import partial
 from pathlib import Path
 from typing import Any
 
@@ -15,6 +16,7 @@ from zenquant.execution import ExecutionKernelConfig
 from zenquant.historical import HistoricalBacktest, HistoricalBacktestConfig
 from zenquant.historical.replay import ReplayContext, _build_replay_context
 from zenquant.indicator import IndicatorEngineConfig
+from zenquant.research.attribution import build_decision_attribution_ledger
 from zenquant.research.splits import DatasetSplitSpec, SplitWindow, default_btc_split_spec, period_within_split
 from zenquant.risk import RiskOverlayConfig
 from zenquant.strategy import ARCStrategyConfig
@@ -26,6 +28,7 @@ class VariantSpec:
 
     name: str
     label: str
+    execution_architecture_profile: str | None = None
     risk_config: RiskOverlayConfig | None = None
     execution_config: ExecutionKernelConfig | None = None
     strategy_config: ARCStrategyConfig | None = None
@@ -153,12 +156,155 @@ def paulwei_execution_baseline() -> ExecutionKernelConfig:
     )
 
 
+def build_execution_architecture_profile(profile: str) -> ExecutionKernelConfig:
+    """Return a research-side execution architecture preset."""
+
+    if profile == "legacy_paulwei_like":
+        return paulwei_execution_baseline()
+    if profile == "short_restraint_v1":
+        return replace(
+            paulwei_execution_baseline(),
+            pyramid_short_initial_pct=0.15,
+            pyramid_short_add_pct=0.10,
+            max_short_inventory_tranches=2,
+            flip_min_confidence=0.60,
+        )
+    if profile == "long_dca_cap_v1":
+        return replace(
+            paulwei_execution_baseline(),
+            max_long_dca_tranches=1,
+            dca_spacing_atr=1.25,
+            dca_size_decay=0.90,
+            dca_max_adverse_atr=2.5,
+        )
+    if profile == "protective_exit_speed_v1":
+        return replace(
+            paulwei_execution_baseline(),
+            exit_unwind_pct=0.40,
+            exit_unwind_min_pct=0.30,
+            exit_unwind_max_pct=0.55,
+        )
+    if profile == "flip_confidence_v1":
+        return replace(paulwei_execution_baseline(), flip_min_confidence=0.70)
+    if profile == "hostile_aware_behavior_router_v1":
+        return replace(paulwei_execution_baseline(), hostile_behavior_router_enabled=True)
+    if profile == "squeeze_flip_flatten_only_v1":
+        return replace(paulwei_execution_baseline(), squeeze_flip_flatten_only_enabled=True)
+    if profile == "squeeze_flip_cooldown_v1":
+        return replace(
+            paulwei_execution_baseline(),
+            squeeze_flip_cooldown_enabled=True,
+            squeeze_flip_cooldown_bars=2,
+        )
+    if profile == "squeeze_conditional_cooldown_v1":
+        return replace(
+            paulwei_execution_baseline(),
+            squeeze_conditional_cooldown_enabled=True,
+            squeeze_flip_cooldown_bars=2,
+            squeeze_conditional_cooldown_drawdown_threshold=0.025,
+        )
+    if profile == "squeeze_conditional_cooldown_dd025_b2":
+        return replace(
+            paulwei_execution_baseline(),
+            squeeze_conditional_cooldown_enabled=True,
+            squeeze_flip_cooldown_bars=2,
+            squeeze_conditional_cooldown_drawdown_threshold=0.025,
+        )
+    if profile == "squeeze_conditional_cooldown_dd040_b1":
+        return replace(
+            paulwei_execution_baseline(),
+            squeeze_conditional_cooldown_enabled=True,
+            squeeze_flip_cooldown_bars=1,
+            squeeze_conditional_cooldown_drawdown_threshold=0.040,
+        )
+    if profile == "squeeze_conditional_cooldown_dd060_b1":
+        return replace(
+            paulwei_execution_baseline(),
+            squeeze_conditional_cooldown_enabled=True,
+            squeeze_flip_cooldown_bars=1,
+            squeeze_conditional_cooldown_drawdown_threshold=0.060,
+        )
+    if profile == "squeeze_conditional_cooldown_dd060_chop_cancel_b1":
+        return replace(
+            paulwei_execution_baseline(),
+            squeeze_conditional_cooldown_enabled=True,
+            squeeze_flip_cooldown_bars=1,
+            squeeze_conditional_cooldown_drawdown_threshold=0.060,
+            squeeze_cooldown_cancel_on_non_squeeze_enabled=True,
+        )
+    if profile == "squeeze_toxic_only_cooldown_b1":
+        return replace(
+            paulwei_execution_baseline(),
+            squeeze_conditional_cooldown_enabled=True,
+            squeeze_flip_cooldown_bars=1,
+            squeeze_conditional_cooldown_drawdown_threshold=1.0,
+            squeeze_conditional_cooldown_toxic_only=True,
+        )
+    if profile == "hostile_inventory_rethink_v1":
+        # Preserve long-side build while tightening short expansion, reload,
+        # and protective unwinds for hostile grind conditions.
+        return ExecutionKernelConfig(
+            min_trade_qty=0.0001,
+            max_trade_qty_per_bar=1.0,
+            max_slippage_bps=8.0,
+            pyramid_initial_pct=0.30,
+            pyramid_add_pct=0.30,
+            pyramid_short_initial_pct=0.15,
+            pyramid_short_add_pct=0.10,
+            pyramid_spacing_atr=1.00,
+            pyramid_enabled=True,
+            dca_on_loss_long=True,
+            adaptive_pyramid_enabled=True,
+            pyramid_target_vol=0.60,
+            pyramid_min_speed=0.10,
+            pyramid_max_speed=0.40,
+            dca_min_speed=0.05,
+            dca_max_speed=0.20,
+            dca_spacing_atr=1.75,
+            dca_size_decay=0.90,
+            max_long_inventory_tranches=6,
+            max_short_inventory_tranches=2,
+            max_long_dca_tranches=1,
+            gradual_exit_enabled=True,
+            exit_unwind_pct=0.40,
+            exit_unwind_min_pct=0.30,
+            exit_unwind_max_pct=0.55,
+            dca_max_adverse_atr=2.0,
+            flip_immediate=True,
+            flip_min_confidence=0.70,
+            hostile_behavior_router_enabled=False,
+            entry_fraction=1.0,
+            exit_fraction=1.0,
+        )
+    raise ValueError(f"Unsupported execution architecture profile: {profile}")
+
+
+def build_risk_architecture_profile(profile: str) -> RiskOverlayConfig:
+    """Return a single-behavior risk preset for candidate existence checks."""
+
+    baseline = paulwei_risk_baseline()
+    if profile == "legacy_paulwei_like":
+        return baseline
+    if profile == "vol_shock_compression_v1":
+        return replace(baseline, vol_shock_mult=0.30, vol_shock_threshold=0.90)
+    if profile == "ahr999_slow_risk_modifier_v1":
+        # Use existing slow cycle-position inputs as the auditable AHR999 proxy.
+        return replace(
+            baseline,
+            overheated_cycle_threshold=1.15,
+            high_cycle_mult=0.60,
+            overheated_mult=0.30,
+        )
+    raise ValueError(f"Unsupported risk architecture profile: {profile}")
+
+
 def default_variant_specs() -> list[VariantSpec]:
     return [
-        VariantSpec(name="current", label="Current Strategy"),
+        VariantSpec(name="current", label="Current Strategy", execution_architecture_profile="current_production"),
         VariantSpec(
             name="paulwei_baseline",
             label="PaulWei Execution/Risk Baseline",
+            execution_architecture_profile="legacy_paulwei_like",
             risk_config=paulwei_risk_baseline(),
             execution_config=paulwei_execution_baseline(),
         ),
@@ -177,6 +323,7 @@ def public_archive_variant_specs(*, mapping_path: Path) -> list[VariantSpec]:
         VariantSpec(
             name=str(payload["name"]),
             label=str(payload["label"]),
+            execution_architecture_profile=str(payload.get("execution_architecture_profile") or "legacy_paulwei_like"),
             risk_config=payload.get("risk_config"),
             execution_config=payload.get("execution_config"),
             strategy_config=payload.get("strategy_config"),
@@ -191,6 +338,7 @@ def liquidation_research_variant_specs() -> list[VariantSpec]:
         VariantSpec(
             name="paulwei_baseline",
             label="PaulWei Baseline (No Liquidation)",
+            execution_architecture_profile="legacy_paulwei_like",
             risk_config=replace(baseline_risk, enable_liq_risk_guard=False),
             execution_config=paulwei_execution_baseline(),
             liquidation_data_enabled=False,
@@ -199,6 +347,7 @@ def liquidation_research_variant_specs() -> list[VariantSpec]:
         VariantSpec(
             name="execution_plus",
             label="Execution Plus (Liq Risk Guard)",
+            execution_architecture_profile="legacy_paulwei_like",
             risk_config=replace(baseline_risk, enable_liq_risk_guard=True),
             execution_config=paulwei_execution_baseline(),
             liquidation_data_enabled=True,
@@ -207,6 +356,7 @@ def liquidation_research_variant_specs() -> list[VariantSpec]:
         VariantSpec(
             name="strategy_plus",
             label="Strategy Plus (Liq State Overlay)",
+            execution_architecture_profile="legacy_paulwei_like",
             risk_config=replace(baseline_risk, enable_liq_risk_guard=False),
             execution_config=paulwei_execution_baseline(),
             liquidation_data_enabled=True,
@@ -215,12 +365,150 @@ def liquidation_research_variant_specs() -> list[VariantSpec]:
         VariantSpec(
             name="full_variant",
             label="Full Variant (Liq State + Risk)",
+            execution_architecture_profile="legacy_paulwei_like",
             risk_config=replace(baseline_risk, enable_liq_risk_guard=True),
             execution_config=paulwei_execution_baseline(),
             liquidation_data_enabled=True,
             state_liquidation_overlay_enabled=True,
         ),
     ]
+
+
+def execution_inventory_rethink_variant_specs() -> list[VariantSpec]:
+    """Return the fixed A/B/C set for the minimal execution architecture check."""
+
+    return [
+        VariantSpec(name="current", label="Current Strategy", execution_architecture_profile="current_production"),
+        VariantSpec(
+            name="paulwei_baseline",
+            label="PaulWei Execution/Risk Baseline",
+            execution_architecture_profile="legacy_paulwei_like",
+            risk_config=paulwei_risk_baseline(),
+            execution_config=build_execution_architecture_profile("legacy_paulwei_like"),
+        ),
+        VariantSpec(
+            name="hostile_inventory_rethink_v1",
+            label="Hostile Inventory Rethink V1",
+            execution_architecture_profile="hostile_inventory_rethink_v1",
+            risk_config=paulwei_risk_baseline(),
+            execution_config=build_execution_architecture_profile("hostile_inventory_rethink_v1"),
+        ),
+    ]
+
+
+def behavior_candidate_existence_variant_specs(behavior: str) -> list[VariantSpec]:
+    """Return current / PaulWei / one behavior candidate for existence checks."""
+
+    candidate_specs = {
+        "short_restraint": VariantSpec(
+            name="short_restraint_v1",
+            label="Short Restraint V1",
+            execution_architecture_profile="short_restraint_v1",
+            risk_config=paulwei_risk_baseline(),
+            execution_config=build_execution_architecture_profile("short_restraint_v1"),
+        ),
+        "long_dca_cap": VariantSpec(
+            name="long_dca_cap_v1",
+            label="Long DCA Cap V1",
+            execution_architecture_profile="long_dca_cap_v1",
+            risk_config=paulwei_risk_baseline(),
+            execution_config=build_execution_architecture_profile("long_dca_cap_v1"),
+        ),
+        "protective_exit_speed": VariantSpec(
+            name="protective_exit_speed_v1",
+            label="Protective Exit Speed V1",
+            execution_architecture_profile="protective_exit_speed_v1",
+            risk_config=paulwei_risk_baseline(),
+            execution_config=build_execution_architecture_profile("protective_exit_speed_v1"),
+        ),
+        "flip_confidence": VariantSpec(
+            name="flip_confidence_v1",
+            label="Flip Confidence V1",
+            execution_architecture_profile="flip_confidence_v1",
+            risk_config=paulwei_risk_baseline(),
+            execution_config=build_execution_architecture_profile("flip_confidence_v1"),
+        ),
+        "vol_shock_compression": VariantSpec(
+            name="vol_shock_compression_v1",
+            label="Vol Shock Compression V1",
+            execution_architecture_profile="legacy_paulwei_like",
+            risk_config=build_risk_architecture_profile("vol_shock_compression_v1"),
+            execution_config=paulwei_execution_baseline(),
+        ),
+        "ahr999_slow_risk_modifier": VariantSpec(
+            name="ahr999_slow_risk_modifier_v1",
+            label="AHR999 Slow Risk Modifier V1",
+            execution_architecture_profile="legacy_paulwei_like",
+            risk_config=build_risk_architecture_profile("ahr999_slow_risk_modifier_v1"),
+            execution_config=paulwei_execution_baseline(),
+        ),
+        "hostile_aware_behavior_router": VariantSpec(
+            name="hostile_aware_behavior_router_v1",
+            label="Hostile-Aware Behavior Router V1",
+            execution_architecture_profile="hostile_aware_behavior_router_v1",
+            risk_config=paulwei_risk_baseline(),
+            execution_config=build_execution_architecture_profile("hostile_aware_behavior_router_v1"),
+        ),
+        "squeeze_flip_flatten_only": VariantSpec(
+            name="squeeze_flip_flatten_only_v1",
+            label="Squeeze Flip Flatten Only V1",
+            execution_architecture_profile="squeeze_flip_flatten_only_v1",
+            risk_config=paulwei_risk_baseline(),
+            execution_config=build_execution_architecture_profile("squeeze_flip_flatten_only_v1"),
+        ),
+        "squeeze_flip_cooldown": VariantSpec(
+            name="squeeze_flip_cooldown_v1",
+            label="Squeeze Flip Cooldown V1",
+            execution_architecture_profile="squeeze_flip_cooldown_v1",
+            risk_config=paulwei_risk_baseline(),
+            execution_config=build_execution_architecture_profile("squeeze_flip_cooldown_v1"),
+        ),
+        "squeeze_conditional_cooldown": VariantSpec(
+            name="squeeze_conditional_cooldown_v1",
+            label="Squeeze Conditional Cooldown V1",
+            execution_architecture_profile="squeeze_conditional_cooldown_v1",
+            risk_config=paulwei_risk_baseline(),
+            execution_config=build_execution_architecture_profile("squeeze_conditional_cooldown_v1"),
+        ),
+        "squeeze_conditional_cooldown_dd025_b2": VariantSpec(
+            name="squeeze_conditional_cooldown_dd025_b2",
+            label="Squeeze Conditional Cooldown DD025 B2",
+            execution_architecture_profile="squeeze_conditional_cooldown_dd025_b2",
+            risk_config=paulwei_risk_baseline(),
+            execution_config=build_execution_architecture_profile("squeeze_conditional_cooldown_dd025_b2"),
+        ),
+        "squeeze_conditional_cooldown_dd040_b1": VariantSpec(
+            name="squeeze_conditional_cooldown_dd040_b1",
+            label="Squeeze Conditional Cooldown DD040 B1",
+            execution_architecture_profile="squeeze_conditional_cooldown_dd040_b1",
+            risk_config=paulwei_risk_baseline(),
+            execution_config=build_execution_architecture_profile("squeeze_conditional_cooldown_dd040_b1"),
+        ),
+        "squeeze_conditional_cooldown_dd060_b1": VariantSpec(
+            name="squeeze_conditional_cooldown_dd060_b1",
+            label="Squeeze Conditional Cooldown DD060 B1",
+            execution_architecture_profile="squeeze_conditional_cooldown_dd060_b1",
+            risk_config=paulwei_risk_baseline(),
+            execution_config=build_execution_architecture_profile("squeeze_conditional_cooldown_dd060_b1"),
+        ),
+        "squeeze_conditional_cooldown_dd060_chop_cancel_b1": VariantSpec(
+            name="squeeze_conditional_cooldown_dd060_chop_cancel_b1",
+            label="Squeeze Conditional Cooldown DD060 Chop Cancel B1",
+            execution_architecture_profile="squeeze_conditional_cooldown_dd060_chop_cancel_b1",
+            risk_config=paulwei_risk_baseline(),
+            execution_config=build_execution_architecture_profile("squeeze_conditional_cooldown_dd060_chop_cancel_b1"),
+        ),
+        "squeeze_toxic_only_cooldown_b1": VariantSpec(
+            name="squeeze_toxic_only_cooldown_b1",
+            label="Squeeze Toxic Only Cooldown B1",
+            execution_architecture_profile="squeeze_toxic_only_cooldown_b1",
+            risk_config=paulwei_risk_baseline(),
+            execution_config=build_execution_architecture_profile("squeeze_toxic_only_cooldown_b1"),
+        ),
+    }
+    if behavior not in candidate_specs:
+        raise ValueError(f"Unsupported behavior candidate: {behavior}")
+    return [*default_variant_specs(), candidate_specs[behavior]]
 
 
 def compare_variants(
@@ -237,6 +525,7 @@ def compare_variants(
     validation_workers: int = 1,
     validation_leg_timeout_s: float | None = None,
     validation_variant_budget_s: float | None = None,
+    include_attribution_ledger: bool = False,
     status_callback: Any | None = None,
 ) -> dict[str, Any]:
     """Run one deterministic comparison bundle and return a JSON-ready payload."""
@@ -280,9 +569,15 @@ def compare_variants(
     ]
     window_results: dict[tuple[int, int], dict[str, Any]] = {}
     if window_order and max(1, int(window_workers)) > 1:
+        window_runner = partial(_run_window, include_attribution_ledger=include_attribution_ledger)
         with ProcessPoolExecutor(max_workers=max(1, int(window_workers))) as executor:
             futures = {
-                executor.submit(_run_window, base_config, variant, window): (variant_index, window_index, variant, window)
+                executor.submit(window_runner, base_config, variant, window): (
+                    variant_index,
+                    window_index,
+                    variant,
+                    window,
+                )
                 for variant_index, window_index, variant, window in window_order
             }
             for future in as_completed(futures):
@@ -317,7 +612,7 @@ def compare_variants(
                     )
     else:
         for variant_index, window_index, variant, window in window_order:
-            run = _run_window(base_config, variant, window)
+            run = _run_window(base_config, variant, window, include_attribution_ledger)
             if not include_diagnostics:
                 run = {
                     "variant": run["variant"],
@@ -517,7 +812,11 @@ def default_comparison_windows(
     spec = split_spec or default_btc_split_spec()
     if comparison_split == "test":
         return [split_window_spec(spec, "test")]
-    return [split_window_spec(spec, "dev"), fixed_2023_08_window(), *filtered_worst_period_windows(spec, comparison_split)]
+    return [
+        split_window_spec(spec, "dev"),
+        fixed_2023_08_window(),
+        *filtered_worst_period_windows(spec, comparison_split),
+    ]
 
 
 def default_walk_forward_windows(
@@ -563,7 +862,12 @@ def filtered_worst_period_windows(
     ]
 
 
-def _run_window(base_config: HistoricalBacktestConfig, variant: VariantSpec, window: WindowSpec) -> dict[str, Any]:
+def _run_window(
+    base_config: HistoricalBacktestConfig,
+    variant: VariantSpec,
+    window: WindowSpec,
+    include_attribution_ledger: bool = False,
+) -> dict[str, Any]:
     runner, result = _run_variant_backtest(base_config, variant, start_ns=window.start_ns, end_ns=window.end_ns)
     payload = {
         "variant": variant.name,
@@ -578,6 +882,13 @@ def _run_window(base_config: HistoricalBacktestConfig, variant: VariantSpec, win
     payload["directional_state_distribution"] = _normalized_counter(state.directional_state for state in states)
     payload["regime_distribution"] = _normalized_counter(state.regime for state in states)
     payload["playbook_usage"] = _normalized_counter(playbook.playbook_id for playbook in playbooks)
+    if include_attribution_ledger:
+        payload["decision_attribution_ledger"] = build_decision_attribution_ledger(
+            runner,
+            result,
+            variant=variant.name,
+            window_label=window.label,
+        )
     del runner
     return payload
 
@@ -777,10 +1088,7 @@ def _run_walk_forward_validation(
             window_label=task.window.label,
             leg=task.leg,
             completed_units=completed_units,
-            message=(
-                f"comparison_validation_timeout: variant={variant.name} "
-                f"wf={task.window.label} leg={task.leg}"
-            ),
+            message=(f"comparison_validation_timeout: variant={variant.name} wf={task.window.label} leg={task.leg}"),
         )
 
     max_workers = max(1, int(workers))
@@ -864,18 +1172,18 @@ def _run_walk_forward_validation(
                 window_payload["oos_ratio"] = round(ratio, 4)
                 completed_units += 1
                 if status_callback is not None:
-                        status_callback(
-                            event="comparison_validation_window_test_completed",
-                            variant=variant.name,
-                            window_label=task.window.label,
-                            unit=f"{task.window.label}:test",
-                            completed_units=completed_units,
-                            total_units=total_units,
-                            window_units_completed=total_window_units,
-                            window_units_total=total_window_units,
-                            validation_units_completed=max(0, completed_units - total_window_units),
-                            validation_units_total=total_validation_units,
-                        )
+                    status_callback(
+                        event="comparison_validation_window_test_completed",
+                        variant=variant.name,
+                        window_label=task.window.label,
+                        unit=f"{task.window.label}:test",
+                        completed_units=completed_units,
+                        total_units=total_units,
+                        window_units_completed=total_window_units,
+                        window_units_total=total_window_units,
+                        validation_units_completed=max(0, completed_units - total_window_units),
+                        validation_units_total=total_validation_units,
+                    )
                 if remaining_windows:
                     _submit_train(executor, remaining_windows.pop(0))
     finally:
@@ -975,6 +1283,7 @@ def _failed_validation_payload(
 
 
 def _comparison_context_key(config: HistoricalBacktestConfig) -> tuple[Any, ...]:
+    perturbation_key = None if config.perturbation is None else tuple(sorted(asdict(config.perturbation).items()))
     return (
         str(config.root_dir),
         config.symbol,
@@ -985,6 +1294,7 @@ def _comparison_context_key(config: HistoricalBacktestConfig) -> tuple[Any, ...]
         config.start_ns,
         config.end_ns,
         config.liquidation_data_enabled,
+        perturbation_key,
     )
 
 
