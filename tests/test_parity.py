@@ -21,6 +21,8 @@ from zenquant.domain import (
 )
 from zenquant.infra.event_bus import InMemoryJetStream, StreamConfig
 from zenquant.plugins.profile import build_from_profile
+from zenquant.plugins.protocols import PluginMeta, SignalResult, SizerResult
+from zenquant.plugins.registry import LoadedPlugin, PluginRegistry
 from zenquant.strategy.engine import ARCStrategyConfig, ARCStrategyEngine
 
 PLUGIN_ROOT = Path(__file__).parent.parent / "zenquant" / "plugins"
@@ -167,6 +169,94 @@ class TestPluginLegacyParity(unittest.TestCase):
                 f"Leverage divergence too large: legacy={legacy.target_leverage:.2f}, "
                 f"plugin={plugin.target_leverage:.2f}, ratio={ratio:.1f}",
             )
+
+
+class TestPluginRuntimeContracts(unittest.TestCase):
+    def test_execution_modifier_affects_sizing_on_same_bar(self):
+        bus = InMemoryJetStream()
+        registry = PluginRegistry(
+            signals=[
+                LoadedPlugin(
+                    meta=PluginMeta(
+                        name="multi_momentum_signal",
+                        version="1.0",
+                        plugin_type="signal",
+                        description="direction",
+                    ),
+                    compute=lambda ind, st, cfg: SignalResult(value=1.0, confidence=1.0, reason_codes=("DIR",)),
+                    config={},
+                    weight=1.0,
+                    source_path="<test>/multi.py",
+                    role="direction",
+                ),
+                LoadedPlugin(
+                    meta=PluginMeta(
+                        name="liquidity_signal",
+                        version="1.0",
+                        plugin_type="signal",
+                        description="execution",
+                    ),
+                    compute=lambda ind, st, cfg: SignalResult(value=1.0, confidence=1.0, reason_codes=("EXEC",)),
+                    config={},
+                    weight=1.0,
+                    source_path="<test>/liq.py",
+                    role="execution_modifier",
+                ),
+            ],
+            sizers=[
+                LoadedPlugin(
+                    meta=PluginMeta(name="unit_sizer", version="1.0", plugin_type="sizer", description="unit"),
+                    compute=lambda ind, st, cfg: SizerResult(factor=1.0, reason_codes=("UNIT_SIZE",)),
+                    config={},
+                    weight=1.0,
+                    source_path="<test>/sizer.py",
+                )
+            ],
+        )
+        registry._index = {plugin.meta.name: plugin for plugin in [*registry.signals, *registry.sizers]}
+        engine = ARCStrategyEngine(bus=bus, config=ARCStrategyConfig(), plugin_registry=registry)
+        state = _make_state(regime="TREND", directional_state="UPTREND")
+        pack = _make_pack()
+
+        target = engine._build_target(pack, state, engine._playbook_engine.select(state))
+
+        self.assertIn("EXECUTION_MODIFIER_ACTIVE", target.reason_codes)
+        self.assertGreater(target.target_leverage, 1.0)
+
+    def test_adaptive_signal_weights_default_off_for_restart_parity(self):
+        registry = PluginRegistry(
+            signals=[
+                LoadedPlugin(
+                    meta=PluginMeta(
+                        name="multi_momentum_signal",
+                        version="1.0",
+                        plugin_type="signal",
+                        description="direction",
+                    ),
+                    compute=lambda ind, st, cfg: SignalResult(value=1.0, confidence=1.0, reason_codes=("DIR",)),
+                    config={},
+                    weight=1.0,
+                    source_path="<test>/multi.py",
+                    role="direction",
+                )
+            ]
+        )
+        registry._index = {plugin.meta.name: plugin for plugin in registry.signals}
+        state = _make_state(regime="TREND", directional_state="UPTREND")
+        playbook_bus = InMemoryJetStream()
+        warm_engine = ARCStrategyEngine(bus=playbook_bus, config=ARCStrategyConfig(), plugin_registry=registry)
+        cold_engine = ARCStrategyEngine(bus=InMemoryJetStream(), config=ARCStrategyConfig(), plugin_registry=registry)
+
+        for idx in range(80):
+            pack = _make_pack(last_price=60000.0 + idx)
+            warm_engine._build_target(pack, state, warm_engine._playbook_engine.select(state))
+        pack = _make_pack(last_price=60100.0)
+        warm_target = warm_engine._build_target(pack, state, warm_engine._playbook_engine.select(state))
+        cold_target = cold_engine._build_target(pack, state, cold_engine._playbook_engine.select(state))
+
+        self.assertNotIn("ADAPTIVE_SIGNAL_WEIGHTS_ENABLED", warm_target.reason_codes)
+        self.assertEqual(warm_target.target_qty, cold_target.target_qty)
+        self.assertEqual(warm_target.target_leverage, cold_target.target_leverage)
 
 
 if __name__ == "__main__":

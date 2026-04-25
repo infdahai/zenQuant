@@ -243,20 +243,34 @@ class RiskOverlay:
             lev_cap *= self._config.dd_step_1_mult
             flags.append("DD_STEP_1")
 
-        # Kill switch with recovery (Claude Code "fallback model" pattern)
+        # Kill switch with recovery. New risk stays blocked until drawdown
+        # recovers below the configured threshold, then ramps back gradually.
         if drawdown >= self._config.kill_switch_drawdown:
             if not self._kill_active:
                 self._kill_active = True
                 self._kill_bar_count = 0
+                self._recovery_bar_count = 0
             self._kill_bar_count += 1
-            # After cooldown, reset HWM and recover (break the deadlock)
-            if self._kill_bar_count >= self._config.kill_cooldown_bars:
-                self._high_water_mark = self._equity  # Fresh start
-                self._kill_active = False
-                self._kill_bar_count = 0
-                lev_cap *= self._config.kill_recovery_mult
-                flags.append("KILL_RECOVERED")
+            flags.append("KILL_SWITCH")
+        elif self._kill_active:
+            self._kill_bar_count += 1
+            cooldown_complete = self._kill_bar_count >= self._config.kill_cooldown_bars
+            if drawdown <= self._config.kill_recovery_threshold and cooldown_complete:
+                self._recovery_bar_count += 1
+                if self._recovery_bar_count >= self._config.kill_ramp_bars:
+                    self._kill_active = False
+                    self._kill_bar_count = 0
+                    self._recovery_bar_count = 0
+                    flags.append("KILL_RECOVERED")
+                else:
+                    ramp_progress = self._recovery_bar_count / max(1, self._config.kill_ramp_bars)
+                    ramp_mult = self._config.kill_recovery_mult + (
+                        (1.0 - self._config.kill_recovery_mult) * ramp_progress
+                    )
+                    lev_cap *= ramp_mult
+                    flags.append("KILL_RECOVERY_RAMP")
             else:
+                self._recovery_bar_count = 0
                 flags.append("KILL_SWITCH")
 
         daily_loss = self._daily_loss(target.cutoff_time_ns)
@@ -398,9 +412,15 @@ class RiskOverlay:
                 ):
                     lev_cap *= self._config.microstructure_severe_guard_mult
                     reduce_only = True
-                    if "MICROSTRUCTURE_TOXIC" not in flags and ms_toxicity >= self._config.microstructure_severe_toxicity_threshold:
+                    if (
+                        "MICROSTRUCTURE_TOXIC" not in flags
+                        and ms_toxicity >= self._config.microstructure_severe_toxicity_threshold
+                    ):
                         flags.append("MICROSTRUCTURE_TOXIC")
-                    if "MICROSTRUCTURE_SPREAD_STRESS" not in flags and ms_spread_bps >= self._config.microstructure_severe_spread_threshold_bps:
+                    if (
+                        "MICROSTRUCTURE_SPREAD_STRESS" not in flags
+                        and ms_spread_bps >= self._config.microstructure_severe_spread_threshold_bps
+                    ):
                         flags.append("MICROSTRUCTURE_SPREAD_STRESS")
 
             cycle_pos = float(indicator.values.get("cycle_position", 1.0) or 1.0)
@@ -425,9 +445,15 @@ class RiskOverlay:
             max_abs_qty = (self._equity * lev_cap) / price
             revised_qty = max(-max_abs_qty, min(max_abs_qty, revised_qty))
 
-        if reduce_only and abs(revised_qty) > abs(current_position):
-            revised_qty = current_position
-            flags.append("REDUCE_ONLY_BLOCK_ADD")
+        if reduce_only:
+            if current_position > 0:
+                revised_qty = max(0.0, min(revised_qty, current_position))
+            elif current_position < 0:
+                revised_qty = min(0.0, max(revised_qty, current_position))
+            else:
+                revised_qty = 0.0
+            if revised_qty != target.target_qty:
+                flags.append("REDUCE_ONLY_BLOCK_ADD")
 
         revised = replace(
             target,
