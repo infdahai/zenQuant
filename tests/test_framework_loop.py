@@ -71,6 +71,7 @@ class FrameworkLoopScriptTests(unittest.TestCase):
                 Args(),
                 run_dir,
                 budget="smoke",
+                search_space_mode="baseline_anchored_train_only",
                 seed_trials_file=seed_file,
                 resume=True,
                 development_dev_gate=True,
@@ -83,6 +84,8 @@ class FrameworkLoopScriptTests(unittest.TestCase):
         self.assertIn(str(seed_file), command)
         self.assertIn("--resume", command)
         self.assertIn("--development-dev-gate", command)
+        self.assertIn("--search-space-mode", command)
+        self.assertIn("baseline_anchored_train_only", command)
         self.assertIn("--dev-gate-last-round", command)
         self.assertIn("--dev-gate-interval", command)
 
@@ -563,6 +566,7 @@ class FrameworkLoopScriptTests(unittest.TestCase):
                 *,
                 run_dir,
                 budget,
+                search_space_mode,
                 seed_trials,
                 loop_status_path,
                 loop_log_path,
@@ -576,6 +580,7 @@ class FrameworkLoopScriptTests(unittest.TestCase):
             ):
                 captured["seed_trials"] = seed_trials
                 captured["round_index"] = round_index
+                captured["search_space_mode"] = search_space_mode
                 return (
                     {
                         "post_smoke_scenario": {
@@ -600,10 +605,14 @@ class FrameworkLoopScriptTests(unittest.TestCase):
             def fake_plan_next_iteration(**kwargs):
                 return Namespace(
                     next_budget="fast",
+                    next_search_space_mode="execution_first_v2_correlation_constrained",
                     adaptation_policy="steady_state",
                     all_seed_trials=[],
                     loop_progression_blocked=False,
                     should_open_fast_or_full_training=False,
+                    negative_candidate_streak=0,
+                    anchored_negative_candidate_streak=0,
+                    candidate_existence_goal_met=False,
                     stop=True,
                     stop_reason="done",
                 )
@@ -669,6 +678,7 @@ class FrameworkLoopScriptTests(unittest.TestCase):
                 *,
                 run_dir,
                 budget,
+                search_space_mode,
                 seed_trials,
                 loop_status_path,
                 loop_log_path,
@@ -680,7 +690,7 @@ class FrameworkLoopScriptTests(unittest.TestCase):
                 dev_gate_last_round,
                 dev_gate_interval,
             ):
-                del args, run_dir, budget, loop_status_path, loop_log_path, max_rounds, adaptation_policy, resume, development_dev_gate, dev_gate_last_round, dev_gate_interval
+                del args, run_dir, budget, search_space_mode, loop_status_path, loop_log_path, max_rounds, adaptation_policy, resume, development_dev_gate, dev_gate_last_round, dev_gate_interval
                 captured["round_index"] = round_index
                 captured["seed_trials"] = seed_trials
                 return (
@@ -707,10 +717,14 @@ class FrameworkLoopScriptTests(unittest.TestCase):
             def fake_plan_next_iteration(**kwargs):
                 return Namespace(
                     next_budget="fast",
+                    next_search_space_mode="execution_first_v2_correlation_constrained",
                     adaptation_policy="steady_state",
                     all_seed_trials=[],
                     loop_progression_blocked=False,
                     should_open_fast_or_full_training=False,
+                    negative_candidate_streak=0,
+                    anchored_negative_candidate_streak=0,
+                    candidate_existence_goal_met=False,
                     stop=True,
                     stop_reason="done",
                 )
@@ -787,6 +801,7 @@ class FrameworkLoopScriptTests(unittest.TestCase):
                 *,
                 run_dir,
                 budget,
+                search_space_mode,
                 seed_trials,
                 loop_status_path,
                 loop_log_path,
@@ -798,7 +813,7 @@ class FrameworkLoopScriptTests(unittest.TestCase):
                 dev_gate_last_round,
                 dev_gate_interval,
             ):
-                del args, run_dir, budget, loop_status_path, loop_log_path, round_index, max_rounds, adaptation_policy, resume, development_dev_gate, dev_gate_last_round, dev_gate_interval
+                del args, run_dir, budget, search_space_mode, loop_status_path, loop_log_path, round_index, max_rounds, adaptation_policy, resume, development_dev_gate, dev_gate_last_round, dev_gate_interval
                 captured["seed_trials"] = seed_trials
                 return (
                     {
@@ -818,10 +833,14 @@ class FrameworkLoopScriptTests(unittest.TestCase):
             def fake_plan_next_iteration(**kwargs):
                 return Namespace(
                     next_budget="fast",
+                    next_search_space_mode="execution_first_v2_correlation_constrained",
                     adaptation_policy="steady_state",
                     all_seed_trials=[],
                     loop_progression_blocked=False,
                     should_open_fast_or_full_training=False,
+                    negative_candidate_streak=0,
+                    anchored_negative_candidate_streak=0,
+                    candidate_existence_goal_met=False,
                     stop=True,
                     stop_reason="done",
                 )

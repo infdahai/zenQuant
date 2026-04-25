@@ -81,6 +81,136 @@ def _append_campaign_log(path: Path, message: str) -> None:
         handle.write(f"[{_ts()}] {message}\n")
 
 
+def _repo_root() -> Path:
+    return Path(__file__).resolve().parents[1]
+
+
+def _default_research_hypothesis_spec_path() -> Path:
+    return _repo_root() / "docs" / "NEXT_RESEARCH_HYPOTHESIS_EXECUTION_INVENTORY_RETHINK.json"
+
+
+def _load_research_hypothesis_spec(path: Path | None = None) -> dict[str, Any]:
+    resolved = path or _default_research_hypothesis_spec_path()
+    if not resolved.exists():
+        raise FileNotFoundError(f"research_hypothesis_spec_missing:{resolved}")
+    payload = json.loads(resolved.read_text(encoding="utf-8"))
+    required_fields = {
+        "research_line_id",
+        "closed_predecessor",
+        "research_direction",
+        "refuted_hypothesis",
+        "new_hypothesis",
+        "market_behavior_to_fix",
+        "why_old_family_cannot_fix_it",
+        "structural_change_vs_old_family",
+        "minimal_falsification_plan",
+        "not_allowed_repeats",
+        "success_criteria",
+    }
+    missing = sorted(field for field in required_fields if field not in payload)
+    if missing:
+        raise ValueError(f"research_hypothesis_spec_invalid:missing={','.join(missing)}")
+    if payload.get("research_direction") != "execution/inventory architecture rethink":
+        raise ValueError("research_hypothesis_spec_invalid:research_direction")
+    if payload.get("closed_predecessor") != "baseline_anchored_2023_08_hostile_repair":
+        raise ValueError("research_hypothesis_spec_invalid:closed_predecessor")
+    blocked_repeats = set(payload.get("not_allowed_repeats") or [])
+    if not {
+        "baseline_anchored_defensive_candidate_existence",
+        "baseline_anchored_2023_08_hostile_repair",
+    } <= blocked_repeats:
+        raise ValueError("research_hypothesis_spec_invalid:not_allowed_repeats")
+    minimal = payload.get("minimal_falsification_plan") or {}
+    if minimal.get("single_minimal_falsification_only") is not True:
+        raise ValueError("research_hypothesis_spec_invalid:minimal_falsification_plan")
+    return payload
+
+
+def _write_research_closure(output_dir: Path, final_report_payload: dict[str, Any]) -> tuple[str, str]:
+    json_path = output_dir / "research_closure.json"
+    md_path = output_dir / "research_closure.md"
+    evidence_paths = [
+        str(output_dir / "campaign_status.json"),
+        str(output_dir / "framework_optimization.json"),
+        str(output_dir / "checkpoints" / "stage1_search.json"),
+    ]
+    closed_line = final_report_payload.get("search_space_mode") or "baseline_anchored_family"
+    payload = {
+        "created_at": _ts(),
+        "research_line_name": str(output_dir.name),
+        "closed_training_line": closed_line,
+        "closure_classification": "VALID_RUN_NEGATIVE",
+        "promotion_path_status": final_report_payload.get("promotion_path_status"),
+        "failure_class": final_report_payload.get("failure_class"),
+        "primary_driver": final_report_payload.get("primary_driver"),
+        "loop_stop_reason": final_report_payload.get("loop_stop_reason"),
+        "evidence_files": evidence_paths,
+        "refuted_hypothesis": (
+            "A narrower baseline-anchored execution/risk neighborhood can repair "
+            "weak_window_2023_08 and restore a comparable tuned candidate."
+        ),
+        "repetition_not_allowed": [
+            "baseline_anchored_defensive_candidate_existence",
+            "baseline_anchored_2023_08_hostile_repair",
+            "more_rounds_same_family",
+            "more_budget_same_family",
+            "new_seed_same_family",
+        ],
+        "rejected_candidate_summary": {
+            "optuna_candidate_found": bool((final_report_payload.get("search_status") or {}).get("optuna_candidate_found")),
+            "rl_candidate_found": bool((final_report_payload.get("search_status") or {}).get("rl_candidate_found")),
+            "candidate_existence_recovered": bool(final_report_payload.get("candidate_existence_recovered", False)),
+            "no_tuned_candidate_reason": final_report_payload.get("no_tuned_candidate_reason"),
+            "rl_tuned_comparable_candidate": False,
+        },
+        "candidate_new_research_directions": [
+            "execution/inventory architecture rethink",
+            "weak-window-specific regime segmentation rethink",
+            "candidate generation objective redesign",
+        ],
+        "new_research_gate": {
+            "hypothesis_spec_required": True,
+            "reuse_same_search_space_family_forbidden": True,
+            "must_explain_why_v38_failure_can_flip": True,
+        },
+    }
+    _write_json(json_path, payload)
+    md_lines = [
+        "# Research Closure",
+        "",
+        f"- research_line_name: `{payload['research_line_name']}`",
+        f"- closure_classification: `{payload['closure_classification']}`",
+        f"- promotion_path_status: `{payload['promotion_path_status']}`",
+        f"- failure_class: `{payload['failure_class']}`",
+        f"- primary_driver: `{payload['primary_driver']}`",
+        f"- loop_stop_reason: `{payload['loop_stop_reason']}`",
+        "",
+        "## Evidence",
+        "",
+        *[f"- `{item}`" for item in evidence_paths],
+        "",
+        "## Refuted Hypothesis",
+        "",
+        f"- `{payload['refuted_hypothesis']}`",
+        "",
+        "## Repetition Not Allowed",
+        "",
+        *[f"- `{item}`" for item in payload["repetition_not_allowed"]],
+        "",
+        "## Candidate New Research Directions",
+        "",
+        *[f"- `{item}`" for item in payload["candidate_new_research_directions"]],
+        "",
+        "## New Research Gate",
+        "",
+        "- `hypothesis_spec_required = true`",
+        "- `reuse_same_search_space_family_forbidden = true`",
+        "- `must_explain_why_v38_failure_can_flip = true`",
+    ]
+    md_path.write_text("\n".join(md_lines), encoding="utf-8")
+    return str(json_path), str(md_path)
+
+
 @contextlib.contextmanager
 def _stage2_watchdog(initial_timeout_s: float | None) -> Any:
     if initial_timeout_s is None or initial_timeout_s <= 0:
@@ -270,6 +400,8 @@ def _initialize_running_status(
         "stage2_prepare_variant_cache_hits": 0,
         "stage2_prepare_variant_replay_reused": 0,
         "stage2_prepare_variant_miss_reasons": {},
+        "stage2_validation_bundle_cache_hits": 0,
+        "stage2_validation_bundle_cache_observations": 0,
         "stage1_last_progress_at": None,
         "stage1_last_completed_unit": None,
         "stage1_failure_reason": None,
@@ -291,6 +423,8 @@ def _initialize_running_status(
         "stage2_prepare_last_active_unit": None,
         "train_candidate_diagnostics": None,
         "empty_shortlist_reason": None,
+        "no_tuned_candidate_reason": None,
+        "candidate_existence_goal_met": False,
         "candidate_checkpoint_written": False,
         "candidate_checkpoint_status": None,
         "candidate_checkpoint_variant": None,
@@ -424,6 +558,15 @@ def _stage1_indicator_hotspot_summary(stage1_state: dict[str, Any], *, timing_co
 def _update_stage2_prepare_cache_metrics(stage2_state: dict[str, Any], *, event: str, unit_label: str) -> None:
     if event != "stage2_prepare_variant_validation_progress":
         return
+    if unit_label.startswith(("cache_hit:validation_bundle", "cache_miss:validation_bundle")):
+        stage2_state["stage2_validation_bundle_cache_observations"] = int(
+            stage2_state.get("stage2_validation_bundle_cache_observations", 0) or 0
+        ) + 1
+        if unit_label.startswith("cache_hit:validation_bundle"):
+            stage2_state["stage2_validation_bundle_cache_hits"] = int(
+                stage2_state.get("stage2_validation_bundle_cache_hits", 0) or 0
+            ) + 1
+        return
     stage2_state["prepare_variant_cache_observations"] = int(
         stage2_state.get("prepare_variant_cache_observations", 0) or 0
     ) + 1
@@ -463,6 +606,8 @@ def _stage2_failure_driver(
         return True, "stage2_prepare_deadlock_after_rl_mps"
     if "no_progress_timeout" in normalized:
         return True, "stage2_prepare_worker_unresponsive"
+    if "stage2_prepare_variant_timeout" in normalized:
+        return False, "stage2_prepare_worker_unresponsive"
     if "timeout" in normalized:
         return False, "stage2_prepare_timeout"
     return False, "stage2_runtime_or_search_issue"
@@ -786,6 +931,16 @@ def main() -> None:
     parser.add_argument("--symbol", default="BTCUSDT")
     parser.add_argument("--output-dir", default="results/framework_optimization")
     parser.add_argument("--budget", choices=("smoke", "fast", "high"), default="high")
+    parser.add_argument(
+        "--search-space-mode",
+        choices=(
+            "baseline_anchored_train_only",
+            "baseline_anchored_defensive_candidate_existence",
+            "baseline_anchored_2023_08_hostile_repair",
+            "execution_first_v2_correlation_constrained",
+        ),
+        default=None,
+    )
     parser.add_argument("--optuna-trials", type=int)
     parser.add_argument("--rl-episodes", type=int)
     parser.add_argument("--liquidation-dir", default="data/raw/merged_liquidations/aggregated")
@@ -824,6 +979,51 @@ def main() -> None:
         output_dir.mkdir(parents=True, exist_ok=True)
         checkpoint_dir = output_dir / "checkpoints"
         checkpoint_dir.mkdir(parents=True, exist_ok=True)
+        hypothesis_spec: dict[str, Any] | None = None
+        hypothesis_spec_path = _default_research_hypothesis_spec_path()
+        if not args.resume:
+            try:
+                hypothesis_spec = _load_research_hypothesis_spec(hypothesis_spec_path)
+            except FileNotFoundError as exc:
+                _write_json(
+                    status_path,
+                    {
+                        "phase": "stage0_readiness",
+                        "status": "blocked",
+                        "blocked_by": "research_hypothesis_spec_missing",
+                        "detail": str(exc),
+                        "research_hypothesis_spec_path": str(hypothesis_spec_path),
+                        "updated_at": _ts(),
+                        "resume_supported": True,
+                        "split_contract": split_summary_json(default_btc_split_spec()),
+                        "split_contract_version": default_btc_split_spec().version,
+                        "authoritative_promote_path": True,
+                        "test_evaluated": False,
+                    },
+                )
+                _append_campaign_log(log_path, "campaign_blocked blocked_by=research_hypothesis_spec_missing")
+                print("blocked_by=research_hypothesis_spec_missing")
+                return
+            except ValueError as exc:
+                _write_json(
+                    status_path,
+                    {
+                        "phase": "stage0_readiness",
+                        "status": "blocked",
+                        "blocked_by": "research_hypothesis_spec_invalid",
+                        "detail": str(exc),
+                        "research_hypothesis_spec_path": str(hypothesis_spec_path),
+                        "updated_at": _ts(),
+                        "resume_supported": True,
+                        "split_contract": split_summary_json(default_btc_split_spec()),
+                        "split_contract_version": default_btc_split_spec().version,
+                        "authoritative_promote_path": True,
+                        "test_evaluated": False,
+                    },
+                )
+                _append_campaign_log(log_path, "campaign_blocked blocked_by=research_hypothesis_spec_invalid")
+                print("blocked_by=research_hypothesis_spec_invalid")
+                return
 
         stage1_parallel_mode = "serial" if args.budget == "smoke" else "cpu_parallel"
         if args.budget == "smoke":
@@ -861,6 +1061,10 @@ def main() -> None:
             dev_gate_used_this_round=bool(args.development_dev_gate),
             dev_gate_last_round=args.dev_gate_last_round,
             dev_gate_interval=args.dev_gate_interval,
+            research_hypothesis_spec_path=str(hypothesis_spec_path),
+            research_line_id=(hypothesis_spec or {}).get("research_line_id"),
+            research_direction=(hypothesis_spec or {}).get("research_direction"),
+            closed_predecessor=(hypothesis_spec or {}).get("closed_predecessor"),
         )
         _append_campaign_log(log_path, f"campaign_started budget={args.budget} resume={args.resume} pid={campaign_pid}")
         bootstrap_guard_armed = False
@@ -886,7 +1090,10 @@ def main() -> None:
             strategy_config=ARCStrategyConfig(execution_timeframe=Timeframe.TF_5M),
         )
         split_spec = default_btc_split_spec()
-        search_space_mode = "baseline_anchored_train_only" if args.budget == "smoke" else "execution_first_v2_correlation_constrained"
+        search_space_mode = (
+            args.search_space_mode
+            or ("baseline_anchored_train_only" if args.budget == "smoke" else "execution_first_v2_correlation_constrained")
+        )
         evaluator = FrameworkEvaluator(base_config, split_spec=split_spec, search_space_mode=search_space_mode)
         resolved_search_space_profile, resolved_search_space_mode, resolved_baseline_anchored_search, resolved_baseline_anchor_variant = _resolved_search_space_contract(
             evaluator,
@@ -1028,6 +1235,7 @@ def main() -> None:
         stage1_state.setdefault("train_candidate_diagnostics", {})
         stage1_state.setdefault("empty_shortlist_reason", None)
         stage1_state.setdefault("no_tuned_candidate_reason", None)
+        stage1_state.setdefault("candidate_existence_goal_met", False)
         if stage1_payload is None:
             stage1_execution_mode = "1h_context_only" if args.budget == "smoke" else "5m_lightweight_train_search"
             smoke_ranking_top_n = 1 if args.budget == "smoke" else min(5, optuna_trials)
@@ -1054,6 +1262,7 @@ def main() -> None:
         },
         "empty_shortlist_reason": None,
         "no_tuned_candidate_reason": None,
+        "candidate_existence_goal_met": False,
                 "rl_result": None,
                 "rl_params": None,
                 "rl_failure_reason": None,
@@ -1532,6 +1741,7 @@ def main() -> None:
                     train_candidate_diagnostics=dict(stage1_state.get("train_candidate_diagnostics") or {}),
                     empty_shortlist_reason=stage1_state.get("empty_shortlist_reason"),
                     no_tuned_candidate_reason=stage1_state.get("no_tuned_candidate_reason"),
+                    candidate_existence_goal_met=stage1_state.get("candidate_existence_goal_met"),
                 )
                 if event in {
                     "trial_completed",
@@ -1586,6 +1796,7 @@ def main() -> None:
                 train_candidate_diagnostics=dict(stage1_state.get("train_candidate_diagnostics") or {}),
                 empty_shortlist_reason=stage1_state.get("empty_shortlist_reason"),
                 no_tuned_candidate_reason=stage1_state.get("no_tuned_candidate_reason"),
+                candidate_existence_goal_met=stage1_state.get("candidate_existence_goal_met"),
             )
             _append_campaign_log(log_path, "stage1_optuna_search started")
 
@@ -1807,6 +2018,7 @@ def main() -> None:
             stage1_state["train_candidate_diagnostics"] = dict(optuna_diagnostics.get("train_candidate_diagnostics") or {})
             stage1_state["empty_shortlist_reason"] = optuna_diagnostics.get("empty_shortlist_reason")
             stage1_state["no_tuned_candidate_reason"] = optuna_diagnostics.get("no_tuned_candidate_reason")
+            stage1_state["candidate_existence_goal_met"] = bool(optuna_params is not None)
             stage1_state["stage1_budget_mode"] = optuna_diagnostics.get("stage1_budget_mode", stage1_state.get("stage1_budget_mode"))
             stage1_state["stage1_stop_reason"] = optuna_diagnostics.get("stage1_stop_reason", stage1_state.get("stage1_stop_reason"))
             stage1_state["optuna_params"] = optuna_params
@@ -1915,6 +2127,7 @@ def main() -> None:
                     train_candidate_diagnostics=dict(stage1_state.get("train_candidate_diagnostics") or {}),
                     empty_shortlist_reason=stage1_state.get("empty_shortlist_reason"),
                     no_tuned_candidate_reason=stage1_state.get("no_tuned_candidate_reason"),
+                    candidate_existence_goal_met=stage1_state.get("candidate_existence_goal_met"),
                 )
                 _append_campaign_log(log_path, "stage1_rl started")
                 try:
@@ -2164,6 +2377,7 @@ def main() -> None:
             train_candidate_diagnostics=stage1_payload["search_status"].get("train_candidate_diagnostics"),
             empty_shortlist_reason=stage1_payload["search_status"].get("empty_shortlist_reason"),
             no_tuned_candidate_reason=stage1_payload["search_status"].get("no_tuned_candidate_reason"),
+            candidate_existence_goal_met=stage1_payload["search_status"].get("candidate_existence_goal_met"),
             candidate_checkpoint_written=written_candidate_checkpoint is not None,
             candidate_checkpoint_status=(written_candidate_checkpoint or {}).get("checkpoint_status"),
             candidate_checkpoint_variant=(written_candidate_checkpoint or {}).get("candidate_variant"),
@@ -2186,6 +2400,8 @@ def main() -> None:
                 "prepare_variant_cache_hits": 0,
                 "prepare_variant_replay_reused": 0,
                 "prepare_variant_cache_observations": 0,
+                "stage2_validation_bundle_cache_hits": 0,
+                "stage2_validation_bundle_cache_observations": 0,
                 "prepare_timeout_s": None,
             }
 
@@ -2311,6 +2527,7 @@ def main() -> None:
                     stage2_prepare_variant_cache_hits=stage2_state.get("prepare_variant_cache_hits", 0),
                     stage2_prepare_variant_replay_reused=stage2_state.get("prepare_variant_replay_reused", 0),
                     stage2_prepare_variant_miss_reasons=stage2_state.get("prepare_variant_miss_reasons", {}),
+                    stage2_validation_bundle_cache_hits=stage2_state.get("stage2_validation_bundle_cache_hits", 0),
                     window_snapshot_cache_hit_rate=(
                         round(
                             float(stage2_state.get("prepare_variant_cache_hits", 0) or 0)
@@ -2322,11 +2539,11 @@ def main() -> None:
                     ),
                     validation_cache_hit_rate=(
                         round(
-                            float(stage2_state.get("prepare_variant_cache_hits", 0) or 0)
-                            / max(1, int(stage2_state.get("prepare_variant_cache_observations", 0) or 0)),
-                            4,
-                        )
-                        if int(stage2_state.get("prepare_variant_cache_observations", 0) or 0) > 0
+                            float(stage2_state.get("stage2_validation_bundle_cache_hits", 0) or 0)
+                            / max(1, int(stage2_state.get("stage2_validation_bundle_cache_observations", 0) or 0)),
+                        4,
+                    )
+                        if int(stage2_state.get("stage2_validation_bundle_cache_observations", 0) or 0) > 0
                         else 0.0
                     ),
                     stage2_failure_reason=None,
@@ -2566,7 +2783,20 @@ def main() -> None:
                     "prepare_variant_miss_reasons",
                     {},
                 )
+                final_json_payload["stage2_validation_bundle_cache_hits"] = stage2_state.get(
+                    "stage2_validation_bundle_cache_hits",
+                    0,
+                )
                 final_json_payload["validation_cache_hit_rate"] = (
+                    round(
+                        float(stage2_state.get("stage2_validation_bundle_cache_hits", 0) or 0)
+                        / max(1, int(stage2_state.get("stage2_validation_bundle_cache_observations", 0) or 0)),
+                        4,
+                    )
+                    if int(stage2_state.get("stage2_validation_bundle_cache_observations", 0) or 0) > 0
+                    else 0.0
+                )
+                final_json_payload["window_snapshot_cache_hit_rate"] = (
                     round(
                         float(stage2_state.get("prepare_variant_cache_hits", 0) or 0)
                         / max(1, int(stage2_state.get("prepare_variant_cache_observations", 0) or 0)),
@@ -2575,7 +2805,6 @@ def main() -> None:
                     if int(stage2_state.get("prepare_variant_cache_observations", 0) or 0) > 0
                     else 0.0
                 )
-                final_json_payload["window_snapshot_cache_hit_rate"] = final_json_payload["validation_cache_hit_rate"]
                 final_json_payload["stage2_mp_start_method"] = stage2_runtime_contract.get("stage2_mp_start_method")
                 final_json_payload["validation_pool_mode"] = stage2_runtime_contract.get("validation_pool_mode")
                 final_json_payload["stage2_prepare_timeout_s"] = stage2_state.get("prepare_timeout_s")
@@ -2598,8 +2827,16 @@ def main() -> None:
                     "json_path": str(final_json),
                     "md_path": str(final_md),
                     "signal_audit_summary": report.signal_audit_summary,
+                    "search_status": final_json_payload.get("search_status"),
                     "full_training_assessment": final_json_payload.get("full_training_assessment"),
                     "post_smoke_scenario": final_json_payload.get("post_smoke_scenario"),
+                    "candidate_existence_recovered": final_json_payload.get("candidate_existence_recovered"),
+                    "no_tuned_candidate_reason": final_json_payload.get("no_tuned_candidate_reason"),
+                    "promotion_path_status": final_json_payload.get("promotion_path_status"),
+                    "failure_class": final_json_payload.get("failure_class"),
+                    "primary_driver": final_json_payload.get("primary_driver"),
+                    "loop_stop_reason": final_json_payload.get("loop_stop_reason"),
+                    "hostile_regression_driver": final_json_payload.get("hostile_regression_driver"),
                 }
                 existing_checkpoint = written_candidate_checkpoint if isinstance(written_candidate_checkpoint, dict) else None
                 if existing_checkpoint is not None:
@@ -2638,6 +2875,16 @@ def main() -> None:
                 )
 
         post_smoke_scenario = final_report_payload.get("post_smoke_scenario") or {}
+        candidate_existence_recovered = bool(final_report_payload.get("candidate_existence_recovered", False))
+        promotion_path_status = final_report_payload.get("promotion_path_status")
+        failure_class = final_report_payload.get("failure_class")
+        primary_driver = final_report_payload.get("primary_driver")
+        loop_stop_reason = final_report_payload.get("loop_stop_reason")
+        hostile_quality_blocked = bool(promotion_path_status == "blocked")
+        closure_json_path = None
+        closure_md_path = None
+        if hostile_quality_blocked and loop_stop_reason == "search_space_exhausted_without_candidate":
+            closure_json_path, closure_md_path = _write_research_closure(output_dir, final_report_payload)
         _update_status(
             status_path,
             phase="stage3_complete",
@@ -2668,9 +2915,16 @@ def main() -> None:
                 "decision", "defer_handoff"
             ),
             full_training_blockers=(final_report_payload.get("full_training_assessment") or {}).get("blockers", []),
+            candidate_existence_recovered=candidate_existence_recovered,
             post_smoke_scenario=post_smoke_scenario.get("scenario"),
             post_smoke_category=post_smoke_scenario.get("category"),
             post_smoke_next_action=post_smoke_scenario.get("next_action"),
+            promotion_path_status=promotion_path_status,
+            failure_class=failure_class,
+            primary_driver=primary_driver,
+            loop_stop_reason=loop_stop_reason,
+            research_closure_json_path=closure_json_path,
+            research_closure_md_path=closure_md_path,
             stage2_subphase="stage3_complete",
             candidate_checkpoint_written=written_candidate_checkpoint is not None,
             candidate_checkpoint_status=(written_candidate_checkpoint or {}).get("checkpoint_status"),

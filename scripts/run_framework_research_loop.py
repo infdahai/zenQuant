@@ -271,6 +271,8 @@ def _current_campaign_snapshot(run_dir: Path) -> dict[str, Any]:
         "full_training_allowed": status.get("full_training_allowed"),
         "full_training_blockers": status.get("full_training_blockers"),
         "post_smoke_scenario": status.get("post_smoke_scenario"),
+        "search_space_mode": status.get("search_space_mode"),
+        "no_tuned_candidate_reason": status.get("no_tuned_candidate_reason"),
         "campaign_updated_at": status.get("updated_at"),
     }
 
@@ -426,10 +428,12 @@ def _recent_rounds(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
             {
                 "round": item.get("round"),
                 "budget": item.get("budget"),
+                "search_space_mode": item.get("search_space_mode"),
                 "train_score": item.get("train_score"),
                 "dev_score": item.get("dev_score"),
                 "best_variant": item.get("best_variant"),
                 "candidate_ready_for_handoff": item.get("candidate_ready_for_handoff"),
+                "candidate_existence_goal_met": item.get("candidate_existence_goal_met"),
                 "promotion_health": item.get("promotion_health"),
                 "round_runtime_s": item.get("round_runtime_s"),
             }
@@ -437,14 +441,19 @@ def _recent_rounds(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return recent
 
 
-def _candidate_checkpoint_invalidated_reason(payload: dict[str, Any], *, budget: str) -> str | None:
+def _candidate_checkpoint_invalidated_reason(
+    payload: dict[str, Any],
+    *,
+    budget: str,
+    expected_search_space_mode: str | None = None,
+) -> str | None:
     if payload.get("checkpoint_status") == "invalidated":
         return str(payload.get("invalidated_reason") or "candidate_checkpoint_invalidated")
     if payload.get("train_only_search") is False:
         return "checkpoint_not_train_only_search"
     if payload.get("split_contract_version") not in {None, _default_split_contract_version()}:
         return "split_contract_mismatch"
-    expected_mode = _mode_for_budget(budget)
+    expected_mode = expected_search_space_mode or _mode_for_budget(budget)
     candidate_mode = payload.get("search_space_mode")
     if candidate_mode and candidate_mode != expected_mode:
         return "candidate_search_space_mismatch"
@@ -456,11 +465,20 @@ def _candidate_checkpoint_invalidated_reason(payload: dict[str, Any], *, budget:
     return None
 
 
-def _load_candidate_checkpoint(run_dir: Path, *, budget: str) -> dict[str, Any] | None:
+def _load_candidate_checkpoint(
+    run_dir: Path,
+    *,
+    budget: str,
+    expected_search_space_mode: str | None = None,
+) -> dict[str, Any] | None:
     payload = _read_json(_candidate_checkpoint_path(run_dir))
     if not isinstance(payload, dict):
         return None
-    invalidated_reason = _candidate_checkpoint_invalidated_reason(payload, budget=budget)
+    invalidated_reason = _candidate_checkpoint_invalidated_reason(
+        payload,
+        budget=budget,
+        expected_search_space_mode=expected_search_space_mode,
+    )
     if invalidated_reason is not None:
         payload = dict(payload)
         payload["checkpoint_status"] = "invalidated"
@@ -475,6 +493,7 @@ def _select_candidate_checkpoint(
     *,
     campaign_root: Path,
     budget: str,
+    expected_search_space_mode: str,
     previous_record: dict[str, Any] | None,
 ) -> dict[str, Any] | None:
     records = _recent_history_records(loop_dir)
@@ -494,7 +513,11 @@ def _select_candidate_checkpoint(
         if key in seen:
             continue
         seen.add(key)
-        payload = _load_candidate_checkpoint(run_dir, budget=budget)
+        payload = _load_candidate_checkpoint(
+            run_dir,
+            budget=budget,
+            expected_search_space_mode=expected_search_space_mode,
+        )
         if payload is not None:
             usable.append(payload)
     if not usable:
@@ -761,6 +784,7 @@ def _build_campaign_command(
     run_dir: Path,
     *,
     budget: str,
+    search_space_mode: str,
     seed_trials_file: Path | None,
     resume: bool,
     development_dev_gate: bool,
@@ -780,6 +804,8 @@ def _build_campaign_command(
         str(run_dir),
         "--budget",
         budget,
+        "--search-space-mode",
+        search_space_mode,
     ]
     if seed_trials_file is not None and seed_trials_file.exists():
         command.extend(["--seed-trials-file", str(seed_trials_file)])
@@ -815,6 +841,7 @@ def _launch_round(
     *,
     run_dir: Path,
     budget: str,
+    search_space_mode: str | None = None,
     seed_trials: list[dict[str, Any]],
     loop_status_path: Path,
     loop_log_path: Path,
@@ -827,6 +854,7 @@ def _launch_round(
     dev_gate_interval: int | None,
 ) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
     run_dir.mkdir(parents=True, exist_ok=True)
+    resolved_search_space_mode = search_space_mode or _mode_for_budget(budget)
     campaign_lock_path = _campaign_lock_file(run_dir)
     launcher_log_path = _campaign_launcher_log_file(run_dir)
     launcher_log_handle = launcher_log_path.open("w", encoding="utf-8")
@@ -841,6 +869,7 @@ def _launch_round(
         args,
         run_dir,
         budget=budget,
+        search_space_mode=resolved_search_space_mode,
         seed_trials_file=seed_trials_file,
         resume=resume,
         development_dev_gate=development_dev_gate,
@@ -851,6 +880,7 @@ def _launch_round(
         loop_log_path,
         (
             f"round_started round={round_index}/{max_rounds} budget={budget} "
+            f"search_space_mode={resolved_search_space_mode} "
             f"seed_trials={len(seed_trials)} adaptation_policy={adaptation_policy} "
             f"dev_gate={development_dev_gate} resume={resume}"
         ),
@@ -876,6 +906,7 @@ def _launch_round(
                 current_round=round_index,
                 max_rounds=max_rounds,
                 current_budget=budget,
+                current_search_space_mode=resolved_search_space_mode,
                 current_run_dir=str(run_dir),
                 current_phase=None,
                 current_status="blocked",
@@ -932,6 +963,7 @@ def _launch_round(
                 current_round=round_index,
                 max_rounds=max_rounds,
                 current_budget=budget,
+                current_search_space_mode=resolved_search_space_mode,
                 current_run_dir=str(run_dir),
                 current_phase=snapshot.get("phase"),
                 current_status=snapshot.get("status"),
@@ -1224,21 +1256,26 @@ def main() -> None:
             start_round = completed_rounds + 1
 
         current_budget = args.start_budget
+        current_search_space_mode = _mode_for_budget(current_budget)
         previous_budget: str | None = None
         seed_trials: list[dict[str, Any]] = []
         adaptation_policy = "initial_baseline_anchored"
         if previous_record is not None:
             current_budget = str(previous_record.get("next_budget", current_budget))
+            current_search_space_mode = str(
+                previous_record.get("next_search_space_mode", _mode_for_budget(current_budget))
+            )
             previous_budget = str(previous_record.get("budget", current_budget))
             candidate_checkpoint = _select_candidate_checkpoint(
                 loop_dir,
                 campaign_root=campaign_root,
                 budget=current_budget,
+                expected_search_space_mode=current_search_space_mode,
                 previous_record=previous_record,
             )
             seed_trials = project_seed_trials_to_mode(
                 _merge_seed_trials_with_candidate(list(previous_record.get("next_seed_trials") or []), candidate_checkpoint),
-                mode=_mode_for_budget(current_budget),
+                mode=current_search_space_mode,
             )
             adaptation_policy = str(previous_record.get("next_adaptation_policy", adaptation_policy))
         elif args.initial_seed_trials_file:
@@ -1251,7 +1288,7 @@ def main() -> None:
                     _read_seed_trials(Path(args.initial_seed_trials_file)),
                     external_candidate_checkpoint,
                 ),
-                mode=_mode_for_budget(current_budget),
+                mode=current_search_space_mode,
             )
         elif args.initial_candidate_checkpoint_file:
             external_candidate_checkpoint = _read_external_candidate_checkpoint(
@@ -1260,7 +1297,7 @@ def main() -> None:
             )
             seed_trials = project_seed_trials_to_mode(
                 _merge_seed_trials_with_candidate([], external_candidate_checkpoint),
-                mode=_mode_for_budget(current_budget),
+                mode=current_search_space_mode,
             )
 
         _update_loop_status(
@@ -1269,6 +1306,7 @@ def main() -> None:
             current_round=start_round - 1,
             max_rounds=args.max_rounds,
             current_budget=current_budget,
+            current_search_space_mode=current_search_space_mode,
             current_run_dir=None,
             current_phase=None,
             current_status=None,
@@ -1301,6 +1339,7 @@ def main() -> None:
                 args,
                 run_dir=run_dir,
                 budget=current_budget,
+                search_space_mode=current_search_space_mode,
                 seed_trials=seed_trials,
                 loop_status_path=loop_status_path,
                 loop_log_path=loop_log_path,
@@ -1322,6 +1361,7 @@ def main() -> None:
                 exploit_ratio=args.exploit_ratio,
                 explore_ratio=args.explore_ratio,
                 allow_fast_progression=args.allow_fast_progression,
+                recent_history=_recent_history_records(loop_dir),
             )
             best_variant = final_report.get("best_variant")
             best_summary = None
@@ -1351,6 +1391,11 @@ def main() -> None:
             history_item = {
                 "round": round_index,
                 "budget": current_budget,
+                "search_space_mode": (
+                    (final_report.get("search_status") or {}).get("search_space_mode")
+                    or (stage1_payload.get("search_status") or {}).get("search_space_mode")
+                    or current_search_space_mode
+                ),
                 "run_dir": str(run_dir),
                 "post_smoke_scenario": (final_report.get("post_smoke_scenario") or {}).get("scenario"),
                 "full_training_allowed": bool((final_report.get("full_training_assessment") or {}).get("ready", False)),
@@ -1364,10 +1409,17 @@ def main() -> None:
                 "dev_drawdown": _safe_float((best_summary or {}).get("dev_drawdown")) if isinstance(best_summary, dict) else None,
                 "negative_dev_worst_windows": _safe_int((best_summary or {}).get("negative_dev_worst_windows")) if isinstance(best_summary, dict) else None,
                 "train_candidate_diagnostics": final_report.get("train_candidate_diagnostics"),
+                "no_tuned_candidate_reason": (
+                    (final_report.get("train_candidate_diagnostics") or {}).get("no_tuned_candidate_reason")
+                    or (stage1_payload.get("search_status") or {}).get("no_tuned_candidate_reason")
+                ),
                 "candidate_ready_for_handoff": bool(final_report.get("candidate_ready_for_handoff", False)),
                 "candidate_frozen_id": final_report.get("candidate_frozen_id"),
                 "dev_gate_used_this_round": bool(final_report.get("dev_gate_used_this_round", development_dev_gate)),
                 "adaptation_policy": adaptation_policy,
+                "negative_candidate_streak": plan.negative_candidate_streak,
+                "anchored_negative_candidate_streak": plan.anchored_negative_candidate_streak,
+                "candidate_existence_goal_met": plan.candidate_existence_goal_met,
                 "round_runtime_s": round_runtime_s,
                 "stage1_runtime_s": _safe_float(campaign_status.get("stage1_runtime_s")),
                 "stage2_runtime_s": _safe_float((loop_status := _read_json(loop_status_path) or {}).get("stage2_runtime_s")),
@@ -1379,6 +1431,7 @@ def main() -> None:
                     "campaign_pid": campaign_status.get("campaign_pid"),
                 },
                 "next_budget": plan.next_budget,
+                "next_search_space_mode": plan.next_search_space_mode,
                 "next_adaptation_policy": plan.adaptation_policy,
                 "next_seed_trials": plan.all_seed_trials,
                 "loop_progression_blocked": plan.loop_progression_blocked,
@@ -1400,6 +1453,7 @@ def main() -> None:
                 loop_status_path,
                 current_round=round_index,
                 current_budget=current_budget,
+                current_search_space_mode=current_search_space_mode,
                 current_run_dir=str(run_dir),
                 current_phase=campaign_status.get("phase"),
                 current_status=campaign_status.get("status"),
@@ -1408,10 +1462,14 @@ def main() -> None:
                 should_open_fast_or_full_training=plan.should_open_fast_or_full_training,
                 loop_progression_blocked=plan.loop_progression_blocked,
                 next_budget=plan.next_budget,
+                next_search_space_mode=plan.next_search_space_mode,
                 next_adaptation_policy=plan.adaptation_policy,
                 current_campaign_pid=campaign_status.get("campaign_pid"),
                 candidate_ready_for_handoff=history_item["candidate_ready_for_handoff"],
                 candidate_frozen_id=history_item["candidate_frozen_id"],
+                negative_candidate_streak=plan.negative_candidate_streak,
+                anchored_negative_candidate_streak=plan.anchored_negative_candidate_streak,
+                candidate_existence_goal_met=plan.candidate_existence_goal_met,
                 dev_gate_used_this_round=history_item["dev_gate_used_this_round"],
                 dev_gate_last_round=round_index if history_item["dev_gate_used_this_round"] else (previous_record.get("round") if previous_record and previous_record.get("dev_gate_used_this_round") else None),
                 dev_gate_interval=dev_gate_interval,
@@ -1430,6 +1488,7 @@ def main() -> None:
                 break
             previous_budget = current_budget
             current_budget = plan.next_budget
+            current_search_space_mode = plan.next_search_space_mode
             seed_trials = plan.all_seed_trials
             adaptation_policy = plan.adaptation_policy
             previous_record = history_item

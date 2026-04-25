@@ -39,12 +39,16 @@ class LoopIterationPlan:
     stop: bool
     stop_reason: str | None
     next_budget: str
+    next_search_space_mode: str
     adaptation_policy: str
     exploit_seed_trials: list[dict[str, Any]]
     explore_seed_trials: list[dict[str, Any]]
     anchor_seed_trials: list[dict[str, Any]]
     should_open_fast_or_full_training: bool
     loop_progression_blocked: bool
+    negative_candidate_streak: int = 0
+    anchored_negative_candidate_streak: int = 0
+    candidate_existence_goal_met: bool = False
 
     @property
     def all_seed_trials(self) -> list[dict[str, Any]]:
@@ -176,6 +180,70 @@ def _explore_seeds(
     return [], "steady_state"
 
 
+def _current_no_tuned_candidate_reason(
+    final_report: dict[str, Any],
+    stage1_payload: dict[str, Any],
+) -> str | None:
+    diagnostics = final_report.get("train_candidate_diagnostics") or {}
+    if diagnostics.get("no_tuned_candidate_reason"):
+        return str(diagnostics.get("no_tuned_candidate_reason"))
+    search_status = stage1_payload.get("search_status") or {}
+    if search_status.get("no_tuned_candidate_reason"):
+        return str(search_status.get("no_tuned_candidate_reason"))
+    return None
+
+
+def _current_search_space_mode(
+    final_report: dict[str, Any],
+    stage1_payload: dict[str, Any],
+    *,
+    current_budget: str,
+) -> str:
+    search_status = final_report.get("search_status") or stage1_payload.get("search_status") or {}
+    mode = search_status.get("search_space_mode")
+    if isinstance(mode, str) and mode:
+        return mode
+    return "baseline_anchored_train_only" if current_budget == "smoke" else "execution_first_v2_correlation_constrained"
+
+
+def _negative_candidate_streak(
+    history: list[dict[str, Any]],
+    *,
+    current_reason: str | None,
+) -> int:
+    streak = 0
+    reasons = [item.get("no_tuned_candidate_reason") for item in history] + [current_reason]
+    for reason in reversed(reasons):
+        if reason == "all_negative_primary_metric":
+            streak += 1
+            continue
+        break
+    return streak
+
+
+def _anchored_negative_candidate_streak(
+    history: list[dict[str, Any]],
+    *,
+    current_reason: str | None,
+    current_mode: str,
+) -> int:
+    streak = 0
+    items = [
+        *history,
+        {
+            "search_space_mode": current_mode,
+            "no_tuned_candidate_reason": current_reason,
+        },
+    ]
+    for item in reversed(items):
+        if item.get("search_space_mode") != "baseline_anchored_defensive_candidate_existence":
+            break
+        if item.get("no_tuned_candidate_reason") != "all_negative_primary_metric":
+            break
+        streak += 1
+    return streak
+
+
 def plan_next_iteration(
     *,
     round_index: int,
@@ -187,24 +255,74 @@ def plan_next_iteration(
     exploit_ratio: float = 0.4,
     explore_ratio: float = 0.4,
     allow_fast_progression: bool = True,
+    recent_history: list[dict[str, Any]] | None = None,
 ) -> LoopIterationPlan:
     del anchor_ratio, exploit_ratio, explore_ratio
 
     scenario = ((final_report.get("post_smoke_scenario") or {}).get("scenario")) or ""
     blockers = set(final_report.get("handoff_blockers") or (final_report.get("full_training_assessment") or {}).get("blockers") or [])
     candidate_ready_for_handoff = bool(final_report.get("candidate_ready_for_handoff", False))
+    terminal_stop_reason = final_report.get("loop_stop_reason")
+    history = list(recent_history or [])
+    current_reason = _current_no_tuned_candidate_reason(final_report, stage1_payload)
+    current_mode = _current_search_space_mode(final_report, stage1_payload, current_budget=current_budget)
+    negative_candidate_streak = _negative_candidate_streak(history, current_reason=current_reason)
+    anchored_negative_candidate_streak = _anchored_negative_candidate_streak(
+        history,
+        current_reason=current_reason,
+        current_mode=current_mode,
+    )
+    candidate_existence_goal_met = current_reason not in {None, "all_negative_primary_metric"}
 
     if candidate_ready_for_handoff:
         return LoopIterationPlan(
             stop=True,
             stop_reason="candidate_ready_for_handoff",
             next_budget=current_budget,
+            next_search_space_mode=current_mode,
             adaptation_policy="candidate_ready_for_handoff",
             anchor_seed_trials=[],
             exploit_seed_trials=[],
             explore_seed_trials=[],
             should_open_fast_or_full_training=False,
             loop_progression_blocked=False,
+            negative_candidate_streak=negative_candidate_streak,
+            anchored_negative_candidate_streak=anchored_negative_candidate_streak,
+            candidate_existence_goal_met=True,
+        )
+
+    if terminal_stop_reason == "search_space_exhausted_without_candidate":
+        return LoopIterationPlan(
+            stop=True,
+            stop_reason="search_space_exhausted_without_candidate",
+            next_budget=current_budget,
+            next_search_space_mode=current_mode,
+            adaptation_policy="search_space_exhausted_without_candidate",
+            anchor_seed_trials=[],
+            exploit_seed_trials=[],
+            explore_seed_trials=[],
+            should_open_fast_or_full_training=False,
+            loop_progression_blocked=True,
+            negative_candidate_streak=negative_candidate_streak,
+            anchored_negative_candidate_streak=anchored_negative_candidate_streak,
+            candidate_existence_goal_met=False,
+        )
+
+    if anchored_negative_candidate_streak >= 2:
+        return LoopIterationPlan(
+            stop=True,
+            stop_reason="search_space_exhausted_without_candidate",
+            next_budget=current_budget,
+            next_search_space_mode="baseline_anchored_defensive_candidate_existence",
+            adaptation_policy="search_space_exhausted_without_candidate",
+            anchor_seed_trials=[],
+            exploit_seed_trials=[],
+            explore_seed_trials=[],
+            should_open_fast_or_full_training=False,
+            loop_progression_blocked=True,
+            negative_candidate_streak=negative_candidate_streak,
+            anchored_negative_candidate_streak=anchored_negative_candidate_streak,
+            candidate_existence_goal_met=False,
         )
 
     if round_index >= max_rounds:
@@ -212,16 +330,25 @@ def plan_next_iteration(
             stop=True,
             stop_reason="max_rounds_reached",
             next_budget=current_budget,
+            next_search_space_mode=current_mode,
             adaptation_policy="max_rounds_reached",
             anchor_seed_trials=[],
             exploit_seed_trials=[],
             explore_seed_trials=[],
             should_open_fast_or_full_training=False,
             loop_progression_blocked=False,
+            negative_candidate_streak=negative_candidate_streak,
+            anchored_negative_candidate_streak=anchored_negative_candidate_streak,
+            candidate_existence_goal_met=candidate_existence_goal_met,
         )
 
     next_budget = current_budget
-    if (
+    next_search_space_mode = current_mode
+    if negative_candidate_streak >= 2:
+        next_budget = "fast"
+        next_search_space_mode = "baseline_anchored_defensive_candidate_existence"
+        adaptation_policy = "anchored_candidate_existence_check"
+    elif (
         allow_fast_progression
         and round_index >= 4
         and current_budget == "smoke"
@@ -229,24 +356,35 @@ def plan_next_iteration(
         and not {"scenario_c_state_data_gap", "scenario_d_direction_gate_failure"}.__contains__(scenario)
     ):
         next_budget = "fast"
-
-    mode = "baseline_anchored_train_only" if next_budget == "smoke" else "execution_first_v2_correlation_constrained"
-    exploit = _exploit_seeds(stage1_payload, mode=mode)
-    explore, adaptation_policy = _explore_seeds(final_report, stage1_payload, mode=mode)
+        next_search_space_mode = "execution_first_v2_correlation_constrained"
+        adaptation_policy = "steady_state"
+    else:
+        explore, adaptation_policy = _explore_seeds(final_report, stage1_payload, mode=next_search_space_mode)
+    if negative_candidate_streak >= 2:
+        exploit = _exploit_seeds(stage1_payload, mode=next_search_space_mode)
+        explore = []
+    else:
+        exploit = _exploit_seeds(stage1_payload, mode=next_search_space_mode)
+        if "explore" not in locals():
+            explore, adaptation_policy = _explore_seeds(final_report, stage1_payload, mode=next_search_space_mode)
     anchor = baseline_anchor_seed_trials()
-    anchor = project_seed_trials_to_mode(anchor, mode=mode)
-    exploit = project_seed_trials_to_mode(exploit, mode=mode)
-    explore = project_seed_trials_to_mode(explore, mode=mode)
+    anchor = project_seed_trials_to_mode(anchor, mode=next_search_space_mode)
+    exploit = project_seed_trials_to_mode(exploit, mode=next_search_space_mode)
+    explore = project_seed_trials_to_mode(explore, mode=next_search_space_mode)
     loop_progression_blocked = scenario in {"scenario_c_state_data_gap", "scenario_d_direction_gate_failure"}
 
     return LoopIterationPlan(
         stop=False,
         stop_reason=None,
         next_budget=next_budget,
+        next_search_space_mode=next_search_space_mode,
         adaptation_policy=adaptation_policy,
         anchor_seed_trials=anchor,
         exploit_seed_trials=exploit,
         explore_seed_trials=explore,
         should_open_fast_or_full_training=False,
         loop_progression_blocked=loop_progression_blocked,
+        negative_candidate_streak=negative_candidate_streak,
+        anchored_negative_candidate_streak=anchored_negative_candidate_streak,
+        candidate_existence_goal_met=candidate_existence_goal_met,
     )

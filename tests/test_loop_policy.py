@@ -84,11 +84,67 @@ class LoopPolicyTests(unittest.TestCase):
         )
 
         self.assertEqual(plan.next_budget, "fast")
+        self.assertEqual(plan.next_search_space_mode, "execution_first_v2_correlation_constrained")
         fast_grid = param_grid_for_mode(mode="execution_first_v2_correlation_constrained")
         for seed in plan.all_seed_trials:
             for key, value in seed.items():
                 if key in fast_grid:
                     self.assertIn(value, fast_grid[key])
+
+    def test_two_negative_rounds_switch_to_fast_anchored_candidate_existence(self) -> None:
+        final_report = {"train_candidate_diagnostics": {"no_tuned_candidate_reason": "all_negative_primary_metric"}}
+        plan = plan_next_iteration(
+            round_index=2,
+            max_rounds=8,
+            current_budget="fast",
+            final_report=final_report,
+            stage1_payload={"search_status": {"search_space_mode": "execution_first_v2_correlation_constrained"}},
+            recent_history=[
+                {
+                    "round": 1,
+                    "search_space_mode": "execution_first_v2_correlation_constrained",
+                    "no_tuned_candidate_reason": "all_negative_primary_metric",
+                }
+            ],
+        )
+
+        self.assertFalse(plan.stop)
+        self.assertEqual(plan.next_budget, "fast")
+        self.assertEqual(plan.next_search_space_mode, "baseline_anchored_defensive_candidate_existence")
+        self.assertEqual(plan.adaptation_policy, "anchored_candidate_existence_check")
+
+    def test_two_anchored_negative_rounds_stop_loop(self) -> None:
+        final_report = {"train_candidate_diagnostics": {"no_tuned_candidate_reason": "all_negative_primary_metric"}}
+        plan = plan_next_iteration(
+            round_index=3,
+            max_rounds=8,
+            current_budget="fast",
+            final_report=final_report,
+            stage1_payload={"search_status": {"search_space_mode": "baseline_anchored_defensive_candidate_existence"}},
+            recent_history=[
+                {
+                    "round": 2,
+                    "search_space_mode": "baseline_anchored_defensive_candidate_existence",
+                    "no_tuned_candidate_reason": "all_negative_primary_metric",
+                }
+            ],
+        )
+
+        self.assertTrue(plan.stop)
+        self.assertEqual(plan.stop_reason, "search_space_exhausted_without_candidate")
+
+    def test_terminal_stop_reason_in_final_report_stops_loop_immediately(self) -> None:
+        plan = plan_next_iteration(
+            round_index=3,
+            max_rounds=8,
+            current_budget="fast",
+            final_report={"loop_stop_reason": "search_space_exhausted_without_candidate"},
+            stage1_payload={"search_status": {"search_space_mode": "baseline_anchored_2023_08_hostile_repair"}},
+        )
+
+        self.assertTrue(plan.stop)
+        self.assertEqual(plan.stop_reason, "search_space_exhausted_without_candidate")
+        self.assertTrue(plan.loop_progression_blocked)
 
 
 if __name__ == "__main__":
