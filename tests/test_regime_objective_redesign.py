@@ -244,6 +244,21 @@ class RegimeObjectiveRedesignTests(unittest.TestCase):
         self.assertGreater(score["trade_count_penalty"], 0.20)
         self.assertIn("train_trade_count_churn_worse", score["bucket_blockers"])
 
+    def test_candidate_generation_scorer_uses_absolute_fee_drag_when_baseline_missing(self) -> None:
+        score = score_regime_objective_candidate_generation(
+            {
+                "sharpe": 2.2,
+                "profit_factor": 1.2,
+                "max_drawdown": 0.08,
+                "trade_count": 4100,
+                "fee_drag_pct": 0.032,
+            }
+        )
+
+        self.assertFalse(score["allow_dev_diagnostic_review"])
+        self.assertGreater(score["fee_drag_penalty"], 0.15)
+        self.assertIn("train_fee_drag_structurally_worse", score["bucket_blockers"])
+
     def test_candidate_generation_ranking_compares_original_and_regime_order(self) -> None:
         candidates = [
             {

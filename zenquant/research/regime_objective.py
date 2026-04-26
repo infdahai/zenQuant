@@ -381,6 +381,8 @@ def score_regime_objective_candidate_generation(
         trade_count_penalty = max(0.0, (trade_count - 4200.0) / 500.0)
     if baseline_fee_drag > 0:
         fee_drag_penalty = max(0.0, (fee_drag - baseline_fee_drag) / max(0.001, baseline_fee_drag))
+    else:
+        fee_drag_penalty = max(0.0, (fee_drag - 0.02) / 0.01)
 
     bucket_blockers: list[str] = []
     bucket_metrics = dict(train_metrics.get("train_bucket_metrics") or {})
