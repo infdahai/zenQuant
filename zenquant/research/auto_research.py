@@ -139,14 +139,21 @@ def _hostile_proxy_diagnostics(params: dict[str, Any], metrics: dict[str, float]
         + max(0.0, 0.75 - dca_size_decay) * 4.0,
         6,
     )
-    churn_penalty = max(0.0, (trade_count - 3200.0) / 500.0)
+    train_trade_count_penalty = max(0.0, (trade_count - 4200.0) / 500.0)
+    train_fee_drag_proxy_penalty = max(0.0, (fee_drag_pct - 0.02) / 0.01)
+    train_churn_stress_penalty = round(
+        0.75 * train_trade_count_penalty
+        + 0.35 * train_fee_drag_proxy_penalty
+        + 0.50 * max(0.0, 1.0 - profit_factor),
+        6,
+    )
     raw_fragility_penalty = (
         0.60 * execution_fragility_score
         + 0.55 * inventory_path_dependence_score
         + 3.0 * max(0.0, max_drawdown - 0.10)
         + 1.2 * max(0.0, 1.0 - profit_factor)
         + 0.9 * max(0.0, fee_drag_pct - 0.30)
-        + 0.35 * churn_penalty
+        + train_churn_stress_penalty
         + 0.5 * terminated_early
     )
     if raw_fragility_penalty <= 1.0:
@@ -165,6 +172,9 @@ def _hostile_proxy_diagnostics(params: dict[str, Any], metrics: dict[str, float]
     return {
         "execution_fragility_score": execution_fragility_score,
         "inventory_path_dependence_score": inventory_path_dependence_score,
+        "train_trade_count_penalty": round(train_trade_count_penalty, 6),
+        "train_fee_drag_proxy_penalty": round(train_fee_drag_proxy_penalty, 6),
+        "train_churn_stress_penalty": train_churn_stress_penalty,
         "hostile_proxy_penalty_applied": hostile_proxy_penalty_applied,
         "hostile_proxy_score": hostile_proxy_score,
         "stage1_score": hostile_proxy_score,

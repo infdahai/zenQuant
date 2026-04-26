@@ -365,13 +365,20 @@ def score_regime_objective_candidate_generation(
     profit_factor = _safe_float(train_metrics.get("profit_factor"))
     drawdown = _safe_float(train_metrics.get("max_drawdown"))
     turnover = _safe_float(train_metrics.get("turnover_per_day"))
+    trade_count = _safe_float(train_metrics.get("trade_count"))
     fee_drag = _safe_float(train_metrics.get("fee_drag_pct"))
     baseline_turnover = _safe_float(baseline.get("turnover_per_day"))
+    baseline_trade_count = _safe_float(baseline.get("trade_count"))
     baseline_fee_drag = _safe_float(baseline.get("fee_drag_pct"))
     turnover_penalty = 0.0
+    trade_count_penalty = 0.0
     fee_drag_penalty = 0.0
     if baseline_turnover > 0:
         turnover_penalty = max(0.0, (turnover - baseline_turnover) / max(1.0, baseline_turnover))
+    elif baseline_trade_count > 0:
+        trade_count_penalty = max(0.0, (trade_count - baseline_trade_count) / max(1.0, baseline_trade_count))
+    else:
+        trade_count_penalty = max(0.0, (trade_count - 4200.0) / 500.0)
     if baseline_fee_drag > 0:
         fee_drag_penalty = max(0.0, (fee_drag - baseline_fee_drag) / max(0.001, baseline_fee_drag))
 
@@ -399,6 +406,8 @@ def score_regime_objective_candidate_generation(
         bucket_score /= bucket_count
     if turnover_penalty > 0.20:
         bucket_blockers.append("train_turnover_structurally_worse")
+    if trade_count_penalty > 0.20:
+        bucket_blockers.append("train_trade_count_churn_worse")
     if fee_drag_penalty > 0.15:
         bucket_blockers.append("train_fee_drag_structurally_worse")
 
@@ -408,12 +417,14 @@ def score_regime_objective_candidate_generation(
         + 0.25 * bucket_score
         - 1.50 * drawdown
         - 0.80 * turnover_penalty
+        - 0.80 * trade_count_penalty
         - 0.80 * fee_drag_penalty
     )
     return {
         "regime_objective_score": round(regime_objective_score, 6),
         "bucket_blockers": bucket_blockers,
         "turnover_penalty": round(turnover_penalty, 6),
+        "trade_count_penalty": round(trade_count_penalty, 6),
         "fee_drag_penalty": round(fee_drag_penalty, 6),
         "allow_dev_diagnostic_review": not bucket_blockers,
         "bucket_metrics_available": bool(bucket_metrics),

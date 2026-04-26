@@ -11,6 +11,7 @@ from unittest.mock import patch
 from zenquant.domain import Timeframe
 from zenquant.historical import HistoricalBacktestConfig
 from zenquant.historical.storage import HistoricalKlineRow, write_parquet_rows
+from zenquant.research.auto_research import _hostile_proxy_diagnostics
 from zenquant.research.framework_params import (
     baseline_anchor_params,
     baseline_anchor_seed_trials,
@@ -708,6 +709,40 @@ class SearchReportSerializationTests(unittest.TestCase):
             fee_drag_pct=0.05,
         )
         self.assertGreater(cleaner, expensive)
+
+    def test_stage1_hostile_proxy_penalizes_train_churn_stress(self) -> None:
+        params = {
+            "target_vol_4h": 1.1,
+            "max_leverage": 4.5,
+            "pyramid_initial_pct": 0.3,
+            "pyramid_add_pct": 0.3,
+            "pyramid_short_initial_pct": 0.2,
+            "pyramid_short_add_pct": 0.1,
+            "dca_spacing_atr": 0.75,
+            "dca_size_decay": 0.75,
+            "flip_min_confidence": 0.7,
+        }
+        base_metrics = {
+            "sharpe": 2.9,
+            "max_drawdown": 0.18,
+            "profit_factor": 1.2,
+            "fee_drag_pct": 0.015,
+            "trade_count": 3600,
+        }
+        clean = _hostile_proxy_diagnostics(params, base_metrics)
+        churny = _hostile_proxy_diagnostics(
+            params,
+            {
+                **base_metrics,
+                "fee_drag_pct": 0.045,
+                "trade_count": 5200,
+            },
+        )
+
+        self.assertGreater(churny["train_churn_stress_penalty"], clean["train_churn_stress_penalty"])
+        self.assertGreater(churny["train_trade_count_penalty"], 0.0)
+        self.assertGreater(churny["train_fee_drag_proxy_penalty"], 0.0)
+        self.assertLess(churny["stage1_score"], clean["stage1_score"])
 
     def test_stage1_fail_fast_rejects_fragile_hostile_candidate(self) -> None:
         baseline = CandidateSummary(

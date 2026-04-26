@@ -222,7 +222,27 @@ class RegimeObjectiveRedesignTests(unittest.TestCase):
         self.assertTrue(score["allow_dev_diagnostic_review"])
         self.assertEqual(score["bucket_blockers"], [])
         self.assertLess(score["turnover_penalty"], 0.01)
+        self.assertLess(score["trade_count_penalty"], 0.01)
         self.assertLess(score["fee_drag_penalty"], 0.01)
+
+    def test_candidate_generation_scorer_uses_trade_count_when_turnover_missing(self) -> None:
+        score = score_regime_objective_candidate_generation(
+            {
+                "sharpe": 2.2,
+                "profit_factor": 1.2,
+                "max_drawdown": 0.08,
+                "trade_count": 5200,
+                "fee_drag_pct": 0.01,
+            },
+            baseline_metrics={
+                "trade_count": 3600,
+                "fee_drag_pct": 0.01,
+            },
+        )
+
+        self.assertFalse(score["allow_dev_diagnostic_review"])
+        self.assertGreater(score["trade_count_penalty"], 0.20)
+        self.assertIn("train_trade_count_churn_worse", score["bucket_blockers"])
 
     def test_candidate_generation_ranking_compares_original_and_regime_order(self) -> None:
         candidates = [
