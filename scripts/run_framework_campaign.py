@@ -2202,19 +2202,13 @@ def main() -> None:
                 rl_budget_mode = "wall_clock_primary" if args.budget == "fast" else "episode_primary"
                 rl_wall_clock_budget_s = 180.0 if args.budget == "fast" else smoke_rl_timeout_s
                 rl_max_episodes = min(12, rl_episodes) if args.budget == "fast" else rl_episodes
-                rl_n_envs = 3 if args.budget == "fast" else 1
-                rl_device_preference = "auto"
-                rl_execution_mode = "default"
-                rl_vec_env_type = "subproc_vec_env" if rl_n_envs > 1 else "dummy_vec_env"
-                rl_platform_guard_applied = False
+                rl_n_envs = 1
+                rl_device_preference = "cpu" if args.budget == "fast" else "auto"
+                rl_execution_mode = "single_env_cpu_guarded" if args.budget == "fast" else "default"
+                rl_vec_env_type = "dummy_vec_env"
+                rl_platform_guard_applied = args.budget == "fast"
                 rl_init_timeout_s = 30.0 if args.budget == "fast" else 60.0
                 rl_first_progress_timeout_s = 45.0 if args.budget == "fast" else 90.0
-                if args.budget == "fast" and sys.platform == "darwin":
-                    rl_n_envs = 1
-                    rl_device_preference = "cpu"
-                    rl_execution_mode = "single_env_cpu_guarded"
-                    rl_vec_env_type = "dummy_vec_env"
-                    rl_platform_guard_applied = True
                 _update_status(
                     status_path,
                     phase="stage1_rl",

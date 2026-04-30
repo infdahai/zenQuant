@@ -77,7 +77,13 @@ def _cleanup_rl_runtime(*, model: Any | None, env: Any | None, manager: Any | No
     try:
         import torch
 
-        if hasattr(torch, "mps") and hasattr(torch.mps, "empty_cache"):
+        mps_backend = getattr(getattr(torch, "backends", None), "mps", None)
+        mps_available = bool(
+            mps_backend is not None
+            and getattr(mps_backend, "is_built", lambda: False)()
+            and getattr(mps_backend, "is_available", lambda: False)()
+        )
+        if mps_available and hasattr(torch, "mps") and hasattr(torch.mps, "empty_cache"):
             try:
                 torch.mps.empty_cache()
             except Exception as exc:
