@@ -596,9 +596,20 @@ class ARCStrategyEngine:
             ):
                 direction = -1.0
                 reason_codes.append("STATE_BEARISH_DIRECTION_OVERRIDE")
+                if self._plugins.filters:
+                    _state_dict = self._state_dict(state, playbook)
+                    _state_dict["signal_direction"] = direction
+                    bias_usable, _ = self._active_directional_bias(pack.symbol, pack.cutoff_time_ns)
+                    _state_dict["bias_direction"] = bias_usable.direction if bias_usable else 0.0
+                    verdict = compose_filters(self._plugins.filters, _ind_dict, _state_dict)
+                    if not verdict.passed:
+                        direction = 0.0
+                        reason_codes.extend(verdict.reason_codes)
+                        reason_codes.append("STATE_BEARISH_DIRECTION_OVERRIDE_FILTERED")
 
             if self._plugins.sizers:
                 _state_dict = self._state_dict(state, playbook)
+                _state_dict["signal_direction"] = direction
                 target_leverage, sizer_codes = self._plugin_sizing(pack, state, playbook, _ind_dict, _state_dict)
                 # Apply execution haircut based on data quality (parity with legacy path)
                 execution_haircut = SizingEngine._execution_haircut(state)
