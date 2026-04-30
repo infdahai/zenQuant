@@ -28,7 +28,18 @@ class HyperliquidPublicTests(unittest.TestCase):
 
     def test_fetch_candle_and_funding_history_parse_payloads(self) -> None:
         candle_payload = [
-            {"t": 1711929600000, "T": 1711943999999, "s": "BTC", "i": "4h", "o": "70000", "h": "70500", "l": "69000", "c": "69500", "v": "1000", "n": 10}
+            {
+                "t": 1711929600000,
+                "T": 1711943999999,
+                "s": "BTC",
+                "i": "4h",
+                "o": "70000",
+                "h": "70500",
+                "l": "69000",
+                "c": "69500",
+                "v": "1000",
+                "n": 10,
+            }
         ]
         funding_payload = [{"coin": "BTC", "fundingRate": "0.0001", "premium": "0.001", "time": 1711929600000}]
         with (
@@ -43,7 +54,18 @@ class HyperliquidPublicTests(unittest.TestCase):
 
     def test_build_proxy_history_marks_short_backfill_as_blocked(self) -> None:
         candle_payload = [
-            {"t": 1711929600000, "T": 1711943999999, "s": "BTC", "i": "4h", "o": "70000", "h": "70500", "l": "69000", "c": "69500", "v": "1000", "n": 10}
+            {
+                "t": 1711929600000,
+                "T": 1711943999999,
+                "s": "BTC",
+                "i": "4h",
+                "o": "70000",
+                "h": "70500",
+                "l": "69000",
+                "c": "69500",
+                "v": "1000",
+                "n": 10,
+            }
         ]
         funding_payload = [{"coin": "BTC", "fundingRate": "0.0001", "premium": "0.001", "time": 1711929600000}]
         with patch("zenquant.data.hyperliquid_public._post_info", side_effect=[candle_payload, funding_payload]):
@@ -71,7 +93,18 @@ class HyperliquidPublicTests(unittest.TestCase):
 
     def test_write_hyperliquid_raw_creates_expected_files(self) -> None:
         candle_payload = [
-            {"t": 1711929600000, "T": 1711943999999, "s": "BTC", "i": "4h", "o": "70000", "h": "70500", "l": "69000", "c": "69500", "v": "1000", "n": 10}
+            {
+                "t": 1711929600000,
+                "T": 1711943999999,
+                "s": "BTC",
+                "i": "4h",
+                "o": "70000",
+                "h": "70500",
+                "l": "69000",
+                "c": "69500",
+                "v": "1000",
+                "n": 10,
+            }
         ]
         with patch("zenquant.data.hyperliquid_public._post_info", return_value=candle_payload):
             candles = fetch_candle_snapshot("BTC", "4h", 1711929600000, 1711944000000)

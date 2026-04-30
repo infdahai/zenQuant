@@ -18,7 +18,10 @@ def test_claude_points_to_authoritative_runtime_artifacts() -> None:
 
 def test_claude_keeps_product_philosophy_in_agents() -> None:
     content = Path("CLAUDE.md").read_text(encoding="utf-8")
-    assert "If `AGENTS.md` conflicts with `CLAUDE.md`, `AGENTS.md` wins." in content or "如果与 `AGENTS.md` 冲突，以 `AGENTS.md` 为准。" in content
+    assert (
+        "If `AGENTS.md` conflicts with `CLAUDE.md`, `AGENTS.md` wins." in content
+        or "如果与 `AGENTS.md` 冲突，以 `AGENTS.md` 为准。" in content
+    )
     assert "Role" not in content
 
 

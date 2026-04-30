@@ -95,13 +95,16 @@ class BtcEtfFlowIngestorTests(unittest.TestCase):
             """
             mock_get.return_value = bitbo_response
 
-            with patch.dict(
-                "os.environ",
-                {"ZENQUANT_BINANCE_BTC_1D_PATH": str(kline_path)},
-                clear=False,
-            ), patch(
-                "zenquant.ingestor.macro._fetch_coingecko_daily_close_map",
-                return_value={},
+            with (
+                patch.dict(
+                    "os.environ",
+                    {"ZENQUANT_BINANCE_BTC_1D_PATH": str(kline_path)},
+                    clear=False,
+                ),
+                patch(
+                    "zenquant.ingestor.macro._fetch_coingecko_daily_close_map",
+                    return_value={},
+                ),
             ):
                 saved = fetch_btc_etf_netflow(output_dir)
 

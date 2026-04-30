@@ -504,7 +504,9 @@ class IndicatorEngine:
             )
             quality_flags = sorted(set([*quality_flags, *options_snap.quality_flags]))
 
-        cycle_position = self._update_cycle_position(symbol=candle.symbol, timeframe=candle.timeframe, close=candle.close)
+        cycle_position = self._update_cycle_position(
+            symbol=candle.symbol, timeframe=candle.timeframe, close=candle.close
+        )
         macro_values["cycle_position"] = round(cycle_position, 4)
 
         ou_kappa = _ou_kappa(candles, window=self._config.vol_window)
@@ -771,9 +773,7 @@ def _realized_vol(candles: list[Candle], window: int, timeframe: Timeframe) -> f
         return 0.0
     mean_ret = sum(returns) / len(returns)
     variance = sum((value - mean_ret) ** 2 for value in returns) / (len(returns) - 1)
-    bar_per_day = {Timeframe.TF_5M: 288, Timeframe.TF_1H: 24, Timeframe.TF_4H: 6, Timeframe.TF_1D: 1}.get(
-        timeframe, 6
-    )
+    bar_per_day = {Timeframe.TF_5M: 288, Timeframe.TF_1H: 24, Timeframe.TF_4H: 6, Timeframe.TF_1D: 1}.get(timeframe, 6)
     annualizer = math.sqrt(365 * bar_per_day)
     return max(0.0, math.sqrt(max(0.0, variance)) * annualizer)
 

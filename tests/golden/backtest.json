@@ -1,27 +1,15 @@
 {
-  "metrics": {
-    "sharpe": 6.104,
-    "net_pnl": 6982012.52,
-    "max_drawdown": 0.003643,
-    "profit_factor": 4.88722,
-    "trade_count": 341
-  },
-  "equity": {
-    "final": 7082012.515578098
-  },
-  "counts": {
-    "indicator_packs": 630,
-    "targets": 540,
-    "reports": 341
-  },
-  "diagnostics": {
-    "playbook_counts": {
-      "RANGE_LIGHT": 484,
-      "BEAR_DEFENSE": 8,
-      "BULL_CONTINUATION": 138
+    "metrics": {
+        "sharpe": 7.0254,
+        "net_pnl": 11502582.13,
+        "max_drawdown": 0.00464,
+        "profit_factor": 2.565284,
+        "trade_count": 350
     },
-    "actionable_exit_counts": {
-      "TRAILING": 3
+    "equity": {"final": 11602582.132391747},
+    "counts": {"indicator_packs": 630, "targets": 540, "reports": 350},
+    "diagnostics": {
+        "playbook_counts": {"RANGE_LIGHT": 484, "BEAR_DEFENSE": 8, "BULL_CONTINUATION": 138},
+        "actionable_exit_counts": {"TIME_DECAY": 81, "TRAILING": 9}
     }
-  }
 }

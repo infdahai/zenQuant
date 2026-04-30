@@ -38,7 +38,9 @@ class MacroDataStoreTests(unittest.TestCase):
         if btc_mvrv:
             _write_parquet(macro_dir / "btc_mvrv" / "data.parquet", [{"ts_ns": t, "value": v} for t, v in btc_mvrv])
         if etf_flow:
-            _write_parquet(macro_dir / "btc_etf_netflow" / "data.parquet", [{"ts_ns": t, "value": v} for t, v in etf_flow])
+            _write_parquet(
+                macro_dir / "btc_etf_netflow" / "data.parquet", [{"ts_ns": t, "value": v} for t, v in etf_flow]
+            )
         if cme_cot:
             _write_parquet(Path(tmpdir) / "cftc" / "cot_btc.parquet", cme_cot)
         store = MacroDataStore(
@@ -185,9 +187,27 @@ class MacroDataStoreTests(unittest.TestCase):
     def test_cme_positioning_features(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             cot_rows = [
-                {"report_date_ns": 1 * DAY_NS, "asset_mgr_net": 1000.0, "leveraged_net": -500.0, "dealer_net": -100.0, "total_oi": 10_000.0},
-                {"report_date_ns": 8 * DAY_NS, "asset_mgr_net": 1200.0, "leveraged_net": -700.0, "dealer_net": -200.0, "total_oi": 11_000.0},
-                {"report_date_ns": 15 * DAY_NS, "asset_mgr_net": 1800.0, "leveraged_net": 900.0, "dealer_net": -300.0, "total_oi": 14_000.0},
+                {
+                    "report_date_ns": 1 * DAY_NS,
+                    "asset_mgr_net": 1000.0,
+                    "leveraged_net": -500.0,
+                    "dealer_net": -100.0,
+                    "total_oi": 10_000.0,
+                },
+                {
+                    "report_date_ns": 8 * DAY_NS,
+                    "asset_mgr_net": 1200.0,
+                    "leveraged_net": -700.0,
+                    "dealer_net": -200.0,
+                    "total_oi": 11_000.0,
+                },
+                {
+                    "report_date_ns": 15 * DAY_NS,
+                    "asset_mgr_net": 1800.0,
+                    "leveraged_net": 900.0,
+                    "dealer_net": -300.0,
+                    "total_oi": 14_000.0,
+                },
             ]
             store = self._make_store(tmpdir, cme_cot=cot_rows)
 

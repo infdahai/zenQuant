@@ -69,9 +69,7 @@ def compose_signals(
 
     direction_plugins = [plugin for plugin in plugins if getattr(plugin, "role", "direction") == "direction"]
     state_plugins = [plugin for plugin in plugins if getattr(plugin, "role", "direction") == "state"]
-    execution_plugins = [
-        plugin for plugin in plugins if getattr(plugin, "role", "direction") == "execution_modifier"
-    ]
+    execution_plugins = [plugin for plugin in plugins if getattr(plugin, "role", "direction") == "execution_modifier"]
 
     total_weight = sum(weights.get(p.meta.name, 1.0) for p in direction_plugins)
     if total_weight <= 0:

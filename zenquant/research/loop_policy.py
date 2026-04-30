@@ -260,7 +260,11 @@ def plan_next_iteration(
     del anchor_ratio, exploit_ratio, explore_ratio
 
     scenario = ((final_report.get("post_smoke_scenario") or {}).get("scenario")) or ""
-    blockers = set(final_report.get("handoff_blockers") or (final_report.get("full_training_assessment") or {}).get("blockers") or [])
+    blockers = set(
+        final_report.get("handoff_blockers")
+        or (final_report.get("full_training_assessment") or {}).get("blockers")
+        or []
+    )
     candidate_ready_for_handoff = bool(final_report.get("candidate_ready_for_handoff", False))
     terminal_stop_reason = final_report.get("loop_stop_reason")
     history = list(recent_history or [])

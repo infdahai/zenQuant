@@ -115,10 +115,13 @@ def _load_research_hypothesis_spec(path: Path | None = None) -> dict[str, Any]:
     if payload.get("closed_predecessor") != "baseline_anchored_2023_08_hostile_repair":
         raise ValueError("research_hypothesis_spec_invalid:closed_predecessor")
     blocked_repeats = set(payload.get("not_allowed_repeats") or [])
-    if not {
-        "baseline_anchored_defensive_candidate_existence",
-        "baseline_anchored_2023_08_hostile_repair",
-    } <= blocked_repeats:
+    if (
+        not {
+            "baseline_anchored_defensive_candidate_existence",
+            "baseline_anchored_2023_08_hostile_repair",
+        }
+        <= blocked_repeats
+    ):
         raise ValueError("research_hypothesis_spec_invalid:not_allowed_repeats")
     minimal = payload.get("minimal_falsification_plan") or {}
     if minimal.get("single_minimal_falsification_only") is not True:
@@ -157,7 +160,9 @@ def _write_research_closure(output_dir: Path, final_report_payload: dict[str, An
             "new_seed_same_family",
         ],
         "rejected_candidate_summary": {
-            "optuna_candidate_found": bool((final_report_payload.get("search_status") or {}).get("optuna_candidate_found")),
+            "optuna_candidate_found": bool(
+                (final_report_payload.get("search_status") or {}).get("optuna_candidate_found")
+            ),
             "rl_candidate_found": bool((final_report_payload.get("search_status") or {}).get("rl_candidate_found")),
             "candidate_existence_recovered": bool(final_report_payload.get("candidate_existence_recovered", False)),
             "no_tuned_candidate_reason": final_report_payload.get("no_tuned_candidate_reason"),
@@ -559,21 +564,23 @@ def _update_stage2_prepare_cache_metrics(stage2_state: dict[str, Any], *, event:
     if event != "stage2_prepare_variant_validation_progress":
         return
     if unit_label.startswith(("cache_hit:validation_bundle", "cache_miss:validation_bundle")):
-        stage2_state["stage2_validation_bundle_cache_observations"] = int(
-            stage2_state.get("stage2_validation_bundle_cache_observations", 0) or 0
-        ) + 1
+        stage2_state["stage2_validation_bundle_cache_observations"] = (
+            int(stage2_state.get("stage2_validation_bundle_cache_observations", 0) or 0) + 1
+        )
         if unit_label.startswith("cache_hit:validation_bundle"):
-            stage2_state["stage2_validation_bundle_cache_hits"] = int(
-                stage2_state.get("stage2_validation_bundle_cache_hits", 0) or 0
-            ) + 1
+            stage2_state["stage2_validation_bundle_cache_hits"] = (
+                int(stage2_state.get("stage2_validation_bundle_cache_hits", 0) or 0) + 1
+            )
         return
-    stage2_state["prepare_variant_cache_observations"] = int(
-        stage2_state.get("prepare_variant_cache_observations", 0) or 0
-    ) + 1
+    stage2_state["prepare_variant_cache_observations"] = (
+        int(stage2_state.get("prepare_variant_cache_observations", 0) or 0) + 1
+    )
     if unit_label.startswith("cache_hit:"):
         stage2_state["prepare_variant_cache_hits"] = int(stage2_state.get("prepare_variant_cache_hits", 0) or 0) + 1
     if unit_label.startswith(("cache_hit:", "replay_reused:", "baseline_summary_")):
-        stage2_state["prepare_variant_replay_reused"] = int(stage2_state.get("prepare_variant_replay_reused", 0) or 0) + 1
+        stage2_state["prepare_variant_replay_reused"] = (
+            int(stage2_state.get("prepare_variant_replay_reused", 0) or 0) + 1
+        )
     if unit_label.startswith("cache_miss:"):
         reason = unit_label.split("cache_miss:", 1)[1] or "unknown"
         miss_reasons = dict(stage2_state.get("prepare_variant_miss_reasons") or {})
@@ -594,7 +601,9 @@ def _stage2_failure_driver(
         return False, "stage2_prepare_pool_broken" if "stage2_prepare" in normalized else "stage2_compare_pool_broken"
     if "child_process_exited" in normalized:
         return False, (
-            "stage2_prepare_child_process_exited" if "stage2_prepare" in normalized else "stage2_compare_child_process_exited"
+            "stage2_prepare_child_process_exited"
+            if "stage2_prepare" in normalized
+            else "stage2_compare_child_process_exited"
         )
     if "validation_runtime_failure" in normalized:
         return False, "stage2_compare_runtime_exception"
@@ -795,7 +804,9 @@ def _write_development_iteration_report(
         "training_window_coverage": evaluator._training_window_coverage,
         "training_input_contract": evaluator.training_input_contract,
         "search_status": search_status,
-        "optuna_tuned": stage1_payload.get("optuna_trials_payload", [{}])[0].get("summary") if stage1_payload.get("optuna_trials_payload") else None,
+        "optuna_tuned": stage1_payload.get("optuna_trials_payload", [{}])[0].get("summary")
+        if stage1_payload.get("optuna_trials_payload")
+        else None,
         "rl_tuned": (stage1_payload.get("rl_result") or {}).get("summary"),
         "train_candidate_diagnostics": search_status.get("train_candidate_diagnostics"),
         "empty_shortlist_reason": search_status.get("empty_shortlist_reason"),
@@ -812,7 +823,9 @@ def _write_development_iteration_report(
             "scenario": "scenario_development_train_iteration" if candidate_exists else "scenario_b_no_tuned_candidate",
             "category": "train_iteration" if candidate_exists else "search_candidate_quality",
             "should_open_full_training": False,
-            "next_action": "continue_train_search_until_dev_gate" if candidate_exists else "tighten_train_search_and_rerun_smoke",
+            "next_action": "continue_train_search_until_dev_gate"
+            if candidate_exists
+            else "tighten_train_search_and_rerun_smoke",
             "blockers": handoff_blockers,
         },
         "final_verdict": {
@@ -865,9 +878,17 @@ def _write_development_iteration_report(
 def _archive_prior_outputs(output_dir: Path) -> None:
     if not output_dir.exists():
         return
-    archive_root = output_dir.parent / "archive" / "dev_runs" / f"{output_dir.name}_{datetime.now(UTC).strftime('%Y%m%dT%H%M%SZ')}"
+    archive_root = (
+        output_dir.parent / "archive" / "dev_runs" / f"{output_dir.name}_{datetime.now(UTC).strftime('%Y%m%dT%H%M%SZ')}"
+    )
     archive_root.parent.mkdir(parents=True, exist_ok=True)
-    for name in ("campaign_status.json", "framework_optimization.json", "framework_optimization.md", "campaign.log", "checkpoints"):
+    for name in (
+        "campaign_status.json",
+        "framework_optimization.json",
+        "framework_optimization.md",
+        "campaign.log",
+        "checkpoints",
+    ):
         source = output_dir / name
         if source.exists():
             target = archive_root / name
@@ -1090,12 +1111,16 @@ def main() -> None:
             strategy_config=ARCStrategyConfig(execution_timeframe=Timeframe.TF_5M),
         )
         split_spec = default_btc_split_spec()
-        search_space_mode = (
-            args.search_space_mode
-            or ("baseline_anchored_train_only" if args.budget == "smoke" else "execution_first_v2_correlation_constrained")
+        search_space_mode = args.search_space_mode or (
+            "baseline_anchored_train_only" if args.budget == "smoke" else "execution_first_v2_correlation_constrained"
         )
         evaluator = FrameworkEvaluator(base_config, split_spec=split_spec, search_space_mode=search_space_mode)
-        resolved_search_space_profile, resolved_search_space_mode, resolved_baseline_anchored_search, resolved_baseline_anchor_variant = _resolved_search_space_contract(
+        (
+            resolved_search_space_profile,
+            resolved_search_space_mode,
+            resolved_baseline_anchored_search,
+            resolved_baseline_anchor_variant,
+        ) = _resolved_search_space_contract(
             evaluator,
             budget=args.budget,
         )
@@ -1115,9 +1140,7 @@ def main() -> None:
                 "liquidation_in_search": evaluator.readiness["promotion_ready"],
                 "liquidation_blocked_by": None if evaluator.readiness["promotion_ready"] else "not_promotion_ready",
                 "stage1_execution_mode": (
-                    "1h_context_only"
-                    if args.budget == "smoke"
-                    else "5m_lightweight_train_search"
+                    "1h_context_only" if args.budget == "smoke" else "5m_lightweight_train_search"
                 ),
                 "authoritative_verdict_execution_mode": "5m_enabled",
                 "macro_state_sources": [],
@@ -1208,7 +1231,9 @@ def main() -> None:
                 "historical_extension_candidate_contract",
                 {},
             ).get("blocked_by"),
-            historical_extension_train_enabled=evaluator.training_input_contract.get("historical_extension_train_enabled", False),
+            historical_extension_train_enabled=evaluator.training_input_contract.get(
+                "historical_extension_train_enabled", False
+            ),
             historical_extension_mode=evaluator.training_input_contract.get("historical_extension_mode"),
             mixed_era_declared=evaluator.training_input_contract.get("mixed_era_declared", False),
             train_truth_legs=evaluator.training_input_contract.get("train_truth_legs", []),
@@ -1249,20 +1274,20 @@ def main() -> None:
                 "primary_optuna_trials_total": optuna_trials,
                 "fallback_optuna_trials_completed": 0,
                 "fallback_optuna_trials_total": 0,
-        "train_candidate_diagnostics": {
-            "raw_trial_count": 0,
-            "raw_nonzero_trade_trials": 0,
-            "eligible_trade_count_trials": 0,
-            "max_train_trade_count": 0,
-            "max_train_sharpe": 0.0,
-            "max_hostile_proxy_score": 0.0,
-            "hostile_proxy_penalty_applied": 0.0,
-            "min_execution_fragility_score": 0.0,
-            "min_inventory_path_dependence_score": 0.0,
-        },
-        "empty_shortlist_reason": None,
-        "no_tuned_candidate_reason": None,
-        "candidate_existence_goal_met": False,
+                "train_candidate_diagnostics": {
+                    "raw_trial_count": 0,
+                    "raw_nonzero_trade_trials": 0,
+                    "eligible_trade_count_trials": 0,
+                    "max_train_trade_count": 0,
+                    "max_train_sharpe": 0.0,
+                    "max_hostile_proxy_score": 0.0,
+                    "hostile_proxy_penalty_applied": 0.0,
+                    "min_execution_fragility_score": 0.0,
+                    "min_inventory_path_dependence_score": 0.0,
+                },
+                "empty_shortlist_reason": None,
+                "no_tuned_candidate_reason": None,
+                "candidate_existence_goal_met": False,
                 "rl_result": None,
                 "rl_params": None,
                 "rl_failure_reason": None,
@@ -1304,22 +1329,42 @@ def main() -> None:
                         "optuna_candidate_found": optuna_params is not None,
                         "rl_candidate_found": rl_params is not None,
                         "stage1_search_mode": stage1_state.get("stage1_search_mode"),
-                        "stage1_primary_optuna_trials_completed": stage1_state.get("primary_optuna_trials_completed", 0),
-                        "stage1_primary_optuna_trials_total": stage1_state.get("primary_optuna_trials_total", optuna_trials),
-                        "stage1_fallback_optuna_trials_completed": stage1_state.get("fallback_optuna_trials_completed", 0),
+                        "stage1_primary_optuna_trials_completed": stage1_state.get(
+                            "primary_optuna_trials_completed", 0
+                        ),
+                        "stage1_primary_optuna_trials_total": stage1_state.get(
+                            "primary_optuna_trials_total", optuna_trials
+                        ),
+                        "stage1_fallback_optuna_trials_completed": stage1_state.get(
+                            "fallback_optuna_trials_completed", 0
+                        ),
                         "stage1_fallback_optuna_trials_total": stage1_state.get("fallback_optuna_trials_total", 0),
                         "liquidation_in_search": evaluator.readiness["promotion_ready"],
-                        "liquidation_blocked_by": None if evaluator.readiness["promotion_ready"] else "not_promotion_ready",
+                        "liquidation_blocked_by": None
+                        if evaluator.readiness["promotion_ready"]
+                        else "not_promotion_ready",
                         "search_space_profile": resolved_search_space_profile,
                         "search_space_mode": resolved_search_space_mode,
                         "baseline_anchored_search": resolved_baseline_anchored_search,
                         "baseline_anchor_variant": resolved_baseline_anchor_variant,
-                        "five_min_feature_aggregation_enabled": evaluator.training_input_contract["execution_framework"]["five_min_feature_aggregation_enabled"],
-                        "five_min_direct_execution_enabled": evaluator.training_input_contract["execution_framework"]["five_min_direct_execution_enabled"],
-                        "hyperliquid_in_state_features": evaluator.training_input_contract["state_feature_sources"]["hyperliquid_in_state_features"],
-                        "deribit_in_state_features": evaluator.training_input_contract["state_feature_sources"]["deribit_in_state_features"],
-                        "etf_flow_in_state_features": evaluator.training_input_contract["state_feature_sources"]["etf_flow_in_state_features"],
-                        "cme_positioning_in_state_features": state_sources.get("cme_positioning_in_state_features", False),
+                        "five_min_feature_aggregation_enabled": evaluator.training_input_contract[
+                            "execution_framework"
+                        ]["five_min_feature_aggregation_enabled"],
+                        "five_min_direct_execution_enabled": evaluator.training_input_contract["execution_framework"][
+                            "five_min_direct_execution_enabled"
+                        ],
+                        "hyperliquid_in_state_features": evaluator.training_input_contract["state_feature_sources"][
+                            "hyperliquid_in_state_features"
+                        ],
+                        "deribit_in_state_features": evaluator.training_input_contract["state_feature_sources"][
+                            "deribit_in_state_features"
+                        ],
+                        "etf_flow_in_state_features": evaluator.training_input_contract["state_feature_sources"][
+                            "etf_flow_in_state_features"
+                        ],
+                        "cme_positioning_in_state_features": state_sources.get(
+                            "cme_positioning_in_state_features", False
+                        ),
                         "etf_flow_source": state_sources.get("etf_flow_source"),
                         "etf_flow_source_confidence": state_sources.get("etf_flow_source_confidence"),
                         "etf_flow_last_success_at": state_sources.get("etf_flow_last_success_at"),
@@ -1342,7 +1387,11 @@ def main() -> None:
                         "candidate_sources": [
                             "auto_research_train_only",
                             *(["auto_research_train_only_5m_fallback"] if stage1_state.get("used_5m_fallback") else []),
-                            *(([(rl_result or {}).get("candidate_source", "rl_train_shortlist")]) if rl_episodes > 0 else []),
+                            *(
+                                ([(rl_result or {}).get("candidate_source", "rl_train_shortlist")])
+                                if rl_episodes > 0
+                                else []
+                            ),
                         ],
                         "train_only_search": True,
                         "dev_only_ranking": False,
@@ -1394,18 +1443,22 @@ def main() -> None:
                 actual_steps = int(heartbeat.get("actual_steps", heartbeat.get("completed_steps", 0)) or 0)
                 requested_steps = int(heartbeat.get("requested_steps", heartbeat.get("total_steps", 0)) or 0)
                 completed_trials = int(
-                    heartbeat.get("completed_trials", heartbeat.get("completed_candidates", heartbeat.get("completed_steps", 0)))
+                    heartbeat.get(
+                        "completed_trials", heartbeat.get("completed_candidates", heartbeat.get("completed_steps", 0))
+                    )
                     or 0
                 )
                 total_progress = int(
-                    heartbeat.get("total_trials", heartbeat.get("total_candidates", heartbeat.get("total_steps", 0))) or 0
+                    heartbeat.get("total_trials", heartbeat.get("total_candidates", heartbeat.get("total_steps", 0)))
+                    or 0
                 )
                 runtime_s = round(float(heartbeat.get("runtime_s", 0.0) or 0.0), 2)
                 slow_trial = runtime_s >= 180.0 and current_trial > 0
                 pending_trials = int(heartbeat.get("pending_trials", 0) or 0)
                 heartbeat_max_workers = int(heartbeat.get("max_workers", stage1_max_workers or 1) or 1)
                 heartbeat_target_inflight = int(
-                    heartbeat.get("target_inflight", stage1_target_inflight or heartbeat_max_workers) or heartbeat_max_workers
+                    heartbeat.get("target_inflight", stage1_target_inflight or heartbeat_max_workers)
+                    or heartbeat_max_workers
                 )
                 stage1_active_workers_estimate = int(heartbeat.get("active_workers_estimate", pending_trials) or 0)
                 stage1_scheduler_mode = heartbeat.get("scheduler_mode")
@@ -1451,15 +1504,15 @@ def main() -> None:
                             stage1_state["rl_cleanup_warnings"] = list(heartbeat.get("rl_cleanup_warnings") or [])
                     if event in {"rl_progress", "rl_completed"}:
                         stage1_state["rl_timing_count"] = int(stage1_state.get("rl_timing_count", 0) or 0) + 1
-                        stage1_state["rl_episode_runtime_sum_s"] = float(stage1_state.get("rl_episode_runtime_sum_s", 0.0) or 0.0) + float(
-                            heartbeat.get("rl_avg_episode_runtime_s", 0.0) or 0.0
-                        )
-                        stage1_state["rl_cache_hit_sum"] = float(stage1_state.get("rl_cache_hit_sum", 0.0) or 0.0) + float(
-                            heartbeat.get("rl_cache_hit_rate", 0.0) or 0.0
-                        )
-                        stage1_state["rl_event_loop_sum_s"] = float(stage1_state.get("rl_event_loop_sum_s", 0.0) or 0.0) + float(
-                            heartbeat.get("rl_avg_event_loop_s", 0.0) or 0.0
-                        )
+                        stage1_state["rl_episode_runtime_sum_s"] = float(
+                            stage1_state.get("rl_episode_runtime_sum_s", 0.0) or 0.0
+                        ) + float(heartbeat.get("rl_avg_episode_runtime_s", 0.0) or 0.0)
+                        stage1_state["rl_cache_hit_sum"] = float(
+                            stage1_state.get("rl_cache_hit_sum", 0.0) or 0.0
+                        ) + float(heartbeat.get("rl_cache_hit_rate", 0.0) or 0.0)
+                        stage1_state["rl_event_loop_sum_s"] = float(
+                            stage1_state.get("rl_event_loop_sum_s", 0.0) or 0.0
+                        ) + float(heartbeat.get("rl_avg_event_loop_s", 0.0) or 0.0)
                 elif event == "stage1_finalize":
                     subphase = "stage1_finalize"
                 running_event = event in {"trial_running", "scheduler_tick"}
@@ -1480,12 +1533,12 @@ def main() -> None:
                             normalized_completed,
                         )
                     stage1_state["timing_count"] = int(stage1_state.get("timing_count", 0) or 0) + 1
-                    stage1_state["trial_runtime_sum_s"] = float(stage1_state.get("trial_runtime_sum_s", 0.0) or 0.0) + float(
-                        heartbeat.get("trial_runtime_s", 0.0) or 0.0
-                    )
-                    stage1_state["context_build_sum_s"] = float(stage1_state.get("context_build_sum_s", 0.0) or 0.0) + float(
-                        heartbeat.get("replay_context_build_s", 0.0) or 0.0
-                    )
+                    stage1_state["trial_runtime_sum_s"] = float(
+                        stage1_state.get("trial_runtime_sum_s", 0.0) or 0.0
+                    ) + float(heartbeat.get("trial_runtime_s", 0.0) or 0.0)
+                    stage1_state["context_build_sum_s"] = float(
+                        stage1_state.get("context_build_sum_s", 0.0) or 0.0
+                    ) + float(heartbeat.get("replay_context_build_s", 0.0) or 0.0)
                     stage1_state["replay_run_sum_s"] = float(stage1_state.get("replay_run_sum_s", 0.0) or 0.0) + float(
                         heartbeat.get("event_publish_run_s", 0.0) or 0.0
                     )
@@ -1495,30 +1548,30 @@ def main() -> None:
                     stage1_state["event_loop_sum_s"] = float(stage1_state.get("event_loop_sum_s", 0.0) or 0.0) + float(
                         heartbeat.get("event_loop_total_s", 0.0) or 0.0
                     )
-                    stage1_state["metrics_finalize_sum_s"] = float(stage1_state.get("metrics_finalize_sum_s", 0.0) or 0.0) + float(
-                        heartbeat.get("metrics_finalize_s", 0.0) or 0.0
-                    )
-                    stage1_state["diagnostics_finalize_sum_s"] = float(stage1_state.get("diagnostics_finalize_sum_s", 0.0) or 0.0) + float(
-                        heartbeat.get("diagnostics_finalize_s", 0.0) or 0.0
-                    )
-                    stage1_state["terminated_early_sum"] = float(stage1_state.get("terminated_early_sum", 0.0) or 0.0) + float(
-                        heartbeat.get("terminated_early", 0.0) or 0.0
-                    )
-                    stage1_state["indicator_step_sum_s"] = float(stage1_state.get("indicator_step_sum_s", 0.0) or 0.0) + float(
-                        heartbeat.get("indicator_step_total_s", 0.0) or 0.0
-                    )
-                    stage1_state["strategy_step_sum_s"] = float(stage1_state.get("strategy_step_sum_s", 0.0) or 0.0) + float(
-                        heartbeat.get("strategy_step_total_s", 0.0) or 0.0
-                    )
+                    stage1_state["metrics_finalize_sum_s"] = float(
+                        stage1_state.get("metrics_finalize_sum_s", 0.0) or 0.0
+                    ) + float(heartbeat.get("metrics_finalize_s", 0.0) or 0.0)
+                    stage1_state["diagnostics_finalize_sum_s"] = float(
+                        stage1_state.get("diagnostics_finalize_sum_s", 0.0) or 0.0
+                    ) + float(heartbeat.get("diagnostics_finalize_s", 0.0) or 0.0)
+                    stage1_state["terminated_early_sum"] = float(
+                        stage1_state.get("terminated_early_sum", 0.0) or 0.0
+                    ) + float(heartbeat.get("terminated_early", 0.0) or 0.0)
+                    stage1_state["indicator_step_sum_s"] = float(
+                        stage1_state.get("indicator_step_sum_s", 0.0) or 0.0
+                    ) + float(heartbeat.get("indicator_step_total_s", 0.0) or 0.0)
+                    stage1_state["strategy_step_sum_s"] = float(
+                        stage1_state.get("strategy_step_sum_s", 0.0) or 0.0
+                    ) + float(heartbeat.get("strategy_step_total_s", 0.0) or 0.0)
                     stage1_state["risk_step_sum_s"] = float(stage1_state.get("risk_step_sum_s", 0.0) or 0.0) + float(
                         heartbeat.get("risk_step_total_s", 0.0) or 0.0
                     )
-                    stage1_state["execution_step_sum_s"] = float(stage1_state.get("execution_step_sum_s", 0.0) or 0.0) + float(
-                        heartbeat.get("execution_step_total_s", 0.0) or 0.0
-                    )
-                    stage1_state["accounting_step_sum_s"] = float(stage1_state.get("accounting_step_sum_s", 0.0) or 0.0) + float(
-                        heartbeat.get("accounting_step_total_s", 0.0) or 0.0
-                    )
+                    stage1_state["execution_step_sum_s"] = float(
+                        stage1_state.get("execution_step_sum_s", 0.0) or 0.0
+                    ) + float(heartbeat.get("execution_step_total_s", 0.0) or 0.0)
+                    stage1_state["accounting_step_sum_s"] = float(
+                        stage1_state.get("accounting_step_sum_s", 0.0) or 0.0
+                    ) + float(heartbeat.get("accounting_step_total_s", 0.0) or 0.0)
                     stage1_state["replay_context_cache_hit_sum"] = float(
                         stage1_state.get("replay_context_cache_hit_sum", 0.0) or 0.0
                     ) + float(heartbeat.get("replay_context_cache_hit_rate", 0.0) or 0.0)
@@ -1560,7 +1613,9 @@ def main() -> None:
                         if stage1_state.get("stage1_search_mode") == "fallback_5m"
                         else optuna_trials
                     ),
-                    stage1_search_mode=stage1_state.get("stage1_search_mode", "primary_1h" if args.budget == "smoke" else "primary_5m"),
+                    stage1_search_mode=stage1_state.get(
+                        "stage1_search_mode", "primary_1h" if args.budget == "smoke" else "primary_5m"
+                    ),
                     stage1_primary_optuna_trials_completed=stage1_state.get("primary_optuna_trials_completed", 0),
                     stage1_primary_optuna_trials_total=stage1_state.get("primary_optuna_trials_total", optuna_trials),
                     stage1_fallback_optuna_trials_completed=stage1_state.get("fallback_optuna_trials_completed", 0),
@@ -1578,7 +1633,9 @@ def main() -> None:
                     stage1_pending_trials=pending_trials if subphase == "stage1_optuna_search" else None,
                     stage1_max_workers=heartbeat_max_workers if subphase == "stage1_optuna_search" else None,
                     stage1_target_inflight=heartbeat_target_inflight if subphase == "stage1_optuna_search" else None,
-                    stage1_active_workers_estimate=stage1_active_workers_estimate if subphase == "stage1_optuna_search" else None,
+                    stage1_active_workers_estimate=stage1_active_workers_estimate
+                    if subphase == "stage1_optuna_search"
+                    else None,
                     stage1_scheduler_mode=stage1_scheduler_mode if subphase == "stage1_optuna_search" else None,
                     stage1_underfilled=(
                         bool(stage1_state.get("stage1_underfilled", False))
@@ -1586,9 +1643,7 @@ def main() -> None:
                         else None
                     ),
                     stage1_underfilled_reason=(
-                        stage1_state.get("stage1_underfilled_reason")
-                        if subphase == "stage1_optuna_search"
-                        else None
+                        stage1_state.get("stage1_underfilled_reason") if subphase == "stage1_optuna_search" else None
                     ),
                     stage1_avg_trial_runtime_s=(
                         round(float(stage1_state.get("trial_runtime_sum_s", 0.0) or 0.0) / timing_count, 4)
@@ -1668,7 +1723,9 @@ def main() -> None:
                     stage1_budget_mode=stage1_state.get("stage1_budget_mode"),
                     stage1_stop_reason=stage1_state.get("stage1_stop_reason"),
                     rl_budget_mode=heartbeat.get("rl_budget_mode") if subphase == "stage1_rl" else None,
-                    rl_wall_clock_elapsed_s=heartbeat.get("rl_wall_clock_elapsed_s") if subphase == "stage1_rl" else None,
+                    rl_wall_clock_elapsed_s=heartbeat.get("rl_wall_clock_elapsed_s")
+                    if subphase == "stage1_rl"
+                    else None,
                     rl_stop_reason=heartbeat.get("rl_stop_reason") if subphase == "stage1_rl" else None,
                     rl_active_envs=heartbeat.get("rl_active_envs") if subphase == "stage1_rl" else None,
                     rl_avg_episode_runtime_s=(
@@ -1716,19 +1773,19 @@ def main() -> None:
                     stage1_requested_steps=requested_steps if subphase == "stage1_rl" else None,
                     stage1_last_progress_at=_ts(),
                     stage1_last_completed_unit=(
-                        "trial_completed"
-                        if completion_event
-                        else "trial_running"
-                        if running_event
-                        else event
+                        "trial_completed" if completion_event else "trial_running" if running_event else event
                     ),
                     stage1_failure_reason=None,
                     search_space_profile=resolved_search_space_profile,
                     search_space_mode=resolved_search_space_mode,
                     baseline_anchored_search=resolved_baseline_anchored_search,
                     baseline_anchor_variant=resolved_baseline_anchor_variant,
-                    five_min_feature_aggregation_enabled=evaluator.training_input_contract["execution_framework"]["five_min_feature_aggregation_enabled"],
-                    five_min_direct_execution_enabled=evaluator.training_input_contract["execution_framework"]["five_min_direct_execution_enabled"],
+                    five_min_feature_aggregation_enabled=evaluator.training_input_contract["execution_framework"][
+                        "five_min_feature_aggregation_enabled"
+                    ],
+                    five_min_direct_execution_enabled=evaluator.training_input_contract["execution_framework"][
+                        "five_min_direct_execution_enabled"
+                    ],
                     hyperliquid_in_state_features=state_sources["hyperliquid_in_state_features"],
                     deribit_in_state_features=state_sources["deribit_in_state_features"],
                     etf_flow_in_state_features=state_sources["etf_flow_in_state_features"],
@@ -1782,8 +1839,12 @@ def main() -> None:
                 search_space_mode=resolved_search_space_mode,
                 baseline_anchored_search=resolved_baseline_anchored_search,
                 baseline_anchor_variant=resolved_baseline_anchor_variant,
-                five_min_feature_aggregation_enabled=evaluator.training_input_contract["execution_framework"]["five_min_feature_aggregation_enabled"],
-                five_min_direct_execution_enabled=evaluator.training_input_contract["execution_framework"]["five_min_direct_execution_enabled"],
+                five_min_feature_aggregation_enabled=evaluator.training_input_contract["execution_framework"][
+                    "five_min_feature_aggregation_enabled"
+                ],
+                five_min_direct_execution_enabled=evaluator.training_input_contract["execution_framework"][
+                    "five_min_direct_execution_enabled"
+                ],
                 hyperliquid_in_state_features=state_sources["hyperliquid_in_state_features"],
                 deribit_in_state_features=state_sources["deribit_in_state_features"],
                 etf_flow_in_state_features=state_sources["etf_flow_in_state_features"],
@@ -1835,20 +1896,42 @@ def main() -> None:
                         "train_candidate_diagnostics": {
                             "raw_trial_count": len(ranked),
                             "raw_nonzero_trade_trials": sum(
-                                1 for item in ranked if int((item.get("train_metrics") or item.get("metrics") or {}).get("trade_count", 0) or 0) > 0
+                                1
+                                for item in ranked
+                                if int(
+                                    (item.get("train_metrics") or item.get("metrics") or {}).get("trade_count", 0) or 0
+                                )
+                                > 0
                             ),
                             "eligible_trade_count_trials": len(ranked),
                             "max_train_trade_count": max(
-                                (int((item.get("train_metrics") or item.get("metrics") or {}).get("trade_count", 0) or 0) for item in ranked),
+                                (
+                                    int(
+                                        (item.get("train_metrics") or item.get("metrics") or {}).get("trade_count", 0)
+                                        or 0
+                                    )
+                                    for item in ranked
+                                ),
                                 default=0,
                             ),
                             "max_train_sharpe": max(
-                                (float((item.get("train_metrics") or item.get("metrics") or {}).get("sharpe", 0.0) or 0.0) for item in ranked),
+                                (
+                                    float(
+                                        (item.get("train_metrics") or item.get("metrics") or {}).get("sharpe", 0.0)
+                                        or 0.0
+                                    )
+                                    for item in ranked
+                                ),
                                 default=0.0,
                             ),
                             "max_hostile_proxy_score": max(
                                 (
-                                    float((item.get("train_metrics") or item.get("metrics") or {}).get("hostile_proxy_score", 0.0) or 0.0)
+                                    float(
+                                        (item.get("train_metrics") or item.get("metrics") or {}).get(
+                                            "hostile_proxy_score", 0.0
+                                        )
+                                        or 0.0
+                                    )
                                     for item in ranked
                                 ),
                                 default=0.0,
@@ -1868,14 +1951,24 @@ def main() -> None:
                             ),
                             "min_execution_fragility_score": min(
                                 (
-                                    float((item.get("train_metrics") or item.get("metrics") or {}).get("execution_fragility_score", 0.0) or 0.0)
+                                    float(
+                                        (item.get("train_metrics") or item.get("metrics") or {}).get(
+                                            "execution_fragility_score", 0.0
+                                        )
+                                        or 0.0
+                                    )
                                     for item in ranked
                                 ),
                                 default=0.0,
                             ),
                             "min_inventory_path_dependence_score": min(
                                 (
-                                    float((item.get("train_metrics") or item.get("metrics") or {}).get("inventory_path_dependence_score", 0.0) or 0.0)
+                                    float(
+                                        (item.get("train_metrics") or item.get("metrics") or {}).get(
+                                            "inventory_path_dependence_score", 0.0
+                                        )
+                                        or 0.0
+                                    )
                                     for item in ranked
                                 ),
                                 default=0.0,
@@ -1886,10 +1979,15 @@ def main() -> None:
                     }
                     return best_params, ranked, diagnostics
                 return result
+
             try:
                 optuna_params, optuna_trials_payload, optuna_diagnostics = _run_stage1_optuna_search(
-                    search_execution_timeframe=Timeframe.TF_1H if args.budget == "smoke" else evaluator._base_config.execution_timeframe,
-                    search_context_timeframe=Timeframe.TF_1H if args.budget == "smoke" else evaluator._base_config.context_timeframe,
+                    search_execution_timeframe=Timeframe.TF_1H
+                    if args.budget == "smoke"
+                    else evaluator._base_config.execution_timeframe,
+                    search_context_timeframe=Timeframe.TF_1H
+                    if args.budget == "smoke"
+                    else evaluator._base_config.context_timeframe,
                     trial_timeout_s=720.0 if args.budget == "smoke" else None,
                     stage_total_timeout_s=900.0 if args.budget == "smoke" else None,
                     ranking_timeout_s=120.0 if args.budget == "smoke" else None,
@@ -1989,7 +2087,9 @@ def main() -> None:
                         ranking_candidate_timeout_s=360.0,
                         seed_trials=extra_seed_trials,
                     )
-                    stage1_state["fallback_optuna_trials_completed"] = int(stage1_state.get("optuna_trials_completed", 0) or 0)
+                    stage1_state["fallback_optuna_trials_completed"] = int(
+                        stage1_state.get("optuna_trials_completed", 0) or 0
+                    )
                     fallback_optuna_diagnostics = dict(optuna_diagnostics or {})
                     if optuna_params is None and not optuna_trials_payload:
                         primary_train_diagnostics = dict(
@@ -2013,7 +2113,9 @@ def main() -> None:
                             "empty_shortlist_reason": "primary_and_fallback_empty",
                             "no_tuned_candidate_reason": "primary_and_fallback_empty",
                             "primary_empty_shortlist_reason": primary_optuna_diagnostics.get("empty_shortlist_reason"),
-                            "fallback_empty_shortlist_reason": fallback_optuna_diagnostics.get("empty_shortlist_reason"),
+                            "fallback_empty_shortlist_reason": fallback_optuna_diagnostics.get(
+                                "empty_shortlist_reason"
+                            ),
                         }
                 except SearchStageTimeoutError as exc:
                     _append_campaign_log(log_path, f"stage1_optuna_search fallback_5m_failed reason={exc}")
@@ -2022,7 +2124,9 @@ def main() -> None:
                         stage1_optuna_trials_total=1,
                         stage1_search_mode="fallback_5m",
                         stage1_primary_optuna_trials_completed=stage1_state.get("primary_optuna_trials_completed", 0),
-                        stage1_primary_optuna_trials_total=stage1_state.get("primary_optuna_trials_total", optuna_trials),
+                        stage1_primary_optuna_trials_total=stage1_state.get(
+                            "primary_optuna_trials_total", optuna_trials
+                        ),
                         stage1_fallback_optuna_trials_completed=stage1_state.get("fallback_optuna_trials_completed", 0),
                         stage1_fallback_optuna_trials_total=1,
                         stage1_failure_reason=str(exc),
@@ -2035,18 +2139,26 @@ def main() -> None:
                         stage1_optuna_trials_total=1,
                         stage1_search_mode="fallback_5m",
                         stage1_primary_optuna_trials_completed=stage1_state.get("primary_optuna_trials_completed", 0),
-                        stage1_primary_optuna_trials_total=stage1_state.get("primary_optuna_trials_total", optuna_trials),
+                        stage1_primary_optuna_trials_total=stage1_state.get(
+                            "primary_optuna_trials_total", optuna_trials
+                        ),
                         stage1_fallback_optuna_trials_completed=stage1_state.get("fallback_optuna_trials_completed", 0),
                         stage1_fallback_optuna_trials_total=1,
                         stage1_failure_reason=str(exc),
                     )
                     raise
-            stage1_state["train_candidate_diagnostics"] = dict(optuna_diagnostics.get("train_candidate_diagnostics") or {})
+            stage1_state["train_candidate_diagnostics"] = dict(
+                optuna_diagnostics.get("train_candidate_diagnostics") or {}
+            )
             stage1_state["empty_shortlist_reason"] = optuna_diagnostics.get("empty_shortlist_reason")
             stage1_state["no_tuned_candidate_reason"] = optuna_diagnostics.get("no_tuned_candidate_reason")
             stage1_state["candidate_existence_goal_met"] = bool(optuna_params is not None)
-            stage1_state["stage1_budget_mode"] = optuna_diagnostics.get("stage1_budget_mode", stage1_state.get("stage1_budget_mode"))
-            stage1_state["stage1_stop_reason"] = optuna_diagnostics.get("stage1_stop_reason", stage1_state.get("stage1_stop_reason"))
+            stage1_state["stage1_budget_mode"] = optuna_diagnostics.get(
+                "stage1_budget_mode", stage1_state.get("stage1_budget_mode")
+            )
+            stage1_state["stage1_stop_reason"] = optuna_diagnostics.get(
+                "stage1_stop_reason", stage1_state.get("stage1_stop_reason")
+            )
             stage1_state["optuna_params"] = optuna_params
             stage1_state["optuna_trials_payload"] = optuna_trials_payload
             if stage1_state.get("stage1_stop_reason") == "wall_clock_budget_reached":
@@ -2117,11 +2229,21 @@ def main() -> None:
                     search_space_mode=resolved_search_space_mode,
                     baseline_anchored_search=resolved_baseline_anchored_search,
                     baseline_anchor_variant=resolved_baseline_anchor_variant,
-                    five_min_feature_aggregation_enabled=evaluator.training_input_contract["execution_framework"]["five_min_feature_aggregation_enabled"],
-                    five_min_direct_execution_enabled=evaluator.training_input_contract["execution_framework"]["five_min_direct_execution_enabled"],
-                    hyperliquid_in_state_features=evaluator.training_input_contract["state_feature_sources"]["hyperliquid_in_state_features"],
-                    deribit_in_state_features=evaluator.training_input_contract["state_feature_sources"]["deribit_in_state_features"],
-                    etf_flow_in_state_features=evaluator.training_input_contract["state_feature_sources"]["etf_flow_in_state_features"],
+                    five_min_feature_aggregation_enabled=evaluator.training_input_contract["execution_framework"][
+                        "five_min_feature_aggregation_enabled"
+                    ],
+                    five_min_direct_execution_enabled=evaluator.training_input_contract["execution_framework"][
+                        "five_min_direct_execution_enabled"
+                    ],
+                    hyperliquid_in_state_features=evaluator.training_input_contract["state_feature_sources"][
+                        "hyperliquid_in_state_features"
+                    ],
+                    deribit_in_state_features=evaluator.training_input_contract["state_feature_sources"][
+                        "deribit_in_state_features"
+                    ],
+                    etf_flow_in_state_features=evaluator.training_input_contract["state_feature_sources"][
+                        "etf_flow_in_state_features"
+                    ],
                     cme_positioning_in_state_features=state_sources.get("cme_positioning_in_state_features", False),
                     etf_flow_source=state_sources.get("etf_flow_source"),
                     etf_flow_source_confidence=state_sources.get("etf_flow_source_confidence"),
@@ -2219,11 +2341,7 @@ def main() -> None:
                     stage1_state["rl_cleanup_completed"] = rl_search_status.get("rl_cleanup_completed")
                     stage1_state["rl_cleanup_warnings"] = list(rl_search_status.get("rl_cleanup_warnings") or [])
             else:
-                skip_reason = (
-                    "budget=smoke"
-                    if args.budget == "smoke"
-                    else "budget=disabled"
-                )
+                skip_reason = "budget=smoke" if args.budget == "smoke" else "budget=disabled"
                 _append_campaign_log(log_path, f"stage1_rl skipped {skip_reason}")
             rl_params = rl_result.get("best_params") if rl_result else None
             stage1_state["rl_result"] = rl_result
@@ -2235,7 +2353,9 @@ def main() -> None:
                 rl_result=rl_result,
                 optuna_trials_payload=optuna_trials_payload,
                 optuna_trials_completed=int(stage1_state.get("optuna_trials_completed", 0) or 0),
-                rl_episodes_completed=min(int((rl_result or {}).get("search_status", {}).get("episodes_completed", 0)), rl_episodes),
+                rl_episodes_completed=min(
+                    int((rl_result or {}).get("search_status", {}).get("episodes_completed", 0)), rl_episodes
+                ),
             )
             stage1_payload = _write_minimal_stage1_checkpoint(
                 search_outcome="success" if (optuna_params is not None or rl_params is not None) else "empty",
@@ -2244,7 +2364,9 @@ def main() -> None:
                 rl_result=rl_result,
                 optuna_trials_payload=optuna_trials_payload,
                 optuna_trials_completed=int(stage1_state.get("optuna_trials_completed", 0) or 0),
-                rl_episodes_completed=min(int((rl_result or {}).get("search_status", {}).get("episodes_completed", 0)), rl_episodes),
+                rl_episodes_completed=min(
+                    int((rl_result or {}).get("search_status", {}).get("episodes_completed", 0)), rl_episodes
+                ),
             )
             optuna_summary = None
             rl_summary = None
@@ -2295,11 +2417,7 @@ def main() -> None:
                     "blockers": ["development_stage1_train_only"],
                 }
                 stage1_best_score = max(
-                    [
-                        summary.robust_score
-                        for summary in (optuna_summary, rl_summary)
-                        if summary is not None
-                    ],
+                    [summary.robust_score for summary in (optuna_summary, rl_summary) if summary is not None],
                     default=0.0,
                 )
                 stage1_payload["search_status"]["full_training_allowed"] = stage1_assessment["ready"]
@@ -2339,7 +2457,9 @@ def main() -> None:
                 stage1_payload["search_status"]["failure_detail"] = stage1_state["rl_failure_reason"]
             _stage1_heartbeat(
                 event="stage1_finalize",
-                completed_steps=min(int((rl_result or {}).get("search_status", {}).get("episodes_completed", 0)), rl_episodes),
+                completed_steps=min(
+                    int((rl_result or {}).get("search_status", {}).get("episodes_completed", 0)), rl_episodes
+                ),
                 total_steps=rl_episodes,
                 runtime_s=float((_read_json(status_path) or {}).get("stage1_runtime_s", 0.0)),
                 best_params_so_far=stage1_payload["optuna_params"] or stage1_payload["rl_params"],
@@ -2382,9 +2502,7 @@ def main() -> None:
             baseline_anchor_variant=stage1_payload["search_status"].get("baseline_anchor_variant"),
             resume_supported=True,
             full_training_allowed=stage1_payload["search_status"].get("full_training_allowed", False),
-            full_training_decision=stage1_payload["search_status"].get(
-                "full_training_decision", "defer_full_training"
-            ),
+            full_training_decision=stage1_payload["search_status"].get("full_training_decision", "defer_full_training"),
             full_training_blockers=stage1_payload["search_status"].get(
                 "full_training_blockers", ["smoke_campaign_incomplete"]
             ),
@@ -2395,11 +2513,21 @@ def main() -> None:
             stage1_last_completed_unit=stage1_payload["search_status"].get("search_outcome"),
             stage1_budget_mode=stage1_payload["search_status"].get("stage1_budget_mode"),
             stage1_stop_reason=stage1_payload["search_status"].get("stage1_stop_reason"),
-            stage1_avg_indicator_step_s=_read_json(status_path).get("stage1_avg_indicator_step_s") if _read_json(status_path) else None,
-            stage1_avg_strategy_step_s=_read_json(status_path).get("stage1_avg_strategy_step_s") if _read_json(status_path) else None,
-            stage1_avg_risk_step_s=_read_json(status_path).get("stage1_avg_risk_step_s") if _read_json(status_path) else None,
-            stage1_avg_execution_step_s=_read_json(status_path).get("stage1_avg_execution_step_s") if _read_json(status_path) else None,
-            stage1_avg_accounting_step_s=_read_json(status_path).get("stage1_avg_accounting_step_s") if _read_json(status_path) else None,
+            stage1_avg_indicator_step_s=_read_json(status_path).get("stage1_avg_indicator_step_s")
+            if _read_json(status_path)
+            else None,
+            stage1_avg_strategy_step_s=_read_json(status_path).get("stage1_avg_strategy_step_s")
+            if _read_json(status_path)
+            else None,
+            stage1_avg_risk_step_s=_read_json(status_path).get("stage1_avg_risk_step_s")
+            if _read_json(status_path)
+            else None,
+            stage1_avg_execution_step_s=_read_json(status_path).get("stage1_avg_execution_step_s")
+            if _read_json(status_path)
+            else None,
+            stage1_avg_accounting_step_s=_read_json(status_path).get("stage1_avg_accounting_step_s")
+            if _read_json(status_path)
+            else None,
             train_candidate_diagnostics=stage1_payload["search_status"].get("train_candidate_diagnostics"),
             empty_shortlist_reason=stage1_payload["search_status"].get("empty_shortlist_reason"),
             no_tuned_candidate_reason=stage1_payload["search_status"].get("no_tuned_candidate_reason"),
@@ -2407,7 +2535,9 @@ def main() -> None:
             candidate_checkpoint_written=written_candidate_checkpoint is not None,
             candidate_checkpoint_status=(written_candidate_checkpoint or {}).get("checkpoint_status"),
             candidate_checkpoint_variant=(written_candidate_checkpoint or {}).get("candidate_variant"),
-            candidate_checkpoint_score=((written_candidate_checkpoint or {}).get("selected_checkpoint_candidate") or {}).get("score"),
+            candidate_checkpoint_score=(
+                (written_candidate_checkpoint or {}).get("selected_checkpoint_candidate") or {}
+            ).get("score"),
             candidate_checkpoint_origin_phase=(written_candidate_checkpoint or {}).get("origin_phase"),
         )
 
@@ -2439,10 +2569,14 @@ def main() -> None:
 
             def _stage2_timeout_check() -> None:
                 now = datetime.now(UTC).timestamp()
-                current_subphase = stage2_state.get("current_subphase") or (_read_json(status_path) or {}).get("stage2_subphase")
+                current_subphase = stage2_state.get("current_subphase") or (_read_json(status_path) or {}).get(
+                    "stage2_subphase"
+                )
                 total_timeout = float(stage2_budgets[budget_key]["total"])
                 subphase_timeout = float(stage2_budgets[budget_key]["subphases"].get(current_subphase, total_timeout))
-                no_progress_timeout = float(stage2_budgets[budget_key]["no_progress"].get(current_subphase, subphase_timeout))
+                no_progress_timeout = float(
+                    stage2_budgets[budget_key]["no_progress"].get(current_subphase, subphase_timeout)
+                )
                 if (now - stage2_started_at) > total_timeout:
                     raise SearchStageTimeoutError("stage2_total_timeout")
                 if (now - float(stage2_state.get("subphase_started_at") or stage2_started_at)) > subphase_timeout:
@@ -2451,7 +2585,7 @@ def main() -> None:
                     )
                 if (now - stage2_state["last_progress_at"]) > no_progress_timeout:
                     raise SearchStageTimeoutError(
-                        f"{current_subphase}_no_progress_timeout: subphase={( _read_json(status_path) or {}).get('stage2_subphase')} "
+                        f"{current_subphase}_no_progress_timeout: subphase={(_read_json(status_path) or {}).get('stage2_subphase')} "
                         f"last_unit={stage2_state['last_unit']}"
                     )
 
@@ -2496,10 +2630,7 @@ def main() -> None:
                 stage2_state["total"] = total
                 stage2_state["last_progress_at"] = now_ts
                 stage2_state["last_unit"] = (
-                    heartbeat.get("unit")
-                    or heartbeat.get("window_label")
-                    or heartbeat.get("variant")
-                    or event
+                    heartbeat.get("unit") or heartbeat.get("window_label") or heartbeat.get("variant") or event
                 )
                 unit_label = str(stage2_state["last_unit"] or "")
                 _update_stage2_prepare_cache_metrics(stage2_state, event=event, unit_label=unit_label)
@@ -2567,8 +2698,8 @@ def main() -> None:
                         round(
                             float(stage2_state.get("stage2_validation_bundle_cache_hits", 0) or 0)
                             / max(1, int(stage2_state.get("stage2_validation_bundle_cache_observations", 0) or 0)),
-                        4,
-                    )
+                            4,
+                        )
                         if int(stage2_state.get("stage2_validation_bundle_cache_observations", 0) or 0) > 0
                         else 0.0
                     ),
@@ -2597,7 +2728,9 @@ def main() -> None:
                 stage2_last_progress_at=_ts(),
                 stage2_last_completed_unit=None,
                 stage2_failure_reason=None,
-                stage2_prepare_timeout_s=float(stage2_budgets[budget_key]["no_progress"].get("stage2_prepare_variants", 0.0)),
+                stage2_prepare_timeout_s=float(
+                    stage2_budgets[budget_key]["no_progress"].get("stage2_prepare_variants", 0.0)
+                ),
                 stage2_prepare_last_active_unit=None,
                 stage2_prepare_deadlock_suspected=False,
                 stage2_prepare_failure_driver=None,
@@ -2659,7 +2792,12 @@ def main() -> None:
                             dev_gate_interval=args.dev_gate_interval,
                             full_stage2_executed_this_round=True,
                         )
-                        _stage2_heartbeat(event="stage2_prepare_variants_progress", variant="no_tuned_candidate", completed_units=4, total_units=4)
+                        _stage2_heartbeat(
+                            event="stage2_prepare_variants_progress",
+                            variant="no_tuned_candidate",
+                            completed_units=4,
+                            total_units=4,
+                        )
                     else:
                         full_stage2_budget = args.budget == "high"
                         report = evaluator.final_report(
@@ -2680,7 +2818,9 @@ def main() -> None:
                         )
                 _stage2_timeout_check()
             except SearchStageTimeoutError as exc:
-                existing_checkpoint = written_candidate_checkpoint if isinstance(written_candidate_checkpoint, dict) else None
+                existing_checkpoint = (
+                    written_candidate_checkpoint if isinstance(written_candidate_checkpoint, dict) else None
+                )
                 deadlock_suspected, failure_driver = _stage2_failure_driver(
                     str(exc),
                     rl_device=stage1_state.get("rl_device"),
@@ -2688,11 +2828,18 @@ def main() -> None:
                 )
                 if existing_checkpoint is not None:
                     failure_reason = str(exc)
-                    degraded_blockers = {"prepare_timeout", "pre_validation_rejection", "validation_timeout", "compare_timeout"}
+                    degraded_blockers = {
+                        "prepare_timeout",
+                        "pre_validation_rejection",
+                        "validation_timeout",
+                        "compare_timeout",
+                    }
                     degraded_reason = next((item for item in degraded_blockers if item in failure_reason), None)
                     updated_payload = dict(existing_checkpoint)
                     updated_payload["created_at"] = _ts()
-                    updated_payload["checkpoint_status"] = "degraded" if degraded_reason else updated_payload.get("checkpoint_status", "usable")
+                    updated_payload["checkpoint_status"] = (
+                        "degraded" if degraded_reason else updated_payload.get("checkpoint_status", "usable")
+                    )
                     updated_payload["blocked_by"] = degraded_reason
                     updated_payload["failure_reason"] = failure_reason
                     updated_payload["origin_phase"] = (
@@ -2725,13 +2872,17 @@ def main() -> None:
                     candidate_checkpoint_written=written_candidate_checkpoint is not None,
                     candidate_checkpoint_status=(written_candidate_checkpoint or {}).get("checkpoint_status"),
                     candidate_checkpoint_variant=(written_candidate_checkpoint or {}).get("candidate_variant"),
-                    candidate_checkpoint_score=((written_candidate_checkpoint or {}).get("selected_checkpoint_candidate") or {}).get("score"),
+                    candidate_checkpoint_score=(
+                        (written_candidate_checkpoint or {}).get("selected_checkpoint_candidate") or {}
+                    ).get("score"),
                     candidate_checkpoint_origin_phase=(written_candidate_checkpoint or {}).get("origin_phase"),
                 )
                 _append_campaign_log(log_path, f"stage2_full_verdict failed reason={exc}")
                 raise
             except Exception as exc:
-                existing_checkpoint = written_candidate_checkpoint if isinstance(written_candidate_checkpoint, dict) else None
+                existing_checkpoint = (
+                    written_candidate_checkpoint if isinstance(written_candidate_checkpoint, dict) else None
+                )
                 failure_detail = f"{type(exc).__name__}: {exc}"
                 deadlock_suspected, failure_driver = _stage2_failure_driver(
                     failure_detail,
@@ -2774,7 +2925,9 @@ def main() -> None:
                     candidate_checkpoint_written=written_candidate_checkpoint is not None,
                     candidate_checkpoint_status=(written_candidate_checkpoint or {}).get("checkpoint_status"),
                     candidate_checkpoint_variant=(written_candidate_checkpoint or {}).get("candidate_variant"),
-                    candidate_checkpoint_score=((written_candidate_checkpoint or {}).get("selected_checkpoint_candidate") or {}).get("score"),
+                    candidate_checkpoint_score=(
+                        (written_candidate_checkpoint or {}).get("selected_checkpoint_candidate") or {}
+                    ).get("score"),
                     candidate_checkpoint_origin_phase=(written_candidate_checkpoint or {}).get("origin_phase"),
                 )
                 _append_campaign_log(log_path, f"stage2_full_verdict failed exception={failure_detail}")
@@ -2782,14 +2935,28 @@ def main() -> None:
             if args.development_dev_gate and smoke_stage2:
                 report.smoke_completed = True
             if args.development_dev_gate:
-                _stage2_heartbeat(event="stage2_rank_variants_completed", completed_units=stage2_state["completed"], total_units=stage2_state["total"])
-                _append_campaign_log(log_path, "stage2_signal_audit started")
-                report.signal_audit_summary = generate_signal_combination_audit(
-                    data_root=base_config.root_dir,
-                    symbol=base_config.symbol,
-                    output_dir=output_dir.parent / "signal_combination",
-                    profile_path=base_config.profile_path or Path("config/profiles/default.toml"),
+                _stage2_heartbeat(
+                    event="stage2_rank_variants_completed",
+                    completed_units=stage2_state["completed"],
+                    total_units=stage2_state["total"],
                 )
+                _append_campaign_log(log_path, "stage2_signal_audit started")
+                try:
+                    report.signal_audit_summary = generate_signal_combination_audit(
+                        data_root=base_config.root_dir,
+                        symbol=base_config.symbol,
+                        output_dir=output_dir.parent / "signal_combination",
+                        profile_path=base_config.profile_path or Path("config/profiles/default.toml"),
+                    )
+                except RuntimeError as exc:
+                    if "no historical events available for replay" not in str(exc):
+                        raise
+                    report.signal_audit_summary = {
+                        "status": "blocked",
+                        "blocked_by": "signal_audit_historical_data_missing",
+                        "detail": str(exc),
+                    }
+                    _append_campaign_log(log_path, f"stage2_signal_audit blocked exception={exc}")
                 _stage2_heartbeat(
                     event="stage2_write_artifacts_started",
                     completed_units=stage2_state["completed"] + 1,
@@ -2800,7 +2967,9 @@ def main() -> None:
                 write_search_report(final_json, report)
                 final_md.write_text(build_markdown_report(report), encoding="utf-8")
                 final_json_payload = _read_json(final_json) or {}
-                final_json_payload["stage2_prepare_variant_cache_hits"] = stage2_state.get("prepare_variant_cache_hits", 0)
+                final_json_payload["stage2_prepare_variant_cache_hits"] = stage2_state.get(
+                    "prepare_variant_cache_hits", 0
+                )
                 final_json_payload["stage2_prepare_variant_replay_reused"] = stage2_state.get(
                     "prepare_variant_replay_reused",
                     0,
@@ -2864,7 +3033,9 @@ def main() -> None:
                     "loop_stop_reason": final_json_payload.get("loop_stop_reason"),
                     "hostile_regression_driver": final_json_payload.get("hostile_regression_driver"),
                 }
-                existing_checkpoint = written_candidate_checkpoint if isinstance(written_candidate_checkpoint, dict) else None
+                existing_checkpoint = (
+                    written_candidate_checkpoint if isinstance(written_candidate_checkpoint, dict) else None
+                )
                 if existing_checkpoint is not None:
                     report_variant = existing_checkpoint.get("candidate_variant")
                     report_summary = None
@@ -2877,8 +3048,14 @@ def main() -> None:
                     updated_payload["created_at"] = _ts()
                     updated_payload["checkpoint_status"] = "degraded" if blocked_by else "usable"
                     updated_payload["blocked_by"] = blocked_by
-                    updated_payload["failure_reason"] = report_summary.get("promotion_failure_reason") if isinstance(report_summary, dict) else None
-                    updated_payload["origin_phase"] = "stage2_prepare" if blocked_by in {"prepare_timeout", "pre_validation_rejection"} else "stage2_compare"
+                    updated_payload["failure_reason"] = (
+                        report_summary.get("promotion_failure_reason") if isinstance(report_summary, dict) else None
+                    )
+                    updated_payload["origin_phase"] = (
+                        "stage2_prepare"
+                        if blocked_by in {"prepare_timeout", "pre_validation_rejection"}
+                        else "stage2_compare"
+                    )
                     if isinstance(report_summary, dict):
                         if report_variant == "optuna_tuned":
                             updated_payload["optuna_summary"] = dict(report_summary)
@@ -2955,7 +3132,9 @@ def main() -> None:
             candidate_checkpoint_written=written_candidate_checkpoint is not None,
             candidate_checkpoint_status=(written_candidate_checkpoint or {}).get("checkpoint_status"),
             candidate_checkpoint_variant=(written_candidate_checkpoint or {}).get("candidate_variant"),
-            candidate_checkpoint_score=((written_candidate_checkpoint or {}).get("selected_checkpoint_candidate") or {}).get("score"),
+            candidate_checkpoint_score=(
+                (written_candidate_checkpoint or {}).get("selected_checkpoint_candidate") or {}
+            ).get("score"),
             candidate_checkpoint_origin_phase=(written_candidate_checkpoint or {}).get("origin_phase"),
         )
         _append_campaign_log(log_path, f"campaign_completed scenario={post_smoke_scenario.get('scenario')}")
@@ -2983,7 +3162,9 @@ def main() -> None:
             candidate_checkpoint_written=isinstance(locals().get("written_candidate_checkpoint"), dict),
             candidate_checkpoint_status=(locals().get("written_candidate_checkpoint") or {}).get("checkpoint_status"),
             candidate_checkpoint_variant=(locals().get("written_candidate_checkpoint") or {}).get("candidate_variant"),
-            candidate_checkpoint_score=(((locals().get("written_candidate_checkpoint") or {}).get("selected_checkpoint_candidate")) or {}).get("score"),
+            candidate_checkpoint_score=(
+                ((locals().get("written_candidate_checkpoint") or {}).get("selected_checkpoint_candidate")) or {}
+            ).get("score"),
             candidate_checkpoint_origin_phase=(locals().get("written_candidate_checkpoint") or {}).get("origin_phase"),
         )
         _append_campaign_log(log_path, f"campaign_failed timeout={reason}")

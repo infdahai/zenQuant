@@ -56,7 +56,17 @@ class TestBacktestInvariants(unittest.TestCase):
                 _open_interest_rows(),
             )
 
-            self.result = HistoricalBacktest(HistoricalBacktestConfig(root_dir=root, symbol="BTCUSDT")).run()
+            self.result = HistoricalBacktest(
+                HistoricalBacktestConfig(
+                    root_dir=root,
+                    symbol="BTCUSDT",
+                    macro_dir=root / "macro",
+                    options_dir=root / "deribit_options",
+                    cot_path=root / "cftc" / "cot_btc.parquet",
+                    liquidation_dir=root / "liquidations" / "aggregated",
+                    profile_path=None,
+                )
+            ).run()
 
     def test_sharpe_is_positive(self) -> None:
         """Sharpe must be positive (strategy should be profitable on synthetic uptrend)."""

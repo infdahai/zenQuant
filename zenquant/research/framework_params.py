@@ -90,7 +90,12 @@ def hostile_constraint_violations(params: dict[str, Any]) -> list[str]:
         and pyramid_short_add_pct > 0.12
     ):
         violations.append("aggressive_long_and_short_pyramiding")
-    if dca_spacing_atr is not None and dca_size_decay is not None and dca_spacing_atr <= 0.75 and dca_size_decay <= 0.60:
+    if (
+        dca_spacing_atr is not None
+        and dca_size_decay is not None
+        and dca_spacing_atr <= 0.75
+        and dca_size_decay <= 0.60
+    ):
         violations.append("tight_dca_spacing_with_heavy_inventory_reloading")
     if (
         flip_min_confidence is not None

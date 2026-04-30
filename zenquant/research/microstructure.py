@@ -139,10 +139,7 @@ def _normalize_snapshots(
     top_ask_size = ask_sizes.map(lambda levels: float(levels[0]) if levels else 0.0)
     normalized["microprice"] = np.where(
         (top_bid_size + top_ask_size) > 0,
-        (
-            normalized["best_ask"] * top_bid_size + normalized["best_bid"] * top_ask_size
-        )
-        / (top_bid_size + top_ask_size),
+        (normalized["best_ask"] * top_bid_size + normalized["best_bid"] * top_ask_size) / (top_bid_size + top_ask_size),
         normalized["mid_price"],
     )
     normalized["microprice_dev_bps"] = np.where(
@@ -167,11 +164,7 @@ def _normalize_trades(data_root: Path, *, venue: str, symbol: str) -> pd.DataFra
     frame["price"] = pd.to_numeric(frame.get("price"), errors="coerce")
     frame["size"] = pd.to_numeric(frame.get("size"), errors="coerce").fillna(0.0)
     frame["side_sign"] = (
-        frame.get("side", pd.Series(dtype="object"))
-        .astype(str)
-        .str.lower()
-        .map({"buy": 1.0, "sell": -1.0})
-        .fillna(0.0)
+        frame.get("side", pd.Series(dtype="object")).astype(str).str.lower().map({"buy": 1.0, "sell": -1.0}).fillna(0.0)
     )
     frame = frame.loc[frame["ts_ns"].notna() & frame["price"].notna()].copy()
     return frame.sort_values("ts_ns", kind="stable")
@@ -220,9 +213,9 @@ def build_microstructure_dataset_contract(
         "execution_modifier_only": True,
         "promote_truth": False,
         "pit_safe_required": True,
-        "blocked_by": [] if len(missing_files) == 0 and not snapshots.empty else (
-            [f"missing:{name}" for name in missing_files] + ([] if not snapshots.empty else ["snapshots_missing"])
-        ),
+        "blocked_by": []
+        if len(missing_files) == 0 and not snapshots.empty
+        else ([f"missing:{name}" for name in missing_files] + ([] if not snapshots.empty else ["snapshots_missing"])),
     }
     payload["artifact_id"] = _artifact_id(payload)
     return payload
@@ -300,7 +293,9 @@ def build_microstructure_preprocessing_review(
         return payload
 
     cadence_ns = cadence_ms * 1_000_000
-    raw_snapshot_ts = pd.to_numeric(_read_parquet(data_root / "snapshots.parquet").get("ts_ns"), errors="coerce").dropna()
+    raw_snapshot_ts = pd.to_numeric(
+        _read_parquet(data_root / "snapshots.parquet").get("ts_ns"), errors="coerce"
+    ).dropna()
     duplicate_snapshot_rows = int(raw_snapshot_ts.duplicated().sum()) if not raw_snapshot_ts.empty else 0
     reordered_snapshot_rows = int((raw_snapshot_ts.diff() < 0).fillna(False).sum()) if not raw_snapshot_ts.empty else 0
     gaps = snapshots["ts_ns"].diff().fillna(0)
@@ -391,8 +386,12 @@ def _aggregate_windows(
     feature_rows: list[dict[str, Any]] = []
     for window_start_ns, group in grouped:
         last_row = group.iloc[-1]
-        trade_slice = trades.loc[(trades["ts_ns"] >= window_start_ns) & (trades["ts_ns"] < window_start_ns + cadence_ns)].copy()
-        aggressive_flow = float((trade_slice["size"] * trade_slice["side_sign"]).sum()) if not trade_slice.empty else 0.0
+        trade_slice = trades.loc[
+            (trades["ts_ns"] >= window_start_ns) & (trades["ts_ns"] < window_start_ns + cadence_ns)
+        ].copy()
+        aggressive_flow = (
+            float((trade_slice["size"] * trade_slice["side_sign"]).sum()) if not trade_slice.empty else 0.0
+        )
         trade_volume = float(trade_slice["size"].sum()) if not trade_slice.empty else 0.0
         flow_imbalance = aggressive_flow / trade_volume if trade_volume > 0 else 0.0
         feature_rows.append(
@@ -418,8 +417,8 @@ def _aggregate_windows(
 
     windows["volatility_burst"] = np.where(rolling_std > 0, returns_bps.abs() / rolling_std.replace(0.0, np.nan), 0.0)
     windows["volatility_burst"] = windows["volatility_burst"].replace([np.inf, -np.inf], 0.0).fillna(0.0)
-    windows["liquidity_vacuum_score"] = (
-        windows["spread_bps"].clip(lower=0.0) * (1.0 - windows["book_imbalance"].abs().clip(upper=0.99))
+    windows["liquidity_vacuum_score"] = windows["spread_bps"].clip(lower=0.0) * (
+        1.0 - windows["book_imbalance"].abs().clip(upper=0.99)
     )
     windows["toxicity_proxy"] = windows["spread_bps"].clip(lower=0.0) * windows["aggressive_flow_imbalance"].abs()
 
@@ -508,7 +507,9 @@ def _f1_score(y_true: np.ndarray, y_pred: np.ndarray) -> float:
     return 2.0 * precision * recall / (precision + recall)
 
 
-def _evaluate_linear_baseline(frame: pd.DataFrame, *, variant_name: str, horizon_ms: int, cadence_ms: int) -> dict[str, Any]:
+def _evaluate_linear_baseline(
+    frame: pd.DataFrame, *, variant_name: str, horizon_ms: int, cadence_ms: int
+) -> dict[str, Any]:
     cadence_ns = cadence_ms * 1_000_000
     horizon_steps = max(1, round(horizon_ms * 1_000_000 / cadence_ns))
     base = frame.copy()
@@ -727,8 +728,10 @@ def build_microstructure_admission_review(
         cadence_ms=cadence_ms,
         horizon_ms=horizon_ms,
     )
-    blocked_by = list(dataset.get("blocked_by", [])) + list(preprocessing.get("blocked_by", [])) + list(
-        baseline.get("blocked_by", [])
+    blocked_by = (
+        list(dataset.get("blocked_by", []))
+        + list(preprocessing.get("blocked_by", []))
+        + list(baseline.get("blocked_by", []))
     )
     payload = {
         "generated_at": _ts(),

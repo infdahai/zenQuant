@@ -47,7 +47,9 @@ class SignalCombinationAuditTests(unittest.TestCase):
             entry.normalized_final_research_weight for entry in audit.signals if entry.role == "direction"
         ]
         self.assertAlmostEqual(sum(direction_weights), 1.0, places=3)
-        self.assertTrue(any(pair["left"] == "cvd_signal" or pair["right"] == "cvd_signal" for pair in audit.redundant_pairs))
+        self.assertTrue(
+            any(pair["left"] == "cvd_signal" or pair["right"] == "cvd_signal" for pair in audit.redundant_pairs)
+        )
         self.assertGreaterEqual(audit.summary["same_role_redundant_pair_count"], 1)
         options_entry = next(entry for entry in audit.signals if entry.name == "options_vol_signal")
         self.assertEqual(options_entry.recommended_weight_adjustment, "research_only")

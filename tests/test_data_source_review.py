@@ -28,7 +28,9 @@ def _load_module(name: str, path: str):
 
 REVIEW = _load_module("review_hyperliquid_admission_module", "scripts/review_hyperliquid_admission.py")
 MVRV_REVIEW = _load_module("review_mvrv_admission_module", "scripts/review_mvrv_admission.py")
-BLOCK_FLOW_REVIEW = _load_module("review_deribit_block_flow_admission_module", "scripts/review_deribit_block_flow_admission.py")
+BLOCK_FLOW_REVIEW = _load_module(
+    "review_deribit_block_flow_admission_module", "scripts/review_deribit_block_flow_admission.py"
+)
 
 
 def _ts(year: int, month: int, day: int, hour: int) -> int:

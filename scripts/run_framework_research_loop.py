@@ -290,13 +290,7 @@ def _campaign_bootstrap_state(run_dir: Path) -> tuple[bool, bool]:
 
 
 def _campaign_failed_authoritatively(snapshot: dict[str, Any]) -> bool:
-    return bool(
-        snapshot.get("status") == "failed"
-        and (
-            snapshot.get("failure_reason")
-            or snapshot.get("blocked_by")
-        )
-    )
+    return bool(snapshot.get("status") == "failed" and (snapshot.get("failure_reason") or snapshot.get("blocked_by")))
 
 
 def _parse_ts(value: Any) -> datetime | None:
@@ -528,7 +522,9 @@ def _select_candidate_checkpoint(
             return payload
     return max(
         usable,
-        key=lambda item: _safe_float(((item.get("selected_checkpoint_candidate") or {}).get("score")) or item.get("stage1_best_score")),
+        key=lambda item: _safe_float(
+            ((item.get("selected_checkpoint_candidate") or {}).get("score")) or item.get("stage1_best_score")
+        ),
     )
 
 
@@ -539,7 +535,9 @@ def _merge_seed_trials_with_candidate(
     merged: list[dict[str, Any]] = []
     seen: set[str] = set()
     candidate_params = candidate_checkpoint.get("params") if isinstance(candidate_checkpoint, dict) else None
-    for item in ([candidate_params] if isinstance(candidate_params, dict) and candidate_params else []) + list(seed_trials):
+    for item in ([candidate_params] if isinstance(candidate_params, dict) and candidate_params else []) + list(
+        seed_trials
+    ):
         if not isinstance(item, dict) or not item:
             continue
         key = json.dumps(item, sort_keys=True, separators=(",", ":"))
@@ -554,7 +552,11 @@ def _write_training_monitor(loop_dir: Path) -> dict[str, Any]:
     loop_status = _read_json(loop_dir / "loop_status.json") or {}
     records = _recent_history_records(loop_dir)
     current_run_dir = loop_status.get("current_run_dir")
-    snapshot = _current_campaign_snapshot(Path(current_run_dir)) if isinstance(current_run_dir, str) and current_run_dir else {}
+    snapshot = (
+        _current_campaign_snapshot(Path(current_run_dir))
+        if isinstance(current_run_dir, str) and current_run_dir
+        else {}
+    )
     loop_pid = _safe_int(loop_status.get("loop_pid") or loop_status.get("lock_owner_pid") or 0)
     campaign_pid = _safe_int(loop_status.get("current_campaign_pid") or 0)
     cpu_utilization_estimate, active_process_count = _process_metrics(loop_pid, campaign_pid)
@@ -573,7 +575,9 @@ def _write_training_monitor(loop_dir: Path) -> dict[str, Any]:
     compare_window_units_total = _safe_int(snapshot.get("stage2_compare_window_units_total"))
     compare_validation_units_completed = _safe_int(snapshot.get("stage2_compare_validation_units_completed"))
     compare_validation_units_total = _safe_int(snapshot.get("stage2_compare_validation_units_total"))
-    optuna_trials_total = _safe_int(snapshot.get("stage1_optuna_trials_total") or snapshot.get("optuna_trials_requested"))
+    optuna_trials_total = _safe_int(
+        snapshot.get("stage1_optuna_trials_total") or snapshot.get("optuna_trials_requested")
+    )
     stage1_pending_trials = _safe_int(snapshot.get("stage1_pending_trials"))
     stage1_max_workers = _safe_int(snapshot.get("stage1_max_workers"))
     stage1_target_inflight = _safe_int(snapshot.get("stage1_target_inflight"))
@@ -592,15 +596,23 @@ def _write_training_monitor(loop_dir: Path) -> dict[str, Any]:
     best_train_sharpe_so_far = max((_safe_float(item.get("train_sharpe")) for item in records), default=0.0)
     best_dev_score_so_far = max((_safe_float(item.get("dev_score")) for item in records), default=0.0)
     best_dev_drawdown_so_far = min(
-        (_safe_float(item.get("dev_drawdown"), float("inf")) for item in records if item.get("dev_drawdown") is not None),
+        (
+            _safe_float(item.get("dev_drawdown"), float("inf"))
+            for item in records
+            if item.get("dev_drawdown") is not None
+        ),
         default=0.0,
     )
     best_candidate_variant_so_far = None
     if records:
         best_record = max(records, key=lambda item: _safe_float(item.get("dev_score")))
         best_candidate_variant_so_far = best_record.get("best_variant")
-    dev_gate_pass_count = sum(1 for item in records if item.get("dev_gate_used_this_round") and item.get("candidate_ready_for_handoff"))
-    dev_gate_fail_count = sum(1 for item in records if item.get("dev_gate_used_this_round") and not item.get("candidate_ready_for_handoff"))
+    dev_gate_pass_count = sum(
+        1 for item in records if item.get("dev_gate_used_this_round") and item.get("candidate_ready_for_handoff")
+    )
+    dev_gate_fail_count = sum(
+        1 for item in records if item.get("dev_gate_used_this_round") and not item.get("candidate_ready_for_handoff")
+    )
     prevalidation_rejection_count = sum(_safe_int(item.get("prevalidation_rejection_count")) for item in records)
     validation_timeout_count = sum(_safe_int(item.get("validation_timeout_count")) for item in records)
     stalled = bool(
@@ -613,15 +625,15 @@ def _write_training_monitor(loop_dir: Path) -> dict[str, Any]:
     stalled_reason = None
     if stalled:
         stalled_reason = f"heartbeat_stale:{int(freshness or 0)}s"
-    stage1_work_conserving = current_phase.startswith("stage1") and snapshot.get("stage1_scheduler_mode") == "work_conserving"
-    cpu_underutilized = False if stage1_work_conserving else (
-        expected_mode == "parallel_expected" and cpu_utilization_estimate < 120.0
+    stage1_work_conserving = (
+        current_phase.startswith("stage1") and snapshot.get("stage1_scheduler_mode") == "work_conserving"
+    )
+    cpu_underutilized = (
+        False if stage1_work_conserving else (expected_mode == "parallel_expected" and cpu_utilization_estimate < 120.0)
     )
     cpu_underutilized_reason = None
     if cpu_underutilized:
-        cpu_underutilized_reason = (
-            f"{current_phase or 'unknown_phase'}:{snapshot.get('stage2_subphase') or snapshot.get('stage1_subphase') or 'unknown_subphase'}"
-        )
+        cpu_underutilized_reason = f"{current_phase or 'unknown_phase'}:{snapshot.get('stage2_subphase') or snapshot.get('stage1_subphase') or 'unknown_subphase'}"
     if stage1_work_conserving:
         sustained_underfilled_candidate = (
             stage1_target_inflight >= 2
@@ -639,18 +651,13 @@ def _write_training_monitor(loop_dir: Path) -> dict[str, Any]:
             underfilled_duration_s = 0.0
         elif started_at:
             underfilled_duration_s = _seconds_between(started_at, _ts()) or 0.0
-        if (
-            sustained_underfilled_candidate
-            and underfilled_duration_s >= 15.0
-        ):
+        if sustained_underfilled_candidate and underfilled_duration_s >= 15.0:
             cpu_underutilized = True
             cpu_underutilized_reason = "stage1_parallelism_not_materializing"
         snapshot["stage1_underfilled_candidate"] = sustained_underfilled_candidate
         snapshot["stage1_underfilled_started_at"] = started_at
         snapshot["stage1_underfilled_duration_s"] = round(underfilled_duration_s, 2)
-        snapshot["stage1_underfilled"] = bool(
-            sustained_underfilled_candidate and underfilled_duration_s >= 15.0
-        )
+        snapshot["stage1_underfilled"] = bool(sustained_underfilled_candidate and underfilled_duration_s >= 15.0)
         if not snapshot["stage1_underfilled"]:
             snapshot["stage1_underfilled_reason"] = None
     alerts: list[str] = []
@@ -749,14 +756,18 @@ def _write_training_monitor(loop_dir: Path) -> dict[str, Any]:
             stalled and snapshot.get("stage2_subphase") in {"stage2_compare_windows", "stage2_compare_validation"}
         ),
         "stage2_compare_stalled_reason": (
-            stalled_reason if snapshot.get("stage2_subphase") in {"stage2_compare_windows", "stage2_compare_validation"} else None
+            stalled_reason
+            if snapshot.get("stage2_subphase") in {"stage2_compare_windows", "stage2_compare_validation"}
+            else None
         ),
         "active_process_count": active_process_count,
         "slowest_subphase": snapshot.get("stage2_subphase") or snapshot.get("stage1_subphase"),
         "best_train_score_so_far": round(best_train_score_so_far, 4),
         "best_train_sharpe_so_far": round(best_train_sharpe_so_far, 4),
         "best_dev_score_so_far": round(best_dev_score_so_far, 4),
-        "best_dev_drawdown_so_far": round(best_dev_drawdown_so_far, 4) if isinstance(best_dev_drawdown_so_far, float) else None,
+        "best_dev_drawdown_so_far": round(best_dev_drawdown_so_far, 4)
+        if isinstance(best_dev_drawdown_so_far, float)
+        else None,
         "best_candidate_variant_so_far": best_candidate_variant_so_far,
         "candidate_improvement_trend": _promotion_health(records),
         "dev_gate_pass_count": dev_gate_pass_count,
@@ -1093,16 +1104,16 @@ def _launch_round(
         if failure_driver is None:
             if authoritative_failure_snapshot is not None:
                 failure_driver = str(
-                    snapshot.get("failure_reason")
-                    or snapshot.get("blocked_by")
-                    or "campaign_round_failed"
+                    snapshot.get("failure_reason") or snapshot.get("blocked_by") or "campaign_round_failed"
                 )
             elif not has_campaign_status:
                 failure_driver = "campaign_bootstrap_failed_before_status"
             elif not has_final_report:
                 failure_driver = "campaign_failed_before_final_report"
             else:
-                failure_driver = str(snapshot.get("failure_reason") or snapshot.get("blocked_by") or "campaign_round_failed")
+                failure_driver = str(
+                    snapshot.get("failure_reason") or snapshot.get("blocked_by") or "campaign_round_failed"
+                )
         _update_loop_status(
             loop_status_path,
             current_round=round_index,
@@ -1210,7 +1221,9 @@ def main() -> None:
     args = parser.parse_args()
 
     if args.resume and (args.initial_seed_trials_file or args.initial_candidate_checkpoint_file):
-        raise SystemExit("--resume, --initial-seed-trials-file, and --initial-candidate-checkpoint-file are mutually exclusive")
+        raise SystemExit(
+            "--resume, --initial-seed-trials-file, and --initial-candidate-checkpoint-file are mutually exclusive"
+        )
 
     loop_dir = Path(args.output_dir)
     campaign_root = Path(args.campaign_output_root) if args.campaign_output_root else loop_dir / "runs"
@@ -1274,7 +1287,9 @@ def main() -> None:
                 previous_record=previous_record,
             )
             seed_trials = project_seed_trials_to_mode(
-                _merge_seed_trials_with_candidate(list(previous_record.get("next_seed_trials") or []), candidate_checkpoint),
+                _merge_seed_trials_with_candidate(
+                    list(previous_record.get("next_seed_trials") or []), candidate_checkpoint
+                ),
                 mode=current_search_space_mode,
             )
             adaptation_policy = str(previous_record.get("next_adaptation_policy", adaptation_policy))
@@ -1320,7 +1335,9 @@ def main() -> None:
             lock_owner_pid=os.getpid(),
             lock_acquired_at=loop_lock_payload["started_at"],
             current_campaign_pid=None,
-            dev_gate_last_round=previous_record.get("round") if previous_record and previous_record.get("dev_gate_used_this_round") else None,
+            dev_gate_last_round=previous_record.get("round")
+            if previous_record and previous_record.get("dev_gate_used_this_round")
+            else None,
             dev_gate_interval=dev_gate_interval,
         )
         _write_training_monitor(loop_dir)
@@ -1348,7 +1365,9 @@ def main() -> None:
                 adaptation_policy=adaptation_policy,
                 resume=args.resume and run_dir.exists(),
                 development_dev_gate=development_dev_gate,
-                dev_gate_last_round=previous_record.get("round") if previous_record and previous_record.get("dev_gate_used_this_round") else None,
+                dev_gate_last_round=previous_record.get("round")
+                if previous_record and previous_record.get("dev_gate_used_this_round")
+                else None,
                 dev_gate_interval=dev_gate_interval,
             )
             plan = plan_next_iteration(
@@ -1404,10 +1423,16 @@ def main() -> None:
                 "best_variant": final_report.get("best_variant"),
                 "best_score": final_report.get("best_score"),
                 "train_score": _safe_float((stage1_payload.get("search_status") or {}).get("stage1_best_score")),
-                "train_sharpe": _safe_float((final_report.get("train_candidate_diagnostics") or {}).get("max_train_sharpe")),
+                "train_sharpe": _safe_float(
+                    (final_report.get("train_candidate_diagnostics") or {}).get("max_train_sharpe")
+                ),
                 "dev_score": _safe_float(final_report.get("best_score")),
-                "dev_drawdown": _safe_float((best_summary or {}).get("dev_drawdown")) if isinstance(best_summary, dict) else None,
-                "negative_dev_worst_windows": _safe_int((best_summary or {}).get("negative_dev_worst_windows")) if isinstance(best_summary, dict) else None,
+                "dev_drawdown": _safe_float((best_summary or {}).get("dev_drawdown"))
+                if isinstance(best_summary, dict)
+                else None,
+                "negative_dev_worst_windows": _safe_int((best_summary or {}).get("negative_dev_worst_windows"))
+                if isinstance(best_summary, dict)
+                else None,
                 "train_candidate_diagnostics": final_report.get("train_candidate_diagnostics"),
                 "no_tuned_candidate_reason": (
                     (final_report.get("train_candidate_diagnostics") or {}).get("no_tuned_candidate_reason")
@@ -1422,7 +1447,9 @@ def main() -> None:
                 "candidate_existence_goal_met": plan.candidate_existence_goal_met,
                 "round_runtime_s": round_runtime_s,
                 "stage1_runtime_s": _safe_float(campaign_status.get("stage1_runtime_s")),
-                "stage2_runtime_s": _safe_float((loop_status := _read_json(loop_status_path) or {}).get("stage2_runtime_s")),
+                "stage2_runtime_s": _safe_float(
+                    (loop_status := _read_json(loop_status_path) or {}).get("stage2_runtime_s")
+                ),
                 "prevalidation_rejection_count": prevalidation_rejection_count,
                 "validation_timeout_count": validation_timeout_count,
                 "campaign_status": {
@@ -1471,7 +1498,13 @@ def main() -> None:
                 anchored_negative_candidate_streak=plan.anchored_negative_candidate_streak,
                 candidate_existence_goal_met=plan.candidate_existence_goal_met,
                 dev_gate_used_this_round=history_item["dev_gate_used_this_round"],
-                dev_gate_last_round=round_index if history_item["dev_gate_used_this_round"] else (previous_record.get("round") if previous_record and previous_record.get("dev_gate_used_this_round") else None),
+                dev_gate_last_round=round_index
+                if history_item["dev_gate_used_this_round"]
+                else (
+                    previous_record.get("round")
+                    if previous_record and previous_record.get("dev_gate_used_this_round")
+                    else None
+                ),
                 dev_gate_interval=dev_gate_interval,
                 loop_state="running",
             )

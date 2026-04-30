@@ -124,8 +124,14 @@ def _build_public_source(root: Path) -> None:
     _write_csv(root / "api-v1-order.csv", [{"timestamp": "2022-02-01T00:00:00Z", "symbol": "XBTUSD"}])
     _write_csv(root / "api-v1-user-walletHistory.csv", [{"timestamp": "2022-02-01T00:00:00Z", "walletBalance": 1}])
     _write_csv(root / "api-v1-position.snapshot.csv", [{"timestamp": "2022-02-03T00:00:00Z", "currentQty": 0}])
-    _write_csv(root / "api-v1-user-wallet.snapshot-all.csv", [{"timestamp": "2022-02-03T00:00:00Z", "currency": "XBt", "amount": 1}])
-    _write_csv(root / "api-v1-user-margin.snapshot-all.csv", [{"timestamp": "2022-02-03T00:00:00Z", "currency": "XBt", "walletBalance": 1}])
+    _write_csv(
+        root / "api-v1-user-wallet.snapshot-all.csv",
+        [{"timestamp": "2022-02-03T00:00:00Z", "currency": "XBt", "amount": 1}],
+    )
+    _write_csv(
+        root / "api-v1-user-margin.snapshot-all.csv",
+        [{"timestamp": "2022-02-03T00:00:00Z", "currency": "XBt", "walletBalance": 1}],
+    )
     _write_csv(
         root / "derived-equity-curve.csv",
         [
@@ -244,13 +250,41 @@ class PaulWeiPublicResearchTests(unittest.TestCase):
                 "window_reports": [
                     {"variant": "current", "window_label": "dev", "metrics": {"sharpe": 4.0, "max_drawdown": 0.10}},
                     {"variant": "current", "window_label": "2023-08", "metrics": {"sharpe": 4.2, "max_drawdown": 0.05}},
-                    {"variant": "current", "window_label": "2024-11 DD", "metrics": {"sharpe": 5.0, "max_drawdown": 0.03}},
-                    {"variant": "paulwei_baseline", "window_label": "dev", "metrics": {"sharpe": 4.0, "max_drawdown": 0.10}},
-                    {"variant": "paulwei_baseline", "window_label": "2023-08", "metrics": {"sharpe": 4.0, "max_drawdown": 0.05}},
-                    {"variant": "paulwei_baseline", "window_label": "2024-11 DD", "metrics": {"sharpe": 4.8, "max_drawdown": 0.04}},
-                    {"variant": "paulwei_public_archive_baseline", "window_label": "dev", "metrics": {"sharpe": 4.3, "max_drawdown": 0.11}},
-                    {"variant": "paulwei_public_archive_baseline", "window_label": "2023-08", "metrics": {"sharpe": 4.1, "max_drawdown": 0.05}},
-                    {"variant": "paulwei_public_archive_baseline", "window_label": "2024-11 DD", "metrics": {"sharpe": 5.2, "max_drawdown": 0.031}},
+                    {
+                        "variant": "current",
+                        "window_label": "2024-11 DD",
+                        "metrics": {"sharpe": 5.0, "max_drawdown": 0.03},
+                    },
+                    {
+                        "variant": "paulwei_baseline",
+                        "window_label": "dev",
+                        "metrics": {"sharpe": 4.0, "max_drawdown": 0.10},
+                    },
+                    {
+                        "variant": "paulwei_baseline",
+                        "window_label": "2023-08",
+                        "metrics": {"sharpe": 4.0, "max_drawdown": 0.05},
+                    },
+                    {
+                        "variant": "paulwei_baseline",
+                        "window_label": "2024-11 DD",
+                        "metrics": {"sharpe": 4.8, "max_drawdown": 0.04},
+                    },
+                    {
+                        "variant": "paulwei_public_archive_baseline",
+                        "window_label": "dev",
+                        "metrics": {"sharpe": 4.3, "max_drawdown": 0.11},
+                    },
+                    {
+                        "variant": "paulwei_public_archive_baseline",
+                        "window_label": "2023-08",
+                        "metrics": {"sharpe": 4.1, "max_drawdown": 0.05},
+                    },
+                    {
+                        "variant": "paulwei_public_archive_baseline",
+                        "window_label": "2024-11 DD",
+                        "metrics": {"sharpe": 5.2, "max_drawdown": 0.031},
+                    },
                 ],
             }
             comparison_payload_path = output / "variant_comparison_payload.json"
@@ -335,13 +369,41 @@ class PaulWeiPublicResearchTests(unittest.TestCase):
                 "window_reports": [
                     {"variant": "current", "window_label": "dev", "metrics": {"sharpe": 4.0, "max_drawdown": 0.10}},
                     {"variant": "current", "window_label": "2023-08", "metrics": {"sharpe": 4.2, "max_drawdown": 0.05}},
-                    {"variant": "current", "window_label": "2024-11 DD", "metrics": {"sharpe": 5.0, "max_drawdown": 0.03}},
-                    {"variant": "paulwei_baseline", "window_label": "dev", "metrics": {"sharpe": 4.0, "max_drawdown": 0.10}},
-                    {"variant": "paulwei_baseline", "window_label": "2023-08", "metrics": {"sharpe": 4.0, "max_drawdown": 0.05}},
-                    {"variant": "paulwei_baseline", "window_label": "2024-11 DD", "metrics": {"sharpe": 4.8, "max_drawdown": 0.04}},
-                    {"variant": "paulwei_public_archive_baseline", "window_label": "dev", "metrics": {"sharpe": 4.3, "max_drawdown": 0.145}},
-                    {"variant": "paulwei_public_archive_baseline", "window_label": "2023-08", "metrics": {"sharpe": 4.4, "max_drawdown": 0.047}},
-                    {"variant": "paulwei_public_archive_baseline", "window_label": "2024-11 DD", "metrics": {"sharpe": 6.5, "max_drawdown": 0.032}},
+                    {
+                        "variant": "current",
+                        "window_label": "2024-11 DD",
+                        "metrics": {"sharpe": 5.0, "max_drawdown": 0.03},
+                    },
+                    {
+                        "variant": "paulwei_baseline",
+                        "window_label": "dev",
+                        "metrics": {"sharpe": 4.0, "max_drawdown": 0.10},
+                    },
+                    {
+                        "variant": "paulwei_baseline",
+                        "window_label": "2023-08",
+                        "metrics": {"sharpe": 4.0, "max_drawdown": 0.05},
+                    },
+                    {
+                        "variant": "paulwei_baseline",
+                        "window_label": "2024-11 DD",
+                        "metrics": {"sharpe": 4.8, "max_drawdown": 0.04},
+                    },
+                    {
+                        "variant": "paulwei_public_archive_baseline",
+                        "window_label": "dev",
+                        "metrics": {"sharpe": 4.3, "max_drawdown": 0.145},
+                    },
+                    {
+                        "variant": "paulwei_public_archive_baseline",
+                        "window_label": "2023-08",
+                        "metrics": {"sharpe": 4.4, "max_drawdown": 0.047},
+                    },
+                    {
+                        "variant": "paulwei_public_archive_baseline",
+                        "window_label": "2024-11 DD",
+                        "metrics": {"sharpe": 6.5, "max_drawdown": 0.032},
+                    },
                 ],
             }
             comparison_payload_path = output / "variant_comparison_payload.json"
@@ -388,5 +450,7 @@ class PaulWeiPublicResearchTests(unittest.TestCase):
                 "drawdown_outside_current_band",
             )
             self.assertTrue(strict_review["next_action_review"]["keep_research_only"])
-            self.assertIn("inventory_build_profile", {item["module"] for item in strict_review["strict_learning_modules"]})
+            self.assertIn(
+                "inventory_build_profile", {item["module"] for item in strict_review["strict_learning_modules"]}
+            )
             self.assertFalse(strict_review["next_action_review"]["ready_for_authoritative_candidate_review"])

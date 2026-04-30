@@ -94,7 +94,21 @@ def build_markdown_review(review: DataSourceAdmissionReview) -> str:
         "",
     ]
     lines.extend(f"- `{role}`" for role in review.source_role_candidate)
-    lines.extend(["", "## Economic Hypothesis", "", f"- {review.economic_hypothesis}", "", "## Incremental Value", "", f"- {review.incremental_value_evidence}", "", "## Source Tiers", ""])
+    lines.extend(
+        [
+            "",
+            "## Economic Hypothesis",
+            "",
+            f"- {review.economic_hypothesis}",
+            "",
+            "## Incremental Value",
+            "",
+            f"- {review.incremental_value_evidence}",
+            "",
+            "## Source Tiers",
+            "",
+        ]
+    )
     for name, tier in review.source_tiers.items():
         lines.append(f"- {name}: `{tier}`")
     lines.extend(["", "## Market Evidence", ""])
@@ -328,7 +342,9 @@ def build_deribit_block_flow_admission_review(
         blocked_by=blocked_by,
         next_action="refresh_deribit_block_flow_daily" if research_ready else "stabilize_deribit_block_flow_collection",
         reviewed_sources=["deribit_block_flow"],
-        source_tiers={"deribit_block_flow": "tier2_research_only_feature" if research_ready else "tier1_observation_only"},
+        source_tiers={
+            "deribit_block_flow": "tier2_research_only_feature" if research_ready else "tier1_observation_only"
+        },
         market_evidence=market_evidence,
         repo_evidence=repo_evidence,
         recommendation=recommendation,
@@ -428,7 +444,9 @@ def write_deribit_block_flow_admission_review(
     return _write_review(review, output_dir, "deribit_block_flow_admission_review")
 
 
-def load_source_admission_review(source_name: str, *, review_dir: Path = Path("results/data_source_review")) -> dict[str, Any]:
+def load_source_admission_review(
+    source_name: str, *, review_dir: Path = Path("results/data_source_review")
+) -> dict[str, Any]:
     path = review_dir / f"{source_name}_admission_review.json"
     if not path.exists():
         return {}

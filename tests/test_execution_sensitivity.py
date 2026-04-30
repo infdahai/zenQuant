@@ -43,6 +43,8 @@ class ExecutionSensitivityTests(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
+        if not Path("data/raw/binance").exists():
+            raise unittest.SkipTest("execution sensitivity gate requires local historical Binance data")
         # Baseline: current production config
         cls.baseline = _run_with_execution_params(
             init_pct=0.30,

@@ -122,7 +122,10 @@ class FrameworkCampaignTests(unittest.TestCase):
                     self._base_config = type(
                         "BaseConfig",
                         (),
-                        {"execution_timeframe": CAMPAIGN.Timeframe.TF_5M, "context_timeframe": CAMPAIGN.Timeframe.TF_1H},
+                        {
+                            "execution_timeframe": CAMPAIGN.Timeframe.TF_5M,
+                            "context_timeframe": CAMPAIGN.Timeframe.TF_1H,
+                        },
                     )()
                     self.readiness = {"promotion_ready": False, "blocked_by": "not_promotion_ready"}
                     self.search_param_grid = {"w_momentum": [0.2, 0.3]}
@@ -155,9 +158,17 @@ class FrameworkCampaignTests(unittest.TestCase):
                     return SearchReport(
                         created_at="2026-04-11T00:00:00+00:00",
                         symbol="BTCUSDT",
-                        readiness={"promotion_ready": False, "blocked_by": "not_promotion_ready", "data_ready": False, "detail": "missing"},
+                        readiness={
+                            "promotion_ready": False,
+                            "blocked_by": "not_promotion_ready",
+                            "data_ready": False,
+                            "detail": "missing",
+                        },
                         deribit_status=self._deribit_status,
-                        split_contract={"version": "btc_temporal_v2_train_selection_only", "windows": {"train": {}, "dev": {}, "test": {}}},
+                        split_contract={
+                            "version": "btc_temporal_v2_train_selection_only",
+                            "windows": {"train": {}, "dev": {}, "test": {}},
+                        },
                         training_window_coverage={"fast_windows": ["overall_recent"]},
                         training_input_contract=self.training_input_contract,
                         search_status={"search_outcome": "candidate_found"},
@@ -200,10 +211,14 @@ class FrameworkCampaignTests(unittest.TestCase):
             def _fake_run_optuna_search(*_args, **kwargs):
                 callback = kwargs["status_callback"]
                 callback(event="trial_completed", current_trial=1, completed_trials=1, total_trials=1, runtime_s=1.0)
-                return {"w_momentum": 0.3}, [{"params": {"w_momentum": 0.3}, "metrics": {"trade_count": 10, "sharpe": 1.0}}], {
-                    "train_candidate_diagnostics": {"raw_trial_count": 1},
-                    "empty_shortlist_reason": None,
-                }
+                return (
+                    {"w_momentum": 0.3},
+                    [{"params": {"w_momentum": 0.3}, "metrics": {"trade_count": 10, "sharpe": 1.0}}],
+                    {
+                        "train_candidate_diagnostics": {"raw_trial_count": 1},
+                        "empty_shortlist_reason": None,
+                    },
+                )
 
             argv = ["run_framework_campaign.py", "--output-dir", str(out), "--budget", "fast", "--development-dev-gate"]
             with (
@@ -229,7 +244,10 @@ class FrameworkCampaignTests(unittest.TestCase):
                     self._base_config = type(
                         "BaseConfig",
                         (),
-                        {"execution_timeframe": CAMPAIGN.Timeframe.TF_5M, "context_timeframe": CAMPAIGN.Timeframe.TF_1H},
+                        {
+                            "execution_timeframe": CAMPAIGN.Timeframe.TF_5M,
+                            "context_timeframe": CAMPAIGN.Timeframe.TF_1H,
+                        },
                     )()
                     self.readiness = {"promotion_ready": False, "blocked_by": "not_promotion_ready"}
                     self.search_param_grid = {"w_momentum": [0.2, 0.3]}
@@ -241,7 +259,10 @@ class FrameworkCampaignTests(unittest.TestCase):
                     }
                     self._deribit_status = {"enabled": True, "observation_ready": False, "research_ready": False}
                     self._training_window_coverage = {"fast_windows": ["overall_recent"]}
-                    self.stage2_runtime_contract = {"stage2_mp_start_method": "spawn", "validation_pool_mode": "process_pool_spawn"}
+                    self.stage2_runtime_contract = {
+                        "stage2_mp_start_method": "spawn",
+                        "validation_pool_mode": "process_pool_spawn",
+                    }
                     self.training_input_contract = {
                         "primary_truth_source": "binance",
                         "execution_framework": {
@@ -265,7 +286,10 @@ class FrameworkCampaignTests(unittest.TestCase):
                         symbol="BTCUSDT",
                         readiness={"promotion_ready": False, "blocked_by": "not_promotion_ready"},
                         deribit_status=self._deribit_status,
-                        split_contract={"version": "btc_temporal_v2_train_selection_only", "windows": {"train": {}, "dev": {}, "test": {}}},
+                        split_contract={
+                            "version": "btc_temporal_v2_train_selection_only",
+                            "windows": {"train": {}, "dev": {}, "test": {}},
+                        },
                         training_window_coverage={"fast_windows": ["overall_recent"]},
                         training_input_contract=self.training_input_contract,
                         search_status=self.search_space_profile,
@@ -345,7 +369,10 @@ class FrameworkCampaignTests(unittest.TestCase):
                     self._base_config = type(
                         "BaseConfig",
                         (),
-                        {"execution_timeframe": CAMPAIGN.Timeframe.TF_5M, "context_timeframe": CAMPAIGN.Timeframe.TF_1H},
+                        {
+                            "execution_timeframe": CAMPAIGN.Timeframe.TF_5M,
+                            "context_timeframe": CAMPAIGN.Timeframe.TF_1H,
+                        },
                     )()
                     self.readiness = {"promotion_ready": False, "blocked_by": "not_promotion_ready"}
                     self.search_param_grid = {"w_momentum": [0.2, 0.3]}
@@ -488,7 +515,10 @@ class FrameworkCampaignTests(unittest.TestCase):
                     self._base_config = type(
                         "BaseConfig",
                         (),
-                        {"execution_timeframe": CAMPAIGN.Timeframe.TF_5M, "context_timeframe": CAMPAIGN.Timeframe.TF_1H},
+                        {
+                            "execution_timeframe": CAMPAIGN.Timeframe.TF_5M,
+                            "context_timeframe": CAMPAIGN.Timeframe.TF_1H,
+                        },
                     )()
                     self.readiness = {"promotion_ready": False, "blocked_by": "not_promotion_ready"}
                     self.search_param_grid = {"w_momentum": [0.2, 0.3]}
@@ -616,7 +646,11 @@ class FrameworkCampaignTests(unittest.TestCase):
                         },
                     ),
                 ),
-                patch.object(CAMPAIGN, "train_tuner", return_value={"best_params": {"x": 1}, "search_status": {"episodes_completed": 1}}),
+                patch.object(
+                    CAMPAIGN,
+                    "train_tuner",
+                    return_value={"best_params": {"x": 1}, "search_status": {"episodes_completed": 1}},
+                ),
                 patch.object(CAMPAIGN, "build_markdown_report", return_value="# ok"),
                 patch.object(CAMPAIGN, "generate_signal_combination_audit", return_value=None),
             ):
@@ -645,7 +679,10 @@ class FrameworkCampaignTests(unittest.TestCase):
                     self._base_config = type(
                         "BaseConfig",
                         (),
-                        {"execution_timeframe": CAMPAIGN.Timeframe.TF_5M, "context_timeframe": CAMPAIGN.Timeframe.TF_1H},
+                        {
+                            "execution_timeframe": CAMPAIGN.Timeframe.TF_5M,
+                            "context_timeframe": CAMPAIGN.Timeframe.TF_1H,
+                        },
                     )()
                     self.readiness = {"promotion_ready": False, "blocked_by": "not_promotion_ready"}
                     self.search_param_grid = {"w_momentum": [0.2, 0.3]}
@@ -677,9 +714,17 @@ class FrameworkCampaignTests(unittest.TestCase):
                     return SearchReport(
                         created_at="2026-04-11T00:00:00+00:00",
                         symbol="BTCUSDT",
-                        readiness={"promotion_ready": False, "blocked_by": "not_promotion_ready", "data_ready": False, "detail": "missing"},
+                        readiness={
+                            "promotion_ready": False,
+                            "blocked_by": "not_promotion_ready",
+                            "data_ready": False,
+                            "detail": "missing",
+                        },
                         deribit_status=self._deribit_status,
-                        split_contract={"version": "btc_temporal_v2_train_selection_only", "windows": {"train": {}, "dev": {}, "test": {}}},
+                        split_contract={
+                            "version": "btc_temporal_v2_train_selection_only",
+                            "windows": {"train": {}, "dev": {}, "test": {}},
+                        },
                         training_window_coverage={"fast_windows": ["overall_recent"]},
                         training_input_contract=self.training_input_contract,
                         search_status={"search_outcome": "candidate_found"},
@@ -773,12 +818,16 @@ class FrameworkCampaignTests(unittest.TestCase):
                     stage1_budget_mode="wall_clock_primary",
                     stage1_stop_reason="wall_clock_budget_reached",
                 )
-                return {"w_momentum": 0.3}, [{"params": {"w_momentum": 0.3}, "metrics": {"trade_count": 10, "sharpe": 1.0}}], {
-                    "train_candidate_diagnostics": {"raw_trial_count": 1},
-                    "empty_shortlist_reason": None,
-                    "stage1_budget_mode": "wall_clock_primary",
-                    "stage1_stop_reason": "wall_clock_budget_reached",
-                }
+                return (
+                    {"w_momentum": 0.3},
+                    [{"params": {"w_momentum": 0.3}, "metrics": {"trade_count": 10, "sharpe": 1.0}}],
+                    {
+                        "train_candidate_diagnostics": {"raw_trial_count": 1},
+                        "empty_shortlist_reason": None,
+                        "stage1_budget_mode": "wall_clock_primary",
+                        "stage1_stop_reason": "wall_clock_budget_reached",
+                    },
+                )
 
             argv = ["run_framework_campaign.py", "--output-dir", str(out), "--budget", "fast", "--development-dev-gate"]
             with (
@@ -808,7 +857,9 @@ class FrameworkCampaignTests(unittest.TestCase):
         self.assertEqual(payload["trial_replay_cache_hit_rate"], 1.0)
         self.assertEqual(payload["replay_context_cache_hit_rate"], 1.0)
         self.assertEqual(payload["stage1_cpu_hotspot_summary"]["dominant_step"], "execution")
-        self.assertAlmostEqual(payload["stage1_indicator_hotspot_summary"]["indicator_share_of_replay"], 0.1905, places=4)
+        self.assertAlmostEqual(
+            payload["stage1_indicator_hotspot_summary"]["indicator_share_of_replay"], 0.1905, places=4
+        )
         self.assertEqual(
             payload["stage1_indicator_hotspot_summary"]["dominant_indicator_layer"],
             "core_execution_indicators_s",
@@ -827,7 +878,10 @@ class FrameworkCampaignTests(unittest.TestCase):
                     self._base_config = type(
                         "BaseConfig",
                         (),
-                        {"execution_timeframe": CAMPAIGN.Timeframe.TF_5M, "context_timeframe": CAMPAIGN.Timeframe.TF_1H},
+                        {
+                            "execution_timeframe": CAMPAIGN.Timeframe.TF_5M,
+                            "context_timeframe": CAMPAIGN.Timeframe.TF_1H,
+                        },
                     )()
                     self.readiness = {"promotion_ready": False, "blocked_by": "not_promotion_ready"}
                     self.search_param_grid = {"w_momentum": [0.2, 0.3]}
@@ -859,9 +913,17 @@ class FrameworkCampaignTests(unittest.TestCase):
                     return SearchReport(
                         created_at="2026-04-11T00:00:00+00:00",
                         symbol="BTCUSDT",
-                        readiness={"promotion_ready": False, "blocked_by": "not_promotion_ready", "data_ready": False, "detail": "missing"},
+                        readiness={
+                            "promotion_ready": False,
+                            "blocked_by": "not_promotion_ready",
+                            "data_ready": False,
+                            "detail": "missing",
+                        },
                         deribit_status=self._deribit_status,
-                        split_contract={"version": "btc_temporal_v2_train_selection_only", "windows": {"train": {}, "dev": {}, "test": {}}},
+                        split_contract={
+                            "version": "btc_temporal_v2_train_selection_only",
+                            "windows": {"train": {}, "dev": {}, "test": {}},
+                        },
                         training_window_coverage={"fast_windows": ["overall_recent"]},
                         training_input_contract=self.training_input_contract,
                         search_status={"search_outcome": "candidate_found"},
@@ -904,10 +966,14 @@ class FrameworkCampaignTests(unittest.TestCase):
             def _fake_run_optuna_search(*_args, **kwargs):
                 callback = kwargs["status_callback"]
                 callback(event="trial_completed", current_trial=1, completed_trials=1, total_trials=1, runtime_s=1.0)
-                return {"w_momentum": 0.3}, [{"params": {"w_momentum": 0.3}, "metrics": {"trade_count": 10, "sharpe": 1.0}}], {
-                    "train_candidate_diagnostics": {"raw_trial_count": 1},
-                    "empty_shortlist_reason": None,
-                }
+                return (
+                    {"w_momentum": 0.3},
+                    [{"params": {"w_momentum": 0.3}, "metrics": {"trade_count": 10, "sharpe": 1.0}}],
+                    {
+                        "train_candidate_diagnostics": {"raw_trial_count": 1},
+                        "empty_shortlist_reason": None,
+                    },
+                )
 
             captured_train_tuner: dict[str, object] = {}
             progress_payload: dict[str, object] = {}
@@ -1164,9 +1230,17 @@ class FrameworkCampaignTests(unittest.TestCase):
                     return SearchReport(
                         created_at="2026-04-11T00:00:00+00:00",
                         symbol="BTCUSDT",
-                        readiness={"promotion_ready": False, "blocked_by": "not_promotion_ready", "detail": "missing", "data_ready": False},
+                        readiness={
+                            "promotion_ready": False,
+                            "blocked_by": "not_promotion_ready",
+                            "detail": "missing",
+                            "data_ready": False,
+                        },
                         deribit_status={"enabled": True, "observation_ready": False, "research_ready": False},
-                        split_contract={"version": "btc_temporal_v2_train_selection_only", "windows": {"train": {}, "dev": {}, "test": {}}},
+                        split_contract={
+                            "version": "btc_temporal_v2_train_selection_only",
+                            "windows": {"train": {}, "dev": {}, "test": {}},
+                        },
                         training_window_coverage={},
                         training_input_contract=self.training_input_contract,
                         search_status={"search_space_profile": self.search_space_profile},
@@ -1452,14 +1526,14 @@ class FrameworkCampaignTests(unittest.TestCase):
                             "split_contract_version": "btc_temporal_v2_train_selection_only",
                             "stage1_execution_mode": "1h_context_only",
                             "authoritative_verdict_execution_mode": "5m_enabled",
-                        "search_space_profile": {
-                            "direction_weight_policy": {
-                                "correlation_constrained": True,
-                                "capped_direction_signal": "crowding_signal",
-                                "demoted_signal": "funding_alpha_signal",
-                                "demoted_signal_role": "state",
-                            }
-                        },
+                            "search_space_profile": {
+                                "direction_weight_policy": {
+                                    "correlation_constrained": True,
+                                    "capped_direction_signal": "crowding_signal",
+                                    "demoted_signal": "funding_alpha_signal",
+                                    "demoted_signal_role": "state",
+                                }
+                            },
                             "liquidation_in_search": False,
                             "etf_flow_in_state_features": True,
                             "hyperliquid_in_state_features": True,
@@ -1482,7 +1556,10 @@ class FrameworkCampaignTests(unittest.TestCase):
                     self._base_config = type(
                         "BaseConfig",
                         (),
-                        {"execution_timeframe": CAMPAIGN.Timeframe.TF_5M, "context_timeframe": CAMPAIGN.Timeframe.TF_1H},
+                        {
+                            "execution_timeframe": CAMPAIGN.Timeframe.TF_5M,
+                            "context_timeframe": CAMPAIGN.Timeframe.TF_1H,
+                        },
                     )()
                     self.readiness = {"promotion_ready": False, "blocked_by": "not_promotion_ready"}
                     self.search_param_grid = {"w_momentum": [0.2, 0.3]}
@@ -1527,15 +1604,32 @@ class FrameworkCampaignTests(unittest.TestCase):
                 def final_report(self, **kwargs):
                     callback = kwargs["status_callback"]
                     callback(event="stage2_prepare_variants_started", completed_units=0, total_units=4)
-                    callback(event="comparison_window_completed", variant="current", window_label="dev", completed_units=1, total_units=4)
-                    callback(event="comparison_ranking_completed", variant="current", rank=1, completed_units=3, total_units=4)
-                    callback(event="stage2_rank_variants_completed", variant="current", completed_units=3, total_units=4)
+                    callback(
+                        event="comparison_window_completed",
+                        variant="current",
+                        window_label="dev",
+                        completed_units=1,
+                        total_units=4,
+                    )
+                    callback(
+                        event="comparison_ranking_completed",
+                        variant="current",
+                        rank=1,
+                        completed_units=3,
+                        total_units=4,
+                    )
+                    callback(
+                        event="stage2_rank_variants_completed", variant="current", completed_units=3, total_units=4
+                    )
                     return SearchReport(
                         created_at="2026-04-10T00:00:00+00:00",
                         symbol="BTCUSDT",
                         readiness={"promotion_ready": False, "blocked_by": "not_promotion_ready"},
                         deribit_status={"enabled": True, "observation_ready": False, "research_ready": False},
-                        split_contract={"version": "btc_temporal_v2_train_selection_only", "windows": {"train": {}, "dev": {}, "test": {}}},
+                        split_contract={
+                            "version": "btc_temporal_v2_train_selection_only",
+                            "windows": {"train": {}, "dev": {}, "test": {}},
+                        },
                         training_window_coverage={},
                         training_input_contract=self.training_input_contract,
                         search_status=kwargs["search_status"],
@@ -1629,7 +1723,10 @@ class FrameworkCampaignTests(unittest.TestCase):
                     self._base_config = type(
                         "BaseConfig",
                         (),
-                        {"execution_timeframe": CAMPAIGN.Timeframe.TF_5M, "context_timeframe": CAMPAIGN.Timeframe.TF_1H},
+                        {
+                            "execution_timeframe": CAMPAIGN.Timeframe.TF_5M,
+                            "context_timeframe": CAMPAIGN.Timeframe.TF_1H,
+                        },
                     )()
                     self.readiness = {"promotion_ready": False, "blocked_by": "not_promotion_ready"}
                     self.search_param_grid = {"w_momentum": [0.2, 0.3]}
@@ -1665,10 +1762,14 @@ class FrameworkCampaignTests(unittest.TestCase):
             def _fake_run_optuna_search(*_args, **kwargs):
                 callback = kwargs["status_callback"]
                 callback(event="trial_completed", current_trial=1, completed_trials=1, total_trials=1, runtime_s=1.0)
-                return {"w_momentum": 0.3}, [{"params": {"w_momentum": 0.3}, "summary": {"robust_score": 1.25}}], {
-                    "train_candidate_diagnostics": {"raw_trial_count": 1},
-                    "empty_shortlist_reason": None,
-                }
+                return (
+                    {"w_momentum": 0.3},
+                    [{"params": {"w_momentum": 0.3}, "summary": {"robust_score": 1.25}}],
+                    {
+                        "train_candidate_diagnostics": {"raw_trial_count": 1},
+                        "empty_shortlist_reason": None,
+                    },
+                )
 
             argv = ["run_framework_campaign.py", "--output-dir", str(out), "--budget", "fast", "--development-dev-gate"]
             with (
@@ -1705,7 +1806,10 @@ class FrameworkCampaignTests(unittest.TestCase):
                     self._base_config = type(
                         "BaseConfig",
                         (),
-                        {"execution_timeframe": CAMPAIGN.Timeframe.TF_5M, "context_timeframe": CAMPAIGN.Timeframe.TF_1H},
+                        {
+                            "execution_timeframe": CAMPAIGN.Timeframe.TF_5M,
+                            "context_timeframe": CAMPAIGN.Timeframe.TF_1H,
+                        },
                     )()
                     self.readiness = {"promotion_ready": False, "blocked_by": "not_promotion_ready"}
                     self.search_param_grid = {"w_momentum": [0.2, 0.3]}
@@ -1741,10 +1845,14 @@ class FrameworkCampaignTests(unittest.TestCase):
             def _fake_run_optuna_search(*_args, **kwargs):
                 callback = kwargs["status_callback"]
                 callback(event="trial_completed", current_trial=1, completed_trials=1, total_trials=1, runtime_s=1.0)
-                return {"w_momentum": 0.3}, [{"params": {"w_momentum": 0.3}, "summary": {"robust_score": 1.25}}], {
-                    "train_candidate_diagnostics": {"raw_trial_count": 1},
-                    "empty_shortlist_reason": None,
-                }
+                return (
+                    {"w_momentum": 0.3},
+                    [{"params": {"w_momentum": 0.3}, "summary": {"robust_score": 1.25}}],
+                    {
+                        "train_candidate_diagnostics": {"raw_trial_count": 1},
+                        "empty_shortlist_reason": None,
+                    },
+                )
 
             fake_rl = {
                 "best_params": {"w_momentum": 0.3},
@@ -1788,7 +1896,10 @@ class FrameworkCampaignTests(unittest.TestCase):
                     self._base_config = type(
                         "BaseConfig",
                         (),
-                        {"execution_timeframe": CAMPAIGN.Timeframe.TF_5M, "context_timeframe": CAMPAIGN.Timeframe.TF_1H},
+                        {
+                            "execution_timeframe": CAMPAIGN.Timeframe.TF_5M,
+                            "context_timeframe": CAMPAIGN.Timeframe.TF_1H,
+                        },
                     )()
                     self.readiness = {"promotion_ready": False, "blocked_by": "not_promotion_ready"}
                     self.search_param_grid = {"w_momentum": [0.2, 0.3]}
@@ -1823,10 +1934,14 @@ class FrameworkCampaignTests(unittest.TestCase):
             def _fake_run_optuna_search(*_args, **kwargs):
                 callback = kwargs["status_callback"]
                 callback(event="trial_completed", current_trial=1, completed_trials=1, total_trials=1, runtime_s=1.0)
-                return {"w_momentum": 0.3}, [{"params": {"w_momentum": 0.3}, "summary": {"robust_score": 1.25}}], {
-                    "train_candidate_diagnostics": {"raw_trial_count": 1},
-                    "empty_shortlist_reason": None,
-                }
+                return (
+                    {"w_momentum": 0.3},
+                    [{"params": {"w_momentum": 0.3}, "summary": {"robust_score": 1.25}}],
+                    {
+                        "train_candidate_diagnostics": {"raw_trial_count": 1},
+                        "empty_shortlist_reason": None,
+                    },
+                )
 
             def _tight_stage2_budget(_level: str):
                 return {
@@ -1875,7 +1990,10 @@ class FrameworkCampaignTests(unittest.TestCase):
                     self._base_config = type(
                         "BaseConfig",
                         (),
-                        {"execution_timeframe": CAMPAIGN.Timeframe.TF_5M, "context_timeframe": CAMPAIGN.Timeframe.TF_1H},
+                        {
+                            "execution_timeframe": CAMPAIGN.Timeframe.TF_5M,
+                            "context_timeframe": CAMPAIGN.Timeframe.TF_1H,
+                        },
                     )()
                     self.readiness = {"promotion_ready": False, "blocked_by": "not_promotion_ready"}
                     self.search_param_grid = {"w_momentum": [0.2, 0.3]}
@@ -1909,10 +2027,14 @@ class FrameworkCampaignTests(unittest.TestCase):
             def _fake_run_optuna_search(*_args, **kwargs):
                 callback = kwargs["status_callback"]
                 callback(event="trial_completed", current_trial=1, completed_trials=1, total_trials=1, runtime_s=1.0)
-                return {"w_momentum": 0.3}, [{"params": {"w_momentum": 0.3}, "summary": {"robust_score": 1.25}}], {
-                    "train_candidate_diagnostics": {"raw_trial_count": 1},
-                    "empty_shortlist_reason": None,
-                }
+                return (
+                    {"w_momentum": 0.3},
+                    [{"params": {"w_momentum": 0.3}, "summary": {"robust_score": 1.25}}],
+                    {
+                        "train_candidate_diagnostics": {"raw_trial_count": 1},
+                        "empty_shortlist_reason": None,
+                    },
+                )
 
             argv = ["run_framework_campaign.py", "--output-dir", str(out), "--budget", "fast", "--development-dev-gate"]
             with (
@@ -1949,7 +2071,10 @@ class FrameworkCampaignTests(unittest.TestCase):
                     self._base_config = type(
                         "BaseConfig",
                         (),
-                        {"execution_timeframe": CAMPAIGN.Timeframe.TF_5M, "context_timeframe": CAMPAIGN.Timeframe.TF_1H},
+                        {
+                            "execution_timeframe": CAMPAIGN.Timeframe.TF_5M,
+                            "context_timeframe": CAMPAIGN.Timeframe.TF_1H,
+                        },
                     )()
                     self.readiness = {"promotion_ready": False, "blocked_by": "not_promotion_ready"}
                     self.search_param_grid = {"w_momentum": [0.2, 0.3]}
@@ -2011,7 +2136,10 @@ class FrameworkCampaignTests(unittest.TestCase):
                         symbol="BTCUSDT",
                         readiness={"promotion_ready": False, "blocked_by": "not_promotion_ready"},
                         deribit_status={"enabled": True, "observation_ready": False, "research_ready": False},
-                        split_contract={"version": "btc_temporal_v2_train_selection_only", "windows": {"train": {}, "dev": {}, "test": {}}},
+                        split_contract={
+                            "version": "btc_temporal_v2_train_selection_only",
+                            "windows": {"train": {}, "dev": {}, "test": {}},
+                        },
                         training_window_coverage={},
                         training_input_contract=self.training_input_contract,
                         search_status=kwargs["search_status"],
@@ -2044,7 +2172,13 @@ class FrameworkCampaignTests(unittest.TestCase):
             def _fake_run_optuna_search(*_args, **kwargs):
                 callback = kwargs["status_callback"]
                 callback(event="trial_completed", current_trial=1, completed_trials=1, total_trials=5, runtime_s=1.0)
-                callback(event="ranking_candidate_completed", current_candidate=1, completed_candidates=1, total_candidates=2, runtime_s=2.0)
+                callback(
+                    event="ranking_candidate_completed",
+                    current_candidate=1,
+                    completed_candidates=1,
+                    total_candidates=2,
+                    runtime_s=2.0,
+                )
                 return {"w_momentum": 0.3}, [{"params": {"w_momentum": 0.3}, "summary": {"robust_score": 1.0}}]
 
             def _fake_train_tuner(*_args, **kwargs):
@@ -2084,7 +2218,10 @@ class FrameworkCampaignTests(unittest.TestCase):
                     self._base_config = type(
                         "BaseConfig",
                         (),
-                        {"execution_timeframe": CAMPAIGN.Timeframe.TF_5M, "context_timeframe": CAMPAIGN.Timeframe.TF_1H},
+                        {
+                            "execution_timeframe": CAMPAIGN.Timeframe.TF_5M,
+                            "context_timeframe": CAMPAIGN.Timeframe.TF_1H,
+                        },
                     )()
                     self.readiness = {"promotion_ready": False, "blocked_by": "not_promotion_ready"}
                     self.search_param_grid = {"w_momentum": [0.2, 0.3]}
@@ -2122,28 +2259,38 @@ class FrameworkCampaignTests(unittest.TestCase):
             def _fake_run_optuna_search(*_args, **kwargs):
                 callback = kwargs["status_callback"]
                 callback(event="trial_completed", current_trial=1, completed_trials=1, total_trials=5, runtime_s=1.0)
-                callback(event="ranking_candidate_completed", current_candidate=1, completed_candidates=1, total_candidates=1, runtime_s=2.0)
-                return {
-                    "w_momentum": 0.3,
-                }, [
+                callback(
+                    event="ranking_candidate_completed",
+                    current_candidate=1,
+                    completed_candidates=1,
+                    total_candidates=1,
+                    runtime_s=2.0,
+                )
+                return (
                     {
-                        "params": {"w_momentum": 0.3},
-                        "summary": {
-                            "variant": "optuna_tuned",
-                            "robust_score": 1.2,
-                            "selection_split": "train",
-                            "dev_sharpe": 1.0,
-                            "dev_pnl": 10.0,
-                            "dev_drawdown": 0.1,
-                            "avg_dev_sharpe": 1.0,
-                            "avg_dev_ratio": 1.0,
-                            "worst_dev_sharpe": 0.5,
-                            "weak_window_sharpe": 0.2,
-                            "negative_dev_worst_windows": 0,
-                            "promotion_candidate": False,
-                        },
-                    }
-                ], {"train_candidate_diagnostics": {"raw_trial_count": 1}, "empty_shortlist_reason": None}
+                        "w_momentum": 0.3,
+                    },
+                    [
+                        {
+                            "params": {"w_momentum": 0.3},
+                            "summary": {
+                                "variant": "optuna_tuned",
+                                "robust_score": 1.2,
+                                "selection_split": "train",
+                                "dev_sharpe": 1.0,
+                                "dev_pnl": 10.0,
+                                "dev_drawdown": 0.1,
+                                "avg_dev_sharpe": 1.0,
+                                "avg_dev_ratio": 1.0,
+                                "worst_dev_sharpe": 0.5,
+                                "weak_window_sharpe": 0.2,
+                                "negative_dev_worst_windows": 0,
+                                "promotion_candidate": False,
+                            },
+                        }
+                    ],
+                    {"train_candidate_diagnostics": {"raw_trial_count": 1}, "empty_shortlist_reason": None},
+                )
 
             argv = ["run_framework_campaign.py", "--output-dir", str(out), "--budget", "fast"]
             with (
@@ -2168,7 +2315,10 @@ class FrameworkCampaignTests(unittest.TestCase):
                     self._base_config = type(
                         "BaseConfig",
                         (),
-                        {"execution_timeframe": CAMPAIGN.Timeframe.TF_5M, "context_timeframe": CAMPAIGN.Timeframe.TF_1H},
+                        {
+                            "execution_timeframe": CAMPAIGN.Timeframe.TF_5M,
+                            "context_timeframe": CAMPAIGN.Timeframe.TF_1H,
+                        },
                     )()
                     self.readiness = {"promotion_ready": False, "blocked_by": "not_promotion_ready"}
                     self.search_param_grid = {"w_momentum": [0.2, 0.3]}
@@ -2288,29 +2438,49 @@ class FrameworkCampaignTests(unittest.TestCase):
                 search_execution_timeframe = kwargs["search_execution_timeframe"]
                 if search_execution_timeframe == CAMPAIGN.Timeframe.TF_1H:
                     for idx in range(1, 6):
-                        callback(event="trial_completed", current_trial=idx, completed_trials=idx, total_trials=5, runtime_s=float(idx))
-                    return None, [], {
-                        "train_candidate_diagnostics": {
-                            "raw_trial_count": 5,
-                            "raw_nonzero_trade_trials": 0,
-                            "eligible_trade_count_trials": 0,
-                            "max_train_trade_count": 0,
-                            "max_train_sharpe": 0.0,
+                        callback(
+                            event="trial_completed",
+                            current_trial=idx,
+                            completed_trials=idx,
+                            total_trials=5,
+                            runtime_s=float(idx),
+                        )
+                    return (
+                        None,
+                        [],
+                        {
+                            "train_candidate_diagnostics": {
+                                "raw_trial_count": 5,
+                                "raw_nonzero_trade_trials": 0,
+                                "eligible_trade_count_trials": 0,
+                                "max_train_trade_count": 0,
+                                "max_train_sharpe": 0.0,
+                            },
+                            "empty_shortlist_reason": "all_zero_trade",
                         },
-                        "empty_shortlist_reason": "all_zero_trade",
-                    }
+                    )
                 callback(event="trial_completed", current_trial=1, completed_trials=1, total_trials=5, runtime_s=1.0)
-                callback(event="ranking_candidate_completed", current_candidate=1, completed_candidates=1, total_candidates=1, runtime_s=2.0)
-                return {"w_momentum": 0.3}, [{"params": {"w_momentum": 0.3}, "summary": {"robust_score": 1.0}}], {
-                    "train_candidate_diagnostics": {
-                        "raw_trial_count": 1,
-                        "raw_nonzero_trade_trials": 1,
-                        "eligible_trade_count_trials": 1,
-                        "max_train_trade_count": 24,
-                        "max_train_sharpe": 1.0,
+                callback(
+                    event="ranking_candidate_completed",
+                    current_candidate=1,
+                    completed_candidates=1,
+                    total_candidates=1,
+                    runtime_s=2.0,
+                )
+                return (
+                    {"w_momentum": 0.3},
+                    [{"params": {"w_momentum": 0.3}, "summary": {"robust_score": 1.0}}],
+                    {
+                        "train_candidate_diagnostics": {
+                            "raw_trial_count": 1,
+                            "raw_nonzero_trade_trials": 1,
+                            "eligible_trade_count_trials": 1,
+                            "max_train_trade_count": 24,
+                            "max_train_sharpe": 1.0,
+                        },
+                        "empty_shortlist_reason": None,
                     },
-                    "empty_shortlist_reason": None,
-                }
+                )
 
             argv = ["run_framework_campaign.py", "--output-dir", str(out), "--budget", "smoke"]
             with (
@@ -2351,7 +2521,10 @@ class FrameworkCampaignTests(unittest.TestCase):
                     self._base_config = type(
                         "BaseConfig",
                         (),
-                        {"execution_timeframe": CAMPAIGN.Timeframe.TF_5M, "context_timeframe": CAMPAIGN.Timeframe.TF_1H},
+                        {
+                            "execution_timeframe": CAMPAIGN.Timeframe.TF_5M,
+                            "context_timeframe": CAMPAIGN.Timeframe.TF_1H,
+                        },
                     )()
                     self.readiness = {"promotion_ready": False, "blocked_by": "not_promotion_ready"}
                     self.search_param_grid = {"w_momentum": [0.2, 0.3]}
@@ -2443,11 +2616,21 @@ class FrameworkCampaignTests(unittest.TestCase):
             def _fake_run_optuna_search(*_args, **kwargs):
                 callback = kwargs["status_callback"]
                 callback(event="trial_completed", current_trial=1, completed_trials=1, total_trials=5, runtime_s=1.0)
-                callback(event="ranking_candidate_completed", current_candidate=1, completed_candidates=1, total_candidates=1, runtime_s=2.0)
-                return {"w_momentum": 0.3}, [{"params": {"w_momentum": 0.3}, "summary": {"robust_score": 1.0}}], {
-                    "train_candidate_diagnostics": {"raw_trial_count": 1},
-                    "empty_shortlist_reason": None,
-                }
+                callback(
+                    event="ranking_candidate_completed",
+                    current_candidate=1,
+                    completed_candidates=1,
+                    total_candidates=1,
+                    runtime_s=2.0,
+                )
+                return (
+                    {"w_momentum": 0.3},
+                    [{"params": {"w_momentum": 0.3}, "summary": {"robust_score": 1.0}}],
+                    {
+                        "train_candidate_diagnostics": {"raw_trial_count": 1},
+                        "empty_shortlist_reason": None,
+                    },
+                )
 
             argv = ["run_framework_campaign.py", "--output-dir", str(out), "--budget", "smoke"]
             with (
@@ -2475,7 +2658,10 @@ class FrameworkCampaignTests(unittest.TestCase):
                     self._base_config = type(
                         "BaseConfig",
                         (),
-                        {"execution_timeframe": CAMPAIGN.Timeframe.TF_5M, "context_timeframe": CAMPAIGN.Timeframe.TF_1H},
+                        {
+                            "execution_timeframe": CAMPAIGN.Timeframe.TF_5M,
+                            "context_timeframe": CAMPAIGN.Timeframe.TF_1H,
+                        },
                     )()
                     self.readiness = {"promotion_ready": False, "blocked_by": "not_promotion_ready"}
                     self.search_param_grid = {"w_momentum": [0.2, 0.3]}
@@ -2553,10 +2739,35 @@ class FrameworkCampaignTests(unittest.TestCase):
                 search_execution_timeframe = kwargs["search_execution_timeframe"]
                 if search_execution_timeframe == CAMPAIGN.Timeframe.TF_1H:
                     for idx in range(1, 6):
-                        callback(event="trial_completed", current_trial=idx, completed_trials=idx, total_trials=5, runtime_s=float(idx))
-                    return None, [], {
+                        callback(
+                            event="trial_completed",
+                            current_trial=idx,
+                            completed_trials=idx,
+                            total_trials=5,
+                            runtime_s=float(idx),
+                        )
+                    return (
+                        None,
+                        [],
+                        {
+                            "train_candidate_diagnostics": {
+                                "raw_trial_count": 5,
+                                "raw_nonzero_trade_trials": 0,
+                                "eligible_trade_count_trials": 0,
+                                "max_train_trade_count": 0,
+                                "max_train_sharpe": 0.0,
+                            },
+                            "empty_shortlist_reason": "all_zero_trade",
+                            "no_tuned_candidate_reason": "all_zero_trade",
+                        },
+                    )
+                callback(event="trial_completed", current_trial=1, completed_trials=1, total_trials=1, runtime_s=1.0)
+                return (
+                    None,
+                    [],
+                    {
                         "train_candidate_diagnostics": {
-                            "raw_trial_count": 5,
+                            "raw_trial_count": 1,
                             "raw_nonzero_trade_trials": 0,
                             "eligible_trade_count_trials": 0,
                             "max_train_trade_count": 0,
@@ -2564,19 +2775,8 @@ class FrameworkCampaignTests(unittest.TestCase):
                         },
                         "empty_shortlist_reason": "all_zero_trade",
                         "no_tuned_candidate_reason": "all_zero_trade",
-                    }
-                callback(event="trial_completed", current_trial=1, completed_trials=1, total_trials=1, runtime_s=1.0)
-                return None, [], {
-                    "train_candidate_diagnostics": {
-                        "raw_trial_count": 1,
-                        "raw_nonzero_trade_trials": 0,
-                        "eligible_trade_count_trials": 0,
-                        "max_train_trade_count": 0,
-                        "max_train_sharpe": 0.0,
                     },
-                    "empty_shortlist_reason": "all_zero_trade",
-                    "no_tuned_candidate_reason": "all_zero_trade",
-                }
+                )
 
             argv = ["run_framework_campaign.py", "--output-dir", str(out), "--budget", "smoke"]
             with (
@@ -2613,7 +2813,10 @@ class FrameworkCampaignTests(unittest.TestCase):
                     self._base_config = type(
                         "BaseConfig",
                         (),
-                        {"execution_timeframe": CAMPAIGN.Timeframe.TF_5M, "context_timeframe": CAMPAIGN.Timeframe.TF_1H},
+                        {
+                            "execution_timeframe": CAMPAIGN.Timeframe.TF_5M,
+                            "context_timeframe": CAMPAIGN.Timeframe.TF_1H,
+                        },
                     )()
                     self.readiness = {"promotion_ready": False, "blocked_by": "not_promotion_ready"}
                     self.search_param_grid = {"w_momentum": [0.2, 0.3]}
@@ -2641,17 +2844,27 @@ class FrameworkCampaignTests(unittest.TestCase):
                 callback = kwargs["status_callback"]
                 if kwargs["search_execution_timeframe"] == CAMPAIGN.Timeframe.TF_1H:
                     for idx in range(1, 6):
-                        callback(event="trial_completed", current_trial=idx, completed_trials=idx, total_trials=5, runtime_s=float(idx))
-                    return None, [], {
-                        "train_candidate_diagnostics": {
-                            "raw_trial_count": 5,
-                            "raw_nonzero_trade_trials": 0,
-                            "eligible_trade_count_trials": 0,
-                            "max_train_trade_count": 0,
-                            "max_train_sharpe": 0.0,
+                        callback(
+                            event="trial_completed",
+                            current_trial=idx,
+                            completed_trials=idx,
+                            total_trials=5,
+                            runtime_s=float(idx),
+                        )
+                    return (
+                        None,
+                        [],
+                        {
+                            "train_candidate_diagnostics": {
+                                "raw_trial_count": 5,
+                                "raw_nonzero_trade_trials": 0,
+                                "eligible_trade_count_trials": 0,
+                                "max_train_trade_count": 0,
+                                "max_train_sharpe": 0.0,
+                            },
+                            "empty_shortlist_reason": "all_zero_trade",
                         },
-                        "empty_shortlist_reason": "all_zero_trade",
-                    }
+                    )
                 callback(
                     event="trial_running",
                     current_trial=1,

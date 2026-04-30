@@ -34,6 +34,7 @@ SERIES = {
     "gold": "GLD",  # Gold ETF
 }
 
+
 def download_yfinance(output_dir: Path, years: int = 7) -> None:
     """Download all yfinance-based macro series."""
     try:
