@@ -100,7 +100,8 @@ def build_decision_attribution_ledger(
         summary["target_actions"][target_action] += 1
         for action in execution_actions:
             summary["execution_actions"][action] += 1
-        for code in _reason_codes(row):
+        row_reason_codes = _reason_codes(row)
+        for code in row_reason_codes:
             reason_counts[micro_state][code] += 1
 
         playbook_payload = playbook_summary.setdefault(
@@ -131,8 +132,15 @@ def build_decision_attribution_ledger(
                 "target_qty": round(target_qty, 6),
                 "target_direction": 1 if target_qty > 0 else -1 if target_qty < 0 else 0,
                 "regime": row.get("regime") or row.get("target_regime"),
+                "regime_confidence": round(_safe_float(row.get("regime_confidence")), 6),
                 "directional_state": row.get("directional_state"),
+                "directional_confidence": round(_safe_float(row.get("directional_confidence")), 6),
                 "volatility_state": row.get("volatility_state"),
+                "positioning_state": row.get("positioning_state"),
+                "quality_state": row.get("quality_state"),
+                "transition_risk": round(_safe_float(row.get("transition_risk")), 6),
+                "funding_oi_z": round(_safe_float(row.get("funding_oi_z")), 6),
+                "momentum_roc_z": round(_safe_float(row.get("momentum_roc_z")), 6),
                 "realized_vol": round(_safe_float(row.get("realized_vol")), 6),
                 "drawdown": round(_safe_float(row.get("drawdown")), 6),
                 "estimated_equity_pnl": round(equity_pnl, 6),
@@ -141,6 +149,7 @@ def build_decision_attribution_ledger(
                 "execution_actions": execution_actions,
                 "risk_flags": str(row.get("risk_flags") or ""),
                 "target_reason_codes": str(row.get("target_reason_codes") or ""),
+                "reason_codes": row_reason_codes,
             }
         )
         previous_target_qty = target_qty

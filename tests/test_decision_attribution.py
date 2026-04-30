@@ -40,7 +40,10 @@ class _FakeRunner:
                 "playbook_id": "BEAR_DEFENSE",
                 "regime_confidence": 0.55,
                 "directional_state": "DOWNTREND",
+                "directional_confidence": 0.62,
                 "volatility_state": "HIGH",
+                "positioning_state": "HEALTHY",
+                "quality_state": "NOISY",
                 "realized_vol": 1.1,
                 "transition_risk": 0.5,
                 "target_reason_codes": "REGIME_STRESS|TREND_SHORT",
@@ -108,6 +111,10 @@ class DecisionAttributionTests(unittest.TestCase):
         self.assertIn("panic_reversal", ledger["micro_state_summary"])
         self.assertIn("squeeze_continuation", ledger["micro_state_summary"])
         self.assertEqual(ledger["decision_rows"][0]["playbook_id"], "BEAR_DEFENSE")
+        self.assertEqual(ledger["decision_rows"][0]["quality_state"], "NOISY")
+        self.assertEqual(ledger["decision_rows"][0]["transition_risk"], 0.5)
+        self.assertEqual(ledger["decision_rows"][0]["directional_confidence"], 0.62)
+        self.assertIn("TREND_SHORT", ledger["decision_rows"][0]["reason_codes"])
         self.assertEqual(ledger["playbook_summary"]["BEAR_DEFENSE"]["execution_actions"]["entry"], 1)
         self.assertEqual(ledger["micro_state_summary"]["panic_reversal"]["execution_actions"]["entry"], 1)
         self.assertEqual(ledger["micro_state_summary"]["squeeze_continuation"]["execution_actions"]["exit"], 1)
