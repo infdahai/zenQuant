@@ -6,7 +6,7 @@ import itertools
 from dataclasses import dataclass
 from typing import Protocol
 
-from zenquant.domain import ExecutionOrder, MarkPriceUpdate, OrderBookSnapshot, TargetPosition, TradeTick
+from zenquant.domain import ExecutionOrder, MarkPriceUpdate, OrderBookSnapshot, RiskSnapshot, TargetPosition, TradeTick
 from zenquant.execution.gateway import ExecutionGateway
 from zenquant.infra import EventBus
 
@@ -63,6 +63,16 @@ class ExecutionKernelConfig:
     # Direction flip: immediately flatten + open opposite in one bar
     flip_immediate: bool = True
     flip_min_confidence: float = 0.5  # min regime_confidence to allow flip
+    # Research-only hostile router. Defaults off to preserve production parity.
+    hostile_behavior_router_enabled: bool = False
+    # Research-only squeeze guard. Defaults off to preserve production parity.
+    squeeze_flip_flatten_only_enabled: bool = False
+    squeeze_flip_cooldown_enabled: bool = False
+    squeeze_flip_cooldown_bars: int = 2
+    squeeze_conditional_cooldown_enabled: bool = False
+    squeeze_conditional_cooldown_drawdown_threshold: float = 0.025
+    squeeze_conditional_cooldown_toxic_only: bool = False
+    squeeze_cooldown_cancel_on_non_squeeze_enabled: bool = False
     # Legacy gradual execution (kept for compatibility)
     entry_fraction: float = 1.0
     exit_fraction: float = 1.0
@@ -100,6 +110,10 @@ class ExecutionKernelConfig:
             raise ValueError("max_long_dca_tranches must be >= 1")
         if self.max_long_dca_tranches > self.max_long_inventory_tranches:
             raise ValueError("max_long_dca_tranches must be <= max_long_inventory_tranches")
+        if self.squeeze_flip_cooldown_bars < 1:
+            raise ValueError("squeeze_flip_cooldown_bars must be >= 1")
+        if self.squeeze_conditional_cooldown_drawdown_threshold < 0.0:
+            raise ValueError("squeeze_conditional_cooldown_drawdown_threshold must be >= 0.0")
 
 
 class ExecutionKernel:
@@ -131,10 +145,13 @@ class ExecutionKernel:
         self._last_fill_prices: dict[str, float] = {}
         self._pyramid_filled_pct: dict[str, float] = {}  # How much of target is filled
         self._inventory_tranches: dict[str, int] = {}
+        self._squeeze_flip_cooldowns: dict[str, int] = {}
+        self._latest_drawdown_by_portfolio: dict[str, float] = {}
 
         self._bus.subscribe("md.trade.>", self._on_trade)
         self._bus.subscribe("md.mark.>", self._on_mark_price)
         self._bus.subscribe("md.book.>", self._on_book)
+        self._bus.subscribe("risk.snapshot", self._on_risk_snapshot)
         self._bus.subscribe("intent.target_position.final.>", self._on_target)
 
     def _on_trade(self, _: str, payload: object) -> None:
@@ -156,6 +173,11 @@ class ExecutionKernel:
         if payload.asks:
             self._best_ask[payload.meta.symbol] = payload.asks[0].price
 
+    def _on_risk_snapshot(self, _: str, payload: object) -> None:
+        if not isinstance(payload, RiskSnapshot):
+            return
+        self._latest_drawdown_by_portfolio[payload.portfolio] = payload.drawdown
+
     def _on_target(self, _: str, payload: object) -> None:
         """Diff current filled position against the new target and trade the delta."""
         if not isinstance(payload, TargetPosition):
@@ -173,14 +195,28 @@ class ExecutionKernel:
 
         side = 1 if delta_qty > 0 else -1
         is_reducing = current_position != 0 and current_position * delta_qty < 0
+        router_micro_state = self._hostile_router_micro_state(payload, current_position)
+
+        if self._should_squeeze_flip_flatten_only(payload, current_position, router_micro_state):
+            self._execute_flatten_only(symbol, current_position, payload, mark_price)
+            if self._should_arm_squeeze_cooldown(payload):
+                self._squeeze_flip_cooldowns[symbol] = self._config.squeeze_flip_cooldown_bars
+            return
+
+        if self._should_block_squeeze_cooldown_reentry(payload, current_position, router_micro_state):
+            self._advance_squeeze_cooldown(symbol)
+            return
+        if self._squeeze_cooldown_feature_enabled() and self._squeeze_flip_cooldowns.get(symbol, 0) > 0:
+            self._advance_squeeze_cooldown(symbol)
 
         # Direction flip: current position and target are opposite directions
         # Requires minimum confidence to prevent oscillation-driven churn
+        flip_min_confidence = self._effective_flip_min_confidence(payload, current_position, router_micro_state)
         is_flip = (
             not payload.reduce_only
             and abs(current_position) >= self._config.min_trade_qty
             and current_position * payload.target_qty < 0
-            and payload.regime_confidence >= self._config.flip_min_confidence
+            and payload.regime_confidence >= flip_min_confidence
         )
         if is_flip and self._config.flip_immediate:
             self._execute_flip(symbol, current_position, payload, mark_price)
@@ -194,9 +230,14 @@ class ExecutionKernel:
             trade_qty = min(abs(delta_qty), abs(current_position))
             # Gradual exit: unwind fraction per bar for non-immediate exits
             if self._config.gradual_exit_enabled and not self._is_immediate_exit(payload):
+                exit_unwind_pct = self._effective_exit_unwind_pct(
+                    payload,
+                    current_position,
+                    router_micro_state,
+                )
                 unwind_pct = self._adaptive_speed(
                     payload.realized_vol,
-                    self._config.exit_unwind_pct,
+                    exit_unwind_pct,
                     self._config.exit_unwind_min_pct,
                     self._config.exit_unwind_max_pct,
                 )
@@ -225,6 +266,14 @@ class ExecutionKernel:
             add_pct = self._config.pyramid_short_add_pct if is_short else self._config.pyramid_add_pct
             max_tranches = (
                 self._config.max_short_inventory_tranches if is_short else self._config.max_long_inventory_tranches
+            )
+            init_pct, add_pct, max_tranches = self._effective_pyramid_profile(
+                payload,
+                is_short=is_short,
+                init_pct=init_pct,
+                add_pct=add_pct,
+                max_tranches=max_tranches,
+                router_micro_state=router_micro_state,
             )
 
             # Volatility-adaptive speed: fast in calm trends, slow in crashes
@@ -433,6 +482,41 @@ class ExecutionKernel:
             self._inventory_tranches[symbol] = 1
             self._risk_overlay.apply_fee(open_report.fee)
 
+    def _execute_flatten_only(
+        self,
+        symbol: str,
+        current_position: float,
+        payload: TargetPosition,
+        mark_price: float,
+    ) -> None:
+        """Close an existing position without opening the requested opposite side."""
+        close_side = -1 if current_position > 0 else 1
+        close_order = ExecutionOrder(
+            client_order_id=f"{symbol}-{payload.cutoff_time_ns}-{next(self._order_seq)}-flatten",
+            symbol=symbol,
+            side=close_side,
+            quantity=round(abs(current_position), 6),
+            reduce_only=True,
+            max_slippage_bps=self._config.max_slippage_bps,
+        )
+        self._bus.publish("exec.order.submit", close_order)
+        close_report = self._gateway.submit_order(
+            close_order,
+            mark_price=mark_price,
+            best_bid=self._best_bid.get(symbol),
+            best_ask=self._best_ask.get(symbol),
+            now_ns=payload.cutoff_time_ns,
+        )
+        self._bus.publish("exec.order.report", close_report)
+        if close_report.status != "FILLED":
+            return
+        self._positions[symbol] = 0.0
+        self._entry_prices.pop(symbol, None)
+        self._last_fill_prices.pop(symbol, None)
+        self._pyramid_filled_pct.pop(symbol, None)
+        self._inventory_tranches.pop(symbol, None)
+        self._risk_overlay.apply_fee(close_report.fee)
+
     def _adaptive_speed(
         self,
         realized_vol: float,
@@ -445,6 +529,184 @@ class ExecutionKernel:
             return base_pct
         vol_ratio = self._config.pyramid_target_vol / realized_vol
         return max(min_speed, min(max_speed, base_pct * vol_ratio))
+
+    def _hostile_router_micro_state(self, payload: TargetPosition, current_position: float) -> str:
+        """Classify execution-only microstate from already-audited target fields."""
+        if not (
+            self._config.hostile_behavior_router_enabled
+            or self._config.squeeze_flip_flatten_only_enabled
+            or self._config.squeeze_flip_cooldown_enabled
+            or self._config.squeeze_conditional_cooldown_enabled
+            or self._config.squeeze_cooldown_cancel_on_non_squeeze_enabled
+        ):
+            return "disabled"
+        target_direction = 1 if payload.target_qty > 0 else -1 if payload.target_qty < 0 else 0
+        if (
+            current_position < -self._config.min_trade_qty
+            and target_direction > 0
+            and self._has_squeeze_degraded_signal(payload)
+        ):
+            return "squeeze_continuation"
+        if (
+            current_position < -self._config.min_trade_qty
+            and target_direction >= 0
+            and self._config.hostile_behavior_router_enabled
+            and (payload.realized_vol >= 0.8 or payload.regime_confidence < 0.55)
+        ):
+            return "squeeze_continuation"
+        if (
+            target_direction < 0
+            and payload.realized_vol >= 0.9
+            and (payload.regime in {"STRESS", "RANGE"} or payload.regime_confidence < 0.60)
+        ):
+            return "panic_reversal"
+        if (
+            target_direction < 0
+            and payload.regime == "TREND"
+            and payload.regime_confidence >= 0.55
+            and payload.realized_vol < 1.2
+        ):
+            return "bearish_grind"
+        if payload.regime == "RANGE" or payload.regime_confidence < 0.50:
+            return "chop_neutral"
+        return "default"
+
+    def _should_squeeze_flip_flatten_only(
+        self,
+        payload: TargetPosition,
+        current_position: float,
+        router_micro_state: str,
+    ) -> bool:
+        return (
+            (
+                self._config.squeeze_flip_flatten_only_enabled
+                or self._config.squeeze_flip_cooldown_enabled
+                or (
+                    self._config.squeeze_conditional_cooldown_enabled
+                    and self._conditional_squeeze_cooldown_allowed(payload)
+                )
+            )
+            and current_position < -self._config.min_trade_qty
+            and payload.target_qty > self._config.min_trade_qty
+            and router_micro_state == "squeeze_continuation"
+            and self._has_squeeze_degraded_signal(payload)
+        )
+
+    def _should_block_squeeze_cooldown_reentry(
+        self,
+        payload: TargetPosition,
+        current_position: float,
+        router_micro_state: str,
+    ) -> bool:
+        if not self._squeeze_cooldown_feature_enabled():
+            return False
+        remaining = self._squeeze_flip_cooldowns.get(payload.symbol, 0)
+        if (
+            remaining > 0
+            and self._config.squeeze_cooldown_cancel_on_non_squeeze_enabled
+            and router_micro_state != "squeeze_continuation"
+        ):
+            self._squeeze_flip_cooldowns.pop(payload.symbol, None)
+            return False
+        return (
+            remaining > 0
+            and abs(current_position) < self._config.min_trade_qty
+            and payload.target_qty > self._config.min_trade_qty
+            and not payload.reduce_only
+        )
+
+    def _advance_squeeze_cooldown(self, symbol: str) -> None:
+        remaining = self._squeeze_flip_cooldowns.get(symbol, 0)
+        if remaining <= 1:
+            self._squeeze_flip_cooldowns.pop(symbol, None)
+        else:
+            self._squeeze_flip_cooldowns[symbol] = remaining - 1
+
+    def _should_arm_squeeze_cooldown(self, payload: TargetPosition) -> bool:
+        if self._config.squeeze_flip_cooldown_enabled:
+            return True
+        return self._config.squeeze_conditional_cooldown_enabled and self._conditional_squeeze_cooldown_allowed(payload)
+
+    def _squeeze_cooldown_feature_enabled(self) -> bool:
+        return self._config.squeeze_flip_cooldown_enabled or self._config.squeeze_conditional_cooldown_enabled
+
+    def _conditional_squeeze_cooldown_allowed(self, payload: TargetPosition) -> bool:
+        if not self._has_squeeze_degraded_signal(payload):
+            return False
+        if (
+            not self._config.squeeze_conditional_cooldown_toxic_only
+            and self._latest_drawdown_by_portfolio.get(payload.portfolio, 0.0)
+            >= self._config.squeeze_conditional_cooldown_drawdown_threshold
+        ):
+            return True
+        toxic_codes = {
+            "DD_STEP_1",
+            "DD_STEP_2",
+            "DD_STEP_3",
+            "STRATEGY_DEGRADED",
+            "VPIN_TOXIC",
+            "VOLATILITY_STRESS",
+        }
+        return bool(toxic_codes.intersection(payload.reason_codes))
+
+    @staticmethod
+    def _has_squeeze_degraded_signal(payload: TargetPosition) -> bool:
+        degraded_codes = {
+            "BIAS_QUALITY_DEGRADED",
+            "DIRECTION_TRANSITION",
+            "PLAYBOOK_RANGE_LIGHT",
+        }
+        return bool(degraded_codes.intersection(payload.reason_codes))
+
+    def _effective_flip_min_confidence(
+        self,
+        payload: TargetPosition,
+        current_position: float,
+        router_micro_state: str,
+    ) -> float:
+        threshold = self._config.flip_min_confidence
+        if (
+            self._config.hostile_behavior_router_enabled
+            and current_position > self._config.min_trade_qty
+            and payload.target_qty < 0
+            and router_micro_state in {"panic_reversal", "chop_neutral"}
+        ):
+            threshold = max(threshold, 0.70)
+        return threshold
+
+    def _effective_exit_unwind_pct(
+        self,
+        payload: TargetPosition,
+        current_position: float,
+        router_micro_state: str,
+    ) -> float:
+        unwind_pct = self._config.exit_unwind_pct
+        if (
+            self._config.hostile_behavior_router_enabled
+            and current_position < -self._config.min_trade_qty
+            and payload.target_qty >= 0
+            and router_micro_state == "squeeze_continuation"
+        ):
+            unwind_pct = max(unwind_pct, 0.40)
+        return unwind_pct
+
+    def _effective_pyramid_profile(
+        self,
+        payload: TargetPosition,
+        *,
+        is_short: bool,
+        init_pct: float,
+        add_pct: float,
+        max_tranches: int,
+        router_micro_state: str,
+    ) -> tuple[float, float, int]:
+        if not self._config.hostile_behavior_router_enabled or not is_short:
+            return init_pct, add_pct, max_tranches
+        if router_micro_state in {"panic_reversal", "chop_neutral"}:
+            return min(init_pct, 0.15), min(add_pct, 0.10), min(max_tranches, 2)
+        if payload.regime == "STRESS":
+            return min(init_pct, 0.15), min(add_pct, 0.10), min(max_tranches, 2)
+        return init_pct, add_pct, max_tranches
 
     @staticmethod
     def _is_immediate_exit(target: TargetPosition) -> bool:

@@ -36,7 +36,9 @@ def _bucket_stats(buckets: list[object]) -> dict[str, object]:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Collect Hyperliquid recent public trades into proxy liquidation buckets")
+    parser = argparse.ArgumentParser(
+        description="Collect Hyperliquid recent public trades into proxy liquidation buckets"
+    )
     parser.add_argument("--coin", default="BTC")
     parser.add_argument("--output", type=Path, default=Path("data/raw/hyperliquid/liquidations"))
     parser.add_argument("--min-trade-notional-usd", type=float, default=50_000.0)
@@ -61,7 +63,12 @@ def main() -> None:
     status_path.parent.mkdir(parents=True, exist_ok=True)
     status_path.write_text(json.dumps(status, indent=2), encoding="utf-8")
 
-    print(json.dumps({"status": status, "raw_files": [str(p) for p in raw_paths], "agg_files": [str(p) for p in agg_paths]}, indent=2))
+    print(
+        json.dumps(
+            {"status": status, "raw_files": [str(p) for p in raw_paths], "agg_files": [str(p) for p in agg_paths]},
+            indent=2,
+        )
+    )
 
 
 if __name__ == "__main__":

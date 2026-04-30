@@ -46,4 +46,3 @@ class PerpCarryStressSignalTests(unittest.TestCase):
         )
 
         self.assertEqual(result.value, 0.0)
-

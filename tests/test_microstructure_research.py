@@ -278,10 +278,13 @@ class MicrostructureResearchTests(unittest.TestCase):
                 "--poll-interval-ms",
                 "1",
             ]
-            with patch.object(sys, "argv", argv), patch.object(
-                PREPARE_BYBIT_CLI,
-                "_get_json",
-                side_effect=_fake_get_json,
+            with (
+                patch.object(sys, "argv", argv),
+                patch.object(
+                    PREPARE_BYBIT_CLI,
+                    "_get_json",
+                    side_effect=_fake_get_json,
+                ),
             ):
                 PREPARE_BYBIT_CLI.main()
 

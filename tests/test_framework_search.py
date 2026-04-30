@@ -11,9 +11,12 @@ from unittest.mock import patch
 from zenquant.domain import Timeframe
 from zenquant.historical import HistoricalBacktestConfig
 from zenquant.historical.storage import HistoricalKlineRow, write_parquet_rows
+from zenquant.research.auto_research import _hostile_proxy_diagnostics
 from zenquant.research.framework_params import (
     baseline_anchor_params,
     baseline_anchor_seed_trials,
+    baseline_anchored_2023_08_hostile_repair_param_grid,
+    baseline_anchored_defensive_param_grid,
     baseline_anchored_param_grid,
     build_replay_toggles,
     core_param_grid,
@@ -34,6 +37,7 @@ from zenquant.research.framework_search import (
     _classify_post_smoke_scenario,
     _hostile_regression_summary,
     _run_validation_bundle,
+    _stage1_fail_fast_reason,
     build_markdown_report,
     run_optuna_search,
     write_search_report,
@@ -127,6 +131,40 @@ class FrameworkParamTests(unittest.TestCase):
         self.assertEqual(profile["search_space_mode"], "baseline_anchored_train_only")
         self.assertTrue(profile["baseline_anchored_search"])
         self.assertEqual(profile["baseline_anchor_variant"], "paulwei_baseline")
+
+    def test_defensive_anchored_grid_freezes_long_side_and_only_widens_inventory_path(self) -> None:
+        grid = baseline_anchored_defensive_param_grid()
+        self.assertEqual(grid["pyramid_initial_pct"], [0.30])
+        self.assertEqual(grid["pyramid_add_pct"], [0.30])
+        self.assertTrue(all(value >= baseline_anchor_params()["dca_spacing_atr"] for value in grid["dca_spacing_atr"]))
+        self.assertTrue(all(value >= baseline_anchor_params()["dca_size_decay"] for value in grid["dca_size_decay"]))
+        self.assertTrue(
+            all(value >= baseline_anchor_params()["flip_min_confidence"] for value in grid["flip_min_confidence"])
+        )
+
+    def test_search_space_profile_marks_defensive_anchored_mode(self) -> None:
+        profile = search_space_profile(mode="baseline_anchored_defensive_candidate_existence")
+        self.assertEqual(profile["search_space_mode"], "baseline_anchored_defensive_candidate_existence")
+        self.assertTrue(profile["baseline_anchored_search"])
+
+    def test_targeted_hostile_repair_grid_is_more_defensive_than_baseline_anchor(self) -> None:
+        grid = baseline_anchored_2023_08_hostile_repair_param_grid()
+        self.assertEqual(grid["pyramid_initial_pct"], [0.30])
+        self.assertEqual(grid["pyramid_add_pct"], [0.30])
+        self.assertEqual(grid["pyramid_short_initial_pct"], [0.15])
+        self.assertEqual(grid["pyramid_short_add_pct"], [0.10, 0.12])
+        self.assertEqual(grid["pyramid_spacing_atr"], [1.00])
+        self.assertEqual(grid["exit_unwind_pct"], [0.35])
+        self.assertEqual(grid["max_leverage"], [4.5])
+        self.assertTrue(all(value >= baseline_anchor_params()["dca_spacing_atr"] for value in grid["dca_spacing_atr"]))
+        self.assertTrue(all(value >= baseline_anchor_params()["dca_size_decay"] for value in grid["dca_size_decay"]))
+        self.assertTrue(all(value >= 0.60 for value in grid["flip_min_confidence"]))
+
+    def test_search_space_profile_marks_targeted_hostile_repair_mode(self) -> None:
+        profile = search_space_profile(mode="baseline_anchored_2023_08_hostile_repair")
+        self.assertEqual(profile["search_space_mode"], "baseline_anchored_2023_08_hostile_repair")
+        self.assertTrue(profile["baseline_anchored_search"])
+        self.assertEqual(profile["hostile_window_focus"], "weak_window_2023_08")
 
     def test_baseline_anchor_seed_trials_start_with_exact_baseline(self) -> None:
         seeds = baseline_anchor_seed_trials()
@@ -461,7 +499,9 @@ class FrameworkEvaluatorTests(unittest.TestCase):
             pass
 
         evaluator = FrameworkEvaluator(HistoricalBacktestConfig())
-        with patch("zenquant.research.framework_search._run_variant_backtest", return_value=(FakeRunner(), FakeResult())):
+        with patch(
+            "zenquant.research.framework_search._run_variant_backtest", return_value=(FakeRunner(), FakeResult())
+        ):
             snapshot = evaluator._run_variant_backtest_cached(evaluator._current_variant, start_ns=None, end_ns=None)
 
         self.assertIsInstance(snapshot, BacktestSnapshot)
@@ -670,6 +710,156 @@ class SearchReportSerializationTests(unittest.TestCase):
         )
         self.assertGreater(cleaner, expensive)
 
+    def test_stage1_hostile_proxy_penalizes_train_churn_stress(self) -> None:
+        params = {
+            "target_vol_4h": 1.1,
+            "max_leverage": 4.5,
+            "pyramid_initial_pct": 0.3,
+            "pyramid_add_pct": 0.3,
+            "pyramid_short_initial_pct": 0.2,
+            "pyramid_short_add_pct": 0.1,
+            "dca_spacing_atr": 0.75,
+            "dca_size_decay": 0.75,
+            "flip_min_confidence": 0.7,
+        }
+        base_metrics = {
+            "sharpe": 2.9,
+            "max_drawdown": 0.18,
+            "profit_factor": 1.2,
+            "fee_drag_pct": 0.015,
+            "trade_count": 3600,
+        }
+        clean = _hostile_proxy_diagnostics(params, base_metrics)
+        churny = _hostile_proxy_diagnostics(
+            params,
+            {
+                **base_metrics,
+                "fee_drag_pct": 0.045,
+                "trade_count": 5200,
+            },
+        )
+
+        self.assertGreater(churny["train_churn_stress_penalty"], clean["train_churn_stress_penalty"])
+        self.assertGreater(churny["train_trade_count_penalty"], 0.0)
+        self.assertGreater(churny["train_fee_drag_proxy_penalty"], 0.0)
+        self.assertLess(churny["stage1_score"], clean["stage1_score"])
+
+    def test_stage1_fail_fast_rejects_fragile_hostile_candidate(self) -> None:
+        baseline = CandidateSummary(
+            variant="paulwei_baseline",
+            robust_score=1.0,
+            selection_split="dev",
+            dev_sharpe=1.0,
+            dev_pnl=100.0,
+            dev_drawdown=0.10,
+            avg_dev_sharpe=1.0,
+            avg_dev_ratio=1.0,
+            worst_dev_sharpe=0.4,
+            weak_window_sharpe=0.5,
+            negative_dev_worst_windows=0,
+            promotion_candidate=True,
+            profit_factor=1.3,
+            turnover_per_day=1000.0,
+            fee_drag_pct=0.01,
+        )
+        current = CandidateSummary(
+            variant="current",
+            robust_score=baseline.robust_score,
+            selection_split=baseline.selection_split,
+            dev_sharpe=baseline.dev_sharpe,
+            dev_pnl=baseline.dev_pnl,
+            dev_drawdown=baseline.dev_drawdown,
+            avg_dev_sharpe=baseline.avg_dev_sharpe,
+            avg_dev_ratio=baseline.avg_dev_ratio,
+            worst_dev_sharpe=0.3,
+            weak_window_sharpe=baseline.weak_window_sharpe,
+            negative_dev_worst_windows=baseline.negative_dev_worst_windows,
+            promotion_candidate=baseline.promotion_candidate,
+            profit_factor=baseline.profit_factor,
+            turnover_per_day=baseline.turnover_per_day,
+            fee_drag_pct=baseline.fee_drag_pct,
+        )
+        fragile = CandidateSummary(
+            variant="optuna_tuned",
+            robust_score=baseline.robust_score,
+            selection_split=baseline.selection_split,
+            dev_sharpe=baseline.dev_sharpe,
+            dev_pnl=baseline.dev_pnl,
+            dev_drawdown=baseline.dev_drawdown,
+            avg_dev_sharpe=baseline.avg_dev_sharpe,
+            avg_dev_ratio=baseline.avg_dev_ratio,
+            worst_dev_sharpe=-0.2,
+            weak_window_sharpe=baseline.weak_window_sharpe,
+            negative_dev_worst_windows=baseline.negative_dev_worst_windows,
+            promotion_candidate=baseline.promotion_candidate,
+            profit_factor=0.8,
+            turnover_per_day=1800.0,
+            fee_drag_pct=0.03,
+        )
+
+        self.assertEqual(
+            _stage1_fail_fast_reason(fragile, baseline=baseline, current=current),
+            "worst_dev_sharpe_fail_fast",
+        )
+
+    def test_stage1_fail_fast_rejects_weak_window_2023_08_regression_first(self) -> None:
+        baseline = CandidateSummary(
+            variant="paulwei_baseline",
+            robust_score=1.0,
+            selection_split="dev",
+            dev_sharpe=1.0,
+            dev_pnl=100.0,
+            dev_drawdown=0.10,
+            avg_dev_sharpe=1.0,
+            avg_dev_ratio=1.0,
+            worst_dev_sharpe=0.4,
+            weak_window_sharpe=0.5,
+            negative_dev_worst_windows=0,
+            promotion_candidate=True,
+            profit_factor=1.3,
+            turnover_per_day=1000.0,
+            fee_drag_pct=0.01,
+        )
+        current = CandidateSummary(
+            variant="current",
+            robust_score=1.0,
+            selection_split="dev",
+            dev_sharpe=1.0,
+            dev_pnl=100.0,
+            dev_drawdown=0.10,
+            avg_dev_sharpe=1.0,
+            avg_dev_ratio=1.0,
+            worst_dev_sharpe=0.5,
+            weak_window_sharpe=0.55,
+            negative_dev_worst_windows=0,
+            promotion_candidate=True,
+            profit_factor=1.3,
+            turnover_per_day=1000.0,
+            fee_drag_pct=0.01,
+        )
+        fragile = CandidateSummary(
+            variant="optuna_tuned",
+            robust_score=1.0,
+            selection_split="dev",
+            dev_sharpe=1.5,
+            dev_pnl=120.0,
+            dev_drawdown=0.08,
+            avg_dev_sharpe=1.2,
+            avg_dev_ratio=1.0,
+            worst_dev_sharpe=0.4,
+            weak_window_sharpe=0.2,
+            negative_dev_worst_windows=0,
+            promotion_candidate=False,
+            profit_factor=1.1,
+            turnover_per_day=1000.0,
+            fee_drag_pct=0.01,
+        )
+
+        self.assertEqual(
+            _stage1_fail_fast_reason(fragile, baseline=baseline, current=current),
+            "weak_window_2023_08_fail_fast",
+        )
+
     def test_post_smoke_scenario_classifies_hostile_window_failure(self) -> None:
         report = SearchReport(
             created_at="2026-04-10T00:00:00+00:00",
@@ -826,11 +1016,20 @@ class SearchReportSerializationTests(unittest.TestCase):
         report = SearchReport(
             created_at="2026-04-10T00:00:00+00:00",
             symbol="BTCUSDT",
-            readiness={"promotion_ready": False, "blocked_by": "not_promotion_ready", "data_ready": True, "detail": "ok"},
+            readiness={
+                "promotion_ready": False,
+                "blocked_by": "not_promotion_ready",
+                "data_ready": True,
+                "detail": "ok",
+            },
             deribit_status={"observation_ready": True, "enabled": True, "research_ready": True},
             split_contract=split_summary_json(default_btc_split_spec()),
             training_window_coverage={},
-            training_input_contract={"state_feature_sources": {}, "signal_stack_contract": {}, "signal_independence_contract": {}},
+            training_input_contract={
+                "state_feature_sources": {},
+                "signal_stack_contract": {},
+                "signal_independence_contract": {},
+            },
             search_status={"search_space_profile": search_space_profile()},
             current=CandidateSummary(
                 variant="current",
@@ -915,7 +1114,16 @@ class SearchReportSerializationTests(unittest.TestCase):
                     "blocked_by": None,
                 },
             },
-            search_status={"search_space_profile": {"direction_weight_policy": {"correlation_constrained": True, "capped_direction_signal": "crowding_signal", "demoted_signal": "funding_alpha_signal", "demoted_signal_role": "state"}}},
+            search_status={
+                "search_space_profile": {
+                    "direction_weight_policy": {
+                        "correlation_constrained": True,
+                        "capped_direction_signal": "crowding_signal",
+                        "demoted_signal": "funding_alpha_signal",
+                        "demoted_signal_role": "state",
+                    }
+                }
+            },
             current=CandidateSummary(
                 variant="current",
                 robust_score=1.0,
@@ -999,7 +1207,16 @@ class SearchReportSerializationTests(unittest.TestCase):
                     "blocked_by": None,
                 },
             },
-            search_status={"search_space_profile": {"direction_weight_policy": {"correlation_constrained": True, "capped_direction_signal": "crowding_signal", "demoted_signal": "funding_alpha_signal", "demoted_signal_role": "state"}}},
+            search_status={
+                "search_space_profile": {
+                    "direction_weight_policy": {
+                        "correlation_constrained": True,
+                        "capped_direction_signal": "crowding_signal",
+                        "demoted_signal": "funding_alpha_signal",
+                        "demoted_signal_role": "state",
+                    }
+                }
+            },
             current=CandidateSummary(
                 variant="current",
                 robust_score=1.0,
@@ -1064,7 +1281,12 @@ class SearchReportSerializationTests(unittest.TestCase):
         report = SearchReport(
             created_at="2026-04-08T00:00:00+00:00",
             symbol="BTCUSDT",
-            readiness={"data_ready": False, "promotion_ready": False, "blocked_by": "missing_liquidation_history", "detail": "missing"},
+            readiness={
+                "data_ready": False,
+                "promotion_ready": False,
+                "blocked_by": "missing_liquidation_history",
+                "detail": "missing",
+            },
             deribit_status={"enabled": True, "observation_ready": False, "research_ready": False},
             split_contract=split_summary_json(default_btc_split_spec()),
             training_window_coverage={"fast_windows": ["overall_recent"]},
@@ -1181,7 +1403,9 @@ class SearchReportSerializationTests(unittest.TestCase):
         self.assertFalse(payload["full_unified_truth"])
         self.assertIsNone(payload["optuna_tuned"])
         self.assertIsNone(payload["rl_tuned"])
-        self.assertTrue(payload["training_input_contract"]["signal_stack_contract"]["direction_state_execution_split_enabled"])
+        self.assertTrue(
+            payload["training_input_contract"]["signal_stack_contract"]["direction_state_execution_split_enabled"]
+        )
         self.assertTrue(payload["training_input_contract"]["execution_framework"]["five_min_direct_execution_enabled"])
         self.assertEqual(payload["final_verdict"]["best_variant"], "current")
         self.assertTrue(payload["final_verdict"]["candidate_generation_failed"])
@@ -1215,15 +1439,18 @@ class SearchReportSerializationTests(unittest.TestCase):
             top_n: list[dict]
             runtime_s: float
 
-        with patch("zenquant.research.framework_search.run_search_stage", return_value=FakeSweep(
-            total_combinations=2,
-            results=[],
-            top_n=[
-                {"params": {"w_momentum": 0.3}, "metrics": {"sharpe": 1.0, "score": 1.0}},
-                {"params": {"w_momentum": 0.45}, "metrics": {"sharpe": 1.2, "score": 1.2}},
-            ],
-            runtime_s=0.1,
-        )) as run_stage:
+        with patch(
+            "zenquant.research.framework_search.run_search_stage",
+            return_value=FakeSweep(
+                total_combinations=2,
+                results=[],
+                top_n=[
+                    {"params": {"w_momentum": 0.3}, "metrics": {"sharpe": 1.0, "score": 1.0}},
+                    {"params": {"w_momentum": 0.45}, "metrics": {"sharpe": 1.2, "score": 1.2}},
+                ],
+                runtime_s=0.1,
+            ),
+        ) as run_stage:
             evaluator = FrameworkEvaluator(HistoricalBacktestConfig(), split_spec=default_btc_split_spec())
             best, ranked, diagnostics = run_optuna_search(evaluator, n_trials=5)
 
@@ -1231,8 +1458,66 @@ class SearchReportSerializationTests(unittest.TestCase):
         self.assertEqual(ranked[0]["candidate_source"], "auto_research_train_only")
         self.assertEqual(ranked[0]["split_contract_version"], "btc_temporal_v2_train_selection_only")
         self.assertEqual(ranked[0]["summary"]["selection_split"], "train")
+        self.assertIn("regime_objective", ranked[0]["combined_train_diagnostics"])
+        self.assertIn("regime_objective_score", ranked[0]["train_metrics"])
+        self.assertTrue(diagnostics["train_candidate_diagnostics"]["regime_objective_enabled"])
         self.assertIn("train_candidate_diagnostics", diagnostics)
         run_stage.assert_called_once()
+
+    def test_run_optuna_search_rejects_regime_bucket_failure_before_dev_screen(self) -> None:
+        @dataclass
+        class FakeSweep:
+            total_combinations: int
+            results: list[dict]
+            top_n: list[dict]
+            runtime_s: float
+
+        top_n = [
+            {
+                "params": {"w_momentum": 0.3},
+                "metrics": {
+                    "sharpe": 2.0,
+                    "score": 2.0,
+                    "train_bucket_metrics": {"train_late_cycle_recovery_2023_11": {"sharpe": 0.1}},
+                },
+                "baseline_train_metrics": {
+                    "train_bucket_metrics": {"train_late_cycle_recovery_2023_11": {"sharpe": 0.4}},
+                },
+            },
+            {
+                "params": {"w_momentum": 0.45},
+                "metrics": {
+                    "sharpe": 1.5,
+                    "score": 1.5,
+                    "train_bucket_metrics": {"train_late_cycle_recovery_2023_11": {"sharpe": 0.42}},
+                },
+                "baseline_train_metrics": {
+                    "train_bucket_metrics": {"train_late_cycle_recovery_2023_11": {"sharpe": 0.4}},
+                },
+            },
+        ]
+        with (
+            patch(
+                "zenquant.research.framework_search.run_search_stage",
+                return_value=FakeSweep(total_combinations=2, results=[], top_n=top_n, runtime_s=0.1),
+            ),
+            patch.object(FrameworkEvaluator, "_evaluate_variant") as evaluate_variant,
+        ):
+            evaluator = FrameworkEvaluator(HistoricalBacktestConfig(), split_spec=default_btc_split_spec())
+            best, ranked, diagnostics = run_optuna_search(evaluator, n_trials=5)
+
+        evaluate_variant.assert_not_called()
+        self.assertEqual(best, {"w_momentum": 0.45})
+        self.assertEqual(len(ranked), 1)
+        self.assertEqual(
+            diagnostics["train_candidate_diagnostics"]["stage1_fail_fast_reasons"],
+            {"regime_objective_train_bucket_fail_fast": 1},
+        )
+        self.assertEqual(diagnostics["train_candidate_diagnostics"]["regime_objective_rejection_count"], 1)
+        rejected = diagnostics["train_candidate_diagnostics"]["rejected_candidate_diagnostics"]
+        self.assertEqual(rejected[0]["params"], {"w_momentum": 0.3})
+        self.assertEqual(rejected[0]["stage1_fail_fast_reason"], "regime_objective_train_bucket_fail_fast")
+        self.assertFalse(rejected[0]["regime_objective"]["allow_dev_diagnostic_review"])
 
     def test_run_optuna_search_passes_stage1_target_inflight(self) -> None:
         @dataclass
@@ -1291,8 +1576,14 @@ class SearchReportSerializationTests(unittest.TestCase):
                     total_combinations=2,
                     results=[],
                     top_n=[
-                        {"params": {"w_momentum": 0.3}, "metrics": {"sharpe": 2.0, "score": 2.0, "net_pnl": 5.0, "max_drawdown": 0.1}},
-                        {"params": {"w_momentum": 0.45}, "metrics": {"sharpe": 1.6, "score": 1.6, "net_pnl": 5.0, "max_drawdown": 0.1}},
+                        {
+                            "params": {"w_momentum": 0.3},
+                            "metrics": {"sharpe": 2.0, "score": 2.0, "net_pnl": 5.0, "max_drawdown": 0.1},
+                        },
+                        {
+                            "params": {"w_momentum": 0.45},
+                            "metrics": {"sharpe": 1.6, "score": 1.6, "net_pnl": 5.0, "max_drawdown": 0.1},
+                        },
                     ],
                     runtime_s=0.1,
                     train_candidate_diagnostics={"raw_trial_count": 2},
@@ -1499,7 +1790,10 @@ class SearchReportSerializationTests(unittest.TestCase):
         self.assertIn(("cache_miss", "window_snapshot:2023-08"), progress)
 
     def test_stage2_runtime_contract_uses_spawn_on_darwin(self) -> None:
-        fake_variants = [type("Variant", (), {"name": "current"})(), type("Variant", (), {"name": "paulwei_baseline"})()]
+        fake_variants = [
+            type("Variant", (), {"name": "current"})(),
+            type("Variant", (), {"name": "paulwei_baseline"})(),
+        ]
         with (
             patch("zenquant.research.framework_search.sys.platform", "darwin"),
             patch("zenquant.research.framework_search.default_variant_specs", return_value=fake_variants),
@@ -1515,7 +1809,10 @@ class SearchReportSerializationTests(unittest.TestCase):
         )
 
     def test_get_validation_pool_uses_explicit_mp_context(self) -> None:
-        fake_variants = [type("Variant", (), {"name": "current"})(), type("Variant", (), {"name": "paulwei_baseline"})()]
+        fake_variants = [
+            type("Variant", (), {"name": "current"})(),
+            type("Variant", (), {"name": "paulwei_baseline"})(),
+        ]
         executor_calls: list[dict[str, object]] = []
 
         class FakeExecutor:
@@ -1677,14 +1974,18 @@ class SearchReportSerializationTests(unittest.TestCase):
         class FakeEnv:
             def __init__(self, *_args, **_kwargs) -> None:
                 self._results = [
-                    type("Result", (), {
-                        "params": {"w_momentum": 0.3},
-                        "candidate_score": 1.0,
-                        "sharpe": 1.0,
-                        "pnl": 10.0,
-                        "max_dd": 0.1,
-                        "trades": 5,
-                    })()
+                    type(
+                        "Result",
+                        (),
+                        {
+                            "params": {"w_momentum": 0.3},
+                            "candidate_score": 1.0,
+                            "sharpe": 1.0,
+                            "pnl": 10.0,
+                            "max_dd": 0.1,
+                            "trades": 5,
+                        },
+                    )()
                     for _ in range(7)
                 ]
 
@@ -1794,7 +2095,10 @@ class SearchReportSerializationTests(unittest.TestCase):
         self.assertEqual(summary.selection_split, "dev")
         self.assertAlmostEqual(summary.avg_dev_sharpe, 0.4)
         self.assertAlmostEqual(summary.worst_dev_sharpe, -0.2)
-        self.assertEqual([window.label for window in evaluator._prepare_windows(fast=True, lightweight=True)], ["dev", "2023-08", "2024-11 DD"])
+        self.assertEqual(
+            [window.label for window in evaluator._prepare_windows(fast=True, lightweight=True)],
+            ["dev", "2023-08", "2024-11 DD"],
+        )
 
     def test_evaluate_variant_lightweight_emits_worst_window_progress(self) -> None:
         evaluator = FrameworkEvaluator(HistoricalBacktestConfig(), split_spec=default_btc_split_spec())
@@ -1941,7 +2245,7 @@ class SearchReportSerializationTests(unittest.TestCase):
                 r"stage2_prepare_variant_timeout: variant=current window=2024-11 DD",
             ),
         ):
-                evaluator._evaluate_variant(evaluator._current_variant, fast=True, lightweight=True)
+            evaluator._evaluate_variant(evaluator._current_variant, fast=True, lightweight=True)
 
     def test_evaluate_variant_degrades_tuned_candidate_on_validation_timeout(self) -> None:
         evaluator = FrameworkEvaluator(HistoricalBacktestConfig(), split_spec=default_btc_split_spec())

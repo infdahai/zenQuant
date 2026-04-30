@@ -71,6 +71,7 @@ class FrameworkLoopScriptTests(unittest.TestCase):
                 Args(),
                 run_dir,
                 budget="smoke",
+                search_space_mode="baseline_anchored_train_only",
                 seed_trials_file=seed_file,
                 resume=True,
                 development_dev_gate=True,
@@ -83,6 +84,8 @@ class FrameworkLoopScriptTests(unittest.TestCase):
         self.assertIn(str(seed_file), command)
         self.assertIn("--resume", command)
         self.assertIn("--development-dev-gate", command)
+        self.assertIn("--search-space-mode", command)
+        self.assertIn("baseline_anchored_train_only", command)
         self.assertIn("--dev-gate-last-round", command)
         self.assertIn("--dev-gate-interval", command)
 
@@ -192,7 +195,16 @@ class FrameworkLoopScriptTests(unittest.TestCase):
                         "dev_gate_fail_count": 2,
                         "candidate_ready_for_handoff": False,
                         "alerts": ["repeated_prevalidation_rejection"],
-                        "recent_rounds": [{"round": 2, "budget": "fast", "train_score": 1.0, "dev_score": 0.7, "promotion_health": "flat", "best_variant": "current"}],
+                        "recent_rounds": [
+                            {
+                                "round": 2,
+                                "budget": "fast",
+                                "train_score": 1.0,
+                                "dev_score": 0.7,
+                                "promotion_health": "flat",
+                                "best_variant": "current",
+                            }
+                        ],
                     }
                 ),
                 encoding="utf-8",
@@ -209,8 +221,28 @@ class FrameworkLoopScriptTests(unittest.TestCase):
             (loop_dir / "training_history.jsonl").write_text(
                 "\n".join(
                     [
-                        json.dumps({"round": 1, "budget": "smoke", "train_score": 0.2, "dev_score": 0.1, "promotion_health": "flat", "candidate_ready_for_handoff": False, "full_training_blockers": ["x"]}),
-                        json.dumps({"round": 2, "budget": "fast", "train_score": 0.8, "dev_score": 0.6, "promotion_health": "improving", "candidate_ready_for_handoff": False, "full_training_blockers": ["y"]}),
+                        json.dumps(
+                            {
+                                "round": 1,
+                                "budget": "smoke",
+                                "train_score": 0.2,
+                                "dev_score": 0.1,
+                                "promotion_health": "flat",
+                                "candidate_ready_for_handoff": False,
+                                "full_training_blockers": ["x"],
+                            }
+                        ),
+                        json.dumps(
+                            {
+                                "round": 2,
+                                "budget": "fast",
+                                "train_score": 0.8,
+                                "dev_score": 0.6,
+                                "promotion_health": "improving",
+                                "candidate_ready_for_handoff": False,
+                                "full_training_blockers": ["y"],
+                            }
+                        ),
                     ]
                 ),
                 encoding="utf-8",
@@ -563,6 +595,7 @@ class FrameworkLoopScriptTests(unittest.TestCase):
                 *,
                 run_dir,
                 budget,
+                search_space_mode,
                 seed_trials,
                 loop_status_path,
                 loop_log_path,
@@ -576,6 +609,7 @@ class FrameworkLoopScriptTests(unittest.TestCase):
             ):
                 captured["seed_trials"] = seed_trials
                 captured["round_index"] = round_index
+                captured["search_space_mode"] = search_space_mode
                 return (
                     {
                         "post_smoke_scenario": {
@@ -600,10 +634,14 @@ class FrameworkLoopScriptTests(unittest.TestCase):
             def fake_plan_next_iteration(**kwargs):
                 return Namespace(
                     next_budget="fast",
+                    next_search_space_mode="execution_first_v2_correlation_constrained",
                     adaptation_policy="steady_state",
                     all_seed_trials=[],
                     loop_progression_blocked=False,
                     should_open_fast_or_full_training=False,
+                    negative_candidate_streak=0,
+                    anchored_negative_candidate_streak=0,
+                    candidate_existence_goal_met=False,
                     stop=True,
                     stop_reason="done",
                 )
@@ -669,6 +707,7 @@ class FrameworkLoopScriptTests(unittest.TestCase):
                 *,
                 run_dir,
                 budget,
+                search_space_mode,
                 seed_trials,
                 loop_status_path,
                 loop_log_path,
@@ -680,7 +719,20 @@ class FrameworkLoopScriptTests(unittest.TestCase):
                 dev_gate_last_round,
                 dev_gate_interval,
             ):
-                del args, run_dir, budget, loop_status_path, loop_log_path, max_rounds, adaptation_policy, resume, development_dev_gate, dev_gate_last_round, dev_gate_interval
+                del (
+                    args,
+                    run_dir,
+                    budget,
+                    search_space_mode,
+                    loop_status_path,
+                    loop_log_path,
+                    max_rounds,
+                    adaptation_policy,
+                    resume,
+                    development_dev_gate,
+                    dev_gate_last_round,
+                    dev_gate_interval,
+                )
                 captured["round_index"] = round_index
                 captured["seed_trials"] = seed_trials
                 return (
@@ -707,10 +759,14 @@ class FrameworkLoopScriptTests(unittest.TestCase):
             def fake_plan_next_iteration(**kwargs):
                 return Namespace(
                     next_budget="fast",
+                    next_search_space_mode="execution_first_v2_correlation_constrained",
                     adaptation_policy="steady_state",
                     all_seed_trials=[],
                     loop_progression_blocked=False,
                     should_open_fast_or_full_training=False,
+                    negative_candidate_streak=0,
+                    anchored_negative_candidate_streak=0,
+                    candidate_existence_goal_met=False,
                     stop=True,
                     stop_reason="done",
                 )
@@ -787,6 +843,7 @@ class FrameworkLoopScriptTests(unittest.TestCase):
                 *,
                 run_dir,
                 budget,
+                search_space_mode,
                 seed_trials,
                 loop_status_path,
                 loop_log_path,
@@ -798,11 +855,31 @@ class FrameworkLoopScriptTests(unittest.TestCase):
                 dev_gate_last_round,
                 dev_gate_interval,
             ):
-                del args, run_dir, budget, loop_status_path, loop_log_path, round_index, max_rounds, adaptation_policy, resume, development_dev_gate, dev_gate_last_round, dev_gate_interval
+                del (
+                    args,
+                    run_dir,
+                    budget,
+                    search_space_mode,
+                    loop_status_path,
+                    loop_log_path,
+                    round_index,
+                    max_rounds,
+                    adaptation_policy,
+                    resume,
+                    development_dev_gate,
+                    dev_gate_last_round,
+                    dev_gate_interval,
+                )
                 captured["seed_trials"] = seed_trials
                 return (
                     {
-                        "post_smoke_scenario": {"scenario": "done", "category": "train_iteration", "should_open_full_training": False, "next_action": "stop", "blockers": []},
+                        "post_smoke_scenario": {
+                            "scenario": "done",
+                            "category": "train_iteration",
+                            "should_open_full_training": False,
+                            "next_action": "stop",
+                            "blockers": [],
+                        },
                         "full_training_assessment": {"allowed": False, "blockers": [], "warnings": []},
                         "best_variant": "current",
                         "best_score": 0.0,
@@ -818,16 +895,30 @@ class FrameworkLoopScriptTests(unittest.TestCase):
             def fake_plan_next_iteration(**kwargs):
                 return Namespace(
                     next_budget="fast",
+                    next_search_space_mode="execution_first_v2_correlation_constrained",
                     adaptation_policy="steady_state",
                     all_seed_trials=[],
                     loop_progression_blocked=False,
                     should_open_fast_or_full_training=False,
+                    negative_candidate_streak=0,
+                    anchored_negative_candidate_streak=0,
+                    candidate_existence_goal_met=False,
                     stop=True,
                     stop_reason="done",
                 )
 
             with (
-                mock.patch("sys.argv", ["run_framework_research_loop.py", "--output-dir", str(loop_dir), "--campaign-output-root", str(campaign_root), "--resume"]),
+                mock.patch(
+                    "sys.argv",
+                    [
+                        "run_framework_research_loop.py",
+                        "--output-dir",
+                        str(loop_dir),
+                        "--campaign-output-root",
+                        str(campaign_root),
+                        "--resume",
+                    ],
+                ),
                 mock.patch.object(LOOP, "_launch_round", side_effect=fake_launch_round),
                 mock.patch.object(LOOP, "plan_next_iteration", side_effect=fake_plan_next_iteration),
                 mock.patch.object(LOOP, "_write_training_monitor", return_value={}),
@@ -862,7 +953,9 @@ class FrameworkLoopScriptTests(unittest.TestCase):
             loop_dir = Path(tmp)
             run_dir = loop_dir / "runs" / "round_002"
             run_dir.mkdir(parents=True, exist_ok=True)
-            (loop_dir / "loop.lock").write_text(json.dumps({"started_at": "2026-04-12T00:00:00+00:00"}), encoding="utf-8")
+            (loop_dir / "loop.lock").write_text(
+                json.dumps({"started_at": "2026-04-12T00:00:00+00:00"}), encoding="utf-8"
+            )
             (loop_dir / "loop_status.json").write_text(
                 json.dumps(
                     {
@@ -956,7 +1049,9 @@ class FrameworkLoopScriptTests(unittest.TestCase):
             loop_dir = Path(tmp)
             run_dir = loop_dir / "runs" / "round_005"
             run_dir.mkdir(parents=True, exist_ok=True)
-            (loop_dir / "loop.lock").write_text(json.dumps({"started_at": "2026-04-12T00:00:00+00:00"}), encoding="utf-8")
+            (loop_dir / "loop.lock").write_text(
+                json.dumps({"started_at": "2026-04-12T00:00:00+00:00"}), encoding="utf-8"
+            )
             (loop_dir / "loop_status.json").write_text(
                 json.dumps(
                     {
@@ -1006,7 +1101,9 @@ class FrameworkLoopScriptTests(unittest.TestCase):
             loop_dir = Path(tmp)
             run_dir = loop_dir / "runs" / "round_005"
             run_dir.mkdir(parents=True, exist_ok=True)
-            (loop_dir / "loop.lock").write_text(json.dumps({"started_at": "2026-04-12T00:00:00+00:00"}), encoding="utf-8")
+            (loop_dir / "loop.lock").write_text(
+                json.dumps({"started_at": "2026-04-12T00:00:00+00:00"}), encoding="utf-8"
+            )
             (loop_dir / "loop_status.json").write_text(
                 json.dumps(
                     {
@@ -1062,7 +1159,9 @@ class FrameworkLoopScriptTests(unittest.TestCase):
             loop_dir = Path(tmp)
             run_dir = loop_dir / "runs" / "round_005"
             run_dir.mkdir(parents=True, exist_ok=True)
-            (loop_dir / "loop.lock").write_text(json.dumps({"started_at": "2026-04-12T00:00:00+00:00"}), encoding="utf-8")
+            (loop_dir / "loop.lock").write_text(
+                json.dumps({"started_at": "2026-04-12T00:00:00+00:00"}), encoding="utf-8"
+            )
             (loop_dir / "loop_status.json").write_text(
                 json.dumps(
                     {
@@ -1126,7 +1225,9 @@ class FrameworkLoopScriptTests(unittest.TestCase):
             loop_dir = Path(tmp)
             run_dir = loop_dir / "runs" / "round_005"
             run_dir.mkdir(parents=True, exist_ok=True)
-            (loop_dir / "loop.lock").write_text(json.dumps({"started_at": "2026-04-12T00:00:00+00:00"}), encoding="utf-8")
+            (loop_dir / "loop.lock").write_text(
+                json.dumps({"started_at": "2026-04-12T00:00:00+00:00"}), encoding="utf-8"
+            )
             (loop_dir / "loop_status.json").write_text(
                 json.dumps(
                     {
@@ -1221,7 +1322,9 @@ class FrameworkLoopScriptTests(unittest.TestCase):
                 ),
                 encoding="utf-8",
             )
-            (run_dir / "framework_optimization.json").write_text(json.dumps({"best_variant": "current"}), encoding="utf-8")
+            (run_dir / "framework_optimization.json").write_text(
+                json.dumps({"best_variant": "current"}), encoding="utf-8"
+            )
             (run_dir / "checkpoints").mkdir(parents=True, exist_ok=True)
             (run_dir / "checkpoints" / "stage1_search.json").write_text(json.dumps({}), encoding="utf-8")
 

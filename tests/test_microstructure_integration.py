@@ -91,7 +91,10 @@ class MicrostructureIndicatorIntegrationTests(unittest.TestCase):
             self.assertIsNotNone(engine)
 
             packs: list[IndicatorPack] = []
-            bus.subscribe("indicator.>", lambda _subject, payload: packs.append(payload) if isinstance(payload, IndicatorPack) else None)
+            bus.subscribe(
+                "indicator.>",
+                lambda _subject, payload: packs.append(payload) if isinstance(payload, IndicatorPack) else None,
+            )
 
             cutoff_ns = base_ns + 7 * 1_000_000_000
             bus.publish(

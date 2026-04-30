@@ -78,19 +78,29 @@ uv run python scripts/research_microstructure.py \
 
 ## Design boundary
 
-This sidecar is intentionally not wired into:
+Current implementation boundary is narrower than a pure offline research track, but still intentionally below direction/promote truth:
 
-- `IndicatorPack` public semantics
-- `MarketState`
-- authoritative replay truth
-- the current flagship strategy decision path
+Already wired:
 
-If it proves useful later, the only acceptable integration path is:
+- historical replay sidecar lookup
+- runtime/live sidecar lookup
+- `IndicatorPack.values` enrichment via `ms_*` risk-only fields
+- `RiskOverlay` consumption as a research-only microstructure stress sensor
 
-1. bar-aligned aggregated sidecar features
-2. research-only gating
-3. `risk_overlay` / `execution_modifier` first
-4. direction logic last, and only with separate evidence
+Not wired:
+
+- `MarketState` directional semantics
+- `framework_search.py` candidate ranking truth
+- `training_input_contract.state_feature_sources`
+- direction vote / strategy entry replacement
+- promoted truth / authoritative alpha
+
+The implementation should be interpreted as:
+
+- sidecar values are permitted to enrich `IndicatorPack.values`
+- only `risk_overlay_input` is active today
+- `execution_modifier` remains an allowed future class, not an active promote path
+- direction logic is still last, and only with separate evidence
 
 ## Approved rollout order
 
@@ -110,3 +120,26 @@ Current boundaries:
 - `framework_search.py` candidate ranking is out of scope
 - `training_input_contract.state_feature_sources` is out of scope
 - direction plugins are out of scope
+
+## Current verdict
+
+Current repository verdict is:
+
+- `artifact-first` design: accepted
+- `risk_overlay` research-path integration: accepted
+- direction-path integration: not approved
+- promoted-truth integration: not approved
+
+Interpretation rules:
+
+- this sidecar is currently a microstructure stress / execution-quality sensor
+- it is not yet an alpha proof
+- tightening risk via sidecar guards should be described as risk control improvement, not as evidence of higher expected return
+
+Authoritative supporting evidence currently lives in:
+
+- [`results/microstructure_research/dataset_contract.json`](/Users/disaster/workspace/code/zenQuant/results/microstructure_research/dataset_contract.json)
+- [`results/microstructure_research/preprocessing_review.json`](/Users/disaster/workspace/code/zenQuant/results/microstructure_research/preprocessing_review.json)
+- [`results/microstructure_research/feature_baseline_review.json`](/Users/disaster/workspace/code/zenQuant/results/microstructure_research/feature_baseline_review.json)
+- [`results/microstructure_research/admission_review.json`](/Users/disaster/workspace/code/zenQuant/results/microstructure_research/admission_review.json)
+- [`docs/MICROSTRUCTURE_SIDECAR_VERDICT_2026_04_22.md`](/Users/disaster/workspace/code/zenQuant/docs/MICROSTRUCTURE_SIDECAR_VERDICT_2026_04_22.md)

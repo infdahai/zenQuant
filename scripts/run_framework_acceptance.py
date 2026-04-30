@@ -113,19 +113,22 @@ def main() -> None:
     write_search_report(final_json, report)
     final_md.write_text(build_markdown_report(report), encoding="utf-8")
     payload = _read_json(final_json)
-    print(json.dumps(
-        {
-            "accepted_for_paper_live": bool(payload.get("full_training_allowed", False)),
-            "acceptance_failure_reason": (
-                None if payload.get("full_training_allowed", False)
-                else (payload.get("full_training_blockers") or [None])[0]
-            ),
-            "candidate_frozen_id": frozen_id,
-            "json_path": str(final_json),
-            "md_path": str(final_md),
-        },
-        indent=2,
-    ))
+    print(
+        json.dumps(
+            {
+                "accepted_for_paper_live": bool(payload.get("full_training_allowed", False)),
+                "acceptance_failure_reason": (
+                    None
+                    if payload.get("full_training_allowed", False)
+                    else (payload.get("full_training_blockers") or [None])[0]
+                ),
+                "candidate_frozen_id": frozen_id,
+                "json_path": str(final_json),
+                "md_path": str(final_md),
+            },
+            indent=2,
+        )
+    )
 
 
 if __name__ == "__main__":

@@ -694,6 +694,7 @@ class TestSearchSpace(unittest.TestCase):
             robustness_seeds=[],
             verbose=False,
         )
+
         def fake_worker(args):
             params = args[0]
             bull_lev = params.get("bull_leverage", 2.5)

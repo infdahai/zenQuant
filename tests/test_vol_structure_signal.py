@@ -37,4 +37,3 @@ class VolStructureSignalTests(unittest.TestCase):
 
         self.assertGreater(result.value, 0.0)
         self.assertIn("VOL_STRUCTURE_TREND_SUPPORT", result.reason_codes)
-

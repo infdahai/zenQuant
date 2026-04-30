@@ -137,7 +137,11 @@ def build_stage2_benchmark_review(
     benchmark_status = "partial_success"
     if rerun_status.get("status") != "completed":
         benchmark_status = "failed"
-    elif (stage1_indicator_delta is not None and stage1_indicator_delta < -0.5) or stage2_cache_hits > 0 or stage2_reused > 0:
+    elif (
+        (stage1_indicator_delta is not None and stage1_indicator_delta < -0.5)
+        or stage2_cache_hits > 0
+        or stage2_reused > 0
+    ):
         benchmark_status = "success"
 
     payload = {
@@ -160,7 +164,9 @@ def build_stage2_benchmark_review(
             "stage2_reuse_visible": bool(stage2_cache_hits > 0 or stage2_reused > 0),
             "main_takeaway": (
                 "stage2 reuse is now observable and the rerun completed cleanly, but indicator hot path did not improve yet"
-                if stage1_indicator_delta is not None and stage1_indicator_delta >= 0 and (stage2_cache_hits > 0 or stage2_reused > 0)
+                if stage1_indicator_delta is not None
+                and stage1_indicator_delta >= 0
+                and (stage2_cache_hits > 0 or stage2_reused > 0)
                 else "rerun completed cleanly with observable cache reuse and measurable runtime improvement"
                 if benchmark_status == "success"
                 else "diagnostics are wired correctly, but measured runtime improvement remains limited"

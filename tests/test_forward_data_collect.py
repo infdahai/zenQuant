@@ -37,7 +37,13 @@ class ForwardDataCollectTests(unittest.TestCase):
             self.assertTrue(payload["ok"])
             self.assertEqual(
                 [step["step"] for step in payload["steps"]],
-                ["deribit_collect", "deribit_block_flow_collect", "hyperliquid_collect", "merge_liquidation", "readiness_refresh"],
+                [
+                    "deribit_collect",
+                    "deribit_block_flow_collect",
+                    "hyperliquid_collect",
+                    "merge_liquidation",
+                    "readiness_refresh",
+                ],
             )
             summary_path = root / "results" / "forward_collection_latest.json"
             self.assertTrue(summary_path.exists())
@@ -67,7 +73,9 @@ class ForwardDataCollectTests(unittest.TestCase):
             block_flow_root = root / "block_flow"
             snapshot_dir = deribit_root / "BTC" / now.strftime("%Y-%m")
             snapshot_dir.mkdir(parents=True, exist_ok=True)
-            (snapshot_dir / f"options_chain_{now.strftime('%Y%m%dT%H%M%SZ')}.parquet").write_text("ok", encoding="utf-8")
+            (snapshot_dir / f"options_chain_{now.strftime('%Y%m%dT%H%M%SZ')}.parquet").write_text(
+                "ok", encoding="utf-8"
+            )
             write_deribit_status(deribit_root)
             save_block_flow_rows(
                 [
@@ -158,7 +166,9 @@ class ForwardDataCollectTests(unittest.TestCase):
             block_flow_root = root / "block_flow"
             snapshot_dir = deribit_root / "BTC" / now.strftime("%Y-%m")
             snapshot_dir.mkdir(parents=True, exist_ok=True)
-            (snapshot_dir / f"options_chain_{now.strftime('%Y%m%dT%H%M%SZ')}.parquet").write_text("ok", encoding="utf-8")
+            (snapshot_dir / f"options_chain_{now.strftime('%Y%m%dT%H%M%SZ')}.parquet").write_text(
+                "ok", encoding="utf-8"
+            )
             write_deribit_status(deribit_root)
             save_block_flow_rows(
                 [

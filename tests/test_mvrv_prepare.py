@@ -58,4 +58,3 @@ class MvrvPrepareTests(unittest.TestCase):
 
         self.assertEqual(rows[0], {"date": "2024-01-01", "mvrv": "1.230000"})
         self.assertEqual(rows[1], {"date": "2024-01-02", "mvrv": "1.450000"})
-

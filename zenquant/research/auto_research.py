@@ -139,14 +139,19 @@ def _hostile_proxy_diagnostics(params: dict[str, Any], metrics: dict[str, float]
         + max(0.0, 0.75 - dca_size_decay) * 4.0,
         6,
     )
-    churn_penalty = max(0.0, (trade_count - 3200.0) / 500.0)
+    train_trade_count_penalty = max(0.0, (trade_count - 4200.0) / 500.0)
+    train_fee_drag_proxy_penalty = max(0.0, (fee_drag_pct - 0.02) / 0.01)
+    train_churn_stress_penalty = round(
+        0.75 * train_trade_count_penalty + 0.35 * train_fee_drag_proxy_penalty + 0.50 * max(0.0, 1.0 - profit_factor),
+        6,
+    )
     raw_fragility_penalty = (
         0.60 * execution_fragility_score
         + 0.55 * inventory_path_dependence_score
         + 3.0 * max(0.0, max_drawdown - 0.10)
         + 1.2 * max(0.0, 1.0 - profit_factor)
         + 0.9 * max(0.0, fee_drag_pct - 0.30)
-        + 0.35 * churn_penalty
+        + train_churn_stress_penalty
         + 0.5 * terminated_early
     )
     if raw_fragility_penalty <= 1.0:
@@ -157,14 +162,15 @@ def _hostile_proxy_diagnostics(params: dict[str, Any], metrics: dict[str, float]
         hostile_proxy_penalty_applied = 1.625 + (raw_fragility_penalty - 2.5) * 1.25
     hostile_proxy_penalty_applied = round(hostile_proxy_penalty_applied, 6)
     hostile_proxy_score = round(
-        sharpe
-        + 0.15 * profit_factor
-        - hostile_proxy_penalty_applied,
+        sharpe + 0.15 * profit_factor - hostile_proxy_penalty_applied,
         6,
     )
     return {
         "execution_fragility_score": execution_fragility_score,
         "inventory_path_dependence_score": inventory_path_dependence_score,
+        "train_trade_count_penalty": round(train_trade_count_penalty, 6),
+        "train_fee_drag_proxy_penalty": round(train_fee_drag_proxy_penalty, 6),
+        "train_churn_stress_penalty": train_churn_stress_penalty,
         "hostile_proxy_penalty_applied": hostile_proxy_penalty_applied,
         "hostile_proxy_score": hostile_proxy_score,
         "stage1_score": hostile_proxy_score,
@@ -172,7 +178,9 @@ def _hostile_proxy_diagnostics(params: dict[str, Any], metrics: dict[str, float]
 
 
 def _stage1_sort_metric(metrics: dict[str, Any], primary_metric: str) -> float:
-    return float(metrics.get("stage1_score", metrics.get("hostile_proxy_score", metrics.get(primary_metric, 0.0))) or 0.0)
+    return float(
+        metrics.get("stage1_score", metrics.get("hostile_proxy_score", metrics.get(primary_metric, 0.0))) or 0.0
+    )
 
 
 def _has_nonzero_alpha(metrics: dict[str, Any]) -> bool:
@@ -590,6 +598,10 @@ class Campaign:
                 "hostile_proxy_penalty_applied": round(max_hostile_proxy_penalty_applied, 6),
                 "min_execution_fragility_score": round(min_execution_fragility_score, 6),
                 "min_inventory_path_dependence_score": round(min_inventory_path_dependence_score, 6),
+                "stage1_fail_fast_rejection_count": 0,
+                "stage1_fail_fast_reasons": {},
+                "hostile_proxy_penalized_count": 0,
+                "candidate_existence_recovered": False,
             },
             empty_shortlist_reason,
         )
@@ -597,7 +609,9 @@ class Campaign:
     def _run_grid_sweep(self) -> SweepResult:
         start = time.time()
         param_grid = [
-            params for params in _build_param_grid(self._config.search_space) if not _hostile_constraint_violations(params)
+            params
+            for params in _build_param_grid(self._config.search_space)
+            if not _hostile_constraint_violations(params)
         ]
         if not param_grid:
             return SweepResult(total_combinations=0, results=[], top_n=[], runtime_s=0)
@@ -635,7 +649,9 @@ class Campaign:
 
         ranked_results = [{"params": p, "metrics": m} for p, m in results]
         eligible_results = [
-            item for item in ranked_results if int(item["metrics"].get("trade_count", 0) or 0) >= self._config.minimum_train_trade_count
+            item
+            for item in ranked_results
+            if int(item["metrics"].get("trade_count", 0) or 0) >= self._config.minimum_train_trade_count
         ]
         alpha_positive_results = [item for item in eligible_results if _has_nonzero_alpha(item["metrics"])]
         proxy_shortlisted = [
@@ -663,14 +679,28 @@ class Campaign:
                 f"(min_train_trade_count={self._config.minimum_train_trade_count})"
             )
         diagnostics, empty_shortlist_reason = self._train_candidate_diagnostics(ranked_results, sorted_results)
-        if empty_shortlist_reason is None and eligible_results and alpha_positive_results and not [
-            item for item in alpha_positive_results if float(item["metrics"].get("hostile_proxy_score", 0.0) or 0.0) >= -3.0
-        ]:
+        if (
+            empty_shortlist_reason is None
+            and eligible_results
+            and alpha_positive_results
+            and not [
+                item
+                for item in alpha_positive_results
+                if float(item["metrics"].get("hostile_proxy_score", 0.0) or 0.0) >= -3.0
+            ]
+        ):
             diagnostics["no_tuned_candidate_reason"] = "proxy_penalized_out"
         elif empty_shortlist_reason is not None:
             diagnostics["no_tuned_candidate_reason"] = empty_shortlist_reason
         else:
             diagnostics["no_tuned_candidate_reason"] = None
+        diagnostics["hostile_proxy_penalized_count"] = sum(
+            1 for item in alpha_positive_results if float(item["metrics"].get("hostile_proxy_score", 0.0) or 0.0) < -3.0
+        )
+        diagnostics["candidate_existence_recovered"] = bool(
+            diagnostics["no_tuned_candidate_reason"] not in {None, "all_negative_primary_metric"}
+            or bool(sorted_results)
+        )
         return SweepResult(
             total_combinations=len(param_grid),
             results=sorted_results,
@@ -717,7 +747,10 @@ class Campaign:
         def objective(trial: optuna.Trial) -> float:
             trial_number = trial.number + 1
             started_trial_at = time.time()
-            if self._config.stage_total_timeout_s is not None and started_trial_at - start > self._config.stage_total_timeout_s:
+            if (
+                self._config.stage_total_timeout_s is not None
+                and started_trial_at - start > self._config.stage_total_timeout_s
+            ):
                 raise SearchStageTimeoutError(
                     f"stage1_optuna_timeout: no completed result within {self._config.stage_total_timeout_s:.0f}s"
                 )
@@ -784,9 +817,10 @@ class Campaign:
                             break
                         except FutureTimeoutError:
                             elapsed_s = time.time() - started_trial_at
-                            if self._config.status_callback is not None and (
-                                time.time() - last_running_heartbeat_at
-                            ) >= 5.0:
+                            if (
+                                self._config.status_callback is not None
+                                and (time.time() - last_running_heartbeat_at) >= 5.0
+                            ):
                                 self._config.status_callback(
                                     event="trial_running",
                                     current_trial=trial_number,
@@ -840,7 +874,9 @@ class Campaign:
             completed_trials = 0
             launched_trials = 0
             last_running_heartbeat_at = 0.0
-            budget_mode = "wall_clock_primary" if self._config.stage_wall_clock_budget_s is not None else "trial_count_primary"
+            budget_mode = (
+                "wall_clock_primary" if self._config.stage_wall_clock_budget_s is not None else "trial_count_primary"
+            )
             stop_reason = "trial_budget_reached"
 
             pool: ProcessPoolExecutor | None = None
@@ -849,7 +885,10 @@ class Campaign:
                 pool = ProcessPoolExecutor(max_workers=max_workers)
                 while completed_trials < n_trials:
                     elapsed_stage_s = time.time() - start
-                    if self._config.stage_wall_clock_budget_s is not None and elapsed_stage_s >= self._config.stage_wall_clock_budget_s:
+                    if (
+                        self._config.stage_wall_clock_budget_s is not None
+                        and elapsed_stage_s >= self._config.stage_wall_clock_budget_s
+                    ):
                         if completed_trials >= max(1, self._config.min_completed_trials):
                             _shutdown_pool_quickly(pool, list(pending.keys()))
                             pending.clear()
@@ -879,16 +918,16 @@ class Campaign:
                         raise SearchStageTimeoutError(
                             f"stage1_optuna_budget_shortfall: completed {completed_trials}/{max(1, self._config.min_completed_trials)} within {self._config.stage_wall_clock_budget_s:.0f}s"
                         )
-                    if self._config.stage_total_timeout_s is not None and (time.time() - start) > self._config.stage_total_timeout_s:
+                    if (
+                        self._config.stage_total_timeout_s is not None
+                        and (time.time() - start) > self._config.stage_total_timeout_s
+                    ):
                         _shutdown_pool_quickly(pool, list(pending.keys()))
                         raise SearchStageTimeoutError(
                             f"stage1_optuna_timeout: no completed result within {self._config.stage_total_timeout_s:.0f}s"
                         )
 
-                    while (
-                        launched_trials < n_trials
-                        and len(pending) < target_inflight
-                    ):
+                    while launched_trials < n_trials and len(pending) < target_inflight:
                         trial = study.ask()
                         trial_number = trial.number + 1
                         started_trial_at = time.time()
@@ -960,7 +999,10 @@ class Campaign:
 
                     done, _ = wait(list(pending.keys()), timeout=1.0, return_when=FIRST_COMPLETED)
                     if not done:
-                        if self._config.status_callback is not None and (time.time() - last_running_heartbeat_at) >= 5.0:
+                        if (
+                            self._config.status_callback is not None
+                            and (time.time() - last_running_heartbeat_at) >= 5.0
+                        ):
                             best_value, best_params = _best_trial_snapshot(study)
                             self._config.status_callback(
                                 event="trial_running",
@@ -1053,6 +1095,7 @@ class Campaign:
             finally:
                 _shutdown_pool_quickly(pool, list(pending.keys()))
         else:
+
             def _trial_callback(study: Any, trial: Any) -> None:
                 if self._config.status_callback is None:
                     return
@@ -1070,7 +1113,9 @@ class Campaign:
             study.optimize(objective, n_trials=n_trials, n_jobs=1, callbacks=[_trial_callback])
 
         eligible_results = [
-            item for item in all_results if int(item["metrics"].get("trade_count", 0) or 0) >= self._config.minimum_train_trade_count
+            item
+            for item in all_results
+            if int(item["metrics"].get("trade_count", 0) or 0) >= self._config.minimum_train_trade_count
         ]
         alpha_positive_results = [item for item in eligible_results if _has_nonzero_alpha(item["metrics"])]
         shortlist_results = [
@@ -1098,29 +1143,43 @@ class Campaign:
                 f"(min_train_trade_count={self._config.minimum_train_trade_count})"
             )
         if alpha_positive_results and not [
-            item for item in alpha_positive_results if float(item["metrics"].get("hostile_proxy_score", 0.0) or 0.0) >= -3.0
+            item
+            for item in alpha_positive_results
+            if float(item["metrics"].get("hostile_proxy_score", 0.0) or 0.0) >= -3.0
         ]:
             self._log("Bayesian sweep retained top alpha-positive candidate after proxy compression")
 
         best_value, _ = _best_trial_snapshot(study)
         if best_value is None:
-            self._log(
-                f"Bayesian sweep complete: no completed trials in {n_trials} trials"
-            )
+            self._log(f"Bayesian sweep complete: no completed trials in {n_trials} trials")
         else:
             self._log(
                 f"Bayesian sweep complete: best {self._config.primary_metric} = {best_value:.4f} in {n_trials} trials"
             )
 
         diagnostics, empty_shortlist_reason = self._train_candidate_diagnostics(all_results, sorted_results)
-        if empty_shortlist_reason is None and eligible_results and alpha_positive_results and not [
-            item for item in alpha_positive_results if float(item["metrics"].get("hostile_proxy_score", 0.0) or 0.0) >= -3.0
-        ]:
+        if (
+            empty_shortlist_reason is None
+            and eligible_results
+            and alpha_positive_results
+            and not [
+                item
+                for item in alpha_positive_results
+                if float(item["metrics"].get("hostile_proxy_score", 0.0) or 0.0) >= -3.0
+            ]
+        ):
             diagnostics["no_tuned_candidate_reason"] = "proxy_penalized_out"
         elif empty_shortlist_reason is not None:
             diagnostics["no_tuned_candidate_reason"] = empty_shortlist_reason
         else:
             diagnostics["no_tuned_candidate_reason"] = None
+        diagnostics["hostile_proxy_penalized_count"] = sum(
+            1 for item in alpha_positive_results if float(item["metrics"].get("hostile_proxy_score", 0.0) or 0.0) < -3.0
+        )
+        diagnostics["candidate_existence_recovered"] = bool(
+            diagnostics["no_tuned_candidate_reason"] not in {None, "all_negative_primary_metric"}
+            or bool(sorted_results)
+        )
         return SweepResult(
             total_combinations=n_trials,
             results=sorted_results,
@@ -1128,8 +1187,12 @@ class Campaign:
             runtime_s=time.time() - start,
             train_candidate_diagnostics=diagnostics,
             empty_shortlist_reason=empty_shortlist_reason,
-            budget_mode=budget_mode if self._config.stage1_parallel_mode == "cpu_parallel" and n_trials > 1 else "trial_count_primary",
-            stop_reason=stop_reason if self._config.stage1_parallel_mode == "cpu_parallel" and n_trials > 1 else "trial_budget_reached",
+            budget_mode=budget_mode
+            if self._config.stage1_parallel_mode == "cpu_parallel" and n_trials > 1
+            else "trial_count_primary",
+            stop_reason=stop_reason
+            if self._config.stage1_parallel_mode == "cpu_parallel" and n_trials > 1
+            else "trial_budget_reached",
         )
 
     # ── Stage 2: Walk-Forward ──────────────────────────────

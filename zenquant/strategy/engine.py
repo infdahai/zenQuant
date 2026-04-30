@@ -73,6 +73,7 @@ class ARCStrategyConfig:
     playbook_config: PlaybookEngineConfig | None = None
     sizing_config: SizingEngineConfig | None = None
     exit_config: ExitEngineConfig | None = None
+    enable_adaptive_signal_weights: bool = False
 
 
 class ARCStrategyEngine:
@@ -112,7 +113,7 @@ class ARCStrategyEngine:
             or ExitEngineConfig(min_bars_before_trail=self._config.min_bars_before_trail)
         )
 
-        # Adaptive signal weighting: track rolling IC per signal
+        # Adaptive signal weighting is research-only unless explicitly enabled.
         from collections import defaultdict, deque
 
         self._signal_values: dict[str, deque[float]] = defaultdict(lambda: deque(maxlen=120))
@@ -223,7 +224,10 @@ class ARCStrategyEngine:
             self._update_directional_bias(state)
             return
         # Multi-layer: 4H computes target but stores as pending for lower-timeframe execution.
-        if state.timeframe == Timeframe.TF_4H and self._config.execution_timeframe in {Timeframe.TF_1H, Timeframe.TF_5M}:
+        if state.timeframe == Timeframe.TF_4H and self._config.execution_timeframe in {
+            Timeframe.TF_1H,
+            Timeframe.TF_5M,
+        }:
             self._update_context_bias(state)
             pack = self._latest_packs.get((state.symbol, state.timeframe))
             if pack is not None:
@@ -253,10 +257,7 @@ class ARCStrategyEngine:
             return
 
         # 1H context confirmation for 5M final timing.
-        if (
-            state.timeframe == Timeframe.TF_1H
-            and self._config.execution_timeframe == Timeframe.TF_5M
-        ):
+        if state.timeframe == Timeframe.TF_1H and self._config.execution_timeframe == Timeframe.TF_5M:
             self._stage_5m_entry(state)
             return
 
@@ -597,6 +598,7 @@ class ARCStrategyEngine:
                 reason_codes.append("STATE_BEARISH_DIRECTION_OVERRIDE")
 
             if self._plugins.sizers:
+                _state_dict = self._state_dict(state, playbook)
                 target_leverage, sizer_codes = self._plugin_sizing(pack, state, playbook, _ind_dict, _state_dict)
                 # Apply execution haircut based on data quality (parity with legacy path)
                 execution_haircut = SizingEngine._execution_haircut(state)
@@ -954,17 +956,18 @@ class ARCStrategyEngine:
         if state_dict is None:
             state_dict = self._state_dict(state, playbook)
 
-        # Update rolling IC tracker (online learning)
+        # Update rolling IC tracker only when research profile explicitly enables it.
         close = float(ind_dict.get("close", ind_dict.get("last_price", 0)) or 0)
         symbol = pack.symbol if hasattr(pack, "symbol") else ""
-        prev_close = self._last_close.get(symbol, 0)
-        if prev_close > 0 and close > 0:
-            self._forward_returns.append((close - prev_close) / prev_close)
-        self._last_close[symbol] = close
+        if self._config.enable_adaptive_signal_weights:
+            prev_close = self._last_close.get(symbol, 0)
+            if prev_close > 0 and close > 0:
+                self._forward_returns.append((close - prev_close) / prev_close)
+            self._last_close[symbol] = close
 
         # Compute adaptive weights from rolling IC (every bar, lightweight)
         effective_weights = dict(self._plugins.signal_weights)
-        if len(self._forward_returns) >= 60:
+        if self._config.enable_adaptive_signal_weights and len(self._forward_returns) >= 60:
             import math
 
             rets = list(self._forward_returns)
@@ -985,6 +988,9 @@ class ARCStrategyEngine:
                 base_w = self._plugins.signal_weights.get(sig_name, 1.0)
                 scale = max(0.2, min(1.0, 0.5 + ic * 5.0))
                 effective_weights[sig_name] = base_w * scale
+                reason_scale = round(scale, 4)
+                if abs(reason_scale - 1.0) > 1e-6:
+                    self._adaptive_weights[sig_name] = round(base_w * scale, 6)
 
         # Compose signals → weighted direction
         composed = compose_signals(
@@ -997,8 +1003,12 @@ class ARCStrategyEngine:
             "state_confidence_haircut": composed.state_confidence_haircut,
             "execution_bias": composed.execution_bias,
             "role_contributions": composed.role_contributions,
+            "adaptive_signal_weights_enabled": self._config.enable_adaptive_signal_weights,
+            "effective_signal_weights": effective_weights,
         }
         reason_codes = list(composed.reason_codes)
+        if self._config.enable_adaptive_signal_weights:
+            reason_codes.append("ADAPTIVE_SIGNAL_WEIGHTS_ENABLED")
 
         # Track each signal's contribution for rolling IC
         for sig_name, contrib in composed.contributions.items():

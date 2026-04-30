@@ -369,22 +369,33 @@ def build_behavior_profile(*, data_root: Path, spot_root: Path) -> tuple[dict[st
             "order": len(orders),
             "wallet_history": len(wallet),
             "episodes": len(episodes),
-            "closed_episodes": int(episodes["closed"].sum()) if not episodes.empty and "closed" in episodes.columns else 0,
+            "closed_episodes": int(episodes["closed"].sum())
+            if not episodes.empty and "closed" in episodes.columns
+            else 0,
         },
     }
 
     if not executions.empty:
-        trade_rows = executions.loc[executions["execType"].astype(str) == "Trade"].copy() if "execType" in executions.columns else executions.copy()
+        trade_rows = (
+            executions.loc[executions["execType"].astype(str) == "Trade"].copy()
+            if "execType" in executions.columns
+            else executions.copy()
+        )
         trade_rows["timestamp"] = _parse_ts(trade_rows["timestamp"])
         trade_rows["hour_utc"] = trade_rows["timestamp"].dt.hour
-        trade_rows["foreignNotional"] = pd.to_numeric(trade_rows.get("foreignNotional"), errors="coerce").abs().fillna(0.0)
+        trade_rows["foreignNotional"] = (
+            pd.to_numeric(trade_rows.get("foreignNotional"), errors="coerce").abs().fillna(0.0)
+        )
         product_mix = (
             trade_rows.groupby("symbol", dropna=False)["foreignNotional"].sum().sort_values(ascending=False).head(8)
         )
         total_notional = float(trade_rows["foreignNotional"].sum())
         btc_notional = float(trade_rows.loc[trade_rows["symbol"].astype(str).map(_btc_symbol), "foreignNotional"].sum())
         profile["dominant_products"] = [
-            {"symbol": str(symbol), "notional_share": round((float(value) / total_notional) if total_notional > 0 else 0.0, 4)}
+            {
+                "symbol": str(symbol),
+                "notional_share": round((float(value) / total_notional) if total_notional > 0 else 0.0, 4),
+            }
             for symbol, value in product_mix.items()
         ]
         profile["btc_notional_share"] = round((btc_notional / total_notional) if total_notional > 0 else 0.0, 4)
@@ -397,7 +408,13 @@ def build_behavior_profile(*, data_root: Path, spot_root: Path) -> tuple[dict[st
         closed = episodes.loc[episodes["closed"]].copy()
         positive = closed.loc[closed["estimated_return_bps"] > 0]
         negative = closed.loc[closed["estimated_return_bps"] <= 0]
-        span_days = max(1.0, (pd.Timestamp(profile["dataset_window"]["end"]) - pd.Timestamp(profile["dataset_window"]["start"])).total_seconds() / 86_400.0)
+        span_days = max(
+            1.0,
+            (
+                pd.Timestamp(profile["dataset_window"]["end"]) - pd.Timestamp(profile["dataset_window"]["start"])
+            ).total_seconds()
+            / 86_400.0,
+        )
         yearly_btc_share = _yearly_btc_share(frames.get("api-v1-execution-tradeHistory.csv", pd.DataFrame()))
         profile.update(
             {
@@ -494,12 +511,14 @@ def build_baseline_mapping(*, behavior_profile: dict[str, Any]) -> dict[str, Any
     dd_profile = behavior_profile.get("drawdown_profile", {})
     max_dd = float(dd_profile.get("max_drawdown_pct", 0.0) or 0.0)
     recovery_days = float(dd_profile.get("median_recovery_days", 6.0) or 6.0)
-    protective_share = float((behavior_profile.get("extreme_vol_alignment") or {}).get("protective_action_share", 0.0) or 0.0)
+    protective_share = float(
+        (behavior_profile.get("extreme_vol_alignment") or {}).get("protective_action_share", 0.0) or 0.0
+    )
 
-    execution_rules["pyramid_initial_pct"] = 0.30 if median_adds >= 1.0 else 0.25
-    execution_rules["pyramid_add_pct"] = min(0.30, max(0.18, 0.18 + 0.04 * median_adds))
+    execution_rules["pyramid_initial_pct"] = 0.30
+    execution_rules["pyramid_add_pct"] = 0.30
     execution_rules["pyramid_short_initial_pct"] = 0.20 if long_share >= 0.55 else 0.25
-    execution_rules["pyramid_short_add_pct"] = 0.08 if long_share >= 0.60 else 0.12
+    execution_rules["pyramid_short_add_pct"] = 0.10 if long_share >= 0.60 else 0.12
     execution_rules["gradual_exit_enabled"] = True
     execution_rules["exit_unwind_pct"] = 0.35 if median_reduces >= 1.0 else 0.30
     execution_rules["flip_immediate"] = True
@@ -934,10 +953,7 @@ def build_variant_comparison_review(
             ).get("window_label")
         summary[variant] = {
             "dev_metrics": dev.get("metrics", {}),
-            "hostile_windows": {
-                item.get("window_label"): item.get("metrics", {})
-                for item in hostile_runs
-            },
+            "hostile_windows": {item.get("window_label"): item.get("metrics", {}) for item in hostile_runs},
             "worst_window_sharpe": worst_hostile_sharpe,
             "hostile_window_regressed": None,
             "hostile_regression_driver": hostile_driver,
@@ -955,7 +971,8 @@ def build_variant_comparison_review(
         current_metrics = (current.get("hostile_windows") or {}).get(label, {})
         if (
             float(metrics.get("sharpe", 0.0) or 0.0) < float(current_metrics.get("sharpe", 0.0) or 0.0) - 0.25
-            or float(metrics.get("max_drawdown", 0.0) or 0.0) > float(current_metrics.get("max_drawdown", 0.0) or 0.0) + 0.03
+            or float(metrics.get("max_drawdown", 0.0) or 0.0)
+            > float(current_metrics.get("max_drawdown", 0.0) or 0.0) + 0.03
         ):
             hostile_regressed = True
             hostile_driver = label
@@ -1068,9 +1085,7 @@ def build_promotion_eligibility_review(
             "paulwei_public_archive_baseline": "research_only_mapped_public_ledger_baseline",
         },
         "decision": {
-            "status": "authoritative_candidate_review"
-            if len(blocked_by) == 0
-            else "research_only",
+            "status": "authoritative_candidate_review" if len(blocked_by) == 0 else "research_only",
             "reason": "eligible_for_authoritative_candidate_review"
             if len(blocked_by) == 0
             else "insufficient_stability_or_explanatory_confidence",

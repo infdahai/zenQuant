@@ -290,7 +290,8 @@ def _window_stats(records: list[dict[str, Any]], *, hours: int, now: datetime) -
     window = [
         record
         for record in records
-        if _parse_iso(record.get("checked_at")) is not None and _parse_iso(record.get("checked_at")).timestamp() >= cutoff
+        if _parse_iso(record.get("checked_at")) is not None
+        and _parse_iso(record.get("checked_at")).timestamp() >= cutoff
     ]
     if not window:
         return {"window_hours": hours, "observations": 0, "healthy_observations": 0, "pass_rate": None}

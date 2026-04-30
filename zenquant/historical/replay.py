@@ -202,28 +202,36 @@ class HistoricalBacktest:
                 )
             )
             microstructure_store.load()
-        self.indicator_engine = self._subscribe_with_profile("indicator_step_total_s", lambda: IndicatorEngine(
-            bus=self.bus,
-            store=self.indicator_store,
-            config=self._config.indicator_config
-            or IndicatorEngineConfig(expected_symbols=(self._config.portfolio_symbol,)),
-            macro_store=self._macro_store if self._macro_store.loaded else None,
-            options_store=self._options_store if self._options_store.loaded else None,
-            hf_store=self._hf_store if self._hf_store.loaded else None,
-            cot_store=self._cot_store if self._cot_store.loaded else None,
-            basis_store=self._basis_store if self._basis_store.loaded else None,
-            eth_store=self._eth_store if self._eth_store.loaded else None,
-            liquidation_store=(
-                self._liquidation_store
-                if self._config.liquidation_data_enabled and self._liquidation_store.loaded
-                else None
+        self.indicator_engine = self._subscribe_with_profile(
+            "indicator_step_total_s",
+            lambda: IndicatorEngine(
+                bus=self.bus,
+                store=self.indicator_store,
+                config=self._config.indicator_config
+                or IndicatorEngineConfig(expected_symbols=(self._config.portfolio_symbol,)),
+                macro_store=self._macro_store if self._macro_store.loaded else None,
+                options_store=self._options_store if self._options_store.loaded else None,
+                hf_store=self._hf_store if self._hf_store.loaded else None,
+                cot_store=self._cot_store if self._cot_store.loaded else None,
+                basis_store=self._basis_store if self._basis_store.loaded else None,
+                eth_store=self._eth_store if self._eth_store.loaded else None,
+                liquidation_store=(
+                    self._liquidation_store
+                    if self._config.liquidation_data_enabled and self._liquidation_store.loaded
+                    else None
+                ),
+                microstructure_store=microstructure_store
+                if microstructure_store and microstructure_store.loaded
+                else None,
             ),
-            microstructure_store=microstructure_store if microstructure_store and microstructure_store.loaded else None,
-        ))
-        self.risk_overlay = self._subscribe_with_profile("risk_step_total_s", lambda: RiskOverlay(
-            bus=self.bus,
-            config=self._config.risk_config or RiskOverlayConfig(starting_equity=self._config.starting_equity),
-        ))
+        )
+        self.risk_overlay = self._subscribe_with_profile(
+            "risk_step_total_s",
+            lambda: RiskOverlay(
+                bus=self.bus,
+                config=self._config.risk_config or RiskOverlayConfig(starting_equity=self._config.starting_equity),
+            ),
+        )
         # Load plugin registry if profile path provided
         plugin_registry = None
         if self._config.profile_path and self._config.profile_path.exists():
@@ -232,21 +240,30 @@ class HistoricalBacktest:
             # Apply RL tuner weight overrides (dynamic, bypass default.toml)
             if self._config.signal_weight_overrides and plugin_registry is not None:
                 plugin_registry.weight_overrides = dict(self._config.signal_weight_overrides)
-        self.strategy_engine = self._subscribe_with_profile("strategy_step_total_s", lambda: ARCStrategyEngine(
-            bus=self.bus,
-            config=self._config.strategy_config,
-            plugin_registry=plugin_registry,
-        ))
-        self.state_engine = self._subscribe_with_profile("state_step_total_s", lambda: StateEngine(
-            bus=self.bus,
-            config=StateEngineConfig(enable_liquidation_overlay=self._config.state_liquidation_overlay_enabled),
-        ))
-        self.execution_kernel = self._subscribe_with_profile("execution_step_total_s", lambda: ExecutionKernel(
-            bus=self.bus,
-            gateway=SimulatedGateway(),
-            risk_overlay=self.risk_overlay,
-            config=self._config.execution_config,
-        ))
+        self.strategy_engine = self._subscribe_with_profile(
+            "strategy_step_total_s",
+            lambda: ARCStrategyEngine(
+                bus=self.bus,
+                config=self._config.strategy_config,
+                plugin_registry=plugin_registry,
+            ),
+        )
+        self.state_engine = self._subscribe_with_profile(
+            "state_step_total_s",
+            lambda: StateEngine(
+                bus=self.bus,
+                config=StateEngineConfig(enable_liquidation_overlay=self._config.state_liquidation_overlay_enabled),
+            ),
+        )
+        self.execution_kernel = self._subscribe_with_profile(
+            "execution_step_total_s",
+            lambda: ExecutionKernel(
+                bus=self.bus,
+                gateway=SimulatedGateway(),
+                risk_overlay=self.risk_overlay,
+                config=self._config.execution_config,
+            ),
+        )
 
         self._indicators: list[IndicatorPack] = []
         self._market_states: list[MarketState] = []
@@ -334,11 +351,15 @@ class HistoricalBacktest:
         metrics = self._build_metrics(processed)
         metrics_finished_at = datetime.now(UTC).timestamp()
         diagnostics_started_at = metrics_finished_at
-        diagnostics = self._build_diagnostics() if not self._lightweight_train_search else BacktestDiagnostics(
-            playbook_counts={},
-            actionable_exit_counts={},
-            risk_flag_counts={},
-            top_target_reason_codes={},
+        diagnostics = (
+            self._build_diagnostics()
+            if not self._lightweight_train_search
+            else BacktestDiagnostics(
+                playbook_counts={},
+                actionable_exit_counts={},
+                risk_flag_counts={},
+                top_target_reason_codes={},
+            )
         )
         diagnostics_finished_at = datetime.now(UTC).timestamp()
         cycle_started_at = diagnostics_finished_at
@@ -347,11 +368,19 @@ class HistoricalBacktest:
         if self._profiling_enabled:
             profiling = {
                 "event_loop_total_s": round(event_loop_finished_at - event_loop_started_at, 6),
-                "indicator_step_total_s": round(float(self._profiling_totals.get("indicator_step_total_s", 0.0) or 0.0), 6),
-                "strategy_step_total_s": round(float(self._profiling_totals.get("strategy_step_total_s", 0.0) or 0.0), 6),
+                "indicator_step_total_s": round(
+                    float(self._profiling_totals.get("indicator_step_total_s", 0.0) or 0.0), 6
+                ),
+                "strategy_step_total_s": round(
+                    float(self._profiling_totals.get("strategy_step_total_s", 0.0) or 0.0), 6
+                ),
                 "risk_step_total_s": round(float(self._profiling_totals.get("risk_step_total_s", 0.0) or 0.0), 6),
-                "execution_step_total_s": round(float(self._profiling_totals.get("execution_step_total_s", 0.0) or 0.0), 6),
-                "accounting_step_total_s": round(float(self._profiling_totals.get("accounting_step_total_s", 0.0) or 0.0), 6),
+                "execution_step_total_s": round(
+                    float(self._profiling_totals.get("execution_step_total_s", 0.0) or 0.0), 6
+                ),
+                "accounting_step_total_s": round(
+                    float(self._profiling_totals.get("accounting_step_total_s", 0.0) or 0.0), 6
+                ),
                 "metrics_finalize_s": round(metrics_finished_at - metrics_started_at, 6),
                 "diagnostics_finalize_s": round(diagnostics_finished_at - diagnostics_started_at, 6),
                 "cycle_context_finalize_s": round(cycle_finished_at - cycle_started_at, 6),
@@ -369,11 +398,7 @@ class HistoricalBacktest:
             profiling=profiling,
             terminated_early=terminated_early,
             termination_reason=termination_reason,
-            processed_event_ratio=(
-                round(processed_events / max(1, len(events)), 6)
-                if events
-                else 1.0
-            ),
+            processed_event_ratio=(round(processed_events / max(1, len(events)), 6) if events else 1.0),
         )
 
     def _should_early_stop(
@@ -395,10 +420,7 @@ class HistoricalBacktest:
             floor_ratio = max(float(self._config.early_stop_trade_floor_ratio), 0.1)
         trade_floor = max(
             1,
-            math.floor(
-                float(self._config.early_stop_min_trade_count)
-                * floor_ratio
-            ),
+            math.floor(float(self._config.early_stop_min_trade_count) * floor_ratio),
         )
         if processed_ratio >= 0.50 and current_trade_count == 0:
             return True, "no_trade_progress"

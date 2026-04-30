@@ -11,7 +11,23 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from zenquant.data.deribit_options_chain import fetch_option_chain, save_option_chain
+from zenquant.data import deribit_options_chain as _chain
+
+OptionChainRow = _chain.OptionChainRow
+_fetch_json = _chain._fetch_json
+
+
+def fetch_option_chain(currency: str = "BTC") -> list[OptionChainRow]:
+    original_fetch = _chain._fetch_json
+    _chain._fetch_json = _fetch_json
+    try:
+        return _chain.fetch_option_chain(currency)
+    finally:
+        _chain._fetch_json = original_fetch
+
+
+def save_option_chain(rows: list[OptionChainRow], output_root: Path) -> tuple[Path, Path]:
+    return _chain.save_option_chain(rows, output_root)
 
 
 def main() -> None:
