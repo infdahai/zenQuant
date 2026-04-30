@@ -136,6 +136,13 @@ positioning_discount_floor = 0.35
 volatility_distorted_discount = 0.75
 volatility_high_discount = 0.90
 
+[sizers.bear_defense_churn_sizer]
+enabled = false
+weak_confidence_threshold = 0.58
+transition_risk_threshold = 0.42
+weak_transition_discount = 0.88
+discount_floor = 0.55
+
 [sizers.conviction_boost_sizer]
 enabled = true
 confidence_threshold = 0.75

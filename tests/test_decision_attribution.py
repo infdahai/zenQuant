@@ -37,6 +37,7 @@ class _FakeRunner:
                 "target_qty": -1.0,
                 "equity": 100000.0,
                 "regime": "STRESS",
+                "playbook_id": "BEAR_DEFENSE",
                 "regime_confidence": 0.55,
                 "directional_state": "DOWNTREND",
                 "volatility_state": "HIGH",
@@ -49,6 +50,7 @@ class _FakeRunner:
                 "target_qty": 0.0,
                 "equity": 100010.0,
                 "regime": "TREND",
+                "playbook_id": "RANGE_LIGHT",
                 "regime_confidence": 0.9,
                 "directional_state": "UPTREND",
                 "volatility_state": "HIGH",
@@ -105,6 +107,8 @@ class DecisionAttributionTests(unittest.TestCase):
         self.assertEqual(ledger["summary"]["bar_count"], 2)
         self.assertIn("panic_reversal", ledger["micro_state_summary"])
         self.assertIn("squeeze_continuation", ledger["micro_state_summary"])
+        self.assertEqual(ledger["decision_rows"][0]["playbook_id"], "BEAR_DEFENSE")
+        self.assertEqual(ledger["playbook_summary"]["BEAR_DEFENSE"]["execution_actions"]["entry"], 1)
         self.assertEqual(ledger["micro_state_summary"]["panic_reversal"]["execution_actions"]["entry"], 1)
         self.assertEqual(ledger["micro_state_summary"]["squeeze_continuation"]["execution_actions"]["exit"], 1)
         self.assertEqual(ledger["micro_state_summary"]["squeeze_continuation"]["estimated_equity_pnl"], 10.0)

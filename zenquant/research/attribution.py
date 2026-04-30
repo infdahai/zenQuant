@@ -60,6 +60,7 @@ def build_decision_attribution_ledger(
     rows = runner.build_analysis_rows()
     reports_by_ts = _execution_reports_by_ts(getattr(runner, "_reports", []))
     state_summary: dict[str, dict[str, Any]] = {}
+    playbook_summary: dict[str, dict[str, Any]] = {}
     reason_counts: dict[str, Counter[str]] = defaultdict(Counter)
     decision_rows: list[dict[str, Any]] = []
     previous_target_qty = 0.0
@@ -74,6 +75,7 @@ def build_decision_attribution_ledger(
             previous_equity = equity
 
         micro_state = classify_hostile_micro_state(row, previous_target_qty=previous_target_qty)
+        playbook_id = str(row.get("playbook_id") or "UNKNOWN")
         target_action = _target_action(previous_target_qty, target_qty)
         execution_reports = reports_by_ts.get(cutoff_ns, [])
         report_fees = sum(_safe_float(item.get("fee")) for item in execution_reports)
@@ -101,10 +103,30 @@ def build_decision_attribution_ledger(
         for code in _reason_codes(row):
             reason_counts[micro_state][code] += 1
 
+        playbook_payload = playbook_summary.setdefault(
+            playbook_id,
+            {
+                "bars": 0,
+                "estimated_equity_pnl": 0.0,
+                "fees": 0.0,
+                "turnover_notional": 0.0,
+                "target_actions": Counter(),
+                "execution_actions": Counter(),
+            },
+        )
+        playbook_payload["bars"] += 1
+        playbook_payload["estimated_equity_pnl"] += equity_pnl
+        playbook_payload["fees"] += report_fees
+        playbook_payload["turnover_notional"] += report_turnover
+        playbook_payload["target_actions"][target_action] += 1
+        for action in execution_actions:
+            playbook_payload["execution_actions"][action] += 1
+
         decision_rows.append(
             {
                 "cutoff_time_ns": cutoff_ns,
                 "micro_state": micro_state,
+                "playbook_id": playbook_id,
                 "target_action": target_action,
                 "target_qty": round(target_qty, 6),
                 "target_direction": 1 if target_qty > 0 else -1 if target_qty < 0 else 0,
@@ -135,6 +157,7 @@ def build_decision_attribution_ledger(
             "net_pnl": round(_safe_float(getattr(result.metrics, "net_pnl", 0.0)), 6),
         },
         "micro_state_summary": _serialize_state_summary(state_summary),
+        "playbook_summary": _serialize_state_summary(playbook_summary),
         "top_reason_codes_by_micro_state": {
             state: dict(counter.most_common(12)) for state, counter in sorted(reason_counts.items())
         },
