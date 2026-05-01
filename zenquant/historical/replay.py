@@ -18,14 +18,20 @@ from typing import Any
 from zenquant.data import (
     BasisDataStore,
     BasisStoreConfig,
+    BinanceMetricsFactorStore,
+    BinanceMetricsFactorStoreConfig,
     CotDataStore,
     CotStoreConfig,
+    CrossAssetContextStore,
+    CrossAssetContextStoreConfig,
     LiquidationDataStore,
     LiquidationStoreConfig,
     MacroDataStore,
     MacroDataStoreConfig,
     MicrostructureFeatureStore,
     MicrostructureFeatureStoreConfig,
+    OnchainFactorStore,
+    OnchainFactorStoreConfig,
     OptionsDataStore,
     OptionsDataStoreConfig,
 )
@@ -88,6 +94,9 @@ class HistoricalBacktestConfig:
     execution_config: ExecutionKernelConfig | None = None
     # Signal weight overrides (for RL tuner — bypass default.toml weights)
     signal_weight_overrides: dict[str, float] | None = None
+    # Research-only plugin config overrides. Default profiles remain the system
+    # of record; candidate sweeps may explicitly enable disabled audit plugins.
+    plugin_config_overrides: dict[str, dict[str, dict[str, Any]]] | None = None
     # Indicator config override (for RL tuner — vol_window, cvd_window, etc.)
     indicator_config: IndicatorEngineConfig | None = None
     # Execution config override (for RL tuner / execution sensitivity tests)
@@ -123,6 +132,14 @@ class HistoricalBacktestConfig:
     early_stop_max_drawdown: float = 0.35
     early_stop_mid_trade_floor_ratio: float = 0.35
     early_stop_late_trade_floor_ratio: float = 0.6
+    early_stop_min_churn_processed_ratio: float = 0.35
+    early_stop_min_churn_elapsed_days: float = 120.0
+    early_stop_min_churn_trade_count: int = 50
+    early_stop_max_trade_count_per_day: float = 1.5
+    early_stop_trade_count_per_day_buffer: float = 1.5
+    early_stop_max_fee_drag_pct: float = 0.025
+    early_stop_fee_drag_buffer: float = 2.0
+    early_stop_min_gross_pnl_fraction_for_fee_drag: float = 0.05
     replay_context: ReplayContext | None = None
 
 
@@ -155,6 +172,9 @@ class ReplayContext:
     cot_store: CotDataStore
     liquidation_store: LiquidationDataStore
     eth_store: EthDataStore
+    cross_asset_context_store: CrossAssetContextStore
+    onchain_factor_store: OnchainFactorStore
+    binance_metrics_factor_store: BinanceMetricsFactorStore
     basis_store: BasisDataStore
     cache_stats: dict[str, Any] = field(default_factory=dict)
 
@@ -202,51 +222,87 @@ class HistoricalBacktest:
                 )
             )
             microstructure_store.load()
-        self.indicator_engine = self._subscribe_with_profile("indicator_step_total_s", lambda: IndicatorEngine(
-            bus=self.bus,
-            store=self.indicator_store,
-            config=self._config.indicator_config
-            or IndicatorEngineConfig(expected_symbols=(self._config.portfolio_symbol,)),
-            macro_store=self._macro_store if self._macro_store.loaded else None,
-            options_store=self._options_store if self._options_store.loaded else None,
-            hf_store=self._hf_store if self._hf_store.loaded else None,
-            cot_store=self._cot_store if self._cot_store.loaded else None,
-            basis_store=self._basis_store if self._basis_store.loaded else None,
-            eth_store=self._eth_store if self._eth_store.loaded else None,
-            liquidation_store=(
-                self._liquidation_store
-                if self._config.liquidation_data_enabled and self._liquidation_store.loaded
-                else None
+        self.indicator_engine = self._subscribe_with_profile(
+            "indicator_step_total_s",
+            lambda: IndicatorEngine(
+                bus=self.bus,
+                store=self.indicator_store,
+                config=self._config.indicator_config
+                or IndicatorEngineConfig(expected_symbols=(self._config.portfolio_symbol,)),
+                macro_store=self._macro_store if self._macro_store.loaded else None,
+                options_store=self._options_store if self._options_store.loaded else None,
+                hf_store=self._hf_store if self._hf_store.loaded else None,
+                cot_store=self._cot_store if self._cot_store.loaded else None,
+                basis_store=self._basis_store if self._basis_store.loaded else None,
+                eth_store=self._eth_store if self._eth_store.loaded else None,
+                cross_asset_context_store=(
+                    self._replay_context.cross_asset_context_store
+                    if self._replay_context.cross_asset_context_store.loaded
+                    else None
+                ),
+                onchain_factor_store=(
+                    self._replay_context.onchain_factor_store
+                    if self._replay_context.onchain_factor_store.loaded
+                    else None
+                ),
+                binance_metrics_factor_store=(
+                    self._replay_context.binance_metrics_factor_store
+                    if self._replay_context.binance_metrics_factor_store.loaded
+                    else None
+                ),
+                liquidation_store=(
+                    self._liquidation_store
+                    if self._config.liquidation_data_enabled and self._liquidation_store.loaded
+                    else None
+                ),
+                microstructure_store=microstructure_store
+                if microstructure_store and microstructure_store.loaded
+                else None,
             ),
-            microstructure_store=microstructure_store if microstructure_store and microstructure_store.loaded else None,
-        ))
-        self.risk_overlay = self._subscribe_with_profile("risk_step_total_s", lambda: RiskOverlay(
-            bus=self.bus,
-            config=self._config.risk_config or RiskOverlayConfig(starting_equity=self._config.starting_equity),
-        ))
+        )
+        self.risk_overlay = self._subscribe_with_profile(
+            "risk_step_total_s",
+            lambda: RiskOverlay(
+                bus=self.bus,
+                config=self._config.risk_config or RiskOverlayConfig(starting_equity=self._config.starting_equity),
+            ),
+        )
         # Load plugin registry if profile path provided
         plugin_registry = None
         if self._config.profile_path and self._config.profile_path.exists():
             plugin_root = Path(__file__).parent.parent / "plugins"
-            _, plugin_registry = build_from_profile(self._config.profile_path, plugin_root=plugin_root)
+            _, plugin_registry = build_from_profile(
+                self._config.profile_path,
+                plugin_root=plugin_root,
+                config_overrides=self._config.plugin_config_overrides,
+            )
             # Apply RL tuner weight overrides (dynamic, bypass default.toml)
             if self._config.signal_weight_overrides and plugin_registry is not None:
                 plugin_registry.weight_overrides = dict(self._config.signal_weight_overrides)
-        self.strategy_engine = self._subscribe_with_profile("strategy_step_total_s", lambda: ARCStrategyEngine(
-            bus=self.bus,
-            config=self._config.strategy_config,
-            plugin_registry=plugin_registry,
-        ))
-        self.state_engine = self._subscribe_with_profile("state_step_total_s", lambda: StateEngine(
-            bus=self.bus,
-            config=StateEngineConfig(enable_liquidation_overlay=self._config.state_liquidation_overlay_enabled),
-        ))
-        self.execution_kernel = self._subscribe_with_profile("execution_step_total_s", lambda: ExecutionKernel(
-            bus=self.bus,
-            gateway=SimulatedGateway(),
-            risk_overlay=self.risk_overlay,
-            config=self._config.execution_config,
-        ))
+        self.strategy_engine = self._subscribe_with_profile(
+            "strategy_step_total_s",
+            lambda: ARCStrategyEngine(
+                bus=self.bus,
+                config=self._config.strategy_config,
+                plugin_registry=plugin_registry,
+            ),
+        )
+        self.state_engine = self._subscribe_with_profile(
+            "state_step_total_s",
+            lambda: StateEngine(
+                bus=self.bus,
+                config=StateEngineConfig(enable_liquidation_overlay=self._config.state_liquidation_overlay_enabled),
+            ),
+        )
+        self.execution_kernel = self._subscribe_with_profile(
+            "execution_step_total_s",
+            lambda: ExecutionKernel(
+                bus=self.bus,
+                gateway=SimulatedGateway(),
+                risk_overlay=self.risk_overlay,
+                config=self._config.execution_config,
+            ),
+        )
 
         self._indicators: list[IndicatorPack] = []
         self._market_states: list[MarketState] = []
@@ -302,6 +358,7 @@ class HistoricalBacktest:
         terminated_early = False
         termination_reason: str | None = None
         event_loop_started_at = datetime.now(UTC).timestamp()
+        first_event_open_ns = int(events[0]["open_time_ns"])
         for event in events:
             self._publish_event(event)
             processed_events += 1
@@ -319,6 +376,8 @@ class HistoricalBacktest:
                 and event["event_timeframe"] == self._config.execution_timeframe.value
             ):
                 should_stop, reason = self._should_early_stop(
+                    current_event=event,
+                    first_event_open_ns=first_event_open_ns,
                     processed_events=processed_events,
                     total_events=len(events),
                     execution_events_total=execution_events_total,
@@ -334,11 +393,15 @@ class HistoricalBacktest:
         metrics = self._build_metrics(processed)
         metrics_finished_at = datetime.now(UTC).timestamp()
         diagnostics_started_at = metrics_finished_at
-        diagnostics = self._build_diagnostics() if not self._lightweight_train_search else BacktestDiagnostics(
-            playbook_counts={},
-            actionable_exit_counts={},
-            risk_flag_counts={},
-            top_target_reason_codes={},
+        diagnostics = (
+            self._build_diagnostics()
+            if not self._lightweight_train_search
+            else BacktestDiagnostics(
+                playbook_counts={},
+                actionable_exit_counts={},
+                risk_flag_counts={},
+                top_target_reason_codes={},
+            )
         )
         diagnostics_finished_at = datetime.now(UTC).timestamp()
         cycle_started_at = diagnostics_finished_at
@@ -347,11 +410,19 @@ class HistoricalBacktest:
         if self._profiling_enabled:
             profiling = {
                 "event_loop_total_s": round(event_loop_finished_at - event_loop_started_at, 6),
-                "indicator_step_total_s": round(float(self._profiling_totals.get("indicator_step_total_s", 0.0) or 0.0), 6),
-                "strategy_step_total_s": round(float(self._profiling_totals.get("strategy_step_total_s", 0.0) or 0.0), 6),
+                "indicator_step_total_s": round(
+                    float(self._profiling_totals.get("indicator_step_total_s", 0.0) or 0.0), 6
+                ),
+                "strategy_step_total_s": round(
+                    float(self._profiling_totals.get("strategy_step_total_s", 0.0) or 0.0), 6
+                ),
                 "risk_step_total_s": round(float(self._profiling_totals.get("risk_step_total_s", 0.0) or 0.0), 6),
-                "execution_step_total_s": round(float(self._profiling_totals.get("execution_step_total_s", 0.0) or 0.0), 6),
-                "accounting_step_total_s": round(float(self._profiling_totals.get("accounting_step_total_s", 0.0) or 0.0), 6),
+                "execution_step_total_s": round(
+                    float(self._profiling_totals.get("execution_step_total_s", 0.0) or 0.0), 6
+                ),
+                "accounting_step_total_s": round(
+                    float(self._profiling_totals.get("accounting_step_total_s", 0.0) or 0.0), 6
+                ),
                 "metrics_finalize_s": round(metrics_finished_at - metrics_started_at, 6),
                 "diagnostics_finalize_s": round(diagnostics_finished_at - diagnostics_started_at, 6),
                 "cycle_context_finalize_s": round(cycle_finished_at - cycle_started_at, 6),
@@ -369,16 +440,14 @@ class HistoricalBacktest:
             profiling=profiling,
             terminated_early=terminated_early,
             termination_reason=termination_reason,
-            processed_event_ratio=(
-                round(processed_events / max(1, len(events)), 6)
-                if events
-                else 1.0
-            ),
+            processed_event_ratio=(round(processed_events / max(1, len(events)), 6) if events else 1.0),
         )
 
     def _should_early_stop(
         self,
         *,
+        current_event: dict[str, Any],
+        first_event_open_ns: int,
         processed_events: int,
         total_events: int,
         execution_events_total: int,
@@ -395,10 +464,7 @@ class HistoricalBacktest:
             floor_ratio = max(float(self._config.early_stop_trade_floor_ratio), 0.1)
         trade_floor = max(
             1,
-            math.floor(
-                float(self._config.early_stop_min_trade_count)
-                * floor_ratio
-            ),
+            math.floor(float(self._config.early_stop_min_trade_count) * floor_ratio),
         )
         if processed_ratio >= 0.50 and current_trade_count == 0:
             return True, "no_trade_progress"
@@ -408,6 +474,50 @@ class HistoricalBacktest:
             max_drawdown, _ = _max_drawdown(self._risk_snapshots)
             if max_drawdown >= float(self._config.early_stop_max_drawdown):
                 return True, "drawdown_hard_fail"
+        churn_stop, churn_reason = self._should_early_stop_churn(
+            current_event=current_event,
+            first_event_open_ns=first_event_open_ns,
+            processed_ratio=processed_ratio,
+            trade_count=current_trade_count,
+        )
+        if churn_stop:
+            return True, churn_reason
+        return False, None
+
+    def _should_early_stop_churn(
+        self,
+        *,
+        current_event: dict[str, Any],
+        first_event_open_ns: int,
+        processed_ratio: float,
+        trade_count: int,
+    ) -> tuple[bool, str | None]:
+        if processed_ratio < float(self._config.early_stop_min_churn_processed_ratio):
+            return False, None
+        if trade_count < int(self._config.early_stop_min_churn_trade_count):
+            return False, None
+        close_time_ns = int(current_event.get("close_time_ns", first_event_open_ns))
+        elapsed_days = max(1.0, (close_time_ns - first_event_open_ns) / 1_000_000_000 / 86_400)
+        if elapsed_days < float(self._config.early_stop_min_churn_elapsed_days):
+            return False, None
+        max_trade_count_per_day = float(self._config.early_stop_max_trade_count_per_day)
+        if max_trade_count_per_day > 0.0:
+            trade_count_per_day = trade_count / elapsed_days
+            trade_count_limit = max_trade_count_per_day * float(self._config.early_stop_trade_count_per_day_buffer)
+            if trade_count_per_day > trade_count_limit:
+                return True, "trade_count_per_day_hard_fail"
+
+        max_fee_drag_pct = float(self._config.early_stop_max_fee_drag_pct)
+        if max_fee_drag_pct <= 0.0:
+            return False, None
+        gross_pnl = self.risk_overlay.equity - self._config.starting_equity + self._trade_ledger.total_fees
+        min_gross_pnl = self._config.starting_equity * float(self._config.early_stop_min_gross_pnl_fraction_for_fee_drag)
+        if gross_pnl < min_gross_pnl:
+            return False, None
+        fee_drag_pct = self._trade_ledger.total_fees / gross_pnl
+        fee_drag_limit = max_fee_drag_pct * float(self._config.early_stop_fee_drag_buffer)
+        if fee_drag_pct > fee_drag_limit:
+            return True, "fee_drag_hard_fail"
         return False, None
 
     def _subscribe_with_profile(self, bucket: str, factory: Any) -> Any:
@@ -616,6 +726,9 @@ class HistoricalBacktest:
         realized = self._trade_ledger.realized_pnls
         wins = [value for value in realized if value > 0]
         losses = [value for value in realized if value < 0]
+        action_realized = {
+            key: list(values) for key, values in sorted(self._trade_ledger.action_realized_pnls.items())
+        }
         total_bars = sum(1 for item in events if item["event_timeframe"] == self._config.execution_timeframe.value)
         return BacktestMetrics(
             symbol=self._config.portfolio_symbol,
@@ -640,6 +753,28 @@ class HistoricalBacktest:
             trade_count=len(self._reports),
             turnover_per_day=round(self._trade_ledger.turnover_notional / elapsed_days, 2),
             fee_drag_pct=round((self._trade_ledger.total_fees / gross_pnl) if gross_pnl > 0 else 0.0, 6),
+            action_trade_counts=dict(sorted(self._trade_ledger.action_trade_counts.items())),
+            action_fees={key: round(value, 6) for key, value in sorted(self._trade_ledger.action_fees.items())},
+            action_fee_drag_pct={
+                key: round((value / gross_pnl) if gross_pnl > 0 else 0.0, 6)
+                for key, value in sorted(self._trade_ledger.action_fees.items())
+            },
+            action_realized_counts={key: len(values) for key, values in action_realized.items()},
+            action_realized_pnl={key: round(sum(values), 6) for key, values in action_realized.items()},
+            action_profit_factor={
+                key: round(
+                    (
+                        sum(value for value in values if value > 0)
+                        / abs(sum(value for value in values if value < 0))
+                    )
+                    if any(value > 0 for value in values)
+                    and any(value < 0 for value in values)
+                    and sum(value for value in values if value < 0) != 0
+                    else 0.0,
+                    6,
+                )
+                for key, values in action_realized.items()
+            },
         )
 
     def _build_diagnostics(self) -> BacktestDiagnostics:
@@ -900,12 +1035,19 @@ class _TradeLedger:
         self.realized_pnls: list[float] = []
         self.total_fees = 0.0
         self.turnover_notional = 0.0
+        self.action_trade_counts: Counter[str] = Counter()
+        self.action_fees: Counter[str] = Counter()
+        self.action_realized_pnls: defaultdict[str, list[float]] = defaultdict(list)
 
     def on_execution_report(self, report: ExecutionReport) -> None:
         """Update realized PnL state from a single filled report."""
         if report.status != "FILLED" or report.filled_qty <= 0 or report.avg_price <= 0:
             return
         signed_qty = report.side * report.filled_qty
+        next_position = self.position_qty + signed_qty
+        action = self._execution_action(self.position_qty, next_position)
+        self.action_trade_counts[action] += 1
+        self.action_fees[action] += report.fee
         self.total_fees += report.fee
         self.turnover_notional += abs(signed_qty) * report.avg_price
 
@@ -921,6 +1063,7 @@ class _TradeLedger:
         close_qty = min(abs(self.position_qty), abs(signed_qty))
         pnl = (report.avg_price - self.avg_entry) * close_qty * (1.0 if self.position_qty > 0 else -1.0)
         self.realized_pnls.append(pnl)
+        self.action_realized_pnls[action].append(pnl)
         remaining_qty = self.position_qty + signed_qty
         if remaining_qty == 0:
             self.position_qty = 0.0
@@ -931,6 +1074,20 @@ class _TradeLedger:
             self.avg_entry = report.avg_price
             return
         self.position_qty = remaining_qty
+
+    @staticmethod
+    def _execution_action(previous_qty: float, next_qty: float) -> str:
+        if abs(previous_qty) <= 0.0 and abs(next_qty) > 0.0:
+            return "entry"
+        if abs(next_qty) <= 0.0:
+            return "exit"
+        if previous_qty * next_qty < 0:
+            return "flip"
+        if abs(next_qty) > abs(previous_qty):
+            return "add"
+        if abs(next_qty) < abs(previous_qty):
+            return "reduce"
+        return "unchanged"
 
 
 class _FundingAccumulator:
@@ -1307,6 +1464,34 @@ def _build_replay_context(config: HistoricalBacktestConfig) -> ReplayContext:
     )
     cache_stats["store_cache_requests"] += 1
     cache_stats["store_cache_hits"] += int(eth_store_hit)
+    cross_asset_context_store, cross_asset_context_store_hit = _load_store_cached(
+        ("cross_asset_context_store", "data/research/cross_asset/sol_bnb_btc_context.parquet"),
+        lambda: CrossAssetContextStore(
+            CrossAssetContextStoreConfig(data_path=Path("data/research/cross_asset/sol_bnb_btc_context.parquet"))
+        ),
+    )
+    cache_stats["store_cache_requests"] += 1
+    cache_stats["store_cache_hits"] += int(cross_asset_context_store_hit)
+    onchain_factor_store, onchain_factor_store_hit = _load_store_cached(
+        ("onchain_factor_store", "data/raw/coinmetrics/community/BTC/derived_onchain_factors.parquet"),
+        lambda: OnchainFactorStore(
+            OnchainFactorStoreConfig(
+                data_path=Path("data/raw/coinmetrics/community/BTC/derived_onchain_factors.parquet")
+            )
+        ),
+    )
+    cache_stats["store_cache_requests"] += 1
+    cache_stats["store_cache_hits"] += int(onchain_factor_store_hit)
+    binance_metrics_factor_store, binance_metrics_factor_store_hit = _load_store_cached(
+        ("binance_metrics_factor_store", "data/raw/binance/metrics/BTCUSDT/derived_metrics_factors.parquet"),
+        lambda: BinanceMetricsFactorStore(
+            BinanceMetricsFactorStoreConfig(
+                data_path=Path("data/raw/binance/metrics/BTCUSDT/derived_metrics_factors.parquet")
+            )
+        ),
+    )
+    cache_stats["store_cache_requests"] += 1
+    cache_stats["store_cache_hits"] += int(binance_metrics_factor_store_hit)
     basis_store, basis_store_hit = _load_store_cached(
         (
             "basis_store",
@@ -1335,6 +1520,12 @@ def _build_replay_context(config: HistoricalBacktestConfig) -> ReplayContext:
         liquidation_store.load()
     if not getattr(eth_store, "loaded", False):
         eth_store.load()
+    if not getattr(cross_asset_context_store, "loaded", False):
+        cross_asset_context_store.load()
+    if not getattr(onchain_factor_store, "loaded", False):
+        onchain_factor_store.load()
+    if not getattr(binance_metrics_factor_store, "loaded", False):
+        binance_metrics_factor_store.load()
     if not getattr(basis_store, "loaded", False):
         basis_store.load()
 
@@ -1456,6 +1647,9 @@ def _build_replay_context(config: HistoricalBacktestConfig) -> ReplayContext:
         cot_store=cot_store,
         liquidation_store=liquidation_store,
         eth_store=eth_store,
+        cross_asset_context_store=cross_asset_context_store,
+        onchain_factor_store=onchain_factor_store,
+        binance_metrics_factor_store=binance_metrics_factor_store,
         basis_store=basis_store,
         cache_stats=cache_stats,
     )

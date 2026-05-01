@@ -224,6 +224,49 @@ def build_execution_config(params: dict[str, float]) -> ExecutionKernelConfig:
         dca_size_decay=params.get("dca_size_decay", 0.75),
         exit_unwind_pct=params.get("exit_unwind_pct", 0.30),
         flip_min_confidence=params.get("flip_min_confidence", 0.50),
+        flip_flatten_only_enabled=bool(round(float(params.get("flip_flatten_only_enabled", 0.0)))),
+        flip_reverse_open_scale=params.get("flip_reverse_open_scale", 1.0),
+        loss_flip_reverse_open_confidence_floor=params.get("loss_flip_reverse_open_confidence_floor", 0.0),
+        hostile_behavior_router_enabled=bool(round(float(params.get("hostile_behavior_router_enabled", 0.0)))),
+        squeeze_flip_flatten_only_enabled=bool(round(float(params.get("squeeze_flip_flatten_only_enabled", 0.0)))),
+        squeeze_flip_cooldown_enabled=bool(round(float(params.get("squeeze_flip_cooldown_enabled", 0.0)))),
+        squeeze_flip_cooldown_bars=int(params.get("squeeze_flip_cooldown_bars", 2)),
+        squeeze_conditional_cooldown_enabled=bool(
+            round(float(params.get("squeeze_conditional_cooldown_enabled", 0.0)))
+        ),
+        squeeze_conditional_cooldown_drawdown_threshold=params.get(
+            "squeeze_conditional_cooldown_drawdown_threshold",
+            0.025,
+        ),
+        squeeze_conditional_cooldown_toxic_only=bool(
+            round(float(params.get("squeeze_conditional_cooldown_toxic_only", 0.0)))
+        ),
+        squeeze_cooldown_cancel_on_non_squeeze_enabled=bool(
+            round(float(params.get("squeeze_cooldown_cancel_on_non_squeeze_enabled", 0.0)))
+        ),
+        target_delta_deadband_qty=params.get("target_delta_deadband_qty", 0.0),
+        target_delta_deadband_pct=params.get("target_delta_deadband_pct", 0.0),
+        target_reduce_deadband_qty=params.get("target_reduce_deadband_qty", 0.0),
+        target_reduce_deadband_pct=params.get("target_reduce_deadband_pct", 0.0),
+        min_hold_bars_before_flip=int(params.get("min_hold_bars_before_flip", 0)),
+        entry_cooldown_bars=int(params.get("entry_cooldown_bars", 0)),
+        weak_signal_no_flip_enabled=bool(round(float(params.get("weak_signal_no_flip_enabled", 0.0)))),
+        weak_signal_no_flip_confidence=params.get("weak_signal_no_flip_confidence", 0.65),
+        tiny_reverse_reduce_only_enabled=bool(round(float(params.get("tiny_reverse_reduce_only_enabled", 0.0)))),
+        tiny_reverse_deadband_qty=params.get("tiny_reverse_deadband_qty", 0.0),
+        tiny_reverse_deadband_pct=params.get("tiny_reverse_deadband_pct", 0.0),
+        entry_confidence_floor=params.get("entry_confidence_floor", 0.0),
+        reverse_open_confidence_floor=params.get("reverse_open_confidence_floor", 0.0),
+        range_entry_block_enabled=bool(round(float(params.get("range_entry_block_enabled", 0.0)))),
+        degraded_entry_block_enabled=bool(round(float(params.get("degraded_entry_block_enabled", 0.0)))),
+        degraded_entry_confidence_floor=params.get("degraded_entry_confidence_floor", 0.0),
+        loss_dca_confidence_floor=params.get("loss_dca_confidence_floor", 0.0),
+        loss_dca_range_block_enabled=bool(round(float(params.get("loss_dca_range_block_enabled", 0.0)))),
+        loss_dca_degraded_block_enabled=bool(round(float(params.get("loss_dca_degraded_block_enabled", 0.0)))),
+        profit_protect_reduce_enabled=bool(round(float(params.get("profit_protect_reduce_enabled", 0.0)))),
+        profit_protect_min_move_atr=params.get("profit_protect_min_move_atr", 1.0),
+        profit_protect_unwind_pct=params.get("profit_protect_unwind_pct", 0.25),
+        profit_protect_confidence_ceiling=params.get("profit_protect_confidence_ceiling", 0.75),
     )
 
 

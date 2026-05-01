@@ -254,7 +254,16 @@ class PyramidExecutionTests(unittest.TestCase):
 class DCAOnLossTests(unittest.TestCase):
     """Verify PaulWei DCA: longs add on loss at 0.5x, shorts never add on loss."""
 
-    def _target(self, qty=1.0, intent_id="t1", cutoff_ns=2):
+    def _target(
+        self,
+        qty=1.0,
+        intent_id="t1",
+        cutoff_ns=2,
+        *,
+        confidence=0.9,
+        reason_codes=None,
+        regime="TREND",
+    ):
         return TargetPosition(
             intent_id=intent_id,
             portfolio="arc",
@@ -264,17 +273,17 @@ class DCAOnLossTests(unittest.TestCase):
             target_qty=qty,
             target_leverage=2.0,
             reduce_only=False,
-            regime="TREND",
-            regime_confidence=0.9,
-            reason_codes=["TEST"],
+            regime=regime,
+            regime_confidence=confidence,
+            reason_codes=reason_codes or ["TEST"],
         )
 
-    def _setup(self, dca_on_loss_long=True, mark_price=40000.0):
+    def _setup(self, dca_on_loss_long=True, mark_price=40000.0, **config_overrides):
         from zenquant.execution.router import ExecutionKernelConfig
 
         bus = InMemoryJetStream()
         risk = RiskOverlay(bus)
-        config = ExecutionKernelConfig(dca_on_loss_long=dca_on_loss_long)
+        config = ExecutionKernelConfig(dca_on_loss_long=dca_on_loss_long, **config_overrides)
         kernel = ExecutionKernel(bus, SimulatedGateway(), risk, config=config)
         reports = []
         bus.subscribe("exec.order.report", lambda _, p: reports.append(p))
@@ -354,6 +363,80 @@ class DCAOnLossTests(unittest.TestCase):
         # No DCA add
         bus.publish("intent.target_position.final.BTCUSDT_PERP", self._target(qty=1.0, intent_id="t2", cutoff_ns=4))
         self.assertEqual(len(reports), 1)  # No new fill
+
+    def test_loss_dca_confidence_floor_blocks_weak_loss_add(self) -> None:
+        bus, kernel, reports = self._setup(mark_price=40000.0, loss_dca_confidence_floor=0.85)
+
+        bus.publish("intent.target_position.final.BTCUSDT_PERP", self._target(qty=1.0, intent_id="t1", cutoff_ns=2))
+        self.assertEqual(len(reports), 1)
+
+        bus.publish(
+            "md.mark.BINANCE.BTCUSDT_PERP",
+            MarkPriceUpdate(
+                meta=EventMeta(event_time_ns=3, ingest_time_ns=3, venue="BINANCE", symbol="BTCUSDT_PERP", stream_seq=2),
+                mark_price=38000.0,
+            ),
+        )
+        bus.publish(
+            "intent.target_position.final.BTCUSDT_PERP",
+            self._target(qty=1.0, intent_id="weak-dca", cutoff_ns=4, confidence=0.80),
+        )
+
+        self.assertEqual(len(reports), 1)
+        self.assertAlmostEqual(kernel.positions["BTCUSDT_PERP"], reports[0].filled_qty)
+
+    def test_loss_dca_range_block_skips_range_loss_add(self) -> None:
+        bus, kernel, reports = self._setup(mark_price=40000.0, loss_dca_range_block_enabled=True)
+
+        bus.publish("intent.target_position.final.BTCUSDT_PERP", self._target(qty=1.0, intent_id="t1", cutoff_ns=2))
+        self.assertEqual(len(reports), 1)
+
+        bus.publish(
+            "md.mark.BINANCE.BTCUSDT_PERP",
+            MarkPriceUpdate(
+                meta=EventMeta(event_time_ns=3, ingest_time_ns=3, venue="BINANCE", symbol="BTCUSDT_PERP", stream_seq=2),
+                mark_price=38000.0,
+            ),
+        )
+        bus.publish(
+            "intent.target_position.final.BTCUSDT_PERP",
+            self._target(
+                qty=1.0,
+                intent_id="range-dca",
+                cutoff_ns=4,
+                reason_codes=["PLAYBOOK_RANGE_LIGHT", "TEST"],
+                regime="RANGE",
+            ),
+        )
+
+        self.assertEqual(len(reports), 1)
+        self.assertAlmostEqual(kernel.positions["BTCUSDT_PERP"], reports[0].filled_qty)
+
+    def test_loss_dca_degraded_block_skips_degraded_loss_add(self) -> None:
+        bus, kernel, reports = self._setup(mark_price=40000.0, loss_dca_degraded_block_enabled=True)
+
+        bus.publish("intent.target_position.final.BTCUSDT_PERP", self._target(qty=1.0, intent_id="t1", cutoff_ns=2))
+        self.assertEqual(len(reports), 1)
+
+        bus.publish(
+            "md.mark.BINANCE.BTCUSDT_PERP",
+            MarkPriceUpdate(
+                meta=EventMeta(event_time_ns=3, ingest_time_ns=3, venue="BINANCE", symbol="BTCUSDT_PERP", stream_seq=2),
+                mark_price=38000.0,
+            ),
+        )
+        bus.publish(
+            "intent.target_position.final.BTCUSDT_PERP",
+            self._target(
+                qty=1.0,
+                intent_id="degraded-dca",
+                cutoff_ns=4,
+                reason_codes=["QUALITY_DEGRADED", "TEST"],
+            ),
+        )
+
+        self.assertEqual(len(reports), 1)
+        self.assertAlmostEqual(kernel.positions["BTCUSDT_PERP"], reports[0].filled_qty)
 
     def test_profitable_long_adds_full_size(self) -> None:
         """Profitable long → normal add (30%), not DCA reduced (15%)."""
@@ -1260,6 +1343,325 @@ class FlipExecutionTests(unittest.TestCase):
         self.assertAlmostEqual(kernel._pyramid_filled_pct.get("BTCUSDT_PERP", 0), 0.20, places=2)
 
 
+class ChurnControlExecutionTests(unittest.TestCase):
+    def _setup(self, **config_overrides):
+        bus = InMemoryJetStream()
+        risk = RiskOverlay(bus)
+        config = ExecutionKernelConfig(
+            pyramid_enabled=False,
+            adaptive_pyramid_enabled=False,
+            gradual_exit_enabled=False,
+            **config_overrides,
+        )
+        kernel = ExecutionKernel(bus, SimulatedGateway(), risk, config=config)
+        orders = []
+        reports = []
+        bus.subscribe("exec.order.submit", lambda _, p: orders.append(p))
+        bus.subscribe("exec.order.report", lambda _, p: reports.append(p))
+        bus.publish(
+            "md.mark.BINANCE.BTCUSDT_PERP",
+            MarkPriceUpdate(
+                meta=EventMeta(event_time_ns=1, ingest_time_ns=1, venue="BINANCE", symbol="BTCUSDT_PERP", stream_seq=1),
+                mark_price=40000.0,
+            ),
+        )
+        return bus, kernel, orders, reports
+
+    def _target(
+        self,
+        qty: float,
+        *,
+        intent_id: str,
+        cutoff_ns: int,
+        confidence: float = 0.9,
+        atr: float = 0.0,
+    ) -> TargetPosition:
+        return TargetPosition(
+            intent_id=intent_id,
+            portfolio="arc",
+            symbol="BTCUSDT_PERP",
+            timeframe=Timeframe.TF_4H,
+            cutoff_time_ns=cutoff_ns,
+            target_qty=qty,
+            target_leverage=2.0,
+            reduce_only=False,
+            regime="TREND",
+            regime_confidence=confidence,
+            reason_codes=["TEST"],
+            atr=atr,
+        )
+
+    def _target_with_reasons(
+        self,
+        qty: float,
+        *,
+        intent_id: str,
+        cutoff_ns: int,
+        confidence: float = 0.9,
+        reason_codes: list[str] | None = None,
+    ) -> TargetPosition:
+        target = self._target(qty, intent_id=intent_id, cutoff_ns=cutoff_ns, confidence=confidence)
+        target.reason_codes[:] = reason_codes or ["TEST"]
+        return target
+
+    def test_target_delta_deadband_skips_small_add_but_allows_reduction(self) -> None:
+        bus, kernel, orders, reports = self._setup(target_delta_deadband_pct=0.05)
+
+        bus.publish("intent.target_position.final.BTCUSDT_PERP", self._target(1.0, intent_id="entry", cutoff_ns=2))
+        bus.publish("intent.target_position.final.BTCUSDT_PERP", self._target(1.04, intent_id="small-add", cutoff_ns=3))
+        self.assertEqual(len(reports), 1)
+        self.assertAlmostEqual(kernel.positions["BTCUSDT_PERP"], 1.0)
+
+        bus.publish("intent.target_position.final.BTCUSDT_PERP", self._target(0.96, intent_id="small-reduce", cutoff_ns=4))
+        self.assertEqual(len(reports), 2)
+        self.assertEqual(orders[-1].side, -1)
+        self.assertAlmostEqual(kernel.positions["BTCUSDT_PERP"], 0.96)
+
+    def test_target_reduce_deadband_skips_strategy_trim_but_allows_reduce_only(self) -> None:
+        bus, kernel, orders, reports = self._setup(target_reduce_deadband_pct=0.05)
+
+        bus.publish("intent.target_position.final.BTCUSDT_PERP", self._target(1.0, intent_id="entry", cutoff_ns=2))
+        bus.publish("intent.target_position.final.BTCUSDT_PERP", self._target(0.96, intent_id="small-trim", cutoff_ns=3))
+        self.assertEqual(len(reports), 1)
+        self.assertAlmostEqual(kernel.positions["BTCUSDT_PERP"], 1.0)
+
+        reduce_only = self._target(0.96, intent_id="risk-trim", cutoff_ns=4)
+        reduce_only.reduce_only = True
+        bus.publish("intent.target_position.final.BTCUSDT_PERP", reduce_only)
+        self.assertEqual(len(reports), 2)
+        self.assertTrue(orders[-1].reduce_only)
+        self.assertAlmostEqual(kernel.positions["BTCUSDT_PERP"], 0.96)
+
+    def test_weak_signal_reverse_flattens_without_opening_opposite(self) -> None:
+        bus, kernel, orders, reports = self._setup(
+            weak_signal_no_flip_enabled=True,
+            weak_signal_no_flip_confidence=0.70,
+        )
+
+        bus.publish("intent.target_position.final.BTCUSDT_PERP", self._target(1.0, intent_id="entry", cutoff_ns=2))
+        bus.publish(
+            "intent.target_position.final.BTCUSDT_PERP",
+            self._target(-1.0, intent_id="weak-flip", cutoff_ns=3, confidence=0.55),
+        )
+
+        self.assertEqual(len(reports), 2)
+        self.assertTrue(orders[-1].reduce_only)
+        self.assertEqual(orders[-1].side, -1)
+        self.assertAlmostEqual(kernel.positions["BTCUSDT_PERP"], 0.0)
+
+    def test_flip_flatten_only_blocks_opposite_open_even_for_strong_signal(self) -> None:
+        bus, kernel, orders, reports = self._setup(flip_flatten_only_enabled=True)
+
+        bus.publish("intent.target_position.final.BTCUSDT_PERP", self._target(1.0, intent_id="entry", cutoff_ns=2))
+        bus.publish(
+            "intent.target_position.final.BTCUSDT_PERP",
+            self._target(-1.0, intent_id="strong-flip", cutoff_ns=3, confidence=0.95),
+        )
+
+        self.assertEqual(len(reports), 2)
+        self.assertTrue(orders[-1].reduce_only)
+        self.assertEqual(orders[-1].side, -1)
+        self.assertAlmostEqual(kernel.positions["BTCUSDT_PERP"], 0.0)
+
+    def test_flip_reverse_open_scale_reduces_opposite_open_size(self) -> None:
+        bus, kernel, orders, reports = self._setup(flip_reverse_open_scale=0.5)
+
+        bus.publish("intent.target_position.final.BTCUSDT_PERP", self._target(1.0, intent_id="entry", cutoff_ns=2))
+        bus.publish(
+            "intent.target_position.final.BTCUSDT_PERP",
+            self._target(-1.0, intent_id="scaled-flip", cutoff_ns=3, confidence=0.95),
+        )
+
+        self.assertEqual(len(reports), 3)
+        self.assertTrue(orders[-2].reduce_only)
+        self.assertFalse(orders[-1].reduce_only)
+        self.assertEqual(orders[-1].side, -1)
+        self.assertAlmostEqual(orders[-1].quantity, 0.1)
+        self.assertAlmostEqual(kernel.positions["BTCUSDT_PERP"], -0.1)
+
+    def test_loss_flip_confidence_floor_flattens_losing_position(self) -> None:
+        bus, kernel, orders, reports = self._setup(loss_flip_reverse_open_confidence_floor=0.95)
+
+        bus.publish("intent.target_position.final.BTCUSDT_PERP", self._target(1.0, intent_id="entry", cutoff_ns=2))
+        bus.publish(
+            "md.mark.BINANCE.BTCUSDT_PERP",
+            MarkPriceUpdate(
+                meta=EventMeta(event_time_ns=3, ingest_time_ns=3, venue="BINANCE", symbol="BTCUSDT_PERP", stream_seq=2),
+                mark_price=39000.0,
+            ),
+        )
+        bus.publish(
+            "intent.target_position.final.BTCUSDT_PERP",
+            self._target(-1.0, intent_id="loss-flip", cutoff_ns=4, confidence=0.9),
+        )
+
+        self.assertEqual(len(reports), 2)
+        self.assertTrue(orders[-1].reduce_only)
+        self.assertAlmostEqual(kernel.positions["BTCUSDT_PERP"], 0.0)
+
+    def test_loss_flip_confidence_floor_allows_profitable_position_flip(self) -> None:
+        bus, kernel, orders, reports = self._setup(loss_flip_reverse_open_confidence_floor=0.95)
+
+        bus.publish("intent.target_position.final.BTCUSDT_PERP", self._target(1.0, intent_id="entry", cutoff_ns=2))
+        bus.publish(
+            "md.mark.BINANCE.BTCUSDT_PERP",
+            MarkPriceUpdate(
+                meta=EventMeta(event_time_ns=3, ingest_time_ns=3, venue="BINANCE", symbol="BTCUSDT_PERP", stream_seq=2),
+                mark_price=41000.0,
+            ),
+        )
+        bus.publish(
+            "intent.target_position.final.BTCUSDT_PERP",
+            self._target(-1.0, intent_id="profit-flip", cutoff_ns=4, confidence=0.9),
+        )
+
+        self.assertEqual(len(reports), 3)
+        self.assertTrue(orders[-2].reduce_only)
+        self.assertFalse(orders[-1].reduce_only)
+        self.assertAlmostEqual(kernel.positions["BTCUSDT_PERP"], -0.2)
+
+    def test_min_hold_blocks_reverse_open_until_position_ages(self) -> None:
+        bus, kernel, orders, reports = self._setup(min_hold_bars_before_flip=2)
+
+        bus.publish("intent.target_position.final.BTCUSDT_PERP", self._target(1.0, intent_id="entry", cutoff_ns=2))
+        bus.publish("intent.target_position.final.BTCUSDT_PERP", self._target(-1.0, intent_id="early-flip", cutoff_ns=3))
+
+        self.assertEqual(len(reports), 2)
+        self.assertTrue(orders[-1].reduce_only)
+        self.assertAlmostEqual(kernel.positions["BTCUSDT_PERP"], 0.0)
+
+    def test_tiny_reverse_target_reduces_only(self) -> None:
+        bus, kernel, orders, reports = self._setup(
+            tiny_reverse_reduce_only_enabled=True,
+            tiny_reverse_deadband_pct=0.10,
+        )
+
+        bus.publish("intent.target_position.final.BTCUSDT_PERP", self._target(1.0, intent_id="entry", cutoff_ns=2))
+        bus.publish("intent.target_position.final.BTCUSDT_PERP", self._target(-0.05, intent_id="tiny-reverse", cutoff_ns=3))
+
+        self.assertEqual(len(reports), 2)
+        self.assertTrue(orders[-1].reduce_only)
+        self.assertAlmostEqual(kernel.positions["BTCUSDT_PERP"], 0.0)
+
+    def test_entry_cooldown_blocks_reentry_after_flatten_only(self) -> None:
+        bus, kernel, orders, reports = self._setup(
+            entry_cooldown_bars=2,
+            weak_signal_no_flip_enabled=True,
+            weak_signal_no_flip_confidence=0.70,
+        )
+
+        bus.publish("intent.target_position.final.BTCUSDT_PERP", self._target(1.0, intent_id="entry", cutoff_ns=2))
+        bus.publish(
+            "intent.target_position.final.BTCUSDT_PERP",
+            self._target(-1.0, intent_id="weak-flip", cutoff_ns=3, confidence=0.55),
+        )
+        bus.publish("intent.target_position.final.BTCUSDT_PERP", self._target(-1.0, intent_id="cooldown-1", cutoff_ns=4))
+        bus.publish("intent.target_position.final.BTCUSDT_PERP", self._target(-1.0, intent_id="cooldown-2", cutoff_ns=5))
+        bus.publish("intent.target_position.final.BTCUSDT_PERP", self._target(-1.0, intent_id="after-cooldown", cutoff_ns=6))
+
+        self.assertEqual(len(reports), 3)
+        self.assertLess(kernel.positions["BTCUSDT_PERP"], 0.0)
+
+    def test_entry_confidence_floor_blocks_new_low_confidence_risk(self) -> None:
+        bus, kernel, orders, reports = self._setup(entry_confidence_floor=0.75)
+
+        bus.publish(
+            "intent.target_position.final.BTCUSDT_PERP",
+            self._target(1.0, intent_id="weak-entry", cutoff_ns=2, confidence=0.70),
+        )
+
+        self.assertEqual(orders, [])
+        self.assertEqual(reports, [])
+        self.assertEqual(kernel.positions, {})
+
+    def test_range_entry_block_skips_range_light_new_risk(self) -> None:
+        bus, kernel, orders, reports = self._setup(range_entry_block_enabled=True)
+
+        bus.publish(
+            "intent.target_position.final.BTCUSDT_PERP",
+            self._target_with_reasons(
+                1.0,
+                intent_id="range-entry",
+                cutoff_ns=2,
+                reason_codes=["PLAYBOOK_RANGE_LIGHT", "TREND_LONG"],
+            ),
+        )
+
+        self.assertEqual(orders, [])
+        self.assertEqual(reports, [])
+        self.assertEqual(kernel.positions, {})
+
+    def test_degraded_entry_block_allows_only_strong_degraded_signal(self) -> None:
+        bus, kernel, orders, reports = self._setup(
+            degraded_entry_block_enabled=True,
+            degraded_entry_confidence_floor=0.80,
+        )
+
+        bus.publish(
+            "intent.target_position.final.BTCUSDT_PERP",
+            self._target_with_reasons(
+                1.0,
+                intent_id="weak-degraded",
+                cutoff_ns=2,
+                confidence=0.75,
+                reason_codes=["QUALITY_DEGRADED", "TREND_LONG"],
+            ),
+        )
+        bus.publish(
+            "intent.target_position.final.BTCUSDT_PERP",
+            self._target_with_reasons(
+                1.0,
+                intent_id="strong-degraded",
+                cutoff_ns=3,
+                confidence=0.85,
+                reason_codes=["QUALITY_DEGRADED", "TREND_LONG"],
+            ),
+        )
+
+        self.assertEqual(len(reports), 1)
+        self.assertGreater(kernel.positions["BTCUSDT_PERP"], 0.0)
+
+    def test_reverse_open_confidence_floor_flattens_without_opposite_open(self) -> None:
+        bus, kernel, orders, reports = self._setup(reverse_open_confidence_floor=0.85)
+
+        bus.publish("intent.target_position.final.BTCUSDT_PERP", self._target(1.0, intent_id="entry", cutoff_ns=2))
+        bus.publish(
+            "intent.target_position.final.BTCUSDT_PERP",
+            self._target(-1.0, intent_id="weak-reverse", cutoff_ns=3, confidence=0.80),
+        )
+
+        self.assertEqual(len(reports), 2)
+        self.assertTrue(orders[-1].reduce_only)
+        self.assertAlmostEqual(kernel.positions["BTCUSDT_PERP"], 0.0)
+
+    def test_profit_protect_reduces_profitable_position_on_weak_add(self) -> None:
+        bus, kernel, orders, reports = self._setup(
+            profit_protect_reduce_enabled=True,
+            profit_protect_min_move_atr=1.0,
+            profit_protect_unwind_pct=0.25,
+            profit_protect_confidence_ceiling=0.75,
+        )
+
+        bus.publish("intent.target_position.final.BTCUSDT_PERP", self._target(1.0, intent_id="entry", cutoff_ns=2))
+        bus.publish(
+            "md.mark.BINANCE.BTCUSDT_PERP",
+            MarkPriceUpdate(
+                meta=EventMeta(event_time_ns=3, ingest_time_ns=3, venue="BINANCE", symbol="BTCUSDT_PERP", stream_seq=2),
+                mark_price=42000.0,
+            ),
+        )
+        bus.publish(
+            "intent.target_position.final.BTCUSDT_PERP",
+            self._target(1.2, intent_id="weak-profitable-add", cutoff_ns=4, confidence=0.70, atr=1000.0),
+        )
+
+        self.assertEqual(len(reports), 2)
+        self.assertTrue(orders[-1].reduce_only)
+        self.assertEqual(orders[-1].side, -1)
+        self.assertAlmostEqual(orders[-1].quantity, 0.25)
+        self.assertAlmostEqual(kernel.positions["BTCUSDT_PERP"], 0.75)
+
+
 class ExecutionConfigBoundsTests(unittest.TestCase):
     def test_rejects_initial_pct_above_supported_range(self) -> None:
         from zenquant.execution.router import ExecutionKernelConfig
@@ -1290,3 +1692,15 @@ class ExecutionConfigBoundsTests(unittest.TestCase):
 
         with self.assertRaisesRegex(ValueError, "dca_size_decay must be within"):
             ExecutionKernelConfig(dca_size_decay=1.2)
+
+    def test_rejects_negative_loss_dca_confidence_floor(self) -> None:
+        from zenquant.execution.router import ExecutionKernelConfig
+
+        with self.assertRaisesRegex(ValueError, "loss_dca_confidence_floor must be >= 0.0"):
+            ExecutionKernelConfig(loss_dca_confidence_floor=-0.1)
+
+    def test_rejects_invalid_profit_protect_unwind_pct(self) -> None:
+        from zenquant.execution.router import ExecutionKernelConfig
+
+        with self.assertRaisesRegex(ValueError, "profit_protect_unwind_pct must be within"):
+            ExecutionKernelConfig(profit_protect_unwind_pct=0.0)

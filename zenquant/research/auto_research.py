@@ -52,6 +52,9 @@ from zenquant.research.framework_params import (
     build_indicator_config as _shared_build_indicator_config,
 )
 from zenquant.research.framework_params import (
+    build_plugin_config_overrides as _shared_build_plugin_config_overrides,
+)
+from zenquant.research.framework_params import (
     build_replay_toggles as _shared_build_replay_toggles,
 )
 from zenquant.research.framework_params import (
@@ -87,6 +90,10 @@ class SearchStageTimeoutError(RuntimeError):
 
 
 _WORKER_REPLAY_CONTEXT_CACHE: dict[tuple[Any, ...], ReplayContext] = {}
+TRAIN_TRUTH_DAY_FALLBACK = 1461.0
+MAX_FEE_DRAG_PCT_ABSOLUTE = 0.025
+MAX_TRADE_COUNT_PER_DAY = 1.50
+MIN_PROFIT_FACTOR_AFTER_FEE = 1.05
 
 
 def _shutdown_pool_quickly(pool: ProcessPoolExecutor | None, futures: list[Any] | None = None) -> None:
@@ -108,10 +115,20 @@ def _hostile_proxy_diagnostics(params: dict[str, Any], metrics: dict[str, float]
     """Train-only hostile stability proxy for stage1 ranking."""
 
     sharpe = float(metrics.get("sharpe", 0.0) or 0.0)
+    net_pnl = float(metrics.get("net_pnl", metrics.get("pnl", 0.0)) or 0.0)
     max_drawdown = float(metrics.get("max_drawdown", 0.0) or 0.0)
     profit_factor = float(metrics.get("profit_factor", 0.0) or 0.0)
     fee_drag_pct = float(metrics.get("fee_drag_pct", 0.0) or 0.0)
     trade_count = float(metrics.get("trade_count", 0.0) or 0.0)
+    net_pnl_per_trade = float(
+        metrics.get("net_pnl_per_trade", (net_pnl / trade_count) if trade_count > 0 else 0.0) or 0.0
+    )
+    trade_count_per_day = float(
+        metrics.get("trade_count_per_day", trade_count / TRAIN_TRUTH_DAY_FALLBACK if trade_count > 0 else 0.0) or 0.0
+    )
+    profit_factor_after_fee = float(
+        metrics.get("profit_factor_after_fee", profit_factor * max(0.0, 1.0 - fee_drag_pct)) or 0.0
+    )
     terminated_early = float(metrics.get("terminated_early", 0.0) or 0.0)
 
     target_vol_4h = float(params.get("target_vol_4h", 0.0) or 0.0)
@@ -141,9 +158,23 @@ def _hostile_proxy_diagnostics(params: dict[str, Any], metrics: dict[str, float]
     )
     train_trade_count_penalty = max(0.0, (trade_count - 4200.0) / 500.0)
     train_fee_drag_proxy_penalty = max(0.0, (fee_drag_pct - 0.02) / 0.01)
+    train_fee_drag_cap_penalty = max(0.0, (fee_drag_pct - MAX_FEE_DRAG_PCT_ABSOLUTE) / MAX_FEE_DRAG_PCT_ABSOLUTE)
+    train_trade_count_day_penalty = max(
+        0.0,
+        (trade_count_per_day - MAX_TRADE_COUNT_PER_DAY) / MAX_TRADE_COUNT_PER_DAY,
+    )
+    profit_factor_after_fee_penalty = max(
+        0.0,
+        (MIN_PROFIT_FACTOR_AFTER_FEE - profit_factor_after_fee) / MIN_PROFIT_FACTOR_AFTER_FEE,
+    )
+    net_pnl_per_trade_penalty = 1.0 if trade_count > 0 and net_pnl_per_trade <= 0.0 else 0.0
     train_churn_stress_penalty = round(
         0.75 * train_trade_count_penalty
         + 0.35 * train_fee_drag_proxy_penalty
+        + 0.75 * train_fee_drag_cap_penalty
+        + 0.65 * train_trade_count_day_penalty
+        + 0.55 * profit_factor_after_fee_penalty
+        + 0.50 * net_pnl_per_trade_penalty
         + 0.50 * max(0.0, 1.0 - profit_factor),
         6,
     )
@@ -174,7 +205,14 @@ def _hostile_proxy_diagnostics(params: dict[str, Any], metrics: dict[str, float]
         "inventory_path_dependence_score": inventory_path_dependence_score,
         "train_trade_count_penalty": round(train_trade_count_penalty, 6),
         "train_fee_drag_proxy_penalty": round(train_fee_drag_proxy_penalty, 6),
+        "train_fee_drag_cap_penalty": round(train_fee_drag_cap_penalty, 6),
+        "train_trade_count_day_penalty": round(train_trade_count_day_penalty, 6),
+        "profit_factor_after_fee_penalty": round(profit_factor_after_fee_penalty, 6),
+        "net_pnl_per_trade_penalty": round(net_pnl_per_trade_penalty, 6),
         "train_churn_stress_penalty": train_churn_stress_penalty,
+        "net_pnl_per_trade": round(net_pnl_per_trade, 6),
+        "trade_count_per_day": round(trade_count_per_day, 6),
+        "profit_factor_after_fee": round(profit_factor_after_fee, 6),
         "hostile_proxy_penalty_applied": hostile_proxy_penalty_applied,
         "hostile_proxy_score": hostile_proxy_score,
         "stage1_score": hostile_proxy_score,
@@ -344,6 +382,7 @@ def _run_backtest_worker(args: tuple[Any, ...]) -> tuple[dict[str, Any], dict[st
     execution_cfg = _shared_build_execution_config(params)
     indicator_cfg = _shared_build_indicator_config(params)
     signal_weight_overrides = _shared_build_signal_weight_overrides(params)
+    plugin_config_overrides = _shared_build_plugin_config_overrides(params)
     liquidation_data_enabled, state_liquidation_overlay_enabled = _shared_build_replay_toggles(params)
     perturbation = PerturbationConfig(**perturbation_dict) if perturbation_dict else None
     context_key = (
@@ -392,6 +431,7 @@ def _run_backtest_worker(args: tuple[Any, ...]) -> tuple[dict[str, Any], dict[st
         execution_config=execution_cfg,
         indicator_config=indicator_cfg,
         signal_weight_overrides=signal_weight_overrides,
+        plugin_config_overrides=plugin_config_overrides,
         liquidation_data_enabled=liquidation_data_enabled,
         state_liquidation_overlay_enabled=state_liquidation_overlay_enabled,
         research_compute_mode=research_compute_mode,
@@ -408,6 +448,15 @@ def _run_backtest_worker(args: tuple[Any, ...]) -> tuple[dict[str, Any], dict[st
     result = bt.run()
     run_finished_at = time.time()
     m = result.metrics
+    trade_count = float(m.trade_count or 0)
+    elapsed_days = max(
+        1.0,
+        (float(getattr(m, "end_ns", 0.0) or 0.0) - float(getattr(m, "start_ns", 0.0) or 0.0))
+        / 1_000_000_000
+        / 86_400,
+    )
+    if elapsed_days <= 1.0 and trade_count > 0:
+        elapsed_days = TRAIN_TRUTH_DAY_FALLBACK
     metrics = {
         "sharpe": m.sharpe,
         "sortino": m.sortino,
@@ -417,6 +466,15 @@ def _run_backtest_worker(args: tuple[Any, ...]) -> tuple[dict[str, Any], dict[st
         "profit_factor": m.profit_factor,
         "trade_count": m.trade_count,
         "fee_drag_pct": m.fee_drag_pct,
+        "action_trade_counts": dict(getattr(m, "action_trade_counts", {}) or {}),
+        "action_fees": dict(getattr(m, "action_fees", {}) or {}),
+        "action_fee_drag_pct": dict(getattr(m, "action_fee_drag_pct", {}) or {}),
+        "action_realized_counts": dict(getattr(m, "action_realized_counts", {}) or {}),
+        "action_realized_pnl": dict(getattr(m, "action_realized_pnl", {}) or {}),
+        "action_profit_factor": dict(getattr(m, "action_profit_factor", {}) or {}),
+        "net_pnl_per_trade": round((m.net_pnl / trade_count) if trade_count > 0 else 0.0, 6),
+        "trade_count_per_day": round(trade_count / elapsed_days if elapsed_days > 0 else 0.0, 6),
+        "profit_factor_after_fee": round(m.profit_factor * max(0.0, 1.0 - m.fee_drag_pct), 6),
         "cache_hit": 1.0 if cache_hit else 0.0,
         "replay_context_build_s": round(replay_context_build_s, 6),
         "store_load_s": round(replay_context_build_s, 6),
@@ -444,6 +502,7 @@ def _run_backtest_worker(args: tuple[Any, ...]) -> tuple[dict[str, Any], dict[st
         "event_list_cache_hit_rate": round(float(result.profiling.get("event_list_cache_hit_rate", 0.0) or 0.0), 6),
         "store_cache_hit_rate": round(float(result.profiling.get("store_cache_hit_rate", 0.0) or 0.0), 6),
         "terminated_early": 1.0 if result.terminated_early else 0.0,
+        "termination_reason": result.termination_reason,
         "processed_event_ratio": round(float(result.processed_event_ratio or 0.0), 6),
     }
     metrics.update(_hostile_proxy_diagnostics(params, metrics))
@@ -1436,8 +1495,8 @@ def _build_strategy_config(
             playbook_kwargs["range_max_leverage"] = value
         elif key == "exit_transition_risk":
             exit_kwargs["transition_risk_exit_threshold"] = value
-    existing_playbook = vars(config.playbook_config) if config.playbook_config is not None else {}
-    existing_exit = vars(config.exit_config) if config.exit_config is not None else {}
+    existing_playbook = asdict(config.playbook_config) if config.playbook_config is not None else {}
+    existing_exit = asdict(config.exit_config) if config.exit_config is not None else {}
     return ARCStrategyConfig(
         **{
             **asdict(config),

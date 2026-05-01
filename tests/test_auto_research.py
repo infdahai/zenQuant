@@ -915,6 +915,7 @@ class TestSearchSpace(unittest.TestCase):
         self.assertEqual(first["cache_hit"], 0.0)
         self.assertEqual(second["cache_hit"], 1.0)
         self.assertEqual(second["terminated_early"], 1.0)
+        self.assertEqual(second["termination_reason"], "trade_count_too_low_for_processed_ratio")
         self.assertEqual(second["processed_event_ratio"], 0.75)
         self.assertEqual(second["event_loop_total_s"], 1.1)
 
