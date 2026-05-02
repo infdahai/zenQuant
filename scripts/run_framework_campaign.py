@@ -67,6 +67,98 @@ def _read_seed_trials(path: Path | None) -> list[dict[str, Any]]:
     return resolved
 
 
+_TRAIN_QUALITY_FALLBACK_SKIP_BLOCKERS = {
+    "train_trade_count_churn_worse",
+    "train_trade_count_per_day_cap_exceeded",
+    "train_fee_drag_structurally_worse",
+    "train_fee_drag_cap_exceeded",
+    "train_net_pnl_per_trade_inefficient",
+    "train_profit_factor_after_fee_weak",
+}
+
+
+def _extract_rejected_train_bucket_blockers(diagnostics: dict[str, Any]) -> set[str]:
+    train_diagnostics = diagnostics.get("train_candidate_diagnostics") or {}
+    if not isinstance(train_diagnostics, dict):
+        return set()
+
+    blockers: set[str] = set()
+    for key in ("bucket_blockers", "rejected_candidate_blockers"):
+        raw_blockers = train_diagnostics.get(key)
+        if isinstance(raw_blockers, list):
+            blockers.update(str(item) for item in raw_blockers)
+
+    rejected_candidates = train_diagnostics.get("rejected_candidate_diagnostics") or []
+    if not isinstance(rejected_candidates, list):
+        return blockers
+
+    for candidate in rejected_candidates:
+        if not isinstance(candidate, dict):
+            continue
+        regime_objective = candidate.get("regime_objective") or {}
+        if not isinstance(regime_objective, dict):
+            continue
+        raw_blockers = regime_objective.get("bucket_blockers") or []
+        if isinstance(raw_blockers, list):
+            blockers.update(str(item) for item in raw_blockers)
+    return blockers
+
+
+def _smoke_primary_empty_skip_fallback_reason(
+    *,
+    search_space_mode: str | None,
+    primary_diagnostics: dict[str, Any],
+) -> str | None:
+    train_only_modes = {
+        "binance_factor_weight_repair_train_only",
+        "execution_inventory_rethink_train_only",
+        "intent_churn_repair_train_only",
+        "baseline_anchored_train_only",
+        "baseline_anchored_defensive_candidate_existence",
+        "baseline_anchored_2023_08_hostile_repair",
+    }
+    if search_space_mode not in train_only_modes:
+        return None
+    empty_reason = primary_diagnostics.get("empty_shortlist_reason")
+    if empty_reason != "stage1_fail_fast_rejected":
+        return None
+
+    train_diagnostics = primary_diagnostics.get("train_candidate_diagnostics") or {}
+    if not isinstance(train_diagnostics, dict):
+        return None
+    fail_fast_reasons = train_diagnostics.get("stage1_fail_fast_reasons") or {}
+    train_bucket_fail_fast = (
+        isinstance(fail_fast_reasons, dict) and int(fail_fast_reasons.get("regime_objective_train_bucket_fail_fast", 0) or 0) > 0
+    )
+    blockers = _extract_rejected_train_bucket_blockers(primary_diagnostics)
+    train_quality_blockers = sorted(blockers & _TRAIN_QUALITY_FALLBACK_SKIP_BLOCKERS)
+    if not train_bucket_fail_fast or not train_quality_blockers:
+        return None
+    return "primary_train_quality_fail_fast:" + ",".join(train_quality_blockers)
+
+
+def _diagnostics_with_skipped_5m_fallback(
+    *,
+    primary_diagnostics: dict[str, Any],
+    skip_reason: str,
+) -> dict[str, Any]:
+    primary_train_diagnostics = dict(primary_diagnostics.get("train_candidate_diagnostics") or {})
+    merged_train_diagnostics = dict(primary_train_diagnostics)
+    merged_train_diagnostics["primary_search_diagnostics"] = primary_train_diagnostics
+    merged_train_diagnostics["primary_empty_shortlist_reason"] = primary_diagnostics.get("empty_shortlist_reason")
+    merged_train_diagnostics["fallback_search_skipped"] = True
+    merged_train_diagnostics["fallback_skip_reason"] = skip_reason
+    return {
+        **primary_diagnostics,
+        "train_candidate_diagnostics": merged_train_diagnostics,
+        "empty_shortlist_reason": "primary_empty_train_quality_fallback_skipped",
+        "no_tuned_candidate_reason": "primary_empty_train_quality_fallback_skipped",
+        "primary_empty_shortlist_reason": primary_diagnostics.get("empty_shortlist_reason"),
+        "fallback_empty_shortlist_reason": "skipped",
+        "fallback_skip_reason": skip_reason,
+    }
+
+
 def _update_status(path: Path, **kwargs: Any) -> dict[str, Any]:
     payload = _read_json(path) or {}
     payload.update(kwargs)
@@ -2063,7 +2155,30 @@ def main() -> None:
             primary_optuna_diagnostics = dict(optuna_diagnostics or {})
             stage1_state["primary_optuna_trials_completed"] = int(stage1_state.get("optuna_trials_completed", 0) or 0)
             stage1_state["primary_optuna_trials_total"] = optuna_trials
-            if args.budget == "smoke" and optuna_params is None and not optuna_trials_payload:
+            skip_fallback_reason = _smoke_primary_empty_skip_fallback_reason(
+                search_space_mode=resolved_search_space_mode,
+                primary_diagnostics=primary_optuna_diagnostics,
+            )
+            if args.budget == "smoke" and optuna_params is None and not optuna_trials_payload and skip_fallback_reason:
+                optuna_diagnostics = _diagnostics_with_skipped_5m_fallback(
+                    primary_diagnostics=primary_optuna_diagnostics,
+                    skip_reason=skip_fallback_reason,
+                )
+                _append_campaign_log(
+                    log_path,
+                    f"stage1_optuna_search skip_5m_fallback reason={skip_fallback_reason}",
+                )
+                _update_status(
+                    status_path,
+                    stage1_search_mode=stage1_state.get("stage1_search_mode", "primary_1h"),
+                    stage1_primary_optuna_trials_completed=stage1_state.get("primary_optuna_trials_completed", 0),
+                    stage1_primary_optuna_trials_total=stage1_state.get("primary_optuna_trials_total", optuna_trials),
+                    stage1_fallback_optuna_trials_completed=0,
+                    stage1_fallback_optuna_trials_total=0,
+                    stage1_last_completed_unit="fallback_skipped_train_quality_fail_fast",
+                    fallback_skip_reason=skip_fallback_reason,
+                )
+            elif args.budget == "smoke" and optuna_params is None and not optuna_trials_payload:
                 stage1_state["used_5m_fallback"] = True
                 stage1_state["stage1_search_mode"] = "fallback_5m"
                 stage1_state["fallback_optuna_trials_completed"] = 0

@@ -41,12 +41,16 @@ from zenquant.research.comparison import (
 from zenquant.research.data_source_review import load_source_admission_review
 from zenquant.research.framework_params import (
     baseline_anchor_seed_trials,
+    binance_factor_weight_repair_seed_trials,
     build_execution_config,
     build_indicator_config,
+    build_plugin_config_overrides,
     build_replay_toggles,
     build_risk_config,
     build_signal_weight_overrides,
     build_strategy_config,
+    execution_inventory_rethink_seed_trials,
+    intent_churn_repair_seed_trials,
     param_grid_for_mode,
     search_space_profile,
 )
@@ -343,6 +347,7 @@ def _spot_train_leg_snapshot(
         risk_config=variant.risk_config,
         execution_config=variant.execution_config,
         signal_weight_overrides=variant.signal_weight_overrides,
+        plugin_config_overrides=variant.plugin_config_overrides,
         indicator_config=variant.indicator_config,
         liquidation_data_enabled=False,
         state_liquidation_overlay_enabled=False,
@@ -1263,6 +1268,7 @@ class FrameworkEvaluator:
         strategy_config = build_strategy_config(params)
         indicator_config = build_indicator_config(params)
         signal_weight_overrides = build_signal_weight_overrides(params)
+        plugin_config_overrides = build_plugin_config_overrides(params)
         liquidation_data_enabled, state_liquidation_overlay_enabled = build_replay_toggles(params)
         if not self._readiness["data_ready"]:
             liquidation_data_enabled = False
@@ -1276,6 +1282,7 @@ class FrameworkEvaluator:
             strategy_config=strategy_config,
             indicator_config=indicator_config,
             signal_weight_overrides=signal_weight_overrides,
+            plugin_config_overrides=plugin_config_overrides,
             liquidation_data_enabled=liquidation_data_enabled,
             state_liquidation_overlay_enabled=state_liquidation_overlay_enabled,
         )
@@ -2552,11 +2559,16 @@ def run_optuna_search(
             },
         )
     effective_execution_timeframe = search_execution_timeframe or evaluator._base_config.execution_timeframe
-    resolved_seed_trials = (
-        baseline_anchor_seed_trials()[:n_trials]
-        if evaluator.search_space_profile.get("baseline_anchored_search", False)
-        else []
-    )
+    if evaluator.search_space_profile.get("binance_factor_weight_repair_search", False):
+        resolved_seed_trials = binance_factor_weight_repair_seed_trials()[:n_trials]
+    elif evaluator.search_space_profile.get("intent_churn_repair_search", False):
+        resolved_seed_trials = intent_churn_repair_seed_trials()[:n_trials]
+    elif evaluator.search_space_profile.get("execution_inventory_rethink_search", False):
+        resolved_seed_trials = execution_inventory_rethink_seed_trials()[:n_trials]
+    elif evaluator.search_space_profile.get("baseline_anchored_search", False):
+        resolved_seed_trials = baseline_anchor_seed_trials()[:n_trials]
+    else:
+        resolved_seed_trials = []
     if seed_trials:
         resolved_seed_trials.extend(dict(trial) for trial in seed_trials)
     resolved_seed_trials = _project_seed_trials_to_search_grid(
@@ -2604,8 +2616,8 @@ def run_optuna_search(
         or "weak_window_sharpe" in dict(candidate.get("metrics", {}))
         for candidate in sweep.top_n
     )
-    current_lightweight = evaluator._get_current_fast_summary(lightweight=True) if stage1_fail_fast_enabled else None
-    paulwei_lightweight = evaluator._get_paulwei_fast_summary(lightweight=True) if stage1_fail_fast_enabled else None
+    current_lightweight: CandidateSummary | None = None
+    paulwei_lightweight: CandidateSummary | None = None
     hostile_proxy_penalized_count = 0
     fail_fast_rejection_count = 0
     fail_fast_reason_counts: dict[str, int] = {}
@@ -2647,23 +2659,31 @@ def run_optuna_search(
         candidate_payload = dict(candidate)
         candidate_payload["metrics"] = combined_metrics
         train_summary = CandidateSummary(**_train_candidate_summary_payload(candidate_payload))
-        if stage1_fail_fast_enabled and paulwei_lightweight is not None and current_lightweight is not None:
-            dev_screen = evaluator._evaluate_variant(
-                evaluator.candidate_variant(params, name="optuna_candidate", label="Optuna Candidate"),
-                fast=True,
-                lightweight=True,
-            )
-            fail_fast_reason = _stage1_fail_fast_reason(
-                dev_screen,
-                baseline=paulwei_lightweight,
-                current=current_lightweight,
-            )
-            lightweight_dev_summary = asdict(dev_screen)
-        else:
-            fail_fast_reason = None
-            lightweight_dev_summary = None
         if not regime_objective["allow_dev_diagnostic_review"]:
             fail_fast_reason = "regime_objective_train_bucket_fail_fast"
+            lightweight_dev_summary = None
+        elif stage1_fail_fast_enabled:
+            if current_lightweight is None:
+                current_lightweight = evaluator._get_current_fast_summary(lightweight=True)
+            if paulwei_lightweight is None:
+                paulwei_lightweight = evaluator._get_paulwei_fast_summary(lightweight=True)
+            if paulwei_lightweight is not None and current_lightweight is not None:
+                dev_screen = evaluator._evaluate_variant(
+                    evaluator.candidate_variant(params, name="optuna_candidate", label="Optuna Candidate"),
+                    fast=True,
+                    lightweight=True,
+                )
+                fail_fast_reason = _stage1_fail_fast_reason(
+                    dev_screen,
+                    baseline=paulwei_lightweight,
+                    current=current_lightweight,
+                )
+                lightweight_dev_summary = asdict(dev_screen)
+            else:
+                fail_fast_reason = None
+                lightweight_dev_summary = None
+        else:
+            fail_fast_reason = None
             lightweight_dev_summary = None
         if fail_fast_reason is not None:
             fail_fast_rejection_count += 1

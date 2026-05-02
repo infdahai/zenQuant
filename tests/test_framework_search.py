@@ -1778,37 +1778,46 @@ class SearchReportSerializationTests(unittest.TestCase):
                 "metrics": {
                     "sharpe": 2.0,
                     "score": 2.0,
+                    "hostile_proxy_score": 0.5,
                     "train_bucket_metrics": {"train_late_cycle_recovery_2023_11": {"sharpe": 0.1}},
                 },
                 "baseline_train_metrics": {
                     "train_bucket_metrics": {"train_late_cycle_recovery_2023_11": {"sharpe": 0.4}},
                 },
             },
-            {
-                "params": {"w_momentum": 0.45},
-                "metrics": {
-                    "sharpe": 1.5,
-                    "score": 1.5,
-                    "train_bucket_metrics": {"train_late_cycle_recovery_2023_11": {"sharpe": 0.42}},
-                },
-                "baseline_train_metrics": {
-                    "train_bucket_metrics": {"train_late_cycle_recovery_2023_11": {"sharpe": 0.4}},
-                },
-            },
         ]
+        baseline = CandidateSummary(
+            variant="paulwei_baseline",
+            robust_score=1.0,
+            selection_split="dev",
+            dev_sharpe=1.0,
+            dev_pnl=1.0,
+            dev_drawdown=0.1,
+            avg_dev_sharpe=1.0,
+            avg_dev_ratio=1.0,
+            worst_dev_sharpe=0.1,
+            weak_window_sharpe=0.1,
+            negative_dev_worst_windows=0,
+            promotion_candidate=False,
+        )
         with (
             patch(
                 "zenquant.research.framework_search.run_search_stage",
                 return_value=FakeSweep(total_combinations=2, results=[], top_n=top_n, runtime_s=0.1),
             ),
+            patch.object(FrameworkEvaluator, "_get_current_fast_summary", return_value=baseline) as current_summary,
+            patch.object(FrameworkEvaluator, "_get_paulwei_fast_summary", return_value=baseline) as paulwei_summary,
             patch.object(FrameworkEvaluator, "_evaluate_variant") as evaluate_variant,
         ):
             evaluator = FrameworkEvaluator(HistoricalBacktestConfig(), split_spec=default_btc_split_spec())
             best, ranked, diagnostics = run_optuna_search(evaluator, n_trials=5)
 
+        current_summary.assert_not_called()
+        paulwei_summary.assert_not_called()
         evaluate_variant.assert_not_called()
-        self.assertEqual(best, {"w_momentum": 0.45})
-        self.assertEqual(len(ranked), 1)
+        self.assertIsNone(best)
+        self.assertEqual(ranked, [])
+        self.assertEqual(diagnostics["empty_shortlist_reason"], "stage1_fail_fast_rejected")
         self.assertEqual(
             diagnostics["train_candidate_diagnostics"]["stage1_fail_fast_reasons"],
             {"regime_objective_train_bucket_fail_fast": 1},

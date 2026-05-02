@@ -60,6 +60,48 @@ class FrameworkCampaignTests(unittest.TestCase):
         self.assertEqual(CAMPAIGN._resolved_budget("fast", None, None), (50, 20))
         self.assertEqual(CAMPAIGN._resolved_budget("high", None, None), (150, 60))
 
+    def test_smoke_primary_empty_skip_fallback_reason_requires_train_fee_or_churn_blocker(self) -> None:
+        reason = CAMPAIGN._smoke_primary_empty_skip_fallback_reason(
+            search_space_mode="binance_factor_weight_repair_train_only",
+            primary_diagnostics={
+                "empty_shortlist_reason": "stage1_fail_fast_rejected",
+                "train_candidate_diagnostics": {
+                    "stage1_fail_fast_reasons": {"regime_objective_train_bucket_fail_fast": 1},
+                    "rejected_candidate_diagnostics": [
+                        {
+                            "regime_objective": {
+                                "bucket_blockers": [
+                                    "train_fee_drag_cap_exceeded",
+                                    "train_fee_drag_structurally_worse",
+                                ]
+                            }
+                        }
+                    ],
+                },
+            },
+        )
+
+        self.assertEqual(
+            reason,
+            "primary_train_quality_fail_fast:train_fee_drag_cap_exceeded,train_fee_drag_structurally_worse",
+        )
+
+    def test_smoke_primary_empty_skip_fallback_reason_keeps_uninformative_empty_fallback(self) -> None:
+        reason = CAMPAIGN._smoke_primary_empty_skip_fallback_reason(
+            search_space_mode="binance_factor_weight_repair_train_only",
+            primary_diagnostics={
+                "empty_shortlist_reason": "all_zero_trade",
+                "train_candidate_diagnostics": {
+                    "stage1_fail_fast_reasons": {"regime_objective_train_bucket_fail_fast": 1},
+                    "rejected_candidate_diagnostics": [
+                        {"regime_objective": {"bucket_blockers": ["train_fee_drag_cap_exceeded"]}}
+                    ],
+                },
+            },
+        )
+
+        self.assertIsNone(reason)
+
     def test_stage2_budget_profile_relaxes_smoke_compare_windows_only(self) -> None:
         smoke = CAMPAIGN._stage2_budget_profile("smoke")
 
