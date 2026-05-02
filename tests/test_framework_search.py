@@ -1849,6 +1849,7 @@ class SearchReportSerializationTests(unittest.TestCase):
             run_optuna_search(
                 evaluator,
                 n_trials=5,
+                search_execution_timeframe=Timeframe.TF_5M,
                 stage1_parallel_mode="cpu_parallel",
                 stage1_max_workers=6,
                 stage1_target_inflight=6,
@@ -1860,6 +1861,7 @@ class SearchReportSerializationTests(unittest.TestCase):
         self.assertEqual(config.stage1_max_workers, 6)
         self.assertEqual(config.stage1_target_inflight, 6)
         self.assertEqual(config.stage1_batch_size, 4)
+        self.assertEqual(config.min_completed_trials, 5)
 
     def test_run_optuna_search_treats_pre_2020_spot_as_context_only(self) -> None:
         @dataclass

@@ -2597,7 +2597,7 @@ def run_optuna_search(
         trial_timeout_s=trial_timeout_s,
         stage_total_timeout_s=stage_total_timeout_s,
         stage_wall_clock_budget_s=720.0 if effective_execution_timeframe == Timeframe.TF_5M else None,
-        min_completed_trials=24 if effective_execution_timeframe == Timeframe.TF_5M else 0,
+        min_completed_trials=min(n_trials, 24) if effective_execution_timeframe == Timeframe.TF_5M else 0,
         stage1_parallel_mode=stage1_parallel_mode,
         stage1_max_workers=stage1_max_workers,
         stage1_target_inflight=stage1_target_inflight,
