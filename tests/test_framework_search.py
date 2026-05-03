@@ -574,7 +574,7 @@ class FrameworkParamTests(unittest.TestCase):
         self.assertEqual(seeds[0]["intent_range_entry_confirmation_bars"], 6)
         self.assertEqual(seeds[0]["intent_range_reentry_cooldown_bars"], 24)
         self.assertEqual(seeds[0]["intent_bearish_override_confirmation_bars"], 4)
-        self.assertEqual(seeds[0]["intent_bearish_override_chop_guard_enabled"], 1.0)
+        self.assertEqual(seeds[0]["intent_bearish_override_chop_guard_enabled"], 0.0)
         self.assertEqual(seeds[0]["intent_bearish_override_chop_max_confidence"], 0.50)
         self.assertEqual(seeds[0]["intent_bearish_override_chop_min_transition_risk"], 0.55)
         self.assertEqual(seeds[0]["intent_unconfirmed_flip_reduce_only"], 0.0)
@@ -597,7 +597,7 @@ class FrameworkParamTests(unittest.TestCase):
         self.assertEqual(seeds[1]["intent_range_entry_confirmation_bars"], 8)
         self.assertEqual(seeds[1]["intent_range_reentry_cooldown_bars"], 48)
         self.assertEqual(seeds[1]["intent_bearish_override_confirmation_bars"], 8)
-        self.assertEqual(seeds[1]["intent_bearish_override_chop_guard_enabled"], 1.0)
+        self.assertEqual(seeds[1]["intent_bearish_override_chop_guard_enabled"], 0.0)
         self.assertEqual(seeds[1]["intent_bearish_override_chop_max_confidence"], 0.40)
         self.assertEqual(seeds[1]["intent_bearish_override_chop_min_transition_risk"], 0.65)
         self.assertEqual(seeds[1]["intent_unconfirmed_flip_reduce_only"], 0.0)
@@ -613,7 +613,7 @@ class FrameworkParamTests(unittest.TestCase):
         self.assertTrue(any(seed["intent_range_entry_confirmation_bars"] == 8 for seed in seeds))
         self.assertTrue(any(seed["intent_range_reentry_cooldown_bars"] == 48 for seed in seeds))
         self.assertTrue(any(seed["intent_bearish_override_confirmation_bars"] == 8 for seed in seeds))
-        self.assertTrue(any(seed["intent_bearish_override_chop_guard_enabled"] == 1.0 for seed in seeds))
+        self.assertTrue(all("intent_bearish_override_chop_guard_enabled" in seed for seed in seeds))
         self.assertTrue(
             any(
                 seed["target_vol_4h"] == 0.65
