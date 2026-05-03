@@ -389,6 +389,28 @@ class TestStrategyIntentConfirmation(unittest.TestCase):
         self.assertIsNotNone(confirmed)
         self.assertLess(confirmed.target_qty, 0.0)
 
+    def test_bearish_override_intent_uses_slower_confirmation(self):
+        bus = _strategy_bus()
+        engine = ARCStrategyEngine(
+            bus=bus,
+            config=ARCStrategyConfig(
+                intent_entry_confirmation_bars=2,
+                intent_bearish_override_confirmation_bars=4,
+            ),
+        )
+
+        for cutoff_time_ns in (1, 2, 3):
+            target = _target(qty=-1.0, cutoff_time_ns=cutoff_time_ns)
+            target.reason_codes.append("STATE_BEARISH_DIRECTION_OVERRIDE")
+            self.assertIsNone(engine._confirm_directional_intent(target))
+        confirmed = _target(qty=-1.0, cutoff_time_ns=4)
+        confirmed.reason_codes.append("STATE_BEARISH_DIRECTION_OVERRIDE")
+        confirmed = engine._confirm_directional_intent(confirmed)
+
+        self.assertIsNotNone(confirmed)
+        assert confirmed is not None
+        self.assertIn("INTENT_CONFIRMED_4_BARS", confirmed.reason_codes)
+
     def test_flat_intent_requires_configured_persistence(self):
         bus = _strategy_bus()
         audit_events = []
