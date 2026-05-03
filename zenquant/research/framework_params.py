@@ -377,6 +377,56 @@ def intent_churn_repair_param_grid(*, include_liquidation_toggles: bool = False)
     return grid
 
 
+def intent_churn_ablation_param_grid(*, include_liquidation_toggles: bool = False) -> dict[str, list[float]]:
+    """Train-only single-control strategy-intent ablation around a no-control edge anchor."""
+
+    grid: dict[str, list[float]] = {
+        "dd_step_1_long": [0.18],
+        "dd_step_1_short": [0.10],
+        "vpin_threshold": [0.10],
+        "vol_shock_threshold": [1.00],
+        "target_vol_4h": [0.80],
+        "max_leverage": [3.5],
+        "pyramid_initial_pct": [0.30],
+        "pyramid_add_pct": [0.30],
+        "pyramid_short_initial_pct": [0.15],
+        "pyramid_short_add_pct": [0.12],
+        "pyramid_spacing_atr": [1.00],
+        "exit_unwind_pct": [0.35],
+        "dca_max_adverse_atr": [2.5],
+        "dca_spacing_atr": [1.75],
+        "dca_size_decay": [0.90],
+        "flip_min_confidence": [0.70],
+        "range_time_decay_bars": [3, 5, 8, 12],
+        "preserve_capital_time_decay_bars": [1, 2, 3],
+        "trade_directional_confidence_floor": [0.50, 0.55, 0.60, 0.65],
+        "bearish_override_confidence_floor": [0.50, 0.55, 0.60, 0.65],
+        "exit_transition_risk": [0.80, 0.85, 0.90],
+        "hostile_behavior_router_enabled": [0.0],
+        "squeeze_flip_flatten_only_enabled": [0.0],
+        "squeeze_flip_cooldown_enabled": [0.0],
+        "squeeze_conditional_cooldown_enabled": [0.0],
+        "squeeze_flip_cooldown_bars": [1],
+        "squeeze_conditional_cooldown_drawdown_threshold": [0.06],
+        "squeeze_conditional_cooldown_toxic_only": [0.0],
+        "squeeze_cooldown_cancel_on_non_squeeze_enabled": [0.0],
+        "liquidation_data_enabled": [0.0],
+        "state_liquidation_overlay_enabled": [0.0],
+        "liq_risk_guard_enabled": [0.0],
+    }
+    if include_liquidation_toggles:
+        grid.update(
+            {
+                "liquidation_data_enabled": [0.0],
+                "state_liquidation_overlay_enabled": [0.0],
+                "liq_risk_guard_enabled": [0.0],
+                "liq_risk_guard_threshold": [1.8],
+                "liq_risk_guard_mult": [0.65],
+            }
+        )
+    return grid
+
+
 def binance_factor_weight_repair_param_grid(*, include_liquidation_toggles: bool = False) -> dict[str, list[float]]:
     """Train-only search space for audited Binance metrics/OI state-weight admission."""
 
@@ -631,6 +681,62 @@ def intent_churn_repair_seed_trials() -> list[dict[str, float]]:
             "trade_directional_confidence_floor": 0.65,
             "bearish_override_confidence_floor": 0.65,
             "exit_transition_risk": 0.90,
+        },
+    ]
+
+
+def intent_churn_ablation_seed_trials() -> list[dict[str, float]]:
+    base = {
+        **baseline_anchor_params(),
+        "dd_step_1_long": 0.18,
+        "dd_step_1_short": 0.10,
+        "vol_shock_threshold": 1.00,
+        "target_vol_4h": 0.80,
+        "max_leverage": 3.5,
+        "pyramid_short_initial_pct": 0.15,
+        "pyramid_short_add_pct": 0.12,
+        "pyramid_spacing_atr": 1.00,
+        "exit_unwind_pct": 0.35,
+        "dca_max_adverse_atr": 2.5,
+        "dca_spacing_atr": 1.75,
+        "dca_size_decay": 0.90,
+        "flip_min_confidence": 0.70,
+        "range_time_decay_bars": 3,
+        "preserve_capital_time_decay_bars": 1,
+        "trade_directional_confidence_floor": 0.50,
+        "bearish_override_confidence_floor": 0.50,
+        "exit_transition_risk": 0.80,
+        "hostile_behavior_router_enabled": 0.0,
+        "squeeze_flip_flatten_only_enabled": 0.0,
+        "squeeze_flip_cooldown_enabled": 0.0,
+        "squeeze_conditional_cooldown_enabled": 0.0,
+        "squeeze_flip_cooldown_bars": 1,
+        "squeeze_conditional_cooldown_drawdown_threshold": 0.06,
+        "squeeze_conditional_cooldown_toxic_only": 0.0,
+        "squeeze_cooldown_cancel_on_non_squeeze_enabled": 0.0,
+        "liquidation_data_enabled": 0.0,
+        "state_liquidation_overlay_enabled": 0.0,
+        "liq_risk_guard_enabled": 0.0,
+    }
+    return [
+        dict(base),
+        {**base, "range_time_decay_bars": 5},
+        {**base, "range_time_decay_bars": 8},
+        {**base, "range_time_decay_bars": 12},
+        {**base, "preserve_capital_time_decay_bars": 2},
+        {**base, "preserve_capital_time_decay_bars": 3},
+        {**base, "trade_directional_confidence_floor": 0.55},
+        {**base, "trade_directional_confidence_floor": 0.60},
+        {**base, "bearish_override_confidence_floor": 0.55},
+        {**base, "bearish_override_confidence_floor": 0.60},
+        {**base, "exit_transition_risk": 0.85},
+        {
+            **base,
+            "range_time_decay_bars": 5,
+            "preserve_capital_time_decay_bars": 2,
+            "trade_directional_confidence_floor": 0.55,
+            "bearish_override_confidence_floor": 0.55,
+            "exit_transition_risk": 0.85,
         },
     ]
 
@@ -968,6 +1074,8 @@ def param_grid_for_mode(
         return baseline_anchored_param_grid(include_liquidation_toggles=include_liquidation_toggles)
     if mode == "execution_inventory_rethink_train_only":
         return execution_inventory_rethink_param_grid(include_liquidation_toggles=include_liquidation_toggles)
+    if mode == "intent_churn_ablation_train_only":
+        return intent_churn_ablation_param_grid(include_liquidation_toggles=include_liquidation_toggles)
     if mode == "intent_churn_repair_train_only":
         return intent_churn_repair_param_grid(include_liquidation_toggles=include_liquidation_toggles)
     if mode == "binance_factor_weight_repair_train_only":
@@ -986,12 +1094,19 @@ def search_space_profile(
         "baseline_anchored_2023_08_hostile_repair",
     }
     execution_inventory_rethink = mode == "execution_inventory_rethink_train_only"
+    intent_churn_ablation = mode == "intent_churn_ablation_train_only"
     intent_churn_repair = mode == "intent_churn_repair_train_only"
     binance_factor_weight_repair = mode == "binance_factor_weight_repair_train_only"
     return {
         "profile": (
             mode
-            if baseline_anchored or execution_inventory_rethink or intent_churn_repair or binance_factor_weight_repair
+            if (
+                baseline_anchored
+                or execution_inventory_rethink
+                or intent_churn_ablation
+                or intent_churn_repair
+                or binance_factor_weight_repair
+            )
             else "execution_first_v2_correlation_constrained"
             if not include_liquidation_toggles
             else "execution_first_v2_correlation_constrained_liquidation"
@@ -1000,6 +1115,7 @@ def search_space_profile(
         "baseline_anchored_search": baseline_anchored,
         "baseline_anchor_variant": "paulwei_baseline",
         "execution_inventory_rethink_search": execution_inventory_rethink,
+        "intent_churn_ablation_search": intent_churn_ablation,
         "intent_churn_repair_search": intent_churn_repair,
         "binance_factor_weight_repair_search": binance_factor_weight_repair,
         "hostile_window_focus": "weak_window_2023_08" if mode == "baseline_anchored_2023_08_hostile_repair" else None,

@@ -29,6 +29,8 @@ from zenquant.research.framework_params import (
     execution_inventory_rethink_param_grid,
     execution_inventory_rethink_seed_trials,
     hostile_constraint_violations,
+    intent_churn_ablation_param_grid,
+    intent_churn_ablation_seed_trials,
     intent_churn_repair_param_grid,
     intent_churn_repair_seed_trials,
     is_hostile_aware_param_combo,
@@ -194,6 +196,28 @@ class FrameworkParamTests(unittest.TestCase):
         self.assertFalse(profile["baseline_anchored_search"])
         self.assertFalse(profile["execution_inventory_rethink_search"])
         self.assertTrue(profile["intent_churn_repair_search"])
+        self.assertFalse(profile["include_liquidation_toggles"])
+
+    def test_intent_churn_ablation_grid_keeps_single_control_anchor(self) -> None:
+        grid = intent_churn_ablation_param_grid()
+
+        self.assertEqual(grid["target_vol_4h"], [0.80])
+        self.assertEqual(grid["max_leverage"], [3.5])
+        self.assertEqual(grid["range_time_decay_bars"], [3, 5, 8, 12])
+        self.assertEqual(grid["preserve_capital_time_decay_bars"], [1, 2, 3])
+        self.assertEqual(grid["trade_directional_confidence_floor"][0], 0.50)
+        self.assertEqual(grid["bearish_override_confidence_floor"][0], 0.50)
+        self.assertEqual(grid["exit_transition_risk"][0], 0.80)
+        self.assertEqual(grid["hostile_behavior_router_enabled"], [0.0])
+        self.assertEqual(grid["liquidation_data_enabled"], [0.0])
+
+    def test_search_space_profile_marks_intent_churn_ablation_mode(self) -> None:
+        profile = search_space_profile(mode="intent_churn_ablation_train_only")
+
+        self.assertEqual(profile["profile"], "intent_churn_ablation_train_only")
+        self.assertEqual(profile["search_space_mode"], "intent_churn_ablation_train_only")
+        self.assertTrue(profile["intent_churn_ablation_search"])
+        self.assertFalse(profile["intent_churn_repair_search"])
         self.assertFalse(profile["include_liquidation_toggles"])
 
     def test_binance_factor_weight_repair_grid_trains_audited_state_weights(self) -> None:
@@ -428,6 +452,26 @@ class FrameworkParamTests(unittest.TestCase):
             self.assertEqual(seed["liquidation_data_enabled"], 0.0)
             self.assertEqual(seed["state_liquidation_overlay_enabled"], 0.0)
             self.assertEqual(seed["liq_risk_guard_enabled"], 0.0)
+            self.assertIsNotNone(strategy_config.playbook_config)
+            self.assertIsNotNone(strategy_config.exit_config)
+
+    def test_intent_churn_ablation_seed_trials_start_with_no_control_anchor(self) -> None:
+        seeds = intent_churn_ablation_seed_trials()
+
+        self.assertGreaterEqual(len(seeds), 12)
+        self.assertEqual(seeds[0]["range_time_decay_bars"], 3)
+        self.assertEqual(seeds[0]["preserve_capital_time_decay_bars"], 1)
+        self.assertEqual(seeds[0]["trade_directional_confidence_floor"], 0.50)
+        self.assertEqual(seeds[0]["bearish_override_confidence_floor"], 0.50)
+        self.assertEqual(seeds[0]["exit_transition_risk"], 0.80)
+        self.assertEqual(seeds[1]["range_time_decay_bars"], 5)
+        self.assertEqual(seeds[6]["trade_directional_confidence_floor"], 0.55)
+        self.assertEqual(seeds[8]["bearish_override_confidence_floor"], 0.55)
+        for seed in seeds:
+            build_execution_config(seed)
+            strategy_config = build_strategy_config(seed)
+            self.assertEqual(seed["hostile_behavior_router_enabled"], 0.0)
+            self.assertEqual(seed["liquidation_data_enabled"], 0.0)
             self.assertIsNotNone(strategy_config.playbook_config)
             self.assertIsNotNone(strategy_config.exit_config)
 

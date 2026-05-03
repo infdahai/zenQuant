@@ -157,6 +157,7 @@ def _smoke_primary_empty_skip_fallback_reason(
     train_only_modes = {
         "binance_factor_weight_repair_train_only",
         "execution_inventory_rethink_train_only",
+        "intent_churn_ablation_train_only",
         "intent_churn_repair_train_only",
         "baseline_anchored_train_only",
         "baseline_anchored_defensive_candidate_existence",
@@ -1096,6 +1097,7 @@ def main() -> None:
             "baseline_anchored_defensive_candidate_existence",
             "baseline_anchored_2023_08_hostile_repair",
             "execution_inventory_rethink_train_only",
+            "intent_churn_ablation_train_only",
             "intent_churn_repair_train_only",
             "binance_factor_weight_repair_train_only",
             "execution_first_v2_correlation_constrained",

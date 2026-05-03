@@ -50,6 +50,7 @@ from zenquant.research.framework_params import (
     build_signal_weight_overrides,
     build_strategy_config,
     execution_inventory_rethink_seed_trials,
+    intent_churn_ablation_seed_trials,
     intent_churn_repair_seed_trials,
     param_grid_for_mode,
     search_space_profile,
@@ -2561,6 +2562,8 @@ def run_optuna_search(
     effective_execution_timeframe = search_execution_timeframe or evaluator._base_config.execution_timeframe
     if evaluator.search_space_profile.get("binance_factor_weight_repair_search", False):
         resolved_seed_trials = binance_factor_weight_repair_seed_trials()[:n_trials]
+    elif evaluator.search_space_profile.get("intent_churn_ablation_search", False):
+        resolved_seed_trials = intent_churn_ablation_seed_trials()[:n_trials]
     elif evaluator.search_space_profile.get("intent_churn_repair_search", False):
         resolved_seed_trials = intent_churn_repair_seed_trials()[:n_trials]
     elif evaluator.search_space_profile.get("execution_inventory_rethink_search", False):
