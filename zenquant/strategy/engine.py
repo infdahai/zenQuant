@@ -85,6 +85,7 @@ class ARCStrategyConfig:
     intent_flip_confirmation_bars: int = 1
     intent_flat_confirmation_bars: int = 1
     intent_range_entry_confirmation_bars: int = 0
+    intent_range_reentry_cooldown_bars: int = 0
     intent_unconfirmed_flip_reduce_only: bool = False
     intent_add_signal_threshold: float = 0.0
     intent_add_confirmation_bars: int = 1
@@ -162,6 +163,7 @@ class ARCStrategyEngine:
         self._pending_4h_bars: dict[str, int] = {}  # bars waited since 4H target
         self._pending_1h_target: dict[str, TargetPosition] = {}
         self._pending_1h_bars: dict[str, int] = {}
+        self._range_reentry_cooldown_until_ns: dict[tuple[str, Timeframe], int] = {}
         self._intent_confirmation: dict[str, _IntentConfirmationState] = {}
         self._intent_add_confirmation: dict[tuple[str, Timeframe], _IntentConfirmationState] = {}
 
@@ -386,6 +388,13 @@ class ARCStrategyEngine:
         price = float(pack.values.get("last_price", 0) or 0)
         if price <= 0:
             return None
+        if not self._range_reentry_cooldown_ready(
+            pending=pending,
+            symbol=symbol,
+            timeframe=Timeframe.TF_1H,
+            cutoff_time_ns=state.cutoff_time_ns,
+        ):
+            return None
         if not self._range_entry_confirmation_ready(
             pending=pending,
             symbol=symbol,
@@ -458,6 +467,13 @@ class ARCStrategyEngine:
         pack = self._latest_packs.get((symbol, Timeframe.TF_1H))
         if pack is None:
             return
+        if not self._range_reentry_cooldown_ready(
+            pending=pending,
+            symbol=symbol,
+            timeframe=Timeframe.TF_5M,
+            cutoff_time_ns=state.cutoff_time_ns,
+        ):
+            return
         if not self._range_entry_confirmation_ready(
             pending=pending,
             symbol=symbol,
@@ -515,6 +531,14 @@ class ARCStrategyEngine:
             entry_score += 0.1
         if large_trade_count > 0 and pending_direction * float(pack.values.get("cvd_slope", 0.0) or 0.0) > 0:
             entry_score += 0.15
+
+        if not self._range_reentry_cooldown_ready(
+            pending=pending,
+            symbol=symbol,
+            timeframe=Timeframe.TF_5M,
+            cutoff_time_ns=state.cutoff_time_ns,
+        ):
+            return None
 
         if not self._range_entry_confirmation_ready(
             pending=pending,
@@ -782,6 +806,74 @@ class ARCStrategyEngine:
             return -1.0
         return 0.0
 
+    def _is_range_directional_target(self, pending: TargetPosition) -> bool:
+        if self._target_direction(pending.target_qty) == 0.0:
+            return False
+        return "PLAYBOOK_RANGE_LIGHT" in pending.reason_codes or "REGIME_RANGE" in pending.reason_codes
+
+    def _arm_range_reentry_cooldown_if_needed(
+        self,
+        *,
+        symbol: str,
+        timeframe: Timeframe,
+        cutoff_time_ns: int,
+        playbook: PlaybookSelection,
+        exit_decision: ExitDecision,
+    ) -> None:
+        cooldown_bars = max(0, int(self._config.intent_range_reentry_cooldown_bars))
+        if cooldown_bars <= 0:
+            return
+        if playbook.playbook_id != "RANGE_LIGHT" or "EXIT_TRAILING_STOP" not in exit_decision.reason_codes:
+            return
+        bar_ns = timeframe.seconds * 1_000_000_000
+        cooldown_until_ns = cutoff_time_ns + (cooldown_bars * bar_ns)
+        key = (symbol, timeframe)
+        self._range_reentry_cooldown_until_ns[key] = max(
+            cooldown_until_ns,
+            self._range_reentry_cooldown_until_ns.get(key, 0),
+        )
+        self._bus.publish(
+            f"strategy.intent_range_reentry_cooldown.{timeframe.value}.{symbol}",
+            {
+                "symbol": symbol,
+                "timeframe": timeframe.value,
+                "cutoff_time_ns": cutoff_time_ns,
+                "cooldown_bars": cooldown_bars,
+                "cooldown_until_ns": self._range_reentry_cooldown_until_ns[key],
+                "reason": "INTENT_RANGE_REENTRY_COOLDOWN_ARMED",
+            },
+        )
+
+    def _range_reentry_cooldown_ready(
+        self,
+        *,
+        pending: TargetPosition,
+        symbol: str,
+        timeframe: Timeframe,
+        cutoff_time_ns: int,
+    ) -> bool:
+        if not self._is_range_directional_target(pending):
+            return True
+        key = (symbol, timeframe)
+        cooldown_until_ns = self._range_reentry_cooldown_until_ns.get(key, 0)
+        if cooldown_until_ns <= cutoff_time_ns:
+            self._range_reentry_cooldown_until_ns.pop(key, None)
+            return True
+        bar_ns = timeframe.seconds * 1_000_000_000
+        remaining_bars = max(1, int((cooldown_until_ns - cutoff_time_ns + bar_ns - 1) // bar_ns))
+        self._bus.publish(
+            f"strategy.intent_range_reentry_cooldown.{timeframe.value}.{symbol}",
+            {
+                "symbol": symbol,
+                "timeframe": timeframe.value,
+                "cutoff_time_ns": cutoff_time_ns,
+                "cooldown_until_ns": cooldown_until_ns,
+                "remaining_bars": remaining_bars,
+                "reason": "INTENT_RANGE_REENTRY_COOLDOWN_PENDING",
+            },
+        )
+        return False
+
     def _range_entry_confirmation_ready(
         self,
         *,
@@ -794,11 +886,9 @@ class ARCStrategyEngine:
         required_bars = max(0, int(self._config.intent_range_entry_confirmation_bars))
         if required_bars <= 0:
             return True
+        if not self._is_range_directional_target(pending):
+            return True
         pending_direction = self._target_direction(pending.target_qty)
-        if pending_direction == 0.0:
-            return True
-        if "PLAYBOOK_RANGE_LIGHT" not in pending.reason_codes and "REGIME_RANGE" not in pending.reason_codes:
-            return True
 
         bars_seen = bars_waited + 1
         if bars_seen >= required_bars:
@@ -1274,6 +1364,13 @@ class ARCStrategyEngine:
             if exit_decision is not None:
                 self._publish_exit(exit_decision)
                 if exit_decision.should_exit():
+                    self._arm_range_reentry_cooldown_if_needed(
+                        symbol=pack.symbol,
+                        timeframe=pack.timeframe,
+                        cutoff_time_ns=pack.cutoff_time_ns,
+                        playbook=playbook,
+                        exit_decision=exit_decision,
+                    )
                     return self._build_exit_target(
                         pack=pack,
                         position=position,
@@ -1496,6 +1593,13 @@ class ARCStrategyEngine:
         if exit_decision is not None:
             self._publish_exit(exit_decision)
             if exit_decision.should_exit():
+                self._arm_range_reentry_cooldown_if_needed(
+                    symbol=pack.symbol,
+                    timeframe=pack.timeframe,
+                    cutoff_time_ns=pack.cutoff_time_ns,
+                    playbook=playbook,
+                    exit_decision=exit_decision,
+                )
                 return self._build_exit_target(
                     pack=pack,
                     position=position,
