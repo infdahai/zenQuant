@@ -14,6 +14,11 @@ MAX_FEE_DRAG_RELATIVE_INCREASE = 1.15
 MAX_FEE_DRAG_ABSOLUTE_INCREASE = 0.002
 MAX_TURNOVER_RELATIVE_INCREASE = 1.20
 MAX_TURNOVER_ABSOLUTE_INCREASE = 100.0
+TRAIN_TRUTH_DAY_FALLBACK = 1461.0
+MAX_FEE_DRAG_PCT_ABSOLUTE = 0.025
+MAX_TRADE_COUNT_PER_DAY = 1.50
+MIN_PROFIT_FACTOR_AFTER_FEE = 1.05
+MIN_NET_PNL_PER_TRADE_RELATIVE = 0.80
 _FORBIDDEN_SELECTION_PREFIXES = ("dev", "test")
 
 
@@ -29,6 +34,31 @@ class RegimeBucketSpec:
 
 def _safe_float(value: Any) -> float:
     return float(value or 0.0)
+
+
+def _trade_count_per_day(metrics: dict[str, Any], trade_count: float) -> float:
+    explicit = _safe_float(metrics.get("trade_count_per_day"))
+    if explicit > 0:
+        return explicit
+    for key in ("duration_days", "elapsed_days", "window_days", "train_days"):
+        days = _safe_float(metrics.get(key))
+        if days > 0:
+            return trade_count / days
+    return trade_count / TRAIN_TRUTH_DAY_FALLBACK if trade_count > 0 else 0.0
+
+
+def _net_pnl_per_trade(metrics: dict[str, Any], net_pnl: float, trade_count: float) -> float:
+    explicit = metrics.get("net_pnl_per_trade")
+    if explicit is not None:
+        return _safe_float(explicit)
+    return net_pnl / trade_count if trade_count > 0 else 0.0
+
+
+def _profit_factor_after_fee(metrics: dict[str, Any], profit_factor: float, fee_drag_pct: float) -> float:
+    explicit = metrics.get("profit_factor_after_fee")
+    if explicit is not None:
+        return _safe_float(explicit)
+    return profit_factor * max(0.0, 1.0 - fee_drag_pct)
 
 
 def _assert_train_only_metric_keys(metrics: dict[str, Any]) -> None:
@@ -364,25 +394,67 @@ def score_regime_objective_candidate_generation(
     sharpe = _safe_float(train_metrics.get("sharpe"))
     profit_factor = _safe_float(train_metrics.get("profit_factor"))
     drawdown = _safe_float(train_metrics.get("max_drawdown"))
+    net_pnl = _safe_float(train_metrics.get("net_pnl", train_metrics.get("pnl")))
     turnover = _safe_float(train_metrics.get("turnover_per_day"))
     trade_count = _safe_float(train_metrics.get("trade_count"))
     fee_drag = _safe_float(train_metrics.get("fee_drag_pct"))
+    net_pnl_per_trade = _net_pnl_per_trade(train_metrics, net_pnl, trade_count)
+    trade_count_per_day = _trade_count_per_day(train_metrics, trade_count)
+    profit_factor_after_fee = _profit_factor_after_fee(train_metrics, profit_factor, fee_drag)
+    profit_factor_after_fee_present = "profit_factor" in train_metrics or "profit_factor_after_fee" in train_metrics
     baseline_turnover = _safe_float(baseline.get("turnover_per_day"))
     baseline_trade_count = _safe_float(baseline.get("trade_count"))
     baseline_fee_drag = _safe_float(baseline.get("fee_drag_pct"))
+    baseline_net_pnl = _safe_float(baseline.get("net_pnl", baseline.get("pnl")))
+    baseline_net_pnl_per_trade = _net_pnl_per_trade(baseline, baseline_net_pnl, baseline_trade_count)
+    baseline_trade_count_per_day = _trade_count_per_day(baseline, baseline_trade_count)
+    baseline_profit_factor = _safe_float(baseline.get("profit_factor"))
+    baseline_profit_factor_after_fee = _profit_factor_after_fee(
+        baseline,
+        baseline_profit_factor,
+        baseline_fee_drag,
+    )
     turnover_penalty = 0.0
     trade_count_penalty = 0.0
     fee_drag_penalty = 0.0
+    net_pnl_per_trade_penalty = 0.0
+    trade_count_per_day_penalty = max(0.0, (trade_count_per_day - MAX_TRADE_COUNT_PER_DAY) / MAX_TRADE_COUNT_PER_DAY)
+    profit_factor_after_fee_floor = (
+        max(MIN_PROFIT_FACTOR_AFTER_FEE, baseline_profit_factor_after_fee * 0.95)
+        if baseline_profit_factor_after_fee > 0
+        else MIN_PROFIT_FACTOR_AFTER_FEE
+    )
+    profit_factor_after_fee_penalty = (
+        max(
+            0.0,
+            (profit_factor_after_fee_floor - profit_factor_after_fee) / max(0.1, profit_factor_after_fee_floor),
+        )
+        if profit_factor_after_fee_present
+        else 0.0
+    )
     if baseline_turnover > 0:
         turnover_penalty = max(0.0, (turnover - baseline_turnover) / max(1.0, baseline_turnover))
     elif baseline_trade_count > 0:
         trade_count_penalty = max(0.0, (trade_count - baseline_trade_count) / max(1.0, baseline_trade_count))
     else:
         trade_count_penalty = max(0.0, (trade_count - 4200.0) / 500.0)
+    if baseline_trade_count_per_day > 0:
+        trade_count_per_day_penalty = max(
+            trade_count_per_day_penalty,
+            (trade_count_per_day - baseline_trade_count_per_day * 1.10) / max(0.01, baseline_trade_count_per_day),
+        )
     if baseline_fee_drag > 0:
         fee_drag_penalty = max(0.0, (fee_drag - baseline_fee_drag) / max(0.001, baseline_fee_drag))
     else:
         fee_drag_penalty = max(0.0, (fee_drag - 0.02) / 0.01)
+    if baseline_net_pnl_per_trade > 0:
+        net_pnl_per_trade_penalty = max(
+            0.0,
+            ((baseline_net_pnl_per_trade * MIN_NET_PNL_PER_TRADE_RELATIVE) - net_pnl_per_trade)
+            / max(1.0, abs(baseline_net_pnl_per_trade)),
+        )
+    elif trade_count > 0 and net_pnl_per_trade <= 0:
+        net_pnl_per_trade_penalty = 1.0
 
     bucket_blockers: list[str] = []
     bucket_metrics = dict(train_metrics.get("train_bucket_metrics") or {})
@@ -410,17 +482,29 @@ def score_regime_objective_candidate_generation(
         bucket_blockers.append("train_turnover_structurally_worse")
     if trade_count_penalty > 0.20:
         bucket_blockers.append("train_trade_count_churn_worse")
-    if fee_drag_penalty > 0.15:
+    if trade_count_per_day_penalty > 0.0:
+        bucket_blockers.append("train_trade_count_per_day_cap_exceeded")
+    if fee_drag_penalty > 0.15 or fee_drag > MAX_FEE_DRAG_PCT_ABSOLUTE:
         bucket_blockers.append("train_fee_drag_structurally_worse")
+    if fee_drag > MAX_FEE_DRAG_PCT_ABSOLUTE:
+        bucket_blockers.append("train_fee_drag_cap_exceeded")
+    if net_pnl_per_trade_penalty > 0.0:
+        bucket_blockers.append("train_net_pnl_per_trade_inefficient")
+    if profit_factor_after_fee_penalty > 0.0:
+        bucket_blockers.append("train_profit_factor_after_fee_weak")
 
     regime_objective_score = (
         0.55 * sharpe
         + 0.20 * profit_factor
+        + 0.10 * profit_factor_after_fee
         + 0.25 * bucket_score
         - 1.50 * drawdown
         - 0.80 * turnover_penalty
         - 0.80 * trade_count_penalty
         - 0.80 * fee_drag_penalty
+        - 0.70 * net_pnl_per_trade_penalty
+        - 0.75 * trade_count_per_day_penalty
+        - 0.75 * profit_factor_after_fee_penalty
     )
     return {
         "regime_objective_score": round(regime_objective_score, 6),
@@ -428,6 +512,18 @@ def score_regime_objective_candidate_generation(
         "turnover_penalty": round(turnover_penalty, 6),
         "trade_count_penalty": round(trade_count_penalty, 6),
         "fee_drag_penalty": round(fee_drag_penalty, 6),
+        "net_pnl_per_trade": round(net_pnl_per_trade, 6),
+        "net_pnl_per_trade_penalty": round(net_pnl_per_trade_penalty, 6),
+        "trade_count_per_day": round(trade_count_per_day, 6),
+        "trade_count_per_day_penalty": round(trade_count_per_day_penalty, 6),
+        "profit_factor_after_fee": round(profit_factor_after_fee, 6),
+        "profit_factor_after_fee_penalty": round(profit_factor_after_fee_penalty, 6),
+        "fee_efficiency_thresholds": {
+            "max_fee_drag_pct_absolute": MAX_FEE_DRAG_PCT_ABSOLUTE,
+            "max_trade_count_per_day": MAX_TRADE_COUNT_PER_DAY,
+            "min_profit_factor_after_fee": MIN_PROFIT_FACTOR_AFTER_FEE,
+            "min_net_pnl_per_trade_relative": MIN_NET_PNL_PER_TRADE_RELATIVE,
+        },
         "allow_dev_diagnostic_review": not bucket_blockers,
         "bucket_metrics_available": bool(bucket_metrics),
         "selection_scope": "train_only",
@@ -456,6 +552,9 @@ def compare_regime_objective_candidate_rankings(candidates: list[dict[str, Any]]
                 "bucket_blockers": list(regime_score["bucket_blockers"]),
                 "turnover_penalty": regime_score["turnover_penalty"],
                 "fee_drag_penalty": regime_score["fee_drag_penalty"],
+                "net_pnl_per_trade": regime_score["net_pnl_per_trade"],
+                "trade_count_per_day": regime_score["trade_count_per_day"],
+                "profit_factor_after_fee": regime_score["profit_factor_after_fee"],
             }
         )
 

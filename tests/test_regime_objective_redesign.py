@@ -259,6 +259,32 @@ class RegimeObjectiveRedesignTests(unittest.TestCase):
         self.assertGreater(score["fee_drag_penalty"], 0.15)
         self.assertIn("train_fee_drag_structurally_worse", score["bucket_blockers"])
 
+    def test_candidate_generation_scorer_blocks_hard_fee_efficiency_failures(self) -> None:
+        score = score_regime_objective_candidate_generation(
+            {
+                "sharpe": 2.2,
+                "profit_factor": 1.0,
+                "net_pnl": 100.0,
+                "max_drawdown": 0.08,
+                "trade_count": 3000,
+                "fee_drag_pct": 0.03,
+            },
+            baseline_metrics={
+                "profit_factor": 1.3,
+                "net_pnl": 1200.0,
+                "trade_count": 120,
+                "fee_drag_pct": 0.01,
+            },
+        )
+
+        self.assertFalse(score["allow_dev_diagnostic_review"])
+        self.assertIn("train_fee_drag_cap_exceeded", score["bucket_blockers"])
+        self.assertIn("train_trade_count_per_day_cap_exceeded", score["bucket_blockers"])
+        self.assertIn("train_net_pnl_per_trade_inefficient", score["bucket_blockers"])
+        self.assertIn("train_profit_factor_after_fee_weak", score["bucket_blockers"])
+        self.assertLess(score["profit_factor_after_fee"], 1.05)
+        self.assertGreater(score["trade_count_per_day"], 1.5)
+
     def test_candidate_generation_ranking_compares_original_and_regime_order(self) -> None:
         candidates = [
             {
