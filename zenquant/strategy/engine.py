@@ -86,6 +86,7 @@ class ARCStrategyConfig:
     intent_flat_confirmation_bars: int = 1
     intent_range_entry_confirmation_bars: int = 0
     intent_range_reentry_cooldown_bars: int = 0
+    intent_bearish_override_confirmation_bars: int = 0
     intent_unconfirmed_flip_reduce_only: bool = False
     intent_add_signal_threshold: float = 0.0
     intent_add_confirmation_bars: int = 1
@@ -679,6 +680,8 @@ class ARCStrategyEngine:
             if current_direction != 0.0 and current_direction != direction
             else self._config.intent_entry_confirmation_bars
         )
+        if "STATE_BEARISH_DIRECTION_OVERRIDE" in target.reason_codes:
+            required_bars = max(required_bars, self._config.intent_bearish_override_confirmation_bars)
         required_bars = max(1, int(required_bars))
         if required_bars <= 1:
             self._intent_confirmation.pop(target.symbol, None)
