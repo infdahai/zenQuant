@@ -25,6 +25,7 @@ MAX_POSITION_SWITCH_RELATIVE_INCREASE = 1.15
 MAX_FLIP_REDUCE_FEE_DRAG_PCT_ABSOLUTE = 0.016
 MAX_FLIP_REDUCE_FEE_DRAG_RELATIVE_INCREASE = 1.15
 MIN_NET_PNL_PER_POSITION_SWITCH_RELATIVE = 0.75
+TRAIN_DRAWDOWN_PREFERRED_BAND = 0.06
 _FORBIDDEN_SELECTION_PREFIXES = ("dev", "test")
 
 
@@ -494,6 +495,10 @@ def score_regime_objective_candidate_generation(
     mature_position_switch_penalty = 0.0
     flip_reduce_fee_drag_penalty = 0.0
     position_switch_efficiency_penalty = 0.0
+    drawdown_preferred_band_penalty = max(
+        0.0,
+        (drawdown - TRAIN_DRAWDOWN_PREFERRED_BAND) / max(0.01, TRAIN_DRAWDOWN_PREFERRED_BAND),
+    )
     trade_count_per_day_penalty = max(0.0, (trade_count_per_day - MAX_TRADE_COUNT_PER_DAY) / MAX_TRADE_COUNT_PER_DAY)
     profit_factor_after_fee_floor = (
         max(MIN_PROFIT_FACTOR_AFTER_FEE, baseline_profit_factor_after_fee * 0.95)
@@ -617,6 +622,7 @@ def score_regime_objective_candidate_generation(
         + 0.25 * bucket_score
         + time_leverage_bonus
         - 1.50 * drawdown
+        - 0.60 * drawdown_preferred_band_penalty
         - 0.80 * turnover_penalty
         - 0.80 * trade_count_penalty
         - 0.80 * fee_drag_penalty
@@ -638,6 +644,8 @@ def score_regime_objective_candidate_generation(
         "net_pnl_per_trade_penalty": round(net_pnl_per_trade_penalty, 6),
         "trade_count_per_day": round(trade_count_per_day, 6),
         "trade_count_per_day_penalty": round(trade_count_per_day_penalty, 6),
+        "drawdown_preferred_band": TRAIN_DRAWDOWN_PREFERRED_BAND,
+        "drawdown_preferred_band_penalty": round(drawdown_preferred_band_penalty, 6),
         "profit_factor_after_fee": round(profit_factor_after_fee, 6),
         "profit_factor_after_fee_penalty": round(profit_factor_after_fee_penalty, 6),
         "position_switches_per_30d": round(position_switches_per_30d, 6),
