@@ -6,6 +6,7 @@ import unittest
 from pathlib import Path
 
 from zenquant.domain import (
+    ExitDecision,
     IndicatorCoverage,
     IndicatorPack,
     MarketState,
@@ -467,6 +468,77 @@ class TestStrategyIntentConfirmation(unittest.TestCase):
         self.assertLess(target.target_qty, 0.0)
         self.assertIn("INTENT_RANGE_ENTRY_CONFIRMED_6_BARS", target.reason_codes)
         self.assertIn("1H_ENTRY_OPTIMIZED", target.reason_codes)
+
+    def test_range_trailing_exit_arms_reentry_cooldown(self):
+        bus = _strategy_bus()
+        audit_events = []
+        bus.subscribe(
+            "strategy.intent_range_reentry_cooldown.>",
+            lambda _subject, payload: audit_events.append(payload),
+        )
+        engine = ARCStrategyEngine(
+            bus=bus,
+            config=ARCStrategyConfig(intent_range_reentry_cooldown_bars=3),
+        )
+        engine._arm_range_reentry_cooldown_if_needed(
+            symbol="BTCUSDT_PERP",
+            timeframe=Timeframe.TF_5M,
+            cutoff_time_ns=10,
+            playbook=_playbook(playbook_id="RANGE_LIGHT"),
+            exit_decision=ExitDecision(
+                symbol="BTCUSDT_PERP",
+                timeframe=Timeframe.TF_5M,
+                cutoff_time_ns=10,
+                exit_type="TRAILING",
+                exit_urgency="IMMEDIATE",
+                target_reduction_pct=1.0,
+                stop_price=60000.0,
+                reason_code="TRAILING_STOP_BREACH",
+                reason_detail="test",
+                reason_codes=["EXIT_TRAILING_STOP"],
+            ),
+        )
+
+        cooldown_until_ns = 10 + (3 * Timeframe.TF_5M.seconds * 1_000_000_000)
+        self.assertEqual(engine._range_reentry_cooldown_until_ns[("BTCUSDT_PERP", Timeframe.TF_5M)], cooldown_until_ns)
+        self.assertEqual(audit_events[-1]["reason"], "INTENT_RANGE_REENTRY_COOLDOWN_ARMED")
+        self.assertEqual(audit_events[-1]["cooldown_bars"], 3)
+
+    def test_range_reentry_cooldown_blocks_pending_entry_until_expiry(self):
+        bus = _strategy_bus()
+        audit_events = []
+        bus.subscribe(
+            "strategy.intent_range_reentry_cooldown.>",
+            lambda _subject, payload: audit_events.append(payload),
+        )
+        engine = ARCStrategyEngine(
+            bus=bus,
+            config=ARCStrategyConfig(intent_range_reentry_cooldown_bars=3),
+        )
+        bar_ns = Timeframe.TF_5M.seconds * 1_000_000_000
+        cooldown_until_ns = 10 + (3 * bar_ns)
+        engine._range_reentry_cooldown_until_ns[("BTCUSDT_PERP", Timeframe.TF_5M)] = cooldown_until_ns
+        pending = _target(qty=1.0, cutoff_time_ns=10)
+        pending.reason_codes[:] = ["REGIME_RANGE", "PLAYBOOK_RANGE_LIGHT", "TREND_LONG"]
+
+        blocked = engine._range_reentry_cooldown_ready(
+            pending=pending,
+            symbol="BTCUSDT_PERP",
+            timeframe=Timeframe.TF_5M,
+            cutoff_time_ns=10,
+        )
+        ready = engine._range_reentry_cooldown_ready(
+            pending=pending,
+            symbol="BTCUSDT_PERP",
+            timeframe=Timeframe.TF_5M,
+            cutoff_time_ns=cooldown_until_ns,
+        )
+
+        self.assertFalse(blocked)
+        self.assertTrue(ready)
+        self.assertNotIn(("BTCUSDT_PERP", Timeframe.TF_5M), engine._range_reentry_cooldown_until_ns)
+        self.assertEqual(audit_events[-1]["reason"], "INTENT_RANGE_REENTRY_COOLDOWN_PENDING")
+        self.assertEqual(audit_events[-1]["remaining_bars"], 3)
 
     def test_pending_lower_timeframe_target_is_cleared_when_confirmation_waits(self):
         bus = _strategy_bus()
