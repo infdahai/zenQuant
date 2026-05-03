@@ -351,6 +351,7 @@ class CampaignConfig:
     research_compute_mode: str = "authoritative"
     enable_early_stop: bool = False
     trial_runtime_budget_s: float | None = None
+    early_stop_fee_drag_buffer: float = 2.0
 
 
 # ── Results ───────────────────────────────────────────────────
@@ -422,6 +423,7 @@ def _run_backtest_worker(args: tuple[Any, ...]) -> tuple[dict[str, Any], dict[st
     perturbation_dict = args[10] if len(args) > 10 else None
     research_compute_mode = str(args[11]) if len(args) > 11 else "authoritative"
     enable_early_stop = bool(args[12]) if len(args) > 12 else False
+    early_stop_fee_drag_buffer = float(args[14]) if len(args) > 14 and args[14] is not None else 2.0
     resolved_execution_timeframe = Timeframe(execution_timeframe)
     strategy_config = _build_strategy_config(params, execution_timeframe=resolved_execution_timeframe)
     risk_config = _shared_build_risk_config(params)
@@ -484,6 +486,7 @@ def _run_backtest_worker(args: tuple[Any, ...]) -> tuple[dict[str, Any], dict[st
         profiling_enabled=True,
         early_stop_enabled=enable_early_stop and research_compute_mode == "lightweight_train_search",
         early_stop_min_trade_count=20,
+        early_stop_fee_drag_buffer=early_stop_fee_drag_buffer,
         trial_runtime_budget_s=float(args[13]) if len(args) > 13 and args[13] is not None else None,
         perturbation=perturbation,
         replay_context=replay_context,
@@ -746,6 +749,7 @@ class Campaign:
                 self._config.research_compute_mode,
                 self._config.enable_early_stop,
                 self._config.trial_runtime_budget_s,
+                self._config.early_stop_fee_drag_buffer,
             )
             for params in param_grid
         ]
@@ -885,6 +889,7 @@ class Campaign:
                 self._config.research_compute_mode,
                 self._config.enable_early_stop,
                 self._config.trial_runtime_budget_s,
+                self._config.early_stop_fee_drag_buffer,
             )
             if self._config.trial_timeout_s is not None:
                 pool: ProcessPoolExecutor | None = None
@@ -1060,6 +1065,7 @@ class Campaign:
                             self._config.research_compute_mode,
                             self._config.enable_early_stop,
                             self._config.trial_runtime_budget_s,
+                            self._config.early_stop_fee_drag_buffer,
                         )
                         future = pool.submit(_run_backtest_worker, args)
                         pending[future] = (trial, trial_number, params, started_trial_at)

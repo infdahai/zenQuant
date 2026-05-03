@@ -1920,6 +1920,34 @@ class SearchReportSerializationTests(unittest.TestCase):
         self.assertEqual(config.stage1_target_inflight, 6)
         self.assertEqual(config.stage1_batch_size, 4)
         self.assertEqual(config.min_completed_trials, 5)
+        self.assertEqual(config.early_stop_fee_drag_buffer, 2.0)
+
+    def test_run_optuna_search_tightens_fee_drag_stop_for_fee_repair_modes(self) -> None:
+        @dataclass
+        class FakeSweep:
+            total_combinations: int
+            results: list[dict]
+            top_n: list[dict]
+            runtime_s: float
+
+        with patch(
+            "zenquant.research.framework_search.run_search_stage",
+            return_value=FakeSweep(
+                total_combinations=1,
+                results=[],
+                top_n=[{"params": {"w_momentum": 0.45}, "metrics": {"sharpe": 1.2, "score": 1.2}}],
+                runtime_s=0.1,
+            ),
+        ) as run_stage:
+            evaluator = FrameworkEvaluator(
+                HistoricalBacktestConfig(),
+                split_spec=default_btc_split_spec(),
+                search_space_mode="intent_churn_ablation_train_only",
+            )
+            run_optuna_search(evaluator, n_trials=5)
+
+        config = run_stage.call_args.args[0]
+        self.assertEqual(config.early_stop_fee_drag_buffer, 1.25)
 
     def test_run_optuna_search_treats_pre_2020_spot_as_context_only(self) -> None:
         @dataclass

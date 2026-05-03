@@ -399,7 +399,10 @@ class TestTimeoutCleanup(unittest.TestCase):
         def fake_time():
             return next(clock_values)
 
+        seen_fee_buffers: list[float] = []
+
         def fake_worker(args):
+            seen_fee_buffers.append(float(args[14]))
             return args[0], {
                 "sharpe": 1.0,
                 "sortino": 1.0,
@@ -438,6 +441,7 @@ class TestTimeoutCleanup(unittest.TestCase):
             stage1_target_inflight=1,
             stage_wall_clock_budget_s=10.0,
             min_completed_trials=1,
+            early_stop_fee_drag_buffer=1.25,
         )
 
         with (
@@ -452,6 +456,8 @@ class TestTimeoutCleanup(unittest.TestCase):
         self.assertEqual(sweep.budget_mode, "wall_clock_primary")
         self.assertEqual(sweep.total_combinations, 3)
         self.assertGreaterEqual(len(sweep.results), 1)
+        self.assertTrue(seen_fee_buffers)
+        self.assertTrue(all(buffer == 1.25 for buffer in seen_fee_buffers))
 
     def test_bayesian_stage_handles_all_pruned_trials_without_crashing(self) -> None:
         spec = default_btc_split_spec()

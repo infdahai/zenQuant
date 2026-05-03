@@ -2578,6 +2578,14 @@ def run_optuna_search(
         resolved_seed_trials,
         search_grid=evaluator.search_param_grid,
     )[:n_trials]
+    strict_train_fee_stop = any(
+        bool(evaluator.search_space_profile.get(key, False))
+        for key in (
+            "intent_churn_ablation_search",
+            "intent_churn_repair_search",
+            "binance_factor_weight_repair_search",
+        )
+    )
     worker_config = CampaignConfig(
         data_root=evaluator._base_config.root_dir,
         symbol=evaluator._base_config.symbol,
@@ -2608,6 +2616,7 @@ def run_optuna_search(
         research_compute_mode="lightweight_train_search",
         enable_early_stop=True,
         trial_runtime_budget_s=90.0 if effective_execution_timeframe == Timeframe.TF_5M else 60.0,
+        early_stop_fee_drag_buffer=1.25 if strict_train_fee_stop else 2.0,
     )
     sweep = run_search_stage(worker_config)
     ranking_started_at = datetime.now(UTC).timestamp()
