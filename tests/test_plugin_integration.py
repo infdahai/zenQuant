@@ -515,6 +515,66 @@ class TestStrategyIntentConfirmation(unittest.TestCase):
         self.assertEqual(leverage, 0.9)
         self.assertIn("TIME_LEVERAGE_FLIP_CONFIRMED", reason_codes)
 
+    def test_time_leverage_size_hysteresis_holds_small_aligned_reduce(self):
+        bus = _strategy_bus()
+        audit_events = []
+        bus.subscribe(
+            "strategy.time_leverage_size_hysteresis.>", lambda _subject, payload: audit_events.append(payload)
+        )
+        engine = ARCStrategyEngine(
+            bus=bus,
+            config=ARCStrategyConfig(
+                intent_time_leverage_size_hysteresis_enabled=True,
+                intent_time_leverage_reduce_deadband_pct=0.20,
+            ),
+        )
+        engine._positions[("BTCUSDT_PERP", Timeframe.TF_4H)] = _position(direction=1.0)
+        reason_codes: list[str] = []
+
+        qty, leverage = engine._apply_time_leverage_size_hysteresis(
+            symbol="BTCUSDT_PERP",
+            timeframe=Timeframe.TF_4H,
+            target_qty=0.85,
+            target_leverage=0.51,
+            price=60000.0,
+            state=_state(directional_state="UPTREND"),
+            reduce_only=False,
+            reason_codes=reason_codes,
+        )
+
+        self.assertEqual(qty, 1.0)
+        self.assertAlmostEqual(leverage, 0.6)
+        self.assertIn("TIME_LEVERAGE_SIZE_HELD", reason_codes)
+        self.assertIn("TIME_LEVERAGE_REDUCE_DEADBAND", reason_codes)
+        self.assertEqual(audit_events[-1]["resize"], "reduce")
+
+    def test_time_leverage_size_hysteresis_allows_reduce_when_trend_breaks(self):
+        bus = _strategy_bus()
+        engine = ARCStrategyEngine(
+            bus=bus,
+            config=ARCStrategyConfig(
+                intent_time_leverage_size_hysteresis_enabled=True,
+                intent_time_leverage_reduce_deadband_pct=0.20,
+            ),
+        )
+        engine._positions[("BTCUSDT_PERP", Timeframe.TF_4H)] = _position(direction=1.0)
+        reason_codes: list[str] = []
+
+        qty, leverage = engine._apply_time_leverage_size_hysteresis(
+            symbol="BTCUSDT_PERP",
+            timeframe=Timeframe.TF_4H,
+            target_qty=0.85,
+            target_leverage=0.51,
+            price=60000.0,
+            state=_state(directional_state="DOWNTREND"),
+            reduce_only=False,
+            reason_codes=reason_codes,
+        )
+
+        self.assertEqual(qty, 0.85)
+        self.assertEqual(leverage, 0.51)
+        self.assertNotIn("TIME_LEVERAGE_SIZE_HELD", reason_codes)
+
 
 class TestLegacyPathUnchanged(unittest.TestCase):
     """Verify that engine without plugins uses legacy path."""
