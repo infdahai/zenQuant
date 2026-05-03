@@ -201,8 +201,8 @@ class FrameworkParamTests(unittest.TestCase):
     def test_intent_churn_ablation_grid_keeps_single_control_anchor(self) -> None:
         grid = intent_churn_ablation_param_grid()
 
-        self.assertEqual(grid["target_vol_4h"], [0.80])
-        self.assertEqual(grid["max_leverage"], [3.5])
+        self.assertEqual(grid["target_vol_4h"], [0.50, 0.65, 0.80])
+        self.assertEqual(grid["max_leverage"], [2.5, 3.0, 3.5])
         self.assertEqual(grid["range_time_decay_bars"], [3, 5, 8, 12])
         self.assertEqual(grid["preserve_capital_time_decay_bars"], [1, 2, 3])
         self.assertEqual(grid["trade_directional_confidence_floor"][0], 0.50)
@@ -476,8 +476,9 @@ class FrameworkParamTests(unittest.TestCase):
         self.assertTrue(any(seed["trade_directional_confidence_floor"] == 0.55 for seed in seeds))
         self.assertTrue(any(seed["bearish_override_confidence_floor"] == 0.55 for seed in seeds))
         self.assertTrue(any(seed["direction_signal_threshold"] == 0.35 for seed in seeds))
-        self.assertTrue(any(seed["intent_flip_confirmation_bars"] == 2 for seed in seeds))
-        self.assertTrue(any(seed["intent_unconfirmed_flip_reduce_only"] == 1.0 for seed in seeds))
+        self.assertTrue(any(seed["target_vol_4h"] == 0.65 for seed in seeds))
+        self.assertTrue(any(seed["target_vol_4h"] == 0.50 for seed in seeds))
+        self.assertTrue(any(seed["max_leverage"] == 2.5 for seed in seeds))
         for seed in seeds:
             build_execution_config(seed)
             strategy_config = build_strategy_config(seed)
