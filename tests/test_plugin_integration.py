@@ -575,6 +575,123 @@ class TestStrategyIntentConfirmation(unittest.TestCase):
         self.assertEqual(leverage, 0.51)
         self.assertNotIn("TIME_LEVERAGE_SIZE_HELD", reason_codes)
 
+    def test_time_leverage_long_bias_blocks_short_and_accumulates_dip(self):
+        bus = _strategy_bus()
+        audit_events = []
+        bus.subscribe("strategy.time_leverage_long_bias.>", lambda _subject, payload: audit_events.append(payload))
+        engine = ARCStrategyEngine(
+            bus=bus,
+            config=ARCStrategyConfig(
+                intent_time_leverage_long_bias_enabled=True,
+                intent_time_leverage_long_bias_confidence_floor=0.65,
+                intent_time_leverage_long_bias_transition_ceiling=0.45,
+                intent_time_leverage_dip_accumulation_enabled=True,
+                intent_time_leverage_dip_min_adverse_atr=1.0,
+                intent_time_leverage_dip_max_adverse_atr=3.0,
+                intent_time_leverage_dip_add_pct=0.20,
+                intent_time_leverage_dip_max_leverage=3.0,
+            ),
+        )
+        engine._positions[("BTCUSDT_PERP", Timeframe.TF_4H)] = _position(direction=1.0)
+        reason_codes: list[str] = []
+
+        qty, leverage = engine._apply_time_leverage_long_bias_guard(
+            symbol="BTCUSDT_PERP",
+            timeframe=Timeframe.TF_4H,
+            target_qty=-1.5,
+            target_leverage=0.9,
+            price=59000.0,
+            atr=500.0,
+            state=_state(directional_state="UPTREND", transition_risk=0.2),
+            reduce_only=False,
+            reason_codes=reason_codes,
+        )
+
+        self.assertAlmostEqual(qty, 1.2)
+        self.assertAlmostEqual(leverage, 0.708)
+        self.assertIn("TIME_LEVERAGE_LONG_BIAS_ACTIVE", reason_codes)
+        self.assertIn("TIME_LEVERAGE_SHORT_BLOCKED", reason_codes)
+        self.assertIn("TIME_LEVERAGE_DIP_ACCUMULATION", reason_codes)
+        self.assertEqual(audit_events[-1]["action"], "dip_accumulation")
+
+    def test_time_leverage_long_bias_holds_aligned_reduction(self):
+        bus = _strategy_bus()
+        engine = ARCStrategyEngine(
+            bus=bus,
+            config=ARCStrategyConfig(
+                intent_time_leverage_long_bias_enabled=True,
+                intent_time_leverage_long_bias_hold_reductions=True,
+            ),
+        )
+        engine._positions[("BTCUSDT_PERP", Timeframe.TF_4H)] = _position(direction=1.0)
+        reason_codes: list[str] = []
+
+        qty, leverage = engine._apply_time_leverage_long_bias_guard(
+            symbol="BTCUSDT_PERP",
+            timeframe=Timeframe.TF_4H,
+            target_qty=0.5,
+            target_leverage=0.3,
+            price=60000.0,
+            atr=500.0,
+            state=_state(directional_state="UPTREND", transition_risk=0.2),
+            reduce_only=False,
+            reason_codes=reason_codes,
+        )
+
+        self.assertEqual(qty, 1.0)
+        self.assertAlmostEqual(leverage, 0.6)
+        self.assertIn("TIME_LEVERAGE_REDUCTION_HELD", reason_codes)
+
+    def test_time_leverage_long_bias_does_not_block_reduce_only(self):
+        bus = _strategy_bus()
+        engine = ARCStrategyEngine(
+            bus=bus,
+            config=ARCStrategyConfig(intent_time_leverage_long_bias_enabled=True),
+        )
+        engine._positions[("BTCUSDT_PERP", Timeframe.TF_4H)] = _position(direction=1.0)
+        reason_codes: list[str] = []
+
+        qty, leverage = engine._apply_time_leverage_long_bias_guard(
+            symbol="BTCUSDT_PERP",
+            timeframe=Timeframe.TF_4H,
+            target_qty=0.5,
+            target_leverage=0.3,
+            price=60000.0,
+            atr=500.0,
+            state=_state(directional_state="UPTREND", transition_risk=0.2),
+            reduce_only=True,
+            reason_codes=reason_codes,
+        )
+
+        self.assertEqual(qty, 0.5)
+        self.assertEqual(leverage, 0.3)
+        self.assertEqual(reason_codes, [])
+
+    def test_time_leverage_long_bias_flattens_continued_short(self):
+        bus = _strategy_bus()
+        engine = ARCStrategyEngine(
+            bus=bus,
+            config=ARCStrategyConfig(intent_time_leverage_long_bias_enabled=True),
+        )
+        engine._positions[("BTCUSDT_PERP", Timeframe.TF_4H)] = _position(direction=-1.0)
+        reason_codes: list[str] = []
+
+        qty, leverage = engine._apply_time_leverage_long_bias_guard(
+            symbol="BTCUSDT_PERP",
+            timeframe=Timeframe.TF_4H,
+            target_qty=-1.5,
+            target_leverage=0.9,
+            price=60000.0,
+            atr=500.0,
+            state=_state(directional_state="UPTREND", transition_risk=0.2),
+            reduce_only=False,
+            reason_codes=reason_codes,
+        )
+
+        self.assertEqual(qty, 0.0)
+        self.assertEqual(leverage, 0.0)
+        self.assertIn("TIME_LEVERAGE_SHORT_BLOCKED", reason_codes)
+
 
 class TestLegacyPathUnchanged(unittest.TestCase):
     """Verify that engine without plugins uses legacy path."""
