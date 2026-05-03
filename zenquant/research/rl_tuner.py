@@ -205,6 +205,28 @@ def build_strategy_config(params: dict[str, float]) -> ARCStrategyConfig:
         ),
         intent_time_leverage_add_deadband_pct=params.get("intent_time_leverage_add_deadband_pct", 0.0),
         intent_time_leverage_reduce_deadband_pct=params.get("intent_time_leverage_reduce_deadband_pct", 0.0),
+        intent_time_leverage_long_bias_enabled=bool(
+            round(float(params.get("intent_time_leverage_long_bias_enabled", 0.0)))
+        ),
+        intent_time_leverage_long_bias_confidence_floor=params.get(
+            "intent_time_leverage_long_bias_confidence_floor", 0.65
+        ),
+        intent_time_leverage_long_bias_transition_ceiling=params.get(
+            "intent_time_leverage_long_bias_transition_ceiling", 0.45
+        ),
+        intent_time_leverage_long_bias_block_short=bool(
+            round(float(params.get("intent_time_leverage_long_bias_block_short", 1.0)))
+        ),
+        intent_time_leverage_long_bias_hold_reductions=bool(
+            round(float(params.get("intent_time_leverage_long_bias_hold_reductions", 1.0)))
+        ),
+        intent_time_leverage_dip_accumulation_enabled=bool(
+            round(float(params.get("intent_time_leverage_dip_accumulation_enabled", 0.0)))
+        ),
+        intent_time_leverage_dip_min_adverse_atr=params.get("intent_time_leverage_dip_min_adverse_atr", 0.75),
+        intent_time_leverage_dip_max_adverse_atr=params.get("intent_time_leverage_dip_max_adverse_atr", 2.5),
+        intent_time_leverage_dip_add_pct=params.get("intent_time_leverage_dip_add_pct", 0.15),
+        intent_time_leverage_dip_max_leverage=params.get("intent_time_leverage_dip_max_leverage", 3.0),
     )
 
 

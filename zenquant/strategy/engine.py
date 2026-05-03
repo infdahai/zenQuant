@@ -93,6 +93,16 @@ class ARCStrategyConfig:
     intent_time_leverage_size_hysteresis_enabled: bool = False
     intent_time_leverage_add_deadband_pct: float = 0.0
     intent_time_leverage_reduce_deadband_pct: float = 0.0
+    intent_time_leverage_long_bias_enabled: bool = False
+    intent_time_leverage_long_bias_confidence_floor: float = 0.65
+    intent_time_leverage_long_bias_transition_ceiling: float = 0.45
+    intent_time_leverage_long_bias_block_short: bool = True
+    intent_time_leverage_long_bias_hold_reductions: bool = True
+    intent_time_leverage_dip_accumulation_enabled: bool = False
+    intent_time_leverage_dip_min_adverse_atr: float = 0.75
+    intent_time_leverage_dip_max_adverse_atr: float = 2.5
+    intent_time_leverage_dip_add_pct: float = 0.15
+    intent_time_leverage_dip_max_leverage: float = 3.0
 
 
 class ARCStrategyEngine:
@@ -839,6 +849,172 @@ class ARCStrategyEngine:
         )
         return current_signed_qty, held_leverage
 
+    def _time_leverage_long_bias_active(self, symbol: str, cutoff_time_ns: int, state: MarketState) -> tuple[bool, str]:
+        if not self._config.intent_time_leverage_long_bias_enabled:
+            return False, "disabled"
+        if state.quality_state == "UNSAFE" or state.volatility_state == "DISTORTED":
+            return False, "unsafe_state"
+
+        confidence_floor = max(0.0, float(self._config.intent_time_leverage_long_bias_confidence_floor))
+        transition_ceiling = max(0.0, float(self._config.intent_time_leverage_long_bias_transition_ceiling))
+        if state.directional_state == "DOWNTREND" and state.directional_confidence >= confidence_floor:
+            return False, "confirmed_downtrend"
+
+        bias, _ = self._active_directional_bias(symbol, cutoff_time_ns)
+        if bias is not None:
+            if bias.direction > 0.0 and bias.confidence >= confidence_floor:
+                return True, "1d_bias"
+            if bias.direction < 0.0 and bias.confidence >= confidence_floor:
+                return False, "1d_bias_opposes"
+
+        if (
+            state.directional_state == "UPTREND"
+            and state.directional_confidence >= confidence_floor
+            and state.transition_risk <= transition_ceiling
+        ):
+            return True, "4h_uptrend"
+        return False, "no_long_bias"
+
+    def _apply_time_leverage_long_bias_guard(
+        self,
+        *,
+        symbol: str,
+        timeframe: Timeframe,
+        target_qty: float,
+        target_leverage: float,
+        price: float,
+        atr: float,
+        state: MarketState,
+        reduce_only: bool,
+        reason_codes: list[str],
+    ) -> tuple[float, float]:
+        if not self._config.intent_time_leverage_long_bias_enabled or reduce_only:
+            return target_qty, target_leverage
+
+        long_bias_active, long_bias_source = self._time_leverage_long_bias_active(symbol, state.cutoff_time_ns, state)
+        if not long_bias_active:
+            return target_qty, target_leverage
+
+        position = self._current_execution_position(symbol, timeframe)
+        target_direction = self._target_direction(target_qty)
+        if position is None:
+            if target_direction < 0.0 and self._config.intent_time_leverage_long_bias_block_short:
+                reason_codes.extend(["TIME_LEVERAGE_LONG_BIAS_ACTIVE", "TIME_LEVERAGE_SHORT_BLOCKED"])
+                self._publish_time_leverage_long_bias_event(
+                    symbol=symbol,
+                    timeframe=timeframe,
+                    state=state,
+                    long_bias_source=long_bias_source,
+                    action="short_blocked_flat",
+                    current_qty=0.0,
+                    blocked_target_qty=target_qty,
+                    adverse_atr=0.0,
+                )
+                return 0.0, 0.0
+            return target_qty, target_leverage
+
+        current_signed_qty = position.direction * position.current_qty
+        if position.direction < 0.0:
+            if target_direction < 0.0 and self._config.intent_time_leverage_long_bias_block_short:
+                reason_codes.extend(["TIME_LEVERAGE_LONG_BIAS_ACTIVE", "TIME_LEVERAGE_SHORT_BLOCKED"])
+                self._publish_time_leverage_long_bias_event(
+                    symbol=symbol,
+                    timeframe=timeframe,
+                    state=state,
+                    long_bias_source=long_bias_source,
+                    action="short_blocked_flat",
+                    current_qty=current_signed_qty,
+                    blocked_target_qty=target_qty,
+                    adverse_atr=0.0,
+                )
+                return 0.0, 0.0
+            return target_qty, target_leverage
+        if position.direction == 0.0:
+            return target_qty, target_leverage
+        if target_direction > 0.0 and target_qty >= current_signed_qty:
+            return target_qty, target_leverage
+        if target_direction < 0.0 and not self._config.intent_time_leverage_long_bias_block_short:
+            return target_qty, target_leverage
+        if target_direction >= 0.0 and not self._config.intent_time_leverage_long_bias_hold_reductions:
+            return target_qty, target_leverage
+
+        held_qty = current_signed_qty
+        held_leverage = abs(held_qty * price) / self._equity if price > 0.0 and self._equity > 0.0 else target_leverage
+        adverse_atr = 0.0
+        if atr > 0.0 and price > 0.0 and position.entry_price > price:
+            adverse_atr = (position.entry_price - price) / atr
+        action = "reduction_held"
+
+        if target_direction < 0.0:
+            reason_codes.append("TIME_LEVERAGE_SHORT_BLOCKED")
+            action = "short_blocked"
+        else:
+            reason_codes.append("TIME_LEVERAGE_REDUCTION_HELD")
+        reason_codes.append("TIME_LEVERAGE_LONG_BIAS_ACTIVE")
+
+        dip_min = max(0.0, float(self._config.intent_time_leverage_dip_min_adverse_atr))
+        dip_max = max(dip_min, float(self._config.intent_time_leverage_dip_max_adverse_atr))
+        dip_add_pct = max(0.0, float(self._config.intent_time_leverage_dip_add_pct))
+        if (
+            self._config.intent_time_leverage_dip_accumulation_enabled
+            and dip_add_pct > 0.0
+            and dip_min <= adverse_atr <= dip_max
+            and price > 0.0
+            and self._equity > 0.0
+        ):
+            max_leverage = min(self._config.max_leverage, max(0.0, self._config.intent_time_leverage_dip_max_leverage))
+            max_qty = (self._equity * max_leverage) / price
+            desired_qty = position.current_qty * (1.0 + dip_add_pct)
+            accumulated_qty = min(max_qty, desired_qty)
+            if accumulated_qty > position.current_qty + self._config.min_trade_qty:
+                held_qty = accumulated_qty
+                held_leverage = abs(held_qty * price) / self._equity
+                reason_codes.append("TIME_LEVERAGE_DIP_ACCUMULATION")
+                action = "dip_accumulation"
+
+        self._publish_time_leverage_long_bias_event(
+            symbol=symbol,
+            timeframe=timeframe,
+            state=state,
+            long_bias_source=long_bias_source,
+            action=action,
+            current_qty=current_signed_qty,
+            blocked_target_qty=target_qty,
+            adverse_atr=adverse_atr,
+        )
+        return held_qty, held_leverage
+
+    def _publish_time_leverage_long_bias_event(
+        self,
+        *,
+        symbol: str,
+        timeframe: Timeframe,
+        state: MarketState,
+        long_bias_source: str,
+        action: str,
+        current_qty: float,
+        blocked_target_qty: float,
+        adverse_atr: float,
+    ) -> None:
+        self._bus.publish(
+            f"strategy.time_leverage_long_bias.{timeframe.value}.{symbol}",
+            {
+                "symbol": symbol,
+                "timeframe": timeframe.value,
+                "cutoff_time_ns": state.cutoff_time_ns,
+                "long_bias_source": long_bias_source,
+                "action": action,
+                "current_qty": round(current_qty, 6),
+                "blocked_target_qty": round(blocked_target_qty, 6),
+                "adverse_atr": round(adverse_atr, 6),
+                "directional_state": state.directional_state,
+                "directional_confidence": round(float(state.directional_confidence), 6),
+                "transition_risk": round(float(state.transition_risk), 6),
+                "quality_state": state.quality_state,
+                "volatility_state": state.volatility_state,
+            },
+        )
+
     def _build_target(
         self,
         pack: IndicatorPack,
@@ -1005,6 +1181,17 @@ class ARCStrategyEngine:
         target_qty = target_notional / vals.price
         if abs(target_qty) < self._config.min_trade_qty:
             target_qty = 0.0
+        target_qty, target_leverage = self._apply_time_leverage_long_bias_guard(
+            symbol=pack.symbol,
+            timeframe=pack.timeframe,
+            target_qty=target_qty,
+            target_leverage=target_leverage,
+            price=vals.price,
+            atr=vals.atr,
+            state=state,
+            reduce_only=reduce_only,
+            reason_codes=reason_codes,
+        )
         target_qty, target_leverage = self._apply_time_leverage_hold_guard(
             symbol=pack.symbol,
             timeframe=pack.timeframe,

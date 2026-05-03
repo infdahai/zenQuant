@@ -57,6 +57,26 @@ def build_strategy_config(params: dict[str, Any]) -> ARCStrategyConfig:
             strategy_kwargs["intent_time_leverage_add_deadband_pct"] = float(value)
         elif key == "intent_time_leverage_reduce_deadband_pct":
             strategy_kwargs["intent_time_leverage_reduce_deadband_pct"] = float(value)
+        elif key == "intent_time_leverage_long_bias_enabled":
+            strategy_kwargs["intent_time_leverage_long_bias_enabled"] = bool(round(float(value)))
+        elif key == "intent_time_leverage_long_bias_confidence_floor":
+            strategy_kwargs["intent_time_leverage_long_bias_confidence_floor"] = float(value)
+        elif key == "intent_time_leverage_long_bias_transition_ceiling":
+            strategy_kwargs["intent_time_leverage_long_bias_transition_ceiling"] = float(value)
+        elif key == "intent_time_leverage_long_bias_block_short":
+            strategy_kwargs["intent_time_leverage_long_bias_block_short"] = bool(round(float(value)))
+        elif key == "intent_time_leverage_long_bias_hold_reductions":
+            strategy_kwargs["intent_time_leverage_long_bias_hold_reductions"] = bool(round(float(value)))
+        elif key == "intent_time_leverage_dip_accumulation_enabled":
+            strategy_kwargs["intent_time_leverage_dip_accumulation_enabled"] = bool(round(float(value)))
+        elif key == "intent_time_leverage_dip_min_adverse_atr":
+            strategy_kwargs["intent_time_leverage_dip_min_adverse_atr"] = float(value)
+        elif key == "intent_time_leverage_dip_max_adverse_atr":
+            strategy_kwargs["intent_time_leverage_dip_max_adverse_atr"] = float(value)
+        elif key == "intent_time_leverage_dip_add_pct":
+            strategy_kwargs["intent_time_leverage_dip_add_pct"] = float(value)
+        elif key == "intent_time_leverage_dip_max_leverage":
+            strategy_kwargs["intent_time_leverage_dip_max_leverage"] = float(value)
         elif key == "preserve_capital_risk":
             playbook_kwargs["preserve_capital_transition_risk"] = value
         elif key == "bull_leverage":
@@ -443,6 +463,16 @@ def intent_churn_ablation_param_grid(*, include_liquidation_toggles: bool = Fals
         "intent_time_leverage_size_hysteresis_enabled": [0.0, 1.0],
         "intent_time_leverage_add_deadband_pct": [0.0, 0.10, 0.15],
         "intent_time_leverage_reduce_deadband_pct": [0.0, 0.20, 0.30],
+        "intent_time_leverage_long_bias_enabled": [0.0, 1.0],
+        "intent_time_leverage_long_bias_confidence_floor": [0.60, 0.65, 0.70],
+        "intent_time_leverage_long_bias_transition_ceiling": [0.35, 0.45],
+        "intent_time_leverage_long_bias_block_short": [1.0],
+        "intent_time_leverage_long_bias_hold_reductions": [1.0],
+        "intent_time_leverage_dip_accumulation_enabled": [0.0, 1.0],
+        "intent_time_leverage_dip_min_adverse_atr": [0.75, 1.25],
+        "intent_time_leverage_dip_max_adverse_atr": [2.5, 3.0],
+        "intent_time_leverage_dip_add_pct": [0.10, 0.15],
+        "intent_time_leverage_dip_max_leverage": [2.5, 3.0],
         "hostile_behavior_router_enabled": [0.0],
         "squeeze_flip_flatten_only_enabled": [0.0],
         "squeeze_flip_cooldown_enabled": [0.0],
@@ -760,6 +790,16 @@ def intent_churn_ablation_seed_trials() -> list[dict[str, float]]:
         "intent_time_leverage_size_hysteresis_enabled": 0.0,
         "intent_time_leverage_add_deadband_pct": 0.0,
         "intent_time_leverage_reduce_deadband_pct": 0.0,
+        "intent_time_leverage_long_bias_enabled": 0.0,
+        "intent_time_leverage_long_bias_confidence_floor": 0.65,
+        "intent_time_leverage_long_bias_transition_ceiling": 0.45,
+        "intent_time_leverage_long_bias_block_short": 1.0,
+        "intent_time_leverage_long_bias_hold_reductions": 1.0,
+        "intent_time_leverage_dip_accumulation_enabled": 0.0,
+        "intent_time_leverage_dip_min_adverse_atr": 0.75,
+        "intent_time_leverage_dip_max_adverse_atr": 2.5,
+        "intent_time_leverage_dip_add_pct": 0.15,
+        "intent_time_leverage_dip_max_leverage": 3.0,
         "hostile_behavior_router_enabled": 0.0,
         "squeeze_flip_flatten_only_enabled": 0.0,
         "squeeze_flip_cooldown_enabled": 0.0,
@@ -786,6 +826,24 @@ def intent_churn_ablation_seed_trials() -> list[dict[str, float]]:
             **fee_shape,
             "direction_signal_threshold": 0.25,
             "intent_add_signal_threshold": 0.45,
+            "intent_entry_confirmation_bars": 2,
+            "intent_flip_confirmation_bars": 3,
+            "intent_time_leverage_hold_enabled": 1.0,
+            "intent_time_leverage_min_hold_bars": 24,
+            "intent_time_leverage_flip_signal_threshold": 0.65,
+            "intent_time_leverage_confidence_floor": 0.65,
+            "intent_time_leverage_size_hysteresis_enabled": 1.0,
+            "intent_time_leverage_add_deadband_pct": 0.15,
+            "intent_time_leverage_reduce_deadband_pct": 0.30,
+            "intent_time_leverage_long_bias_enabled": 1.0,
+            "intent_time_leverage_long_bias_confidence_floor": 0.65,
+            "intent_time_leverage_long_bias_transition_ceiling": 0.45,
+            "intent_time_leverage_dip_accumulation_enabled": 0.0,
+        },
+        {
+            **fee_shape,
+            "direction_signal_threshold": 0.25,
+            "intent_add_signal_threshold": 0.45,
             "intent_flip_confirmation_bars": 3,
             "intent_time_leverage_hold_enabled": 1.0,
             "intent_time_leverage_min_hold_bars": 12,
@@ -793,6 +851,14 @@ def intent_churn_ablation_seed_trials() -> list[dict[str, float]]:
             "intent_time_leverage_size_hysteresis_enabled": 1.0,
             "intent_time_leverage_add_deadband_pct": 0.10,
             "intent_time_leverage_reduce_deadband_pct": 0.20,
+            "intent_time_leverage_long_bias_enabled": 1.0,
+            "intent_time_leverage_long_bias_confidence_floor": 0.60,
+            "intent_time_leverage_long_bias_transition_ceiling": 0.45,
+            "intent_time_leverage_dip_accumulation_enabled": 1.0,
+            "intent_time_leverage_dip_min_adverse_atr": 0.75,
+            "intent_time_leverage_dip_max_adverse_atr": 2.5,
+            "intent_time_leverage_dip_add_pct": 0.10,
+            "intent_time_leverage_dip_max_leverage": 3.0,
         },
         {
             **fee_shape,
@@ -807,6 +873,14 @@ def intent_churn_ablation_seed_trials() -> list[dict[str, float]]:
             "intent_time_leverage_size_hysteresis_enabled": 1.0,
             "intent_time_leverage_add_deadband_pct": 0.15,
             "intent_time_leverage_reduce_deadband_pct": 0.30,
+            "intent_time_leverage_long_bias_enabled": 1.0,
+            "intent_time_leverage_long_bias_confidence_floor": 0.65,
+            "intent_time_leverage_long_bias_transition_ceiling": 0.35,
+            "intent_time_leverage_dip_accumulation_enabled": 1.0,
+            "intent_time_leverage_dip_min_adverse_atr": 1.25,
+            "intent_time_leverage_dip_max_adverse_atr": 2.5,
+            "intent_time_leverage_dip_add_pct": 0.10,
+            "intent_time_leverage_dip_max_leverage": 2.5,
         },
         {
             **fee_shape,
@@ -823,6 +897,14 @@ def intent_churn_ablation_seed_trials() -> list[dict[str, float]]:
             "intent_time_leverage_size_hysteresis_enabled": 1.0,
             "intent_time_leverage_add_deadband_pct": 0.15,
             "intent_time_leverage_reduce_deadband_pct": 0.30,
+            "intent_time_leverage_long_bias_enabled": 1.0,
+            "intent_time_leverage_long_bias_confidence_floor": 0.70,
+            "intent_time_leverage_long_bias_transition_ceiling": 0.35,
+            "intent_time_leverage_dip_accumulation_enabled": 1.0,
+            "intent_time_leverage_dip_min_adverse_atr": 1.25,
+            "intent_time_leverage_dip_max_adverse_atr": 3.0,
+            "intent_time_leverage_dip_add_pct": 0.15,
+            "intent_time_leverage_dip_max_leverage": 3.0,
         },
         {**fee_shape, "direction_signal_threshold": 0.25},
         {**fee_shape, "direction_signal_threshold": 0.25, "intent_add_signal_threshold": 0.30},
