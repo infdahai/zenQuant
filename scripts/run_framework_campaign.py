@@ -174,7 +174,8 @@ def _smoke_primary_empty_skip_fallback_reason(
         return None
     fail_fast_reasons = train_diagnostics.get("stage1_fail_fast_reasons") or {}
     train_bucket_fail_fast = (
-        isinstance(fail_fast_reasons, dict) and int(fail_fast_reasons.get("regime_objective_train_bucket_fail_fast", 0) or 0) > 0
+        isinstance(fail_fast_reasons, dict)
+        and int(fail_fast_reasons.get("regime_objective_train_bucket_fail_fast", 0) or 0) > 0
     )
     blockers = _extract_rejected_train_bucket_blockers(primary_diagnostics)
     train_quality_blockers = sorted(blockers & _TRAIN_QUALITY_FALLBACK_SKIP_BLOCKERS)
@@ -1263,11 +1264,11 @@ def main() -> None:
             evaluator,
             budget=args.budget,
         )
-        smoke_uses_base_timeframe = args.budget == "smoke" and resolved_search_space_mode == "intent_churn_repair_train_only"
+        smoke_uses_base_timeframe = (
+            args.budget == "smoke" and resolved_search_space_mode == "intent_churn_repair_train_only"
+        )
         primary_stage1_execution_mode = (
-            "5m_lightweight_train_search"
-            if args.budget != "smoke" or smoke_uses_base_timeframe
-            else "1h_context_only"
+            "5m_lightweight_train_search" if args.budget != "smoke" or smoke_uses_base_timeframe else "1h_context_only"
         )
         primary_stage1_search_mode = (
             "primary_5m" if args.budget != "smoke" or smoke_uses_base_timeframe else "primary_1h"
@@ -1759,9 +1760,7 @@ def main() -> None:
                         if stage1_state.get("stage1_search_mode") == "fallback_5m"
                         else optuna_trials
                     ),
-                    stage1_search_mode=stage1_state.get(
-                        "stage1_search_mode", primary_stage1_search_mode
-                    ),
+                    stage1_search_mode=stage1_state.get("stage1_search_mode", primary_stage1_search_mode),
                     stage1_primary_optuna_trials_completed=stage1_state.get("primary_optuna_trials_completed", 0),
                     stage1_primary_optuna_trials_total=stage1_state.get("primary_optuna_trials_total", optuna_trials),
                     stage1_fallback_optuna_trials_completed=stage1_state.get("fallback_optuna_trials_completed", 0),
