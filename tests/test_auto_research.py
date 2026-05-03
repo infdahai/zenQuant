@@ -420,6 +420,47 @@ class TestStage1HostileProxy(unittest.TestCase):
             above_mature_cadence["hostile_proxy_score"],
         )
 
+    def test_hostile_proxy_penalizes_wide_train_drawdown_band(self) -> None:
+        params = {
+            "target_vol_4h": 0.95,
+            "max_leverage": 4.5,
+            "pyramid_initial_pct": 0.25,
+            "pyramid_add_pct": 0.20,
+            "pyramid_short_initial_pct": 0.15,
+            "pyramid_short_add_pct": 0.12,
+            "dca_spacing_atr": 1.25,
+            "dca_size_decay": 0.75,
+            "flip_min_confidence": 0.65,
+        }
+        stable = _hostile_proxy_diagnostics(
+            params,
+            {
+                "sharpe": 1.6,
+                "max_drawdown": 0.05,
+                "profit_factor": 1.4,
+                "fee_drag_pct": 0.01,
+                "trade_count": 120,
+                "net_pnl": 100_000.0,
+                "terminated_early": 0.0,
+            },
+        )
+        wide = _hostile_proxy_diagnostics(
+            params,
+            {
+                "sharpe": 1.6,
+                "max_drawdown": 0.09,
+                "profit_factor": 1.4,
+                "fee_drag_pct": 0.01,
+                "trade_count": 120,
+                "net_pnl": 100_000.0,
+                "terminated_early": 0.0,
+            },
+        )
+
+        self.assertEqual(stable["train_drawdown_preferred_band_penalty"], 0.0)
+        self.assertGreater(wide["train_drawdown_preferred_band_penalty"], 0.0)
+        self.assertLess(wide["hostile_proxy_score"], stable["hostile_proxy_score"])
+
     def test_stage1_sort_metric_prefers_hostile_proxy_score_over_raw_sharpe(self) -> None:
         strong_sharpe = {"sharpe": 3.0, "hostile_proxy_score": 0.2}
         safer_profile = {"sharpe": 2.0, "hostile_proxy_score": 1.5}
