@@ -408,6 +408,52 @@ class TestStrategyIntentConfirmation(unittest.TestCase):
         self.assertNotIn("BTCUSDT_PERP", engine._pending_4h_target)
         self.assertNotIn("BTCUSDT_PERP", engine._pending_1h_target)
 
+    def test_add_signal_gate_holds_same_direction_add_when_signal_is_weak(self):
+        bus = _strategy_bus()
+        engine = ARCStrategyEngine(
+            bus=bus,
+            config=ARCStrategyConfig(intent_add_signal_threshold=0.40),
+        )
+        engine._positions[("BTCUSDT_PERP", Timeframe.TF_4H)] = _position(direction=1.0)
+        engine._plugin_signal_context[("BTCUSDT_PERP", Timeframe.TF_4H)] = {"effective_direction": 0.25}
+        reason_codes: list[str] = []
+
+        qty, leverage = engine._apply_same_direction_add_gate(
+            symbol="BTCUSDT_PERP",
+            timeframe=Timeframe.TF_4H,
+            target_qty=1.5,
+            target_leverage=0.9,
+            price=60000.0,
+            reason_codes=reason_codes,
+        )
+
+        self.assertEqual(qty, 1.0)
+        self.assertAlmostEqual(leverage, 0.6)
+        self.assertIn("INTENT_ADD_SIGNAL_GATE", reason_codes)
+
+    def test_add_signal_gate_allows_same_direction_add_when_signal_is_strong(self):
+        bus = _strategy_bus()
+        engine = ARCStrategyEngine(
+            bus=bus,
+            config=ARCStrategyConfig(intent_add_signal_threshold=0.40),
+        )
+        engine._positions[("BTCUSDT_PERP", Timeframe.TF_4H)] = _position(direction=1.0)
+        engine._plugin_signal_context[("BTCUSDT_PERP", Timeframe.TF_4H)] = {"effective_direction": 0.45}
+        reason_codes: list[str] = []
+
+        qty, leverage = engine._apply_same_direction_add_gate(
+            symbol="BTCUSDT_PERP",
+            timeframe=Timeframe.TF_4H,
+            target_qty=1.5,
+            target_leverage=0.9,
+            price=60000.0,
+            reason_codes=reason_codes,
+        )
+
+        self.assertEqual(qty, 1.5)
+        self.assertEqual(leverage, 0.9)
+        self.assertNotIn("INTENT_ADD_SIGNAL_GATE", reason_codes)
+
 
 class TestLegacyPathUnchanged(unittest.TestCase):
     """Verify that engine without plugins uses legacy path."""
