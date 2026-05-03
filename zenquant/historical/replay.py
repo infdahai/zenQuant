@@ -520,7 +520,9 @@ class HistoricalBacktest:
         if max_fee_drag_pct <= 0.0:
             return False, None
         gross_pnl = self.risk_overlay.equity - self._config.starting_equity + self._trade_ledger.total_fees
-        min_gross_pnl = self._config.starting_equity * float(self._config.early_stop_min_gross_pnl_fraction_for_fee_drag)
+        min_gross_pnl = self._config.starting_equity * float(
+            self._config.early_stop_min_gross_pnl_fraction_for_fee_drag
+        )
         if gross_pnl < min_gross_pnl:
             return False, None
         fee_drag_pct = self._trade_ledger.total_fees / gross_pnl
@@ -739,9 +741,7 @@ class HistoricalBacktest:
         realized = self._trade_ledger.realized_pnls
         wins = [value for value in realized if value > 0]
         losses = [value for value in realized if value < 0]
-        action_realized = {
-            key: list(values) for key, values in sorted(self._trade_ledger.action_realized_pnls.items())
-        }
+        action_realized = {key: list(values) for key, values in sorted(self._trade_ledger.action_realized_pnls.items())}
         total_bars = sum(1 for item in events if item["event_timeframe"] == self._config.execution_timeframe.value)
         return BacktestMetrics(
             symbol=self._config.portfolio_symbol,
@@ -776,10 +776,7 @@ class HistoricalBacktest:
             action_realized_pnl={key: round(sum(values), 6) for key, values in action_realized.items()},
             action_profit_factor={
                 key: round(
-                    (
-                        sum(value for value in values if value > 0)
-                        / abs(sum(value for value in values if value < 0))
-                    )
+                    (sum(value for value in values if value > 0) / abs(sum(value for value in values if value < 0)))
                     if any(value > 0 for value in values)
                     and any(value < 0 for value in values)
                     and sum(value for value in values if value < 0) != 0
