@@ -34,6 +34,7 @@ class VariantSpec:
     strategy_config: ARCStrategyConfig | None = None
     indicator_config: IndicatorEngineConfig | None = None
     signal_weight_overrides: dict[str, float] | None = None
+    plugin_config_overrides: dict[str, dict[str, dict[str, Any]]] | None = None
     liquidation_data_enabled: bool | None = None
     state_liquidation_overlay_enabled: bool | None = None
 
@@ -1217,6 +1218,7 @@ def _run_variant_backtest(
         strategy_config=variant.strategy_config or base_config.strategy_config,
         indicator_config=variant.indicator_config or base_config.indicator_config,
         signal_weight_overrides=variant.signal_weight_overrides or base_config.signal_weight_overrides,
+        plugin_config_overrides=variant.plugin_config_overrides or base_config.plugin_config_overrides,
         liquidation_data_enabled=(
             base_config.liquidation_data_enabled
             if variant.liquidation_data_enabled is None

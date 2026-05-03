@@ -138,6 +138,23 @@ class TestRegistryLoadsRealPlugins(unittest.TestCase):
         self.assertEqual(exit_names[0], "invalidation_exit")  # priority 1
         self.assertEqual(exit_names[-1], "regime_change_exit")  # priority 5
 
+    def test_profile_overrides_can_enable_research_only_plugins(self):
+        if not PROFILE_PATH.exists():
+            self.skipTest("default.toml not found")
+
+        _, registry = build_from_profile(
+            PROFILE_PATH,
+            plugin_root=PLUGIN_ROOT,
+            config_overrides={
+                "signals": {"binance_metrics_state_signal": {"enabled": True, "weight": 0.18}},
+                "sizers": {"binance_metrics_risk_sizer": {"enabled": True, "discount_floor": 0.60}},
+            },
+        )
+
+        self.assertIn("binance_metrics_state_signal", [plugin.meta.name for plugin in registry.signals])
+        self.assertIn("binance_metrics_risk_sizer", [plugin.meta.name for plugin in registry.sizers])
+        self.assertEqual(registry.signal_weights["binance_metrics_state_signal"], 0.18)
+
     def test_all_signal_plugins_compute(self):
         if not PROFILE_PATH.exists():
             self.skipTest("default.toml not found")
