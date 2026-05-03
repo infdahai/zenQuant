@@ -403,6 +403,31 @@ def _run_variant_backtest_snapshot(
     )
 
 
+def _shutdown_process_pool_quickly(pool: ProcessPoolExecutor | None, futures: list[Any] | None = None) -> None:
+    if futures:
+        for future in futures:
+            try:
+                future.cancel()
+            except Exception:
+                pass
+    if pool is None:
+        return
+    try:
+        processes = list((getattr(pool, "_processes", None) or {}).values())
+    except Exception:
+        processes = []
+    try:
+        pool.shutdown(wait=False, cancel_futures=True)
+    except Exception:
+        pass
+    for process in processes:
+        try:
+            if process.is_alive():
+                process.terminate()
+        except Exception:
+            pass
+
+
 def _run_variant_backtest_with_timeout(
     base_config: HistoricalBacktestConfig,
     variant: VariantSpec,
@@ -429,19 +454,24 @@ def _run_variant_backtest_with_timeout(
     executor_kwargs: dict[str, Any] = {"max_workers": 1}
     if mp_start_method:
         executor_kwargs["mp_context"] = mp.get_context(mp_start_method)
-    with ProcessPoolExecutor(**executor_kwargs) as local_pool:
-        future = local_pool.submit(
-            _run_variant_backtest_snapshot,
-            base_config,
-            variant,
-            start_ns=start_ns,
-            end_ns=end_ns,
-        )
-        try:
-            return future.result(timeout=timeout_s)
-        except FutureTimeoutError as exc:
-            future.cancel()
-            raise TimeoutError(f"variant_backtest_timeout:{timeout_s:.0f}s") from exc
+    local_pool = ProcessPoolExecutor(**executor_kwargs)
+    future = local_pool.submit(
+        _run_variant_backtest_snapshot,
+        base_config,
+        variant,
+        start_ns=start_ns,
+        end_ns=end_ns,
+    )
+    shutdown_wait = True
+    try:
+        return future.result(timeout=timeout_s)
+    except FutureTimeoutError as exc:
+        shutdown_wait = False
+        _shutdown_process_pool_quickly(local_pool, [future])
+        raise TimeoutError(f"variant_backtest_timeout:{timeout_s:.0f}s") from exc
+    finally:
+        if shutdown_wait:
+            local_pool.shutdown(wait=True)
 
 
 @dataclass(slots=True, frozen=True)
@@ -1176,6 +1206,10 @@ class FrameworkEvaluator:
         self._stage2_mp_start_method = "spawn" if sys.platform == "darwin" else None
         self._validation_pool_mode = "process_pool_spawn" if self._stage2_mp_start_method else "process_pool_default"
 
+    def _reset_validation_pool(self) -> None:
+        _shutdown_process_pool_quickly(self._validation_pool)
+        self._validation_pool = None
+
     def _compute_profile(self, *, fast: bool, lightweight: bool) -> dict[str, Any]:
         if lightweight:
             return self._compute_profiles["smoke" if not fast else "fast"]
@@ -1209,6 +1243,7 @@ class FrameworkEvaluator:
                 mp_start_method=self._stage2_mp_start_method,
             )
         except TimeoutError as exc:
+            self._reset_validation_pool()
             raise PrepareVariantTimeoutError(
                 variant=variant.name,
                 window_label=window.label,
@@ -2048,15 +2083,19 @@ class FrameworkEvaluator:
             return cached
         if progress_callback is not None:
             progress_callback("cache_miss", "validation_bundle")
-        result = _run_validation_bundle(
-            self._base_config,
-            variant,
-            windows,
-            run_backtest=self._run_variant_backtest_cached,
-            progress_callback=progress_callback,
-            replay_timeout_s=replay_timeout_s,
-            replay_pool=replay_pool,
-        )
+        try:
+            result = _run_validation_bundle(
+                self._base_config,
+                variant,
+                windows,
+                run_backtest=self._run_variant_backtest_cached,
+                progress_callback=progress_callback,
+                replay_timeout_s=replay_timeout_s,
+                replay_pool=replay_pool,
+            )
+        except ValidationBundleTimeoutError:
+            self._reset_validation_pool()
+            raise
         self._validation_cache[key] = result
         return result
 
