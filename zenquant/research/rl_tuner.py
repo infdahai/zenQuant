@@ -200,6 +200,11 @@ def build_strategy_config(params: dict[str, float]) -> ARCStrategyConfig:
         intent_time_leverage_flip_signal_threshold=params.get("intent_time_leverage_flip_signal_threshold", 0.55),
         intent_time_leverage_confidence_floor=params.get("intent_time_leverage_confidence_floor", 0.55),
         intent_time_leverage_transition_risk_floor=params.get("intent_time_leverage_transition_risk_floor", 0.35),
+        intent_time_leverage_size_hysteresis_enabled=bool(
+            round(float(params.get("intent_time_leverage_size_hysteresis_enabled", 0.0)))
+        ),
+        intent_time_leverage_add_deadband_pct=params.get("intent_time_leverage_add_deadband_pct", 0.0),
+        intent_time_leverage_reduce_deadband_pct=params.get("intent_time_leverage_reduce_deadband_pct", 0.0),
     )
 
 

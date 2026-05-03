@@ -90,6 +90,9 @@ class ARCStrategyConfig:
     intent_time_leverage_flip_signal_threshold: float = 0.55
     intent_time_leverage_confidence_floor: float = 0.55
     intent_time_leverage_transition_risk_floor: float = 0.35
+    intent_time_leverage_size_hysteresis_enabled: bool = False
+    intent_time_leverage_add_deadband_pct: float = 0.0
+    intent_time_leverage_reduce_deadband_pct: float = 0.0
 
 
 class ARCStrategyEngine:
@@ -762,6 +765,80 @@ class ARCStrategyEngine:
         )
         return current_signed_qty, held_leverage
 
+    def _apply_time_leverage_size_hysteresis(
+        self,
+        *,
+        symbol: str,
+        timeframe: Timeframe,
+        target_qty: float,
+        target_leverage: float,
+        price: float,
+        state: MarketState,
+        reduce_only: bool,
+        reason_codes: list[str],
+    ) -> tuple[float, float]:
+        if not self._config.intent_time_leverage_size_hysteresis_enabled or reduce_only:
+            return target_qty, target_leverage
+
+        position = self._current_execution_position(symbol, timeframe)
+        if position is None or price <= 0.0 or self._equity <= 0.0:
+            return target_qty, target_leverage
+
+        current_signed_qty = position.direction * position.current_qty
+        target_direction = self._target_direction(target_qty)
+        if target_direction == 0.0 or current_signed_qty * target_qty <= 0.0:
+            return target_qty, target_leverage
+
+        current_abs = abs(current_signed_qty)
+        target_abs = abs(target_qty)
+        add_resize = target_abs > current_abs + self._config.min_trade_qty
+        reduce_resize = target_abs < current_abs - self._config.min_trade_qty
+        if not add_resize and not reduce_resize:
+            return target_qty, target_leverage
+
+        deadband = (
+            self._config.intent_time_leverage_add_deadband_pct
+            if add_resize
+            else self._config.intent_time_leverage_reduce_deadband_pct
+        )
+        deadband = max(0.0, float(deadband))
+        if deadband <= 0.0:
+            return target_qty, target_leverage
+
+        change_pct = abs(target_abs - current_abs) / max(current_abs, self._config.min_trade_qty)
+        if change_pct >= deadband:
+            return target_qty, target_leverage
+
+        opposing_trend_state = "DOWNTREND" if position.direction > 0 else "UPTREND"
+        if reduce_resize and state.directional_state == opposing_trend_state:
+            return target_qty, target_leverage
+        if reduce_resize and state.quality_state == "UNSAFE":
+            return target_qty, target_leverage
+        if reduce_resize and state.volatility_state == "DISTORTED":
+            return target_qty, target_leverage
+
+        held_leverage = abs(current_signed_qty * price) / self._equity
+        reason_codes.append("TIME_LEVERAGE_SIZE_HELD")
+        reason_codes.append("TIME_LEVERAGE_ADD_DEADBAND" if add_resize else "TIME_LEVERAGE_REDUCE_DEADBAND")
+        self._bus.publish(
+            f"strategy.time_leverage_size_hysteresis.{timeframe.value}.{symbol}",
+            {
+                "symbol": symbol,
+                "timeframe": timeframe.value,
+                "cutoff_time_ns": state.cutoff_time_ns,
+                "current_qty": round(current_signed_qty, 6),
+                "blocked_target_qty": round(target_qty, 6),
+                "change_pct": round(change_pct, 6),
+                "deadband": round(deadband, 6),
+                "resize": "add" if add_resize else "reduce",
+                "directional_state": state.directional_state,
+                "quality_state": state.quality_state,
+                "volatility_state": state.volatility_state,
+                "reason": "TIME_LEVERAGE_SIZE_HELD",
+            },
+        )
+        return current_signed_qty, held_leverage
+
     def _build_target(
         self,
         pack: IndicatorPack,
@@ -935,6 +1012,16 @@ class ARCStrategyEngine:
             target_leverage=target_leverage,
             price=vals.price,
             state=state,
+            reason_codes=reason_codes,
+        )
+        target_qty, target_leverage = self._apply_time_leverage_size_hysteresis(
+            symbol=pack.symbol,
+            timeframe=pack.timeframe,
+            target_qty=target_qty,
+            target_leverage=target_leverage,
+            price=vals.price,
+            state=state,
+            reduce_only=reduce_only,
             reason_codes=reason_codes,
         )
         target_qty, target_leverage = self._apply_same_direction_add_gate(
