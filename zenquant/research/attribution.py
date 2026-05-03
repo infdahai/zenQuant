@@ -62,6 +62,8 @@ def build_decision_attribution_ledger(
     state_summary: dict[str, dict[str, Any]] = {}
     playbook_summary: dict[str, dict[str, Any]] = {}
     reason_counts: dict[str, Counter[str]] = defaultdict(Counter)
+    action_attribution: dict[str, dict[str, Any]] = {}
+    source_attribution: dict[str, dict[str, Any]] = {}
     decision_rows: list[dict[str, Any]] = []
     previous_target_qty = 0.0
     previous_equity: float | None = None
@@ -81,6 +83,7 @@ def build_decision_attribution_ledger(
         report_fees = sum(_safe_float(item.get("fee")) for item in execution_reports)
         report_turnover = sum(_safe_float(item.get("turnover_notional")) for item in execution_reports)
         execution_actions = [str(item.get("action") or "none") for item in execution_reports]
+        execution_action_sources: list[str] = []
 
         summary = state_summary.setdefault(
             micro_state,
@@ -120,7 +123,20 @@ def build_decision_attribution_ledger(
         playbook_payload["fees"] += report_fees
         playbook_payload["turnover_notional"] += report_turnover
         playbook_payload["target_actions"][target_action] += 1
-        for action in execution_actions:
+        for action, report in zip(execution_actions, execution_reports, strict=True):
+            source = classify_execution_action_source(action, row, target_action=target_action)
+            execution_action_sources.append(source)
+            _update_action_attribution(
+                action_attribution,
+                source_attribution,
+                action=action,
+                source=source,
+                row=row,
+                report=report,
+                target_action=target_action,
+                micro_state=micro_state,
+                playbook_id=playbook_id,
+            )
             playbook_payload["execution_actions"][action] += 1
 
         decision_rows.append(
@@ -147,8 +163,11 @@ def build_decision_attribution_ledger(
                 "fees": round(report_fees, 6),
                 "turnover_notional": round(report_turnover, 6),
                 "execution_actions": execution_actions,
+                "execution_action_sources": execution_action_sources,
                 "risk_flags": str(row.get("risk_flags") or ""),
+                "risk_decision_flags": str(row.get("risk_decision_flags") or ""),
                 "target_reason_codes": str(row.get("target_reason_codes") or ""),
+                "exit_reason_codes": str(row.get("exit_reason_codes") or ""),
                 "reason_codes": row_reason_codes,
             }
         )
@@ -167,11 +186,40 @@ def build_decision_attribution_ledger(
         },
         "micro_state_summary": _serialize_state_summary(state_summary),
         "playbook_summary": _serialize_state_summary(playbook_summary),
+        "action_attribution_summary": _serialize_action_attribution(action_attribution),
+        "action_source_summary": _serialize_action_attribution(source_attribution),
         "top_reason_codes_by_micro_state": {
             state: dict(counter.most_common(12)) for state, counter in sorted(reason_counts.items())
         },
         "decision_rows": decision_rows,
     }
+
+
+def classify_execution_action_source(action: str, row: dict[str, Any], *, target_action: str) -> str:
+    """Classify why a filled action happened from the same-bar audit fields."""
+
+    exit_type = str(row.get("exit_type") or "NONE")
+    exit_codes = _pipe_codes(row.get("exit_reason_codes"))
+    target_codes = _pipe_codes(row.get("target_reason_codes"))
+    risk_flags = _pipe_codes(row.get("risk_decision_flags") or row.get("risk_flags"))
+    is_reduce_action = action in {"reduce", "exit", "flip"}
+    is_add_action = action in {"add", "entry"}
+
+    if is_reduce_action and (exit_type != "NONE" or _has_exit_code(exit_codes)):
+        return "exit_plugin"
+    if is_reduce_action and _risk_reduced_target(row) and _has_active_risk_flag(risk_flags):
+        return "risk_overlay"
+    if target_action in {"reduce", "exit", "flip"} or bool(row.get("reduce_only")):
+        return "strategy_target"
+    if _has_exit_code(target_codes):
+        return "strategy_target"
+    if action == "flip" and target_action == "entry":
+        return "strategy_target"
+    if is_add_action and target_action in {"add", "entry", "flip"}:
+        return "strategy_target"
+    if action in {"add", "reduce", "entry", "exit"} and target_action == "hold":
+        return "execution_inventory"
+    return "unattributed"
 
 
 def build_chop_neutral_edge_ledger(
@@ -276,6 +324,59 @@ def _execution_reports_by_ts(reports: list[ExecutionReport]) -> dict[int, list[d
         )
         position_qty = next_position
     return dict(by_ts)
+
+
+def _update_action_attribution(
+    action_attribution: dict[str, dict[str, Any]],
+    source_attribution: dict[str, dict[str, Any]],
+    *,
+    action: str,
+    source: str,
+    row: dict[str, Any],
+    report: dict[str, Any],
+    target_action: str,
+    micro_state: str,
+    playbook_id: str,
+) -> None:
+    payload = _action_bucket(action_attribution, action)
+    source_payload = _action_bucket(source_attribution, source)
+    fee = _safe_float(report.get("fee"))
+    turnover = _safe_float(report.get("turnover_notional"))
+    for bucket in (payload, source_payload):
+        bucket["count"] += 1
+        bucket["fees"] += fee
+        bucket["turnover_notional"] += turnover
+        bucket["source_counts"][source] += 1
+        bucket["source_fees"][source] += fee
+        bucket["action_counts"][action] += 1
+        bucket["action_fees"][action] += fee
+        bucket["target_actions"][target_action] += 1
+        bucket["micro_states"][micro_state] += 1
+        bucket["playbooks"][playbook_id] += 1
+        bucket["target_reason_codes"].update(_pipe_codes(row.get("target_reason_codes")))
+        bucket["exit_reason_codes"].update(_pipe_codes(row.get("exit_reason_codes")))
+        bucket["risk_flags"].update(_pipe_codes(row.get("risk_decision_flags") or row.get("risk_flags")))
+
+
+def _action_bucket(container: dict[str, dict[str, Any]], key: str) -> dict[str, Any]:
+    return container.setdefault(
+        key,
+        {
+            "count": 0,
+            "fees": 0.0,
+            "turnover_notional": 0.0,
+            "source_counts": Counter(),
+            "source_fees": Counter(),
+            "action_counts": Counter(),
+            "action_fees": Counter(),
+            "target_actions": Counter(),
+            "target_reason_codes": Counter(),
+            "exit_reason_codes": Counter(),
+            "risk_flags": Counter(),
+            "micro_states": Counter(),
+            "playbooks": Counter(),
+        },
+    )
 
 
 def _window_runs(payload: dict[str, Any], variant: str) -> list[dict[str, Any]]:
@@ -487,6 +588,55 @@ def _serialize_state_summary(summary: dict[str, dict[str, Any]]) -> dict[str, di
             "execution_actions": dict(payload["execution_actions"]),
         }
     return serializable
+
+
+def _serialize_action_attribution(summary: dict[str, dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    serializable: dict[str, dict[str, Any]] = {}
+    for key, payload in sorted(summary.items()):
+        serializable[key] = {
+            "count": int(payload["count"]),
+            "fees": round(float(payload["fees"]), 6),
+            "turnover_notional": round(float(payload["turnover_notional"]), 6),
+            "source_counts": dict(payload["source_counts"]),
+            "source_fees": _rounded_counter(payload["source_fees"]),
+            "action_counts": dict(payload["action_counts"]),
+            "action_fees": _rounded_counter(payload["action_fees"]),
+            "target_actions": dict(payload["target_actions"]),
+            "top_target_reason_codes": dict(payload["target_reason_codes"].most_common(12)),
+            "top_exit_reason_codes": dict(payload["exit_reason_codes"].most_common(12)),
+            "top_risk_flags": dict(payload["risk_flags"].most_common(12)),
+            "top_micro_states": dict(payload["micro_states"].most_common(12)),
+            "top_playbooks": dict(payload["playbooks"].most_common(12)),
+        }
+    return serializable
+
+
+def _rounded_counter(counter: Counter[str]) -> dict[str, float]:
+    return {key: round(float(value), 6) for key, value in counter.items()}
+
+
+def _pipe_codes(value: Any) -> list[str]:
+    if not value:
+        return []
+    return [part for part in str(value).split("|") if part]
+
+
+def _has_exit_code(codes: list[str]) -> bool:
+    return any(code.startswith("EXIT") or "_EXIT" in code for code in codes)
+
+
+def _has_active_risk_flag(flags: list[str]) -> bool:
+    return any(flag and flag != "OK" for flag in flags)
+
+
+def _risk_reduced_target(row: dict[str, Any]) -> bool:
+    original = _safe_float(row.get("risk_original_target_qty"))
+    revised = _safe_float(row.get("risk_revised_target_qty"))
+    if abs(original) <= 0.0:
+        return False
+    if abs(revised) < abs(original) - 1e-9:
+        return True
+    return bool(row.get("risk_reduce_only")) and abs(revised) <= abs(original)
 
 
 def _safe_float(value: Any) -> float:

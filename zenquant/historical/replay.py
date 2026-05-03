@@ -52,6 +52,7 @@ from zenquant.domain import (
     MarkPriceUpdate,
     OpenPositionState,
     PlaybookSelection,
+    RiskOverlayDecision,
     RiskSnapshot,
     SizingDecision,
     TargetPosition,
@@ -121,6 +122,9 @@ class HistoricalBacktestConfig:
     # Research-only compute mode. Authoritative mode preserves the full path
     # used by stage2/acceptance; lightweight mode is only for stage1 search.
     research_compute_mode: str = "authoritative"
+    # Research diagnostic only: collect decision ledgers while preserving
+    # lightweight train-search execution and early-stop semantics.
+    diagnostic_collect_ledgers: bool = False
     # Optional profiling for research-time hot path diagnosis.
     profiling_enabled: bool = False
     # Deterministic early-stop controls for lightweight train search only.
@@ -195,6 +199,9 @@ class HistoricalBacktest:
     def __init__(self, config: HistoricalBacktestConfig | None = None) -> None:
         self._config = config or HistoricalBacktestConfig()
         self._lightweight_train_search = self._config.research_compute_mode == "lightweight_train_search"
+        self._collect_decision_ledgers = (not self._lightweight_train_search) or bool(
+            self._config.diagnostic_collect_ledgers
+        )
         self._profiling_enabled = bool(self._config.profiling_enabled or self._lightweight_train_search)
         self.bus = InMemoryJetStream()
         self.bus.add_stream(StreamConfig(name="STREAM_MARKET_DATA", subjects=["md.>"]))
@@ -313,6 +320,7 @@ class HistoricalBacktest:
         self._position_states: list[OpenPositionState] = []
         self._targets: list[TargetPosition] = []
         self._reports: list[ExecutionReport] = []
+        self._risk_decisions: list[RiskOverlayDecision] = []
         self._risk_snapshots: list[RiskSnapshot] = []
         self._execution_rows: list[dict[str, Any]] = []
         self._trade_ledger = _TradeLedger()
@@ -322,7 +330,7 @@ class HistoricalBacktest:
         self._funding_index = -1
         self._open_interest_index = -1
 
-        if not self._lightweight_train_search:
+        if self._collect_decision_ledgers:
             self.bus.subscribe("indicator.>", self._collect_indicator)
             self.bus.subscribe("state.market.>", self._collect_market_state)
             self.bus.subscribe("strategy.bias.1d.>", self._collect_bias)
@@ -330,6 +338,7 @@ class HistoricalBacktest:
             self.bus.subscribe("strategy.sizing.>", self._collect_sizing)
             self.bus.subscribe("strategy.exit.>", self._collect_exit)
             self.bus.subscribe("strategy.position_state.>", self._collect_position_state)
+            self.bus.subscribe("risk.overlay.decision", self._collect_risk_decision)
             self.bus.subscribe("intent.target_position.final.>", self._collect_target)
         self.bus.subscribe("exec.order.report", self._collect_report)
         self.bus.subscribe("risk.snapshot", self._collect_risk_snapshot)
@@ -395,7 +404,7 @@ class HistoricalBacktest:
         diagnostics_started_at = metrics_finished_at
         diagnostics = (
             self._build_diagnostics()
-            if not self._lightweight_train_search
+            if self._collect_decision_ledgers
             else BacktestDiagnostics(
                 playbook_counts={},
                 actionable_exit_counts={},
@@ -702,6 +711,10 @@ class HistoricalBacktest:
         if isinstance(payload, RiskSnapshot):
             self._risk_snapshots.append(payload)
 
+    def _collect_risk_decision(self, _: str, payload: object) -> None:
+        if isinstance(payload, RiskOverlayDecision):
+            self._risk_decisions.append(payload)
+
     def _build_metrics(self, events: list[dict[str, Any]]) -> BacktestMetrics:
         returns = _equity_returns(self._risk_snapshots)
         periods_per_year = {
@@ -870,6 +883,7 @@ class HistoricalBacktest:
             for payload in self._targets
             if payload.timeframe == self._config.execution_timeframe
         }
+        risk_decision_map = {payload.cutoff_time_ns: payload for payload in self._risk_decisions}
         risk_map = {payload.ts_ns: payload for payload in self._risk_snapshots}
         bias_points = sorted(self._biases, key=lambda payload: payload.cutoff_time_ns)
         bias_index = 0
@@ -889,6 +903,7 @@ class HistoricalBacktest:
             sizing = sizing_map.get(cutoff_ns)
             exit_decision = exit_map.get(cutoff_ns)
             target = target_map.get(cutoff_ns)
+            risk_decision = risk_decision_map.get(cutoff_ns)
             risk_snapshot = risk_map.get(cutoff_ns)
             close_price = float(event_row["close"])
 
@@ -1008,6 +1023,17 @@ class HistoricalBacktest:
                         "target_regime_confidence": target.regime_confidence,
                         "target_reason_codes": "|".join(target.reason_codes),
                         "target_direction": 1.0 if target.target_qty > 0 else -1.0 if target.target_qty < 0 else 0.0,
+                    }
+                )
+
+            if risk_decision is not None:
+                row.update(
+                    {
+                        "risk_original_target_qty": risk_decision.original_target_qty,
+                        "risk_revised_target_qty": risk_decision.revised_target_qty,
+                        "risk_reduce_only": risk_decision.reduce_only,
+                        "risk_decision_flags": "|".join(risk_decision.flags),
+                        "risk_qty_delta": risk_decision.revised_target_qty - risk_decision.original_target_qty,
                     }
                 )
 

@@ -3,10 +3,9 @@
 
 This is a diagnostic runner, not a trainer. By default it mirrors Stage 1
 lightweight train-search semantics for the rejected candidate so trade_count
-and fee behavior are comparable to framework campaign artifacts. Lightweight
-Stage 1 intentionally does not collect target/indicator ledgers, so target
-reason attribution is reported as unavailable unless a future authoritative
-diagnostic path is explicitly added.
+and fee behavior are comparable to framework campaign artifacts. Pass
+--collect-ledger to keep the same lightweight execution and early-stop behavior
+while collecting target/action/risk attribution ledgers for fee-source analysis.
 """
 
 from __future__ import annotations
@@ -24,6 +23,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from zenquant.domain import ExecutionReport, Timeframe
 from zenquant.historical import HistoricalBacktest, HistoricalBacktestConfig
+from zenquant.research.attribution import build_decision_attribution_ledger
 from zenquant.research.auto_research import _build_strategy_config
 from zenquant.research.comparison import paulwei_execution_baseline, paulwei_risk_baseline
 from zenquant.research.framework_params import (
@@ -66,6 +66,8 @@ def _base_config(
     lightweight_stage1_semantics: bool,
     execution_timeframe: Timeframe,
     context_timeframe: Timeframe | None,
+    diagnostic_collect_ledgers: bool,
+    early_stop_fee_drag_buffer: float,
 ) -> HistoricalBacktestConfig:
     return HistoricalBacktestConfig(
         root_dir=root,
@@ -81,9 +83,11 @@ def _base_config(
         liquidation_data_enabled=False,
         state_liquidation_overlay_enabled=False,
         research_compute_mode=research_compute_mode,
+        diagnostic_collect_ledgers=diagnostic_collect_ledgers,
         profiling_enabled=True,
         early_stop_enabled=lightweight_stage1_semantics,
         early_stop_min_trade_count=20,
+        early_stop_fee_drag_buffer=early_stop_fee_drag_buffer,
         trial_runtime_budget_s=60.0 if lightweight_stage1_semantics else None,
     )
 
@@ -143,7 +147,7 @@ def _execution_action_counts(reports: list[ExecutionReport]) -> dict[str, int]:
     return dict(counts.most_common())
 
 
-def _run_variant(name: str, config: HistoricalBacktestConfig) -> dict[str, Any]:
+def _run_variant(name: str, config: HistoricalBacktestConfig, *, window_label: str) -> dict[str, Any]:
     runner = HistoricalBacktest(config)
     result = runner.run()
     target_reason_counts: Counter[str] = Counter()
@@ -153,6 +157,14 @@ def _run_variant(name: str, config: HistoricalBacktestConfig) -> dict[str, Any]:
     for exit_decision in getattr(runner, "_exits", []):
         if exit_decision.should_exit():
             exit_reason_counts.update(exit_decision.reason_codes or [exit_decision.reason_code])
+    decision_attribution_ledger = {}
+    if getattr(runner, "_targets", []):
+        decision_attribution_ledger = build_decision_attribution_ledger(
+            runner,
+            result,
+            variant=name,
+            window_label=window_label,
+        )
     return {
         "variant": name,
         "metrics": asdict(result.metrics),
@@ -164,6 +176,10 @@ def _run_variant(name: str, config: HistoricalBacktestConfig) -> dict[str, Any]:
         "target_reason_counts": dict(target_reason_counts.most_common(30)),
         "exit_reason_counts_available": bool(exit_reason_counts),
         "exit_reason_counts": dict(exit_reason_counts.most_common(30)),
+        "decision_attribution_available": bool(decision_attribution_ledger),
+        "action_attribution_summary": decision_attribution_ledger.get("action_attribution_summary", {}),
+        "action_source_summary": decision_attribution_ledger.get("action_source_summary", {}),
+        "decision_attribution_ledger": decision_attribution_ledger,
         "diagnostics": asdict(result.diagnostics),
     }
 
@@ -202,6 +218,8 @@ def _window_payload(
     lightweight_stage1_semantics: bool,
     execution_timeframe: Timeframe,
     context_timeframe: Timeframe | None,
+    diagnostic_collect_ledgers: bool,
+    early_stop_fee_drag_buffer: float,
     skip_baseline: bool,
 ) -> dict[str, Any]:
     base = _base_config(
@@ -214,11 +232,13 @@ def _window_payload(
         lightweight_stage1_semantics=lightweight_stage1_semantics,
         execution_timeframe=execution_timeframe,
         context_timeframe=context_timeframe,
+        diagnostic_collect_ledgers=diagnostic_collect_ledgers,
+        early_stop_fee_drag_buffer=early_stop_fee_drag_buffer,
     )
     variants = []
     if not skip_baseline:
-        variants.append(_run_variant("paulwei_baseline", _paulwei_config(base)))
-    variants.append(_run_variant("rejected_candidate", _candidate_config(base, params)))
+        variants.append(_run_variant("paulwei_baseline", _paulwei_config(base), window_label=label))
+    variants.append(_run_variant("rejected_candidate", _candidate_config(base, params), window_label=label))
     return {"window": label, "variants": variants}
 
 
@@ -251,9 +271,19 @@ def _markdown(payload: dict[str, Any]) -> str:
                     f"- execution_action_counts: `{variant['execution_action_counts']}`",
                     f"- target_reason_counts_available: `{variant['target_reason_counts_available']}`",
                     f"- exit_reason_counts_available: `{variant['exit_reason_counts_available']}`",
+                    f"- decision_attribution_available: `{variant['decision_attribution_available']}`",
                     "",
                 ]
             )
+            action_summary = variant.get("action_attribution_summary") or {}
+            if action_summary:
+                lines.extend(["#### action attribution", ""])
+                for action, summary in action_summary.items():
+                    lines.append(
+                        f"- {action}: count=`{summary['count']}`, fees=`{summary['fees']}`, "
+                        f"sources=`{summary['source_counts']}`"
+                    )
+                lines.append("")
     return "\n".join(lines)
 
 
@@ -276,6 +306,17 @@ def main() -> None:
         "--full-window",
         action="store_true",
         help="Disable early-stop/runtime budget so diagnostics cover the full requested window.",
+    )
+    parser.add_argument(
+        "--collect-ledger",
+        action="store_true",
+        help="Collect target/action/risk ledgers while preserving the selected replay and early-stop semantics.",
+    )
+    parser.add_argument(
+        "--early-stop-fee-drag-buffer",
+        type=float,
+        default=2.0,
+        help="Fee-drag early-stop buffer; use 1.25 to mirror strict train-fee Stage 1 runs.",
     )
     parser.add_argument(
         "--skip-baseline",
@@ -312,6 +353,8 @@ def main() -> None:
             lightweight_stage1_semantics=lightweight_stage1_semantics,
             execution_timeframe=execution_timeframe,
             context_timeframe=context_timeframe,
+            diagnostic_collect_ledgers=args.collect_ledger,
+            early_stop_fee_drag_buffer=args.early_stop_fee_drag_buffer,
             skip_baseline=args.skip_baseline,
         )
     ]
@@ -329,6 +372,8 @@ def main() -> None:
                 lightweight_stage1_semantics=lightweight_stage1_semantics,
                 execution_timeframe=execution_timeframe,
                 context_timeframe=context_timeframe,
+                diagnostic_collect_ledgers=args.collect_ledger,
+                early_stop_fee_drag_buffer=args.early_stop_fee_drag_buffer,
                 skip_baseline=args.skip_baseline,
             )
         )
@@ -341,11 +386,13 @@ def main() -> None:
         "execution_timeframe": execution_timeframe.value,
         "context_timeframe": context_timeframe.value if context_timeframe else None,
         "lightweight_stage1_semantics": lightweight_stage1_semantics,
+        "diagnostic_collect_ledgers": args.collect_ledger,
+        "early_stop_fee_drag_buffer": args.early_stop_fee_drag_buffer,
         "test_evaluated": False,
         "evaluation_role": "development",
         "target_reason_attribution_note": (
-            "Stage 1 lightweight train search does not collect _targets/_indicators; "
-            "target and exit reason counts are only populated when the replay mode collects those ledgers."
+            "Stage 1 lightweight train search does not collect _targets/_indicators by default; "
+            "--collect-ledger enables diagnostic-only collection without changing replay execution or early-stop semantics."
         ),
         "candidate_params": params,
         "windows": windows,
