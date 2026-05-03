@@ -19,6 +19,7 @@ MAX_FEE_DRAG_PCT_ABSOLUTE = 0.025
 MAX_TRADE_COUNT_PER_DAY = 1.50
 MIN_PROFIT_FACTOR_AFTER_FEE = 1.05
 MIN_NET_PNL_PER_TRADE_RELATIVE = 0.80
+PAULWEI_MATURE_POSITION_SWITCHES_PER_30D = 1.6807
 MAX_POSITION_SWITCHES_PER_30D = 3.0
 MAX_POSITION_SWITCH_RELATIVE_INCREASE = 1.15
 MAX_FLIP_REDUCE_FEE_DRAG_PCT_ABSOLUTE = 0.016
@@ -490,6 +491,7 @@ def score_regime_objective_candidate_generation(
     fee_drag_penalty = 0.0
     net_pnl_per_trade_penalty = 0.0
     position_switch_penalty = 0.0
+    mature_position_switch_penalty = 0.0
     flip_reduce_fee_drag_penalty = 0.0
     position_switch_efficiency_penalty = 0.0
     trade_count_per_day_penalty = max(0.0, (trade_count_per_day - MAX_TRADE_COUNT_PER_DAY) / MAX_TRADE_COUNT_PER_DAY)
@@ -530,6 +532,11 @@ def score_regime_objective_candidate_generation(
     position_switch_penalty = max(
         0.0,
         (position_switches_per_30d - position_switch_limit) / max(0.10, position_switch_limit),
+    )
+    mature_position_switch_penalty = max(
+        0.0,
+        (position_switches_per_30d - PAULWEI_MATURE_POSITION_SWITCHES_PER_30D)
+        / PAULWEI_MATURE_POSITION_SWITCHES_PER_30D,
     )
     flip_reduce_fee_drag_limit = MAX_FLIP_REDUCE_FEE_DRAG_PCT_ABSOLUTE
     if baseline_flip_reduce_fee_drag_pct > 0:
@@ -617,6 +624,7 @@ def score_regime_objective_candidate_generation(
         - 0.75 * trade_count_per_day_penalty
         - 0.75 * profit_factor_after_fee_penalty
         - 0.65 * position_switch_penalty
+        - 0.35 * mature_position_switch_penalty
         - 0.85 * flip_reduce_fee_drag_penalty
         - 0.45 * position_switch_efficiency_penalty
     )
@@ -633,7 +641,9 @@ def score_regime_objective_candidate_generation(
         "profit_factor_after_fee": round(profit_factor_after_fee, 6),
         "profit_factor_after_fee_penalty": round(profit_factor_after_fee_penalty, 6),
         "position_switches_per_30d": round(position_switches_per_30d, 6),
+        "target_position_switches_per_30d": PAULWEI_MATURE_POSITION_SWITCHES_PER_30D,
         "position_switch_penalty": round(position_switch_penalty, 6),
+        "mature_position_switch_penalty": round(mature_position_switch_penalty, 6),
         "flip_reduce_fee_drag_pct": round(flip_reduce_fee_drag_pct, 6),
         "flip_reduce_fee_drag_penalty": round(flip_reduce_fee_drag_penalty, 6),
         "flip_reduce_trade_share": round(flip_reduce_trade_share, 6),
@@ -646,6 +656,7 @@ def score_regime_objective_candidate_generation(
             "max_trade_count_per_day": MAX_TRADE_COUNT_PER_DAY,
             "min_profit_factor_after_fee": MIN_PROFIT_FACTOR_AFTER_FEE,
             "min_net_pnl_per_trade_relative": MIN_NET_PNL_PER_TRADE_RELATIVE,
+            "target_position_switches_per_30d": PAULWEI_MATURE_POSITION_SWITCHES_PER_30D,
             "max_position_switches_per_30d": MAX_POSITION_SWITCHES_PER_30D,
             "max_flip_reduce_fee_drag_pct_absolute": MAX_FLIP_REDUCE_FEE_DRAG_PCT_ABSOLUTE,
             "min_net_pnl_per_position_switch_relative": MIN_NET_PNL_PER_POSITION_SWITCH_RELATIVE,

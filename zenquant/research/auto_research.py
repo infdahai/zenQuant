@@ -94,6 +94,7 @@ TRAIN_TRUTH_DAY_FALLBACK = 1461.0
 MAX_FEE_DRAG_PCT_ABSOLUTE = 0.025
 MAX_TRADE_COUNT_PER_DAY = 1.50
 MIN_PROFIT_FACTOR_AFTER_FEE = 1.05
+PAULWEI_MATURE_POSITION_SWITCHES_PER_30D = 1.6807
 MAX_POSITION_SWITCHES_PER_30D = 3.0
 MAX_FLIP_REDUCE_FEE_DRAG_PCT_ABSOLUTE = 0.016
 
@@ -198,6 +199,11 @@ def _hostile_proxy_diagnostics(params: dict[str, Any], metrics: dict[str, float]
         0.0,
         (position_switches_per_30d - MAX_POSITION_SWITCHES_PER_30D) / MAX_POSITION_SWITCHES_PER_30D,
     )
+    mature_position_switch_penalty = max(
+        0.0,
+        (position_switches_per_30d - PAULWEI_MATURE_POSITION_SWITCHES_PER_30D)
+        / PAULWEI_MATURE_POSITION_SWITCHES_PER_30D,
+    )
     flip_reduce_fee_drag_penalty = max(
         0.0,
         (flip_reduce_fee_drag_pct - MAX_FLIP_REDUCE_FEE_DRAG_PCT_ABSOLUTE) / MAX_FLIP_REDUCE_FEE_DRAG_PCT_ABSOLUTE,
@@ -211,6 +217,7 @@ def _hostile_proxy_diagnostics(params: dict[str, Any], metrics: dict[str, float]
         + 0.55 * profit_factor_after_fee_penalty
         + 0.50 * net_pnl_per_trade_penalty
         + 0.55 * position_switch_penalty
+        + 0.60 * mature_position_switch_penalty
         + 0.65 * flip_reduce_fee_drag_penalty
         + 0.50 * max(0.0, 1.0 - profit_factor),
         6,
@@ -245,12 +252,14 @@ def _hostile_proxy_diagnostics(params: dict[str, Any], metrics: dict[str, float]
         "profit_factor_after_fee_penalty": round(profit_factor_after_fee_penalty, 6),
         "net_pnl_per_trade_penalty": round(net_pnl_per_trade_penalty, 6),
         "position_switch_penalty": round(position_switch_penalty, 6),
+        "mature_position_switch_penalty": round(mature_position_switch_penalty, 6),
         "flip_reduce_fee_drag_penalty": round(flip_reduce_fee_drag_penalty, 6),
         "train_churn_stress_penalty": train_churn_stress_penalty,
         "net_pnl_per_trade": round(net_pnl_per_trade, 6),
         "trade_count_per_day": round(trade_count_per_day, 6),
         "profit_factor_after_fee": round(profit_factor_after_fee, 6),
         "position_switches_per_30d": round(position_switches_per_30d, 6),
+        "target_position_switches_per_30d": PAULWEI_MATURE_POSITION_SWITCHES_PER_30D,
         "flip_reduce_fee_drag_pct": round(flip_reduce_fee_drag_pct, 6),
         "net_pnl_per_position_switch": round(net_pnl_per_position_switch, 6),
         "time_leverage_efficiency": round(time_leverage_efficiency, 6),
@@ -290,6 +299,8 @@ def _compact_train_trial_diagnostics(
         "net_pnl_per_position_switch",
         "time_leverage_efficiency",
         "time_leverage_bonus",
+        "target_position_switches_per_30d",
+        "mature_position_switch_penalty",
         "position_switch_penalty",
         "flip_reduce_fee_drag_penalty",
         "hostile_proxy_score",

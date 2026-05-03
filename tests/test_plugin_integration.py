@@ -388,6 +388,29 @@ class TestStrategyIntentConfirmation(unittest.TestCase):
         self.assertIsNotNone(confirmed)
         self.assertLess(confirmed.target_qty, 0.0)
 
+    def test_flat_intent_requires_configured_persistence(self):
+        bus = _strategy_bus()
+        audit_events = []
+        bus.subscribe("strategy.intent_confirmation.>", lambda _subject, payload: audit_events.append(payload))
+        engine = ARCStrategyEngine(
+            bus=bus,
+            config=ARCStrategyConfig(intent_flat_confirmation_bars=2),
+        )
+        engine._positions[("BTCUSDT_PERP", Timeframe.TF_4H)] = _position(direction=1.0)
+
+        held = engine._confirm_directional_intent(_target(qty=0.0, cutoff_time_ns=1), price=60000.0)
+        confirmed = engine._confirm_directional_intent(_target(qty=0.0, cutoff_time_ns=2), price=60000.0)
+
+        self.assertIsNotNone(held)
+        self.assertGreater(held.target_qty, 0.0)
+        self.assertFalse(held.reduce_only)
+        self.assertIn("INTENT_FLAT_HELD", held.reason_codes)
+        self.assertIsNotNone(confirmed)
+        self.assertEqual(confirmed.target_qty, 0.0)
+        self.assertIn("INTENT_FLAT_CONFIRMED_2_BARS", confirmed.reason_codes)
+        self.assertEqual(audit_events[0]["reason"], "INTENT_FLAT_CONFIRMATION_PENDING")
+        self.assertEqual(audit_events[-1]["reason"], "INTENT_FLAT_CONFIRMED")
+
     def test_pending_lower_timeframe_target_is_cleared_when_confirmation_waits(self):
         bus = _strategy_bus()
         engine = ARCStrategyEngine(
@@ -453,6 +476,49 @@ class TestStrategyIntentConfirmation(unittest.TestCase):
         self.assertEqual(qty, 1.5)
         self.assertEqual(leverage, 0.9)
         self.assertNotIn("INTENT_ADD_SIGNAL_GATE", reason_codes)
+
+    def test_add_confirmation_holds_same_direction_add_until_persistent(self):
+        bus = _strategy_bus()
+        audit_events = []
+        bus.subscribe("strategy.intent_add_confirmation.>", lambda _subject, payload: audit_events.append(payload))
+        engine = ARCStrategyEngine(
+            bus=bus,
+            config=ARCStrategyConfig(
+                intent_add_signal_threshold=0.40,
+                intent_add_confirmation_bars=2,
+            ),
+        )
+        engine._positions[("BTCUSDT_PERP", Timeframe.TF_4H)] = _position(direction=1.0)
+        engine._plugin_signal_context[("BTCUSDT_PERP", Timeframe.TF_4H)] = {"effective_direction": 0.45}
+
+        first_reasons: list[str] = []
+        first_qty, first_leverage = engine._apply_same_direction_add_gate(
+            symbol="BTCUSDT_PERP",
+            timeframe=Timeframe.TF_4H,
+            target_qty=1.5,
+            target_leverage=0.9,
+            price=60000.0,
+            reason_codes=first_reasons,
+        )
+        second_reasons: list[str] = []
+        second_qty, second_leverage = engine._apply_same_direction_add_gate(
+            symbol="BTCUSDT_PERP",
+            timeframe=Timeframe.TF_4H,
+            target_qty=1.5,
+            target_leverage=0.9,
+            price=60000.0,
+            reason_codes=second_reasons,
+        )
+
+        self.assertEqual(first_qty, 1.0)
+        self.assertAlmostEqual(first_leverage, 0.6)
+        self.assertIn("INTENT_ADD_CONFIRMATION_PENDING", first_reasons)
+        self.assertIn("INTENT_ADD_HELD", first_reasons)
+        self.assertEqual(second_qty, 1.5)
+        self.assertEqual(second_leverage, 0.9)
+        self.assertIn("INTENT_ADD_CONFIRMED_2_BARS", second_reasons)
+        self.assertEqual(audit_events[0]["reason"], "INTENT_ADD_CONFIRMATION_PENDING")
+        self.assertEqual(audit_events[-1]["reason"], "INTENT_ADD_CONFIRMED")
 
     def test_time_leverage_guard_holds_existing_position_before_flip_is_confirmed(self):
         bus = _strategy_bus()

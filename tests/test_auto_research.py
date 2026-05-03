@@ -358,9 +358,67 @@ class TestStage1HostileProxy(unittest.TestCase):
         )
 
         self.assertGreater(efficient["time_leverage_bonus"], churny["time_leverage_bonus"])
+        self.assertGreater(
+            churny["mature_position_switch_penalty"],
+            efficient["mature_position_switch_penalty"],
+        )
         self.assertGreater(churny["position_switch_penalty"], efficient["position_switch_penalty"])
         self.assertGreater(churny["flip_reduce_fee_drag_penalty"], efficient["flip_reduce_fee_drag_penalty"])
         self.assertLess(churny["hostile_proxy_score"], efficient["hostile_proxy_score"])
+
+    def test_hostile_proxy_soft_targets_paulwei_mature_switch_cadence(self) -> None:
+        params = {
+            "target_vol_4h": 0.95,
+            "max_leverage": 4.5,
+            "pyramid_initial_pct": 0.25,
+            "pyramid_add_pct": 0.20,
+            "pyramid_short_initial_pct": 0.15,
+            "pyramid_short_add_pct": 0.12,
+            "dca_spacing_atr": 1.25,
+            "dca_size_decay": 0.75,
+            "flip_min_confidence": 0.65,
+        }
+        below_mature_cadence = _hostile_proxy_diagnostics(
+            params,
+            {
+                "sharpe": 2.0,
+                "max_drawdown": 0.08,
+                "profit_factor": 1.2,
+                "fee_drag_pct": 0.015,
+                "trade_count": 180,
+                "net_pnl": 4500.0,
+                "net_pnl_per_trade": 25.0,
+                "position_switches_per_30d": 1.6,
+                "flip_reduce_fee_drag_pct": 0.008,
+                "net_pnl_per_position_switch": 300.0,
+                "terminated_early": 0.0,
+            },
+        )
+        above_mature_cadence = _hostile_proxy_diagnostics(
+            params,
+            {
+                "sharpe": 2.0,
+                "max_drawdown": 0.08,
+                "profit_factor": 1.2,
+                "fee_drag_pct": 0.015,
+                "trade_count": 180,
+                "net_pnl": 4500.0,
+                "net_pnl_per_trade": 25.0,
+                "position_switches_per_30d": 2.6,
+                "flip_reduce_fee_drag_pct": 0.008,
+                "net_pnl_per_position_switch": 300.0,
+                "terminated_early": 0.0,
+            },
+        )
+
+        self.assertEqual(below_mature_cadence["mature_position_switch_penalty"], 0.0)
+        self.assertEqual(below_mature_cadence["target_position_switches_per_30d"], 1.6807)
+        self.assertGreater(above_mature_cadence["mature_position_switch_penalty"], 0.0)
+        self.assertEqual(above_mature_cadence["position_switch_penalty"], 0.0)
+        self.assertGreater(
+            below_mature_cadence["hostile_proxy_score"],
+            above_mature_cadence["hostile_proxy_score"],
+        )
 
     def test_stage1_sort_metric_prefers_hostile_proxy_score_over_raw_sharpe(self) -> None:
         strong_sharpe = {"sharpe": 3.0, "hostile_proxy_score": 0.2}
@@ -591,11 +649,13 @@ class TestSearchSpace(unittest.TestCase):
                 "preserve_capital_risk": 0.65,
                 "bull_leverage": 3.0,
                 "exit_transition_risk": 0.85,
+                "intent_add_confirmation_bars": 4,
             }
         )
         self.assertEqual(config.playbook_config.preserve_capital_transition_risk, 0.65)
         self.assertEqual(config.playbook_config.bull_max_leverage, 3.0)
         self.assertEqual(config.exit_config.transition_risk_exit_threshold, 0.85)
+        self.assertEqual(config.intent_add_confirmation_bars, 4)
 
     def test_build_strategy_config_partial(self) -> None:
         config = _build_strategy_config({"bull_leverage": 2.5})

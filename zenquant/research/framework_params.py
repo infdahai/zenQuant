@@ -35,12 +35,16 @@ def build_strategy_config(params: dict[str, Any]) -> ARCStrategyConfig:
             strategy_kwargs["intent_entry_confirmation_bars"] = int(value)
         elif key == "intent_flip_confirmation_bars":
             strategy_kwargs["intent_flip_confirmation_bars"] = int(value)
+        elif key == "intent_flat_confirmation_bars":
+            strategy_kwargs["intent_flat_confirmation_bars"] = int(value)
         elif key == "intent_unconfirmed_flip_reduce_only":
             strategy_kwargs["intent_unconfirmed_flip_reduce_only"] = bool(round(float(value)))
         elif key == "direction_signal_threshold":
             strategy_kwargs["direction_signal_threshold"] = float(value)
         elif key == "intent_add_signal_threshold":
             strategy_kwargs["intent_add_signal_threshold"] = float(value)
+        elif key == "intent_add_confirmation_bars":
+            strategy_kwargs["intent_add_confirmation_bars"] = int(value)
         elif key == "intent_time_leverage_hold_enabled":
             strategy_kwargs["intent_time_leverage_hold_enabled"] = bool(round(float(value)))
         elif key == "intent_time_leverage_min_hold_bars":
@@ -89,6 +93,14 @@ def build_strategy_config(params: dict[str, Any]) -> ARCStrategyConfig:
             playbook_kwargs["range_time_decay_bars"] = int(value)
         elif key == "preserve_capital_time_decay_bars":
             playbook_kwargs["preserve_capital_time_decay_bars"] = int(value)
+        elif key == "range_trailing_stop_atr_mult":
+            playbook_kwargs["range_trailing_stop_atr_mult"] = float(value)
+        elif key == "preserve_capital_trailing_stop_atr_mult":
+            playbook_kwargs["preserve_capital_trailing_stop_atr_mult"] = float(value)
+        elif key == "bull_trailing_stop_atr_mult":
+            playbook_kwargs["bull_trailing_stop_atr_mult"] = float(value)
+        elif key == "bear_trailing_stop_atr_mult":
+            playbook_kwargs["bear_trailing_stop_atr_mult"] = float(value)
         elif key == "trade_directional_confidence_floor":
             playbook_kwargs["trade_directional_confidence_floor"] = float(value)
         elif key == "bearish_override_confidence_floor":
@@ -170,6 +182,11 @@ def build_plugin_config_overrides(params: dict[str, Any]) -> dict[str, dict[str,
             "discount_floor": float(params.get("binance_metrics_risk_discount_floor", 0.65)),
             "max_discount": float(params.get("binance_metrics_risk_max_discount", 0.35)),
         }
+
+    if "exit_transition_risk" in params:
+        overrides.setdefault("exits", {}).setdefault("regime_change_exit", {})["transition_risk_threshold"] = float(
+            params["exit_transition_risk"]
+        )
 
     return overrides
 
@@ -426,46 +443,50 @@ def intent_churn_repair_param_grid(*, include_liquidation_toggles: bool = False)
 
 
 def intent_churn_ablation_param_grid(*, include_liquidation_toggles: bool = False) -> dict[str, list[float]]:
-    """Train-only single-control strategy-intent ablation around a no-control edge anchor."""
+    """Train-only strategy-intent search biased toward PaulWei mature low-switch cadence."""
 
     grid: dict[str, list[float]] = {
         "dd_step_1_long": [0.18],
         "dd_step_1_short": [0.10],
         "vpin_threshold": [0.10],
         "vol_shock_threshold": [1.00],
-        "target_vol_4h": [0.50, 0.65, 0.80],
-        "max_leverage": [2.5, 3.0, 3.5],
+        "target_vol_4h": [0.45, 0.50, 0.65],
+        "max_leverage": [2.5, 3.0],
         "pyramid_initial_pct": [0.30],
         "pyramid_add_pct": [0.30],
         "pyramid_short_initial_pct": [0.15],
-        "pyramid_short_add_pct": [0.12],
+        "pyramid_short_add_pct": [0.10, 0.12],
         "pyramid_spacing_atr": [1.00],
         "exit_unwind_pct": [0.35],
         "dca_max_adverse_atr": [2.5],
         "dca_spacing_atr": [1.75],
         "dca_size_decay": [0.90],
         "flip_min_confidence": [0.70],
-        "range_time_decay_bars": [3, 5, 8, 12],
-        "preserve_capital_time_decay_bars": [1, 2, 3],
+        "range_time_decay_bars": [5, 8, 12, 16],
+        "preserve_capital_time_decay_bars": [2, 3, 4],
+        "range_trailing_stop_atr_mult": [2.5, 3.0, 3.5],
+        "preserve_capital_trailing_stop_atr_mult": [1.5, 2.0],
         "trade_directional_confidence_floor": [0.50, 0.55, 0.60, 0.65],
         "bearish_override_confidence_floor": [0.50, 0.55, 0.60, 0.65],
         "exit_transition_risk": [0.80, 0.85, 0.90],
-        "direction_signal_threshold": [0.15, 0.20, 0.25, 0.30, 0.35],
-        "intent_add_signal_threshold": [0.0, 0.30, 0.35, 0.40, 0.45],
-        "intent_entry_confirmation_bars": [1, 2],
-        "intent_flip_confirmation_bars": [1, 2, 3],
-        "intent_unconfirmed_flip_reduce_only": [0.0, 1.0],
-        "intent_time_leverage_hold_enabled": [0.0, 1.0],
-        "intent_time_leverage_min_hold_bars": [0, 12, 24, 48],
-        "intent_time_leverage_flip_signal_threshold": [0.45, 0.55, 0.65],
-        "intent_time_leverage_confidence_floor": [0.55, 0.65],
-        "intent_time_leverage_transition_risk_floor": [0.25, 0.35, 0.45],
-        "intent_time_leverage_size_hysteresis_enabled": [0.0, 1.0],
-        "intent_time_leverage_add_deadband_pct": [0.0, 0.10, 0.15],
-        "intent_time_leverage_reduce_deadband_pct": [0.0, 0.20, 0.30],
-        "intent_time_leverage_long_bias_enabled": [0.0, 1.0],
-        "intent_time_leverage_long_bias_confidence_floor": [0.60, 0.65, 0.70],
-        "intent_time_leverage_long_bias_transition_ceiling": [0.35, 0.45],
+        "direction_signal_threshold": [0.30, 0.35, 0.40, 0.45],
+        "intent_add_signal_threshold": [0.45, 0.50, 0.55],
+        "intent_add_confirmation_bars": [1, 2, 4],
+        "intent_entry_confirmation_bars": [3, 4],
+        "intent_flip_confirmation_bars": [5, 6, 8],
+        "intent_flat_confirmation_bars": [4, 8, 12],
+        "intent_unconfirmed_flip_reduce_only": [1.0],
+        "intent_time_leverage_hold_enabled": [1.0],
+        "intent_time_leverage_min_hold_bars": [120, 168, 240],
+        "intent_time_leverage_flip_signal_threshold": [0.65, 0.75],
+        "intent_time_leverage_confidence_floor": [0.65, 0.70],
+        "intent_time_leverage_transition_risk_floor": [0.35, 0.45],
+        "intent_time_leverage_size_hysteresis_enabled": [1.0],
+        "intent_time_leverage_add_deadband_pct": [0.15, 0.20, 0.25],
+        "intent_time_leverage_reduce_deadband_pct": [0.40, 0.60, 0.80],
+        "intent_time_leverage_long_bias_enabled": [1.0],
+        "intent_time_leverage_long_bias_confidence_floor": [0.65, 0.70],
+        "intent_time_leverage_long_bias_transition_ceiling": [0.35],
         "intent_time_leverage_long_bias_block_short": [1.0],
         "intent_time_leverage_long_bias_hold_reductions": [1.0],
         "intent_time_leverage_dip_accumulation_enabled": [0.0, 1.0],
@@ -774,11 +795,14 @@ def intent_churn_ablation_seed_trials() -> list[dict[str, float]]:
         "flip_min_confidence": 0.70,
         "range_time_decay_bars": 3,
         "preserve_capital_time_decay_bars": 1,
+        "range_trailing_stop_atr_mult": 2.5,
+        "preserve_capital_trailing_stop_atr_mult": 1.5,
         "trade_directional_confidence_floor": 0.50,
         "bearish_override_confidence_floor": 0.50,
         "exit_transition_risk": 0.80,
         "direction_signal_threshold": 0.15,
         "intent_add_signal_threshold": 0.0,
+        "intent_add_confirmation_bars": 1,
         "intent_entry_confirmation_bars": 1,
         "intent_flip_confirmation_bars": 1,
         "intent_unconfirmed_flip_reduce_only": 0.0,
@@ -820,8 +844,121 @@ def intent_churn_ablation_seed_trials() -> list[dict[str, float]]:
         "bearish_override_confidence_floor": 0.55,
         "exit_transition_risk": 0.85,
     }
+    mature_low_switch = {
+        **fee_shape,
+        "target_vol_4h": 0.50,
+        "max_leverage": 3.0,
+        "pyramid_short_add_pct": 0.10,
+        "range_time_decay_bars": 8,
+        "preserve_capital_time_decay_bars": 3,
+        "range_trailing_stop_atr_mult": 3.0,
+        "preserve_capital_trailing_stop_atr_mult": 2.0,
+        "trade_directional_confidence_floor": 0.60,
+        "bearish_override_confidence_floor": 0.60,
+        "exit_transition_risk": 0.80,
+        "direction_signal_threshold": 0.45,
+        "intent_add_signal_threshold": 0.50,
+        "intent_add_confirmation_bars": 1,
+        "intent_entry_confirmation_bars": 4,
+        "intent_flip_confirmation_bars": 6,
+        "intent_flat_confirmation_bars": 8,
+        "intent_unconfirmed_flip_reduce_only": 1.0,
+        "intent_time_leverage_hold_enabled": 1.0,
+        "intent_time_leverage_min_hold_bars": 168,
+        "intent_time_leverage_flip_signal_threshold": 0.75,
+        "intent_time_leverage_confidence_floor": 0.70,
+        "intent_time_leverage_transition_risk_floor": 0.45,
+        "intent_time_leverage_size_hysteresis_enabled": 1.0,
+        "intent_time_leverage_add_deadband_pct": 0.25,
+        "intent_time_leverage_reduce_deadband_pct": 0.80,
+        "intent_time_leverage_long_bias_enabled": 1.0,
+        "intent_time_leverage_long_bias_confidence_floor": 0.70,
+        "intent_time_leverage_long_bias_transition_ceiling": 0.35,
+        "intent_time_leverage_dip_accumulation_enabled": 1.0,
+        "intent_time_leverage_dip_min_adverse_atr": 1.25,
+        "intent_time_leverage_dip_max_adverse_atr": 3.0,
+        "intent_time_leverage_dip_add_pct": 0.15,
+        "intent_time_leverage_dip_max_leverage": 3.0,
+    }
+    fee_efficient_high_return = {
+        **fee_shape,
+        "target_vol_4h": 0.65,
+        "max_leverage": 3.0,
+        "direction_signal_threshold": 0.30,
+        "intent_add_signal_threshold": 0.45,
+        "intent_add_confirmation_bars": 1,
+        "intent_entry_confirmation_bars": 3,
+        "intent_flip_confirmation_bars": 5,
+        "intent_flat_confirmation_bars": 4,
+        "intent_unconfirmed_flip_reduce_only": 1.0,
+        "intent_time_leverage_hold_enabled": 1.0,
+        "intent_time_leverage_min_hold_bars": 120,
+        "intent_time_leverage_flip_signal_threshold": 0.65,
+        "intent_time_leverage_confidence_floor": 0.65,
+        "intent_time_leverage_transition_risk_floor": 0.35,
+        "intent_time_leverage_size_hysteresis_enabled": 1.0,
+        "intent_time_leverage_add_deadband_pct": 0.15,
+        "intent_time_leverage_reduce_deadband_pct": 0.40,
+        "intent_time_leverage_long_bias_enabled": 1.0,
+        "intent_time_leverage_long_bias_confidence_floor": 0.65,
+        "intent_time_leverage_long_bias_transition_ceiling": 0.35,
+        "intent_time_leverage_dip_accumulation_enabled": 1.0,
+        "intent_time_leverage_dip_min_adverse_atr": 0.75,
+        "intent_time_leverage_dip_max_adverse_atr": 2.5,
+        "intent_time_leverage_dip_add_pct": 0.10,
+        "intent_time_leverage_dip_max_leverage": 3.0,
+    }
+    fee_efficient_slow_flip = {
+        **fee_efficient_high_return,
+        "intent_flip_confirmation_bars": 8,
+        "intent_time_leverage_min_hold_bars": 240,
+        "intent_time_leverage_flip_signal_threshold": 0.75,
+        "intent_time_leverage_confidence_floor": 0.70,
+    }
+    fee_efficient_wide_hysteresis = {
+        **fee_efficient_slow_flip,
+        "direction_signal_threshold": 0.35,
+        "intent_time_leverage_add_deadband_pct": 0.25,
+        "intent_time_leverage_reduce_deadband_pct": 0.80,
+    }
+    slow_exit_low_switch = {
+        **mature_low_switch,
+        "range_time_decay_bars": 12,
+        "preserve_capital_time_decay_bars": 4,
+        "range_trailing_stop_atr_mult": 3.5,
+        "preserve_capital_trailing_stop_atr_mult": 2.0,
+        "exit_transition_risk": 0.90,
+        "intent_flat_confirmation_bars": 8,
+    }
     return [
-        dict(base),
+        mature_low_switch,
+        slow_exit_low_switch,
+        {
+            **mature_low_switch,
+            "intent_add_signal_threshold": 0.55,
+            "intent_add_confirmation_bars": 2,
+            "intent_flat_confirmation_bars": 12,
+        },
+        fee_efficient_high_return,
+        fee_efficient_slow_flip,
+        fee_efficient_wide_hysteresis,
+        {
+            **mature_low_switch,
+            "max_leverage": 2.5,
+        },
+        {
+            **mature_low_switch,
+            "target_vol_4h": 0.45,
+        },
+        {
+            **mature_low_switch,
+            "target_vol_4h": 0.65,
+            "direction_signal_threshold": 0.40,
+            "intent_add_signal_threshold": 0.55,
+            "intent_flip_confirmation_bars": 8,
+            "intent_time_leverage_min_hold_bars": 240,
+            "exit_transition_risk": 0.90,
+        },
         {
             **fee_shape,
             "direction_signal_threshold": 0.25,

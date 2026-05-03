@@ -83,8 +83,10 @@ class ARCStrategyConfig:
     direction_signal_threshold: float = DIRECTION_THRESHOLD
     intent_entry_confirmation_bars: int = 1
     intent_flip_confirmation_bars: int = 1
+    intent_flat_confirmation_bars: int = 1
     intent_unconfirmed_flip_reduce_only: bool = False
     intent_add_signal_threshold: float = 0.0
+    intent_add_confirmation_bars: int = 1
     intent_time_leverage_hold_enabled: bool = False
     intent_time_leverage_min_hold_bars: int = 0
     intent_time_leverage_flip_signal_threshold: float = 0.55
@@ -160,6 +162,7 @@ class ARCStrategyEngine:
         self._pending_1h_target: dict[str, TargetPosition] = {}
         self._pending_1h_bars: dict[str, int] = {}
         self._intent_confirmation: dict[str, _IntentConfirmationState] = {}
+        self._intent_add_confirmation: dict[tuple[str, Timeframe], _IntentConfirmationState] = {}
 
         # Phase 2: position tracking for trailing stops
         self._positions: dict[tuple[str, Timeframe], OpenPositionState] = {}
@@ -262,7 +265,9 @@ class ARCStrategyEngine:
             pack = self._latest_packs.get((state.symbol, state.timeframe))
             if pack is not None:
                 target = self._build_target(pack, state, playbook)
-                target = self._confirm_directional_intent(target)
+                target = self._confirm_directional_intent(
+                    target, price=float(pack.values.get("last_price", 0.0) or 0.0)
+                )
                 if target is not None:
                     self._pending_4h_target[state.symbol] = target
                     self._pending_4h_bars[state.symbol] = 0
@@ -319,7 +324,7 @@ class ARCStrategyEngine:
         if pack is None:
             return
         target = self._build_target(pack, state, playbook)
-        target = self._confirm_directional_intent(target)
+        target = self._confirm_directional_intent(target, price=float(pack.values.get("last_price", 0.0) or 0.0))
         if target is None:
             return
         reason = self._build_reason(target)
@@ -563,13 +568,58 @@ class ARCStrategyEngine:
             atr=pending.atr,
         )
 
-    def _confirm_directional_intent(self, target: TargetPosition) -> TargetPosition | None:
+    def _confirm_directional_intent(
+        self, target: TargetPosition, *, price: float | None = None
+    ) -> TargetPosition | None:
         direction = self._target_direction(target.target_qty)
-        if target.reduce_only or direction == 0.0:
+        if target.reduce_only:
             self._intent_confirmation.pop(target.symbol, None)
             return target
 
         current_direction = self._current_execution_position_direction(target.symbol, target.timeframe)
+        if direction == 0.0:
+            if current_direction == 0.0:
+                self._intent_confirmation.pop(target.symbol, None)
+                return target
+            required_bars = max(1, int(self._config.intent_flat_confirmation_bars))
+            if required_bars <= 1:
+                self._intent_confirmation.pop(target.symbol, None)
+                return target
+            confirmation = self._intent_confirmation.get(target.symbol)
+            if confirmation is None or confirmation.direction != 0.0:
+                confirmation = _IntentConfirmationState(direction=0.0, bars=1)
+            else:
+                confirmation.bars += 1
+            self._intent_confirmation[target.symbol] = confirmation
+            if confirmation.bars < required_bars:
+                self._bus.publish(
+                    f"strategy.intent_confirmation.{target.timeframe.value}.{target.symbol}",
+                    {
+                        "symbol": target.symbol,
+                        "timeframe": target.timeframe.value,
+                        "cutoff_time_ns": target.cutoff_time_ns,
+                        "direction": direction,
+                        "bars": confirmation.bars,
+                        "required_bars": required_bars,
+                        "reason": "INTENT_FLAT_CONFIRMATION_PENDING",
+                    },
+                )
+                return self._hold_current_position_for_flat_confirmation(target, price=price)
+            target.reason_codes.append(f"INTENT_FLAT_CONFIRMED_{required_bars}_BARS")
+            self._bus.publish(
+                f"strategy.intent_confirmation.{target.timeframe.value}.{target.symbol}",
+                {
+                    "symbol": target.symbol,
+                    "timeframe": target.timeframe.value,
+                    "cutoff_time_ns": target.cutoff_time_ns,
+                    "direction": direction,
+                    "bars": confirmation.bars,
+                    "required_bars": required_bars,
+                    "reason": "INTENT_FLAT_CONFIRMED",
+                },
+            )
+            return target
+
         if current_direction == direction:
             self._intent_confirmation.pop(target.symbol, None)
             return target
@@ -645,6 +695,42 @@ class ARCStrategyEngine:
             atr=target.atr,
         )
 
+    def _hold_current_position_for_flat_confirmation(
+        self,
+        target: TargetPosition,
+        *,
+        price: float | None,
+    ) -> TargetPosition:
+        position = self._current_execution_position(target.symbol, target.timeframe)
+        if position is None:
+            return target
+        signed_qty = position.direction * position.current_qty
+        target_leverage = target.target_leverage
+        mark_price = float(price or 0.0)
+        if mark_price <= 0.0:
+            mark_price = position.entry_price
+        if mark_price > 0.0 and self._equity > 0.0:
+            target_leverage = abs(signed_qty * mark_price) / self._equity
+        return TargetPosition(
+            intent_id=target.intent_id,
+            portfolio=target.portfolio,
+            symbol=target.symbol,
+            timeframe=target.timeframe,
+            cutoff_time_ns=target.cutoff_time_ns,
+            target_qty=round(signed_qty, 6),
+            target_leverage=round(target_leverage, 4),
+            reduce_only=False,
+            regime=target.regime,
+            regime_confidence=target.regime_confidence,
+            reason_codes=[
+                *target.reason_codes,
+                "INTENT_FLAT_CONFIRMATION_PENDING",
+                "INTENT_FLAT_HELD",
+            ],
+            realized_vol=target.realized_vol,
+            atr=target.atr,
+        )
+
     def _current_execution_position_direction(self, symbol: str, target_timeframe: Timeframe) -> float:
         position = self._current_execution_position(symbol, target_timeframe)
         if position is not None and position.current_qty >= self._config.min_trade_qty:
@@ -680,30 +766,98 @@ class ARCStrategyEngine:
         price: float,
         reason_codes: list[str],
     ) -> tuple[float, float]:
+        confirmation_key = (symbol, timeframe)
         threshold = max(0.0, float(self._config.intent_add_signal_threshold))
         if threshold <= 0.0 or abs(target_qty) < self._config.min_trade_qty:
+            self._intent_add_confirmation.pop(confirmation_key, None)
             return target_qty, target_leverage
 
         position = self._current_execution_position(symbol, timeframe)
         if position is None:
+            self._intent_add_confirmation.pop(confirmation_key, None)
             return target_qty, target_leverage
 
         current_signed_qty = position.direction * position.current_qty
         if current_signed_qty * target_qty <= 0.0:
+            self._intent_add_confirmation.pop(confirmation_key, None)
             return target_qty, target_leverage
         if abs(target_qty) <= abs(current_signed_qty) + self._config.min_trade_qty:
+            self._intent_add_confirmation.pop(confirmation_key, None)
             return target_qty, target_leverage
 
         context = self._plugin_signal_context.get((symbol, timeframe), {})
         signal_strength = abs(float(context.get("effective_direction", 0.0) or 0.0))
-        if signal_strength >= threshold:
+        if signal_strength < threshold:
+            self._intent_add_confirmation.pop(confirmation_key, None)
+            capped_qty, capped_leverage = self._current_position_target(
+                current_signed_qty=current_signed_qty,
+                target_leverage=target_leverage,
+                price=price,
+            )
+            reason_codes.append("INTENT_ADD_SIGNAL_GATE")
+            return capped_qty, capped_leverage
+
+        required_bars = max(1, int(self._config.intent_add_confirmation_bars))
+        if required_bars <= 1:
+            self._intent_add_confirmation.pop(confirmation_key, None)
             return target_qty, target_leverage
 
+        direction = self._target_direction(target_qty)
+        confirmation = self._intent_add_confirmation.get(confirmation_key)
+        if confirmation is None or confirmation.direction != direction:
+            confirmation = _IntentConfirmationState(direction=direction, bars=1)
+        else:
+            confirmation.bars += 1
+        self._intent_add_confirmation[confirmation_key] = confirmation
+
+        if confirmation.bars >= required_bars:
+            self._intent_add_confirmation.pop(confirmation_key, None)
+            reason_codes.append(f"INTENT_ADD_CONFIRMED_{required_bars}_BARS")
+            self._bus.publish(
+                f"strategy.intent_add_confirmation.{timeframe.value}.{symbol}",
+                {
+                    "symbol": symbol,
+                    "timeframe": timeframe.value,
+                    "direction": direction,
+                    "bars": confirmation.bars,
+                    "required_bars": required_bars,
+                    "signal_strength": signal_strength,
+                    "reason": "INTENT_ADD_CONFIRMED",
+                },
+            )
+            return target_qty, target_leverage
+
+        capped_qty, capped_leverage = self._current_position_target(
+            current_signed_qty=current_signed_qty,
+            target_leverage=target_leverage,
+            price=price,
+        )
+        reason_codes.extend(["INTENT_ADD_CONFIRMATION_PENDING", "INTENT_ADD_HELD"])
+        self._bus.publish(
+            f"strategy.intent_add_confirmation.{timeframe.value}.{symbol}",
+            {
+                "symbol": symbol,
+                "timeframe": timeframe.value,
+                "direction": direction,
+                "bars": confirmation.bars,
+                "required_bars": required_bars,
+                "signal_strength": signal_strength,
+                "reason": "INTENT_ADD_CONFIRMATION_PENDING",
+            },
+        )
+        return capped_qty, capped_leverage
+
+    def _current_position_target(
+        self,
+        *,
+        current_signed_qty: float,
+        target_leverage: float,
+        price: float,
+    ) -> tuple[float, float]:
         capped_qty = current_signed_qty
         capped_leverage = target_leverage
         if price > 0.0 and self._equity > 0.0:
             capped_leverage = abs(capped_qty * price) / self._equity
-        reason_codes.append("INTENT_ADD_SIGNAL_GATE")
         return capped_qty, capped_leverage
 
     def _apply_time_leverage_hold_guard(
