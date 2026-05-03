@@ -44,6 +44,12 @@ class _IndicatorValues:
     momentum_roc_z: float
 
 
+@dataclass(slots=True)
+class _IntentConfirmationState:
+    direction: float
+    bars: int
+
+
 # Minimum absolute signal strength to take a directional position.
 # Below this threshold, the plugin-composed signal is treated as neutral (0.0).
 DIRECTION_THRESHOLD: float = 0.15
@@ -74,6 +80,10 @@ class ARCStrategyConfig:
     sizing_config: SizingEngineConfig | None = None
     exit_config: ExitEngineConfig | None = None
     enable_adaptive_signal_weights: bool = False
+    direction_signal_threshold: float = DIRECTION_THRESHOLD
+    intent_entry_confirmation_bars: int = 1
+    intent_flip_confirmation_bars: int = 1
+    intent_unconfirmed_flip_reduce_only: bool = False
 
 
 class ARCStrategyEngine:
@@ -130,6 +140,7 @@ class ARCStrategyEngine:
         self._pending_4h_bars: dict[str, int] = {}  # bars waited since 4H target
         self._pending_1h_target: dict[str, TargetPosition] = {}
         self._pending_1h_bars: dict[str, int] = {}
+        self._intent_confirmation: dict[str, _IntentConfirmationState] = {}
 
         # Phase 2: position tracking for trailing stops
         self._positions: dict[tuple[str, Timeframe], OpenPositionState] = {}
@@ -232,10 +243,17 @@ class ARCStrategyEngine:
             pack = self._latest_packs.get((state.symbol, state.timeframe))
             if pack is not None:
                 target = self._build_target(pack, state, playbook)
-                self._pending_4h_target[state.symbol] = target
-                self._pending_4h_bars[state.symbol] = 0
-                self._pending_1h_target.pop(state.symbol, None)
-                self._pending_1h_bars.pop(state.symbol, None)
+                target = self._confirm_directional_intent(target)
+                if target is not None:
+                    self._pending_4h_target[state.symbol] = target
+                    self._pending_4h_bars[state.symbol] = 0
+                    self._pending_1h_target.pop(state.symbol, None)
+                    self._pending_1h_bars.pop(state.symbol, None)
+                else:
+                    self._pending_4h_target.pop(state.symbol, None)
+                    self._pending_4h_bars.pop(state.symbol, None)
+                    self._pending_1h_target.pop(state.symbol, None)
+                    self._pending_1h_bars.pop(state.symbol, None)
             return
 
         # 1H entry optimization for direct 1H execution.
@@ -282,6 +300,9 @@ class ARCStrategyEngine:
         if pack is None:
             return
         target = self._build_target(pack, state, playbook)
+        target = self._confirm_directional_intent(target)
+        if target is None:
+            return
         reason = self._build_reason(target)
         self._bus.publish(
             f"strategy.regime.{self._config.portfolio}",
@@ -522,6 +543,107 @@ class ARCStrategyEngine:
             realized_vol=pending.realized_vol,
             atr=pending.atr,
         )
+
+    def _confirm_directional_intent(self, target: TargetPosition) -> TargetPosition | None:
+        direction = self._target_direction(target.target_qty)
+        if target.reduce_only or direction == 0.0:
+            self._intent_confirmation.pop(target.symbol, None)
+            return target
+
+        current_direction = self._current_execution_position_direction(target.symbol, target.timeframe)
+        if current_direction == direction:
+            self._intent_confirmation.pop(target.symbol, None)
+            return target
+
+        required_bars = (
+            self._config.intent_flip_confirmation_bars
+            if current_direction != 0.0 and current_direction != direction
+            else self._config.intent_entry_confirmation_bars
+        )
+        required_bars = max(1, int(required_bars))
+        if required_bars <= 1:
+            self._intent_confirmation.pop(target.symbol, None)
+            return target
+
+        confirmation = self._intent_confirmation.get(target.symbol)
+        if confirmation is None or confirmation.direction != direction:
+            confirmation = _IntentConfirmationState(direction=direction, bars=1)
+        else:
+            confirmation.bars += 1
+        self._intent_confirmation[target.symbol] = confirmation
+
+        if confirmation.bars < required_bars:
+            self._bus.publish(
+                f"strategy.intent_confirmation.{target.timeframe.value}.{target.symbol}",
+                {
+                    "symbol": target.symbol,
+                    "timeframe": target.timeframe.value,
+                    "cutoff_time_ns": target.cutoff_time_ns,
+                    "direction": direction,
+                    "bars": confirmation.bars,
+                    "required_bars": required_bars,
+                    "reason": "INTENT_CONFIRMATION_PENDING",
+                },
+            )
+            if current_direction != 0.0 and self._config.intent_unconfirmed_flip_reduce_only:
+                return self._flatten_unconfirmed_flip(target)
+            return None
+
+        target.reason_codes.append(f"INTENT_CONFIRMED_{required_bars}_BARS")
+        self._bus.publish(
+            f"strategy.intent_confirmation.{target.timeframe.value}.{target.symbol}",
+            {
+                "symbol": target.symbol,
+                "timeframe": target.timeframe.value,
+                "cutoff_time_ns": target.cutoff_time_ns,
+                "direction": direction,
+                "bars": confirmation.bars,
+                "required_bars": required_bars,
+                "reason": "INTENT_CONFIRMED",
+            },
+        )
+        return target
+
+    @staticmethod
+    def _flatten_unconfirmed_flip(target: TargetPosition) -> TargetPosition:
+        return TargetPosition(
+            intent_id=target.intent_id,
+            portfolio=target.portfolio,
+            symbol=target.symbol,
+            timeframe=target.timeframe,
+            cutoff_time_ns=target.cutoff_time_ns,
+            target_qty=0.0,
+            target_leverage=0.0,
+            reduce_only=True,
+            regime=target.regime,
+            regime_confidence=target.regime_confidence,
+            reason_codes=[
+                *target.reason_codes,
+                "INTENT_FLIP_CONFIRMATION_PENDING",
+                "INTENT_FLIP_FLATTEN_FIRST",
+            ],
+            realized_vol=target.realized_vol,
+            atr=target.atr,
+        )
+
+    def _current_execution_position_direction(self, symbol: str, target_timeframe: Timeframe) -> float:
+        preferred_keys = (
+            (symbol, self._config.execution_timeframe),
+            (symbol, target_timeframe),
+        )
+        for key in preferred_keys:
+            position = self._positions.get(key)
+            if position is not None and position.current_qty >= self._config.min_trade_qty:
+                return 1.0 if position.direction > 0 else -1.0
+        return 0.0
+
+    @staticmethod
+    def _target_direction(target_qty: float) -> float:
+        if target_qty > 0:
+            return 1.0
+        if target_qty < 0:
+            return -1.0
+        return 0.0
 
     def _build_target(
         self,
@@ -1027,10 +1149,11 @@ class ARCStrategyEngine:
 
         # Discretize to {-1, 0, 1} based on direction threshold
         effective_direction = composed.direction * composed.state_confidence_haircut
+        direction_threshold = max(0.0, self._config.direction_signal_threshold)
         direction = 0.0
-        if effective_direction > DIRECTION_THRESHOLD:
+        if effective_direction > direction_threshold:
             direction = 1.0
-        elif effective_direction < -DIRECTION_THRESHOLD:
+        elif effective_direction < -direction_threshold:
             direction = -1.0
         if composed.state_confidence_haircut < 0.9999:
             reason_codes.append("STATE_CONFIDENCE_HAIRCUT")

@@ -27,10 +27,19 @@ from zenquant.strategy import ARCStrategyConfig, ExitEngineConfig, PlaybookEngin
 
 def build_strategy_config(params: dict[str, Any]) -> ARCStrategyConfig:
     config = _build_strategy_config(params)
+    strategy_kwargs: dict[str, Any] = {}
     playbook_kwargs: dict[str, Any] = {}
     exit_kwargs: dict[str, Any] = {}
     for key, value in params.items():
-        if key == "preserve_capital_risk":
+        if key == "intent_entry_confirmation_bars":
+            strategy_kwargs["intent_entry_confirmation_bars"] = int(value)
+        elif key == "intent_flip_confirmation_bars":
+            strategy_kwargs["intent_flip_confirmation_bars"] = int(value)
+        elif key == "intent_unconfirmed_flip_reduce_only":
+            strategy_kwargs["intent_unconfirmed_flip_reduce_only"] = bool(round(float(value)))
+        elif key == "direction_signal_threshold":
+            strategy_kwargs["direction_signal_threshold"] = float(value)
+        elif key == "preserve_capital_risk":
             playbook_kwargs["preserve_capital_transition_risk"] = value
         elif key == "bull_leverage":
             playbook_kwargs["bull_max_leverage"] = value
@@ -53,6 +62,7 @@ def build_strategy_config(params: dict[str, Any]) -> ARCStrategyConfig:
     return ARCStrategyConfig(
         **{
             **asdict(config),
+            **strategy_kwargs,
             "playbook_config": (
                 PlaybookEngineConfig(**{**existing_playbook, **playbook_kwargs})
                 if config.playbook_config is not None or playbook_kwargs
@@ -402,6 +412,10 @@ def intent_churn_ablation_param_grid(*, include_liquidation_toggles: bool = Fals
         "trade_directional_confidence_floor": [0.50, 0.55, 0.60, 0.65],
         "bearish_override_confidence_floor": [0.50, 0.55, 0.60, 0.65],
         "exit_transition_risk": [0.80, 0.85, 0.90],
+        "direction_signal_threshold": [0.15, 0.20, 0.25, 0.30, 0.35],
+        "intent_entry_confirmation_bars": [1, 2],
+        "intent_flip_confirmation_bars": [1, 2, 3],
+        "intent_unconfirmed_flip_reduce_only": [0.0, 1.0],
         "hostile_behavior_router_enabled": [0.0],
         "squeeze_flip_flatten_only_enabled": [0.0],
         "squeeze_flip_cooldown_enabled": [0.0],
@@ -706,6 +720,10 @@ def intent_churn_ablation_seed_trials() -> list[dict[str, float]]:
         "trade_directional_confidence_floor": 0.50,
         "bearish_override_confidence_floor": 0.50,
         "exit_transition_risk": 0.80,
+        "direction_signal_threshold": 0.15,
+        "intent_entry_confirmation_bars": 1,
+        "intent_flip_confirmation_bars": 1,
+        "intent_unconfirmed_flip_reduce_only": 0.0,
         "hostile_behavior_router_enabled": 0.0,
         "squeeze_flip_flatten_only_enabled": 0.0,
         "squeeze_flip_cooldown_enabled": 0.0,
@@ -720,16 +738,6 @@ def intent_churn_ablation_seed_trials() -> list[dict[str, float]]:
     }
     return [
         dict(base),
-        {**base, "range_time_decay_bars": 5},
-        {**base, "range_time_decay_bars": 8},
-        {**base, "range_time_decay_bars": 12},
-        {**base, "preserve_capital_time_decay_bars": 2},
-        {**base, "preserve_capital_time_decay_bars": 3},
-        {**base, "trade_directional_confidence_floor": 0.55},
-        {**base, "trade_directional_confidence_floor": 0.60},
-        {**base, "bearish_override_confidence_floor": 0.55},
-        {**base, "bearish_override_confidence_floor": 0.60},
-        {**base, "exit_transition_risk": 0.85},
         {
             **base,
             "range_time_decay_bars": 5,
@@ -737,6 +745,57 @@ def intent_churn_ablation_seed_trials() -> list[dict[str, float]]:
             "trade_directional_confidence_floor": 0.55,
             "bearish_override_confidence_floor": 0.55,
             "exit_transition_risk": 0.85,
+        },
+        {
+            **base,
+            "range_time_decay_bars": 5,
+            "preserve_capital_time_decay_bars": 2,
+            "trade_directional_confidence_floor": 0.55,
+            "bearish_override_confidence_floor": 0.55,
+            "exit_transition_risk": 0.85,
+            "intent_flip_confirmation_bars": 2,
+        },
+        {
+            **base,
+            "range_time_decay_bars": 5,
+            "preserve_capital_time_decay_bars": 2,
+            "trade_directional_confidence_floor": 0.55,
+            "bearish_override_confidence_floor": 0.55,
+            "exit_transition_risk": 0.85,
+            "intent_flip_confirmation_bars": 2,
+            "intent_unconfirmed_flip_reduce_only": 1.0,
+        },
+        {**base, "intent_flip_confirmation_bars": 2, "intent_unconfirmed_flip_reduce_only": 1.0},
+        {**base, "direction_signal_threshold": 0.20},
+        {**base, "direction_signal_threshold": 0.25},
+        {**base, "direction_signal_threshold": 0.30},
+        {**base, "direction_signal_threshold": 0.35},
+        {
+            **base,
+            "range_time_decay_bars": 5,
+            "preserve_capital_time_decay_bars": 2,
+            "trade_directional_confidence_floor": 0.55,
+            "bearish_override_confidence_floor": 0.55,
+            "exit_transition_risk": 0.85,
+            "direction_signal_threshold": 0.25,
+        },
+        {
+            **base,
+            "range_time_decay_bars": 5,
+            "preserve_capital_time_decay_bars": 2,
+            "trade_directional_confidence_floor": 0.55,
+            "bearish_override_confidence_floor": 0.55,
+            "exit_transition_risk": 0.85,
+            "direction_signal_threshold": 0.30,
+        },
+        {
+            **base,
+            "range_time_decay_bars": 5,
+            "preserve_capital_time_decay_bars": 2,
+            "trade_directional_confidence_floor": 0.55,
+            "bearish_override_confidence_floor": 0.55,
+            "exit_transition_risk": 0.85,
+            "direction_signal_threshold": 0.35,
         },
     ]
 
