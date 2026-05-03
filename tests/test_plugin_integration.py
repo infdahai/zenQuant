@@ -411,6 +411,41 @@ class TestStrategyIntentConfirmation(unittest.TestCase):
         assert confirmed is not None
         self.assertIn("INTENT_CONFIRMED_4_BARS", confirmed.reason_codes)
 
+    def test_bearish_override_chop_guard_blocks_noisy_transition_pending_entry(self):
+        bus = _strategy_bus()
+        audit_events = []
+        bus.subscribe(
+            "strategy.intent_bearish_override_chop_guard.>",
+            lambda _subject, payload: audit_events.append(payload),
+        )
+        engine = ARCStrategyEngine(
+            bus=bus,
+            config=ARCStrategyConfig(intent_bearish_override_chop_guard_enabled=True),
+        )
+        pending = _target(qty=-1.0)
+        pending.reason_codes.append("STATE_BEARISH_DIRECTION_OVERRIDE")
+        state = _state(directional_state="TRANSITION", quality_state="NOISY", transition_risk=0.55)
+        state.directional_confidence = 0.45
+
+        blocked = engine._bearish_override_chop_guard_ready(
+            pending=pending,
+            state=state,
+            timeframe=Timeframe.TF_5M,
+            bars_waited=2,
+        )
+        state.directional_state = "DOWNTREND"
+        ready = engine._bearish_override_chop_guard_ready(
+            pending=pending,
+            state=state,
+            timeframe=Timeframe.TF_5M,
+            bars_waited=3,
+        )
+
+        self.assertFalse(blocked)
+        self.assertTrue(ready)
+        self.assertEqual(audit_events[-1]["reason"], "INTENT_BEARISH_OVERRIDE_CHOP_GUARD_PENDING")
+        self.assertEqual(audit_events[-1]["bars_waited"], 3)
+
     def test_flat_intent_requires_configured_persistence(self):
         bus = _strategy_bus()
         audit_events = []

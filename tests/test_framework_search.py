@@ -223,6 +223,9 @@ class FrameworkParamTests(unittest.TestCase):
         self.assertEqual(grid["intent_range_entry_confirmation_bars"], [4, 6, 8, 12])
         self.assertEqual(grid["intent_range_reentry_cooldown_bars"], [0, 12, 24, 48])
         self.assertEqual(grid["intent_bearish_override_confirmation_bars"], [0, 4, 8, 12])
+        self.assertEqual(grid["intent_bearish_override_chop_guard_enabled"], [0.0, 1.0])
+        self.assertEqual(grid["intent_bearish_override_chop_max_confidence"], [0.58])
+        self.assertEqual(grid["intent_bearish_override_chop_min_transition_risk"], [0.40])
         self.assertEqual(grid["intent_unconfirmed_flip_reduce_only"], [0.0, 1.0])
         self.assertEqual(grid["intent_time_leverage_hold_enabled"], [1.0])
         self.assertEqual(grid["intent_time_leverage_min_hold_bars"], [168, 240, 336, 480])
@@ -571,6 +574,7 @@ class FrameworkParamTests(unittest.TestCase):
         self.assertEqual(seeds[0]["intent_range_entry_confirmation_bars"], 6)
         self.assertEqual(seeds[0]["intent_range_reentry_cooldown_bars"], 24)
         self.assertEqual(seeds[0]["intent_bearish_override_confirmation_bars"], 4)
+        self.assertEqual(seeds[0]["intent_bearish_override_chop_guard_enabled"], 1.0)
         self.assertEqual(seeds[0]["intent_unconfirmed_flip_reduce_only"], 0.0)
         self.assertEqual(seeds[0]["intent_time_leverage_hold_enabled"], 1.0)
         self.assertEqual(seeds[0]["intent_time_leverage_min_hold_bars"], 240)
@@ -591,6 +595,7 @@ class FrameworkParamTests(unittest.TestCase):
         self.assertEqual(seeds[1]["intent_range_entry_confirmation_bars"], 8)
         self.assertEqual(seeds[1]["intent_range_reentry_cooldown_bars"], 48)
         self.assertEqual(seeds[1]["intent_bearish_override_confirmation_bars"], 8)
+        self.assertEqual(seeds[1]["intent_bearish_override_chop_guard_enabled"], 1.0)
         self.assertEqual(seeds[1]["intent_unconfirmed_flip_reduce_only"], 0.0)
         self.assertEqual(seeds[1]["intent_time_leverage_min_hold_bars"], 336)
         self.assertTrue(any(seed["trade_directional_confidence_floor"] == 0.55 for seed in seeds))
@@ -604,6 +609,7 @@ class FrameworkParamTests(unittest.TestCase):
         self.assertTrue(any(seed["intent_range_entry_confirmation_bars"] == 8 for seed in seeds))
         self.assertTrue(any(seed["intent_range_reentry_cooldown_bars"] == 48 for seed in seeds))
         self.assertTrue(any(seed["intent_bearish_override_confirmation_bars"] == 8 for seed in seeds))
+        self.assertTrue(any(seed["intent_bearish_override_chop_guard_enabled"] == 1.0 for seed in seeds))
         self.assertTrue(
             any(
                 seed["target_vol_4h"] == 0.65
@@ -647,6 +653,8 @@ class FrameworkParamTests(unittest.TestCase):
             self.assertGreaterEqual(strategy_config.intent_range_entry_confirmation_bars, 0)
             self.assertGreaterEqual(strategy_config.intent_range_reentry_cooldown_bars, 0)
             self.assertGreaterEqual(strategy_config.intent_bearish_override_confirmation_bars, 0)
+            self.assertGreaterEqual(strategy_config.intent_bearish_override_chop_max_confidence, 0.0)
+            self.assertGreaterEqual(strategy_config.intent_bearish_override_chop_min_transition_risk, 0.0)
             self.assertGreaterEqual(strategy_config.intent_time_leverage_min_hold_bars, 0)
             self.assertGreaterEqual(strategy_config.intent_time_leverage_reduce_deadband_pct, 0.0)
             self.assertGreaterEqual(strategy_config.intent_time_leverage_long_bias_confidence_floor, 0.0)
