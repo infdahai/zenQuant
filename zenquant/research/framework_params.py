@@ -37,6 +37,8 @@ def build_strategy_config(params: dict[str, Any]) -> ARCStrategyConfig:
             strategy_kwargs["intent_flip_confirmation_bars"] = int(value)
         elif key == "intent_flat_confirmation_bars":
             strategy_kwargs["intent_flat_confirmation_bars"] = int(value)
+        elif key == "intent_range_entry_confirmation_bars":
+            strategy_kwargs["intent_range_entry_confirmation_bars"] = int(value)
         elif key == "intent_unconfirmed_flip_reduce_only":
             strategy_kwargs["intent_unconfirmed_flip_reduce_only"] = bool(round(float(value)))
         elif key == "direction_signal_threshold":
@@ -450,7 +452,7 @@ def intent_churn_ablation_param_grid(*, include_liquidation_toggles: bool = Fals
         "dd_step_1_short": [0.10],
         "vpin_threshold": [0.10],
         "vol_shock_threshold": [1.00],
-        "target_vol_4h": [0.45, 0.50, 0.65],
+        "target_vol_4h": [0.35, 0.40, 0.45, 0.50, 0.65],
         "max_leverage": [2.5, 3.0],
         "pyramid_initial_pct": [0.30],
         "pyramid_add_pct": [0.30],
@@ -462,10 +464,10 @@ def intent_churn_ablation_param_grid(*, include_liquidation_toggles: bool = Fals
         "dca_spacing_atr": [1.75],
         "dca_size_decay": [0.90],
         "flip_min_confidence": [0.70],
-        "range_time_decay_bars": [5, 8, 12, 16],
-        "preserve_capital_time_decay_bars": [2, 3, 4],
-        "range_trailing_stop_atr_mult": [2.5, 3.0, 3.5],
-        "preserve_capital_trailing_stop_atr_mult": [1.5, 2.0],
+        "range_time_decay_bars": [8, 12, 16, 24],
+        "preserve_capital_time_decay_bars": [3, 4, 6],
+        "range_trailing_stop_atr_mult": [3.0, 3.5, 4.5],
+        "preserve_capital_trailing_stop_atr_mult": [2.0, 2.5, 3.0],
         "trade_directional_confidence_floor": [0.50, 0.55, 0.60, 0.65],
         "bearish_override_confidence_floor": [0.50, 0.55, 0.60, 0.65],
         "exit_transition_risk": [0.80, 0.85, 0.90],
@@ -473,17 +475,18 @@ def intent_churn_ablation_param_grid(*, include_liquidation_toggles: bool = Fals
         "intent_add_signal_threshold": [0.45, 0.50, 0.55],
         "intent_add_confirmation_bars": [1, 2, 4],
         "intent_entry_confirmation_bars": [3, 4],
-        "intent_flip_confirmation_bars": [5, 6, 8],
-        "intent_flat_confirmation_bars": [4, 8, 12],
-        "intent_unconfirmed_flip_reduce_only": [1.0],
+        "intent_flip_confirmation_bars": [6, 8, 12, 16],
+        "intent_flat_confirmation_bars": [8, 12, 16, 24],
+        "intent_range_entry_confirmation_bars": [4, 6, 8, 12],
+        "intent_unconfirmed_flip_reduce_only": [0.0, 1.0],
         "intent_time_leverage_hold_enabled": [1.0],
-        "intent_time_leverage_min_hold_bars": [120, 168, 240],
+        "intent_time_leverage_min_hold_bars": [168, 240, 336, 480],
         "intent_time_leverage_flip_signal_threshold": [0.65, 0.75],
         "intent_time_leverage_confidence_floor": [0.65, 0.70],
         "intent_time_leverage_transition_risk_floor": [0.35, 0.45],
         "intent_time_leverage_size_hysteresis_enabled": [1.0],
-        "intent_time_leverage_add_deadband_pct": [0.15, 0.20, 0.25],
-        "intent_time_leverage_reduce_deadband_pct": [0.40, 0.60, 0.80],
+        "intent_time_leverage_add_deadband_pct": [0.25, 0.40, 0.60],
+        "intent_time_leverage_reduce_deadband_pct": [0.80, 1.00, 1.25],
         "intent_time_leverage_long_bias_enabled": [1.0],
         "intent_time_leverage_long_bias_confidence_floor": [0.65, 0.70],
         "intent_time_leverage_long_bias_transition_ceiling": [0.35],
@@ -805,6 +808,7 @@ def intent_churn_ablation_seed_trials() -> list[dict[str, float]]:
         "intent_add_confirmation_bars": 1,
         "intent_entry_confirmation_bars": 1,
         "intent_flip_confirmation_bars": 1,
+        "intent_range_entry_confirmation_bars": 0,
         "intent_unconfirmed_flip_reduce_only": 0.0,
         "intent_time_leverage_hold_enabled": 0.0,
         "intent_time_leverage_min_hold_bars": 0,
@@ -930,7 +934,38 @@ def intent_churn_ablation_seed_trials() -> list[dict[str, float]]:
         "exit_transition_risk": 0.90,
         "intent_flat_confirmation_bars": 8,
     }
+    paulwei_time_leverage_low_turnover = {
+        **mature_low_switch,
+        "target_vol_4h": 0.40,
+        "max_leverage": 2.5,
+        "range_time_decay_bars": 16,
+        "preserve_capital_time_decay_bars": 6,
+        "range_trailing_stop_atr_mult": 4.5,
+        "preserve_capital_trailing_stop_atr_mult": 3.0,
+        "exit_transition_risk": 0.90,
+        "intent_add_confirmation_bars": 2,
+        "intent_flip_confirmation_bars": 8,
+        "intent_flat_confirmation_bars": 16,
+        "intent_range_entry_confirmation_bars": 6,
+        "intent_unconfirmed_flip_reduce_only": 0.0,
+        "intent_time_leverage_min_hold_bars": 240,
+        "intent_time_leverage_add_deadband_pct": 0.40,
+        "intent_time_leverage_reduce_deadband_pct": 1.00,
+        "intent_time_leverage_dip_add_pct": 0.10,
+    }
+    paulwei_time_leverage_low_exposure = {
+        **paulwei_time_leverage_low_turnover,
+        "target_vol_4h": 0.35,
+        "intent_flip_confirmation_bars": 12,
+        "intent_flat_confirmation_bars": 24,
+        "intent_range_entry_confirmation_bars": 8,
+        "intent_time_leverage_min_hold_bars": 336,
+        "intent_time_leverage_add_deadband_pct": 0.60,
+        "intent_time_leverage_reduce_deadband_pct": 1.25,
+    }
     return [
+        paulwei_time_leverage_low_turnover,
+        paulwei_time_leverage_low_exposure,
         mature_low_switch,
         slow_exit_low_switch,
         {

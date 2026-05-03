@@ -84,6 +84,7 @@ class ARCStrategyConfig:
     intent_entry_confirmation_bars: int = 1
     intent_flip_confirmation_bars: int = 1
     intent_flat_confirmation_bars: int = 1
+    intent_range_entry_confirmation_bars: int = 0
     intent_unconfirmed_flip_reduce_only: bool = False
     intent_add_signal_threshold: float = 0.0
     intent_add_confirmation_bars: int = 1
@@ -385,6 +386,14 @@ class ARCStrategyEngine:
         price = float(pack.values.get("last_price", 0) or 0)
         if price <= 0:
             return None
+        if not self._range_entry_confirmation_ready(
+            pending=pending,
+            symbol=symbol,
+            timeframe=Timeframe.TF_1H,
+            bars_waited=bars_waited,
+            cutoff_time_ns=state.cutoff_time_ns,
+        ):
+            return None
 
         # Multi-factor entry scoring (richer than simple momentum check)
         pending_direction = 1.0 if pending.target_qty > 0 else -1.0
@@ -449,6 +458,14 @@ class ARCStrategyEngine:
         pack = self._latest_packs.get((symbol, Timeframe.TF_1H))
         if pack is None:
             return
+        if not self._range_entry_confirmation_ready(
+            pending=pending,
+            symbol=symbol,
+            timeframe=Timeframe.TF_5M,
+            bars_waited=bars_waited,
+            cutoff_time_ns=state.cutoff_time_ns,
+        ):
+            return
 
         pending_direction = 1.0 if pending.target_qty > 0 else -1.0
         timeout = bars_waited >= 3
@@ -498,6 +515,15 @@ class ARCStrategyEngine:
             entry_score += 0.1
         if large_trade_count > 0 and pending_direction * float(pack.values.get("cvd_slope", 0.0) or 0.0) > 0:
             entry_score += 0.15
+
+        if not self._range_entry_confirmation_ready(
+            pending=pending,
+            symbol=symbol,
+            timeframe=Timeframe.TF_5M,
+            bars_waited=bars_waited,
+            cutoff_time_ns=state.cutoff_time_ns,
+        ):
+            return None
 
         if entry_score < 0.45 and not timeout:
             return None
@@ -755,6 +781,45 @@ class ARCStrategyEngine:
         if target_qty < 0:
             return -1.0
         return 0.0
+
+    def _range_entry_confirmation_ready(
+        self,
+        *,
+        pending: TargetPosition,
+        symbol: str,
+        timeframe: Timeframe,
+        bars_waited: int,
+        cutoff_time_ns: int,
+    ) -> bool:
+        required_bars = max(0, int(self._config.intent_range_entry_confirmation_bars))
+        if required_bars <= 0:
+            return True
+        pending_direction = self._target_direction(pending.target_qty)
+        if pending_direction == 0.0:
+            return True
+        if "PLAYBOOK_RANGE_LIGHT" not in pending.reason_codes and "REGIME_RANGE" not in pending.reason_codes:
+            return True
+
+        bars_seen = bars_waited + 1
+        if bars_seen >= required_bars:
+            confirmed_reason = f"INTENT_RANGE_ENTRY_CONFIRMED_{required_bars}_BARS"
+            if confirmed_reason not in pending.reason_codes:
+                pending.reason_codes.append(confirmed_reason)
+            return True
+
+        self._bus.publish(
+            f"strategy.intent_range_entry_confirmation.{timeframe.value}.{symbol}",
+            {
+                "symbol": symbol,
+                "timeframe": timeframe.value,
+                "cutoff_time_ns": cutoff_time_ns,
+                "pending_direction": pending_direction,
+                "bars": bars_seen,
+                "required_bars": required_bars,
+                "reason": "INTENT_RANGE_ENTRY_CONFIRMATION_PENDING",
+            },
+        )
+        return False
 
     def _apply_same_direction_add_gate(
         self,
