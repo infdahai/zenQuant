@@ -223,6 +223,52 @@ def _stage1_sort_metric(metrics: dict[str, Any], primary_metric: str) -> float:
     return float(metrics.get("stage1_score", metrics.get("hostile_proxy_score", metrics.get(primary_metric, 0.0))) or 0.0)
 
 
+def _compact_train_trial_diagnostics(
+    results: list[dict[str, Any]],
+    *,
+    primary_metric: str,
+    limit: int = 20,
+) -> list[dict[str, Any]]:
+    metric_keys = (
+        "sharpe",
+        "sortino",
+        "net_pnl",
+        "max_drawdown",
+        "profit_factor",
+        "trade_count",
+        "fee_drag_pct",
+        "net_pnl_per_trade",
+        "trade_count_per_day",
+        "profit_factor_after_fee",
+        "hostile_proxy_score",
+        "hostile_proxy_penalty_applied",
+        "stage1_score",
+        "terminated_early",
+        "termination_reason",
+        "processed_event_ratio",
+        "action_trade_counts",
+        "action_fee_drag_pct",
+        "action_profit_factor",
+    )
+    ranked = sorted(
+        results,
+        key=lambda item: _stage1_sort_metric(dict(item.get("metrics", {}) or {}), primary_metric),
+        reverse=True,
+    )
+    diagnostics: list[dict[str, Any]] = []
+    for rank, item in enumerate(ranked[: max(0, limit)], start=1):
+        metrics = dict(item.get("metrics", {}) or {})
+        diagnostics.append(
+            {
+                "rank": rank,
+                "stage1_sort_value": round(_stage1_sort_metric(metrics, primary_metric), 6),
+                "params": dict(item.get("params", {}) or {}),
+                "metrics": {key: metrics[key] for key in metric_keys if key in metrics},
+            }
+        )
+    return diagnostics
+
+
 def _has_nonzero_alpha(metrics: dict[str, Any]) -> bool:
     sharpe = float(metrics.get("sharpe", 0.0) or 0.0)
     net_pnl = float(metrics.get("net_pnl", 0.0) or 0.0)
@@ -663,6 +709,10 @@ class Campaign:
                 "stage1_fail_fast_reasons": {},
                 "hostile_proxy_penalized_count": 0,
                 "candidate_existence_recovered": False,
+                "top_train_trial_diagnostics": _compact_train_trial_diagnostics(
+                    results,
+                    primary_metric=self._config.primary_metric,
+                ),
             },
             empty_shortlist_reason,
         )

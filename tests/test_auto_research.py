@@ -489,6 +489,10 @@ class TestTimeoutCleanup(unittest.TestCase):
         self.assertEqual(sweep.results, [])
         self.assertEqual(sweep.top_n, [])
         self.assertEqual(sweep.train_candidate_diagnostics["raw_trial_count"], 1)
+        trial_diagnostics = sweep.train_candidate_diagnostics["top_train_trial_diagnostics"]
+        self.assertEqual(len(trial_diagnostics), 1)
+        self.assertEqual(trial_diagnostics[0]["metrics"]["fee_drag_pct"], 0.01)
+        self.assertEqual(trial_diagnostics[0]["metrics"]["trade_count"], 0)
 
 
 class TestSearchSpace(unittest.TestCase):
