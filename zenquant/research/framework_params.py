@@ -755,6 +755,31 @@ def intent_churn_ablation_seed_trials() -> list[dict[str, float]]:
         {**fee_shape, "direction_signal_threshold": 0.25, "intent_add_signal_threshold": 0.35},
         {**fee_shape, "direction_signal_threshold": 0.25, "intent_add_signal_threshold": 0.40},
         {**fee_shape, "direction_signal_threshold": 0.25, "intent_add_signal_threshold": 0.45},
+        {
+            **fee_shape,
+            "direction_signal_threshold": 0.25,
+            "intent_add_signal_threshold": 0.45,
+            "intent_flip_confirmation_bars": 2,
+        },
+        {
+            **fee_shape,
+            "direction_signal_threshold": 0.25,
+            "intent_add_signal_threshold": 0.45,
+            "intent_flip_confirmation_bars": 3,
+        },
+        {
+            **fee_shape,
+            "direction_signal_threshold": 0.25,
+            "intent_add_signal_threshold": 0.45,
+            "intent_entry_confirmation_bars": 2,
+        },
+        {
+            **fee_shape,
+            "direction_signal_threshold": 0.25,
+            "intent_add_signal_threshold": 0.45,
+            "intent_entry_confirmation_bars": 2,
+            "intent_flip_confirmation_bars": 2,
+        },
         {**fee_shape, "target_vol_4h": 0.65, "max_leverage": 3.0, "direction_signal_threshold": 0.25},
         {
             **fee_shape,

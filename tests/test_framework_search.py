@@ -479,6 +479,8 @@ class FrameworkParamTests(unittest.TestCase):
         self.assertTrue(any(seed["bearish_override_confidence_floor"] == 0.55 for seed in seeds))
         self.assertTrue(any(seed["direction_signal_threshold"] == 0.35 for seed in seeds))
         self.assertTrue(any(seed["intent_add_signal_threshold"] == 0.45 for seed in seeds))
+        self.assertTrue(any(seed["intent_entry_confirmation_bars"] == 2 for seed in seeds))
+        self.assertTrue(any(seed["intent_flip_confirmation_bars"] == 3 for seed in seeds))
         self.assertTrue(any(seed["target_vol_4h"] == 0.65 for seed in seeds))
         self.assertTrue(any(seed["target_vol_4h"] == 0.50 for seed in seeds))
         self.assertTrue(any(seed["max_leverage"] == 3.0 for seed in seeds))
