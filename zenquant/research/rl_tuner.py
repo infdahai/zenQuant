@@ -200,6 +200,15 @@ def build_strategy_config(params: dict[str, float]) -> ARCStrategyConfig:
         intent_range_entry_confirmation_bars=int(params.get("intent_range_entry_confirmation_bars", 0)),
         intent_range_reentry_cooldown_bars=int(params.get("intent_range_reentry_cooldown_bars", 0)),
         intent_bearish_override_confirmation_bars=int(params.get("intent_bearish_override_confirmation_bars", 0)),
+        intent_bearish_override_chop_guard_enabled=bool(
+            round(float(params.get("intent_bearish_override_chop_guard_enabled", 0.0)))
+        ),
+        intent_bearish_override_chop_max_confidence=params.get(
+            "intent_bearish_override_chop_max_confidence", 0.58
+        ),
+        intent_bearish_override_chop_min_transition_risk=params.get(
+            "intent_bearish_override_chop_min_transition_risk", 0.40
+        ),
         intent_unconfirmed_flip_reduce_only=bool(round(float(params.get("intent_unconfirmed_flip_reduce_only", 0.0)))),
         intent_add_signal_threshold=params.get("intent_add_signal_threshold", 0.0),
         intent_add_confirmation_bars=int(params.get("intent_add_confirmation_bars", 1)),

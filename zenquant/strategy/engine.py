@@ -87,6 +87,9 @@ class ARCStrategyConfig:
     intent_range_entry_confirmation_bars: int = 0
     intent_range_reentry_cooldown_bars: int = 0
     intent_bearish_override_confirmation_bars: int = 0
+    intent_bearish_override_chop_guard_enabled: bool = False
+    intent_bearish_override_chop_max_confidence: float = 0.58
+    intent_bearish_override_chop_min_transition_risk: float = 0.40
     intent_unconfirmed_flip_reduce_only: bool = False
     intent_add_signal_threshold: float = 0.0
     intent_add_confirmation_bars: int = 1
@@ -396,6 +399,13 @@ class ARCStrategyEngine:
             cutoff_time_ns=state.cutoff_time_ns,
         ):
             return None
+        if not self._bearish_override_chop_guard_ready(
+            pending=pending,
+            state=state,
+            timeframe=Timeframe.TF_1H,
+            bars_waited=bars_waited,
+        ):
+            return None
         if not self._range_entry_confirmation_ready(
             pending=pending,
             symbol=symbol,
@@ -475,6 +485,13 @@ class ARCStrategyEngine:
             cutoff_time_ns=state.cutoff_time_ns,
         ):
             return
+        if not self._bearish_override_chop_guard_ready(
+            pending=pending,
+            state=state,
+            timeframe=Timeframe.TF_5M,
+            bars_waited=bars_waited,
+        ):
+            return
         if not self._range_entry_confirmation_ready(
             pending=pending,
             symbol=symbol,
@@ -538,6 +555,14 @@ class ARCStrategyEngine:
             symbol=symbol,
             timeframe=Timeframe.TF_5M,
             cutoff_time_ns=state.cutoff_time_ns,
+        ):
+            return None
+
+        if not self._bearish_override_chop_guard_ready(
+            pending=pending,
+            state=state,
+            timeframe=Timeframe.TF_5M,
+            bars_waited=bars_waited,
         ):
             return None
 
@@ -910,6 +935,48 @@ class ARCStrategyEngine:
                 "bars": bars_seen,
                 "required_bars": required_bars,
                 "reason": "INTENT_RANGE_ENTRY_CONFIRMATION_PENDING",
+            },
+        )
+        return False
+
+    def _bearish_override_chop_guard_ready(
+        self,
+        *,
+        pending: TargetPosition,
+        state: MarketState,
+        timeframe: Timeframe,
+        bars_waited: int,
+    ) -> bool:
+        if not self._config.intent_bearish_override_chop_guard_enabled:
+            return True
+        if "STATE_BEARISH_DIRECTION_OVERRIDE" not in pending.reason_codes:
+            return True
+        if self._target_direction(pending.target_qty) >= 0.0:
+            return True
+
+        max_confidence = max(0.0, float(self._config.intent_bearish_override_chop_max_confidence))
+        min_transition_risk = max(0.0, float(self._config.intent_bearish_override_chop_min_transition_risk))
+        chop_like = (
+            state.directional_state == "TRANSITION"
+            and state.quality_state == "NOISY"
+            and float(state.directional_confidence) <= max_confidence
+            and float(state.transition_risk) >= min_transition_risk
+        )
+        if not chop_like:
+            return True
+
+        self._bus.publish(
+            f"strategy.intent_bearish_override_chop_guard.{timeframe.value}.{state.symbol}",
+            {
+                "symbol": state.symbol,
+                "timeframe": timeframe.value,
+                "cutoff_time_ns": state.cutoff_time_ns,
+                "bars_waited": bars_waited + 1,
+                "directional_state": state.directional_state,
+                "directional_confidence": round(float(state.directional_confidence), 6),
+                "quality_state": state.quality_state,
+                "transition_risk": round(float(state.transition_risk), 6),
+                "reason": "INTENT_BEARISH_OVERRIDE_CHOP_GUARD_PENDING",
             },
         )
         return False

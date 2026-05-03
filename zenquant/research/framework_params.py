@@ -43,6 +43,12 @@ def build_strategy_config(params: dict[str, Any]) -> ARCStrategyConfig:
             strategy_kwargs["intent_range_reentry_cooldown_bars"] = int(value)
         elif key == "intent_bearish_override_confirmation_bars":
             strategy_kwargs["intent_bearish_override_confirmation_bars"] = int(value)
+        elif key == "intent_bearish_override_chop_guard_enabled":
+            strategy_kwargs["intent_bearish_override_chop_guard_enabled"] = bool(round(float(value)))
+        elif key == "intent_bearish_override_chop_max_confidence":
+            strategy_kwargs["intent_bearish_override_chop_max_confidence"] = float(value)
+        elif key == "intent_bearish_override_chop_min_transition_risk":
+            strategy_kwargs["intent_bearish_override_chop_min_transition_risk"] = float(value)
         elif key == "intent_unconfirmed_flip_reduce_only":
             strategy_kwargs["intent_unconfirmed_flip_reduce_only"] = bool(round(float(value)))
         elif key == "direction_signal_threshold":
@@ -484,6 +490,9 @@ def intent_churn_ablation_param_grid(*, include_liquidation_toggles: bool = Fals
         "intent_range_entry_confirmation_bars": [4, 6, 8, 12],
         "intent_range_reentry_cooldown_bars": [0, 12, 24, 48],
         "intent_bearish_override_confirmation_bars": [0, 4, 8, 12],
+        "intent_bearish_override_chop_guard_enabled": [0.0, 1.0],
+        "intent_bearish_override_chop_max_confidence": [0.58],
+        "intent_bearish_override_chop_min_transition_risk": [0.40],
         "intent_unconfirmed_flip_reduce_only": [0.0, 1.0],
         "intent_time_leverage_hold_enabled": [1.0],
         "intent_time_leverage_min_hold_bars": [168, 240, 336, 480],
@@ -817,6 +826,9 @@ def intent_churn_ablation_seed_trials() -> list[dict[str, float]]:
         "intent_range_entry_confirmation_bars": 0,
         "intent_range_reentry_cooldown_bars": 0,
         "intent_bearish_override_confirmation_bars": 0,
+        "intent_bearish_override_chop_guard_enabled": 0.0,
+        "intent_bearish_override_chop_max_confidence": 0.58,
+        "intent_bearish_override_chop_min_transition_risk": 0.40,
         "intent_unconfirmed_flip_reduce_only": 0.0,
         "intent_time_leverage_hold_enabled": 0.0,
         "intent_time_leverage_min_hold_bars": 0,
@@ -957,6 +969,7 @@ def intent_churn_ablation_seed_trials() -> list[dict[str, float]]:
         "intent_range_entry_confirmation_bars": 6,
         "intent_range_reentry_cooldown_bars": 24,
         "intent_bearish_override_confirmation_bars": 4,
+        "intent_bearish_override_chop_guard_enabled": 1.0,
         "intent_unconfirmed_flip_reduce_only": 0.0,
         "intent_time_leverage_min_hold_bars": 240,
         "intent_time_leverage_add_deadband_pct": 0.40,
