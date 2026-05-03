@@ -97,6 +97,7 @@ MIN_PROFIT_FACTOR_AFTER_FEE = 1.05
 PAULWEI_MATURE_POSITION_SWITCHES_PER_30D = 1.6807
 MAX_POSITION_SWITCHES_PER_30D = 3.0
 MAX_FLIP_REDUCE_FEE_DRAG_PCT_ABSOLUTE = 0.016
+TRAIN_DRAWDOWN_PREFERRED_BAND = 0.06
 
 
 def _safe_float(value: Any) -> float:
@@ -208,6 +209,10 @@ def _hostile_proxy_diagnostics(params: dict[str, Any], metrics: dict[str, float]
         0.0,
         (flip_reduce_fee_drag_pct - MAX_FLIP_REDUCE_FEE_DRAG_PCT_ABSOLUTE) / MAX_FLIP_REDUCE_FEE_DRAG_PCT_ABSOLUTE,
     )
+    train_drawdown_preferred_band_penalty = max(
+        0.0,
+        (max_drawdown - TRAIN_DRAWDOWN_PREFERRED_BAND) / max(0.01, TRAIN_DRAWDOWN_PREFERRED_BAND),
+    )
     time_leverage_bonus = min(0.35, 0.05 * time_leverage_efficiency)
     train_churn_stress_penalty = round(
         0.75 * train_trade_count_penalty
@@ -239,7 +244,11 @@ def _hostile_proxy_diagnostics(params: dict[str, Any], metrics: dict[str, float]
         hostile_proxy_penalty_applied = 1.625 + (raw_fragility_penalty - 2.5) * 1.25
     hostile_proxy_penalty_applied = round(hostile_proxy_penalty_applied, 6)
     hostile_proxy_score = round(
-        sharpe + 0.15 * profit_factor + time_leverage_bonus - hostile_proxy_penalty_applied,
+        sharpe
+        + 0.15 * profit_factor
+        + time_leverage_bonus
+        - hostile_proxy_penalty_applied
+        - 0.60 * train_drawdown_preferred_band_penalty,
         6,
     )
     return {
@@ -254,6 +263,7 @@ def _hostile_proxy_diagnostics(params: dict[str, Any], metrics: dict[str, float]
         "position_switch_penalty": round(position_switch_penalty, 6),
         "mature_position_switch_penalty": round(mature_position_switch_penalty, 6),
         "flip_reduce_fee_drag_penalty": round(flip_reduce_fee_drag_penalty, 6),
+        "train_drawdown_preferred_band_penalty": round(train_drawdown_preferred_band_penalty, 6),
         "train_churn_stress_penalty": train_churn_stress_penalty,
         "net_pnl_per_trade": round(net_pnl_per_trade, 6),
         "trade_count_per_day": round(trade_count_per_day, 6),
