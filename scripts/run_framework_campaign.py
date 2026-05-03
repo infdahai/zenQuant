@@ -119,6 +119,9 @@ _TRAIN_QUALITY_FALLBACK_SKIP_BLOCKERS = {
     "train_fee_drag_cap_exceeded",
     "train_net_pnl_per_trade_inefficient",
     "train_profit_factor_after_fee_weak",
+    "train_position_switch_cadence_worse",
+    "train_flip_reduce_fee_drag_worse",
+    "train_time_leverage_efficiency_weak",
 }
 
 
