@@ -5,8 +5,10 @@ from unittest.mock import patch
 
 from zenquant.data.hyperliquid_public import (
     build_hyperliquid_proxy_history,
+    fetch_candle_history,
     fetch_candle_snapshot,
     fetch_funding_history,
+    fetch_funding_history_paginated,
     fetch_recent_trades,
     recent_trades_to_buckets,
     write_hyperliquid_raw,
@@ -28,7 +30,18 @@ class HyperliquidPublicTests(unittest.TestCase):
 
     def test_fetch_candle_and_funding_history_parse_payloads(self) -> None:
         candle_payload = [
-            {"t": 1711929600000, "T": 1711943999999, "s": "BTC", "i": "4h", "o": "70000", "h": "70500", "l": "69000", "c": "69500", "v": "1000", "n": 10}
+            {
+                "t": 1711929600000,
+                "T": 1711943999999,
+                "s": "BTC",
+                "i": "4h",
+                "o": "70000",
+                "h": "70500",
+                "l": "69000",
+                "c": "69500",
+                "v": "1000",
+                "n": 10,
+            }
         ]
         funding_payload = [{"coin": "BTC", "fundingRate": "0.0001", "premium": "0.001", "time": 1711929600000}]
         with (
@@ -41,9 +54,76 @@ class HyperliquidPublicTests(unittest.TestCase):
         self.assertEqual(candles[0].interval, "4h")
         self.assertEqual(funding[0].symbol, "BTCUSDT")
 
+    def test_fetch_history_chunks_and_deduplicates_rows(self) -> None:
+        candle_payloads = [
+            [
+                {
+                    "t": 1711929600000,
+                    "T": 1711943999999,
+                    "s": "BTC",
+                    "i": "4h",
+                    "o": "70000",
+                    "h": "70500",
+                    "l": "69000",
+                    "c": "69500",
+                    "v": "1000",
+                    "n": 10,
+                }
+            ],
+            [
+                {
+                    "t": 1711944000000,
+                    "T": 1711958399999,
+                    "s": "BTC",
+                    "i": "4h",
+                    "o": "69500",
+                    "h": "70000",
+                    "l": "69000",
+                    "c": "69900",
+                    "v": "900",
+                    "n": 11,
+                }
+            ],
+        ]
+        with patch("zenquant.data.hyperliquid_public._post_info", side_effect=candle_payloads):
+            candles = fetch_candle_history(
+                "BTC",
+                "4h",
+                1711929600000,
+                1711958400000,
+                chunk_ms=4 * 3600 * 1000,
+            )
+
+        self.assertEqual([row.start_ms for row in candles], [1711929600000, 1711944000000])
+
+        funding_payloads = [
+            [{"coin": "BTC", "fundingRate": "0.0001", "premium": "0.001", "time": 1711929600000}],
+            [{"coin": "BTC", "fundingRate": "0.0002", "premium": "0.002", "time": 1711944000000}],
+        ]
+        with patch("zenquant.data.hyperliquid_public._post_info", side_effect=funding_payloads):
+            funding = fetch_funding_history_paginated(
+                "BTC",
+                1711929600000,
+                1711958400000,
+                chunk_ms=4 * 3600 * 1000,
+            )
+
+        self.assertEqual([row.ts_ms for row in funding], [1711929600000, 1711944000000])
+
     def test_build_proxy_history_marks_short_backfill_as_blocked(self) -> None:
         candle_payload = [
-            {"t": 1711929600000, "T": 1711943999999, "s": "BTC", "i": "4h", "o": "70000", "h": "70500", "l": "69000", "c": "69500", "v": "1000", "n": 10}
+            {
+                "t": 1711929600000,
+                "T": 1711943999999,
+                "s": "BTC",
+                "i": "4h",
+                "o": "70000",
+                "h": "70500",
+                "l": "69000",
+                "c": "69500",
+                "v": "1000",
+                "n": 10,
+            }
         ]
         funding_payload = [{"coin": "BTC", "fundingRate": "0.0001", "premium": "0.001", "time": 1711929600000}]
         with patch("zenquant.data.hyperliquid_public._post_info", side_effect=[candle_payload, funding_payload]):
@@ -71,7 +151,18 @@ class HyperliquidPublicTests(unittest.TestCase):
 
     def test_write_hyperliquid_raw_creates_expected_files(self) -> None:
         candle_payload = [
-            {"t": 1711929600000, "T": 1711943999999, "s": "BTC", "i": "4h", "o": "70000", "h": "70500", "l": "69000", "c": "69500", "v": "1000", "n": 10}
+            {
+                "t": 1711929600000,
+                "T": 1711943999999,
+                "s": "BTC",
+                "i": "4h",
+                "o": "70000",
+                "h": "70500",
+                "l": "69000",
+                "c": "69500",
+                "v": "1000",
+                "n": 10,
+            }
         ]
         with patch("zenquant.data.hyperliquid_public._post_info", return_value=candle_payload):
             candles = fetch_candle_snapshot("BTC", "4h", 1711929600000, 1711944000000)
