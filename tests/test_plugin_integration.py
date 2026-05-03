@@ -9,7 +9,9 @@ from zenquant.domain import (
     IndicatorCoverage,
     IndicatorPack,
     MarketState,
+    OpenPositionState,
     PlaybookSelection,
+    TargetPosition,
     Timeframe,
 )
 from zenquant.infra.event_bus import InMemoryJetStream
@@ -117,6 +119,47 @@ def _playbook(
     )
 
 
+def _target(*, qty: float, cutoff_time_ns: int = 1) -> TargetPosition:
+    return TargetPosition(
+        intent_id=f"intent-{cutoff_time_ns}",
+        portfolio="arc",
+        symbol="BTCUSDT_PERP",
+        timeframe=Timeframe.TF_4H,
+        cutoff_time_ns=cutoff_time_ns,
+        target_qty=qty,
+        target_leverage=1.0,
+        reduce_only=False,
+        regime="TREND",
+        regime_confidence=0.8,
+        reason_codes=["TEST_INTENT"],
+    )
+
+
+def _position(*, direction: float) -> OpenPositionState:
+    return OpenPositionState(
+        symbol="BTCUSDT_PERP",
+        timeframe=Timeframe.TF_4H,
+        direction=direction,
+        entry_price=60000.0,
+        entry_bar_ns=0,
+        base_qty=1.0,
+        current_qty=1.0,
+        trailing_stop=0.0,
+        pyramid_count=0,
+        bars_held=1,
+    )
+
+
+def _strategy_bus() -> InMemoryJetStream:
+    bus = InMemoryJetStream()
+    bus.add_stream(
+        __import__("zenquant.infra.event_bus", fromlist=["StreamConfig"]).StreamConfig(
+            name="STRATEGY", subjects=["strategy.>", "intent.>"]
+        )
+    )
+    return bus
+
+
 class TestRegistryLoadsRealPlugins(unittest.TestCase):
     """Verify that all plugins in default.toml load successfully."""
 
@@ -190,7 +233,10 @@ class TestRegistryLoadsRealPlugins(unittest.TestCase):
 class TestPluginPathProducesValidOutput(unittest.TestCase):
     """Verify the plugin path in ARCStrategyEngine produces valid targets."""
 
-    def _build_engine_with_plugins(self) -> tuple[ARCStrategyEngine, InMemoryJetStream]:
+    def _build_engine_with_plugins(
+        self,
+        config: ARCStrategyConfig | None = None,
+    ) -> tuple[ARCStrategyEngine, InMemoryJetStream]:
         if not PROFILE_PATH.exists():
             self.skipTest("default.toml not found")
 
@@ -201,8 +247,7 @@ class TestPluginPathProducesValidOutput(unittest.TestCase):
                 name="STRATEGY", subjects=["strategy.>", "intent.>"]
             )
         )
-        config = ARCStrategyConfig()
-        engine = ARCStrategyEngine(bus=bus, config=config, plugin_registry=registry)
+        engine = ARCStrategyEngine(bus=bus, config=config or ARCStrategyConfig(), plugin_registry=registry)
         return engine, bus
 
     def test_plugin_direction_uptrend(self):
@@ -215,6 +260,16 @@ class TestPluginPathProducesValidOutput(unittest.TestCase):
         direction, codes = engine._plugin_direction(pack, state, playbook)
         self.assertEqual(direction, 1.0)
         self.assertTrue(any("momentum_signal" in c for c in codes))
+
+    def test_plugin_direction_threshold_can_neutralize_weak_signal(self):
+        engine, bus = self._build_engine_with_plugins(ARCStrategyConfig(direction_signal_threshold=0.95))
+
+        pack = _pack(structure_state="UPTREND", momentum_roc_z=1.0, cvd_slope=0.1)
+        state = _state(regime="TREND", directional_state="UPTREND")
+        playbook = _playbook()
+
+        direction, _ = engine._plugin_direction(pack, state, playbook)
+        self.assertEqual(direction, 0.0)
 
     def test_plugin_direction_stress_zero(self):
         engine, bus = self._build_engine_with_plugins()
@@ -276,6 +331,82 @@ class TestPluginPathProducesValidOutput(unittest.TestCase):
         # Quality filter should block
         self.assertEqual(direction, 0.0)
         self.assertTrue(any("QUALITY" in c for c in codes))
+
+
+class TestStrategyIntentConfirmation(unittest.TestCase):
+    def test_entry_intent_requires_configured_persistence(self):
+        bus = _strategy_bus()
+        audit_events = []
+        bus.subscribe("strategy.intent_confirmation.>", lambda _subject, payload: audit_events.append(payload))
+        engine = ARCStrategyEngine(
+            bus=bus,
+            config=ARCStrategyConfig(intent_entry_confirmation_bars=2),
+        )
+
+        self.assertIsNone(engine._confirm_directional_intent(_target(qty=1.0, cutoff_time_ns=1)))
+        confirmed = engine._confirm_directional_intent(_target(qty=1.0, cutoff_time_ns=2))
+
+        self.assertIsNotNone(confirmed)
+        self.assertIn("INTENT_CONFIRMED_2_BARS", confirmed.reason_codes)
+        self.assertEqual(audit_events[0]["reason"], "INTENT_CONFIRMATION_PENDING")
+        self.assertEqual(audit_events[-1]["reason"], "INTENT_CONFIRMED")
+
+    def test_flip_intent_requires_configured_persistence(self):
+        bus = _strategy_bus()
+        engine = ARCStrategyEngine(
+            bus=bus,
+            config=ARCStrategyConfig(intent_flip_confirmation_bars=2),
+        )
+        engine._positions[("BTCUSDT_PERP", Timeframe.TF_4H)] = _position(direction=1.0)
+
+        self.assertIsNone(engine._confirm_directional_intent(_target(qty=-1.0, cutoff_time_ns=1)))
+        confirmed = engine._confirm_directional_intent(_target(qty=-1.0, cutoff_time_ns=2))
+
+        self.assertIsNotNone(confirmed)
+        self.assertLess(confirmed.target_qty, 0.0)
+        self.assertIn("INTENT_CONFIRMED_2_BARS", confirmed.reason_codes)
+
+    def test_unconfirmed_flip_can_emit_reduce_only_flatten_intent(self):
+        bus = _strategy_bus()
+        engine = ARCStrategyEngine(
+            bus=bus,
+            config=ARCStrategyConfig(
+                intent_flip_confirmation_bars=2,
+                intent_unconfirmed_flip_reduce_only=True,
+            ),
+        )
+        engine._positions[("BTCUSDT_PERP", Timeframe.TF_4H)] = _position(direction=1.0)
+
+        flatten = engine._confirm_directional_intent(_target(qty=-1.0, cutoff_time_ns=1))
+        confirmed = engine._confirm_directional_intent(_target(qty=-1.0, cutoff_time_ns=2))
+
+        self.assertIsNotNone(flatten)
+        self.assertEqual(flatten.target_qty, 0.0)
+        self.assertEqual(flatten.target_leverage, 0.0)
+        self.assertTrue(flatten.reduce_only)
+        self.assertIn("INTENT_FLIP_FLATTEN_FIRST", flatten.reason_codes)
+        self.assertIsNotNone(confirmed)
+        self.assertLess(confirmed.target_qty, 0.0)
+
+    def test_pending_lower_timeframe_target_is_cleared_when_confirmation_waits(self):
+        bus = _strategy_bus()
+        engine = ARCStrategyEngine(
+            bus=bus,
+            config=ARCStrategyConfig(
+                execution_timeframe=Timeframe.TF_1H,
+                intent_entry_confirmation_bars=2,
+            ),
+        )
+        engine._pending_4h_target["BTCUSDT_PERP"] = _target(qty=-1.0, cutoff_time_ns=0)
+        engine._pending_4h_bars["BTCUSDT_PERP"] = 1
+        engine._pending_1h_target["BTCUSDT_PERP"] = _target(qty=-1.0, cutoff_time_ns=0)
+        engine._pending_1h_bars["BTCUSDT_PERP"] = 1
+
+        engine.prime_indicator(_pack())
+        engine.prime_state(_state())
+
+        self.assertNotIn("BTCUSDT_PERP", engine._pending_4h_target)
+        self.assertNotIn("BTCUSDT_PERP", engine._pending_1h_target)
 
 
 class TestLegacyPathUnchanged(unittest.TestCase):
