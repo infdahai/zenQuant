@@ -41,6 +41,16 @@ def build_strategy_config(params: dict[str, Any]) -> ARCStrategyConfig:
             strategy_kwargs["direction_signal_threshold"] = float(value)
         elif key == "intent_add_signal_threshold":
             strategy_kwargs["intent_add_signal_threshold"] = float(value)
+        elif key == "intent_time_leverage_hold_enabled":
+            strategy_kwargs["intent_time_leverage_hold_enabled"] = bool(round(float(value)))
+        elif key == "intent_time_leverage_min_hold_bars":
+            strategy_kwargs["intent_time_leverage_min_hold_bars"] = int(value)
+        elif key == "intent_time_leverage_flip_signal_threshold":
+            strategy_kwargs["intent_time_leverage_flip_signal_threshold"] = float(value)
+        elif key == "intent_time_leverage_confidence_floor":
+            strategy_kwargs["intent_time_leverage_confidence_floor"] = float(value)
+        elif key == "intent_time_leverage_transition_risk_floor":
+            strategy_kwargs["intent_time_leverage_transition_risk_floor"] = float(value)
         elif key == "preserve_capital_risk":
             playbook_kwargs["preserve_capital_transition_risk"] = value
         elif key == "bull_leverage":
@@ -419,6 +429,11 @@ def intent_churn_ablation_param_grid(*, include_liquidation_toggles: bool = Fals
         "intent_entry_confirmation_bars": [1, 2],
         "intent_flip_confirmation_bars": [1, 2, 3],
         "intent_unconfirmed_flip_reduce_only": [0.0, 1.0],
+        "intent_time_leverage_hold_enabled": [0.0, 1.0],
+        "intent_time_leverage_min_hold_bars": [0, 12, 24, 48],
+        "intent_time_leverage_flip_signal_threshold": [0.45, 0.55, 0.65],
+        "intent_time_leverage_confidence_floor": [0.55, 0.65],
+        "intent_time_leverage_transition_risk_floor": [0.25, 0.35, 0.45],
         "hostile_behavior_router_enabled": [0.0],
         "squeeze_flip_flatten_only_enabled": [0.0],
         "squeeze_flip_cooldown_enabled": [0.0],
@@ -728,6 +743,11 @@ def intent_churn_ablation_seed_trials() -> list[dict[str, float]]:
         "intent_entry_confirmation_bars": 1,
         "intent_flip_confirmation_bars": 1,
         "intent_unconfirmed_flip_reduce_only": 0.0,
+        "intent_time_leverage_hold_enabled": 0.0,
+        "intent_time_leverage_min_hold_bars": 0,
+        "intent_time_leverage_flip_signal_threshold": 0.55,
+        "intent_time_leverage_confidence_floor": 0.55,
+        "intent_time_leverage_transition_risk_floor": 0.35,
         "hostile_behavior_router_enabled": 0.0,
         "squeeze_flip_flatten_only_enabled": 0.0,
         "squeeze_flip_cooldown_enabled": 0.0,
@@ -750,6 +770,39 @@ def intent_churn_ablation_seed_trials() -> list[dict[str, float]]:
     }
     return [
         dict(base),
+        {
+            **fee_shape,
+            "direction_signal_threshold": 0.25,
+            "intent_add_signal_threshold": 0.45,
+            "intent_flip_confirmation_bars": 3,
+            "intent_time_leverage_hold_enabled": 1.0,
+            "intent_time_leverage_min_hold_bars": 12,
+            "intent_time_leverage_flip_signal_threshold": 0.55,
+        },
+        {
+            **fee_shape,
+            "direction_signal_threshold": 0.25,
+            "intent_add_signal_threshold": 0.45,
+            "intent_entry_confirmation_bars": 2,
+            "intent_flip_confirmation_bars": 3,
+            "intent_time_leverage_hold_enabled": 1.0,
+            "intent_time_leverage_min_hold_bars": 24,
+            "intent_time_leverage_flip_signal_threshold": 0.65,
+            "intent_time_leverage_confidence_floor": 0.65,
+        },
+        {
+            **fee_shape,
+            "target_vol_4h": 0.65,
+            "max_leverage": 3.0,
+            "direction_signal_threshold": 0.30,
+            "intent_add_signal_threshold": 0.40,
+            "intent_flip_confirmation_bars": 3,
+            "intent_time_leverage_hold_enabled": 1.0,
+            "intent_time_leverage_min_hold_bars": 48,
+            "intent_time_leverage_flip_signal_threshold": 0.65,
+            "intent_time_leverage_confidence_floor": 0.65,
+            "intent_time_leverage_transition_risk_floor": 0.45,
+        },
         {**fee_shape, "direction_signal_threshold": 0.25},
         {**fee_shape, "direction_signal_threshold": 0.25, "intent_add_signal_threshold": 0.30},
         {**fee_shape, "direction_signal_threshold": 0.25, "intent_add_signal_threshold": 0.35},

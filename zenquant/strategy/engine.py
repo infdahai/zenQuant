@@ -85,6 +85,11 @@ class ARCStrategyConfig:
     intent_flip_confirmation_bars: int = 1
     intent_unconfirmed_flip_reduce_only: bool = False
     intent_add_signal_threshold: float = 0.0
+    intent_time_leverage_hold_enabled: bool = False
+    intent_time_leverage_min_hold_bars: int = 0
+    intent_time_leverage_flip_signal_threshold: float = 0.55
+    intent_time_leverage_confidence_floor: float = 0.55
+    intent_time_leverage_transition_risk_floor: float = 0.35
 
 
 class ARCStrategyEngine:
@@ -688,6 +693,75 @@ class ARCStrategyEngine:
         reason_codes.append("INTENT_ADD_SIGNAL_GATE")
         return capped_qty, capped_leverage
 
+    def _apply_time_leverage_hold_guard(
+        self,
+        *,
+        symbol: str,
+        timeframe: Timeframe,
+        target_qty: float,
+        target_leverage: float,
+        price: float,
+        state: MarketState,
+        reason_codes: list[str],
+    ) -> tuple[float, float]:
+        if not self._config.intent_time_leverage_hold_enabled:
+            return target_qty, target_leverage
+
+        position = self._current_execution_position(symbol, timeframe)
+        if position is None or price <= 0.0 or self._equity <= 0.0:
+            return target_qty, target_leverage
+
+        current_signed_qty = position.direction * position.current_qty
+        target_direction = self._target_direction(target_qty)
+        if target_direction == 0.0 or current_signed_qty * target_qty >= 0.0:
+            return target_qty, target_leverage
+
+        context = self._plugin_signal_context.get((symbol, timeframe), {})
+        signal_strength = abs(float(context.get("effective_direction", state.direction_signal) or 0.0))
+        flip_threshold = max(0.0, float(self._config.intent_time_leverage_flip_signal_threshold))
+        confidence_floor = max(0.0, float(self._config.intent_time_leverage_confidence_floor))
+        transition_floor = max(0.0, float(self._config.intent_time_leverage_transition_risk_floor))
+        min_hold_bars = max(0, int(self._config.intent_time_leverage_min_hold_bars))
+        opposing_trend_state = "DOWNTREND" if position.direction > 0 else "UPTREND"
+        opposing_trend_confirmed = (
+            state.directional_state == opposing_trend_state
+            and state.directional_confidence >= confidence_floor
+            and state.transition_risk >= transition_floor
+            and signal_strength >= flip_threshold
+        )
+        min_hold_satisfied = position.bars_held >= min_hold_bars
+        if min_hold_satisfied and opposing_trend_confirmed:
+            reason_codes.append("TIME_LEVERAGE_FLIP_CONFIRMED")
+            return target_qty, target_leverage
+
+        held_leverage = abs(current_signed_qty * price) / self._equity
+        reason_codes.append("TIME_LEVERAGE_FLIP_HELD")
+        if not min_hold_satisfied:
+            reason_codes.append("TIME_LEVERAGE_MIN_HOLD")
+        if state.directional_state != opposing_trend_state:
+            reason_codes.append("TIME_LEVERAGE_TREND_STILL_ALIGNED")
+        if signal_strength < flip_threshold:
+            reason_codes.append("TIME_LEVERAGE_SIGNAL_TOO_WEAK")
+        if state.directional_confidence < confidence_floor or state.transition_risk < transition_floor:
+            reason_codes.append("TIME_LEVERAGE_REVERSAL_NOT_CONFIRMED")
+        self._bus.publish(
+            f"strategy.time_leverage_hold.{timeframe.value}.{symbol}",
+            {
+                "symbol": symbol,
+                "timeframe": timeframe.value,
+                "cutoff_time_ns": state.cutoff_time_ns,
+                "bars_held": position.bars_held,
+                "min_hold_bars": min_hold_bars,
+                "current_direction": position.direction,
+                "blocked_direction": target_direction,
+                "signal_strength": round(signal_strength, 6),
+                "directional_confidence": round(float(state.directional_confidence), 6),
+                "transition_risk": round(float(state.transition_risk), 6),
+                "reason": "TIME_LEVERAGE_FLIP_HELD",
+            },
+        )
+        return current_signed_qty, held_leverage
+
     def _build_target(
         self,
         pack: IndicatorPack,
@@ -854,6 +928,15 @@ class ARCStrategyEngine:
         target_qty = target_notional / vals.price
         if abs(target_qty) < self._config.min_trade_qty:
             target_qty = 0.0
+        target_qty, target_leverage = self._apply_time_leverage_hold_guard(
+            symbol=pack.symbol,
+            timeframe=pack.timeframe,
+            target_qty=target_qty,
+            target_leverage=target_leverage,
+            price=vals.price,
+            state=state,
+            reason_codes=reason_codes,
+        )
         target_qty, target_leverage = self._apply_same_direction_add_gate(
             symbol=pack.symbol,
             timeframe=pack.timeframe,

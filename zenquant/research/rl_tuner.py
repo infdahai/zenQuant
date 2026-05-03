@@ -195,6 +195,11 @@ def build_strategy_config(params: dict[str, float]) -> ARCStrategyConfig:
         bias_max_age_bars=int(params.get("bias_max_age_bars", 8)),
         enable_adaptive_signal_weights=bool(round(float(params.get("enable_adaptive_signal_weights", 0.0)))),
         intent_add_signal_threshold=params.get("intent_add_signal_threshold", 0.0),
+        intent_time_leverage_hold_enabled=bool(round(float(params.get("intent_time_leverage_hold_enabled", 0.0)))),
+        intent_time_leverage_min_hold_bars=int(params.get("intent_time_leverage_min_hold_bars", 0)),
+        intent_time_leverage_flip_signal_threshold=params.get("intent_time_leverage_flip_signal_threshold", 0.55),
+        intent_time_leverage_confidence_floor=params.get("intent_time_leverage_confidence_floor", 0.55),
+        intent_time_leverage_transition_risk_floor=params.get("intent_time_leverage_transition_risk_floor", 0.35),
     )
 
 
