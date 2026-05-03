@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pandas as pd
 
-from zenquant.research.comparison import public_archive_variant_specs
+from zenquant.research.comparison import paulwei_mature_style_variant_specs, public_archive_variant_specs
 from zenquant.research.paulwei_public import (
     build_ahr999_alignment,
     build_ahr999_execution_guidance_review,
@@ -124,8 +124,14 @@ def _build_public_source(root: Path) -> None:
     _write_csv(root / "api-v1-order.csv", [{"timestamp": "2022-02-01T00:00:00Z", "symbol": "XBTUSD"}])
     _write_csv(root / "api-v1-user-walletHistory.csv", [{"timestamp": "2022-02-01T00:00:00Z", "walletBalance": 1}])
     _write_csv(root / "api-v1-position.snapshot.csv", [{"timestamp": "2022-02-03T00:00:00Z", "currentQty": 0}])
-    _write_csv(root / "api-v1-user-wallet.snapshot-all.csv", [{"timestamp": "2022-02-03T00:00:00Z", "currency": "XBt", "amount": 1}])
-    _write_csv(root / "api-v1-user-margin.snapshot-all.csv", [{"timestamp": "2022-02-03T00:00:00Z", "currency": "XBt", "walletBalance": 1}])
+    _write_csv(
+        root / "api-v1-user-wallet.snapshot-all.csv",
+        [{"timestamp": "2022-02-03T00:00:00Z", "currency": "XBt", "amount": 1}],
+    )
+    _write_csv(
+        root / "api-v1-user-margin.snapshot-all.csv",
+        [{"timestamp": "2022-02-03T00:00:00Z", "currency": "XBt", "walletBalance": 1}],
+    )
     _write_csv(
         root / "derived-equity-curve.csv",
         [
@@ -172,6 +178,7 @@ class PaulWeiPublicResearchTests(unittest.TestCase):
             self.assertIn("drawdown_profile", profile)
             self.assertEqual(mapping["mapping_confidence"], "medium")
             self.assertIn("derived_execution_rules", mapping)
+            self.assertGreaterEqual(mapping["execution_config_overrides"]["pyramid_short_add_pct"], 0.10)
             self.assertTrue(Path(mapping_info["json_path"]).exists())
 
     def test_ahr999_alignment_and_public_archive_variant_specs(self) -> None:
@@ -188,11 +195,27 @@ class PaulWeiPublicResearchTests(unittest.TestCase):
             write_baseline_mapping(behavior_profile=profile, output_dir=output)
             alignment = build_ahr999_alignment(data_root=data_root, spot_root=spot_root, macro_root=macro_root)
             variants = public_archive_variant_specs(mapping_path=output / "baseline_mapping.json")
+            mature_variants = paulwei_mature_style_variant_specs(mapping_path=output / "baseline_mapping.json")
 
             self.assertTrue(alignment["ready"])
             self.assertIn("correlation_to_mvrv", alignment)
             self.assertEqual(variants[-1].name, "paulwei_public_archive_baseline")
+            self.assertEqual(mature_variants[-1].name, "paulwei_mature_style_baseline")
             self.assertEqual(len(variants), 3)
+            self.assertEqual(len(mature_variants), 3)
+
+    def test_committed_paulwei_research_baseline_configs_load_as_variants(self) -> None:
+        public_variants = public_archive_variant_specs(
+            mapping_path=Path("config/research_baselines/paulwei_public_archive_2020_05_2026_04.json")
+        )
+        mature_variants = paulwei_mature_style_variant_specs(
+            mapping_path=Path("config/research_baselines/paulwei_mature_style_2021_05_28.json")
+        )
+
+        self.assertEqual(public_variants[-1].name, "paulwei_public_archive_baseline")
+        self.assertEqual(mature_variants[-1].name, "paulwei_mature_style_baseline")
+        self.assertGreaterEqual(public_variants[-1].execution_config.pyramid_short_add_pct, 0.10)
+        self.assertGreaterEqual(mature_variants[-1].execution_config.pyramid_short_add_pct, 0.10)
 
     def test_execution_guidance_and_promotion_reviews(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -244,13 +267,41 @@ class PaulWeiPublicResearchTests(unittest.TestCase):
                 "window_reports": [
                     {"variant": "current", "window_label": "dev", "metrics": {"sharpe": 4.0, "max_drawdown": 0.10}},
                     {"variant": "current", "window_label": "2023-08", "metrics": {"sharpe": 4.2, "max_drawdown": 0.05}},
-                    {"variant": "current", "window_label": "2024-11 DD", "metrics": {"sharpe": 5.0, "max_drawdown": 0.03}},
-                    {"variant": "paulwei_baseline", "window_label": "dev", "metrics": {"sharpe": 4.0, "max_drawdown": 0.10}},
-                    {"variant": "paulwei_baseline", "window_label": "2023-08", "metrics": {"sharpe": 4.0, "max_drawdown": 0.05}},
-                    {"variant": "paulwei_baseline", "window_label": "2024-11 DD", "metrics": {"sharpe": 4.8, "max_drawdown": 0.04}},
-                    {"variant": "paulwei_public_archive_baseline", "window_label": "dev", "metrics": {"sharpe": 4.3, "max_drawdown": 0.11}},
-                    {"variant": "paulwei_public_archive_baseline", "window_label": "2023-08", "metrics": {"sharpe": 4.1, "max_drawdown": 0.05}},
-                    {"variant": "paulwei_public_archive_baseline", "window_label": "2024-11 DD", "metrics": {"sharpe": 5.2, "max_drawdown": 0.031}},
+                    {
+                        "variant": "current",
+                        "window_label": "2024-11 DD",
+                        "metrics": {"sharpe": 5.0, "max_drawdown": 0.03},
+                    },
+                    {
+                        "variant": "paulwei_baseline",
+                        "window_label": "dev",
+                        "metrics": {"sharpe": 4.0, "max_drawdown": 0.10},
+                    },
+                    {
+                        "variant": "paulwei_baseline",
+                        "window_label": "2023-08",
+                        "metrics": {"sharpe": 4.0, "max_drawdown": 0.05},
+                    },
+                    {
+                        "variant": "paulwei_baseline",
+                        "window_label": "2024-11 DD",
+                        "metrics": {"sharpe": 4.8, "max_drawdown": 0.04},
+                    },
+                    {
+                        "variant": "paulwei_public_archive_baseline",
+                        "window_label": "dev",
+                        "metrics": {"sharpe": 4.3, "max_drawdown": 0.11},
+                    },
+                    {
+                        "variant": "paulwei_public_archive_baseline",
+                        "window_label": "2023-08",
+                        "metrics": {"sharpe": 4.1, "max_drawdown": 0.05},
+                    },
+                    {
+                        "variant": "paulwei_public_archive_baseline",
+                        "window_label": "2024-11 DD",
+                        "metrics": {"sharpe": 5.2, "max_drawdown": 0.031},
+                    },
                 ],
             }
             comparison_payload_path = output / "variant_comparison_payload.json"
@@ -335,13 +386,41 @@ class PaulWeiPublicResearchTests(unittest.TestCase):
                 "window_reports": [
                     {"variant": "current", "window_label": "dev", "metrics": {"sharpe": 4.0, "max_drawdown": 0.10}},
                     {"variant": "current", "window_label": "2023-08", "metrics": {"sharpe": 4.2, "max_drawdown": 0.05}},
-                    {"variant": "current", "window_label": "2024-11 DD", "metrics": {"sharpe": 5.0, "max_drawdown": 0.03}},
-                    {"variant": "paulwei_baseline", "window_label": "dev", "metrics": {"sharpe": 4.0, "max_drawdown": 0.10}},
-                    {"variant": "paulwei_baseline", "window_label": "2023-08", "metrics": {"sharpe": 4.0, "max_drawdown": 0.05}},
-                    {"variant": "paulwei_baseline", "window_label": "2024-11 DD", "metrics": {"sharpe": 4.8, "max_drawdown": 0.04}},
-                    {"variant": "paulwei_public_archive_baseline", "window_label": "dev", "metrics": {"sharpe": 4.3, "max_drawdown": 0.145}},
-                    {"variant": "paulwei_public_archive_baseline", "window_label": "2023-08", "metrics": {"sharpe": 4.4, "max_drawdown": 0.047}},
-                    {"variant": "paulwei_public_archive_baseline", "window_label": "2024-11 DD", "metrics": {"sharpe": 6.5, "max_drawdown": 0.032}},
+                    {
+                        "variant": "current",
+                        "window_label": "2024-11 DD",
+                        "metrics": {"sharpe": 5.0, "max_drawdown": 0.03},
+                    },
+                    {
+                        "variant": "paulwei_baseline",
+                        "window_label": "dev",
+                        "metrics": {"sharpe": 4.0, "max_drawdown": 0.10},
+                    },
+                    {
+                        "variant": "paulwei_baseline",
+                        "window_label": "2023-08",
+                        "metrics": {"sharpe": 4.0, "max_drawdown": 0.05},
+                    },
+                    {
+                        "variant": "paulwei_baseline",
+                        "window_label": "2024-11 DD",
+                        "metrics": {"sharpe": 4.8, "max_drawdown": 0.04},
+                    },
+                    {
+                        "variant": "paulwei_public_archive_baseline",
+                        "window_label": "dev",
+                        "metrics": {"sharpe": 4.3, "max_drawdown": 0.145},
+                    },
+                    {
+                        "variant": "paulwei_public_archive_baseline",
+                        "window_label": "2023-08",
+                        "metrics": {"sharpe": 4.4, "max_drawdown": 0.047},
+                    },
+                    {
+                        "variant": "paulwei_public_archive_baseline",
+                        "window_label": "2024-11 DD",
+                        "metrics": {"sharpe": 6.5, "max_drawdown": 0.032},
+                    },
                 ],
             }
             comparison_payload_path = output / "variant_comparison_payload.json"
@@ -388,5 +467,7 @@ class PaulWeiPublicResearchTests(unittest.TestCase):
                 "drawdown_outside_current_band",
             )
             self.assertTrue(strict_review["next_action_review"]["keep_research_only"])
-            self.assertIn("inventory_build_profile", {item["module"] for item in strict_review["strict_learning_modules"]})
+            self.assertIn(
+                "inventory_build_profile", {item["module"] for item in strict_review["strict_learning_modules"]}
+            )
             self.assertFalse(strict_review["next_action_review"]["ready_for_authoritative_candidate_review"])

@@ -12,10 +12,14 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from zenquant.historical import HistoricalBacktestConfig
 from zenquant.research.comparison import (
+    PAULWEI_MATURE_STYLE_MAPPING_PATH,
+    PAULWEI_PUBLIC_ARCHIVE_MAPPING_PATH,
     build_markdown_summary,
     compare_variants,
     default_comparison_windows,
+    default_variant_specs,
     filtered_worst_period_windows,
+    mapped_public_archive_variant_spec,
     public_archive_variant_specs,
 )
 from zenquant.research.splits import default_btc_split_spec
@@ -30,7 +34,9 @@ def main() -> None:
     parser.add_argument("--include-worst-periods", action="store_true")
     parser.add_argument("--skip-walk-forward", action="store_true")
     parser.add_argument("--include-paulwei-public-baseline", action="store_true")
-    parser.add_argument("--paulwei-mapping-path", default="results/paulwei_research/baseline_mapping.json")
+    parser.add_argument("--include-paulwei-mature-baseline", action="store_true")
+    parser.add_argument("--paulwei-mapping-path", default=str(PAULWEI_PUBLIC_ARCHIVE_MAPPING_PATH))
+    parser.add_argument("--paulwei-mature-mapping-path", default=str(PAULWEI_MATURE_STYLE_MAPPING_PATH))
     args = parser.parse_args()
 
     split_spec = default_btc_split_spec()
@@ -42,11 +48,23 @@ def main() -> None:
                 windows.append(window)
                 seen.add(window.label)
 
-    variants = (
-        public_archive_variant_specs(mapping_path=Path(args.paulwei_mapping_path))
-        if args.include_paulwei_public_baseline
-        else None
-    )
+    variants = None
+    if args.include_paulwei_public_baseline and not args.include_paulwei_mature_baseline:
+        variants = public_archive_variant_specs(mapping_path=Path(args.paulwei_mapping_path))
+    elif args.include_paulwei_public_baseline or args.include_paulwei_mature_baseline:
+        variants = list(default_variant_specs())
+        if args.include_paulwei_public_baseline:
+            public_spec = mapped_public_archive_variant_spec(mapping_path=Path(args.paulwei_mapping_path))
+            if public_spec is not None:
+                variants.append(public_spec)
+        if args.include_paulwei_mature_baseline:
+            mature_spec = mapped_public_archive_variant_spec(
+                mapping_path=Path(args.paulwei_mature_mapping_path),
+                variant_name="paulwei_mature_style_baseline",
+                variant_label="PaulWei Mature Style Baseline",
+            )
+            if mature_spec is not None:
+                variants.append(mature_spec)
 
     payload = compare_variants(
         HistoricalBacktestConfig(

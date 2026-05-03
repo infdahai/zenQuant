@@ -74,6 +74,8 @@ class ComparisonValidationTimeoutError(RuntimeError):
 
 
 _COMPARISON_REPLAY_CONTEXT_CACHE: dict[tuple[Any, ...], ReplayContext] = {}
+PAULWEI_PUBLIC_ARCHIVE_MAPPING_PATH = Path("config/research_baselines/paulwei_public_archive_2020_05_2026_04.json")
+PAULWEI_MATURE_STYLE_MAPPING_PATH = Path("config/research_baselines/paulwei_mature_style_2021_05_28.json")
 
 
 def paulwei_risk_baseline() -> RiskOverlayConfig:
@@ -312,25 +314,59 @@ def default_variant_specs() -> list[VariantSpec]:
     ]
 
 
-def public_archive_variant_specs(*, mapping_path: Path) -> list[VariantSpec]:
-    """Return default variants plus the optional PaulWei public-archive baseline."""
+def mapped_public_archive_variant_spec(
+    *,
+    mapping_path: Path,
+    variant_name: str = "paulwei_public_archive_baseline",
+    variant_label: str = "PaulWei Public Archive Baseline",
+) -> VariantSpec | None:
     from zenquant.research.paulwei_public import paulwei_public_archive_variant_spec
 
-    variants = list(default_variant_specs())
-    payload = paulwei_public_archive_variant_spec(mapping_path=mapping_path)
-    if payload is None:
-        return variants
-    variants.append(
-        VariantSpec(
-            name=str(payload["name"]),
-            label=str(payload["label"]),
-            execution_architecture_profile=str(payload.get("execution_architecture_profile") or "legacy_paulwei_like"),
-            risk_config=payload.get("risk_config"),
-            execution_config=payload.get("execution_config"),
-            strategy_config=payload.get("strategy_config"),
-        )
+    payload = paulwei_public_archive_variant_spec(
+        mapping_path=mapping_path,
+        variant_name=variant_name,
+        variant_label=variant_label,
     )
+    if payload is None:
+        return None
+    return VariantSpec(
+        name=str(payload["name"]),
+        label=str(payload["label"]),
+        execution_architecture_profile=str(payload.get("execution_architecture_profile") or "legacy_paulwei_like"),
+        risk_config=payload.get("risk_config"),
+        execution_config=payload.get("execution_config"),
+        strategy_config=payload.get("strategy_config"),
+    )
+
+
+def public_archive_variant_specs(
+    *,
+    mapping_path: Path = PAULWEI_PUBLIC_ARCHIVE_MAPPING_PATH,
+    variant_name: str = "paulwei_public_archive_baseline",
+    variant_label: str = "PaulWei Public Archive Baseline",
+) -> list[VariantSpec]:
+    """Return default variants plus the optional PaulWei public-archive baseline."""
+    variants = list(default_variant_specs())
+    spec = mapped_public_archive_variant_spec(
+        mapping_path=mapping_path,
+        variant_name=variant_name,
+        variant_label=variant_label,
+    )
+    if spec is not None:
+        variants.append(spec)
     return variants
+
+
+def paulwei_mature_style_variant_specs(
+    *,
+    mapping_path: Path = PAULWEI_MATURE_STYLE_MAPPING_PATH,
+) -> list[VariantSpec]:
+    """Return default variants plus the mature-style PaulWei research baseline."""
+    return public_archive_variant_specs(
+        mapping_path=mapping_path,
+        variant_name="paulwei_mature_style_baseline",
+        variant_label="PaulWei Mature Style Baseline",
+    )
 
 
 def liquidation_research_variant_specs() -> list[VariantSpec]:

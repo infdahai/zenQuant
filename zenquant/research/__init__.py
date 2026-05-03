@@ -21,8 +21,11 @@ from .comparison import (
     default_variant_specs,
     fixed_2023_08_window,
     liquidation_research_variant_specs,
+    mapped_public_archive_variant_spec,
     paulwei_execution_baseline,
+    paulwei_mature_style_variant_specs,
     paulwei_risk_baseline,
+    public_archive_variant_specs,
     windows_from_worst_periods,
 )
 from .experiment import Experiment, ExperimentTracker
@@ -83,8 +86,11 @@ __all__ = [
     "default_variant_specs",
     "fixed_2023_08_window",
     "liquidation_research_variant_specs",
+    "mapped_public_archive_variant_spec",
     "paulwei_execution_baseline",
+    "paulwei_mature_style_variant_specs",
     "paulwei_risk_baseline",
+    "public_archive_variant_specs",
     "run_dev_robustness_stage",
     "run_dev_validation_stage",
     "run_research_pipeline",

@@ -1,0 +1,54 @@
+{
+  "baseline_id": "paulwei_mature_style_baseline",
+  "baseline_role": "primary_research_learning_baseline",
+  "mapping_source": "paulwei_public_archive_behavior_profile",
+  "style_filter": {
+    "mode": "mature_only",
+    "start_at": "2021-05-28T12:00:00+00:00",
+    "selection_reason": "after recovery from 2021-04/05 cash-flow adjusted drawdown; subsequent max adjusted drawdown is materially lower and position-switch cadence slows",
+    "excluded_behavior": "early aggressive public-ledger period before mature style start"
+  },
+  "evidence_window": {
+    "start": "2021-05-28T12:00:00+00:00",
+    "end": "2026-04-17T11:53:30.513000+00:00"
+  },
+  "behavior_summary": {
+    "position_switches_per_30d": 1.6807,
+    "median_adds_per_episode": 18.0,
+    "median_reduces_per_episode": 17.0,
+    "long_episode_share": 0.6636,
+    "win_median_hold_hours": 25.8007,
+    "loss_median_hold_hours": 34.3481,
+    "btc_notional_share": 0.8619,
+    "max_drawdown_pct": 0.1911,
+    "median_recovery_days": 11.5
+  },
+  "execution_config_overrides": {
+    "pyramid_initial_pct": 0.3,
+    "pyramid_add_pct": 0.3,
+    "pyramid_short_initial_pct": 0.2,
+    "pyramid_short_add_pct": 0.1,
+    "gradual_exit_enabled": true,
+    "exit_unwind_pct": 0.35,
+    "flip_immediate": true,
+    "flip_min_confidence": 0.55
+  },
+  "risk_config_overrides": {
+    "dd_step_1_long": 0.15,
+    "dd_step_1_short": 0.08,
+    "kill_switch_drawdown": 0.3,
+    "kill_cooldown_bars": 48,
+    "kill_ramp_bars": 36,
+    "vol_shock_mult": 0.35
+  },
+  "strategy_config_overrides": {},
+  "mapping_confidence": "medium",
+  "unsupported_dimensions": [
+    "discretionary_macro_inputs",
+    "news_and_narrative_interpretation",
+    "cross-exchange_context",
+    "manual conviction scaling beyond observable ledger behavior"
+  ],
+  "promotion_status": "research_only",
+  "learning_priority": "primary"
+}
