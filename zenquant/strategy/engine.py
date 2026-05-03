@@ -84,6 +84,7 @@ class ARCStrategyConfig:
     intent_entry_confirmation_bars: int = 1
     intent_flip_confirmation_bars: int = 1
     intent_unconfirmed_flip_reduce_only: bool = False
+    intent_add_signal_threshold: float = 0.0
 
 
 class ARCStrategyEngine:
@@ -627,6 +628,12 @@ class ARCStrategyEngine:
         )
 
     def _current_execution_position_direction(self, symbol: str, target_timeframe: Timeframe) -> float:
+        position = self._current_execution_position(symbol, target_timeframe)
+        if position is not None and position.current_qty >= self._config.min_trade_qty:
+            return 1.0 if position.direction > 0 else -1.0
+        return 0.0
+
+    def _current_execution_position(self, symbol: str, target_timeframe: Timeframe) -> OpenPositionState | None:
         preferred_keys = (
             (symbol, self._config.execution_timeframe),
             (symbol, target_timeframe),
@@ -634,8 +641,8 @@ class ARCStrategyEngine:
         for key in preferred_keys:
             position = self._positions.get(key)
             if position is not None and position.current_qty >= self._config.min_trade_qty:
-                return 1.0 if position.direction > 0 else -1.0
-        return 0.0
+                return position
+        return None
 
     @staticmethod
     def _target_direction(target_qty: float) -> float:
@@ -644,6 +651,42 @@ class ARCStrategyEngine:
         if target_qty < 0:
             return -1.0
         return 0.0
+
+    def _apply_same_direction_add_gate(
+        self,
+        *,
+        symbol: str,
+        timeframe: Timeframe,
+        target_qty: float,
+        target_leverage: float,
+        price: float,
+        reason_codes: list[str],
+    ) -> tuple[float, float]:
+        threshold = max(0.0, float(self._config.intent_add_signal_threshold))
+        if threshold <= 0.0 or abs(target_qty) < self._config.min_trade_qty:
+            return target_qty, target_leverage
+
+        position = self._current_execution_position(symbol, timeframe)
+        if position is None:
+            return target_qty, target_leverage
+
+        current_signed_qty = position.direction * position.current_qty
+        if current_signed_qty * target_qty <= 0.0:
+            return target_qty, target_leverage
+        if abs(target_qty) <= abs(current_signed_qty) + self._config.min_trade_qty:
+            return target_qty, target_leverage
+
+        context = self._plugin_signal_context.get((symbol, timeframe), {})
+        signal_strength = abs(float(context.get("effective_direction", 0.0) or 0.0))
+        if signal_strength >= threshold:
+            return target_qty, target_leverage
+
+        capped_qty = current_signed_qty
+        capped_leverage = target_leverage
+        if price > 0.0 and self._equity > 0.0:
+            capped_leverage = abs(capped_qty * price) / self._equity
+        reason_codes.append("INTENT_ADD_SIGNAL_GATE")
+        return capped_qty, capped_leverage
 
     def _build_target(
         self,
@@ -811,6 +854,14 @@ class ARCStrategyEngine:
         target_qty = target_notional / vals.price
         if abs(target_qty) < self._config.min_trade_qty:
             target_qty = 0.0
+        target_qty, target_leverage = self._apply_same_direction_add_gate(
+            symbol=pack.symbol,
+            timeframe=pack.timeframe,
+            target_qty=target_qty,
+            target_leverage=target_leverage,
+            price=vals.price,
+            reason_codes=reason_codes,
+        )
 
         if direction > 0:
             reason_codes.append("TREND_LONG")
@@ -1132,9 +1183,12 @@ class ARCStrategyEngine:
             ind_dict,
             state_dict,
         )
+        effective_direction = composed.direction * composed.state_confidence_haircut
         self._plugin_signal_context[(pack.symbol, pack.timeframe)] = {
             "state_confidence_haircut": composed.state_confidence_haircut,
             "execution_bias": composed.execution_bias,
+            "effective_direction": effective_direction,
+            "signal_confidence": composed.confidence,
             "role_contributions": composed.role_contributions,
             "adaptive_signal_weights_enabled": self._config.enable_adaptive_signal_weights,
             "effective_signal_weights": effective_weights,
@@ -1148,7 +1202,6 @@ class ARCStrategyEngine:
             self._signal_values[sig_name].append(contrib)
 
         # Discretize to {-1, 0, 1} based on direction threshold
-        effective_direction = composed.direction * composed.state_confidence_haircut
         direction_threshold = max(0.0, self._config.direction_signal_threshold)
         direction = 0.0
         if effective_direction > direction_threshold:

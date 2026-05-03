@@ -194,6 +194,7 @@ def build_strategy_config(params: dict[str, float]) -> ARCStrategyConfig:
         trailing_stop_atr_mult=params.get("trailing_stop_atr_mult", 2.5),
         bias_max_age_bars=int(params.get("bias_max_age_bars", 8)),
         enable_adaptive_signal_weights=bool(round(float(params.get("enable_adaptive_signal_weights", 0.0)))),
+        intent_add_signal_threshold=params.get("intent_add_signal_threshold", 0.0),
     )
 
 
