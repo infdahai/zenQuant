@@ -4,6 +4,7 @@ import multiprocessing as mp
 import sys
 import tempfile
 import unittest
+from concurrent.futures import TimeoutError as FutureTimeoutError
 from dataclasses import dataclass
 from pathlib import Path
 from unittest.mock import patch
@@ -49,6 +50,7 @@ from zenquant.research.framework_search import (
     _classify_post_smoke_scenario,
     _hostile_regression_summary,
     _run_validation_bundle,
+    _run_variant_backtest_with_timeout,
     _stage1_fail_fast_reason,
     build_markdown_report,
     run_optuna_search,
@@ -2363,6 +2365,71 @@ class SearchReportSerializationTests(unittest.TestCase):
 
         self.assertEqual(executor_calls[0]["max_workers"], 2)
         self.assertEqual(executor_calls[0]["mp_context"].get_start_method(), mp.get_context("spawn").get_start_method())
+
+    def test_variant_backtest_timeout_does_not_wait_for_local_pool_shutdown(self) -> None:
+        shutdown_calls: list[tuple[bool, bool]] = []
+        cancel_calls: list[bool] = []
+
+        class FakeFuture:
+            def result(self, timeout=None):
+                del timeout
+                raise FutureTimeoutError()
+
+            def cancel(self) -> bool:
+                cancel_calls.append(True)
+                return True
+
+        class FakeExecutor:
+            def __init__(self, **_kwargs) -> None:
+                return None
+
+            def submit(self, *_args, **_kwargs) -> FakeFuture:
+                return FakeFuture()
+
+            def shutdown(self, *, wait=True, cancel_futures=False) -> None:
+                shutdown_calls.append((wait, cancel_futures))
+
+        with (
+            patch("zenquant.research.framework_search.ProcessPoolExecutor", FakeExecutor),
+            self.assertRaisesRegex(TimeoutError, "variant_backtest_timeout:1s"),
+        ):
+            _run_variant_backtest_with_timeout(
+                HistoricalBacktestConfig(),
+                FrameworkEvaluator(HistoricalBacktestConfig())._current_variant,
+                start_ns=None,
+                end_ns=None,
+                timeout_s=1.0,
+            )
+
+        self.assertEqual(cancel_calls, [True])
+        self.assertEqual(shutdown_calls, [(False, True)])
+
+    def test_prepare_backtest_timeout_resets_validation_pool(self) -> None:
+        shutdown_calls: list[tuple[bool, bool]] = []
+
+        class FakePool:
+            def shutdown(self, *, wait=False, cancel_futures=False) -> None:
+                shutdown_calls.append((wait, cancel_futures))
+
+        window = type("Window", (), {"label": "dev", "start_ns": None, "end_ns": None})()
+        with patch(
+            "zenquant.research.framework_search._run_variant_backtest_with_timeout",
+            side_effect=TimeoutError("variant_backtest_timeout:1s"),
+        ):
+            evaluator = FrameworkEvaluator(HistoricalBacktestConfig(), split_spec=default_btc_split_spec())
+            fake_pool = FakePool()
+            evaluator._validation_pool = fake_pool
+
+            with self.assertRaises(PrepareVariantTimeoutError):
+                evaluator._run_prepare_backtest_cached(
+                    evaluator._current_variant,
+                    window,
+                    timeout_s=1.0,
+                    replay_pool=fake_pool,
+                )
+
+        self.assertIsNone(evaluator._validation_pool)
+        self.assertEqual(shutdown_calls, [(False, True)])
 
     def test_final_report_uses_fast_compare_window_profile_and_workers(self) -> None:
         summary = CandidateSummary(
