@@ -130,6 +130,9 @@ class IndicatorEngine:
         cot_store: object | None = None,
         basis_store: object | None = None,
         eth_store: object | None = None,
+        cross_asset_context_store: object | None = None,
+        onchain_factor_store: object | None = None,
+        binance_metrics_factor_store: object | None = None,
         liquidation_store: object | None = None,
         microstructure_store: MicrostructureFeatureStore | None = None,
     ) -> None:
@@ -142,6 +145,9 @@ class IndicatorEngine:
         self._cot_store = cot_store  # CotDataStore (optional, weekly institutional positioning)
         self._basis_store = basis_store  # BasisDataStore (optional, spot-perp premium)
         self._eth_store = eth_store  # EthDataStore (optional, cross-asset TE)
+        self._cross_asset_context_store = cross_asset_context_store
+        self._onchain_factor_store = onchain_factor_store
+        self._binance_metrics_factor_store = binance_metrics_factor_store
         self._liquidation_store = liquidation_store  # LiquidationDataStore (optional, aggregated force-order data)
         self._microstructure_store = microstructure_store
         self._btc_returns_buffer: list[float] = []  # Rolling BTC returns for TE
@@ -504,7 +510,9 @@ class IndicatorEngine:
             )
             quality_flags = sorted(set([*quality_flags, *options_snap.quality_flags]))
 
-        cycle_position = self._update_cycle_position(symbol=candle.symbol, timeframe=candle.timeframe, close=candle.close)
+        cycle_position = self._update_cycle_position(
+            symbol=candle.symbol, timeframe=candle.timeframe, close=candle.close
+        )
         macro_values["cycle_position"] = round(cycle_position, 4)
 
         ou_kappa = _ou_kappa(candles, window=self._config.vol_window)
@@ -569,6 +577,32 @@ class IndicatorEngine:
                 macro_values["te_eth_to_btc"] = round(te, 4)
                 if len(eth_returns) >= 6:
                     macro_values["eth_momentum"] = sum(eth_returns[-6:])
+
+        if self._cross_asset_context_store is not None and hasattr(self._cross_asset_context_store, "lookup"):
+            context = self._cross_asset_context_store.lookup(candle.bar_end_ns)
+            macro_values["alt_btc_spread_z"] = context.alt_btc_spread_z
+            macro_values["alt_momentum_7d"] = context.alt_momentum_7d
+            macro_values["eth_momentum_7d"] = context.eth_momentum_7d
+            macro_values["sol_momentum_7d"] = context.sol_momentum_7d
+            macro_values["bnb_momentum_7d"] = context.bnb_momentum_7d
+            quality_flags = sorted(set([*quality_flags, *context.quality_flags]))
+
+        if self._onchain_factor_store is not None and hasattr(self._onchain_factor_store, "lookup"):
+            onchain = self._onchain_factor_store.lookup(candle.bar_end_ns)
+            macro_values["active_address_momentum_14d"] = onchain.active_address_momentum_14d
+            macro_values["supply_activity_regime"] = onchain.supply_activity_regime
+            quality_flags = sorted(set([*quality_flags, *onchain.quality_flags]))
+
+        if self._binance_metrics_factor_store is not None and hasattr(self._binance_metrics_factor_store, "lookup"):
+            binance_metrics = self._binance_metrics_factor_store.lookup(candle.bar_end_ns)
+            macro_values["binance_oi_value_growth_24h_z"] = binance_metrics.oi_value_growth_24h_z
+            macro_values["binance_top_trader_account_lsr_z"] = binance_metrics.top_trader_account_lsr_z
+            macro_values["binance_crowding_unwind_pressure"] = binance_metrics.crowding_unwind_pressure
+            macro_values["binance_top_account_global_divergence"] = binance_metrics.top_account_global_divergence
+            macro_values["binance_oi_expansion_price_continuation"] = binance_metrics.oi_expansion_price_continuation
+            macro_values["binance_taker_oi_exhaustion"] = binance_metrics.taker_oi_exhaustion
+            macro_values["binance_crowded_unwind_vol_adjusted"] = binance_metrics.crowded_unwind_vol_adjusted
+            quality_flags = sorted(set([*quality_flags, *binance_metrics.quality_flags]))
 
         if self._liquidation_store is not None and hasattr(self._liquidation_store, "lookup"):
             liq = self._liquidation_store.lookup(candle.bar_end_ns)
@@ -771,9 +805,7 @@ def _realized_vol(candles: list[Candle], window: int, timeframe: Timeframe) -> f
         return 0.0
     mean_ret = sum(returns) / len(returns)
     variance = sum((value - mean_ret) ** 2 for value in returns) / (len(returns) - 1)
-    bar_per_day = {Timeframe.TF_5M: 288, Timeframe.TF_1H: 24, Timeframe.TF_4H: 6, Timeframe.TF_1D: 1}.get(
-        timeframe, 6
-    )
+    bar_per_day = {Timeframe.TF_5M: 288, Timeframe.TF_1H: 24, Timeframe.TF_4H: 6, Timeframe.TF_1D: 1}.get(timeframe, 6)
     annualizer = math.sqrt(365 * bar_per_day)
     return max(0.0, math.sqrt(max(0.0, variance)) * annualizer)
 
