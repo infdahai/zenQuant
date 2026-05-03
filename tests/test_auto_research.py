@@ -303,6 +303,65 @@ class TestStage1HostileProxy(unittest.TestCase):
             stable["hostile_proxy_penalty_applied"],
         )
 
+    def test_hostile_proxy_penalizes_flip_reduce_cadence_over_time_leverage(self) -> None:
+        efficient = _hostile_proxy_diagnostics(
+            {
+                "target_vol_4h": 0.95,
+                "max_leverage": 4.5,
+                "pyramid_initial_pct": 0.25,
+                "pyramid_add_pct": 0.20,
+                "pyramid_short_initial_pct": 0.15,
+                "pyramid_short_add_pct": 0.12,
+                "dca_spacing_atr": 1.25,
+                "dca_size_decay": 0.75,
+                "flip_min_confidence": 0.65,
+            },
+            {
+                "sharpe": 2.0,
+                "max_drawdown": 0.08,
+                "profit_factor": 1.2,
+                "fee_drag_pct": 0.015,
+                "trade_count": 180,
+                "net_pnl": 4500.0,
+                "net_pnl_per_trade": 25.0,
+                "position_switches_per_30d": 2.0,
+                "flip_reduce_fee_drag_pct": 0.008,
+                "net_pnl_per_position_switch": 300.0,
+                "terminated_early": 0.0,
+            },
+        )
+        churny = _hostile_proxy_diagnostics(
+            {
+                "target_vol_4h": 0.95,
+                "max_leverage": 4.5,
+                "pyramid_initial_pct": 0.25,
+                "pyramid_add_pct": 0.20,
+                "pyramid_short_initial_pct": 0.15,
+                "pyramid_short_add_pct": 0.12,
+                "dca_spacing_atr": 1.25,
+                "dca_size_decay": 0.75,
+                "flip_min_confidence": 0.65,
+            },
+            {
+                "sharpe": 2.0,
+                "max_drawdown": 0.08,
+                "profit_factor": 1.2,
+                "fee_drag_pct": 0.015,
+                "trade_count": 180,
+                "net_pnl": 4500.0,
+                "net_pnl_per_trade": 25.0,
+                "position_switches_per_30d": 8.0,
+                "flip_reduce_fee_drag_pct": 0.025,
+                "net_pnl_per_position_switch": 40.0,
+                "terminated_early": 0.0,
+            },
+        )
+
+        self.assertGreater(efficient["time_leverage_bonus"], churny["time_leverage_bonus"])
+        self.assertGreater(churny["position_switch_penalty"], efficient["position_switch_penalty"])
+        self.assertGreater(churny["flip_reduce_fee_drag_penalty"], efficient["flip_reduce_fee_drag_penalty"])
+        self.assertLess(churny["hostile_proxy_score"], efficient["hostile_proxy_score"])
+
     def test_stage1_sort_metric_prefers_hostile_proxy_score_over_raw_sharpe(self) -> None:
         strong_sharpe = {"sharpe": 3.0, "hostile_proxy_score": 0.2}
         safer_profile = {"sharpe": 2.0, "hostile_proxy_score": 1.5}
@@ -704,6 +763,7 @@ class TestSearchSpace(unittest.TestCase):
             robustness_seeds=[],
             verbose=False,
         )
+
         def fake_worker(args):
             params = args[0]
             bull_lev = params.get("bull_leverage", 2.5)
