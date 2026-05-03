@@ -411,6 +411,63 @@ class TestStrategyIntentConfirmation(unittest.TestCase):
         self.assertEqual(audit_events[0]["reason"], "INTENT_FLAT_CONFIRMATION_PENDING")
         self.assertEqual(audit_events[-1]["reason"], "INTENT_FLAT_CONFIRMED")
 
+    def test_range_light_pending_entry_waits_for_lower_timeframe_confirmation(self):
+        bus = _strategy_bus()
+        audit_events = []
+        bus.subscribe(
+            "strategy.intent_range_entry_confirmation.>",
+            lambda _subject, payload: audit_events.append(payload),
+        )
+        engine = ARCStrategyEngine(
+            bus=bus,
+            config=ARCStrategyConfig(
+                execution_timeframe=Timeframe.TF_1H,
+                intent_range_entry_confirmation_bars=6,
+            ),
+        )
+        engine._positions[("BTCUSDT_PERP", Timeframe.TF_1H)] = _position(direction=1.0)
+        pending = _target(qty=-1.0, cutoff_time_ns=0)
+        pending.reason_codes[:] = ["REGIME_RANGE", "PLAYBOOK_RANGE_LIGHT", "TREND_SHORT"]
+        engine._pending_4h_target["BTCUSDT_PERP"] = pending
+        engine._pending_4h_bars["BTCUSDT_PERP"] = 4
+        engine.prime_indicator(_pack(timeframe=Timeframe.TF_1H))
+        state = _state(regime="RANGE", directional_state="DOWNTREND")
+        state.timeframe = Timeframe.TF_1H
+
+        self.assertIsNone(engine._try_1h_entry(state))
+
+        self.assertEqual(engine._pending_4h_bars["BTCUSDT_PERP"], 5)
+        self.assertEqual(audit_events[-1]["reason"], "INTENT_RANGE_ENTRY_CONFIRMATION_PENDING")
+        self.assertEqual(audit_events[-1]["bars"], 5)
+        self.assertEqual(audit_events[-1]["required_bars"], 6)
+
+    def test_range_light_pending_entry_executes_after_lower_timeframe_confirmation(self):
+        bus = _strategy_bus()
+        engine = ARCStrategyEngine(
+            bus=bus,
+            config=ARCStrategyConfig(
+                execution_timeframe=Timeframe.TF_1H,
+                intent_range_entry_confirmation_bars=6,
+            ),
+        )
+        engine._positions[("BTCUSDT_PERP", Timeframe.TF_1H)] = _position(direction=1.0)
+        pending = _target(qty=-1.0, cutoff_time_ns=0)
+        pending.reason_codes[:] = ["REGIME_RANGE", "PLAYBOOK_RANGE_LIGHT", "TREND_SHORT"]
+        engine._pending_4h_target["BTCUSDT_PERP"] = pending
+        engine._pending_4h_bars["BTCUSDT_PERP"] = 5
+        engine.prime_indicator(_pack(timeframe=Timeframe.TF_1H))
+        state = _state(regime="RANGE", directional_state="DOWNTREND")
+        state.timeframe = Timeframe.TF_1H
+
+        target = engine._try_1h_entry(state)
+
+        self.assertIsNotNone(target)
+        assert target is not None
+        self.assertEqual(target.timeframe, Timeframe.TF_1H)
+        self.assertLess(target.target_qty, 0.0)
+        self.assertIn("INTENT_RANGE_ENTRY_CONFIRMED_6_BARS", target.reason_codes)
+        self.assertIn("1H_ENTRY_OPTIMIZED", target.reason_codes)
+
     def test_pending_lower_timeframe_target_is_cleared_when_confirmation_waits(self):
         bus = _strategy_bus()
         engine = ARCStrategyEngine(
