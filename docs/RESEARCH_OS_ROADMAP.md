@@ -1,8 +1,7 @@
 # Research OS Roadmap
 
-This roadmap translates the lessons in
-[QUADRATURE_LESSONS.md](./QUADRATURE_LESSONS.md) into a concrete next-step infra
-plan for zenQuant.
+This roadmap defines the concrete next-step research infrastructure plan for
+zenQuant.
 
 This is not a strategy roadmap. It does not change:
 
