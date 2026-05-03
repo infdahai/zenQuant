@@ -225,6 +225,32 @@ class RegimeObjectiveRedesignTests(unittest.TestCase):
         self.assertLess(score["trade_count_penalty"], 0.01)
         self.assertLess(score["fee_drag_penalty"], 0.01)
 
+    def test_candidate_generation_scorer_penalizes_wide_train_drawdown_band(self) -> None:
+        base_metrics = {
+            "sharpe": 1.6,
+            "profit_factor": 1.4,
+            "net_pnl": 100_000.0,
+            "trade_count": 120,
+            "fee_drag_pct": 0.01,
+            "profit_factor_after_fee": 1.35,
+        }
+        stable = score_regime_objective_candidate_generation(
+            {
+                **base_metrics,
+                "max_drawdown": 0.05,
+            }
+        )
+        wide = score_regime_objective_candidate_generation(
+            {
+                **base_metrics,
+                "max_drawdown": 0.09,
+            }
+        )
+
+        self.assertEqual(stable["drawdown_preferred_band_penalty"], 0.0)
+        self.assertGreater(wide["drawdown_preferred_band_penalty"], 0.0)
+        self.assertLess(wide["regime_objective_score"], stable["regime_objective_score"])
+
     def test_candidate_generation_scorer_uses_trade_count_when_turnover_missing(self) -> None:
         score = score_regime_objective_candidate_generation(
             {
