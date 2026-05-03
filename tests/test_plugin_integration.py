@@ -454,6 +454,67 @@ class TestStrategyIntentConfirmation(unittest.TestCase):
         self.assertEqual(leverage, 0.9)
         self.assertNotIn("INTENT_ADD_SIGNAL_GATE", reason_codes)
 
+    def test_time_leverage_guard_holds_existing_position_before_flip_is_confirmed(self):
+        bus = _strategy_bus()
+        audit_events = []
+        bus.subscribe("strategy.time_leverage_hold.>", lambda _subject, payload: audit_events.append(payload))
+        engine = ARCStrategyEngine(
+            bus=bus,
+            config=ARCStrategyConfig(
+                intent_time_leverage_hold_enabled=True,
+                intent_time_leverage_min_hold_bars=12,
+                intent_time_leverage_flip_signal_threshold=0.60,
+            ),
+        )
+        engine._positions[("BTCUSDT_PERP", Timeframe.TF_4H)] = _position(direction=1.0)
+        engine._plugin_signal_context[("BTCUSDT_PERP", Timeframe.TF_4H)] = {"effective_direction": -0.35}
+        reason_codes: list[str] = []
+
+        qty, leverage = engine._apply_time_leverage_hold_guard(
+            symbol="BTCUSDT_PERP",
+            timeframe=Timeframe.TF_4H,
+            target_qty=-1.5,
+            target_leverage=0.9,
+            price=60000.0,
+            state=_state(directional_state="UPTREND", transition_risk=0.2),
+            reason_codes=reason_codes,
+        )
+
+        self.assertEqual(qty, 1.0)
+        self.assertAlmostEqual(leverage, 0.6)
+        self.assertIn("TIME_LEVERAGE_FLIP_HELD", reason_codes)
+        self.assertIn("TIME_LEVERAGE_MIN_HOLD", reason_codes)
+        self.assertEqual(audit_events[-1]["reason"], "TIME_LEVERAGE_FLIP_HELD")
+
+    def test_time_leverage_guard_allows_confirmed_opposite_trend_after_hold_window(self):
+        bus = _strategy_bus()
+        engine = ARCStrategyEngine(
+            bus=bus,
+            config=ARCStrategyConfig(
+                intent_time_leverage_hold_enabled=True,
+                intent_time_leverage_min_hold_bars=12,
+                intent_time_leverage_flip_signal_threshold=0.60,
+            ),
+        )
+        engine._positions[("BTCUSDT_PERP", Timeframe.TF_4H)] = _position(direction=1.0)
+        engine._positions[("BTCUSDT_PERP", Timeframe.TF_4H)].bars_held = 15
+        engine._plugin_signal_context[("BTCUSDT_PERP", Timeframe.TF_4H)] = {"effective_direction": -0.75}
+        reason_codes: list[str] = []
+
+        qty, leverage = engine._apply_time_leverage_hold_guard(
+            symbol="BTCUSDT_PERP",
+            timeframe=Timeframe.TF_4H,
+            target_qty=-1.5,
+            target_leverage=0.9,
+            price=60000.0,
+            state=_state(directional_state="DOWNTREND", transition_risk=0.6),
+            reason_codes=reason_codes,
+        )
+
+        self.assertEqual(qty, -1.5)
+        self.assertEqual(leverage, 0.9)
+        self.assertIn("TIME_LEVERAGE_FLIP_CONFIRMED", reason_codes)
+
 
 class TestLegacyPathUnchanged(unittest.TestCase):
     """Verify that engine without plugins uses legacy path."""

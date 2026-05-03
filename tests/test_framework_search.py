@@ -213,6 +213,9 @@ class FrameworkParamTests(unittest.TestCase):
         self.assertEqual(grid["intent_entry_confirmation_bars"], [1, 2])
         self.assertEqual(grid["intent_flip_confirmation_bars"], [1, 2, 3])
         self.assertEqual(grid["intent_unconfirmed_flip_reduce_only"], [0.0, 1.0])
+        self.assertEqual(grid["intent_time_leverage_hold_enabled"], [0.0, 1.0])
+        self.assertEqual(grid["intent_time_leverage_min_hold_bars"], [0, 12, 24, 48])
+        self.assertEqual(grid["intent_time_leverage_flip_signal_threshold"], [0.45, 0.55, 0.65])
         self.assertEqual(grid["hostile_behavior_router_enabled"], [0.0])
         self.assertEqual(grid["liquidation_data_enabled"], [0.0])
 
@@ -312,6 +315,11 @@ class FrameworkParamTests(unittest.TestCase):
                 "trade_directional_confidence_floor": 0.60,
                 "bearish_override_confidence_floor": 0.65,
                 "exit_transition_risk": 0.90,
+                "intent_time_leverage_hold_enabled": 1.0,
+                "intent_time_leverage_min_hold_bars": 24,
+                "intent_time_leverage_flip_signal_threshold": 0.65,
+                "intent_time_leverage_confidence_floor": 0.65,
+                "intent_time_leverage_transition_risk_floor": 0.45,
             }
         )
 
@@ -324,6 +332,11 @@ class FrameworkParamTests(unittest.TestCase):
         self.assertEqual(config.playbook_config.trade_directional_confidence_floor, 0.60)
         self.assertEqual(config.playbook_config.bearish_override_confidence_floor, 0.65)
         self.assertEqual(config.exit_config.transition_risk_exit_threshold, 0.90)
+        self.assertTrue(config.intent_time_leverage_hold_enabled)
+        self.assertEqual(config.intent_time_leverage_min_hold_bars, 24)
+        self.assertEqual(config.intent_time_leverage_flip_signal_threshold, 0.65)
+        self.assertEqual(config.intent_time_leverage_confidence_floor, 0.65)
+        self.assertEqual(config.intent_time_leverage_transition_risk_floor, 0.45)
 
     def test_autoresearch_strategy_config_accepts_shared_intent_churn_config(self) -> None:
         config = _build_strategy_config(
@@ -333,11 +346,15 @@ class FrameworkParamTests(unittest.TestCase):
                 "trade_directional_confidence_floor": 0.60,
                 "bearish_override_confidence_floor": 0.65,
                 "exit_transition_risk": 0.90,
+                "intent_time_leverage_hold_enabled": 1.0,
+                "intent_time_leverage_min_hold_bars": 12,
             },
             execution_timeframe=Timeframe.TF_4H,
         )
 
         self.assertEqual(config.execution_timeframe, Timeframe.TF_4H)
+        self.assertTrue(config.intent_time_leverage_hold_enabled)
+        self.assertEqual(config.intent_time_leverage_min_hold_bars, 12)
         self.assertIsNotNone(config.playbook_config)
         self.assertIsNotNone(config.exit_config)
         assert config.playbook_config is not None
@@ -474,6 +491,7 @@ class FrameworkParamTests(unittest.TestCase):
         self.assertEqual(seeds[0]["intent_entry_confirmation_bars"], 1)
         self.assertEqual(seeds[0]["intent_flip_confirmation_bars"], 1)
         self.assertEqual(seeds[0]["intent_unconfirmed_flip_reduce_only"], 0.0)
+        self.assertEqual(seeds[0]["intent_time_leverage_hold_enabled"], 0.0)
         self.assertEqual(seeds[1]["range_time_decay_bars"], 5)
         self.assertTrue(any(seed["trade_directional_confidence_floor"] == 0.55 for seed in seeds))
         self.assertTrue(any(seed["bearish_override_confidence_floor"] == 0.55 for seed in seeds))
@@ -481,6 +499,8 @@ class FrameworkParamTests(unittest.TestCase):
         self.assertTrue(any(seed["intent_add_signal_threshold"] == 0.45 for seed in seeds))
         self.assertTrue(any(seed["intent_entry_confirmation_bars"] == 2 for seed in seeds))
         self.assertTrue(any(seed["intent_flip_confirmation_bars"] == 3 for seed in seeds))
+        self.assertTrue(any(seed["intent_time_leverage_hold_enabled"] == 1.0 for seed in seeds))
+        self.assertTrue(any(seed["intent_time_leverage_min_hold_bars"] == 48 for seed in seeds))
         self.assertTrue(any(seed["target_vol_4h"] == 0.65 for seed in seeds))
         self.assertTrue(any(seed["target_vol_4h"] == 0.50 for seed in seeds))
         self.assertTrue(any(seed["max_leverage"] == 3.0 for seed in seeds))
@@ -495,6 +515,7 @@ class FrameworkParamTests(unittest.TestCase):
             self.assertGreaterEqual(strategy_config.intent_add_signal_threshold, 0.0)
             self.assertGreaterEqual(strategy_config.intent_entry_confirmation_bars, 1)
             self.assertGreaterEqual(strategy_config.intent_flip_confirmation_bars, 1)
+            self.assertGreaterEqual(strategy_config.intent_time_leverage_min_hold_bars, 0)
 
     def test_binance_factor_weight_repair_seed_trials_include_neutral_and_active_weight_arms(self) -> None:
         seeds = binance_factor_weight_repair_seed_trials()
