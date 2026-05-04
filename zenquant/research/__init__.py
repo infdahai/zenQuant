@@ -29,6 +29,7 @@ from .comparison import (
     windows_from_worst_periods,
 )
 from .experiment import Experiment, ExperimentTracker
+from .mature_progression import build_mature_progression_markdown, build_mature_progression_payload
 from .pipeline import ResearchRunArtifact, ResearchRunConfig, run_research_pipeline
 from .promoter import (
     BaselineMetrics,
@@ -76,6 +77,8 @@ __all__ = [
     "behavior_candidate_existence_variant_specs",
     "build_decision_attribution_ledger",
     "build_markdown_summary",
+    "build_mature_progression_markdown",
+    "build_mature_progression_payload",
     "build_regime_objective_markdown",
     "build_regime_objective_verdict",
     "build_risk_architecture_profile",
