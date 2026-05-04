@@ -13,6 +13,10 @@ from zenquant.data.deribit_block_flow import (
     save_block_flow_rows,
     write_deribit_block_flow_status,
 )
+from zenquant.research.deribit_large_option_flow import (
+    build_large_option_flow_records,
+    filter_large_option_flow_rows,
+)
 
 
 class DeribitBlockFlowTests(unittest.TestCase):
@@ -148,6 +152,142 @@ class DeribitBlockFlowTests(unittest.TestCase):
             self.assertTrue(status.enabled)
             self.assertTrue(status_path.exists())
             self.assertEqual(len(frame), 1)
+
+    def test_large_option_flow_filter_respects_amount_notional_and_block_gate(self) -> None:
+        rows = [
+            DeribitBlockFlowRow(
+                ts_ns=1713446400000000000,
+                trade_id="small",
+                block_trade_id="block-small",
+                combo_id=None,
+                combo_trade_id=None,
+                instrument_name="BTC-24APR26-72000-C",
+                option_type="c",
+                expiry_ts_ms=1776988800000,
+                strike=72000.0,
+                direction="buy",
+                amount=10.0,
+                price=0.0525,
+                index_price=70000.0,
+                mark_price=0.05253883,
+                iv=45.91,
+                liquidity=None,
+                is_block_trade=True,
+                is_combo_leg=False,
+                leg_count=1,
+                source="public_option_trade",
+            ),
+            DeribitBlockFlowRow(
+                ts_ns=1713446460000000000,
+                trade_id="screen-large",
+                block_trade_id=None,
+                combo_id=None,
+                combo_trade_id=None,
+                instrument_name="BTC-24APR26-74000-C",
+                option_type="c",
+                expiry_ts_ms=1776988800000,
+                strike=74000.0,
+                direction="sell",
+                amount=50.0,
+                price=0.031,
+                index_price=70000.0,
+                mark_price=0.0312,
+                iv=44.2,
+                liquidity=None,
+                is_block_trade=False,
+                is_combo_leg=False,
+                leg_count=1,
+                source="public_option_trade",
+            ),
+            DeribitBlockFlowRow(
+                ts_ns=1713446520000000000,
+                trade_id="block-large",
+                block_trade_id="block-1",
+                combo_id="BTC-CS-24APR26-70000_72000",
+                combo_trade_id="combo-1",
+                instrument_name="BTC-24APR26-70000-C",
+                option_type="c",
+                expiry_ts_ms=1776988800000,
+                strike=70000.0,
+                direction="buy",
+                amount=30.0,
+                price=0.08,
+                index_price=70000.0,
+                mark_price=0.0801,
+                iv=46.0,
+                liquidity=None,
+                is_block_trade=True,
+                is_combo_leg=True,
+                leg_count=2,
+                source="public_option_trade",
+            ),
+        ]
+
+        large_rows = filter_large_option_flow_rows(rows, min_amount=25.0, require_block_trade=True)
+        self.assertEqual([row.trade_id for row in large_rows], ["block-large"])
+
+        notional_rows = filter_large_option_flow_rows(
+            rows,
+            min_amount=25.0,
+            min_underlying_notional_usd=3_000_000.0,
+        )
+        self.assertEqual([row.trade_id for row in notional_rows], ["screen-large"])
+
+    def test_large_option_flow_records_are_latest_first_and_json_safe(self) -> None:
+        rows = [
+            DeribitBlockFlowRow(
+                ts_ns=1713446400000000000,
+                trade_id="older",
+                block_trade_id=None,
+                combo_id=None,
+                combo_trade_id=None,
+                instrument_name="BTC-24APR26-72000-C",
+                option_type="c",
+                expiry_ts_ms=1776988800000,
+                strike=72000.0,
+                direction="buy",
+                amount=25.0,
+                price=0.0525,
+                index_price=70000.0,
+                mark_price=0.05253883,
+                iv=45.91,
+                liquidity=None,
+                is_block_trade=False,
+                is_combo_leg=False,
+                leg_count=1,
+                source="public_option_trade",
+            ),
+            DeribitBlockFlowRow(
+                ts_ns=1713446460000000000,
+                trade_id="newer",
+                block_trade_id="block-2",
+                combo_id=None,
+                combo_trade_id=None,
+                instrument_name="BTC-24APR26-74000-P",
+                option_type="p",
+                expiry_ts_ms=1776988800000,
+                strike=74000.0,
+                direction="sell",
+                amount=50.0,
+                price=0.031,
+                index_price=70000.0,
+                mark_price=0.0312,
+                iv=44.2,
+                liquidity=None,
+                is_block_trade=True,
+                is_combo_leg=False,
+                leg_count=1,
+                source="public_option_trade",
+            ),
+        ]
+
+        records = build_large_option_flow_records(rows, min_amount=25.0, limit=1)
+
+        self.assertEqual(len(records), 1)
+        self.assertEqual(records[0]["trade_id"], "newer")
+        self.assertEqual(records[0]["expiry"], "2026-04-24")
+        self.assertEqual(records[0]["underlying_notional_usd"], 3_500_000.0)
+        self.assertEqual(records[0]["premium_usd"], 108_500.0)
 
 
 if __name__ == "__main__":
