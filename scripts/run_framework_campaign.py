@@ -67,6 +67,20 @@ def _read_seed_trials(path: Path | None) -> list[dict[str, Any]]:
     return resolved
 
 
+_BASE_TIMEFRAME_SMOKE_MODES = {
+    "intent_churn_ablation_train_only",
+    "intent_churn_repair_train_only",
+    "ralph_protective_reduce_train_only",
+    "ralph_protective_reduce_fee_repair_train_only",
+    "ralph_execution_fee_cooldown_train_only",
+    "ralph_intent_reduce_cadence_train_only",
+}
+
+
+def _smoke_uses_base_timeframe(*, budget: str, search_space_mode: str) -> bool:
+    return budget == "smoke" and search_space_mode in _BASE_TIMEFRAME_SMOKE_MODES
+
+
 def _resolve_stage1_parallelism(
     *,
     budget: str,
@@ -75,7 +89,7 @@ def _resolve_stage1_parallelism(
     cpu_count: int | None = None,
 ) -> dict[str, Any]:
     available_workers = max(1, ((cpu_count if cpu_count is not None else os.cpu_count()) or 4) - 2)
-    if budget == "smoke" and search_space_mode == "intent_churn_repair_train_only":
+    if _smoke_uses_base_timeframe(budget=budget, search_space_mode=search_space_mode):
         workers = max(1, min(available_workers, 4))
         return {
             "stage1_parallel_mode": "cpu_parallel",
@@ -1276,8 +1290,9 @@ def main() -> None:
             evaluator,
             budget=args.budget,
         )
-        smoke_uses_base_timeframe = (
-            args.budget == "smoke" and resolved_search_space_mode == "intent_churn_repair_train_only"
+        smoke_uses_base_timeframe = _smoke_uses_base_timeframe(
+            budget=args.budget,
+            search_space_mode=resolved_search_space_mode,
         )
         primary_stage1_execution_mode = (
             "5m_lightweight_train_search" if args.budget != "smoke" or smoke_uses_base_timeframe else "1h_context_only"
@@ -1422,7 +1437,7 @@ def main() -> None:
         stage1_state.setdefault("candidate_existence_goal_met", False)
         if stage1_payload is None:
             stage1_execution_mode = primary_stage1_execution_mode
-            smoke_ranking_top_n = 1 if args.budget == "smoke" else min(5, optuna_trials)
+            smoke_ranking_top_n = 2 if args.budget == "smoke" else min(5, optuna_trials)
             smoke_rl_timeout_s = 600.0 if args.budget == "smoke" else None
             smoke_ranking_candidate_timeout_s = 30.0 if args.budget == "smoke" else None
             stage1_state = {
@@ -2167,9 +2182,9 @@ def main() -> None:
                     ),
                     trial_timeout_s=720.0 if args.budget == "smoke" else None,
                     stage_total_timeout_s=smoke_stage_total_timeout_s if args.budget == "smoke" else None,
-                    ranking_timeout_s=360.0
+                    ranking_timeout_s=max(360.0, 240.0 * smoke_ranking_top_n)
                     if args.budget == "smoke" and slow_state_factor_search
-                    else 120.0
+                    else 240.0 * smoke_ranking_top_n
                     if args.budget == "smoke"
                     else None,
                     ranking_top_n=smoke_ranking_top_n,

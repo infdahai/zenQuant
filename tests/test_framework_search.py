@@ -56,6 +56,7 @@ from zenquant.research.framework_search import (
     _assess_full_training_readiness,
     _candidate_score,
     _classify_post_smoke_scenario,
+    _dev_fee_stability_summary,
     _hostile_regression_summary,
     _run_validation_bundle,
     _run_variant_backtest_with_timeout,
@@ -211,8 +212,8 @@ class FrameworkParamTests(unittest.TestCase):
     def test_intent_churn_ablation_grid_prioritizes_low_switch_intent(self) -> None:
         grid = intent_churn_ablation_param_grid()
 
-        self.assertEqual(grid["target_vol_4h"], [0.35, 0.40, 0.45, 0.50, 0.65])
-        self.assertEqual(grid["max_leverage"], [2.5, 3.0])
+        self.assertEqual(grid["target_vol_4h"], [0.30, 0.35, 0.40, 0.45, 0.50, 0.65])
+        self.assertEqual(grid["max_leverage"], [2.0, 2.5, 3.0])
         self.assertEqual(grid["pyramid_add_pct"], [0.30])
         self.assertEqual(grid["pyramid_short_add_pct"], [0.10, 0.12])
         self.assertEqual(grid["range_time_decay_bars"], [8, 12, 16, 24])
@@ -222,8 +223,8 @@ class FrameworkParamTests(unittest.TestCase):
         self.assertEqual(grid["trade_directional_confidence_floor"][0], 0.50)
         self.assertEqual(grid["bearish_override_confidence_floor"][0], 0.50)
         self.assertEqual(grid["exit_transition_risk"][0], 0.80)
-        self.assertEqual(grid["direction_signal_threshold"], [0.30, 0.35, 0.40, 0.45])
-        self.assertEqual(grid["intent_add_signal_threshold"], [0.45, 0.50, 0.55])
+        self.assertEqual(grid["direction_signal_threshold"], [0.30, 0.35, 0.40, 0.45, 0.50, 0.55])
+        self.assertEqual(grid["intent_add_signal_threshold"], [0.45, 0.50, 0.55, 0.60])
         self.assertEqual(grid["intent_add_confirmation_bars"], [1, 2, 4])
         self.assertEqual(grid["min_bars_before_trail"], [1])
         self.assertEqual(grid["min_hours_before_trail"], [0.0, 12.0, 20.0, 36.0])
@@ -752,11 +753,18 @@ class FrameworkParamTests(unittest.TestCase):
         self.assertEqual(seeds[1]["intent_bearish_override_chop_max_confidence"], 0.40)
         self.assertEqual(seeds[1]["intent_bearish_override_chop_min_transition_risk"], 0.65)
         self.assertEqual(seeds[1]["intent_unconfirmed_flip_reduce_only"], 0.0)
+        self.assertEqual(seeds[2]["target_vol_4h"], 0.30)
+        self.assertEqual(seeds[2]["max_leverage"], 2.0)
+        self.assertEqual(seeds[2]["intent_time_leverage_dip_max_leverage"], 2.0)
+        self.assertEqual(seeds[3]["direction_signal_threshold"], 0.55)
+        self.assertEqual(seeds[3]["intent_add_signal_threshold"], 0.60)
         self.assertEqual(seeds[1]["intent_time_leverage_min_hold_bars"], 336)
         self.assertTrue(any(seed["trade_directional_confidence_floor"] == 0.55 for seed in seeds))
         self.assertTrue(any(seed["bearish_override_confidence_floor"] == 0.55 for seed in seeds))
         self.assertTrue(any(seed["direction_signal_threshold"] == 0.35 for seed in seeds))
+        self.assertTrue(any(seed["direction_signal_threshold"] == 0.55 for seed in seeds))
         self.assertTrue(any(seed["intent_add_signal_threshold"] == 0.55 for seed in seeds))
+        self.assertTrue(any(seed["intent_add_signal_threshold"] == 0.60 for seed in seeds))
         self.assertTrue(any(seed["intent_add_confirmation_bars"] == 2 for seed in seeds))
         self.assertTrue(any(seed["intent_entry_confirmation_bars"] == 4 for seed in seeds))
         self.assertTrue(any(seed["intent_flip_confirmation_bars"] == 12 for seed in seeds))
@@ -789,8 +797,10 @@ class FrameworkParamTests(unittest.TestCase):
         )
         self.assertTrue(any(seed["intent_time_leverage_dip_add_pct"] == 0.15 for seed in seeds))
         self.assertTrue(any(seed["target_vol_4h"] == 0.65 for seed in seeds))
+        self.assertTrue(any(seed["target_vol_4h"] == 0.30 for seed in seeds))
         self.assertTrue(any(seed["target_vol_4h"] == 0.35 for seed in seeds))
         self.assertTrue(any(seed["target_vol_4h"] == 0.45 for seed in seeds))
+        self.assertTrue(any(seed["max_leverage"] == 2.0 for seed in seeds))
         self.assertTrue(any(seed["max_leverage"] == 3.0 for seed in seeds))
         for seed in seeds:
             build_execution_config(seed)
@@ -1697,6 +1707,84 @@ class SearchReportSerializationTests(unittest.TestCase):
             "weak_window_2023_08_fail_fast",
         )
 
+    def test_stage1_fail_fast_rejects_catastrophic_dev_fee_drag(self) -> None:
+        baseline = CandidateSummary(
+            variant="paulwei_baseline",
+            robust_score=1.0,
+            selection_split="dev",
+            dev_sharpe=1.0,
+            dev_pnl=100.0,
+            dev_drawdown=0.10,
+            avg_dev_sharpe=1.0,
+            avg_dev_ratio=1.0,
+            worst_dev_sharpe=0.4,
+            weak_window_sharpe=0.5,
+            negative_dev_worst_windows=0,
+            promotion_candidate=True,
+            profit_factor=1.3,
+            turnover_per_day=1000.0,
+            fee_drag_pct=0.01,
+        )
+        current = CandidateSummary(
+            variant="current",
+            robust_score=1.0,
+            selection_split="dev",
+            dev_sharpe=1.0,
+            dev_pnl=100.0,
+            dev_drawdown=0.10,
+            avg_dev_sharpe=1.0,
+            avg_dev_ratio=1.0,
+            worst_dev_sharpe=0.5,
+            weak_window_sharpe=0.55,
+            negative_dev_worst_windows=0,
+            promotion_candidate=True,
+            profit_factor=1.3,
+            turnover_per_day=1000.0,
+            fee_drag_pct=0.01,
+        )
+        expensive = CandidateSummary(
+            variant="optuna_tuned",
+            robust_score=1.0,
+            selection_split="dev",
+            dev_sharpe=2.0,
+            dev_pnl=120.0,
+            dev_drawdown=0.08,
+            avg_dev_sharpe=1.2,
+            avg_dev_ratio=1.0,
+            worst_dev_sharpe=0.6,
+            weak_window_sharpe=0.8,
+            negative_dev_worst_windows=0,
+            promotion_candidate=True,
+            profit_factor=1.5,
+            turnover_per_day=1200.0,
+            fee_drag_pct=0.08,
+        )
+
+        self.assertEqual(
+            _stage1_fail_fast_reason(expensive, baseline=baseline, current=current),
+            "dev_fee_drag_fail_fast",
+        )
+
+        close_miss = CandidateSummary(
+            variant="optuna_tuned",
+            robust_score=1.0,
+            selection_split="dev",
+            dev_sharpe=2.0,
+            dev_pnl=120.0,
+            dev_drawdown=0.08,
+            avg_dev_sharpe=1.2,
+            avg_dev_ratio=1.0,
+            worst_dev_sharpe=0.6,
+            weak_window_sharpe=0.8,
+            negative_dev_worst_windows=0,
+            promotion_candidate=True,
+            profit_factor=1.5,
+            turnover_per_day=1200.0,
+            fee_drag_pct=0.057,
+        )
+        self.assertIsNone(_stage1_fail_fast_reason(close_miss, baseline=baseline, current=current))
+
+
     def test_post_smoke_scenario_classifies_hostile_window_failure(self) -> None:
         report = SearchReport(
             created_at="2026-04-10T00:00:00+00:00",
@@ -2016,6 +2104,123 @@ class SearchReportSerializationTests(unittest.TestCase):
         self.assertTrue(assessment["ready"])
         self.assertIn("deribit_observation_not_ready", assessment["warnings"])
         self.assertNotIn("deribit_observation_not_ready", assessment["blockers"])
+
+    def test_dev_fee_stability_gate_blocks_train_dev_fee_mismatch(self) -> None:
+        best_params = {"target_vol_4h": 0.35, "intent_time_leverage_min_hold_bars": 336.0}
+        report = SearchReport(
+            created_at="2026-05-05T00:00:00+00:00",
+            symbol="BTCUSDT",
+            readiness={"promotion_ready": False, "blocked_by": "not_promotion_ready"},
+            deribit_status={"enabled": True, "observation_ready": True, "research_ready": True},
+            split_contract=split_summary_json(default_btc_split_spec()),
+            training_window_coverage={},
+            training_input_contract={
+                "execution_framework": {
+                    "five_min_direct_execution_enabled": True,
+                    "five_min_feature_aggregation_enabled": True,
+                    "one_hour_bars_available": True,
+                    "four_hour_bars_available": True,
+                },
+                "state_feature_sources": {
+                    "hyperliquid_in_state_features": True,
+                    "etf_flow_in_state_features": True,
+                    "mvrv_in_state_features": True,
+                    "deribit_block_flow_in_state_features": True,
+                },
+                "signal_independence_contract": {
+                    "audit_present": True,
+                    "direction_layer_clean": True,
+                    "state_layer_clean": True,
+                    "blocked_by": None,
+                },
+            },
+            search_status={
+                "search_space_profile": {
+                    "direction_weight_policy": {
+                        "correlation_constrained": True,
+                        "capped_direction_signal": "crowding_signal",
+                        "demoted_signal": "funding_alpha_signal",
+                        "demoted_signal_role": "state",
+                    }
+                },
+                "train_candidate_diagnostics": {
+                    "top_train_trial_diagnostics": [
+                        {
+                            "rank": 1,
+                            "params": best_params,
+                            "metrics": {"fee_drag_pct": 0.011215, "sharpe": 1.7271},
+                        }
+                    ]
+                },
+            },
+            current=CandidateSummary(
+                variant="current",
+                robust_score=1.0,
+                selection_split="dev",
+                dev_sharpe=1.0,
+                dev_pnl=10.0,
+                dev_drawdown=0.1,
+                avg_dev_sharpe=1.0,
+                avg_dev_ratio=1.0,
+                worst_dev_sharpe=0.5,
+                weak_window_sharpe=0.2,
+                negative_dev_worst_windows=0,
+                promotion_candidate=True,
+            ),
+            paulwei_baseline=CandidateSummary(
+                variant="paulwei_baseline",
+                robust_score=1.0,
+                selection_split="dev",
+                dev_sharpe=1.0,
+                dev_pnl=10.0,
+                dev_drawdown=0.1,
+                avg_dev_sharpe=1.0,
+                avg_dev_ratio=1.0,
+                worst_dev_sharpe=0.5,
+                weak_window_sharpe=0.2,
+                negative_dev_worst_windows=0,
+                promotion_candidate=True,
+            ),
+            optuna_best=CandidateSummary(
+                variant="optuna_tuned",
+                robust_score=1.2,
+                selection_split="dev",
+                dev_sharpe=4.5647,
+                dev_pnl=24_807.49,
+                dev_drawdown=0.058481,
+                avg_dev_sharpe=9.6997,
+                avg_dev_ratio=1.0,
+                worst_dev_sharpe=4.5647,
+                weak_window_sharpe=10.1243,
+                negative_dev_worst_windows=0,
+                promotion_candidate=True,
+                turnover_per_day=5141.09,
+                fee_drag_pct=0.057135,
+            ),
+            rl_best=None,
+            best_variant="optuna_tuned",
+            best_score=1.2,
+            best_params=best_params,
+            comparison_payload={
+                "window_reports": [
+                    {"variant": "optuna_tuned", "window_label": "dev", "metrics": {"fee_drag_pct": 0.057135}},
+                    {"variant": "optuna_tuned", "window_label": "2023-08", "metrics": {"fee_drag_pct": 0.0726}},
+                ]
+            },
+            smoke_completed=True,
+        )
+
+        fee_summary = _dev_fee_stability_summary(report)
+        assessment = _assess_full_training_readiness(report, smoke_completed=True)
+        scenario = _classify_post_smoke_scenario(report, full_training_assessment=assessment)
+
+        self.assertFalse(fee_summary["passed"])
+        self.assertIn("dev_fee_drag_cap_exceeded", fee_summary["failures"])
+        self.assertIn("dev_train_fee_drag_mismatch", fee_summary["failures"])
+        self.assertIn("hostile_window_fee_drag_cap_exceeded", fee_summary["failures"])
+        self.assertFalse(assessment["ready"])
+        self.assertIn("dev_train_fee_drag_mismatch", assessment["blockers"])
+        self.assertEqual(scenario["scenario"], "scenario_b_fee_efficiency_failure")
 
     def test_classify_post_smoke_scenario_no_tuned_candidate_is_not_data_gap(self) -> None:
         report = SearchReport(
@@ -2425,6 +2630,8 @@ class SearchReportSerializationTests(unittest.TestCase):
 
         config = run_stage.call_args.args[0]
         self.assertEqual(config.early_stop_fee_drag_buffer, 1.25)
+        self.assertFalse(config.enable_early_stop)
+        self.assertIsNone(config.trial_runtime_budget_s)
 
     def test_run_optuna_search_treats_pre_2020_spot_as_context_only(self) -> None:
         @dataclass

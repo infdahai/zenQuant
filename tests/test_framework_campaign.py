@@ -76,7 +76,7 @@ class FrameworkCampaignTests(unittest.TestCase):
     def test_stage1_parallelism_runs_intent_smoke_with_limited_cpu_parallelism(self) -> None:
         policy = CAMPAIGN._resolve_stage1_parallelism(
             budget="smoke",
-            search_space_mode="intent_churn_repair_train_only",
+            search_space_mode="intent_churn_ablation_train_only",
             fast_worker_profile="fast_default",
             cpu_count=10,
         )
@@ -85,6 +85,26 @@ class FrameworkCampaignTests(unittest.TestCase):
         self.assertEqual(policy["stage1_max_workers"], 4)
         self.assertEqual(policy["stage1_target_inflight"], 4)
         self.assertEqual(policy["stage1_batch_size"], 1)
+
+    def test_smoke_uses_base_timeframe_for_low_switch_intent_modes(self) -> None:
+        self.assertTrue(
+            CAMPAIGN._smoke_uses_base_timeframe(
+                budget="smoke",
+                search_space_mode="intent_churn_ablation_train_only",
+            )
+        )
+        self.assertTrue(
+            CAMPAIGN._smoke_uses_base_timeframe(
+                budget="smoke",
+                search_space_mode="ralph_intent_reduce_cadence_train_only",
+            )
+        )
+        self.assertFalse(
+            CAMPAIGN._smoke_uses_base_timeframe(
+                budget="smoke",
+                search_space_mode="baseline_anchored_train_only",
+            )
+        )
 
     def test_smoke_primary_empty_skip_fallback_reason_requires_train_fee_or_churn_blocker(self) -> None:
         reason = CAMPAIGN._smoke_primary_empty_skip_fallback_reason(

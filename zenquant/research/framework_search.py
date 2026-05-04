@@ -64,6 +64,12 @@ from zenquant.research.regime_objective import score_regime_objective_candidate_
 from zenquant.research.source_independence import load_source_independence_audit
 from zenquant.research.splits import DatasetSplitSpec, default_btc_split_spec, split_summary_json
 
+DEV_FEE_DRAG_HARD_CAP = 0.05
+DEV_FEE_DRAG_FAIL_FAST_CAP = 0.075
+DEV_HOSTILE_WINDOW_FEE_DRAG_HARD_CAP = 0.065
+DEV_TO_TRAIN_FEE_DRAG_RATIO_CAP = 4.0
+DEV_TO_TRAIN_FEE_DRAG_GAP_CAP = 0.04
+
 
 def _etf_flow_source_metadata(macro_dir: Path) -> dict[str, Any]:
     metadata_path = macro_dir / "btc_etf_netflow" / "metadata.json"
@@ -687,6 +693,121 @@ def _hostile_regression_summary(report: SearchReport) -> dict[str, Any]:
     }
 
 
+def _params_equivalent(left: dict[str, Any] | None, right: dict[str, Any] | None) -> bool:
+    if not isinstance(left, dict) or not isinstance(right, dict):
+        return False
+    if set(left) != set(right):
+        return False
+    for key, left_value in left.items():
+        right_value = right.get(key)
+        try:
+            if round(float(left_value), 10) != round(float(right_value), 10):
+                return False
+        except (TypeError, ValueError):
+            if left_value != right_value:
+                return False
+    return True
+
+
+def _best_train_candidate_metrics(report: SearchReport) -> dict[str, Any] | None:
+    diagnostics = report.search_status.get("train_candidate_diagnostics")
+    if not isinstance(diagnostics, dict):
+        return None
+    train_trials = diagnostics.get("top_train_trial_diagnostics")
+    if not isinstance(train_trials, list) or not train_trials:
+        return None
+    best_params = report.best_params if isinstance(report.best_params, dict) else None
+    if best_params:
+        for trial in train_trials:
+            if not isinstance(trial, dict):
+                continue
+            if _params_equivalent(trial.get("params"), best_params):
+                metrics = trial.get("metrics")
+                return dict(metrics) if isinstance(metrics, dict) else None
+    first_metrics = train_trials[0].get("metrics") if isinstance(train_trials[0], dict) else None
+    return dict(first_metrics) if isinstance(first_metrics, dict) else None
+
+
+def _variant_window_metrics(report: SearchReport, variant: str) -> dict[str, dict[str, Any]]:
+    comparison_payload = report.comparison_payload if isinstance(report.comparison_payload, dict) else {}
+    window_reports = comparison_payload.get("window_reports")
+    if not isinstance(window_reports, list):
+        return {}
+    metrics_by_window: dict[str, dict[str, Any]] = {}
+    for window_report in window_reports:
+        if not isinstance(window_report, dict) or window_report.get("variant") != variant:
+            continue
+        label = str(window_report.get("window_label") or "")
+        metrics = window_report.get("metrics")
+        if label and isinstance(metrics, dict):
+            metrics_by_window[label] = dict(metrics)
+    return metrics_by_window
+
+
+def _dev_fee_stability_summary(report: SearchReport) -> dict[str, Any]:
+    tuned = _best_tuned_candidate(report)
+    if tuned is None:
+        return {
+            "passed": True,
+            "failures": [],
+            "dev_fee_drag_pct": None,
+            "train_fee_drag_pct": None,
+            "dev_to_train_fee_drag_ratio": None,
+            "dev_train_fee_drag_gap": None,
+            "window_fee_drag_pct": {},
+            "limits": {
+                "dev_fee_drag_hard_cap": DEV_FEE_DRAG_HARD_CAP,
+                "dev_hostile_window_fee_drag_hard_cap": DEV_HOSTILE_WINDOW_FEE_DRAG_HARD_CAP,
+                "dev_to_train_fee_drag_ratio_cap": DEV_TO_TRAIN_FEE_DRAG_RATIO_CAP,
+                "dev_to_train_fee_drag_gap_cap": DEV_TO_TRAIN_FEE_DRAG_GAP_CAP,
+            },
+        }
+
+    failures: list[str] = []
+    train_metrics = _best_train_candidate_metrics(report)
+    train_fee_drag_pct = _safe_metric(train_metrics, "fee_drag_pct") if train_metrics is not None else None
+    dev_fee_drag_pct = float(tuned.fee_drag_pct or 0.0)
+    dev_to_train_ratio = None
+    dev_train_gap = None
+
+    if dev_fee_drag_pct > DEV_FEE_DRAG_HARD_CAP:
+        failures.append("dev_fee_drag_cap_exceeded")
+    if train_fee_drag_pct is not None and train_fee_drag_pct > 0.0:
+        dev_to_train_ratio = dev_fee_drag_pct / train_fee_drag_pct
+        dev_train_gap = dev_fee_drag_pct - train_fee_drag_pct
+        if dev_to_train_ratio > DEV_TO_TRAIN_FEE_DRAG_RATIO_CAP or dev_train_gap > DEV_TO_TRAIN_FEE_DRAG_GAP_CAP:
+            failures.append("dev_train_fee_drag_mismatch")
+
+    window_fee_drag_pct = {
+        label: round(_safe_metric(metrics, "fee_drag_pct"), 6)
+        for label, metrics in _variant_window_metrics(report, tuned.variant).items()
+    }
+    hostile_fee_failures = [
+        label
+        for label, fee_drag_pct in window_fee_drag_pct.items()
+        if label != "dev" and fee_drag_pct > DEV_HOSTILE_WINDOW_FEE_DRAG_HARD_CAP
+    ]
+    if hostile_fee_failures:
+        failures.append("hostile_window_fee_drag_cap_exceeded")
+
+    return {
+        "passed": not failures,
+        "failures": failures,
+        "dev_fee_drag_pct": round(dev_fee_drag_pct, 6),
+        "train_fee_drag_pct": round(train_fee_drag_pct, 6) if train_fee_drag_pct is not None else None,
+        "dev_to_train_fee_drag_ratio": round(dev_to_train_ratio, 4) if dev_to_train_ratio is not None else None,
+        "dev_train_fee_drag_gap": round(dev_train_gap, 6) if dev_train_gap is not None else None,
+        "window_fee_drag_pct": window_fee_drag_pct,
+        "hostile_fee_failure_windows": hostile_fee_failures,
+        "limits": {
+            "dev_fee_drag_hard_cap": DEV_FEE_DRAG_HARD_CAP,
+            "dev_hostile_window_fee_drag_hard_cap": DEV_HOSTILE_WINDOW_FEE_DRAG_HARD_CAP,
+            "dev_to_train_fee_drag_ratio_cap": DEV_TO_TRAIN_FEE_DRAG_RATIO_CAP,
+            "dev_to_train_fee_drag_gap_cap": DEV_TO_TRAIN_FEE_DRAG_GAP_CAP,
+        },
+    }
+
+
 def _no_tuned_candidate_reason(report: SearchReport) -> str | None:
     explicit_reason = report.search_status.get("no_tuned_candidate_reason")
     if explicit_reason:
@@ -775,6 +896,7 @@ def _assess_full_training_readiness(
         data_failures.append("liquidation_search_enabled_before_promotion_ready")
 
     model_failures: list[str] = []
+    fee_stability = _dev_fee_stability_summary(report)
     if tuned is None:
         model_failures.append("no_tuned_candidate_from_smoke")
     else:
@@ -784,6 +906,7 @@ def _assess_full_training_readiness(
             model_failures.append("negative_worst_windows_increased")
         if tuned.dev_drawdown > baseline.dev_drawdown + 0.03:
             model_failures.append("drawdown_worse_than_baseline_relative_gate")
+        model_failures.extend(fee_stability["failures"])
         if report.evaluation_role == "acceptance":
             if not tuned.test_evaluated:
                 model_failures.append("test_not_evaluated")
@@ -813,6 +936,7 @@ def _assess_full_training_readiness(
             "system_gate": {"passed": not system_failures, "failures": system_failures},
             "data_gate": {"passed": not data_failures, "failures": data_failures},
             "model_gate": {"passed": not model_failures, "failures": model_failures},
+            "fee_stability_gate": fee_stability,
             "search_gate": {"passed": not search_failures, "failures": search_failures},
         },
         "blockers": blockers,
@@ -873,6 +997,20 @@ def _classify_post_smoke_scenario(
             "category": "search_candidate_quality",
             "should_open_full_training": False,
             "next_action": "tighten_train_search_and_rerun_smoke",
+            "blockers": blockers,
+        }
+
+    fee_efficiency_failures = {
+        "dev_fee_drag_cap_exceeded",
+        "dev_train_fee_drag_mismatch",
+        "hostile_window_fee_drag_cap_exceeded",
+    }
+    if model_failures & fee_efficiency_failures:
+        return {
+            "scenario": "scenario_b_fee_efficiency_failure",
+            "category": "train_dev_fee_stability",
+            "should_open_full_training": False,
+            "next_action": "tighten_train_dev_fee_efficiency_and_rerun_smoke",
             "blockers": blockers,
         }
 
@@ -2560,7 +2698,9 @@ def _stage1_fail_fast_reason(
         return "weak_window_2023_08_fail_fast"
     if candidate.worst_dev_sharpe < hostile_anchor.worst_dev_sharpe - 0.25:
         return "worst_dev_sharpe_fail_fast"
-    if candidate.fee_drag_pct > max(0.02, fee_drag_anchor * 1.35):
+    if candidate.fee_drag_pct > DEV_FEE_DRAG_FAIL_FAST_CAP:
+        return "dev_fee_drag_fail_fast"
+    if candidate.fee_drag_pct > max(DEV_FEE_DRAG_FAIL_FAST_CAP, fee_drag_anchor * 1.35):
         return "fee_drag_fail_fast"
     if candidate.turnover_per_day > max(turnover_anchor * 1.35, turnover_anchor + 250.0):
         return "turnover_fail_fast"
@@ -2719,6 +2859,17 @@ def run_optuna_search(
             "binance_factor_weight_repair_search",
         )
     )
+    strict_train_truth_search = any(
+        bool(evaluator.search_space_profile.get(key, False))
+        for key in (
+            "intent_churn_ablation_search",
+            "intent_churn_repair_search",
+            "ralph_protective_reduce_search",
+            "ralph_protective_reduce_fee_repair_search",
+            "ralph_execution_fee_cooldown_search",
+            "ralph_intent_reduce_cadence_search",
+        )
+    )
     worker_config = CampaignConfig(
         data_root=evaluator._base_config.root_dir,
         symbol=evaluator._base_config.symbol,
@@ -2747,8 +2898,12 @@ def run_optuna_search(
         stage1_target_inflight=stage1_target_inflight,
         stage1_batch_size=stage1_batch_size,
         research_compute_mode="lightweight_train_search",
-        enable_early_stop=True,
-        trial_runtime_budget_s=90.0 if effective_execution_timeframe == Timeframe.TF_5M else 60.0,
+        enable_early_stop=not strict_train_truth_search,
+        trial_runtime_budget_s=None
+        if strict_train_truth_search
+        else 90.0
+        if effective_execution_timeframe == Timeframe.TF_5M
+        else 60.0,
         early_stop_fee_drag_buffer=1.25 if strict_train_fee_stop else 2.0,
     )
     sweep = run_search_stage(worker_config)

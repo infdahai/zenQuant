@@ -478,8 +478,8 @@ def intent_churn_ablation_param_grid(*, include_liquidation_toggles: bool = Fals
         "dd_step_1_short": [0.10],
         "vpin_threshold": [0.10],
         "vol_shock_threshold": [1.00],
-        "target_vol_4h": [0.35, 0.40, 0.45, 0.50, 0.65],
-        "max_leverage": [2.5, 3.0],
+        "target_vol_4h": [0.30, 0.35, 0.40, 0.45, 0.50, 0.65],
+        "max_leverage": [2.0, 2.5, 3.0],
         "pyramid_initial_pct": [0.30],
         "pyramid_add_pct": [0.30],
         "pyramid_short_initial_pct": [0.15],
@@ -497,8 +497,8 @@ def intent_churn_ablation_param_grid(*, include_liquidation_toggles: bool = Fals
         "trade_directional_confidence_floor": [0.50, 0.55, 0.60, 0.65],
         "bearish_override_confidence_floor": [0.50, 0.55, 0.60, 0.65],
         "exit_transition_risk": [0.80, 0.85, 0.90],
-        "direction_signal_threshold": [0.30, 0.35, 0.40, 0.45],
-        "intent_add_signal_threshold": [0.45, 0.50, 0.55],
+        "direction_signal_threshold": [0.30, 0.35, 0.40, 0.45, 0.50, 0.55],
+        "intent_add_signal_threshold": [0.45, 0.50, 0.55, 0.60],
         "intent_add_confirmation_bars": [1, 2, 4],
         "min_bars_before_trail": [1],
         "min_hours_before_trail": [0.0, 12.0, 20.0, 36.0],
@@ -530,7 +530,7 @@ def intent_churn_ablation_param_grid(*, include_liquidation_toggles: bool = Fals
         "intent_time_leverage_dip_min_adverse_atr": [0.75, 1.25],
         "intent_time_leverage_dip_max_adverse_atr": [2.5, 3.0],
         "intent_time_leverage_dip_add_pct": [0.10, 0.15],
-        "intent_time_leverage_dip_max_leverage": [2.5, 3.0],
+        "intent_time_leverage_dip_max_leverage": [2.0, 2.5, 3.0],
         "hostile_behavior_router_enabled": [0.0],
         "squeeze_flip_flatten_only_enabled": [0.0],
         "squeeze_flip_cooldown_enabled": [0.0],
@@ -1149,9 +1149,22 @@ def intent_churn_ablation_seed_trials() -> list[dict[str, float]]:
         "intent_time_leverage_add_deadband_pct": 0.60,
         "intent_time_leverage_reduce_deadband_pct": 1.25,
     }
+    paulwei_time_leverage_fee_scaled = {
+        **paulwei_time_leverage_low_exposure,
+        "target_vol_4h": 0.30,
+        "max_leverage": 2.0,
+        "intent_time_leverage_dip_max_leverage": 2.0,
+    }
+    paulwei_time_leverage_signal_quality = {
+        **paulwei_time_leverage_low_turnover,
+        "direction_signal_threshold": 0.55,
+        "intent_add_signal_threshold": 0.60,
+    }
     return [
         paulwei_time_leverage_low_turnover,
         paulwei_time_leverage_low_exposure,
+        paulwei_time_leverage_fee_scaled,
+        paulwei_time_leverage_signal_quality,
         mature_low_switch,
         slow_exit_low_switch,
         {
