@@ -420,6 +420,59 @@ class TestStage1HostileProxy(unittest.TestCase):
             above_mature_cadence["hostile_proxy_score"],
         )
 
+    def test_hostile_proxy_penalizes_flip_dominant_exits(self) -> None:
+        params = {
+            "target_vol_4h": 0.95,
+            "max_leverage": 4.5,
+            "pyramid_initial_pct": 0.25,
+            "pyramid_add_pct": 0.20,
+            "pyramid_short_initial_pct": 0.15,
+            "pyramid_short_add_pct": 0.12,
+            "dca_spacing_atr": 1.25,
+            "dca_size_decay": 0.75,
+            "flip_min_confidence": 0.65,
+        }
+        protective = _hostile_proxy_diagnostics(
+            params,
+            {
+                "sharpe": 2.0,
+                "max_drawdown": 0.05,
+                "profit_factor": 1.3,
+                "fee_drag_pct": 0.012,
+                "trade_count": 220,
+                "net_pnl": 8000.0,
+                "net_pnl_per_trade": 36.36,
+                "position_switches_per_30d": 1.4,
+                "flip_reduce_fee_drag_pct": 0.008,
+                "net_pnl_per_position_switch": 220.0,
+                "action_trade_counts": {"flip": 30, "reduce": 90},
+            },
+        )
+        flip_dominant = _hostile_proxy_diagnostics(
+            params,
+            {
+                "sharpe": 2.0,
+                "max_drawdown": 0.05,
+                "profit_factor": 1.3,
+                "fee_drag_pct": 0.012,
+                "trade_count": 220,
+                "net_pnl": 8000.0,
+                "net_pnl_per_trade": 36.36,
+                "position_switches_per_30d": 1.4,
+                "flip_reduce_fee_drag_pct": 0.008,
+                "net_pnl_per_position_switch": 220.0,
+                "action_trade_counts": {"flip": 90, "reduce": 30},
+            },
+        )
+
+        self.assertEqual(protective["protective_reduce_share"], 0.75)
+        self.assertEqual(flip_dominant["protective_reduce_share"], 0.25)
+        self.assertGreater(
+            flip_dominant["protective_reduce_bias_penalty"],
+            protective["protective_reduce_bias_penalty"],
+        )
+        self.assertLess(flip_dominant["hostile_proxy_score"], protective["hostile_proxy_score"])
+
     def test_hostile_proxy_penalizes_wide_train_drawdown_band(self) -> None:
         params = {
             "target_vol_4h": 0.95,

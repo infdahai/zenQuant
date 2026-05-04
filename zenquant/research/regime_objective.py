@@ -25,6 +25,7 @@ MAX_POSITION_SWITCH_RELATIVE_INCREASE = 1.15
 MAX_FLIP_REDUCE_FEE_DRAG_PCT_ABSOLUTE = 0.016
 MAX_FLIP_REDUCE_FEE_DRAG_RELATIVE_INCREASE = 1.15
 MIN_NET_PNL_PER_POSITION_SWITCH_RELATIVE = 0.75
+MIN_PROTECTIVE_REDUCE_SHARE = 0.75
 TRAIN_DRAWDOWN_PREFERRED_BAND = 0.06
 _FORBIDDEN_SELECTION_PREFIXES = ("dev", "test")
 
@@ -116,6 +117,16 @@ def _net_pnl_per_position_switch(metrics: dict[str, Any], net_pnl: float, flip_c
     if explicit is not None:
         return _safe_float(explicit)
     return net_pnl / max(1.0, flip_count)
+
+
+def _protective_reduce_share(metrics: dict[str, Any], flip_count: float, reduce_count: float) -> tuple[float, float]:
+    explicit = metrics.get("protective_reduce_share")
+    if explicit is not None:
+        return _safe_float(explicit), max(1.0, flip_count + reduce_count)
+    action_count = flip_count + reduce_count
+    if action_count <= 0:
+        return 0.0, 0.0
+    return reduce_count / action_count, action_count
 
 
 def _assert_train_only_metric_keys(metrics: dict[str, Any]) -> None:
@@ -465,6 +476,11 @@ def score_regime_objective_candidate_generation(
     flip_reduce_fee_drag_pct = _flip_reduce_fee_drag_pct(train_metrics)
     flip_reduce_trade_share = (flip_count + reduce_count) / trade_count if trade_count > 0 else 0.0
     net_pnl_per_position_switch = _net_pnl_per_position_switch(train_metrics, net_pnl, flip_count)
+    protective_reduce_share, protective_reduce_action_count = _protective_reduce_share(
+        train_metrics,
+        flip_count,
+        reduce_count,
+    )
     time_leverage_efficiency = max(0.0, net_pnl_per_position_switch) / max(1.0, abs(net_pnl_per_trade))
     time_leverage_bonus = min(0.35, 0.05 * time_leverage_efficiency)
     baseline_turnover = _safe_float(baseline.get("turnover_per_day"))
@@ -495,6 +511,11 @@ def score_regime_objective_candidate_generation(
     mature_position_switch_penalty = 0.0
     flip_reduce_fee_drag_penalty = 0.0
     position_switch_efficiency_penalty = 0.0
+    protective_reduce_bias_penalty = (
+        max(0.0, (MIN_PROTECTIVE_REDUCE_SHARE - protective_reduce_share) / MIN_PROTECTIVE_REDUCE_SHARE)
+        if protective_reduce_action_count > 0
+        else 0.0
+    )
     drawdown_preferred_band_penalty = max(
         0.0,
         (drawdown - TRAIN_DRAWDOWN_PREFERRED_BAND) / max(0.01, TRAIN_DRAWDOWN_PREFERRED_BAND),
@@ -612,6 +633,8 @@ def score_regime_objective_candidate_generation(
         bucket_blockers.append("train_position_switch_cadence_worse")
     if flip_reduce_fee_drag_penalty > 0.15:
         bucket_blockers.append("train_flip_reduce_fee_drag_worse")
+    if protective_reduce_bias_penalty > 0.0:
+        bucket_blockers.append("train_protective_reduce_bias_weak")
     if position_switch_efficiency_penalty > 0.20:
         bucket_blockers.append("train_time_leverage_efficiency_weak")
 
@@ -632,6 +655,7 @@ def score_regime_objective_candidate_generation(
         - 0.65 * position_switch_penalty
         - 0.35 * mature_position_switch_penalty
         - 0.85 * flip_reduce_fee_drag_penalty
+        - 0.70 * protective_reduce_bias_penalty
         - 0.45 * position_switch_efficiency_penalty
     )
     return {
@@ -655,6 +679,9 @@ def score_regime_objective_candidate_generation(
         "flip_reduce_fee_drag_pct": round(flip_reduce_fee_drag_pct, 6),
         "flip_reduce_fee_drag_penalty": round(flip_reduce_fee_drag_penalty, 6),
         "flip_reduce_trade_share": round(flip_reduce_trade_share, 6),
+        "protective_reduce_share": round(protective_reduce_share, 6),
+        "protective_reduce_action_count": round(protective_reduce_action_count, 6),
+        "protective_reduce_bias_penalty": round(protective_reduce_bias_penalty, 6),
         "net_pnl_per_position_switch": round(net_pnl_per_position_switch, 6),
         "position_switch_efficiency_penalty": round(position_switch_efficiency_penalty, 6),
         "time_leverage_efficiency": round(time_leverage_efficiency, 6),
@@ -668,6 +695,7 @@ def score_regime_objective_candidate_generation(
             "max_position_switches_per_30d": MAX_POSITION_SWITCHES_PER_30D,
             "max_flip_reduce_fee_drag_pct_absolute": MAX_FLIP_REDUCE_FEE_DRAG_PCT_ABSOLUTE,
             "min_net_pnl_per_position_switch_relative": MIN_NET_PNL_PER_POSITION_SWITCH_RELATIVE,
+            "min_protective_reduce_share": MIN_PROTECTIVE_REDUCE_SHARE,
         },
         "allow_dev_diagnostic_review": not bucket_blockers,
         "bucket_metrics_available": bool(bucket_metrics),

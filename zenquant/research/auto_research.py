@@ -98,6 +98,7 @@ PAULWEI_MATURE_POSITION_SWITCHES_PER_30D = 1.6807
 MAX_POSITION_SWITCHES_PER_30D = 3.0
 MAX_FLIP_REDUCE_FEE_DRAG_PCT_ABSOLUTE = 0.016
 TRAIN_DRAWDOWN_PREFERRED_BAND = 0.06
+MIN_PROTECTIVE_REDUCE_SHARE = 0.75
 
 
 def _safe_float(value: Any) -> float:
@@ -150,10 +151,16 @@ def _hostile_proxy_diagnostics(params: dict[str, Any], metrics: dict[str, float]
     terminated_early = float(metrics.get("terminated_early", 0.0) or 0.0)
     position_switches_per_30d = float(metrics.get("position_switches_per_30d", 0.0) or 0.0)
     flip_reduce_fee_drag_pct = float(metrics.get("flip_reduce_fee_drag_pct", 0.0) or 0.0)
+    flip_count = _metric_action_value(metrics, "action_trade_counts", "flip")
+    reduce_count = _metric_action_value(metrics, "action_trade_counts", "reduce")
+    protective_action_count = flip_count + reduce_count
+    protective_reduce_share = float(metrics.get("protective_reduce_share", 0.0) or 0.0)
+    if protective_reduce_share <= 0.0 and protective_action_count > 0:
+        protective_reduce_share = reduce_count / protective_action_count
     net_pnl_per_position_switch = float(
         metrics.get(
             "net_pnl_per_position_switch",
-            net_pnl / max(1.0, _metric_action_value(metrics, "action_trade_counts", "flip")),
+            net_pnl / max(1.0, flip_count),
         )
         or 0.0
     )
@@ -213,6 +220,11 @@ def _hostile_proxy_diagnostics(params: dict[str, Any], metrics: dict[str, float]
         0.0,
         (max_drawdown - TRAIN_DRAWDOWN_PREFERRED_BAND) / max(0.01, TRAIN_DRAWDOWN_PREFERRED_BAND),
     )
+    protective_reduce_bias_penalty = (
+        max(0.0, (MIN_PROTECTIVE_REDUCE_SHARE - protective_reduce_share) / MIN_PROTECTIVE_REDUCE_SHARE)
+        if protective_action_count > 0
+        else 0.0
+    )
     time_leverage_bonus = min(0.35, 0.05 * time_leverage_efficiency)
     train_churn_stress_penalty = round(
         0.75 * train_trade_count_penalty
@@ -224,6 +236,7 @@ def _hostile_proxy_diagnostics(params: dict[str, Any], metrics: dict[str, float]
         + 0.55 * position_switch_penalty
         + 0.60 * mature_position_switch_penalty
         + 0.65 * flip_reduce_fee_drag_penalty
+        + 0.55 * protective_reduce_bias_penalty
         + 0.50 * max(0.0, 1.0 - profit_factor),
         6,
     )
@@ -263,6 +276,7 @@ def _hostile_proxy_diagnostics(params: dict[str, Any], metrics: dict[str, float]
         "position_switch_penalty": round(position_switch_penalty, 6),
         "mature_position_switch_penalty": round(mature_position_switch_penalty, 6),
         "flip_reduce_fee_drag_penalty": round(flip_reduce_fee_drag_penalty, 6),
+        "protective_reduce_bias_penalty": round(protective_reduce_bias_penalty, 6),
         "train_drawdown_preferred_band_penalty": round(train_drawdown_preferred_band_penalty, 6),
         "train_churn_stress_penalty": train_churn_stress_penalty,
         "net_pnl_per_trade": round(net_pnl_per_trade, 6),
@@ -271,6 +285,8 @@ def _hostile_proxy_diagnostics(params: dict[str, Any], metrics: dict[str, float]
         "position_switches_per_30d": round(position_switches_per_30d, 6),
         "target_position_switches_per_30d": PAULWEI_MATURE_POSITION_SWITCHES_PER_30D,
         "flip_reduce_fee_drag_pct": round(flip_reduce_fee_drag_pct, 6),
+        "protective_reduce_share": round(protective_reduce_share, 6),
+        "protective_reduce_action_count": round(protective_action_count, 6),
         "net_pnl_per_position_switch": round(net_pnl_per_position_switch, 6),
         "time_leverage_efficiency": round(time_leverage_efficiency, 6),
         "time_leverage_bonus": round(time_leverage_bonus, 6),
@@ -306,6 +322,8 @@ def _compact_train_trial_diagnostics(
         "position_switches_per_30d",
         "flip_reduce_fee_drag_pct",
         "flip_reduce_trade_share",
+        "protective_reduce_share",
+        "protective_reduce_action_count",
         "net_pnl_per_position_switch",
         "time_leverage_efficiency",
         "time_leverage_bonus",
@@ -313,6 +331,7 @@ def _compact_train_trial_diagnostics(
         "mature_position_switch_penalty",
         "position_switch_penalty",
         "flip_reduce_fee_drag_penalty",
+        "protective_reduce_bias_penalty",
         "hostile_proxy_score",
         "hostile_proxy_penalty_applied",
         "stage1_score",
@@ -589,11 +608,13 @@ def _run_backtest_worker(args: tuple[Any, ...]) -> tuple[dict[str, Any], dict[st
     action_profit_factor = dict(getattr(m, "action_profit_factor", {}) or {})
     flip_count = _safe_float(action_trade_counts.get("flip"))
     reduce_count = _safe_float(action_trade_counts.get("reduce"))
+    protective_action_count = flip_count + reduce_count
     position_switches_per_30d = (flip_count / effective_elapsed_days) * 30.0 if effective_elapsed_days > 0 else 0.0
     flip_reduce_fee_drag_pct = _safe_float(action_fee_drag_pct.get("flip")) + _safe_float(
         action_fee_drag_pct.get("reduce")
     )
     flip_reduce_trade_share = (flip_count + reduce_count) / trade_count if trade_count > 0 else 0.0
+    protective_reduce_share = reduce_count / protective_action_count if protective_action_count > 0 else 0.0
     net_pnl_per_position_switch = m.net_pnl / max(1.0, flip_count)
     metrics = {
         "sharpe": m.sharpe,
@@ -609,6 +630,8 @@ def _run_backtest_worker(args: tuple[Any, ...]) -> tuple[dict[str, Any], dict[st
         "position_switches_per_30d": round(position_switches_per_30d, 6),
         "flip_reduce_fee_drag_pct": round(flip_reduce_fee_drag_pct, 6),
         "flip_reduce_trade_share": round(flip_reduce_trade_share, 6),
+        "protective_reduce_share": round(protective_reduce_share, 6),
+        "protective_reduce_action_count": round(protective_action_count, 6),
         "net_pnl_per_position_switch": round(net_pnl_per_position_switch, 6),
         "action_trade_counts": action_trade_counts,
         "action_fees": action_fees,

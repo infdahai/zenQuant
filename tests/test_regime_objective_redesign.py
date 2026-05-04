@@ -379,6 +379,29 @@ class RegimeObjectiveRedesignTests(unittest.TestCase):
         self.assertEqual(score["flip_reduce_fee_drag_penalty"], 0.0)
         self.assertGreater(score["time_leverage_bonus"], 0.0)
 
+    def test_candidate_generation_scorer_blocks_flip_dominant_exit_structure(self) -> None:
+        score = score_regime_objective_candidate_generation(
+            {
+                "sharpe": 2.0,
+                "profit_factor": 1.3,
+                "net_pnl": 8000.0,
+                "max_drawdown": 0.05,
+                "trade_count": 220,
+                "fee_drag_pct": 0.012,
+                "position_switches_per_30d": 1.4,
+                "flip_reduce_fee_drag_pct": 0.008,
+                "net_pnl_per_trade": 36.36,
+                "net_pnl_per_position_switch": 220.0,
+                "profit_factor_after_fee": 1.28,
+                "action_trade_counts": {"flip": 90, "reduce": 30},
+            },
+        )
+
+        self.assertFalse(score["allow_dev_diagnostic_review"])
+        self.assertIn("train_protective_reduce_bias_weak", score["bucket_blockers"])
+        self.assertEqual(score["protective_reduce_share"], 0.25)
+        self.assertGreater(score["protective_reduce_bias_penalty"], 0.0)
+
     def test_candidate_generation_ranking_compares_original_and_regime_order(self) -> None:
         candidates = [
             {
