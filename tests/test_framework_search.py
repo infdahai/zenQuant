@@ -2958,9 +2958,9 @@ class SearchReportSerializationTests(unittest.TestCase):
             patch.object(evaluator, "_run_validation_bundle_cached", side_effect=AssertionError("should_not_run")),
             patch.object(
                 evaluator,
-                "_get_paulwei_fast_summary",
+                "_get_current_fast_summary",
                 return_value=CandidateSummary(
-                    variant="paulwei_baseline",
+                    variant="current",
                     robust_score=0.5,
                     selection_split="dev",
                     dev_sharpe=0.5,
@@ -3014,9 +3014,9 @@ class SearchReportSerializationTests(unittest.TestCase):
             ),
             patch.object(
                 evaluator,
-                "_get_paulwei_fast_summary",
+                "_get_current_fast_summary",
                 return_value=CandidateSummary(
-                    variant="paulwei_baseline",
+                    variant="current",
                     robust_score=0.5,
                     selection_split="dev",
                     dev_sharpe=0.5,
@@ -3073,9 +3073,9 @@ class SearchReportSerializationTests(unittest.TestCase):
             ),
             patch.object(
                 evaluator,
-                "_get_paulwei_fast_summary",
+                "_get_current_fast_summary",
                 return_value=CandidateSummary(
-                    variant="paulwei_baseline",
+                    variant="current",
                     robust_score=0.5,
                     selection_split="dev",
                     dev_sharpe=0.5,
@@ -3161,9 +3161,9 @@ class SearchReportSerializationTests(unittest.TestCase):
             ),
             patch.object(
                 evaluator,
-                "_get_paulwei_fast_summary",
+                "_get_current_fast_summary",
                 return_value=CandidateSummary(
-                    variant="paulwei_baseline",
+                    variant="current",
                     robust_score=0.5,
                     selection_split="dev",
                     dev_sharpe=0.5,
@@ -3237,7 +3237,7 @@ class SearchReportSerializationTests(unittest.TestCase):
                     _snapshot(-0.1, 1.0, 0.09),
                 ],
             ),
-            patch.object(evaluator, "_get_paulwei_fast_summary", return_value=baseline),
+            patch.object(evaluator, "_get_current_fast_summary", return_value=baseline),
             patch.object(evaluator, "_run_validation_bundle_cached", side_effect=AssertionError("should_not_run")),
         ):
             summary = evaluator._evaluate_variant(variant, fast=True, lightweight=False)
@@ -3316,6 +3316,125 @@ class SearchReportSerializationTests(unittest.TestCase):
         self.assertEqual(heartbeats[-1], (4, "lightweight_summary"))
         self.assertIsNotNone(evaluator._paulwei_fast_lightweight)
         self.assertIsNone(evaluator._paulwei_fast_full)
+
+    def test_current_fast_summary_evaluates_current_without_paulwei_recursion(self) -> None:
+        evaluator = FrameworkEvaluator(HistoricalBacktestConfig(), split_spec=default_btc_split_spec())
+        summary = CandidateSummary(
+            variant="current",
+            robust_score=0.5,
+            selection_split="dev",
+            dev_sharpe=0.5,
+            dev_pnl=5.0,
+            dev_drawdown=0.1,
+            avg_dev_sharpe=0.5,
+            avg_dev_ratio=1.0,
+            worst_dev_sharpe=0.1,
+            weak_window_sharpe=0.1,
+            negative_dev_worst_windows=0,
+            promotion_candidate=False,
+        )
+
+        with (
+            patch.object(
+                evaluator,
+                "_get_paulwei_fast_summary",
+                side_effect=AssertionError("current summary must not recurse through PaulWei"),
+            ) as paulwei_summary,
+            patch.object(evaluator, "_evaluate_variant", return_value=summary) as evaluate_variant,
+        ):
+            result = evaluator._get_current_fast_summary(lightweight=False)
+
+        self.assertIs(result, summary)
+        paulwei_summary.assert_not_called()
+        evaluate_variant.assert_called_once()
+        self.assertIs(evaluate_variant.call_args.args[0], evaluator._current_variant)
+        self.assertTrue(evaluate_variant.call_args.kwargs["fast"])
+        self.assertFalse(evaluate_variant.call_args.kwargs["lightweight"])
+
+    def test_acceptance_readiness_blocks_failed_test_candidate(self) -> None:
+        baseline = CandidateSummary(
+            variant="current",
+            robust_score=1.0,
+            selection_split="dev",
+            dev_sharpe=1.0,
+            dev_pnl=10.0,
+            dev_drawdown=0.1,
+            avg_dev_sharpe=1.0,
+            avg_dev_ratio=1.0,
+            worst_dev_sharpe=0.5,
+            weak_window_sharpe=0.4,
+            negative_dev_worst_windows=0,
+            promotion_candidate=True,
+        )
+        tuned = CandidateSummary(
+            variant="optuna_tuned",
+            robust_score=1.2,
+            selection_split="dev",
+            dev_sharpe=1.2,
+            dev_pnl=12.0,
+            dev_drawdown=0.1,
+            avg_dev_sharpe=1.1,
+            avg_dev_ratio=1.0,
+            worst_dev_sharpe=0.6,
+            weak_window_sharpe=0.5,
+            negative_dev_worst_windows=0,
+            promotion_candidate=False,
+            test_sharpe=-0.1,
+            test_drawdown=0.08,
+            test_adversarial_failures=0,
+            test_evaluated=True,
+            promotion_failure_reason="test_sharpe",
+        )
+        report = SearchReport(
+            created_at="2026-05-04T00:00:00+00:00",
+            symbol="BTCUSDT",
+            readiness={"promotion_ready": True, "blocked_by": None},
+            deribit_status={"observation_ready": True, "enabled": True, "research_ready": True},
+            split_contract=split_summary_json(default_btc_split_spec()),
+            training_window_coverage={},
+            training_input_contract={
+                "execution_framework": {
+                    "five_min_direct_execution_enabled": True,
+                    "five_min_feature_aggregation_enabled": True,
+                    "one_hour_bars_available": True,
+                    "four_hour_bars_available": True,
+                },
+                "state_feature_sources": {
+                    "hyperliquid_in_state_features": True,
+                    "etf_flow_in_state_features": True,
+                    "mvrv_in_state_features": True,
+                    "deribit_block_flow_in_state_features": True,
+                },
+                "signal_independence_contract": {"audit_present": True, "direction_layer_clean": True},
+            },
+            search_status={
+                "search_space_profile": {
+                    "direction_weight_policy": {
+                        "correlation_constrained": True,
+                        "capped_direction_signal": "crowding_signal",
+                        "demoted_signal": "funding_alpha_signal",
+                        "demoted_signal_role": "state",
+                    }
+                }
+            },
+            current=baseline,
+            paulwei_baseline=baseline,
+            optuna_best=tuned,
+            rl_best=None,
+            best_variant="optuna_tuned",
+            best_score=1.2,
+            best_params={"x": 1},
+            comparison_payload={},
+            test_evaluated=True,
+            smoke_completed=True,
+            evaluation_role="acceptance",
+            test_access_allowed=True,
+        )
+
+        assessment = _assess_full_training_readiness(report, smoke_completed=True)
+
+        self.assertFalse(assessment["ready"])
+        self.assertIn("test_sharpe", assessment["blockers"])
 
 
 if __name__ == "__main__":

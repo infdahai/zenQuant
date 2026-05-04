@@ -758,6 +758,11 @@ def _assess_full_training_readiness(
             model_failures.append("negative_worst_windows_increased")
         if tuned.dev_drawdown > baseline.dev_drawdown + 0.03:
             model_failures.append("drawdown_worse_than_baseline_relative_gate")
+        if report.evaluation_role == "acceptance":
+            if not tuned.test_evaluated:
+                model_failures.append("test_not_evaluated")
+            elif not tuned.promotion_candidate:
+                model_failures.append(tuned.promotion_failure_reason or "test_acceptance_failed")
 
     search_failures: list[str] = []
     if not direction_policy.get("correlation_constrained"):
@@ -2159,12 +2164,10 @@ class FrameworkEvaluator:
                 progress_callback("replay_reused", "current_fast_summary")
             return self._current_fast
         if self._current_fast is None:
-            # Current and the frozen PaulWei baseline are currently identical in
-            # authoritative evaluation, so reuse the existing baseline summary
-            # until they diverge again. This preserves the hard gate target
-            # without forcing an extra cached replay path.
-            self._current_fast = self._get_paulwei_fast_summary(
-                lightweight=lightweight,
+            self._current_fast = self._evaluate_variant(
+                self._current_variant,
+                fast=True,
+                lightweight=False,
                 progress_callback=progress_callback,
             )
         return self._current_fast
