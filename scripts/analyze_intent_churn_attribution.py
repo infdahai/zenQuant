@@ -25,7 +25,13 @@ from zenquant.domain import ExecutionReport, Timeframe
 from zenquant.historical import HistoricalBacktest, HistoricalBacktestConfig
 from zenquant.research.attribution import build_decision_attribution_ledger
 from zenquant.research.auto_research import _build_strategy_config
-from zenquant.research.comparison import paulwei_execution_baseline, paulwei_risk_baseline
+from zenquant.research.comparison import (
+    WindowSpec,
+    default_comparison_windows,
+    paulwei_execution_baseline,
+    paulwei_risk_baseline,
+    split_window_spec,
+)
 from zenquant.research.framework_params import (
     build_execution_config,
     build_indicator_config,
@@ -42,17 +48,43 @@ DEFAULT_V14B_REPORT = Path(
 )
 
 
-def _load_rejected_params(path: Path, index: int) -> dict[str, Any]:
+def _load_candidate_params(path: Path, *, source: str, index: int) -> dict[str, Any]:
     payload = json.loads(path.read_text(encoding="utf-8"))
-    diagnostics = (
+    diagnostics = _candidate_diagnostics(payload, source=source)
+    if index >= len(diagnostics):
+        raise ValueError(f"{source} candidate index {index} not found in {path}")
+    return dict(diagnostics[index]["params"])
+
+
+def _candidate_diagnostics(payload: dict[str, Any], *, source: str) -> list[dict[str, Any]]:
+    if source == "rejected":
+        return _rejected_candidate_diagnostics(payload)
+    if source == "top-train":
+        search_status_diagnostics = (
+            (payload.get("search_status") or {})
+            .get("train_candidate_diagnostics", {})
+            .get("top_train_trial_diagnostics", [])
+        )
+        if search_status_diagnostics:
+            return list(search_status_diagnostics)
+        return list((payload.get("train_candidate_diagnostics") or {}).get("top_train_trial_diagnostics", []))
+    raise ValueError(f"unsupported candidate source {source!r}")
+
+
+def _rejected_candidate_diagnostics(payload: dict[str, Any]) -> list[dict[str, Any]]:
+    search_status_diagnostics = (
         (payload.get("search_status") or {})
         .get("train_candidate_diagnostics", {})
         .get("primary_search_diagnostics", {})
         .get("rejected_candidate_diagnostics", [])
     )
-    if index >= len(diagnostics):
-        raise ValueError(f"rejected candidate index {index} not found in {path}")
-    return dict(diagnostics[index]["params"])
+    if search_status_diagnostics:
+        return list(search_status_diagnostics)
+    return list(
+        (payload.get("train_candidate_diagnostics") or {})
+        .get("primary_search_diagnostics", {})
+        .get("rejected_candidate_diagnostics", [])
+    )
 
 
 def _base_config(
@@ -242,6 +274,23 @@ def _window_payload(
     return {"window": label, "variants": variants}
 
 
+def _selected_windows(*, split: Any, train_only: bool, window_labels: list[str]) -> list[WindowSpec]:
+    if not window_labels:
+        windows = [split_window_spec(split, "train")]
+        if not train_only:
+            windows.append(split_window_spec(split, "dev"))
+        return windows
+
+    available = {window.label: window for window in [split_window_spec(split, "train"), *default_comparison_windows(split, "dev")]}
+    selected: list[WindowSpec] = []
+    for label in window_labels:
+        if label not in available:
+            allowed = ", ".join(sorted(available))
+            raise ValueError(f"unknown window label {label!r}; allowed labels: {allowed}")
+        selected.append(available[label])
+    return selected
+
+
 def _markdown(payload: dict[str, Any]) -> str:
     lines = [
         "# Intent Churn Attribution Diagnostic",
@@ -291,6 +340,18 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Analyze train-only churn attribution for rejected params")
     parser.add_argument("--source-report", type=Path, default=DEFAULT_V14B_REPORT)
     parser.add_argument("--rejected-index", type=int, default=0)
+    parser.add_argument(
+        "--candidate-source",
+        choices=("rejected", "top-train"),
+        default="rejected",
+        help="Candidate params source inside source-report.",
+    )
+    parser.add_argument(
+        "--candidate-index",
+        type=int,
+        default=None,
+        help="Candidate index for --candidate-source; defaults to --rejected-index for backward compatibility.",
+    )
     parser.add_argument("--root", type=Path, default=Path("data/raw/binance"))
     parser.add_argument("--symbol", default="BTCUSDT")
     parser.add_argument("--liquidation-dir", type=Path, default=Path("data/raw/hyperliquid_liquidations"))
@@ -301,6 +362,15 @@ def main() -> None:
         "--train-only",
         action="store_true",
         help="Only replay the train split so pre-candidate diagnostics do not touch dev.",
+    )
+    parser.add_argument(
+        "--window-label",
+        action="append",
+        default=[],
+        help=(
+            "Replay only the named diagnostic window; may be passed multiple times. "
+            "Supported labels include train, dev, 2023-08, and worst-period labels such as '2024-11 DD'."
+        ),
     )
     parser.add_argument(
         "--full-window",
@@ -332,7 +402,8 @@ def main() -> None:
     args = parser.parse_args()
 
     split = default_btc_split_spec()
-    params = _load_rejected_params(args.source_report, args.rejected_index)
+    candidate_index = args.rejected_index if args.candidate_index is None else args.candidate_index
+    params = _load_candidate_params(args.source_report, source=args.candidate_source, index=candidate_index)
     for raw_override in args.param_override:
         key, value = _parse_param_override(raw_override)
         params[key] = value
@@ -342,12 +413,12 @@ def main() -> None:
     context_timeframe = None if args.context_timeframe == "none" else Timeframe(args.context_timeframe)
     windows = [
         _window_payload(
-            label="train",
+            label=window.label,
             root=args.root,
             symbol=args.symbol,
             liquidation_dir=args.liquidation_dir,
-            start_ns=split.train.start_ns,
-            end_ns=split.train.end_ns,
+            start_ns=int(window.start_ns or 0),
+            end_ns=int(window.end_ns or 0),
             params=params,
             research_compute_mode=research_compute_mode,
             lightweight_stage1_semantics=lightweight_stage1_semantics,
@@ -357,30 +428,14 @@ def main() -> None:
             early_stop_fee_drag_buffer=args.early_stop_fee_drag_buffer,
             skip_baseline=args.skip_baseline,
         )
+        for window in _selected_windows(split=split, train_only=args.train_only, window_labels=args.window_label)
     ]
-    if not args.train_only:
-        windows.append(
-            _window_payload(
-                label="dev",
-                root=args.root,
-                symbol=args.symbol,
-                liquidation_dir=args.liquidation_dir,
-                start_ns=split.dev.start_ns,
-                end_ns=split.dev.end_ns,
-                params=params,
-                research_compute_mode=research_compute_mode,
-                lightweight_stage1_semantics=lightweight_stage1_semantics,
-                execution_timeframe=execution_timeframe,
-                context_timeframe=context_timeframe,
-                diagnostic_collect_ledgers=args.collect_ledger,
-                early_stop_fee_drag_buffer=args.early_stop_fee_drag_buffer,
-                skip_baseline=args.skip_baseline,
-            )
-        )
     payload = {
         "created_at": datetime.now(UTC).isoformat(),
         "source_report": str(args.source_report),
         "rejected_index": args.rejected_index,
+        "candidate_source": args.candidate_source,
+        "candidate_index": candidate_index,
         "symbol": args.symbol,
         "research_compute_mode": research_compute_mode,
         "execution_timeframe": execution_timeframe.value,
