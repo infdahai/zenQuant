@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import uuid
 from dataclasses import dataclass
+from math import ceil
 from typing import Any
 
 from zenquant.domain import (
@@ -50,6 +51,13 @@ class _IntentConfirmationState:
     bars: int
 
 
+@dataclass(slots=True)
+class _IntentReduceConfirmationState:
+    direction: float
+    target_qty: float
+    bars: int
+
+
 # Minimum absolute signal strength to take a directional position.
 # Below this threshold, the plugin-composed signal is treated as neutral (0.0).
 DIRECTION_THRESHOLD: float = 0.15
@@ -75,6 +83,7 @@ class ARCStrategyConfig:
     # Phase 2: trailing stop config
     trailing_stop_atr_mult: float = 2.5  # ATR multiplier for trailing stop
     min_bars_before_trail: int = 1  # minimum bars held before activating trail
+    min_hours_before_trail: float = 0.0  # timeframe-normalized minimum hold before activating trail
     # Phase 4-6: engine-specific configs (can be overridden)
     playbook_config: PlaybookEngineConfig | None = None
     sizing_config: SizingEngineConfig | None = None
@@ -84,6 +93,8 @@ class ARCStrategyConfig:
     intent_entry_confirmation_bars: int = 1
     intent_flip_confirmation_bars: int = 1
     intent_flat_confirmation_bars: int = 1
+    intent_flat_reduce_step_pct: float = 0.0
+    intent_flat_step_cadence_bars: int = 0
     intent_range_entry_confirmation_bars: int = 0
     intent_range_reentry_cooldown_bars: int = 0
     intent_bearish_override_confirmation_bars: int = 0
@@ -98,6 +109,10 @@ class ARCStrategyConfig:
     intent_time_leverage_flip_signal_threshold: float = 0.55
     intent_time_leverage_confidence_floor: float = 0.55
     intent_time_leverage_transition_risk_floor: float = 0.35
+    intent_time_leverage_trailing_stop_atr_mult: float = 0.0
+    intent_time_leverage_trailing_exit_hold_enabled: bool = False
+    intent_time_leverage_trailing_exit_max_adverse_atr: float = 2.5
+    intent_same_direction_reduce_confirmation_bars: int = 1
     intent_time_leverage_size_hysteresis_enabled: bool = False
     intent_time_leverage_add_deadband_pct: float = 0.0
     intent_time_leverage_reduce_deadband_pct: float = 0.0
@@ -170,6 +185,8 @@ class ARCStrategyEngine:
         self._range_reentry_cooldown_until_ns: dict[tuple[str, Timeframe], int] = {}
         self._intent_confirmation: dict[str, _IntentConfirmationState] = {}
         self._intent_add_confirmation: dict[tuple[str, Timeframe], _IntentConfirmationState] = {}
+        self._intent_reduce_confirmation: dict[tuple[str, Timeframe], _IntentReduceConfirmationState] = {}
+        self._intent_flat_step_cooldowns: dict[tuple[str, Timeframe], int] = {}
 
         # Phase 2: position tracking for trailing stops
         self._positions: dict[tuple[str, Timeframe], OpenPositionState] = {}
@@ -650,17 +667,22 @@ class ARCStrategyEngine:
         direction = self._target_direction(target.target_qty)
         if target.reduce_only:
             self._intent_confirmation.pop(target.symbol, None)
+            self._intent_flat_step_cooldowns.pop((target.symbol, target.timeframe), None)
             return target
 
         current_direction = self._current_execution_position_direction(target.symbol, target.timeframe)
         if direction == 0.0:
             if current_direction == 0.0:
                 self._intent_confirmation.pop(target.symbol, None)
+                self._intent_flat_step_cooldowns.pop((target.symbol, target.timeframe), None)
                 return target
+            cooldown_hold = self._hold_flat_step_cooldown_if_needed(target, price=price)
+            if cooldown_hold is not None:
+                return cooldown_hold
             required_bars = max(1, int(self._config.intent_flat_confirmation_bars))
             if required_bars <= 1:
                 self._intent_confirmation.pop(target.symbol, None)
-                return target
+                return self._apply_flat_step_reduce(target, price=price)
             confirmation = self._intent_confirmation.get(target.symbol)
             if confirmation is None or confirmation.direction != 0.0:
                 confirmation = _IntentConfirmationState(direction=0.0, bars=1)
@@ -694,11 +716,13 @@ class ARCStrategyEngine:
                     "reason": "INTENT_FLAT_CONFIRMED",
                 },
             )
-            return target
+            return self._apply_flat_step_reduce(target, price=price)
 
         if current_direction == direction:
             self._intent_confirmation.pop(target.symbol, None)
+            self._intent_flat_step_cooldowns.pop((target.symbol, target.timeframe), None)
             return target
+        self._intent_flat_step_cooldowns.pop((target.symbol, target.timeframe), None)
 
         required_bars = (
             self._config.intent_flip_confirmation_bars
@@ -805,6 +829,102 @@ class ARCStrategyEngine:
                 "INTENT_FLAT_CONFIRMATION_PENDING",
                 "INTENT_FLAT_HELD",
             ],
+            realized_vol=target.realized_vol,
+            atr=target.atr,
+        )
+
+    def _hold_flat_step_cooldown_if_needed(
+        self,
+        target: TargetPosition,
+        *,
+        price: float | None,
+    ) -> TargetPosition | None:
+        key = (target.symbol, target.timeframe)
+        remaining = self._intent_flat_step_cooldowns.get(key, 0)
+        if remaining <= 0:
+            self._intent_flat_step_cooldowns.pop(key, None)
+            return None
+        if remaining <= 1:
+            self._intent_flat_step_cooldowns.pop(key, None)
+        else:
+            self._intent_flat_step_cooldowns[key] = remaining - 1
+        held = self._hold_current_position_for_flat_confirmation(target, price=price)
+        held.reason_codes = [
+            code for code in held.reason_codes if code not in {"INTENT_FLAT_CONFIRMATION_PENDING", "INTENT_FLAT_HELD"}
+        ]
+        held.reason_codes.extend(["INTENT_FLAT_STEP_CADENCE", "INTENT_FLAT_HELD"])
+        self._bus.publish(
+            f"strategy.intent_flat_step.{target.timeframe.value}.{target.symbol}",
+            {
+                "symbol": target.symbol,
+                "timeframe": target.timeframe.value,
+                "cutoff_time_ns": target.cutoff_time_ns,
+                "remaining_bars": remaining,
+                "reason": "INTENT_FLAT_STEP_CADENCE",
+            },
+        )
+        return held
+
+    def _apply_flat_step_reduce(
+        self,
+        target: TargetPosition,
+        *,
+        price: float | None,
+    ) -> TargetPosition:
+        step_pct = max(0.0, min(1.0, float(self._config.intent_flat_reduce_step_pct)))
+        if step_pct <= 0.0:
+            self._intent_flat_step_cooldowns.pop((target.symbol, target.timeframe), None)
+            return target
+
+        position = self._current_execution_position(target.symbol, target.timeframe)
+        if position is None or position.current_qty < self._config.min_trade_qty:
+            self._intent_flat_step_cooldowns.pop((target.symbol, target.timeframe), None)
+            return target
+
+        signed_qty = position.direction * position.current_qty
+        stepped_qty = signed_qty * max(0.0, 1.0 - step_pct)
+        if abs(stepped_qty) < self._config.min_trade_qty:
+            stepped_qty = 0.0
+
+        target_leverage = 0.0
+        mark_price = float(price or 0.0)
+        if mark_price <= 0.0:
+            mark_price = position.entry_price
+        if mark_price > 0.0 and self._equity > 0.0:
+            target_leverage = abs(stepped_qty * mark_price) / self._equity
+
+        if stepped_qty != 0.0:
+            cadence_bars = max(0, int(self._config.intent_flat_step_cadence_bars))
+            if cadence_bars > 0:
+                self._intent_flat_step_cooldowns[(target.symbol, target.timeframe)] = cadence_bars
+        else:
+            self._intent_flat_step_cooldowns.pop((target.symbol, target.timeframe), None)
+
+        self._bus.publish(
+            f"strategy.intent_flat_step.{target.timeframe.value}.{target.symbol}",
+            {
+                "symbol": target.symbol,
+                "timeframe": target.timeframe.value,
+                "cutoff_time_ns": target.cutoff_time_ns,
+                "current_qty": round(signed_qty, 6),
+                "target_qty": round(stepped_qty, 6),
+                "step_pct": round(step_pct, 6),
+                "cadence_bars": max(0, int(self._config.intent_flat_step_cadence_bars)),
+                "reason": "INTENT_FLAT_STEP_REDUCE",
+            },
+        )
+        return TargetPosition(
+            intent_id=target.intent_id,
+            portfolio=target.portfolio,
+            symbol=target.symbol,
+            timeframe=target.timeframe,
+            cutoff_time_ns=target.cutoff_time_ns,
+            target_qty=round(stepped_qty, 6),
+            target_leverage=round(target_leverage, 4),
+            reduce_only=False,
+            regime=target.regime,
+            regime_confidence=target.regime_confidence,
+            reason_codes=[*target.reason_codes, "INTENT_FLAT_STEP_REDUCE"],
             realized_vol=target.realized_vol,
             atr=target.atr,
         )
@@ -1072,6 +1192,117 @@ class ARCStrategyEngine:
         )
         return capped_qty, capped_leverage
 
+    def _apply_same_direction_reduce_confirmation(
+        self,
+        *,
+        symbol: str,
+        timeframe: Timeframe,
+        target_qty: float,
+        target_leverage: float,
+        price: float,
+        state: MarketState,
+        reduce_only: bool,
+        reason_codes: list[str],
+    ) -> tuple[float, float]:
+        confirmation_key = (symbol, timeframe)
+        required_bars = max(1, int(self._config.intent_same_direction_reduce_confirmation_bars))
+        if required_bars <= 1 or reduce_only:
+            self._intent_reduce_confirmation.pop(confirmation_key, None)
+            return target_qty, target_leverage
+
+        position = self._current_execution_position(symbol, timeframe)
+        if position is None:
+            self._intent_reduce_confirmation.pop(confirmation_key, None)
+            return target_qty, target_leverage
+
+        current_signed_qty = position.direction * position.current_qty
+        if abs(current_signed_qty) < self._config.min_trade_qty:
+            self._intent_reduce_confirmation.pop(confirmation_key, None)
+            return target_qty, target_leverage
+        if abs(target_qty) < self._config.min_trade_qty or current_signed_qty * target_qty <= 0.0:
+            self._intent_reduce_confirmation.pop(confirmation_key, None)
+            return target_qty, target_leverage
+        if abs(target_qty) >= abs(current_signed_qty) - self._config.min_trade_qty:
+            self._intent_reduce_confirmation.pop(confirmation_key, None)
+            return target_qty, target_leverage
+
+        if self._same_direction_reduce_confirmation_bypassed(position=position, state=state):
+            self._intent_reduce_confirmation.pop(confirmation_key, None)
+            reason_codes.append("INTENT_REDUCE_CONFIRMATION_BYPASS")
+            return target_qty, target_leverage
+
+        direction = self._target_direction(target_qty)
+        confirmation = self._intent_reduce_confirmation.get(confirmation_key)
+        if confirmation is None or confirmation.direction != direction:
+            confirmation = _IntentReduceConfirmationState(direction=direction, target_qty=target_qty, bars=1)
+        else:
+            confirmation.bars += 1
+            if abs(target_qty) < abs(confirmation.target_qty):
+                confirmation.target_qty = target_qty
+        self._intent_reduce_confirmation[confirmation_key] = confirmation
+
+        if confirmation.bars >= required_bars:
+            self._intent_reduce_confirmation.pop(confirmation_key, None)
+            confirmed_qty = confirmation.target_qty
+            confirmed_leverage = target_leverage
+            if price > 0.0 and self._equity > 0.0:
+                confirmed_leverage = abs(confirmed_qty * price) / self._equity
+            reason_codes.append(f"INTENT_REDUCE_CONFIRMED_{required_bars}_BARS")
+            if abs(confirmed_qty) < abs(target_qty):
+                reason_codes.append("INTENT_REDUCE_AGGREGATED")
+            self._bus.publish(
+                f"strategy.intent_reduce_confirmation.{timeframe.value}.{symbol}",
+                {
+                    "symbol": symbol,
+                    "timeframe": timeframe.value,
+                    "cutoff_time_ns": state.cutoff_time_ns,
+                    "direction": direction,
+                    "bars": confirmation.bars,
+                    "required_bars": required_bars,
+                    "current_qty": round(current_signed_qty, 6),
+                    "requested_target_qty": round(target_qty, 6),
+                    "confirmed_target_qty": round(confirmed_qty, 6),
+                    "reason": "INTENT_REDUCE_CONFIRMED",
+                },
+            )
+            return confirmed_qty, confirmed_leverage
+
+        capped_qty, capped_leverage = self._current_position_target(
+            current_signed_qty=current_signed_qty,
+            target_leverage=target_leverage,
+            price=price,
+        )
+        reason_codes.extend(["INTENT_REDUCE_CONFIRMATION_PENDING", "INTENT_REDUCE_HELD"])
+        self._bus.publish(
+            f"strategy.intent_reduce_confirmation.{timeframe.value}.{symbol}",
+            {
+                "symbol": symbol,
+                "timeframe": timeframe.value,
+                "cutoff_time_ns": state.cutoff_time_ns,
+                "direction": direction,
+                "bars": confirmation.bars,
+                "required_bars": required_bars,
+                "current_qty": round(current_signed_qty, 6),
+                "requested_target_qty": round(target_qty, 6),
+                "pending_target_qty": round(confirmation.target_qty, 6),
+                "reason": "INTENT_REDUCE_CONFIRMATION_PENDING",
+            },
+        )
+        return capped_qty, capped_leverage
+
+    @staticmethod
+    def _same_direction_reduce_confirmation_bypassed(
+        *,
+        position: OpenPositionState,
+        state: MarketState,
+    ) -> bool:
+        opposing_trend_state = "DOWNTREND" if position.direction > 0 else "UPTREND"
+        return (
+            state.directional_state == opposing_trend_state
+            or state.quality_state == "UNSAFE"
+            or state.volatility_state == "DISTORTED"
+        )
+
     def _current_position_target(
         self,
         *,
@@ -1153,6 +1384,104 @@ class ARCStrategyEngine:
             },
         )
         return current_signed_qty, held_leverage
+
+    def _time_leverage_trailing_exit_hold_target(
+        self,
+        *,
+        pack: IndicatorPack,
+        state: MarketState,
+        position: OpenPositionState,
+        exit_decision: ExitDecision,
+        price: float,
+        atr: float,
+    ) -> TargetPosition | None:
+        if (
+            not self._config.intent_time_leverage_hold_enabled
+            or not self._config.intent_time_leverage_trailing_exit_hold_enabled
+        ):
+            return None
+        if "EXIT_TRAILING_STOP" not in exit_decision.reason_codes:
+            return None
+        if position.direction <= 0.0:
+            return None
+        if price <= 0.0 or self._equity <= 0.0:
+            return None
+        if state.quality_state == "UNSAFE" or state.volatility_state == "DISTORTED":
+            return None
+
+        context = self._plugin_signal_context.get((pack.symbol, pack.timeframe), {})
+        signal_strength = abs(float(context.get("effective_direction", state.direction_signal) or 0.0))
+        flip_threshold = max(0.0, float(self._config.intent_time_leverage_flip_signal_threshold))
+        confidence_floor = max(0.0, float(self._config.intent_time_leverage_confidence_floor))
+        transition_floor = max(0.0, float(self._config.intent_time_leverage_transition_risk_floor))
+        min_hold_bars = max(0, int(self._config.intent_time_leverage_min_hold_bars))
+        opposing_trend_confirmed = (
+            state.directional_state == "DOWNTREND"
+            and state.directional_confidence >= confidence_floor
+            and state.transition_risk >= transition_floor
+            and signal_strength >= flip_threshold
+        )
+        min_hold_satisfied = position.bars_held >= min_hold_bars
+        if min_hold_satisfied and opposing_trend_confirmed:
+            return None
+
+        adverse_atr = 0.0
+        if atr > 0.0 and position.entry_price > price:
+            adverse_atr = (position.entry_price - price) / atr
+        max_adverse_atr = max(0.0, float(self._config.intent_time_leverage_trailing_exit_max_adverse_atr))
+        if max_adverse_atr > 0.0 and adverse_atr > max_adverse_atr:
+            return None
+
+        signed_qty = position.direction * position.current_qty
+        target_leverage = abs(signed_qty * price) / self._equity
+        reason_codes = [
+            f"REGIME_{state.regime}",
+            "HOLD_EXECUTION_POSITION",
+            *exit_decision.reason_codes,
+            "TIME_LEVERAGE_TRAILING_EXIT_HELD",
+        ]
+        if not min_hold_satisfied:
+            reason_codes.append("TIME_LEVERAGE_MIN_HOLD")
+        if state.directional_state != "DOWNTREND":
+            reason_codes.append("TIME_LEVERAGE_TREND_STILL_ALIGNED")
+        if signal_strength < flip_threshold:
+            reason_codes.append("TIME_LEVERAGE_SIGNAL_TOO_WEAK")
+        if state.directional_confidence < confidence_floor or state.transition_risk < transition_floor:
+            reason_codes.append("TIME_LEVERAGE_REVERSAL_NOT_CONFIRMED")
+
+        self._bus.publish(
+            f"strategy.time_leverage_trailing_exit_hold.{pack.timeframe.value}.{pack.symbol}",
+            {
+                "symbol": pack.symbol,
+                "timeframe": pack.timeframe.value,
+                "cutoff_time_ns": pack.cutoff_time_ns,
+                "bars_held": position.bars_held,
+                "min_hold_bars": min_hold_bars,
+                "adverse_atr": round(adverse_atr, 6),
+                "max_adverse_atr": round(max_adverse_atr, 6),
+                "signal_strength": round(signal_strength, 6),
+                "directional_state": state.directional_state,
+                "directional_confidence": round(float(state.directional_confidence), 6),
+                "transition_risk": round(float(state.transition_risk), 6),
+                "exit_type": exit_decision.exit_type,
+                "reason": "TIME_LEVERAGE_TRAILING_EXIT_HELD",
+            },
+        )
+        return TargetPosition(
+            intent_id=self._intent_id(pack),
+            portfolio=self._config.portfolio,
+            symbol=pack.symbol,
+            timeframe=pack.timeframe,
+            cutoff_time_ns=pack.cutoff_time_ns,
+            target_qty=round(signed_qty, 6),
+            target_leverage=round(target_leverage, 4),
+            reduce_only=False,
+            regime=state.regime,
+            regime_confidence=round(state.regime_confidence, 4),
+            reason_codes=reason_codes,
+            realized_vol=float(pack.values.get("realized_vol", 0) or 0),
+            atr=float(pack.values.get("atr", 0) or 0),
+        )
 
     def _apply_time_leverage_size_hysteresis(
         self,
@@ -1253,6 +1582,52 @@ class ARCStrategyEngine:
         ):
             return True, "4h_uptrend"
         return False, "no_long_bias"
+
+    def _time_leverage_trailing_stop_atr_mult(
+        self,
+        *,
+        symbol: str,
+        timeframe: Timeframe,
+        state: MarketState,
+        position: OpenPositionState,
+        default_mult: float,
+    ) -> float:
+        configured_mult = max(0.0, float(self._config.intent_time_leverage_trailing_stop_atr_mult))
+        if (
+            not self._config.intent_time_leverage_hold_enabled
+            or configured_mult <= default_mult
+            or position.direction <= 0.0
+        ):
+            return default_mult
+
+        long_bias_active, long_bias_source = self._time_leverage_long_bias_active(symbol, state.cutoff_time_ns, state)
+        if not long_bias_active:
+            return default_mult
+
+        self._bus.publish(
+            f"strategy.time_leverage_trailing_stop.{timeframe.value}.{symbol}",
+            {
+                "symbol": symbol,
+                "timeframe": timeframe.value,
+                "cutoff_time_ns": state.cutoff_time_ns,
+                "default_atr_mult": round(default_mult, 6),
+                "time_leverage_atr_mult": round(configured_mult, 6),
+                "long_bias_source": long_bias_source,
+                "directional_state": state.directional_state,
+                "directional_confidence": round(float(state.directional_confidence), 6),
+                "transition_risk": round(float(state.transition_risk), 6),
+                "reason": "TIME_LEVERAGE_TRAILING_STOP_WIDENED",
+            },
+        )
+        return configured_mult
+
+    def _min_bars_before_trail(self, timeframe: Timeframe) -> int:
+        min_bars = max(0, int(self._config.min_bars_before_trail))
+        min_hours = max(0.0, float(self._config.min_hours_before_trail))
+        if min_hours <= 0.0:
+            return min_bars
+        timeframe_bars = max(1, ceil((min_hours * 3600.0) / timeframe.seconds))
+        return max(min_bars, timeframe_bars)
 
     def _apply_time_leverage_long_bias_guard(
         self,
@@ -1597,6 +1972,16 @@ class ARCStrategyEngine:
             reduce_only=reduce_only,
             reason_codes=reason_codes,
         )
+        target_qty, target_leverage = self._apply_same_direction_reduce_confirmation(
+            symbol=pack.symbol,
+            timeframe=pack.timeframe,
+            target_qty=target_qty,
+            target_leverage=target_leverage,
+            price=vals.price,
+            state=state,
+            reduce_only=reduce_only,
+            reason_codes=reason_codes,
+        )
         target_qty, target_leverage = self._apply_same_direction_add_gate(
             symbol=pack.symbol,
             timeframe=pack.timeframe,
@@ -1663,6 +2048,16 @@ class ARCStrategyEngine:
         if exit_decision is not None:
             self._publish_exit(exit_decision)
             if exit_decision.should_exit():
+                hold_target = self._time_leverage_trailing_exit_hold_target(
+                    pack=pack,
+                    state=state,
+                    position=position,
+                    exit_decision=exit_decision,
+                    price=vals.price,
+                    atr=vals.atr,
+                )
+                if hold_target is not None:
+                    return hold_target
                 self._arm_range_reentry_cooldown_if_needed(
                     symbol=pack.symbol,
                     timeframe=pack.timeframe,
@@ -2042,8 +2437,15 @@ class ARCStrategyEngine:
         atr = float(ind_dict.get("atr", 0.0) or 0.0)
 
         # ── Trailing stop ratchet (engine responsibility) ──
-        if price > 0 and atr > 0 and position.bars_held >= self._config.min_bars_before_trail:
-            stop_distance = atr * playbook.trailing_stop_atr_mult
+        if price > 0 and atr > 0 and position.bars_held >= self._min_bars_before_trail(pack.timeframe):
+            trailing_stop_atr_mult = self._time_leverage_trailing_stop_atr_mult(
+                symbol=pack.symbol,
+                timeframe=pack.timeframe,
+                state=state,
+                position=position,
+                default_mult=playbook.trailing_stop_atr_mult,
+            )
+            stop_distance = atr * trailing_stop_atr_mult
             if position.trailing_stop == 0.0:
                 # Initialize
                 if position.direction > 0:

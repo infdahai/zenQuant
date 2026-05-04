@@ -192,20 +192,22 @@ def build_strategy_config(params: dict[str, float]) -> ARCStrategyConfig:
         target_vol_1d=1.30,
         max_leverage=params.get("max_leverage", 6.0),
         trailing_stop_atr_mult=params.get("trailing_stop_atr_mult", 2.5),
+        min_bars_before_trail=int(params.get("min_bars_before_trail", 1)),
+        min_hours_before_trail=params.get("min_hours_before_trail", 0.0),
         bias_max_age_bars=int(params.get("bias_max_age_bars", 8)),
         enable_adaptive_signal_weights=bool(round(float(params.get("enable_adaptive_signal_weights", 0.0)))),
         intent_entry_confirmation_bars=int(params.get("intent_entry_confirmation_bars", 1)),
         intent_flip_confirmation_bars=int(params.get("intent_flip_confirmation_bars", 1)),
         intent_flat_confirmation_bars=int(params.get("intent_flat_confirmation_bars", 1)),
+        intent_flat_reduce_step_pct=params.get("intent_flat_reduce_step_pct", 0.0),
+        intent_flat_step_cadence_bars=int(params.get("intent_flat_step_cadence_bars", 0)),
         intent_range_entry_confirmation_bars=int(params.get("intent_range_entry_confirmation_bars", 0)),
         intent_range_reentry_cooldown_bars=int(params.get("intent_range_reentry_cooldown_bars", 0)),
         intent_bearish_override_confirmation_bars=int(params.get("intent_bearish_override_confirmation_bars", 0)),
         intent_bearish_override_chop_guard_enabled=bool(
             round(float(params.get("intent_bearish_override_chop_guard_enabled", 0.0)))
         ),
-        intent_bearish_override_chop_max_confidence=params.get(
-            "intent_bearish_override_chop_max_confidence", 0.58
-        ),
+        intent_bearish_override_chop_max_confidence=params.get("intent_bearish_override_chop_max_confidence", 0.58),
         intent_bearish_override_chop_min_transition_risk=params.get(
             "intent_bearish_override_chop_min_transition_risk", 0.40
         ),
@@ -217,6 +219,16 @@ def build_strategy_config(params: dict[str, float]) -> ARCStrategyConfig:
         intent_time_leverage_flip_signal_threshold=params.get("intent_time_leverage_flip_signal_threshold", 0.55),
         intent_time_leverage_confidence_floor=params.get("intent_time_leverage_confidence_floor", 0.55),
         intent_time_leverage_transition_risk_floor=params.get("intent_time_leverage_transition_risk_floor", 0.35),
+        intent_time_leverage_trailing_stop_atr_mult=params.get("intent_time_leverage_trailing_stop_atr_mult", 0.0),
+        intent_time_leverage_trailing_exit_hold_enabled=bool(
+            round(float(params.get("intent_time_leverage_trailing_exit_hold_enabled", 0.0)))
+        ),
+        intent_time_leverage_trailing_exit_max_adverse_atr=params.get(
+            "intent_time_leverage_trailing_exit_max_adverse_atr", 2.5
+        ),
+        intent_same_direction_reduce_confirmation_bars=int(
+            params.get("intent_same_direction_reduce_confirmation_bars", 1)
+        ),
         intent_time_leverage_size_hysteresis_enabled=bool(
             round(float(params.get("intent_time_leverage_size_hysteresis_enabled", 0.0)))
         ),
@@ -317,6 +329,7 @@ def build_execution_config(params: dict[str, float]) -> ExecutionKernelConfig:
         profit_protect_min_move_atr=params.get("profit_protect_min_move_atr", 1.0),
         profit_protect_unwind_pct=params.get("profit_protect_unwind_pct", 0.25),
         profit_protect_confidence_ceiling=params.get("profit_protect_confidence_ceiling", 0.75),
+        profit_protect_cooldown_bars=int(params.get("profit_protect_cooldown_bars", 0)),
     )
 
 

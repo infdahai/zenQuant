@@ -53,6 +53,10 @@ from zenquant.research.framework_params import (
     intent_churn_ablation_seed_trials,
     intent_churn_repair_seed_trials,
     param_grid_for_mode,
+    ralph_execution_fee_cooldown_seed_trials,
+    ralph_intent_reduce_cadence_seed_trials,
+    ralph_protective_reduce_fee_repair_seed_trials,
+    ralph_protective_reduce_seed_trials,
     search_space_profile,
 )
 from zenquant.research.historical_extension import load_historical_extension_candidate_contract
@@ -1360,6 +1364,7 @@ class FrameworkEvaluator:
         dev_gate_last_round: int | None = None,
         dev_gate_interval: int | None = None,
         full_stage2_executed_this_round: bool = True,
+        smoke_completed: bool = True,
     ) -> SearchReport:
         if evaluation_role != "acceptance" and evaluate_test:
             raise ValueError("development path must not evaluate test")
@@ -1556,7 +1561,7 @@ class FrameworkEvaluator:
             test_evaluated=evaluate_test,
             report_mode=report_mode if full else "fast",
             report_degraded_due_to_memory=report_degraded_due_to_memory if full else False,
-            smoke_completed=full,
+            smoke_completed=smoke_completed,
             evaluation_role=evaluation_role,
             test_access_allowed=test_access_allowed,
             dev_gate_used_this_round=dev_gate_used_this_round,
@@ -2601,6 +2606,14 @@ def run_optuna_search(
     effective_execution_timeframe = search_execution_timeframe or evaluator._base_config.execution_timeframe
     if evaluator.search_space_profile.get("binance_factor_weight_repair_search", False):
         resolved_seed_trials = binance_factor_weight_repair_seed_trials()[:n_trials]
+    elif evaluator.search_space_profile.get("ralph_intent_reduce_cadence_search", False):
+        resolved_seed_trials = ralph_intent_reduce_cadence_seed_trials()[:n_trials]
+    elif evaluator.search_space_profile.get("ralph_execution_fee_cooldown_search", False):
+        resolved_seed_trials = ralph_execution_fee_cooldown_seed_trials()[:n_trials]
+    elif evaluator.search_space_profile.get("ralph_protective_reduce_fee_repair_search", False):
+        resolved_seed_trials = ralph_protective_reduce_fee_repair_seed_trials()[:n_trials]
+    elif evaluator.search_space_profile.get("ralph_protective_reduce_search", False):
+        resolved_seed_trials = ralph_protective_reduce_seed_trials()[:n_trials]
     elif evaluator.search_space_profile.get("intent_churn_ablation_search", False):
         resolved_seed_trials = intent_churn_ablation_seed_trials()[:n_trials]
     elif evaluator.search_space_profile.get("intent_churn_repair_search", False):

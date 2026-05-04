@@ -469,6 +469,41 @@ class TestStrategyIntentConfirmation(unittest.TestCase):
         self.assertEqual(audit_events[0]["reason"], "INTENT_FLAT_CONFIRMATION_PENDING")
         self.assertEqual(audit_events[-1]["reason"], "INTENT_FLAT_CONFIRMED")
 
+    def test_flat_step_reduce_throttles_repeated_non_risk_flat_targets(self):
+        bus = _strategy_bus()
+        audit_events = []
+        bus.subscribe("strategy.intent_flat_step.>", lambda _subject, payload: audit_events.append(payload))
+        engine = ARCStrategyEngine(
+            bus=bus,
+            config=ARCStrategyConfig(
+                intent_flat_confirmation_bars=2,
+                intent_flat_reduce_step_pct=0.50,
+                intent_flat_step_cadence_bars=2,
+            ),
+        )
+        engine._positions[("BTCUSDT_PERP", Timeframe.TF_4H)] = _position(direction=1.0)
+
+        held = engine._confirm_directional_intent(_target(qty=0.0, cutoff_time_ns=1), price=60000.0)
+        stepped = engine._confirm_directional_intent(_target(qty=0.0, cutoff_time_ns=2), price=60000.0)
+
+        self.assertIsNotNone(held)
+        self.assertIn("INTENT_FLAT_HELD", held.reason_codes)
+        self.assertIsNotNone(stepped)
+        self.assertEqual(stepped.target_qty, 0.5)
+        self.assertAlmostEqual(stepped.target_leverage, 0.3)
+        self.assertIn("INTENT_FLAT_CONFIRMED_2_BARS", stepped.reason_codes)
+        self.assertIn("INTENT_FLAT_STEP_REDUCE", stepped.reason_codes)
+        self.assertEqual(audit_events[-1]["reason"], "INTENT_FLAT_STEP_REDUCE")
+
+        engine._positions[("BTCUSDT_PERP", Timeframe.TF_4H)].current_qty = 0.5
+        cooldown_hold = engine._confirm_directional_intent(_target(qty=0.0, cutoff_time_ns=3), price=60000.0)
+
+        self.assertIsNotNone(cooldown_hold)
+        self.assertEqual(cooldown_hold.target_qty, 0.5)
+        self.assertAlmostEqual(cooldown_hold.target_leverage, 0.3)
+        self.assertIn("INTENT_FLAT_STEP_CADENCE", cooldown_hold.reason_codes)
+        self.assertEqual(audit_events[-1]["reason"], "INTENT_FLAT_STEP_CADENCE")
+
     def test_range_light_pending_entry_waits_for_lower_timeframe_confirmation(self):
         bus = _strategy_bus()
         audit_events = []
@@ -767,6 +802,152 @@ class TestStrategyIntentConfirmation(unittest.TestCase):
         self.assertEqual(leverage, 0.9)
         self.assertIn("TIME_LEVERAGE_FLIP_CONFIRMED", reason_codes)
 
+    def test_time_leverage_trailing_exit_hold_keeps_long_before_confirmed_reversal(self):
+        bus = _strategy_bus()
+        audit_events = []
+        bus.subscribe(
+            "strategy.time_leverage_trailing_exit_hold.>",
+            lambda _subject, payload: audit_events.append(payload),
+        )
+        engine = ARCStrategyEngine(
+            bus=bus,
+            config=ARCStrategyConfig(
+                execution_timeframe=Timeframe.TF_5M,
+                intent_time_leverage_hold_enabled=True,
+                intent_time_leverage_min_hold_bars=12,
+                intent_time_leverage_trailing_exit_hold_enabled=True,
+                intent_time_leverage_trailing_exit_max_adverse_atr=2.5,
+            ),
+        )
+        position = _position(direction=1.0)
+        position.timeframe = Timeframe.TF_5M
+        position.bars_held = 4
+        exit_decision = ExitDecision(
+            symbol="BTCUSDT_PERP",
+            timeframe=Timeframe.TF_5M,
+            cutoff_time_ns=1,
+            exit_type="TRAILING",
+            exit_urgency="IMMEDIATE",
+            target_reduction_pct=1.0,
+            stop_price=59000.0,
+            reason_code="TRAILING",
+            reason_detail="test",
+            reason_codes=["EXIT_TRAILING_STOP"],
+        )
+
+        target = engine._time_leverage_trailing_exit_hold_target(
+            pack=_pack(timeframe=Timeframe.TF_5M, last_price=59000.0),
+            state=_state(directional_state="TRANSITION", transition_risk=0.3),
+            position=position,
+            exit_decision=exit_decision,
+            price=59000.0,
+            atr=500.0,
+        )
+
+        self.assertIsNotNone(target)
+        assert target is not None
+        self.assertEqual(target.target_qty, 1.0)
+        self.assertIn("TIME_LEVERAGE_TRAILING_EXIT_HELD", target.reason_codes)
+        self.assertIn("TIME_LEVERAGE_MIN_HOLD", target.reason_codes)
+        self.assertEqual(audit_events[-1]["reason"], "TIME_LEVERAGE_TRAILING_EXIT_HELD")
+        self.assertEqual(audit_events[-1]["adverse_atr"], 2.0)
+
+    def test_time_leverage_trailing_exit_hold_allows_confirmed_adverse_trend(self):
+        bus = _strategy_bus()
+        engine = ARCStrategyEngine(
+            bus=bus,
+            config=ARCStrategyConfig(
+                execution_timeframe=Timeframe.TF_5M,
+                intent_time_leverage_hold_enabled=True,
+                intent_time_leverage_min_hold_bars=12,
+                intent_time_leverage_flip_signal_threshold=0.6,
+                intent_time_leverage_confidence_floor=0.65,
+                intent_time_leverage_transition_risk_floor=0.45,
+                intent_time_leverage_trailing_exit_hold_enabled=True,
+            ),
+        )
+        position = _position(direction=1.0)
+        position.timeframe = Timeframe.TF_5M
+        position.bars_held = 20
+        engine._plugin_signal_context[("BTCUSDT_PERP", Timeframe.TF_5M)] = {"effective_direction": -0.8}
+        exit_decision = ExitDecision(
+            symbol="BTCUSDT_PERP",
+            timeframe=Timeframe.TF_5M,
+            cutoff_time_ns=1,
+            exit_type="TRAILING",
+            exit_urgency="IMMEDIATE",
+            target_reduction_pct=1.0,
+            stop_price=59000.0,
+            reason_code="TRAILING",
+            reason_detail="test",
+            reason_codes=["EXIT_TRAILING_STOP"],
+        )
+
+        target = engine._time_leverage_trailing_exit_hold_target(
+            pack=_pack(timeframe=Timeframe.TF_5M, last_price=59000.0),
+            state=_state(directional_state="DOWNTREND", transition_risk=0.6),
+            position=position,
+            exit_decision=exit_decision,
+            price=59000.0,
+            atr=500.0,
+        )
+
+        self.assertIsNone(target)
+
+    def test_time_leverage_trailing_stop_widens_for_long_bias(self):
+        bus = _strategy_bus()
+        audit_events = []
+        bus.subscribe("strategy.time_leverage_trailing_stop.>", lambda _subject, payload: audit_events.append(payload))
+        engine = ARCStrategyEngine(
+            bus=bus,
+            config=ARCStrategyConfig(
+                intent_time_leverage_hold_enabled=True,
+                intent_time_leverage_long_bias_enabled=True,
+                intent_time_leverage_long_bias_confidence_floor=0.65,
+                intent_time_leverage_trailing_stop_atr_mult=9.0,
+            ),
+        )
+
+        atr_mult = engine._time_leverage_trailing_stop_atr_mult(
+            symbol="BTCUSDT_PERP",
+            timeframe=Timeframe.TF_5M,
+            state=_state(directional_state="UPTREND", transition_risk=0.3),
+            position=_position(direction=1.0),
+            default_mult=4.5,
+        )
+
+        self.assertEqual(atr_mult, 9.0)
+        self.assertEqual(audit_events[-1]["reason"], "TIME_LEVERAGE_TRAILING_STOP_WIDENED")
+
+    def test_time_leverage_trailing_stop_keeps_default_for_short(self):
+        engine = ARCStrategyEngine(
+            bus=_strategy_bus(),
+            config=ARCStrategyConfig(
+                intent_time_leverage_hold_enabled=True,
+                intent_time_leverage_long_bias_enabled=True,
+                intent_time_leverage_trailing_stop_atr_mult=9.0,
+            ),
+        )
+
+        atr_mult = engine._time_leverage_trailing_stop_atr_mult(
+            symbol="BTCUSDT_PERP",
+            timeframe=Timeframe.TF_5M,
+            state=_state(directional_state="UPTREND", transition_risk=0.3),
+            position=_position(direction=-1.0),
+            default_mult=4.5,
+        )
+
+        self.assertEqual(atr_mult, 4.5)
+
+    def test_min_hours_before_trail_normalizes_across_timeframes(self):
+        engine = ARCStrategyEngine(
+            bus=_strategy_bus(),
+            config=ARCStrategyConfig(min_bars_before_trail=1, min_hours_before_trail=20.0),
+        )
+
+        self.assertEqual(engine._min_bars_before_trail(Timeframe.TF_1H), 20)
+        self.assertEqual(engine._min_bars_before_trail(Timeframe.TF_5M), 240)
+
     def test_time_leverage_size_hysteresis_holds_small_aligned_reduce(self):
         bus = _strategy_bus()
         audit_events = []
@@ -826,6 +1007,95 @@ class TestStrategyIntentConfirmation(unittest.TestCase):
         self.assertEqual(qty, 0.85)
         self.assertEqual(leverage, 0.51)
         self.assertNotIn("TIME_LEVERAGE_SIZE_HELD", reason_codes)
+
+    def test_same_direction_reduce_confirmation_holds_and_aggregates_reduce(self):
+        bus = _strategy_bus()
+        audit_events = []
+        bus.subscribe("strategy.intent_reduce_confirmation.>", lambda _subject, payload: audit_events.append(payload))
+        engine = ARCStrategyEngine(
+            bus=bus,
+            config=ARCStrategyConfig(intent_same_direction_reduce_confirmation_bars=3),
+        )
+        engine._positions[("BTCUSDT_PERP", Timeframe.TF_4H)] = _position(direction=1.0)
+
+        reason_codes: list[str] = []
+        qty, leverage = engine._apply_same_direction_reduce_confirmation(
+            symbol="BTCUSDT_PERP",
+            timeframe=Timeframe.TF_4H,
+            target_qty=0.8,
+            target_leverage=0.48,
+            price=60000.0,
+            state=_state(directional_state="UPTREND"),
+            reduce_only=False,
+            reason_codes=reason_codes,
+        )
+
+        self.assertEqual(qty, 1.0)
+        self.assertAlmostEqual(leverage, 0.6)
+        self.assertIn("INTENT_REDUCE_CONFIRMATION_PENDING", reason_codes)
+        self.assertEqual(audit_events[-1]["pending_target_qty"], 0.8)
+
+        reason_codes = []
+        qty, leverage = engine._apply_same_direction_reduce_confirmation(
+            symbol="BTCUSDT_PERP",
+            timeframe=Timeframe.TF_4H,
+            target_qty=0.6,
+            target_leverage=0.36,
+            price=60000.0,
+            state=_state(directional_state="UPTREND"),
+            reduce_only=False,
+            reason_codes=reason_codes,
+        )
+
+        self.assertEqual(qty, 1.0)
+        self.assertAlmostEqual(leverage, 0.6)
+        self.assertEqual(audit_events[-1]["pending_target_qty"], 0.6)
+
+        reason_codes = []
+        qty, leverage = engine._apply_same_direction_reduce_confirmation(
+            symbol="BTCUSDT_PERP",
+            timeframe=Timeframe.TF_4H,
+            target_qty=0.7,
+            target_leverage=0.42,
+            price=60000.0,
+            state=_state(directional_state="UPTREND"),
+            reduce_only=False,
+            reason_codes=reason_codes,
+        )
+
+        self.assertEqual(qty, 0.6)
+        self.assertAlmostEqual(leverage, 0.36)
+        self.assertIn("INTENT_REDUCE_CONFIRMED_3_BARS", reason_codes)
+        self.assertIn("INTENT_REDUCE_AGGREGATED", reason_codes)
+        self.assertEqual(audit_events[-1]["reason"], "INTENT_REDUCE_CONFIRMED")
+        self.assertEqual(audit_events[-1]["confirmed_target_qty"], 0.6)
+
+    def test_same_direction_reduce_confirmation_bypasses_urgent_trend_break(self):
+        bus = _strategy_bus()
+        audit_events = []
+        bus.subscribe("strategy.intent_reduce_confirmation.>", lambda _subject, payload: audit_events.append(payload))
+        engine = ARCStrategyEngine(
+            bus=bus,
+            config=ARCStrategyConfig(intent_same_direction_reduce_confirmation_bars=4),
+        )
+        engine._positions[("BTCUSDT_PERP", Timeframe.TF_4H)] = _position(direction=1.0)
+        reason_codes: list[str] = []
+
+        qty, leverage = engine._apply_same_direction_reduce_confirmation(
+            symbol="BTCUSDT_PERP",
+            timeframe=Timeframe.TF_4H,
+            target_qty=0.5,
+            target_leverage=0.3,
+            price=60000.0,
+            state=_state(directional_state="DOWNTREND"),
+            reduce_only=False,
+            reason_codes=reason_codes,
+        )
+
+        self.assertEqual(qty, 0.5)
+        self.assertEqual(leverage, 0.3)
+        self.assertIn("INTENT_REDUCE_CONFIRMATION_BYPASS", reason_codes)
+        self.assertEqual(audit_events, [])
 
     def test_time_leverage_long_bias_blocks_short_and_accumulates_dip(self):
         bus = _strategy_bus()

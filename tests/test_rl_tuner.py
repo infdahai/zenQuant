@@ -101,6 +101,7 @@ class RLTunerConfigTests(unittest.TestCase):
                 "profit_protect_min_move_atr": 1.25,
                 "profit_protect_unwind_pct": 0.20,
                 "profit_protect_confidence_ceiling": 0.80,
+                "profit_protect_cooldown_bars": 12,
             }
         )
 
@@ -141,6 +142,7 @@ class RLTunerConfigTests(unittest.TestCase):
         self.assertAlmostEqual(config.profit_protect_min_move_atr, 1.25)
         self.assertAlmostEqual(config.profit_protect_unwind_pct, 0.20)
         self.assertAlmostEqual(config.profit_protect_confidence_ceiling, 0.80)
+        self.assertEqual(config.profit_protect_cooldown_bars, 12)
 
     def test_env_backtest_passes_execution_config_into_replay(self) -> None:
         captured: dict[str, HistoricalBacktestConfig] = {}

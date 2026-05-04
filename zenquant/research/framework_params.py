@@ -33,10 +33,18 @@ def build_strategy_config(params: dict[str, Any]) -> ARCStrategyConfig:
     for key, value in params.items():
         if key == "intent_entry_confirmation_bars":
             strategy_kwargs["intent_entry_confirmation_bars"] = int(value)
+        elif key == "min_bars_before_trail":
+            strategy_kwargs["min_bars_before_trail"] = int(value)
+        elif key == "min_hours_before_trail":
+            strategy_kwargs["min_hours_before_trail"] = float(value)
         elif key == "intent_flip_confirmation_bars":
             strategy_kwargs["intent_flip_confirmation_bars"] = int(value)
         elif key == "intent_flat_confirmation_bars":
             strategy_kwargs["intent_flat_confirmation_bars"] = int(value)
+        elif key == "intent_flat_reduce_step_pct":
+            strategy_kwargs["intent_flat_reduce_step_pct"] = float(value)
+        elif key == "intent_flat_step_cadence_bars":
+            strategy_kwargs["intent_flat_step_cadence_bars"] = int(value)
         elif key == "intent_range_entry_confirmation_bars":
             strategy_kwargs["intent_range_entry_confirmation_bars"] = int(value)
         elif key == "intent_range_reentry_cooldown_bars":
@@ -67,6 +75,14 @@ def build_strategy_config(params: dict[str, Any]) -> ARCStrategyConfig:
             strategy_kwargs["intent_time_leverage_confidence_floor"] = float(value)
         elif key == "intent_time_leverage_transition_risk_floor":
             strategy_kwargs["intent_time_leverage_transition_risk_floor"] = float(value)
+        elif key == "intent_time_leverage_trailing_stop_atr_mult":
+            strategy_kwargs["intent_time_leverage_trailing_stop_atr_mult"] = float(value)
+        elif key == "intent_time_leverage_trailing_exit_hold_enabled":
+            strategy_kwargs["intent_time_leverage_trailing_exit_hold_enabled"] = bool(round(float(value)))
+        elif key == "intent_time_leverage_trailing_exit_max_adverse_atr":
+            strategy_kwargs["intent_time_leverage_trailing_exit_max_adverse_atr"] = float(value)
+        elif key == "intent_same_direction_reduce_confirmation_bars":
+            strategy_kwargs["intent_same_direction_reduce_confirmation_bars"] = int(value)
         elif key == "intent_time_leverage_size_hysteresis_enabled":
             strategy_kwargs["intent_time_leverage_size_hysteresis_enabled"] = bool(round(float(value)))
         elif key == "intent_time_leverage_add_deadband_pct":
@@ -484,6 +500,8 @@ def intent_churn_ablation_param_grid(*, include_liquidation_toggles: bool = Fals
         "direction_signal_threshold": [0.30, 0.35, 0.40, 0.45],
         "intent_add_signal_threshold": [0.45, 0.50, 0.55],
         "intent_add_confirmation_bars": [1, 2, 4],
+        "min_bars_before_trail": [1],
+        "min_hours_before_trail": [0.0, 12.0, 20.0, 36.0],
         "intent_entry_confirmation_bars": [3, 4],
         "intent_flip_confirmation_bars": [6, 8, 12, 16],
         "intent_flat_confirmation_bars": [8, 12, 16, 24],
@@ -499,6 +517,7 @@ def intent_churn_ablation_param_grid(*, include_liquidation_toggles: bool = Fals
         "intent_time_leverage_flip_signal_threshold": [0.65, 0.75],
         "intent_time_leverage_confidence_floor": [0.65, 0.70],
         "intent_time_leverage_transition_risk_floor": [0.35, 0.45],
+        "intent_time_leverage_trailing_stop_atr_mult": [0.0],
         "intent_time_leverage_size_hysteresis_enabled": [1.0],
         "intent_time_leverage_add_deadband_pct": [0.25, 0.40, 0.60],
         "intent_time_leverage_reduce_deadband_pct": [0.80, 1.00, 1.25],
@@ -584,6 +603,133 @@ def binance_factor_weight_repair_param_grid(*, include_liquidation_toggles: bool
             "profit_protect_min_move_atr": [0.75, 1.00, 1.25],
             "profit_protect_unwind_pct": [0.20, 0.25, 0.30],
             "profit_protect_confidence_ceiling": [0.70, 0.75, 0.80],
+        }
+    )
+    return grid
+
+
+def ralph_protective_reduce_param_grid(*, include_liquidation_toggles: bool = False) -> dict[str, list[float]]:
+    """Train-only Ralph loop search biased toward flatten/reduce before reverse-open behavior."""
+
+    grid = intent_churn_ablation_param_grid(include_liquidation_toggles=include_liquidation_toggles)
+    grid.update(
+        {
+            "target_vol_4h": [0.35, 0.40, 0.50, 0.65],
+            "max_leverage": [2.5, 3.0],
+            "direction_signal_threshold": [0.40, 0.45, 0.50],
+            "intent_add_signal_threshold": [0.50, 0.55, 0.60],
+            "intent_entry_confirmation_bars": [4, 6],
+            "intent_flip_confirmation_bars": [12, 16, 24],
+            "intent_flat_confirmation_bars": [4, 8, 12],
+            "intent_unconfirmed_flip_reduce_only": [1.0],
+            "intent_time_leverage_min_hold_bars": [240, 336, 480],
+            "intent_time_leverage_reduce_deadband_pct": [0.40, 0.80],
+            "flip_min_confidence": [0.75, 0.80],
+            "flip_flatten_only_enabled": [1.0],
+            "flip_reverse_open_scale": [1.00],
+            "loss_flip_reverse_open_confidence_floor": [0.95, 1.00],
+            "target_delta_deadband_qty": [0.0],
+            "target_delta_deadband_pct": [0.04, 0.06],
+            "target_reduce_deadband_qty": [0.0],
+            "target_reduce_deadband_pct": [0.0],
+            "min_hold_bars_before_flip": [4, 8, 12],
+            "entry_cooldown_bars": [1, 2, 4],
+            "weak_signal_no_flip_enabled": [1.0],
+            "weak_signal_no_flip_confidence": [0.75, 0.85],
+            "tiny_reverse_reduce_only_enabled": [1.0],
+            "tiny_reverse_deadband_qty": [0.0],
+            "tiny_reverse_deadband_pct": [0.10, 0.20],
+            "entry_confidence_floor": [0.80, 0.85, 0.90],
+            "reverse_open_confidence_floor": [0.95, 1.00],
+            "range_entry_block_enabled": [1.0],
+            "degraded_entry_block_enabled": [1.0],
+            "degraded_entry_confidence_floor": [0.85, 0.90],
+            "loss_dca_confidence_floor": [0.80, 0.85, 0.90],
+            "loss_dca_range_block_enabled": [1.0],
+            "loss_dca_degraded_block_enabled": [1.0],
+            "profit_protect_reduce_enabled": [1.0],
+            "profit_protect_min_move_atr": [0.75, 1.00, 1.25],
+            "profit_protect_unwind_pct": [0.20, 0.25, 0.30],
+            "profit_protect_confidence_ceiling": [0.75, 0.80, 0.85],
+        }
+    )
+    return grid
+
+
+def ralph_protective_reduce_fee_repair_param_grid(
+    *, include_liquidation_toggles: bool = False
+) -> dict[str, list[float]]:
+    """Ralph reduce-first search with tighter fee-drag controls after protective behavior is recovered."""
+
+    grid = ralph_protective_reduce_param_grid(include_liquidation_toggles=include_liquidation_toggles)
+    grid.update(
+        {
+            "target_vol_4h": [0.35, 0.40, 0.50],
+            "max_leverage": [2.0, 2.5],
+            "exit_unwind_pct": [0.45, 0.55],
+            "intent_add_signal_threshold": [0.60, 0.65],
+            "intent_add_confirmation_bars": [2, 4],
+            "intent_entry_confirmation_bars": [6, 8],
+            "intent_flip_confirmation_bars": [16, 24],
+            "intent_flat_confirmation_bars": [2, 4, 8],
+            "intent_time_leverage_reduce_deadband_pct": [0.20, 0.40],
+            "target_delta_deadband_pct": [0.08, 0.10],
+            "target_reduce_deadband_pct": [0.0],
+            "entry_cooldown_bars": [4, 8],
+            "weak_signal_no_flip_confidence": [0.85, 0.90],
+            "profit_protect_min_move_atr": [1.25, 1.75, 2.25],
+            "profit_protect_unwind_pct": [0.35, 0.50],
+            "profit_protect_confidence_ceiling": [0.65, 0.75],
+        }
+    )
+    return grid
+
+
+def ralph_execution_fee_cooldown_param_grid(*, include_liquidation_toggles: bool = False) -> dict[str, list[float]]:
+    """Ralph execution-fee search that throttles repeated protective reductions instead of killing activity."""
+
+    grid = ralph_protective_reduce_param_grid(include_liquidation_toggles=include_liquidation_toggles)
+    grid.update(
+        {
+            "target_vol_4h": [0.40, 0.50, 0.65],
+            "max_leverage": [2.5, 3.0],
+            "intent_add_signal_threshold": [0.50, 0.55, 0.60],
+            "intent_entry_confirmation_bars": [4, 6],
+            "intent_flip_confirmation_bars": [12, 16],
+            "intent_flat_confirmation_bars": [4, 8],
+            "target_delta_deadband_pct": [0.04, 0.06, 0.08],
+            "entry_cooldown_bars": [2, 4],
+            "profit_protect_min_move_atr": [0.75, 1.00, 1.25],
+            "profit_protect_unwind_pct": [0.25, 0.35, 0.50],
+            "profit_protect_confidence_ceiling": [0.75, 0.80],
+            "profit_protect_cooldown_bars": [6, 12, 24],
+        }
+    )
+    return grid
+
+
+def ralph_intent_reduce_cadence_param_grid(*, include_liquidation_toggles: bool = False) -> dict[str, list[float]]:
+    """Ralph train-only search for strategy-intent reduce confirmation and aggregation."""
+
+    grid = ralph_protective_reduce_param_grid(include_liquidation_toggles=include_liquidation_toggles)
+    grid.update(
+        {
+            "target_vol_4h": [0.40, 0.50, 0.65],
+            "max_leverage": [2.5, 3.0],
+            "intent_add_signal_threshold": [0.50, 0.55, 0.60],
+            "intent_entry_confirmation_bars": [4, 6],
+            "intent_flip_confirmation_bars": [12, 16],
+            "intent_flat_confirmation_bars": [4, 8],
+            "intent_flat_reduce_step_pct": [0.0, 0.15, 0.25, 0.35, 0.50],
+            "intent_flat_step_cadence_bars": [0, 8, 12, 24],
+            "intent_same_direction_reduce_confirmation_bars": [2, 4, 8, 12],
+            "intent_time_leverage_reduce_deadband_pct": [0.40, 0.80, 1.00],
+            "target_delta_deadband_pct": [0.04, 0.06, 0.08],
+            "entry_cooldown_bars": [2, 4],
+            "profit_protect_min_move_atr": [0.75, 1.00, 1.25],
+            "profit_protect_unwind_pct": [0.25, 0.30, 0.35],
+            "profit_protect_confidence_ceiling": [0.75, 0.80],
+            "profit_protect_cooldown_bars": [0],
         }
     )
     return grid
@@ -821,6 +967,8 @@ def intent_churn_ablation_seed_trials() -> list[dict[str, float]]:
         "direction_signal_threshold": 0.15,
         "intent_add_signal_threshold": 0.0,
         "intent_add_confirmation_bars": 1,
+        "min_bars_before_trail": 1,
+        "min_hours_before_trail": 0.0,
         "intent_entry_confirmation_bars": 1,
         "intent_flip_confirmation_bars": 1,
         "intent_range_entry_confirmation_bars": 0,
@@ -835,6 +983,9 @@ def intent_churn_ablation_seed_trials() -> list[dict[str, float]]:
         "intent_time_leverage_flip_signal_threshold": 0.55,
         "intent_time_leverage_confidence_floor": 0.55,
         "intent_time_leverage_transition_risk_floor": 0.35,
+        "intent_time_leverage_trailing_stop_atr_mult": 0.0,
+        "intent_time_leverage_trailing_exit_hold_enabled": 0.0,
+        "intent_time_leverage_trailing_exit_max_adverse_atr": 2.5,
         "intent_time_leverage_size_hysteresis_enabled": 0.0,
         "intent_time_leverage_add_deadband_pct": 0.0,
         "intent_time_leverage_reduce_deadband_pct": 0.0,
@@ -883,6 +1034,8 @@ def intent_churn_ablation_seed_trials() -> list[dict[str, float]]:
         "direction_signal_threshold": 0.45,
         "intent_add_signal_threshold": 0.50,
         "intent_add_confirmation_bars": 1,
+        "min_bars_before_trail": 1,
+        "min_hours_before_trail": 0.0,
         "intent_entry_confirmation_bars": 4,
         "intent_flip_confirmation_bars": 6,
         "intent_flat_confirmation_bars": 8,
@@ -892,6 +1045,7 @@ def intent_churn_ablation_seed_trials() -> list[dict[str, float]]:
         "intent_time_leverage_flip_signal_threshold": 0.75,
         "intent_time_leverage_confidence_floor": 0.70,
         "intent_time_leverage_transition_risk_floor": 0.45,
+        "intent_time_leverage_trailing_stop_atr_mult": 0.0,
         "intent_time_leverage_size_hysteresis_enabled": 1.0,
         "intent_time_leverage_add_deadband_pct": 0.25,
         "intent_time_leverage_reduce_deadband_pct": 0.80,
@@ -964,6 +1118,8 @@ def intent_churn_ablation_seed_trials() -> list[dict[str, float]]:
         "preserve_capital_trailing_stop_atr_mult": 3.0,
         "exit_transition_risk": 0.90,
         "intent_add_confirmation_bars": 2,
+        "min_bars_before_trail": 1,
+        "min_hours_before_trail": 20.0,
         "intent_flip_confirmation_bars": 8,
         "intent_flat_confirmation_bars": 16,
         "intent_range_entry_confirmation_bars": 6,
@@ -1175,6 +1331,377 @@ def intent_churn_ablation_seed_trials() -> list[dict[str, float]]:
             "intent_add_signal_threshold": 0.35,
         },
     ]
+
+
+def ralph_protective_reduce_seed_trials() -> list[dict[str, float]]:
+    """Deterministic Ralph loop seed set for proving reduce-first behavior before dev review."""
+
+    common_reduce_first = {
+        "intent_unconfirmed_flip_reduce_only": 1.0,
+        "flip_min_confidence": 0.80,
+        "flip_flatten_only_enabled": 1.0,
+        "flip_reverse_open_scale": 1.00,
+        "loss_flip_reverse_open_confidence_floor": 1.00,
+        "target_delta_deadband_qty": 0.0,
+        "target_reduce_deadband_qty": 0.0,
+        "target_reduce_deadband_pct": 0.0,
+        "weak_signal_no_flip_enabled": 1.0,
+        "tiny_reverse_reduce_only_enabled": 1.0,
+        "tiny_reverse_deadband_qty": 0.0,
+        "range_entry_block_enabled": 1.0,
+        "degraded_entry_block_enabled": 1.0,
+        "loss_dca_range_block_enabled": 1.0,
+        "loss_dca_degraded_block_enabled": 1.0,
+        "profit_protect_reduce_enabled": 1.0,
+    }
+    reduce_first_variants = [
+        {
+            "target_vol_4h": 0.35,
+            "max_leverage": 2.5,
+            "direction_signal_threshold": 0.50,
+            "intent_add_signal_threshold": 0.60,
+            "intent_entry_confirmation_bars": 6,
+            "intent_flip_confirmation_bars": 24,
+            "intent_flat_confirmation_bars": 4,
+            "intent_time_leverage_min_hold_bars": 480,
+            "intent_time_leverage_reduce_deadband_pct": 0.40,
+            "target_delta_deadband_pct": 0.06,
+            "min_hold_bars_before_flip": 12,
+            "entry_cooldown_bars": 4,
+            "weak_signal_no_flip_confidence": 0.85,
+            "tiny_reverse_deadband_pct": 0.20,
+            "entry_confidence_floor": 0.90,
+            "reverse_open_confidence_floor": 1.00,
+            "degraded_entry_confidence_floor": 0.90,
+            "loss_dca_confidence_floor": 0.90,
+            "profit_protect_min_move_atr": 0.75,
+            "profit_protect_unwind_pct": 0.30,
+            "profit_protect_confidence_ceiling": 0.85,
+        },
+        {
+            "target_vol_4h": 0.40,
+            "max_leverage": 2.5,
+            "direction_signal_threshold": 0.45,
+            "intent_add_signal_threshold": 0.55,
+            "intent_entry_confirmation_bars": 4,
+            "intent_flip_confirmation_bars": 16,
+            "intent_flat_confirmation_bars": 8,
+            "intent_time_leverage_min_hold_bars": 336,
+            "intent_time_leverage_reduce_deadband_pct": 0.40,
+            "target_delta_deadband_pct": 0.06,
+            "min_hold_bars_before_flip": 8,
+            "entry_cooldown_bars": 2,
+            "weak_signal_no_flip_confidence": 0.85,
+            "tiny_reverse_deadband_pct": 0.20,
+            "entry_confidence_floor": 0.85,
+            "reverse_open_confidence_floor": 1.00,
+            "degraded_entry_confidence_floor": 0.85,
+            "loss_dca_confidence_floor": 0.85,
+            "profit_protect_min_move_atr": 1.00,
+            "profit_protect_unwind_pct": 0.25,
+            "profit_protect_confidence_ceiling": 0.80,
+        },
+        {
+            "target_vol_4h": 0.50,
+            "max_leverage": 3.0,
+            "direction_signal_threshold": 0.45,
+            "intent_add_signal_threshold": 0.55,
+            "intent_entry_confirmation_bars": 4,
+            "intent_flip_confirmation_bars": 12,
+            "intent_flat_confirmation_bars": 8,
+            "intent_time_leverage_min_hold_bars": 240,
+            "intent_time_leverage_reduce_deadband_pct": 0.80,
+            "target_delta_deadband_pct": 0.04,
+            "min_hold_bars_before_flip": 8,
+            "entry_cooldown_bars": 2,
+            "weak_signal_no_flip_confidence": 0.75,
+            "tiny_reverse_deadband_pct": 0.10,
+            "entry_confidence_floor": 0.85,
+            "reverse_open_confidence_floor": 0.95,
+            "degraded_entry_confidence_floor": 0.85,
+            "loss_dca_confidence_floor": 0.80,
+            "profit_protect_min_move_atr": 1.00,
+            "profit_protect_unwind_pct": 0.25,
+            "profit_protect_confidence_ceiling": 0.75,
+        },
+        {
+            "target_vol_4h": 0.65,
+            "max_leverage": 3.0,
+            "direction_signal_threshold": 0.40,
+            "intent_add_signal_threshold": 0.50,
+            "intent_entry_confirmation_bars": 4,
+            "intent_flip_confirmation_bars": 12,
+            "intent_flat_confirmation_bars": 12,
+            "intent_time_leverage_min_hold_bars": 240,
+            "intent_time_leverage_reduce_deadband_pct": 0.80,
+            "target_delta_deadband_pct": 0.04,
+            "min_hold_bars_before_flip": 4,
+            "entry_cooldown_bars": 1,
+            "weak_signal_no_flip_confidence": 0.75,
+            "tiny_reverse_deadband_pct": 0.10,
+            "entry_confidence_floor": 0.80,
+            "reverse_open_confidence_floor": 0.95,
+            "degraded_entry_confidence_floor": 0.85,
+            "loss_dca_confidence_floor": 0.80,
+            "profit_protect_min_move_atr": 1.25,
+            "profit_protect_unwind_pct": 0.20,
+            "profit_protect_confidence_ceiling": 0.75,
+        },
+    ]
+    seeds: list[dict[str, float]] = []
+    for index, base_seed in enumerate(intent_churn_ablation_seed_trials()[:12]):
+        seeds.append(
+            {
+                **base_seed,
+                **common_reduce_first,
+                **reduce_first_variants[index % len(reduce_first_variants)],
+            }
+        )
+    return seeds
+
+
+def ralph_protective_reduce_fee_repair_seed_trials() -> list[dict[str, float]]:
+    """Second Ralph reduce-first seed set that tries to preserve behavior while reducing fee drag."""
+
+    fee_repair_variants = [
+        {
+            "target_vol_4h": 0.35,
+            "max_leverage": 2.0,
+            "exit_unwind_pct": 0.55,
+            "intent_add_signal_threshold": 0.65,
+            "intent_add_confirmation_bars": 4,
+            "intent_entry_confirmation_bars": 8,
+            "intent_flip_confirmation_bars": 24,
+            "intent_flat_confirmation_bars": 2,
+            "intent_time_leverage_reduce_deadband_pct": 0.20,
+            "target_delta_deadband_pct": 0.10,
+            "entry_cooldown_bars": 8,
+            "weak_signal_no_flip_confidence": 0.90,
+            "profit_protect_min_move_atr": 2.25,
+            "profit_protect_unwind_pct": 0.50,
+            "profit_protect_confidence_ceiling": 0.65,
+        },
+        {
+            "target_vol_4h": 0.40,
+            "max_leverage": 2.5,
+            "exit_unwind_pct": 0.55,
+            "intent_add_signal_threshold": 0.60,
+            "intent_add_confirmation_bars": 4,
+            "intent_entry_confirmation_bars": 6,
+            "intent_flip_confirmation_bars": 24,
+            "intent_flat_confirmation_bars": 4,
+            "intent_time_leverage_reduce_deadband_pct": 0.20,
+            "target_delta_deadband_pct": 0.10,
+            "entry_cooldown_bars": 4,
+            "weak_signal_no_flip_confidence": 0.85,
+            "profit_protect_min_move_atr": 1.75,
+            "profit_protect_unwind_pct": 0.50,
+            "profit_protect_confidence_ceiling": 0.75,
+        },
+        {
+            "target_vol_4h": 0.50,
+            "max_leverage": 2.5,
+            "exit_unwind_pct": 0.45,
+            "intent_add_signal_threshold": 0.60,
+            "intent_add_confirmation_bars": 2,
+            "intent_entry_confirmation_bars": 6,
+            "intent_flip_confirmation_bars": 16,
+            "intent_flat_confirmation_bars": 4,
+            "intent_time_leverage_reduce_deadband_pct": 0.40,
+            "target_delta_deadband_pct": 0.08,
+            "entry_cooldown_bars": 4,
+            "weak_signal_no_flip_confidence": 0.85,
+            "profit_protect_min_move_atr": 1.75,
+            "profit_protect_unwind_pct": 0.35,
+            "profit_protect_confidence_ceiling": 0.75,
+        },
+        {
+            "target_vol_4h": 0.40,
+            "max_leverage": 2.0,
+            "exit_unwind_pct": 0.55,
+            "intent_add_signal_threshold": 0.65,
+            "intent_add_confirmation_bars": 2,
+            "intent_entry_confirmation_bars": 8,
+            "intent_flip_confirmation_bars": 16,
+            "intent_flat_confirmation_bars": 8,
+            "intent_time_leverage_reduce_deadband_pct": 0.40,
+            "target_delta_deadband_pct": 0.08,
+            "entry_cooldown_bars": 8,
+            "weak_signal_no_flip_confidence": 0.90,
+            "profit_protect_min_move_atr": 1.25,
+            "profit_protect_unwind_pct": 0.35,
+            "profit_protect_confidence_ceiling": 0.65,
+        },
+    ]
+    seeds: list[dict[str, float]] = []
+    for index, base_seed in enumerate(ralph_protective_reduce_seed_trials()):
+        seeds.append(
+            {
+                **base_seed,
+                **fee_repair_variants[index % len(fee_repair_variants)],
+            }
+        )
+    return seeds
+
+
+def ralph_execution_fee_cooldown_seed_trials() -> list[dict[str, float]]:
+    """Ralph seed set for testing cooldown-gated protective reductions without suppressing all trades."""
+
+    cooldown_variants = [
+        {
+            "target_vol_4h": 0.50,
+            "max_leverage": 3.0,
+            "intent_add_signal_threshold": 0.55,
+            "intent_entry_confirmation_bars": 4,
+            "intent_flip_confirmation_bars": 12,
+            "intent_flat_confirmation_bars": 4,
+            "target_delta_deadband_pct": 0.04,
+            "entry_cooldown_bars": 2,
+            "profit_protect_min_move_atr": 0.75,
+            "profit_protect_unwind_pct": 0.35,
+            "profit_protect_confidence_ceiling": 0.80,
+            "profit_protect_cooldown_bars": 6,
+        },
+        {
+            "target_vol_4h": 0.50,
+            "max_leverage": 3.0,
+            "intent_add_signal_threshold": 0.55,
+            "intent_entry_confirmation_bars": 4,
+            "intent_flip_confirmation_bars": 12,
+            "intent_flat_confirmation_bars": 8,
+            "target_delta_deadband_pct": 0.06,
+            "entry_cooldown_bars": 2,
+            "profit_protect_min_move_atr": 1.00,
+            "profit_protect_unwind_pct": 0.25,
+            "profit_protect_confidence_ceiling": 0.75,
+            "profit_protect_cooldown_bars": 12,
+        },
+        {
+            "target_vol_4h": 0.65,
+            "max_leverage": 3.0,
+            "intent_add_signal_threshold": 0.50,
+            "intent_entry_confirmation_bars": 4,
+            "intent_flip_confirmation_bars": 12,
+            "intent_flat_confirmation_bars": 8,
+            "target_delta_deadband_pct": 0.04,
+            "entry_cooldown_bars": 2,
+            "profit_protect_min_move_atr": 1.00,
+            "profit_protect_unwind_pct": 0.35,
+            "profit_protect_confidence_ceiling": 0.80,
+            "profit_protect_cooldown_bars": 12,
+        },
+        {
+            "target_vol_4h": 0.40,
+            "max_leverage": 2.5,
+            "intent_add_signal_threshold": 0.60,
+            "intent_entry_confirmation_bars": 6,
+            "intent_flip_confirmation_bars": 16,
+            "intent_flat_confirmation_bars": 4,
+            "target_delta_deadband_pct": 0.08,
+            "entry_cooldown_bars": 4,
+            "profit_protect_min_move_atr": 1.25,
+            "profit_protect_unwind_pct": 0.50,
+            "profit_protect_confidence_ceiling": 0.75,
+            "profit_protect_cooldown_bars": 24,
+        },
+    ]
+    seeds: list[dict[str, float]] = []
+    for index, base_seed in enumerate(ralph_protective_reduce_seed_trials()):
+        seeds.append(
+            {
+                **base_seed,
+                **cooldown_variants[index % len(cooldown_variants)],
+            }
+        )
+    return seeds
+
+
+def ralph_intent_reduce_cadence_seed_trials() -> list[dict[str, float]]:
+    """Ralph seed set for confirming and aggregating strategy-level same-direction reductions."""
+
+    cadence_variants = [
+        {
+            "target_vol_4h": 0.50,
+            "max_leverage": 3.0,
+            "intent_add_signal_threshold": 0.55,
+            "intent_entry_confirmation_bars": 4,
+            "intent_flip_confirmation_bars": 12,
+            "intent_flat_confirmation_bars": 4,
+            "intent_flat_reduce_step_pct": 0.0,
+            "intent_flat_step_cadence_bars": 0,
+            "intent_same_direction_reduce_confirmation_bars": 4,
+            "intent_time_leverage_reduce_deadband_pct": 0.40,
+            "target_delta_deadband_pct": 0.04,
+            "entry_cooldown_bars": 2,
+            "profit_protect_min_move_atr": 0.75,
+            "profit_protect_unwind_pct": 0.30,
+            "profit_protect_confidence_ceiling": 0.80,
+            "profit_protect_cooldown_bars": 0,
+        },
+        {
+            "target_vol_4h": 0.50,
+            "max_leverage": 3.0,
+            "intent_add_signal_threshold": 0.55,
+            "intent_entry_confirmation_bars": 4,
+            "intent_flip_confirmation_bars": 12,
+            "intent_flat_confirmation_bars": 8,
+            "intent_flat_reduce_step_pct": 0.15,
+            "intent_flat_step_cadence_bars": 8,
+            "intent_same_direction_reduce_confirmation_bars": 4,
+            "intent_time_leverage_reduce_deadband_pct": 0.80,
+            "target_delta_deadband_pct": 0.06,
+            "entry_cooldown_bars": 2,
+            "profit_protect_min_move_atr": 1.00,
+            "profit_protect_unwind_pct": 0.25,
+            "profit_protect_confidence_ceiling": 0.75,
+            "profit_protect_cooldown_bars": 0,
+        },
+        {
+            "target_vol_4h": 0.65,
+            "max_leverage": 3.0,
+            "intent_add_signal_threshold": 0.50,
+            "intent_entry_confirmation_bars": 4,
+            "intent_flip_confirmation_bars": 12,
+            "intent_flat_confirmation_bars": 8,
+            "intent_flat_reduce_step_pct": 0.25,
+            "intent_flat_step_cadence_bars": 12,
+            "intent_same_direction_reduce_confirmation_bars": 8,
+            "intent_time_leverage_reduce_deadband_pct": 0.80,
+            "target_delta_deadband_pct": 0.04,
+            "entry_cooldown_bars": 2,
+            "profit_protect_min_move_atr": 1.00,
+            "profit_protect_unwind_pct": 0.35,
+            "profit_protect_confidence_ceiling": 0.80,
+            "profit_protect_cooldown_bars": 0,
+        },
+        {
+            "target_vol_4h": 0.40,
+            "max_leverage": 2.5,
+            "intent_add_signal_threshold": 0.60,
+            "intent_entry_confirmation_bars": 6,
+            "intent_flip_confirmation_bars": 16,
+            "intent_flat_confirmation_bars": 4,
+            "intent_flat_reduce_step_pct": 0.35,
+            "intent_flat_step_cadence_bars": 24,
+            "intent_same_direction_reduce_confirmation_bars": 12,
+            "intent_time_leverage_reduce_deadband_pct": 1.00,
+            "target_delta_deadband_pct": 0.08,
+            "entry_cooldown_bars": 4,
+            "profit_protect_min_move_atr": 1.25,
+            "profit_protect_unwind_pct": 0.25,
+            "profit_protect_confidence_ceiling": 0.75,
+            "profit_protect_cooldown_bars": 0,
+        },
+    ]
+    seeds: list[dict[str, float]] = []
+    for index, base_seed in enumerate(ralph_protective_reduce_seed_trials()):
+        seeds.append(
+            {
+                **base_seed,
+                **cadence_variants[index % len(cadence_variants)],
+            }
+        )
+    return seeds
 
 
 def binance_factor_weight_repair_seed_trials() -> list[dict[str, float]]:
@@ -1516,6 +2043,14 @@ def param_grid_for_mode(
         return intent_churn_repair_param_grid(include_liquidation_toggles=include_liquidation_toggles)
     if mode == "binance_factor_weight_repair_train_only":
         return binance_factor_weight_repair_param_grid(include_liquidation_toggles=include_liquidation_toggles)
+    if mode == "ralph_protective_reduce_train_only":
+        return ralph_protective_reduce_param_grid(include_liquidation_toggles=include_liquidation_toggles)
+    if mode == "ralph_protective_reduce_fee_repair_train_only":
+        return ralph_protective_reduce_fee_repair_param_grid(include_liquidation_toggles=include_liquidation_toggles)
+    if mode == "ralph_execution_fee_cooldown_train_only":
+        return ralph_execution_fee_cooldown_param_grid(include_liquidation_toggles=include_liquidation_toggles)
+    if mode == "ralph_intent_reduce_cadence_train_only":
+        return ralph_intent_reduce_cadence_param_grid(include_liquidation_toggles=include_liquidation_toggles)
     return core_param_grid(include_liquidation_toggles=include_liquidation_toggles)
 
 
@@ -1533,6 +2068,10 @@ def search_space_profile(
     intent_churn_ablation = mode == "intent_churn_ablation_train_only"
     intent_churn_repair = mode == "intent_churn_repair_train_only"
     binance_factor_weight_repair = mode == "binance_factor_weight_repair_train_only"
+    ralph_protective_reduce = mode == "ralph_protective_reduce_train_only"
+    ralph_protective_reduce_fee_repair = mode == "ralph_protective_reduce_fee_repair_train_only"
+    ralph_execution_fee_cooldown = mode == "ralph_execution_fee_cooldown_train_only"
+    ralph_intent_reduce_cadence = mode == "ralph_intent_reduce_cadence_train_only"
     return {
         "profile": (
             mode
@@ -1542,6 +2081,10 @@ def search_space_profile(
                 or intent_churn_ablation
                 or intent_churn_repair
                 or binance_factor_weight_repair
+                or ralph_protective_reduce
+                or ralph_protective_reduce_fee_repair
+                or ralph_execution_fee_cooldown
+                or ralph_intent_reduce_cadence
             )
             else "execution_first_v2_correlation_constrained"
             if not include_liquidation_toggles
@@ -1554,6 +2097,10 @@ def search_space_profile(
         "intent_churn_ablation_search": intent_churn_ablation,
         "intent_churn_repair_search": intent_churn_repair,
         "binance_factor_weight_repair_search": binance_factor_weight_repair,
+        "ralph_protective_reduce_search": ralph_protective_reduce,
+        "ralph_protective_reduce_fee_repair_search": ralph_protective_reduce_fee_repair,
+        "ralph_execution_fee_cooldown_search": ralph_execution_fee_cooldown,
+        "ralph_intent_reduce_cadence_search": ralph_intent_reduce_cadence,
         "hostile_window_focus": "weak_window_2023_08" if mode == "baseline_anchored_2023_08_hostile_repair" else None,
         "include_liquidation_toggles": include_liquidation_toggles,
         "direction_weight_policy": {

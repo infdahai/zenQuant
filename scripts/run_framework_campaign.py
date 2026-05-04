@@ -121,6 +121,7 @@ _TRAIN_QUALITY_FALLBACK_SKIP_BLOCKERS = {
     "train_profit_factor_after_fee_weak",
     "train_position_switch_cadence_worse",
     "train_flip_reduce_fee_drag_worse",
+    "train_protective_reduce_bias_weak",
     "train_time_leverage_efficiency_weak",
 }
 
@@ -162,6 +163,10 @@ def _smoke_primary_empty_skip_fallback_reason(
         "execution_inventory_rethink_train_only",
         "intent_churn_ablation_train_only",
         "intent_churn_repair_train_only",
+        "ralph_protective_reduce_train_only",
+        "ralph_protective_reduce_fee_repair_train_only",
+        "ralph_execution_fee_cooldown_train_only",
+        "ralph_intent_reduce_cadence_train_only",
         "baseline_anchored_train_only",
         "baseline_anchored_defensive_candidate_existence",
         "baseline_anchored_2023_08_hostile_repair",
@@ -1104,6 +1109,10 @@ def main() -> None:
             "intent_churn_ablation_train_only",
             "intent_churn_repair_train_only",
             "binance_factor_weight_repair_train_only",
+            "ralph_protective_reduce_train_only",
+            "ralph_protective_reduce_fee_repair_train_only",
+            "ralph_execution_fee_cooldown_train_only",
+            "ralph_intent_reduce_cadence_train_only",
             "execution_first_v2_correlation_constrained",
         ),
         default=None,
@@ -2135,7 +2144,14 @@ def main() -> None:
                     if resolved_search_space_mode == "intent_churn_repair_train_only"
                     else 1800.0
                     if resolved_search_space_mode
-                    in {"execution_inventory_rethink_train_only", "binance_factor_weight_repair_train_only"}
+                    in {
+                        "execution_inventory_rethink_train_only",
+                        "binance_factor_weight_repair_train_only",
+                        "ralph_protective_reduce_train_only",
+                        "ralph_protective_reduce_fee_repair_train_only",
+                        "ralph_execution_fee_cooldown_train_only",
+                        "ralph_intent_reduce_cadence_train_only",
+                    }
                     else 900.0
                 )
                 optuna_params, optuna_trials_payload, optuna_diagnostics = _run_stage1_optuna_search(
@@ -3008,6 +3024,7 @@ def main() -> None:
                             dev_gate_last_round=args.dev_gate_last_round,
                             dev_gate_interval=args.dev_gate_interval,
                             full_stage2_executed_this_round=full_stage2_budget,
+                            smoke_completed=True,
                         )
                 _stage2_timeout_check()
             except SearchStageTimeoutError as exc:

@@ -35,6 +35,14 @@ from zenquant.research.framework_params import (
     intent_churn_repair_param_grid,
     intent_churn_repair_seed_trials,
     is_hostile_aware_param_combo,
+    ralph_execution_fee_cooldown_param_grid,
+    ralph_execution_fee_cooldown_seed_trials,
+    ralph_intent_reduce_cadence_param_grid,
+    ralph_intent_reduce_cadence_seed_trials,
+    ralph_protective_reduce_fee_repair_param_grid,
+    ralph_protective_reduce_fee_repair_seed_trials,
+    ralph_protective_reduce_param_grid,
+    ralph_protective_reduce_seed_trials,
     search_space_profile,
 )
 from zenquant.research.framework_search import (
@@ -217,6 +225,8 @@ class FrameworkParamTests(unittest.TestCase):
         self.assertEqual(grid["direction_signal_threshold"], [0.30, 0.35, 0.40, 0.45])
         self.assertEqual(grid["intent_add_signal_threshold"], [0.45, 0.50, 0.55])
         self.assertEqual(grid["intent_add_confirmation_bars"], [1, 2, 4])
+        self.assertEqual(grid["min_bars_before_trail"], [1])
+        self.assertEqual(grid["min_hours_before_trail"], [0.0, 12.0, 20.0, 36.0])
         self.assertEqual(grid["intent_entry_confirmation_bars"], [3, 4])
         self.assertEqual(grid["intent_flip_confirmation_bars"], [6, 8, 12, 16])
         self.assertEqual(grid["intent_flat_confirmation_bars"], [8, 12, 16, 24])
@@ -230,6 +240,7 @@ class FrameworkParamTests(unittest.TestCase):
         self.assertEqual(grid["intent_time_leverage_hold_enabled"], [1.0])
         self.assertEqual(grid["intent_time_leverage_min_hold_bars"], [168, 240, 336, 480])
         self.assertEqual(grid["intent_time_leverage_flip_signal_threshold"], [0.65, 0.75])
+        self.assertEqual(grid["intent_time_leverage_trailing_stop_atr_mult"], [0.0])
         self.assertEqual(grid["intent_time_leverage_size_hysteresis_enabled"], [1.0])
         self.assertEqual(grid["intent_time_leverage_add_deadband_pct"], [0.25, 0.40, 0.60])
         self.assertEqual(grid["intent_time_leverage_reduce_deadband_pct"], [0.80, 1.00, 1.25])
@@ -296,6 +307,111 @@ class FrameworkParamTests(unittest.TestCase):
         self.assertTrue(profile["binance_factor_weight_repair_search"])
         self.assertFalse(profile["include_liquidation_toggles"])
 
+    def test_ralph_protective_reduce_grid_targets_flatten_first_behavior(self) -> None:
+        grid = ralph_protective_reduce_param_grid()
+
+        self.assertEqual(grid["target_vol_4h"], [0.35, 0.40, 0.50, 0.65])
+        self.assertEqual(grid["max_leverage"], [2.5, 3.0])
+        self.assertEqual(grid["intent_unconfirmed_flip_reduce_only"], [1.0])
+        self.assertEqual(grid["intent_flip_confirmation_bars"], [12, 16, 24])
+        self.assertEqual(grid["intent_flat_confirmation_bars"], [4, 8, 12])
+        self.assertEqual(grid["flip_flatten_only_enabled"], [1.0])
+        self.assertEqual(grid["target_reduce_deadband_pct"], [0.0])
+        self.assertEqual(grid["min_hold_bars_before_flip"], [4, 8, 12])
+        self.assertEqual(grid["weak_signal_no_flip_enabled"], [1.0])
+        self.assertEqual(grid["tiny_reverse_reduce_only_enabled"], [1.0])
+        self.assertEqual(grid["range_entry_block_enabled"], [1.0])
+        self.assertEqual(grid["degraded_entry_block_enabled"], [1.0])
+        self.assertEqual(grid["loss_dca_range_block_enabled"], [1.0])
+        self.assertEqual(grid["loss_dca_degraded_block_enabled"], [1.0])
+        self.assertEqual(grid["profit_protect_reduce_enabled"], [1.0])
+
+    def test_search_space_profile_marks_ralph_protective_reduce_mode(self) -> None:
+        profile = search_space_profile(mode="ralph_protective_reduce_train_only")
+
+        self.assertEqual(profile["profile"], "ralph_protective_reduce_train_only")
+        self.assertEqual(profile["search_space_mode"], "ralph_protective_reduce_train_only")
+        self.assertFalse(profile["baseline_anchored_search"])
+        self.assertFalse(profile["intent_churn_ablation_search"])
+        self.assertFalse(profile["binance_factor_weight_repair_search"])
+        self.assertTrue(profile["ralph_protective_reduce_search"])
+        self.assertFalse(profile["include_liquidation_toggles"])
+
+    def test_ralph_protective_reduce_fee_repair_grid_tightens_fee_controls(self) -> None:
+        grid = ralph_protective_reduce_fee_repair_param_grid()
+
+        self.assertEqual(grid["target_vol_4h"], [0.35, 0.40, 0.50])
+        self.assertEqual(grid["max_leverage"], [2.0, 2.5])
+        self.assertEqual(grid["exit_unwind_pct"], [0.45, 0.55])
+        self.assertEqual(grid["intent_add_signal_threshold"], [0.60, 0.65])
+        self.assertEqual(grid["intent_add_confirmation_bars"], [2, 4])
+        self.assertEqual(grid["intent_entry_confirmation_bars"], [6, 8])
+        self.assertEqual(grid["intent_flip_confirmation_bars"], [16, 24])
+        self.assertEqual(grid["intent_unconfirmed_flip_reduce_only"], [1.0])
+        self.assertEqual(grid["flip_flatten_only_enabled"], [1.0])
+        self.assertEqual(grid["target_delta_deadband_pct"], [0.08, 0.10])
+        self.assertEqual(grid["target_reduce_deadband_pct"], [0.0])
+        self.assertEqual(grid["entry_cooldown_bars"], [4, 8])
+        self.assertEqual(grid["profit_protect_min_move_atr"], [1.25, 1.75, 2.25])
+        self.assertEqual(grid["profit_protect_unwind_pct"], [0.35, 0.50])
+        self.assertEqual(grid["profit_protect_confidence_ceiling"], [0.65, 0.75])
+
+    def test_search_space_profile_marks_ralph_protective_reduce_fee_repair_mode(self) -> None:
+        profile = search_space_profile(mode="ralph_protective_reduce_fee_repair_train_only")
+
+        self.assertEqual(profile["profile"], "ralph_protective_reduce_fee_repair_train_only")
+        self.assertEqual(profile["search_space_mode"], "ralph_protective_reduce_fee_repair_train_only")
+        self.assertFalse(profile["ralph_protective_reduce_search"])
+        self.assertTrue(profile["ralph_protective_reduce_fee_repair_search"])
+        self.assertFalse(profile["binance_factor_weight_repair_search"])
+
+    def test_ralph_execution_fee_cooldown_grid_adds_protective_reduce_throttle(self) -> None:
+        grid = ralph_execution_fee_cooldown_param_grid()
+
+        self.assertEqual(grid["target_vol_4h"], [0.40, 0.50, 0.65])
+        self.assertEqual(grid["max_leverage"], [2.5, 3.0])
+        self.assertEqual(grid["intent_unconfirmed_flip_reduce_only"], [1.0])
+        self.assertEqual(grid["flip_flatten_only_enabled"], [1.0])
+        self.assertEqual(grid["profit_protect_reduce_enabled"], [1.0])
+        self.assertEqual(grid["profit_protect_cooldown_bars"], [6, 12, 24])
+        self.assertEqual(grid["profit_protect_unwind_pct"], [0.25, 0.35, 0.50])
+        self.assertEqual(grid["target_delta_deadband_pct"], [0.04, 0.06, 0.08])
+
+    def test_search_space_profile_marks_ralph_execution_fee_cooldown_mode(self) -> None:
+        profile = search_space_profile(mode="ralph_execution_fee_cooldown_train_only")
+
+        self.assertEqual(profile["profile"], "ralph_execution_fee_cooldown_train_only")
+        self.assertEqual(profile["search_space_mode"], "ralph_execution_fee_cooldown_train_only")
+        self.assertFalse(profile["ralph_protective_reduce_search"])
+        self.assertFalse(profile["ralph_protective_reduce_fee_repair_search"])
+        self.assertTrue(profile["ralph_execution_fee_cooldown_search"])
+        self.assertFalse(profile["ralph_intent_reduce_cadence_search"])
+
+    def test_ralph_intent_reduce_cadence_grid_targets_strategy_reduce_confirmation(self) -> None:
+        grid = ralph_intent_reduce_cadence_param_grid()
+
+        self.assertEqual(grid["target_vol_4h"], [0.40, 0.50, 0.65])
+        self.assertEqual(grid["max_leverage"], [2.5, 3.0])
+        self.assertEqual(grid["intent_unconfirmed_flip_reduce_only"], [1.0])
+        self.assertEqual(grid["flip_flatten_only_enabled"], [1.0])
+        self.assertEqual(grid["profit_protect_reduce_enabled"], [1.0])
+        self.assertEqual(grid["profit_protect_cooldown_bars"], [0])
+        self.assertEqual(grid["intent_flat_reduce_step_pct"], [0.0, 0.15, 0.25, 0.35, 0.50])
+        self.assertEqual(grid["intent_flat_step_cadence_bars"], [0, 8, 12, 24])
+        self.assertEqual(grid["intent_same_direction_reduce_confirmation_bars"], [2, 4, 8, 12])
+        self.assertEqual(grid["intent_time_leverage_reduce_deadband_pct"], [0.40, 0.80, 1.00])
+        self.assertEqual(grid["target_delta_deadband_pct"], [0.04, 0.06, 0.08])
+
+    def test_search_space_profile_marks_ralph_intent_reduce_cadence_mode(self) -> None:
+        profile = search_space_profile(mode="ralph_intent_reduce_cadence_train_only")
+
+        self.assertEqual(profile["profile"], "ralph_intent_reduce_cadence_train_only")
+        self.assertEqual(profile["search_space_mode"], "ralph_intent_reduce_cadence_train_only")
+        self.assertFalse(profile["ralph_protective_reduce_search"])
+        self.assertFalse(profile["ralph_protective_reduce_fee_repair_search"])
+        self.assertFalse(profile["ralph_execution_fee_cooldown_search"])
+        self.assertTrue(profile["ralph_intent_reduce_cadence_search"])
+
     def test_build_signal_weight_overrides_maps_audited_state_factor_weights(self) -> None:
         weights = build_signal_weight_overrides(
             {
@@ -341,6 +457,10 @@ class FrameworkParamTests(unittest.TestCase):
                 "bearish_override_confidence_floor": 0.65,
                 "exit_transition_risk": 0.90,
                 "intent_add_confirmation_bars": 4,
+                "min_bars_before_trail": 72,
+                "min_hours_before_trail": 20.0,
+                "intent_flat_reduce_step_pct": 0.50,
+                "intent_flat_step_cadence_bars": 8,
                 "intent_range_entry_confirmation_bars": 36,
                 "intent_range_reentry_cooldown_bars": 72,
                 "intent_bearish_override_confirmation_bars": 48,
@@ -349,6 +469,10 @@ class FrameworkParamTests(unittest.TestCase):
                 "intent_time_leverage_flip_signal_threshold": 0.65,
                 "intent_time_leverage_confidence_floor": 0.65,
                 "intent_time_leverage_transition_risk_floor": 0.45,
+                "intent_time_leverage_trailing_stop_atr_mult": 9.0,
+                "intent_time_leverage_trailing_exit_hold_enabled": 1.0,
+                "intent_time_leverage_trailing_exit_max_adverse_atr": 2.0,
+                "intent_same_direction_reduce_confirmation_bars": 4,
                 "intent_time_leverage_size_hysteresis_enabled": 1.0,
                 "intent_time_leverage_add_deadband_pct": 0.15,
                 "intent_time_leverage_reduce_deadband_pct": 0.30,
@@ -375,6 +499,10 @@ class FrameworkParamTests(unittest.TestCase):
         self.assertEqual(config.playbook_config.bearish_override_confidence_floor, 0.65)
         self.assertEqual(config.exit_config.transition_risk_exit_threshold, 0.90)
         self.assertEqual(config.intent_add_confirmation_bars, 4)
+        self.assertEqual(config.min_bars_before_trail, 72)
+        self.assertEqual(config.min_hours_before_trail, 20.0)
+        self.assertEqual(config.intent_flat_reduce_step_pct, 0.50)
+        self.assertEqual(config.intent_flat_step_cadence_bars, 8)
         self.assertEqual(config.intent_range_entry_confirmation_bars, 36)
         self.assertEqual(config.intent_range_reentry_cooldown_bars, 72)
         self.assertEqual(config.intent_bearish_override_confirmation_bars, 48)
@@ -383,6 +511,10 @@ class FrameworkParamTests(unittest.TestCase):
         self.assertEqual(config.intent_time_leverage_flip_signal_threshold, 0.65)
         self.assertEqual(config.intent_time_leverage_confidence_floor, 0.65)
         self.assertEqual(config.intent_time_leverage_transition_risk_floor, 0.45)
+        self.assertEqual(config.intent_time_leverage_trailing_stop_atr_mult, 9.0)
+        self.assertTrue(config.intent_time_leverage_trailing_exit_hold_enabled)
+        self.assertEqual(config.intent_time_leverage_trailing_exit_max_adverse_atr, 2.0)
+        self.assertEqual(config.intent_same_direction_reduce_confirmation_bars, 4)
         self.assertTrue(config.intent_time_leverage_size_hysteresis_enabled)
         self.assertEqual(config.intent_time_leverage_add_deadband_pct, 0.15)
         self.assertEqual(config.intent_time_leverage_reduce_deadband_pct, 0.30)
@@ -404,11 +536,19 @@ class FrameworkParamTests(unittest.TestCase):
                 "bearish_override_confidence_floor": 0.65,
                 "exit_transition_risk": 0.90,
                 "intent_add_confirmation_bars": 4,
+                "min_bars_before_trail": 24,
+                "min_hours_before_trail": 12.0,
+                "intent_flat_reduce_step_pct": 0.35,
+                "intent_flat_step_cadence_bars": 6,
                 "intent_range_entry_confirmation_bars": 18,
                 "intent_range_reentry_cooldown_bars": 36,
                 "intent_bearish_override_confirmation_bars": 24,
                 "intent_time_leverage_hold_enabled": 1.0,
                 "intent_time_leverage_min_hold_bars": 12,
+                "intent_time_leverage_trailing_stop_atr_mult": 6.0,
+                "intent_time_leverage_trailing_exit_hold_enabled": 1.0,
+                "intent_time_leverage_trailing_exit_max_adverse_atr": 1.5,
+                "intent_same_direction_reduce_confirmation_bars": 3,
                 "intent_time_leverage_size_hysteresis_enabled": 1.0,
                 "intent_time_leverage_reduce_deadband_pct": 0.20,
                 "intent_time_leverage_long_bias_enabled": 1.0,
@@ -419,11 +559,19 @@ class FrameworkParamTests(unittest.TestCase):
 
         self.assertEqual(config.execution_timeframe, Timeframe.TF_4H)
         self.assertEqual(config.intent_add_confirmation_bars, 4)
+        self.assertEqual(config.min_bars_before_trail, 24)
+        self.assertEqual(config.min_hours_before_trail, 12.0)
+        self.assertEqual(config.intent_flat_reduce_step_pct, 0.35)
+        self.assertEqual(config.intent_flat_step_cadence_bars, 6)
         self.assertEqual(config.intent_range_entry_confirmation_bars, 18)
         self.assertEqual(config.intent_range_reentry_cooldown_bars, 36)
         self.assertEqual(config.intent_bearish_override_confirmation_bars, 24)
         self.assertTrue(config.intent_time_leverage_hold_enabled)
         self.assertEqual(config.intent_time_leverage_min_hold_bars, 12)
+        self.assertEqual(config.intent_time_leverage_trailing_stop_atr_mult, 6.0)
+        self.assertTrue(config.intent_time_leverage_trailing_exit_hold_enabled)
+        self.assertEqual(config.intent_time_leverage_trailing_exit_max_adverse_atr, 1.5)
+        self.assertEqual(config.intent_same_direction_reduce_confirmation_bars, 3)
         self.assertTrue(config.intent_time_leverage_size_hysteresis_enabled)
         self.assertEqual(config.intent_time_leverage_reduce_deadband_pct, 0.20)
         self.assertTrue(config.intent_time_leverage_long_bias_enabled)
@@ -568,6 +716,8 @@ class FrameworkParamTests(unittest.TestCase):
         self.assertEqual(seeds[0]["direction_signal_threshold"], 0.45)
         self.assertEqual(seeds[0]["intent_add_signal_threshold"], 0.50)
         self.assertEqual(seeds[0]["intent_add_confirmation_bars"], 2)
+        self.assertEqual(seeds[0]["min_bars_before_trail"], 1)
+        self.assertEqual(seeds[0]["min_hours_before_trail"], 20.0)
         self.assertEqual(seeds[0]["intent_entry_confirmation_bars"], 4)
         self.assertEqual(seeds[0]["intent_flip_confirmation_bars"], 8)
         self.assertEqual(seeds[0]["intent_flat_confirmation_bars"], 16)
@@ -582,6 +732,7 @@ class FrameworkParamTests(unittest.TestCase):
         self.assertEqual(seeds[0]["intent_time_leverage_min_hold_bars"], 240)
         self.assertEqual(seeds[0]["intent_time_leverage_flip_signal_threshold"], 0.75)
         self.assertEqual(seeds[0]["intent_time_leverage_confidence_floor"], 0.70)
+        self.assertEqual(seeds[0]["intent_time_leverage_trailing_stop_atr_mult"], 0.0)
         self.assertEqual(seeds[0]["intent_time_leverage_size_hysteresis_enabled"], 1.0)
         self.assertEqual(seeds[0]["intent_time_leverage_add_deadband_pct"], 0.40)
         self.assertEqual(seeds[0]["intent_time_leverage_reduce_deadband_pct"], 1.00)
@@ -706,6 +857,113 @@ class FrameworkParamTests(unittest.TestCase):
             self.assertGreaterEqual(execution_config.entry_confidence_floor, 0.0)
             self.assertGreaterEqual(execution_config.loss_dca_confidence_floor, 0.0)
             self.assertGreater(execution_config.profit_protect_min_move_atr, 0.0)
+
+    def test_ralph_protective_reduce_seed_trials_force_reduce_first_execution(self) -> None:
+        seeds = ralph_protective_reduce_seed_trials()
+
+        self.assertEqual(len(seeds), 12)
+        self.assertEqual(seeds[0]["target_vol_4h"], 0.35)
+        self.assertEqual(seeds[0]["intent_flip_confirmation_bars"], 24)
+        self.assertEqual(seeds[0]["intent_flat_confirmation_bars"], 4)
+        self.assertEqual(seeds[0]["entry_cooldown_bars"], 4)
+        self.assertEqual(seeds[0]["profit_protect_unwind_pct"], 0.30)
+        self.assertTrue(any(seed["target_vol_4h"] == 0.65 for seed in seeds))
+        self.assertTrue(any(seed["intent_flat_confirmation_bars"] == 12 for seed in seeds))
+        for seed in seeds:
+            execution_config = build_execution_config(seed)
+            strategy_config = build_strategy_config(seed)
+            self.assertEqual(seed["intent_unconfirmed_flip_reduce_only"], 1.0)
+            self.assertEqual(seed["flip_flatten_only_enabled"], 1.0)
+            self.assertEqual(seed["target_reduce_deadband_pct"], 0.0)
+            self.assertEqual(seed["weak_signal_no_flip_enabled"], 1.0)
+            self.assertEqual(seed["tiny_reverse_reduce_only_enabled"], 1.0)
+            self.assertEqual(seed["range_entry_block_enabled"], 1.0)
+            self.assertEqual(seed["degraded_entry_block_enabled"], 1.0)
+            self.assertEqual(seed["loss_dca_range_block_enabled"], 1.0)
+            self.assertEqual(seed["loss_dca_degraded_block_enabled"], 1.0)
+            self.assertEqual(seed["profit_protect_reduce_enabled"], 1.0)
+            self.assertTrue(execution_config.flip_flatten_only_enabled)
+            self.assertTrue(execution_config.profit_protect_reduce_enabled)
+            self.assertTrue(strategy_config.intent_unconfirmed_flip_reduce_only)
+            self.assertGreaterEqual(strategy_config.intent_flip_confirmation_bars, 12)
+            self.assertGreaterEqual(strategy_config.intent_time_leverage_min_hold_bars, 240)
+
+    def test_ralph_protective_reduce_fee_repair_seed_trials_reduce_fee_pressure(self) -> None:
+        seeds = ralph_protective_reduce_fee_repair_seed_trials()
+
+        self.assertEqual(len(seeds), 12)
+        self.assertEqual(seeds[0]["max_leverage"], 2.0)
+        self.assertEqual(seeds[0]["exit_unwind_pct"], 0.55)
+        self.assertEqual(seeds[0]["profit_protect_min_move_atr"], 2.25)
+        self.assertEqual(seeds[0]["profit_protect_unwind_pct"], 0.50)
+        self.assertTrue(any(seed["target_vol_4h"] == 0.50 for seed in seeds))
+        for seed in seeds:
+            execution_config = build_execution_config(seed)
+            strategy_config = build_strategy_config(seed)
+            self.assertEqual(seed["intent_unconfirmed_flip_reduce_only"], 1.0)
+            self.assertEqual(seed["flip_flatten_only_enabled"], 1.0)
+            self.assertEqual(seed["target_reduce_deadband_pct"], 0.0)
+            self.assertEqual(seed["profit_protect_reduce_enabled"], 1.0)
+            self.assertGreaterEqual(seed["profit_protect_min_move_atr"], 1.25)
+            self.assertGreaterEqual(seed["profit_protect_unwind_pct"], 0.35)
+            self.assertGreaterEqual(seed["target_delta_deadband_pct"], 0.08)
+            self.assertGreaterEqual(seed["entry_cooldown_bars"], 4)
+            self.assertTrue(execution_config.flip_flatten_only_enabled)
+            self.assertTrue(execution_config.profit_protect_reduce_enabled)
+            self.assertTrue(strategy_config.intent_unconfirmed_flip_reduce_only)
+            self.assertGreaterEqual(strategy_config.intent_entry_confirmation_bars, 6)
+
+    def test_ralph_execution_fee_cooldown_seed_trials_keep_activity_while_throttling_reduces(self) -> None:
+        seeds = ralph_execution_fee_cooldown_seed_trials()
+
+        self.assertEqual(len(seeds), 12)
+        self.assertEqual(seeds[0]["profit_protect_cooldown_bars"], 6)
+        self.assertEqual(seeds[0]["profit_protect_unwind_pct"], 0.35)
+        self.assertTrue(any(seed["profit_protect_cooldown_bars"] == 24 for seed in seeds))
+        self.assertTrue(any(seed["target_vol_4h"] == 0.65 for seed in seeds))
+        for seed in seeds:
+            execution_config = build_execution_config(seed)
+            strategy_config = build_strategy_config(seed)
+            self.assertEqual(seed["intent_unconfirmed_flip_reduce_only"], 1.0)
+            self.assertEqual(seed["flip_flatten_only_enabled"], 1.0)
+            self.assertEqual(seed["profit_protect_reduce_enabled"], 1.0)
+            self.assertGreaterEqual(seed["profit_protect_cooldown_bars"], 6)
+            self.assertGreaterEqual(seed["profit_protect_unwind_pct"], 0.25)
+            self.assertGreaterEqual(seed["target_delta_deadband_pct"], 0.04)
+            self.assertTrue(execution_config.flip_flatten_only_enabled)
+            self.assertTrue(execution_config.profit_protect_reduce_enabled)
+            self.assertGreaterEqual(execution_config.profit_protect_cooldown_bars, 6)
+            self.assertTrue(strategy_config.intent_unconfirmed_flip_reduce_only)
+
+    def test_ralph_intent_reduce_cadence_seed_trials_confirm_strategy_reduces(self) -> None:
+        seeds = ralph_intent_reduce_cadence_seed_trials()
+
+        self.assertEqual(len(seeds), 12)
+        self.assertEqual(seeds[0]["intent_same_direction_reduce_confirmation_bars"], 4)
+        self.assertEqual(seeds[0]["intent_flat_reduce_step_pct"], 0.0)
+        self.assertEqual(seeds[0]["intent_flat_step_cadence_bars"], 0)
+        self.assertEqual(seeds[0]["profit_protect_cooldown_bars"], 0)
+        self.assertTrue(any(seed["intent_same_direction_reduce_confirmation_bars"] == 12 for seed in seeds))
+        self.assertTrue(any(seed["intent_flat_reduce_step_pct"] == 0.35 for seed in seeds))
+        self.assertTrue(any(seed["target_vol_4h"] == 0.65 for seed in seeds))
+        for seed in seeds:
+            execution_config = build_execution_config(seed)
+            strategy_config = build_strategy_config(seed)
+            self.assertEqual(seed["intent_unconfirmed_flip_reduce_only"], 1.0)
+            self.assertEqual(seed["flip_flatten_only_enabled"], 1.0)
+            self.assertEqual(seed["profit_protect_reduce_enabled"], 1.0)
+            self.assertEqual(seed["profit_protect_cooldown_bars"], 0)
+            self.assertGreaterEqual(seed["intent_flat_reduce_step_pct"], 0.0)
+            self.assertGreaterEqual(seed["intent_flat_step_cadence_bars"], 0)
+            self.assertGreaterEqual(seed["intent_same_direction_reduce_confirmation_bars"], 2)
+            self.assertGreaterEqual(seed["target_delta_deadband_pct"], 0.04)
+            self.assertTrue(execution_config.flip_flatten_only_enabled)
+            self.assertTrue(execution_config.profit_protect_reduce_enabled)
+            self.assertEqual(execution_config.profit_protect_cooldown_bars, 0)
+            self.assertTrue(strategy_config.intent_unconfirmed_flip_reduce_only)
+            self.assertGreaterEqual(strategy_config.intent_flat_reduce_step_pct, 0.0)
+            self.assertGreaterEqual(strategy_config.intent_flat_step_cadence_bars, 0)
+            self.assertGreaterEqual(strategy_config.intent_same_direction_reduce_confirmation_bars, 2)
 
 
 class FrameworkEvaluatorTests(unittest.TestCase):
