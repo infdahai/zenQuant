@@ -11,7 +11,7 @@ node_modules/
 test-results/
 playwright-report/
 
-data/
+/data/
 logs/
 results/
 
