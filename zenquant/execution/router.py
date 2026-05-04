@@ -100,6 +100,7 @@ class ExecutionKernelConfig:
     profit_protect_min_move_atr: float = 1.0
     profit_protect_unwind_pct: float = 0.25
     profit_protect_confidence_ceiling: float = 0.75
+    profit_protect_cooldown_bars: int = 0
     # Legacy gradual execution (kept for compatibility)
     entry_fraction: float = 1.0
     exit_fraction: float = 1.0
@@ -177,6 +178,8 @@ class ExecutionKernelConfig:
             raise ValueError("profit_protect_unwind_pct must be within (0.0, 0.5]")
         if self.profit_protect_confidence_ceiling < 0.0:
             raise ValueError("profit_protect_confidence_ceiling must be >= 0.0")
+        if self.profit_protect_cooldown_bars < 0:
+            raise ValueError("profit_protect_cooldown_bars must be >= 0")
 
 
 class ExecutionKernel:
@@ -210,6 +213,7 @@ class ExecutionKernel:
         self._inventory_tranches: dict[str, int] = {}
         self._squeeze_flip_cooldowns: dict[str, int] = {}
         self._entry_cooldowns: dict[str, int] = {}
+        self._profit_protect_cooldowns: dict[str, int] = {}
         self._position_bars_held: dict[str, int] = {}
         self._latest_drawdown_by_portfolio: dict[str, float] = {}
 
@@ -270,8 +274,11 @@ class ExecutionKernel:
             self._advance_entry_cooldown(symbol)
             return
 
-        if self._should_profit_protect_reduce(payload, current_position, is_reducing, is_flip_intent, mark_price):
-            self._execute_reduce_only_qty(
+        if self._profit_protect_signal_active(payload, current_position, is_reducing, is_flip_intent, mark_price):
+            if self._profit_protect_cooldowns.get(symbol, 0) > 0:
+                self._advance_profit_protect_cooldown(symbol)
+                return
+            reduced = self._execute_reduce_only_qty(
                 symbol,
                 current_position,
                 abs(current_position) * self._config.profit_protect_unwind_pct,
@@ -279,7 +286,10 @@ class ExecutionKernel:
                 mark_price,
                 suffix="profit-protect",
             )
+            if reduced:
+                self._arm_profit_protect_cooldown(symbol)
             return
+        self._advance_profit_protect_cooldown(symbol)
 
         if self._should_block_low_quality_entry(payload, current_position, is_reducing, is_flip_intent):
             return
@@ -484,6 +494,7 @@ class ExecutionKernel:
                 self._inventory_tranches[symbol] = 1
                 self._position_bars_held[symbol] = 0
                 self._entry_cooldowns.pop(symbol, None)
+                self._profit_protect_cooldowns.pop(symbol, None)
             elif current_position * new_position < 0:
                 # Flipped direction: reset
                 self._entry_prices[symbol] = report.avg_price
@@ -495,6 +506,7 @@ class ExecutionKernel:
                 self._inventory_tranches[symbol] = 1
                 self._position_bars_held[symbol] = 0
                 self._entry_cooldowns.pop(symbol, None)
+                self._profit_protect_cooldowns.pop(symbol, None)
             elif abs(new_position) < self._config.min_trade_qty:
                 # Closed: reset
                 self._entry_prices.pop(symbol, None)
@@ -502,6 +514,7 @@ class ExecutionKernel:
                 self._pyramid_filled_pct.pop(symbol, None)
                 self._inventory_tranches.pop(symbol, None)
                 self._position_bars_held.pop(symbol, None)
+                self._profit_protect_cooldowns.pop(symbol, None)
                 self._arm_entry_cooldown(symbol)
             elif abs(new_position) > abs(current_position):
                 self._last_fill_prices[symbol] = report.avg_price
@@ -544,6 +557,7 @@ class ExecutionKernel:
         self._pyramid_filled_pct.pop(symbol, None)
         self._inventory_tranches.pop(symbol, None)
         self._position_bars_held.pop(symbol, None)
+        self._profit_protect_cooldowns.pop(symbol, None)
         self._risk_overlay.apply_fee(close_report.fee)
 
         # Step 2: Open opposite direction with pyramid initial sizing
@@ -586,6 +600,7 @@ class ExecutionKernel:
             self._inventory_tranches[symbol] = 1
             self._position_bars_held[symbol] = 0
             self._entry_cooldowns.pop(symbol, None)
+            self._profit_protect_cooldowns.pop(symbol, None)
             self._risk_overlay.apply_fee(open_report.fee)
         else:
             self._arm_entry_cooldown(symbol)
@@ -624,6 +639,7 @@ class ExecutionKernel:
         self._pyramid_filled_pct.pop(symbol, None)
         self._inventory_tranches.pop(symbol, None)
         self._position_bars_held.pop(symbol, None)
+        self._profit_protect_cooldowns.pop(symbol, None)
         self._arm_entry_cooldown(symbol)
         self._risk_overlay.apply_fee(close_report.fee)
 
@@ -636,11 +652,11 @@ class ExecutionKernel:
         mark_price: float,
         *,
         suffix: str,
-    ) -> None:
+    ) -> bool:
         close_side = -1 if current_position > 0 else 1
         reduce_qty = min(abs(current_position), quantity, self._config.max_trade_qty_per_bar)
         if reduce_qty < self._config.min_trade_qty:
-            return
+            return False
         order = ExecutionOrder(
             client_order_id=f"{symbol}-{payload.cutoff_time_ns}-{next(self._order_seq)}-{suffix}",
             symbol=symbol,
@@ -659,7 +675,7 @@ class ExecutionKernel:
         )
         self._bus.publish("exec.order.report", report)
         if report.status != "FILLED" or report.filled_qty <= 0:
-            return
+            return False
         new_position = current_position + close_side * report.filled_qty
         if abs(new_position) < self._config.min_trade_qty:
             self._positions[symbol] = 0.0
@@ -668,11 +684,13 @@ class ExecutionKernel:
             self._pyramid_filled_pct.pop(symbol, None)
             self._inventory_tranches.pop(symbol, None)
             self._position_bars_held.pop(symbol, None)
+            self._profit_protect_cooldowns.pop(symbol, None)
             self._arm_entry_cooldown(symbol)
         else:
             self._positions[symbol] = new_position
             self._position_bars_held[symbol] = max(0, self._position_bars_held.get(symbol, 0))
         self._risk_overlay.apply_fee(report.fee)
+        return True
 
     def _advance_position_age(self, symbol: str, current_position: float) -> None:
         if abs(current_position) < self._config.min_trade_qty:
@@ -736,6 +754,17 @@ class ExecutionKernel:
         if self._config.entry_cooldown_bars > 0:
             self._entry_cooldowns[symbol] = self._config.entry_cooldown_bars
 
+    def _advance_profit_protect_cooldown(self, symbol: str) -> None:
+        remaining = self._profit_protect_cooldowns.get(symbol, 0)
+        if remaining <= 1:
+            self._profit_protect_cooldowns.pop(symbol, None)
+        else:
+            self._profit_protect_cooldowns[symbol] = remaining - 1
+
+    def _arm_profit_protect_cooldown(self, symbol: str) -> None:
+        if self._config.profit_protect_cooldown_bars > 0:
+            self._profit_protect_cooldowns[symbol] = self._config.profit_protect_cooldown_bars
+
     def _should_block_low_quality_entry(
         self,
         payload: TargetPosition,
@@ -748,7 +777,10 @@ class ExecutionKernel:
         is_new_or_add = abs(payload.target_qty) > abs(current_position) + self._config.min_trade_qty
         if not is_new_or_add and not is_flip_intent:
             return False
-        if self._config.entry_confidence_floor > 0.0 and payload.regime_confidence < self._config.entry_confidence_floor:
+        if (
+            self._config.entry_confidence_floor > 0.0
+            and payload.regime_confidence < self._config.entry_confidence_floor
+        ):
             return True
         if self._config.range_entry_block_enabled and "PLAYBOOK_RANGE_LIGHT" in set(payload.reason_codes):
             return True
@@ -787,10 +819,8 @@ class ExecutionKernel:
             and payload.regime_confidence < self._config.reverse_open_confidence_floor
         ):
             return True
-        if (
-            self._config.weak_signal_no_flip_enabled
-            and payload.regime_confidence
-            < max(self._config.weak_signal_no_flip_confidence, self._config.flip_min_confidence)
+        if self._config.weak_signal_no_flip_enabled and payload.regime_confidence < max(
+            self._config.weak_signal_no_flip_confidence, self._config.flip_min_confidence
         ):
             return True
         if (
@@ -800,9 +830,7 @@ class ExecutionKernel:
             return True
         threshold = self._tiny_reverse_deadband_qty(current_position)
         return (
-            self._config.tiny_reverse_reduce_only_enabled
-            and threshold > 0.0
-            and abs(payload.target_qty) <= threshold
+            self._config.tiny_reverse_reduce_only_enabled and threshold > 0.0 and abs(payload.target_qty) <= threshold
         )
 
     def _is_position_losing(self, symbol: str, current_position: float, mark_price: float) -> bool:
@@ -824,7 +852,7 @@ class ExecutionKernel:
             return True
         return self._config.loss_dca_degraded_block_enabled and self._has_degraded_entry_signal(payload)
 
-    def _should_profit_protect_reduce(
+    def _profit_protect_signal_active(
         self,
         payload: TargetPosition,
         current_position: float,

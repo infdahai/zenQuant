@@ -1412,7 +1412,9 @@ class ChurnControlExecutionTests(unittest.TestCase):
         self.assertEqual(len(reports), 1)
         self.assertAlmostEqual(kernel.positions["BTCUSDT_PERP"], 1.0)
 
-        bus.publish("intent.target_position.final.BTCUSDT_PERP", self._target(0.96, intent_id="small-reduce", cutoff_ns=4))
+        bus.publish(
+            "intent.target_position.final.BTCUSDT_PERP", self._target(0.96, intent_id="small-reduce", cutoff_ns=4)
+        )
         self.assertEqual(len(reports), 2)
         self.assertEqual(orders[-1].side, -1)
         self.assertAlmostEqual(kernel.positions["BTCUSDT_PERP"], 0.96)
@@ -1421,7 +1423,9 @@ class ChurnControlExecutionTests(unittest.TestCase):
         bus, kernel, orders, reports = self._setup(target_reduce_deadband_pct=0.05)
 
         bus.publish("intent.target_position.final.BTCUSDT_PERP", self._target(1.0, intent_id="entry", cutoff_ns=2))
-        bus.publish("intent.target_position.final.BTCUSDT_PERP", self._target(0.96, intent_id="small-trim", cutoff_ns=3))
+        bus.publish(
+            "intent.target_position.final.BTCUSDT_PERP", self._target(0.96, intent_id="small-trim", cutoff_ns=3)
+        )
         self.assertEqual(len(reports), 1)
         self.assertAlmostEqual(kernel.positions["BTCUSDT_PERP"], 1.0)
 
@@ -1524,7 +1528,9 @@ class ChurnControlExecutionTests(unittest.TestCase):
         bus, kernel, orders, reports = self._setup(min_hold_bars_before_flip=2)
 
         bus.publish("intent.target_position.final.BTCUSDT_PERP", self._target(1.0, intent_id="entry", cutoff_ns=2))
-        bus.publish("intent.target_position.final.BTCUSDT_PERP", self._target(-1.0, intent_id="early-flip", cutoff_ns=3))
+        bus.publish(
+            "intent.target_position.final.BTCUSDT_PERP", self._target(-1.0, intent_id="early-flip", cutoff_ns=3)
+        )
 
         self.assertEqual(len(reports), 2)
         self.assertTrue(orders[-1].reduce_only)
@@ -1537,7 +1543,9 @@ class ChurnControlExecutionTests(unittest.TestCase):
         )
 
         bus.publish("intent.target_position.final.BTCUSDT_PERP", self._target(1.0, intent_id="entry", cutoff_ns=2))
-        bus.publish("intent.target_position.final.BTCUSDT_PERP", self._target(-0.05, intent_id="tiny-reverse", cutoff_ns=3))
+        bus.publish(
+            "intent.target_position.final.BTCUSDT_PERP", self._target(-0.05, intent_id="tiny-reverse", cutoff_ns=3)
+        )
 
         self.assertEqual(len(reports), 2)
         self.assertTrue(orders[-1].reduce_only)
@@ -1555,9 +1563,15 @@ class ChurnControlExecutionTests(unittest.TestCase):
             "intent.target_position.final.BTCUSDT_PERP",
             self._target(-1.0, intent_id="weak-flip", cutoff_ns=3, confidence=0.55),
         )
-        bus.publish("intent.target_position.final.BTCUSDT_PERP", self._target(-1.0, intent_id="cooldown-1", cutoff_ns=4))
-        bus.publish("intent.target_position.final.BTCUSDT_PERP", self._target(-1.0, intent_id="cooldown-2", cutoff_ns=5))
-        bus.publish("intent.target_position.final.BTCUSDT_PERP", self._target(-1.0, intent_id="after-cooldown", cutoff_ns=6))
+        bus.publish(
+            "intent.target_position.final.BTCUSDT_PERP", self._target(-1.0, intent_id="cooldown-1", cutoff_ns=4)
+        )
+        bus.publish(
+            "intent.target_position.final.BTCUSDT_PERP", self._target(-1.0, intent_id="cooldown-2", cutoff_ns=5)
+        )
+        bus.publish(
+            "intent.target_position.final.BTCUSDT_PERP", self._target(-1.0, intent_id="after-cooldown", cutoff_ns=6)
+        )
 
         self.assertEqual(len(reports), 3)
         self.assertLess(kernel.positions["BTCUSDT_PERP"], 0.0)
@@ -1661,6 +1675,54 @@ class ChurnControlExecutionTests(unittest.TestCase):
         self.assertAlmostEqual(orders[-1].quantity, 0.25)
         self.assertAlmostEqual(kernel.positions["BTCUSDT_PERP"], 0.75)
 
+    def test_profit_protect_cooldown_suppresses_repeated_weak_add_reductions(self) -> None:
+        bus, kernel, orders, reports = self._setup(
+            profit_protect_reduce_enabled=True,
+            profit_protect_min_move_atr=1.0,
+            profit_protect_unwind_pct=0.25,
+            profit_protect_confidence_ceiling=0.75,
+            profit_protect_cooldown_bars=2,
+        )
+
+        bus.publish("intent.target_position.final.BTCUSDT_PERP", self._target(1.0, intent_id="entry", cutoff_ns=2))
+        bus.publish(
+            "md.mark.BINANCE.BTCUSDT_PERP",
+            MarkPriceUpdate(
+                meta=EventMeta(event_time_ns=3, ingest_time_ns=3, venue="BINANCE", symbol="BTCUSDT_PERP", stream_seq=2),
+                mark_price=42000.0,
+            ),
+        )
+        bus.publish(
+            "intent.target_position.final.BTCUSDT_PERP",
+            self._target(1.2, intent_id="weak-profitable-add-1", cutoff_ns=4, confidence=0.70, atr=1000.0),
+        )
+        position_after_first_reduce = kernel.positions["BTCUSDT_PERP"]
+
+        bus.publish(
+            "intent.target_position.final.BTCUSDT_PERP",
+            self._target(1.2, intent_id="weak-profitable-add-2", cutoff_ns=5, confidence=0.70, atr=1000.0),
+        )
+        bus.publish(
+            "intent.target_position.final.BTCUSDT_PERP",
+            self._target(1.2, intent_id="weak-profitable-add-3", cutoff_ns=6, confidence=0.70, atr=1000.0),
+        )
+
+        self.assertEqual(len(reports), 2)
+        self.assertEqual(len(orders), 2)
+        self.assertAlmostEqual(position_after_first_reduce, 0.75)
+        self.assertAlmostEqual(kernel.positions["BTCUSDT_PERP"], 0.75)
+
+        bus.publish(
+            "intent.target_position.final.BTCUSDT_PERP",
+            self._target(1.2, intent_id="weak-profitable-add-4", cutoff_ns=7, confidence=0.70, atr=1000.0),
+        )
+
+        self.assertEqual(len(reports), 3)
+        self.assertTrue(orders[-1].reduce_only)
+        self.assertEqual(orders[-1].side, -1)
+        self.assertAlmostEqual(orders[-1].quantity, 0.1875)
+        self.assertAlmostEqual(kernel.positions["BTCUSDT_PERP"], 0.5625)
+
 
 class ExecutionConfigBoundsTests(unittest.TestCase):
     def test_rejects_initial_pct_above_supported_range(self) -> None:
@@ -1704,3 +1766,9 @@ class ExecutionConfigBoundsTests(unittest.TestCase):
 
         with self.assertRaisesRegex(ValueError, "profit_protect_unwind_pct must be within"):
             ExecutionKernelConfig(profit_protect_unwind_pct=0.0)
+
+    def test_rejects_negative_profit_protect_cooldown(self) -> None:
+        from zenquant.execution.router import ExecutionKernelConfig
+
+        with self.assertRaisesRegex(ValueError, "profit_protect_cooldown_bars must be >= 0"):
+            ExecutionKernelConfig(profit_protect_cooldown_bars=-1)
