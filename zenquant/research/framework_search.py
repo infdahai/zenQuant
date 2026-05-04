@@ -142,6 +142,14 @@ def _admission_contract(source_name: str) -> dict[str, Any]:
             "research_ready": False,
             "use_for_research_only": False,
             "exclude_from_promote_truth": True,
+            "allowed_in_training_observation": False,
+            "allowed_in_candidate_explanation": False,
+            "direction_vote_allowed": False,
+            "intent_aggregation_allowed": False,
+            "position_sizing_allowed": False,
+            "strategy_wiring_allowed": False,
+            "risk_overlay_wiring_allowed": False,
+            "feature_freeze_candidate": False,
             "blocked_by": "admission_review_missing",
         }
     return {
@@ -151,6 +159,14 @@ def _admission_contract(source_name: str) -> dict[str, Any]:
         "research_ready": bool(review.get("research_ready")),
         "use_for_research_only": bool(review.get("use_for_research_only")),
         "exclude_from_promote_truth": bool(review.get("exclude_from_promote_truth")),
+        "allowed_in_training_observation": bool(review.get("allowed_in_training_observation")),
+        "allowed_in_candidate_explanation": bool(review.get("allowed_in_candidate_explanation")),
+        "direction_vote_allowed": bool(review.get("direction_vote_allowed")),
+        "intent_aggregation_allowed": bool(review.get("intent_aggregation_allowed")),
+        "position_sizing_allowed": bool(review.get("position_sizing_allowed")),
+        "strategy_wiring_allowed": bool(review.get("strategy_wiring_allowed")),
+        "risk_overlay_wiring_allowed": bool(review.get("risk_overlay_wiring_allowed")),
+        "feature_freeze_candidate": bool(review.get("feature_freeze_candidate")),
         "blocked_by": review.get("blocked_by"),
     }
 
@@ -161,6 +177,11 @@ def _independence_contract(source_name: str) -> dict[str, Any]:
         return {
             "review_present": False,
             "allowed_in_state_features": False,
+            "allowed_in_pressure_context": False,
+            "allowed_in_candidate_explanation": False,
+            "direction_vote_allowed": False,
+            "intent_aggregation_allowed": False,
+            "risk_overlay_wiring_allowed": False,
             "use_for_research_only": False,
             "blocked_by": "independence_review_missing",
             "max_abs_correlation": None,
@@ -168,6 +189,11 @@ def _independence_contract(source_name: str) -> dict[str, Any]:
     return {
         "review_present": True,
         "allowed_in_state_features": bool(review.get("allowed_in_state_features")),
+        "allowed_in_pressure_context": bool(review.get("allowed_in_pressure_context")),
+        "allowed_in_candidate_explanation": bool(review.get("allowed_in_candidate_explanation")),
+        "direction_vote_allowed": bool(review.get("direction_vote_allowed")),
+        "intent_aggregation_allowed": bool(review.get("intent_aggregation_allowed")),
+        "risk_overlay_wiring_allowed": bool(review.get("risk_overlay_wiring_allowed")),
         "use_for_research_only": bool(review.get("use_for_research_only")),
         "blocked_by": review.get("blocked_by"),
         "max_abs_correlation": review.get("max_abs_correlation"),
@@ -1117,6 +1143,8 @@ class FrameworkEvaluator:
         mvrv_independence = _independence_contract("btc_mvrv")
         deribit_block_admission = _admission_contract("deribit_block_flow")
         deribit_block_independence = _independence_contract("deribit_block_flow")
+        deribit_large_option_admission = _admission_contract("deribit_large_option_flow")
+        deribit_large_option_independence = _independence_contract("deribit_large_option_flow")
         active_signal_independence = _active_signal_independence_contract()
         historical_extension_candidate = _historical_extension_candidate_contract()
         self._training_input_contract = {
@@ -1190,6 +1218,56 @@ class FrameworkEvaluator:
                 "deribit_block_flow_blocked_by": (
                     deribit_block_independence["blocked_by"] or deribit_block_admission["blocked_by"]
                 ),
+                "deribit_large_option_flow_in_state_features": False,
+                "deribit_large_option_flow_research_candidate": bool(
+                    deribit_large_option_admission["review_present"]
+                    and deribit_large_option_admission["research_ready"]
+                    and deribit_large_option_admission["feature_freeze_candidate"]
+                    and deribit_large_option_admission["tier_decision"] == "tier2_research_candidate"
+                ),
+                "deribit_large_option_flow_admission_review_present": deribit_large_option_admission["review_present"],
+                "deribit_large_option_flow_tier_decision": deribit_large_option_admission["tier_decision"],
+                "deribit_large_option_flow_time_granularity": deribit_large_option_admission["time_granularity"],
+                "deribit_large_option_flow_use_for_research_only": deribit_large_option_admission[
+                    "use_for_research_only"
+                ],
+                "deribit_large_option_flow_exclude_from_promote_truth": deribit_large_option_admission[
+                    "exclude_from_promote_truth"
+                ],
+                "deribit_large_option_flow_strategy_wiring_allowed": deribit_large_option_admission[
+                    "strategy_wiring_allowed"
+                ],
+                "deribit_large_option_flow_risk_overlay_wiring_allowed": deribit_large_option_admission[
+                    "risk_overlay_wiring_allowed"
+                ],
+                "deribit_large_option_flow_direction_vote_allowed": deribit_large_option_admission[
+                    "direction_vote_allowed"
+                ],
+                "deribit_large_option_flow_intent_aggregation_allowed": deribit_large_option_admission[
+                    "intent_aggregation_allowed"
+                ],
+                "deribit_large_option_flow_position_sizing_allowed": deribit_large_option_admission[
+                    "position_sizing_allowed"
+                ],
+                "deribit_large_option_flow_training_observation_allowed": deribit_large_option_admission[
+                    "allowed_in_training_observation"
+                ],
+                "deribit_large_option_flow_candidate_explanation_allowed": deribit_large_option_admission[
+                    "allowed_in_candidate_explanation"
+                ],
+                "deribit_large_option_flow_independence_review_present": deribit_large_option_independence[
+                    "review_present"
+                ],
+                "deribit_large_option_flow_independence_allowed": deribit_large_option_independence[
+                    "allowed_in_state_features"
+                ],
+                "deribit_large_option_flow_pressure_context_allowed": deribit_large_option_independence[
+                    "allowed_in_pressure_context"
+                ],
+                "deribit_large_option_flow_max_abs_correlation": deribit_large_option_independence[
+                    "max_abs_correlation"
+                ],
+                "deribit_large_option_flow_blocked_by": deribit_large_option_admission["blocked_by"],
                 "cme_positioning_in_state_features": (Path("data/raw/cftc") / "cot_btc.parquet").exists(),
                 "liquidation_in_search": bool(self._readiness["promotion_ready"]),
             },

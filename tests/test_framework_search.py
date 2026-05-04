@@ -1148,6 +1148,23 @@ class FrameworkEvaluatorTests(unittest.TestCase):
                         "exclude_from_promote_truth": True,
                         "blocked_by": None,
                     }
+                if name == "deribit_large_option_flow":
+                    return {
+                        "tier_decision": "tier2_research_candidate",
+                        "time_granularity": "4h",
+                        "research_ready": True,
+                        "use_for_research_only": True,
+                        "exclude_from_promote_truth": True,
+                        "strategy_wiring_allowed": False,
+                        "risk_overlay_wiring_allowed": False,
+                        "direction_vote_allowed": False,
+                        "intent_aggregation_allowed": False,
+                        "position_sizing_allowed": False,
+                        "allowed_in_training_observation": True,
+                        "allowed_in_candidate_explanation": True,
+                        "feature_freeze_candidate": True,
+                        "blocked_by": None,
+                    }
                 return {}
 
             def _independence(name: str):
@@ -1157,6 +1174,18 @@ class FrameworkEvaluatorTests(unittest.TestCase):
                         "use_for_research_only": True,
                         "blocked_by": None,
                         "max_abs_correlation": 0.41,
+                    }
+                if name == "deribit_large_option_flow":
+                    return {
+                        "allowed_in_state_features": False,
+                        "allowed_in_pressure_context": True,
+                        "allowed_in_candidate_explanation": True,
+                        "direction_vote_allowed": False,
+                        "intent_aggregation_allowed": False,
+                        "risk_overlay_wiring_allowed": False,
+                        "use_for_research_only": True,
+                        "blocked_by": None,
+                        "max_abs_correlation": 0.32,
                     }
                 return {}
 
@@ -1220,6 +1249,21 @@ class FrameworkEvaluatorTests(unittest.TestCase):
         self.assertTrue(state_sources["mvrv_independence_review_present"])
         self.assertEqual(state_sources["mvrv_tier_decision"], "tier2_research_only_feature")
         self.assertEqual(state_sources["mvrv_time_granularity"], "1d")
+        self.assertTrue(state_sources["deribit_large_option_flow_research_candidate"])
+        self.assertFalse(state_sources["deribit_large_option_flow_in_state_features"])
+        self.assertEqual(state_sources["deribit_large_option_flow_tier_decision"], "tier2_research_candidate")
+        self.assertEqual(state_sources["deribit_large_option_flow_time_granularity"], "4h")
+        self.assertFalse(state_sources["deribit_large_option_flow_strategy_wiring_allowed"])
+        self.assertFalse(state_sources["deribit_large_option_flow_risk_overlay_wiring_allowed"])
+        self.assertFalse(state_sources["deribit_large_option_flow_direction_vote_allowed"])
+        self.assertFalse(state_sources["deribit_large_option_flow_intent_aggregation_allowed"])
+        self.assertFalse(state_sources["deribit_large_option_flow_position_sizing_allowed"])
+        self.assertTrue(state_sources["deribit_large_option_flow_training_observation_allowed"])
+        self.assertTrue(state_sources["deribit_large_option_flow_candidate_explanation_allowed"])
+        self.assertTrue(state_sources["deribit_large_option_flow_independence_review_present"])
+        self.assertFalse(state_sources["deribit_large_option_flow_independence_allowed"])
+        self.assertTrue(state_sources["deribit_large_option_flow_pressure_context_allowed"])
+        self.assertEqual(state_sources["deribit_large_option_flow_max_abs_correlation"], 0.32)
         self.assertFalse(signal_contract["audit_present"])
         self.assertEqual(signal_contract["blocked_by"], "active_signal_independence_missing")
         historical_contract = evaluator.training_input_contract["historical_extension_candidate_contract"]
@@ -1539,7 +1583,7 @@ class SearchReportSerializationTests(unittest.TestCase):
 
     def test_stage1_fail_fast_rejects_fragile_hostile_candidate(self) -> None:
         baseline = CandidateSummary(
-            variant="paulwei_baseline",
+            variant="current",
             robust_score=1.0,
             selection_split="dev",
             dev_sharpe=1.0,
