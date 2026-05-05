@@ -28,6 +28,21 @@ period and uses the later behavior profile:
 This baseline is the preferred learning target for cadence, time leverage,
 staged inventory, and fee-efficiency research.
 
+## Tranche Behavior
+
+PaulWei's low switch cadence must not be interpreted as low execution activity.
+The public archive contains many submitted orders that never trade, and filled
+position episodes are built and unwound through many partial trade executions.
+Use the tranche profile to separate:
+
+- submitted orders
+- trade executions that actually filled
+- net position episodes and direction switches
+- add/reduce fill rows inside each episode
+
+The mature BTC profile is the better learning target for intent design: low
+direction switching, many small adds, and many small reduces.
+
 ## Commands
 
 Compare default current and frozen PaulWei:
@@ -52,4 +67,10 @@ Compare all PaulWei research baselines together:
 
 ```bash
 uv run python scripts/compare_variants.py --root data/raw/binance --symbol BTCUSDT --split dev --skip-walk-forward --include-paulwei-public-baseline --include-paulwei-mature-baseline
+```
+
+Build the order/fill/episode tranche profile:
+
+```bash
+uv run python scripts/analyze_paulwei_tranche_behavior.py --data-root data/raw/paulwei_public --output-dir results/paulwei_tranche_behavior
 ```
