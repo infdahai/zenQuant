@@ -438,6 +438,54 @@ class RegimeObjectiveRedesignTests(unittest.TestCase):
         self.assertGreater(score["flip_action_fee_drag_penalty"], 0.0)
         self.assertGreater(score["reduce_profit_factor_penalty"], 0.0)
 
+    def test_candidate_generation_scorer_learns_paulwei_balanced_tranche_intent(self) -> None:
+        balanced = score_regime_objective_candidate_generation(
+            {
+                "sharpe": 2.2,
+                "profit_factor": 1.7,
+                "net_pnl": 7200.0,
+                "max_drawdown": 0.04,
+                "trade_count": 180,
+                "fee_drag_pct": 0.014,
+                "position_switches_per_30d": 1.2,
+                "flip_reduce_fee_drag_pct": 0.010,
+                "net_pnl_per_trade": 40.0,
+                "net_pnl_per_position_switch": 260.0,
+                "profit_factor_after_fee": 1.5,
+                "action_trade_counts": {"add": 35, "entry": 18, "exit": 18, "flip": 12, "reduce": 40},
+                "action_fee_drag_pct": {"exit": 0.004, "flip": 0.004, "reduce": 0.006},
+                "action_profit_factor": {"reduce": 1.25},
+            },
+        )
+        one_sided_reduce = score_regime_objective_candidate_generation(
+            {
+                "sharpe": 2.2,
+                "profit_factor": 1.7,
+                "net_pnl": 7200.0,
+                "max_drawdown": 0.04,
+                "trade_count": 180,
+                "fee_drag_pct": 0.014,
+                "position_switches_per_30d": 1.2,
+                "flip_reduce_fee_drag_pct": 0.010,
+                "net_pnl_per_trade": 40.0,
+                "net_pnl_per_position_switch": 260.0,
+                "profit_factor_after_fee": 1.5,
+                "action_trade_counts": {"add": 2, "entry": 10, "exit": 18, "flip": 12, "reduce": 90},
+                "action_fee_drag_pct": {"exit": 0.004, "flip": 0.004, "reduce": 0.006},
+                "action_profit_factor": {"reduce": 1.25},
+            },
+        )
+
+        self.assertGreaterEqual(balanced["staged_inventory_balance_ratio"], 0.25)
+        self.assertEqual(balanced["staged_inventory_balance_penalty"], 0.0)
+        self.assertGreater(balanced["tranche_alignment_bonus"], 0.0)
+        self.assertIn("train_staged_inventory_balance_weak", one_sided_reduce["bucket_blockers"])
+        self.assertGreater(one_sided_reduce["staged_inventory_balance_penalty"], 0.0)
+        self.assertLess(
+            one_sided_reduce["regime_objective_score"],
+            balanced["regime_objective_score"],
+        )
+
     def test_candidate_generation_ranking_compares_original_and_regime_order(self) -> None:
         candidates = [
             {

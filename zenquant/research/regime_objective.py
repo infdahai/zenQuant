@@ -27,6 +27,8 @@ MAX_FLIP_REDUCE_FEE_DRAG_RELATIVE_INCREASE = 1.15
 MAX_EXIT_FEE_DRAG_PCT_ABSOLUTE = 0.018
 MAX_FLIP_ACTION_FEE_DRAG_PCT_ABSOLUTE = 0.018
 MIN_REDUCE_ACTION_PROFIT_FACTOR = 1.0
+MIN_STAGED_BUILD_UNWIND_BALANCE_RATIO = 0.25
+MIN_TRANCHE_ACTIONS_PER_POSITION_SWITCH = 3.0
 MIN_NET_PNL_PER_POSITION_SWITCH_RELATIVE = 0.75
 MIN_PROTECTIVE_REDUCE_SHARE = 0.75
 TRAIN_DRAWDOWN_PREFERRED_BAND = 0.06
@@ -81,6 +83,11 @@ def _action_value(metrics: dict[str, Any], key: str, action: str) -> float:
 
 def _action_profit_factor(metrics: dict[str, Any], action: str) -> float:
     return _action_value(metrics, "action_profit_factor", action)
+
+
+def _action_counts_present(metrics: dict[str, Any], actions: set[str]) -> bool:
+    values = metrics.get("action_trade_counts")
+    return isinstance(values, dict) and bool(actions & set(values))
 
 
 def _effective_elapsed_days(metrics: dict[str, Any]) -> float:
@@ -477,6 +484,9 @@ def score_regime_objective_candidate_generation(
     trade_count_per_day = _trade_count_per_day(train_metrics, trade_count)
     profit_factor_after_fee = _profit_factor_after_fee(train_metrics, profit_factor, fee_drag)
     profit_factor_after_fee_present = "profit_factor" in train_metrics or "profit_factor_after_fee" in train_metrics
+    add_count = _action_value(train_metrics, "action_trade_counts", "add")
+    entry_count = _action_value(train_metrics, "action_trade_counts", "entry")
+    exit_count = _action_value(train_metrics, "action_trade_counts", "exit")
     flip_count = _action_value(train_metrics, "action_trade_counts", "flip")
     reduce_count = _action_value(train_metrics, "action_trade_counts", "reduce")
     position_switches_per_30d = _position_switches_per_30d(train_metrics, flip_count)
@@ -491,8 +501,19 @@ def score_regime_objective_candidate_generation(
         flip_count,
         reduce_count,
     )
+    staged_build_tranche_count = entry_count + add_count
+    staged_unwind_tranche_count = exit_count + reduce_count
+    staged_tranche_count = staged_build_tranche_count + staged_unwind_tranche_count
+    staged_inventory_balance_ratio = (
+        min(staged_build_tranche_count, staged_unwind_tranche_count)
+        / max(staged_build_tranche_count, staged_unwind_tranche_count)
+        if max(staged_build_tranche_count, staged_unwind_tranche_count) > 0
+        else 0.0
+    )
+    tranche_actions_per_position_switch = staged_tranche_count / max(1.0, flip_count)
     time_leverage_efficiency = max(0.0, net_pnl_per_position_switch) / max(1.0, abs(net_pnl_per_trade))
     time_leverage_bonus = min(0.35, 0.05 * time_leverage_efficiency)
+    tranche_alignment_bonus = 0.0
     baseline_turnover = _safe_float(baseline.get("turnover_per_day"))
     baseline_trade_count = _safe_float(baseline.get("trade_count"))
     baseline_fee_drag = _safe_float(baseline.get("fee_drag_pct"))
@@ -523,6 +544,7 @@ def score_regime_objective_candidate_generation(
     exit_fee_drag_penalty = 0.0
     flip_action_fee_drag_penalty = 0.0
     reduce_profit_factor_penalty = 0.0
+    staged_inventory_balance_penalty = 0.0
     position_switch_efficiency_penalty = 0.0
     protective_reduce_bias_penalty = (
         max(0.0, (MIN_PROTECTIVE_REDUCE_SHARE - protective_reduce_share) / MIN_PROTECTIVE_REDUCE_SHARE)
@@ -604,6 +626,26 @@ def score_regime_objective_candidate_generation(
         if reduce_count > 0 and reduce_action_profit_factor > 0.0
         else 0.0
     )
+    staged_inventory_balance_penalty = (
+        max(
+            0.0,
+            (MIN_STAGED_BUILD_UNWIND_BALANCE_RATIO - staged_inventory_balance_ratio)
+            / MIN_STAGED_BUILD_UNWIND_BALANCE_RATIO,
+        )
+        if staged_tranche_count >= 10
+        and _action_counts_present(train_metrics, {"add", "entry", "exit"})
+        and max(staged_build_tranche_count, staged_unwind_tranche_count) > 0
+        else 0.0
+    )
+    tranche_alignment_bonus = (
+        min(0.20, 0.04 * min(5.0, tranche_actions_per_position_switch))
+        if tranche_actions_per_position_switch >= MIN_TRANCHE_ACTIONS_PER_POSITION_SWITCH
+        and staged_inventory_balance_ratio >= MIN_STAGED_BUILD_UNWIND_BALANCE_RATIO
+        and position_switches_per_30d <= PAULWEI_MATURE_POSITION_SWITCHES_PER_30D
+        and reduce_profit_factor_penalty == 0.0
+        and flip_reduce_fee_drag_penalty == 0.0
+        else 0.0
+    )
     if baseline_net_pnl_per_trade > 0:
         net_pnl_per_trade_penalty = max(
             0.0,
@@ -668,6 +710,8 @@ def score_regime_objective_candidate_generation(
         bucket_blockers.append("train_flip_action_fee_drag_worse")
     if reduce_profit_factor_penalty > 0.0:
         bucket_blockers.append("train_reduce_profit_factor_weak")
+    if staged_inventory_balance_penalty > 0.25:
+        bucket_blockers.append("train_staged_inventory_balance_weak")
     if protective_reduce_bias_penalty > 0.0:
         bucket_blockers.append("train_protective_reduce_bias_weak")
     if position_switch_efficiency_penalty > 0.20:
@@ -679,6 +723,7 @@ def score_regime_objective_candidate_generation(
         + 0.10 * profit_factor_after_fee
         + 0.25 * bucket_score
         + time_leverage_bonus
+        + tranche_alignment_bonus
         - 1.50 * drawdown
         - 0.60 * drawdown_preferred_band_penalty
         - 0.80 * turnover_penalty
@@ -693,6 +738,7 @@ def score_regime_objective_candidate_generation(
         - 0.55 * exit_fee_drag_penalty
         - 0.55 * flip_action_fee_drag_penalty
         - 0.45 * reduce_profit_factor_penalty
+        - 0.40 * staged_inventory_balance_penalty
         - 0.70 * protective_reduce_bias_penalty
         - 0.45 * position_switch_efficiency_penalty
     )
@@ -723,6 +769,12 @@ def score_regime_objective_candidate_generation(
         "reduce_action_profit_factor": round(reduce_action_profit_factor, 6),
         "reduce_profit_factor_penalty": round(reduce_profit_factor_penalty, 6),
         "flip_reduce_trade_share": round(flip_reduce_trade_share, 6),
+        "staged_build_tranche_count": round(staged_build_tranche_count, 6),
+        "staged_unwind_tranche_count": round(staged_unwind_tranche_count, 6),
+        "staged_inventory_balance_ratio": round(staged_inventory_balance_ratio, 6),
+        "staged_inventory_balance_penalty": round(staged_inventory_balance_penalty, 6),
+        "tranche_actions_per_position_switch": round(tranche_actions_per_position_switch, 6),
+        "tranche_alignment_bonus": round(tranche_alignment_bonus, 6),
         "protective_reduce_share": round(protective_reduce_share, 6),
         "protective_reduce_action_count": round(protective_reduce_action_count, 6),
         "protective_reduce_bias_penalty": round(protective_reduce_bias_penalty, 6),
@@ -741,6 +793,8 @@ def score_regime_objective_candidate_generation(
             "max_exit_fee_drag_pct_absolute": MAX_EXIT_FEE_DRAG_PCT_ABSOLUTE,
             "max_flip_action_fee_drag_pct_absolute": MAX_FLIP_ACTION_FEE_DRAG_PCT_ABSOLUTE,
             "min_reduce_action_profit_factor": MIN_REDUCE_ACTION_PROFIT_FACTOR,
+            "min_staged_build_unwind_balance_ratio": MIN_STAGED_BUILD_UNWIND_BALANCE_RATIO,
+            "min_tranche_actions_per_position_switch": MIN_TRANCHE_ACTIONS_PER_POSITION_SWITCH,
             "min_net_pnl_per_position_switch_relative": MIN_NET_PNL_PER_POSITION_SWITCH_RELATIVE,
             "min_protective_reduce_share": MIN_PROTECTIVE_REDUCE_SHARE,
         },

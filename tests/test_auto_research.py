@@ -527,6 +527,60 @@ class TestStage1HostileProxy(unittest.TestCase):
         self.assertGreater(expensive["reduce_profit_factor_penalty"], 0.0)
         self.assertLess(expensive["hostile_proxy_score"], clean["hostile_proxy_score"])
 
+    def test_hostile_proxy_rewards_balanced_tranche_build_and_unwind(self) -> None:
+        params = {
+            "target_vol_4h": 0.95,
+            "max_leverage": 4.5,
+            "pyramid_initial_pct": 0.25,
+            "pyramid_add_pct": 0.20,
+            "pyramid_short_initial_pct": 0.15,
+            "pyramid_short_add_pct": 0.12,
+            "dca_spacing_atr": 1.25,
+            "dca_size_decay": 0.75,
+            "flip_min_confidence": 0.65,
+        }
+        balanced = _hostile_proxy_diagnostics(
+            params,
+            {
+                "sharpe": 2.1,
+                "max_drawdown": 0.04,
+                "profit_factor": 1.6,
+                "fee_drag_pct": 0.014,
+                "trade_count": 180,
+                "net_pnl": 7200.0,
+                "net_pnl_per_trade": 40.0,
+                "position_switches_per_30d": 1.2,
+                "flip_reduce_fee_drag_pct": 0.010,
+                "net_pnl_per_position_switch": 260.0,
+                "action_trade_counts": {"add": 35, "entry": 18, "exit": 18, "flip": 12, "reduce": 40},
+                "action_fee_drag_pct": {"exit": 0.004, "flip": 0.004, "reduce": 0.006},
+                "action_profit_factor": {"reduce": 1.25},
+            },
+        )
+        one_sided_reduce = _hostile_proxy_diagnostics(
+            params,
+            {
+                "sharpe": 2.1,
+                "max_drawdown": 0.04,
+                "profit_factor": 1.6,
+                "fee_drag_pct": 0.014,
+                "trade_count": 180,
+                "net_pnl": 7200.0,
+                "net_pnl_per_trade": 40.0,
+                "position_switches_per_30d": 1.2,
+                "flip_reduce_fee_drag_pct": 0.010,
+                "net_pnl_per_position_switch": 260.0,
+                "action_trade_counts": {"add": 2, "entry": 10, "exit": 18, "flip": 12, "reduce": 90},
+                "action_fee_drag_pct": {"exit": 0.004, "flip": 0.004, "reduce": 0.006},
+                "action_profit_factor": {"reduce": 1.25},
+            },
+        )
+
+        self.assertEqual(balanced["staged_inventory_balance_penalty"], 0.0)
+        self.assertGreater(balanced["tranche_alignment_bonus"], 0.0)
+        self.assertGreater(one_sided_reduce["staged_inventory_balance_penalty"], 0.0)
+        self.assertLess(one_sided_reduce["hostile_proxy_score"], balanced["hostile_proxy_score"])
+
     def test_hostile_proxy_penalizes_wide_train_drawdown_band(self) -> None:
         params = {
             "target_vol_4h": 0.95,

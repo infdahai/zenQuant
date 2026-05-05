@@ -100,6 +100,8 @@ MAX_FLIP_REDUCE_FEE_DRAG_PCT_ABSOLUTE = 0.016
 MAX_EXIT_FEE_DRAG_PCT_ABSOLUTE = 0.018
 MAX_FLIP_ACTION_FEE_DRAG_PCT_ABSOLUTE = 0.018
 MIN_REDUCE_ACTION_PROFIT_FACTOR = 1.0
+MIN_STAGED_BUILD_UNWIND_BALANCE_RATIO = 0.25
+MIN_TRANCHE_ACTIONS_PER_POSITION_SWITCH = 3.0
 TRAIN_DRAWDOWN_PREFERRED_BAND = 0.06
 MIN_PROTECTIVE_REDUCE_SHARE = 0.75
 
@@ -116,6 +118,11 @@ def _metric_action_value(metrics: dict[str, Any], key: str, action: str) -> floa
     if not isinstance(values, dict):
         return 0.0
     return _safe_float(values.get(action))
+
+
+def _metric_action_counts_present(metrics: dict[str, Any], actions: set[str]) -> bool:
+    values = metrics.get("action_trade_counts")
+    return isinstance(values, dict) and bool(actions & set(values))
 
 
 def _shutdown_pool_quickly(pool: ProcessPoolExecutor | None, futures: list[Any] | None = None) -> None:
@@ -157,6 +164,9 @@ def _hostile_proxy_diagnostics(params: dict[str, Any], metrics: dict[str, float]
     exit_fee_drag_pct = _metric_action_value(metrics, "action_fee_drag_pct", "exit")
     flip_action_fee_drag_pct = _metric_action_value(metrics, "action_fee_drag_pct", "flip")
     reduce_action_profit_factor = _metric_action_value(metrics, "action_profit_factor", "reduce")
+    add_count = _metric_action_value(metrics, "action_trade_counts", "add")
+    entry_count = _metric_action_value(metrics, "action_trade_counts", "entry")
+    exit_count = _metric_action_value(metrics, "action_trade_counts", "exit")
     flip_count = _metric_action_value(metrics, "action_trade_counts", "flip")
     reduce_count = _metric_action_value(metrics, "action_trade_counts", "reduce")
     protective_action_count = flip_count + reduce_count
@@ -171,6 +181,16 @@ def _hostile_proxy_diagnostics(params: dict[str, Any], metrics: dict[str, float]
         or 0.0
     )
     time_leverage_efficiency = max(0.0, net_pnl_per_position_switch) / max(1.0, abs(net_pnl_per_trade))
+    staged_build_tranche_count = entry_count + add_count
+    staged_unwind_tranche_count = exit_count + reduce_count
+    staged_tranche_count = staged_build_tranche_count + staged_unwind_tranche_count
+    staged_inventory_balance_ratio = (
+        min(staged_build_tranche_count, staged_unwind_tranche_count)
+        / max(staged_build_tranche_count, staged_unwind_tranche_count)
+        if max(staged_build_tranche_count, staged_unwind_tranche_count) > 0
+        else 0.0
+    )
+    tranche_actions_per_position_switch = staged_tranche_count / max(1.0, flip_count)
 
     target_vol_4h = float(params.get("target_vol_4h", 0.0) or 0.0)
     max_leverage = float(params.get("max_leverage", 0.0) or 0.0)
@@ -238,6 +258,17 @@ def _hostile_proxy_diagnostics(params: dict[str, Any], metrics: dict[str, float]
         if reduce_count > 0 and reduce_action_profit_factor > 0.0
         else 0.0
     )
+    staged_inventory_balance_penalty = (
+        max(
+            0.0,
+            (MIN_STAGED_BUILD_UNWIND_BALANCE_RATIO - staged_inventory_balance_ratio)
+            / MIN_STAGED_BUILD_UNWIND_BALANCE_RATIO,
+        )
+        if staged_tranche_count >= 10
+        and _metric_action_counts_present(metrics, {"add", "entry", "exit"})
+        and max(staged_build_tranche_count, staged_unwind_tranche_count) > 0
+        else 0.0
+    )
     train_drawdown_preferred_band_penalty = max(
         0.0,
         (max_drawdown - TRAIN_DRAWDOWN_PREFERRED_BAND) / max(0.01, TRAIN_DRAWDOWN_PREFERRED_BAND),
@@ -248,6 +279,15 @@ def _hostile_proxy_diagnostics(params: dict[str, Any], metrics: dict[str, float]
         else 0.0
     )
     time_leverage_bonus = min(0.35, 0.05 * time_leverage_efficiency)
+    tranche_alignment_bonus = (
+        min(0.20, 0.04 * min(5.0, tranche_actions_per_position_switch))
+        if tranche_actions_per_position_switch >= MIN_TRANCHE_ACTIONS_PER_POSITION_SWITCH
+        and staged_inventory_balance_ratio >= MIN_STAGED_BUILD_UNWIND_BALANCE_RATIO
+        and position_switches_per_30d <= PAULWEI_MATURE_POSITION_SWITCHES_PER_30D
+        and reduce_profit_factor_penalty == 0.0
+        and flip_reduce_fee_drag_penalty == 0.0
+        else 0.0
+    )
     train_churn_stress_penalty = round(
         0.75 * train_trade_count_penalty
         + 0.35 * train_fee_drag_proxy_penalty
@@ -261,6 +301,7 @@ def _hostile_proxy_diagnostics(params: dict[str, Any], metrics: dict[str, float]
         + 0.45 * exit_fee_drag_penalty
         + 0.45 * flip_action_fee_drag_penalty
         + 0.35 * reduce_profit_factor_penalty
+        + 0.35 * staged_inventory_balance_penalty
         + 0.55 * protective_reduce_bias_penalty
         + 0.50 * max(0.0, 1.0 - profit_factor),
         6,
@@ -285,6 +326,7 @@ def _hostile_proxy_diagnostics(params: dict[str, Any], metrics: dict[str, float]
         sharpe
         + 0.15 * profit_factor
         + time_leverage_bonus
+        + tranche_alignment_bonus
         - hostile_proxy_penalty_applied
         - 0.60 * train_drawdown_preferred_band_penalty,
         6,
@@ -304,6 +346,7 @@ def _hostile_proxy_diagnostics(params: dict[str, Any], metrics: dict[str, float]
         "exit_fee_drag_penalty": round(exit_fee_drag_penalty, 6),
         "flip_action_fee_drag_penalty": round(flip_action_fee_drag_penalty, 6),
         "reduce_profit_factor_penalty": round(reduce_profit_factor_penalty, 6),
+        "staged_inventory_balance_penalty": round(staged_inventory_balance_penalty, 6),
         "protective_reduce_bias_penalty": round(protective_reduce_bias_penalty, 6),
         "train_drawdown_preferred_band_penalty": round(train_drawdown_preferred_band_penalty, 6),
         "train_churn_stress_penalty": train_churn_stress_penalty,
@@ -316,6 +359,11 @@ def _hostile_proxy_diagnostics(params: dict[str, Any], metrics: dict[str, float]
         "exit_fee_drag_pct": round(exit_fee_drag_pct, 6),
         "flip_action_fee_drag_pct": round(flip_action_fee_drag_pct, 6),
         "reduce_action_profit_factor": round(reduce_action_profit_factor, 6),
+        "staged_build_tranche_count": round(staged_build_tranche_count, 6),
+        "staged_unwind_tranche_count": round(staged_unwind_tranche_count, 6),
+        "staged_inventory_balance_ratio": round(staged_inventory_balance_ratio, 6),
+        "tranche_actions_per_position_switch": round(tranche_actions_per_position_switch, 6),
+        "tranche_alignment_bonus": round(tranche_alignment_bonus, 6),
         "protective_reduce_share": round(protective_reduce_share, 6),
         "protective_reduce_action_count": round(protective_action_count, 6),
         "net_pnl_per_position_switch": round(net_pnl_per_position_switch, 6),
@@ -359,6 +407,12 @@ def _compact_train_trial_diagnostics(
         "time_leverage_efficiency",
         "time_leverage_bonus",
         "target_position_switches_per_30d",
+        "staged_build_tranche_count",
+        "staged_unwind_tranche_count",
+        "staged_inventory_balance_ratio",
+        "staged_inventory_balance_penalty",
+        "tranche_actions_per_position_switch",
+        "tranche_alignment_bonus",
         "mature_position_switch_penalty",
         "position_switch_penalty",
         "flip_reduce_fee_drag_penalty",
