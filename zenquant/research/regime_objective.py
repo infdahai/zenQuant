@@ -663,6 +663,16 @@ def score_regime_objective_candidate_generation(
             )
             / max(1.0, abs(baseline_net_pnl_per_position_switch)),
         )
+    fee_drag_quality_override = (
+        fee_drag <= MAX_FEE_DRAG_PCT_ABSOLUTE
+        and profit_factor_after_fee_penalty == 0.0
+        and net_pnl_per_trade_penalty == 0.0
+        and flip_reduce_fee_drag_penalty == 0.0
+        and exit_fee_drag_penalty == 0.0
+        and flip_action_fee_drag_penalty == 0.0
+        and reduce_profit_factor_penalty == 0.0
+        and staged_inventory_balance_penalty == 0.0
+    )
 
     bucket_blockers: list[str] = []
     bucket_metrics = dict(train_metrics.get("train_bucket_metrics") or {})
@@ -692,7 +702,7 @@ def score_regime_objective_candidate_generation(
         bucket_blockers.append("train_trade_count_churn_worse")
     if trade_count_per_day_penalty > 0.0:
         bucket_blockers.append("train_trade_count_per_day_cap_exceeded")
-    if fee_drag_penalty > 0.15 or fee_drag > MAX_FEE_DRAG_PCT_ABSOLUTE:
+    if (fee_drag_penalty > 0.15 and not fee_drag_quality_override) or fee_drag > MAX_FEE_DRAG_PCT_ABSOLUTE:
         bucket_blockers.append("train_fee_drag_structurally_worse")
     if fee_drag > MAX_FEE_DRAG_PCT_ABSOLUTE:
         bucket_blockers.append("train_fee_drag_cap_exceeded")
@@ -748,6 +758,7 @@ def score_regime_objective_candidate_generation(
         "turnover_penalty": round(turnover_penalty, 6),
         "trade_count_penalty": round(trade_count_penalty, 6),
         "fee_drag_penalty": round(fee_drag_penalty, 6),
+        "fee_drag_quality_override": fee_drag_quality_override,
         "net_pnl_per_trade": round(net_pnl_per_trade, 6),
         "net_pnl_per_trade_penalty": round(net_pnl_per_trade_penalty, 6),
         "trade_count_per_day": round(trade_count_per_day, 6),
