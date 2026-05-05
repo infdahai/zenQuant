@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import asdict
+from dataclasses import asdict, dataclass
 from typing import Any
 
 from zenquant.indicator import IndicatorEngineConfig
@@ -23,6 +23,66 @@ from zenquant.research.rl_tuner import (
 )
 from zenquant.risk import RiskOverlayConfig
 from zenquant.strategy import ARCStrategyConfig, ExitEngineConfig, PlaybookEngineConfig
+
+FRAMEWORK_CAMPAIGN_BUDGETS: tuple[str, ...] = ("smoke", "fast", "high")
+FRAMEWORK_FAST_WORKER_PROFILES: tuple[str, ...] = ("fast_low", "fast_default", "fast_high_cpu")
+
+SEARCH_SPACE_MODES: tuple[str, ...] = (
+    "baseline_anchored_train_only",
+    "baseline_anchored_defensive_candidate_existence",
+    "baseline_anchored_2023_08_hostile_repair",
+    "execution_inventory_rethink_train_only",
+    "intent_churn_ablation_train_only",
+    "intent_churn_repair_train_only",
+    "binance_factor_weight_repair_train_only",
+    "ralph_protective_reduce_train_only",
+    "ralph_protective_reduce_fee_repair_train_only",
+    "ralph_execution_fee_cooldown_train_only",
+    "ralph_intent_reduce_cadence_train_only",
+    "execution_first_v2_correlation_constrained",
+)
+
+BASE_TIMEFRAME_SMOKE_MODES: frozenset[str] = frozenset(
+    {
+        "intent_churn_ablation_train_only",
+        "intent_churn_repair_train_only",
+        "ralph_protective_reduce_train_only",
+        "ralph_protective_reduce_fee_repair_train_only",
+        "ralph_execution_fee_cooldown_train_only",
+        "ralph_intent_reduce_cadence_train_only",
+    }
+)
+
+STRICT_TRAIN_FEE_STOP_PROFILE_FLAGS: tuple[str, ...] = (
+    "intent_churn_ablation_search",
+    "intent_churn_repair_search",
+    "binance_factor_weight_repair_search",
+)
+
+STRICT_TRAIN_TRUTH_PROFILE_FLAGS: tuple[str, ...] = (
+    "intent_churn_ablation_search",
+    "intent_churn_repair_search",
+    "ralph_protective_reduce_search",
+    "ralph_protective_reduce_fee_repair_search",
+    "ralph_execution_fee_cooldown_search",
+    "ralph_intent_reduce_cadence_search",
+)
+
+
+@dataclass(frozen=True, slots=True)
+class DevFeeStabilityLimits:
+    dev_fee_drag_hard_cap: float = 0.05
+    dev_fee_drag_fail_fast_cap: float = 0.075
+    dev_hostile_window_fee_drag_hard_cap: float = 0.065
+    dev_to_train_fee_drag_ratio_cap: float = 4.0
+    dev_to_train_fee_drag_gap_cap: float = 0.04
+
+
+DEFAULT_DEV_FEE_STABILITY_LIMITS = DevFeeStabilityLimits()
+
+
+def smoke_uses_base_timeframe(*, budget: str, search_space_mode: str) -> bool:
+    return budget == "smoke" and search_space_mode in BASE_TIMEFRAME_SMOKE_MODES
 
 
 def build_strategy_config(params: dict[str, Any]) -> ARCStrategyConfig:

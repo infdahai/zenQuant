@@ -148,6 +148,32 @@ class FrameworkCampaignTests(unittest.TestCase):
 
         self.assertIsNone(reason)
 
+    def test_skipped_5m_fallback_diagnostics_preserve_top_level_reason(self) -> None:
+        diagnostics = CAMPAIGN._diagnostics_with_skipped_5m_fallback(
+            primary_diagnostics={
+                "empty_shortlist_reason": "stage1_fail_fast_rejected",
+                "no_tuned_candidate_reason": "proxy_penalized_out",
+                "train_candidate_diagnostics": {
+                    "stage1_fail_fast_reasons": {"regime_objective_train_bucket_fail_fast": 1}
+                },
+            },
+            skip_reason="primary_train_quality_fail_fast:train_fee_drag_cap_exceeded",
+        )
+
+        train_diagnostics = diagnostics["train_candidate_diagnostics"]
+        self.assertEqual(diagnostics["empty_shortlist_reason"], "primary_empty_train_quality_fallback_skipped")
+        self.assertEqual(diagnostics["primary_empty_shortlist_reason"], "stage1_fail_fast_rejected")
+        self.assertEqual(diagnostics["fallback_empty_shortlist_reason"], "skipped")
+        self.assertEqual(
+            diagnostics["fallback_skip_reason"],
+            "primary_train_quality_fail_fast:train_fee_drag_cap_exceeded",
+        )
+        self.assertTrue(train_diagnostics["fallback_search_skipped"])
+        self.assertEqual(
+            train_diagnostics["fallback_skip_reason"],
+            "primary_train_quality_fail_fast:train_fee_drag_cap_exceeded",
+        )
+
     def test_stage2_budget_profile_relaxes_smoke_compare_windows_only(self) -> None:
         smoke = CAMPAIGN._stage2_budget_profile("smoke")
 

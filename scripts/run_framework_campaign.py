@@ -22,6 +22,14 @@ from typing import Any
 from zenquant.domain import Timeframe
 from zenquant.historical import HistoricalBacktestConfig
 from zenquant.research.auto_research import SearchStageTimeoutError
+from zenquant.research.framework_params import (
+    FRAMEWORK_CAMPAIGN_BUDGETS,
+    FRAMEWORK_FAST_WORKER_PROFILES,
+    SEARCH_SPACE_MODES,
+)
+from zenquant.research.framework_params import (
+    smoke_uses_base_timeframe as _smoke_uses_base_timeframe,
+)
 from zenquant.research.framework_search import (
     CandidateSummary,
     FrameworkEvaluator,
@@ -65,20 +73,6 @@ def _read_seed_trials(path: Path | None) -> list[dict[str, Any]]:
             raise ValueError("seed_trials_file entries must be JSON objects")
         resolved.append(dict(item))
     return resolved
-
-
-_BASE_TIMEFRAME_SMOKE_MODES = {
-    "intent_churn_ablation_train_only",
-    "intent_churn_repair_train_only",
-    "ralph_protective_reduce_train_only",
-    "ralph_protective_reduce_fee_repair_train_only",
-    "ralph_execution_fee_cooldown_train_only",
-    "ralph_intent_reduce_cadence_train_only",
-}
-
-
-def _smoke_uses_base_timeframe(*, budget: str, search_space_mode: str) -> bool:
-    return budget == "smoke" and search_space_mode in _BASE_TIMEFRAME_SMOKE_MODES
 
 
 def _resolve_stage1_parallelism(
@@ -1112,23 +1106,10 @@ def main() -> None:
     parser.add_argument("--root", default="data/raw/binance")
     parser.add_argument("--symbol", default="BTCUSDT")
     parser.add_argument("--output-dir", default="results/framework_optimization")
-    parser.add_argument("--budget", choices=("smoke", "fast", "high"), default="high")
+    parser.add_argument("--budget", choices=FRAMEWORK_CAMPAIGN_BUDGETS, default="high")
     parser.add_argument(
         "--search-space-mode",
-        choices=(
-            "baseline_anchored_train_only",
-            "baseline_anchored_defensive_candidate_existence",
-            "baseline_anchored_2023_08_hostile_repair",
-            "execution_inventory_rethink_train_only",
-            "intent_churn_ablation_train_only",
-            "intent_churn_repair_train_only",
-            "binance_factor_weight_repair_train_only",
-            "ralph_protective_reduce_train_only",
-            "ralph_protective_reduce_fee_repair_train_only",
-            "ralph_execution_fee_cooldown_train_only",
-            "ralph_intent_reduce_cadence_train_only",
-            "execution_first_v2_correlation_constrained",
-        ),
+        choices=SEARCH_SPACE_MODES,
         default=None,
     )
     parser.add_argument("--optuna-trials", type=int)
@@ -1142,7 +1123,7 @@ def main() -> None:
     parser.add_argument("--dev-gate-interval", type=int, default=None)
     parser.add_argument(
         "--fast-worker-profile",
-        choices=("fast_low", "fast_default", "fast_high_cpu"),
+        choices=FRAMEWORK_FAST_WORKER_PROFILES,
         default="fast_default",
     )
     args = parser.parse_args()
@@ -1579,6 +1560,10 @@ def main() -> None:
                         "train_candidate_diagnostics": dict(stage1_state.get("train_candidate_diagnostics") or {}),
                         "empty_shortlist_reason": stage1_state.get("empty_shortlist_reason"),
                         "no_tuned_candidate_reason": stage1_state.get("no_tuned_candidate_reason"),
+                        "primary_empty_shortlist_reason": stage1_state.get("primary_empty_shortlist_reason"),
+                        "fallback_empty_shortlist_reason": stage1_state.get("fallback_empty_shortlist_reason"),
+                        "fallback_search_skipped": stage1_state.get("fallback_search_skipped"),
+                        "fallback_skip_reason": stage1_state.get("fallback_skip_reason"),
                         "failure_reason": failure_reason,
                         "failure_detail": failure_detail,
                     },
@@ -2376,6 +2361,10 @@ def main() -> None:
             )
             stage1_state["empty_shortlist_reason"] = optuna_diagnostics.get("empty_shortlist_reason")
             stage1_state["no_tuned_candidate_reason"] = optuna_diagnostics.get("no_tuned_candidate_reason")
+            stage1_state["primary_empty_shortlist_reason"] = optuna_diagnostics.get("primary_empty_shortlist_reason")
+            stage1_state["fallback_empty_shortlist_reason"] = optuna_diagnostics.get("fallback_empty_shortlist_reason")
+            stage1_state["fallback_search_skipped"] = optuna_diagnostics.get("fallback_empty_shortlist_reason") == "skipped"
+            stage1_state["fallback_skip_reason"] = optuna_diagnostics.get("fallback_skip_reason")
             stage1_state["candidate_existence_goal_met"] = bool(optuna_params is not None)
             stage1_state["stage1_budget_mode"] = optuna_diagnostics.get(
                 "stage1_budget_mode", stage1_state.get("stage1_budget_mode")

@@ -14,6 +14,11 @@ from zenquant.historical import HistoricalBacktestConfig
 from zenquant.historical.storage import HistoricalKlineRow, write_parquet_rows
 from zenquant.research.auto_research import _build_strategy_config, _hostile_proxy_diagnostics
 from zenquant.research.framework_params import (
+    BASE_TIMEFRAME_SMOKE_MODES,
+    DEFAULT_DEV_FEE_STABILITY_LIMITS,
+    SEARCH_SPACE_MODES,
+    STRICT_TRAIN_FEE_STOP_PROFILE_FLAGS,
+    STRICT_TRAIN_TRUTH_PROFILE_FLAGS,
     baseline_anchor_params,
     baseline_anchor_seed_trials,
     baseline_anchored_2023_08_hostile_repair_param_grid,
@@ -44,6 +49,7 @@ from zenquant.research.framework_params import (
     ralph_protective_reduce_param_grid,
     ralph_protective_reduce_seed_trials,
     search_space_profile,
+    smoke_uses_base_timeframe,
 )
 from zenquant.research.framework_search import (
     BacktestSnapshot,
@@ -108,6 +114,20 @@ class FrameworkParamTests(unittest.TestCase):
         self.assertEqual(profile["direction_weight_policy"]["demoted_signal"], "funding_alpha_signal")
         self.assertEqual(profile["direction_weight_policy"]["demoted_signal_role"], "state")
         self.assertTrue(profile["hostile_window_guardrails"]["enabled"])
+
+    def test_framework_research_config_registry_contains_campaign_modes_and_limits(self) -> None:
+        self.assertIn("intent_churn_ablation_train_only", SEARCH_SPACE_MODES)
+        self.assertIn("ralph_intent_reduce_cadence_train_only", SEARCH_SPACE_MODES)
+        self.assertIn("intent_churn_ablation_train_only", BASE_TIMEFRAME_SMOKE_MODES)
+        self.assertTrue(
+            smoke_uses_base_timeframe(budget="smoke", search_space_mode="ralph_intent_reduce_cadence_train_only")
+        )
+        self.assertFalse(
+            smoke_uses_base_timeframe(budget="smoke", search_space_mode="baseline_anchored_train_only")
+        )
+        self.assertIn("intent_churn_ablation_search", STRICT_TRAIN_FEE_STOP_PROFILE_FLAGS)
+        self.assertIn("ralph_intent_reduce_cadence_search", STRICT_TRAIN_TRUTH_PROFILE_FLAGS)
+        self.assertEqual(DEFAULT_DEV_FEE_STABILITY_LIMITS.dev_fee_drag_fail_fast_cap, 0.075)
 
     def test_hostile_constraint_violations_reject_aggressive_combo(self) -> None:
         params = {

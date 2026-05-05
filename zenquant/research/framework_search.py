@@ -40,6 +40,9 @@ from zenquant.research.comparison import (
 )
 from zenquant.research.data_source_review import load_source_admission_review
 from zenquant.research.framework_params import (
+    DEFAULT_DEV_FEE_STABILITY_LIMITS,
+    STRICT_TRAIN_FEE_STOP_PROFILE_FLAGS,
+    STRICT_TRAIN_TRUTH_PROFILE_FLAGS,
     baseline_anchor_seed_trials,
     binance_factor_weight_repair_seed_trials,
     build_execution_config,
@@ -63,12 +66,6 @@ from zenquant.research.historical_extension import load_historical_extension_can
 from zenquant.research.regime_objective import score_regime_objective_candidate_generation
 from zenquant.research.source_independence import load_source_independence_audit
 from zenquant.research.splits import DatasetSplitSpec, default_btc_split_spec, split_summary_json
-
-DEV_FEE_DRAG_HARD_CAP = 0.05
-DEV_FEE_DRAG_FAIL_FAST_CAP = 0.075
-DEV_HOSTILE_WINDOW_FEE_DRAG_HARD_CAP = 0.065
-DEV_TO_TRAIN_FEE_DRAG_RATIO_CAP = 4.0
-DEV_TO_TRAIN_FEE_DRAG_GAP_CAP = 0.04
 
 
 def _etf_flow_source_metadata(macro_dir: Path) -> dict[str, Any]:
@@ -745,6 +742,7 @@ def _variant_window_metrics(report: SearchReport, variant: str) -> dict[str, dic
 
 
 def _dev_fee_stability_summary(report: SearchReport) -> dict[str, Any]:
+    limits = DEFAULT_DEV_FEE_STABILITY_LIMITS
     tuned = _best_tuned_candidate(report)
     if tuned is None:
         return {
@@ -756,10 +754,10 @@ def _dev_fee_stability_summary(report: SearchReport) -> dict[str, Any]:
             "dev_train_fee_drag_gap": None,
             "window_fee_drag_pct": {},
             "limits": {
-                "dev_fee_drag_hard_cap": DEV_FEE_DRAG_HARD_CAP,
-                "dev_hostile_window_fee_drag_hard_cap": DEV_HOSTILE_WINDOW_FEE_DRAG_HARD_CAP,
-                "dev_to_train_fee_drag_ratio_cap": DEV_TO_TRAIN_FEE_DRAG_RATIO_CAP,
-                "dev_to_train_fee_drag_gap_cap": DEV_TO_TRAIN_FEE_DRAG_GAP_CAP,
+                "dev_fee_drag_hard_cap": limits.dev_fee_drag_hard_cap,
+                "dev_hostile_window_fee_drag_hard_cap": limits.dev_hostile_window_fee_drag_hard_cap,
+                "dev_to_train_fee_drag_ratio_cap": limits.dev_to_train_fee_drag_ratio_cap,
+                "dev_to_train_fee_drag_gap_cap": limits.dev_to_train_fee_drag_gap_cap,
             },
         }
 
@@ -770,12 +768,15 @@ def _dev_fee_stability_summary(report: SearchReport) -> dict[str, Any]:
     dev_to_train_ratio = None
     dev_train_gap = None
 
-    if dev_fee_drag_pct > DEV_FEE_DRAG_HARD_CAP:
+    if dev_fee_drag_pct > limits.dev_fee_drag_hard_cap:
         failures.append("dev_fee_drag_cap_exceeded")
     if train_fee_drag_pct is not None and train_fee_drag_pct > 0.0:
         dev_to_train_ratio = dev_fee_drag_pct / train_fee_drag_pct
         dev_train_gap = dev_fee_drag_pct - train_fee_drag_pct
-        if dev_to_train_ratio > DEV_TO_TRAIN_FEE_DRAG_RATIO_CAP or dev_train_gap > DEV_TO_TRAIN_FEE_DRAG_GAP_CAP:
+        if (
+            dev_to_train_ratio > limits.dev_to_train_fee_drag_ratio_cap
+            or dev_train_gap > limits.dev_to_train_fee_drag_gap_cap
+        ):
             failures.append("dev_train_fee_drag_mismatch")
 
     window_fee_drag_pct = {
@@ -785,7 +786,7 @@ def _dev_fee_stability_summary(report: SearchReport) -> dict[str, Any]:
     hostile_fee_failures = [
         label
         for label, fee_drag_pct in window_fee_drag_pct.items()
-        if label != "dev" and fee_drag_pct > DEV_HOSTILE_WINDOW_FEE_DRAG_HARD_CAP
+        if label != "dev" and fee_drag_pct > limits.dev_hostile_window_fee_drag_hard_cap
     ]
     if hostile_fee_failures:
         failures.append("hostile_window_fee_drag_cap_exceeded")
@@ -800,10 +801,10 @@ def _dev_fee_stability_summary(report: SearchReport) -> dict[str, Any]:
         "window_fee_drag_pct": window_fee_drag_pct,
         "hostile_fee_failure_windows": hostile_fee_failures,
         "limits": {
-            "dev_fee_drag_hard_cap": DEV_FEE_DRAG_HARD_CAP,
-            "dev_hostile_window_fee_drag_hard_cap": DEV_HOSTILE_WINDOW_FEE_DRAG_HARD_CAP,
-            "dev_to_train_fee_drag_ratio_cap": DEV_TO_TRAIN_FEE_DRAG_RATIO_CAP,
-            "dev_to_train_fee_drag_gap_cap": DEV_TO_TRAIN_FEE_DRAG_GAP_CAP,
+            "dev_fee_drag_hard_cap": limits.dev_fee_drag_hard_cap,
+            "dev_hostile_window_fee_drag_hard_cap": limits.dev_hostile_window_fee_drag_hard_cap,
+            "dev_to_train_fee_drag_ratio_cap": limits.dev_to_train_fee_drag_ratio_cap,
+            "dev_to_train_fee_drag_gap_cap": limits.dev_to_train_fee_drag_gap_cap,
         },
     }
 
@@ -2691,6 +2692,7 @@ def _stage1_fail_fast_reason(
     baseline: CandidateSummary,
     current: CandidateSummary,
 ) -> str | None:
+    fee_limits = DEFAULT_DEV_FEE_STABILITY_LIMITS
     hostile_anchor = baseline if baseline.worst_dev_sharpe >= current.worst_dev_sharpe else current
     turnover_anchor = max(baseline.turnover_per_day, current.turnover_per_day)
     fee_drag_anchor = max(baseline.fee_drag_pct, current.fee_drag_pct)
@@ -2698,9 +2700,9 @@ def _stage1_fail_fast_reason(
         return "weak_window_2023_08_fail_fast"
     if candidate.worst_dev_sharpe < hostile_anchor.worst_dev_sharpe - 0.25:
         return "worst_dev_sharpe_fail_fast"
-    if candidate.fee_drag_pct > DEV_FEE_DRAG_FAIL_FAST_CAP:
+    if candidate.fee_drag_pct > fee_limits.dev_fee_drag_fail_fast_cap:
         return "dev_fee_drag_fail_fast"
-    if candidate.fee_drag_pct > max(DEV_FEE_DRAG_FAIL_FAST_CAP, fee_drag_anchor * 1.35):
+    if candidate.fee_drag_pct > max(fee_limits.dev_fee_drag_fail_fast_cap, fee_drag_anchor * 1.35):
         return "fee_drag_fail_fast"
     if candidate.turnover_per_day > max(turnover_anchor * 1.35, turnover_anchor + 250.0):
         return "turnover_fail_fast"
@@ -2853,22 +2855,11 @@ def run_optuna_search(
     )[:n_trials]
     strict_train_fee_stop = any(
         bool(evaluator.search_space_profile.get(key, False))
-        for key in (
-            "intent_churn_ablation_search",
-            "intent_churn_repair_search",
-            "binance_factor_weight_repair_search",
-        )
+        for key in STRICT_TRAIN_FEE_STOP_PROFILE_FLAGS
     )
     strict_train_truth_search = any(
         bool(evaluator.search_space_profile.get(key, False))
-        for key in (
-            "intent_churn_ablation_search",
-            "intent_churn_repair_search",
-            "ralph_protective_reduce_search",
-            "ralph_protective_reduce_fee_repair_search",
-            "ralph_execution_fee_cooldown_search",
-            "ralph_intent_reduce_cadence_search",
-        )
+        for key in STRICT_TRAIN_TRUTH_PROFILE_FLAGS
     )
     worker_config = CampaignConfig(
         data_root=evaluator._base_config.root_dir,
