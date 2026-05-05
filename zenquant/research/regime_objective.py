@@ -24,6 +24,9 @@ MAX_POSITION_SWITCHES_PER_30D = 3.0
 MAX_POSITION_SWITCH_RELATIVE_INCREASE = 1.15
 MAX_FLIP_REDUCE_FEE_DRAG_PCT_ABSOLUTE = 0.016
 MAX_FLIP_REDUCE_FEE_DRAG_RELATIVE_INCREASE = 1.15
+MAX_EXIT_FEE_DRAG_PCT_ABSOLUTE = 0.018
+MAX_FLIP_ACTION_FEE_DRAG_PCT_ABSOLUTE = 0.018
+MIN_REDUCE_ACTION_PROFIT_FACTOR = 1.0
 MIN_NET_PNL_PER_POSITION_SWITCH_RELATIVE = 0.75
 MIN_PROTECTIVE_REDUCE_SHARE = 0.75
 TRAIN_DRAWDOWN_PREFERRED_BAND = 0.06
@@ -74,6 +77,10 @@ def _action_value(metrics: dict[str, Any], key: str, action: str) -> float:
     if not isinstance(values, dict):
         return 0.0
     return _safe_float(values.get(action))
+
+
+def _action_profit_factor(metrics: dict[str, Any], action: str) -> float:
+    return _action_value(metrics, "action_profit_factor", action)
 
 
 def _effective_elapsed_days(metrics: dict[str, Any]) -> float:
@@ -474,6 +481,9 @@ def score_regime_objective_candidate_generation(
     reduce_count = _action_value(train_metrics, "action_trade_counts", "reduce")
     position_switches_per_30d = _position_switches_per_30d(train_metrics, flip_count)
     flip_reduce_fee_drag_pct = _flip_reduce_fee_drag_pct(train_metrics)
+    exit_fee_drag_pct = _action_value(train_metrics, "action_fee_drag_pct", "exit")
+    flip_action_fee_drag_pct = _action_value(train_metrics, "action_fee_drag_pct", "flip")
+    reduce_action_profit_factor = _action_profit_factor(train_metrics, "reduce")
     flip_reduce_trade_share = (flip_count + reduce_count) / trade_count if trade_count > 0 else 0.0
     net_pnl_per_position_switch = _net_pnl_per_position_switch(train_metrics, net_pnl, flip_count)
     protective_reduce_share, protective_reduce_action_count = _protective_reduce_share(
@@ -510,6 +520,9 @@ def score_regime_objective_candidate_generation(
     position_switch_penalty = 0.0
     mature_position_switch_penalty = 0.0
     flip_reduce_fee_drag_penalty = 0.0
+    exit_fee_drag_penalty = 0.0
+    flip_action_fee_drag_penalty = 0.0
+    reduce_profit_factor_penalty = 0.0
     position_switch_efficiency_penalty = 0.0
     protective_reduce_bias_penalty = (
         max(0.0, (MIN_PROTECTIVE_REDUCE_SHARE - protective_reduce_share) / MIN_PROTECTIVE_REDUCE_SHARE)
@@ -575,6 +588,22 @@ def score_regime_objective_candidate_generation(
         0.0,
         (flip_reduce_fee_drag_pct - flip_reduce_fee_drag_limit) / max(0.001, flip_reduce_fee_drag_limit),
     )
+    exit_fee_drag_penalty = max(
+        0.0,
+        (exit_fee_drag_pct - MAX_EXIT_FEE_DRAG_PCT_ABSOLUTE) / MAX_EXIT_FEE_DRAG_PCT_ABSOLUTE,
+    )
+    flip_action_fee_drag_penalty = max(
+        0.0,
+        (flip_action_fee_drag_pct - MAX_FLIP_ACTION_FEE_DRAG_PCT_ABSOLUTE) / MAX_FLIP_ACTION_FEE_DRAG_PCT_ABSOLUTE,
+    )
+    reduce_profit_factor_penalty = (
+        max(
+            0.0,
+            (MIN_REDUCE_ACTION_PROFIT_FACTOR - reduce_action_profit_factor) / MIN_REDUCE_ACTION_PROFIT_FACTOR,
+        )
+        if reduce_count > 0 and reduce_action_profit_factor > 0.0
+        else 0.0
+    )
     if baseline_net_pnl_per_trade > 0:
         net_pnl_per_trade_penalty = max(
             0.0,
@@ -633,6 +662,12 @@ def score_regime_objective_candidate_generation(
         bucket_blockers.append("train_position_switch_cadence_worse")
     if flip_reduce_fee_drag_penalty > 0.15:
         bucket_blockers.append("train_flip_reduce_fee_drag_worse")
+    if exit_fee_drag_penalty > 0.15:
+        bucket_blockers.append("train_exit_fee_drag_worse")
+    if flip_action_fee_drag_penalty > 0.15:
+        bucket_blockers.append("train_flip_action_fee_drag_worse")
+    if reduce_profit_factor_penalty > 0.0:
+        bucket_blockers.append("train_reduce_profit_factor_weak")
     if protective_reduce_bias_penalty > 0.0:
         bucket_blockers.append("train_protective_reduce_bias_weak")
     if position_switch_efficiency_penalty > 0.20:
@@ -655,6 +690,9 @@ def score_regime_objective_candidate_generation(
         - 0.65 * position_switch_penalty
         - 0.35 * mature_position_switch_penalty
         - 0.85 * flip_reduce_fee_drag_penalty
+        - 0.55 * exit_fee_drag_penalty
+        - 0.55 * flip_action_fee_drag_penalty
+        - 0.45 * reduce_profit_factor_penalty
         - 0.70 * protective_reduce_bias_penalty
         - 0.45 * position_switch_efficiency_penalty
     )
@@ -678,6 +716,12 @@ def score_regime_objective_candidate_generation(
         "mature_position_switch_penalty": round(mature_position_switch_penalty, 6),
         "flip_reduce_fee_drag_pct": round(flip_reduce_fee_drag_pct, 6),
         "flip_reduce_fee_drag_penalty": round(flip_reduce_fee_drag_penalty, 6),
+        "exit_fee_drag_pct": round(exit_fee_drag_pct, 6),
+        "exit_fee_drag_penalty": round(exit_fee_drag_penalty, 6),
+        "flip_action_fee_drag_pct": round(flip_action_fee_drag_pct, 6),
+        "flip_action_fee_drag_penalty": round(flip_action_fee_drag_penalty, 6),
+        "reduce_action_profit_factor": round(reduce_action_profit_factor, 6),
+        "reduce_profit_factor_penalty": round(reduce_profit_factor_penalty, 6),
         "flip_reduce_trade_share": round(flip_reduce_trade_share, 6),
         "protective_reduce_share": round(protective_reduce_share, 6),
         "protective_reduce_action_count": round(protective_reduce_action_count, 6),
@@ -694,6 +738,9 @@ def score_regime_objective_candidate_generation(
             "target_position_switches_per_30d": PAULWEI_MATURE_POSITION_SWITCHES_PER_30D,
             "max_position_switches_per_30d": MAX_POSITION_SWITCHES_PER_30D,
             "max_flip_reduce_fee_drag_pct_absolute": MAX_FLIP_REDUCE_FEE_DRAG_PCT_ABSOLUTE,
+            "max_exit_fee_drag_pct_absolute": MAX_EXIT_FEE_DRAG_PCT_ABSOLUTE,
+            "max_flip_action_fee_drag_pct_absolute": MAX_FLIP_ACTION_FEE_DRAG_PCT_ABSOLUTE,
+            "min_reduce_action_profit_factor": MIN_REDUCE_ACTION_PROFIT_FACTOR,
             "min_net_pnl_per_position_switch_relative": MIN_NET_PNL_PER_POSITION_SWITCH_RELATIVE,
             "min_protective_reduce_share": MIN_PROTECTIVE_REDUCE_SHARE,
         },

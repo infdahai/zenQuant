@@ -473,6 +473,60 @@ class TestStage1HostileProxy(unittest.TestCase):
         )
         self.assertLess(flip_dominant["hostile_proxy_score"], protective["hostile_proxy_score"])
 
+    def test_hostile_proxy_penalizes_expensive_exit_and_weak_reduce_quality(self) -> None:
+        params = {
+            "target_vol_4h": 0.95,
+            "max_leverage": 4.5,
+            "pyramid_initial_pct": 0.25,
+            "pyramid_add_pct": 0.20,
+            "pyramid_short_initial_pct": 0.15,
+            "pyramid_short_add_pct": 0.12,
+            "dca_spacing_atr": 1.25,
+            "dca_size_decay": 0.75,
+            "flip_min_confidence": 0.65,
+        }
+        clean = _hostile_proxy_diagnostics(
+            params,
+            {
+                "sharpe": 2.0,
+                "max_drawdown": 0.05,
+                "profit_factor": 1.3,
+                "fee_drag_pct": 0.012,
+                "trade_count": 220,
+                "net_pnl": 8000.0,
+                "net_pnl_per_trade": 36.36,
+                "position_switches_per_30d": 1.4,
+                "flip_reduce_fee_drag_pct": 0.008,
+                "net_pnl_per_position_switch": 220.0,
+                "action_trade_counts": {"flip": 20, "reduce": 80},
+                "action_fee_drag_pct": {"exit": 0.010, "flip": 0.010, "reduce": 0.006},
+                "action_profit_factor": {"reduce": 1.20},
+            },
+        )
+        expensive = _hostile_proxy_diagnostics(
+            params,
+            {
+                "sharpe": 2.0,
+                "max_drawdown": 0.05,
+                "profit_factor": 1.3,
+                "fee_drag_pct": 0.012,
+                "trade_count": 220,
+                "net_pnl": 8000.0,
+                "net_pnl_per_trade": 36.36,
+                "position_switches_per_30d": 1.4,
+                "flip_reduce_fee_drag_pct": 0.008,
+                "net_pnl_per_position_switch": 220.0,
+                "action_trade_counts": {"flip": 20, "reduce": 80},
+                "action_fee_drag_pct": {"exit": 0.033, "flip": 0.045, "reduce": 0.016},
+                "action_profit_factor": {"reduce": 0.94},
+            },
+        )
+
+        self.assertGreater(expensive["exit_fee_drag_penalty"], 0.0)
+        self.assertGreater(expensive["flip_action_fee_drag_penalty"], 0.0)
+        self.assertGreater(expensive["reduce_profit_factor_penalty"], 0.0)
+        self.assertLess(expensive["hostile_proxy_score"], clean["hostile_proxy_score"])
+
     def test_hostile_proxy_penalizes_wide_train_drawdown_band(self) -> None:
         params = {
             "target_vol_4h": 0.95,

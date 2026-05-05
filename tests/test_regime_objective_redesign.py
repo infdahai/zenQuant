@@ -402,6 +402,42 @@ class RegimeObjectiveRedesignTests(unittest.TestCase):
         self.assertEqual(score["protective_reduce_share"], 0.25)
         self.assertGreater(score["protective_reduce_bias_penalty"], 0.0)
 
+    def test_candidate_generation_scorer_blocks_expensive_exit_and_weak_reduce_quality(self) -> None:
+        score = score_regime_objective_candidate_generation(
+            {
+                "sharpe": 3.3,
+                "profit_factor": 2.1,
+                "net_pnl": 9400.0,
+                "max_drawdown": 0.04,
+                "trade_count": 334,
+                "fee_drag_pct": 0.135,
+                "position_switches_per_30d": 1.0,
+                "flip_reduce_fee_drag_pct": 0.061,
+                "net_pnl_per_trade": 28.0,
+                "net_pnl_per_position_switch": 190.0,
+                "profit_factor_after_fee": 1.86,
+                "action_trade_counts": {"flip": 49, "reduce": 231},
+                "action_fee_drag_pct": {"exit": 0.033, "flip": 0.045, "reduce": 0.016},
+                "action_profit_factor": {"exit": 4.2, "flip": 4.8, "reduce": 0.94},
+            },
+            baseline_metrics={
+                "profit_factor": 1.2,
+                "net_pnl": 4000.0,
+                "trade_count": 220,
+                "fee_drag_pct": 0.015,
+                "position_switches_per_30d": 1.6,
+                "flip_reduce_fee_drag_pct": 0.010,
+                "net_pnl_per_position_switch": 160.0,
+            },
+        )
+
+        self.assertIn("train_exit_fee_drag_worse", score["bucket_blockers"])
+        self.assertIn("train_flip_action_fee_drag_worse", score["bucket_blockers"])
+        self.assertIn("train_reduce_profit_factor_weak", score["bucket_blockers"])
+        self.assertGreater(score["exit_fee_drag_penalty"], 0.0)
+        self.assertGreater(score["flip_action_fee_drag_penalty"], 0.0)
+        self.assertGreater(score["reduce_profit_factor_penalty"], 0.0)
+
     def test_candidate_generation_ranking_compares_original_and_regime_order(self) -> None:
         candidates = [
             {
