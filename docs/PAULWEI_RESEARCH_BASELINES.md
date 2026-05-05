@@ -43,6 +43,18 @@ Use the tranche profile to separate:
 The mature BTC profile is the better learning target for intent design: low
 direction switching, many small adds, and many small reduces.
 
+## Early Convexity Audit
+
+The early public-ledger period should not be summarized as a single headline USD
+multiple. The research target is `paulwei_early_convexity_train_only`: a
+research-only audit that separates BTC-unit wealth, actual wallet USD, and
+cash-flow adjusted USD.
+
+This distinction matters for this repo because the strategy is USDT-margined.
+BTC-collateral convexity is not a direct promotion target. The transferable
+parts are phase-aware time-in-market, staged add/reduce behavior, and explicit
+cash-flow adjusted evaluation with actual-wallet drawdown reporting.
+
 ## Commands
 
 Compare default current and frozen PaulWei:
@@ -73,4 +85,10 @@ Build the order/fill/episode tranche profile:
 
 ```bash
 uv run python scripts/analyze_paulwei_tranche_behavior.py --data-root data/raw/paulwei_public --output-dir results/paulwei_tranche_behavior
+```
+
+Build the early BTC-unit convexity audit:
+
+```bash
+uv run python scripts/analyze_paulwei_early_convexity.py --data-root data/raw/paulwei_public --spot-root data/raw/binance_spot --output-dir results/paulwei_early_convexity
 ```

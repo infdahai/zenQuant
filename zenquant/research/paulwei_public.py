@@ -569,6 +569,148 @@ def write_tranche_behavior_profile(
     }
 
 
+def build_early_convexity_audit(
+    *,
+    data_root: Path,
+    spot_root: Path,
+    mature_start_at: str = "2021-05-28T12:00:00+00:00",
+) -> dict[str, Any]:
+    """Audit PaulWei's early BTC-denominated convexity as research-only evidence.
+
+    The output intentionally separates BTC units, actual wallet USD, and
+    cash-flow adjusted USD so the behavior can inform USDT-margin research
+    without importing BTC-collateral accounting as execution truth.
+    """
+    frames = load_paulwei_frames(data_root=data_root)
+    equity_curve = frames.get("derived-equity-curve.csv", pd.DataFrame()).copy()
+    if equity_curve.empty:
+        payload = {
+            "generated_at": _ts(),
+            "audit_id": "paulwei_early_convexity_train_only",
+            "ready": False,
+            "blocked_by": ["derived_equity_curve_missing"],
+            "research_scope": "research_only_public_account_behavior",
+        }
+        payload["artifact_id"] = _artifact_id(payload)
+        return payload
+
+    ledger = _build_three_ledger_curve(equity_curve=equity_curve, spot_root=spot_root)
+    if ledger.empty:
+        payload = {
+            "generated_at": _ts(),
+            "audit_id": "paulwei_early_convexity_train_only",
+            "ready": False,
+            "blocked_by": ["three_ledger_curve_empty"],
+            "research_scope": "research_only_public_account_behavior",
+        }
+        payload["artifact_id"] = _artifact_id(payload)
+        return payload
+
+    mature_start = pd.Timestamp(mature_start_at)
+    window_specs = [
+        {"label": "full_public_window", "start": None, "end": None},
+        {"label": "early_convexity_window", "start": None, "end": mature_start},
+        {"label": "mature_control_window", "start": mature_start, "end": None},
+    ]
+    window_summaries = [
+        _summarize_convexity_window(
+            ledger,
+            label=str(spec["label"]),
+            start=spec["start"],
+            end=spec["end"],
+        )
+        for spec in window_specs
+    ]
+    tranche_profile = build_tranche_behavior_profile(data_root=data_root, mature_start_at=mature_start_at)
+
+    payload = {
+        "generated_at": _ts(),
+        "audit_id": "paulwei_early_convexity_train_only",
+        "ready": True,
+        "blocked_by": [],
+        "research_scope": "research_only_public_account_behavior",
+        "strategy_base_currency": "USDT",
+        "source_dataset": "paulwei_public_archive",
+        "source_venue": "bitmex",
+        "mature_start_at": mature_start_at,
+        "test_split_policy": "public ledger can extend beyond canonical test; do not use for promotion feedback",
+        "three_ledger_contract": {
+            "btc_units": {
+                "primary_curve": "cash_flow_adjusted_btc",
+                "actual_wallet_curve": "actual_wallet_btc",
+                "purpose": "measure coin-denominated wealth expansion separately from BTC/USD beta",
+            },
+            "actual_wallet_usd": {
+                "primary_curve": "actual_wallet_usd",
+                "purpose": "measure post-withdrawal account risk visible in the live wallet",
+            },
+            "cash_flow_adjusted_usd": {
+                "primary_curve": "cash_flow_adjusted_usd",
+                "purpose": "measure trading performance after adding withdrawals back and valuing BTC units in USD",
+            },
+        },
+        "cash_flow_summary": _cash_flow_summary(ledger),
+        "btc_unit_milestones": _first_crossings(
+            ledger,
+            column="cash_flow_adjusted_btc",
+            levels=(5.0, 10.0, 25.0, 50.0, 75.0),
+        ),
+        "window_summaries": window_summaries,
+        "btc_tranche_profiles": _extract_btc_tranche_profiles(tranche_profile),
+        "u_margin_translation": {
+            "learning_target": "separate early BTC-unit expansion behavior from mature low-switch cadence",
+            "safe_to_transfer": [
+                "phase-aware time-in-market target during confirmed expansion regimes",
+                "staged add behavior when position is already working",
+                "staged reduce behavior that avoids one-shot liquidation",
+                "cash-flow adjusted evaluation alongside actual-wallet drawdown",
+            ],
+            "blocked_from_transfer": [
+                "BTC-collateral convexity as a direct return target for a USDT-margin strategy",
+                "tolerating early-public-ledger drawdowns without a risk governor",
+                "using public-ledger hindsight as promotion truth",
+                "copying inverse-contract accounting into Binance USDT execution truth",
+            ],
+            "proposed_train_observables": [
+                "cash_flow_adjusted_usd_return",
+                "actual_wallet_usd_drawdown",
+                "btc_unit_growth_multiple",
+                "btc_beta_multiple",
+                "unit_vs_beta_log_contribution",
+                "phase_tranche_add_reduce_counts",
+            ],
+            "promotion_constraint": "only after canonical train/dev/test and robustness gates on USDT-margin replay",
+        },
+    }
+    payload["artifact_id"] = _artifact_id(payload)
+    return payload
+
+
+def write_early_convexity_audit(
+    *,
+    data_root: Path,
+    spot_root: Path,
+    output_dir: Path,
+    mature_start_at: str = "2021-05-28T12:00:00+00:00",
+) -> dict[str, Any]:
+    payload = build_early_convexity_audit(
+        data_root=data_root,
+        spot_root=spot_root,
+        mature_start_at=mature_start_at,
+    )
+    output_dir.mkdir(parents=True, exist_ok=True)
+    json_path = output_dir / "early_convexity_audit.json"
+    md_path = output_dir / "early_convexity_audit.md"
+    _write_json(json_path, payload)
+    md_path.write_text(_early_convexity_markdown(payload), encoding="utf-8")
+    return {
+        "json_path": str(json_path),
+        "md_path": str(md_path),
+        "ready": payload.get("ready", False),
+        "artifact_id": payload.get("artifact_id"),
+    }
+
+
 def build_baseline_mapping(*, behavior_profile: dict[str, Any]) -> dict[str, Any]:
     from zenquant.research.comparison import paulwei_execution_baseline, paulwei_risk_baseline
 
@@ -2014,6 +2156,338 @@ def _tranche_behavior_markdown(payload: dict[str, Any]) -> str:
                     "",
                 ]
             )
+    return "\n".join(lines)
+
+
+def _build_three_ledger_curve(*, equity_curve: pd.DataFrame, spot_root: Path) -> pd.DataFrame:
+    frame = equity_curve.copy()
+    if frame.empty or "timestamp" not in frame.columns:
+        return pd.DataFrame()
+
+    frame["timestamp"] = _parse_ts(frame["timestamp"])
+    for column in (
+        "walletBalanceXBT",
+        "walletBalanceXBTEquivalent",
+        "adjustedWealthXBT",
+        "adjustedMarkedWealthXBT",
+        "cumulativeCompletedDepositsAfterBaselineXBT",
+        "cumulativeCompletedWithdrawalsAfterBaselineXBT",
+        "xbtUsdtRate",
+    ):
+        if column in frame.columns:
+            frame[column] = pd.to_numeric(frame[column], errors="coerce")
+    frame = frame.dropna(subset=["timestamp"]).sort_values("timestamp", kind="stable")
+    frame = frame.drop_duplicates(subset=["timestamp"], keep="last")
+    if frame.empty:
+        return pd.DataFrame()
+
+    daily = _load_spot_daily(spot_root / "klines" / "BTCUSDT" / "1d" / "data.parquet")
+    if not daily.empty:
+        price_frame = daily.rename(columns={"date": "price_timestamp", "close": "spot_close_usd"})
+        frame["timestamp"] = frame["timestamp"].astype("datetime64[ns, UTC]")
+        price_frame["price_timestamp"] = price_frame["price_timestamp"].astype("datetime64[ns, UTC]")
+        frame = pd.merge_asof(
+            frame.sort_values("timestamp"),
+            price_frame[["price_timestamp", "spot_close_usd"]].sort_values("price_timestamp"),
+            left_on="timestamp",
+            right_on="price_timestamp",
+            direction="backward",
+        )
+        frame["spot_close_usd"] = pd.to_numeric(frame["spot_close_usd"], errors="coerce").ffill().bfill()
+    else:
+        frame["spot_close_usd"] = pd.NA
+
+    frame["btc_usd_price"] = frame["spot_close_usd"].combine_first(frame.get("xbtUsdtRate", pd.Series(dtype=float)))
+    if "walletBalanceXBTEquivalent" in frame.columns:
+        frame["actual_wallet_btc"] = frame["walletBalanceXBTEquivalent"]
+    elif "walletBalanceXBT" in frame.columns:
+        frame["actual_wallet_btc"] = frame["walletBalanceXBT"]
+    elif "adjustedWealthXBT" in frame.columns:
+        frame["actual_wallet_btc"] = frame["adjustedWealthXBT"]
+    else:
+        return pd.DataFrame()
+    frame["cash_flow_adjusted_btc"] = frame.get("adjustedWealthXBT", frame["actual_wallet_btc"])
+    if "adjustedMarkedWealthXBT" in frame.columns:
+        frame["cash_flow_adjusted_marked_btc"] = frame["adjustedMarkedWealthXBT"].combine_first(
+            frame["cash_flow_adjusted_btc"]
+        )
+    else:
+        frame["cash_flow_adjusted_marked_btc"] = frame["cash_flow_adjusted_btc"]
+    frame["actual_wallet_usd"] = frame["actual_wallet_btc"] * frame["btc_usd_price"]
+    frame["cash_flow_adjusted_usd"] = frame["cash_flow_adjusted_btc"] * frame["btc_usd_price"]
+    frame["cash_flow_adjusted_marked_usd"] = frame["cash_flow_adjusted_marked_btc"] * frame["btc_usd_price"]
+    for column in (
+        "cumulativeCompletedDepositsAfterBaselineXBT",
+        "cumulativeCompletedWithdrawalsAfterBaselineXBT",
+    ):
+        if column not in frame.columns:
+            frame[column] = 0.0
+        frame[column] = pd.to_numeric(frame[column], errors="coerce").fillna(0.0)
+    if "transactType" not in frame.columns:
+        frame["transactType"] = None
+    keep = [
+        "timestamp",
+        "transactType",
+        "actual_wallet_btc",
+        "cash_flow_adjusted_btc",
+        "cash_flow_adjusted_marked_btc",
+        "btc_usd_price",
+        "actual_wallet_usd",
+        "cash_flow_adjusted_usd",
+        "cash_flow_adjusted_marked_usd",
+        "cumulativeCompletedDepositsAfterBaselineXBT",
+        "cumulativeCompletedWithdrawalsAfterBaselineXBT",
+    ]
+    return frame[keep].dropna(subset=["actual_wallet_btc", "cash_flow_adjusted_btc", "btc_usd_price"])
+
+
+def _summarize_convexity_window(
+    ledger: pd.DataFrame,
+    *,
+    label: str,
+    start: pd.Timestamp | None,
+    end: pd.Timestamp | None,
+) -> dict[str, Any]:
+    frame = ledger.copy()
+    if start is not None:
+        frame = frame.loc[frame["timestamp"] >= start]
+    if end is not None:
+        frame = frame.loc[frame["timestamp"] < end]
+    frame = frame.sort_values("timestamp")
+    if frame.empty:
+        return {"label": label, "available": False, "blocked_by": ["empty_window"]}
+
+    first = frame.iloc[0]
+    last = frame.iloc[-1]
+    unit_multiple = _multiple(last["cash_flow_adjusted_btc"], first["cash_flow_adjusted_btc"])
+    beta_multiple = _multiple(last["btc_usd_price"], first["btc_usd_price"])
+    adjusted_usd_multiple = _multiple(last["cash_flow_adjusted_usd"], first["cash_flow_adjusted_usd"])
+    actual_usd_multiple = _multiple(last["actual_wallet_usd"], first["actual_wallet_usd"])
+    deposits_delta = float(
+        last["cumulativeCompletedDepositsAfterBaselineXBT"] - first["cumulativeCompletedDepositsAfterBaselineXBT"]
+    )
+    withdrawals_delta = float(
+        last["cumulativeCompletedWithdrawalsAfterBaselineXBT"] - first["cumulativeCompletedWithdrawalsAfterBaselineXBT"]
+    )
+    return {
+        "label": label,
+        "available": True,
+        "start_at": first["timestamp"].isoformat(),
+        "end_at": last["timestamp"].isoformat(),
+        "span_days": round((last["timestamp"] - first["timestamp"]).total_seconds() / 86_400.0, 4),
+        "start": _ledger_point(first),
+        "end": _ledger_point(last),
+        "multiples": {
+            "cash_flow_adjusted_btc": unit_multiple,
+            "btc_beta": beta_multiple,
+            "cash_flow_adjusted_usd": adjusted_usd_multiple,
+            "actual_wallet_usd": actual_usd_multiple,
+        },
+        "drawdowns": {
+            "actual_wallet_btc": _max_drawdown_pct(frame["actual_wallet_btc"]),
+            "cash_flow_adjusted_btc": _max_drawdown_pct(frame["cash_flow_adjusted_btc"]),
+            "actual_wallet_usd": _max_drawdown_pct(frame["actual_wallet_usd"]),
+            "cash_flow_adjusted_usd": _max_drawdown_pct(frame["cash_flow_adjusted_usd"]),
+        },
+        "cash_flows_btc": {
+            "completed_deposits_delta": round(deposits_delta, 8),
+            "completed_withdrawals_delta": round(withdrawals_delta, 8),
+            "net_external_flow_delta": round(deposits_delta - withdrawals_delta, 8),
+        },
+        "growth_attribution": _growth_attribution(unit_multiple=unit_multiple, beta_multiple=beta_multiple),
+        "risk_interpretation": _convexity_risk_interpretation(label=label, frame=frame),
+    }
+
+
+def _ledger_point(row: pd.Series) -> dict[str, Any]:
+    return {
+        "actual_wallet_btc": round(float(row["actual_wallet_btc"]), 8),
+        "cash_flow_adjusted_btc": round(float(row["cash_flow_adjusted_btc"]), 8),
+        "btc_usd_price": round(float(row["btc_usd_price"]), 2),
+        "actual_wallet_usd": round(float(row["actual_wallet_usd"]), 2),
+        "cash_flow_adjusted_usd": round(float(row["cash_flow_adjusted_usd"]), 2),
+    }
+
+
+def _multiple(end_value: Any, start_value: Any) -> float | None:
+    start = float(start_value or 0.0)
+    end = float(end_value or 0.0)
+    if start <= 0 or end <= 0:
+        return None
+    return round(end / start, 6)
+
+
+def _max_drawdown_pct(series: pd.Series) -> float | None:
+    values = pd.to_numeric(series, errors="coerce").dropna()
+    if values.empty:
+        return None
+    high_water = values.cummax()
+    drawdown = (high_water - values) / high_water.replace(0, pd.NA)
+    return round(float(drawdown.max()), 6)
+
+
+def _growth_attribution(*, unit_multiple: float | None, beta_multiple: float | None) -> dict[str, Any]:
+    if unit_multiple is None or beta_multiple is None or unit_multiple <= 0 or beta_multiple <= 0:
+        return {
+            "available": False,
+            "dominant_driver": "unavailable",
+        }
+    unit_log = math.log(unit_multiple)
+    beta_log = math.log(beta_multiple)
+    abs_unit = abs(unit_log)
+    abs_beta = abs(beta_log)
+    if abs_unit > abs_beta * 1.2:
+        dominant = "btc_unit_expansion"
+    elif abs_beta > abs_unit * 1.2:
+        dominant = "btc_beta"
+    else:
+        dominant = "mixed_unit_and_beta"
+    return {
+        "available": True,
+        "btc_unit_log_contribution": round(unit_log, 6),
+        "btc_beta_log_contribution": round(beta_log, 6),
+        "dominant_driver": dominant,
+        "interpretation": (
+            "unit growth dominated USD convexity"
+            if dominant == "btc_unit_expansion"
+            else "BTC price beta dominated USD convexity"
+            if dominant == "btc_beta"
+            else "unit growth and BTC price beta both mattered"
+        ),
+    }
+
+
+def _convexity_risk_interpretation(*, label: str, frame: pd.DataFrame) -> dict[str, Any]:
+    if label == "early_convexity_window":
+        transfer = "replicate_only_with_strict_usdt_drawdown_budget"
+    elif label == "mature_control_window":
+        transfer = "better_template_for_usdt_margin_risk_controls"
+    else:
+        transfer = "split_before_using_as_training_target"
+    return {
+        "actual_wallet_btc_max_drawdown": _max_drawdown_pct(frame["actual_wallet_btc"]),
+        "cash_flow_adjusted_btc_max_drawdown": _max_drawdown_pct(frame["cash_flow_adjusted_btc"]),
+        "actual_wallet_usd_max_drawdown": _max_drawdown_pct(frame["actual_wallet_usd"]),
+        "cash_flow_adjusted_usd_max_drawdown": _max_drawdown_pct(frame["cash_flow_adjusted_usd"]),
+        "u_margin_transferability": transfer,
+    }
+
+
+def _cash_flow_summary(ledger: pd.DataFrame) -> dict[str, Any]:
+    frame = ledger.sort_values("timestamp")
+    first = frame.iloc[0]
+    last = frame.iloc[-1]
+    withdrawals = float(last["cumulativeCompletedWithdrawalsAfterBaselineXBT"])
+    deposits = float(last["cumulativeCompletedDepositsAfterBaselineXBT"])
+    return {
+        "baseline_at": first["timestamp"].isoformat(),
+        "latest_at": last["timestamp"].isoformat(),
+        "baseline_actual_wallet_btc": round(float(first["actual_wallet_btc"]), 8),
+        "latest_actual_wallet_btc": round(float(last["actual_wallet_btc"]), 8),
+        "latest_cash_flow_adjusted_btc": round(float(last["cash_flow_adjusted_btc"]), 8),
+        "completed_deposits_after_baseline_btc": round(deposits, 8),
+        "completed_withdrawals_after_baseline_btc": round(withdrawals, 8),
+        "withdrawals_to_latest_actual_wallet_btc": round(
+            withdrawals / max(1e-12, float(last["actual_wallet_btc"])),
+            6,
+        ),
+        "latest_actual_wallet_usd": round(float(last["actual_wallet_usd"]), 2),
+        "latest_cash_flow_adjusted_usd": round(float(last["cash_flow_adjusted_usd"]), 2),
+    }
+
+
+def _first_crossings(ledger: pd.DataFrame, *, column: str, levels: tuple[float, ...]) -> list[dict[str, Any]]:
+    if column not in ledger.columns:
+        return []
+    frame = ledger.sort_values("timestamp")
+    rows: list[dict[str, Any]] = []
+    for level in levels:
+        crossed = frame.loc[pd.to_numeric(frame[column], errors="coerce") >= level]
+        if crossed.empty:
+            rows.append({"level_btc": level, "crossed": False, "first_crossed_at": None})
+            continue
+        first = crossed.iloc[0]
+        rows.append(
+            {
+                "level_btc": level,
+                "crossed": True,
+                "first_crossed_at": first["timestamp"].isoformat(),
+                "actual_wallet_btc_at_cross": round(float(first["actual_wallet_btc"]), 8),
+                "cash_flow_adjusted_usd_at_cross": round(float(first["cash_flow_adjusted_usd"]), 2),
+                "btc_usd_price_at_cross": round(float(first["btc_usd_price"]), 2),
+            }
+        )
+    return rows
+
+
+def _extract_btc_tranche_profiles(tranche_profile: dict[str, Any]) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for window in tranche_profile.get("windows", []):
+        rows.append(
+            {
+                "label": window.get("label"),
+                "start_at": window.get("start_at"),
+                "btc_tranche_profile": window.get("btc_tranche_profile"),
+                "order_fill_profile": window.get("order_fill_profile"),
+            }
+        )
+    return rows
+
+
+def _early_convexity_markdown(payload: dict[str, Any]) -> str:
+    lines = [
+        "# PaulWei Early Convexity Audit",
+        "",
+        f"- audit_id: `{payload.get('audit_id')}`",
+        f"- ready: `{payload.get('ready')}`",
+        f"- research_scope: `{payload.get('research_scope')}`",
+        f"- strategy_base_currency: `{payload.get('strategy_base_currency')}`",
+        f"- mature_start_at: `{payload.get('mature_start_at')}`",
+        f"- blocked_by: `{payload.get('blocked_by')}`",
+        "",
+        "## Cash Flow Summary",
+        "",
+    ]
+    for key, value in (payload.get("cash_flow_summary") or {}).items():
+        lines.append(f"- {key}: `{value}`")
+
+    lines.extend(["", "## BTC Unit Milestones", ""])
+    for item in payload.get("btc_unit_milestones", []):
+        lines.append(
+            f"- {item.get('level_btc')} BTC: crossed=`{item.get('crossed')}`, "
+            f"first_crossed_at=`{item.get('first_crossed_at')}`"
+        )
+
+    lines.extend(["", "## Window Summaries", ""])
+    for summary in payload.get("window_summaries", []):
+        lines.extend(
+            [
+                f"### {summary.get('label')}",
+                "",
+                f"- available: `{summary.get('available')}`",
+                f"- start_at: `{summary.get('start_at')}`",
+                f"- end_at: `{summary.get('end_at')}`",
+                f"- multiples: `{summary.get('multiples')}`",
+                f"- drawdowns: `{summary.get('drawdowns')}`",
+                f"- cash_flows_btc: `{summary.get('cash_flows_btc')}`",
+                f"- growth_attribution: `{summary.get('growth_attribution')}`",
+                f"- risk_interpretation: `{summary.get('risk_interpretation')}`",
+                "",
+            ]
+        )
+
+    translation = payload.get("u_margin_translation", {})
+    lines.extend(
+        [
+            "## USDT-Margin Translation",
+            "",
+            f"- learning_target: `{translation.get('learning_target')}`",
+            f"- safe_to_transfer: `{translation.get('safe_to_transfer')}`",
+            f"- blocked_from_transfer: `{translation.get('blocked_from_transfer')}`",
+            f"- proposed_train_observables: `{translation.get('proposed_train_observables')}`",
+            f"- promotion_constraint: `{translation.get('promotion_constraint')}`",
+        ]
+    )
     return "\n".join(lines)
 
 
