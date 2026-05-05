@@ -263,6 +263,13 @@ def build_signal_weight_overrides(params: dict[str, Any]) -> dict[str, float]:
 def build_plugin_config_overrides(params: dict[str, Any]) -> dict[str, dict[str, dict[str, Any]]]:
     overrides: dict[str, dict[str, dict[str, Any]]] = {}
 
+    vol_target_keys = ("target_vol_5m", "target_vol_1h", "target_vol_4h", "target_vol_1d")
+    if any(key in params for key in vol_target_keys):
+        vol_target_config = overrides.setdefault("sizers", {}).setdefault("vol_target_sizer", {})
+        for key in vol_target_keys:
+            if key in params:
+                vol_target_config[key] = float(params[key])
+
     if "w_binance_metrics_state" in params or "binance_metrics_state_enabled" in params:
         signal_weight = float(params.get("w_binance_metrics_state", 0.0) or 0.0)
         signal_enabled = bool(round(float(params.get("binance_metrics_state_enabled", 1.0 if signal_weight else 0.0))))
@@ -924,30 +931,31 @@ def paulwei_dual_phase_param_grid(*, include_liquidation_toggles: bool = False) 
 
 
 def paulwei_dual_phase_fee_repair_param_grid(*, include_liquidation_toggles: bool = False) -> dict[str, list[float]]:
-    """Train-only dual-phase search narrowed around the v102 fee-drag miss."""
+    """Train-only dual-phase search anchored to the v102 near-miss fee profile."""
 
     grid = paulwei_dual_phase_param_grid(include_liquidation_toggles=include_liquidation_toggles)
     grid.update(
         {
-            "target_vol_4h": [0.45, 0.50, 0.55],
-            "max_leverage": [2.5, 3.0],
+            "target_vol_4h": [0.45, 0.50],
+            "target_vol_5m": [0.60, 0.65, 0.70],
+            "max_leverage": [3.0],
             "direction_signal_threshold": [0.40, 0.45],
-            "intent_add_signal_threshold": [0.40, 0.45, 0.50],
-            "intent_entry_confirmation_bars": [4, 6, 8],
+            "intent_add_signal_threshold": [0.35, 0.40],
+            "intent_entry_confirmation_bars": [4, 6],
             "intent_flip_confirmation_bars": [24, 36],
-            "intent_flat_confirmation_bars": [16, 24, 36],
+            "intent_flat_confirmation_bars": [16, 24],
             "intent_range_entry_confirmation_bars": [12],
             "intent_range_reentry_cooldown_bars": [48],
             "intent_bearish_override_confirmation_bars": [8, 12],
-            "intent_time_leverage_min_hold_bars": [480, 672],
-            "intent_time_leverage_add_deadband_pct": [0.15, 0.25],
-            "intent_time_leverage_reduce_deadband_pct": [1.00, 1.25],
+            "intent_time_leverage_min_hold_bars": [480],
+            "intent_time_leverage_add_deadband_pct": [0.15],
+            "intent_time_leverage_reduce_deadband_pct": [1.00],
             "intent_time_leverage_dip_accumulation_enabled": [1.0],
             "intent_time_leverage_dip_min_adverse_atr": [1.25],
             "intent_time_leverage_dip_max_adverse_atr": [3.0],
-            "intent_time_leverage_dip_add_pct": [0.10, 0.15],
-            "intent_time_leverage_dip_max_leverage": [2.5, 3.0],
-            "intent_flat_reduce_step_pct": [0.25, 0.35],
+            "intent_time_leverage_dip_add_pct": [0.10],
+            "intent_time_leverage_dip_max_leverage": [3.0],
+            "intent_flat_reduce_step_pct": [0.25],
             "intent_flat_step_cadence_bars": [24],
             "intent_same_direction_reduce_confirmation_bars": [12],
             "range_time_decay_bars": [168],
@@ -2173,84 +2181,78 @@ def paulwei_dual_phase_seed_trials() -> list[dict[str, float]]:
 
 
 def paulwei_dual_phase_fee_repair_seed_trials() -> list[dict[str, float]]:
-    """Deterministic seed set for preserving v102 time leverage while repairing fee drag."""
+    """Deterministic seeds for small v102-anchor fee repairs."""
 
     repair_variants = [
         {
-            "target_vol_4h": 0.50,
-            "max_leverage": 3.0,
+            "target_vol_4h": 0.45,
+            "target_vol_5m": 0.65,
             "direction_signal_threshold": 0.40,
-            "intent_add_signal_threshold": 0.45,
-            "intent_entry_confirmation_bars": 6,
+            "intent_add_signal_threshold": 0.40,
+            "intent_entry_confirmation_bars": 4,
             "intent_flip_confirmation_bars": 24,
-            "intent_flat_confirmation_bars": 24,
-            "intent_time_leverage_min_hold_bars": 480,
-            "intent_time_leverage_add_deadband_pct": 0.15,
-            "intent_time_leverage_reduce_deadband_pct": 1.00,
-            "intent_time_leverage_dip_add_pct": 0.10,
-            "intent_time_leverage_dip_max_leverage": 3.0,
-            "intent_flat_reduce_step_pct": 0.25,
+            "intent_flat_confirmation_bars": 16,
+        },
+        {
+            "target_vol_4h": 0.50,
+            "target_vol_5m": 0.70,
+            "direction_signal_threshold": 0.40,
+            "intent_add_signal_threshold": 0.40,
+            "intent_entry_confirmation_bars": 4,
+            "intent_flip_confirmation_bars": 24,
+            "intent_flat_confirmation_bars": 16,
         },
         {
             "target_vol_4h": 0.45,
-            "max_leverage": 3.0,
-            "direction_signal_threshold": 0.40,
-            "intent_add_signal_threshold": 0.45,
+            "target_vol_5m": 0.60,
+            "direction_signal_threshold": 0.45,
+            "intent_add_signal_threshold": 0.40,
             "intent_entry_confirmation_bars": 6,
-            "intent_flip_confirmation_bars": 36,
-            "intent_flat_confirmation_bars": 24,
-            "intent_time_leverage_min_hold_bars": 480,
-            "intent_time_leverage_add_deadband_pct": 0.15,
-            "intent_time_leverage_reduce_deadband_pct": 1.25,
-            "intent_time_leverage_dip_add_pct": 0.10,
-            "intent_time_leverage_dip_max_leverage": 3.0,
-            "intent_flat_reduce_step_pct": 0.25,
+            "intent_flip_confirmation_bars": 24,
+            "intent_flat_confirmation_bars": 16,
         },
         {
             "target_vol_4h": 0.50,
-            "max_leverage": 2.5,
+            "target_vol_5m": 0.65,
             "direction_signal_threshold": 0.45,
-            "intent_add_signal_threshold": 0.50,
-            "intent_entry_confirmation_bars": 8,
+            "intent_add_signal_threshold": 0.40,
+            "intent_entry_confirmation_bars": 6,
             "intent_flip_confirmation_bars": 36,
-            "intent_flat_confirmation_bars": 36,
-            "intent_time_leverage_min_hold_bars": 672,
-            "intent_time_leverage_add_deadband_pct": 0.25,
-            "intent_time_leverage_reduce_deadband_pct": 1.25,
-            "intent_time_leverage_dip_add_pct": 0.15,
-            "intent_time_leverage_dip_max_leverage": 2.5,
-            "intent_flat_reduce_step_pct": 0.35,
+            "intent_flat_confirmation_bars": 16,
         },
         {
-            "target_vol_4h": 0.55,
-            "max_leverage": 2.5,
-            "direction_signal_threshold": 0.45,
-            "intent_add_signal_threshold": 0.45,
-            "intent_entry_confirmation_bars": 8,
+            "target_vol_4h": 0.45,
+            "target_vol_5m": 0.65,
+            "direction_signal_threshold": 0.40,
+            "intent_add_signal_threshold": 0.35,
+            "intent_entry_confirmation_bars": 4,
             "intent_flip_confirmation_bars": 24,
-            "intent_flat_confirmation_bars": 36,
-            "intent_time_leverage_min_hold_bars": 672,
-            "intent_time_leverage_add_deadband_pct": 0.25,
-            "intent_time_leverage_reduce_deadband_pct": 1.00,
-            "intent_time_leverage_dip_add_pct": 0.10,
-            "intent_time_leverage_dip_max_leverage": 2.5,
-            "intent_flat_reduce_step_pct": 0.35,
+            "intent_flat_confirmation_bars": 24,
         },
     ]
     shared_repair = {
         "paulwei_dual_phase_objective_enabled": 1.0,
+        "target_vol_4h": 0.45,
+        "target_vol_5m": 0.65,
+        "max_leverage": 3.0,
         "intent_time_leverage_hold_enabled": 1.0,
         "intent_time_leverage_size_hysteresis_enabled": 1.0,
         "intent_time_leverage_dip_accumulation_enabled": 1.0,
         "intent_time_leverage_dip_min_adverse_atr": 1.25,
         "intent_time_leverage_dip_max_adverse_atr": 3.0,
+        "intent_time_leverage_dip_add_pct": 0.10,
+        "intent_time_leverage_dip_max_leverage": 3.0,
         "intent_time_leverage_long_bias_enabled": 1.0,
+        "intent_time_leverage_min_hold_bars": 480,
+        "intent_time_leverage_add_deadband_pct": 0.15,
+        "intent_time_leverage_reduce_deadband_pct": 1.00,
         "time_decay_exit_enabled": 1.0,
         "range_time_decay_bars": 168,
         "preserve_capital_time_decay_bars": 48,
         "time_decay_long_loss_threshold": -0.08,
         "time_decay_short_loss_threshold": -0.06,
         "intent_flat_step_cadence_bars": 24,
+        "intent_flat_reduce_step_pct": 0.25,
         "intent_same_direction_reduce_confirmation_bars": 12,
         "intent_range_entry_confirmation_bars": 12,
         "intent_range_reentry_cooldown_bars": 48,

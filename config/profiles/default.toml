@@ -149,6 +149,8 @@ min_transition_risk = 0.40
 
 [sizers.vol_target_sizer]
 enabled = true
+target_vol_5m = 0.60
+target_vol_1h = 0.60
 target_vol_4h = 0.60
 target_vol_1d = 0.50
 min_realized_vol_ratio = 0.25

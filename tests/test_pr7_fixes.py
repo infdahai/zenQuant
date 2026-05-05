@@ -255,6 +255,18 @@ class TestC2SizerCap(unittest.TestCase):
         self.assertAlmostEqual(result.factor, 1.0, places=1)
         self.assertNotIn("SIZE_FACTOR_CAPPED", result.reason_codes)
 
+    def test_uses_5m_target_vol_for_5m_state(self):
+        from zenquant.plugins.sizers import vol_target_sizer
+
+        result = vol_target_sizer.compute(
+            indicators={"realized_vol": 0.6},
+            state={"timeframe": "5m"},
+            config={"target_vol_5m": 0.30, "target_vol_4h": 0.60, "min_realized_vol_ratio": 0.25, "max_factor": 3.5},
+        )
+
+        self.assertAlmostEqual(result.factor, 0.5, places=3)
+        self.assertNotIn("SIZE_FACTOR_CAPPED", result.reason_codes)
+
 
 class TestC3BiasQualityChecks(unittest.TestCase):
     """C3: Plugin path must check bias staleness and quality."""

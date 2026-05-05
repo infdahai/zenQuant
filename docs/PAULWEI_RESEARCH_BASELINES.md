@@ -76,8 +76,9 @@ previous scoring.
 
 The narrowed repair mode is `paulwei_dual_phase_fee_repair_train_only`. It keeps
 the same two learning templates, but adds a third training context label,
-`dual_phase_fee_repair`, and narrows the grid around lower target volatility,
-slower entry/flat confirmation, and longer time-leverage holds. This mode is for
+`dual_phase_fee_repair`, and narrows the grid around the v102 near-miss shape:
+lower 5m target volatility for the 5m smoke path, modestly stricter entry
+confirmation, and the same time-leverage hold contract. This mode is for
 repairing the v102 train fee miss without moving the fix into execution-layer
 order filtering.
 

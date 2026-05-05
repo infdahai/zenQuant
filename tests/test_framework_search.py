@@ -521,21 +521,25 @@ class FrameworkParamTests(unittest.TestCase):
         seeds = paulwei_dual_phase_fee_repair_seed_trials()
 
         self.assertEqual(grid["paulwei_dual_phase_objective_enabled"], [1.0])
-        self.assertEqual(grid["target_vol_4h"], [0.45, 0.50, 0.55])
-        self.assertEqual(grid["max_leverage"], [2.5, 3.0])
+        self.assertEqual(grid["target_vol_4h"], [0.45, 0.50])
+        self.assertEqual(grid["target_vol_5m"], [0.60, 0.65, 0.70])
+        self.assertEqual(grid["max_leverage"], [3.0])
         self.assertEqual(grid["direction_signal_threshold"], [0.40, 0.45])
-        self.assertEqual(grid["intent_entry_confirmation_bars"], [4, 6, 8])
-        self.assertEqual(grid["intent_flat_confirmation_bars"], [16, 24, 36])
-        self.assertEqual(grid["intent_time_leverage_min_hold_bars"], [480, 672])
-        self.assertEqual(grid["intent_time_leverage_reduce_deadband_pct"], [1.00, 1.25])
+        self.assertEqual(grid["intent_add_signal_threshold"], [0.35, 0.40])
+        self.assertEqual(grid["intent_entry_confirmation_bars"], [4, 6])
+        self.assertEqual(grid["intent_flat_confirmation_bars"], [16, 24])
+        self.assertEqual(grid["intent_time_leverage_min_hold_bars"], [480])
+        self.assertEqual(grid["intent_time_leverage_reduce_deadband_pct"], [1.00])
         self.assertEqual(grid["intent_flat_step_cadence_bars"], [24])
         self.assertEqual(grid["range_time_decay_bars"], [168])
         self.assertEqual(grid["target_delta_deadband_pct"], [0.0])
         self.assertEqual(grid["profit_protect_reduce_enabled"], [0.0])
         self.assertGreaterEqual(len(seeds), 4)
         self.assertTrue(all(seed["paulwei_dual_phase_objective_enabled"] == 1.0 for seed in seeds))
-        self.assertTrue(all(seed["target_vol_4h"] <= 0.55 for seed in seeds))
-        self.assertTrue(all(seed["intent_entry_confirmation_bars"] >= 6 for seed in seeds))
+        self.assertTrue(all(seed["target_vol_4h"] in {0.45, 0.50} for seed in seeds))
+        self.assertTrue(all(seed["target_vol_5m"] in {0.60, 0.65, 0.70} for seed in seeds))
+        self.assertTrue(all(seed["max_leverage"] == 3.0 for seed in seeds))
+        self.assertTrue(all(seed["intent_add_signal_threshold"] <= 0.40 for seed in seeds))
         self.assertTrue(all(seed["intent_flat_step_cadence_bars"] == 24 for seed in seeds))
 
     def test_search_space_profile_marks_paulwei_dual_phase_fee_repair_mode(self) -> None:
@@ -570,6 +574,8 @@ class FrameworkParamTests(unittest.TestCase):
     def test_build_plugin_config_overrides_enables_binance_factor_research_plugins(self) -> None:
         overrides = build_plugin_config_overrides(
             {
+                "target_vol_5m": 0.65,
+                "target_vol_4h": 0.45,
                 "w_binance_metrics_state": 0.18,
                 "binance_metrics_state_enabled": 1.0,
                 "binance_metrics_risk_sizer_enabled": 1.0,
@@ -588,6 +594,8 @@ class FrameworkParamTests(unittest.TestCase):
         self.assertTrue(overrides["exits"]["time_decay_exit"]["enabled"])
         self.assertEqual(overrides["exits"]["time_decay_exit"]["long_loss_threshold"], -0.08)
         self.assertEqual(overrides["exits"]["time_decay_exit"]["short_loss_threshold"], -0.06)
+        self.assertEqual(overrides["sizers"]["vol_target_sizer"]["target_vol_5m"], 0.65)
+        self.assertEqual(overrides["sizers"]["vol_target_sizer"]["target_vol_4h"], 0.45)
         self.assertTrue(overrides["sizers"]["binance_metrics_risk_sizer"]["enabled"])
         self.assertEqual(overrides["sizers"]["binance_metrics_risk_sizer"]["edge_threshold"], 0.15)
         self.assertEqual(overrides["sizers"]["binance_metrics_risk_sizer"]["discount_floor"], 0.60)
