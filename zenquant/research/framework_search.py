@@ -56,6 +56,7 @@ from zenquant.research.framework_params import (
     intent_churn_ablation_seed_trials,
     intent_churn_repair_seed_trials,
     param_grid_for_mode,
+    paulwei_balanced_tranche_seed_trials,
     ralph_execution_fee_cooldown_seed_trials,
     ralph_intent_reduce_cadence_seed_trials,
     ralph_protective_reduce_fee_repair_seed_trials,
@@ -1195,7 +1196,7 @@ class FrameworkEvaluator:
                 "workers": 1,
                 "wf_windows": 0,
                 "compare_windows": len(self._fast_dev_compare_windows),
-                "compare_workers": min(2, cpu_budget),
+                "compare_workers": 2,
                 "compare_validation_workers": 1,
                 "compare_validation_leg_timeout_s": 90.0,
                 "compare_validation_variant_budget_s": 180.0,
@@ -2829,6 +2830,8 @@ def run_optuna_search(
     effective_execution_timeframe = search_execution_timeframe or evaluator._base_config.execution_timeframe
     if evaluator.search_space_profile.get("binance_factor_weight_repair_search", False):
         resolved_seed_trials = binance_factor_weight_repair_seed_trials()[:n_trials]
+    elif evaluator.search_space_profile.get("paulwei_balanced_tranche_search", False):
+        resolved_seed_trials = paulwei_balanced_tranche_seed_trials()[:n_trials]
     elif evaluator.search_space_profile.get("ralph_intent_reduce_cadence_search", False):
         resolved_seed_trials = ralph_intent_reduce_cadence_seed_trials()[:n_trials]
     elif evaluator.search_space_profile.get("ralph_execution_fee_cooldown_search", False):
@@ -2854,12 +2857,10 @@ def run_optuna_search(
         search_grid=evaluator.search_param_grid,
     )[:n_trials]
     strict_train_fee_stop = any(
-        bool(evaluator.search_space_profile.get(key, False))
-        for key in STRICT_TRAIN_FEE_STOP_PROFILE_FLAGS
+        bool(evaluator.search_space_profile.get(key, False)) for key in STRICT_TRAIN_FEE_STOP_PROFILE_FLAGS
     )
     strict_train_truth_search = any(
-        bool(evaluator.search_space_profile.get(key, False))
-        for key in STRICT_TRAIN_TRUTH_PROFILE_FLAGS
+        bool(evaluator.search_space_profile.get(key, False)) for key in STRICT_TRAIN_TRUTH_PROFILE_FLAGS
     )
     worker_config = CampaignConfig(
         data_root=evaluator._base_config.root_dir,

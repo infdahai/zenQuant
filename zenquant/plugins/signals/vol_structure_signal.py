@@ -42,7 +42,9 @@ def compute(
         )
 
     if rv_term_ratio <= compression_threshold and trend_persistence >= persistence_threshold and momentum_z > 0.0:
-        magnitude = min(0.6, 0.2 + (compression_threshold - rv_term_ratio) * 0.5 + (trend_persistence - persistence_threshold) * 0.8)
+        magnitude = min(
+            0.6, 0.2 + (compression_threshold - rv_term_ratio) * 0.5 + (trend_persistence - persistence_threshold) * 0.8
+        )
         return SignalResult(
             value=magnitude,
             confidence=min(0.8, 0.4 + trend_persistence * 0.4),

@@ -67,6 +67,7 @@ class TestGoldenOutput(unittest.TestCase):
                     options_dir=root / "deribit_options",
                     cot_path=root / "cftc" / "cot_btc.parquet",
                     liquidation_dir=root / "liquidations" / "aggregated",
+                    profile_path=None,
                 )
             ).run()
 

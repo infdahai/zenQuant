@@ -34,9 +34,7 @@ RISK_OVERLAY_FEATURE_MAP = {
 
 @dataclass(slots=True)
 class MicrostructureFeatureStoreConfig:
-    data_dir: Path = field(
-        default_factory=lambda: Path("data/raw/microstructure_sidecar/bybit/BTCUSDT/1000ms")
-    )
+    data_dir: Path = field(default_factory=lambda: Path("data/raw/microstructure_sidecar/bybit/BTCUSDT/1000ms"))
     max_staleness_ns: int | None = None
 
 
@@ -71,10 +69,7 @@ class MicrostructureFeatureStore:
         self._cutoffs = [int(value) for value in frame["cutoff_time_ns"].tolist()]
         self._rows = []
         for row in frame.to_dict("records"):
-            payload = {
-                key: float(row.get(key, 0.0) or 0.0)
-                for key in FEATURE_COLUMNS
-            }
+            payload = {key: float(row.get(key, 0.0) or 0.0) for key in FEATURE_COLUMNS}
             self._rows.append(payload)
 
     def lookup(self, cutoff_time_ns: int) -> dict[str, float]:

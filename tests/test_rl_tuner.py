@@ -50,6 +50,26 @@ class RLTunerConfigTests(unittest.TestCase):
         self.assertFalse(mps_allowed)
         self.assertEqual(fallback_reason, "mps_unavailable")
 
+    def test_cleanup_skips_mps_cache_when_backend_unavailable(self) -> None:
+        def _raise_unavailable() -> None:
+            raise RuntimeError("MPS backend unavailable")
+
+        fake_torch = types.SimpleNamespace(
+            backends=types.SimpleNamespace(
+                mps=types.SimpleNamespace(
+                    is_available=lambda: False,
+                    is_built=lambda: False,
+                )
+            ),
+            mps=types.SimpleNamespace(empty_cache=_raise_unavailable),
+        )
+
+        with patch.dict("sys.modules", {"torch": fake_torch}):
+            cleanup_completed, warnings = rl_tuner._cleanup_rl_runtime(model=None, env=None, manager=None)
+
+        self.assertTrue(cleanup_completed)
+        self.assertEqual(warnings, [])
+
     def test_signal_weight_builder_caps_redundant_funding_crowding_pair(self) -> None:
         weights = rl_tuner.build_signal_weight_overrides(
             {

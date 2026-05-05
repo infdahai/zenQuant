@@ -125,9 +125,7 @@ def build_historical_extension_candidate_contract(
     elif (_date_floor(futures_one_hour.start_at) or "9999-12-31") > "2020-01-01":
         blocked_by.append("futures_1h_incomplete_current_truth")
     spot_train_leg_blocked_by = ["spot_context_only_not_formal_train_truth"] + [
-        reason
-        for reason in blocked_by
-        if reason not in {"full_unified_truth_blocked", "spot_perp_truth_boundary"}
+        reason for reason in blocked_by if reason not in {"full_unified_truth_blocked", "spot_perp_truth_boundary"}
     ]
 
     return HistoricalExtensionCandidateContract(
@@ -162,7 +160,10 @@ def build_historical_extension_candidate_contract(
         ],
         blocked_by=blocked_by,
         spot_train_leg_blocked_by=spot_train_leg_blocked_by,
-        ready=not any(reason in {"spot_timeframe_gap"} for reason in blocked_by),
+        ready=not any(
+            reason in {"spot_timeframe_gap", "futures_1h_missing", "futures_1h_incomplete_current_truth"}
+            for reason in spot_train_leg_blocked_by
+        ),
         source_boundary=(
             "Candidate history uses Binance spot data from 2017-08 onward. "
             "It is context-only for regime and stress research. Formal train/dev/test "
@@ -209,14 +210,12 @@ def write_historical_extension_candidate_contract(
         "",
     ]
     for leg in contract.train_truth_legs:
-        lines.append(
-            f"- `{leg['name']}` source=`{leg['source']}` start=`{leg['start_at']}` end=`{leg['end_at']}`"
-        )
+        lines.append(f"- `{leg['name']}` source=`{leg['source']}` start=`{leg['start_at']}` end=`{leg['end_at']}`")
     lines.extend(
         [
             "",
-        "## Timeframes",
-        "",
+            "## Timeframes",
+            "",
         ]
     )
     for coverage in contract.timeframes.values():

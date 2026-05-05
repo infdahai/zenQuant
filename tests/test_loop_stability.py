@@ -48,7 +48,9 @@ class LoopStabilityReviewTests(unittest.TestCase):
                 json.dumps({"phase": "stage3_complete", "status": "completed", "rl_episodes_completed": 4}),
                 encoding="utf-8",
             )
-            (completed_run / "framework_optimization.json").write_text(json.dumps({"best_variant": "current"}), encoding="utf-8")
+            (completed_run / "framework_optimization.json").write_text(
+                json.dumps({"best_variant": "current"}), encoding="utf-8"
+            )
 
             payload = build_loop_stability_review(root)
 

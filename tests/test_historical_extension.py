@@ -33,10 +33,18 @@ class HistoricalExtensionContractTests(unittest.TestCase):
             root = Path(tmp)
             spot_root = root / "binance_spot"
             futures_root = root / "binance"
-            _write_row(spot_root / "klines" / "BTCUSDT" / "1d" / "data.parquet", Timeframe.TF_1D, 1_503_014_400_000_000_000)
-            _write_row(spot_root / "klines" / "BTCUSDT" / "4h" / "data.parquet", Timeframe.TF_4H, 1_503_003_600_000_000_000)
-            _write_row(spot_root / "klines" / "BTCUSDT" / "1h" / "data.parquet", Timeframe.TF_1H, 1_502_982_000_000_000_000)
-            _write_row(futures_root / "klines" / "BTCUSDT" / "1h" / "data.parquet", Timeframe.TF_1H, 1_577_840_400_000_000_000)
+            _write_row(
+                spot_root / "klines" / "BTCUSDT" / "1d" / "data.parquet", Timeframe.TF_1D, 1_503_014_400_000_000_000
+            )
+            _write_row(
+                spot_root / "klines" / "BTCUSDT" / "4h" / "data.parquet", Timeframe.TF_4H, 1_503_003_600_000_000_000
+            )
+            _write_row(
+                spot_root / "klines" / "BTCUSDT" / "1h" / "data.parquet", Timeframe.TF_1H, 1_502_982_000_000_000_000
+            )
+            _write_row(
+                futures_root / "klines" / "BTCUSDT" / "1h" / "data.parquet", Timeframe.TF_1H, 1_577_840_400_000_000_000
+            )
 
             contract = build_historical_extension_candidate_contract(
                 symbol="BTCUSDT",

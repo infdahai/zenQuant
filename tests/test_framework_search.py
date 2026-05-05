@@ -40,6 +40,8 @@ from zenquant.research.framework_params import (
     intent_churn_repair_param_grid,
     intent_churn_repair_seed_trials,
     is_hostile_aware_param_combo,
+    paulwei_balanced_tranche_param_grid,
+    paulwei_balanced_tranche_seed_trials,
     ralph_execution_fee_cooldown_param_grid,
     ralph_execution_fee_cooldown_seed_trials,
     ralph_intent_reduce_cadence_param_grid,
@@ -118,15 +120,19 @@ class FrameworkParamTests(unittest.TestCase):
     def test_framework_research_config_registry_contains_campaign_modes_and_limits(self) -> None:
         self.assertIn("intent_churn_ablation_train_only", SEARCH_SPACE_MODES)
         self.assertIn("ralph_intent_reduce_cadence_train_only", SEARCH_SPACE_MODES)
+        self.assertIn("paulwei_balanced_tranche_train_only", SEARCH_SPACE_MODES)
         self.assertIn("intent_churn_ablation_train_only", BASE_TIMEFRAME_SMOKE_MODES)
         self.assertTrue(
             smoke_uses_base_timeframe(budget="smoke", search_space_mode="ralph_intent_reduce_cadence_train_only")
         )
-        self.assertFalse(
-            smoke_uses_base_timeframe(budget="smoke", search_space_mode="baseline_anchored_train_only")
+        self.assertTrue(
+            smoke_uses_base_timeframe(budget="smoke", search_space_mode="paulwei_balanced_tranche_train_only")
         )
+        self.assertFalse(smoke_uses_base_timeframe(budget="smoke", search_space_mode="baseline_anchored_train_only"))
         self.assertIn("intent_churn_ablation_search", STRICT_TRAIN_FEE_STOP_PROFILE_FLAGS)
         self.assertIn("ralph_intent_reduce_cadence_search", STRICT_TRAIN_TRUTH_PROFILE_FLAGS)
+        self.assertIn("paulwei_balanced_tranche_search", STRICT_TRAIN_FEE_STOP_PROFILE_FLAGS)
+        self.assertIn("paulwei_balanced_tranche_search", STRICT_TRAIN_TRUTH_PROFILE_FLAGS)
         self.assertEqual(DEFAULT_DEV_FEE_STABILITY_LIMITS.dev_fee_drag_fail_fast_cap, 0.075)
 
     def test_hostile_constraint_violations_reject_aggressive_combo(self) -> None:
@@ -432,6 +438,35 @@ class FrameworkParamTests(unittest.TestCase):
         self.assertFalse(profile["ralph_protective_reduce_fee_repair_search"])
         self.assertFalse(profile["ralph_execution_fee_cooldown_search"])
         self.assertTrue(profile["ralph_intent_reduce_cadence_search"])
+
+    def test_paulwei_balanced_tranche_grid_targets_strategy_tranche_intent(self) -> None:
+        grid = paulwei_balanced_tranche_param_grid()
+
+        self.assertEqual(grid["target_vol_4h"], [0.40, 0.50, 0.65])
+        self.assertEqual(grid["max_leverage"], [2.5, 3.0])
+        self.assertEqual(grid["intent_add_signal_threshold"], [0.30, 0.35, 0.40, 0.45, 0.50])
+        self.assertEqual(grid["intent_add_confirmation_bars"], [1, 2])
+        self.assertEqual(grid["intent_flip_confirmation_bars"], [12, 16, 24])
+        self.assertEqual(grid["intent_time_leverage_add_deadband_pct"], [0.10, 0.15, 0.25])
+        self.assertEqual(grid["intent_time_leverage_reduce_deadband_pct"], [0.60, 0.80, 1.00])
+        self.assertEqual(grid["intent_time_leverage_dip_accumulation_enabled"], [1.0])
+        self.assertEqual(grid["intent_flat_reduce_step_pct"], [0.15, 0.25, 0.35])
+        self.assertEqual(grid["intent_flat_step_cadence_bars"], [8, 12, 24])
+        self.assertEqual(grid["intent_same_direction_reduce_confirmation_bars"], [4, 8, 12])
+        self.assertEqual(grid["intent_unconfirmed_flip_reduce_only"], [0.0])
+        self.assertEqual(grid["flip_flatten_only_enabled"], [0.0])
+        self.assertEqual(grid["target_delta_deadband_pct"], [0.0])
+        self.assertEqual(grid["weak_signal_no_flip_enabled"], [0.0])
+        self.assertEqual(grid["profit_protect_reduce_enabled"], [0.0])
+
+    def test_search_space_profile_marks_paulwei_balanced_tranche_mode(self) -> None:
+        profile = search_space_profile(mode="paulwei_balanced_tranche_train_only")
+
+        self.assertEqual(profile["profile"], "paulwei_balanced_tranche_train_only")
+        self.assertEqual(profile["search_space_mode"], "paulwei_balanced_tranche_train_only")
+        self.assertFalse(profile["intent_churn_ablation_search"])
+        self.assertFalse(profile["ralph_intent_reduce_cadence_search"])
+        self.assertTrue(profile["paulwei_balanced_tranche_search"])
 
     def test_build_signal_weight_overrides_maps_audited_state_factor_weights(self) -> None:
         weights = build_signal_weight_overrides(
@@ -994,6 +1029,39 @@ class FrameworkParamTests(unittest.TestCase):
             self.assertGreaterEqual(strategy_config.intent_flat_reduce_step_pct, 0.0)
             self.assertGreaterEqual(strategy_config.intent_flat_step_cadence_bars, 0)
             self.assertGreaterEqual(strategy_config.intent_same_direction_reduce_confirmation_bars, 2)
+
+    def test_paulwei_balanced_tranche_seed_trials_keep_execution_neutral(self) -> None:
+        seeds = paulwei_balanced_tranche_seed_trials()
+
+        self.assertEqual(len(seeds), 12)
+        self.assertEqual(seeds[0]["target_vol_4h"], 0.65)
+        self.assertEqual(seeds[0]["intent_add_signal_threshold"], 0.35)
+        self.assertEqual(seeds[0]["intent_flat_reduce_step_pct"], 0.15)
+        self.assertEqual(seeds[0]["intent_flat_step_cadence_bars"], 8)
+        self.assertTrue(any(seed["intent_flat_reduce_step_pct"] == 0.35 for seed in seeds))
+        self.assertTrue(any(seed["intent_same_direction_reduce_confirmation_bars"] == 12 for seed in seeds))
+        self.assertTrue(any(seed["intent_time_leverage_min_hold_bars"] == 480 for seed in seeds))
+        self.assertTrue(any(seed["intent_add_signal_threshold"] == 0.30 for seed in seeds))
+        for seed in seeds:
+            execution_config = build_execution_config(seed)
+            strategy_config = build_strategy_config(seed)
+            self.assertEqual(seed["intent_unconfirmed_flip_reduce_only"], 0.0)
+            self.assertEqual(seed["intent_time_leverage_dip_accumulation_enabled"], 1.0)
+            self.assertEqual(seed["flip_flatten_only_enabled"], 0.0)
+            self.assertEqual(seed["target_delta_deadband_pct"], 0.0)
+            self.assertEqual(seed["target_reduce_deadband_pct"], 0.0)
+            self.assertEqual(seed["weak_signal_no_flip_enabled"], 0.0)
+            self.assertEqual(seed["tiny_reverse_reduce_only_enabled"], 0.0)
+            self.assertEqual(seed["profit_protect_reduce_enabled"], 0.0)
+            self.assertFalse(execution_config.flip_flatten_only_enabled)
+            self.assertFalse(execution_config.profit_protect_reduce_enabled)
+            self.assertFalse(strategy_config.intent_unconfirmed_flip_reduce_only)
+            self.assertTrue(strategy_config.intent_time_leverage_dip_accumulation_enabled)
+            self.assertLessEqual(strategy_config.intent_add_signal_threshold, 0.45)
+            self.assertLessEqual(strategy_config.intent_time_leverage_add_deadband_pct, 0.25)
+            self.assertGreaterEqual(strategy_config.intent_flat_reduce_step_pct, 0.15)
+            self.assertGreaterEqual(strategy_config.intent_flat_step_cadence_bars, 8)
+            self.assertGreaterEqual(strategy_config.intent_same_direction_reduce_confirmation_bars, 4)
 
 
 class FrameworkEvaluatorTests(unittest.TestCase):
@@ -1803,7 +1871,6 @@ class SearchReportSerializationTests(unittest.TestCase):
             fee_drag_pct=0.057,
         )
         self.assertIsNone(_stage1_fail_fast_reason(close_miss, baseline=baseline, current=current))
-
 
     def test_post_smoke_scenario_classifies_hostile_window_failure(self) -> None:
         report = SearchReport(

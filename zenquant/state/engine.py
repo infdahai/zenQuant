@@ -23,6 +23,10 @@ class _IndicatorValues:
     liq_intensity_z: float = 0.0
     liq_imbalance: float = 0.0
     liq_max_single_share: float = 0.0
+    liq_follow_through_score: float = 0.0
+    leverage_pressure_score: float = 0.0
+    rv_term_ratio: float = 0.0
+    vol_of_vol: float = 0.0
     liq_stale: bool = False
     cycle_position: float = 1.0  # price/MA200: <0.8 bear, >1.3 overheated
 
@@ -135,6 +139,12 @@ class StateEngine:
             reason_codes.append("LIQ_LONGS_FLUSHED")
         if self._config.enable_liquidation_overlay and not vals.liq_stale and vals.liq_imbalance <= -0.2:
             reason_codes.append("LIQ_SHORTS_FLUSHED")
+        if self._config.enable_liquidation_overlay and not vals.liq_stale and vals.liq_follow_through_score >= 0.65:
+            reason_codes.append("LIQ_CASCADE_CONTINUATION")
+        if vals.leverage_pressure_score >= 0.75 and vals.liq_imbalance >= 0.2:
+            reason_codes.append("LEVERAGE_QUALITY_CROWDED_LONG")
+        if vals.rv_term_ratio >= 1.35 and vals.vol_of_vol >= 0.12:
+            reason_codes.append("VOL_STRUCTURE_STRESSED")
 
         return MarketState(
             symbol=pack.symbol,
@@ -171,6 +181,10 @@ def _extract_values(values: dict[str, Any]) -> _IndicatorValues:
         liq_intensity_z=float(values.get("liq_intensity_z", 0.0) or 0.0),
         liq_imbalance=float(values.get("liq_imbalance", 0.0) or 0.0),
         liq_max_single_share=float(values.get("liq_max_single_share", 0.0) or 0.0),
+        liq_follow_through_score=float(values.get("liq_follow_through_score", 0.0) or 0.0),
+        leverage_pressure_score=float(values.get("leverage_pressure_score", 0.0) or 0.0),
+        rv_term_ratio=float(values.get("rv_term_ratio", 0.0) or 0.0),
+        vol_of_vol=float(values.get("vol_of_vol", 0.0) or 0.0),
         liq_stale=bool(values.get("liq_stale", False)),
         cycle_position=float(values.get("cycle_position", 1.0) or 1.0),
     )

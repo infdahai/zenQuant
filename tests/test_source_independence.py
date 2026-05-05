@@ -31,7 +31,9 @@ class SourceIndependenceTests(unittest.TestCase):
             (macro_root / "gold").mkdir(parents=True, exist_ok=True)
             (data_root / "klines" / "BTCUSDT" / "1d").mkdir(parents=True, exist_ok=True)
 
-            pd.DataFrame({"ts_ns": [_ts(i) for i in range(90)], "value": [1.0 + i * 0.01 for i in range(90)]}).to_parquet(
+            pd.DataFrame(
+                {"ts_ns": [_ts(i) for i in range(90)], "value": [1.0 + i * 0.01 for i in range(90)]}
+            ).to_parquet(
                 macro_root / "btc_mvrv" / "data.parquet",
                 index=False,
             )
@@ -39,7 +41,9 @@ class SourceIndependenceTests(unittest.TestCase):
                 macro_root / "btc_etf_netflow" / "data.parquet",
                 index=False,
             )
-            pd.DataFrame({"ts_ns": [_ts(i) for i in range(90)], "value": [180.0 + i * 0.1 for i in range(90)]}).to_parquet(
+            pd.DataFrame(
+                {"ts_ns": [_ts(i) for i in range(90)], "value": [180.0 + i * 0.1 for i in range(90)]}
+            ).to_parquet(
                 macro_root / "gold" / "data.parquet",
                 index=False,
             )
@@ -67,7 +71,9 @@ class SourceIndependenceTests(unittest.TestCase):
             (macro_root / "btc_mvrv").mkdir(parents=True, exist_ok=True)
             (macro_root / "btc_etf_netflow").mkdir(parents=True, exist_ok=True)
             (data_root / "klines" / "BTCUSDT" / "1d").mkdir(parents=True, exist_ok=True)
-            pd.DataFrame({"ts_ns": [_ts(i) for i in range(30)], "value": [1.2 + i * 0.01 for i in range(30)]}).to_parquet(
+            pd.DataFrame(
+                {"ts_ns": [_ts(i) for i in range(30)], "value": [1.2 + i * 0.01 for i in range(30)]}
+            ).to_parquet(
                 macro_root / "btc_mvrv" / "data.parquet",
                 index=False,
             )

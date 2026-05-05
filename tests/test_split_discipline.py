@@ -119,7 +119,9 @@ class ResearchDisciplineTests(unittest.TestCase):
             patch("zenquant.research.framework_search._build_comparison_payload", return_value={}),
         ):
             evaluator = FrameworkEvaluator(HistoricalBacktestConfig(), split_spec=default_btc_split_spec())
-            report = evaluator.final_report(optuna_params=None, rl_params=None, search_status={}, full=False, evaluate_test=False)
+            report = evaluator.final_report(
+                optuna_params=None, rl_params=None, search_status={}, full=False, evaluate_test=False
+            )
 
         self.assertFalse(report.test_evaluated)
         self.assertEqual(report.split_contract["version"], "btc_temporal_v2_train_selection_only")

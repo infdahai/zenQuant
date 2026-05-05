@@ -174,7 +174,9 @@ class VariantComparisonTests(unittest.TestCase):
 
         with (
             patch("zenquant.research.comparison.ProcessPoolExecutor", return_value=FakeExecutor()),
-            patch("zenquant.research.comparison.as_completed", side_effect=lambda futures: list(reversed(list(futures)))),
+            patch(
+                "zenquant.research.comparison.as_completed", side_effect=lambda futures: list(reversed(list(futures)))
+            ),
         ):
             payload = compare_variants(
                 HistoricalBacktestConfig(root_dir=Path("data/raw/binance"), symbol="BTCUSDT"),
@@ -403,7 +405,26 @@ class VariantComparisonTests(unittest.TestCase):
         heartbeats: list[dict[str, object]] = []
 
         with (
-            patch("zenquant.research.comparison._run_window", return_value={"variant": "current", "window_label": "dev", "metrics": {"sharpe": 1.0, "net_pnl": 10.0, "max_drawdown": 0.1, "profit_factor": 1.1, "trade_count": 2}, "win_rate": 0.5, "diagnostics": {"playbook_counts": {}, "risk_flag_counts": {}, "actionable_exit_counts": {}}, "cycle_context": {}, "directional_state_distribution": {}, "regime_distribution": {}, "playbook_usage": {}}),
+            patch(
+                "zenquant.research.comparison._run_window",
+                return_value={
+                    "variant": "current",
+                    "window_label": "dev",
+                    "metrics": {
+                        "sharpe": 1.0,
+                        "net_pnl": 10.0,
+                        "max_drawdown": 0.1,
+                        "profit_factor": 1.1,
+                        "trade_count": 2,
+                    },
+                    "win_rate": 0.5,
+                    "diagnostics": {"playbook_counts": {}, "risk_flag_counts": {}, "actionable_exit_counts": {}},
+                    "cycle_context": {},
+                    "directional_state_distribution": {},
+                    "regime_distribution": {},
+                    "playbook_usage": {},
+                },
+            ),
             patch(
                 "zenquant.research.comparison._run_validation_leg",
                 return_value={"sharpe": 1.0, "net_pnl": 5.0, "max_drawdown": 0.1},
@@ -453,7 +474,26 @@ class VariantComparisonTests(unittest.TestCase):
             )
 
         with (
-            patch("zenquant.research.comparison._run_window", return_value={"variant": "current", "window_label": "dev", "metrics": {"sharpe": 1.0, "net_pnl": 10.0, "max_drawdown": 0.1, "profit_factor": 1.1, "trade_count": 2}, "win_rate": 0.5, "diagnostics": {"playbook_counts": {}, "risk_flag_counts": {}, "actionable_exit_counts": {}}, "cycle_context": {}, "directional_state_distribution": {}, "regime_distribution": {}, "playbook_usage": {}}),
+            patch(
+                "zenquant.research.comparison._run_window",
+                return_value={
+                    "variant": "current",
+                    "window_label": "dev",
+                    "metrics": {
+                        "sharpe": 1.0,
+                        "net_pnl": 10.0,
+                        "max_drawdown": 0.1,
+                        "profit_factor": 1.1,
+                        "trade_count": 2,
+                    },
+                    "win_rate": 0.5,
+                    "diagnostics": {"playbook_counts": {}, "risk_flag_counts": {}, "actionable_exit_counts": {}},
+                    "cycle_context": {},
+                    "directional_state_distribution": {},
+                    "regime_distribution": {},
+                    "playbook_usage": {},
+                },
+            ),
             patch("zenquant.research.comparison._run_walk_forward_validation", side_effect=_fake_validation),
         ):
             payload = compare_variants(
@@ -496,7 +536,26 @@ class VariantComparisonTests(unittest.TestCase):
             )
 
         with (
-            patch("zenquant.research.comparison._run_window", return_value={"variant": "current", "window_label": "dev", "metrics": {"sharpe": 1.0, "net_pnl": 10.0, "max_drawdown": 0.1, "profit_factor": 1.1, "trade_count": 2}, "win_rate": 0.5, "diagnostics": {"playbook_counts": {}, "risk_flag_counts": {}, "actionable_exit_counts": {}}, "cycle_context": {}, "directional_state_distribution": {}, "regime_distribution": {}, "playbook_usage": {}}),
+            patch(
+                "zenquant.research.comparison._run_window",
+                return_value={
+                    "variant": "current",
+                    "window_label": "dev",
+                    "metrics": {
+                        "sharpe": 1.0,
+                        "net_pnl": 10.0,
+                        "max_drawdown": 0.1,
+                        "profit_factor": 1.1,
+                        "trade_count": 2,
+                    },
+                    "win_rate": 0.5,
+                    "diagnostics": {"playbook_counts": {}, "risk_flag_counts": {}, "actionable_exit_counts": {}},
+                    "cycle_context": {},
+                    "directional_state_distribution": {},
+                    "regime_distribution": {},
+                    "playbook_usage": {},
+                },
+            ),
             patch("zenquant.research.comparison._run_walk_forward_validation", side_effect=_fake_validation),
             self.assertRaises(ComparisonValidationTimeoutError),
         ):

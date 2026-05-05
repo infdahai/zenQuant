@@ -2363,7 +2363,9 @@ def main() -> None:
             stage1_state["no_tuned_candidate_reason"] = optuna_diagnostics.get("no_tuned_candidate_reason")
             stage1_state["primary_empty_shortlist_reason"] = optuna_diagnostics.get("primary_empty_shortlist_reason")
             stage1_state["fallback_empty_shortlist_reason"] = optuna_diagnostics.get("fallback_empty_shortlist_reason")
-            stage1_state["fallback_search_skipped"] = optuna_diagnostics.get("fallback_empty_shortlist_reason") == "skipped"
+            stage1_state["fallback_search_skipped"] = (
+                optuna_diagnostics.get("fallback_empty_shortlist_reason") == "skipped"
+            )
             stage1_state["fallback_skip_reason"] = optuna_diagnostics.get("fallback_skip_reason")
             stage1_state["candidate_existence_goal_met"] = bool(optuna_params is not None)
             stage1_state["stage1_budget_mode"] = optuna_diagnostics.get(
@@ -2415,19 +2417,13 @@ def main() -> None:
                 rl_budget_mode = "wall_clock_primary" if args.budget == "fast" else "episode_primary"
                 rl_wall_clock_budget_s = 180.0 if args.budget == "fast" else smoke_rl_timeout_s
                 rl_max_episodes = min(12, rl_episodes) if args.budget == "fast" else rl_episodes
-                rl_n_envs = 3 if args.budget == "fast" else 1
-                rl_device_preference = "auto"
-                rl_execution_mode = "default"
-                rl_vec_env_type = "subproc_vec_env" if rl_n_envs > 1 else "dummy_vec_env"
-                rl_platform_guard_applied = False
+                rl_n_envs = 1
+                rl_device_preference = "cpu" if args.budget == "fast" else "auto"
+                rl_execution_mode = "single_env_cpu_guarded" if args.budget == "fast" else "default"
+                rl_vec_env_type = "dummy_vec_env"
+                rl_platform_guard_applied = args.budget == "fast"
                 rl_init_timeout_s = 30.0 if args.budget == "fast" else 60.0
                 rl_first_progress_timeout_s = 45.0 if args.budget == "fast" else 90.0
-                if args.budget == "fast" and sys.platform == "darwin":
-                    rl_n_envs = 1
-                    rl_device_preference = "cpu"
-                    rl_execution_mode = "single_env_cpu_guarded"
-                    rl_vec_env_type = "dummy_vec_env"
-                    rl_platform_guard_applied = True
                 _update_status(
                     status_path,
                     phase="stage1_rl",
@@ -3155,12 +3151,22 @@ def main() -> None:
                     total_units=stage2_state["total"],
                 )
                 _append_campaign_log(log_path, "stage2_signal_audit started")
-                report.signal_audit_summary = generate_signal_combination_audit(
-                    data_root=base_config.root_dir,
-                    symbol=base_config.symbol,
-                    output_dir=output_dir.parent / "signal_combination",
-                    profile_path=base_config.profile_path or Path("config/profiles/default.toml"),
-                )
+                try:
+                    report.signal_audit_summary = generate_signal_combination_audit(
+                        data_root=base_config.root_dir,
+                        symbol=base_config.symbol,
+                        output_dir=output_dir.parent / "signal_combination",
+                        profile_path=base_config.profile_path or Path("config/profiles/default.toml"),
+                    )
+                except RuntimeError as exc:
+                    if "no historical events available for replay" not in str(exc):
+                        raise
+                    report.signal_audit_summary = {
+                        "status": "blocked",
+                        "blocked_by": "signal_audit_historical_data_missing",
+                        "detail": str(exc),
+                    }
+                    _append_campaign_log(log_path, f"stage2_signal_audit blocked exception={exc}")
                 _stage2_heartbeat(
                     event="stage2_write_artifacts_started",
                     completed_units=stage2_state["completed"] + 1,

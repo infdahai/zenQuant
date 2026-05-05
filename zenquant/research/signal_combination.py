@@ -136,20 +136,31 @@ def _clamp(value: float, low: float, high: float) -> float:
     return max(low, min(high, value))
 
 
-def _signal_data_dependency(signal_name: str, *, macro_root: Path, data_root: Path) -> tuple[bool, str, str | None, str]:
+def _signal_data_dependency(
+    signal_name: str, *, macro_root: Path, data_root: Path
+) -> tuple[bool, str, str | None, str]:
     if signal_name == "etf_flow_state_signal":
         exists = (macro_root / "btc_etf_netflow" / "data.parquet").exists()
         return True, "ready" if exists else "missing", None if exists else "btc_etf_netflow_missing", "btc_etf_netflow"
     if signal_name == "cme_positioning_state_signal":
-        exists = (data_root / "cftc" / "cot_btc.parquet").exists() or (Path("data/raw/cftc") / "cot_btc.parquet").exists()
+        exists = (data_root / "cftc" / "cot_btc.parquet").exists() or (
+            Path("data/raw/cftc") / "cot_btc.parquet"
+        ).exists()
         return True, "ready" if exists else "missing", None if exists else "cme_positioning_missing", "cme_cot"
     if signal_name == "options_vol_signal":
-        exists = (data_root / "deribit_options" / "_collector_status.json").exists() or (Path("data/raw/deribit_options") / "_collector_status.json").exists()
+        exists = (data_root / "deribit_options" / "_collector_status.json").exists() or (
+            Path("data/raw/deribit_options") / "_collector_status.json"
+        ).exists()
         return True, "ready" if exists else "missing", None if exists else "deribit_options_missing", "deribit_options"
     if signal_name == "macro_regime_signal":
         macro_names = ("vix", "dxy", "tlt")
         ready = all((macro_root / name / "data.parquet").exists() for name in macro_names)
-        return True, "ready" if ready else "partial", None if ready else "macro_regime_inputs_incomplete", ",".join(macro_names)
+        return (
+            True,
+            "ready" if ready else "partial",
+            None if ready else "macro_regime_inputs_incomplete",
+            ",".join(macro_names),
+        )
     if signal_name == "cross_asset_flow_signal":
         return True, "missing", "eth_flow_dependency_missing", "eth_to_btc_transfer_entropy"
     if signal_name == "vacuum_signal":
@@ -306,7 +317,9 @@ def build_signal_combination_audit(
     finalized: list[SignalAuditEntry] = []
     for entry in entries:
         normalized = (
-            direction_raw_weights.get(entry.name, 0.0) / total_direction_weight if total_direction_weight > 1e-12 else 0.0
+            direction_raw_weights.get(entry.name, 0.0) / total_direction_weight
+            if total_direction_weight > 1e-12
+            else 0.0
         )
         finalized.append(
             SignalAuditEntry(

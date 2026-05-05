@@ -64,7 +64,12 @@ def main() -> None:
     md_path = output_dir / "data_readiness.md"
     json_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
     md_path.write_text(build_markdown(payload), encoding="utf-8")
-    print(json.dumps({"json_path": str(json_path), "md_path": str(md_path), "overall_blockers": payload["overall_blockers"]}, indent=2))
+    print(
+        json.dumps(
+            {"json_path": str(json_path), "md_path": str(md_path), "overall_blockers": payload["overall_blockers"]},
+            indent=2,
+        )
+    )
 
 
 if __name__ == "__main__":

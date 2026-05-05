@@ -229,20 +229,23 @@ def main() -> None:
     accepted = bool(payload.get("full_training_allowed", False)) and bool(
         final_verdict.get("promote_to_paper_live_candidate", False)
     )
-    print(json.dumps(
-        {
-            "accepted_for_paper_live": accepted,
-            "acceptance_failure_reason": (
-                None
-                if accepted
-                else final_verdict.get("promotion_failure_reason") or (payload.get("full_training_blockers") or [None])[0]
-            ),
-            "candidate_frozen_id": frozen_id,
-            "json_path": str(final_json),
-            "md_path": str(final_md),
-        },
-        indent=2,
-    ))
+    print(
+        json.dumps(
+            {
+                "accepted_for_paper_live": accepted,
+                "acceptance_failure_reason": (
+                    None
+                    if accepted
+                    else final_verdict.get("promotion_failure_reason")
+                    or (payload.get("full_training_blockers") or [None])[0]
+                ),
+                "candidate_frozen_id": frozen_id,
+                "json_path": str(final_json),
+                "md_path": str(final_md),
+            },
+            indent=2,
+        )
+    )
 
 
 if __name__ == "__main__":

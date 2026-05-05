@@ -43,7 +43,9 @@ def aggregated_span_stats(root: Path, symbol: str) -> dict[str, Any]:
         "first_bucket_start": datetime.fromtimestamp(first_start / 1_000_000_000, tz=UTC).isoformat(),
         "last_bucket_end": datetime.fromtimestamp(last_end / 1_000_000_000, tz=UTC).isoformat(),
         "coverage_ratio_estimate": round(len(rows) / span_bars, 4),
-        "extreme_bars_estimate": sum(1 for row in rows if float(row.get("total_liq_usd", 0.0) or 0.0) >= extreme_threshold),
+        "extreme_bars_estimate": sum(
+            1 for row in rows if float(row.get("total_liq_usd", 0.0) or 0.0) >= extreme_threshold
+        ),
     }
 
 

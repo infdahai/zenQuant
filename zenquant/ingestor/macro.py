@@ -27,6 +27,7 @@ from urllib.request import Request, urlopen
 try:
     import requests
 except ModuleNotFoundError:
+
     class _CompatResponse:
         def __init__(self, status_code: int, text: str) -> None:
             self.status_code = status_code
@@ -390,7 +391,9 @@ def _fetch_btc_etf_from_farside_html(source_url: str) -> list[dict[str, float | 
     return _parse_farside_html_table(response.text)
 
 
-def _fetch_btc_etf_from_bitbo(source_url: str, *, binance_daily_close: dict[int, float]) -> list[dict[str, float | int]]:
+def _fetch_btc_etf_from_bitbo(
+    source_url: str, *, binance_daily_close: dict[int, float]
+) -> list[dict[str, float | int]]:
     response = requests.get(source_url, headers=DEFAULT_HTTP_HEADERS, timeout=REQUEST_TIMEOUT)
     response.raise_for_status()
     return _parse_bitbo_etf_flows_html(response.text, binance_daily_close=binance_daily_close)
@@ -409,7 +412,12 @@ def fetch_btc_etf_netflow(output_dir: Path, csv_path: Path | None = None, csv_ur
         Path(os.environ["ZENQUANT_BTC_ETF_FLOW_CSV"]) if os.getenv("ZENQUANT_BTC_ETF_FLOW_CSV") else None
     )
     bitbo_url = os.getenv("ZENQUANT_BTC_ETF_FLOW_BITBO_URL") or DEFAULT_BITBO_ETF_FLOW_URL
-    farside_url = csv_url or os.getenv("ZENQUANT_BTC_ETF_FLOW_CSV_URL") or os.getenv("ZENQUANT_BTC_ETF_FLOW_FARSIDE_URL") or DEFAULT_BTC_ETF_FLOW_FARSIDE_URL
+    farside_url = (
+        csv_url
+        or os.getenv("ZENQUANT_BTC_ETF_FLOW_CSV_URL")
+        or os.getenv("ZENQUANT_BTC_ETF_FLOW_FARSIDE_URL")
+        or DEFAULT_BTC_ETF_FLOW_FARSIDE_URL
+    )
     local_daily_close = _load_binance_daily_close_map(
         Path(os.getenv("ZENQUANT_BINANCE_BTC_1D_PATH", "data/raw/binance/klines/BTCUSDT/1d/data.parquet"))
     )
@@ -481,7 +489,9 @@ def fetch_btc_mvrv(output_dir: Path, csv_path: Path | None = None, csv_url: str 
       1. local CSV
       2. remote CSV URL
     """
-    source_path = csv_path or (Path(os.environ["ZENQUANT_BTC_MVRV_CSV"]) if os.getenv("ZENQUANT_BTC_MVRV_CSV") else None)
+    source_path = csv_path or (
+        Path(os.environ["ZENQUANT_BTC_MVRV_CSV"]) if os.getenv("ZENQUANT_BTC_MVRV_CSV") else None
+    )
     source_url = csv_url or os.getenv("ZENQUANT_BTC_MVRV_CSV_URL")
     metadata = {
         "btc_mvrv_source": None,

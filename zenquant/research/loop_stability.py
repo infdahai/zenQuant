@@ -19,7 +19,9 @@ def _read_json(path: Path) -> dict[str, Any] | None:
 def _stale_running(loop_status: dict[str, Any] | None, campaign_status: dict[str, Any] | None) -> bool:
     if not loop_status or not campaign_status:
         return False
-    return loop_status.get("loop_state") in {"campaign_running", "failed"} and campaign_status.get("status") == "running"
+    return (
+        loop_status.get("loop_state") in {"campaign_running", "failed"} and campaign_status.get("status") == "running"
+    )
 
 
 def _failure_cluster(loop_status: dict[str, Any] | None, campaign_status: dict[str, Any] | None) -> str:
@@ -34,7 +36,9 @@ def _failure_cluster(loop_status: dict[str, Any] | None, campaign_status: dict[s
     return "unknown_or_completed"
 
 
-def _terminal_classification(loop_status: dict[str, Any] | None, campaign_status: dict[str, Any] | None, report_present: bool) -> str:
+def _terminal_classification(
+    loop_status: dict[str, Any] | None, campaign_status: dict[str, Any] | None, report_present: bool
+) -> str:
     if report_present and (campaign_status or {}).get("status") == "completed":
         return "completed"
     if _stale_running(loop_status, campaign_status):
@@ -77,7 +81,9 @@ def build_loop_stability_review(results_root: Path) -> dict[str, Any]:
                 "failure_cluster": _failure_cluster(loop_status, campaign_status),
                 "stale_state_detected": _stale_running(loop_status, campaign_status),
                 "bootstrap_status_present": campaign_status is not None,
-                "stage1_rl_progress_seen": bool(campaign_status and (campaign_status.get("rl_episodes_completed") or 0) > 0),
+                "stage1_rl_progress_seen": bool(
+                    campaign_status and (campaign_status.get("rl_episodes_completed") or 0) > 0
+                ),
                 "stage2_terminal_state_written": bool(
                     campaign_status
                     and (
