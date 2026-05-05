@@ -453,6 +453,11 @@ class FrameworkParamTests(unittest.TestCase):
         self.assertEqual(grid["intent_flat_reduce_step_pct"], [0.15, 0.25, 0.35])
         self.assertEqual(grid["intent_flat_step_cadence_bars"], [8, 12, 24])
         self.assertEqual(grid["intent_same_direction_reduce_confirmation_bars"], [4, 8, 12])
+        self.assertEqual(grid["range_time_decay_bars"], [48, 96, 168])
+        self.assertEqual(grid["preserve_capital_time_decay_bars"], [12, 24, 48])
+        self.assertEqual(grid["time_decay_exit_enabled"], [1.0])
+        self.assertEqual(grid["time_decay_long_loss_threshold"], [-0.08, -0.12])
+        self.assertEqual(grid["time_decay_short_loss_threshold"], [-0.04, -0.06, -0.08])
         self.assertEqual(grid["intent_unconfirmed_flip_reduce_only"], [0.0])
         self.assertEqual(grid["flip_flatten_only_enabled"], [0.0])
         self.assertEqual(grid["target_delta_deadband_pct"], [0.0])
@@ -492,12 +497,18 @@ class FrameworkParamTests(unittest.TestCase):
                 "binance_metrics_risk_edge_threshold": 0.15,
                 "binance_metrics_risk_discount_floor": 0.60,
                 "exit_transition_risk": 0.90,
+                "time_decay_exit_enabled": 1.0,
+                "time_decay_long_loss_threshold": -0.08,
+                "time_decay_short_loss_threshold": -0.06,
             }
         )
 
         self.assertTrue(overrides["signals"]["binance_metrics_state_signal"]["enabled"])
         self.assertEqual(overrides["signals"]["binance_metrics_state_signal"]["weight"], 0.18)
         self.assertEqual(overrides["exits"]["regime_change_exit"]["transition_risk_threshold"], 0.90)
+        self.assertTrue(overrides["exits"]["time_decay_exit"]["enabled"])
+        self.assertEqual(overrides["exits"]["time_decay_exit"]["long_loss_threshold"], -0.08)
+        self.assertEqual(overrides["exits"]["time_decay_exit"]["short_loss_threshold"], -0.06)
         self.assertTrue(overrides["sizers"]["binance_metrics_risk_sizer"]["enabled"])
         self.assertEqual(overrides["sizers"]["binance_metrics_risk_sizer"]["edge_threshold"], 0.15)
         self.assertEqual(overrides["sizers"]["binance_metrics_risk_sizer"]["discount_floor"], 0.60)
@@ -1047,6 +1058,7 @@ class FrameworkParamTests(unittest.TestCase):
             strategy_config = build_strategy_config(seed)
             self.assertEqual(seed["intent_unconfirmed_flip_reduce_only"], 0.0)
             self.assertEqual(seed["intent_time_leverage_dip_accumulation_enabled"], 1.0)
+            self.assertEqual(seed["time_decay_exit_enabled"], 1.0)
             self.assertEqual(seed["flip_flatten_only_enabled"], 0.0)
             self.assertEqual(seed["target_delta_deadband_pct"], 0.0)
             self.assertEqual(seed["target_reduce_deadband_pct"], 0.0)
@@ -1059,6 +1071,10 @@ class FrameworkParamTests(unittest.TestCase):
             self.assertTrue(strategy_config.intent_time_leverage_dip_accumulation_enabled)
             self.assertLessEqual(strategy_config.intent_add_signal_threshold, 0.45)
             self.assertLessEqual(strategy_config.intent_time_leverage_add_deadband_pct, 0.25)
+            self.assertGreaterEqual(seed["range_time_decay_bars"], 48)
+            self.assertGreaterEqual(seed["preserve_capital_time_decay_bars"], 12)
+            self.assertLessEqual(seed["time_decay_long_loss_threshold"], -0.08)
+            self.assertLessEqual(seed["time_decay_short_loss_threshold"], -0.04)
             self.assertGreaterEqual(strategy_config.intent_flat_reduce_step_pct, 0.15)
             self.assertGreaterEqual(strategy_config.intent_flat_step_cadence_bars, 8)
             self.assertGreaterEqual(strategy_config.intent_same_direction_reduce_confirmation_bars, 4)

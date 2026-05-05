@@ -279,6 +279,18 @@ def build_plugin_config_overrides(params: dict[str, Any]) -> dict[str, dict[str,
         overrides.setdefault("exits", {}).setdefault("regime_change_exit", {})["transition_risk_threshold"] = float(
             params["exit_transition_risk"]
         )
+    if "time_decay_exit_enabled" in params:
+        overrides.setdefault("exits", {}).setdefault("time_decay_exit", {})["enabled"] = bool(
+            round(float(params["time_decay_exit_enabled"]))
+        )
+    if "time_decay_long_loss_threshold" in params:
+        overrides.setdefault("exits", {}).setdefault("time_decay_exit", {})["long_loss_threshold"] = float(
+            params["time_decay_long_loss_threshold"]
+        )
+    if "time_decay_short_loss_threshold" in params:
+        overrides.setdefault("exits", {}).setdefault("time_decay_exit", {})["short_loss_threshold"] = float(
+            params["time_decay_short_loss_threshold"]
+        )
 
     return overrides
 
@@ -828,6 +840,11 @@ def paulwei_balanced_tranche_param_grid(*, include_liquidation_toggles: bool = F
             "intent_flat_reduce_step_pct": [0.15, 0.25, 0.35],
             "intent_flat_step_cadence_bars": [8, 12, 24],
             "intent_same_direction_reduce_confirmation_bars": [4, 8, 12],
+            "range_time_decay_bars": [48, 96, 168],
+            "preserve_capital_time_decay_bars": [12, 24, 48],
+            "time_decay_exit_enabled": [1.0],
+            "time_decay_long_loss_threshold": [-0.08, -0.12],
+            "time_decay_short_loss_threshold": [-0.04, -0.06, -0.08],
             "flip_flatten_only_enabled": [0.0],
             "flip_reverse_open_scale": [1.00],
             "loss_flip_reverse_open_confidence_floor": [0.0],
@@ -1857,6 +1874,10 @@ def paulwei_balanced_tranche_seed_trials() -> list[dict[str, float]]:
             "intent_time_leverage_dip_min_adverse_atr": 0.75,
             "intent_time_leverage_dip_add_pct": 0.10,
             "intent_time_leverage_dip_max_leverage": 3.0,
+            "range_time_decay_bars": 48,
+            "preserve_capital_time_decay_bars": 12,
+            "time_decay_long_loss_threshold": -0.08,
+            "time_decay_short_loss_threshold": -0.04,
             "intent_flat_reduce_step_pct": 0.15,
             "intent_flat_step_cadence_bars": 8,
             "intent_same_direction_reduce_confirmation_bars": 4,
@@ -1876,6 +1897,10 @@ def paulwei_balanced_tranche_seed_trials() -> list[dict[str, float]]:
             "intent_time_leverage_dip_min_adverse_atr": 1.25,
             "intent_time_leverage_dip_add_pct": 0.10,
             "intent_time_leverage_dip_max_leverage": 3.0,
+            "range_time_decay_bars": 96,
+            "preserve_capital_time_decay_bars": 24,
+            "time_decay_long_loss_threshold": -0.08,
+            "time_decay_short_loss_threshold": -0.06,
             "intent_flat_reduce_step_pct": 0.25,
             "intent_flat_step_cadence_bars": 12,
             "intent_same_direction_reduce_confirmation_bars": 8,
@@ -1895,6 +1920,10 @@ def paulwei_balanced_tranche_seed_trials() -> list[dict[str, float]]:
             "intent_time_leverage_dip_min_adverse_atr": 1.25,
             "intent_time_leverage_dip_add_pct": 0.15,
             "intent_time_leverage_dip_max_leverage": 2.5,
+            "range_time_decay_bars": 168,
+            "preserve_capital_time_decay_bars": 48,
+            "time_decay_long_loss_threshold": -0.12,
+            "time_decay_short_loss_threshold": -0.08,
             "intent_flat_reduce_step_pct": 0.35,
             "intent_flat_step_cadence_bars": 24,
             "intent_same_direction_reduce_confirmation_bars": 12,
@@ -1914,6 +1943,10 @@ def paulwei_balanced_tranche_seed_trials() -> list[dict[str, float]]:
             "intent_time_leverage_dip_min_adverse_atr": 0.75,
             "intent_time_leverage_dip_add_pct": 0.15,
             "intent_time_leverage_dip_max_leverage": 3.0,
+            "range_time_decay_bars": 96,
+            "preserve_capital_time_decay_bars": 24,
+            "time_decay_long_loss_threshold": -0.12,
+            "time_decay_short_loss_threshold": -0.06,
             "intent_flat_reduce_step_pct": 0.25,
             "intent_flat_step_cadence_bars": 24,
             "intent_same_direction_reduce_confirmation_bars": 8,
@@ -1928,6 +1961,7 @@ def paulwei_balanced_tranche_seed_trials() -> list[dict[str, float]]:
         "intent_time_leverage_long_bias_enabled": 1.0,
         "intent_time_leverage_long_bias_confidence_floor": 0.65,
         "intent_time_leverage_long_bias_transition_ceiling": 0.35,
+        "time_decay_exit_enabled": 1.0,
         "flip_flatten_only_enabled": 0.0,
         "flip_reverse_open_scale": 1.00,
         "loss_flip_reverse_open_confidence_floor": 0.0,
