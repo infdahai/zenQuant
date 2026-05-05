@@ -23,8 +23,8 @@ uv run zenquant-backtest --root data/raw/binance --symbol BTCUSDT
 export ZENQUANT_PG_DSN='postgresql://user:pass@host:5432/zenQuant'
 uv run zenquant-web --host 127.0.0.1 --port 8090 --mode live
 
-# Export a labeled research dataset from historical replay
-uv run python scripts/run_research_pipeline.py --root data/raw/binance --symbol BTCUSDT --label baseline
+# Run a train/dev framework smoke campaign
+uv run python scripts/run_framework_campaign.py --budget smoke --optuna-trials 12 --rl-episodes 0 --search-space-mode intent_churn_ablation_train_only --development-dev-gate --output-dir results/framework_optimization_smoke
 
 # Export a labeled research dataset from live/paper PostgreSQL audit logs
 uv run zenquant-live-export --dsn "$ZENQUANT_PG_DSN" --symbol BTCUSDT_PERP --label paper-live
@@ -324,10 +324,20 @@ ZenQuant now supports two deterministic dataset-export paths for tuning and late
 Use this when you have Binance Parquet history on disk and want fully reproducible offline research.
 
 ```bash
-uv run python scripts/run_research_pipeline.py \
-  --root data/raw/binance \
-  --symbol BTCUSDT \
-  --label baseline
+uv run python - <<'PY'
+from pathlib import Path
+
+from zenquant.historical import HistoricalBacktestConfig
+from zenquant.research import ResearchRunConfig, run_research_pipeline
+
+artifact = run_research_pipeline(
+    ResearchRunConfig(
+        backtest=HistoricalBacktestConfig(root_dir=Path("data/raw/binance"), symbol="BTCUSDT"),
+        run_label="baseline",
+    )
+)
+print(artifact.run_dir)
+PY
 ```
 
 Output directory:
