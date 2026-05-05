@@ -41,6 +41,7 @@ SEARCH_SPACE_MODES: tuple[str, ...] = (
     "ralph_intent_reduce_cadence_train_only",
     "paulwei_balanced_tranche_train_only",
     "paulwei_dual_phase_train_only",
+    "paulwei_dual_phase_fee_repair_train_only",
     "execution_first_v2_correlation_constrained",
 )
 
@@ -54,6 +55,7 @@ BASE_TIMEFRAME_SMOKE_MODES: frozenset[str] = frozenset(
         "ralph_intent_reduce_cadence_train_only",
         "paulwei_balanced_tranche_train_only",
         "paulwei_dual_phase_train_only",
+        "paulwei_dual_phase_fee_repair_train_only",
     }
 )
 
@@ -63,6 +65,7 @@ STRICT_TRAIN_FEE_STOP_PROFILE_FLAGS: tuple[str, ...] = (
     "binance_factor_weight_repair_search",
     "paulwei_balanced_tranche_search",
     "paulwei_dual_phase_search",
+    "paulwei_dual_phase_fee_repair_search",
 )
 
 STRICT_TRAIN_TRUTH_PROFILE_FLAGS: tuple[str, ...] = (
@@ -74,6 +77,7 @@ STRICT_TRAIN_TRUTH_PROFILE_FLAGS: tuple[str, ...] = (
     "ralph_intent_reduce_cadence_search",
     "paulwei_balanced_tranche_search",
     "paulwei_dual_phase_search",
+    "paulwei_dual_phase_fee_repair_search",
 )
 
 
@@ -914,6 +918,42 @@ def paulwei_dual_phase_param_grid(*, include_liquidation_toggles: bool = False) 
             "weak_signal_no_flip_enabled": [0.0],
             "tiny_reverse_reduce_only_enabled": [0.0],
             "profit_protect_reduce_enabled": [0.0],
+        }
+    )
+    return grid
+
+
+def paulwei_dual_phase_fee_repair_param_grid(*, include_liquidation_toggles: bool = False) -> dict[str, list[float]]:
+    """Train-only dual-phase search narrowed around the v102 fee-drag miss."""
+
+    grid = paulwei_dual_phase_param_grid(include_liquidation_toggles=include_liquidation_toggles)
+    grid.update(
+        {
+            "target_vol_4h": [0.45, 0.50, 0.55],
+            "max_leverage": [2.5, 3.0],
+            "direction_signal_threshold": [0.40, 0.45],
+            "intent_add_signal_threshold": [0.40, 0.45, 0.50],
+            "intent_entry_confirmation_bars": [4, 6, 8],
+            "intent_flip_confirmation_bars": [24, 36],
+            "intent_flat_confirmation_bars": [16, 24, 36],
+            "intent_range_entry_confirmation_bars": [12],
+            "intent_range_reentry_cooldown_bars": [48],
+            "intent_bearish_override_confirmation_bars": [8, 12],
+            "intent_time_leverage_min_hold_bars": [480, 672],
+            "intent_time_leverage_add_deadband_pct": [0.15, 0.25],
+            "intent_time_leverage_reduce_deadband_pct": [1.00, 1.25],
+            "intent_time_leverage_dip_accumulation_enabled": [1.0],
+            "intent_time_leverage_dip_min_adverse_atr": [1.25],
+            "intent_time_leverage_dip_max_adverse_atr": [3.0],
+            "intent_time_leverage_dip_add_pct": [0.10, 0.15],
+            "intent_time_leverage_dip_max_leverage": [2.5, 3.0],
+            "intent_flat_reduce_step_pct": [0.25, 0.35],
+            "intent_flat_step_cadence_bars": [24],
+            "intent_same_direction_reduce_confirmation_bars": [12],
+            "range_time_decay_bars": [168],
+            "preserve_capital_time_decay_bars": [48],
+            "time_decay_long_loss_threshold": [-0.08, -0.12],
+            "time_decay_short_loss_threshold": [-0.06, -0.08],
         }
     )
     return grid
@@ -2132,6 +2172,109 @@ def paulwei_dual_phase_seed_trials() -> list[dict[str, float]]:
     return seeds
 
 
+def paulwei_dual_phase_fee_repair_seed_trials() -> list[dict[str, float]]:
+    """Deterministic seed set for preserving v102 time leverage while repairing fee drag."""
+
+    repair_variants = [
+        {
+            "target_vol_4h": 0.50,
+            "max_leverage": 3.0,
+            "direction_signal_threshold": 0.40,
+            "intent_add_signal_threshold": 0.45,
+            "intent_entry_confirmation_bars": 6,
+            "intent_flip_confirmation_bars": 24,
+            "intent_flat_confirmation_bars": 24,
+            "intent_time_leverage_min_hold_bars": 480,
+            "intent_time_leverage_add_deadband_pct": 0.15,
+            "intent_time_leverage_reduce_deadband_pct": 1.00,
+            "intent_time_leverage_dip_add_pct": 0.10,
+            "intent_time_leverage_dip_max_leverage": 3.0,
+            "intent_flat_reduce_step_pct": 0.25,
+        },
+        {
+            "target_vol_4h": 0.45,
+            "max_leverage": 3.0,
+            "direction_signal_threshold": 0.40,
+            "intent_add_signal_threshold": 0.45,
+            "intent_entry_confirmation_bars": 6,
+            "intent_flip_confirmation_bars": 36,
+            "intent_flat_confirmation_bars": 24,
+            "intent_time_leverage_min_hold_bars": 480,
+            "intent_time_leverage_add_deadband_pct": 0.15,
+            "intent_time_leverage_reduce_deadband_pct": 1.25,
+            "intent_time_leverage_dip_add_pct": 0.10,
+            "intent_time_leverage_dip_max_leverage": 3.0,
+            "intent_flat_reduce_step_pct": 0.25,
+        },
+        {
+            "target_vol_4h": 0.50,
+            "max_leverage": 2.5,
+            "direction_signal_threshold": 0.45,
+            "intent_add_signal_threshold": 0.50,
+            "intent_entry_confirmation_bars": 8,
+            "intent_flip_confirmation_bars": 36,
+            "intent_flat_confirmation_bars": 36,
+            "intent_time_leverage_min_hold_bars": 672,
+            "intent_time_leverage_add_deadband_pct": 0.25,
+            "intent_time_leverage_reduce_deadband_pct": 1.25,
+            "intent_time_leverage_dip_add_pct": 0.15,
+            "intent_time_leverage_dip_max_leverage": 2.5,
+            "intent_flat_reduce_step_pct": 0.35,
+        },
+        {
+            "target_vol_4h": 0.55,
+            "max_leverage": 2.5,
+            "direction_signal_threshold": 0.45,
+            "intent_add_signal_threshold": 0.45,
+            "intent_entry_confirmation_bars": 8,
+            "intent_flip_confirmation_bars": 24,
+            "intent_flat_confirmation_bars": 36,
+            "intent_time_leverage_min_hold_bars": 672,
+            "intent_time_leverage_add_deadband_pct": 0.25,
+            "intent_time_leverage_reduce_deadband_pct": 1.00,
+            "intent_time_leverage_dip_add_pct": 0.10,
+            "intent_time_leverage_dip_max_leverage": 2.5,
+            "intent_flat_reduce_step_pct": 0.35,
+        },
+    ]
+    shared_repair = {
+        "paulwei_dual_phase_objective_enabled": 1.0,
+        "intent_time_leverage_hold_enabled": 1.0,
+        "intent_time_leverage_size_hysteresis_enabled": 1.0,
+        "intent_time_leverage_dip_accumulation_enabled": 1.0,
+        "intent_time_leverage_dip_min_adverse_atr": 1.25,
+        "intent_time_leverage_dip_max_adverse_atr": 3.0,
+        "intent_time_leverage_long_bias_enabled": 1.0,
+        "time_decay_exit_enabled": 1.0,
+        "range_time_decay_bars": 168,
+        "preserve_capital_time_decay_bars": 48,
+        "time_decay_long_loss_threshold": -0.08,
+        "time_decay_short_loss_threshold": -0.06,
+        "intent_flat_step_cadence_bars": 24,
+        "intent_same_direction_reduce_confirmation_bars": 12,
+        "intent_range_entry_confirmation_bars": 12,
+        "intent_range_reentry_cooldown_bars": 48,
+        "intent_bearish_override_confirmation_bars": 8,
+        "flip_flatten_only_enabled": 0.0,
+        "flip_reverse_open_scale": 1.00,
+        "weak_signal_no_flip_enabled": 0.0,
+        "tiny_reverse_reduce_only_enabled": 0.0,
+        "profit_protect_reduce_enabled": 0.0,
+        "target_delta_deadband_pct": 0.0,
+        "target_reduce_deadband_pct": 0.0,
+    }
+    seeds: list[dict[str, float]] = []
+    for index, base_seed in enumerate(paulwei_dual_phase_seed_trials()):
+        seeds.append(
+            {
+                **base_seed,
+                **shared_repair,
+                **repair_variants[index % len(repair_variants)],
+            }
+        )
+    return seeds
+
+
 def binance_factor_weight_repair_seed_trials() -> list[dict[str, float]]:
     targeted_v22_fee_shape = {
         **baseline_anchor_params(),
@@ -2483,6 +2626,8 @@ def param_grid_for_mode(
         return paulwei_balanced_tranche_param_grid(include_liquidation_toggles=include_liquidation_toggles)
     if mode == "paulwei_dual_phase_train_only":
         return paulwei_dual_phase_param_grid(include_liquidation_toggles=include_liquidation_toggles)
+    if mode == "paulwei_dual_phase_fee_repair_train_only":
+        return paulwei_dual_phase_fee_repair_param_grid(include_liquidation_toggles=include_liquidation_toggles)
     return core_param_grid(include_liquidation_toggles=include_liquidation_toggles)
 
 
@@ -2505,7 +2650,11 @@ def search_space_profile(
     ralph_execution_fee_cooldown = mode == "ralph_execution_fee_cooldown_train_only"
     ralph_intent_reduce_cadence = mode == "ralph_intent_reduce_cadence_train_only"
     paulwei_balanced_tranche = mode == "paulwei_balanced_tranche_train_only"
-    paulwei_dual_phase = mode == "paulwei_dual_phase_train_only"
+    paulwei_dual_phase_fee_repair = mode == "paulwei_dual_phase_fee_repair_train_only"
+    paulwei_dual_phase = mode in {
+        "paulwei_dual_phase_train_only",
+        "paulwei_dual_phase_fee_repair_train_only",
+    }
     return {
         "profile": (
             mode
@@ -2521,6 +2670,7 @@ def search_space_profile(
                 or ralph_intent_reduce_cadence
                 or paulwei_balanced_tranche
                 or paulwei_dual_phase
+                or paulwei_dual_phase_fee_repair
             )
             else "execution_first_v2_correlation_constrained"
             if not include_liquidation_toggles
@@ -2539,11 +2689,13 @@ def search_space_profile(
         "ralph_intent_reduce_cadence_search": ralph_intent_reduce_cadence,
         "paulwei_balanced_tranche_search": paulwei_balanced_tranche,
         "paulwei_dual_phase_search": paulwei_dual_phase,
+        "paulwei_dual_phase_fee_repair_search": paulwei_dual_phase_fee_repair,
         "paulwei_phase_learning_contract": {
             "enabled": paulwei_dual_phase,
             "templates": [
                 "early_convexity_usdt_projection",
                 "mature_low_switch_control",
+                *(["dual_phase_fee_repair"] if paulwei_dual_phase_fee_repair else []),
             ]
             if paulwei_dual_phase
             else [],

@@ -74,6 +74,13 @@ The train-only search mode for this combined target is
 that mode; existing PaulWei balanced-tranche and legacy search modes keep their
 previous scoring.
 
+The narrowed repair mode is `paulwei_dual_phase_fee_repair_train_only`. It keeps
+the same two learning templates, but adds a third training context label,
+`dual_phase_fee_repair`, and narrows the grid around lower target volatility,
+slower entry/flat confirmation, and longer time-leverage holds. This mode is for
+repairing the v102 train fee miss without moving the fix into execution-layer
+order filtering.
+
 ## Commands
 
 Compare default current and frozen PaulWei:
@@ -116,4 +123,10 @@ Run a smoke search for the dual-phase learning objective:
 
 ```bash
 uv run python scripts/run_framework_campaign.py --root data/raw/binance --symbol BTCUSDT --budget smoke --optuna-trials 12 --rl-episodes 0 --search-space-mode paulwei_dual_phase_train_only --development-dev-gate --output-dir results/regime_objective_candidate_search_v102_paulwei_dual_phase_smoke
+```
+
+Run a smoke search for the dual-phase fee-repair objective:
+
+```bash
+uv run python scripts/run_framework_campaign.py --root data/raw/binance --symbol BTCUSDT --budget smoke --optuna-trials 12 --rl-episodes 0 --search-space-mode paulwei_dual_phase_fee_repair_train_only --development-dev-gate --output-dir results/regime_objective_candidate_search_v103_paulwei_dual_phase_fee_repair_smoke
 ```
