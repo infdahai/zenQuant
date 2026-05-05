@@ -489,6 +489,86 @@ def build_behavior_profile(*, data_root: Path, spot_root: Path) -> tuple[dict[st
     return profile, episodes
 
 
+def build_tranche_behavior_profile(
+    *,
+    data_root: Path,
+    mature_start_at: str | None = "2021-05-28T12:00:00+00:00",
+) -> dict[str, Any]:
+    """Summarize PaulWei's order/fill/episode tranching behavior.
+
+    This keeps public-account behavior as research-only evidence. The output
+    intentionally separates submitted orders from trade executions because many
+    PaulWei orders never fill, while filled position episodes often contain many
+    partial add/reduce executions.
+    """
+    frames = load_paulwei_frames(data_root=data_root)
+    orders = frames.get("api-v1-order.csv", pd.DataFrame()).copy()
+    executions = frames.get("api-v1-execution-tradeHistory.csv", pd.DataFrame()).copy()
+
+    if not orders.empty and "timestamp" in orders.columns:
+        orders["timestamp"] = _parse_ts(orders["timestamp"])
+    if not executions.empty and "timestamp" in executions.columns:
+        executions["timestamp"] = _parse_ts(executions["timestamp"])
+    full_fill_catalog = _build_fill_action_catalog(executions)
+
+    windows: list[dict[str, Any]] = [
+        {"label": "full_public_window", "start_at": None, "end_at": None},
+    ]
+    if mature_start_at:
+        windows.append({"label": "mature_style_window", "start_at": mature_start_at, "end_at": None})
+
+    window_summaries: list[dict[str, Any]] = []
+    for window in windows:
+        start = pd.Timestamp(window["start_at"]) if window["start_at"] else None
+        order_window = _filter_timestamp_window(orders, start=start, end=None)
+        execution_window = _filter_timestamp_window(executions, start=start, end=None)
+        fill_catalog = _filter_timestamp_window(full_fill_catalog, start=start, end=None)
+        window_summaries.append(
+            {
+                "label": window["label"],
+                "start_at": window["start_at"],
+                "end_at": window["end_at"],
+                "order_fill_profile": _summarize_order_fill_window(order_window, execution_window),
+                "all_symbol_tranche_profile": _summarize_fill_action_catalog(fill_catalog),
+                "btc_tranche_profile": _summarize_fill_action_catalog(
+                    fill_catalog.loc[fill_catalog["symbol"].astype(str).map(_btc_symbol)].copy()
+                    if not fill_catalog.empty and "symbol" in fill_catalog.columns
+                    else pd.DataFrame()
+                ),
+            }
+        )
+
+    payload = {
+        "generated_at": _ts(),
+        "data_root": str(data_root),
+        "research_scope": "research_only_public_account_behavior",
+        "test_split_policy": "public ledger windows can extend beyond canonical test; do not use for promotion feedback",
+        "mature_start_at": mature_start_at,
+        "windows": window_summaries,
+    }
+    payload["artifact_id"] = _artifact_id(payload)
+    return payload
+
+
+def write_tranche_behavior_profile(
+    *,
+    data_root: Path,
+    output_dir: Path,
+    mature_start_at: str | None = "2021-05-28T12:00:00+00:00",
+) -> dict[str, Any]:
+    profile = build_tranche_behavior_profile(data_root=data_root, mature_start_at=mature_start_at)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    json_path = output_dir / "tranche_behavior_profile.json"
+    md_path = output_dir / "tranche_behavior_profile.md"
+    _write_json(json_path, profile)
+    md_path.write_text(_tranche_behavior_markdown(profile), encoding="utf-8")
+    return {
+        "json_path": str(json_path),
+        "md_path": str(md_path),
+        "artifact_id": profile.get("artifact_id"),
+    }
+
+
 def build_baseline_mapping(*, behavior_profile: dict[str, Any]) -> dict[str, Any]:
     from zenquant.research.comparison import paulwei_execution_baseline, paulwei_risk_baseline
 
@@ -1487,7 +1567,12 @@ def load_paulwei_public_archive_variant(*, mapping_path: Path) -> dict[str, Any]
         return None
 
 
-def paulwei_public_archive_variant_spec(*, mapping_path: Path) -> dict[str, Any] | None:
+def paulwei_public_archive_variant_spec(
+    *,
+    mapping_path: Path,
+    variant_name: str = "paulwei_public_archive_baseline",
+    variant_label: str = "PaulWei Public Archive Baseline",
+) -> dict[str, Any] | None:
     from zenquant.research.comparison import paulwei_execution_baseline, paulwei_risk_baseline
 
     payload = load_paulwei_public_archive_variant(mapping_path=mapping_path)
@@ -1498,8 +1583,8 @@ def paulwei_public_archive_variant_spec(*, mapping_path: Path) -> dict[str, Any]
     strategy_overrides = payload.get("strategy_config_overrides", {})
     strategy = replace_config(ARCStrategyConfig(), strategy_overrides) if strategy_overrides else None
     return {
-        "name": "paulwei_public_archive_baseline",
-        "label": "PaulWei Public Archive Baseline",
+        "name": variant_name,
+        "label": variant_label,
         "risk_config": risk,
         "execution_config": execution,
         "strategy_config": strategy,
@@ -1597,6 +1682,339 @@ def _finalize_episode(
     else:
         payload["median_add_interval_hours"] = None
     return payload
+
+
+def _filter_timestamp_window(
+    frame: pd.DataFrame,
+    *,
+    start: pd.Timestamp | None,
+    end: pd.Timestamp | None,
+) -> pd.DataFrame:
+    if frame.empty or "timestamp" not in frame.columns:
+        return frame.copy()
+    filtered = frame.copy()
+    if start is not None:
+        filtered = filtered.loc[filtered["timestamp"] >= start].copy()
+    if end is not None:
+        filtered = filtered.loc[filtered["timestamp"] <= end].copy()
+    return filtered
+
+
+def _numeric_column(frame: pd.DataFrame, column: str) -> pd.Series:
+    if column not in frame.columns:
+        return pd.Series(0.0, index=frame.index)
+    return pd.to_numeric(frame[column], errors="coerce").fillna(0.0)
+
+
+def _pct(part: float, total: float) -> float:
+    return round((float(part) / float(total)) if float(total) > 0 else 0.0, 6)
+
+
+def _summarize_order_fill_window(orders: pd.DataFrame, executions: pd.DataFrame) -> dict[str, Any]:
+    trade_execs = executions.copy()
+    if not trade_execs.empty and "execType" in trade_execs.columns:
+        trade_execs = trade_execs.loc[trade_execs["execType"].astype(str) == "Trade"].copy()
+
+    if orders.empty:
+        return {
+            "orders": 0,
+            "trade_execution_rows": len(trade_execs),
+            "available": False,
+            "reason": "orders_empty",
+        }
+
+    orders = orders.copy()
+    orders["orderQty"] = _numeric_column(orders, "orderQty").abs()
+    orders["cumQty"] = _numeric_column(orders, "cumQty").abs()
+    order_ids = orders["orderID"].astype(str) if "orderID" in orders.columns else pd.Series("", index=orders.index)
+    trade_order_ids = set(trade_execs["orderID"].dropna().astype(str)) if "orderID" in trade_execs.columns else set()
+    has_trade_exec = order_ids.isin(trade_order_ids)
+    full_fill = (orders["orderQty"] > 0.0) & (orders["cumQty"] >= orders["orderQty"])
+    partial_fill = (orders["cumQty"] > 0.0) & (orders["cumQty"] < orders["orderQty"])
+    zero_fill = orders["cumQty"] <= 0.0
+    canceled = (
+        orders["ordStatus"].astype(str).eq("Canceled")
+        if "ordStatus" in orders.columns
+        else pd.Series(False, index=orders.index)
+    )
+
+    per_order_exec_counts = (
+        trade_execs.groupby("orderID").size()
+        if not trade_execs.empty and "orderID" in trade_execs.columns
+        else pd.Series(dtype=int)
+    )
+    matched_exec_counts = order_ids.map(per_order_exec_counts).fillna(0).astype(int)
+    filled_exec_counts = matched_exec_counts.loc[matched_exec_counts > 0]
+
+    return {
+        "available": True,
+        "orders": len(orders),
+        "trade_execution_rows": len(trade_execs),
+        "unique_trade_order_ids": len(trade_order_ids),
+        "orders_with_trade_exec": int(has_trade_exec.sum()),
+        "orders_without_trade_exec": int((~has_trade_exec).sum()),
+        "orders_with_trade_exec_pct": _pct(float(has_trade_exec.sum()), float(len(orders))),
+        "orders_without_trade_exec_pct": _pct(float((~has_trade_exec).sum()), float(len(orders))),
+        "zero_fill_orders": int(zero_fill.sum()),
+        "zero_fill_pct": _pct(float(zero_fill.sum()), float(len(orders))),
+        "partial_fill_orders": int(partial_fill.sum()),
+        "partial_fill_pct": _pct(float(partial_fill.sum()), float(len(orders))),
+        "full_fill_orders": int(full_fill.sum()),
+        "full_fill_pct": _pct(float(full_fill.sum()), float(len(orders))),
+        "canceled_orders": int(canceled.sum()),
+        "canceled_zero_fill_orders": int((canceled & zero_fill).sum()),
+        "canceled_partial_fill_orders": int((canceled & partial_fill).sum()),
+        "median_trade_exec_rows_per_filled_order": _median_nonnull(filled_exec_counts),
+        "p75_trade_exec_rows_per_filled_order": _quantile_nonnull(filled_exec_counts, 0.75),
+        "p90_trade_exec_rows_per_filled_order": _quantile_nonnull(filled_exec_counts, 0.90),
+        "max_trade_exec_rows_per_filled_order": int(filled_exec_counts.max()) if not filled_exec_counts.empty else 0,
+        "status_counts": _value_counts(orders, "ordStatus"),
+        "ord_type_counts": _value_counts(orders, "ordType"),
+    }
+
+
+def _build_fill_action_catalog(executions: pd.DataFrame) -> pd.DataFrame:
+    if executions.empty:
+        return pd.DataFrame()
+
+    trades = executions.copy()
+    if "execType" in trades.columns:
+        trades = trades.loc[trades["execType"].astype(str) == "Trade"].copy()
+    if trades.empty:
+        return pd.DataFrame()
+
+    trades["timestamp"] = _parse_ts(trades["timestamp"])
+    trades["side_sign"] = trades["side"].map({"Buy": 1.0, "Sell": -1.0}).fillna(0.0)
+    trades["lastQty"] = _numeric_column(trades, "lastQty")
+    trades["signed_qty"] = trades["lastQty"] * trades["side_sign"]
+    price_col = _price_col(trades)
+    trades["trade_price"] = _numeric_column(trades, price_col)
+    trades = trades.loc[trades["timestamp"].notna() & (trades["signed_qty"] != 0)].copy()
+    if trades.empty:
+        return pd.DataFrame()
+    trades = trades.sort_values(["symbol", "timestamp", "orderID", "execID"], kind="stable")
+
+    rows: list[dict[str, Any]] = []
+    next_episode_id = 0
+    for symbol, group in trades.groupby("symbol", sort=False):
+        current_qty = 0.0
+        active_episode_id: int | None = None
+        active_side: str | None = None
+        active_peak = 0.0
+
+        for row in group.itertuples(index=False):
+            signed_qty = float(row.signed_qty)
+            old_qty = current_qty
+            new_qty = current_qty + signed_qty
+            old_sign = 0 if old_qty == 0 else (1 if old_qty > 0 else -1)
+            new_sign = 0 if new_qty == 0 else (1 if new_qty > 0 else -1)
+            action: str | None = None
+            episode_id = active_episode_id
+
+            if old_sign == 0 and new_sign != 0:
+                next_episode_id += 1
+                active_episode_id = next_episode_id
+                episode_id = active_episode_id
+                active_side = "long" if new_sign > 0 else "short"
+                active_peak = abs(new_qty)
+                action = "entry"
+            elif old_sign != 0 and new_sign == old_sign and abs(new_qty) > abs(old_qty):
+                action = "add"
+                active_peak = max(active_peak, abs(new_qty))
+            elif old_sign != 0 and new_sign == old_sign and abs(new_qty) < abs(old_qty):
+                action = "reduce"
+            elif old_sign != 0 and new_sign == 0:
+                action = "exit"
+            elif old_sign != 0 and new_sign != old_sign:
+                action = "flip"
+            else:
+                current_qty = new_qty
+                continue
+
+            rows.append(
+                {
+                    "episode_id": episode_id,
+                    "symbol": symbol,
+                    "episode_side": active_side,
+                    "timestamp": row.timestamp,
+                    "action": action,
+                    "side": row.side,
+                    "orderID": getattr(row, "orderID", None),
+                    "execID": getattr(row, "execID", None),
+                    "abs_qty": abs(signed_qty),
+                    "signed_qty": signed_qty,
+                    "old_abs_position": abs(old_qty),
+                    "new_abs_position": abs(new_qty),
+                    "peak_abs_position_so_far": active_peak,
+                    "trade_price": float(row.trade_price),
+                }
+            )
+
+            current_qty = new_qty
+            if action == "exit":
+                active_episode_id = None
+                active_side = None
+                active_peak = 0.0
+            elif action == "flip":
+                next_episode_id += 1
+                active_episode_id = next_episode_id
+                active_side = "long" if new_sign > 0 else "short"
+                active_peak = abs(new_qty)
+
+    catalog = pd.DataFrame(rows)
+    if catalog.empty:
+        return catalog
+    episode_peak = catalog.groupby("episode_id")["new_abs_position"].transform("max").replace(0.0, pd.NA)
+    catalog["fill_qty_pct_of_episode_peak"] = pd.to_numeric(catalog["abs_qty"], errors="coerce") / episode_peak
+    return catalog
+
+
+def _summarize_fill_action_catalog(catalog: pd.DataFrame) -> dict[str, Any]:
+    if catalog.empty:
+        return {"available": False, "reason": "fill_action_catalog_empty"}
+
+    frame = catalog.copy()
+    span_days = max(1.0, (frame["timestamp"].max() - frame["timestamp"].min()).total_seconds() / 86_400.0)
+    decrease_actions = {"reduce", "exit", "flip"}
+    increase_actions = {"entry", "add"}
+    action_counts = {str(k): int(v) for k, v in frame["action"].value_counts().sort_index().items()}
+    position_switches = int(action_counts.get("flip", 0))
+
+    per_episode = []
+    for (_, _symbol), group in frame.groupby(["episode_id", "symbol"], dropna=False):
+        increase = group.loc[group["action"].isin(increase_actions)]
+        decrease = group.loc[group["action"].isin(decrease_actions)]
+        reduce_only = group.loc[group["action"].eq("reduce")]
+        intervals = group["timestamp"].sort_values().diff().dt.total_seconds().div(60.0).dropna()
+        positive_intervals = intervals.loc[intervals > 0.0]
+        per_episode.append(
+            {
+                "fill_rows": len(group),
+                "unique_order_ids": group["orderID"].nunique(dropna=True),
+                "entry_add_fill_rows": len(increase),
+                "reduce_exit_fill_rows": len(decrease),
+                "reduce_fill_rows": len(reduce_only),
+                "median_positive_fill_interval_minutes": float(positive_intervals.median())
+                if not positive_intervals.empty
+                else None,
+                "zero_minute_fill_share": _pct(float((intervals == 0.0).sum()), float(len(intervals)))
+                if len(intervals)
+                else 0.0,
+            }
+        )
+    episode_frame = pd.DataFrame(per_episode)
+
+    add_fill_pct = frame.loc[frame["action"].isin(increase_actions), "fill_qty_pct_of_episode_peak"]
+    reduce_fill_pct = frame.loc[frame["action"].isin(decrease_actions), "fill_qty_pct_of_episode_peak"]
+    filled_order_count = int(frame["orderID"].nunique(dropna=True))
+    execution_rows = len(frame)
+
+    return {
+        "available": True,
+        "symbols": sorted(str(value) for value in frame["symbol"].dropna().unique()),
+        "trade_execution_rows": execution_rows,
+        "filled_order_count": filled_order_count,
+        "position_episode_count": int(frame["episode_id"].nunique(dropna=True)),
+        "position_switch_count": position_switches,
+        "position_switches_per_30d": round((float(position_switches) / span_days) * 30.0, 6),
+        "trade_execution_rows_per_position_switch": round(execution_rows / max(1, position_switches), 4),
+        "filled_orders_per_position_switch": round(filled_order_count / max(1, position_switches), 4),
+        "action_fill_counts": action_counts,
+        "median_fill_rows_per_episode": _median_nonnull(episode_frame["fill_rows"]),
+        "p75_fill_rows_per_episode": _quantile_nonnull(episode_frame["fill_rows"], 0.75),
+        "p90_fill_rows_per_episode": _quantile_nonnull(episode_frame["fill_rows"], 0.90),
+        "median_filled_orders_per_episode": _median_nonnull(episode_frame["unique_order_ids"]),
+        "median_entry_add_fill_rows_per_episode": _median_nonnull(episode_frame["entry_add_fill_rows"]),
+        "median_reduce_exit_fill_rows_per_episode": _median_nonnull(episode_frame["reduce_exit_fill_rows"]),
+        "median_reduce_fill_rows_per_episode": _median_nonnull(episode_frame["reduce_fill_rows"]),
+        "median_add_fill_qty_pct_of_episode_peak": _median_nonnull(add_fill_pct),
+        "median_reduce_fill_qty_pct_of_episode_peak": _median_nonnull(reduce_fill_pct),
+        "median_positive_fill_interval_minutes_per_episode": _median_nonnull(
+            episode_frame["median_positive_fill_interval_minutes"]
+        ),
+        "median_zero_minute_fill_share_per_episode": _median_nonnull(episode_frame["zero_minute_fill_share"]),
+        "interpretation": (
+            "low_position_switch_count_does_not_imply_low_execution_activity"
+            if execution_rows > max(10, position_switches * 10)
+            else "execution_activity_close_to_position_switch_count"
+        ),
+    }
+
+
+def _quantile_nonnull(series: pd.Series, quantile: float) -> float | None:
+    clean = pd.to_numeric(series, errors="coerce").dropna()
+    return None if clean.empty else round(float(clean.quantile(quantile)), 4)
+
+
+def _value_counts(frame: pd.DataFrame, column: str) -> dict[str, int]:
+    if column not in frame.columns:
+        return {}
+    return {str(k): int(v) for k, v in frame[column].fillna("NA").value_counts().sort_index().items()}
+
+
+def _tranche_behavior_markdown(payload: dict[str, Any]) -> str:
+    lines = [
+        "# PaulWei Tranche Behavior Profile",
+        "",
+        f"- generated_at: `{payload.get('generated_at')}`",
+        f"- research_scope: `{payload.get('research_scope')}`",
+        f"- test_split_policy: `{payload.get('test_split_policy')}`",
+        f"- mature_start_at: `{payload.get('mature_start_at')}`",
+        "",
+    ]
+    for window in payload.get("windows", []):
+        lines.extend(
+            [
+                f"## {window.get('label')}",
+                "",
+                f"- start_at: `{window.get('start_at')}`",
+                "",
+            ]
+        )
+        order_profile = window.get("order_fill_profile", {})
+        lines.extend(
+            [
+                "### Order Fill Profile",
+                "",
+                f"- orders: `{order_profile.get('orders')}`",
+                f"- trade_execution_rows: `{order_profile.get('trade_execution_rows')}`",
+                f"- orders_with_trade_exec_pct: `{order_profile.get('orders_with_trade_exec_pct')}`",
+                f"- orders_without_trade_exec_pct: `{order_profile.get('orders_without_trade_exec_pct')}`",
+                f"- partial_fill_pct: `{order_profile.get('partial_fill_pct')}`",
+                f"- median_trade_exec_rows_per_filled_order: `{order_profile.get('median_trade_exec_rows_per_filled_order')}`",
+                f"- p90_trade_exec_rows_per_filled_order: `{order_profile.get('p90_trade_exec_rows_per_filled_order')}`",
+                "",
+            ]
+        )
+        for key, title in (
+            ("all_symbol_tranche_profile", "All Symbols Tranche Profile"),
+            ("btc_tranche_profile", "BTC Tranche Profile"),
+        ):
+            profile = window.get(key, {})
+            lines.extend(
+                [
+                    f"### {title}",
+                    "",
+                    f"- available: `{profile.get('available')}`",
+                    f"- trade_execution_rows: `{profile.get('trade_execution_rows')}`",
+                    f"- filled_order_count: `{profile.get('filled_order_count')}`",
+                    f"- position_episode_count: `{profile.get('position_episode_count')}`",
+                    f"- position_switch_count: `{profile.get('position_switch_count')}`",
+                    f"- position_switches_per_30d: `{profile.get('position_switches_per_30d')}`",
+                    f"- trade_execution_rows_per_position_switch: `{profile.get('trade_execution_rows_per_position_switch')}`",
+                    f"- filled_orders_per_position_switch: `{profile.get('filled_orders_per_position_switch')}`",
+                    f"- action_fill_counts: `{profile.get('action_fill_counts')}`",
+                    f"- median_fill_rows_per_episode: `{profile.get('median_fill_rows_per_episode')}`",
+                    f"- p90_fill_rows_per_episode: `{profile.get('p90_fill_rows_per_episode')}`",
+                    f"- median_entry_add_fill_rows_per_episode: `{profile.get('median_entry_add_fill_rows_per_episode')}`",
+                    f"- median_reduce_exit_fill_rows_per_episode: `{profile.get('median_reduce_exit_fill_rows_per_episode')}`",
+                    f"- median_add_fill_qty_pct_of_episode_peak: `{profile.get('median_add_fill_qty_pct_of_episode_peak')}`",
+                    f"- median_reduce_fill_qty_pct_of_episode_peak: `{profile.get('median_reduce_fill_qty_pct_of_episode_peak')}`",
+                    f"- interpretation: `{profile.get('interpretation')}`",
+                    "",
+                ]
+            )
+    return "\n".join(lines)
 
 
 def _median_nonnull(series: pd.Series) -> float | None:

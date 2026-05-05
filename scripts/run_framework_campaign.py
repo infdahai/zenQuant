@@ -22,6 +22,14 @@ from typing import Any
 from zenquant.domain import Timeframe
 from zenquant.historical import HistoricalBacktestConfig
 from zenquant.research.auto_research import SearchStageTimeoutError
+from zenquant.research.framework_params import (
+    FRAMEWORK_CAMPAIGN_BUDGETS,
+    FRAMEWORK_FAST_WORKER_PROFILES,
+    SEARCH_SPACE_MODES,
+)
+from zenquant.research.framework_params import (
+    smoke_uses_base_timeframe as _smoke_uses_base_timeframe,
+)
 from zenquant.research.framework_search import (
     CandidateSummary,
     FrameworkEvaluator,
@@ -65,6 +73,153 @@ def _read_seed_trials(path: Path | None) -> list[dict[str, Any]]:
             raise ValueError("seed_trials_file entries must be JSON objects")
         resolved.append(dict(item))
     return resolved
+
+
+def _resolve_stage1_parallelism(
+    *,
+    budget: str,
+    search_space_mode: str,
+    fast_worker_profile: str,
+    cpu_count: int | None = None,
+) -> dict[str, Any]:
+    available_workers = max(1, ((cpu_count if cpu_count is not None else os.cpu_count()) or 4) - 2)
+    if _smoke_uses_base_timeframe(budget=budget, search_space_mode=search_space_mode):
+        workers = max(1, min(available_workers, 4))
+        return {
+            "stage1_parallel_mode": "cpu_parallel",
+            "stage1_max_workers": workers,
+            "stage1_target_inflight": workers,
+            "stage1_batch_size": 1,
+        }
+    if budget == "smoke":
+        return {
+            "stage1_parallel_mode": "serial",
+            "stage1_max_workers": None,
+            "stage1_target_inflight": 1,
+            "stage1_batch_size": 1,
+        }
+    if budget == "fast":
+        fast_worker_cap = {
+            "fast_low": 4,
+            "fast_default": 6,
+            "fast_high_cpu": 8,
+        }[fast_worker_profile]
+        workers = max(1, min(available_workers, fast_worker_cap))
+        return {
+            "stage1_parallel_mode": "cpu_parallel",
+            "stage1_max_workers": workers,
+            "stage1_target_inflight": workers,
+            "stage1_batch_size": 4,
+        }
+    workers = max(1, min(available_workers, 8))
+    return {
+        "stage1_parallel_mode": "cpu_parallel",
+        "stage1_max_workers": workers,
+        "stage1_target_inflight": workers,
+        "stage1_batch_size": 6,
+    }
+
+
+_TRAIN_QUALITY_FALLBACK_SKIP_BLOCKERS = {
+    "train_trade_count_churn_worse",
+    "train_trade_count_per_day_cap_exceeded",
+    "train_fee_drag_structurally_worse",
+    "train_fee_drag_cap_exceeded",
+    "train_net_pnl_per_trade_inefficient",
+    "train_profit_factor_after_fee_weak",
+    "train_position_switch_cadence_worse",
+    "train_flip_reduce_fee_drag_worse",
+    "train_protective_reduce_bias_weak",
+    "train_time_leverage_efficiency_weak",
+}
+
+
+def _extract_rejected_train_bucket_blockers(diagnostics: dict[str, Any]) -> set[str]:
+    train_diagnostics = diagnostics.get("train_candidate_diagnostics") or {}
+    if not isinstance(train_diagnostics, dict):
+        return set()
+
+    blockers: set[str] = set()
+    for key in ("bucket_blockers", "rejected_candidate_blockers"):
+        raw_blockers = train_diagnostics.get(key)
+        if isinstance(raw_blockers, list):
+            blockers.update(str(item) for item in raw_blockers)
+
+    rejected_candidates = train_diagnostics.get("rejected_candidate_diagnostics") or []
+    if not isinstance(rejected_candidates, list):
+        return blockers
+
+    for candidate in rejected_candidates:
+        if not isinstance(candidate, dict):
+            continue
+        regime_objective = candidate.get("regime_objective") or {}
+        if not isinstance(regime_objective, dict):
+            continue
+        raw_blockers = regime_objective.get("bucket_blockers") or []
+        if isinstance(raw_blockers, list):
+            blockers.update(str(item) for item in raw_blockers)
+    return blockers
+
+
+def _smoke_primary_empty_skip_fallback_reason(
+    *,
+    search_space_mode: str | None,
+    primary_diagnostics: dict[str, Any],
+) -> str | None:
+    train_only_modes = {
+        "binance_factor_weight_repair_train_only",
+        "execution_inventory_rethink_train_only",
+        "intent_churn_ablation_train_only",
+        "intent_churn_repair_train_only",
+        "ralph_protective_reduce_train_only",
+        "ralph_protective_reduce_fee_repair_train_only",
+        "ralph_execution_fee_cooldown_train_only",
+        "ralph_intent_reduce_cadence_train_only",
+        "baseline_anchored_train_only",
+        "baseline_anchored_defensive_candidate_existence",
+        "baseline_anchored_2023_08_hostile_repair",
+    }
+    if search_space_mode not in train_only_modes:
+        return None
+    empty_reason = primary_diagnostics.get("empty_shortlist_reason")
+    if empty_reason != "stage1_fail_fast_rejected":
+        return None
+
+    train_diagnostics = primary_diagnostics.get("train_candidate_diagnostics") or {}
+    if not isinstance(train_diagnostics, dict):
+        return None
+    fail_fast_reasons = train_diagnostics.get("stage1_fail_fast_reasons") or {}
+    train_bucket_fail_fast = (
+        isinstance(fail_fast_reasons, dict)
+        and int(fail_fast_reasons.get("regime_objective_train_bucket_fail_fast", 0) or 0) > 0
+    )
+    blockers = _extract_rejected_train_bucket_blockers(primary_diagnostics)
+    train_quality_blockers = sorted(blockers & _TRAIN_QUALITY_FALLBACK_SKIP_BLOCKERS)
+    if not train_bucket_fail_fast or not train_quality_blockers:
+        return None
+    return "primary_train_quality_fail_fast:" + ",".join(train_quality_blockers)
+
+
+def _diagnostics_with_skipped_5m_fallback(
+    *,
+    primary_diagnostics: dict[str, Any],
+    skip_reason: str,
+) -> dict[str, Any]:
+    primary_train_diagnostics = dict(primary_diagnostics.get("train_candidate_diagnostics") or {})
+    merged_train_diagnostics = dict(primary_train_diagnostics)
+    merged_train_diagnostics["primary_search_diagnostics"] = primary_train_diagnostics
+    merged_train_diagnostics["primary_empty_shortlist_reason"] = primary_diagnostics.get("empty_shortlist_reason")
+    merged_train_diagnostics["fallback_search_skipped"] = True
+    merged_train_diagnostics["fallback_skip_reason"] = skip_reason
+    return {
+        **primary_diagnostics,
+        "train_candidate_diagnostics": merged_train_diagnostics,
+        "empty_shortlist_reason": "primary_empty_train_quality_fallback_skipped",
+        "no_tuned_candidate_reason": "primary_empty_train_quality_fallback_skipped",
+        "primary_empty_shortlist_reason": primary_diagnostics.get("empty_shortlist_reason"),
+        "fallback_empty_shortlist_reason": "skipped",
+        "fallback_skip_reason": skip_reason,
+    }
 
 
 def _update_status(path: Path, **kwargs: Any) -> dict[str, Any]:
@@ -951,20 +1106,16 @@ def main() -> None:
     parser.add_argument("--root", default="data/raw/binance")
     parser.add_argument("--symbol", default="BTCUSDT")
     parser.add_argument("--output-dir", default="results/framework_optimization")
-    parser.add_argument("--budget", choices=("smoke", "fast", "high"), default="high")
+    parser.add_argument("--budget", choices=FRAMEWORK_CAMPAIGN_BUDGETS, default="high")
     parser.add_argument(
         "--search-space-mode",
-        choices=(
-            "baseline_anchored_train_only",
-            "baseline_anchored_defensive_candidate_existence",
-            "baseline_anchored_2023_08_hostile_repair",
-            "execution_first_v2_correlation_constrained",
-        ),
+        choices=SEARCH_SPACE_MODES,
         default=None,
     )
     parser.add_argument("--optuna-trials", type=int)
     parser.add_argument("--rl-episodes", type=int)
     parser.add_argument("--liquidation-dir", default="data/raw/merged_liquidations/aggregated")
+    parser.add_argument("--profile-path", default="config/profiles/default.toml")
     parser.add_argument("--resume", action="store_true")
     parser.add_argument("--seed-trials-file", default=None)
     parser.add_argument("--development-dev-gate", action="store_true")
@@ -972,7 +1123,7 @@ def main() -> None:
     parser.add_argument("--dev-gate-interval", type=int, default=None)
     parser.add_argument(
         "--fast-worker-profile",
-        choices=("fast_low", "fast_default", "fast_high_cpu"),
+        choices=FRAMEWORK_FAST_WORKER_PROFILES,
         default="fast_default",
     )
     args = parser.parse_args()
@@ -1046,20 +1197,18 @@ def main() -> None:
                 print("blocked_by=research_hypothesis_spec_invalid")
                 return
 
-        stage1_parallel_mode = "serial" if args.budget == "smoke" else "cpu_parallel"
-        if args.budget == "smoke":
-            stage1_max_workers = None
-        elif args.budget == "fast":
-            fast_worker_cap = {
-                "fast_low": 4,
-                "fast_default": 6,
-                "fast_high_cpu": 8,
-            }[args.fast_worker_profile]
-            stage1_max_workers = max(1, min((os.cpu_count() or 4) - 2, fast_worker_cap))
-        else:
-            stage1_max_workers = max(1, min((os.cpu_count() or 4) - 2, 8))
-        stage1_target_inflight = 1 if args.budget == "smoke" else stage1_max_workers
-        stage1_batch_size = 1 if args.budget == "smoke" else 4 if args.budget == "fast" else 6
+        search_space_mode = args.search_space_mode or (
+            "baseline_anchored_train_only" if args.budget == "smoke" else "execution_first_v2_correlation_constrained"
+        )
+        stage1_parallelism = _resolve_stage1_parallelism(
+            budget=args.budget,
+            search_space_mode=search_space_mode,
+            fast_worker_profile=args.fast_worker_profile,
+        )
+        stage1_parallel_mode = str(stage1_parallelism["stage1_parallel_mode"])
+        stage1_max_workers = stage1_parallelism["stage1_max_workers"]
+        stage1_target_inflight = int(stage1_parallelism["stage1_target_inflight"])
+        stage1_batch_size = int(stage1_parallelism["stage1_batch_size"])
         extra_seed_trials = _read_seed_trials(Path(args.seed_trials_file)) if args.seed_trials_file else []
         enable_stage1_rl = args.budget in {"fast", "high"}
         if args.budget == "smoke":
@@ -1106,14 +1255,12 @@ def main() -> None:
             symbol=args.symbol,
             portfolio_symbol=f"{args.symbol}_PERP",
             liquidation_dir=Path(args.liquidation_dir),
+            profile_path=Path(args.profile_path),
             execution_timeframe=Timeframe.TF_5M,
             context_timeframe=Timeframe.TF_1H,
             strategy_config=ARCStrategyConfig(execution_timeframe=Timeframe.TF_5M),
         )
         split_spec = default_btc_split_spec()
-        search_space_mode = args.search_space_mode or (
-            "baseline_anchored_train_only" if args.budget == "smoke" else "execution_first_v2_correlation_constrained"
-        )
         evaluator = FrameworkEvaluator(base_config, split_spec=split_spec, search_space_mode=search_space_mode)
         (
             resolved_search_space_profile,
@@ -1123,6 +1270,16 @@ def main() -> None:
         ) = _resolved_search_space_contract(
             evaluator,
             budget=args.budget,
+        )
+        smoke_uses_base_timeframe = _smoke_uses_base_timeframe(
+            budget=args.budget,
+            search_space_mode=resolved_search_space_mode,
+        )
+        primary_stage1_execution_mode = (
+            "5m_lightweight_train_search" if args.budget != "smoke" or smoke_uses_base_timeframe else "1h_context_only"
+        )
+        primary_stage1_search_mode = (
+            "primary_5m" if args.budget != "smoke" or smoke_uses_base_timeframe else "primary_1h"
         )
         interim_report = SearchReport(
             created_at=_ts(),
@@ -1139,9 +1296,7 @@ def main() -> None:
                 "baseline_anchor_variant": resolved_baseline_anchor_variant,
                 "liquidation_in_search": evaluator.readiness["promotion_ready"],
                 "liquidation_blocked_by": None if evaluator.readiness["promotion_ready"] else "not_promotion_ready",
-                "stage1_execution_mode": (
-                    "1h_context_only" if args.budget == "smoke" else "5m_lightweight_train_search"
-                ),
+                "stage1_execution_mode": primary_stage1_execution_mode,
                 "authoritative_verdict_execution_mode": "5m_enabled",
                 "macro_state_sources": [],
                 "state_data_confidence": "minimal",
@@ -1262,8 +1417,8 @@ def main() -> None:
         stage1_state.setdefault("no_tuned_candidate_reason", None)
         stage1_state.setdefault("candidate_existence_goal_met", False)
         if stage1_payload is None:
-            stage1_execution_mode = "1h_context_only" if args.budget == "smoke" else "5m_lightweight_train_search"
-            smoke_ranking_top_n = 1 if args.budget == "smoke" else min(5, optuna_trials)
+            stage1_execution_mode = primary_stage1_execution_mode
+            smoke_ranking_top_n = 2 if args.budget == "smoke" else min(5, optuna_trials)
             smoke_rl_timeout_s = 600.0 if args.budget == "smoke" else None
             smoke_ranking_candidate_timeout_s = 30.0 if args.budget == "smoke" else None
             stage1_state = {
@@ -1292,7 +1447,7 @@ def main() -> None:
                 "rl_params": None,
                 "rl_failure_reason": None,
                 "used_5m_fallback": False,
-                "stage1_search_mode": "primary_1h" if args.budget == "smoke" else "primary_5m",
+                "stage1_search_mode": primary_stage1_search_mode,
                 "stage1_budget_mode": "trial_count_primary",
                 "stage1_stop_reason": None,
             }
@@ -1405,6 +1560,10 @@ def main() -> None:
                         "train_candidate_diagnostics": dict(stage1_state.get("train_candidate_diagnostics") or {}),
                         "empty_shortlist_reason": stage1_state.get("empty_shortlist_reason"),
                         "no_tuned_candidate_reason": stage1_state.get("no_tuned_candidate_reason"),
+                        "primary_empty_shortlist_reason": stage1_state.get("primary_empty_shortlist_reason"),
+                        "fallback_empty_shortlist_reason": stage1_state.get("fallback_empty_shortlist_reason"),
+                        "fallback_search_skipped": stage1_state.get("fallback_search_skipped"),
+                        "fallback_skip_reason": stage1_state.get("fallback_skip_reason"),
                         "failure_reason": failure_reason,
                         "failure_detail": failure_detail,
                     },
@@ -1613,9 +1772,7 @@ def main() -> None:
                         if stage1_state.get("stage1_search_mode") == "fallback_5m"
                         else optuna_trials
                     ),
-                    stage1_search_mode=stage1_state.get(
-                        "stage1_search_mode", "primary_1h" if args.budget == "smoke" else "primary_5m"
-                    ),
+                    stage1_search_mode=stage1_state.get("stage1_search_mode", primary_stage1_search_mode),
                     stage1_primary_optuna_trials_completed=stage1_state.get("primary_optuna_trials_completed", 0),
                     stage1_primary_optuna_trials_total=stage1_state.get("primary_optuna_trials_total", optuna_trials),
                     stage1_fallback_optuna_trials_completed=stage1_state.get("fallback_optuna_trials_completed", 0),
@@ -1981,16 +2138,40 @@ def main() -> None:
                 return result
 
             try:
+                slow_state_factor_search = resolved_search_space_mode == "binance_factor_weight_repair_train_only"
+                smoke_stage_total_timeout_s = (
+                    3600.0
+                    if resolved_search_space_mode == "intent_churn_repair_train_only"
+                    else 1800.0
+                    if resolved_search_space_mode
+                    in {
+                        "execution_inventory_rethink_train_only",
+                        "binance_factor_weight_repair_train_only",
+                        "ralph_protective_reduce_train_only",
+                        "ralph_protective_reduce_fee_repair_train_only",
+                        "ralph_execution_fee_cooldown_train_only",
+                        "ralph_intent_reduce_cadence_train_only",
+                    }
+                    else 900.0
+                )
                 optuna_params, optuna_trials_payload, optuna_diagnostics = _run_stage1_optuna_search(
-                    search_execution_timeframe=Timeframe.TF_1H
-                    if args.budget == "smoke"
-                    else evaluator._base_config.execution_timeframe,
-                    search_context_timeframe=Timeframe.TF_1H
-                    if args.budget == "smoke"
-                    else evaluator._base_config.context_timeframe,
+                    search_execution_timeframe=(
+                        evaluator._base_config.execution_timeframe
+                        if args.budget != "smoke" or smoke_uses_base_timeframe
+                        else Timeframe.TF_1H
+                    ),
+                    search_context_timeframe=(
+                        evaluator._base_config.context_timeframe
+                        if args.budget != "smoke" or smoke_uses_base_timeframe
+                        else Timeframe.TF_1H
+                    ),
                     trial_timeout_s=720.0 if args.budget == "smoke" else None,
-                    stage_total_timeout_s=900.0 if args.budget == "smoke" else None,
-                    ranking_timeout_s=120.0 if args.budget == "smoke" else None,
+                    stage_total_timeout_s=smoke_stage_total_timeout_s if args.budget == "smoke" else None,
+                    ranking_timeout_s=max(360.0, 240.0 * smoke_ranking_top_n)
+                    if args.budget == "smoke" and slow_state_factor_search
+                    else 240.0 * smoke_ranking_top_n
+                    if args.budget == "smoke"
+                    else None,
                     ranking_top_n=smoke_ranking_top_n,
                     ranking_candidate_timeout_s=smoke_ranking_candidate_timeout_s,
                     seed_trials=extra_seed_trials,
@@ -2040,7 +2221,35 @@ def main() -> None:
             primary_optuna_diagnostics = dict(optuna_diagnostics or {})
             stage1_state["primary_optuna_trials_completed"] = int(stage1_state.get("optuna_trials_completed", 0) or 0)
             stage1_state["primary_optuna_trials_total"] = optuna_trials
-            if args.budget == "smoke" and optuna_params is None and not optuna_trials_payload:
+            skip_fallback_reason = _smoke_primary_empty_skip_fallback_reason(
+                search_space_mode=resolved_search_space_mode,
+                primary_diagnostics=primary_optuna_diagnostics,
+            )
+            if args.budget == "smoke" and optuna_params is None and not optuna_trials_payload and skip_fallback_reason:
+                optuna_diagnostics = _diagnostics_with_skipped_5m_fallback(
+                    primary_diagnostics=primary_optuna_diagnostics,
+                    skip_reason=skip_fallback_reason,
+                )
+                _append_campaign_log(
+                    log_path,
+                    f"stage1_optuna_search skip_5m_fallback reason={skip_fallback_reason}",
+                )
+                _update_status(
+                    status_path,
+                    stage1_search_mode=stage1_state.get("stage1_search_mode", primary_stage1_search_mode),
+                    stage1_primary_optuna_trials_completed=stage1_state.get("primary_optuna_trials_completed", 0),
+                    stage1_primary_optuna_trials_total=stage1_state.get("primary_optuna_trials_total", optuna_trials),
+                    stage1_fallback_optuna_trials_completed=0,
+                    stage1_fallback_optuna_trials_total=0,
+                    stage1_last_completed_unit="fallback_skipped_train_quality_fail_fast",
+                    fallback_skip_reason=skip_fallback_reason,
+                )
+            elif (
+                args.budget == "smoke"
+                and not smoke_uses_base_timeframe
+                and optuna_params is None
+                and not optuna_trials_payload
+            ):
                 stage1_state["used_5m_fallback"] = True
                 stage1_state["stage1_search_mode"] = "fallback_5m"
                 stage1_state["fallback_optuna_trials_completed"] = 0
@@ -2152,6 +2361,12 @@ def main() -> None:
             )
             stage1_state["empty_shortlist_reason"] = optuna_diagnostics.get("empty_shortlist_reason")
             stage1_state["no_tuned_candidate_reason"] = optuna_diagnostics.get("no_tuned_candidate_reason")
+            stage1_state["primary_empty_shortlist_reason"] = optuna_diagnostics.get("primary_empty_shortlist_reason")
+            stage1_state["fallback_empty_shortlist_reason"] = optuna_diagnostics.get("fallback_empty_shortlist_reason")
+            stage1_state["fallback_search_skipped"] = (
+                optuna_diagnostics.get("fallback_empty_shortlist_reason") == "skipped"
+            )
+            stage1_state["fallback_skip_reason"] = optuna_diagnostics.get("fallback_skip_reason")
             stage1_state["candidate_existence_goal_met"] = bool(optuna_params is not None)
             stage1_state["stage1_budget_mode"] = optuna_diagnostics.get(
                 "stage1_budget_mode", stage1_state.get("stage1_budget_mode")
@@ -2809,6 +3024,7 @@ def main() -> None:
                             dev_gate_last_round=args.dev_gate_last_round,
                             dev_gate_interval=args.dev_gate_interval,
                             full_stage2_executed_this_round=full_stage2_budget,
+                            smoke_completed=True,
                         )
                 _stage2_timeout_check()
             except SearchStageTimeoutError as exc:

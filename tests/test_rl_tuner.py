@@ -98,6 +98,30 @@ class RLTunerConfigTests(unittest.TestCase):
                 "dca_size_decay": 0.6,
                 "exit_unwind_pct": 0.2,
                 "flip_min_confidence": 0.7,
+                "flip_flatten_only_enabled": 1.0,
+                "flip_reverse_open_scale": 0.5,
+                "loss_flip_reverse_open_confidence_floor": 0.95,
+                "target_delta_deadband_pct": 0.04,
+                "target_reduce_deadband_pct": 0.05,
+                "min_hold_bars_before_flip": 2,
+                "entry_cooldown_bars": 1,
+                "weak_signal_no_flip_enabled": 1.0,
+                "weak_signal_no_flip_confidence": 0.75,
+                "tiny_reverse_reduce_only_enabled": 1.0,
+                "tiny_reverse_deadband_pct": 0.05,
+                "entry_confidence_floor": 0.75,
+                "reverse_open_confidence_floor": 0.85,
+                "range_entry_block_enabled": 1.0,
+                "degraded_entry_block_enabled": 1.0,
+                "degraded_entry_confidence_floor": 0.80,
+                "loss_dca_confidence_floor": 0.85,
+                "loss_dca_range_block_enabled": 1.0,
+                "loss_dca_degraded_block_enabled": 1.0,
+                "profit_protect_reduce_enabled": 1.0,
+                "profit_protect_min_move_atr": 1.25,
+                "profit_protect_unwind_pct": 0.20,
+                "profit_protect_confidence_ceiling": 0.80,
+                "profit_protect_cooldown_bars": 12,
             }
         )
 
@@ -115,6 +139,30 @@ class RLTunerConfigTests(unittest.TestCase):
         self.assertAlmostEqual(config.dca_size_decay, 0.6)
         self.assertAlmostEqual(config.exit_unwind_pct, 0.2)
         self.assertAlmostEqual(config.flip_min_confidence, 0.7)
+        self.assertTrue(config.flip_flatten_only_enabled)
+        self.assertAlmostEqual(config.flip_reverse_open_scale, 0.5)
+        self.assertAlmostEqual(config.loss_flip_reverse_open_confidence_floor, 0.95)
+        self.assertAlmostEqual(config.target_delta_deadband_pct, 0.04)
+        self.assertAlmostEqual(config.target_reduce_deadband_pct, 0.05)
+        self.assertEqual(config.min_hold_bars_before_flip, 2)
+        self.assertEqual(config.entry_cooldown_bars, 1)
+        self.assertTrue(config.weak_signal_no_flip_enabled)
+        self.assertAlmostEqual(config.weak_signal_no_flip_confidence, 0.75)
+        self.assertTrue(config.tiny_reverse_reduce_only_enabled)
+        self.assertAlmostEqual(config.tiny_reverse_deadband_pct, 0.05)
+        self.assertAlmostEqual(config.entry_confidence_floor, 0.75)
+        self.assertAlmostEqual(config.reverse_open_confidence_floor, 0.85)
+        self.assertTrue(config.range_entry_block_enabled)
+        self.assertTrue(config.degraded_entry_block_enabled)
+        self.assertAlmostEqual(config.degraded_entry_confidence_floor, 0.80)
+        self.assertAlmostEqual(config.loss_dca_confidence_floor, 0.85)
+        self.assertTrue(config.loss_dca_range_block_enabled)
+        self.assertTrue(config.loss_dca_degraded_block_enabled)
+        self.assertTrue(config.profit_protect_reduce_enabled)
+        self.assertAlmostEqual(config.profit_protect_min_move_atr, 1.25)
+        self.assertAlmostEqual(config.profit_protect_unwind_pct, 0.20)
+        self.assertAlmostEqual(config.profit_protect_confidence_ceiling, 0.80)
+        self.assertEqual(config.profit_protect_cooldown_bars, 12)
 
     def test_env_backtest_passes_execution_config_into_replay(self) -> None:
         captured: dict[str, HistoricalBacktestConfig] = {}

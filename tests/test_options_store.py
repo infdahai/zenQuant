@@ -75,6 +75,54 @@ class OptionsDataStoreTests(unittest.TestCase):
             self.assertTrue(store.loaded)
             self.assertEqual(len(store._timestamps), 3)
 
+    def test_load_skips_derived_factor_parquet(self) -> None:
+        """Derived factor cache is not an options chain snapshot."""
+        from zenquant.data import OptionsDataStore, OptionsDataStoreConfig
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            options_dir = Path(tmpdir)
+            month_dir = options_dir / "BTC" / "2026-04"
+            snapshot_ts = DAY_NS
+            _write_parquet(
+                month_dir / "options_chain_20260401T000000Z.parquet",
+                [
+                    {
+                        "snapshot_ts_ns": snapshot_ts,
+                        "currency": "BTC",
+                        "instrument_name": "BTC-1D-60000-C",
+                        "expiry_ts_ms": (snapshot_ts + 30 * DAY_NS) // 1_000_000,
+                        "expiry_date": "2026-04-01",
+                        "strike": 60000.0,
+                        "option_type": "call",
+                        "underlying_price": 68000.0,
+                        "open_interest": 100.0,
+                        "volume_usd": 1000.0,
+                        "mark_iv": 55.0,
+                        "bid_price": 0.1,
+                        "ask_price": 0.15,
+                        "mid_price": 0.125,
+                        "underlying_index": "BTC",
+                        "settlement_period": "day",
+                    }
+                ],
+            )
+            _write_parquet(
+                options_dir / "BTC" / "derived_options_regime_factors.parquet",
+                [
+                    {
+                        "option_snapshot_ts": snapshot_ts,
+                        "iv_level_30d": 55.0,
+                        "put_call_skew_25d": 1.2,
+                    }
+                ],
+            )
+
+            store = OptionsDataStore(OptionsDataStoreConfig(options_dir=options_dir))
+            store.load()
+
+            self.assertTrue(store.loaded)
+            self.assertEqual(len(store._timestamps), 1)
+
     def test_lookup_point_in_time(self) -> None:
         """Test that lookup returns latest snapshot before cutoff."""
         from zenquant.data import OptionsDataStore, OptionsDataStoreConfig

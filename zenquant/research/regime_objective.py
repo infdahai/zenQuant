@@ -14,6 +14,24 @@ MAX_FEE_DRAG_RELATIVE_INCREASE = 1.15
 MAX_FEE_DRAG_ABSOLUTE_INCREASE = 0.002
 MAX_TURNOVER_RELATIVE_INCREASE = 1.20
 MAX_TURNOVER_ABSOLUTE_INCREASE = 100.0
+TRAIN_TRUTH_DAY_FALLBACK = 1461.0
+MAX_FEE_DRAG_PCT_ABSOLUTE = 0.025
+MAX_TRADE_COUNT_PER_DAY = 1.50
+MIN_PROFIT_FACTOR_AFTER_FEE = 1.05
+MIN_NET_PNL_PER_TRADE_RELATIVE = 0.80
+PAULWEI_MATURE_POSITION_SWITCHES_PER_30D = 1.6807
+MAX_POSITION_SWITCHES_PER_30D = 3.0
+MAX_POSITION_SWITCH_RELATIVE_INCREASE = 1.15
+MAX_FLIP_REDUCE_FEE_DRAG_PCT_ABSOLUTE = 0.016
+MAX_FLIP_REDUCE_FEE_DRAG_RELATIVE_INCREASE = 1.15
+MAX_EXIT_FEE_DRAG_PCT_ABSOLUTE = 0.018
+MAX_FLIP_ACTION_FEE_DRAG_PCT_ABSOLUTE = 0.018
+MIN_REDUCE_ACTION_PROFIT_FACTOR = 1.0
+MIN_STAGED_BUILD_UNWIND_BALANCE_RATIO = 0.25
+MIN_TRANCHE_ACTIONS_PER_POSITION_SWITCH = 3.0
+MIN_NET_PNL_PER_POSITION_SWITCH_RELATIVE = 0.75
+MIN_PROTECTIVE_REDUCE_SHARE = 0.75
+TRAIN_DRAWDOWN_PREFERRED_BAND = 0.06
 _FORBIDDEN_SELECTION_PREFIXES = ("dev", "test")
 
 
@@ -29,6 +47,100 @@ class RegimeBucketSpec:
 
 def _safe_float(value: Any) -> float:
     return float(value or 0.0)
+
+
+def _trade_count_per_day(metrics: dict[str, Any], trade_count: float) -> float:
+    explicit = _safe_float(metrics.get("trade_count_per_day"))
+    if explicit > 0:
+        return explicit
+    for key in ("duration_days", "elapsed_days", "window_days", "train_days"):
+        days = _safe_float(metrics.get(key))
+        if days > 0:
+            return trade_count / days
+    return trade_count / TRAIN_TRUTH_DAY_FALLBACK if trade_count > 0 else 0.0
+
+
+def _net_pnl_per_trade(metrics: dict[str, Any], net_pnl: float, trade_count: float) -> float:
+    explicit = metrics.get("net_pnl_per_trade")
+    if explicit is not None:
+        return _safe_float(explicit)
+    return net_pnl / trade_count if trade_count > 0 else 0.0
+
+
+def _profit_factor_after_fee(metrics: dict[str, Any], profit_factor: float, fee_drag_pct: float) -> float:
+    explicit = metrics.get("profit_factor_after_fee")
+    if explicit is not None:
+        return _safe_float(explicit)
+    return profit_factor * max(0.0, 1.0 - fee_drag_pct)
+
+
+def _action_value(metrics: dict[str, Any], key: str, action: str) -> float:
+    values = metrics.get(key) or {}
+    if not isinstance(values, dict):
+        return 0.0
+    return _safe_float(values.get(action))
+
+
+def _action_profit_factor(metrics: dict[str, Any], action: str) -> float:
+    return _action_value(metrics, "action_profit_factor", action)
+
+
+def _action_counts_present(metrics: dict[str, Any], actions: set[str]) -> bool:
+    values = metrics.get("action_trade_counts")
+    return isinstance(values, dict) and bool(actions & set(values))
+
+
+def _effective_elapsed_days(metrics: dict[str, Any]) -> float:
+    explicit = _safe_float(metrics.get("effective_elapsed_days"))
+    if explicit > 0:
+        return explicit
+    elapsed = _safe_float(metrics.get("elapsed_days"))
+    processed_ratio = _safe_float(metrics.get("processed_event_ratio"))
+    if elapsed > 0 and 0.0 < processed_ratio <= 1.0:
+        return max(1.0, elapsed * processed_ratio)
+    if elapsed > 0:
+        return elapsed
+    for key in ("duration_days", "window_days", "train_days"):
+        days = _safe_float(metrics.get(key))
+        if days > 0:
+            return days
+    return TRAIN_TRUTH_DAY_FALLBACK
+
+
+def _position_switches_per_30d(metrics: dict[str, Any], flip_count: float) -> float:
+    explicit = _safe_float(metrics.get("position_switches_per_30d"))
+    if explicit > 0:
+        return explicit
+    elapsed_days = _effective_elapsed_days(metrics)
+    return (flip_count / elapsed_days) * 30.0 if elapsed_days > 0 and flip_count > 0 else 0.0
+
+
+def _flip_reduce_fee_drag_pct(metrics: dict[str, Any]) -> float:
+    explicit = metrics.get("flip_reduce_fee_drag_pct")
+    if explicit is not None:
+        return _safe_float(explicit)
+    return _action_value(metrics, "action_fee_drag_pct", "flip") + _action_value(
+        metrics,
+        "action_fee_drag_pct",
+        "reduce",
+    )
+
+
+def _net_pnl_per_position_switch(metrics: dict[str, Any], net_pnl: float, flip_count: float) -> float:
+    explicit = metrics.get("net_pnl_per_position_switch")
+    if explicit is not None:
+        return _safe_float(explicit)
+    return net_pnl / max(1.0, flip_count)
+
+
+def _protective_reduce_share(metrics: dict[str, Any], flip_count: float, reduce_count: float) -> tuple[float, float]:
+    explicit = metrics.get("protective_reduce_share")
+    if explicit is not None:
+        return _safe_float(explicit), max(1.0, flip_count + reduce_count)
+    action_count = flip_count + reduce_count
+    if action_count <= 0:
+        return 0.0, 0.0
+    return reduce_count / action_count, action_count
 
 
 def _assert_train_only_metric_keys(metrics: dict[str, Any]) -> None:
@@ -364,25 +476,193 @@ def score_regime_objective_candidate_generation(
     sharpe = _safe_float(train_metrics.get("sharpe"))
     profit_factor = _safe_float(train_metrics.get("profit_factor"))
     drawdown = _safe_float(train_metrics.get("max_drawdown"))
+    net_pnl = _safe_float(train_metrics.get("net_pnl", train_metrics.get("pnl")))
     turnover = _safe_float(train_metrics.get("turnover_per_day"))
     trade_count = _safe_float(train_metrics.get("trade_count"))
     fee_drag = _safe_float(train_metrics.get("fee_drag_pct"))
+    net_pnl_per_trade = _net_pnl_per_trade(train_metrics, net_pnl, trade_count)
+    trade_count_per_day = _trade_count_per_day(train_metrics, trade_count)
+    profit_factor_after_fee = _profit_factor_after_fee(train_metrics, profit_factor, fee_drag)
+    profit_factor_after_fee_present = "profit_factor" in train_metrics or "profit_factor_after_fee" in train_metrics
+    add_count = _action_value(train_metrics, "action_trade_counts", "add")
+    entry_count = _action_value(train_metrics, "action_trade_counts", "entry")
+    exit_count = _action_value(train_metrics, "action_trade_counts", "exit")
+    flip_count = _action_value(train_metrics, "action_trade_counts", "flip")
+    reduce_count = _action_value(train_metrics, "action_trade_counts", "reduce")
+    position_switches_per_30d = _position_switches_per_30d(train_metrics, flip_count)
+    flip_reduce_fee_drag_pct = _flip_reduce_fee_drag_pct(train_metrics)
+    exit_fee_drag_pct = _action_value(train_metrics, "action_fee_drag_pct", "exit")
+    flip_action_fee_drag_pct = _action_value(train_metrics, "action_fee_drag_pct", "flip")
+    reduce_action_profit_factor = _action_profit_factor(train_metrics, "reduce")
+    flip_reduce_trade_share = (flip_count + reduce_count) / trade_count if trade_count > 0 else 0.0
+    net_pnl_per_position_switch = _net_pnl_per_position_switch(train_metrics, net_pnl, flip_count)
+    protective_reduce_share, protective_reduce_action_count = _protective_reduce_share(
+        train_metrics,
+        flip_count,
+        reduce_count,
+    )
+    staged_build_tranche_count = entry_count + add_count
+    staged_unwind_tranche_count = exit_count + reduce_count
+    staged_tranche_count = staged_build_tranche_count + staged_unwind_tranche_count
+    staged_inventory_balance_ratio = (
+        min(staged_build_tranche_count, staged_unwind_tranche_count)
+        / max(staged_build_tranche_count, staged_unwind_tranche_count)
+        if max(staged_build_tranche_count, staged_unwind_tranche_count) > 0
+        else 0.0
+    )
+    tranche_actions_per_position_switch = staged_tranche_count / max(1.0, flip_count)
+    time_leverage_efficiency = max(0.0, net_pnl_per_position_switch) / max(1.0, abs(net_pnl_per_trade))
+    time_leverage_bonus = min(0.35, 0.05 * time_leverage_efficiency)
+    tranche_alignment_bonus = 0.0
     baseline_turnover = _safe_float(baseline.get("turnover_per_day"))
     baseline_trade_count = _safe_float(baseline.get("trade_count"))
     baseline_fee_drag = _safe_float(baseline.get("fee_drag_pct"))
+    baseline_net_pnl = _safe_float(baseline.get("net_pnl", baseline.get("pnl")))
+    baseline_net_pnl_per_trade = _net_pnl_per_trade(baseline, baseline_net_pnl, baseline_trade_count)
+    baseline_trade_count_per_day = _trade_count_per_day(baseline, baseline_trade_count)
+    baseline_profit_factor = _safe_float(baseline.get("profit_factor"))
+    baseline_profit_factor_after_fee = _profit_factor_after_fee(
+        baseline,
+        baseline_profit_factor,
+        baseline_fee_drag,
+    )
+    baseline_flip_count = _action_value(baseline, "action_trade_counts", "flip")
+    baseline_position_switches_per_30d = _position_switches_per_30d(baseline, baseline_flip_count)
+    baseline_flip_reduce_fee_drag_pct = _flip_reduce_fee_drag_pct(baseline)
+    baseline_net_pnl_per_position_switch = _net_pnl_per_position_switch(
+        baseline,
+        baseline_net_pnl,
+        baseline_flip_count,
+    )
     turnover_penalty = 0.0
     trade_count_penalty = 0.0
     fee_drag_penalty = 0.0
+    net_pnl_per_trade_penalty = 0.0
+    position_switch_penalty = 0.0
+    mature_position_switch_penalty = 0.0
+    flip_reduce_fee_drag_penalty = 0.0
+    exit_fee_drag_penalty = 0.0
+    flip_action_fee_drag_penalty = 0.0
+    reduce_profit_factor_penalty = 0.0
+    staged_inventory_balance_penalty = 0.0
+    position_switch_efficiency_penalty = 0.0
+    protective_reduce_bias_penalty = (
+        max(0.0, (MIN_PROTECTIVE_REDUCE_SHARE - protective_reduce_share) / MIN_PROTECTIVE_REDUCE_SHARE)
+        if protective_reduce_action_count > 0
+        else 0.0
+    )
+    drawdown_preferred_band_penalty = max(
+        0.0,
+        (drawdown - TRAIN_DRAWDOWN_PREFERRED_BAND) / max(0.01, TRAIN_DRAWDOWN_PREFERRED_BAND),
+    )
+    trade_count_per_day_penalty = max(0.0, (trade_count_per_day - MAX_TRADE_COUNT_PER_DAY) / MAX_TRADE_COUNT_PER_DAY)
+    profit_factor_after_fee_floor = (
+        max(MIN_PROFIT_FACTOR_AFTER_FEE, baseline_profit_factor_after_fee * 0.95)
+        if baseline_profit_factor_after_fee > 0
+        else MIN_PROFIT_FACTOR_AFTER_FEE
+    )
+    profit_factor_after_fee_penalty = (
+        max(
+            0.0,
+            (profit_factor_after_fee_floor - profit_factor_after_fee) / max(0.1, profit_factor_after_fee_floor),
+        )
+        if profit_factor_after_fee_present
+        else 0.0
+    )
     if baseline_turnover > 0:
         turnover_penalty = max(0.0, (turnover - baseline_turnover) / max(1.0, baseline_turnover))
     elif baseline_trade_count > 0:
         trade_count_penalty = max(0.0, (trade_count - baseline_trade_count) / max(1.0, baseline_trade_count))
     else:
         trade_count_penalty = max(0.0, (trade_count - 4200.0) / 500.0)
+    if baseline_trade_count_per_day > 0:
+        trade_count_per_day_penalty = max(
+            trade_count_per_day_penalty,
+            (trade_count_per_day - baseline_trade_count_per_day * 1.10) / max(0.01, baseline_trade_count_per_day),
+        )
     if baseline_fee_drag > 0:
         fee_drag_penalty = max(0.0, (fee_drag - baseline_fee_drag) / max(0.001, baseline_fee_drag))
     else:
         fee_drag_penalty = max(0.0, (fee_drag - 0.02) / 0.01)
+    position_switch_limit = MAX_POSITION_SWITCHES_PER_30D
+    if baseline_position_switches_per_30d > 0:
+        position_switch_limit = max(
+            position_switch_limit,
+            baseline_position_switches_per_30d * MAX_POSITION_SWITCH_RELATIVE_INCREASE,
+        )
+    position_switch_penalty = max(
+        0.0,
+        (position_switches_per_30d - position_switch_limit) / max(0.10, position_switch_limit),
+    )
+    mature_position_switch_penalty = max(
+        0.0,
+        (position_switches_per_30d - PAULWEI_MATURE_POSITION_SWITCHES_PER_30D)
+        / PAULWEI_MATURE_POSITION_SWITCHES_PER_30D,
+    )
+    flip_reduce_fee_drag_limit = MAX_FLIP_REDUCE_FEE_DRAG_PCT_ABSOLUTE
+    if baseline_flip_reduce_fee_drag_pct > 0:
+        flip_reduce_fee_drag_limit = max(
+            flip_reduce_fee_drag_limit,
+            baseline_flip_reduce_fee_drag_pct * MAX_FLIP_REDUCE_FEE_DRAG_RELATIVE_INCREASE,
+            baseline_flip_reduce_fee_drag_pct + 0.001,
+        )
+    flip_reduce_fee_drag_penalty = max(
+        0.0,
+        (flip_reduce_fee_drag_pct - flip_reduce_fee_drag_limit) / max(0.001, flip_reduce_fee_drag_limit),
+    )
+    exit_fee_drag_penalty = max(
+        0.0,
+        (exit_fee_drag_pct - MAX_EXIT_FEE_DRAG_PCT_ABSOLUTE) / MAX_EXIT_FEE_DRAG_PCT_ABSOLUTE,
+    )
+    flip_action_fee_drag_penalty = max(
+        0.0,
+        (flip_action_fee_drag_pct - MAX_FLIP_ACTION_FEE_DRAG_PCT_ABSOLUTE) / MAX_FLIP_ACTION_FEE_DRAG_PCT_ABSOLUTE,
+    )
+    reduce_profit_factor_penalty = (
+        max(
+            0.0,
+            (MIN_REDUCE_ACTION_PROFIT_FACTOR - reduce_action_profit_factor) / MIN_REDUCE_ACTION_PROFIT_FACTOR,
+        )
+        if reduce_count > 0 and reduce_action_profit_factor > 0.0
+        else 0.0
+    )
+    staged_inventory_balance_penalty = (
+        max(
+            0.0,
+            (MIN_STAGED_BUILD_UNWIND_BALANCE_RATIO - staged_inventory_balance_ratio)
+            / MIN_STAGED_BUILD_UNWIND_BALANCE_RATIO,
+        )
+        if staged_tranche_count >= 10
+        and _action_counts_present(train_metrics, {"add", "entry", "exit"})
+        and max(staged_build_tranche_count, staged_unwind_tranche_count) > 0
+        else 0.0
+    )
+    tranche_alignment_bonus = (
+        min(0.20, 0.04 * min(5.0, tranche_actions_per_position_switch))
+        if tranche_actions_per_position_switch >= MIN_TRANCHE_ACTIONS_PER_POSITION_SWITCH
+        and staged_inventory_balance_ratio >= MIN_STAGED_BUILD_UNWIND_BALANCE_RATIO
+        and position_switches_per_30d <= PAULWEI_MATURE_POSITION_SWITCHES_PER_30D
+        and reduce_profit_factor_penalty == 0.0
+        and flip_reduce_fee_drag_penalty == 0.0
+        else 0.0
+    )
+    if baseline_net_pnl_per_trade > 0:
+        net_pnl_per_trade_penalty = max(
+            0.0,
+            ((baseline_net_pnl_per_trade * MIN_NET_PNL_PER_TRADE_RELATIVE) - net_pnl_per_trade)
+            / max(1.0, abs(baseline_net_pnl_per_trade)),
+        )
+    elif trade_count > 0 and net_pnl_per_trade <= 0:
+        net_pnl_per_trade_penalty = 1.0
+    if baseline_net_pnl_per_position_switch > 0:
+        position_switch_efficiency_penalty = max(
+            0.0,
+            (
+                (baseline_net_pnl_per_position_switch * MIN_NET_PNL_PER_POSITION_SWITCH_RELATIVE)
+                - net_pnl_per_position_switch
+            )
+            / max(1.0, abs(baseline_net_pnl_per_position_switch)),
+        )
 
     bucket_blockers: list[str] = []
     bucket_metrics = dict(train_metrics.get("train_bucket_metrics") or {})
@@ -410,17 +690,57 @@ def score_regime_objective_candidate_generation(
         bucket_blockers.append("train_turnover_structurally_worse")
     if trade_count_penalty > 0.20:
         bucket_blockers.append("train_trade_count_churn_worse")
-    if fee_drag_penalty > 0.15:
+    if trade_count_per_day_penalty > 0.0:
+        bucket_blockers.append("train_trade_count_per_day_cap_exceeded")
+    if fee_drag_penalty > 0.15 or fee_drag > MAX_FEE_DRAG_PCT_ABSOLUTE:
         bucket_blockers.append("train_fee_drag_structurally_worse")
+    if fee_drag > MAX_FEE_DRAG_PCT_ABSOLUTE:
+        bucket_blockers.append("train_fee_drag_cap_exceeded")
+    if net_pnl_per_trade_penalty > 0.0:
+        bucket_blockers.append("train_net_pnl_per_trade_inefficient")
+    if profit_factor_after_fee_penalty > 0.0:
+        bucket_blockers.append("train_profit_factor_after_fee_weak")
+    if position_switch_penalty > 0.15:
+        bucket_blockers.append("train_position_switch_cadence_worse")
+    if flip_reduce_fee_drag_penalty > 0.15:
+        bucket_blockers.append("train_flip_reduce_fee_drag_worse")
+    if exit_fee_drag_penalty > 0.15:
+        bucket_blockers.append("train_exit_fee_drag_worse")
+    if flip_action_fee_drag_penalty > 0.15:
+        bucket_blockers.append("train_flip_action_fee_drag_worse")
+    if reduce_profit_factor_penalty > 0.0:
+        bucket_blockers.append("train_reduce_profit_factor_weak")
+    if staged_inventory_balance_penalty > 0.25:
+        bucket_blockers.append("train_staged_inventory_balance_weak")
+    if protective_reduce_bias_penalty > 0.0:
+        bucket_blockers.append("train_protective_reduce_bias_weak")
+    if position_switch_efficiency_penalty > 0.20:
+        bucket_blockers.append("train_time_leverage_efficiency_weak")
 
     regime_objective_score = (
         0.55 * sharpe
         + 0.20 * profit_factor
+        + 0.10 * profit_factor_after_fee
         + 0.25 * bucket_score
+        + time_leverage_bonus
+        + tranche_alignment_bonus
         - 1.50 * drawdown
+        - 0.60 * drawdown_preferred_band_penalty
         - 0.80 * turnover_penalty
         - 0.80 * trade_count_penalty
         - 0.80 * fee_drag_penalty
+        - 0.70 * net_pnl_per_trade_penalty
+        - 0.75 * trade_count_per_day_penalty
+        - 0.75 * profit_factor_after_fee_penalty
+        - 0.65 * position_switch_penalty
+        - 0.35 * mature_position_switch_penalty
+        - 0.85 * flip_reduce_fee_drag_penalty
+        - 0.55 * exit_fee_drag_penalty
+        - 0.55 * flip_action_fee_drag_penalty
+        - 0.45 * reduce_profit_factor_penalty
+        - 0.40 * staged_inventory_balance_penalty
+        - 0.70 * protective_reduce_bias_penalty
+        - 0.45 * position_switch_efficiency_penalty
     )
     return {
         "regime_objective_score": round(regime_objective_score, 6),
@@ -428,6 +748,56 @@ def score_regime_objective_candidate_generation(
         "turnover_penalty": round(turnover_penalty, 6),
         "trade_count_penalty": round(trade_count_penalty, 6),
         "fee_drag_penalty": round(fee_drag_penalty, 6),
+        "net_pnl_per_trade": round(net_pnl_per_trade, 6),
+        "net_pnl_per_trade_penalty": round(net_pnl_per_trade_penalty, 6),
+        "trade_count_per_day": round(trade_count_per_day, 6),
+        "trade_count_per_day_penalty": round(trade_count_per_day_penalty, 6),
+        "drawdown_preferred_band": TRAIN_DRAWDOWN_PREFERRED_BAND,
+        "drawdown_preferred_band_penalty": round(drawdown_preferred_band_penalty, 6),
+        "profit_factor_after_fee": round(profit_factor_after_fee, 6),
+        "profit_factor_after_fee_penalty": round(profit_factor_after_fee_penalty, 6),
+        "position_switches_per_30d": round(position_switches_per_30d, 6),
+        "target_position_switches_per_30d": PAULWEI_MATURE_POSITION_SWITCHES_PER_30D,
+        "position_switch_penalty": round(position_switch_penalty, 6),
+        "mature_position_switch_penalty": round(mature_position_switch_penalty, 6),
+        "flip_reduce_fee_drag_pct": round(flip_reduce_fee_drag_pct, 6),
+        "flip_reduce_fee_drag_penalty": round(flip_reduce_fee_drag_penalty, 6),
+        "exit_fee_drag_pct": round(exit_fee_drag_pct, 6),
+        "exit_fee_drag_penalty": round(exit_fee_drag_penalty, 6),
+        "flip_action_fee_drag_pct": round(flip_action_fee_drag_pct, 6),
+        "flip_action_fee_drag_penalty": round(flip_action_fee_drag_penalty, 6),
+        "reduce_action_profit_factor": round(reduce_action_profit_factor, 6),
+        "reduce_profit_factor_penalty": round(reduce_profit_factor_penalty, 6),
+        "flip_reduce_trade_share": round(flip_reduce_trade_share, 6),
+        "staged_build_tranche_count": round(staged_build_tranche_count, 6),
+        "staged_unwind_tranche_count": round(staged_unwind_tranche_count, 6),
+        "staged_inventory_balance_ratio": round(staged_inventory_balance_ratio, 6),
+        "staged_inventory_balance_penalty": round(staged_inventory_balance_penalty, 6),
+        "tranche_actions_per_position_switch": round(tranche_actions_per_position_switch, 6),
+        "tranche_alignment_bonus": round(tranche_alignment_bonus, 6),
+        "protective_reduce_share": round(protective_reduce_share, 6),
+        "protective_reduce_action_count": round(protective_reduce_action_count, 6),
+        "protective_reduce_bias_penalty": round(protective_reduce_bias_penalty, 6),
+        "net_pnl_per_position_switch": round(net_pnl_per_position_switch, 6),
+        "position_switch_efficiency_penalty": round(position_switch_efficiency_penalty, 6),
+        "time_leverage_efficiency": round(time_leverage_efficiency, 6),
+        "time_leverage_bonus": round(time_leverage_bonus, 6),
+        "fee_efficiency_thresholds": {
+            "max_fee_drag_pct_absolute": MAX_FEE_DRAG_PCT_ABSOLUTE,
+            "max_trade_count_per_day": MAX_TRADE_COUNT_PER_DAY,
+            "min_profit_factor_after_fee": MIN_PROFIT_FACTOR_AFTER_FEE,
+            "min_net_pnl_per_trade_relative": MIN_NET_PNL_PER_TRADE_RELATIVE,
+            "target_position_switches_per_30d": PAULWEI_MATURE_POSITION_SWITCHES_PER_30D,
+            "max_position_switches_per_30d": MAX_POSITION_SWITCHES_PER_30D,
+            "max_flip_reduce_fee_drag_pct_absolute": MAX_FLIP_REDUCE_FEE_DRAG_PCT_ABSOLUTE,
+            "max_exit_fee_drag_pct_absolute": MAX_EXIT_FEE_DRAG_PCT_ABSOLUTE,
+            "max_flip_action_fee_drag_pct_absolute": MAX_FLIP_ACTION_FEE_DRAG_PCT_ABSOLUTE,
+            "min_reduce_action_profit_factor": MIN_REDUCE_ACTION_PROFIT_FACTOR,
+            "min_staged_build_unwind_balance_ratio": MIN_STAGED_BUILD_UNWIND_BALANCE_RATIO,
+            "min_tranche_actions_per_position_switch": MIN_TRANCHE_ACTIONS_PER_POSITION_SWITCH,
+            "min_net_pnl_per_position_switch_relative": MIN_NET_PNL_PER_POSITION_SWITCH_RELATIVE,
+            "min_protective_reduce_share": MIN_PROTECTIVE_REDUCE_SHARE,
+        },
         "allow_dev_diagnostic_review": not bucket_blockers,
         "bucket_metrics_available": bool(bucket_metrics),
         "selection_scope": "train_only",
@@ -456,6 +826,13 @@ def compare_regime_objective_candidate_rankings(candidates: list[dict[str, Any]]
                 "bucket_blockers": list(regime_score["bucket_blockers"]),
                 "turnover_penalty": regime_score["turnover_penalty"],
                 "fee_drag_penalty": regime_score["fee_drag_penalty"],
+                "net_pnl_per_trade": regime_score["net_pnl_per_trade"],
+                "trade_count_per_day": regime_score["trade_count_per_day"],
+                "profit_factor_after_fee": regime_score["profit_factor_after_fee"],
+                "position_switches_per_30d": regime_score["position_switches_per_30d"],
+                "flip_reduce_fee_drag_pct": regime_score["flip_reduce_fee_drag_pct"],
+                "net_pnl_per_position_switch": regime_score["net_pnl_per_position_switch"],
+                "time_leverage_bonus": regime_score["time_leverage_bonus"],
             }
         )
 

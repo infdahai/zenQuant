@@ -468,6 +468,12 @@ class BacktestMetrics:
     trade_count: int
     turnover_per_day: float
     fee_drag_pct: float  # fees / gross_pnl
+    action_trade_counts: dict[str, int] = field(default_factory=dict)
+    action_fees: dict[str, float] = field(default_factory=dict)
+    action_fee_drag_pct: dict[str, float] = field(default_factory=dict)
+    action_realized_counts: dict[str, int] = field(default_factory=dict)
+    action_realized_pnl: dict[str, float] = field(default_factory=dict)
+    action_profit_factor: dict[str, float] = field(default_factory=dict)
 
 
 @dataclass(slots=True)

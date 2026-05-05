@@ -14,6 +14,9 @@ from zenquant.historical import write_parquet_rows
 
 HYPERLIQUID_INFO_URL = "https://api.hyperliquid.xyz/info"
 FOUR_HOUR_MS = 4 * 3600 * 1000
+_DAY_MS = 24 * 3600 * 1000
+_CANDLE_HISTORY_CHUNK_MS = 90 * _DAY_MS
+_FUNDING_HISTORY_CHUNK_MS = 45 * _DAY_MS
 
 
 @dataclass(slots=True, frozen=True)
@@ -115,6 +118,24 @@ def fetch_candle_snapshot(coin: str, interval: str, start_ms: int, end_ms: int) 
     return candles
 
 
+def fetch_candle_history(
+    coin: str,
+    interval: str,
+    start_ms: int,
+    end_ms: int,
+    *,
+    chunk_ms: int = _CANDLE_HISTORY_CHUNK_MS,
+) -> list[HyperliquidCandle]:
+    rows: dict[int, HyperliquidCandle] = {}
+    cursor = start_ms
+    while cursor < end_ms:
+        chunk_end = min(end_ms, cursor + chunk_ms)
+        for candle in fetch_candle_snapshot(coin, interval, cursor, chunk_end):
+            rows[candle.start_ms] = candle
+        cursor = chunk_end
+    return [rows[key] for key in sorted(rows)]
+
+
 def fetch_funding_history(coin: str, start_ms: int, end_ms: int) -> list[HyperliquidFunding]:
     payload = _post_info(
         {
@@ -135,6 +156,23 @@ def fetch_funding_history(coin: str, start_ms: int, end_ms: int) -> list[Hyperli
             )
         )
     return funding_rows
+
+
+def fetch_funding_history_paginated(
+    coin: str,
+    start_ms: int,
+    end_ms: int,
+    *,
+    chunk_ms: int = _FUNDING_HISTORY_CHUNK_MS,
+) -> list[HyperliquidFunding]:
+    rows: dict[int, HyperliquidFunding] = {}
+    cursor = start_ms
+    while cursor < end_ms:
+        chunk_end = min(end_ms, cursor + chunk_ms)
+        for row in fetch_funding_history(coin, cursor, chunk_end):
+            rows[row.ts_ms] = row
+        cursor = chunk_end
+    return [rows[key] for key in sorted(rows)]
 
 
 def recent_trades_to_buckets(
@@ -165,8 +203,8 @@ def build_hyperliquid_proxy_history(
     start_ms: int,
     end_ms: int,
 ) -> tuple[list[HyperliquidCandle], list[HyperliquidFunding], list[LiquidationBucket], HyperliquidBackfillStatus]:
-    candles = fetch_candle_snapshot(coin, "4h", start_ms, end_ms)
-    funding = fetch_funding_history(coin, start_ms, end_ms)
+    candles = fetch_candle_history(coin, "4h", start_ms, end_ms)
+    funding = fetch_funding_history_paginated(coin, start_ms, end_ms)
 
     events: list[LiquidationEvent] = []
     for candle in candles:

@@ -52,6 +52,9 @@ from zenquant.research.framework_params import (
     build_indicator_config as _shared_build_indicator_config,
 )
 from zenquant.research.framework_params import (
+    build_plugin_config_overrides as _shared_build_plugin_config_overrides,
+)
+from zenquant.research.framework_params import (
     build_replay_toggles as _shared_build_replay_toggles,
 )
 from zenquant.research.framework_params import (
@@ -87,6 +90,39 @@ class SearchStageTimeoutError(RuntimeError):
 
 
 _WORKER_REPLAY_CONTEXT_CACHE: dict[tuple[Any, ...], ReplayContext] = {}
+TRAIN_TRUTH_DAY_FALLBACK = 1461.0
+MAX_FEE_DRAG_PCT_ABSOLUTE = 0.025
+MAX_TRADE_COUNT_PER_DAY = 1.50
+MIN_PROFIT_FACTOR_AFTER_FEE = 1.05
+PAULWEI_MATURE_POSITION_SWITCHES_PER_30D = 1.6807
+MAX_POSITION_SWITCHES_PER_30D = 3.0
+MAX_FLIP_REDUCE_FEE_DRAG_PCT_ABSOLUTE = 0.016
+MAX_EXIT_FEE_DRAG_PCT_ABSOLUTE = 0.018
+MAX_FLIP_ACTION_FEE_DRAG_PCT_ABSOLUTE = 0.018
+MIN_REDUCE_ACTION_PROFIT_FACTOR = 1.0
+MIN_STAGED_BUILD_UNWIND_BALANCE_RATIO = 0.25
+MIN_TRANCHE_ACTIONS_PER_POSITION_SWITCH = 3.0
+TRAIN_DRAWDOWN_PREFERRED_BAND = 0.06
+MIN_PROTECTIVE_REDUCE_SHARE = 0.75
+
+
+def _safe_float(value: Any) -> float:
+    try:
+        return float(value or 0.0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _metric_action_value(metrics: dict[str, Any], key: str, action: str) -> float:
+    values = metrics.get(key) or {}
+    if not isinstance(values, dict):
+        return 0.0
+    return _safe_float(values.get(action))
+
+
+def _metric_action_counts_present(metrics: dict[str, Any], actions: set[str]) -> bool:
+    values = metrics.get("action_trade_counts")
+    return isinstance(values, dict) and bool(actions & set(values))
 
 
 def _shutdown_pool_quickly(pool: ProcessPoolExecutor | None, futures: list[Any] | None = None) -> None:
@@ -108,11 +144,53 @@ def _hostile_proxy_diagnostics(params: dict[str, Any], metrics: dict[str, float]
     """Train-only hostile stability proxy for stage1 ranking."""
 
     sharpe = float(metrics.get("sharpe", 0.0) or 0.0)
+    net_pnl = float(metrics.get("net_pnl", metrics.get("pnl", 0.0)) or 0.0)
     max_drawdown = float(metrics.get("max_drawdown", 0.0) or 0.0)
     profit_factor = float(metrics.get("profit_factor", 0.0) or 0.0)
     fee_drag_pct = float(metrics.get("fee_drag_pct", 0.0) or 0.0)
     trade_count = float(metrics.get("trade_count", 0.0) or 0.0)
+    net_pnl_per_trade = float(
+        metrics.get("net_pnl_per_trade", (net_pnl / trade_count) if trade_count > 0 else 0.0) or 0.0
+    )
+    trade_count_per_day = float(
+        metrics.get("trade_count_per_day", trade_count / TRAIN_TRUTH_DAY_FALLBACK if trade_count > 0 else 0.0) or 0.0
+    )
+    profit_factor_after_fee = float(
+        metrics.get("profit_factor_after_fee", profit_factor * max(0.0, 1.0 - fee_drag_pct)) or 0.0
+    )
     terminated_early = float(metrics.get("terminated_early", 0.0) or 0.0)
+    position_switches_per_30d = float(metrics.get("position_switches_per_30d", 0.0) or 0.0)
+    flip_reduce_fee_drag_pct = float(metrics.get("flip_reduce_fee_drag_pct", 0.0) or 0.0)
+    exit_fee_drag_pct = _metric_action_value(metrics, "action_fee_drag_pct", "exit")
+    flip_action_fee_drag_pct = _metric_action_value(metrics, "action_fee_drag_pct", "flip")
+    reduce_action_profit_factor = _metric_action_value(metrics, "action_profit_factor", "reduce")
+    add_count = _metric_action_value(metrics, "action_trade_counts", "add")
+    entry_count = _metric_action_value(metrics, "action_trade_counts", "entry")
+    exit_count = _metric_action_value(metrics, "action_trade_counts", "exit")
+    flip_count = _metric_action_value(metrics, "action_trade_counts", "flip")
+    reduce_count = _metric_action_value(metrics, "action_trade_counts", "reduce")
+    protective_action_count = flip_count + reduce_count
+    protective_reduce_share = float(metrics.get("protective_reduce_share", 0.0) or 0.0)
+    if protective_reduce_share <= 0.0 and protective_action_count > 0:
+        protective_reduce_share = reduce_count / protective_action_count
+    net_pnl_per_position_switch = float(
+        metrics.get(
+            "net_pnl_per_position_switch",
+            net_pnl / max(1.0, flip_count),
+        )
+        or 0.0
+    )
+    time_leverage_efficiency = max(0.0, net_pnl_per_position_switch) / max(1.0, abs(net_pnl_per_trade))
+    staged_build_tranche_count = entry_count + add_count
+    staged_unwind_tranche_count = exit_count + reduce_count
+    staged_tranche_count = staged_build_tranche_count + staged_unwind_tranche_count
+    staged_inventory_balance_ratio = (
+        min(staged_build_tranche_count, staged_unwind_tranche_count)
+        / max(staged_build_tranche_count, staged_unwind_tranche_count)
+        if max(staged_build_tranche_count, staged_unwind_tranche_count) > 0
+        else 0.0
+    )
+    tranche_actions_per_position_switch = staged_tranche_count / max(1.0, flip_count)
 
     target_vol_4h = float(params.get("target_vol_4h", 0.0) or 0.0)
     max_leverage = float(params.get("max_leverage", 0.0) or 0.0)
@@ -141,8 +219,91 @@ def _hostile_proxy_diagnostics(params: dict[str, Any], metrics: dict[str, float]
     )
     train_trade_count_penalty = max(0.0, (trade_count - 4200.0) / 500.0)
     train_fee_drag_proxy_penalty = max(0.0, (fee_drag_pct - 0.02) / 0.01)
+    train_fee_drag_cap_penalty = max(0.0, (fee_drag_pct - MAX_FEE_DRAG_PCT_ABSOLUTE) / MAX_FEE_DRAG_PCT_ABSOLUTE)
+    train_trade_count_day_penalty = max(
+        0.0,
+        (trade_count_per_day - MAX_TRADE_COUNT_PER_DAY) / MAX_TRADE_COUNT_PER_DAY,
+    )
+    profit_factor_after_fee_penalty = max(
+        0.0,
+        (MIN_PROFIT_FACTOR_AFTER_FEE - profit_factor_after_fee) / MIN_PROFIT_FACTOR_AFTER_FEE,
+    )
+    net_pnl_per_trade_penalty = 1.0 if trade_count > 0 and net_pnl_per_trade <= 0.0 else 0.0
+    position_switch_penalty = max(
+        0.0,
+        (position_switches_per_30d - MAX_POSITION_SWITCHES_PER_30D) / MAX_POSITION_SWITCHES_PER_30D,
+    )
+    mature_position_switch_penalty = max(
+        0.0,
+        (position_switches_per_30d - PAULWEI_MATURE_POSITION_SWITCHES_PER_30D)
+        / PAULWEI_MATURE_POSITION_SWITCHES_PER_30D,
+    )
+    flip_reduce_fee_drag_penalty = max(
+        0.0,
+        (flip_reduce_fee_drag_pct - MAX_FLIP_REDUCE_FEE_DRAG_PCT_ABSOLUTE) / MAX_FLIP_REDUCE_FEE_DRAG_PCT_ABSOLUTE,
+    )
+    exit_fee_drag_penalty = max(
+        0.0,
+        (exit_fee_drag_pct - MAX_EXIT_FEE_DRAG_PCT_ABSOLUTE) / MAX_EXIT_FEE_DRAG_PCT_ABSOLUTE,
+    )
+    flip_action_fee_drag_penalty = max(
+        0.0,
+        (flip_action_fee_drag_pct - MAX_FLIP_ACTION_FEE_DRAG_PCT_ABSOLUTE) / MAX_FLIP_ACTION_FEE_DRAG_PCT_ABSOLUTE,
+    )
+    reduce_profit_factor_penalty = (
+        max(
+            0.0,
+            (MIN_REDUCE_ACTION_PROFIT_FACTOR - reduce_action_profit_factor) / MIN_REDUCE_ACTION_PROFIT_FACTOR,
+        )
+        if reduce_count > 0 and reduce_action_profit_factor > 0.0
+        else 0.0
+    )
+    staged_inventory_balance_penalty = (
+        max(
+            0.0,
+            (MIN_STAGED_BUILD_UNWIND_BALANCE_RATIO - staged_inventory_balance_ratio)
+            / MIN_STAGED_BUILD_UNWIND_BALANCE_RATIO,
+        )
+        if staged_tranche_count >= 10
+        and _metric_action_counts_present(metrics, {"add", "entry", "exit"})
+        and max(staged_build_tranche_count, staged_unwind_tranche_count) > 0
+        else 0.0
+    )
+    train_drawdown_preferred_band_penalty = max(
+        0.0,
+        (max_drawdown - TRAIN_DRAWDOWN_PREFERRED_BAND) / max(0.01, TRAIN_DRAWDOWN_PREFERRED_BAND),
+    )
+    protective_reduce_bias_penalty = (
+        max(0.0, (MIN_PROTECTIVE_REDUCE_SHARE - protective_reduce_share) / MIN_PROTECTIVE_REDUCE_SHARE)
+        if protective_action_count > 0
+        else 0.0
+    )
+    time_leverage_bonus = min(0.35, 0.05 * time_leverage_efficiency)
+    tranche_alignment_bonus = (
+        min(0.20, 0.04 * min(5.0, tranche_actions_per_position_switch))
+        if tranche_actions_per_position_switch >= MIN_TRANCHE_ACTIONS_PER_POSITION_SWITCH
+        and staged_inventory_balance_ratio >= MIN_STAGED_BUILD_UNWIND_BALANCE_RATIO
+        and position_switches_per_30d <= PAULWEI_MATURE_POSITION_SWITCHES_PER_30D
+        and reduce_profit_factor_penalty == 0.0
+        and flip_reduce_fee_drag_penalty == 0.0
+        else 0.0
+    )
     train_churn_stress_penalty = round(
-        0.75 * train_trade_count_penalty + 0.35 * train_fee_drag_proxy_penalty + 0.50 * max(0.0, 1.0 - profit_factor),
+        0.75 * train_trade_count_penalty
+        + 0.35 * train_fee_drag_proxy_penalty
+        + 0.75 * train_fee_drag_cap_penalty
+        + 0.65 * train_trade_count_day_penalty
+        + 0.55 * profit_factor_after_fee_penalty
+        + 0.50 * net_pnl_per_trade_penalty
+        + 0.55 * position_switch_penalty
+        + 0.60 * mature_position_switch_penalty
+        + 0.65 * flip_reduce_fee_drag_penalty
+        + 0.45 * exit_fee_drag_penalty
+        + 0.45 * flip_action_fee_drag_penalty
+        + 0.35 * reduce_profit_factor_penalty
+        + 0.35 * staged_inventory_balance_penalty
+        + 0.55 * protective_reduce_bias_penalty
+        + 0.50 * max(0.0, 1.0 - profit_factor),
         6,
     )
     raw_fragility_penalty = (
@@ -162,7 +323,12 @@ def _hostile_proxy_diagnostics(params: dict[str, Any], metrics: dict[str, float]
         hostile_proxy_penalty_applied = 1.625 + (raw_fragility_penalty - 2.5) * 1.25
     hostile_proxy_penalty_applied = round(hostile_proxy_penalty_applied, 6)
     hostile_proxy_score = round(
-        sharpe + 0.15 * profit_factor - hostile_proxy_penalty_applied,
+        sharpe
+        + 0.15 * profit_factor
+        + time_leverage_bonus
+        + tranche_alignment_bonus
+        - hostile_proxy_penalty_applied
+        - 0.60 * train_drawdown_preferred_band_penalty,
         6,
     )
     return {
@@ -170,7 +336,39 @@ def _hostile_proxy_diagnostics(params: dict[str, Any], metrics: dict[str, float]
         "inventory_path_dependence_score": inventory_path_dependence_score,
         "train_trade_count_penalty": round(train_trade_count_penalty, 6),
         "train_fee_drag_proxy_penalty": round(train_fee_drag_proxy_penalty, 6),
+        "train_fee_drag_cap_penalty": round(train_fee_drag_cap_penalty, 6),
+        "train_trade_count_day_penalty": round(train_trade_count_day_penalty, 6),
+        "profit_factor_after_fee_penalty": round(profit_factor_after_fee_penalty, 6),
+        "net_pnl_per_trade_penalty": round(net_pnl_per_trade_penalty, 6),
+        "position_switch_penalty": round(position_switch_penalty, 6),
+        "mature_position_switch_penalty": round(mature_position_switch_penalty, 6),
+        "flip_reduce_fee_drag_penalty": round(flip_reduce_fee_drag_penalty, 6),
+        "exit_fee_drag_penalty": round(exit_fee_drag_penalty, 6),
+        "flip_action_fee_drag_penalty": round(flip_action_fee_drag_penalty, 6),
+        "reduce_profit_factor_penalty": round(reduce_profit_factor_penalty, 6),
+        "staged_inventory_balance_penalty": round(staged_inventory_balance_penalty, 6),
+        "protective_reduce_bias_penalty": round(protective_reduce_bias_penalty, 6),
+        "train_drawdown_preferred_band_penalty": round(train_drawdown_preferred_band_penalty, 6),
         "train_churn_stress_penalty": train_churn_stress_penalty,
+        "net_pnl_per_trade": round(net_pnl_per_trade, 6),
+        "trade_count_per_day": round(trade_count_per_day, 6),
+        "profit_factor_after_fee": round(profit_factor_after_fee, 6),
+        "position_switches_per_30d": round(position_switches_per_30d, 6),
+        "target_position_switches_per_30d": PAULWEI_MATURE_POSITION_SWITCHES_PER_30D,
+        "flip_reduce_fee_drag_pct": round(flip_reduce_fee_drag_pct, 6),
+        "exit_fee_drag_pct": round(exit_fee_drag_pct, 6),
+        "flip_action_fee_drag_pct": round(flip_action_fee_drag_pct, 6),
+        "reduce_action_profit_factor": round(reduce_action_profit_factor, 6),
+        "staged_build_tranche_count": round(staged_build_tranche_count, 6),
+        "staged_unwind_tranche_count": round(staged_unwind_tranche_count, 6),
+        "staged_inventory_balance_ratio": round(staged_inventory_balance_ratio, 6),
+        "tranche_actions_per_position_switch": round(tranche_actions_per_position_switch, 6),
+        "tranche_alignment_bonus": round(tranche_alignment_bonus, 6),
+        "protective_reduce_share": round(protective_reduce_share, 6),
+        "protective_reduce_action_count": round(protective_action_count, 6),
+        "net_pnl_per_position_switch": round(net_pnl_per_position_switch, 6),
+        "time_leverage_efficiency": round(time_leverage_efficiency, 6),
+        "time_leverage_bonus": round(time_leverage_bonus, 6),
         "hostile_proxy_penalty_applied": hostile_proxy_penalty_applied,
         "hostile_proxy_score": hostile_proxy_score,
         "stage1_score": hostile_proxy_score,
@@ -181,6 +379,74 @@ def _stage1_sort_metric(metrics: dict[str, Any], primary_metric: str) -> float:
     return float(
         metrics.get("stage1_score", metrics.get("hostile_proxy_score", metrics.get(primary_metric, 0.0))) or 0.0
     )
+
+
+def _compact_train_trial_diagnostics(
+    results: list[dict[str, Any]],
+    *,
+    primary_metric: str,
+    limit: int = 20,
+) -> list[dict[str, Any]]:
+    metric_keys = (
+        "sharpe",
+        "sortino",
+        "net_pnl",
+        "max_drawdown",
+        "profit_factor",
+        "trade_count",
+        "fee_drag_pct",
+        "net_pnl_per_trade",
+        "trade_count_per_day",
+        "profit_factor_after_fee",
+        "position_switches_per_30d",
+        "flip_reduce_fee_drag_pct",
+        "flip_reduce_trade_share",
+        "protective_reduce_share",
+        "protective_reduce_action_count",
+        "net_pnl_per_position_switch",
+        "time_leverage_efficiency",
+        "time_leverage_bonus",
+        "target_position_switches_per_30d",
+        "staged_build_tranche_count",
+        "staged_unwind_tranche_count",
+        "staged_inventory_balance_ratio",
+        "staged_inventory_balance_penalty",
+        "tranche_actions_per_position_switch",
+        "tranche_alignment_bonus",
+        "mature_position_switch_penalty",
+        "position_switch_penalty",
+        "flip_reduce_fee_drag_penalty",
+        "exit_fee_drag_penalty",
+        "flip_action_fee_drag_penalty",
+        "reduce_profit_factor_penalty",
+        "protective_reduce_bias_penalty",
+        "hostile_proxy_score",
+        "hostile_proxy_penalty_applied",
+        "stage1_score",
+        "terminated_early",
+        "termination_reason",
+        "processed_event_ratio",
+        "action_trade_counts",
+        "action_fee_drag_pct",
+        "action_profit_factor",
+    )
+    ranked = sorted(
+        results,
+        key=lambda item: _stage1_sort_metric(dict(item.get("metrics", {}) or {}), primary_metric),
+        reverse=True,
+    )
+    diagnostics: list[dict[str, Any]] = []
+    for rank, item in enumerate(ranked[: max(0, limit)], start=1):
+        metrics = dict(item.get("metrics", {}) or {})
+        diagnostics.append(
+            {
+                "rank": rank,
+                "stage1_sort_value": round(_stage1_sort_metric(metrics, primary_metric), 6),
+                "params": dict(item.get("params", {}) or {}),
+                "metrics": {key: metrics[key] for key in metric_keys if key in metrics},
+            }
+        )
+    return diagnostics
 
 
 def _has_nonzero_alpha(metrics: dict[str, Any]) -> bool:
@@ -265,6 +531,7 @@ class CampaignConfig:
     research_compute_mode: str = "authoritative"
     enable_early_stop: bool = False
     trial_runtime_budget_s: float | None = None
+    early_stop_fee_drag_buffer: float = 2.0
 
 
 # ── Results ───────────────────────────────────────────────────
@@ -336,12 +603,14 @@ def _run_backtest_worker(args: tuple[Any, ...]) -> tuple[dict[str, Any], dict[st
     perturbation_dict = args[10] if len(args) > 10 else None
     research_compute_mode = str(args[11]) if len(args) > 11 else "authoritative"
     enable_early_stop = bool(args[12]) if len(args) > 12 else False
+    early_stop_fee_drag_buffer = float(args[14]) if len(args) > 14 and args[14] is not None else 2.0
     resolved_execution_timeframe = Timeframe(execution_timeframe)
     strategy_config = _build_strategy_config(params, execution_timeframe=resolved_execution_timeframe)
     risk_config = _shared_build_risk_config(params)
     execution_cfg = _shared_build_execution_config(params)
     indicator_cfg = _shared_build_indicator_config(params)
     signal_weight_overrides = _shared_build_signal_weight_overrides(params)
+    plugin_config_overrides = _shared_build_plugin_config_overrides(params)
     liquidation_data_enabled, state_liquidation_overlay_enabled = _shared_build_replay_toggles(params)
     perturbation = PerturbationConfig(**perturbation_dict) if perturbation_dict else None
     context_key = (
@@ -390,12 +659,14 @@ def _run_backtest_worker(args: tuple[Any, ...]) -> tuple[dict[str, Any], dict[st
         execution_config=execution_cfg,
         indicator_config=indicator_cfg,
         signal_weight_overrides=signal_weight_overrides,
+        plugin_config_overrides=plugin_config_overrides,
         liquidation_data_enabled=liquidation_data_enabled,
         state_liquidation_overlay_enabled=state_liquidation_overlay_enabled,
         research_compute_mode=research_compute_mode,
         profiling_enabled=True,
         early_stop_enabled=enable_early_stop and research_compute_mode == "lightweight_train_search",
         early_stop_min_trade_count=20,
+        early_stop_fee_drag_buffer=early_stop_fee_drag_buffer,
         trial_runtime_budget_s=float(args[13]) if len(args) > 13 and args[13] is not None else None,
         perturbation=perturbation,
         replay_context=replay_context,
@@ -406,6 +677,33 @@ def _run_backtest_worker(args: tuple[Any, ...]) -> tuple[dict[str, Any], dict[st
     result = bt.run()
     run_finished_at = time.time()
     m = result.metrics
+    trade_count = float(m.trade_count or 0)
+    elapsed_days = max(
+        1.0,
+        (float(getattr(m, "end_ns", 0.0) or 0.0) - float(getattr(m, "start_ns", 0.0) or 0.0)) / 1_000_000_000 / 86_400,
+    )
+    if elapsed_days <= 1.0 and trade_count > 0:
+        elapsed_days = TRAIN_TRUTH_DAY_FALLBACK
+    processed_event_ratio = round(float(result.processed_event_ratio or 0.0), 6)
+    effective_elapsed_days = (
+        max(1.0, elapsed_days * processed_event_ratio) if processed_event_ratio > 0.0 else elapsed_days
+    )
+    action_trade_counts = dict(getattr(m, "action_trade_counts", {}) or {})
+    action_fees = dict(getattr(m, "action_fees", {}) or {})
+    action_fee_drag_pct = dict(getattr(m, "action_fee_drag_pct", {}) or {})
+    action_realized_counts = dict(getattr(m, "action_realized_counts", {}) or {})
+    action_realized_pnl = dict(getattr(m, "action_realized_pnl", {}) or {})
+    action_profit_factor = dict(getattr(m, "action_profit_factor", {}) or {})
+    flip_count = _safe_float(action_trade_counts.get("flip"))
+    reduce_count = _safe_float(action_trade_counts.get("reduce"))
+    protective_action_count = flip_count + reduce_count
+    position_switches_per_30d = (flip_count / effective_elapsed_days) * 30.0 if effective_elapsed_days > 0 else 0.0
+    flip_reduce_fee_drag_pct = _safe_float(action_fee_drag_pct.get("flip")) + _safe_float(
+        action_fee_drag_pct.get("reduce")
+    )
+    flip_reduce_trade_share = (flip_count + reduce_count) / trade_count if trade_count > 0 else 0.0
+    protective_reduce_share = reduce_count / protective_action_count if protective_action_count > 0 else 0.0
+    net_pnl_per_position_switch = m.net_pnl / max(1.0, flip_count)
     metrics = {
         "sharpe": m.sharpe,
         "sortino": m.sortino,
@@ -415,6 +713,23 @@ def _run_backtest_worker(args: tuple[Any, ...]) -> tuple[dict[str, Any], dict[st
         "profit_factor": m.profit_factor,
         "trade_count": m.trade_count,
         "fee_drag_pct": m.fee_drag_pct,
+        "elapsed_days": round(elapsed_days, 6),
+        "effective_elapsed_days": round(effective_elapsed_days, 6),
+        "position_switches_per_30d": round(position_switches_per_30d, 6),
+        "flip_reduce_fee_drag_pct": round(flip_reduce_fee_drag_pct, 6),
+        "flip_reduce_trade_share": round(flip_reduce_trade_share, 6),
+        "protective_reduce_share": round(protective_reduce_share, 6),
+        "protective_reduce_action_count": round(protective_action_count, 6),
+        "net_pnl_per_position_switch": round(net_pnl_per_position_switch, 6),
+        "action_trade_counts": action_trade_counts,
+        "action_fees": action_fees,
+        "action_fee_drag_pct": action_fee_drag_pct,
+        "action_realized_counts": action_realized_counts,
+        "action_realized_pnl": action_realized_pnl,
+        "action_profit_factor": action_profit_factor,
+        "net_pnl_per_trade": round((m.net_pnl / trade_count) if trade_count > 0 else 0.0, 6),
+        "trade_count_per_day": round(trade_count / elapsed_days if elapsed_days > 0 else 0.0, 6),
+        "profit_factor_after_fee": round(m.profit_factor * max(0.0, 1.0 - m.fee_drag_pct), 6),
         "cache_hit": 1.0 if cache_hit else 0.0,
         "replay_context_build_s": round(replay_context_build_s, 6),
         "store_load_s": round(replay_context_build_s, 6),
@@ -442,7 +757,8 @@ def _run_backtest_worker(args: tuple[Any, ...]) -> tuple[dict[str, Any], dict[st
         "event_list_cache_hit_rate": round(float(result.profiling.get("event_list_cache_hit_rate", 0.0) or 0.0), 6),
         "store_cache_hit_rate": round(float(result.profiling.get("store_cache_hit_rate", 0.0) or 0.0), 6),
         "terminated_early": 1.0 if result.terminated_early else 0.0,
-        "processed_event_ratio": round(float(result.processed_event_ratio or 0.0), 6),
+        "termination_reason": result.termination_reason,
+        "processed_event_ratio": processed_event_ratio,
     }
     metrics.update(_hostile_proxy_diagnostics(params, metrics))
     metrics["hostile_constraint_violation_count"] = float(len(_hostile_constraint_violations(params)))
@@ -602,6 +918,10 @@ class Campaign:
                 "stage1_fail_fast_reasons": {},
                 "hostile_proxy_penalized_count": 0,
                 "candidate_existence_recovered": False,
+                "top_train_trial_diagnostics": _compact_train_trial_diagnostics(
+                    results,
+                    primary_metric=self._config.primary_metric,
+                ),
             },
             empty_shortlist_reason,
         )
@@ -637,6 +957,7 @@ class Campaign:
                 self._config.research_compute_mode,
                 self._config.enable_early_stop,
                 self._config.trial_runtime_budget_s,
+                self._config.early_stop_fee_drag_buffer,
             )
             for params in param_grid
         ]
@@ -788,6 +1109,7 @@ class Campaign:
                 self._config.research_compute_mode,
                 self._config.enable_early_stop,
                 self._config.trial_runtime_budget_s,
+                self._config.early_stop_fee_drag_buffer,
             )
             if self._config.trial_timeout_s is not None:
                 pool: ProcessPoolExecutor | None = None
@@ -969,6 +1291,7 @@ class Campaign:
                             self._config.research_compute_mode,
                             self._config.enable_early_stop,
                             self._config.trial_runtime_budget_s,
+                            self._config.early_stop_fee_drag_buffer,
                         )
                         future = pool.submit(_run_backtest_worker, args)
                         pending[future] = (trial, trial_number, params, started_trial_at)
@@ -1471,8 +1794,8 @@ def _build_strategy_config(
             playbook_kwargs["range_max_leverage"] = value
         elif key == "exit_transition_risk":
             exit_kwargs["transition_risk_exit_threshold"] = value
-    existing_playbook = vars(config.playbook_config) if config.playbook_config is not None else {}
-    existing_exit = vars(config.exit_config) if config.exit_config is not None else {}
+    existing_playbook = asdict(config.playbook_config) if config.playbook_config is not None else {}
+    existing_exit = asdict(config.exit_config) if config.exit_config is not None else {}
     return ARCStrategyConfig(
         **{
             **asdict(config),

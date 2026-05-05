@@ -60,6 +60,120 @@ class FrameworkCampaignTests(unittest.TestCase):
         self.assertEqual(CAMPAIGN._resolved_budget("fast", None, None), (50, 20))
         self.assertEqual(CAMPAIGN._resolved_budget("high", None, None), (150, 60))
 
+    def test_stage1_parallelism_keeps_standard_smoke_serial(self) -> None:
+        policy = CAMPAIGN._resolve_stage1_parallelism(
+            budget="smoke",
+            search_space_mode="binance_factor_weight_repair_train_only",
+            fast_worker_profile="fast_default",
+            cpu_count=10,
+        )
+
+        self.assertEqual(policy["stage1_parallel_mode"], "serial")
+        self.assertIsNone(policy["stage1_max_workers"])
+        self.assertEqual(policy["stage1_target_inflight"], 1)
+        self.assertEqual(policy["stage1_batch_size"], 1)
+
+    def test_stage1_parallelism_runs_intent_smoke_with_limited_cpu_parallelism(self) -> None:
+        policy = CAMPAIGN._resolve_stage1_parallelism(
+            budget="smoke",
+            search_space_mode="intent_churn_ablation_train_only",
+            fast_worker_profile="fast_default",
+            cpu_count=10,
+        )
+
+        self.assertEqual(policy["stage1_parallel_mode"], "cpu_parallel")
+        self.assertEqual(policy["stage1_max_workers"], 4)
+        self.assertEqual(policy["stage1_target_inflight"], 4)
+        self.assertEqual(policy["stage1_batch_size"], 1)
+
+    def test_smoke_uses_base_timeframe_for_low_switch_intent_modes(self) -> None:
+        self.assertTrue(
+            CAMPAIGN._smoke_uses_base_timeframe(
+                budget="smoke",
+                search_space_mode="intent_churn_ablation_train_only",
+            )
+        )
+        self.assertTrue(
+            CAMPAIGN._smoke_uses_base_timeframe(
+                budget="smoke",
+                search_space_mode="ralph_intent_reduce_cadence_train_only",
+            )
+        )
+        self.assertFalse(
+            CAMPAIGN._smoke_uses_base_timeframe(
+                budget="smoke",
+                search_space_mode="baseline_anchored_train_only",
+            )
+        )
+
+    def test_smoke_primary_empty_skip_fallback_reason_requires_train_fee_or_churn_blocker(self) -> None:
+        reason = CAMPAIGN._smoke_primary_empty_skip_fallback_reason(
+            search_space_mode="binance_factor_weight_repair_train_only",
+            primary_diagnostics={
+                "empty_shortlist_reason": "stage1_fail_fast_rejected",
+                "train_candidate_diagnostics": {
+                    "stage1_fail_fast_reasons": {"regime_objective_train_bucket_fail_fast": 1},
+                    "rejected_candidate_diagnostics": [
+                        {
+                            "regime_objective": {
+                                "bucket_blockers": [
+                                    "train_fee_drag_cap_exceeded",
+                                    "train_fee_drag_structurally_worse",
+                                ]
+                            }
+                        }
+                    ],
+                },
+            },
+        )
+
+        self.assertEqual(
+            reason,
+            "primary_train_quality_fail_fast:train_fee_drag_cap_exceeded,train_fee_drag_structurally_worse",
+        )
+
+    def test_smoke_primary_empty_skip_fallback_reason_keeps_uninformative_empty_fallback(self) -> None:
+        reason = CAMPAIGN._smoke_primary_empty_skip_fallback_reason(
+            search_space_mode="binance_factor_weight_repair_train_only",
+            primary_diagnostics={
+                "empty_shortlist_reason": "all_zero_trade",
+                "train_candidate_diagnostics": {
+                    "stage1_fail_fast_reasons": {"regime_objective_train_bucket_fail_fast": 1},
+                    "rejected_candidate_diagnostics": [
+                        {"regime_objective": {"bucket_blockers": ["train_fee_drag_cap_exceeded"]}}
+                    ],
+                },
+            },
+        )
+
+        self.assertIsNone(reason)
+
+    def test_skipped_5m_fallback_diagnostics_preserve_top_level_reason(self) -> None:
+        diagnostics = CAMPAIGN._diagnostics_with_skipped_5m_fallback(
+            primary_diagnostics={
+                "empty_shortlist_reason": "stage1_fail_fast_rejected",
+                "no_tuned_candidate_reason": "proxy_penalized_out",
+                "train_candidate_diagnostics": {
+                    "stage1_fail_fast_reasons": {"regime_objective_train_bucket_fail_fast": 1}
+                },
+            },
+            skip_reason="primary_train_quality_fail_fast:train_fee_drag_cap_exceeded",
+        )
+
+        train_diagnostics = diagnostics["train_candidate_diagnostics"]
+        self.assertEqual(diagnostics["empty_shortlist_reason"], "primary_empty_train_quality_fallback_skipped")
+        self.assertEqual(diagnostics["primary_empty_shortlist_reason"], "stage1_fail_fast_rejected")
+        self.assertEqual(diagnostics["fallback_empty_shortlist_reason"], "skipped")
+        self.assertEqual(
+            diagnostics["fallback_skip_reason"],
+            "primary_train_quality_fail_fast:train_fee_drag_cap_exceeded",
+        )
+        self.assertTrue(train_diagnostics["fallback_search_skipped"])
+        self.assertEqual(
+            train_diagnostics["fallback_skip_reason"],
+            "primary_train_quality_fail_fast:train_fee_drag_cap_exceeded",
+        )
+
     def test_stage2_budget_profile_relaxes_smoke_compare_windows_only(self) -> None:
         smoke = CAMPAIGN._stage2_budget_profile("smoke")
 

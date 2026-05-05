@@ -28,7 +28,7 @@ def _write_row(path: Path, timeframe: Timeframe, start_ns: int) -> None:
 
 
 class HistoricalExtensionContractTests(unittest.TestCase):
-    def test_contract_marks_spot_history_as_layered_train_truth(self) -> None:
+    def test_contract_marks_spot_history_as_context_only(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             spot_root = root / "binance_spot"
@@ -53,17 +53,19 @@ class HistoricalExtensionContractTests(unittest.TestCase):
             )
 
         self.assertEqual(contract.candidate_source_type, "spot")
-        self.assertTrue(contract.layered_train_enabled)
-        self.assertTrue(contract.formal_train_truth)
-        self.assertEqual(contract.historical_extension_mode, "layered_spot_then_futures")
+        self.assertFalse(contract.layered_train_enabled)
+        self.assertFalse(contract.formal_train_truth)
+        self.assertEqual(contract.historical_extension_mode, "spot_context_only")
         self.assertEqual(contract.dev_truth_source, "futures_only")
         self.assertEqual(contract.test_truth_source, "futures_only")
-        self.assertTrue(contract.mixed_era_declared)
+        self.assertFalse(contract.mixed_era_declared)
         self.assertFalse(contract.full_unified_truth)
         self.assertTrue(contract.ready)
         self.assertIn("spot_perp_truth_boundary", contract.blocked_by)
         self.assertIn("full_unified_truth_blocked", contract.blocked_by)
+        self.assertIn("spot_context_only_not_formal_train_truth", contract.spot_train_leg_blocked_by)
         self.assertEqual(contract.timeframes["1d"].timeframe, "1d")
         self.assertTrue(contract.timeframes["1h"].present)
-        self.assertEqual(contract.train_truth_legs[0]["name"], "pre_2020_spot_train")
-        self.assertEqual(contract.train_truth_legs[1]["name"], "post_2020_futures_train")
+        self.assertEqual(len(contract.train_truth_legs), 1)
+        self.assertEqual(contract.train_truth_legs[0]["name"], "post_2020_futures_train")
+        self.assertIn("pre_2020_regime_context", contract.allowed_uses)

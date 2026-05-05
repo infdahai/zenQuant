@@ -21,11 +21,15 @@ from .comparison import (
     default_variant_specs,
     fixed_2023_08_window,
     liquidation_research_variant_specs,
+    mapped_public_archive_variant_spec,
     paulwei_execution_baseline,
+    paulwei_mature_style_variant_specs,
     paulwei_risk_baseline,
+    public_archive_variant_specs,
     windows_from_worst_periods,
 )
 from .experiment import Experiment, ExperimentTracker
+from .mature_progression import build_mature_progression_markdown, build_mature_progression_payload
 from .pipeline import ResearchRunArtifact, ResearchRunConfig, run_research_pipeline
 from .promoter import (
     BaselineMetrics,
@@ -73,6 +77,8 @@ __all__ = [
     "behavior_candidate_existence_variant_specs",
     "build_decision_attribution_ledger",
     "build_markdown_summary",
+    "build_mature_progression_markdown",
+    "build_mature_progression_payload",
     "build_regime_objective_markdown",
     "build_regime_objective_verdict",
     "build_risk_architecture_profile",
@@ -83,8 +89,11 @@ __all__ = [
     "default_variant_specs",
     "fixed_2023_08_window",
     "liquidation_research_variant_specs",
+    "mapped_public_archive_variant_spec",
     "paulwei_execution_baseline",
+    "paulwei_mature_style_variant_specs",
     "paulwei_risk_baseline",
+    "public_archive_variant_specs",
     "run_dev_robustness_stage",
     "run_dev_validation_stage",
     "run_research_pipeline",

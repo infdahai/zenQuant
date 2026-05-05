@@ -87,6 +87,28 @@ enabled = false  # IC=0.014 NOISE — disabled per IC>0.03 rule. Re-evaluate wit
 weight = 0.10
 te_threshold = 0.1
 
+[signals.alt_risk_context_signal]
+enabled = false
+weight = 0.06
+spread_z_threshold = 1.25
+momentum_threshold = 0.04
+max_magnitude = 0.45
+
+[signals.onchain_activity_signal]
+enabled = false
+weight = 0.07
+active_momentum_threshold = 0.015
+supply_activity_threshold = 0.01
+max_magnitude = 0.35
+
+[signals.binance_metrics_state_signal]
+enabled = false
+weight = 0.07
+oi_value_growth_threshold = 0.75
+top_account_lsr_threshold = 0.75
+unwind_pressure_threshold = 0.35
+max_magnitude = 0.4
+
 [signals.crash_reversal_signal]
 enabled = true
 weight = 0.25
@@ -140,6 +162,15 @@ positioning_discount_max = 0.65
 positioning_discount_floor = 0.35
 volatility_distorted_discount = 0.75
 volatility_high_discount = 0.90
+
+[sizers.binance_metrics_risk_sizer]
+enabled = false
+edge_threshold = 0.2
+edge_discount_scale = 0.25
+crowding_threshold = 1.0
+crowding_discount_scale = 0.08
+discount_floor = 0.65
+max_discount = 0.35
 
 [sizers.bear_defense_churn_sizer]
 enabled = false

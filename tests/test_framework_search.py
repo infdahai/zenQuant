@@ -4,6 +4,7 @@ import multiprocessing as mp
 import sys
 import tempfile
 import unittest
+from concurrent.futures import TimeoutError as FutureTimeoutError
 from dataclasses import dataclass
 from pathlib import Path
 from unittest.mock import patch
@@ -11,18 +12,46 @@ from unittest.mock import patch
 from zenquant.domain import Timeframe
 from zenquant.historical import HistoricalBacktestConfig
 from zenquant.historical.storage import HistoricalKlineRow, write_parquet_rows
-from zenquant.research.auto_research import _hostile_proxy_diagnostics
+from zenquant.research.auto_research import _build_strategy_config, _hostile_proxy_diagnostics
 from zenquant.research.framework_params import (
+    BASE_TIMEFRAME_SMOKE_MODES,
+    DEFAULT_DEV_FEE_STABILITY_LIMITS,
+    SEARCH_SPACE_MODES,
+    STRICT_TRAIN_FEE_STOP_PROFILE_FLAGS,
+    STRICT_TRAIN_TRUTH_PROFILE_FLAGS,
     baseline_anchor_params,
     baseline_anchor_seed_trials,
     baseline_anchored_2023_08_hostile_repair_param_grid,
     baseline_anchored_defensive_param_grid,
     baseline_anchored_param_grid,
+    binance_factor_weight_repair_param_grid,
+    binance_factor_weight_repair_seed_trials,
+    build_execution_config,
+    build_plugin_config_overrides,
     build_replay_toggles,
+    build_signal_weight_overrides,
+    build_strategy_config,
     core_param_grid,
+    execution_inventory_rethink_param_grid,
+    execution_inventory_rethink_seed_trials,
     hostile_constraint_violations,
+    intent_churn_ablation_param_grid,
+    intent_churn_ablation_seed_trials,
+    intent_churn_repair_param_grid,
+    intent_churn_repair_seed_trials,
     is_hostile_aware_param_combo,
+    paulwei_balanced_tranche_param_grid,
+    paulwei_balanced_tranche_seed_trials,
+    ralph_execution_fee_cooldown_param_grid,
+    ralph_execution_fee_cooldown_seed_trials,
+    ralph_intent_reduce_cadence_param_grid,
+    ralph_intent_reduce_cadence_seed_trials,
+    ralph_protective_reduce_fee_repair_param_grid,
+    ralph_protective_reduce_fee_repair_seed_trials,
+    ralph_protective_reduce_param_grid,
+    ralph_protective_reduce_seed_trials,
     search_space_profile,
+    smoke_uses_base_timeframe,
 )
 from zenquant.research.framework_search import (
     BacktestSnapshot,
@@ -35,8 +64,10 @@ from zenquant.research.framework_search import (
     _assess_full_training_readiness,
     _candidate_score,
     _classify_post_smoke_scenario,
+    _dev_fee_stability_summary,
     _hostile_regression_summary,
     _run_validation_bundle,
+    _run_variant_backtest_with_timeout,
     _stage1_fail_fast_reason,
     build_markdown_report,
     run_optuna_search,
@@ -86,6 +117,24 @@ class FrameworkParamTests(unittest.TestCase):
         self.assertEqual(profile["direction_weight_policy"]["demoted_signal_role"], "state")
         self.assertTrue(profile["hostile_window_guardrails"]["enabled"])
 
+    def test_framework_research_config_registry_contains_campaign_modes_and_limits(self) -> None:
+        self.assertIn("intent_churn_ablation_train_only", SEARCH_SPACE_MODES)
+        self.assertIn("ralph_intent_reduce_cadence_train_only", SEARCH_SPACE_MODES)
+        self.assertIn("paulwei_balanced_tranche_train_only", SEARCH_SPACE_MODES)
+        self.assertIn("intent_churn_ablation_train_only", BASE_TIMEFRAME_SMOKE_MODES)
+        self.assertTrue(
+            smoke_uses_base_timeframe(budget="smoke", search_space_mode="ralph_intent_reduce_cadence_train_only")
+        )
+        self.assertTrue(
+            smoke_uses_base_timeframe(budget="smoke", search_space_mode="paulwei_balanced_tranche_train_only")
+        )
+        self.assertFalse(smoke_uses_base_timeframe(budget="smoke", search_space_mode="baseline_anchored_train_only"))
+        self.assertIn("intent_churn_ablation_search", STRICT_TRAIN_FEE_STOP_PROFILE_FLAGS)
+        self.assertIn("ralph_intent_reduce_cadence_search", STRICT_TRAIN_TRUTH_PROFILE_FLAGS)
+        self.assertIn("paulwei_balanced_tranche_search", STRICT_TRAIN_FEE_STOP_PROFILE_FLAGS)
+        self.assertIn("paulwei_balanced_tranche_search", STRICT_TRAIN_TRUTH_PROFILE_FLAGS)
+        self.assertEqual(DEFAULT_DEV_FEE_STABILITY_LIMITS.dev_fee_drag_fail_fast_cap, 0.075)
+
     def test_hostile_constraint_violations_reject_aggressive_combo(self) -> None:
         params = {
             "target_vol_4h": 1.10,
@@ -121,6 +170,8 @@ class FrameworkParamTests(unittest.TestCase):
     def test_baseline_anchored_grid_contains_paulwei_anchor_values(self) -> None:
         grid = baseline_anchored_param_grid()
         self.assertIn(0.95, grid["vol_shock_threshold"])
+        self.assertEqual(grid["pyramid_initial_pct"], [0.30])
+        self.assertEqual(grid["pyramid_add_pct"], [0.30])
         self.assertIn(0.20, grid["pyramid_short_add_pct"])
         self.assertIn(0.50, grid["flip_min_confidence"])
         self.assertIn(1.00, grid["pyramid_spacing_atr"])
@@ -130,7 +181,466 @@ class FrameworkParamTests(unittest.TestCase):
         profile = search_space_profile(mode="baseline_anchored_train_only")
         self.assertEqual(profile["search_space_mode"], "baseline_anchored_train_only")
         self.assertTrue(profile["baseline_anchored_search"])
+        self.assertFalse(profile["execution_inventory_rethink_search"])
         self.assertEqual(profile["baseline_anchor_variant"], "paulwei_baseline")
+
+    def test_execution_inventory_rethink_grid_trains_churn_reduction_controls(self) -> None:
+        grid = execution_inventory_rethink_param_grid()
+
+        self.assertEqual(grid["pyramid_initial_pct"], [0.30])
+        self.assertEqual(grid["pyramid_add_pct"], [0.30])
+        self.assertEqual(grid["max_leverage"], [4.5])
+        self.assertEqual(grid["pyramid_short_initial_pct"], [0.15])
+        self.assertEqual(grid["dca_size_decay"], [0.90])
+        self.assertTrue(all(value >= 1.00 for value in grid["pyramid_spacing_atr"]))
+        self.assertTrue(all(value >= 1.25 for value in grid["dca_spacing_atr"]))
+        self.assertTrue(all(value >= 0.70 for value in grid["flip_min_confidence"]))
+        self.assertEqual(grid["hostile_behavior_router_enabled"], [0.0, 1.0])
+        self.assertEqual(grid["squeeze_conditional_cooldown_enabled"], [0.0, 1.0])
+        self.assertEqual(grid["liquidation_data_enabled"], [0.0])
+
+    def test_search_space_profile_marks_execution_inventory_rethink_mode(self) -> None:
+        profile = search_space_profile(mode="execution_inventory_rethink_train_only")
+
+        self.assertEqual(profile["profile"], "execution_inventory_rethink_train_only")
+        self.assertEqual(profile["search_space_mode"], "execution_inventory_rethink_train_only")
+        self.assertFalse(profile["baseline_anchored_search"])
+        self.assertTrue(profile["execution_inventory_rethink_search"])
+        self.assertFalse(profile["include_liquidation_toggles"])
+
+    def test_intent_churn_repair_grid_trains_strategy_intent_controls(self) -> None:
+        grid = intent_churn_repair_param_grid()
+
+        self.assertEqual(grid["max_leverage"], [4.5])
+        self.assertEqual(grid["pyramid_initial_pct"], [0.30])
+        self.assertEqual(grid["pyramid_add_pct"], [0.30])
+        self.assertEqual(grid["pyramid_short_initial_pct"], [0.15])
+        self.assertTrue(all(value <= 0.12 for value in grid["pyramid_short_add_pct"]))
+        self.assertTrue(all(value >= 1.25 for value in grid["dca_spacing_atr"]))
+        self.assertTrue(all(value >= 0.70 for value in grid["flip_min_confidence"]))
+        self.assertEqual(grid["range_time_decay_bars"], [5, 8, 12])
+        self.assertEqual(grid["preserve_capital_time_decay_bars"], [2, 3])
+        self.assertEqual(grid["trade_directional_confidence_floor"], [0.55, 0.60, 0.65])
+        self.assertEqual(grid["bearish_override_confidence_floor"], [0.55, 0.60, 0.65])
+        self.assertEqual(grid["exit_transition_risk"], [0.85, 0.90])
+        self.assertEqual(grid["liquidation_data_enabled"], [0.0])
+
+    def test_search_space_profile_marks_intent_churn_repair_mode(self) -> None:
+        profile = search_space_profile(mode="intent_churn_repair_train_only")
+
+        self.assertEqual(profile["profile"], "intent_churn_repair_train_only")
+        self.assertEqual(profile["search_space_mode"], "intent_churn_repair_train_only")
+        self.assertFalse(profile["baseline_anchored_search"])
+        self.assertFalse(profile["execution_inventory_rethink_search"])
+        self.assertTrue(profile["intent_churn_repair_search"])
+        self.assertFalse(profile["include_liquidation_toggles"])
+
+    def test_intent_churn_ablation_grid_prioritizes_low_switch_intent(self) -> None:
+        grid = intent_churn_ablation_param_grid()
+
+        self.assertEqual(grid["target_vol_4h"], [0.30, 0.35, 0.40, 0.45, 0.50, 0.65])
+        self.assertEqual(grid["max_leverage"], [2.0, 2.5, 3.0])
+        self.assertEqual(grid["pyramid_add_pct"], [0.30])
+        self.assertEqual(grid["pyramid_short_add_pct"], [0.10, 0.12])
+        self.assertEqual(grid["range_time_decay_bars"], [8, 12, 16, 24])
+        self.assertEqual(grid["preserve_capital_time_decay_bars"], [3, 4, 6])
+        self.assertEqual(grid["range_trailing_stop_atr_mult"], [3.0, 3.5, 4.5])
+        self.assertEqual(grid["preserve_capital_trailing_stop_atr_mult"], [2.0, 2.5, 3.0])
+        self.assertEqual(grid["trade_directional_confidence_floor"][0], 0.50)
+        self.assertEqual(grid["bearish_override_confidence_floor"][0], 0.50)
+        self.assertEqual(grid["exit_transition_risk"][0], 0.80)
+        self.assertEqual(grid["direction_signal_threshold"], [0.30, 0.35, 0.40, 0.45, 0.50, 0.55])
+        self.assertEqual(grid["intent_add_signal_threshold"], [0.45, 0.50, 0.55, 0.60])
+        self.assertEqual(grid["intent_add_confirmation_bars"], [1, 2, 4])
+        self.assertEqual(grid["min_bars_before_trail"], [1])
+        self.assertEqual(grid["min_hours_before_trail"], [0.0, 12.0, 20.0, 36.0])
+        self.assertEqual(grid["intent_entry_confirmation_bars"], [3, 4])
+        self.assertEqual(grid["intent_flip_confirmation_bars"], [6, 8, 12, 16])
+        self.assertEqual(grid["intent_flat_confirmation_bars"], [8, 12, 16, 24])
+        self.assertEqual(grid["intent_range_entry_confirmation_bars"], [4, 6, 8, 12])
+        self.assertEqual(grid["intent_range_reentry_cooldown_bars"], [0, 12, 24, 48])
+        self.assertEqual(grid["intent_bearish_override_confirmation_bars"], [0, 4, 8, 12])
+        self.assertEqual(grid["intent_bearish_override_chop_guard_enabled"], [0.0, 1.0])
+        self.assertEqual(grid["intent_bearish_override_chop_max_confidence"], [0.40, 0.50, 0.58])
+        self.assertEqual(grid["intent_bearish_override_chop_min_transition_risk"], [0.40, 0.55, 0.65])
+        self.assertEqual(grid["intent_unconfirmed_flip_reduce_only"], [0.0, 1.0])
+        self.assertEqual(grid["intent_time_leverage_hold_enabled"], [1.0])
+        self.assertEqual(grid["intent_time_leverage_min_hold_bars"], [168, 240, 336, 480])
+        self.assertEqual(grid["intent_time_leverage_flip_signal_threshold"], [0.65, 0.75])
+        self.assertEqual(grid["intent_time_leverage_trailing_stop_atr_mult"], [0.0])
+        self.assertEqual(grid["intent_time_leverage_size_hysteresis_enabled"], [1.0])
+        self.assertEqual(grid["intent_time_leverage_add_deadband_pct"], [0.25, 0.40, 0.60])
+        self.assertEqual(grid["intent_time_leverage_reduce_deadband_pct"], [0.80, 1.00, 1.25])
+        self.assertEqual(grid["intent_time_leverage_long_bias_enabled"], [1.0])
+        self.assertEqual(grid["intent_time_leverage_long_bias_confidence_floor"], [0.65, 0.70])
+        self.assertEqual(grid["intent_time_leverage_dip_accumulation_enabled"], [0.0, 1.0])
+        self.assertEqual(grid["intent_time_leverage_dip_add_pct"], [0.10, 0.15])
+        self.assertEqual(grid["hostile_behavior_router_enabled"], [0.0])
+        self.assertEqual(grid["liquidation_data_enabled"], [0.0])
+
+    def test_search_space_profile_marks_intent_churn_ablation_mode(self) -> None:
+        profile = search_space_profile(mode="intent_churn_ablation_train_only")
+
+        self.assertEqual(profile["profile"], "intent_churn_ablation_train_only")
+        self.assertEqual(profile["search_space_mode"], "intent_churn_ablation_train_only")
+        self.assertTrue(profile["intent_churn_ablation_search"])
+        self.assertFalse(profile["intent_churn_repair_search"])
+        self.assertFalse(profile["include_liquidation_toggles"])
+
+    def test_binance_factor_weight_repair_grid_trains_audited_state_weights(self) -> None:
+        grid = binance_factor_weight_repair_param_grid()
+
+        self.assertEqual(grid["liquidation_data_enabled"], [0.0])
+        self.assertEqual(grid["target_vol_4h"], [0.50, 0.65, 0.80])
+        self.assertEqual(grid["max_leverage"], [2.5, 3.5, 4.5])
+        self.assertEqual(grid["range_time_decay_bars"], [8, 12, 16])
+        self.assertEqual(grid["trade_directional_confidence_floor"], [0.65, 0.70, 0.75, 0.80])
+        self.assertEqual(grid["w_binance_metrics_state"], [0.0, 0.07, 0.12, 0.18, 0.25])
+        self.assertEqual(grid["w_perp_carry"], [0.04, 0.08])
+        self.assertEqual(grid["w_vol_structure"], [0.04, 0.08])
+        self.assertEqual(grid["binance_metrics_state_enabled"], [0.0, 1.0])
+        self.assertEqual(grid["binance_metrics_risk_sizer_enabled"], [0.0, 1.0])
+        self.assertEqual(grid["binance_metrics_risk_edge_threshold"], [0.15, 0.25])
+        self.assertEqual(grid["flip_min_confidence"], [0.70, 0.75, 0.80])
+        self.assertEqual(grid["flip_flatten_only_enabled"], [0.0])
+        self.assertEqual(grid["flip_reverse_open_scale"], [1.00])
+        self.assertEqual(grid["loss_flip_reverse_open_confidence_floor"], [0.0])
+        self.assertEqual(grid["target_delta_deadband_pct"], [0.0, 0.04, 0.06, 0.08])
+        self.assertEqual(grid["target_reduce_deadband_pct"], [0.0])
+        self.assertEqual(grid["min_hold_bars_before_flip"], [0, 2, 4])
+        self.assertEqual(grid["entry_cooldown_bars"], [0, 1, 2])
+        self.assertEqual(grid["weak_signal_no_flip_enabled"], [0.0, 1.0])
+        self.assertEqual(grid["tiny_reverse_reduce_only_enabled"], [0.0, 1.0])
+        self.assertEqual(grid["entry_confidence_floor"], [0.0, 0.75, 0.80, 0.85])
+        self.assertEqual(grid["tiny_reverse_deadband_pct"], [0.05, 0.10, 0.20])
+        self.assertEqual(grid["reverse_open_confidence_floor"], [0.0, 0.85, 0.90, 0.95])
+        self.assertEqual(grid["range_entry_block_enabled"], [0.0, 1.0])
+        self.assertEqual(grid["degraded_entry_block_enabled"], [0.0, 1.0])
+        self.assertEqual(grid["loss_dca_confidence_floor"], [0.0, 0.80, 0.85])
+        self.assertEqual(grid["loss_dca_range_block_enabled"], [0.0, 1.0])
+        self.assertEqual(grid["loss_dca_degraded_block_enabled"], [0.0, 1.0])
+        self.assertEqual(grid["profit_protect_reduce_enabled"], [0.0])
+        self.assertEqual(grid["profit_protect_min_move_atr"], [0.75, 1.00, 1.25])
+        self.assertEqual(grid["profit_protect_unwind_pct"], [0.20, 0.25, 0.30])
+        self.assertEqual(grid["profit_protect_confidence_ceiling"], [0.70, 0.75, 0.80])
+
+    def test_search_space_profile_marks_binance_factor_weight_repair_mode(self) -> None:
+        profile = search_space_profile(mode="binance_factor_weight_repair_train_only")
+
+        self.assertEqual(profile["profile"], "binance_factor_weight_repair_train_only")
+        self.assertEqual(profile["search_space_mode"], "binance_factor_weight_repair_train_only")
+        self.assertFalse(profile["baseline_anchored_search"])
+        self.assertFalse(profile["intent_churn_repair_search"])
+        self.assertTrue(profile["binance_factor_weight_repair_search"])
+        self.assertFalse(profile["include_liquidation_toggles"])
+
+    def test_ralph_protective_reduce_grid_targets_flatten_first_behavior(self) -> None:
+        grid = ralph_protective_reduce_param_grid()
+
+        self.assertEqual(grid["target_vol_4h"], [0.35, 0.40, 0.50, 0.65])
+        self.assertEqual(grid["max_leverage"], [2.5, 3.0])
+        self.assertEqual(grid["intent_unconfirmed_flip_reduce_only"], [1.0])
+        self.assertEqual(grid["intent_flip_confirmation_bars"], [12, 16, 24])
+        self.assertEqual(grid["intent_flat_confirmation_bars"], [4, 8, 12])
+        self.assertEqual(grid["flip_flatten_only_enabled"], [1.0])
+        self.assertEqual(grid["target_reduce_deadband_pct"], [0.0])
+        self.assertEqual(grid["min_hold_bars_before_flip"], [4, 8, 12])
+        self.assertEqual(grid["weak_signal_no_flip_enabled"], [1.0])
+        self.assertEqual(grid["tiny_reverse_reduce_only_enabled"], [1.0])
+        self.assertEqual(grid["range_entry_block_enabled"], [1.0])
+        self.assertEqual(grid["degraded_entry_block_enabled"], [1.0])
+        self.assertEqual(grid["loss_dca_range_block_enabled"], [1.0])
+        self.assertEqual(grid["loss_dca_degraded_block_enabled"], [1.0])
+        self.assertEqual(grid["profit_protect_reduce_enabled"], [1.0])
+
+    def test_search_space_profile_marks_ralph_protective_reduce_mode(self) -> None:
+        profile = search_space_profile(mode="ralph_protective_reduce_train_only")
+
+        self.assertEqual(profile["profile"], "ralph_protective_reduce_train_only")
+        self.assertEqual(profile["search_space_mode"], "ralph_protective_reduce_train_only")
+        self.assertFalse(profile["baseline_anchored_search"])
+        self.assertFalse(profile["intent_churn_ablation_search"])
+        self.assertFalse(profile["binance_factor_weight_repair_search"])
+        self.assertTrue(profile["ralph_protective_reduce_search"])
+        self.assertFalse(profile["include_liquidation_toggles"])
+
+    def test_ralph_protective_reduce_fee_repair_grid_tightens_fee_controls(self) -> None:
+        grid = ralph_protective_reduce_fee_repair_param_grid()
+
+        self.assertEqual(grid["target_vol_4h"], [0.35, 0.40, 0.50])
+        self.assertEqual(grid["max_leverage"], [2.0, 2.5])
+        self.assertEqual(grid["exit_unwind_pct"], [0.45, 0.55])
+        self.assertEqual(grid["intent_add_signal_threshold"], [0.60, 0.65])
+        self.assertEqual(grid["intent_add_confirmation_bars"], [2, 4])
+        self.assertEqual(grid["intent_entry_confirmation_bars"], [6, 8])
+        self.assertEqual(grid["intent_flip_confirmation_bars"], [16, 24])
+        self.assertEqual(grid["intent_unconfirmed_flip_reduce_only"], [1.0])
+        self.assertEqual(grid["flip_flatten_only_enabled"], [1.0])
+        self.assertEqual(grid["target_delta_deadband_pct"], [0.08, 0.10])
+        self.assertEqual(grid["target_reduce_deadband_pct"], [0.0])
+        self.assertEqual(grid["entry_cooldown_bars"], [4, 8])
+        self.assertEqual(grid["profit_protect_min_move_atr"], [1.25, 1.75, 2.25])
+        self.assertEqual(grid["profit_protect_unwind_pct"], [0.35, 0.50])
+        self.assertEqual(grid["profit_protect_confidence_ceiling"], [0.65, 0.75])
+
+    def test_search_space_profile_marks_ralph_protective_reduce_fee_repair_mode(self) -> None:
+        profile = search_space_profile(mode="ralph_protective_reduce_fee_repair_train_only")
+
+        self.assertEqual(profile["profile"], "ralph_protective_reduce_fee_repair_train_only")
+        self.assertEqual(profile["search_space_mode"], "ralph_protective_reduce_fee_repair_train_only")
+        self.assertFalse(profile["ralph_protective_reduce_search"])
+        self.assertTrue(profile["ralph_protective_reduce_fee_repair_search"])
+        self.assertFalse(profile["binance_factor_weight_repair_search"])
+
+    def test_ralph_execution_fee_cooldown_grid_adds_protective_reduce_throttle(self) -> None:
+        grid = ralph_execution_fee_cooldown_param_grid()
+
+        self.assertEqual(grid["target_vol_4h"], [0.40, 0.50, 0.65])
+        self.assertEqual(grid["max_leverage"], [2.5, 3.0])
+        self.assertEqual(grid["intent_unconfirmed_flip_reduce_only"], [1.0])
+        self.assertEqual(grid["flip_flatten_only_enabled"], [1.0])
+        self.assertEqual(grid["profit_protect_reduce_enabled"], [1.0])
+        self.assertEqual(grid["profit_protect_cooldown_bars"], [6, 12, 24])
+        self.assertEqual(grid["profit_protect_unwind_pct"], [0.25, 0.35, 0.50])
+        self.assertEqual(grid["target_delta_deadband_pct"], [0.04, 0.06, 0.08])
+
+    def test_search_space_profile_marks_ralph_execution_fee_cooldown_mode(self) -> None:
+        profile = search_space_profile(mode="ralph_execution_fee_cooldown_train_only")
+
+        self.assertEqual(profile["profile"], "ralph_execution_fee_cooldown_train_only")
+        self.assertEqual(profile["search_space_mode"], "ralph_execution_fee_cooldown_train_only")
+        self.assertFalse(profile["ralph_protective_reduce_search"])
+        self.assertFalse(profile["ralph_protective_reduce_fee_repair_search"])
+        self.assertTrue(profile["ralph_execution_fee_cooldown_search"])
+        self.assertFalse(profile["ralph_intent_reduce_cadence_search"])
+
+    def test_ralph_intent_reduce_cadence_grid_targets_strategy_reduce_confirmation(self) -> None:
+        grid = ralph_intent_reduce_cadence_param_grid()
+
+        self.assertEqual(grid["target_vol_4h"], [0.40, 0.50, 0.65])
+        self.assertEqual(grid["max_leverage"], [2.5, 3.0])
+        self.assertEqual(grid["intent_unconfirmed_flip_reduce_only"], [1.0])
+        self.assertEqual(grid["flip_flatten_only_enabled"], [1.0])
+        self.assertEqual(grid["profit_protect_reduce_enabled"], [1.0])
+        self.assertEqual(grid["profit_protect_cooldown_bars"], [0])
+        self.assertEqual(grid["intent_flat_reduce_step_pct"], [0.0, 0.15, 0.25, 0.35, 0.50])
+        self.assertEqual(grid["intent_flat_step_cadence_bars"], [0, 8, 12, 24])
+        self.assertEqual(grid["intent_same_direction_reduce_confirmation_bars"], [2, 4, 8, 12])
+        self.assertEqual(grid["intent_time_leverage_reduce_deadband_pct"], [0.40, 0.80, 1.00])
+        self.assertEqual(grid["target_delta_deadband_pct"], [0.04, 0.06, 0.08])
+
+    def test_search_space_profile_marks_ralph_intent_reduce_cadence_mode(self) -> None:
+        profile = search_space_profile(mode="ralph_intent_reduce_cadence_train_only")
+
+        self.assertEqual(profile["profile"], "ralph_intent_reduce_cadence_train_only")
+        self.assertEqual(profile["search_space_mode"], "ralph_intent_reduce_cadence_train_only")
+        self.assertFalse(profile["ralph_protective_reduce_search"])
+        self.assertFalse(profile["ralph_protective_reduce_fee_repair_search"])
+        self.assertFalse(profile["ralph_execution_fee_cooldown_search"])
+        self.assertTrue(profile["ralph_intent_reduce_cadence_search"])
+
+    def test_paulwei_balanced_tranche_grid_targets_strategy_tranche_intent(self) -> None:
+        grid = paulwei_balanced_tranche_param_grid()
+
+        self.assertEqual(grid["target_vol_4h"], [0.40, 0.50, 0.65])
+        self.assertEqual(grid["max_leverage"], [2.5, 3.0])
+        self.assertEqual(grid["intent_add_signal_threshold"], [0.30, 0.35, 0.40, 0.45, 0.50])
+        self.assertEqual(grid["intent_add_confirmation_bars"], [1, 2])
+        self.assertEqual(grid["intent_flip_confirmation_bars"], [12, 16, 24])
+        self.assertEqual(grid["intent_time_leverage_add_deadband_pct"], [0.10, 0.15, 0.25])
+        self.assertEqual(grid["intent_time_leverage_reduce_deadband_pct"], [0.60, 0.80, 1.00])
+        self.assertEqual(grid["intent_time_leverage_dip_accumulation_enabled"], [1.0])
+        self.assertEqual(grid["intent_flat_reduce_step_pct"], [0.15, 0.25, 0.35])
+        self.assertEqual(grid["intent_flat_step_cadence_bars"], [8, 12, 24])
+        self.assertEqual(grid["intent_same_direction_reduce_confirmation_bars"], [4, 8, 12])
+        self.assertEqual(grid["intent_unconfirmed_flip_reduce_only"], [0.0])
+        self.assertEqual(grid["flip_flatten_only_enabled"], [0.0])
+        self.assertEqual(grid["target_delta_deadband_pct"], [0.0])
+        self.assertEqual(grid["weak_signal_no_flip_enabled"], [0.0])
+        self.assertEqual(grid["profit_protect_reduce_enabled"], [0.0])
+
+    def test_search_space_profile_marks_paulwei_balanced_tranche_mode(self) -> None:
+        profile = search_space_profile(mode="paulwei_balanced_tranche_train_only")
+
+        self.assertEqual(profile["profile"], "paulwei_balanced_tranche_train_only")
+        self.assertEqual(profile["search_space_mode"], "paulwei_balanced_tranche_train_only")
+        self.assertFalse(profile["intent_churn_ablation_search"])
+        self.assertFalse(profile["ralph_intent_reduce_cadence_search"])
+        self.assertTrue(profile["paulwei_balanced_tranche_search"])
+
+    def test_build_signal_weight_overrides_maps_audited_state_factor_weights(self) -> None:
+        weights = build_signal_weight_overrides(
+            {
+                "w_binance_metrics_state": 0.18,
+                "w_onchain_activity": 0.07,
+                "w_alt_risk_context": 0.05,
+                "w_cross_asset_flow": 0.04,
+            }
+        )
+
+        self.assertEqual(weights["binance_metrics_state_signal"], 0.18)
+        self.assertEqual(weights["onchain_activity_signal"], 0.07)
+        self.assertEqual(weights["alt_risk_context_signal"], 0.05)
+        self.assertEqual(weights["cross_asset_flow_signal"], 0.04)
+
+    def test_build_plugin_config_overrides_enables_binance_factor_research_plugins(self) -> None:
+        overrides = build_plugin_config_overrides(
+            {
+                "w_binance_metrics_state": 0.18,
+                "binance_metrics_state_enabled": 1.0,
+                "binance_metrics_risk_sizer_enabled": 1.0,
+                "binance_metrics_risk_edge_threshold": 0.15,
+                "binance_metrics_risk_discount_floor": 0.60,
+                "exit_transition_risk": 0.90,
+            }
+        )
+
+        self.assertTrue(overrides["signals"]["binance_metrics_state_signal"]["enabled"])
+        self.assertEqual(overrides["signals"]["binance_metrics_state_signal"]["weight"], 0.18)
+        self.assertEqual(overrides["exits"]["regime_change_exit"]["transition_risk_threshold"], 0.90)
+        self.assertTrue(overrides["sizers"]["binance_metrics_risk_sizer"]["enabled"])
+        self.assertEqual(overrides["sizers"]["binance_metrics_risk_sizer"]["edge_threshold"], 0.15)
+        self.assertEqual(overrides["sizers"]["binance_metrics_risk_sizer"]["discount_floor"], 0.60)
+
+    def test_build_strategy_config_maps_intent_churn_controls(self) -> None:
+        config = build_strategy_config(
+            {
+                "range_time_decay_bars": 8,
+                "preserve_capital_time_decay_bars": 3,
+                "range_trailing_stop_atr_mult": 3.5,
+                "preserve_capital_trailing_stop_atr_mult": 2.0,
+                "trade_directional_confidence_floor": 0.60,
+                "bearish_override_confidence_floor": 0.65,
+                "exit_transition_risk": 0.90,
+                "intent_add_confirmation_bars": 4,
+                "min_bars_before_trail": 72,
+                "min_hours_before_trail": 20.0,
+                "intent_flat_reduce_step_pct": 0.50,
+                "intent_flat_step_cadence_bars": 8,
+                "intent_range_entry_confirmation_bars": 36,
+                "intent_range_reentry_cooldown_bars": 72,
+                "intent_bearish_override_confirmation_bars": 48,
+                "intent_time_leverage_hold_enabled": 1.0,
+                "intent_time_leverage_min_hold_bars": 24,
+                "intent_time_leverage_flip_signal_threshold": 0.65,
+                "intent_time_leverage_confidence_floor": 0.65,
+                "intent_time_leverage_transition_risk_floor": 0.45,
+                "intent_time_leverage_trailing_stop_atr_mult": 9.0,
+                "intent_time_leverage_trailing_exit_hold_enabled": 1.0,
+                "intent_time_leverage_trailing_exit_max_adverse_atr": 2.0,
+                "intent_same_direction_reduce_confirmation_bars": 4,
+                "intent_time_leverage_size_hysteresis_enabled": 1.0,
+                "intent_time_leverage_add_deadband_pct": 0.15,
+                "intent_time_leverage_reduce_deadband_pct": 0.30,
+                "intent_time_leverage_long_bias_enabled": 1.0,
+                "intent_time_leverage_long_bias_confidence_floor": 0.70,
+                "intent_time_leverage_long_bias_transition_ceiling": 0.35,
+                "intent_time_leverage_dip_accumulation_enabled": 1.0,
+                "intent_time_leverage_dip_min_adverse_atr": 1.25,
+                "intent_time_leverage_dip_max_adverse_atr": 3.0,
+                "intent_time_leverage_dip_add_pct": 0.15,
+                "intent_time_leverage_dip_max_leverage": 3.0,
+            }
+        )
+
+        self.assertIsNotNone(config.playbook_config)
+        self.assertIsNotNone(config.exit_config)
+        assert config.playbook_config is not None
+        assert config.exit_config is not None
+        self.assertEqual(config.playbook_config.range_time_decay_bars, 8)
+        self.assertEqual(config.playbook_config.preserve_capital_time_decay_bars, 3)
+        self.assertEqual(config.playbook_config.range_trailing_stop_atr_mult, 3.5)
+        self.assertEqual(config.playbook_config.preserve_capital_trailing_stop_atr_mult, 2.0)
+        self.assertEqual(config.playbook_config.trade_directional_confidence_floor, 0.60)
+        self.assertEqual(config.playbook_config.bearish_override_confidence_floor, 0.65)
+        self.assertEqual(config.exit_config.transition_risk_exit_threshold, 0.90)
+        self.assertEqual(config.intent_add_confirmation_bars, 4)
+        self.assertEqual(config.min_bars_before_trail, 72)
+        self.assertEqual(config.min_hours_before_trail, 20.0)
+        self.assertEqual(config.intent_flat_reduce_step_pct, 0.50)
+        self.assertEqual(config.intent_flat_step_cadence_bars, 8)
+        self.assertEqual(config.intent_range_entry_confirmation_bars, 36)
+        self.assertEqual(config.intent_range_reentry_cooldown_bars, 72)
+        self.assertEqual(config.intent_bearish_override_confirmation_bars, 48)
+        self.assertTrue(config.intent_time_leverage_hold_enabled)
+        self.assertEqual(config.intent_time_leverage_min_hold_bars, 24)
+        self.assertEqual(config.intent_time_leverage_flip_signal_threshold, 0.65)
+        self.assertEqual(config.intent_time_leverage_confidence_floor, 0.65)
+        self.assertEqual(config.intent_time_leverage_transition_risk_floor, 0.45)
+        self.assertEqual(config.intent_time_leverage_trailing_stop_atr_mult, 9.0)
+        self.assertTrue(config.intent_time_leverage_trailing_exit_hold_enabled)
+        self.assertEqual(config.intent_time_leverage_trailing_exit_max_adverse_atr, 2.0)
+        self.assertEqual(config.intent_same_direction_reduce_confirmation_bars, 4)
+        self.assertTrue(config.intent_time_leverage_size_hysteresis_enabled)
+        self.assertEqual(config.intent_time_leverage_add_deadband_pct, 0.15)
+        self.assertEqual(config.intent_time_leverage_reduce_deadband_pct, 0.30)
+        self.assertTrue(config.intent_time_leverage_long_bias_enabled)
+        self.assertEqual(config.intent_time_leverage_long_bias_confidence_floor, 0.70)
+        self.assertEqual(config.intent_time_leverage_long_bias_transition_ceiling, 0.35)
+        self.assertTrue(config.intent_time_leverage_dip_accumulation_enabled)
+        self.assertEqual(config.intent_time_leverage_dip_min_adverse_atr, 1.25)
+        self.assertEqual(config.intent_time_leverage_dip_max_adverse_atr, 3.0)
+        self.assertEqual(config.intent_time_leverage_dip_add_pct, 0.15)
+        self.assertEqual(config.intent_time_leverage_dip_max_leverage, 3.0)
+
+    def test_autoresearch_strategy_config_accepts_shared_intent_churn_config(self) -> None:
+        config = _build_strategy_config(
+            {
+                "range_time_decay_bars": 8,
+                "preserve_capital_time_decay_bars": 3,
+                "trade_directional_confidence_floor": 0.60,
+                "bearish_override_confidence_floor": 0.65,
+                "exit_transition_risk": 0.90,
+                "intent_add_confirmation_bars": 4,
+                "min_bars_before_trail": 24,
+                "min_hours_before_trail": 12.0,
+                "intent_flat_reduce_step_pct": 0.35,
+                "intent_flat_step_cadence_bars": 6,
+                "intent_range_entry_confirmation_bars": 18,
+                "intent_range_reentry_cooldown_bars": 36,
+                "intent_bearish_override_confirmation_bars": 24,
+                "intent_time_leverage_hold_enabled": 1.0,
+                "intent_time_leverage_min_hold_bars": 12,
+                "intent_time_leverage_trailing_stop_atr_mult": 6.0,
+                "intent_time_leverage_trailing_exit_hold_enabled": 1.0,
+                "intent_time_leverage_trailing_exit_max_adverse_atr": 1.5,
+                "intent_same_direction_reduce_confirmation_bars": 3,
+                "intent_time_leverage_size_hysteresis_enabled": 1.0,
+                "intent_time_leverage_reduce_deadband_pct": 0.20,
+                "intent_time_leverage_long_bias_enabled": 1.0,
+                "intent_time_leverage_dip_accumulation_enabled": 1.0,
+            },
+            execution_timeframe=Timeframe.TF_4H,
+        )
+
+        self.assertEqual(config.execution_timeframe, Timeframe.TF_4H)
+        self.assertEqual(config.intent_add_confirmation_bars, 4)
+        self.assertEqual(config.min_bars_before_trail, 24)
+        self.assertEqual(config.min_hours_before_trail, 12.0)
+        self.assertEqual(config.intent_flat_reduce_step_pct, 0.35)
+        self.assertEqual(config.intent_flat_step_cadence_bars, 6)
+        self.assertEqual(config.intent_range_entry_confirmation_bars, 18)
+        self.assertEqual(config.intent_range_reentry_cooldown_bars, 36)
+        self.assertEqual(config.intent_bearish_override_confirmation_bars, 24)
+        self.assertTrue(config.intent_time_leverage_hold_enabled)
+        self.assertEqual(config.intent_time_leverage_min_hold_bars, 12)
+        self.assertEqual(config.intent_time_leverage_trailing_stop_atr_mult, 6.0)
+        self.assertTrue(config.intent_time_leverage_trailing_exit_hold_enabled)
+        self.assertEqual(config.intent_time_leverage_trailing_exit_max_adverse_atr, 1.5)
+        self.assertEqual(config.intent_same_direction_reduce_confirmation_bars, 3)
+        self.assertTrue(config.intent_time_leverage_size_hysteresis_enabled)
+        self.assertEqual(config.intent_time_leverage_reduce_deadband_pct, 0.20)
+        self.assertTrue(config.intent_time_leverage_long_bias_enabled)
+        self.assertTrue(config.intent_time_leverage_dip_accumulation_enabled)
+        self.assertIsNotNone(config.playbook_config)
+        self.assertIsNotNone(config.exit_config)
+        assert config.playbook_config is not None
+        assert config.exit_config is not None
+        self.assertEqual(config.playbook_config.range_time_decay_bars, 8)
+        self.assertEqual(config.playbook_config.preserve_capital_time_decay_bars, 3)
+        self.assertEqual(config.playbook_config.trade_directional_confidence_floor, 0.60)
+        self.assertEqual(config.playbook_config.bearish_override_confidence_floor, 0.65)
+        self.assertEqual(config.exit_config.transition_risk_exit_threshold, 0.90)
 
     def test_defensive_anchored_grid_freezes_long_side_and_only_widens_inventory_path(self) -> None:
         grid = baseline_anchored_defensive_param_grid()
@@ -170,6 +680,388 @@ class FrameworkParamTests(unittest.TestCase):
         seeds = baseline_anchor_seed_trials()
         self.assertGreaterEqual(len(seeds), 1)
         self.assertEqual(seeds[0], baseline_anchor_params())
+
+    def test_baseline_anchor_seed_trials_include_execution_contract_safe_churn_repair_seeds(self) -> None:
+        seeds = baseline_anchor_seed_trials()
+        baseline = baseline_anchor_params()
+
+        self.assertIn(
+            {
+                **baseline,
+                "target_vol_4h": 0.80,
+                "max_leverage": 4.5,
+                "pyramid_initial_pct": 0.30,
+                "pyramid_add_pct": 0.30,
+                "pyramid_short_initial_pct": 0.15,
+                "pyramid_short_add_pct": 0.10,
+                "dca_spacing_atr": 1.75,
+                "dca_size_decay": 0.90,
+                "flip_min_confidence": 0.70,
+            },
+            seeds,
+        )
+        self.assertIn(
+            {
+                **baseline,
+                "target_vol_4h": 0.95,
+                "max_leverage": 4.5,
+                "pyramid_initial_pct": 0.30,
+                "pyramid_add_pct": 0.30,
+                "pyramid_short_initial_pct": 0.15,
+                "pyramid_short_add_pct": 0.10,
+                "pyramid_spacing_atr": 1.00,
+                "exit_unwind_pct": 0.35,
+                "dca_spacing_atr": 1.25,
+                "flip_min_confidence": 0.70,
+            },
+            seeds,
+        )
+
+    def test_baseline_anchor_seed_trials_satisfy_execution_contract(self) -> None:
+        for seed in baseline_anchor_seed_trials():
+            build_execution_config(seed)
+
+    def test_execution_inventory_rethink_seed_trials_satisfy_execution_contract(self) -> None:
+        seeds = execution_inventory_rethink_seed_trials()
+
+        self.assertGreaterEqual(len(seeds), 3)
+        self.assertTrue(any(seed["hostile_behavior_router_enabled"] == 1.0 for seed in seeds))
+        self.assertTrue(any(seed["squeeze_conditional_cooldown_enabled"] == 1.0 for seed in seeds))
+        for seed in seeds:
+            config = build_execution_config(seed)
+            self.assertEqual(config.pyramid_initial_pct, 0.30)
+            self.assertEqual(config.pyramid_add_pct, 0.30)
+            self.assertLessEqual(config.pyramid_short_add_pct, 0.12)
+            self.assertGreaterEqual(config.flip_min_confidence, 0.70)
+
+    def test_intent_churn_repair_seed_trials_satisfy_strategy_and_execution_contracts(self) -> None:
+        seeds = intent_churn_repair_seed_trials()
+
+        self.assertEqual(len(seeds), 3)
+        self.assertTrue(any(seed["range_time_decay_bars"] == 8 for seed in seeds))
+        self.assertTrue(any(seed["exit_transition_risk"] == 0.90 for seed in seeds))
+        self.assertTrue(any(seed["trade_directional_confidence_floor"] == 0.65 for seed in seeds))
+        for seed in seeds:
+            execution_config = build_execution_config(seed)
+            strategy_config = build_strategy_config(seed)
+            self.assertEqual(execution_config.pyramid_initial_pct, 0.30)
+            self.assertEqual(execution_config.pyramid_add_pct, 0.30)
+            self.assertLessEqual(execution_config.pyramid_short_add_pct, 0.12)
+            self.assertGreaterEqual(execution_config.flip_min_confidence, 0.70)
+            self.assertEqual(seed["liquidation_data_enabled"], 0.0)
+            self.assertEqual(seed["state_liquidation_overlay_enabled"], 0.0)
+            self.assertEqual(seed["liq_risk_guard_enabled"], 0.0)
+            self.assertIsNotNone(strategy_config.playbook_config)
+            self.assertIsNotNone(strategy_config.exit_config)
+
+    def test_intent_churn_ablation_seed_trials_start_with_mature_low_switch_anchor(self) -> None:
+        seeds = intent_churn_ablation_seed_trials()
+
+        self.assertGreaterEqual(len(seeds), 12)
+        self.assertEqual(seeds[0]["range_time_decay_bars"], 16)
+        self.assertEqual(seeds[0]["preserve_capital_time_decay_bars"], 6)
+        self.assertEqual(seeds[0]["trade_directional_confidence_floor"], 0.60)
+        self.assertEqual(seeds[0]["bearish_override_confidence_floor"], 0.60)
+        self.assertEqual(seeds[0]["target_vol_4h"], 0.40)
+        self.assertEqual(seeds[0]["max_leverage"], 2.5)
+        self.assertEqual(seeds[0]["pyramid_add_pct"], 0.30)
+        self.assertEqual(seeds[0]["pyramid_short_add_pct"], 0.10)
+        self.assertEqual(seeds[0]["range_trailing_stop_atr_mult"], 4.5)
+        self.assertEqual(seeds[0]["preserve_capital_trailing_stop_atr_mult"], 3.0)
+        self.assertEqual(seeds[0]["exit_transition_risk"], 0.90)
+        self.assertEqual(seeds[0]["direction_signal_threshold"], 0.45)
+        self.assertEqual(seeds[0]["intent_add_signal_threshold"], 0.50)
+        self.assertEqual(seeds[0]["intent_add_confirmation_bars"], 2)
+        self.assertEqual(seeds[0]["min_bars_before_trail"], 1)
+        self.assertEqual(seeds[0]["min_hours_before_trail"], 20.0)
+        self.assertEqual(seeds[0]["intent_entry_confirmation_bars"], 4)
+        self.assertEqual(seeds[0]["intent_flip_confirmation_bars"], 8)
+        self.assertEqual(seeds[0]["intent_flat_confirmation_bars"], 16)
+        self.assertEqual(seeds[0]["intent_range_entry_confirmation_bars"], 6)
+        self.assertEqual(seeds[0]["intent_range_reentry_cooldown_bars"], 24)
+        self.assertEqual(seeds[0]["intent_bearish_override_confirmation_bars"], 4)
+        self.assertEqual(seeds[0]["intent_bearish_override_chop_guard_enabled"], 0.0)
+        self.assertEqual(seeds[0]["intent_bearish_override_chop_max_confidence"], 0.50)
+        self.assertEqual(seeds[0]["intent_bearish_override_chop_min_transition_risk"], 0.55)
+        self.assertEqual(seeds[0]["intent_unconfirmed_flip_reduce_only"], 0.0)
+        self.assertEqual(seeds[0]["intent_time_leverage_hold_enabled"], 1.0)
+        self.assertEqual(seeds[0]["intent_time_leverage_min_hold_bars"], 240)
+        self.assertEqual(seeds[0]["intent_time_leverage_flip_signal_threshold"], 0.75)
+        self.assertEqual(seeds[0]["intent_time_leverage_confidence_floor"], 0.70)
+        self.assertEqual(seeds[0]["intent_time_leverage_trailing_stop_atr_mult"], 0.0)
+        self.assertEqual(seeds[0]["intent_time_leverage_size_hysteresis_enabled"], 1.0)
+        self.assertEqual(seeds[0]["intent_time_leverage_add_deadband_pct"], 0.40)
+        self.assertEqual(seeds[0]["intent_time_leverage_reduce_deadband_pct"], 1.00)
+        self.assertEqual(seeds[0]["intent_time_leverage_long_bias_enabled"], 1.0)
+        self.assertEqual(seeds[0]["intent_time_leverage_dip_accumulation_enabled"], 1.0)
+        self.assertEqual(seeds[1]["target_vol_4h"], 0.35)
+        self.assertEqual(seeds[1]["range_time_decay_bars"], 16)
+        self.assertEqual(seeds[1]["preserve_capital_time_decay_bars"], 6)
+        self.assertEqual(seeds[1]["range_trailing_stop_atr_mult"], 4.5)
+        self.assertEqual(seeds[1]["preserve_capital_trailing_stop_atr_mult"], 3.0)
+        self.assertEqual(seeds[1]["exit_transition_risk"], 0.90)
+        self.assertEqual(seeds[1]["intent_flip_confirmation_bars"], 12)
+        self.assertEqual(seeds[1]["intent_range_entry_confirmation_bars"], 8)
+        self.assertEqual(seeds[1]["intent_range_reentry_cooldown_bars"], 48)
+        self.assertEqual(seeds[1]["intent_bearish_override_confirmation_bars"], 8)
+        self.assertEqual(seeds[1]["intent_bearish_override_chop_guard_enabled"], 0.0)
+        self.assertEqual(seeds[1]["intent_bearish_override_chop_max_confidence"], 0.40)
+        self.assertEqual(seeds[1]["intent_bearish_override_chop_min_transition_risk"], 0.65)
+        self.assertEqual(seeds[1]["intent_unconfirmed_flip_reduce_only"], 0.0)
+        self.assertEqual(seeds[2]["target_vol_4h"], 0.30)
+        self.assertEqual(seeds[2]["max_leverage"], 2.0)
+        self.assertEqual(seeds[2]["intent_time_leverage_dip_max_leverage"], 2.0)
+        self.assertEqual(seeds[3]["direction_signal_threshold"], 0.55)
+        self.assertEqual(seeds[3]["intent_add_signal_threshold"], 0.60)
+        self.assertEqual(seeds[1]["intent_time_leverage_min_hold_bars"], 336)
+        self.assertTrue(any(seed["trade_directional_confidence_floor"] == 0.55 for seed in seeds))
+        self.assertTrue(any(seed["bearish_override_confidence_floor"] == 0.55 for seed in seeds))
+        self.assertTrue(any(seed["direction_signal_threshold"] == 0.35 for seed in seeds))
+        self.assertTrue(any(seed["direction_signal_threshold"] == 0.55 for seed in seeds))
+        self.assertTrue(any(seed["intent_add_signal_threshold"] == 0.55 for seed in seeds))
+        self.assertTrue(any(seed["intent_add_signal_threshold"] == 0.60 for seed in seeds))
+        self.assertTrue(any(seed["intent_add_confirmation_bars"] == 2 for seed in seeds))
+        self.assertTrue(any(seed["intent_entry_confirmation_bars"] == 4 for seed in seeds))
+        self.assertTrue(any(seed["intent_flip_confirmation_bars"] == 12 for seed in seeds))
+        self.assertTrue(any(seed["intent_flat_confirmation_bars"] == 24 for seed in seeds))
+        self.assertTrue(any(seed["intent_range_entry_confirmation_bars"] == 8 for seed in seeds))
+        self.assertTrue(any(seed["intent_range_reentry_cooldown_bars"] == 48 for seed in seeds))
+        self.assertTrue(any(seed["intent_bearish_override_confirmation_bars"] == 8 for seed in seeds))
+        self.assertTrue(all("intent_bearish_override_chop_guard_enabled" in seed for seed in seeds))
+        self.assertTrue(
+            any(
+                seed["target_vol_4h"] == 0.65
+                and seed["intent_flat_confirmation_bars"] == 4
+                and seed["intent_time_leverage_dip_add_pct"] == 0.10
+                for seed in seeds
+            )
+        )
+        self.assertTrue(any(seed["intent_time_leverage_hold_enabled"] == 1.0 for seed in seeds))
+        self.assertTrue(any(seed["intent_time_leverage_min_hold_bars"] == 336 for seed in seeds))
+        self.assertTrue(any(seed["intent_unconfirmed_flip_reduce_only"] == 0.0 for seed in seeds))
+        self.assertTrue(any(seed["intent_time_leverage_size_hysteresis_enabled"] == 1.0 for seed in seeds))
+        self.assertTrue(any(seed["intent_time_leverage_reduce_deadband_pct"] == 1.25 for seed in seeds))
+        self.assertTrue(any(seed["intent_time_leverage_long_bias_enabled"] == 1.0 for seed in seeds))
+        self.assertTrue(any(seed["intent_time_leverage_dip_accumulation_enabled"] == 1.0 for seed in seeds))
+        self.assertTrue(
+            any(
+                seed["intent_time_leverage_long_bias_enabled"] == 1.0
+                and seed["intent_time_leverage_dip_accumulation_enabled"] == 0.0
+                for seed in seeds[1:]
+            )
+        )
+        self.assertTrue(any(seed["intent_time_leverage_dip_add_pct"] == 0.15 for seed in seeds))
+        self.assertTrue(any(seed["target_vol_4h"] == 0.65 for seed in seeds))
+        self.assertTrue(any(seed["target_vol_4h"] == 0.30 for seed in seeds))
+        self.assertTrue(any(seed["target_vol_4h"] == 0.35 for seed in seeds))
+        self.assertTrue(any(seed["target_vol_4h"] == 0.45 for seed in seeds))
+        self.assertTrue(any(seed["max_leverage"] == 2.0 for seed in seeds))
+        self.assertTrue(any(seed["max_leverage"] == 3.0 for seed in seeds))
+        for seed in seeds:
+            build_execution_config(seed)
+            strategy_config = build_strategy_config(seed)
+            self.assertEqual(seed["hostile_behavior_router_enabled"], 0.0)
+            self.assertEqual(seed["liquidation_data_enabled"], 0.0)
+            self.assertIsNotNone(strategy_config.playbook_config)
+            self.assertIsNotNone(strategy_config.exit_config)
+            self.assertGreaterEqual(strategy_config.direction_signal_threshold, 0.15)
+            self.assertGreaterEqual(strategy_config.intent_add_signal_threshold, 0.0)
+            self.assertGreaterEqual(strategy_config.intent_add_confirmation_bars, 1)
+            self.assertGreaterEqual(strategy_config.intent_entry_confirmation_bars, 1)
+            self.assertGreaterEqual(strategy_config.intent_flip_confirmation_bars, 1)
+            self.assertGreaterEqual(strategy_config.intent_flat_confirmation_bars, 1)
+            self.assertGreaterEqual(strategy_config.intent_range_entry_confirmation_bars, 0)
+            self.assertGreaterEqual(strategy_config.intent_range_reentry_cooldown_bars, 0)
+            self.assertGreaterEqual(strategy_config.intent_bearish_override_confirmation_bars, 0)
+            self.assertGreaterEqual(strategy_config.intent_bearish_override_chop_max_confidence, 0.0)
+            self.assertGreaterEqual(strategy_config.intent_bearish_override_chop_min_transition_risk, 0.0)
+            self.assertGreaterEqual(strategy_config.intent_time_leverage_min_hold_bars, 0)
+            self.assertGreaterEqual(strategy_config.intent_time_leverage_reduce_deadband_pct, 0.0)
+            self.assertGreaterEqual(strategy_config.intent_time_leverage_long_bias_confidence_floor, 0.0)
+            self.assertGreaterEqual(strategy_config.intent_time_leverage_dip_add_pct, 0.0)
+
+    def test_binance_factor_weight_repair_seed_trials_include_neutral_and_active_weight_arms(self) -> None:
+        seeds = binance_factor_weight_repair_seed_trials()
+
+        self.assertGreaterEqual(len(seeds), 6)
+        self.assertTrue(any(seed["w_binance_metrics_state"] == 0.0 for seed in seeds))
+        self.assertTrue(any(seed["w_binance_metrics_state"] >= 0.18 for seed in seeds))
+        self.assertTrue(any(seed["binance_metrics_risk_sizer_enabled"] == 1.0 for seed in seeds))
+        self.assertTrue(any(seed["target_vol_4h"] == 0.50 for seed in seeds))
+        self.assertTrue(any(seed["max_leverage"] == 2.5 for seed in seeds))
+        self.assertTrue(any(seed["trade_directional_confidence_floor"] >= 0.75 for seed in seeds))
+        self.assertTrue(any(seed["target_delta_deadband_pct"] == 0.06 for seed in seeds))
+        self.assertTrue(any(seed["min_hold_bars_before_flip"] == 4 for seed in seeds))
+        self.assertTrue(any(seed["weak_signal_no_flip_enabled"] == 1.0 for seed in seeds))
+        self.assertTrue(any(seed["tiny_reverse_reduce_only_enabled"] == 1.0 for seed in seeds))
+        self.assertTrue(any(seed["entry_confidence_floor"] == 0.85 for seed in seeds))
+        self.assertTrue(any(seed["reverse_open_confidence_floor"] == 0.95 for seed in seeds))
+        self.assertTrue(all(seed.get("flip_flatten_only_enabled", 0.0) == 0.0 for seed in seeds[:4]))
+        self.assertTrue(all(seed["flip_reverse_open_scale"] == 1.0 for seed in seeds))
+        self.assertEqual(seeds[0]["target_delta_deadband_pct"], 0.0)
+        self.assertEqual(seeds[0]["target_reduce_deadband_pct"], 0.0)
+        self.assertEqual(seeds[0]["min_hold_bars_before_flip"], 0)
+        self.assertEqual(seeds[0]["entry_cooldown_bars"], 0)
+        self.assertEqual(seeds[0]["reverse_open_confidence_floor"], 0.0)
+        self.assertTrue(any(seed["range_entry_block_enabled"] == 1.0 for seed in seeds))
+        self.assertTrue(any(seed["degraded_entry_block_enabled"] == 1.0 for seed in seeds))
+        self.assertTrue(any(seed["loss_dca_confidence_floor"] == 0.85 for seed in seeds))
+        self.assertTrue(any(seed["loss_dca_range_block_enabled"] == 1.0 for seed in seeds))
+        self.assertTrue(any(seed["loss_dca_degraded_block_enabled"] == 1.0 for seed in seeds))
+        self.assertTrue(all(seed["profit_protect_reduce_enabled"] == 0.0 for seed in seeds))
+        for seed in seeds:
+            self.assertEqual(seed["liquidation_data_enabled"], 0.0)
+            weights = build_signal_weight_overrides(seed)
+            self.assertIn("binance_metrics_state_signal", weights)
+            execution_config = build_execution_config(seed)
+            self.assertIn(seed.get("flip_flatten_only_enabled", 0.0), {0.0, 1.0})
+            self.assertGreater(execution_config.flip_reverse_open_scale, 0.0)
+            self.assertGreaterEqual(execution_config.loss_flip_reverse_open_confidence_floor, 0.0)
+            self.assertGreaterEqual(execution_config.target_reduce_deadband_pct, 0.0)
+            self.assertGreaterEqual(execution_config.target_delta_deadband_pct, 0.0)
+            self.assertGreaterEqual(execution_config.entry_confidence_floor, 0.0)
+            self.assertGreaterEqual(execution_config.loss_dca_confidence_floor, 0.0)
+            self.assertGreater(execution_config.profit_protect_min_move_atr, 0.0)
+
+    def test_ralph_protective_reduce_seed_trials_force_reduce_first_execution(self) -> None:
+        seeds = ralph_protective_reduce_seed_trials()
+
+        self.assertEqual(len(seeds), 12)
+        self.assertEqual(seeds[0]["target_vol_4h"], 0.35)
+        self.assertEqual(seeds[0]["intent_flip_confirmation_bars"], 24)
+        self.assertEqual(seeds[0]["intent_flat_confirmation_bars"], 4)
+        self.assertEqual(seeds[0]["entry_cooldown_bars"], 4)
+        self.assertEqual(seeds[0]["profit_protect_unwind_pct"], 0.30)
+        self.assertTrue(any(seed["target_vol_4h"] == 0.65 for seed in seeds))
+        self.assertTrue(any(seed["intent_flat_confirmation_bars"] == 12 for seed in seeds))
+        for seed in seeds:
+            execution_config = build_execution_config(seed)
+            strategy_config = build_strategy_config(seed)
+            self.assertEqual(seed["intent_unconfirmed_flip_reduce_only"], 1.0)
+            self.assertEqual(seed["flip_flatten_only_enabled"], 1.0)
+            self.assertEqual(seed["target_reduce_deadband_pct"], 0.0)
+            self.assertEqual(seed["weak_signal_no_flip_enabled"], 1.0)
+            self.assertEqual(seed["tiny_reverse_reduce_only_enabled"], 1.0)
+            self.assertEqual(seed["range_entry_block_enabled"], 1.0)
+            self.assertEqual(seed["degraded_entry_block_enabled"], 1.0)
+            self.assertEqual(seed["loss_dca_range_block_enabled"], 1.0)
+            self.assertEqual(seed["loss_dca_degraded_block_enabled"], 1.0)
+            self.assertEqual(seed["profit_protect_reduce_enabled"], 1.0)
+            self.assertTrue(execution_config.flip_flatten_only_enabled)
+            self.assertTrue(execution_config.profit_protect_reduce_enabled)
+            self.assertTrue(strategy_config.intent_unconfirmed_flip_reduce_only)
+            self.assertGreaterEqual(strategy_config.intent_flip_confirmation_bars, 12)
+            self.assertGreaterEqual(strategy_config.intent_time_leverage_min_hold_bars, 240)
+
+    def test_ralph_protective_reduce_fee_repair_seed_trials_reduce_fee_pressure(self) -> None:
+        seeds = ralph_protective_reduce_fee_repair_seed_trials()
+
+        self.assertEqual(len(seeds), 12)
+        self.assertEqual(seeds[0]["max_leverage"], 2.0)
+        self.assertEqual(seeds[0]["exit_unwind_pct"], 0.55)
+        self.assertEqual(seeds[0]["profit_protect_min_move_atr"], 2.25)
+        self.assertEqual(seeds[0]["profit_protect_unwind_pct"], 0.50)
+        self.assertTrue(any(seed["target_vol_4h"] == 0.50 for seed in seeds))
+        for seed in seeds:
+            execution_config = build_execution_config(seed)
+            strategy_config = build_strategy_config(seed)
+            self.assertEqual(seed["intent_unconfirmed_flip_reduce_only"], 1.0)
+            self.assertEqual(seed["flip_flatten_only_enabled"], 1.0)
+            self.assertEqual(seed["target_reduce_deadband_pct"], 0.0)
+            self.assertEqual(seed["profit_protect_reduce_enabled"], 1.0)
+            self.assertGreaterEqual(seed["profit_protect_min_move_atr"], 1.25)
+            self.assertGreaterEqual(seed["profit_protect_unwind_pct"], 0.35)
+            self.assertGreaterEqual(seed["target_delta_deadband_pct"], 0.08)
+            self.assertGreaterEqual(seed["entry_cooldown_bars"], 4)
+            self.assertTrue(execution_config.flip_flatten_only_enabled)
+            self.assertTrue(execution_config.profit_protect_reduce_enabled)
+            self.assertTrue(strategy_config.intent_unconfirmed_flip_reduce_only)
+            self.assertGreaterEqual(strategy_config.intent_entry_confirmation_bars, 6)
+
+    def test_ralph_execution_fee_cooldown_seed_trials_keep_activity_while_throttling_reduces(self) -> None:
+        seeds = ralph_execution_fee_cooldown_seed_trials()
+
+        self.assertEqual(len(seeds), 12)
+        self.assertEqual(seeds[0]["profit_protect_cooldown_bars"], 6)
+        self.assertEqual(seeds[0]["profit_protect_unwind_pct"], 0.35)
+        self.assertTrue(any(seed["profit_protect_cooldown_bars"] == 24 for seed in seeds))
+        self.assertTrue(any(seed["target_vol_4h"] == 0.65 for seed in seeds))
+        for seed in seeds:
+            execution_config = build_execution_config(seed)
+            strategy_config = build_strategy_config(seed)
+            self.assertEqual(seed["intent_unconfirmed_flip_reduce_only"], 1.0)
+            self.assertEqual(seed["flip_flatten_only_enabled"], 1.0)
+            self.assertEqual(seed["profit_protect_reduce_enabled"], 1.0)
+            self.assertGreaterEqual(seed["profit_protect_cooldown_bars"], 6)
+            self.assertGreaterEqual(seed["profit_protect_unwind_pct"], 0.25)
+            self.assertGreaterEqual(seed["target_delta_deadband_pct"], 0.04)
+            self.assertTrue(execution_config.flip_flatten_only_enabled)
+            self.assertTrue(execution_config.profit_protect_reduce_enabled)
+            self.assertGreaterEqual(execution_config.profit_protect_cooldown_bars, 6)
+            self.assertTrue(strategy_config.intent_unconfirmed_flip_reduce_only)
+
+    def test_ralph_intent_reduce_cadence_seed_trials_confirm_strategy_reduces(self) -> None:
+        seeds = ralph_intent_reduce_cadence_seed_trials()
+
+        self.assertEqual(len(seeds), 12)
+        self.assertEqual(seeds[0]["intent_same_direction_reduce_confirmation_bars"], 4)
+        self.assertEqual(seeds[0]["intent_flat_reduce_step_pct"], 0.0)
+        self.assertEqual(seeds[0]["intent_flat_step_cadence_bars"], 0)
+        self.assertEqual(seeds[0]["profit_protect_cooldown_bars"], 0)
+        self.assertTrue(any(seed["intent_same_direction_reduce_confirmation_bars"] == 12 for seed in seeds))
+        self.assertTrue(any(seed["intent_flat_reduce_step_pct"] == 0.35 for seed in seeds))
+        self.assertTrue(any(seed["target_vol_4h"] == 0.65 for seed in seeds))
+        for seed in seeds:
+            execution_config = build_execution_config(seed)
+            strategy_config = build_strategy_config(seed)
+            self.assertEqual(seed["intent_unconfirmed_flip_reduce_only"], 1.0)
+            self.assertEqual(seed["flip_flatten_only_enabled"], 1.0)
+            self.assertEqual(seed["profit_protect_reduce_enabled"], 1.0)
+            self.assertEqual(seed["profit_protect_cooldown_bars"], 0)
+            self.assertGreaterEqual(seed["intent_flat_reduce_step_pct"], 0.0)
+            self.assertGreaterEqual(seed["intent_flat_step_cadence_bars"], 0)
+            self.assertGreaterEqual(seed["intent_same_direction_reduce_confirmation_bars"], 2)
+            self.assertGreaterEqual(seed["target_delta_deadband_pct"], 0.04)
+            self.assertTrue(execution_config.flip_flatten_only_enabled)
+            self.assertTrue(execution_config.profit_protect_reduce_enabled)
+            self.assertEqual(execution_config.profit_protect_cooldown_bars, 0)
+            self.assertTrue(strategy_config.intent_unconfirmed_flip_reduce_only)
+            self.assertGreaterEqual(strategy_config.intent_flat_reduce_step_pct, 0.0)
+            self.assertGreaterEqual(strategy_config.intent_flat_step_cadence_bars, 0)
+            self.assertGreaterEqual(strategy_config.intent_same_direction_reduce_confirmation_bars, 2)
+
+    def test_paulwei_balanced_tranche_seed_trials_keep_execution_neutral(self) -> None:
+        seeds = paulwei_balanced_tranche_seed_trials()
+
+        self.assertEqual(len(seeds), 12)
+        self.assertEqual(seeds[0]["target_vol_4h"], 0.65)
+        self.assertEqual(seeds[0]["intent_add_signal_threshold"], 0.35)
+        self.assertEqual(seeds[0]["intent_flat_reduce_step_pct"], 0.15)
+        self.assertEqual(seeds[0]["intent_flat_step_cadence_bars"], 8)
+        self.assertTrue(any(seed["intent_flat_reduce_step_pct"] == 0.35 for seed in seeds))
+        self.assertTrue(any(seed["intent_same_direction_reduce_confirmation_bars"] == 12 for seed in seeds))
+        self.assertTrue(any(seed["intent_time_leverage_min_hold_bars"] == 480 for seed in seeds))
+        self.assertTrue(any(seed["intent_add_signal_threshold"] == 0.30 for seed in seeds))
+        for seed in seeds:
+            execution_config = build_execution_config(seed)
+            strategy_config = build_strategy_config(seed)
+            self.assertEqual(seed["intent_unconfirmed_flip_reduce_only"], 0.0)
+            self.assertEqual(seed["intent_time_leverage_dip_accumulation_enabled"], 1.0)
+            self.assertEqual(seed["flip_flatten_only_enabled"], 0.0)
+            self.assertEqual(seed["target_delta_deadband_pct"], 0.0)
+            self.assertEqual(seed["target_reduce_deadband_pct"], 0.0)
+            self.assertEqual(seed["weak_signal_no_flip_enabled"], 0.0)
+            self.assertEqual(seed["tiny_reverse_reduce_only_enabled"], 0.0)
+            self.assertEqual(seed["profit_protect_reduce_enabled"], 0.0)
+            self.assertFalse(execution_config.flip_flatten_only_enabled)
+            self.assertFalse(execution_config.profit_protect_reduce_enabled)
+            self.assertFalse(strategy_config.intent_unconfirmed_flip_reduce_only)
+            self.assertTrue(strategy_config.intent_time_leverage_dip_accumulation_enabled)
+            self.assertLessEqual(strategy_config.intent_add_signal_threshold, 0.45)
+            self.assertLessEqual(strategy_config.intent_time_leverage_add_deadband_pct, 0.25)
+            self.assertGreaterEqual(strategy_config.intent_flat_reduce_step_pct, 0.15)
+            self.assertGreaterEqual(strategy_config.intent_flat_step_cadence_bars, 8)
+            self.assertGreaterEqual(strategy_config.intent_same_direction_reduce_confirmation_bars, 4)
 
 
 class FrameworkEvaluatorTests(unittest.TestCase):
@@ -354,6 +1246,23 @@ class FrameworkEvaluatorTests(unittest.TestCase):
                         "exclude_from_promote_truth": True,
                         "blocked_by": None,
                     }
+                if name == "deribit_large_option_flow":
+                    return {
+                        "tier_decision": "tier2_research_candidate",
+                        "time_granularity": "4h",
+                        "research_ready": True,
+                        "use_for_research_only": True,
+                        "exclude_from_promote_truth": True,
+                        "strategy_wiring_allowed": False,
+                        "risk_overlay_wiring_allowed": False,
+                        "direction_vote_allowed": False,
+                        "intent_aggregation_allowed": False,
+                        "position_sizing_allowed": False,
+                        "allowed_in_training_observation": True,
+                        "allowed_in_candidate_explanation": True,
+                        "feature_freeze_candidate": True,
+                        "blocked_by": None,
+                    }
                 return {}
 
             def _independence(name: str):
@@ -363,6 +1272,18 @@ class FrameworkEvaluatorTests(unittest.TestCase):
                         "use_for_research_only": True,
                         "blocked_by": None,
                         "max_abs_correlation": 0.41,
+                    }
+                if name == "deribit_large_option_flow":
+                    return {
+                        "allowed_in_state_features": False,
+                        "allowed_in_pressure_context": True,
+                        "allowed_in_candidate_explanation": True,
+                        "direction_vote_allowed": False,
+                        "intent_aggregation_allowed": False,
+                        "risk_overlay_wiring_allowed": False,
+                        "use_for_research_only": True,
+                        "blocked_by": None,
+                        "max_abs_correlation": 0.32,
                     }
                 return {}
 
@@ -388,16 +1309,15 @@ class FrameworkEvaluatorTests(unittest.TestCase):
                         "candidate_source_type": "spot",
                         "candidate_name": "binance_spot_2017_plus",
                         "ready": False,
-                        "layered_train_enabled": True,
-                        "historical_extension_mode": "layered_spot_then_futures",
-                        "formal_train_truth": True,
+                        "layered_train_enabled": False,
+                        "historical_extension_mode": "spot_context_only",
+                        "formal_train_truth": False,
                         "train_truth_legs": [
-                            {"name": "pre_2020_spot_train", "source": "spot"},
                             {"name": "post_2020_futures_train", "source": "futures"},
                         ],
                         "dev_truth_source": "futures_only",
                         "test_truth_source": "futures_only",
-                        "mixed_era_declared": True,
+                        "mixed_era_declared": False,
                         "full_unified_truth": False,
                         "blocked_by": ["spot_perp_truth_boundary"],
                         "spot_train_leg_blocked_by": [],
@@ -427,6 +1347,21 @@ class FrameworkEvaluatorTests(unittest.TestCase):
         self.assertTrue(state_sources["mvrv_independence_review_present"])
         self.assertEqual(state_sources["mvrv_tier_decision"], "tier2_research_only_feature")
         self.assertEqual(state_sources["mvrv_time_granularity"], "1d")
+        self.assertTrue(state_sources["deribit_large_option_flow_research_candidate"])
+        self.assertFalse(state_sources["deribit_large_option_flow_in_state_features"])
+        self.assertEqual(state_sources["deribit_large_option_flow_tier_decision"], "tier2_research_candidate")
+        self.assertEqual(state_sources["deribit_large_option_flow_time_granularity"], "4h")
+        self.assertFalse(state_sources["deribit_large_option_flow_strategy_wiring_allowed"])
+        self.assertFalse(state_sources["deribit_large_option_flow_risk_overlay_wiring_allowed"])
+        self.assertFalse(state_sources["deribit_large_option_flow_direction_vote_allowed"])
+        self.assertFalse(state_sources["deribit_large_option_flow_intent_aggregation_allowed"])
+        self.assertFalse(state_sources["deribit_large_option_flow_position_sizing_allowed"])
+        self.assertTrue(state_sources["deribit_large_option_flow_training_observation_allowed"])
+        self.assertTrue(state_sources["deribit_large_option_flow_candidate_explanation_allowed"])
+        self.assertTrue(state_sources["deribit_large_option_flow_independence_review_present"])
+        self.assertFalse(state_sources["deribit_large_option_flow_independence_allowed"])
+        self.assertTrue(state_sources["deribit_large_option_flow_pressure_context_allowed"])
+        self.assertEqual(state_sources["deribit_large_option_flow_max_abs_correlation"], 0.32)
         self.assertFalse(signal_contract["audit_present"])
         self.assertEqual(signal_contract["blocked_by"], "active_signal_independence_missing")
         historical_contract = evaluator.training_input_contract["historical_extension_candidate_contract"]
@@ -434,10 +1369,10 @@ class FrameworkEvaluatorTests(unittest.TestCase):
         self.assertEqual(historical_contract["source"], "spot")
         self.assertFalse(historical_contract["ready"])
         self.assertIn("spot_perp_truth_boundary", historical_contract["blocked_by"])
-        self.assertTrue(evaluator.training_input_contract["historical_extension_train_enabled"])
-        self.assertEqual(evaluator.training_input_contract["historical_extension_mode"], "layered_spot_then_futures")
-        self.assertTrue(evaluator.training_input_contract["mixed_era_declared"])
-        self.assertEqual(len(evaluator.training_input_contract["train_truth_legs"]), 2)
+        self.assertFalse(evaluator.training_input_contract["historical_extension_train_enabled"])
+        self.assertEqual(evaluator.training_input_contract["historical_extension_mode"], "spot_context_only")
+        self.assertFalse(evaluator.training_input_contract["mixed_era_declared"])
+        self.assertEqual(len(evaluator.training_input_contract["train_truth_legs"]), 1)
 
     def test_liquidation_candidate_is_blocked_when_history_missing(self) -> None:
         fake_summary = CandidateSummary(
@@ -746,7 +1681,7 @@ class SearchReportSerializationTests(unittest.TestCase):
 
     def test_stage1_fail_fast_rejects_fragile_hostile_candidate(self) -> None:
         baseline = CandidateSummary(
-            variant="paulwei_baseline",
+            variant="current",
             robust_score=1.0,
             selection_split="dev",
             dev_sharpe=1.0,
@@ -859,6 +1794,83 @@ class SearchReportSerializationTests(unittest.TestCase):
             _stage1_fail_fast_reason(fragile, baseline=baseline, current=current),
             "weak_window_2023_08_fail_fast",
         )
+
+    def test_stage1_fail_fast_rejects_catastrophic_dev_fee_drag(self) -> None:
+        baseline = CandidateSummary(
+            variant="paulwei_baseline",
+            robust_score=1.0,
+            selection_split="dev",
+            dev_sharpe=1.0,
+            dev_pnl=100.0,
+            dev_drawdown=0.10,
+            avg_dev_sharpe=1.0,
+            avg_dev_ratio=1.0,
+            worst_dev_sharpe=0.4,
+            weak_window_sharpe=0.5,
+            negative_dev_worst_windows=0,
+            promotion_candidate=True,
+            profit_factor=1.3,
+            turnover_per_day=1000.0,
+            fee_drag_pct=0.01,
+        )
+        current = CandidateSummary(
+            variant="current",
+            robust_score=1.0,
+            selection_split="dev",
+            dev_sharpe=1.0,
+            dev_pnl=100.0,
+            dev_drawdown=0.10,
+            avg_dev_sharpe=1.0,
+            avg_dev_ratio=1.0,
+            worst_dev_sharpe=0.5,
+            weak_window_sharpe=0.55,
+            negative_dev_worst_windows=0,
+            promotion_candidate=True,
+            profit_factor=1.3,
+            turnover_per_day=1000.0,
+            fee_drag_pct=0.01,
+        )
+        expensive = CandidateSummary(
+            variant="optuna_tuned",
+            robust_score=1.0,
+            selection_split="dev",
+            dev_sharpe=2.0,
+            dev_pnl=120.0,
+            dev_drawdown=0.08,
+            avg_dev_sharpe=1.2,
+            avg_dev_ratio=1.0,
+            worst_dev_sharpe=0.6,
+            weak_window_sharpe=0.8,
+            negative_dev_worst_windows=0,
+            promotion_candidate=True,
+            profit_factor=1.5,
+            turnover_per_day=1200.0,
+            fee_drag_pct=0.08,
+        )
+
+        self.assertEqual(
+            _stage1_fail_fast_reason(expensive, baseline=baseline, current=current),
+            "dev_fee_drag_fail_fast",
+        )
+
+        close_miss = CandidateSummary(
+            variant="optuna_tuned",
+            robust_score=1.0,
+            selection_split="dev",
+            dev_sharpe=2.0,
+            dev_pnl=120.0,
+            dev_drawdown=0.08,
+            avg_dev_sharpe=1.2,
+            avg_dev_ratio=1.0,
+            worst_dev_sharpe=0.6,
+            weak_window_sharpe=0.8,
+            negative_dev_worst_windows=0,
+            promotion_candidate=True,
+            profit_factor=1.5,
+            turnover_per_day=1200.0,
+            fee_drag_pct=0.057,
+        )
+        self.assertIsNone(_stage1_fail_fast_reason(close_miss, baseline=baseline, current=current))
 
     def test_post_smoke_scenario_classifies_hostile_window_failure(self) -> None:
         report = SearchReport(
@@ -1180,6 +2192,123 @@ class SearchReportSerializationTests(unittest.TestCase):
         self.assertIn("deribit_observation_not_ready", assessment["warnings"])
         self.assertNotIn("deribit_observation_not_ready", assessment["blockers"])
 
+    def test_dev_fee_stability_gate_blocks_train_dev_fee_mismatch(self) -> None:
+        best_params = {"target_vol_4h": 0.35, "intent_time_leverage_min_hold_bars": 336.0}
+        report = SearchReport(
+            created_at="2026-05-05T00:00:00+00:00",
+            symbol="BTCUSDT",
+            readiness={"promotion_ready": False, "blocked_by": "not_promotion_ready"},
+            deribit_status={"enabled": True, "observation_ready": True, "research_ready": True},
+            split_contract=split_summary_json(default_btc_split_spec()),
+            training_window_coverage={},
+            training_input_contract={
+                "execution_framework": {
+                    "five_min_direct_execution_enabled": True,
+                    "five_min_feature_aggregation_enabled": True,
+                    "one_hour_bars_available": True,
+                    "four_hour_bars_available": True,
+                },
+                "state_feature_sources": {
+                    "hyperliquid_in_state_features": True,
+                    "etf_flow_in_state_features": True,
+                    "mvrv_in_state_features": True,
+                    "deribit_block_flow_in_state_features": True,
+                },
+                "signal_independence_contract": {
+                    "audit_present": True,
+                    "direction_layer_clean": True,
+                    "state_layer_clean": True,
+                    "blocked_by": None,
+                },
+            },
+            search_status={
+                "search_space_profile": {
+                    "direction_weight_policy": {
+                        "correlation_constrained": True,
+                        "capped_direction_signal": "crowding_signal",
+                        "demoted_signal": "funding_alpha_signal",
+                        "demoted_signal_role": "state",
+                    }
+                },
+                "train_candidate_diagnostics": {
+                    "top_train_trial_diagnostics": [
+                        {
+                            "rank": 1,
+                            "params": best_params,
+                            "metrics": {"fee_drag_pct": 0.011215, "sharpe": 1.7271},
+                        }
+                    ]
+                },
+            },
+            current=CandidateSummary(
+                variant="current",
+                robust_score=1.0,
+                selection_split="dev",
+                dev_sharpe=1.0,
+                dev_pnl=10.0,
+                dev_drawdown=0.1,
+                avg_dev_sharpe=1.0,
+                avg_dev_ratio=1.0,
+                worst_dev_sharpe=0.5,
+                weak_window_sharpe=0.2,
+                negative_dev_worst_windows=0,
+                promotion_candidate=True,
+            ),
+            paulwei_baseline=CandidateSummary(
+                variant="paulwei_baseline",
+                robust_score=1.0,
+                selection_split="dev",
+                dev_sharpe=1.0,
+                dev_pnl=10.0,
+                dev_drawdown=0.1,
+                avg_dev_sharpe=1.0,
+                avg_dev_ratio=1.0,
+                worst_dev_sharpe=0.5,
+                weak_window_sharpe=0.2,
+                negative_dev_worst_windows=0,
+                promotion_candidate=True,
+            ),
+            optuna_best=CandidateSummary(
+                variant="optuna_tuned",
+                robust_score=1.2,
+                selection_split="dev",
+                dev_sharpe=4.5647,
+                dev_pnl=24_807.49,
+                dev_drawdown=0.058481,
+                avg_dev_sharpe=9.6997,
+                avg_dev_ratio=1.0,
+                worst_dev_sharpe=4.5647,
+                weak_window_sharpe=10.1243,
+                negative_dev_worst_windows=0,
+                promotion_candidate=True,
+                turnover_per_day=5141.09,
+                fee_drag_pct=0.057135,
+            ),
+            rl_best=None,
+            best_variant="optuna_tuned",
+            best_score=1.2,
+            best_params=best_params,
+            comparison_payload={
+                "window_reports": [
+                    {"variant": "optuna_tuned", "window_label": "dev", "metrics": {"fee_drag_pct": 0.057135}},
+                    {"variant": "optuna_tuned", "window_label": "2023-08", "metrics": {"fee_drag_pct": 0.0726}},
+                ]
+            },
+            smoke_completed=True,
+        )
+
+        fee_summary = _dev_fee_stability_summary(report)
+        assessment = _assess_full_training_readiness(report, smoke_completed=True)
+        scenario = _classify_post_smoke_scenario(report, full_training_assessment=assessment)
+
+        self.assertFalse(fee_summary["passed"])
+        self.assertIn("dev_fee_drag_cap_exceeded", fee_summary["failures"])
+        self.assertIn("dev_train_fee_drag_mismatch", fee_summary["failures"])
+        self.assertIn("hostile_window_fee_drag_cap_exceeded", fee_summary["failures"])
+        self.assertFalse(assessment["ready"])
+        self.assertIn("dev_train_fee_drag_mismatch", assessment["blockers"])
+        self.assertEqual(scenario["scenario"], "scenario_b_fee_efficiency_failure")
+
     def test_classify_post_smoke_scenario_no_tuned_candidate_is_not_data_gap(self) -> None:
         report = SearchReport(
             created_at="2026-04-10T00:00:00+00:00",
@@ -1292,15 +2421,14 @@ class SearchReportSerializationTests(unittest.TestCase):
             training_window_coverage={"fast_windows": ["overall_recent"]},
             training_input_contract={
                 "primary_truth_source": "binance",
-                "historical_extension_train_enabled": True,
-                "historical_extension_mode": "layered_spot_then_futures",
+                "historical_extension_train_enabled": False,
+                "historical_extension_mode": "spot_context_only",
                 "train_truth_legs": [
-                    {"name": "pre_2020_spot_train", "source": "spot"},
                     {"name": "post_2020_futures_train", "source": "futures"},
                 ],
                 "dev_truth_source": "futures_only",
                 "test_truth_source": "futures_only",
-                "mixed_era_declared": True,
+                "mixed_era_declared": False,
                 "historical_extension_candidate_contract": {
                     "full_unified_truth": False,
                     "spot_train_leg_blocked_by": ["execution_parity_not_verified_pre_2020"],
@@ -1350,11 +2478,10 @@ class SearchReportSerializationTests(unittest.TestCase):
                 "train_candidate_diagnostics": {"raw_trial_count": 5, "raw_nonzero_trade_trials": 1},
                 "empty_shortlist_reason": None,
                 "no_tuned_candidate_reason": "proxy_penalized_out",
-                "historical_extension_train_enabled": True,
-                "historical_extension_mode": "layered_spot_then_futures",
-                "mixed_era_declared": True,
+                "historical_extension_train_enabled": False,
+                "historical_extension_mode": "spot_context_only",
+                "mixed_era_declared": False,
                 "train_truth_legs": [
-                    {"name": "pre_2020_spot_train", "source": "spot"},
                     {"name": "post_2020_futures_train", "source": "futures"},
                 ],
                 "spot_train_leg_blocked_by": ["execution_parity_not_verified_pre_2020"],
@@ -1397,9 +2524,9 @@ class SearchReportSerializationTests(unittest.TestCase):
         self.assertEqual(payload["train_candidate_diagnostics"]["raw_trial_count"], 5)
         self.assertIsNone(payload["empty_shortlist_reason"])
         self.assertEqual(payload["no_tuned_candidate_reason"], "proxy_penalized_out")
-        self.assertTrue(payload["historical_extension_train_enabled"])
-        self.assertEqual(payload["historical_extension_mode"], "layered_spot_then_futures")
-        self.assertTrue(payload["mixed_era_declared"])
+        self.assertFalse(payload["historical_extension_train_enabled"])
+        self.assertEqual(payload["historical_extension_mode"], "spot_context_only")
+        self.assertFalse(payload["mixed_era_declared"])
         self.assertFalse(payload["full_unified_truth"])
         self.assertIsNone(payload["optuna_tuned"])
         self.assertIsNone(payload["rl_tuned"])
@@ -1426,7 +2553,7 @@ class SearchReportSerializationTests(unittest.TestCase):
         self.assertIn("hostile_fragility_penalty", payload["final_verdict"])
         self.assertEqual(payload["final_verdict"]["etf_flow_source"], "bitbo_etf_flows")
         self.assertEqual(payload["campaign_execution_contract"]["etf_flow_source_confidence"], "medium")
-        self.assertEqual(payload["final_verdict"]["historical_extension_mode"], "layered_spot_then_futures")
+        self.assertEqual(payload["final_verdict"]["historical_extension_mode"], "spot_context_only")
         self.assertFalse(payload["final_verdict"]["full_unified_truth"])
         self.assertEqual(payload["full_training_assessment"]["decision"], "defer_handoff")
         self.assertIn("handoff_blockers", payload)
@@ -1478,37 +2605,46 @@ class SearchReportSerializationTests(unittest.TestCase):
                 "metrics": {
                     "sharpe": 2.0,
                     "score": 2.0,
+                    "hostile_proxy_score": 0.5,
                     "train_bucket_metrics": {"train_late_cycle_recovery_2023_11": {"sharpe": 0.1}},
                 },
                 "baseline_train_metrics": {
                     "train_bucket_metrics": {"train_late_cycle_recovery_2023_11": {"sharpe": 0.4}},
                 },
             },
-            {
-                "params": {"w_momentum": 0.45},
-                "metrics": {
-                    "sharpe": 1.5,
-                    "score": 1.5,
-                    "train_bucket_metrics": {"train_late_cycle_recovery_2023_11": {"sharpe": 0.42}},
-                },
-                "baseline_train_metrics": {
-                    "train_bucket_metrics": {"train_late_cycle_recovery_2023_11": {"sharpe": 0.4}},
-                },
-            },
         ]
+        baseline = CandidateSummary(
+            variant="paulwei_baseline",
+            robust_score=1.0,
+            selection_split="dev",
+            dev_sharpe=1.0,
+            dev_pnl=1.0,
+            dev_drawdown=0.1,
+            avg_dev_sharpe=1.0,
+            avg_dev_ratio=1.0,
+            worst_dev_sharpe=0.1,
+            weak_window_sharpe=0.1,
+            negative_dev_worst_windows=0,
+            promotion_candidate=False,
+        )
         with (
             patch(
                 "zenquant.research.framework_search.run_search_stage",
                 return_value=FakeSweep(total_combinations=2, results=[], top_n=top_n, runtime_s=0.1),
             ),
+            patch.object(FrameworkEvaluator, "_get_current_fast_summary", return_value=baseline) as current_summary,
+            patch.object(FrameworkEvaluator, "_get_paulwei_fast_summary", return_value=baseline) as paulwei_summary,
             patch.object(FrameworkEvaluator, "_evaluate_variant") as evaluate_variant,
         ):
             evaluator = FrameworkEvaluator(HistoricalBacktestConfig(), split_spec=default_btc_split_spec())
             best, ranked, diagnostics = run_optuna_search(evaluator, n_trials=5)
 
+        current_summary.assert_not_called()
+        paulwei_summary.assert_not_called()
         evaluate_variant.assert_not_called()
-        self.assertEqual(best, {"w_momentum": 0.45})
-        self.assertEqual(len(ranked), 1)
+        self.assertIsNone(best)
+        self.assertEqual(ranked, [])
+        self.assertEqual(diagnostics["empty_shortlist_reason"], "stage1_fail_fast_rejected")
         self.assertEqual(
             diagnostics["train_candidate_diagnostics"]["stage1_fail_fast_reasons"],
             {"regime_objective_train_bucket_fail_fast": 1},
@@ -1540,6 +2676,7 @@ class SearchReportSerializationTests(unittest.TestCase):
             run_optuna_search(
                 evaluator,
                 n_trials=5,
+                search_execution_timeframe=Timeframe.TF_5M,
                 stage1_parallel_mode="cpu_parallel",
                 stage1_max_workers=6,
                 stage1_target_inflight=6,
@@ -1551,8 +2688,39 @@ class SearchReportSerializationTests(unittest.TestCase):
         self.assertEqual(config.stage1_max_workers, 6)
         self.assertEqual(config.stage1_target_inflight, 6)
         self.assertEqual(config.stage1_batch_size, 4)
+        self.assertEqual(config.min_completed_trials, 5)
+        self.assertEqual(config.early_stop_fee_drag_buffer, 2.0)
 
-    def test_run_optuna_search_applies_spot_train_leg_weakest_leg_constraint(self) -> None:
+    def test_run_optuna_search_tightens_fee_drag_stop_for_fee_repair_modes(self) -> None:
+        @dataclass
+        class FakeSweep:
+            total_combinations: int
+            results: list[dict]
+            top_n: list[dict]
+            runtime_s: float
+
+        with patch(
+            "zenquant.research.framework_search.run_search_stage",
+            return_value=FakeSweep(
+                total_combinations=1,
+                results=[],
+                top_n=[{"params": {"w_momentum": 0.45}, "metrics": {"sharpe": 1.2, "score": 1.2}}],
+                runtime_s=0.1,
+            ),
+        ) as run_stage:
+            evaluator = FrameworkEvaluator(
+                HistoricalBacktestConfig(),
+                split_spec=default_btc_split_spec(),
+                search_space_mode="intent_churn_ablation_train_only",
+            )
+            run_optuna_search(evaluator, n_trials=5)
+
+        config = run_stage.call_args.args[0]
+        self.assertEqual(config.early_stop_fee_drag_buffer, 1.25)
+        self.assertFalse(config.enable_early_stop)
+        self.assertIsNone(config.trial_runtime_budget_s)
+
+    def test_run_optuna_search_treats_pre_2020_spot_as_context_only(self) -> None:
         @dataclass
         class FakeSweep:
             total_combinations: int
@@ -1563,11 +2731,6 @@ class SearchReportSerializationTests(unittest.TestCase):
             empty_shortlist_reason: str | None = None
             budget_mode: str = "trial_count_primary"
             stop_reason: str = "trial_budget_reached"
-
-        snapshots = [
-            BacktestSnapshot(sharpe=0.1, net_pnl=10.0, max_drawdown=0.2, win_rate=0.4),
-            BacktestSnapshot(sharpe=1.5, net_pnl=20.0, max_drawdown=0.1, win_rate=0.6),
-        ]
 
         with (
             patch(
@@ -1590,41 +2753,36 @@ class SearchReportSerializationTests(unittest.TestCase):
                 ),
             ),
             patch(
-                "zenquant.research.framework_search._spot_train_leg_snapshot",
-                side_effect=snapshots,
-            ),
-            patch(
                 "zenquant.research.framework_search.load_historical_extension_candidate_contract",
                 return_value={
                     "candidate_source_type": "spot",
                     "candidate_name": "binance_spot_2017_plus",
                     "ready": True,
-                    "layered_train_enabled": True,
-                    "historical_extension_mode": "layered_spot_then_futures",
-                    "formal_train_truth": True,
+                    "layered_train_enabled": False,
+                    "historical_extension_mode": "spot_context_only",
+                    "formal_train_truth": False,
                     "train_truth_legs": [
-                        {"name": "pre_2020_spot_train", "source": "spot"},
                         {"name": "post_2020_futures_train", "source": "futures"},
                     ],
                     "dev_truth_source": "futures_only",
                     "test_truth_source": "futures_only",
-                    "mixed_era_declared": True,
+                    "mixed_era_declared": False,
                     "full_unified_truth": False,
                     "blocked_by": ["spot_perp_truth_boundary"],
-                    "spot_train_leg_blocked_by": [],
+                    "spot_train_leg_blocked_by": ["spot_context_only_not_formal_train_truth"],
                     "candidate_window_start": "2017-08-17T00:00:00+00:00",
                     "candidate_window_end": "2026-04-17T00:00:00+00:00",
-                    "source_boundary": "layered spot train leg",
+                    "source_boundary": "spot context only",
                 },
             ),
         ):
             evaluator = FrameworkEvaluator(HistoricalBacktestConfig(), split_spec=default_btc_split_spec())
             best, ranked, diagnostics = run_optuna_search(evaluator, n_trials=5)
 
-        self.assertEqual(best, {"w_momentum": 0.45})
-        self.assertEqual(ranked[0]["params"], {"w_momentum": 0.45})
-        self.assertIn("spot_train_leg_metrics", ranked[0])
-        self.assertEqual(diagnostics["historical_extension_mode"], "layered_spot_then_futures")
+        self.assertEqual(best, {"w_momentum": 0.3})
+        self.assertEqual(ranked[0]["params"], {"w_momentum": 0.3})
+        self.assertIsNone(ranked[0]["spot_train_leg_metrics"])
+        self.assertEqual(diagnostics["historical_extension_mode"], "spot_context_only")
 
     def test_final_report_passes_smoke_minimal_comparison_mode_and_heartbeat(self) -> None:
         summary = CandidateSummary(
@@ -1833,6 +2991,71 @@ class SearchReportSerializationTests(unittest.TestCase):
 
         self.assertEqual(executor_calls[0]["max_workers"], 2)
         self.assertEqual(executor_calls[0]["mp_context"].get_start_method(), mp.get_context("spawn").get_start_method())
+
+    def test_variant_backtest_timeout_does_not_wait_for_local_pool_shutdown(self) -> None:
+        shutdown_calls: list[tuple[bool, bool]] = []
+        cancel_calls: list[bool] = []
+
+        class FakeFuture:
+            def result(self, timeout=None):
+                del timeout
+                raise FutureTimeoutError()
+
+            def cancel(self) -> bool:
+                cancel_calls.append(True)
+                return True
+
+        class FakeExecutor:
+            def __init__(self, **_kwargs) -> None:
+                return None
+
+            def submit(self, *_args, **_kwargs) -> FakeFuture:
+                return FakeFuture()
+
+            def shutdown(self, *, wait=True, cancel_futures=False) -> None:
+                shutdown_calls.append((wait, cancel_futures))
+
+        with (
+            patch("zenquant.research.framework_search.ProcessPoolExecutor", FakeExecutor),
+            self.assertRaisesRegex(TimeoutError, "variant_backtest_timeout:1s"),
+        ):
+            _run_variant_backtest_with_timeout(
+                HistoricalBacktestConfig(),
+                FrameworkEvaluator(HistoricalBacktestConfig())._current_variant,
+                start_ns=None,
+                end_ns=None,
+                timeout_s=1.0,
+            )
+
+        self.assertEqual(cancel_calls, [True])
+        self.assertEqual(shutdown_calls, [(False, True)])
+
+    def test_prepare_backtest_timeout_resets_validation_pool(self) -> None:
+        shutdown_calls: list[tuple[bool, bool]] = []
+
+        class FakePool:
+            def shutdown(self, *, wait=False, cancel_futures=False) -> None:
+                shutdown_calls.append((wait, cancel_futures))
+
+        window = type("Window", (), {"label": "dev", "start_ns": None, "end_ns": None})()
+        with patch(
+            "zenquant.research.framework_search._run_variant_backtest_with_timeout",
+            side_effect=TimeoutError("variant_backtest_timeout:1s"),
+        ):
+            evaluator = FrameworkEvaluator(HistoricalBacktestConfig(), split_spec=default_btc_split_spec())
+            fake_pool = FakePool()
+            evaluator._validation_pool = fake_pool
+
+            with self.assertRaises(PrepareVariantTimeoutError):
+                evaluator._run_prepare_backtest_cached(
+                    evaluator._current_variant,
+                    window,
+                    timeout_s=1.0,
+                    replay_pool=fake_pool,
+                )
+
+        self.assertIsNone(evaluator._validation_pool)
+        self.assertEqual(shutdown_calls, [(False, True)])
 
     def test_final_report_uses_fast_compare_window_profile_and_workers(self) -> None:
         summary = CandidateSummary(
@@ -2073,9 +3296,9 @@ class SearchReportSerializationTests(unittest.TestCase):
             patch.object(evaluator, "_run_validation_bundle_cached", side_effect=AssertionError("should_not_run")),
             patch.object(
                 evaluator,
-                "_get_paulwei_fast_summary",
+                "_get_current_fast_summary",
                 return_value=CandidateSummary(
-                    variant="paulwei_baseline",
+                    variant="current",
                     robust_score=0.5,
                     selection_split="dev",
                     dev_sharpe=0.5,
@@ -2129,9 +3352,9 @@ class SearchReportSerializationTests(unittest.TestCase):
             ),
             patch.object(
                 evaluator,
-                "_get_paulwei_fast_summary",
+                "_get_current_fast_summary",
                 return_value=CandidateSummary(
-                    variant="paulwei_baseline",
+                    variant="current",
                     robust_score=0.5,
                     selection_split="dev",
                     dev_sharpe=0.5,
@@ -2188,9 +3411,9 @@ class SearchReportSerializationTests(unittest.TestCase):
             ),
             patch.object(
                 evaluator,
-                "_get_paulwei_fast_summary",
+                "_get_current_fast_summary",
                 return_value=CandidateSummary(
-                    variant="paulwei_baseline",
+                    variant="current",
                     robust_score=0.5,
                     selection_split="dev",
                     dev_sharpe=0.5,
@@ -2276,9 +3499,9 @@ class SearchReportSerializationTests(unittest.TestCase):
             ),
             patch.object(
                 evaluator,
-                "_get_paulwei_fast_summary",
+                "_get_current_fast_summary",
                 return_value=CandidateSummary(
-                    variant="paulwei_baseline",
+                    variant="current",
                     robust_score=0.5,
                     selection_split="dev",
                     dev_sharpe=0.5,
@@ -2352,7 +3575,7 @@ class SearchReportSerializationTests(unittest.TestCase):
                     _snapshot(-0.1, 1.0, 0.09),
                 ],
             ),
-            patch.object(evaluator, "_get_paulwei_fast_summary", return_value=baseline),
+            patch.object(evaluator, "_get_current_fast_summary", return_value=baseline),
             patch.object(evaluator, "_run_validation_bundle_cached", side_effect=AssertionError("should_not_run")),
         ):
             summary = evaluator._evaluate_variant(variant, fast=True, lightweight=False)
@@ -2431,6 +3654,125 @@ class SearchReportSerializationTests(unittest.TestCase):
         self.assertEqual(heartbeats[-1], (4, "lightweight_summary"))
         self.assertIsNotNone(evaluator._paulwei_fast_lightweight)
         self.assertIsNone(evaluator._paulwei_fast_full)
+
+    def test_current_fast_summary_evaluates_current_without_paulwei_recursion(self) -> None:
+        evaluator = FrameworkEvaluator(HistoricalBacktestConfig(), split_spec=default_btc_split_spec())
+        summary = CandidateSummary(
+            variant="current",
+            robust_score=0.5,
+            selection_split="dev",
+            dev_sharpe=0.5,
+            dev_pnl=5.0,
+            dev_drawdown=0.1,
+            avg_dev_sharpe=0.5,
+            avg_dev_ratio=1.0,
+            worst_dev_sharpe=0.1,
+            weak_window_sharpe=0.1,
+            negative_dev_worst_windows=0,
+            promotion_candidate=False,
+        )
+
+        with (
+            patch.object(
+                evaluator,
+                "_get_paulwei_fast_summary",
+                side_effect=AssertionError("current summary must not recurse through PaulWei"),
+            ) as paulwei_summary,
+            patch.object(evaluator, "_evaluate_variant", return_value=summary) as evaluate_variant,
+        ):
+            result = evaluator._get_current_fast_summary(lightweight=False)
+
+        self.assertIs(result, summary)
+        paulwei_summary.assert_not_called()
+        evaluate_variant.assert_called_once()
+        self.assertIs(evaluate_variant.call_args.args[0], evaluator._current_variant)
+        self.assertTrue(evaluate_variant.call_args.kwargs["fast"])
+        self.assertFalse(evaluate_variant.call_args.kwargs["lightweight"])
+
+    def test_acceptance_readiness_blocks_failed_test_candidate(self) -> None:
+        baseline = CandidateSummary(
+            variant="current",
+            robust_score=1.0,
+            selection_split="dev",
+            dev_sharpe=1.0,
+            dev_pnl=10.0,
+            dev_drawdown=0.1,
+            avg_dev_sharpe=1.0,
+            avg_dev_ratio=1.0,
+            worst_dev_sharpe=0.5,
+            weak_window_sharpe=0.4,
+            negative_dev_worst_windows=0,
+            promotion_candidate=True,
+        )
+        tuned = CandidateSummary(
+            variant="optuna_tuned",
+            robust_score=1.2,
+            selection_split="dev",
+            dev_sharpe=1.2,
+            dev_pnl=12.0,
+            dev_drawdown=0.1,
+            avg_dev_sharpe=1.1,
+            avg_dev_ratio=1.0,
+            worst_dev_sharpe=0.6,
+            weak_window_sharpe=0.5,
+            negative_dev_worst_windows=0,
+            promotion_candidate=False,
+            test_sharpe=-0.1,
+            test_drawdown=0.08,
+            test_adversarial_failures=0,
+            test_evaluated=True,
+            promotion_failure_reason="test_sharpe",
+        )
+        report = SearchReport(
+            created_at="2026-05-04T00:00:00+00:00",
+            symbol="BTCUSDT",
+            readiness={"promotion_ready": True, "blocked_by": None},
+            deribit_status={"observation_ready": True, "enabled": True, "research_ready": True},
+            split_contract=split_summary_json(default_btc_split_spec()),
+            training_window_coverage={},
+            training_input_contract={
+                "execution_framework": {
+                    "five_min_direct_execution_enabled": True,
+                    "five_min_feature_aggregation_enabled": True,
+                    "one_hour_bars_available": True,
+                    "four_hour_bars_available": True,
+                },
+                "state_feature_sources": {
+                    "hyperliquid_in_state_features": True,
+                    "etf_flow_in_state_features": True,
+                    "mvrv_in_state_features": True,
+                    "deribit_block_flow_in_state_features": True,
+                },
+                "signal_independence_contract": {"audit_present": True, "direction_layer_clean": True},
+            },
+            search_status={
+                "search_space_profile": {
+                    "direction_weight_policy": {
+                        "correlation_constrained": True,
+                        "capped_direction_signal": "crowding_signal",
+                        "demoted_signal": "funding_alpha_signal",
+                        "demoted_signal_role": "state",
+                    }
+                }
+            },
+            current=baseline,
+            paulwei_baseline=baseline,
+            optuna_best=tuned,
+            rl_best=None,
+            best_variant="optuna_tuned",
+            best_score=1.2,
+            best_params={"x": 1},
+            comparison_payload={},
+            test_evaluated=True,
+            smoke_completed=True,
+            evaluation_role="acceptance",
+            test_access_allowed=True,
+        )
+
+        assessment = _assess_full_training_readiness(report, smoke_completed=True)
+
+        self.assertFalse(assessment["ready"])
+        self.assertIn("test_sharpe", assessment["blockers"])
 
 
 if __name__ == "__main__":

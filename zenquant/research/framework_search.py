@@ -40,14 +40,27 @@ from zenquant.research.comparison import (
 )
 from zenquant.research.data_source_review import load_source_admission_review
 from zenquant.research.framework_params import (
+    DEFAULT_DEV_FEE_STABILITY_LIMITS,
+    STRICT_TRAIN_FEE_STOP_PROFILE_FLAGS,
+    STRICT_TRAIN_TRUTH_PROFILE_FLAGS,
     baseline_anchor_seed_trials,
+    binance_factor_weight_repair_seed_trials,
     build_execution_config,
     build_indicator_config,
+    build_plugin_config_overrides,
     build_replay_toggles,
     build_risk_config,
     build_signal_weight_overrides,
     build_strategy_config,
+    execution_inventory_rethink_seed_trials,
+    intent_churn_ablation_seed_trials,
+    intent_churn_repair_seed_trials,
     param_grid_for_mode,
+    paulwei_balanced_tranche_seed_trials,
+    ralph_execution_fee_cooldown_seed_trials,
+    ralph_intent_reduce_cadence_seed_trials,
+    ralph_protective_reduce_fee_repair_seed_trials,
+    ralph_protective_reduce_seed_trials,
     search_space_profile,
 )
 from zenquant.research.historical_extension import load_historical_extension_candidate_contract
@@ -133,6 +146,14 @@ def _admission_contract(source_name: str) -> dict[str, Any]:
             "research_ready": False,
             "use_for_research_only": False,
             "exclude_from_promote_truth": True,
+            "allowed_in_training_observation": False,
+            "allowed_in_candidate_explanation": False,
+            "direction_vote_allowed": False,
+            "intent_aggregation_allowed": False,
+            "position_sizing_allowed": False,
+            "strategy_wiring_allowed": False,
+            "risk_overlay_wiring_allowed": False,
+            "feature_freeze_candidate": False,
             "blocked_by": "admission_review_missing",
         }
     return {
@@ -142,6 +163,14 @@ def _admission_contract(source_name: str) -> dict[str, Any]:
         "research_ready": bool(review.get("research_ready")),
         "use_for_research_only": bool(review.get("use_for_research_only")),
         "exclude_from_promote_truth": bool(review.get("exclude_from_promote_truth")),
+        "allowed_in_training_observation": bool(review.get("allowed_in_training_observation")),
+        "allowed_in_candidate_explanation": bool(review.get("allowed_in_candidate_explanation")),
+        "direction_vote_allowed": bool(review.get("direction_vote_allowed")),
+        "intent_aggregation_allowed": bool(review.get("intent_aggregation_allowed")),
+        "position_sizing_allowed": bool(review.get("position_sizing_allowed")),
+        "strategy_wiring_allowed": bool(review.get("strategy_wiring_allowed")),
+        "risk_overlay_wiring_allowed": bool(review.get("risk_overlay_wiring_allowed")),
+        "feature_freeze_candidate": bool(review.get("feature_freeze_candidate")),
         "blocked_by": review.get("blocked_by"),
     }
 
@@ -152,6 +181,11 @@ def _independence_contract(source_name: str) -> dict[str, Any]:
         return {
             "review_present": False,
             "allowed_in_state_features": False,
+            "allowed_in_pressure_context": False,
+            "allowed_in_candidate_explanation": False,
+            "direction_vote_allowed": False,
+            "intent_aggregation_allowed": False,
+            "risk_overlay_wiring_allowed": False,
             "use_for_research_only": False,
             "blocked_by": "independence_review_missing",
             "max_abs_correlation": None,
@@ -159,6 +193,11 @@ def _independence_contract(source_name: str) -> dict[str, Any]:
     return {
         "review_present": True,
         "allowed_in_state_features": bool(review.get("allowed_in_state_features")),
+        "allowed_in_pressure_context": bool(review.get("allowed_in_pressure_context")),
+        "allowed_in_candidate_explanation": bool(review.get("allowed_in_candidate_explanation")),
+        "direction_vote_allowed": bool(review.get("direction_vote_allowed")),
+        "intent_aggregation_allowed": bool(review.get("intent_aggregation_allowed")),
+        "risk_overlay_wiring_allowed": bool(review.get("risk_overlay_wiring_allowed")),
         "use_for_research_only": bool(review.get("use_for_research_only")),
         "blocked_by": review.get("blocked_by"),
         "max_abs_correlation": review.get("max_abs_correlation"),
@@ -343,6 +382,7 @@ def _spot_train_leg_snapshot(
         risk_config=variant.risk_config,
         execution_config=variant.execution_config,
         signal_weight_overrides=variant.signal_weight_overrides,
+        plugin_config_overrides=variant.plugin_config_overrides,
         indicator_config=variant.indicator_config,
         liquidation_data_enabled=False,
         state_liquidation_overlay_enabled=False,
@@ -397,6 +437,31 @@ def _run_variant_backtest_snapshot(
     )
 
 
+def _shutdown_process_pool_quickly(pool: ProcessPoolExecutor | None, futures: list[Any] | None = None) -> None:
+    if futures:
+        for future in futures:
+            try:
+                future.cancel()
+            except Exception:
+                pass
+    if pool is None:
+        return
+    try:
+        processes = list((getattr(pool, "_processes", None) or {}).values())
+    except Exception:
+        processes = []
+    try:
+        pool.shutdown(wait=False, cancel_futures=True)
+    except Exception:
+        pass
+    for process in processes:
+        try:
+            if process.is_alive():
+                process.terminate()
+        except Exception:
+            pass
+
+
 def _run_variant_backtest_with_timeout(
     base_config: HistoricalBacktestConfig,
     variant: VariantSpec,
@@ -423,19 +488,24 @@ def _run_variant_backtest_with_timeout(
     executor_kwargs: dict[str, Any] = {"max_workers": 1}
     if mp_start_method:
         executor_kwargs["mp_context"] = mp.get_context(mp_start_method)
-    with ProcessPoolExecutor(**executor_kwargs) as local_pool:
-        future = local_pool.submit(
-            _run_variant_backtest_snapshot,
-            base_config,
-            variant,
-            start_ns=start_ns,
-            end_ns=end_ns,
-        )
-        try:
-            return future.result(timeout=timeout_s)
-        except FutureTimeoutError as exc:
-            future.cancel()
-            raise TimeoutError(f"variant_backtest_timeout:{timeout_s:.0f}s") from exc
+    local_pool = ProcessPoolExecutor(**executor_kwargs)
+    future = local_pool.submit(
+        _run_variant_backtest_snapshot,
+        base_config,
+        variant,
+        start_ns=start_ns,
+        end_ns=end_ns,
+    )
+    shutdown_wait = True
+    try:
+        return future.result(timeout=timeout_s)
+    except FutureTimeoutError as exc:
+        shutdown_wait = False
+        _shutdown_process_pool_quickly(local_pool, [future])
+        raise TimeoutError(f"variant_backtest_timeout:{timeout_s:.0f}s") from exc
+    finally:
+        if shutdown_wait:
+            local_pool.shutdown(wait=True)
 
 
 @dataclass(slots=True, frozen=True)
@@ -621,6 +691,125 @@ def _hostile_regression_summary(report: SearchReport) -> dict[str, Any]:
     }
 
 
+def _params_equivalent(left: dict[str, Any] | None, right: dict[str, Any] | None) -> bool:
+    if not isinstance(left, dict) or not isinstance(right, dict):
+        return False
+    if set(left) != set(right):
+        return False
+    for key, left_value in left.items():
+        right_value = right.get(key)
+        try:
+            if round(float(left_value), 10) != round(float(right_value), 10):
+                return False
+        except (TypeError, ValueError):
+            if left_value != right_value:
+                return False
+    return True
+
+
+def _best_train_candidate_metrics(report: SearchReport) -> dict[str, Any] | None:
+    diagnostics = report.search_status.get("train_candidate_diagnostics")
+    if not isinstance(diagnostics, dict):
+        return None
+    train_trials = diagnostics.get("top_train_trial_diagnostics")
+    if not isinstance(train_trials, list) or not train_trials:
+        return None
+    best_params = report.best_params if isinstance(report.best_params, dict) else None
+    if best_params:
+        for trial in train_trials:
+            if not isinstance(trial, dict):
+                continue
+            if _params_equivalent(trial.get("params"), best_params):
+                metrics = trial.get("metrics")
+                return dict(metrics) if isinstance(metrics, dict) else None
+    first_metrics = train_trials[0].get("metrics") if isinstance(train_trials[0], dict) else None
+    return dict(first_metrics) if isinstance(first_metrics, dict) else None
+
+
+def _variant_window_metrics(report: SearchReport, variant: str) -> dict[str, dict[str, Any]]:
+    comparison_payload = report.comparison_payload if isinstance(report.comparison_payload, dict) else {}
+    window_reports = comparison_payload.get("window_reports")
+    if not isinstance(window_reports, list):
+        return {}
+    metrics_by_window: dict[str, dict[str, Any]] = {}
+    for window_report in window_reports:
+        if not isinstance(window_report, dict) or window_report.get("variant") != variant:
+            continue
+        label = str(window_report.get("window_label") or "")
+        metrics = window_report.get("metrics")
+        if label and isinstance(metrics, dict):
+            metrics_by_window[label] = dict(metrics)
+    return metrics_by_window
+
+
+def _dev_fee_stability_summary(report: SearchReport) -> dict[str, Any]:
+    limits = DEFAULT_DEV_FEE_STABILITY_LIMITS
+    tuned = _best_tuned_candidate(report)
+    if tuned is None:
+        return {
+            "passed": True,
+            "failures": [],
+            "dev_fee_drag_pct": None,
+            "train_fee_drag_pct": None,
+            "dev_to_train_fee_drag_ratio": None,
+            "dev_train_fee_drag_gap": None,
+            "window_fee_drag_pct": {},
+            "limits": {
+                "dev_fee_drag_hard_cap": limits.dev_fee_drag_hard_cap,
+                "dev_hostile_window_fee_drag_hard_cap": limits.dev_hostile_window_fee_drag_hard_cap,
+                "dev_to_train_fee_drag_ratio_cap": limits.dev_to_train_fee_drag_ratio_cap,
+                "dev_to_train_fee_drag_gap_cap": limits.dev_to_train_fee_drag_gap_cap,
+            },
+        }
+
+    failures: list[str] = []
+    train_metrics = _best_train_candidate_metrics(report)
+    train_fee_drag_pct = _safe_metric(train_metrics, "fee_drag_pct") if train_metrics is not None else None
+    dev_fee_drag_pct = float(tuned.fee_drag_pct or 0.0)
+    dev_to_train_ratio = None
+    dev_train_gap = None
+
+    if dev_fee_drag_pct > limits.dev_fee_drag_hard_cap:
+        failures.append("dev_fee_drag_cap_exceeded")
+    if train_fee_drag_pct is not None and train_fee_drag_pct > 0.0:
+        dev_to_train_ratio = dev_fee_drag_pct / train_fee_drag_pct
+        dev_train_gap = dev_fee_drag_pct - train_fee_drag_pct
+        if (
+            dev_to_train_ratio > limits.dev_to_train_fee_drag_ratio_cap
+            or dev_train_gap > limits.dev_to_train_fee_drag_gap_cap
+        ):
+            failures.append("dev_train_fee_drag_mismatch")
+
+    window_fee_drag_pct = {
+        label: round(_safe_metric(metrics, "fee_drag_pct"), 6)
+        for label, metrics in _variant_window_metrics(report, tuned.variant).items()
+    }
+    hostile_fee_failures = [
+        label
+        for label, fee_drag_pct in window_fee_drag_pct.items()
+        if label != "dev" and fee_drag_pct > limits.dev_hostile_window_fee_drag_hard_cap
+    ]
+    if hostile_fee_failures:
+        failures.append("hostile_window_fee_drag_cap_exceeded")
+
+    return {
+        "passed": not failures,
+        "failures": failures,
+        "dev_fee_drag_pct": round(dev_fee_drag_pct, 6),
+        "train_fee_drag_pct": round(train_fee_drag_pct, 6) if train_fee_drag_pct is not None else None,
+        "dev_to_train_fee_drag_ratio": round(dev_to_train_ratio, 4) if dev_to_train_ratio is not None else None,
+        "dev_train_fee_drag_gap": round(dev_train_gap, 6) if dev_train_gap is not None else None,
+        "window_fee_drag_pct": window_fee_drag_pct,
+        "hostile_fee_failure_windows": hostile_fee_failures,
+        "limits": {
+            "dev_fee_drag_hard_cap": limits.dev_fee_drag_hard_cap,
+            "dev_hostile_window_fee_drag_hard_cap": limits.dev_hostile_window_fee_drag_hard_cap,
+            "dev_to_train_fee_drag_ratio_cap": limits.dev_to_train_fee_drag_ratio_cap,
+            "dev_to_train_fee_drag_gap_cap": limits.dev_to_train_fee_drag_gap_cap,
+        },
+    }
+
+
 def _no_tuned_candidate_reason(report: SearchReport) -> str | None:
     explicit_reason = report.search_status.get("no_tuned_candidate_reason")
     if explicit_reason:
@@ -709,6 +898,7 @@ def _assess_full_training_readiness(
         data_failures.append("liquidation_search_enabled_before_promotion_ready")
 
     model_failures: list[str] = []
+    fee_stability = _dev_fee_stability_summary(report)
     if tuned is None:
         model_failures.append("no_tuned_candidate_from_smoke")
     else:
@@ -718,6 +908,12 @@ def _assess_full_training_readiness(
             model_failures.append("negative_worst_windows_increased")
         if tuned.dev_drawdown > baseline.dev_drawdown + 0.03:
             model_failures.append("drawdown_worse_than_baseline_relative_gate")
+        model_failures.extend(fee_stability["failures"])
+        if report.evaluation_role == "acceptance":
+            if not tuned.test_evaluated:
+                model_failures.append("test_not_evaluated")
+            elif not tuned.promotion_candidate:
+                model_failures.append(tuned.promotion_failure_reason or "test_acceptance_failed")
 
     search_failures: list[str] = []
     if not direction_policy.get("correlation_constrained"):
@@ -742,6 +938,7 @@ def _assess_full_training_readiness(
             "system_gate": {"passed": not system_failures, "failures": system_failures},
             "data_gate": {"passed": not data_failures, "failures": data_failures},
             "model_gate": {"passed": not model_failures, "failures": model_failures},
+            "fee_stability_gate": fee_stability,
             "search_gate": {"passed": not search_failures, "failures": search_failures},
         },
         "blockers": blockers,
@@ -802,6 +999,20 @@ def _classify_post_smoke_scenario(
             "category": "search_candidate_quality",
             "should_open_full_training": False,
             "next_action": "tighten_train_search_and_rerun_smoke",
+            "blockers": blockers,
+        }
+
+    fee_efficiency_failures = {
+        "dev_fee_drag_cap_exceeded",
+        "dev_train_fee_drag_mismatch",
+        "hostile_window_fee_drag_cap_exceeded",
+    }
+    if model_failures & fee_efficiency_failures:
+        return {
+            "scenario": "scenario_b_fee_efficiency_failure",
+            "category": "train_dev_fee_stability",
+            "should_open_full_training": False,
+            "next_action": "tighten_train_dev_fee_efficiency_and_rerun_smoke",
             "blockers": blockers,
         }
 
@@ -1072,6 +1283,8 @@ class FrameworkEvaluator:
         mvrv_independence = _independence_contract("btc_mvrv")
         deribit_block_admission = _admission_contract("deribit_block_flow")
         deribit_block_independence = _independence_contract("deribit_block_flow")
+        deribit_large_option_admission = _admission_contract("deribit_large_option_flow")
+        deribit_large_option_independence = _independence_contract("deribit_large_option_flow")
         active_signal_independence = _active_signal_independence_contract()
         historical_extension_candidate = _historical_extension_candidate_contract()
         self._training_input_contract = {
@@ -1145,6 +1358,56 @@ class FrameworkEvaluator:
                 "deribit_block_flow_blocked_by": (
                     deribit_block_independence["blocked_by"] or deribit_block_admission["blocked_by"]
                 ),
+                "deribit_large_option_flow_in_state_features": False,
+                "deribit_large_option_flow_research_candidate": bool(
+                    deribit_large_option_admission["review_present"]
+                    and deribit_large_option_admission["research_ready"]
+                    and deribit_large_option_admission["feature_freeze_candidate"]
+                    and deribit_large_option_admission["tier_decision"] == "tier2_research_candidate"
+                ),
+                "deribit_large_option_flow_admission_review_present": deribit_large_option_admission["review_present"],
+                "deribit_large_option_flow_tier_decision": deribit_large_option_admission["tier_decision"],
+                "deribit_large_option_flow_time_granularity": deribit_large_option_admission["time_granularity"],
+                "deribit_large_option_flow_use_for_research_only": deribit_large_option_admission[
+                    "use_for_research_only"
+                ],
+                "deribit_large_option_flow_exclude_from_promote_truth": deribit_large_option_admission[
+                    "exclude_from_promote_truth"
+                ],
+                "deribit_large_option_flow_strategy_wiring_allowed": deribit_large_option_admission[
+                    "strategy_wiring_allowed"
+                ],
+                "deribit_large_option_flow_risk_overlay_wiring_allowed": deribit_large_option_admission[
+                    "risk_overlay_wiring_allowed"
+                ],
+                "deribit_large_option_flow_direction_vote_allowed": deribit_large_option_admission[
+                    "direction_vote_allowed"
+                ],
+                "deribit_large_option_flow_intent_aggregation_allowed": deribit_large_option_admission[
+                    "intent_aggregation_allowed"
+                ],
+                "deribit_large_option_flow_position_sizing_allowed": deribit_large_option_admission[
+                    "position_sizing_allowed"
+                ],
+                "deribit_large_option_flow_training_observation_allowed": deribit_large_option_admission[
+                    "allowed_in_training_observation"
+                ],
+                "deribit_large_option_flow_candidate_explanation_allowed": deribit_large_option_admission[
+                    "allowed_in_candidate_explanation"
+                ],
+                "deribit_large_option_flow_independence_review_present": deribit_large_option_independence[
+                    "review_present"
+                ],
+                "deribit_large_option_flow_independence_allowed": deribit_large_option_independence[
+                    "allowed_in_state_features"
+                ],
+                "deribit_large_option_flow_pressure_context_allowed": deribit_large_option_independence[
+                    "allowed_in_pressure_context"
+                ],
+                "deribit_large_option_flow_max_abs_correlation": deribit_large_option_independence[
+                    "max_abs_correlation"
+                ],
+                "deribit_large_option_flow_blocked_by": deribit_large_option_admission["blocked_by"],
                 "cme_positioning_in_state_features": (Path("data/raw/cftc") / "cot_btc.parquet").exists(),
                 "liquidation_in_search": bool(self._readiness["promotion_ready"]),
             },
@@ -1169,6 +1432,10 @@ class FrameworkEvaluator:
         self._current_fast: CandidateSummary | None = None
         self._stage2_mp_start_method = "spawn" if sys.platform == "darwin" else None
         self._validation_pool_mode = "process_pool_spawn" if self._stage2_mp_start_method else "process_pool_default"
+
+    def _reset_validation_pool(self) -> None:
+        _shutdown_process_pool_quickly(self._validation_pool)
+        self._validation_pool = None
 
     def _compute_profile(self, *, fast: bool, lightweight: bool) -> dict[str, Any]:
         if lightweight:
@@ -1203,6 +1470,7 @@ class FrameworkEvaluator:
                 mp_start_method=self._stage2_mp_start_method,
             )
         except TimeoutError as exc:
+            self._reset_validation_pool()
             raise PrepareVariantTimeoutError(
                 variant=variant.name,
                 window_label=window.label,
@@ -1263,6 +1531,7 @@ class FrameworkEvaluator:
         strategy_config = build_strategy_config(params)
         indicator_config = build_indicator_config(params)
         signal_weight_overrides = build_signal_weight_overrides(params)
+        plugin_config_overrides = build_plugin_config_overrides(params)
         liquidation_data_enabled, state_liquidation_overlay_enabled = build_replay_toggles(params)
         if not self._readiness["data_ready"]:
             liquidation_data_enabled = False
@@ -1276,6 +1545,7 @@ class FrameworkEvaluator:
             strategy_config=strategy_config,
             indicator_config=indicator_config,
             signal_weight_overrides=signal_weight_overrides,
+            plugin_config_overrides=plugin_config_overrides,
             liquidation_data_enabled=liquidation_data_enabled,
             state_liquidation_overlay_enabled=state_liquidation_overlay_enabled,
         )
@@ -1317,6 +1587,7 @@ class FrameworkEvaluator:
         dev_gate_last_round: int | None = None,
         dev_gate_interval: int | None = None,
         full_stage2_executed_this_round: bool = True,
+        smoke_completed: bool = True,
     ) -> SearchReport:
         if evaluation_role != "acceptance" and evaluate_test:
             raise ValueError("development path must not evaluate test")
@@ -1513,7 +1784,7 @@ class FrameworkEvaluator:
             test_evaluated=evaluate_test,
             report_mode=report_mode if full else "fast",
             report_degraded_due_to_memory=report_degraded_due_to_memory if full else False,
-            smoke_completed=full,
+            smoke_completed=smoke_completed,
             evaluation_role=evaluation_role,
             test_access_allowed=test_access_allowed,
             dev_gate_used_this_round=dev_gate_used_this_round,
@@ -2040,15 +2311,19 @@ class FrameworkEvaluator:
             return cached
         if progress_callback is not None:
             progress_callback("cache_miss", "validation_bundle")
-        result = _run_validation_bundle(
-            self._base_config,
-            variant,
-            windows,
-            run_backtest=self._run_variant_backtest_cached,
-            progress_callback=progress_callback,
-            replay_timeout_s=replay_timeout_s,
-            replay_pool=replay_pool,
-        )
+        try:
+            result = _run_validation_bundle(
+                self._base_config,
+                variant,
+                windows,
+                run_backtest=self._run_variant_backtest_cached,
+                progress_callback=progress_callback,
+                replay_timeout_s=replay_timeout_s,
+                replay_pool=replay_pool,
+            )
+        except ValidationBundleTimeoutError:
+            self._reset_validation_pool()
+            raise
         self._validation_cache[key] = result
         return result
 
@@ -2107,12 +2382,10 @@ class FrameworkEvaluator:
                 progress_callback("replay_reused", "current_fast_summary")
             return self._current_fast
         if self._current_fast is None:
-            # Current and the frozen PaulWei baseline are currently identical in
-            # authoritative evaluation, so reuse the existing baseline summary
-            # until they diverge again. This preserves the hard gate target
-            # without forcing an extra cached replay path.
-            self._current_fast = self._get_paulwei_fast_summary(
-                lightweight=lightweight,
+            self._current_fast = self._evaluate_variant(
+                self._current_variant,
+                fast=True,
+                lightweight=False,
                 progress_callback=progress_callback,
             )
         return self._current_fast
@@ -2420,6 +2693,7 @@ def _stage1_fail_fast_reason(
     baseline: CandidateSummary,
     current: CandidateSummary,
 ) -> str | None:
+    fee_limits = DEFAULT_DEV_FEE_STABILITY_LIMITS
     hostile_anchor = baseline if baseline.worst_dev_sharpe >= current.worst_dev_sharpe else current
     turnover_anchor = max(baseline.turnover_per_day, current.turnover_per_day)
     fee_drag_anchor = max(baseline.fee_drag_pct, current.fee_drag_pct)
@@ -2427,7 +2701,9 @@ def _stage1_fail_fast_reason(
         return "weak_window_2023_08_fail_fast"
     if candidate.worst_dev_sharpe < hostile_anchor.worst_dev_sharpe - 0.25:
         return "worst_dev_sharpe_fail_fast"
-    if candidate.fee_drag_pct > max(0.02, fee_drag_anchor * 1.35):
+    if candidate.fee_drag_pct > fee_limits.dev_fee_drag_fail_fast_cap:
+        return "dev_fee_drag_fail_fast"
+    if candidate.fee_drag_pct > max(fee_limits.dev_fee_drag_fail_fast_cap, fee_drag_anchor * 1.35):
         return "fee_drag_fail_fast"
     if candidate.turnover_per_day > max(turnover_anchor * 1.35, turnover_anchor + 250.0):
         return "turnover_fail_fast"
@@ -2552,17 +2828,40 @@ def run_optuna_search(
             },
         )
     effective_execution_timeframe = search_execution_timeframe or evaluator._base_config.execution_timeframe
-    resolved_seed_trials = (
-        baseline_anchor_seed_trials()[:n_trials]
-        if evaluator.search_space_profile.get("baseline_anchored_search", False)
-        else []
-    )
+    if evaluator.search_space_profile.get("binance_factor_weight_repair_search", False):
+        resolved_seed_trials = binance_factor_weight_repair_seed_trials()[:n_trials]
+    elif evaluator.search_space_profile.get("paulwei_balanced_tranche_search", False):
+        resolved_seed_trials = paulwei_balanced_tranche_seed_trials()[:n_trials]
+    elif evaluator.search_space_profile.get("ralph_intent_reduce_cadence_search", False):
+        resolved_seed_trials = ralph_intent_reduce_cadence_seed_trials()[:n_trials]
+    elif evaluator.search_space_profile.get("ralph_execution_fee_cooldown_search", False):
+        resolved_seed_trials = ralph_execution_fee_cooldown_seed_trials()[:n_trials]
+    elif evaluator.search_space_profile.get("ralph_protective_reduce_fee_repair_search", False):
+        resolved_seed_trials = ralph_protective_reduce_fee_repair_seed_trials()[:n_trials]
+    elif evaluator.search_space_profile.get("ralph_protective_reduce_search", False):
+        resolved_seed_trials = ralph_protective_reduce_seed_trials()[:n_trials]
+    elif evaluator.search_space_profile.get("intent_churn_ablation_search", False):
+        resolved_seed_trials = intent_churn_ablation_seed_trials()[:n_trials]
+    elif evaluator.search_space_profile.get("intent_churn_repair_search", False):
+        resolved_seed_trials = intent_churn_repair_seed_trials()[:n_trials]
+    elif evaluator.search_space_profile.get("execution_inventory_rethink_search", False):
+        resolved_seed_trials = execution_inventory_rethink_seed_trials()[:n_trials]
+    elif evaluator.search_space_profile.get("baseline_anchored_search", False):
+        resolved_seed_trials = baseline_anchor_seed_trials()[:n_trials]
+    else:
+        resolved_seed_trials = []
     if seed_trials:
         resolved_seed_trials.extend(dict(trial) for trial in seed_trials)
     resolved_seed_trials = _project_seed_trials_to_search_grid(
         resolved_seed_trials,
         search_grid=evaluator.search_param_grid,
     )[:n_trials]
+    strict_train_fee_stop = any(
+        bool(evaluator.search_space_profile.get(key, False)) for key in STRICT_TRAIN_FEE_STOP_PROFILE_FLAGS
+    )
+    strict_train_truth_search = any(
+        bool(evaluator.search_space_profile.get(key, False)) for key in STRICT_TRAIN_TRUTH_PROFILE_FLAGS
+    )
     worker_config = CampaignConfig(
         data_root=evaluator._base_config.root_dir,
         symbol=evaluator._base_config.symbol,
@@ -2585,14 +2884,19 @@ def run_optuna_search(
         trial_timeout_s=trial_timeout_s,
         stage_total_timeout_s=stage_total_timeout_s,
         stage_wall_clock_budget_s=720.0 if effective_execution_timeframe == Timeframe.TF_5M else None,
-        min_completed_trials=24 if effective_execution_timeframe == Timeframe.TF_5M else 0,
+        min_completed_trials=min(n_trials, 24) if effective_execution_timeframe == Timeframe.TF_5M else 0,
         stage1_parallel_mode=stage1_parallel_mode,
         stage1_max_workers=stage1_max_workers,
         stage1_target_inflight=stage1_target_inflight,
         stage1_batch_size=stage1_batch_size,
         research_compute_mode="lightweight_train_search",
-        enable_early_stop=True,
-        trial_runtime_budget_s=90.0 if effective_execution_timeframe == Timeframe.TF_5M else 60.0,
+        enable_early_stop=not strict_train_truth_search,
+        trial_runtime_budget_s=None
+        if strict_train_truth_search
+        else 90.0
+        if effective_execution_timeframe == Timeframe.TF_5M
+        else 60.0,
+        early_stop_fee_drag_buffer=1.25 if strict_train_fee_stop else 2.0,
     )
     sweep = run_search_stage(worker_config)
     ranking_started_at = datetime.now(UTC).timestamp()
@@ -2604,8 +2908,8 @@ def run_optuna_search(
         or "weak_window_sharpe" in dict(candidate.get("metrics", {}))
         for candidate in sweep.top_n
     )
-    current_lightweight = evaluator._get_current_fast_summary(lightweight=True) if stage1_fail_fast_enabled else None
-    paulwei_lightweight = evaluator._get_paulwei_fast_summary(lightweight=True) if stage1_fail_fast_enabled else None
+    current_lightweight: CandidateSummary | None = None
+    paulwei_lightweight: CandidateSummary | None = None
     hostile_proxy_penalized_count = 0
     fail_fast_rejection_count = 0
     fail_fast_reason_counts: dict[str, int] = {}
@@ -2647,23 +2951,31 @@ def run_optuna_search(
         candidate_payload = dict(candidate)
         candidate_payload["metrics"] = combined_metrics
         train_summary = CandidateSummary(**_train_candidate_summary_payload(candidate_payload))
-        if stage1_fail_fast_enabled and paulwei_lightweight is not None and current_lightweight is not None:
-            dev_screen = evaluator._evaluate_variant(
-                evaluator.candidate_variant(params, name="optuna_candidate", label="Optuna Candidate"),
-                fast=True,
-                lightweight=True,
-            )
-            fail_fast_reason = _stage1_fail_fast_reason(
-                dev_screen,
-                baseline=paulwei_lightweight,
-                current=current_lightweight,
-            )
-            lightweight_dev_summary = asdict(dev_screen)
-        else:
-            fail_fast_reason = None
-            lightweight_dev_summary = None
         if not regime_objective["allow_dev_diagnostic_review"]:
             fail_fast_reason = "regime_objective_train_bucket_fail_fast"
+            lightweight_dev_summary = None
+        elif stage1_fail_fast_enabled:
+            if current_lightweight is None:
+                current_lightweight = evaluator._get_current_fast_summary(lightweight=True)
+            if paulwei_lightweight is None:
+                paulwei_lightweight = evaluator._get_paulwei_fast_summary(lightweight=True)
+            if paulwei_lightweight is not None and current_lightweight is not None:
+                dev_screen = evaluator._evaluate_variant(
+                    evaluator.candidate_variant(params, name="optuna_candidate", label="Optuna Candidate"),
+                    fast=True,
+                    lightweight=True,
+                )
+                fail_fast_reason = _stage1_fail_fast_reason(
+                    dev_screen,
+                    baseline=paulwei_lightweight,
+                    current=current_lightweight,
+                )
+                lightweight_dev_summary = asdict(dev_screen)
+            else:
+                fail_fast_reason = None
+                lightweight_dev_summary = None
+        else:
+            fail_fast_reason = None
             lightweight_dev_summary = None
         if fail_fast_reason is not None:
             fail_fast_rejection_count += 1

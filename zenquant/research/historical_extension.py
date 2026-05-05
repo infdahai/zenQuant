@@ -124,7 +124,7 @@ def build_historical_extension_candidate_contract(
         blocked_by.append("futures_1h_missing")
     elif (_date_floor(futures_one_hour.start_at) or "9999-12-31") > "2020-01-01":
         blocked_by.append("futures_1h_incomplete_current_truth")
-    spot_train_leg_blocked_by = [
+    spot_train_leg_blocked_by = ["spot_context_only_not_formal_train_truth"] + [
         reason for reason in blocked_by if reason not in {"full_unified_truth_blocked", "spot_perp_truth_boundary"}
     ]
 
@@ -134,16 +134,10 @@ def build_historical_extension_candidate_contract(
         candidate_name="binance_spot_2017_plus",
         candidate_source_type="spot",
         primary_truth_source="binance_futures_2020_plus",
-        layered_train_enabled=True,
-        formal_train_truth=True,
-        historical_extension_mode="layered_spot_then_futures",
+        layered_train_enabled=False,
+        formal_train_truth=False,
+        historical_extension_mode="spot_context_only",
         train_truth_legs=[
-            {
-                "name": "pre_2020_spot_train",
-                "source": "spot",
-                "start_at": candidate_window_start,
-                "end_at": "2019-12-31T23:59:59.999000+00:00",
-            },
             {
                 "name": "post_2020_futures_train",
                 "source": "futures",
@@ -153,7 +147,7 @@ def build_historical_extension_candidate_contract(
         ],
         dev_truth_source="futures_only",
         test_truth_source="futures_only",
-        mixed_era_declared=True,
+        mixed_era_declared=False,
         full_unified_truth=False,
         candidate_window_start=candidate_window_start,
         candidate_window_end=candidate_window_end,
@@ -161,9 +155,8 @@ def build_historical_extension_candidate_contract(
         allowed_uses=[
             "cycle_regime_research",
             "slow_macro_signal_validation",
-            "train_candidate_replay_contract_review",
-            "pre_train_stress_tests",
-            "layered_train_pre_2020_spot_leg",
+            "pre_2020_regime_context",
+            "pre_2020_stress_context",
         ],
         blocked_by=blocked_by,
         spot_train_leg_blocked_by=spot_train_leg_blocked_by,
@@ -173,10 +166,11 @@ def build_historical_extension_candidate_contract(
         ),
         source_boundary=(
             "Candidate history uses Binance spot data from 2017-08 onward. "
-            "Formal train truth is layered: pre-2020 train leg uses spot, while "
-            "post-2020 train/dev/test execution truth remains Binance futures."
+            "It is context-only for regime and stress research. Formal train/dev/test "
+            "execution truth remains Binance futures and never imports pre-2020 spot "
+            "as funding/OI/liquidation-backed execution truth."
         ),
-        next_action="use_as_layered_train_leg_until_full_unified_truth_review",
+        next_action="use_as_regime_stress_context_only",
     )
 
 

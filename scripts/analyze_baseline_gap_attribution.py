@@ -29,6 +29,13 @@ def main() -> None:
     parser.add_argument("--symbol", default="BTCUSDT")
     parser.add_argument("--output-dir", type=Path, default=Path("results/research_swarm/baseline_gap_attribution_v1"))
     parser.add_argument("--profile-path", type=Path, default=Path("config/profiles/default.toml"))
+    parser.add_argument(
+        "--paulwei-behavior-profile", type=Path, default=Path("results/paulwei_research/behavior_profile.json")
+    )
+    parser.add_argument(
+        "--paulwei-episode-catalog", type=Path, default=Path("results/paulwei_research/trade_episode_catalog.csv")
+    )
+    parser.add_argument("--paulwei-symbol", default="XBTUSD")
     parser.add_argument("--include-worst-periods", action="store_true")
     parser.add_argument("--skip-walk-forward", action="store_true", default=True)
     args = parser.parse_args()
@@ -55,7 +62,15 @@ def main() -> None:
         comparison_split="dev",
         include_attribution_ledger=True,
     )
-    attribution = build_baseline_gap_attribution(comparison_payload, profile_path=args.profile_path)
+    attribution = build_baseline_gap_attribution(
+        comparison_payload,
+        profile_path=args.profile_path,
+        paulwei_behavior_profile=_read_json_if_exists(args.paulwei_behavior_profile),
+        paulwei_episode_stats=build_paulwei_episode_stats(
+            args.paulwei_episode_catalog,
+            symbol=args.paulwei_symbol,
+        ),
+    )
 
     args.output_dir.mkdir(parents=True, exist_ok=True)
     (args.output_dir / "comparison.json").write_text(json.dumps(comparison_payload, indent=2), encoding="utf-8")
@@ -68,7 +83,12 @@ def main() -> None:
     print(json.dumps({"output_dir": str(args.output_dir), "verdict": attribution["verdict"]}, indent=2))
 
 
-def build_baseline_gap_attribution(payload: dict[str, Any], profile_path: Path | None = None) -> dict[str, Any]:
+def build_baseline_gap_attribution(
+    payload: dict[str, Any],
+    profile_path: Path | None = None,
+    paulwei_behavior_profile: dict[str, Any] | None = None,
+    paulwei_episode_stats: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     windows = sorted(
         {
             str(run.get("window_label"))
@@ -83,6 +103,12 @@ def build_baseline_gap_attribution(payload: dict[str, Any], profile_path: Path |
     ]
     aggregate = _aggregate(comparisons)
     blockers = _blockers(aggregate)
+    strength_profile = _build_strength_profile(
+        aggregate,
+        comparisons,
+        paulwei_behavior_profile=paulwei_behavior_profile,
+        paulwei_episode_stats=paulwei_episode_stats,
+    )
     return {
         "schema_version": "baseline_gap_attribution.v1",
         "created_at": datetime.now(UTC).isoformat(),
@@ -98,11 +124,69 @@ def build_baseline_gap_attribution(payload: dict[str, Any], profile_path: Path |
         "window_count": len(comparisons),
         "window_comparisons": comparisons,
         "aggregate": aggregate,
+        "strength_profile": strength_profile,
         "verdict": {
             "status": "needs_research_fix" if blockers else "baseline_gap_mapped",
             "blocked_by": blockers[0] if blockers else None,
             "reason_codes": blockers,
             "next_action": _next_action(blockers),
+        },
+    }
+
+
+def build_paulwei_episode_stats(path: Path, *, symbol: str = "XBTUSD") -> dict[str, Any]:
+    """Summarize public PaulWei episode cadence for research-only behavior priors."""
+    if not path.exists():
+        return {"available": False, "reason": "episode_catalog_missing", "path": str(path)}
+
+    import pandas as pd
+
+    frame = pd.read_csv(path)
+    required = {
+        "symbol",
+        "side",
+        "closed",
+        "estimated_return_bps",
+        "duration_hours",
+        "add_events",
+        "reduce_events",
+        "entry_notional",
+        "flip_exit",
+        "flip_entry",
+    }
+    missing = sorted(required - set(frame.columns))
+    if missing:
+        return {"available": False, "reason": "episode_catalog_missing_columns", "missing_columns": missing}
+
+    closed = frame[(frame["symbol"] == symbol) & (frame["closed"].astype(bool))].copy()
+    if closed.empty:
+        return {"available": False, "reason": "episode_catalog_empty_for_symbol", "symbol": symbol}
+
+    return {
+        "available": True,
+        "symbol": symbol,
+        "closed_episodes": len(closed),
+        "win_rate": _round_float((closed["estimated_return_bps"] > 0).mean()),
+        "median_return_bps": _round_float(closed["estimated_return_bps"].median()),
+        "p10_return_bps": _round_float(closed["estimated_return_bps"].quantile(0.10)),
+        "p90_return_bps": _round_float(closed["estimated_return_bps"].quantile(0.90)),
+        "median_duration_hours": _round_float(closed["duration_hours"].median()),
+        "p25_duration_hours": _round_float(closed["duration_hours"].quantile(0.25)),
+        "p75_duration_hours": _round_float(closed["duration_hours"].quantile(0.75)),
+        "median_adds_per_episode": _round_float(closed["add_events"].median()),
+        "median_reduces_per_episode": _round_float(closed["reduce_events"].median()),
+        "median_entry_notional": _round_float(closed["entry_notional"].median()),
+        "flip_exit_rate": _round_float(closed["flip_exit"].mean()),
+        "flip_entry_rate": _round_float(closed["flip_entry"].mean()),
+        "side_profile": {
+            str(side): {
+                "episodes": len(group),
+                "win_rate": _round_float((group["estimated_return_bps"] > 0).mean()),
+                "median_return_bps": _round_float(group["estimated_return_bps"].median()),
+                "p10_return_bps": _round_float(group["estimated_return_bps"].quantile(0.10)),
+                "p90_return_bps": _round_float(group["estimated_return_bps"].quantile(0.90)),
+            }
+            for side, group in sorted(closed.groupby("side"), key=lambda item: str(item[0]))
         },
     }
 
@@ -294,6 +378,198 @@ def _next_action(blockers: list[str]) -> str:
     return "use_gap_map_to_prioritize_next_factor_family"
 
 
+def _build_strength_profile(
+    aggregate: dict[str, Any],
+    comparisons: list[dict[str, Any]],
+    *,
+    paulwei_behavior_profile: dict[str, Any] | None,
+    paulwei_episode_stats: dict[str, Any] | None,
+) -> dict[str, Any]:
+    metric_delta = aggregate["metric_delta_current_minus_baseline"]
+    playbook_delta = aggregate["playbook_delta_current_minus_baseline"]
+    micro_state_delta = aggregate["micro_state_delta_current_minus_baseline"]
+    current_strengths: list[dict[str, Any]] = []
+    paulwei_strengths: list[dict[str, Any]] = []
+    research_implications: list[str] = []
+
+    if metric_delta.get("net_pnl", 0.0) > 0:
+        current_strengths.append(
+            {
+                "code": "higher_net_pnl",
+                "metric_delta": metric_delta["net_pnl"],
+                "interpretation": "current monetizes more gross opportunity on the compared dev windows",
+            }
+        )
+    if metric_delta.get("sharpe", 0.0) > 0:
+        current_strengths.append(
+            {
+                "code": "higher_sharpe",
+                "metric_delta": metric_delta["sharpe"],
+                "interpretation": "current has stronger risk-adjusted return in the compared windows",
+            }
+        )
+    if metric_delta.get("max_drawdown", 0.0) < 0:
+        current_strengths.append(
+            {
+                "code": "lower_drawdown",
+                "metric_delta": metric_delta["max_drawdown"],
+                "interpretation": "current carries less peak-to-trough loss in the compared windows",
+            }
+        )
+    range_light_pnl = (playbook_delta.get("RANGE_LIGHT") or {}).get("pnl_delta", 0.0)
+    if _safe_float(range_light_pnl) > 0:
+        current_strengths.append(
+            {
+                "code": "range_light_pnl_engine",
+                "pnl_delta": range_light_pnl,
+                "interpretation": "current's RANGE_LIGHT behavior is a material positive PnL source",
+            }
+        )
+    chop_pnl = (micro_state_delta.get("chop_neutral") or {}).get("pnl_delta", 0.0)
+    if _safe_float(chop_pnl) > 0:
+        current_strengths.append(
+            {
+                "code": "chop_neutral_edge",
+                "pnl_delta": chop_pnl,
+                "interpretation": "current extracts more from chop/neutral states, so broad chop gating is risky",
+            }
+        )
+
+    if metric_delta.get("trade_count", 0.0) > 0:
+        paulwei_strengths.append(
+            {
+                "code": "lower_trade_count",
+                "metric_delta_current_minus_baseline": metric_delta["trade_count"],
+                "interpretation": "PaulWei baseline reaches similar behavior with fewer completed trades",
+            }
+        )
+    if metric_delta.get("turnover_per_day", 0.0) > 0:
+        paulwei_strengths.append(
+            {
+                "code": "lower_turnover",
+                "metric_delta_current_minus_baseline": metric_delta["turnover_per_day"],
+                "interpretation": "PaulWei baseline is more turnover efficient",
+            }
+        )
+    if metric_delta.get("profit_factor", 0.0) < 0:
+        paulwei_strengths.append(
+            {
+                "code": "higher_profit_factor",
+                "metric_delta_current_minus_baseline": metric_delta["profit_factor"],
+                "interpretation": "PaulWei baseline keeps better gross win/loss quality",
+            }
+        )
+
+    behavior = paulwei_behavior_profile or {}
+    if behavior:
+        paulwei_strengths.extend(_public_behavior_strengths(behavior))
+    if paulwei_episode_stats and paulwei_episode_stats.get("available"):
+        paulwei_strengths.extend(_episode_strengths(paulwei_episode_stats))
+
+    if any(item["code"] in {"range_light_pnl_engine", "chop_neutral_edge"} for item in current_strengths):
+        research_implications.append("do_not_broadly_gate_range_light_or_chop_neutral_intent")
+    if any(
+        item["code"] in {"lower_trade_count", "lower_turnover", "higher_profit_factor"} for item in paulwei_strengths
+    ):
+        research_implications.append("convert_paulwei_cadence_into_fee_efficiency_targets")
+    if paulwei_episode_stats and paulwei_episode_stats.get("available"):
+        research_implications.append("use_public_episode_stats_as_behavior_priors_not_primary_truth")
+    research_implications.append("keep_test_split_closed_until_train_candidate_exists")
+
+    return {
+        "current_strengths": current_strengths,
+        "paulwei_baseline_strengths": paulwei_strengths,
+        "paulwei_public_episode_stats": paulwei_episode_stats or {"available": False, "reason": "not_loaded"},
+        "window_labels": [comparison["window_label"] for comparison in comparisons],
+        "research_implications": research_implications,
+    }
+
+
+def _public_behavior_strengths(profile: dict[str, Any]) -> list[dict[str, Any]]:
+    strengths: list[dict[str, Any]] = []
+    if _safe_float(profile.get("btc_notional_share")) >= 0.75:
+        strengths.append(
+            {
+                "code": "btc_concentrated_behavior",
+                "value": profile.get("btc_notional_share"),
+                "interpretation": "public archive behavior is mostly BTC, making it relevant as a BTC behavior prior",
+            }
+        )
+    if _safe_float(profile.get("position_switches_per_30d")) <= 3.0:
+        strengths.append(
+            {
+                "code": "low_position_switch_rate",
+                "value": profile.get("position_switches_per_30d"),
+                "interpretation": "PaulWei changes net direction slowly enough to be useful as an anti-churn prior",
+            }
+        )
+    protective = profile.get("protective_exit_profile") or {}
+    if _safe_float(protective.get("protective_reduce_share")) >= 0.75:
+        strengths.append(
+            {
+                "code": "protective_reduce_bias",
+                "value": protective.get("protective_reduce_share"),
+                "interpretation": "public behavior favors protective reduction instead of constant flipping",
+            }
+        )
+    recovery = profile.get("recovery_profile") or {}
+    if recovery.get("kill_recovery_style") == "gradual_ramp_after_cooldown":
+        strengths.append(
+            {
+                "code": "gradual_recovery_after_drawdown",
+                "value": recovery.get("median_recovery_days"),
+                "interpretation": "drawdown recovery appears staged rather than immediate re-risking",
+            }
+        )
+    return strengths
+
+
+def _episode_strengths(stats: dict[str, Any]) -> list[dict[str, Any]]:
+    strengths: list[dict[str, Any]] = []
+    if _safe_float(stats.get("win_rate")) >= 0.55:
+        strengths.append(
+            {
+                "code": "positive_episode_hit_rate",
+                "value": stats.get("win_rate"),
+                "closed_episodes": stats.get("closed_episodes"),
+                "interpretation": "public BTC episodes have a positive hit-rate profile",
+            }
+        )
+    if _safe_float(stats.get("median_duration_hours")) >= 6.0:
+        strengths.append(
+            {
+                "code": "multi_hour_holding_cadence",
+                "value": stats.get("median_duration_hours"),
+                "interpretation": "public BTC episodes are not dominated by very fast flips",
+            }
+        )
+    if (
+        _safe_float(stats.get("median_adds_per_episode")) >= 5.0
+        and _safe_float(stats.get("median_reduces_per_episode")) >= 5.0
+    ):
+        strengths.append(
+            {
+                "code": "staged_build_and_unwind",
+                "median_adds": stats.get("median_adds_per_episode"),
+                "median_reduces": stats.get("median_reduces_per_episode"),
+                "interpretation": "public BTC behavior uses staged inventory management",
+            }
+        )
+    side_profile = stats.get("side_profile") or {}
+    long_profile = side_profile.get("long") or {}
+    short_profile = side_profile.get("short") or {}
+    if _safe_float(long_profile.get("win_rate")) > _safe_float(short_profile.get("win_rate")):
+        strengths.append(
+            {
+                "code": "stronger_long_side_profile",
+                "long_win_rate": long_profile.get("win_rate"),
+                "short_win_rate": short_profile.get("win_rate"),
+                "interpretation": "public BTC archive shows stronger long-side quality than short-side quality",
+            }
+        )
+    return strengths
+
+
 def _markdown(payload: dict[str, Any]) -> str:
     lines = [
         "# Baseline Gap Attribution",
@@ -310,6 +586,13 @@ def _markdown(payload: dict[str, Any]) -> str:
         "",
         f"- metric_delta_current_minus_baseline: `{payload['aggregate']['metric_delta_current_minus_baseline']}`",
         f"- attribution_missing_windows: `{payload['aggregate']['attribution_missing_windows']}`",
+        "",
+        "## Strength Profile",
+        "",
+        f"- current_strengths: `{payload['strength_profile']['current_strengths']}`",
+        f"- paulwei_baseline_strengths: `{payload['strength_profile']['paulwei_baseline_strengths']}`",
+        f"- paulwei_public_episode_stats: `{payload['strength_profile']['paulwei_public_episode_stats']}`",
+        f"- research_implications: `{payload['strength_profile']['research_implications']}`",
         "",
         "## Windows",
         "",
@@ -336,6 +619,16 @@ def _safe_float(value: Any) -> float:
         return float(value or 0.0)
     except (TypeError, ValueError):
         return 0.0
+
+
+def _round_float(value: Any, digits: int = 4) -> float:
+    return round(_safe_float(value), digits)
+
+
+def _read_json_if_exists(path: Path) -> dict[str, Any] | None:
+    if not path.exists():
+        return None
+    return json.loads(path.read_text(encoding="utf-8"))
 
 
 if __name__ == "__main__":

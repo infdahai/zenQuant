@@ -3,8 +3,6 @@
 > Human steers, agent executes. The repo is the system of record.
 
 **Related Documentation**:
-- [GAN Workflow](GAN_WORKFLOW.md) — Generator/discriminator role separation
-- [Cycle-Aware Testing](CYCLE_AWARE_TESTING.md) — BTC halving cycle impact on validation
 - [Validation Results](VALIDATION.md) — Current performance, IC analysis, overfitting assessment
 - [Operations](OPERATIONS.md) — Deployment, monitoring, iteration
 

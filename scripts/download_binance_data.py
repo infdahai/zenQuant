@@ -44,13 +44,13 @@ def download_binance_data(
     *,
     start_date: datetime | None = None,
     end_date: datetime | None = None,
+    timeframes: tuple[str, ...] = ("5m", "1h", "4h", "1d"),
 ) -> tuple[int, int]:
     """Download Binance futures data using monthly + daily archives."""
     end_date = end_date or datetime.now()
     start_date = start_date or (end_date - timedelta(days=days))
 
     base_dir = Path("data/raw/binance")
-    timeframes = ["1h", "4h", "1d"]
     data_types = {
         "klines": timeframes,
         "fundingRate": [None],
@@ -149,9 +149,17 @@ if __name__ == "__main__":
     parser.add_argument("--symbol", default="BTCUSDT")
     parser.add_argument("--start-date", type=str, default=None)
     parser.add_argument("--end-date", type=str, default=None)
+    parser.add_argument("--timeframes", type=str, default="5m,1h,4h,1d")
     args = parser.parse_args()
 
     start = datetime.fromisoformat(args.start_date) if args.start_date else None
     end = datetime.fromisoformat(args.end_date) if args.end_date else None
-    s, f = download_binance_data(days=args.days, symbol=args.symbol, start_date=start, end_date=end)
+    timeframes = tuple(part.strip() for part in args.timeframes.split(",") if part.strip())
+    s, f = download_binance_data(
+        days=args.days,
+        symbol=args.symbol,
+        start_date=start,
+        end_date=end,
+        timeframes=timeframes,
+    )
     sys.exit(0 if s > 0 else 1)

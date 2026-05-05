@@ -303,6 +303,325 @@ class TestStage1HostileProxy(unittest.TestCase):
             stable["hostile_proxy_penalty_applied"],
         )
 
+    def test_hostile_proxy_penalizes_flip_reduce_cadence_over_time_leverage(self) -> None:
+        efficient = _hostile_proxy_diagnostics(
+            {
+                "target_vol_4h": 0.95,
+                "max_leverage": 4.5,
+                "pyramid_initial_pct": 0.25,
+                "pyramid_add_pct": 0.20,
+                "pyramid_short_initial_pct": 0.15,
+                "pyramid_short_add_pct": 0.12,
+                "dca_spacing_atr": 1.25,
+                "dca_size_decay": 0.75,
+                "flip_min_confidence": 0.65,
+            },
+            {
+                "sharpe": 2.0,
+                "max_drawdown": 0.08,
+                "profit_factor": 1.2,
+                "fee_drag_pct": 0.015,
+                "trade_count": 180,
+                "net_pnl": 4500.0,
+                "net_pnl_per_trade": 25.0,
+                "position_switches_per_30d": 2.0,
+                "flip_reduce_fee_drag_pct": 0.008,
+                "net_pnl_per_position_switch": 300.0,
+                "terminated_early": 0.0,
+            },
+        )
+        churny = _hostile_proxy_diagnostics(
+            {
+                "target_vol_4h": 0.95,
+                "max_leverage": 4.5,
+                "pyramid_initial_pct": 0.25,
+                "pyramid_add_pct": 0.20,
+                "pyramid_short_initial_pct": 0.15,
+                "pyramid_short_add_pct": 0.12,
+                "dca_spacing_atr": 1.25,
+                "dca_size_decay": 0.75,
+                "flip_min_confidence": 0.65,
+            },
+            {
+                "sharpe": 2.0,
+                "max_drawdown": 0.08,
+                "profit_factor": 1.2,
+                "fee_drag_pct": 0.015,
+                "trade_count": 180,
+                "net_pnl": 4500.0,
+                "net_pnl_per_trade": 25.0,
+                "position_switches_per_30d": 8.0,
+                "flip_reduce_fee_drag_pct": 0.025,
+                "net_pnl_per_position_switch": 40.0,
+                "terminated_early": 0.0,
+            },
+        )
+
+        self.assertGreater(efficient["time_leverage_bonus"], churny["time_leverage_bonus"])
+        self.assertGreater(
+            churny["mature_position_switch_penalty"],
+            efficient["mature_position_switch_penalty"],
+        )
+        self.assertGreater(churny["position_switch_penalty"], efficient["position_switch_penalty"])
+        self.assertGreater(churny["flip_reduce_fee_drag_penalty"], efficient["flip_reduce_fee_drag_penalty"])
+        self.assertLess(churny["hostile_proxy_score"], efficient["hostile_proxy_score"])
+
+    def test_hostile_proxy_soft_targets_paulwei_mature_switch_cadence(self) -> None:
+        params = {
+            "target_vol_4h": 0.95,
+            "max_leverage": 4.5,
+            "pyramid_initial_pct": 0.25,
+            "pyramid_add_pct": 0.20,
+            "pyramid_short_initial_pct": 0.15,
+            "pyramid_short_add_pct": 0.12,
+            "dca_spacing_atr": 1.25,
+            "dca_size_decay": 0.75,
+            "flip_min_confidence": 0.65,
+        }
+        below_mature_cadence = _hostile_proxy_diagnostics(
+            params,
+            {
+                "sharpe": 2.0,
+                "max_drawdown": 0.08,
+                "profit_factor": 1.2,
+                "fee_drag_pct": 0.015,
+                "trade_count": 180,
+                "net_pnl": 4500.0,
+                "net_pnl_per_trade": 25.0,
+                "position_switches_per_30d": 1.6,
+                "flip_reduce_fee_drag_pct": 0.008,
+                "net_pnl_per_position_switch": 300.0,
+                "terminated_early": 0.0,
+            },
+        )
+        above_mature_cadence = _hostile_proxy_diagnostics(
+            params,
+            {
+                "sharpe": 2.0,
+                "max_drawdown": 0.08,
+                "profit_factor": 1.2,
+                "fee_drag_pct": 0.015,
+                "trade_count": 180,
+                "net_pnl": 4500.0,
+                "net_pnl_per_trade": 25.0,
+                "position_switches_per_30d": 2.6,
+                "flip_reduce_fee_drag_pct": 0.008,
+                "net_pnl_per_position_switch": 300.0,
+                "terminated_early": 0.0,
+            },
+        )
+
+        self.assertEqual(below_mature_cadence["mature_position_switch_penalty"], 0.0)
+        self.assertEqual(below_mature_cadence["target_position_switches_per_30d"], 1.6807)
+        self.assertGreater(above_mature_cadence["mature_position_switch_penalty"], 0.0)
+        self.assertEqual(above_mature_cadence["position_switch_penalty"], 0.0)
+        self.assertGreater(
+            below_mature_cadence["hostile_proxy_score"],
+            above_mature_cadence["hostile_proxy_score"],
+        )
+
+    def test_hostile_proxy_penalizes_flip_dominant_exits(self) -> None:
+        params = {
+            "target_vol_4h": 0.95,
+            "max_leverage": 4.5,
+            "pyramid_initial_pct": 0.25,
+            "pyramid_add_pct": 0.20,
+            "pyramid_short_initial_pct": 0.15,
+            "pyramid_short_add_pct": 0.12,
+            "dca_spacing_atr": 1.25,
+            "dca_size_decay": 0.75,
+            "flip_min_confidence": 0.65,
+        }
+        protective = _hostile_proxy_diagnostics(
+            params,
+            {
+                "sharpe": 2.0,
+                "max_drawdown": 0.05,
+                "profit_factor": 1.3,
+                "fee_drag_pct": 0.012,
+                "trade_count": 220,
+                "net_pnl": 8000.0,
+                "net_pnl_per_trade": 36.36,
+                "position_switches_per_30d": 1.4,
+                "flip_reduce_fee_drag_pct": 0.008,
+                "net_pnl_per_position_switch": 220.0,
+                "action_trade_counts": {"flip": 30, "reduce": 90},
+            },
+        )
+        flip_dominant = _hostile_proxy_diagnostics(
+            params,
+            {
+                "sharpe": 2.0,
+                "max_drawdown": 0.05,
+                "profit_factor": 1.3,
+                "fee_drag_pct": 0.012,
+                "trade_count": 220,
+                "net_pnl": 8000.0,
+                "net_pnl_per_trade": 36.36,
+                "position_switches_per_30d": 1.4,
+                "flip_reduce_fee_drag_pct": 0.008,
+                "net_pnl_per_position_switch": 220.0,
+                "action_trade_counts": {"flip": 90, "reduce": 30},
+            },
+        )
+
+        self.assertEqual(protective["protective_reduce_share"], 0.75)
+        self.assertEqual(flip_dominant["protective_reduce_share"], 0.25)
+        self.assertGreater(
+            flip_dominant["protective_reduce_bias_penalty"],
+            protective["protective_reduce_bias_penalty"],
+        )
+        self.assertLess(flip_dominant["hostile_proxy_score"], protective["hostile_proxy_score"])
+
+    def test_hostile_proxy_penalizes_expensive_exit_and_weak_reduce_quality(self) -> None:
+        params = {
+            "target_vol_4h": 0.95,
+            "max_leverage": 4.5,
+            "pyramid_initial_pct": 0.25,
+            "pyramid_add_pct": 0.20,
+            "pyramid_short_initial_pct": 0.15,
+            "pyramid_short_add_pct": 0.12,
+            "dca_spacing_atr": 1.25,
+            "dca_size_decay": 0.75,
+            "flip_min_confidence": 0.65,
+        }
+        clean = _hostile_proxy_diagnostics(
+            params,
+            {
+                "sharpe": 2.0,
+                "max_drawdown": 0.05,
+                "profit_factor": 1.3,
+                "fee_drag_pct": 0.012,
+                "trade_count": 220,
+                "net_pnl": 8000.0,
+                "net_pnl_per_trade": 36.36,
+                "position_switches_per_30d": 1.4,
+                "flip_reduce_fee_drag_pct": 0.008,
+                "net_pnl_per_position_switch": 220.0,
+                "action_trade_counts": {"flip": 20, "reduce": 80},
+                "action_fee_drag_pct": {"exit": 0.010, "flip": 0.010, "reduce": 0.006},
+                "action_profit_factor": {"reduce": 1.20},
+            },
+        )
+        expensive = _hostile_proxy_diagnostics(
+            params,
+            {
+                "sharpe": 2.0,
+                "max_drawdown": 0.05,
+                "profit_factor": 1.3,
+                "fee_drag_pct": 0.012,
+                "trade_count": 220,
+                "net_pnl": 8000.0,
+                "net_pnl_per_trade": 36.36,
+                "position_switches_per_30d": 1.4,
+                "flip_reduce_fee_drag_pct": 0.008,
+                "net_pnl_per_position_switch": 220.0,
+                "action_trade_counts": {"flip": 20, "reduce": 80},
+                "action_fee_drag_pct": {"exit": 0.033, "flip": 0.045, "reduce": 0.016},
+                "action_profit_factor": {"reduce": 0.94},
+            },
+        )
+
+        self.assertGreater(expensive["exit_fee_drag_penalty"], 0.0)
+        self.assertGreater(expensive["flip_action_fee_drag_penalty"], 0.0)
+        self.assertGreater(expensive["reduce_profit_factor_penalty"], 0.0)
+        self.assertLess(expensive["hostile_proxy_score"], clean["hostile_proxy_score"])
+
+    def test_hostile_proxy_rewards_balanced_tranche_build_and_unwind(self) -> None:
+        params = {
+            "target_vol_4h": 0.95,
+            "max_leverage": 4.5,
+            "pyramid_initial_pct": 0.25,
+            "pyramid_add_pct": 0.20,
+            "pyramid_short_initial_pct": 0.15,
+            "pyramid_short_add_pct": 0.12,
+            "dca_spacing_atr": 1.25,
+            "dca_size_decay": 0.75,
+            "flip_min_confidence": 0.65,
+        }
+        balanced = _hostile_proxy_diagnostics(
+            params,
+            {
+                "sharpe": 2.1,
+                "max_drawdown": 0.04,
+                "profit_factor": 1.6,
+                "fee_drag_pct": 0.014,
+                "trade_count": 180,
+                "net_pnl": 7200.0,
+                "net_pnl_per_trade": 40.0,
+                "position_switches_per_30d": 1.2,
+                "flip_reduce_fee_drag_pct": 0.010,
+                "net_pnl_per_position_switch": 260.0,
+                "action_trade_counts": {"add": 35, "entry": 18, "exit": 18, "flip": 12, "reduce": 40},
+                "action_fee_drag_pct": {"exit": 0.004, "flip": 0.004, "reduce": 0.006},
+                "action_profit_factor": {"reduce": 1.25},
+            },
+        )
+        one_sided_reduce = _hostile_proxy_diagnostics(
+            params,
+            {
+                "sharpe": 2.1,
+                "max_drawdown": 0.04,
+                "profit_factor": 1.6,
+                "fee_drag_pct": 0.014,
+                "trade_count": 180,
+                "net_pnl": 7200.0,
+                "net_pnl_per_trade": 40.0,
+                "position_switches_per_30d": 1.2,
+                "flip_reduce_fee_drag_pct": 0.010,
+                "net_pnl_per_position_switch": 260.0,
+                "action_trade_counts": {"add": 2, "entry": 10, "exit": 18, "flip": 12, "reduce": 90},
+                "action_fee_drag_pct": {"exit": 0.004, "flip": 0.004, "reduce": 0.006},
+                "action_profit_factor": {"reduce": 1.25},
+            },
+        )
+
+        self.assertEqual(balanced["staged_inventory_balance_penalty"], 0.0)
+        self.assertGreater(balanced["tranche_alignment_bonus"], 0.0)
+        self.assertGreater(one_sided_reduce["staged_inventory_balance_penalty"], 0.0)
+        self.assertLess(one_sided_reduce["hostile_proxy_score"], balanced["hostile_proxy_score"])
+
+    def test_hostile_proxy_penalizes_wide_train_drawdown_band(self) -> None:
+        params = {
+            "target_vol_4h": 0.95,
+            "max_leverage": 4.5,
+            "pyramid_initial_pct": 0.25,
+            "pyramid_add_pct": 0.20,
+            "pyramid_short_initial_pct": 0.15,
+            "pyramid_short_add_pct": 0.12,
+            "dca_spacing_atr": 1.25,
+            "dca_size_decay": 0.75,
+            "flip_min_confidence": 0.65,
+        }
+        stable = _hostile_proxy_diagnostics(
+            params,
+            {
+                "sharpe": 1.6,
+                "max_drawdown": 0.05,
+                "profit_factor": 1.4,
+                "fee_drag_pct": 0.01,
+                "trade_count": 120,
+                "net_pnl": 100_000.0,
+                "terminated_early": 0.0,
+            },
+        )
+        wide = _hostile_proxy_diagnostics(
+            params,
+            {
+                "sharpe": 1.6,
+                "max_drawdown": 0.09,
+                "profit_factor": 1.4,
+                "fee_drag_pct": 0.01,
+                "trade_count": 120,
+                "net_pnl": 100_000.0,
+                "terminated_early": 0.0,
+            },
+        )
+
+        self.assertEqual(stable["train_drawdown_preferred_band_penalty"], 0.0)
+        self.assertGreater(wide["train_drawdown_preferred_band_penalty"], 0.0)
+        self.assertLess(wide["hostile_proxy_score"], stable["hostile_proxy_score"])
+
     def test_stage1_sort_metric_prefers_hostile_proxy_score_over_raw_sharpe(self) -> None:
         strong_sharpe = {"sharpe": 3.0, "hostile_proxy_score": 0.2}
         safer_profile = {"sharpe": 2.0, "hostile_proxy_score": 1.5}
@@ -399,7 +718,10 @@ class TestTimeoutCleanup(unittest.TestCase):
         def fake_time():
             return next(clock_values)
 
+        seen_fee_buffers: list[float] = []
+
         def fake_worker(args):
+            seen_fee_buffers.append(float(args[14]))
             return args[0], {
                 "sharpe": 1.0,
                 "sortino": 1.0,
@@ -438,6 +760,7 @@ class TestTimeoutCleanup(unittest.TestCase):
             stage1_target_inflight=1,
             stage_wall_clock_budget_s=10.0,
             min_completed_trials=1,
+            early_stop_fee_drag_buffer=1.25,
         )
 
         with (
@@ -452,6 +775,8 @@ class TestTimeoutCleanup(unittest.TestCase):
         self.assertEqual(sweep.budget_mode, "wall_clock_primary")
         self.assertEqual(sweep.total_combinations, 3)
         self.assertGreaterEqual(len(sweep.results), 1)
+        self.assertTrue(seen_fee_buffers)
+        self.assertTrue(all(buffer == 1.25 for buffer in seen_fee_buffers))
 
     def test_bayesian_stage_handles_all_pruned_trials_without_crashing(self) -> None:
         spec = default_btc_split_spec()
@@ -489,6 +814,10 @@ class TestTimeoutCleanup(unittest.TestCase):
         self.assertEqual(sweep.results, [])
         self.assertEqual(sweep.top_n, [])
         self.assertEqual(sweep.train_candidate_diagnostics["raw_trial_count"], 1)
+        trial_diagnostics = sweep.train_candidate_diagnostics["top_train_trial_diagnostics"]
+        self.assertEqual(len(trial_diagnostics), 1)
+        self.assertEqual(trial_diagnostics[0]["metrics"]["fee_drag_pct"], 0.01)
+        self.assertEqual(trial_diagnostics[0]["metrics"]["trade_count"], 0)
 
 
 class TestSearchSpace(unittest.TestCase):
@@ -522,11 +851,13 @@ class TestSearchSpace(unittest.TestCase):
                 "preserve_capital_risk": 0.65,
                 "bull_leverage": 3.0,
                 "exit_transition_risk": 0.85,
+                "intent_add_confirmation_bars": 4,
             }
         )
         self.assertEqual(config.playbook_config.preserve_capital_transition_risk, 0.65)
         self.assertEqual(config.playbook_config.bull_max_leverage, 3.0)
         self.assertEqual(config.exit_config.transition_risk_exit_threshold, 0.85)
+        self.assertEqual(config.intent_add_confirmation_bars, 4)
 
     def test_build_strategy_config_partial(self) -> None:
         config = _build_strategy_config({"bull_leverage": 2.5})
@@ -916,6 +1247,7 @@ class TestSearchSpace(unittest.TestCase):
         self.assertEqual(first["cache_hit"], 0.0)
         self.assertEqual(second["cache_hit"], 1.0)
         self.assertEqual(second["terminated_early"], 1.0)
+        self.assertEqual(second["termination_reason"], "trade_count_too_low_for_processed_ratio")
         self.assertEqual(second["processed_event_ratio"], 0.75)
         self.assertEqual(second["event_loop_total_s"], 1.1)
 

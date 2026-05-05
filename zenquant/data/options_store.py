@@ -11,6 +11,8 @@ import bisect
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from zenquant.data._z_utils import robust_z as _robust_z
+
 
 @dataclass(slots=True)
 class OptionsDataStoreConfig:
@@ -45,7 +47,18 @@ class OptionsSnapshot:
     quality_flags: list[str] = field(default_factory=list)
 
 
-from zenquant.data._z_utils import robust_z as _robust_z
+_REQUIRED_CHAIN_COLUMNS = frozenset(
+    {
+        "snapshot_ts_ns",
+        "expiry_ts_ms",
+        "strike",
+        "option_type",
+        "underlying_price",
+        "open_interest",
+        "mark_iv",
+    }
+)
+
 
 class OptionsDataStore:
     """Load options chain Parquet snapshots and provide point-in-time IV lookups.
@@ -106,6 +119,8 @@ class OptionsDataStore:
                 df = table.to_pandas()
 
                 if df.empty:
+                    continue
+                if not _REQUIRED_CHAIN_COLUMNS.issubset(df.columns):
                     continue
 
                 # Extract snapshot timestamp (same for all rows)

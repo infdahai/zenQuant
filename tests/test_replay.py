@@ -1,6 +1,7 @@
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import pandas as pd
@@ -21,6 +22,100 @@ from zenquant.strategy import ARCStrategyEngine
 
 
 class ReplayTests(unittest.TestCase):
+    def test_lightweight_early_stop_rejects_extreme_trade_count_per_day(self) -> None:
+        replay = HistoricalBacktest.__new__(HistoricalBacktest)
+        replay._config = HistoricalBacktestConfig(
+            research_compute_mode="lightweight_train_search",
+            early_stop_enabled=True,
+            early_stop_min_churn_processed_ratio=0.25,
+            early_stop_min_churn_elapsed_days=10.0,
+            early_stop_min_churn_trade_count=20,
+            early_stop_max_trade_count_per_day=1.5,
+            early_stop_trade_count_per_day_buffer=1.2,
+        )
+        replay._reports = [object()] * 100
+        replay._risk_snapshots = []
+        replay._trade_ledger = SimpleNamespace(total_fees=100.0)
+        replay.risk_overlay = SimpleNamespace(equity=101_000.0)
+        first_open_ns = 1_700_000_000_000_000_000
+        current_event = {
+            "close_time_ns": first_open_ns + 30 * 86_400 * 1_000_000_000,
+        }
+
+        should_stop, reason = replay._should_early_stop(
+            current_event=current_event,
+            first_event_open_ns=first_open_ns,
+            processed_events=40,
+            total_events=100,
+            execution_events_total=100,
+        )
+
+        self.assertTrue(should_stop)
+        self.assertEqual(reason, "trade_count_per_day_hard_fail")
+
+    def test_lightweight_early_stop_rejects_extreme_fee_drag(self) -> None:
+        replay = HistoricalBacktest.__new__(HistoricalBacktest)
+        replay._config = HistoricalBacktestConfig(
+            research_compute_mode="lightweight_train_search",
+            early_stop_enabled=True,
+            early_stop_min_churn_processed_ratio=0.25,
+            early_stop_min_churn_elapsed_days=10.0,
+            early_stop_min_churn_trade_count=20,
+            early_stop_max_trade_count_per_day=0.0,
+            early_stop_max_fee_drag_pct=0.025,
+            early_stop_fee_drag_buffer=2.0,
+            early_stop_min_gross_pnl_fraction_for_fee_drag=0.01,
+        )
+        replay._reports = [object()] * 40
+        replay._risk_snapshots = []
+        replay._trade_ledger = SimpleNamespace(total_fees=2_000.0)
+        replay.risk_overlay = SimpleNamespace(equity=105_000.0)
+        first_open_ns = 1_700_000_000_000_000_000
+        current_event = {
+            "close_time_ns": first_open_ns + 120 * 86_400 * 1_000_000_000,
+        }
+
+        should_stop, reason = replay._should_early_stop(
+            current_event=current_event,
+            first_event_open_ns=first_open_ns,
+            processed_events=50,
+            total_events=100,
+            execution_events_total=100,
+        )
+
+        self.assertTrue(should_stop)
+        self.assertEqual(reason, "fee_drag_hard_fail")
+
+    def test_lightweight_early_stop_waits_for_enough_churn_evidence(self) -> None:
+        replay = HistoricalBacktest.__new__(HistoricalBacktest)
+        replay._config = HistoricalBacktestConfig(
+            research_compute_mode="lightweight_train_search",
+            early_stop_enabled=True,
+            early_stop_min_churn_processed_ratio=0.50,
+            early_stop_min_churn_elapsed_days=120.0,
+            early_stop_min_churn_trade_count=50,
+            early_stop_max_trade_count_per_day=1.5,
+        )
+        replay._reports = [object()] * 100
+        replay._risk_snapshots = []
+        replay._trade_ledger = SimpleNamespace(total_fees=2_000.0)
+        replay.risk_overlay = SimpleNamespace(equity=105_000.0)
+        first_open_ns = 1_700_000_000_000_000_000
+        current_event = {
+            "close_time_ns": first_open_ns + 60 * 86_400 * 1_000_000_000,
+        }
+
+        should_stop, reason = replay._should_early_stop(
+            current_event=current_event,
+            first_event_open_ns=first_open_ns,
+            processed_events=40,
+            total_events=100,
+            execution_events_total=100,
+        )
+
+        self.assertFalse(should_stop)
+        self.assertIsNone(reason)
+
     def test_historical_replay_injects_microstructure_sidecar_when_enabled(self) -> None:
         with TemporaryDirectory() as tmp:
             root = Path(tmp)

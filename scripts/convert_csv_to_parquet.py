@@ -50,7 +50,10 @@ def csv_to_parquet(csv_dir: Path, output_dir: Path, data_type: str):
     all_data = []
     for csv_file in csv_files:
         try:
-            df = pd.read_csv(csv_file, names=columns, skiprows=1)  # Skip header row
+            if data_type == "funding":
+                df = _read_funding_csv(csv_file)
+            else:
+                df = pd.read_csv(csv_file, names=columns, skiprows=1)  # Skip header row
             all_data.append(df)
         except Exception as e:
             print(f"Error reading {csv_file.name}: {e}")
@@ -79,6 +82,43 @@ def csv_to_parquet(csv_dir: Path, output_dir: Path, data_type: str):
 
     print(f"  Saved {len(combined)} rows to {output_file}")
     return len(combined)
+
+
+def _read_funding_csv(csv_file: Path) -> pd.DataFrame:
+    """Read both legacy and current Binance funding archive schemas."""
+    frame = pd.read_csv(csv_file)
+    normalized = {str(column).strip().lower(): column for column in frame.columns}
+    time_col = (
+        normalized.get("funding_time")
+        or normalized.get("fundingtime")
+        or normalized.get("calc_time")
+        or normalized.get("calctime")
+    )
+    rate_col = (
+        normalized.get("funding_rate")
+        or normalized.get("fundingrate")
+        or normalized.get("last_funding_rate")
+        or normalized.get("lastfundingrate")
+    )
+    if time_col is None or rate_col is None:
+        # Fall back to the old 4-column archive shape:
+        # symbol,funding_time,funding_rate,mark_price
+        frame = pd.read_csv(
+            csv_file,
+            names=["symbol", "funding_time", "funding_rate", "mark_price"],
+            skiprows=1,
+        )
+        return frame
+    mark_col = normalized.get("mark_price") or normalized.get("markprice")
+    symbol_col = normalized.get("symbol")
+    return pd.DataFrame(
+        {
+            "symbol": frame[symbol_col] if symbol_col is not None else csv_file.parent.name,
+            "funding_time": frame[time_col],
+            "funding_rate": frame[rate_col],
+            "mark_price": frame[mark_col] if mark_col is not None else 0.0,
+        }
+    )
 
 
 def main():

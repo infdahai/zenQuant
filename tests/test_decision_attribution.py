@@ -2,7 +2,11 @@ import unittest
 from types import SimpleNamespace
 
 from zenquant.domain import BacktestMetrics, ExecutionReport
-from zenquant.research.attribution import build_decision_attribution_ledger, classify_hostile_micro_state
+from zenquant.research.attribution import (
+    build_decision_attribution_ledger,
+    classify_execution_action_source,
+    classify_hostile_micro_state,
+)
 
 
 class _FakeRunner:
@@ -59,6 +63,8 @@ class _FakeRunner:
                 "volatility_state": "HIGH",
                 "realized_vol": 0.9,
                 "momentum_roc_z": 0.7,
+                "exit_type": "TRAILING_STOP",
+                "exit_reason_codes": "EXIT_TRAILING_STOP",
                 "target_reason_codes": "EXIT_TRAILING_STOP",
             },
         ]
@@ -119,6 +125,78 @@ class DecisionAttributionTests(unittest.TestCase):
         self.assertEqual(ledger["micro_state_summary"]["panic_reversal"]["execution_actions"]["entry"], 1)
         self.assertEqual(ledger["micro_state_summary"]["squeeze_continuation"]["execution_actions"]["exit"], 1)
         self.assertEqual(ledger["micro_state_summary"]["squeeze_continuation"]["estimated_equity_pnl"], 10.0)
+        self.assertEqual(ledger["action_attribution_summary"]["exit"]["source_counts"]["exit_plugin"], 1)
+
+    def test_ledger_attributes_risk_overlay_reduce_fees(self) -> None:
+        metrics = BacktestMetrics(
+            symbol="BTCUSDT_PERP",
+            start_ns=1,
+            end_ns=2,
+            total_bars=2,
+            net_pnl=1.0,
+            gross_pnl=1.03,
+            total_fees=0.03,
+            total_funding=0.0,
+            sharpe=1.0,
+            sortino=1.0,
+            max_drawdown=0.01,
+            max_dd_duration_bars=1,
+            win_rate=1.0,
+            profit_factor=2.0,
+            avg_win=1.0,
+            avg_loss=0.0,
+            trade_count=2,
+            turnover_per_day=100.0,
+            fee_drag_pct=0.03,
+        )
+        runner = SimpleNamespace(
+            _reports=[
+                ExecutionReport("entry", "BTCUSDT_PERP", 1, "FILLED", 0.5, 100.0, 0.01, 1),
+                ExecutionReport("risk-reduce", "BTCUSDT_PERP", -1, "FILLED", 0.2, 105.0, 0.02, 2),
+            ],
+            build_analysis_rows=lambda: [
+                {
+                    "cutoff_time_ns": 1,
+                    "target_qty": 0.5,
+                    "equity": 100000.0,
+                    "regime": "TREND",
+                    "playbook_id": "BULL_TREND",
+                    "target_reason_codes": "TREND_LONG",
+                    "risk_decision_flags": "OK",
+                },
+                {
+                    "cutoff_time_ns": 2,
+                    "target_qty": 0.3,
+                    "equity": 100001.0,
+                    "regime": "TREND",
+                    "playbook_id": "BULL_TREND",
+                    "target_reason_codes": "TREND_LONG",
+                    "risk_original_target_qty": 0.5,
+                    "risk_revised_target_qty": 0.3,
+                    "risk_decision_flags": "DD_STEP_1",
+                },
+            ],
+        )
+
+        ledger = build_decision_attribution_ledger(
+            runner,
+            SimpleNamespace(metrics=metrics),
+            variant="candidate",
+            window_label="train",
+        )
+
+        reduce_summary = ledger["action_attribution_summary"]["reduce"]
+        self.assertEqual(reduce_summary["source_counts"]["risk_overlay"], 1)
+        self.assertEqual(reduce_summary["source_fees"]["risk_overlay"], 0.02)
+
+    def test_flip_from_new_entry_target_is_strategy_target(self) -> None:
+        source = classify_execution_action_source(
+            "flip",
+            {"target_reason_codes": "TREND_SHORT", "risk_decision_flags": "OK"},
+            target_action="entry",
+        )
+
+        self.assertEqual(source, "strategy_target")
 
 
 if __name__ == "__main__":

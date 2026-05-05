@@ -198,8 +198,70 @@ def build_strategy_config(params: dict[str, float]) -> ARCStrategyConfig:
         target_vol_1d=1.30,
         max_leverage=params.get("max_leverage", 6.0),
         trailing_stop_atr_mult=params.get("trailing_stop_atr_mult", 2.5),
+        min_bars_before_trail=int(params.get("min_bars_before_trail", 1)),
+        min_hours_before_trail=params.get("min_hours_before_trail", 0.0),
         bias_max_age_bars=int(params.get("bias_max_age_bars", 8)),
         enable_adaptive_signal_weights=bool(round(float(params.get("enable_adaptive_signal_weights", 0.0)))),
+        intent_entry_confirmation_bars=int(params.get("intent_entry_confirmation_bars", 1)),
+        intent_flip_confirmation_bars=int(params.get("intent_flip_confirmation_bars", 1)),
+        intent_flat_confirmation_bars=int(params.get("intent_flat_confirmation_bars", 1)),
+        intent_flat_reduce_step_pct=params.get("intent_flat_reduce_step_pct", 0.0),
+        intent_flat_step_cadence_bars=int(params.get("intent_flat_step_cadence_bars", 0)),
+        intent_range_entry_confirmation_bars=int(params.get("intent_range_entry_confirmation_bars", 0)),
+        intent_range_reentry_cooldown_bars=int(params.get("intent_range_reentry_cooldown_bars", 0)),
+        intent_bearish_override_confirmation_bars=int(params.get("intent_bearish_override_confirmation_bars", 0)),
+        intent_bearish_override_chop_guard_enabled=bool(
+            round(float(params.get("intent_bearish_override_chop_guard_enabled", 0.0)))
+        ),
+        intent_bearish_override_chop_max_confidence=params.get("intent_bearish_override_chop_max_confidence", 0.58),
+        intent_bearish_override_chop_min_transition_risk=params.get(
+            "intent_bearish_override_chop_min_transition_risk", 0.40
+        ),
+        intent_unconfirmed_flip_reduce_only=bool(round(float(params.get("intent_unconfirmed_flip_reduce_only", 0.0)))),
+        intent_add_signal_threshold=params.get("intent_add_signal_threshold", 0.0),
+        intent_add_confirmation_bars=int(params.get("intent_add_confirmation_bars", 1)),
+        intent_time_leverage_hold_enabled=bool(round(float(params.get("intent_time_leverage_hold_enabled", 0.0)))),
+        intent_time_leverage_min_hold_bars=int(params.get("intent_time_leverage_min_hold_bars", 0)),
+        intent_time_leverage_flip_signal_threshold=params.get("intent_time_leverage_flip_signal_threshold", 0.55),
+        intent_time_leverage_confidence_floor=params.get("intent_time_leverage_confidence_floor", 0.55),
+        intent_time_leverage_transition_risk_floor=params.get("intent_time_leverage_transition_risk_floor", 0.35),
+        intent_time_leverage_trailing_stop_atr_mult=params.get("intent_time_leverage_trailing_stop_atr_mult", 0.0),
+        intent_time_leverage_trailing_exit_hold_enabled=bool(
+            round(float(params.get("intent_time_leverage_trailing_exit_hold_enabled", 0.0)))
+        ),
+        intent_time_leverage_trailing_exit_max_adverse_atr=params.get(
+            "intent_time_leverage_trailing_exit_max_adverse_atr", 2.5
+        ),
+        intent_same_direction_reduce_confirmation_bars=int(
+            params.get("intent_same_direction_reduce_confirmation_bars", 1)
+        ),
+        intent_time_leverage_size_hysteresis_enabled=bool(
+            round(float(params.get("intent_time_leverage_size_hysteresis_enabled", 0.0)))
+        ),
+        intent_time_leverage_add_deadband_pct=params.get("intent_time_leverage_add_deadband_pct", 0.0),
+        intent_time_leverage_reduce_deadband_pct=params.get("intent_time_leverage_reduce_deadband_pct", 0.0),
+        intent_time_leverage_long_bias_enabled=bool(
+            round(float(params.get("intent_time_leverage_long_bias_enabled", 0.0)))
+        ),
+        intent_time_leverage_long_bias_confidence_floor=params.get(
+            "intent_time_leverage_long_bias_confidence_floor", 0.65
+        ),
+        intent_time_leverage_long_bias_transition_ceiling=params.get(
+            "intent_time_leverage_long_bias_transition_ceiling", 0.45
+        ),
+        intent_time_leverage_long_bias_block_short=bool(
+            round(float(params.get("intent_time_leverage_long_bias_block_short", 1.0)))
+        ),
+        intent_time_leverage_long_bias_hold_reductions=bool(
+            round(float(params.get("intent_time_leverage_long_bias_hold_reductions", 1.0)))
+        ),
+        intent_time_leverage_dip_accumulation_enabled=bool(
+            round(float(params.get("intent_time_leverage_dip_accumulation_enabled", 0.0)))
+        ),
+        intent_time_leverage_dip_min_adverse_atr=params.get("intent_time_leverage_dip_min_adverse_atr", 0.75),
+        intent_time_leverage_dip_max_adverse_atr=params.get("intent_time_leverage_dip_max_adverse_atr", 2.5),
+        intent_time_leverage_dip_add_pct=params.get("intent_time_leverage_dip_add_pct", 0.15),
+        intent_time_leverage_dip_max_leverage=params.get("intent_time_leverage_dip_max_leverage", 3.0),
     )
 
 
@@ -230,6 +292,50 @@ def build_execution_config(params: dict[str, float]) -> ExecutionKernelConfig:
         dca_size_decay=params.get("dca_size_decay", 0.75),
         exit_unwind_pct=params.get("exit_unwind_pct", 0.30),
         flip_min_confidence=params.get("flip_min_confidence", 0.50),
+        flip_flatten_only_enabled=bool(round(float(params.get("flip_flatten_only_enabled", 0.0)))),
+        flip_reverse_open_scale=params.get("flip_reverse_open_scale", 1.0),
+        loss_flip_reverse_open_confidence_floor=params.get("loss_flip_reverse_open_confidence_floor", 0.0),
+        hostile_behavior_router_enabled=bool(round(float(params.get("hostile_behavior_router_enabled", 0.0)))),
+        squeeze_flip_flatten_only_enabled=bool(round(float(params.get("squeeze_flip_flatten_only_enabled", 0.0)))),
+        squeeze_flip_cooldown_enabled=bool(round(float(params.get("squeeze_flip_cooldown_enabled", 0.0)))),
+        squeeze_flip_cooldown_bars=int(params.get("squeeze_flip_cooldown_bars", 2)),
+        squeeze_conditional_cooldown_enabled=bool(
+            round(float(params.get("squeeze_conditional_cooldown_enabled", 0.0)))
+        ),
+        squeeze_conditional_cooldown_drawdown_threshold=params.get(
+            "squeeze_conditional_cooldown_drawdown_threshold",
+            0.025,
+        ),
+        squeeze_conditional_cooldown_toxic_only=bool(
+            round(float(params.get("squeeze_conditional_cooldown_toxic_only", 0.0)))
+        ),
+        squeeze_cooldown_cancel_on_non_squeeze_enabled=bool(
+            round(float(params.get("squeeze_cooldown_cancel_on_non_squeeze_enabled", 0.0)))
+        ),
+        target_delta_deadband_qty=params.get("target_delta_deadband_qty", 0.0),
+        target_delta_deadband_pct=params.get("target_delta_deadband_pct", 0.0),
+        target_reduce_deadband_qty=params.get("target_reduce_deadband_qty", 0.0),
+        target_reduce_deadband_pct=params.get("target_reduce_deadband_pct", 0.0),
+        min_hold_bars_before_flip=int(params.get("min_hold_bars_before_flip", 0)),
+        entry_cooldown_bars=int(params.get("entry_cooldown_bars", 0)),
+        weak_signal_no_flip_enabled=bool(round(float(params.get("weak_signal_no_flip_enabled", 0.0)))),
+        weak_signal_no_flip_confidence=params.get("weak_signal_no_flip_confidence", 0.65),
+        tiny_reverse_reduce_only_enabled=bool(round(float(params.get("tiny_reverse_reduce_only_enabled", 0.0)))),
+        tiny_reverse_deadband_qty=params.get("tiny_reverse_deadband_qty", 0.0),
+        tiny_reverse_deadband_pct=params.get("tiny_reverse_deadband_pct", 0.0),
+        entry_confidence_floor=params.get("entry_confidence_floor", 0.0),
+        reverse_open_confidence_floor=params.get("reverse_open_confidence_floor", 0.0),
+        range_entry_block_enabled=bool(round(float(params.get("range_entry_block_enabled", 0.0)))),
+        degraded_entry_block_enabled=bool(round(float(params.get("degraded_entry_block_enabled", 0.0)))),
+        degraded_entry_confidence_floor=params.get("degraded_entry_confidence_floor", 0.0),
+        loss_dca_confidence_floor=params.get("loss_dca_confidence_floor", 0.0),
+        loss_dca_range_block_enabled=bool(round(float(params.get("loss_dca_range_block_enabled", 0.0)))),
+        loss_dca_degraded_block_enabled=bool(round(float(params.get("loss_dca_degraded_block_enabled", 0.0)))),
+        profit_protect_reduce_enabled=bool(round(float(params.get("profit_protect_reduce_enabled", 0.0)))),
+        profit_protect_min_move_atr=params.get("profit_protect_min_move_atr", 1.0),
+        profit_protect_unwind_pct=params.get("profit_protect_unwind_pct", 0.25),
+        profit_protect_confidence_ceiling=params.get("profit_protect_confidence_ceiling", 0.75),
+        profit_protect_cooldown_bars=int(params.get("profit_protect_cooldown_bars", 0)),
     )
 
 

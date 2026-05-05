@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pandas as pd
 
-from zenquant.research.comparison import public_archive_variant_specs
+from zenquant.research.comparison import paulwei_mature_style_variant_specs, public_archive_variant_specs
 from zenquant.research.paulwei_public import (
     build_ahr999_alignment,
     build_ahr999_execution_guidance_review,
@@ -16,6 +16,7 @@ from zenquant.research.paulwei_public import (
     build_paulwei_dataset_contract,
     build_promotion_eligibility_review,
     build_strict_execution_learning_review,
+    build_tranche_behavior_profile,
     build_variant_comparison_review,
     ingest_paulwei_public_dataset,
     write_baseline_mapping,
@@ -178,7 +179,96 @@ class PaulWeiPublicResearchTests(unittest.TestCase):
             self.assertIn("drawdown_profile", profile)
             self.assertEqual(mapping["mapping_confidence"], "medium")
             self.assertIn("derived_execution_rules", mapping)
+            self.assertGreaterEqual(mapping["execution_config_overrides"]["pyramid_short_add_pct"], 0.10)
             self.assertTrue(Path(mapping_info["json_path"]).exists())
+
+    def test_tranche_behavior_profile_separates_orders_fills_and_episodes(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            data_root = Path(tmp) / "paulwei"
+            _build_public_source(data_root)
+            _write_csv(
+                data_root / "api-v1-order.csv",
+                [
+                    {
+                        "timestamp": "2022-02-01T00:00:00Z",
+                        "ordStatus": "Filled",
+                        "ordType": "Limit",
+                        "symbol": "XBTUSD",
+                        "side": "Buy",
+                        "orderQty": 100,
+                        "cumQty": 100,
+                        "orderID": "o1",
+                    },
+                    {
+                        "timestamp": "2022-02-01T04:00:00Z",
+                        "ordStatus": "Filled",
+                        "ordType": "Limit",
+                        "symbol": "XBTUSD",
+                        "side": "Buy",
+                        "orderQty": 50,
+                        "cumQty": 50,
+                        "orderID": "o2",
+                    },
+                    {
+                        "timestamp": "2022-02-01T08:00:00Z",
+                        "ordStatus": "Filled",
+                        "ordType": "Limit",
+                        "symbol": "XBTUSD",
+                        "side": "Sell",
+                        "orderQty": 30,
+                        "cumQty": 30,
+                        "orderID": "o3",
+                    },
+                    {
+                        "timestamp": "2022-02-02T00:00:00Z",
+                        "ordStatus": "Filled",
+                        "ordType": "Limit",
+                        "symbol": "XBTUSD",
+                        "side": "Sell",
+                        "orderQty": 120,
+                        "cumQty": 120,
+                        "orderID": "o4",
+                    },
+                    {
+                        "timestamp": "2022-02-02T06:00:00Z",
+                        "ordStatus": "Filled",
+                        "ordType": "Limit",
+                        "symbol": "XBTUSD",
+                        "side": "Buy",
+                        "orderQty": 40,
+                        "cumQty": 40,
+                        "orderID": "o5",
+                    },
+                    {
+                        "timestamp": "2022-02-02T08:00:00Z",
+                        "ordStatus": "Canceled",
+                        "ordType": "Limit",
+                        "symbol": "XBTUSD",
+                        "side": "Buy",
+                        "orderQty": 60,
+                        "cumQty": 0,
+                        "orderID": "o6",
+                    },
+                ],
+            )
+
+            profile = build_tranche_behavior_profile(
+                data_root=data_root,
+                mature_start_at="2022-02-01T00:00:00+00:00",
+            )
+            full_window = profile["windows"][0]
+            order_profile = full_window["order_fill_profile"]
+            btc_profile = full_window["btc_tranche_profile"]
+
+            self.assertEqual(order_profile["orders"], 6)
+            self.assertEqual(order_profile["trade_execution_rows"], 5)
+            self.assertEqual(order_profile["orders_without_trade_exec"], 1)
+            self.assertEqual(order_profile["zero_fill_orders"], 1)
+            self.assertEqual(btc_profile["position_episode_count"], 2)
+            self.assertEqual(btc_profile["action_fill_counts"], {"add": 1, "entry": 2, "exit": 1, "reduce": 1})
+            self.assertEqual(btc_profile["median_fill_rows_per_episode"], 2.5)
+            self.assertEqual(btc_profile["median_entry_add_fill_rows_per_episode"], 1.5)
+            self.assertEqual(btc_profile["median_reduce_exit_fill_rows_per_episode"], 1.0)
 
     def test_ahr999_alignment_and_public_archive_variant_specs(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -194,11 +284,27 @@ class PaulWeiPublicResearchTests(unittest.TestCase):
             write_baseline_mapping(behavior_profile=profile, output_dir=output)
             alignment = build_ahr999_alignment(data_root=data_root, spot_root=spot_root, macro_root=macro_root)
             variants = public_archive_variant_specs(mapping_path=output / "baseline_mapping.json")
+            mature_variants = paulwei_mature_style_variant_specs(mapping_path=output / "baseline_mapping.json")
 
             self.assertTrue(alignment["ready"])
             self.assertIn("correlation_to_mvrv", alignment)
             self.assertEqual(variants[-1].name, "paulwei_public_archive_baseline")
+            self.assertEqual(mature_variants[-1].name, "paulwei_mature_style_baseline")
             self.assertEqual(len(variants), 3)
+            self.assertEqual(len(mature_variants), 3)
+
+    def test_committed_paulwei_research_baseline_configs_load_as_variants(self) -> None:
+        public_variants = public_archive_variant_specs(
+            mapping_path=Path("config/research_baselines/paulwei_public_archive_2020_05_2026_04.json")
+        )
+        mature_variants = paulwei_mature_style_variant_specs(
+            mapping_path=Path("config/research_baselines/paulwei_mature_style_2021_05_28.json")
+        )
+
+        self.assertEqual(public_variants[-1].name, "paulwei_public_archive_baseline")
+        self.assertEqual(mature_variants[-1].name, "paulwei_mature_style_baseline")
+        self.assertGreaterEqual(public_variants[-1].execution_config.pyramid_short_add_pct, 0.10)
+        self.assertGreaterEqual(mature_variants[-1].execution_config.pyramid_short_add_pct, 0.10)
 
     def test_execution_guidance_and_promotion_reviews(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
