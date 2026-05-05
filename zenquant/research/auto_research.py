@@ -104,6 +104,7 @@ MIN_STAGED_BUILD_UNWIND_BALANCE_RATIO = 0.25
 MIN_TRANCHE_ACTIONS_PER_POSITION_SWITCH = 3.0
 TRAIN_DRAWDOWN_PREFERRED_BAND = 0.06
 MIN_PROTECTIVE_REDUCE_SHARE = 0.75
+PAULWEI_DUAL_PHASE_OBJECTIVE_PARAM = "paulwei_dual_phase_objective_enabled"
 
 
 def _safe_float(value: Any) -> float:
@@ -201,6 +202,14 @@ def _hostile_proxy_diagnostics(params: dict[str, Any], metrics: dict[str, float]
     dca_spacing_atr = float(params.get("dca_spacing_atr", 0.0) or 0.0)
     dca_size_decay = float(params.get("dca_size_decay", 0.0) or 0.0)
     flip_min_confidence = float(params.get("flip_min_confidence", 0.0) or 0.0)
+    dual_phase_objective_enabled = bool(round(float(params.get(PAULWEI_DUAL_PHASE_OBJECTIVE_PARAM, 0.0) or 0.0)))
+    time_leverage_min_hold_bars = float(params.get("intent_time_leverage_min_hold_bars", 0.0) or 0.0)
+    time_leverage_hold_enabled = bool(round(float(params.get("intent_time_leverage_hold_enabled", 0.0) or 0.0)))
+    dip_accumulation_enabled = bool(
+        round(float(params.get("intent_time_leverage_dip_accumulation_enabled", 0.0) or 0.0))
+    )
+    add_deadband_pct = float(params.get("intent_time_leverage_add_deadband_pct", 0.0) or 0.0)
+    reduce_deadband_pct = float(params.get("intent_time_leverage_reduce_deadband_pct", 0.0) or 0.0)
 
     execution_fragility_score = round(
         max(0.0, target_vol_4h - 0.95) * 4.0
@@ -288,6 +297,67 @@ def _hostile_proxy_diagnostics(params: dict[str, Any], metrics: dict[str, float]
         and flip_reduce_fee_drag_penalty == 0.0
         else 0.0
     )
+    early_expansion_hold_bonus = (
+        0.10
+        if time_leverage_hold_enabled and time_leverage_min_hold_bars >= 336.0 and net_pnl_per_position_switch > 0.0
+        else 0.0
+    )
+    early_expansion_dip_bonus = (
+        0.08
+        if dip_accumulation_enabled
+        and staged_build_tranche_count >= 10.0
+        and net_pnl_per_trade > 0.0
+        and target_vol_4h <= 0.80
+        else 0.0
+    )
+    early_expansion_add_quality_bonus = (
+        min(0.12, 0.02 * min(6.0, staged_build_tranche_count / max(1.0, flip_count)))
+        if staged_build_tranche_count >= staged_unwind_tranche_count * 0.45
+        and net_pnl_per_position_switch > 0.0
+        and max_leverage <= 3.0
+        else 0.0
+    )
+    paulwei_early_convexity_proxy_bonus = (
+        round(early_expansion_hold_bonus + early_expansion_dip_bonus + early_expansion_add_quality_bonus, 6)
+        if dual_phase_objective_enabled
+        else 0.0
+    )
+    mature_cadence_bonus = (
+        0.10
+        if position_switches_per_30d <= PAULWEI_MATURE_POSITION_SWITCHES_PER_30D and position_switches_per_30d > 0.0
+        else 0.0
+    )
+    mature_tranche_control_bonus = (
+        0.10
+        if tranche_alignment_bonus > 0.0
+        and reduce_action_profit_factor >= MIN_REDUCE_ACTION_PROFIT_FACTOR
+        and reduce_deadband_pct >= 0.60
+        else 0.0
+    )
+    mature_fee_control_bonus = (
+        0.08 if fee_drag_pct <= MAX_FEE_DRAG_PCT_ABSOLUTE and flip_reduce_fee_drag_penalty == 0.0 else 0.0
+    )
+    paulwei_mature_control_proxy_bonus = (
+        round(mature_cadence_bonus + mature_tranche_control_bonus + mature_fee_control_bonus, 6)
+        if dual_phase_objective_enabled
+        else 0.0
+    )
+    dual_phase_usdt_safety_penalty = (
+        round(
+            0.65 * max(0.0, (max_drawdown - 0.08) / 0.04)
+            + 0.45 * max(0.0, (fee_drag_pct - MAX_FEE_DRAG_PCT_ABSOLUTE) / MAX_FEE_DRAG_PCT_ABSOLUTE)
+            + 0.35 * max(0.0, max_leverage - 3.0)
+            + 0.20 * max(0.0, 0.10 - add_deadband_pct)
+            + 0.25 * terminated_early,
+            6,
+        )
+        if dual_phase_objective_enabled
+        else 0.0
+    )
+    paulwei_dual_phase_adjustment = round(
+        paulwei_early_convexity_proxy_bonus + paulwei_mature_control_proxy_bonus - dual_phase_usdt_safety_penalty,
+        6,
+    )
     train_churn_stress_penalty = round(
         0.75 * train_trade_count_penalty
         + 0.35 * train_fee_drag_proxy_penalty
@@ -327,6 +397,7 @@ def _hostile_proxy_diagnostics(params: dict[str, Any], metrics: dict[str, float]
         + 0.15 * profit_factor
         + time_leverage_bonus
         + tranche_alignment_bonus
+        + paulwei_dual_phase_adjustment
         - hostile_proxy_penalty_applied
         - 0.60 * train_drawdown_preferred_band_penalty,
         6,
@@ -364,6 +435,11 @@ def _hostile_proxy_diagnostics(params: dict[str, Any], metrics: dict[str, float]
         "staged_inventory_balance_ratio": round(staged_inventory_balance_ratio, 6),
         "tranche_actions_per_position_switch": round(tranche_actions_per_position_switch, 6),
         "tranche_alignment_bonus": round(tranche_alignment_bonus, 6),
+        "paulwei_dual_phase_objective_enabled": 1.0 if dual_phase_objective_enabled else 0.0,
+        "paulwei_early_convexity_proxy_bonus": paulwei_early_convexity_proxy_bonus,
+        "paulwei_mature_control_proxy_bonus": paulwei_mature_control_proxy_bonus,
+        "paulwei_dual_phase_usdt_safety_penalty": dual_phase_usdt_safety_penalty,
+        "paulwei_dual_phase_adjustment": paulwei_dual_phase_adjustment,
         "protective_reduce_share": round(protective_reduce_share, 6),
         "protective_reduce_action_count": round(protective_action_count, 6),
         "net_pnl_per_position_switch": round(net_pnl_per_position_switch, 6),
@@ -413,6 +489,11 @@ def _compact_train_trial_diagnostics(
         "staged_inventory_balance_penalty",
         "tranche_actions_per_position_switch",
         "tranche_alignment_bonus",
+        "paulwei_dual_phase_objective_enabled",
+        "paulwei_early_convexity_proxy_bonus",
+        "paulwei_mature_control_proxy_bonus",
+        "paulwei_dual_phase_usdt_safety_penalty",
+        "paulwei_dual_phase_adjustment",
         "mature_position_switch_penalty",
         "position_switch_penalty",
         "flip_reduce_fee_drag_penalty",

@@ -175,6 +175,8 @@ def _smoke_primary_empty_skip_fallback_reason(
         "ralph_protective_reduce_fee_repair_train_only",
         "ralph_execution_fee_cooldown_train_only",
         "ralph_intent_reduce_cadence_train_only",
+        "paulwei_balanced_tranche_train_only",
+        "paulwei_dual_phase_train_only",
         "baseline_anchored_train_only",
         "baseline_anchored_defensive_candidate_existence",
         "baseline_anchored_2023_08_hostile_repair",

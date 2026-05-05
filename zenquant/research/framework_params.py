@@ -40,6 +40,7 @@ SEARCH_SPACE_MODES: tuple[str, ...] = (
     "ralph_execution_fee_cooldown_train_only",
     "ralph_intent_reduce_cadence_train_only",
     "paulwei_balanced_tranche_train_only",
+    "paulwei_dual_phase_train_only",
     "execution_first_v2_correlation_constrained",
 )
 
@@ -52,6 +53,7 @@ BASE_TIMEFRAME_SMOKE_MODES: frozenset[str] = frozenset(
         "ralph_execution_fee_cooldown_train_only",
         "ralph_intent_reduce_cadence_train_only",
         "paulwei_balanced_tranche_train_only",
+        "paulwei_dual_phase_train_only",
     }
 )
 
@@ -60,6 +62,7 @@ STRICT_TRAIN_FEE_STOP_PROFILE_FLAGS: tuple[str, ...] = (
     "intent_churn_repair_search",
     "binance_factor_weight_repair_search",
     "paulwei_balanced_tranche_search",
+    "paulwei_dual_phase_search",
 )
 
 STRICT_TRAIN_TRUTH_PROFILE_FLAGS: tuple[str, ...] = (
@@ -70,6 +73,7 @@ STRICT_TRAIN_TRUTH_PROFILE_FLAGS: tuple[str, ...] = (
     "ralph_execution_fee_cooldown_search",
     "ralph_intent_reduce_cadence_search",
     "paulwei_balanced_tranche_search",
+    "paulwei_dual_phase_search",
 )
 
 
@@ -868,6 +872,48 @@ def paulwei_balanced_tranche_param_grid(*, include_liquidation_toggles: bool = F
             "profit_protect_unwind_pct": [0.25],
             "profit_protect_confidence_ceiling": [0.75],
             "profit_protect_cooldown_bars": [0],
+        }
+    )
+    return grid
+
+
+def paulwei_dual_phase_param_grid(*, include_liquidation_toggles: bool = False) -> dict[str, list[float]]:
+    """Train-only PaulWei search that learns early expansion and mature control as separate targets."""
+
+    grid = paulwei_balanced_tranche_param_grid(include_liquidation_toggles=include_liquidation_toggles)
+    grid.update(
+        {
+            "paulwei_dual_phase_objective_enabled": [1.0],
+            "target_vol_4h": [0.50, 0.65, 0.80],
+            "max_leverage": [2.5, 3.0],
+            "direction_signal_threshold": [0.30, 0.35, 0.40, 0.45],
+            "intent_add_signal_threshold": [0.30, 0.35, 0.40, 0.45],
+            "intent_entry_confirmation_bars": [3, 4, 6],
+            "intent_flip_confirmation_bars": [16, 24, 36],
+            "intent_flat_confirmation_bars": [12, 16, 24],
+            "intent_range_entry_confirmation_bars": [8, 12],
+            "intent_range_reentry_cooldown_bars": [24, 48],
+            "intent_bearish_override_confirmation_bars": [8, 12],
+            "intent_time_leverage_min_hold_bars": [336, 480, 672],
+            "intent_time_leverage_add_deadband_pct": [0.10, 0.15, 0.25],
+            "intent_time_leverage_reduce_deadband_pct": [0.80, 1.00, 1.25],
+            "intent_time_leverage_dip_accumulation_enabled": [1.0],
+            "intent_time_leverage_dip_min_adverse_atr": [0.75, 1.25],
+            "intent_time_leverage_dip_max_adverse_atr": [2.5, 3.0],
+            "intent_time_leverage_dip_add_pct": [0.10, 0.15],
+            "intent_time_leverage_dip_max_leverage": [2.5, 3.0],
+            "intent_flat_reduce_step_pct": [0.15, 0.25, 0.35],
+            "intent_flat_step_cadence_bars": [12, 24],
+            "intent_same_direction_reduce_confirmation_bars": [8, 12],
+            "range_time_decay_bars": [96, 168],
+            "preserve_capital_time_decay_bars": [24, 48],
+            "time_decay_long_loss_threshold": [-0.08, -0.12],
+            "time_decay_short_loss_threshold": [-0.06, -0.08],
+            "target_delta_deadband_pct": [0.0],
+            "target_reduce_deadband_pct": [0.0],
+            "weak_signal_no_flip_enabled": [0.0],
+            "tiny_reverse_reduce_only_enabled": [0.0],
+            "profit_protect_reduce_enabled": [0.0],
         }
     )
     return grid
@@ -2000,6 +2046,92 @@ def paulwei_balanced_tranche_seed_trials() -> list[dict[str, float]]:
     return seeds
 
 
+def paulwei_dual_phase_seed_trials() -> list[dict[str, float]]:
+    """Deterministic seed set for PaulWei early-expansion plus mature-control learning."""
+
+    dual_phase_variants = [
+        {
+            "target_vol_4h": 0.65,
+            "max_leverage": 3.0,
+            "direction_signal_threshold": 0.35,
+            "intent_add_signal_threshold": 0.35,
+            "intent_entry_confirmation_bars": 3,
+            "intent_flip_confirmation_bars": 16,
+            "intent_flat_confirmation_bars": 12,
+            "intent_time_leverage_min_hold_bars": 336,
+            "intent_time_leverage_add_deadband_pct": 0.10,
+            "intent_time_leverage_reduce_deadband_pct": 0.80,
+            "intent_time_leverage_dip_min_adverse_atr": 0.75,
+            "intent_time_leverage_dip_add_pct": 0.10,
+            "intent_time_leverage_dip_max_leverage": 3.0,
+            "range_time_decay_bars": 96,
+            "preserve_capital_time_decay_bars": 24,
+            "intent_flat_reduce_step_pct": 0.15,
+            "intent_flat_step_cadence_bars": 12,
+            "intent_same_direction_reduce_confirmation_bars": 8,
+        },
+        {
+            "target_vol_4h": 0.50,
+            "max_leverage": 3.0,
+            "direction_signal_threshold": 0.40,
+            "intent_add_signal_threshold": 0.40,
+            "intent_entry_confirmation_bars": 4,
+            "intent_flip_confirmation_bars": 24,
+            "intent_flat_confirmation_bars": 16,
+            "intent_time_leverage_min_hold_bars": 480,
+            "intent_time_leverage_add_deadband_pct": 0.15,
+            "intent_time_leverage_reduce_deadband_pct": 1.00,
+            "intent_time_leverage_dip_min_adverse_atr": 1.25,
+            "intent_time_leverage_dip_add_pct": 0.10,
+            "intent_time_leverage_dip_max_leverage": 3.0,
+            "range_time_decay_bars": 168,
+            "preserve_capital_time_decay_bars": 48,
+            "intent_flat_reduce_step_pct": 0.25,
+            "intent_flat_step_cadence_bars": 24,
+            "intent_same_direction_reduce_confirmation_bars": 12,
+        },
+        {
+            "target_vol_4h": 0.80,
+            "max_leverage": 2.5,
+            "direction_signal_threshold": 0.30,
+            "intent_add_signal_threshold": 0.30,
+            "intent_entry_confirmation_bars": 3,
+            "intent_flip_confirmation_bars": 24,
+            "intent_flat_confirmation_bars": 24,
+            "intent_time_leverage_min_hold_bars": 672,
+            "intent_time_leverage_add_deadband_pct": 0.10,
+            "intent_time_leverage_reduce_deadband_pct": 1.25,
+            "intent_time_leverage_dip_min_adverse_atr": 0.75,
+            "intent_time_leverage_dip_add_pct": 0.15,
+            "intent_time_leverage_dip_max_leverage": 2.5,
+            "range_time_decay_bars": 168,
+            "preserve_capital_time_decay_bars": 48,
+            "intent_flat_reduce_step_pct": 0.35,
+            "intent_flat_step_cadence_bars": 24,
+            "intent_same_direction_reduce_confirmation_bars": 12,
+        },
+    ]
+    seeds: list[dict[str, float]] = []
+    for index, base_seed in enumerate(paulwei_balanced_tranche_seed_trials()):
+        seed = {
+            **base_seed,
+            **dual_phase_variants[index % len(dual_phase_variants)],
+            "paulwei_dual_phase_objective_enabled": 1.0,
+            "intent_time_leverage_hold_enabled": 1.0,
+            "intent_time_leverage_size_hysteresis_enabled": 1.0,
+            "intent_time_leverage_dip_accumulation_enabled": 1.0,
+            "intent_time_leverage_long_bias_enabled": 1.0,
+            "time_decay_exit_enabled": 1.0,
+            "flip_flatten_only_enabled": 0.0,
+            "flip_reverse_open_scale": 1.00,
+            "weak_signal_no_flip_enabled": 0.0,
+            "tiny_reverse_reduce_only_enabled": 0.0,
+            "profit_protect_reduce_enabled": 0.0,
+        }
+        seeds.append(seed)
+    return seeds
+
+
 def binance_factor_weight_repair_seed_trials() -> list[dict[str, float]]:
     targeted_v22_fee_shape = {
         **baseline_anchor_params(),
@@ -2349,6 +2481,8 @@ def param_grid_for_mode(
         return ralph_intent_reduce_cadence_param_grid(include_liquidation_toggles=include_liquidation_toggles)
     if mode == "paulwei_balanced_tranche_train_only":
         return paulwei_balanced_tranche_param_grid(include_liquidation_toggles=include_liquidation_toggles)
+    if mode == "paulwei_dual_phase_train_only":
+        return paulwei_dual_phase_param_grid(include_liquidation_toggles=include_liquidation_toggles)
     return core_param_grid(include_liquidation_toggles=include_liquidation_toggles)
 
 
@@ -2371,6 +2505,7 @@ def search_space_profile(
     ralph_execution_fee_cooldown = mode == "ralph_execution_fee_cooldown_train_only"
     ralph_intent_reduce_cadence = mode == "ralph_intent_reduce_cadence_train_only"
     paulwei_balanced_tranche = mode == "paulwei_balanced_tranche_train_only"
+    paulwei_dual_phase = mode == "paulwei_dual_phase_train_only"
     return {
         "profile": (
             mode
@@ -2385,6 +2520,7 @@ def search_space_profile(
                 or ralph_execution_fee_cooldown
                 or ralph_intent_reduce_cadence
                 or paulwei_balanced_tranche
+                or paulwei_dual_phase
             )
             else "execution_first_v2_correlation_constrained"
             if not include_liquidation_toggles
@@ -2402,6 +2538,23 @@ def search_space_profile(
         "ralph_execution_fee_cooldown_search": ralph_execution_fee_cooldown,
         "ralph_intent_reduce_cadence_search": ralph_intent_reduce_cadence,
         "paulwei_balanced_tranche_search": paulwei_balanced_tranche,
+        "paulwei_dual_phase_search": paulwei_dual_phase,
+        "paulwei_phase_learning_contract": {
+            "enabled": paulwei_dual_phase,
+            "templates": [
+                "early_convexity_usdt_projection",
+                "mature_low_switch_control",
+            ]
+            if paulwei_dual_phase
+            else [],
+            "forbidden_transfers": [
+                "BTC-collateral convexity as direct USDT return target",
+                "public-ledger hindsight as promotion truth",
+                "early-public-ledger drawdown tolerance without USDT risk caps",
+            ]
+            if paulwei_dual_phase
+            else [],
+        },
         "hostile_window_focus": "weak_window_2023_08" if mode == "baseline_anchored_2023_08_hostile_repair" else None,
         "include_liquidation_toggles": include_liquidation_toggles,
         "direction_weight_policy": {

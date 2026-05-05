@@ -57,6 +57,7 @@ from zenquant.research.framework_params import (
     intent_churn_repair_seed_trials,
     param_grid_for_mode,
     paulwei_balanced_tranche_seed_trials,
+    paulwei_dual_phase_seed_trials,
     ralph_execution_fee_cooldown_seed_trials,
     ralph_intent_reduce_cadence_seed_trials,
     ralph_protective_reduce_fee_repair_seed_trials,
@@ -2830,6 +2831,8 @@ def run_optuna_search(
     effective_execution_timeframe = search_execution_timeframe or evaluator._base_config.execution_timeframe
     if evaluator.search_space_profile.get("binance_factor_weight_repair_search", False):
         resolved_seed_trials = binance_factor_weight_repair_seed_trials()[:n_trials]
+    elif evaluator.search_space_profile.get("paulwei_dual_phase_search", False):
+        resolved_seed_trials = paulwei_dual_phase_seed_trials()[:n_trials]
     elif evaluator.search_space_profile.get("paulwei_balanced_tranche_search", False):
         resolved_seed_trials = paulwei_balanced_tranche_seed_trials()[:n_trials]
     elif evaluator.search_space_profile.get("ralph_intent_reduce_cadence_search", False):

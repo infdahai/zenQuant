@@ -318,6 +318,17 @@ class PaulWeiPublicResearchTests(unittest.TestCase):
             self.assertEqual(early["multiples"]["cash_flow_adjusted_btc"], 3.0)
             self.assertGreater(early["multiples"]["cash_flow_adjusted_usd"], 3.0)
             self.assertEqual(early["growth_attribution"]["dominant_driver"], "btc_unit_expansion")
+            contract = audit["phase_learning_contract"]
+            self.assertEqual(contract["version"], "paulwei_dual_phase_learning_v1")
+            self.assertEqual(
+                [item["template_id"] for item in contract["templates"]],
+                ["early_convexity_usdt_projection", "mature_low_switch_control"],
+            )
+            self.assertIn(
+                "longer time-in-market during confirmed expansion regimes",
+                contract["templates"][0]["transferable_behaviors"],
+            )
+            self.assertIn("low position-switch cadence", contract["templates"][1]["transferable_behaviors"])
             self.assertIn(
                 "BTC-collateral convexity as a direct return target for a USDT-margin strategy",
                 audit["u_margin_translation"]["blocked_from_transfer"],

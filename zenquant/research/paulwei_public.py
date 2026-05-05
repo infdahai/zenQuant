@@ -657,6 +657,10 @@ def build_early_convexity_audit(
         ),
         "window_summaries": window_summaries,
         "btc_tranche_profiles": _extract_btc_tranche_profiles(tranche_profile),
+        "phase_learning_contract": _build_phase_learning_contract(
+            window_summaries=window_summaries,
+            mature_start_at=mature_start_at,
+        ),
         "u_margin_translation": {
             "learning_target": "separate early BTC-unit expansion behavior from mature low-switch cadence",
             "safe_to_transfer": [
@@ -2373,6 +2377,104 @@ def _convexity_risk_interpretation(*, label: str, frame: pd.DataFrame) -> dict[s
     }
 
 
+def _window_summary_by_label(window_summaries: list[dict[str, Any]], label: str) -> dict[str, Any]:
+    for summary in window_summaries:
+        if summary.get("label") == label:
+            return summary
+    return {"label": label, "available": False, "blocked_by": ["window_summary_missing"]}
+
+
+def _build_phase_learning_contract(
+    *,
+    window_summaries: list[dict[str, Any]],
+    mature_start_at: str,
+) -> dict[str, Any]:
+    early = _window_summary_by_label(window_summaries, "early_convexity_window")
+    mature = _window_summary_by_label(window_summaries, "mature_control_window")
+    return {
+        "version": "paulwei_dual_phase_learning_v1",
+        "research_only": True,
+        "strategy_base_currency": "USDT",
+        "promotion_policy": "canonical_binance_usdt_train_dev_test_only",
+        "templates": [
+            {
+                "template_id": "early_convexity_usdt_projection",
+                "source_window": {
+                    "start_at": early.get("start_at"),
+                    "end_at": early.get("end_at") or mature_start_at,
+                },
+                "source_evidence": {
+                    "multiples": early.get("multiples"),
+                    "drawdowns": early.get("drawdowns"),
+                    "growth_attribution": early.get("growth_attribution"),
+                    "cash_flows_btc": early.get("cash_flows_btc"),
+                },
+                "learning_goal": "capture a risk-bounded subset of the early BTC-unit expansion mechanism in USDT replay",
+                "transferable_behaviors": [
+                    "longer time-in-market during confirmed expansion regimes",
+                    "staged add when inventory is already working",
+                    "controlled dip accumulation instead of noisy flipping",
+                    "delayed flip confirmation while trend thesis remains valid",
+                ],
+                "forbidden_transfers": [
+                    "BTC-collateral convexity as a direct USDT objective",
+                    "80pct public-ledger drawdown tolerance",
+                    "public-ledger hindsight as candidate promotion truth",
+                ],
+                "train_observables": [
+                    "net_pnl_per_position_switch",
+                    "staged_build_tranche_count",
+                    "time_leverage_efficiency",
+                    "cash_flow_adjusted_usd_return_for_audit_only",
+                    "actual_wallet_usd_drawdown_for_audit_only",
+                ],
+                "hard_safety_constraints": [
+                    "USDT max drawdown must stay inside promotion gates",
+                    "fee drag must stay inside train/dev/test caps",
+                    "test split may reject the candidate without back-propagating new parameters",
+                ],
+            },
+            {
+                "template_id": "mature_low_switch_control",
+                "source_window": {
+                    "start_at": mature.get("start_at") or mature_start_at,
+                    "end_at": mature.get("end_at"),
+                },
+                "source_evidence": {
+                    "multiples": mature.get("multiples"),
+                    "drawdowns": mature.get("drawdowns"),
+                    "growth_attribution": mature.get("growth_attribution"),
+                    "cash_flows_btc": mature.get("cash_flows_btc"),
+                },
+                "learning_goal": "keep position switches low while using many small execution fills to build and unwind inventory",
+                "transferable_behaviors": [
+                    "low position-switch cadence",
+                    "multi-fill tranche build and unwind",
+                    "post-withdrawal account risk control",
+                    "fee-efficient reduce and flip behavior",
+                ],
+                "forbidden_transfers": [
+                    "treating low switch count as low execution activity",
+                    "one-shot exits that erase tranche behavior",
+                    "copying BitMEX inverse-contract accounting into Binance USDT truth",
+                ],
+                "train_observables": [
+                    "position_switches_per_30d",
+                    "tranche_actions_per_position_switch",
+                    "staged_inventory_balance_ratio",
+                    "reduce_action_profit_factor",
+                    "flip_reduce_fee_drag_pct",
+                ],
+                "hard_safety_constraints": [
+                    "do not reduce switching by filtering away the edge",
+                    "risk overlay may reduce exposure but must remain replayable",
+                    "promotion still requires canonical acceptance/test",
+                ],
+            },
+        ],
+    }
+
+
 def _cash_flow_summary(ledger: pd.DataFrame) -> dict[str, Any]:
     frame = ledger.sort_values("timestamp")
     first = frame.iloc[0]
@@ -2472,6 +2574,32 @@ def _early_convexity_markdown(payload: dict[str, Any]) -> str:
                 f"- cash_flows_btc: `{summary.get('cash_flows_btc')}`",
                 f"- growth_attribution: `{summary.get('growth_attribution')}`",
                 f"- risk_interpretation: `{summary.get('risk_interpretation')}`",
+                "",
+            ]
+        )
+
+    contract = payload.get("phase_learning_contract", {})
+    lines.extend(
+        [
+            "## Phase Learning Contract",
+            "",
+            f"- version: `{contract.get('version')}`",
+            f"- strategy_base_currency: `{contract.get('strategy_base_currency')}`",
+            f"- promotion_policy: `{contract.get('promotion_policy')}`",
+            "",
+        ]
+    )
+    for template in contract.get("templates", []):
+        lines.extend(
+            [
+                f"### {template.get('template_id')}",
+                "",
+                f"- source_window: `{template.get('source_window')}`",
+                f"- learning_goal: `{template.get('learning_goal')}`",
+                f"- transferable_behaviors: `{template.get('transferable_behaviors')}`",
+                f"- forbidden_transfers: `{template.get('forbidden_transfers')}`",
+                f"- train_observables: `{template.get('train_observables')}`",
+                f"- hard_safety_constraints: `{template.get('hard_safety_constraints')}`",
                 "",
             ]
         )

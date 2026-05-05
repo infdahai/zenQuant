@@ -17,6 +17,7 @@ from zenquant.research.auto_research import (
     WalkForwardSplit,
     _build_param_grid,
     _build_strategy_config,
+    _compact_train_trial_diagnostics,
     _hostile_proxy_diagnostics,
     _run_backtest_worker,
     _stage1_sort_metric,
@@ -622,6 +623,53 @@ class TestStage1HostileProxy(unittest.TestCase):
         self.assertGreater(wide["train_drawdown_preferred_band_penalty"], 0.0)
         self.assertLess(wide["hostile_proxy_score"], stable["hostile_proxy_score"])
 
+    def test_hostile_proxy_dual_phase_objective_rewards_safe_expansion_and_mature_control(self) -> None:
+        params = {
+            "paulwei_dual_phase_objective_enabled": 1.0,
+            "target_vol_4h": 0.65,
+            "max_leverage": 3.0,
+            "pyramid_initial_pct": 0.25,
+            "pyramid_add_pct": 0.20,
+            "pyramid_short_initial_pct": 0.15,
+            "pyramid_short_add_pct": 0.12,
+            "dca_spacing_atr": 1.25,
+            "dca_size_decay": 0.75,
+            "flip_min_confidence": 0.70,
+            "intent_time_leverage_hold_enabled": 1.0,
+            "intent_time_leverage_min_hold_bars": 480,
+            "intent_time_leverage_size_hysteresis_enabled": 1.0,
+            "intent_time_leverage_add_deadband_pct": 0.15,
+            "intent_time_leverage_reduce_deadband_pct": 0.80,
+            "intent_time_leverage_dip_accumulation_enabled": 1.0,
+        }
+        safe_metrics = {
+            "sharpe": 2.0,
+            "max_drawdown": 0.05,
+            "profit_factor": 1.6,
+            "fee_drag_pct": 0.014,
+            "trade_count": 180,
+            "net_pnl": 7200.0,
+            "net_pnl_per_trade": 40.0,
+            "position_switches_per_30d": 1.2,
+            "flip_reduce_fee_drag_pct": 0.010,
+            "net_pnl_per_position_switch": 260.0,
+            "action_trade_counts": {"add": 35, "entry": 18, "exit": 18, "flip": 12, "reduce": 40},
+            "action_fee_drag_pct": {"exit": 0.004, "flip": 0.004, "reduce": 0.006},
+            "action_profit_factor": {"reduce": 1.25},
+        }
+
+        safe = _hostile_proxy_diagnostics(params, safe_metrics)
+        unsafe = _hostile_proxy_diagnostics(
+            {**params, "max_leverage": 3.5, "intent_time_leverage_add_deadband_pct": 0.0},
+            {**safe_metrics, "max_drawdown": 0.12, "fee_drag_pct": 0.04},
+        )
+
+        self.assertGreater(safe["paulwei_early_convexity_proxy_bonus"], 0.0)
+        self.assertGreater(safe["paulwei_mature_control_proxy_bonus"], 0.0)
+        self.assertEqual(safe["paulwei_dual_phase_usdt_safety_penalty"], 0.0)
+        self.assertGreater(unsafe["paulwei_dual_phase_usdt_safety_penalty"], 0.0)
+        self.assertLess(unsafe["hostile_proxy_score"], safe["hostile_proxy_score"])
+
     def test_stage1_sort_metric_prefers_hostile_proxy_score_over_raw_sharpe(self) -> None:
         strong_sharpe = {"sharpe": 3.0, "hostile_proxy_score": 0.2}
         safer_profile = {"sharpe": 2.0, "hostile_proxy_score": 1.5}
@@ -630,6 +678,32 @@ class TestStage1HostileProxy(unittest.TestCase):
             _stage1_sort_metric(strong_sharpe, "sharpe"),
             _stage1_sort_metric(safer_profile, "sharpe"),
         )
+
+    def test_compact_train_diagnostics_preserve_dual_phase_fields(self) -> None:
+        diagnostics = _compact_train_trial_diagnostics(
+            [
+                {
+                    "params": {"paulwei_dual_phase_objective_enabled": 1.0},
+                    "metrics": {
+                        "sharpe": 2.0,
+                        "hostile_proxy_score": 2.4,
+                        "stage1_score": 2.4,
+                        "paulwei_dual_phase_objective_enabled": 1.0,
+                        "paulwei_early_convexity_proxy_bonus": 0.30,
+                        "paulwei_mature_control_proxy_bonus": 0.20,
+                        "paulwei_dual_phase_usdt_safety_penalty": 0.0,
+                        "paulwei_dual_phase_adjustment": 0.50,
+                    },
+                }
+            ],
+            primary_metric="sharpe",
+        )
+
+        metrics = diagnostics[0]["metrics"]
+        self.assertEqual(metrics["paulwei_dual_phase_objective_enabled"], 1.0)
+        self.assertEqual(metrics["paulwei_early_convexity_proxy_bonus"], 0.30)
+        self.assertEqual(metrics["paulwei_mature_control_proxy_bonus"], 0.20)
+        self.assertEqual(metrics["paulwei_dual_phase_adjustment"], 0.50)
 
     def test_hostile_guardrails_flag_new_execution_fragility_combos(self) -> None:
         violations = hostile_constraint_violations(

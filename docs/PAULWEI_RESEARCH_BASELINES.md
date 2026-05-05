@@ -25,8 +25,8 @@ period and uses the later behavior profile:
 - `loss_median_hold_hours`: `34.3481`
 - `max_drawdown_pct`: `0.1911`
 
-This baseline is the preferred learning target for cadence, time leverage,
-staged inventory, and fee-efficiency research.
+This baseline is the preferred learning target for cadence, low switch count,
+staged unwind, and fee-efficiency research.
 
 ## Tranche Behavior
 
@@ -54,6 +54,25 @@ This distinction matters for this repo because the strategy is USDT-margined.
 BTC-collateral convexity is not a direct promotion target. The transferable
 parts are phase-aware time-in-market, staged add/reduce behavior, and explicit
 cash-flow adjusted evaluation with actual-wallet drawdown reporting.
+
+## Dual-Phase Learning
+
+PaulWei has two different behaviors worth learning, and they should not be
+collapsed into one headline Sharpe target.
+
+1. `early_convexity_usdt_projection`: learn the early expansion mechanism as a
+   USDT-safe projection. The transferable pieces are time leverage in confirmed
+   expansion regimes, staged adds when the position is working, and delayed
+   flips. The forbidden piece is copying BTC-collateral convexity or the early
+   public-ledger drawdown tolerance into a USDT-margin strategy.
+2. `mature_low_switch_control`: learn the later control mechanism. The
+   transferable pieces are low direction-switch cadence, many small fills inside
+   each position episode, staged reduces, and fee-efficient flip/reduce behavior.
+
+The train-only search mode for this combined target is
+`paulwei_dual_phase_train_only`. It enables a Stage1 objective adjustment only in
+that mode; existing PaulWei balanced-tranche and legacy search modes keep their
+previous scoring.
 
 ## Commands
 
@@ -91,4 +110,10 @@ Build the early BTC-unit convexity audit:
 
 ```bash
 uv run python scripts/analyze_paulwei_early_convexity.py --data-root data/raw/paulwei_public --spot-root data/raw/binance_spot --output-dir results/paulwei_early_convexity
+```
+
+Run a smoke search for the dual-phase learning objective:
+
+```bash
+uv run python scripts/run_framework_campaign.py --root data/raw/binance --symbol BTCUSDT --budget smoke --optuna-trials 12 --rl-episodes 0 --search-space-mode paulwei_dual_phase_train_only --development-dev-gate --output-dir results/regime_objective_candidate_search_v102_paulwei_dual_phase_smoke
 ```

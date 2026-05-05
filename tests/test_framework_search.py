@@ -42,6 +42,8 @@ from zenquant.research.framework_params import (
     is_hostile_aware_param_combo,
     paulwei_balanced_tranche_param_grid,
     paulwei_balanced_tranche_seed_trials,
+    paulwei_dual_phase_param_grid,
+    paulwei_dual_phase_seed_trials,
     ralph_execution_fee_cooldown_param_grid,
     ralph_execution_fee_cooldown_seed_trials,
     ralph_intent_reduce_cadence_param_grid,
@@ -121,6 +123,7 @@ class FrameworkParamTests(unittest.TestCase):
         self.assertIn("intent_churn_ablation_train_only", SEARCH_SPACE_MODES)
         self.assertIn("ralph_intent_reduce_cadence_train_only", SEARCH_SPACE_MODES)
         self.assertIn("paulwei_balanced_tranche_train_only", SEARCH_SPACE_MODES)
+        self.assertIn("paulwei_dual_phase_train_only", SEARCH_SPACE_MODES)
         self.assertIn("intent_churn_ablation_train_only", BASE_TIMEFRAME_SMOKE_MODES)
         self.assertTrue(
             smoke_uses_base_timeframe(budget="smoke", search_space_mode="ralph_intent_reduce_cadence_train_only")
@@ -128,11 +131,14 @@ class FrameworkParamTests(unittest.TestCase):
         self.assertTrue(
             smoke_uses_base_timeframe(budget="smoke", search_space_mode="paulwei_balanced_tranche_train_only")
         )
+        self.assertTrue(smoke_uses_base_timeframe(budget="smoke", search_space_mode="paulwei_dual_phase_train_only"))
         self.assertFalse(smoke_uses_base_timeframe(budget="smoke", search_space_mode="baseline_anchored_train_only"))
         self.assertIn("intent_churn_ablation_search", STRICT_TRAIN_FEE_STOP_PROFILE_FLAGS)
         self.assertIn("ralph_intent_reduce_cadence_search", STRICT_TRAIN_TRUTH_PROFILE_FLAGS)
         self.assertIn("paulwei_balanced_tranche_search", STRICT_TRAIN_FEE_STOP_PROFILE_FLAGS)
         self.assertIn("paulwei_balanced_tranche_search", STRICT_TRAIN_TRUTH_PROFILE_FLAGS)
+        self.assertIn("paulwei_dual_phase_search", STRICT_TRAIN_FEE_STOP_PROFILE_FLAGS)
+        self.assertIn("paulwei_dual_phase_search", STRICT_TRAIN_TRUTH_PROFILE_FLAGS)
         self.assertEqual(DEFAULT_DEV_FEE_STABILITY_LIMITS.dev_fee_drag_fail_fast_cap, 0.075)
 
     def test_hostile_constraint_violations_reject_aggressive_combo(self) -> None:
@@ -472,6 +478,35 @@ class FrameworkParamTests(unittest.TestCase):
         self.assertFalse(profile["intent_churn_ablation_search"])
         self.assertFalse(profile["ralph_intent_reduce_cadence_search"])
         self.assertTrue(profile["paulwei_balanced_tranche_search"])
+
+    def test_paulwei_dual_phase_grid_targets_expansion_and_control_templates(self) -> None:
+        grid = paulwei_dual_phase_param_grid()
+        seeds = paulwei_dual_phase_seed_trials()
+
+        self.assertEqual(grid["paulwei_dual_phase_objective_enabled"], [1.0])
+        self.assertEqual(grid["max_leverage"], [2.5, 3.0])
+        self.assertEqual(grid["intent_time_leverage_min_hold_bars"], [336, 480, 672])
+        self.assertEqual(grid["intent_time_leverage_dip_accumulation_enabled"], [1.0])
+        self.assertEqual(grid["intent_time_leverage_reduce_deadband_pct"], [0.80, 1.00, 1.25])
+        self.assertEqual(grid["intent_flip_confirmation_bars"], [16, 24, 36])
+        self.assertEqual(grid["target_delta_deadband_pct"], [0.0])
+        self.assertEqual(grid["profit_protect_reduce_enabled"], [0.0])
+        self.assertGreaterEqual(len(seeds), 4)
+        self.assertTrue(all(seed["paulwei_dual_phase_objective_enabled"] == 1.0 for seed in seeds))
+        self.assertTrue(all(seed["max_leverage"] <= 3.0 for seed in seeds))
+
+    def test_search_space_profile_marks_paulwei_dual_phase_mode(self) -> None:
+        profile = search_space_profile(mode="paulwei_dual_phase_train_only")
+
+        self.assertEqual(profile["profile"], "paulwei_dual_phase_train_only")
+        self.assertEqual(profile["search_space_mode"], "paulwei_dual_phase_train_only")
+        self.assertFalse(profile["paulwei_balanced_tranche_search"])
+        self.assertTrue(profile["paulwei_dual_phase_search"])
+        self.assertTrue(profile["paulwei_phase_learning_contract"]["enabled"])
+        self.assertEqual(
+            profile["paulwei_phase_learning_contract"]["templates"],
+            ["early_convexity_usdt_projection", "mature_low_switch_control"],
+        )
 
     def test_build_signal_weight_overrides_maps_audited_state_factor_weights(self) -> None:
         weights = build_signal_weight_overrides(
