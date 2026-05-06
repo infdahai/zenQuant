@@ -46,6 +46,10 @@ def compute(
     range_profit_run_threshold = float(config.get("range_profit_run_threshold", threshold))
     range_profit_run_value = float(config.get("range_profit_run_value", 0.75))
     range_profit_run_confidence = float(config.get("range_profit_run_confidence", 0.5))
+    range_profit_run_max_transition_risk = float(config.get("range_profit_run_max_transition_risk", 1.0))
+    range_profit_run_min_cycle_position = float(config.get("range_profit_run_min_cycle_position", 0.0))
+    range_profit_run_block_distorted_volatility = bool(config.get("range_profit_run_block_distorted_volatility", False))
+    range_profit_run_block_unsafe_quality = bool(config.get("range_profit_run_block_unsafe_quality", False))
 
     # Confidence naturally encodes regime suitability.
     # Orchestrator uses confidence to weight direction contribution.
@@ -53,6 +57,25 @@ def compute(
 
     if regime == "RANGE" and range_profit_run_enabled:
         if structure == "UPTREND" and roc_z > range_profit_run_threshold:
+            transition_risk = float(state.get("transition_risk", 0.0) or 0.0)
+            volatility_state = str(state.get("volatility_state") or "NORMAL")
+            quality_state = str(state.get("quality_state") or "TRADABLE")
+            cycle_position = float(indicators.get("cycle_position", 1.0) or 1.0)
+            guard_reasons: list[str] = []
+            if transition_risk > range_profit_run_max_transition_risk:
+                guard_reasons.append("TRANSITION_RISK")
+            if cycle_position < range_profit_run_min_cycle_position:
+                guard_reasons.append("CYCLE_POSITION")
+            if range_profit_run_block_distorted_volatility and volatility_state in {"HIGH", "DISTORTED"}:
+                guard_reasons.append("VOLATILITY_STATE")
+            if range_profit_run_block_unsafe_quality and quality_state == "UNSAFE":
+                guard_reasons.append("QUALITY_STATE")
+            if guard_reasons:
+                return SignalResult(
+                    value=0.0,
+                    confidence=0.0,
+                    reason_codes=tuple(f"MULTI_MOM_RANGE_BULL_PROFIT_RUN_GUARDED_{reason}" for reason in guard_reasons),
+                )
             confidence = min(1.0, max(0.0, range_profit_run_confidence + min(0.15, abs(roc_z) / 10.0)))
             return SignalResult(
                 value=sign * min(1.0, max(0.0, range_profit_run_value)),

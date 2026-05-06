@@ -296,6 +296,10 @@ def build_plugin_config_overrides(params: dict[str, Any]) -> dict[str, dict[str,
         "multi_momentum_range_profit_run_threshold",
         "multi_momentum_range_profit_run_value",
         "multi_momentum_range_profit_run_confidence",
+        "multi_momentum_range_profit_run_max_transition_risk",
+        "multi_momentum_range_profit_run_min_cycle_position",
+        "multi_momentum_range_profit_run_block_distorted_volatility",
+        "multi_momentum_range_profit_run_block_unsafe_quality",
     )
     if any(key in params for key in multi_momentum_profit_run_keys):
         multi_momentum_config = overrides.setdefault("signals", {}).setdefault("multi_momentum_signal", {})
@@ -312,6 +316,22 @@ def build_plugin_config_overrides(params: dict[str, Any]) -> dict[str, dict[str,
         if "multi_momentum_range_profit_run_confidence" in params:
             multi_momentum_config["range_profit_run_confidence"] = float(
                 params["multi_momentum_range_profit_run_confidence"]
+            )
+        if "multi_momentum_range_profit_run_max_transition_risk" in params:
+            multi_momentum_config["range_profit_run_max_transition_risk"] = float(
+                params["multi_momentum_range_profit_run_max_transition_risk"]
+            )
+        if "multi_momentum_range_profit_run_min_cycle_position" in params:
+            multi_momentum_config["range_profit_run_min_cycle_position"] = float(
+                params["multi_momentum_range_profit_run_min_cycle_position"]
+            )
+        if "multi_momentum_range_profit_run_block_distorted_volatility" in params:
+            multi_momentum_config["range_profit_run_block_distorted_volatility"] = bool(
+                round(float(params["multi_momentum_range_profit_run_block_distorted_volatility"]))
+            )
+        if "multi_momentum_range_profit_run_block_unsafe_quality" in params:
+            multi_momentum_config["range_profit_run_block_unsafe_quality"] = bool(
+                round(float(params["multi_momentum_range_profit_run_block_unsafe_quality"]))
             )
 
     if "binance_metrics_risk_sizer_enabled" in params:
@@ -1065,6 +1085,10 @@ def paulwei_dual_phase_spot_context_relaxed_fee_param_grid(
             "multi_momentum_range_profit_run_threshold": [0.15, 0.20, 0.25, 0.30],
             "multi_momentum_range_profit_run_value": [0.75, 0.85, 1.00],
             "multi_momentum_range_profit_run_confidence": [0.55, 0.65, 0.75],
+            "multi_momentum_range_profit_run_max_transition_risk": [0.35, 0.45, 0.55, 0.65],
+            "multi_momentum_range_profit_run_min_cycle_position": [0.90, 0.95, 1.00, 1.05],
+            "multi_momentum_range_profit_run_block_distorted_volatility": [0.0, 1.0],
+            "multi_momentum_range_profit_run_block_unsafe_quality": [1.0],
             "time_decay_long_loss_threshold": [-0.16, -0.20, -0.24],
             "time_decay_short_loss_threshold": [-0.10, -0.12, -0.16],
         }
@@ -2838,6 +2862,10 @@ def paulwei_dual_phase_spot_context_relaxed_fee_seed_trials() -> list[dict[str, 
             "multi_momentum_range_profit_run_threshold": 0.15,
             "multi_momentum_range_profit_run_value": 1.00,
             "multi_momentum_range_profit_run_confidence": 0.75,
+            "multi_momentum_range_profit_run_max_transition_risk": 0.55,
+            "multi_momentum_range_profit_run_min_cycle_position": 0.95,
+            "multi_momentum_range_profit_run_block_distorted_volatility": 1.0,
+            "multi_momentum_range_profit_run_block_unsafe_quality": 1.0,
             "time_decay_long_loss_threshold": -0.20,
         },
         {
@@ -2862,6 +2890,10 @@ def paulwei_dual_phase_spot_context_relaxed_fee_seed_trials() -> list[dict[str, 
             "multi_momentum_range_profit_run_threshold": 0.20,
             "multi_momentum_range_profit_run_value": 0.85,
             "multi_momentum_range_profit_run_confidence": 0.65,
+            "multi_momentum_range_profit_run_max_transition_risk": 0.45,
+            "multi_momentum_range_profit_run_min_cycle_position": 1.00,
+            "multi_momentum_range_profit_run_block_distorted_volatility": 1.0,
+            "multi_momentum_range_profit_run_block_unsafe_quality": 1.0,
         },
         {
             "target_vol_4h": 1.10,
@@ -2885,6 +2917,10 @@ def paulwei_dual_phase_spot_context_relaxed_fee_seed_trials() -> list[dict[str, 
             "multi_momentum_range_profit_run_threshold": 0.20,
             "multi_momentum_range_profit_run_value": 0.85,
             "multi_momentum_range_profit_run_confidence": 0.65,
+            "multi_momentum_range_profit_run_max_transition_risk": 0.55,
+            "multi_momentum_range_profit_run_min_cycle_position": 0.95,
+            "multi_momentum_range_profit_run_block_distorted_volatility": 0.0,
+            "multi_momentum_range_profit_run_block_unsafe_quality": 1.0,
         },
         {
             "target_vol_4h": 1.25,

@@ -52,6 +52,37 @@ class MultiMomentumSignalTests(unittest.TestCase):
         self.assertGreaterEqual(result.confidence, 0.65)
         self.assertIn("MULTI_MOM_RANGE_BULL_PROFIT_RUN", result.reason_codes)
 
+    def test_range_profit_run_guard_blocks_unsafe_context(self) -> None:
+        """Research profit-run intent must not fire in noisy bull-like windows."""
+        result = self._compute(
+            {"multi_momentum_z": 1.0, "structure_state": "UPTREND", "cycle_position": 0.86},
+            state={
+                "regime": "RANGE",
+                "transition_risk": 0.62,
+                "volatility_state": "DISTORTED",
+                "quality_state": "TRADABLE",
+            },
+            config={
+                "momentum_threshold": 0.3,
+                "signal_sign": 1.0,
+                "use_single_fallback": True,
+                "range_profit_run_enabled": True,
+                "range_profit_run_threshold": 0.2,
+                "range_profit_run_value": 0.85,
+                "range_profit_run_confidence": 0.65,
+                "range_profit_run_max_transition_risk": 0.45,
+                "range_profit_run_min_cycle_position": 0.95,
+                "range_profit_run_block_distorted_volatility": True,
+                "range_profit_run_block_unsafe_quality": True,
+            },
+        )
+
+        self.assertEqual(result.value, 0.0)
+        self.assertEqual(result.confidence, 0.0)
+        self.assertIn("MULTI_MOM_RANGE_BULL_PROFIT_RUN_GUARDED_TRANSITION_RISK", result.reason_codes)
+        self.assertIn("MULTI_MOM_RANGE_BULL_PROFIT_RUN_GUARDED_CYCLE_POSITION", result.reason_codes)
+        self.assertIn("MULTI_MOM_RANGE_BULL_PROFIT_RUN_GUARDED_VOLATILITY_STATE", result.reason_codes)
+
     # ── None / missing key handling ──
 
     def test_none_momentum_with_fallback(self) -> None:
