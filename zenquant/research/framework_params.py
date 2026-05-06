@@ -304,6 +304,7 @@ def build_plugin_config_overrides(params: dict[str, Any]) -> dict[str, dict[str,
         "multi_momentum_range_profit_run_cycle_threshold",
         "multi_momentum_range_profit_run_cycle_momentum_threshold",
         "multi_momentum_range_profit_run_block_confirmed_downtrend",
+        "multi_momentum_range_profit_run_min_state_direction_signal",
     )
     if any(key in params for key in multi_momentum_profit_run_keys):
         multi_momentum_config = overrides.setdefault("signals", {}).setdefault("multi_momentum_signal", {})
@@ -352,6 +353,10 @@ def build_plugin_config_overrides(params: dict[str, Any]) -> dict[str, dict[str,
         if "multi_momentum_range_profit_run_block_confirmed_downtrend" in params:
             multi_momentum_config["range_profit_run_block_confirmed_downtrend"] = bool(
                 round(float(params["multi_momentum_range_profit_run_block_confirmed_downtrend"]))
+            )
+        if "multi_momentum_range_profit_run_min_state_direction_signal" in params:
+            multi_momentum_config["range_profit_run_min_state_direction_signal"] = float(
+                params["multi_momentum_range_profit_run_min_state_direction_signal"]
             )
 
     if "binance_metrics_risk_sizer_enabled" in params:
@@ -1113,6 +1118,7 @@ def paulwei_dual_phase_spot_context_relaxed_fee_param_grid(
             "multi_momentum_range_profit_run_cycle_threshold": [0.90, 0.95, 1.00, 1.05],
             "multi_momentum_range_profit_run_cycle_momentum_threshold": [0.00, 0.10, 0.20],
             "multi_momentum_range_profit_run_block_confirmed_downtrend": [1.0],
+            "multi_momentum_range_profit_run_min_state_direction_signal": [-0.25, 0.0, 0.15],
             "time_decay_long_loss_threshold": [-0.16, -0.20, -0.24],
             "time_decay_short_loss_threshold": [-0.10, -0.12, -0.16],
         }
@@ -2894,6 +2900,7 @@ def paulwei_dual_phase_spot_context_relaxed_fee_seed_trials() -> list[dict[str, 
             "multi_momentum_range_profit_run_cycle_threshold": 0.95,
             "multi_momentum_range_profit_run_cycle_momentum_threshold": 0.10,
             "multi_momentum_range_profit_run_block_confirmed_downtrend": 1.0,
+            "multi_momentum_range_profit_run_min_state_direction_signal": -0.25,
             "time_decay_long_loss_threshold": -0.20,
         },
         {
@@ -2926,6 +2933,7 @@ def paulwei_dual_phase_spot_context_relaxed_fee_seed_trials() -> list[dict[str, 
             "multi_momentum_range_profit_run_cycle_threshold": 1.00,
             "multi_momentum_range_profit_run_cycle_momentum_threshold": 0.20,
             "multi_momentum_range_profit_run_block_confirmed_downtrend": 1.0,
+            "multi_momentum_range_profit_run_min_state_direction_signal": 0.0,
         },
         {
             "target_vol_4h": 1.10,
@@ -2957,6 +2965,7 @@ def paulwei_dual_phase_spot_context_relaxed_fee_seed_trials() -> list[dict[str, 
             "multi_momentum_range_profit_run_cycle_threshold": 0.95,
             "multi_momentum_range_profit_run_cycle_momentum_threshold": 0.10,
             "multi_momentum_range_profit_run_block_confirmed_downtrend": 1.0,
+            "multi_momentum_range_profit_run_min_state_direction_signal": -0.25,
         },
         {
             "target_vol_4h": 1.25,

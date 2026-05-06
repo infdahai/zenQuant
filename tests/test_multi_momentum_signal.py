@@ -141,6 +141,36 @@ class MultiMomentumSignalTests(unittest.TestCase):
         self.assertEqual(result.value, 0.0)
         self.assertIn("MULTI_MOM_RANGE_BULL_PROFIT_RUN_GUARDED_CONFIRMED_DOWNTREND", result.reason_codes)
 
+    def test_range_profit_run_cycle_fallback_blocks_bearish_state_signal(self) -> None:
+        """Cycle fallback must not fight a negative state direction signal."""
+        result = self._compute(
+            {"multi_momentum_z": 0.25, "structure_state": "NEUTRAL", "cycle_position": 1.08},
+            state={
+                "regime": "RANGE",
+                "transition_risk": 0.30,
+                "directional_state": "TRANSITION",
+                "directional_confidence": 0.50,
+                "direction_signal": -0.55,
+            },
+            config={
+                "momentum_threshold": 0.3,
+                "signal_sign": 1.0,
+                "use_single_fallback": True,
+                "range_profit_run_enabled": True,
+                "range_profit_run_threshold": 0.3,
+                "range_profit_run_value": 0.75,
+                "range_profit_run_confidence": 0.55,
+                "range_profit_run_max_transition_risk": 0.45,
+                "range_profit_run_cycle_fallback_enabled": True,
+                "range_profit_run_cycle_threshold": 1.0,
+                "range_profit_run_cycle_momentum_threshold": 0.10,
+                "range_profit_run_min_state_direction_signal": -0.25,
+            },
+        )
+
+        self.assertEqual(result.value, 0.0)
+        self.assertIn("MULTI_MOM_RANGE_BULL_PROFIT_RUN_GUARDED_STATE_DIRECTION_SIGNAL", result.reason_codes)
+
     # ── None / missing key handling ──
 
     def test_none_momentum_with_fallback(self) -> None:

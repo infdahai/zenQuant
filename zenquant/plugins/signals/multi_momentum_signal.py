@@ -56,6 +56,7 @@ def compute(
         config.get("range_profit_run_cycle_momentum_threshold", range_profit_run_threshold)
     )
     range_profit_run_block_confirmed_downtrend = bool(config.get("range_profit_run_block_confirmed_downtrend", False))
+    range_profit_run_min_state_direction_signal = float(config.get("range_profit_run_min_state_direction_signal", -1.0))
 
     # Confidence naturally encodes regime suitability.
     # Orchestrator uses confidence to weight direction contribution.
@@ -76,6 +77,7 @@ def compute(
             quality_state = str(state.get("quality_state") or "TRADABLE")
             directional_state = str(state.get("directional_state") or "NEUTRAL")
             directional_confidence = float(state.get("directional_confidence", 0.0) or 0.0)
+            state_direction_signal = float(state.get("direction_signal", 0.0) or 0.0)
             guard_reasons: list[str] = []
             if transition_risk > range_profit_run_max_transition_risk:
                 guard_reasons.append("TRANSITION_RISK")
@@ -91,6 +93,8 @@ def compute(
                 and directional_confidence >= 0.55
             ):
                 guard_reasons.append("CONFIRMED_DOWNTREND")
+            if state_direction_signal < range_profit_run_min_state_direction_signal:
+                guard_reasons.append("STATE_DIRECTION_SIGNAL")
             if guard_reasons:
                 return SignalResult(
                     value=0.0,
