@@ -10,7 +10,7 @@ from __future__ import annotations
 import math
 import time
 from collections import Counter, defaultdict
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -229,13 +229,17 @@ class HistoricalBacktest:
                 )
             )
             microstructure_store.load()
+        indicator_config = self._config.indicator_config or IndicatorEngineConfig(
+            expected_symbols=(self._config.portfolio_symbol,)
+        )
+        if self._lightweight_train_search:
+            indicator_config = replace(indicator_config, defer_transfer_entropy=True)
         self.indicator_engine = self._subscribe_with_profile(
             "indicator_step_total_s",
             lambda: IndicatorEngine(
                 bus=self.bus,
                 store=self.indicator_store,
-                config=self._config.indicator_config
-                or IndicatorEngineConfig(expected_symbols=(self._config.portfolio_symbol,)),
+                config=indicator_config,
                 macro_store=self._macro_store if self._macro_store.loaded else None,
                 options_store=self._options_store if self._options_store.loaded else None,
                 hf_store=self._hf_store if self._hf_store.loaded else None,

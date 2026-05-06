@@ -116,6 +116,38 @@ class ReplayTests(unittest.TestCase):
         self.assertFalse(should_stop)
         self.assertIsNone(reason)
 
+    def test_lightweight_replay_defers_transfer_entropy(self) -> None:
+        empty_store = SimpleNamespace(loaded=False)
+        replay_context = SimpleNamespace(
+            funding_rows=[],
+            open_interest_rows=[],
+            aggtrades={},
+            events=[],
+            macro_store=empty_store,
+            options_store=empty_store,
+            hf_store=empty_store,
+            cot_store=empty_store,
+            liquidation_store=empty_store,
+            eth_store=empty_store,
+            basis_store=empty_store,
+            cross_asset_context_store=empty_store,
+            onchain_factor_store=empty_store,
+            binance_metrics_factor_store=empty_store,
+            cache_stats={},
+        )
+
+        with patch("zenquant.historical.replay._build_replay_context", return_value=replay_context):
+            replay = HistoricalBacktest(
+                HistoricalBacktestConfig(
+                    research_compute_mode="lightweight_train_search",
+                    profile_path=None,
+                )
+            )
+
+        profiling = replay.indicator_engine.profiling_snapshot()
+        self.assertTrue(profiling["transfer_entropy_deferred"])
+        self.assertFalse(profiling["slow_enrichment_deferred"])
+
     def test_historical_replay_injects_microstructure_sidecar_when_enabled(self) -> None:
         with TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -489,6 +521,7 @@ class ReplayTests(unittest.TestCase):
         self.assertIn("indicator_layer_timing", first.profiling)
         self.assertIn("indicator_fast_path_enabled", first.profiling)
         self.assertIn("slow_enrichment_deferred", first.profiling)
+        self.assertFalse(first.profiling["transfer_entropy_deferred"])
         self.assertIn("core_execution_indicators_s", first.profiling["indicator_layer_timing"])
 
     def test_replay_preserves_message_order(self) -> None:
