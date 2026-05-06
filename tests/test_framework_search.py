@@ -646,6 +646,8 @@ class FrameworkParamTests(unittest.TestCase):
         self.assertIn(0.50, grid["intent_time_leverage_long_bias_confidence_floor"])
         self.assertIn(0.65, grid["intent_time_leverage_long_bias_transition_ceiling"])
         self.assertIn(0.25, grid["intent_time_leverage_dip_add_pct"])
+        self.assertIn(1.0, grid["multi_momentum_range_profit_run_enabled"])
+        self.assertIn(0.15, grid["multi_momentum_range_profit_run_threshold"])
         self.assertIn(0.0, grid["intent_time_leverage_long_bias_block_short"])
         self.assertTrue(all(seed["research_relaxed_fee_probe_enabled"] == 1.0 for seed in seeds[:12]))
         self.assertTrue(any(seed["max_leverage"] == 4.0 for seed in seeds[:12]))
@@ -653,6 +655,8 @@ class FrameworkParamTests(unittest.TestCase):
         self.assertTrue(any(seed["intent_time_leverage_min_hold_bars"] == 672 for seed in seeds[:12]))
         self.assertTrue(any(seed["intent_time_leverage_long_bias_confidence_floor"] == 0.50 for seed in seeds[:12]))
         self.assertTrue(any(seed["intent_time_leverage_dip_add_pct"] == 0.25 for seed in seeds[:12]))
+        self.assertTrue(any(seed["multi_momentum_range_profit_run_enabled"] == 1.0 for seed in seeds[:12]))
+        self.assertTrue(any(seed["multi_momentum_range_profit_run_threshold"] == 0.15 for seed in seeds[:12]))
         self.assertTrue(any(seed["intent_time_leverage_long_bias_block_short"] == 0.0 for seed in seeds[:12]))
 
     def test_spot_context_score_penalizes_bull_undercapture(self) -> None:
@@ -721,6 +725,10 @@ class FrameworkParamTests(unittest.TestCase):
                 "time_decay_exit_enabled": 1.0,
                 "time_decay_long_loss_threshold": -0.08,
                 "time_decay_short_loss_threshold": -0.06,
+                "multi_momentum_range_profit_run_enabled": 1.0,
+                "multi_momentum_range_profit_run_threshold": 0.20,
+                "multi_momentum_range_profit_run_value": 0.85,
+                "multi_momentum_range_profit_run_confidence": 0.65,
             }
         )
 
@@ -735,6 +743,10 @@ class FrameworkParamTests(unittest.TestCase):
         self.assertTrue(overrides["sizers"]["binance_metrics_risk_sizer"]["enabled"])
         self.assertEqual(overrides["sizers"]["binance_metrics_risk_sizer"]["edge_threshold"], 0.15)
         self.assertEqual(overrides["sizers"]["binance_metrics_risk_sizer"]["discount_floor"], 0.60)
+        self.assertTrue(overrides["signals"]["multi_momentum_signal"]["range_profit_run_enabled"])
+        self.assertEqual(overrides["signals"]["multi_momentum_signal"]["range_profit_run_threshold"], 0.20)
+        self.assertEqual(overrides["signals"]["multi_momentum_signal"]["range_profit_run_value"], 0.85)
+        self.assertEqual(overrides["signals"]["multi_momentum_signal"]["range_profit_run_confidence"], 0.65)
 
     def test_build_strategy_config_maps_intent_churn_controls(self) -> None:
         config = build_strategy_config(

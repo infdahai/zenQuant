@@ -42,10 +42,23 @@ def compute(
     threshold = config.get("momentum_threshold", 0.3)
     sign = float(config.get("signal_sign", 1.0))
     structure = str(indicators.get("structure_state", "NEUTRAL"))
+    range_profit_run_enabled = bool(config.get("range_profit_run_enabled", False))
+    range_profit_run_threshold = float(config.get("range_profit_run_threshold", threshold))
+    range_profit_run_value = float(config.get("range_profit_run_value", 0.75))
+    range_profit_run_confidence = float(config.get("range_profit_run_confidence", 0.5))
 
     # Confidence naturally encodes regime suitability.
     # Orchestrator uses confidence to weight direction contribution.
     # No manual dampening — confidence does the work.
+
+    if regime == "RANGE" and range_profit_run_enabled:
+        if structure == "UPTREND" and roc_z > range_profit_run_threshold:
+            confidence = min(1.0, max(0.0, range_profit_run_confidence + min(0.15, abs(roc_z) / 10.0)))
+            return SignalResult(
+                value=sign * min(1.0, max(0.0, range_profit_run_value)),
+                confidence=confidence,
+                reason_codes=("MULTI_MOM_RANGE_BULL_PROFIT_RUN", "STRUCTURE_UPTREND"),
+            )
 
     if regime == "TREND":
         if structure == "UPTREND" and roc_z > threshold:

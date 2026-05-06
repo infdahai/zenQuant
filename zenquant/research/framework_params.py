@@ -291,6 +291,29 @@ def build_plugin_config_overrides(params: dict[str, Any]) -> dict[str, dict[str,
             "weight": signal_weight,
         }
 
+    multi_momentum_profit_run_keys = (
+        "multi_momentum_range_profit_run_enabled",
+        "multi_momentum_range_profit_run_threshold",
+        "multi_momentum_range_profit_run_value",
+        "multi_momentum_range_profit_run_confidence",
+    )
+    if any(key in params for key in multi_momentum_profit_run_keys):
+        multi_momentum_config = overrides.setdefault("signals", {}).setdefault("multi_momentum_signal", {})
+        if "multi_momentum_range_profit_run_enabled" in params:
+            multi_momentum_config["range_profit_run_enabled"] = bool(
+                round(float(params["multi_momentum_range_profit_run_enabled"]))
+            )
+        if "multi_momentum_range_profit_run_threshold" in params:
+            multi_momentum_config["range_profit_run_threshold"] = float(
+                params["multi_momentum_range_profit_run_threshold"]
+            )
+        if "multi_momentum_range_profit_run_value" in params:
+            multi_momentum_config["range_profit_run_value"] = float(params["multi_momentum_range_profit_run_value"])
+        if "multi_momentum_range_profit_run_confidence" in params:
+            multi_momentum_config["range_profit_run_confidence"] = float(
+                params["multi_momentum_range_profit_run_confidence"]
+            )
+
     if "binance_metrics_risk_sizer_enabled" in params:
         sizer_enabled = bool(round(float(params.get("binance_metrics_risk_sizer_enabled", 0.0) or 0.0)))
         overrides.setdefault("sizers", {})["binance_metrics_risk_sizer"] = {
@@ -1038,6 +1061,10 @@ def paulwei_dual_phase_spot_context_relaxed_fee_param_grid(
             "intent_time_leverage_dip_min_adverse_atr": [0.50, 0.75, 1.00, 1.25],
             "intent_time_leverage_dip_add_pct": [0.10, 0.15, 0.20, 0.25],
             "intent_time_leverage_dip_max_leverage": [3.0, 3.5, 4.0],
+            "multi_momentum_range_profit_run_enabled": [0.0, 1.0],
+            "multi_momentum_range_profit_run_threshold": [0.15, 0.20, 0.25, 0.30],
+            "multi_momentum_range_profit_run_value": [0.75, 0.85, 1.00],
+            "multi_momentum_range_profit_run_confidence": [0.55, 0.65, 0.75],
             "time_decay_long_loss_threshold": [-0.16, -0.20, -0.24],
             "time_decay_short_loss_threshold": [-0.10, -0.12, -0.16],
         }
@@ -2807,6 +2834,10 @@ def paulwei_dual_phase_spot_context_relaxed_fee_seed_trials() -> list[dict[str, 
             "intent_time_leverage_dip_min_adverse_atr": 0.50,
             "intent_time_leverage_dip_add_pct": 0.25,
             "intent_time_leverage_dip_max_leverage": 4.0,
+            "multi_momentum_range_profit_run_enabled": 1.0,
+            "multi_momentum_range_profit_run_threshold": 0.15,
+            "multi_momentum_range_profit_run_value": 1.00,
+            "multi_momentum_range_profit_run_confidence": 0.75,
             "time_decay_long_loss_threshold": -0.20,
         },
         {
@@ -2827,6 +2858,10 @@ def paulwei_dual_phase_spot_context_relaxed_fee_seed_trials() -> list[dict[str, 
             "intent_time_leverage_dip_min_adverse_atr": 0.75,
             "intent_time_leverage_dip_add_pct": 0.20,
             "intent_time_leverage_dip_max_leverage": 3.0,
+            "multi_momentum_range_profit_run_enabled": 1.0,
+            "multi_momentum_range_profit_run_threshold": 0.20,
+            "multi_momentum_range_profit_run_value": 0.85,
+            "multi_momentum_range_profit_run_confidence": 0.65,
         },
         {
             "target_vol_4h": 1.10,
@@ -2846,6 +2881,10 @@ def paulwei_dual_phase_spot_context_relaxed_fee_seed_trials() -> list[dict[str, 
             "intent_time_leverage_dip_min_adverse_atr": 0.75,
             "intent_time_leverage_dip_add_pct": 0.20,
             "intent_time_leverage_dip_max_leverage": 3.5,
+            "multi_momentum_range_profit_run_enabled": 1.0,
+            "multi_momentum_range_profit_run_threshold": 0.20,
+            "multi_momentum_range_profit_run_value": 0.85,
+            "multi_momentum_range_profit_run_confidence": 0.65,
         },
         {
             "target_vol_4h": 1.25,

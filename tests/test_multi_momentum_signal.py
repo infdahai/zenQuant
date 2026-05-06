@@ -32,6 +32,26 @@ class MultiMomentumSignalTests(unittest.TestCase):
         )
         self.assertEqual(result.value, 0.0)
 
+    def test_range_profit_run_is_opt_in(self) -> None:
+        """Research profiles may opt into long profit-run intent inside RANGE."""
+        result = self._compute(
+            {"multi_momentum_z": 1.0, "structure_state": "UPTREND"},
+            state={"regime": "RANGE"},
+            config={
+                "momentum_threshold": 0.3,
+                "signal_sign": 1.0,
+                "use_single_fallback": True,
+                "range_profit_run_enabled": True,
+                "range_profit_run_threshold": 0.2,
+                "range_profit_run_value": 0.85,
+                "range_profit_run_confidence": 0.65,
+            },
+        )
+
+        self.assertEqual(result.value, 0.85)
+        self.assertGreaterEqual(result.confidence, 0.65)
+        self.assertIn("MULTI_MOM_RANGE_BULL_PROFIT_RUN", result.reason_codes)
+
     # ── None / missing key handling ──
 
     def test_none_momentum_with_fallback(self) -> None:
