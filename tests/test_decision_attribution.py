@@ -232,6 +232,9 @@ class DecisionAttributionTests(unittest.TestCase):
                     "equity": 100000.0,
                     "regime": "TREND",
                     "directional_state": "UPTREND",
+                    "momentum_roc_z": 0.4,
+                    "multi_momentum_z": 0.4,
+                    "cycle_position": 1.1,
                     "playbook_id": "RANGE_LIGHT",
                 },
                 {
@@ -242,6 +245,9 @@ class DecisionAttributionTests(unittest.TestCase):
                     "equity": 99998.0,
                     "regime": "TREND",
                     "directional_state": "UPTREND",
+                    "momentum_roc_z": 0.4,
+                    "multi_momentum_z": 0.4,
+                    "cycle_position": 1.1,
                     "playbook_id": "RANGE_LIGHT",
                 },
                 {
@@ -252,6 +258,9 @@ class DecisionAttributionTests(unittest.TestCase):
                     "equity": 99995.0,
                     "regime": "TREND",
                     "directional_state": "UPTREND",
+                    "momentum_roc_z": 0.4,
+                    "multi_momentum_z": 0.4,
+                    "cycle_position": 1.1,
                     "playbook_id": "RANGE_LIGHT",
                 },
             ],
@@ -274,7 +283,14 @@ class DecisionAttributionTests(unittest.TestCase):
         self.assertTrue(attribution["formal_train_truth"])
         self.assertEqual(attribution["summary"]["price_return"], 0.4)
         self.assertEqual(attribution["summary"]["long_when_uptrend_pct"], 0.0)
+        self.assertEqual(attribution["summary"]["cycle_bull_bar_pct"], 1.0)
+        self.assertEqual(attribution["summary"]["long_when_cycle_bull_pct"], 0.0)
+        self.assertEqual(attribution["summary"]["positive_momentum_bar_pct"], 1.0)
         self.assertEqual(attribution["diagnosis"]["primary_failure_mode"], "uptrend_not_converted_to_long_intent")
+        self.assertIn(
+            "cycle_bull_context_not_converted_to_long_intent",
+            attribution["diagnosis"]["failure_flags"],
+        )
         self.assertIn("insufficient_long_time_in_market", attribution["diagnosis"]["failure_flags"])
 
 

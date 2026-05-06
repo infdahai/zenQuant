@@ -936,6 +936,8 @@ class HistoricalBacktest:
                         "zen_pulse": float(indicator.values.get("zen_pulse", 0.0) or 0.0),
                         "atr": float(indicator.values.get("atr", 0.0) or 0.0),
                         "momentum_roc_z": float(indicator.values.get("momentum_roc_z", 0.0) or 0.0),
+                        "multi_momentum_z": float(indicator.values.get("multi_momentum_z", 0.0) or 0.0),
+                        "cycle_position": float(indicator.values.get("cycle_position", 1.0) or 1.0),
                         "structure_state": str(
                             indicator.values.get("structure_state")
                             or indicator.values.get("swing_structure")

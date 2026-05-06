@@ -258,6 +258,12 @@ def build_bull_window_direction_exposure_attribution(
     uptrend_long_bars = 0
     uptrend_short_bars = 0
     uptrend_flat_bars = 0
+    cycle_bull_bars = 0
+    cycle_bull_long_bars = 0
+    cycle_bull_flat_bars = 0
+    positive_momentum_bars = 0
+    range_cycle_profit_candidate_bars = 0
+    range_cycle_profit_candidate_long_bars = 0
     trend_regime_bars = 0
     bull_playbook_bars = 0
     exit_active_bars = 0
@@ -285,6 +291,9 @@ def build_bull_window_direction_exposure_attribution(
         regime = str(row.get("regime") or row.get("target_regime") or "UNKNOWN")
         playbook_id = str(row.get("playbook_id") or "UNKNOWN")
         exit_type = str(row.get("exit_type") or "NONE")
+        cycle_position = _safe_float(row.get("cycle_position")) if row.get("cycle_position") is not None else 1.0
+        momentum_roc_z = _safe_float(row.get("momentum_roc_z"))
+        multi_momentum_z = _safe_float(row.get("multi_momentum_z"))
         target_action = _target_action(previous_target_qty, target_qty)
         target_actions[target_action] += 1
         playbooks[playbook_id] += 1
@@ -300,6 +309,25 @@ def build_bull_window_direction_exposure_attribution(
                 uptrend_short_bars += 1
             else:
                 uptrend_flat_bars += 1
+        is_cycle_bull = cycle_position >= 1.0
+        if is_cycle_bull:
+            cycle_bull_bars += 1
+            if target_qty > 0.0:
+                cycle_bull_long_bars += 1
+            elif target_qty == 0.0:
+                cycle_bull_flat_bars += 1
+        if momentum_roc_z > 0.20 or multi_momentum_z > 0.20:
+            positive_momentum_bars += 1
+        is_range_cycle_profit_candidate = (
+            regime == "RANGE"
+            and is_cycle_bull
+            and directional_state != "DOWNTREND"
+            and (momentum_roc_z > 0.20 or multi_momentum_z > 0.20)
+        )
+        if is_range_cycle_profit_candidate:
+            range_cycle_profit_candidate_bars += 1
+            if target_qty > 0.0:
+                range_cycle_profit_candidate_long_bars += 1
         if regime == "TREND":
             trend_regime_bars += 1
         if "BULL" in playbook_id:
@@ -330,6 +358,15 @@ def build_bull_window_direction_exposure_attribution(
     long_when_uptrend_pct = _pct(uptrend_long_bars, uptrend_bars)
     short_when_uptrend_pct = _pct(uptrend_short_bars, uptrend_bars)
     flat_when_uptrend_pct = _pct(uptrend_flat_bars, uptrend_bars)
+    cycle_bull_bar_pct = _pct(cycle_bull_bars, bar_count)
+    long_when_cycle_bull_pct = _pct(cycle_bull_long_bars, cycle_bull_bars)
+    flat_when_cycle_bull_pct = _pct(cycle_bull_flat_bars, cycle_bull_bars)
+    positive_momentum_bar_pct = _pct(positive_momentum_bars, bar_count)
+    range_cycle_profit_candidate_bar_pct = _pct(range_cycle_profit_candidate_bars, bar_count)
+    long_when_range_cycle_profit_candidate_pct = _pct(
+        range_cycle_profit_candidate_long_bars,
+        range_cycle_profit_candidate_bars,
+    )
     avg_abs_target_leverage = target_abs_leverage_sum / bar_count if bar_count else 0.0
     avg_long_target_leverage = long_target_leverage_sum / long_target_bars if long_target_bars else 0.0
     exit_active_bar_pct = _pct(exit_active_bars, bar_count)
@@ -348,6 +385,10 @@ def build_bull_window_direction_exposure_attribution(
         long_when_uptrend_pct=long_when_uptrend_pct,
         short_target_bar_pct=short_target_bar_pct,
         short_when_uptrend_pct=short_when_uptrend_pct,
+        cycle_bull_bar_pct=cycle_bull_bar_pct,
+        long_when_cycle_bull_pct=long_when_cycle_bull_pct,
+        range_cycle_profit_candidate_bar_pct=range_cycle_profit_candidate_bar_pct,
+        long_when_range_cycle_profit_candidate_pct=long_when_range_cycle_profit_candidate_pct,
         avg_long_target_leverage=avg_long_target_leverage,
         exit_active_bar_pct=exit_active_bar_pct,
         risk_reduced_bar_pct=risk_reduced_bar_pct,
@@ -387,6 +428,12 @@ def build_bull_window_direction_exposure_attribution(
             "long_when_uptrend_pct": round(long_when_uptrend_pct, 6),
             "short_when_uptrend_pct": round(short_when_uptrend_pct, 6),
             "flat_when_uptrend_pct": round(flat_when_uptrend_pct, 6),
+            "cycle_bull_bar_pct": round(cycle_bull_bar_pct, 6),
+            "long_when_cycle_bull_pct": round(long_when_cycle_bull_pct, 6),
+            "flat_when_cycle_bull_pct": round(flat_when_cycle_bull_pct, 6),
+            "positive_momentum_bar_pct": round(positive_momentum_bar_pct, 6),
+            "range_cycle_profit_candidate_bar_pct": round(range_cycle_profit_candidate_bar_pct, 6),
+            "long_when_range_cycle_profit_candidate_pct": round(long_when_range_cycle_profit_candidate_pct, 6),
             "avg_abs_target_leverage": round(avg_abs_target_leverage, 6),
             "avg_long_target_leverage": round(avg_long_target_leverage, 6),
             "exit_active_bar_pct": round(exit_active_bar_pct, 6),
@@ -847,6 +894,10 @@ def _bull_window_failure_flags(
     long_when_uptrend_pct: float,
     short_target_bar_pct: float,
     short_when_uptrend_pct: float,
+    cycle_bull_bar_pct: float,
+    long_when_cycle_bull_pct: float,
+    range_cycle_profit_candidate_bar_pct: float,
+    long_when_range_cycle_profit_candidate_pct: float,
     avg_long_target_leverage: float,
     exit_active_bar_pct: float,
     risk_reduced_bar_pct: float,
@@ -857,6 +908,10 @@ def _bull_window_failure_flags(
             flags.append("bull_regime_not_recognized")
         if uptrend_detected_pct >= 0.20 and long_when_uptrend_pct < 0.35:
             flags.append("uptrend_not_converted_to_long_intent")
+        if cycle_bull_bar_pct >= 0.35 and long_when_cycle_bull_pct < 0.35:
+            flags.append("cycle_bull_context_not_converted_to_long_intent")
+        if range_cycle_profit_candidate_bar_pct >= 0.10 and long_when_range_cycle_profit_candidate_pct < 0.35:
+            flags.append("range_cycle_profit_context_not_converted_to_long_intent")
         if long_target_bar_pct < 0.35:
             flags.append("insufficient_long_time_in_market")
         if long_target_bar_pct >= 0.35 and avg_long_target_leverage < 0.35:
