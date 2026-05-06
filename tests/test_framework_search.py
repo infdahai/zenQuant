@@ -640,9 +640,14 @@ class FrameworkParamTests(unittest.TestCase):
         self.assertEqual(grid["research_relaxed_fee_probe_enabled"], [1.0])
         self.assertIn(1.25, grid["target_vol_4h"])
         self.assertIn(4.0, grid["max_leverage"])
+        self.assertIn(36, grid["intent_flip_confirmation_bars"])
+        self.assertIn(672, grid["intent_time_leverage_min_hold_bars"])
+        self.assertIn(4, grid["intent_bearish_override_confirmation_bars"])
         self.assertIn(0.0, grid["intent_time_leverage_long_bias_block_short"])
         self.assertTrue(all(seed["research_relaxed_fee_probe_enabled"] == 1.0 for seed in seeds[:12]))
         self.assertTrue(any(seed["max_leverage"] == 4.0 for seed in seeds[:12]))
+        self.assertTrue(any(seed["intent_flip_confirmation_bars"] == 36 for seed in seeds[:12]))
+        self.assertTrue(any(seed["intent_time_leverage_min_hold_bars"] == 672 for seed in seeds[:12]))
         self.assertTrue(any(seed["intent_time_leverage_long_bias_block_short"] == 0.0 for seed in seeds[:12]))
 
     def test_spot_context_score_penalizes_bull_undercapture(self) -> None:
