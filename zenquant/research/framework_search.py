@@ -21,7 +21,10 @@ from zenquant.data.liquidation_pipeline import liquidation_readiness
 from zenquant.domain import Timeframe
 from zenquant.historical import HistoricalBacktestConfig
 from zenquant.historical.storage import read_parquet_rows
-from zenquant.research.attribution import build_bull_window_direction_exposure_attribution
+from zenquant.research.attribution import (
+    build_bear_window_direction_exposure_attribution,
+    build_bull_window_direction_exposure_attribution,
+)
 from zenquant.research.auto_research import (
     CampaignConfig,
     SearchSpace,
@@ -920,6 +923,33 @@ def _bull_window_direction_exposure_attribution(
             starting_equity=evaluator._base_config.starting_equity,
         )
 
+    train_2022 = next(
+        (
+            window
+            for window in _train_temporal_robustness_windows(evaluator._split_spec)
+            if window.label == "train_temporal_2022"
+        ),
+        None,
+    )
+    if train_2022 is not None:
+        runner, result = _run_variant_backtest(
+            audit_config,
+            variant,
+            start_ns=train_2022.start_ns,
+            end_ns=train_2022.end_ns,
+        )
+        windows[train_2022.label] = build_bear_window_direction_exposure_attribution(
+            runner,
+            result,
+            variant=variant.name,
+            window_label=train_2022.label,
+            source="post_2020_futures_train",
+            role="bear_survival_direction_exposure",
+            formal_train_truth=True,
+            execution_truth=True,
+            starting_equity=evaluator._base_config.starting_equity,
+        )
+
     if _spot_context_allowed(contract):
         spot_window = next(
             (
@@ -1008,13 +1038,20 @@ def _bull_window_direction_exposure_attribution(
         for payload in windows.values()
         if (payload.get("diagnosis") or {}).get("primary_failure_mode")
     ]
+    bear_modes = [
+        (payload.get("diagnosis") or {}).get("primary_failure_mode")
+        for key, payload in windows.items()
+        if "2022" in key and (payload.get("diagnosis") or {}).get("primary_failure_mode")
+    ]
     return {
-        "scope": "train_dev_only_bull_window_direction_exposure_attribution",
+        "scope": "train_dev_only_direction_exposure_attribution",
+        "legacy_scope": "train_dev_only_bull_window_direction_exposure_attribution",
         "formal_train_truth": False,
         "promotion_allowed": False,
         "test_evaluated": False,
         "windows": windows,
         "primary_failure_modes": list(dict.fromkeys(str(item) for item in primary_modes if item)),
+        "bear_primary_failure_modes": list(dict.fromkeys(str(item) for item in bear_modes if item)),
     }
 
 
@@ -3608,7 +3645,22 @@ def run_optuna_search(
             lightweight_dev_summary = None
         if fail_fast_reason is not None:
             bull_window_attribution = None
-            if str(fail_fast_reason).startswith(("paulwei_2020_", "paulwei_2022_", "temporal_")):
+            temporal_primary_blocker = (
+                str(temporal_robustness_audit.get("primary_blocker") or "")
+                if temporal_robustness_audit is not None
+                else ""
+            )
+            temporal_blockers = (
+                [str(item) for item in temporal_robustness_audit.get("blocked_by", [])]
+                if temporal_robustness_audit is not None
+                else []
+            )
+            attribution_trigger_reasons = [
+                reason
+                for reason in [str(fail_fast_reason), temporal_primary_blocker, *temporal_blockers]
+                if reason.startswith(("paulwei_2020_", "paulwei_2022_", "temporal_", "late_dev_"))
+            ]
+            if attribution_trigger_reasons:
                 try:
                     bull_window_attribution = _bull_window_direction_exposure_attribution(
                         evaluator,
@@ -3623,6 +3675,11 @@ def run_optuna_search(
                         "blocked_by": "bull_window_direction_exposure_attribution_failed",
                         "error": str(exc)[:240],
                     }
+            masked_temporal_primary_blocker = (
+                temporal_primary_blocker
+                if temporal_primary_blocker and temporal_primary_blocker != str(fail_fast_reason)
+                else None
+            )
             fail_fast_rejection_count += 1
             fail_fast_reason_counts[fail_fast_reason] = int(fail_fast_reason_counts.get(fail_fast_reason, 0) or 0) + 1
             rejected_candidate_diagnostics.append(
@@ -3632,6 +3689,10 @@ def run_optuna_search(
                     "spot_context_metrics": spot_context_metrics,
                     "temporal_robustness_audit": temporal_robustness_audit,
                     "bull_window_direction_exposure_attribution": bull_window_attribution,
+                    "direction_window_exposure_attribution": bull_window_attribution,
+                    "masked_temporal_primary_blocker": masked_temporal_primary_blocker,
+                    "masked_temporal_blockers": temporal_blockers if masked_temporal_primary_blocker else [],
+                    "direction_attribution_trigger_reasons": list(dict.fromkeys(attribution_trigger_reasons)),
                     "summary": asdict(train_summary),
                     "stage1_fail_fast_reason": fail_fast_reason,
                     "regime_objective": regime_objective,
@@ -3743,11 +3804,29 @@ def run_optuna_search(
         for item in rejected_candidate_diagnostics
         if item.get("bull_window_direction_exposure_attribution")
     ]
+    bear_window_attributions = [
+        item for item in bull_window_attributions if "train_temporal_2022" in (item.get("windows") or {})
+    ]
+    masked_temporal_blocker_count = sum(
+        1 for item in rejected_candidate_diagnostics if item.get("masked_temporal_primary_blocker")
+    )
     diagnostics["train_candidate_diagnostics"]["bull_window_direction_exposure_attribution_enabled"] = bool(
         bull_window_attributions
     )
     diagnostics["train_candidate_diagnostics"]["best_bull_window_direction_exposure_attribution"] = (
         bull_window_attributions[0] if bull_window_attributions else None
+    )
+    diagnostics["train_candidate_diagnostics"]["direction_window_exposure_attribution_enabled"] = bool(
+        bull_window_attributions
+    )
+    diagnostics["train_candidate_diagnostics"]["best_direction_window_exposure_attribution"] = (
+        bull_window_attributions[0] if bull_window_attributions else None
+    )
+    diagnostics["train_candidate_diagnostics"]["bear_window_direction_exposure_attribution_enabled"] = bool(
+        bear_window_attributions
+    )
+    diagnostics["train_candidate_diagnostics"]["masked_temporal_blocker_attribution_count"] = (
+        masked_temporal_blocker_count
     )
     spot_context_ranked = [item for item in ranked if item.get("spot_context_metrics")]
     diagnostics["spot_era_context_replay_audit"] = {

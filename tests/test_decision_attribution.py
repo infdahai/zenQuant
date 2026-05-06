@@ -3,6 +3,7 @@ from types import SimpleNamespace
 
 from zenquant.domain import BacktestMetrics, ExecutionReport
 from zenquant.research.attribution import (
+    build_bear_window_direction_exposure_attribution,
     build_bull_window_direction_exposure_attribution,
     build_decision_attribution_ledger,
     classify_execution_action_source,
@@ -292,6 +293,97 @@ class DecisionAttributionTests(unittest.TestCase):
             attribution["diagnosis"]["failure_flags"],
         )
         self.assertIn("insufficient_long_time_in_market", attribution["diagnosis"]["failure_flags"])
+
+    def test_bear_window_attribution_flags_overlong_and_missing_short(self) -> None:
+        metrics = BacktestMetrics(
+            symbol="BTCUSDT_PERP",
+            start_ns=1,
+            end_ns=3,
+            total_bars=3,
+            net_pnl=-12.0,
+            gross_pnl=-12.0,
+            total_fees=0.0,
+            total_funding=0.0,
+            sharpe=-1.0,
+            sortino=-1.0,
+            max_drawdown=0.08,
+            max_dd_duration_bars=2,
+            win_rate=0.0,
+            profit_factor=0.0,
+            avg_win=0.0,
+            avg_loss=-12.0,
+            trade_count=1,
+            turnover_per_day=0.0,
+            fee_drag_pct=0.0,
+        )
+        runner = SimpleNamespace(
+            _reports=[],
+            build_analysis_rows=lambda: [
+                {
+                    "cutoff_time_ns": 1,
+                    "close_price": 100.0,
+                    "target_qty": 1.0,
+                    "target_leverage": 0.8,
+                    "equity": 100000.0,
+                    "regime": "RANGE",
+                    "directional_state": "DOWNTREND",
+                    "direction_signal": -0.6,
+                    "cycle_position": 1.1,
+                    "momentum_roc_z": 0.3,
+                    "playbook_id": "RANGE_LIGHT",
+                },
+                {
+                    "cutoff_time_ns": 2,
+                    "close_price": 90.0,
+                    "target_qty": 1.0,
+                    "target_leverage": 0.8,
+                    "equity": 99994.0,
+                    "regime": "RANGE",
+                    "directional_state": "DOWNTREND",
+                    "direction_signal": -0.6,
+                    "cycle_position": 1.1,
+                    "momentum_roc_z": 0.3,
+                    "playbook_id": "RANGE_LIGHT",
+                },
+                {
+                    "cutoff_time_ns": 3,
+                    "close_price": 80.0,
+                    "target_qty": 1.0,
+                    "target_leverage": 0.8,
+                    "equity": 99988.0,
+                    "regime": "RANGE",
+                    "directional_state": "DOWNTREND",
+                    "direction_signal": -0.6,
+                    "cycle_position": 1.1,
+                    "momentum_roc_z": 0.3,
+                    "playbook_id": "RANGE_LIGHT",
+                },
+            ],
+        )
+
+        attribution = build_bear_window_direction_exposure_attribution(
+            runner,
+            SimpleNamespace(metrics=metrics),
+            variant="candidate",
+            window_label="train_temporal_2022",
+            source="post_2020_futures_train",
+            role="bear_survival_direction_exposure",
+            formal_train_truth=True,
+            execution_truth=True,
+            starting_equity=100000.0,
+        )
+
+        self.assertEqual(attribution["scope"], "train_dev_only_bear_window_direction_exposure_attribution")
+        self.assertFalse(attribution["test_evaluated"])
+        self.assertEqual(attribution["summary"]["price_return"], -0.2)
+        self.assertEqual(attribution["summary"]["long_when_bearish_state_pct"], 1.0)
+        self.assertEqual(attribution["summary"]["short_when_bearish_state_pct"], 0.0)
+        self.assertEqual(attribution["diagnosis"]["primary_failure_mode"], "cycle_profit_run_overlong_in_bear_window")
+        self.assertIn(
+            "bearish_state_not_converted_to_short_intent",
+            attribution["diagnosis"]["failure_flags"],
+        )
+        self.assertIn("risk_overlay_not_reducing_bear_exposure", attribution["diagnosis"]["failure_flags"])
 
 
 if __name__ == "__main__":

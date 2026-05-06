@@ -3092,6 +3092,83 @@ class SearchReportSerializationTests(unittest.TestCase):
         self.assertEqual(rejected[0]["stage1_fail_fast_reason"], "regime_objective_train_bucket_fail_fast")
         self.assertFalse(rejected[0]["regime_objective"]["allow_dev_diagnostic_review"])
 
+    def test_run_optuna_search_attaches_direction_attribution_when_regime_failure_masks_temporal(
+        self,
+    ) -> None:
+        @dataclass
+        class FakeSweep:
+            total_combinations: int
+            results: list[dict]
+            top_n: list[dict]
+            runtime_s: float
+
+        temporal_audit = {
+            "primary_blocker": "paulwei_2022_bear_survival_fail_fast",
+            "blocked_by": ["paulwei_2022_bear_survival_fail_fast"],
+            "score_adjustment": -1.0,
+        }
+        direction_attribution = {
+            "scope": "train_dev_only_direction_exposure_attribution",
+            "promotion_allowed": False,
+            "test_evaluated": False,
+            "windows": {
+                "train_temporal_2022": {
+                    "scope": "train_dev_only_bear_window_direction_exposure_attribution",
+                    "diagnosis": {"primary_failure_mode": "cycle_profit_run_overlong_in_bear_window"},
+                }
+            },
+            "bear_primary_failure_modes": ["cycle_profit_run_overlong_in_bear_window"],
+        }
+
+        with (
+            patch(
+                "zenquant.research.framework_search.run_search_stage",
+                return_value=FakeSweep(
+                    total_combinations=1,
+                    results=[],
+                    top_n=[
+                        {
+                            "params": {"w_momentum": 0.3},
+                            "metrics": {"sharpe": 2.0, "score": 2.0, "net_pnl": 50_000.0, "max_drawdown": 0.08},
+                            "baseline_train_metrics": {},
+                        },
+                    ],
+                    runtime_s=0.1,
+                ),
+            ),
+            patch(
+                "zenquant.research.framework_search.score_regime_objective_candidate_generation",
+                return_value={"regime_objective_score": 0.0, "allow_dev_diagnostic_review": False},
+            ),
+            patch("zenquant.research.framework_search._spot_context_replay_audit", return_value=None),
+            patch("zenquant.research.framework_search._temporal_robustness_audit", return_value=temporal_audit),
+            patch(
+                "zenquant.research.framework_search._bull_window_direction_exposure_attribution",
+                return_value=direction_attribution,
+            ) as attribution,
+        ):
+            evaluator = FrameworkEvaluator(HistoricalBacktestConfig(), split_spec=default_btc_split_spec())
+            best, ranked, diagnostics = run_optuna_search(evaluator, n_trials=1)
+
+        self.assertIsNone(best)
+        self.assertEqual(ranked, [])
+        rejected = diagnostics["train_candidate_diagnostics"]["rejected_candidate_diagnostics"]
+        self.assertEqual(rejected[0]["stage1_fail_fast_reason"], "regime_objective_train_bucket_fail_fast")
+        self.assertEqual(rejected[0]["masked_temporal_primary_blocker"], "paulwei_2022_bear_survival_fail_fast")
+        self.assertEqual(rejected[0]["direction_window_exposure_attribution"], direction_attribution)
+        self.assertEqual(
+            rejected[0]["direction_attribution_trigger_reasons"],
+            ["paulwei_2022_bear_survival_fail_fast"],
+        )
+        self.assertTrue(
+            diagnostics["train_candidate_diagnostics"]["bear_window_direction_exposure_attribution_enabled"]
+        )
+        self.assertEqual(
+            diagnostics["train_candidate_diagnostics"]["masked_temporal_blocker_attribution_count"],
+            1,
+        )
+        attribution.assert_called_once()
+
     def test_run_optuna_search_passes_stage1_target_inflight(self) -> None:
         @dataclass
         class FakeSweep:

@@ -460,6 +460,290 @@ def build_bull_window_direction_exposure_attribution(
     }
 
 
+def build_bear_window_direction_exposure_attribution(
+    runner: Any,
+    result: Any,
+    *,
+    variant: str,
+    window_label: str,
+    source: str,
+    role: str,
+    formal_train_truth: bool,
+    execution_truth: bool,
+    starting_equity: float,
+) -> dict[str, Any]:
+    """Explain why a bear/survival window lost money or missed downside exposure."""
+
+    rows = runner.build_analysis_rows()
+    reports_by_ts = _execution_reports_by_ts(getattr(runner, "_reports", []))
+    bar_count = len(rows)
+    if not rows:
+        return {
+            "variant": variant,
+            "window_label": window_label,
+            "source": source,
+            "role": role,
+            "scope": "train_dev_only_bear_window_direction_exposure_attribution",
+            "formal_train_truth": formal_train_truth,
+            "execution_truth": execution_truth,
+            "promotion_allowed": False,
+            "test_evaluated": False,
+            "summary": {"bar_count": 0},
+            "counts": {},
+            "diagnosis": {
+                "primary_failure_mode": "analysis_rows_missing",
+                "failure_flags": ["analysis_rows_missing"],
+            },
+        }
+
+    first_price = _safe_float(rows[0].get("close_price"))
+    last_price = _safe_float(rows[-1].get("close_price"))
+    price_return = (last_price / first_price - 1.0) if first_price > 0.0 else 0.0
+    negative_beta_pnl = abs(min(0.0, price_return)) * max(0.0, starting_equity)
+
+    target_actions: Counter[str] = Counter()
+    execution_actions: Counter[str] = Counter()
+    playbooks: Counter[str] = Counter()
+    regimes: Counter[str] = Counter()
+    directional_states: Counter[str] = Counter()
+    exit_types: Counter[str] = Counter()
+    risk_flags: Counter[str] = Counter()
+    target_reason_codes: Counter[str] = Counter()
+    exit_reason_codes: Counter[str] = Counter()
+
+    previous_target_qty = 0.0
+    previous_equity: float | None = None
+    long_equity_pnl = 0.0
+    short_equity_pnl = 0.0
+    flat_equity_pnl = 0.0
+    target_abs_leverage_sum = 0.0
+    short_target_leverage_sum = 0.0
+    long_target_bars = 0
+    short_target_bars = 0
+    flat_target_bars = 0
+    downtrend_bars = 0
+    downtrend_long_bars = 0
+    downtrend_short_bars = 0
+    downtrend_flat_bars = 0
+    bearish_state_bars = 0
+    bearish_state_long_bars = 0
+    bearish_state_short_bars = 0
+    cycle_bull_bars = 0
+    cycle_bull_long_bars = 0
+    range_cycle_profit_candidate_bars = 0
+    range_cycle_profit_candidate_long_bars = 0
+    trend_regime_bars = 0
+    bear_playbook_bars = 0
+    exit_active_bars = 0
+    target_reduce_bars = 0
+    risk_reduced_bars = 0
+    reduce_only_bars = 0
+
+    for row in rows:
+        target_qty = _safe_float(row.get("target_qty"))
+        close_price = _safe_float(row.get("close_price"))
+        equity = _safe_float(row.get("equity")) or max(0.0, starting_equity)
+        equity_pnl = 0.0 if previous_equity is None or equity <= 0.0 else equity - previous_equity
+        if equity > 0.0:
+            previous_equity = equity
+        if target_qty > 0.0:
+            long_equity_pnl += equity_pnl
+        elif target_qty < 0.0:
+            short_equity_pnl += equity_pnl
+        else:
+            flat_equity_pnl += equity_pnl
+
+        target_leverage = abs(_safe_float(row.get("target_leverage")))
+        if target_leverage <= 0.0 and close_price > 0.0 and equity > 0.0:
+            target_leverage = abs(target_qty) * close_price / equity
+        target_abs_leverage_sum += target_leverage
+        if target_qty > 0.0:
+            long_target_bars += 1
+        elif target_qty < 0.0:
+            short_target_bars += 1
+            short_target_leverage_sum += target_leverage
+        else:
+            flat_target_bars += 1
+
+        directional_state = str(row.get("directional_state") or "UNKNOWN")
+        regime = str(row.get("regime") or row.get("target_regime") or "UNKNOWN")
+        playbook_id = str(row.get("playbook_id") or "UNKNOWN")
+        exit_type = str(row.get("exit_type") or "NONE")
+        cycle_position = _safe_float(row.get("cycle_position")) if row.get("cycle_position") is not None else 1.0
+        momentum_roc_z = _safe_float(row.get("momentum_roc_z"))
+        multi_momentum_z = _safe_float(row.get("multi_momentum_z"))
+        direction_signal = _safe_float(row.get("direction_signal"))
+        target_action = _target_action(previous_target_qty, target_qty)
+        target_actions[target_action] += 1
+        playbooks[playbook_id] += 1
+        regimes[regime] += 1
+        directional_states[directional_state] += 1
+
+        is_downtrend = directional_state == "DOWNTREND"
+        if is_downtrend:
+            downtrend_bars += 1
+            if target_qty > 0.0:
+                downtrend_long_bars += 1
+            elif target_qty < 0.0:
+                downtrend_short_bars += 1
+            else:
+                downtrend_flat_bars += 1
+        is_bearish_state = is_downtrend or direction_signal <= -0.25
+        if is_bearish_state:
+            bearish_state_bars += 1
+            if target_qty > 0.0:
+                bearish_state_long_bars += 1
+            elif target_qty < 0.0:
+                bearish_state_short_bars += 1
+        is_cycle_bull = cycle_position >= 1.0
+        if is_cycle_bull:
+            cycle_bull_bars += 1
+            if target_qty > 0.0:
+                cycle_bull_long_bars += 1
+        is_range_cycle_profit_candidate = (
+            regime == "RANGE"
+            and is_cycle_bull
+            and directional_state != "DOWNTREND"
+            and (momentum_roc_z > 0.20 or multi_momentum_z > 0.20)
+        )
+        if is_range_cycle_profit_candidate:
+            range_cycle_profit_candidate_bars += 1
+            if target_qty > 0.0:
+                range_cycle_profit_candidate_long_bars += 1
+        if regime == "TREND":
+            trend_regime_bars += 1
+        if "BEAR" in playbook_id:
+            bear_playbook_bars += 1
+        if exit_type and exit_type != "NONE":
+            exit_active_bars += 1
+            exit_types[exit_type] += 1
+        if target_action in {"reduce", "exit", "flip"}:
+            target_reduce_bars += 1
+        if _risk_reduced_target(row):
+            risk_reduced_bars += 1
+        if bool(row.get("risk_reduce_only")) or bool(row.get("reduce_only")):
+            reduce_only_bars += 1
+
+        for flag in _pipe_codes(row.get("risk_decision_flags") or row.get("risk_flags")):
+            risk_flags[flag] += 1
+        target_reason_codes.update(_pipe_codes(row.get("target_reason_codes")))
+        exit_reason_codes.update(_pipe_codes(row.get("exit_reason_codes")))
+        for report in reports_by_ts.get(int(row.get("cutoff_time_ns", 0) or 0), []):
+            execution_actions[str(report.get("action") or "none")] += 1
+        previous_target_qty = target_qty
+
+    long_target_bar_pct = _pct(long_target_bars, bar_count)
+    short_target_bar_pct = _pct(short_target_bars, bar_count)
+    flat_target_bar_pct = _pct(flat_target_bars, bar_count)
+    downtrend_detected_pct = _pct(downtrend_bars, bar_count)
+    bearish_state_bar_pct = _pct(bearish_state_bars, bar_count)
+    long_when_downtrend_pct = _pct(downtrend_long_bars, downtrend_bars)
+    short_when_downtrend_pct = _pct(downtrend_short_bars, downtrend_bars)
+    flat_when_downtrend_pct = _pct(downtrend_flat_bars, downtrend_bars)
+    long_when_bearish_state_pct = _pct(bearish_state_long_bars, bearish_state_bars)
+    short_when_bearish_state_pct = _pct(bearish_state_short_bars, bearish_state_bars)
+    cycle_bull_bar_pct = _pct(cycle_bull_bars, bar_count)
+    long_when_cycle_bull_pct = _pct(cycle_bull_long_bars, cycle_bull_bars)
+    range_cycle_profit_candidate_bar_pct = _pct(range_cycle_profit_candidate_bars, bar_count)
+    long_when_range_cycle_profit_candidate_pct = _pct(
+        range_cycle_profit_candidate_long_bars,
+        range_cycle_profit_candidate_bars,
+    )
+    avg_abs_target_leverage = target_abs_leverage_sum / bar_count if bar_count else 0.0
+    avg_short_target_leverage = short_target_leverage_sum / short_target_bars if short_target_bars else 0.0
+    exit_active_bar_pct = _pct(exit_active_bars, bar_count)
+    risk_reduced_bar_pct = _pct(risk_reduced_bars, bar_count)
+    target_reduce_action_pct = _pct(target_reduce_bars, bar_count)
+    bear_capture_ratio = (
+        _safe_float(getattr(result.metrics, "net_pnl", 0.0)) / negative_beta_pnl if negative_beta_pnl > 0.0 else 0.0
+    )
+    failure_flags = _bear_window_failure_flags(
+        price_return=price_return,
+        net_pnl=_safe_float(getattr(result.metrics, "net_pnl", 0.0)),
+        long_equity_pnl=long_equity_pnl,
+        downtrend_detected_pct=downtrend_detected_pct,
+        bearish_state_bar_pct=bearish_state_bar_pct,
+        long_target_bar_pct=long_target_bar_pct,
+        short_target_bar_pct=short_target_bar_pct,
+        long_when_downtrend_pct=long_when_downtrend_pct,
+        short_when_downtrend_pct=short_when_downtrend_pct,
+        long_when_bearish_state_pct=long_when_bearish_state_pct,
+        short_when_bearish_state_pct=short_when_bearish_state_pct,
+        long_when_range_cycle_profit_candidate_pct=long_when_range_cycle_profit_candidate_pct,
+        exit_active_bar_pct=exit_active_bar_pct,
+        target_reduce_action_pct=target_reduce_action_pct,
+        risk_reduced_bar_pct=risk_reduced_bar_pct,
+    )
+
+    return {
+        "variant": variant,
+        "window_label": window_label,
+        "source": source,
+        "role": role,
+        "scope": "train_dev_only_bear_window_direction_exposure_attribution",
+        "formal_train_truth": formal_train_truth,
+        "execution_truth": execution_truth,
+        "promotion_allowed": False,
+        "test_evaluated": False,
+        "metrics": asdict(result.metrics),
+        "summary": {
+            "bar_count": bar_count,
+            "price_return": round(price_return, 6),
+            "equity_multiple": round(
+                (starting_equity + _safe_float(getattr(result.metrics, "net_pnl", 0.0))) / starting_equity,
+                6,
+            )
+            if starting_equity > 0.0
+            else 0.0,
+            "net_pnl": round(_safe_float(getattr(result.metrics, "net_pnl", 0.0)), 6),
+            "sharpe": round(_safe_float(getattr(result.metrics, "sharpe", 0.0)), 6),
+            "max_drawdown": round(_safe_float(getattr(result.metrics, "max_drawdown", 0.0)), 6),
+            "bear_capture_ratio": round(bear_capture_ratio, 6),
+            "long_equity_pnl": round(long_equity_pnl, 6),
+            "short_equity_pnl": round(short_equity_pnl, 6),
+            "flat_equity_pnl": round(flat_equity_pnl, 6),
+            "long_target_bar_pct": round(long_target_bar_pct, 6),
+            "short_target_bar_pct": round(short_target_bar_pct, 6),
+            "flat_target_bar_pct": round(flat_target_bar_pct, 6),
+            "downtrend_detected_pct": round(downtrend_detected_pct, 6),
+            "bearish_state_bar_pct": round(bearish_state_bar_pct, 6),
+            "trend_regime_bar_pct": round(_pct(trend_regime_bars, bar_count), 6),
+            "bear_playbook_bar_pct": round(_pct(bear_playbook_bars, bar_count), 6),
+            "long_when_downtrend_pct": round(long_when_downtrend_pct, 6),
+            "short_when_downtrend_pct": round(short_when_downtrend_pct, 6),
+            "flat_when_downtrend_pct": round(flat_when_downtrend_pct, 6),
+            "long_when_bearish_state_pct": round(long_when_bearish_state_pct, 6),
+            "short_when_bearish_state_pct": round(short_when_bearish_state_pct, 6),
+            "cycle_bull_bar_pct": round(cycle_bull_bar_pct, 6),
+            "long_when_cycle_bull_pct": round(long_when_cycle_bull_pct, 6),
+            "range_cycle_profit_candidate_bar_pct": round(range_cycle_profit_candidate_bar_pct, 6),
+            "long_when_range_cycle_profit_candidate_pct": round(long_when_range_cycle_profit_candidate_pct, 6),
+            "avg_abs_target_leverage": round(avg_abs_target_leverage, 6),
+            "avg_short_target_leverage": round(avg_short_target_leverage, 6),
+            "exit_active_bar_pct": round(exit_active_bar_pct, 6),
+            "target_reduce_action_pct": round(target_reduce_action_pct, 6),
+            "risk_reduced_bar_pct": round(risk_reduced_bar_pct, 6),
+            "reduce_only_bar_pct": round(_pct(reduce_only_bars, bar_count), 6),
+            "execution_report_count": len(getattr(runner, "_reports", [])),
+        },
+        "counts": {
+            "target_actions": dict(target_actions),
+            "execution_actions": dict(execution_actions),
+            "top_playbooks": dict(playbooks.most_common(12)),
+            "regimes": dict(regimes),
+            "directional_states": dict(directional_states),
+            "exit_types": dict(exit_types),
+            "top_risk_flags": dict(risk_flags.most_common(12)),
+            "top_target_reason_codes": dict(target_reason_codes.most_common(12)),
+            "top_exit_reason_codes": dict(exit_reason_codes.most_common(12)),
+        },
+        "diagnosis": {
+            "primary_failure_mode": failure_flags[0] if failure_flags else None,
+            "failure_flags": failure_flags,
+        },
+    }
+
+
 def classify_execution_action_source(action: str, row: dict[str, Any], *, target_action: str) -> str:
     """Classify why a filled action happened from the same-bar audit fields."""
 
@@ -924,6 +1208,45 @@ def _bull_window_failure_flags(
             flags.append("risk_overlay_reducing_bull_exposure")
     if net_pnl < 0.0 and not flags:
         flags.append("unattributed_bull_window_loss")
+    return flags
+
+
+def _bear_window_failure_flags(
+    *,
+    price_return: float,
+    net_pnl: float,
+    long_equity_pnl: float,
+    downtrend_detected_pct: float,
+    bearish_state_bar_pct: float,
+    long_target_bar_pct: float,
+    short_target_bar_pct: float,
+    long_when_downtrend_pct: float,
+    short_when_downtrend_pct: float,
+    long_when_bearish_state_pct: float,
+    short_when_bearish_state_pct: float,
+    long_when_range_cycle_profit_candidate_pct: float,
+    exit_active_bar_pct: float,
+    target_reduce_action_pct: float,
+    risk_reduced_bar_pct: float,
+) -> list[str]:
+    flags: list[str] = []
+    if price_return < -0.10 or net_pnl < 0.0:
+        if long_target_bar_pct > 0.15 or long_when_bearish_state_pct > 0.10:
+            flags.append("cycle_profit_run_overlong_in_bear_window")
+        if long_when_range_cycle_profit_candidate_pct > 0.15:
+            flags.append("range_cycle_profit_fallback_overactive_in_bear_window")
+        if (downtrend_detected_pct >= 0.10 or bearish_state_bar_pct >= 0.15) and short_when_bearish_state_pct < 0.20:
+            flags.append("bearish_state_not_converted_to_short_intent")
+        if downtrend_detected_pct >= 0.10 and short_when_downtrend_pct < 0.20:
+            flags.append("downtrend_not_converted_to_short_intent")
+        if short_target_bar_pct < 0.10 and (downtrend_detected_pct >= 0.10 or bearish_state_bar_pct >= 0.15):
+            flags.append("insufficient_short_time_in_market")
+        if long_equity_pnl < 0.0 and exit_active_bar_pct < 0.05 and target_reduce_action_pct < 0.05:
+            flags.append("exit_layer_not_reducing_bear_loss")
+        if long_when_bearish_state_pct > 0.05 and risk_reduced_bar_pct < 0.05:
+            flags.append("risk_overlay_not_reducing_bear_exposure")
+    if net_pnl < 0.0 and not flags:
+        flags.append("unattributed_bear_window_loss")
     return flags
 
 
