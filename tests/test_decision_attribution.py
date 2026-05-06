@@ -3,6 +3,7 @@ from types import SimpleNamespace
 
 from zenquant.domain import BacktestMetrics, ExecutionReport
 from zenquant.research.attribution import (
+    build_bull_window_direction_exposure_attribution,
     build_decision_attribution_ledger,
     classify_execution_action_source,
     classify_hostile_micro_state,
@@ -197,6 +198,84 @@ class DecisionAttributionTests(unittest.TestCase):
         )
 
         self.assertEqual(source, "strategy_target")
+
+    def test_bull_window_attribution_flags_missing_long_intent(self) -> None:
+        metrics = BacktestMetrics(
+            symbol="BTCUSDT_PERP",
+            start_ns=1,
+            end_ns=3,
+            total_bars=3,
+            net_pnl=-5.0,
+            gross_pnl=-5.0,
+            total_fees=0.0,
+            total_funding=0.0,
+            sharpe=-0.5,
+            sortino=-0.5,
+            max_drawdown=0.02,
+            max_dd_duration_bars=1,
+            win_rate=0.0,
+            profit_factor=0.0,
+            avg_win=0.0,
+            avg_loss=-5.0,
+            trade_count=0,
+            turnover_per_day=0.0,
+            fee_drag_pct=0.0,
+        )
+        runner = SimpleNamespace(
+            _reports=[],
+            build_analysis_rows=lambda: [
+                {
+                    "cutoff_time_ns": 1,
+                    "close_price": 100.0,
+                    "target_qty": 0.0,
+                    "target_leverage": 0.0,
+                    "equity": 100000.0,
+                    "regime": "TREND",
+                    "directional_state": "UPTREND",
+                    "playbook_id": "RANGE_LIGHT",
+                },
+                {
+                    "cutoff_time_ns": 2,
+                    "close_price": 125.0,
+                    "target_qty": 0.0,
+                    "target_leverage": 0.0,
+                    "equity": 99998.0,
+                    "regime": "TREND",
+                    "directional_state": "UPTREND",
+                    "playbook_id": "RANGE_LIGHT",
+                },
+                {
+                    "cutoff_time_ns": 3,
+                    "close_price": 140.0,
+                    "target_qty": 0.0,
+                    "target_leverage": 0.0,
+                    "equity": 99995.0,
+                    "regime": "TREND",
+                    "directional_state": "UPTREND",
+                    "playbook_id": "RANGE_LIGHT",
+                },
+            ],
+        )
+
+        attribution = build_bull_window_direction_exposure_attribution(
+            runner,
+            SimpleNamespace(metrics=metrics),
+            variant="candidate",
+            window_label="train_temporal_2020",
+            source="post_2020_futures_train",
+            role="bull_expansion_profit_run",
+            formal_train_truth=True,
+            execution_truth=True,
+            starting_equity=100000.0,
+        )
+
+        self.assertEqual(attribution["scope"], "train_dev_only_bull_window_direction_exposure_attribution")
+        self.assertFalse(attribution["test_evaluated"])
+        self.assertTrue(attribution["formal_train_truth"])
+        self.assertEqual(attribution["summary"]["price_return"], 0.4)
+        self.assertEqual(attribution["summary"]["long_when_uptrend_pct"], 0.0)
+        self.assertEqual(attribution["diagnosis"]["primary_failure_mode"], "uptrend_not_converted_to_long_intent")
+        self.assertIn("insufficient_long_time_in_market", attribution["diagnosis"]["failure_flags"])
 
 
 if __name__ == "__main__":

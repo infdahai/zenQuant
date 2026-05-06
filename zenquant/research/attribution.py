@@ -195,6 +195,224 @@ def build_decision_attribution_ledger(
     }
 
 
+def build_bull_window_direction_exposure_attribution(
+    runner: Any,
+    result: Any,
+    *,
+    variant: str,
+    window_label: str,
+    source: str,
+    role: str,
+    formal_train_truth: bool,
+    execution_truth: bool,
+    starting_equity: float,
+    formal_auxiliary_train_leg: bool = False,
+) -> dict[str, Any]:
+    """Explain why a bull/profit-run window did or did not translate into exposure."""
+
+    rows = runner.build_analysis_rows()
+    reports_by_ts = _execution_reports_by_ts(getattr(runner, "_reports", []))
+    bar_count = len(rows)
+    if not rows:
+        return {
+            "variant": variant,
+            "window_label": window_label,
+            "source": source,
+            "role": role,
+            "scope": "train_dev_only_bull_window_direction_exposure_attribution",
+            "formal_train_truth": formal_train_truth,
+            "formal_auxiliary_train_leg": formal_auxiliary_train_leg,
+            "execution_truth": execution_truth,
+            "promotion_allowed": False,
+            "test_evaluated": False,
+            "summary": {"bar_count": 0},
+            "counts": {},
+            "diagnosis": {
+                "primary_failure_mode": "analysis_rows_missing",
+                "failure_flags": ["analysis_rows_missing"],
+            },
+        }
+
+    first_price = _safe_float(rows[0].get("close_price"))
+    last_price = _safe_float(rows[-1].get("close_price"))
+    price_return = (last_price / first_price - 1.0) if first_price > 0.0 else 0.0
+    positive_beta_pnl = max(0.0, price_return) * max(0.0, starting_equity)
+
+    target_actions: Counter[str] = Counter()
+    execution_actions: Counter[str] = Counter()
+    playbooks: Counter[str] = Counter()
+    regimes: Counter[str] = Counter()
+    directional_states: Counter[str] = Counter()
+    exit_types: Counter[str] = Counter()
+    risk_flags: Counter[str] = Counter()
+    target_reason_codes: Counter[str] = Counter()
+    exit_reason_codes: Counter[str] = Counter()
+
+    previous_target_qty = 0.0
+    target_abs_leverage_sum = 0.0
+    long_target_leverage_sum = 0.0
+    long_target_bars = 0
+    short_target_bars = 0
+    flat_target_bars = 0
+    uptrend_bars = 0
+    uptrend_long_bars = 0
+    uptrend_short_bars = 0
+    uptrend_flat_bars = 0
+    trend_regime_bars = 0
+    bull_playbook_bars = 0
+    exit_active_bars = 0
+    target_reduce_bars = 0
+    risk_reduced_bars = 0
+    reduce_only_bars = 0
+
+    for row in rows:
+        target_qty = _safe_float(row.get("target_qty"))
+        close_price = _safe_float(row.get("close_price"))
+        equity = _safe_float(row.get("equity")) or max(0.0, starting_equity)
+        target_leverage = abs(_safe_float(row.get("target_leverage")))
+        if target_leverage <= 0.0 and close_price > 0.0 and equity > 0.0:
+            target_leverage = abs(target_qty) * close_price / equity
+        target_abs_leverage_sum += target_leverage
+        if target_qty > 0.0:
+            long_target_bars += 1
+            long_target_leverage_sum += target_leverage
+        elif target_qty < 0.0:
+            short_target_bars += 1
+        else:
+            flat_target_bars += 1
+
+        directional_state = str(row.get("directional_state") or "UNKNOWN")
+        regime = str(row.get("regime") or row.get("target_regime") or "UNKNOWN")
+        playbook_id = str(row.get("playbook_id") or "UNKNOWN")
+        exit_type = str(row.get("exit_type") or "NONE")
+        target_action = _target_action(previous_target_qty, target_qty)
+        target_actions[target_action] += 1
+        playbooks[playbook_id] += 1
+        regimes[regime] += 1
+        directional_states[directional_state] += 1
+
+        is_uptrend = directional_state == "UPTREND"
+        if is_uptrend:
+            uptrend_bars += 1
+            if target_qty > 0.0:
+                uptrend_long_bars += 1
+            elif target_qty < 0.0:
+                uptrend_short_bars += 1
+            else:
+                uptrend_flat_bars += 1
+        if regime == "TREND":
+            trend_regime_bars += 1
+        if "BULL" in playbook_id:
+            bull_playbook_bars += 1
+        if exit_type and exit_type != "NONE":
+            exit_active_bars += 1
+            exit_types[exit_type] += 1
+        if target_action in {"reduce", "exit", "flip"}:
+            target_reduce_bars += 1
+        if _risk_reduced_target(row):
+            risk_reduced_bars += 1
+        if bool(row.get("risk_reduce_only")) or bool(row.get("reduce_only")):
+            reduce_only_bars += 1
+
+        for flag in _pipe_codes(row.get("risk_decision_flags") or row.get("risk_flags")):
+            risk_flags[flag] += 1
+        target_reason_codes.update(_pipe_codes(row.get("target_reason_codes")))
+        exit_reason_codes.update(_pipe_codes(row.get("exit_reason_codes")))
+        for report in reports_by_ts.get(int(row.get("cutoff_time_ns", 0) or 0), []):
+            execution_actions[str(report.get("action") or "none")] += 1
+        previous_target_qty = target_qty
+
+    long_target_bar_pct = _pct(long_target_bars, bar_count)
+    short_target_bar_pct = _pct(short_target_bars, bar_count)
+    flat_target_bar_pct = _pct(flat_target_bars, bar_count)
+    uptrend_detected_pct = _pct(uptrend_bars, bar_count)
+    trend_regime_bar_pct = _pct(trend_regime_bars, bar_count)
+    long_when_uptrend_pct = _pct(uptrend_long_bars, uptrend_bars)
+    short_when_uptrend_pct = _pct(uptrend_short_bars, uptrend_bars)
+    flat_when_uptrend_pct = _pct(uptrend_flat_bars, uptrend_bars)
+    avg_abs_target_leverage = target_abs_leverage_sum / bar_count if bar_count else 0.0
+    avg_long_target_leverage = long_target_leverage_sum / long_target_bars if long_target_bars else 0.0
+    exit_active_bar_pct = _pct(exit_active_bars, bar_count)
+    risk_reduced_bar_pct = _pct(risk_reduced_bars, bar_count)
+    target_reduce_action_pct = _pct(target_reduce_bars, bar_count)
+    profit_run_capture_ratio = (
+        _safe_float(getattr(result.metrics, "net_pnl", 0.0)) / positive_beta_pnl if positive_beta_pnl > 0.0 else 0.0
+    )
+
+    failure_flags = _bull_window_failure_flags(
+        price_return=price_return,
+        net_pnl=_safe_float(getattr(result.metrics, "net_pnl", 0.0)),
+        uptrend_detected_pct=uptrend_detected_pct,
+        trend_regime_bar_pct=trend_regime_bar_pct,
+        long_target_bar_pct=long_target_bar_pct,
+        long_when_uptrend_pct=long_when_uptrend_pct,
+        short_target_bar_pct=short_target_bar_pct,
+        short_when_uptrend_pct=short_when_uptrend_pct,
+        avg_long_target_leverage=avg_long_target_leverage,
+        exit_active_bar_pct=exit_active_bar_pct,
+        risk_reduced_bar_pct=risk_reduced_bar_pct,
+    )
+
+    return {
+        "variant": variant,
+        "window_label": window_label,
+        "source": source,
+        "role": role,
+        "scope": "train_dev_only_bull_window_direction_exposure_attribution",
+        "formal_train_truth": formal_train_truth,
+        "formal_auxiliary_train_leg": formal_auxiliary_train_leg,
+        "execution_truth": execution_truth,
+        "promotion_allowed": False,
+        "test_evaluated": False,
+        "metrics": asdict(result.metrics),
+        "summary": {
+            "bar_count": bar_count,
+            "price_return": round(price_return, 6),
+            "equity_multiple": round(
+                (starting_equity + _safe_float(getattr(result.metrics, "net_pnl", 0.0))) / starting_equity,
+                6,
+            )
+            if starting_equity > 0.0
+            else 0.0,
+            "net_pnl": round(_safe_float(getattr(result.metrics, "net_pnl", 0.0)), 6),
+            "sharpe": round(_safe_float(getattr(result.metrics, "sharpe", 0.0)), 6),
+            "max_drawdown": round(_safe_float(getattr(result.metrics, "max_drawdown", 0.0)), 6),
+            "profit_run_capture_ratio": round(profit_run_capture_ratio, 6),
+            "long_target_bar_pct": round(long_target_bar_pct, 6),
+            "short_target_bar_pct": round(short_target_bar_pct, 6),
+            "flat_target_bar_pct": round(flat_target_bar_pct, 6),
+            "uptrend_detected_pct": round(uptrend_detected_pct, 6),
+            "trend_regime_bar_pct": round(trend_regime_bar_pct, 6),
+            "bull_playbook_bar_pct": round(_pct(bull_playbook_bars, bar_count), 6),
+            "long_when_uptrend_pct": round(long_when_uptrend_pct, 6),
+            "short_when_uptrend_pct": round(short_when_uptrend_pct, 6),
+            "flat_when_uptrend_pct": round(flat_when_uptrend_pct, 6),
+            "avg_abs_target_leverage": round(avg_abs_target_leverage, 6),
+            "avg_long_target_leverage": round(avg_long_target_leverage, 6),
+            "exit_active_bar_pct": round(exit_active_bar_pct, 6),
+            "target_reduce_action_pct": round(target_reduce_action_pct, 6),
+            "risk_reduced_bar_pct": round(risk_reduced_bar_pct, 6),
+            "reduce_only_bar_pct": round(_pct(reduce_only_bars, bar_count), 6),
+            "execution_report_count": len(getattr(runner, "_reports", [])),
+        },
+        "counts": {
+            "target_actions": dict(target_actions),
+            "execution_actions": dict(execution_actions),
+            "top_playbooks": dict(playbooks.most_common(12)),
+            "regimes": dict(regimes),
+            "directional_states": dict(directional_states),
+            "exit_types": dict(exit_types),
+            "top_risk_flags": dict(risk_flags.most_common(12)),
+            "top_target_reason_codes": dict(target_reason_codes.most_common(12)),
+            "top_exit_reason_codes": dict(exit_reason_codes.most_common(12)),
+        },
+        "diagnosis": {
+            "primary_failure_mode": failure_flags[0] if failure_flags else None,
+            "failure_flags": failure_flags,
+        },
+    }
+
+
 def classify_execution_action_source(action: str, row: dict[str, Any], *, target_action: str) -> str:
     """Classify why a filled action happened from the same-bar audit fields."""
 
@@ -613,6 +831,45 @@ def _serialize_action_attribution(summary: dict[str, dict[str, Any]]) -> dict[st
 
 def _rounded_counter(counter: Counter[str]) -> dict[str, float]:
     return {key: round(float(value), 6) for key, value in counter.items()}
+
+
+def _pct(numerator: float, denominator: float) -> float:
+    return float(numerator) / float(denominator) if denominator else 0.0
+
+
+def _bull_window_failure_flags(
+    *,
+    price_return: float,
+    net_pnl: float,
+    uptrend_detected_pct: float,
+    trend_regime_bar_pct: float,
+    long_target_bar_pct: float,
+    long_when_uptrend_pct: float,
+    short_target_bar_pct: float,
+    short_when_uptrend_pct: float,
+    avg_long_target_leverage: float,
+    exit_active_bar_pct: float,
+    risk_reduced_bar_pct: float,
+) -> list[str]:
+    flags: list[str] = []
+    if price_return > 0.20:
+        if uptrend_detected_pct < 0.35 and trend_regime_bar_pct < 0.35:
+            flags.append("bull_regime_not_recognized")
+        if uptrend_detected_pct >= 0.20 and long_when_uptrend_pct < 0.35:
+            flags.append("uptrend_not_converted_to_long_intent")
+        if long_target_bar_pct < 0.35:
+            flags.append("insufficient_long_time_in_market")
+        if long_target_bar_pct >= 0.35 and avg_long_target_leverage < 0.35:
+            flags.append("long_position_size_too_small")
+        if short_target_bar_pct > 0.15 or short_when_uptrend_pct > 0.10:
+            flags.append("short_bias_during_bull_window")
+        if exit_active_bar_pct > 0.12:
+            flags.append("exit_layer_cutting_profit_run")
+        if risk_reduced_bar_pct > 0.12:
+            flags.append("risk_overlay_reducing_bull_exposure")
+    if net_pnl < 0.0 and not flags:
+        flags.append("unattributed_bull_window_loss")
+    return flags
 
 
 def _pipe_codes(value: Any) -> list[str]:

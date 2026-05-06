@@ -21,6 +21,7 @@ from zenquant.data.liquidation_pipeline import liquidation_readiness
 from zenquant.domain import Timeframe
 from zenquant.historical import HistoricalBacktestConfig
 from zenquant.historical.storage import read_parquet_rows
+from zenquant.research.attribution import build_bull_window_direction_exposure_attribution
 from zenquant.research.auto_research import (
     CampaignConfig,
     SearchSpace,
@@ -867,6 +868,153 @@ def _temporal_robustness_audit(
         "score_adjustment": score_adjustment,
         "blocked_by": blockers,
         "primary_blocker": blockers[0] if blockers else None,
+    }
+
+
+def _bull_window_direction_exposure_attribution(
+    evaluator: FrameworkEvaluator,
+    params: dict[str, Any],
+    contract: dict[str, Any],
+) -> dict[str, Any] | None:
+    if not _temporal_robustness_enabled(evaluator):
+        return None
+
+    variant = evaluator.candidate_variant(
+        params,
+        name="bull_window_direction_exposure_candidate",
+        label="Bull Window Direction Exposure Candidate",
+    )
+    audit_config = replace(
+        evaluator._base_config,
+        research_compute_mode="lightweight_train_search",
+        diagnostic_collect_ledgers=True,
+        profiling_enabled=False,
+        early_stop_enabled=False,
+        trial_runtime_budget_s=None,
+    )
+    windows: dict[str, Any] = {}
+    train_2020 = next(
+        (
+            window
+            for window in _train_temporal_robustness_windows(evaluator._split_spec)
+            if window.label == "train_temporal_2020"
+        ),
+        None,
+    )
+    if train_2020 is not None:
+        runner, result = _run_variant_backtest(
+            audit_config,
+            variant,
+            start_ns=train_2020.start_ns,
+            end_ns=train_2020.end_ns,
+        )
+        windows[train_2020.label] = build_bull_window_direction_exposure_attribution(
+            runner,
+            result,
+            variant=variant.name,
+            window_label=train_2020.label,
+            source="post_2020_futures_train",
+            role="bull_expansion_profit_run",
+            formal_train_truth=True,
+            execution_truth=True,
+            starting_equity=evaluator._base_config.starting_equity,
+        )
+
+    if _spot_context_allowed(contract):
+        spot_window = next(
+            (
+                window
+                for window in _spot_context_windows(contract)
+                if window.label == "spot_context_bull_expansion_2017"
+            ),
+            None,
+        )
+        spot_root_dir = evaluator._base_config.root_dir.parent / "binance_spot"
+        if spot_window is not None and _window_has_timeframe_rows(
+            spot_root_dir,
+            evaluator._base_config.symbol,
+            Timeframe.TF_1H,
+            start_ns=spot_window.start_ns,
+            end_ns=spot_window.end_ns,
+        ):
+            spot_variant = evaluator.candidate_variant(
+                params,
+                name="spot_bull_direction_exposure_candidate",
+                label="Spot Bull Direction Exposure Candidate",
+            )
+            spot_strategy_config = replace(
+                spot_variant.strategy_config or ARCStrategyConfig(),
+                execution_timeframe=Timeframe.TF_1H,
+            )
+            spot_variant = replace(
+                spot_variant,
+                name="spot_bull_direction_exposure_candidate",
+                label="Spot Bull Direction Exposure Candidate",
+                strategy_config=spot_strategy_config,
+                liquidation_data_enabled=False,
+                state_liquidation_overlay_enabled=False,
+            )
+            spot_config = HistoricalBacktestConfig(
+                root_dir=spot_root_dir,
+                symbol=evaluator._base_config.symbol,
+                portfolio_symbol=evaluator._base_config.portfolio_symbol,
+                starting_equity=evaluator._base_config.starting_equity,
+                execution_timeframe=Timeframe.TF_1H,
+                bias_timeframe=Timeframe.TF_1D,
+                direction_timeframe=Timeframe.TF_4H,
+                context_timeframe=Timeframe.TF_1H,
+                macro_dir=evaluator._base_config.macro_dir,
+                options_dir=evaluator._base_config.options_dir,
+                cot_path=evaluator._base_config.cot_path,
+                liquidation_dir=evaluator._base_config.liquidation_dir,
+                profile_path=evaluator._base_config.profile_path,
+                research_compute_mode="lightweight_train_search",
+                diagnostic_collect_ledgers=True,
+                profiling_enabled=False,
+                early_stop_enabled=False,
+                trial_runtime_budget_s=None,
+                strategy_config=spot_variant.strategy_config,
+                risk_config=spot_variant.risk_config,
+                execution_config=spot_variant.execution_config,
+                signal_weight_overrides=spot_variant.signal_weight_overrides,
+                plugin_config_overrides=spot_variant.plugin_config_overrides,
+                indicator_config=spot_variant.indicator_config,
+                liquidation_data_enabled=False,
+                state_liquidation_overlay_enabled=False,
+            )
+            spot_runner, spot_result = _run_variant_backtest(
+                spot_config,
+                spot_variant,
+                start_ns=spot_window.start_ns,
+                end_ns=spot_window.end_ns,
+            )
+            windows[spot_window.label] = build_bull_window_direction_exposure_attribution(
+                spot_runner,
+                spot_result,
+                variant=spot_variant.name,
+                window_label=spot_window.label,
+                source="binance_spot",
+                role="spot_era_bull_expansion_direction_profit_run_auxiliary",
+                formal_train_truth=False,
+                formal_auxiliary_train_leg=True,
+                execution_truth=False,
+                starting_equity=evaluator._base_config.starting_equity,
+            )
+
+    if not windows:
+        return None
+    primary_modes = [
+        (payload.get("diagnosis") or {}).get("primary_failure_mode")
+        for payload in windows.values()
+        if (payload.get("diagnosis") or {}).get("primary_failure_mode")
+    ]
+    return {
+        "scope": "train_dev_only_bull_window_direction_exposure_attribution",
+        "formal_train_truth": False,
+        "promotion_allowed": False,
+        "test_evaluated": False,
+        "windows": windows,
+        "primary_failure_modes": list(dict.fromkeys(str(item) for item in primary_modes if item)),
     }
 
 
@@ -3459,6 +3607,22 @@ def run_optuna_search(
             fail_fast_reason = None
             lightweight_dev_summary = None
         if fail_fast_reason is not None:
+            bull_window_attribution = None
+            if str(fail_fast_reason).startswith(("paulwei_2020_", "paulwei_2022_", "temporal_")):
+                try:
+                    bull_window_attribution = _bull_window_direction_exposure_attribution(
+                        evaluator,
+                        params,
+                        historical_extension_contract,
+                    )
+                except Exception as exc:
+                    bull_window_attribution = {
+                        "scope": "train_dev_only_bull_window_direction_exposure_attribution",
+                        "promotion_allowed": False,
+                        "test_evaluated": False,
+                        "blocked_by": "bull_window_direction_exposure_attribution_failed",
+                        "error": str(exc)[:240],
+                    }
             fail_fast_rejection_count += 1
             fail_fast_reason_counts[fail_fast_reason] = int(fail_fast_reason_counts.get(fail_fast_reason, 0) or 0) + 1
             rejected_candidate_diagnostics.append(
@@ -3467,6 +3631,7 @@ def run_optuna_search(
                     "train_metrics": combined_metrics,
                     "spot_context_metrics": spot_context_metrics,
                     "temporal_robustness_audit": temporal_robustness_audit,
+                    "bull_window_direction_exposure_attribution": bull_window_attribution,
                     "summary": asdict(train_summary),
                     "stage1_fail_fast_reason": fail_fast_reason,
                     "regime_objective": regime_objective,
@@ -3572,6 +3737,17 @@ def run_optuna_search(
     diagnostics["train_candidate_diagnostics"]["temporal_robustness_rejection_count"] = temporal_rejection_count
     diagnostics["train_candidate_diagnostics"]["best_temporal_robustness_audit"] = (
         temporal_ranked[0].get("temporal_robustness_audit") if temporal_ranked else None
+    )
+    bull_window_attributions = [
+        item.get("bull_window_direction_exposure_attribution")
+        for item in rejected_candidate_diagnostics
+        if item.get("bull_window_direction_exposure_attribution")
+    ]
+    diagnostics["train_candidate_diagnostics"]["bull_window_direction_exposure_attribution_enabled"] = bool(
+        bull_window_attributions
+    )
+    diagnostics["train_candidate_diagnostics"]["best_bull_window_direction_exposure_attribution"] = (
+        bull_window_attributions[0] if bull_window_attributions else None
     )
     spot_context_ranked = [item for item in ranked if item.get("spot_context_metrics")]
     diagnostics["spot_era_context_replay_audit"] = {
