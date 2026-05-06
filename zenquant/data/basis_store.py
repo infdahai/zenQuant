@@ -48,6 +48,7 @@ class BasisDataStore:
         self._basis_pct: list[float] = []
         self._spot_prices: list[float] = []
         self._perp_prices: list[float] = []
+        self._lookup_cache: dict[int, BasisSnapshot] = {}
 
     @property
     def loaded(self) -> bool:
@@ -55,6 +56,7 @@ class BasisDataStore:
 
     def load(self) -> None:
         """Load spot and perp parquet, compute basis at each timestamp."""
+        self._lookup_cache.clear()
         spot_parquet = self._config.spot_dir / "data.parquet"
         perp_parquet = self._config.perp_dir / "data.parquet"
 
@@ -96,9 +98,7 @@ class BasisDataStore:
 
     def lookup(self, cutoff_time_ns: int) -> BasisSnapshot:
         """Return latest basis at or before cutoff."""
-        empty = BasisSnapshot(
-            basis_pct=0.0, basis_z=0.0, spot_price=0.0, perp_price=0.0, quality_flags=[]
-        )
+        empty = BasisSnapshot(basis_pct=0.0, basis_z=0.0, spot_price=0.0, perp_price=0.0, quality_flags=[])
 
         if not self._timestamps:
             return empty
@@ -106,6 +106,9 @@ class BasisDataStore:
         idx = bisect.bisect_right(self._timestamps, cutoff_time_ns) - 1
         if idx < 0:
             return empty
+        cached = self._lookup_cache.get(idx)
+        if cached is not None:
+            return cached
 
         end_idx = idx + 1
         start_idx = max(0, end_idx - self._config.z_window)
@@ -113,10 +116,12 @@ class BasisDataStore:
         basis_window = self._basis_pct[start_idx:end_idx]
         basis_z = _robust_z(basis_window, basis_val, self._config.robust_z_min_samples)
 
-        return BasisSnapshot(
+        snapshot = BasisSnapshot(
             basis_pct=round(basis_val, 6),
             basis_z=basis_z,
             spot_price=self._spot_prices[idx],
             perp_price=self._perp_prices[idx],
             quality_flags=[],
         )
+        self._lookup_cache[idx] = snapshot
+        return snapshot

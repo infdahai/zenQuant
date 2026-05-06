@@ -33,12 +33,16 @@ class EthDataStore:
         self._timestamps: list[int] = []
         self._closes: list[float] = []
         self._returns: list[float] = []
+        self._returns_cache: dict[tuple[int, int], list[float]] = {}
+        self._price_cache: dict[int, float] = {}
 
     @property
     def loaded(self) -> bool:
         return len(self._timestamps) > 0
 
     def load(self) -> None:
+        self._returns_cache.clear()
+        self._price_cache.clear()
         parquet_path = self._config.eth_kline_path / "data.parquet"
         if not parquet_path.exists():
             return
@@ -60,9 +64,7 @@ class EthDataStore:
         self._returns = [0.0]
         for i in range(1, len(self._closes)):
             if self._closes[i - 1] > 0:
-                self._returns.append(
-                    (self._closes[i] - self._closes[i - 1]) / self._closes[i - 1]
-                )
+                self._returns.append((self._closes[i] - self._closes[i - 1]) / self._closes[i - 1])
             else:
                 self._returns.append(0.0)
 
@@ -75,12 +77,25 @@ class EthDataStore:
         if idx < 2:
             return []
 
+        cache_key = (idx, window)
+        cached = self._returns_cache.get(cache_key)
+        if cached is not None:
+            return cached
         start = max(0, idx - window)
-        return self._returns[start:idx]
+        returns = self._returns[start:idx]
+        self._returns_cache[cache_key] = returns
+        return returns
 
     def get_price(self, cutoff_time_ns: int) -> float:
         """Get ETH price at cutoff."""
         if not self._timestamps:
             return 0.0
         idx = bisect.bisect_right(self._timestamps, cutoff_time_ns) - 1
-        return self._closes[idx] if idx >= 0 else 0.0
+        if idx < 0:
+            return 0.0
+        cached = self._price_cache.get(idx)
+        if cached is not None:
+            return cached
+        price = self._closes[idx]
+        self._price_cache[idx] = price
+        return price

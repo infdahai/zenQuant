@@ -60,6 +60,7 @@ class CotDataStore:
         self._leveraged_net: list[int] = []
         self._dealer_net: list[int] = []
         self._total_oi: list[int] = []
+        self._lookup_cache: dict[tuple[int, bool], CotSnapshot] = {}
 
     @property
     def loaded(self) -> bool:
@@ -67,6 +68,7 @@ class CotDataStore:
 
     def load(self) -> None:
         """Load COT parquet file."""
+        self._lookup_cache.clear()
         if not self._config.cot_path.exists():
             return
 
@@ -108,7 +110,12 @@ class CotDataStore:
         quality_flags: list[str] = []
 
         age_ns = cutoff_time_ns - snapshot_ts
-        if age_ns > self._config.staleness_threshold_ns:
+        is_stale = age_ns > self._config.staleness_threshold_ns
+        cache_key = (idx, is_stale)
+        cached = self._lookup_cache.get(cache_key)
+        if cached is not None:
+            return cached
+        if is_stale:
             quality_flags.append("COT_STALE")
 
         # Z-scores over rolling window
@@ -124,7 +131,7 @@ class CotDataStore:
         asset_mgr_z = _robust_z(asset_mgr_window, asset_mgr_val, self._config.robust_z_min_samples)
         leveraged_z = _robust_z(leveraged_window, leveraged_val, self._config.robust_z_min_samples)
 
-        return CotSnapshot(
+        snapshot = CotSnapshot(
             asset_mgr_net=self._asset_mgr_net[idx],
             leveraged_net=self._leveraged_net[idx],
             dealer_net=self._dealer_net[idx],
@@ -133,3 +140,5 @@ class CotDataStore:
             leveraged_z=leveraged_z,
             quality_flags=quality_flags,
         )
+        self._lookup_cache[cache_key] = snapshot
+        return snapshot

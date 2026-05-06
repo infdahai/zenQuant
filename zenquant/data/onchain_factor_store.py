@@ -29,12 +29,14 @@ class OnchainFactorStore:
         self._timestamps: list[int] = []
         self._active_address_momentum_14d: list[float] = []
         self._supply_activity_regime: list[float] = []
+        self._lookup_cache: dict[int, OnchainFactorSnapshot] = {}
 
     @property
     def loaded(self) -> bool:
         return bool(self._timestamps)
 
     def load(self) -> None:
+        self._lookup_cache.clear()
         if not self._config.data_path.exists():
             return
         import pyarrow.parquet as pq
@@ -63,8 +65,13 @@ class OnchainFactorStore:
         idx = bisect.bisect_right(self._timestamps, cutoff_time_ns) - 1
         if idx < 0:
             return empty
-        return OnchainFactorSnapshot(
+        cached = self._lookup_cache.get(idx)
+        if cached is not None:
+            return cached
+        snapshot = OnchainFactorSnapshot(
             active_address_momentum_14d=round(self._active_address_momentum_14d[idx], 6),
             supply_activity_regime=round(self._supply_activity_regime[idx], 6),
             quality_flags=[],
         )
+        self._lookup_cache[idx] = snapshot
+        return snapshot

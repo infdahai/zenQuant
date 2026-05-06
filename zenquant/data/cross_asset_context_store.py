@@ -42,12 +42,14 @@ class CrossAssetContextStore:
         self._eth_returns: list[float] = []
         self._sol_returns: list[float] = []
         self._bnb_returns: list[float] = []
+        self._lookup_cache: dict[int, CrossAssetContextSnapshot] = {}
 
     @property
     def loaded(self) -> bool:
         return bool(self._timestamps)
 
     def load(self) -> None:
+        self._lookup_cache.clear()
         if not self._config.data_path.exists():
             return
 
@@ -91,6 +93,9 @@ class CrossAssetContextStore:
         idx = bisect.bisect_right(self._timestamps, cutoff_time_ns) - 1
         if idx < 0:
             return empty
+        cached = self._lookup_cache.get(idx)
+        if cached is not None:
+            return cached
 
         end_idx = idx + 1
         z_start = max(0, end_idx - self._config.z_window)
@@ -98,7 +103,7 @@ class CrossAssetContextStore:
         spread_window = self._alt_spreads[z_start:end_idx]
         spread_z = _robust_z(spread_window, self._alt_spreads[idx], self._config.robust_z_min_samples)
 
-        return CrossAssetContextSnapshot(
+        snapshot = CrossAssetContextSnapshot(
             alt_btc_spread_z=round(spread_z, 4),
             alt_momentum_7d=round(sum(self._alt_returns[momentum_start:end_idx]), 6),
             eth_momentum_7d=round(sum(self._eth_returns[momentum_start:end_idx]), 6),
@@ -106,3 +111,5 @@ class CrossAssetContextStore:
             bnb_momentum_7d=round(sum(self._bnb_returns[momentum_start:end_idx]), 6),
             quality_flags=[],
         )
+        self._lookup_cache[idx] = snapshot
+        return snapshot

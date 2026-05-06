@@ -85,6 +85,7 @@ class OptionsDataStore:
         self._gamma_wall: list[float | None] = []
         self._flip_strike: list[float | None] = []
         self._gex_regime: list[str] = []
+        self._lookup_cache: dict[tuple[int, bool], OptionsSnapshot] = {}
 
     @property
     def loaded(self) -> bool:
@@ -102,6 +103,7 @@ class OptionsDataStore:
 
     def load(self) -> None:
         """Load all options chain snapshots and compute IV metrics."""
+        self._lookup_cache.clear()
         currency_dir = self._config.options_dir / self._config.currency
         if not currency_dir.exists():
             return
@@ -214,7 +216,12 @@ class OptionsDataStore:
 
         # Staleness check
         age_ns = cutoff_time_ns - snapshot_ts
-        if age_ns > self._config.staleness_threshold_ns:
+        is_stale = age_ns > self._config.staleness_threshold_ns
+        cache_key = (idx, is_stale)
+        cached = self._lookup_cache.get(cache_key)
+        if cached is not None:
+            return cached
+        if is_stale:
             quality_flags.append("OPTIONS_STALE")
 
         # Compute z-scores using rolling window
@@ -250,7 +257,7 @@ class OptionsDataStore:
         if term_slope is None:
             quality_flags.append("OPTIONS_PARTIAL_TERM")
 
-        return OptionsSnapshot(
+        snapshot = OptionsSnapshot(
             atm_iv_30d=atm_iv,
             atm_iv_z=atm_iv_z,
             term_structure_slope=term_slope,
@@ -265,6 +272,8 @@ class OptionsDataStore:
             gex_regime=self._gex_regime[idx] if idx < len(self._gex_regime) else "",
             quality_flags=quality_flags,
         )
+        self._lookup_cache[cache_key] = snapshot
+        return snapshot
 
     def _compute_gex(self, df, spot: float) -> tuple[float, float | None, float | None, str]:
         """Compute GEX metrics from full options chain."""

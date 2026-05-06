@@ -65,6 +65,7 @@ class MacroSnapshot:
     cme_total_oi_z: float
     quality_flags: list[str]
 
+
 class MacroDataStore:
     """Load macro Parquet files and provide point-in-time lookups with z-scores.
 
@@ -79,6 +80,7 @@ class MacroDataStore:
         self._config = config or MacroDataStoreConfig()
         # Each series: sorted parallel lists of (timestamps, values)
         self._series: dict[str, tuple[list[int], list[float]]] = {}
+        self._lookup_cache: dict[tuple[tuple[tuple[str, int], ...], bool], MacroSnapshot] = {}
 
     @property
     def loaded(self) -> bool:
@@ -86,6 +88,7 @@ class MacroDataStore:
 
     def load(self) -> None:
         """Load all macro Parquet files into sorted arrays."""
+        self._lookup_cache.clear()
         series_map = {
             "vix": self._config.macro_dir / "vix" / "data.parquet",
             "dxy": self._config.macro_dir / "dxy" / "data.parquet",
@@ -151,6 +154,13 @@ class MacroDataStore:
 
         Guarantees point-in-time correctness: no data from after cutoff is used.
         """
+        staleness_key = self._check_staleness(cutoff_time_ns) if self._series else False
+        index_key = self._lookup_index_key(cutoff_time_ns)
+        cache_key = (index_key, staleness_key)
+        cached = self._lookup_cache.get(cache_key)
+        if cached is not None:
+            return cached
+
         vix, vix_z = self._lookup_one("vix", cutoff_time_ns)
         dxy, dxy_z = self._lookup_one("dxy", cutoff_time_ns)
         yield_10y, yield_10y_z = self._lookup_one("yield_10y", cutoff_time_ns)
@@ -174,11 +184,10 @@ class MacroDataStore:
         quality_flags: list[str] = []
         # Check staleness across all loaded series
         if self._series:
-            stale = self._check_staleness(cutoff_time_ns)
-            if stale:
+            if staleness_key:
                 quality_flags.append("MACRO_STALE")
 
-        return MacroSnapshot(
+        snapshot = MacroSnapshot(
             vix=vix,
             vix_z=vix_z,
             dxy=dxy,
@@ -214,10 +223,10 @@ class MacroDataStore:
             cme_total_oi_z=cme_total_oi_z,
             quality_flags=quality_flags,
         )
+        self._lookup_cache[cache_key] = snapshot
+        return snapshot
 
-    def _lookup_one(
-        self, name: str, cutoff_time_ns: int
-    ) -> tuple[float | None, float]:
+    def _lookup_one(self, name: str, cutoff_time_ns: int) -> tuple[float | None, float]:
         """Lookup a single series value and compute its z-score."""
         if name not in self._series:
             return None, 0.0
@@ -236,6 +245,13 @@ class MacroDataStore:
 
         z = _robust_z(window, current_value, self._config.robust_z_min_samples)
         return current_value, z
+
+    def _lookup_index_key(self, cutoff_time_ns: int) -> tuple[tuple[str, int], ...]:
+        """Cache key based on the point-in-time row visible for each series."""
+        return tuple(
+            (name, bisect.bisect_right(timestamps, cutoff_time_ns) - 1)
+            for name, (timestamps, _) in sorted(self._series.items())
+        )
 
     def _rolling_sum(self, name: str, cutoff_time_ns: int, *, window: int) -> float:
         if name not in self._series or window <= 0:
