@@ -126,6 +126,11 @@ class ARCStrategyConfig:
     intent_time_leverage_dip_max_adverse_atr: float = 2.5
     intent_time_leverage_dip_add_pct: float = 0.15
     intent_time_leverage_dip_max_leverage: float = 3.0
+    intent_range_bear_profit_run_override_enabled: bool = False
+    intent_range_bear_profit_run_direction_signal: float = -0.25
+    intent_range_bear_profit_run_momentum_threshold: float = -0.20
+    intent_range_bear_profit_run_confidence_floor: float = 0.50
+    intent_range_bear_profit_run_max_transition_risk: float = 0.65
 
 
 class ARCStrategyEngine:
@@ -1769,6 +1774,46 @@ class ARCStrategyEngine:
             },
         )
 
+    def _range_bear_profit_run_override_ready(
+        self,
+        *,
+        pack: IndicatorPack,
+        state: MarketState,
+        playbook: PlaybookSelection,
+    ) -> bool:
+        if not self._config.intent_range_bear_profit_run_override_enabled:
+            return False
+        if playbook.playbook_id not in {"RANGE_LIGHT", "BEAR_DEFENSE"}:
+            return False
+        if state.quality_state == "UNSAFE" or state.volatility_state == "DISTORTED":
+            return False
+        if state.positioning_state == "CROWDED_SHORT":
+            return False
+        max_transition_risk = max(0.0, float(self._config.intent_range_bear_profit_run_max_transition_risk))
+        if state.transition_risk > max_transition_risk:
+            return False
+
+        momentum_threshold = float(self._config.intent_range_bear_profit_run_momentum_threshold)
+        momentum_roc_z = float(pack.values.get("momentum_roc_z", 0.0) or 0.0)
+        multi_momentum_z = float(pack.values.get("multi_momentum_z", momentum_roc_z) or momentum_roc_z)
+        structure_state = str(pack.values.get("structure_state") or "NEUTRAL")
+        cycle_position = float(pack.values.get("cycle_position", 1.0) or 1.0)
+        negative_momentum = momentum_roc_z <= momentum_threshold or multi_momentum_z <= momentum_threshold
+        bearish_structure = structure_state == "DOWNTREND" or cycle_position <= 0.95
+        direction_signal_ceiling = float(self._config.intent_range_bear_profit_run_direction_signal)
+        confidence_floor = max(0.0, float(self._config.intent_range_bear_profit_run_confidence_floor))
+        bearish_state = (
+            state.directional_state == "DOWNTREND"
+            or state.direction_signal <= direction_signal_ceiling
+            or (
+                cycle_position <= 0.95
+                and state.directional_state != "UPTREND"
+                and state.direction_signal <= max(0.0, direction_signal_ceiling)
+                and state.directional_confidence >= confidence_floor * 0.5
+            )
+        )
+        return negative_momentum and bearish_structure and bearish_state
+
     def _build_target(
         self,
         pack: IndicatorPack,
@@ -1849,6 +1894,13 @@ class ARCStrategyEngine:
             ):
                 direction = -1.0
                 reason_codes.append("STATE_BEARISH_DIRECTION_OVERRIDE")
+            elif direction == 0.0 and self._range_bear_profit_run_override_ready(
+                pack=pack,
+                state=state,
+                playbook=playbook,
+            ):
+                direction = -1.0
+                reason_codes.append("STATE_RANGE_BEAR_PROFIT_RUN_OVERRIDE")
 
             if self._plugins.sizers:
                 _state_dict = self._state_dict(state, playbook)

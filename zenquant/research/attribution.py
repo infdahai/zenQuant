@@ -532,6 +532,11 @@ def build_bear_window_direction_exposure_attribution(
     cycle_bull_long_bars = 0
     range_cycle_profit_candidate_bars = 0
     range_cycle_profit_candidate_long_bars = 0
+    range_bear_profit_candidate_bars = 0
+    range_bear_profit_candidate_short_bars = 0
+    range_bear_profit_candidate_playbooks: Counter[str] = Counter()
+    range_bear_profit_candidate_target_reason_codes: Counter[str] = Counter()
+    range_bear_profit_candidate_blockers: Counter[str] = Counter()
     trend_regime_bars = 0
     bear_playbook_bars = 0
     exit_active_bars = 0
@@ -569,6 +574,10 @@ def build_bear_window_direction_exposure_attribution(
         regime = str(row.get("regime") or row.get("target_regime") or "UNKNOWN")
         playbook_id = str(row.get("playbook_id") or "UNKNOWN")
         exit_type = str(row.get("exit_type") or "NONE")
+        quality_state = str(row.get("quality_state") or "UNKNOWN")
+        volatility_state = str(row.get("volatility_state") or "UNKNOWN")
+        positioning_state = str(row.get("positioning_state") or "UNKNOWN")
+        transition_risk = _safe_float(row.get("transition_risk"))
         cycle_position = _safe_float(row.get("cycle_position")) if row.get("cycle_position") is not None else 1.0
         momentum_roc_z = _safe_float(row.get("momentum_roc_z"))
         multi_momentum_z = _safe_float(row.get("multi_momentum_z"))
@@ -610,6 +619,31 @@ def build_bear_window_direction_exposure_attribution(
             range_cycle_profit_candidate_bars += 1
             if target_qty > 0.0:
                 range_cycle_profit_candidate_long_bars += 1
+        is_range_bear_profit_candidate = (
+            regime == "RANGE"
+            and (directional_state == "DOWNTREND" or cycle_position <= 0.95)
+            and (momentum_roc_z < -0.20 or multi_momentum_z < -0.20)
+        )
+        if is_range_bear_profit_candidate:
+            range_bear_profit_candidate_bars += 1
+            range_bear_profit_candidate_playbooks[playbook_id] += 1
+            range_bear_profit_candidate_target_reason_codes.update(_pipe_codes(row.get("target_reason_codes")))
+            if playbook_id not in {"RANGE_LIGHT", "BEAR_DEFENSE"}:
+                range_bear_profit_candidate_blockers["playbook_not_bear_profit_allowed"] += 1
+            if quality_state == "UNSAFE":
+                range_bear_profit_candidate_blockers["quality_unsafe"] += 1
+            if volatility_state == "DISTORTED":
+                range_bear_profit_candidate_blockers["volatility_distorted"] += 1
+            if positioning_state == "CROWDED_SHORT":
+                range_bear_profit_candidate_blockers["positioning_crowded_short"] += 1
+            if transition_risk > 0.65:
+                range_bear_profit_candidate_blockers["transition_risk_gt_0_65"] += 1
+            if direction_signal > 0.0:
+                range_bear_profit_candidate_blockers["bullish_direction_signal"] += 1
+            if target_qty < 0.0:
+                range_bear_profit_candidate_short_bars += 1
+            else:
+                range_bear_profit_candidate_blockers["no_short_target"] += 1
         if regime == "TREND":
             trend_regime_bars += 1
         if "BEAR" in playbook_id:
@@ -649,6 +683,11 @@ def build_bear_window_direction_exposure_attribution(
         range_cycle_profit_candidate_long_bars,
         range_cycle_profit_candidate_bars,
     )
+    range_bear_profit_candidate_bar_pct = _pct(range_bear_profit_candidate_bars, bar_count)
+    short_when_range_bear_profit_candidate_pct = _pct(
+        range_bear_profit_candidate_short_bars,
+        range_bear_profit_candidate_bars,
+    )
     avg_abs_target_leverage = target_abs_leverage_sum / bar_count if bar_count else 0.0
     avg_short_target_leverage = short_target_leverage_sum / short_target_bars if short_target_bars else 0.0
     exit_active_bar_pct = _pct(exit_active_bars, bar_count)
@@ -670,6 +709,8 @@ def build_bear_window_direction_exposure_attribution(
         long_when_bearish_state_pct=long_when_bearish_state_pct,
         short_when_bearish_state_pct=short_when_bearish_state_pct,
         long_when_range_cycle_profit_candidate_pct=long_when_range_cycle_profit_candidate_pct,
+        range_bear_profit_candidate_bar_pct=range_bear_profit_candidate_bar_pct,
+        short_when_range_bear_profit_candidate_pct=short_when_range_bear_profit_candidate_pct,
         exit_active_bar_pct=exit_active_bar_pct,
         target_reduce_action_pct=target_reduce_action_pct,
         risk_reduced_bar_pct=risk_reduced_bar_pct,
@@ -718,6 +759,8 @@ def build_bear_window_direction_exposure_attribution(
             "long_when_cycle_bull_pct": round(long_when_cycle_bull_pct, 6),
             "range_cycle_profit_candidate_bar_pct": round(range_cycle_profit_candidate_bar_pct, 6),
             "long_when_range_cycle_profit_candidate_pct": round(long_when_range_cycle_profit_candidate_pct, 6),
+            "range_bear_profit_candidate_bar_pct": round(range_bear_profit_candidate_bar_pct, 6),
+            "short_when_range_bear_profit_candidate_pct": round(short_when_range_bear_profit_candidate_pct, 6),
             "avg_abs_target_leverage": round(avg_abs_target_leverage, 6),
             "avg_short_target_leverage": round(avg_short_target_leverage, 6),
             "exit_active_bar_pct": round(exit_active_bar_pct, 6),
@@ -736,6 +779,11 @@ def build_bear_window_direction_exposure_attribution(
             "top_risk_flags": dict(risk_flags.most_common(12)),
             "top_target_reason_codes": dict(target_reason_codes.most_common(12)),
             "top_exit_reason_codes": dict(exit_reason_codes.most_common(12)),
+            "range_bear_profit_candidate_playbooks": dict(range_bear_profit_candidate_playbooks.most_common(8)),
+            "range_bear_profit_candidate_target_reason_codes": dict(
+                range_bear_profit_candidate_target_reason_codes.most_common(12)
+            ),
+            "range_bear_profit_candidate_blockers": dict(range_bear_profit_candidate_blockers.most_common(12)),
         },
         "diagnosis": {
             "primary_failure_mode": failure_flags[0] if failure_flags else None,
@@ -1225,6 +1273,8 @@ def _bear_window_failure_flags(
     long_when_bearish_state_pct: float,
     short_when_bearish_state_pct: float,
     long_when_range_cycle_profit_candidate_pct: float,
+    range_bear_profit_candidate_bar_pct: float,
+    short_when_range_bear_profit_candidate_pct: float,
     exit_active_bar_pct: float,
     target_reduce_action_pct: float,
     risk_reduced_bar_pct: float,
@@ -1235,6 +1285,8 @@ def _bear_window_failure_flags(
             flags.append("cycle_profit_run_overlong_in_bear_window")
         if long_when_range_cycle_profit_candidate_pct > 0.15:
             flags.append("range_cycle_profit_fallback_overactive_in_bear_window")
+        if range_bear_profit_candidate_bar_pct >= 0.10 and short_when_range_bear_profit_candidate_pct < 0.25:
+            flags.append("range_bear_profit_context_not_converted_to_short_intent")
         if (downtrend_detected_pct >= 0.10 or bearish_state_bar_pct >= 0.15) and short_when_bearish_state_pct < 0.20:
             flags.append("bearish_state_not_converted_to_short_intent")
         if downtrend_detected_pct >= 0.10 and short_when_downtrend_pct < 0.20:

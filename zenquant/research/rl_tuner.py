@@ -262,6 +262,19 @@ def build_strategy_config(params: dict[str, float]) -> ARCStrategyConfig:
         intent_time_leverage_dip_max_adverse_atr=params.get("intent_time_leverage_dip_max_adverse_atr", 2.5),
         intent_time_leverage_dip_add_pct=params.get("intent_time_leverage_dip_add_pct", 0.15),
         intent_time_leverage_dip_max_leverage=params.get("intent_time_leverage_dip_max_leverage", 3.0),
+        intent_range_bear_profit_run_override_enabled=bool(
+            round(float(params.get("intent_range_bear_profit_run_override_enabled", 0.0)))
+        ),
+        intent_range_bear_profit_run_direction_signal=params.get(
+            "intent_range_bear_profit_run_direction_signal", -0.25
+        ),
+        intent_range_bear_profit_run_momentum_threshold=params.get(
+            "intent_range_bear_profit_run_momentum_threshold", -0.20
+        ),
+        intent_range_bear_profit_run_confidence_floor=params.get("intent_range_bear_profit_run_confidence_floor", 0.50),
+        intent_range_bear_profit_run_max_transition_risk=params.get(
+            "intent_range_bear_profit_run_max_transition_risk", 0.65
+        ),
     )
 
 
@@ -269,7 +282,11 @@ def build_risk_config(params: dict[str, float]) -> RiskOverlayConfig:
     return RiskOverlayConfig(
         max_leverage=params.get("max_leverage", 6.0),
         dd_step_1_long=params.get("dd_step_1_long", 0.15),
+        dd_step_2_long=params.get("dd_step_2_long", 0.22),
+        dd_step_3_long=params.get("dd_step_3_long", 0.28),
         dd_step_1_short=params.get("dd_step_1_short", 0.08),
+        dd_step_2_short=params.get("dd_step_2_short", 0.14),
+        dd_step_3_short=params.get("dd_step_3_short", 0.20),
         vpin_toxic_threshold=params.get("vpin_threshold", 0.10),
         crowding_threshold=params.get("crowding_threshold", 2.2),
         vol_shock_threshold=params.get("vol_shock_threshold", 0.95),
