@@ -157,6 +157,8 @@ def build_historical_extension_candidate_contract(
             "slow_macro_signal_validation",
             "pre_2020_regime_context",
             "pre_2020_stress_context",
+            "train_side_regime_context_objective",
+            "spot_era_context_replay_audit",
         ],
         blocked_by=blocked_by,
         spot_train_leg_blocked_by=spot_train_leg_blocked_by,
@@ -170,7 +172,7 @@ def build_historical_extension_candidate_contract(
             "execution truth remains Binance futures and never imports pre-2020 spot "
             "as funding/OI/liquidation-backed execution truth."
         ),
-        next_action="use_as_regime_stress_context_only",
+        next_action="use_as_train_side_regime_context_objective_only",
     )
 
 

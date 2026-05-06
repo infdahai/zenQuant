@@ -3,13 +3,14 @@
 from __future__ import annotations
 
 import json
+import math
 import multiprocessing as mp
 import os
 import sys
 from concurrent.futures import ProcessPoolExecutor
 from concurrent.futures import TimeoutError as FutureTimeoutError
 from concurrent.futures.process import BrokenProcessPool
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from datetime import UTC, datetime
 from hashlib import sha1
 from pathlib import Path
@@ -41,6 +42,7 @@ from zenquant.research.comparison import (
 from zenquant.research.data_source_review import load_source_admission_review
 from zenquant.research.framework_params import (
     DEFAULT_DEV_FEE_STABILITY_LIMITS,
+    RELAXED_DEV_FEE_STABILITY_LIMITS,
     STRICT_TRAIN_FEE_STOP_PROFILE_FLAGS,
     STRICT_TRAIN_TRUTH_PROFILE_FLAGS,
     baseline_anchor_seed_trials,
@@ -59,6 +61,8 @@ from zenquant.research.framework_params import (
     paulwei_balanced_tranche_seed_trials,
     paulwei_dual_phase_fee_repair_seed_trials,
     paulwei_dual_phase_seed_trials,
+    paulwei_dual_phase_spot_context_relaxed_fee_seed_trials,
+    paulwei_dual_phase_spot_context_seed_trials,
     ralph_execution_fee_cooldown_seed_trials,
     ralph_intent_reduce_cadence_seed_trials,
     ralph_protective_reduce_fee_repair_seed_trials,
@@ -69,6 +73,7 @@ from zenquant.research.historical_extension import load_historical_extension_can
 from zenquant.research.regime_objective import score_regime_objective_candidate_generation
 from zenquant.research.source_independence import load_source_independence_audit
 from zenquant.research.splits import DatasetSplitSpec, default_btc_split_spec, split_summary_json
+from zenquant.strategy import ARCStrategyConfig
 
 
 def _etf_flow_source_metadata(macro_dir: Path) -> dict[str, Any]:
@@ -260,6 +265,7 @@ def _historical_extension_candidate_contract() -> dict[str, Any]:
             "full_unified_truth": False,
             "blocked_by": ["historical_extension_candidate_missing"],
             "spot_train_leg_blocked_by": ["historical_extension_candidate_missing"],
+            "allowed_uses": [],
             "candidate_window_start": None,
             "candidate_window_end": None,
             "source_boundary": None,
@@ -280,6 +286,7 @@ def _historical_extension_candidate_contract() -> dict[str, Any]:
         "full_unified_truth": bool(review.get("full_unified_truth")),
         "blocked_by": blocked_by,
         "spot_train_leg_blocked_by": list(review.get("spot_train_leg_blocked_by") or blocked_by),
+        "allowed_uses": list(review.get("allowed_uses") or []),
         "candidate_window_start": review.get("candidate_window_start"),
         "candidate_window_end": review.get("candidate_window_end"),
         "source_boundary": review.get("source_boundary"),
@@ -338,6 +345,205 @@ def _iso_to_ns(value: str | None) -> int | None:
     if not value:
         return None
     return int(datetime.fromisoformat(value).timestamp() * 1_000_000_000)
+
+
+def _ns_from_utc(year: int, month: int, day: int) -> int:
+    return int(datetime(year, month, day, tzinfo=UTC).timestamp() * 1_000_000_000)
+
+
+def _spot_context_windows(contract: dict[str, Any]) -> list[WindowSpec]:
+    start_ns = _iso_to_ns(contract.get("candidate_window_start"))
+    end_ns = min(
+        _iso_to_ns(contract.get("candidate_window_end")) or _ns_from_utc(2020, 1, 1),
+        _ns_from_utc(2020, 1, 1),
+    )
+    if start_ns is None or end_ns <= start_ns:
+        return []
+
+    def _bounded(label: str, start: int, end: int) -> WindowSpec | None:
+        bounded_start = max(start_ns, start)
+        bounded_end = min(end_ns, end)
+        if bounded_end <= bounded_start:
+            return None
+        return WindowSpec(label=label, start_ns=bounded_start, end_ns=bounded_end)
+
+    windows = [
+        WindowSpec(label="spot_context_full_2017_2019", start_ns=start_ns, end_ns=end_ns),
+        _bounded("spot_context_bull_expansion_2017", start_ns, _ns_from_utc(2018, 1, 1)),
+        _bounded("spot_context_bear_crash_2018", _ns_from_utc(2018, 1, 1), _ns_from_utc(2019, 1, 1)),
+        _bounded("spot_context_recovery_2019", _ns_from_utc(2019, 1, 1), _ns_from_utc(2020, 1, 1)),
+    ]
+    return [window for window in windows if window is not None]
+
+
+def _spot_context_allowed(contract: dict[str, Any]) -> bool:
+    allowed_uses = set(contract.get("allowed_uses") or [])
+    return (
+        bool(contract.get("ready"))
+        and contract.get("source") == "spot"
+        and contract.get("historical_extension_mode") == "spot_context_only"
+        and ("train_side_regime_context_objective" in allowed_uses or "pre_2020_regime_context" in allowed_uses)
+    )
+
+
+def _spot_context_snapshot_payload(snapshot: BacktestSnapshot, *, starting_equity: float) -> dict[str, Any]:
+    return {
+        "sharpe": round(float(snapshot.sharpe), 6),
+        "net_pnl": round(float(snapshot.net_pnl), 6),
+        "equity_multiple": round((starting_equity + float(snapshot.net_pnl)) / starting_equity, 6)
+        if starting_equity > 0
+        else 0.0,
+        "max_drawdown": round(float(snapshot.max_drawdown), 6),
+        "win_rate": round(float(snapshot.win_rate), 6),
+        "profit_factor": round(float(snapshot.profit_factor), 6),
+        "fee_drag_pct": round(float(snapshot.fee_drag_pct), 6),
+    }
+
+
+def _spot_context_score(windows: dict[str, dict[str, Any]]) -> float:
+    full = windows.get("spot_context_full_2017_2019") or {}
+    bull = windows.get("spot_context_bull_expansion_2017") or {}
+    bear = windows.get("spot_context_bear_crash_2018") or {}
+    recovery = windows.get("spot_context_recovery_2019") or {}
+
+    full_multiple = float(full.get("equity_multiple", 1.0) or 1.0)
+    bull_multiple = float(bull.get("equity_multiple", 1.0) or 1.0)
+    recovery_multiple = float(recovery.get("equity_multiple", 1.0) or 1.0)
+    bear_drawdown = float(bear.get("max_drawdown", 0.0) or 0.0)
+    full_drawdown = float(full.get("max_drawdown", 0.0) or 0.0)
+    full_sharpe = float(full.get("sharpe", 0.0) or 0.0)
+    bear_sharpe = float(bear.get("sharpe", 0.0) or 0.0)
+    bull_fee_drag_pct = float(bull.get("fee_drag_pct", 0.0) or 0.0)
+    bear_fee_drag_pct = float(bear.get("fee_drag_pct", 0.0) or 0.0)
+
+    expansion_bonus = min(0.85, math.log(max(1.0, full_multiple), 2.0) * 0.30)
+    bull_bonus = min(0.45, math.log(max(1.0, bull_multiple), 2.0) * 0.25)
+    recovery_bonus = min(0.35, math.log(max(1.0, recovery_multiple), 2.0) * 0.20)
+    bear_survival_bonus = min(0.25, max(0.0, 0.35 - bear_drawdown) * 0.80)
+    trend_quality_bonus = min(0.25, max(0.0, full_sharpe) * 0.05)
+
+    full_loss_penalty = min(1.25, max(0.0, 1.0 - full_multiple) * 1.25)
+    bull_undercapture_penalty = min(0.90, max(0.0, 1.08 - bull_multiple) * 4.0)
+    bull_fee_drag_penalty = min(0.35, max(0.0, bull_fee_drag_pct - 0.018) * 6.0)
+    drawdown_penalty = min(0.85, max(0.0, full_drawdown - 0.35) * 1.80)
+    bear_collapse_penalty = min(0.60, max(0.0, bear_drawdown - 0.45) * 1.20)
+    bear_fee_drag_penalty = min(0.35, max(0.0, bear_fee_drag_pct - 0.05) * 4.0)
+    negative_bear_penalty = min(0.35, max(0.0, -bear_sharpe) * 0.05)
+
+    return round(
+        expansion_bonus
+        + bull_bonus
+        + recovery_bonus
+        + bear_survival_bonus
+        + trend_quality_bonus
+        - full_loss_penalty
+        - bull_undercapture_penalty
+        - bull_fee_drag_penalty
+        - drawdown_penalty
+        - bear_collapse_penalty
+        - bear_fee_drag_penalty
+        - negative_bear_penalty,
+        6,
+    )
+
+
+def _spot_context_replay_audit(
+    evaluator: FrameworkEvaluator,
+    params: dict[str, Any],
+    contract: dict[str, Any],
+) -> dict[str, Any] | None:
+    if not (
+        evaluator.search_space_profile.get("paulwei_dual_phase_search")
+        or evaluator.search_space_profile.get("paulwei_balanced_tranche_search")
+    ):
+        return None
+    if not _spot_context_allowed(contract):
+        return None
+    windows = _spot_context_windows(contract)
+    if not windows:
+        return None
+
+    spot_root_dir = evaluator._base_config.root_dir.parent / "binance_spot"
+    full_window = windows[0]
+    if not _window_has_timeframe_rows(
+        spot_root_dir,
+        evaluator._base_config.symbol,
+        Timeframe.TF_1H,
+        start_ns=full_window.start_ns,
+        end_ns=full_window.end_ns,
+    ):
+        return {
+            "scope": "train_side_regime_context_objective",
+            "formal_train_truth": False,
+            "promotion_allowed": False,
+            "test_evaluated": False,
+            "blocked_by": "spot_context_1h_missing",
+            "windows": {},
+            "context_score_adjustment": 0.0,
+        }
+
+    variant = evaluator.candidate_variant(params, name="spot_context_candidate", label="Spot Context Candidate")
+    strategy_config = replace(
+        variant.strategy_config or ARCStrategyConfig(),
+        execution_timeframe=Timeframe.TF_1H,
+    )
+    variant = replace(
+        variant,
+        name="spot_context_candidate",
+        label="Spot-Era Context Candidate",
+        strategy_config=strategy_config,
+        liquidation_data_enabled=False,
+        state_liquidation_overlay_enabled=False,
+    )
+    spot_config = HistoricalBacktestConfig(
+        root_dir=spot_root_dir,
+        symbol=evaluator._base_config.symbol,
+        portfolio_symbol=evaluator._base_config.portfolio_symbol,
+        starting_equity=evaluator._base_config.starting_equity,
+        execution_timeframe=Timeframe.TF_1H,
+        bias_timeframe=Timeframe.TF_1D,
+        direction_timeframe=Timeframe.TF_4H,
+        context_timeframe=Timeframe.TF_1H,
+        macro_dir=evaluator._base_config.macro_dir,
+        options_dir=evaluator._base_config.options_dir,
+        cot_path=evaluator._base_config.cot_path,
+        liquidation_dir=evaluator._base_config.liquidation_dir,
+        profile_path=evaluator._base_config.profile_path,
+        research_compute_mode=evaluator._base_config.research_compute_mode,
+        strategy_config=variant.strategy_config,
+        risk_config=variant.risk_config,
+        execution_config=variant.execution_config,
+        signal_weight_overrides=variant.signal_weight_overrides,
+        plugin_config_overrides=variant.plugin_config_overrides,
+        indicator_config=variant.indicator_config,
+        liquidation_data_enabled=False,
+        state_liquidation_overlay_enabled=False,
+    )
+    window_payloads: dict[str, dict[str, Any]] = {}
+    for window in windows:
+        snapshot = _run_variant_backtest_snapshot(
+            spot_config,
+            variant,
+            start_ns=window.start_ns,
+            end_ns=window.end_ns,
+        )
+        window_payloads[window.label] = _spot_context_snapshot_payload(
+            snapshot,
+            starting_equity=evaluator._base_config.starting_equity,
+        )
+    return {
+        "scope": "train_side_regime_context_objective",
+        "formal_train_truth": False,
+        "promotion_allowed": False,
+        "test_evaluated": False,
+        "source": "binance_spot",
+        "context_only": True,
+        "formal_execution_truth_source": "post_2020_futures_train",
+        "execution_timeframe": Timeframe.TF_1H.value,
+        "objective": "early_direction_selection_profit_run_and_bear_survival_context_only",
+        "windows": window_payloads,
+        "context_score_adjustment": _spot_context_score(window_payloads),
+    }
 
 
 def _spot_train_leg(contract: dict[str, Any]) -> dict[str, Any] | None:
@@ -399,24 +605,163 @@ def _spot_train_leg_snapshot(
 
 def _combine_train_leg_metrics(
     futures_metrics: dict[str, Any],
-    spot_snapshot: BacktestSnapshot | None,
+    spot_context_audit: dict[str, Any] | None,
 ) -> tuple[dict[str, Any], dict[str, Any] | None, float]:
     futures_sharpe = float(futures_metrics.get("sharpe", 0.0) or 0.0)
     futures_score = float(futures_metrics.get("score", futures_sharpe) or futures_sharpe)
-    if spot_snapshot is None:
+    if spot_context_audit is None:
         return dict(futures_metrics), None, futures_score
-    spot_metrics = {
-        "sharpe": round(float(spot_snapshot.sharpe), 6),
-        "net_pnl": round(float(spot_snapshot.net_pnl), 6),
-        "max_drawdown": round(float(spot_snapshot.max_drawdown), 6),
-        "win_rate": round(float(spot_snapshot.win_rate), 6),
-    }
-    spot_sharpe = float(spot_snapshot.sharpe)
-    combined_score = round(min(futures_sharpe, spot_sharpe) + 0.25 * ((futures_sharpe + spot_sharpe) / 2.0), 6)
+    windows = dict(spot_context_audit.get("windows") or {})
+    full_context = dict(windows.get("spot_context_full_2017_2019") or {})
+    context_adjustment = float(spot_context_audit.get("context_score_adjustment", 0.0) or 0.0)
+    combined_score = round(futures_score + context_adjustment, 6)
     combined_metrics = dict(futures_metrics)
     combined_metrics["score"] = combined_score
     combined_metrics["combined_train_score"] = combined_score
-    return combined_metrics, spot_metrics, combined_score
+    combined_metrics["spot_context_score_adjustment"] = context_adjustment
+    combined_metrics["spot_context_equity_multiple"] = float(full_context.get("equity_multiple", 1.0) or 1.0)
+    combined_metrics["spot_context_sharpe"] = float(full_context.get("sharpe", 0.0) or 0.0)
+    combined_metrics["spot_context_drawdown"] = float(full_context.get("max_drawdown", 0.0) or 0.0)
+    return combined_metrics, spot_context_audit, combined_score
+
+
+def _temporal_robustness_enabled(evaluator: FrameworkEvaluator) -> bool:
+    profile = evaluator.search_space_profile
+    return any(
+        bool(profile.get(key, False))
+        for key in (
+            "paulwei_dual_phase_spot_context_relaxed_fee_search",
+            "paulwei_dual_phase_spot_context_search",
+            "paulwei_dual_phase_fee_repair_search",
+            "paulwei_dual_phase_search",
+            "paulwei_balanced_tranche_search",
+        )
+    )
+
+
+def _train_temporal_robustness_windows(split_spec: DatasetSplitSpec) -> list[WindowSpec]:
+    train_end = split_spec.train.end_ns
+    if train_end is None:
+        return []
+    windows: list[WindowSpec] = []
+    for year in range(2020, 2024):
+        start_ns = max(split_spec.train.start_ns, _ns_from_utc(year, 1, 1))
+        end_ns = min(train_end, _ns_from_utc(year + 1, 1, 1))
+        if end_ns > start_ns:
+            windows.append(WindowSpec(label=f"train_temporal_{year}", start_ns=start_ns, end_ns=end_ns))
+    return windows
+
+
+def _late_dev_regime_window(split_spec: DatasetSplitSpec) -> WindowSpec | None:
+    if split_spec.dev.end_ns is None:
+        return None
+    start_ns = max(split_spec.dev.start_ns, _shift_months(split_spec.dev.end_ns, -6))
+    if split_spec.dev.end_ns <= start_ns:
+        return None
+    start_dt = datetime.fromtimestamp(start_ns / 1e9, tz=UTC)
+    return WindowSpec(
+        label=f"late_dev_regime_{start_dt.year}_{start_dt.month:02d}",
+        start_ns=start_ns,
+        end_ns=split_spec.dev.end_ns,
+    )
+
+
+def _temporal_robustness_audit(
+    evaluator: FrameworkEvaluator,
+    params: dict[str, Any],
+) -> dict[str, Any] | None:
+    if not _temporal_robustness_enabled(evaluator):
+        return None
+    train_windows = _train_temporal_robustness_windows(evaluator._split_spec)
+    late_dev_window = _late_dev_regime_window(evaluator._split_spec)
+    if not train_windows and late_dev_window is None:
+        return None
+
+    variant = evaluator.candidate_variant(
+        params,
+        name="temporal_robustness_candidate",
+        label="Temporal Robustness Candidate",
+    )
+    audit_config = replace(
+        evaluator._base_config,
+        research_compute_mode="lightweight_train_search",
+        profiling_enabled=False,
+        early_stop_enabled=False,
+        trial_runtime_budget_s=None,
+    )
+
+    train_payloads: dict[str, dict[str, Any]] = {}
+    train_sharpes: list[float] = []
+    for window in train_windows:
+        snapshot = _run_variant_backtest_snapshot(
+            audit_config,
+            variant,
+            start_ns=window.start_ns,
+            end_ns=window.end_ns,
+        )
+        train_payloads[window.label] = _spot_context_snapshot_payload(
+            snapshot,
+            starting_equity=evaluator._base_config.starting_equity,
+        )
+        train_sharpes.append(float(snapshot.sharpe))
+
+    late_dev_payload = None
+    late_dev_sharpe = 0.0
+    if late_dev_window is not None:
+        late_dev_snapshot = _run_variant_backtest_snapshot(
+            audit_config,
+            variant,
+            start_ns=late_dev_window.start_ns,
+            end_ns=late_dev_window.end_ns,
+        )
+        late_dev_payload = {
+            "label": late_dev_window.label,
+            **_spot_context_snapshot_payload(
+                late_dev_snapshot,
+                starting_equity=evaluator._base_config.starting_equity,
+            ),
+        }
+        late_dev_sharpe = float(late_dev_snapshot.sharpe)
+
+    avg_train_sharpe = sum(train_sharpes) / len(train_sharpes) if train_sharpes else 0.0
+    min_train_sharpe = min(train_sharpes) if train_sharpes else 0.0
+    variance = (
+        sum((value - avg_train_sharpe) ** 2 for value in train_sharpes) / len(train_sharpes) if train_sharpes else 0.0
+    )
+    train_sharpe_std = math.sqrt(max(0.0, variance))
+    negative_train_windows = sum(1 for value in train_sharpes if value < 0.0)
+
+    blockers: list[str] = []
+    if negative_train_windows > 1:
+        blockers.append("temporal_train_negative_window_count")
+    if min_train_sharpe < -0.50:
+        blockers.append("temporal_train_min_sharpe_fail_fast")
+    if late_dev_payload is not None and late_dev_sharpe < -0.25:
+        blockers.append("late_dev_regime_fail_fast")
+
+    consistency_penalty = (
+        0.20 * train_sharpe_std
+        + 0.45 * negative_train_windows
+        + 0.25 * max(0.0, -min_train_sharpe)
+        + 0.35 * max(0.0, -0.25 - late_dev_sharpe if late_dev_payload is not None else 0.0)
+    )
+    score_adjustment = -round(min(2.5, consistency_penalty), 6)
+    return {
+        "scope": "train_dev_only_temporal_robustness",
+        "formal_train_truth": False,
+        "promotion_allowed": False,
+        "test_evaluated": False,
+        "train_windows": train_payloads,
+        "late_dev_window": late_dev_payload,
+        "train_avg_sharpe": round(avg_train_sharpe, 6),
+        "train_min_sharpe": round(min_train_sharpe, 6),
+        "train_sharpe_std": round(train_sharpe_std, 6),
+        "train_negative_window_count": negative_train_windows,
+        "late_dev_sharpe": round(late_dev_sharpe, 6),
+        "score_adjustment": score_adjustment,
+        "blocked_by": blockers,
+        "primary_blocker": blockers[0] if blockers else None,
+    }
 
 
 def _run_variant_backtest_snapshot(
@@ -745,7 +1090,12 @@ def _variant_window_metrics(report: SearchReport, variant: str) -> dict[str, dic
 
 
 def _dev_fee_stability_summary(report: SearchReport) -> dict[str, Any]:
-    limits = DEFAULT_DEV_FEE_STABILITY_LIMITS
+    search_profile = report.search_status.get("search_space_profile") or {}
+    limits = (
+        RELAXED_DEV_FEE_STABILITY_LIMITS
+        if isinstance(search_profile, dict) and search_profile.get("research_relaxed_fee_probe")
+        else DEFAULT_DEV_FEE_STABILITY_LIMITS
+    )
     tuned = _best_tuned_candidate(report)
     if tuned is None:
         return {
@@ -2694,8 +3044,9 @@ def _stage1_fail_fast_reason(
     *,
     baseline: CandidateSummary,
     current: CandidateSummary,
+    relaxed_fee_probe: bool = False,
 ) -> str | None:
-    fee_limits = DEFAULT_DEV_FEE_STABILITY_LIMITS
+    fee_limits = RELAXED_DEV_FEE_STABILITY_LIMITS if relaxed_fee_probe else DEFAULT_DEV_FEE_STABILITY_LIMITS
     hostile_anchor = baseline if baseline.worst_dev_sharpe >= current.worst_dev_sharpe else current
     turnover_anchor = max(baseline.turnover_per_day, current.turnover_per_day)
     fee_drag_anchor = max(baseline.fee_drag_pct, current.fee_drag_pct)
@@ -2832,6 +3183,10 @@ def run_optuna_search(
     effective_execution_timeframe = search_execution_timeframe or evaluator._base_config.execution_timeframe
     if evaluator.search_space_profile.get("binance_factor_weight_repair_search", False):
         resolved_seed_trials = binance_factor_weight_repair_seed_trials()[:n_trials]
+    elif evaluator.search_space_profile.get("paulwei_dual_phase_spot_context_relaxed_fee_search", False):
+        resolved_seed_trials = paulwei_dual_phase_spot_context_relaxed_fee_seed_trials()[:n_trials]
+    elif evaluator.search_space_profile.get("paulwei_dual_phase_spot_context_search", False):
+        resolved_seed_trials = paulwei_dual_phase_spot_context_seed_trials()[:n_trials]
     elif evaluator.search_space_profile.get("paulwei_dual_phase_fee_repair_search", False):
         resolved_seed_trials = paulwei_dual_phase_fee_repair_seed_trials()[:n_trials]
     elif evaluator.search_space_profile.get("paulwei_dual_phase_search", False):
@@ -2862,8 +3217,10 @@ def run_optuna_search(
         resolved_seed_trials,
         search_grid=evaluator.search_param_grid,
     )[:n_trials]
-    strict_train_fee_stop = any(
-        bool(evaluator.search_space_profile.get(key, False)) for key in STRICT_TRAIN_FEE_STOP_PROFILE_FLAGS
+    relaxed_fee_probe = bool(evaluator.search_space_profile.get("research_relaxed_fee_probe", False))
+    strict_train_fee_stop = (
+        any(bool(evaluator.search_space_profile.get(key, False)) for key in STRICT_TRAIN_FEE_STOP_PROFILE_FLAGS)
+        and not relaxed_fee_probe
     )
     strict_train_truth_search = any(
         bool(evaluator.search_space_profile.get(key, False)) for key in STRICT_TRAIN_TRUTH_PROFILE_FLAGS
@@ -2938,17 +3295,25 @@ def run_optuna_search(
             raise SearchStageTimeoutError(
                 f"stage1_dev_validation_no_progress_timeout: candidate {index}/{total_candidates}"
             )
-        combined_metrics, spot_train_leg_metrics, combined_train_score = _combine_train_leg_metrics(
+        combined_metrics, spot_context_metrics, combined_train_score = _combine_train_leg_metrics(
             dict(candidate.get("metrics", {})),
-            _spot_train_leg_snapshot(evaluator, params, historical_extension_contract),
+            _spot_context_replay_audit(evaluator, params, historical_extension_contract),
+        )
+        temporal_robustness_audit = _temporal_robustness_audit(evaluator, params)
+        temporal_score_adjustment = (
+            float(temporal_robustness_audit.get("score_adjustment", 0.0) or 0.0)
+            if temporal_robustness_audit is not None
+            else 0.0
         )
         regime_objective = score_regime_objective_candidate_generation(
             combined_metrics,
             baseline_metrics=dict(candidate.get("baseline_train_metrics", {}) or {}),
+            relaxed_fee_probe=relaxed_fee_probe,
         )
         regime_score = float(regime_objective["regime_objective_score"])
-        stage1_score = min(regime_score, combined_train_score)
+        stage1_score = min(regime_score, combined_train_score) + temporal_score_adjustment
         combined_metrics["regime_objective_raw_score"] = regime_score
+        combined_metrics["temporal_robustness_score_adjustment"] = temporal_score_adjustment
         combined_metrics["regime_objective_score"] = stage1_score
         combined_metrics["stage1_score"] = stage1_score
         train_hostile_proxy_score = float(combined_metrics.get("hostile_proxy_score", 0.0) or 0.0)
@@ -2959,6 +3324,9 @@ def run_optuna_search(
         train_summary = CandidateSummary(**_train_candidate_summary_payload(candidate_payload))
         if not regime_objective["allow_dev_diagnostic_review"]:
             fail_fast_reason = "regime_objective_train_bucket_fail_fast"
+            lightweight_dev_summary = None
+        elif temporal_robustness_audit is not None and temporal_robustness_audit.get("primary_blocker"):
+            fail_fast_reason = str(temporal_robustness_audit["primary_blocker"])
             lightweight_dev_summary = None
         elif stage1_fail_fast_enabled:
             if current_lightweight is None:
@@ -2975,6 +3343,7 @@ def run_optuna_search(
                     dev_screen,
                     baseline=paulwei_lightweight,
                     current=current_lightweight,
+                    relaxed_fee_probe=relaxed_fee_probe,
                 )
                 lightweight_dev_summary = asdict(dev_screen)
             else:
@@ -2990,9 +3359,18 @@ def run_optuna_search(
                 {
                     "params": params,
                     "train_metrics": combined_metrics,
+                    "spot_context_metrics": spot_context_metrics,
+                    "temporal_robustness_audit": temporal_robustness_audit,
                     "summary": asdict(train_summary),
                     "stage1_fail_fast_reason": fail_fast_reason,
                     "regime_objective": regime_objective,
+                    "combined_train_diagnostics": {
+                        "combined_train_score": combined_train_score,
+                        "mixed_era_declared": bool(historical_extension_contract.get("mixed_era_declared")),
+                        "historical_extension_mode": historical_extension_contract.get("historical_extension_mode"),
+                        "spot_context_objective_enabled": spot_context_metrics is not None,
+                        "temporal_robustness_enabled": temporal_robustness_audit is not None,
+                    },
                     "lightweight_dev_summary": lightweight_dev_summary,
                 }
             )
@@ -3013,13 +3391,18 @@ def run_optuna_search(
             {
                 "params": params,
                 "train_metrics": combined_metrics,
-                "spot_train_leg_metrics": spot_train_leg_metrics,
+                "spot_train_leg_metrics": None,
+                "spot_context_metrics": spot_context_metrics,
+                "temporal_robustness_audit": temporal_robustness_audit,
                 "futures_train_leg_metrics": dict(candidate.get("metrics", {})),
                 "combined_train_diagnostics": {
                     "combined_train_score": combined_train_score,
+                    "temporal_robustness_score_adjustment": temporal_score_adjustment,
                     "regime_objective": regime_objective,
                     "mixed_era_declared": bool(historical_extension_contract.get("mixed_era_declared")),
                     "historical_extension_mode": historical_extension_contract.get("historical_extension_mode"),
+                    "spot_context_objective_enabled": spot_context_metrics is not None,
+                    "temporal_robustness_enabled": temporal_robustness_audit is not None,
                     "stage1_fail_fast_reason": None,
                 },
                 "summary": asdict(train_summary),
@@ -3071,6 +3454,35 @@ def run_optuna_search(
         weak_window_fail_fast_count > 0
     )
     diagnostics["train_candidate_diagnostics"]["candidate_existence_recovered"] = bool(best is not None)
+    temporal_ranked = [item for item in ranked if item.get("temporal_robustness_audit")]
+    temporal_rejection_count = sum(
+        int(count)
+        for reason, count in fail_fast_reason_counts.items()
+        if str(reason).startswith("temporal_") or str(reason).startswith("late_dev_")
+    )
+    diagnostics["train_candidate_diagnostics"]["temporal_robustness_enabled"] = bool(temporal_ranked) or any(
+        "temporal_robustness_audit" in item for item in rejected_candidate_diagnostics
+    )
+    diagnostics["train_candidate_diagnostics"]["temporal_robustness_rejection_count"] = temporal_rejection_count
+    diagnostics["train_candidate_diagnostics"]["best_temporal_robustness_audit"] = (
+        temporal_ranked[0].get("temporal_robustness_audit") if temporal_ranked else None
+    )
+    spot_context_ranked = [item for item in ranked if item.get("spot_context_metrics")]
+    diagnostics["spot_era_context_replay_audit"] = {
+        "enabled": bool(spot_context_ranked),
+        "scope": "train_side_regime_context_objective",
+        "formal_train_truth": False,
+        "promotion_allowed": False,
+        "test_evaluated": False,
+        "candidate_count": len(spot_context_ranked),
+        "best_candidate": {
+            "params": spot_context_ranked[0]["params"],
+            "context_score_adjustment": spot_context_ranked[0]["spot_context_metrics"].get("context_score_adjustment"),
+            "windows": spot_context_ranked[0]["spot_context_metrics"].get("windows"),
+        }
+        if spot_context_ranked
+        else None,
+    }
     if best is None and diagnostics["empty_shortlist_reason"] is None and fail_fast_rejection_count > 0:
         diagnostics["empty_shortlist_reason"] = "stage1_fail_fast_rejected"
         diagnostics["no_tuned_candidate_reason"] = "stage1_fail_fast_rejected"
@@ -3335,6 +3747,7 @@ def write_search_report(path: Path, report: SearchReport) -> None:
     payload["baseline_anchor_variant"] = baseline_anchor_variant
     payload["stage1_execution_mode"] = report.search_status.get("stage1_execution_mode")
     payload["train_candidate_diagnostics"] = report.search_status.get("train_candidate_diagnostics")
+    payload["spot_era_context_replay_audit"] = report.search_status.get("spot_era_context_replay_audit")
     payload["empty_shortlist_reason"] = report.search_status.get("empty_shortlist_reason")
     payload["historical_extension_train_enabled"] = report.training_input_contract.get(
         "historical_extension_train_enabled"
@@ -3368,6 +3781,7 @@ def write_search_report(path: Path, report: SearchReport) -> None:
         "etf_flow_source_confidence": report.search_status.get("etf_flow_source_confidence"),
         "etf_flow_last_success_at": report.search_status.get("etf_flow_last_success_at"),
         "train_candidate_diagnostics": report.search_status.get("train_candidate_diagnostics"),
+        "spot_era_context_replay_audit": report.search_status.get("spot_era_context_replay_audit"),
         "empty_shortlist_reason": report.search_status.get("empty_shortlist_reason"),
         "historical_extension_train_enabled": report.search_status.get("historical_extension_train_enabled"),
         "historical_extension_mode": report.search_status.get("historical_extension_mode"),
@@ -3451,6 +3865,7 @@ def write_search_report(path: Path, report: SearchReport) -> None:
         "etf_flow_source_confidence": payload["search_status"].get("etf_flow_source_confidence"),
         "etf_flow_last_success_at": payload["search_status"].get("etf_flow_last_success_at"),
         "train_candidate_diagnostics": payload["search_status"].get("train_candidate_diagnostics"),
+        "spot_era_context_replay_audit": payload["search_status"].get("spot_era_context_replay_audit"),
         "empty_shortlist_reason": payload["search_status"].get("empty_shortlist_reason"),
         "historical_extension_train_enabled": payload["training_input_contract"].get(
             "historical_extension_train_enabled"

@@ -178,6 +178,8 @@ def _smoke_primary_empty_skip_fallback_reason(
         "paulwei_balanced_tranche_train_only",
         "paulwei_dual_phase_train_only",
         "paulwei_dual_phase_fee_repair_train_only",
+        "paulwei_dual_phase_spot_context_train_only",
+        "paulwei_dual_phase_spot_context_relaxed_fee_train_only",
         "baseline_anchored_train_only",
         "baseline_anchored_defensive_candidate_existence",
         "baseline_anchored_2023_08_hostile_repair",
@@ -556,6 +558,9 @@ def _initialize_running_status(
         "validation_pool_mode": None,
         "stage1_cpu_hotspot_summary": None,
         "stage1_indicator_hotspot_summary": None,
+        "indicator_fast_path_enabled": None,
+        "slow_enrichment_deferred": None,
+        "transfer_entropy_deferred": None,
         "trial_replay_cache_hit_rate": 0.0,
         "replay_context_cache_hit_rate": 0.0,
         "window_snapshot_cache_hit_rate": 0.0,
@@ -1561,6 +1566,7 @@ def main() -> None:
                         "dev_gate_interval": args.dev_gate_interval,
                         "search_outcome": search_outcome,
                         "train_candidate_diagnostics": dict(stage1_state.get("train_candidate_diagnostics") or {}),
+                        "spot_era_context_replay_audit": stage1_state.get("spot_era_context_replay_audit"),
                         "empty_shortlist_reason": stage1_state.get("empty_shortlist_reason"),
                         "no_tuned_candidate_reason": stage1_state.get("no_tuned_candidate_reason"),
                         "primary_empty_shortlist_reason": stage1_state.get("primary_empty_shortlist_reason"),
@@ -1755,6 +1761,8 @@ def main() -> None:
                         stage1_state["indicator_fast_path_enabled"] = bool(heartbeat.get("indicator_fast_path_enabled"))
                     if "slow_enrichment_deferred" in heartbeat:
                         stage1_state["slow_enrichment_deferred"] = bool(heartbeat.get("slow_enrichment_deferred"))
+                    if "transfer_entropy_deferred" in heartbeat:
+                        stage1_state["transfer_entropy_deferred"] = bool(heartbeat.get("transfer_entropy_deferred"))
                 if subphase == "stage1_optuna_search" and running_event:
                     stage1_state["stage1_underfilled"] = bool(stage1_underfilled)
                     stage1_state["stage1_underfilled_reason"] = stage1_underfilled_reason
@@ -1921,6 +1929,7 @@ def main() -> None:
                     stage1_indicator_hotspot_summary=indicator_hotspot_summary,
                     indicator_fast_path_enabled=stage1_state.get("indicator_fast_path_enabled"),
                     slow_enrichment_deferred=stage1_state.get("slow_enrichment_deferred"),
+                    transfer_entropy_deferred=stage1_state.get("transfer_entropy_deferred"),
                     stage1_best_value_so_far=heartbeat.get("best_value_so_far"),
                     stage1_best_params_so_far=heartbeat.get("best_params_so_far"),
                     stage1_runtime_s=runtime_s,
@@ -2362,6 +2371,7 @@ def main() -> None:
             stage1_state["train_candidate_diagnostics"] = dict(
                 optuna_diagnostics.get("train_candidate_diagnostics") or {}
             )
+            stage1_state["spot_era_context_replay_audit"] = optuna_diagnostics.get("spot_era_context_replay_audit")
             stage1_state["empty_shortlist_reason"] = optuna_diagnostics.get("empty_shortlist_reason")
             stage1_state["no_tuned_candidate_reason"] = optuna_diagnostics.get("no_tuned_candidate_reason")
             stage1_state["primary_empty_shortlist_reason"] = optuna_diagnostics.get("primary_empty_shortlist_reason")

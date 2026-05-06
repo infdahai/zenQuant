@@ -528,6 +528,47 @@ class TestStage1HostileProxy(unittest.TestCase):
         self.assertGreater(expensive["reduce_profit_factor_penalty"], 0.0)
         self.assertLess(expensive["hostile_proxy_score"], clean["hostile_proxy_score"])
 
+    def test_hostile_proxy_relaxed_fee_probe_softens_fee_blockers_only_for_research(self) -> None:
+        params = {
+            "target_vol_4h": 0.95,
+            "max_leverage": 3.0,
+            "pyramid_initial_pct": 0.25,
+            "pyramid_add_pct": 0.20,
+            "pyramid_short_initial_pct": 0.15,
+            "pyramid_short_add_pct": 0.12,
+            "dca_spacing_atr": 1.25,
+            "dca_size_decay": 0.75,
+            "flip_min_confidence": 0.65,
+        }
+        metrics = {
+            "sharpe": 3.1,
+            "max_drawdown": 0.09,
+            "profit_factor": 1.7,
+            "fee_drag_pct": 0.060,
+            "trade_count": 220,
+            "net_pnl": 18000.0,
+            "net_pnl_per_trade": 81.81,
+            "position_switches_per_30d": 1.2,
+            "flip_reduce_fee_drag_pct": 0.024,
+            "net_pnl_per_position_switch": 420.0,
+            "action_trade_counts": {"flip": 30, "reduce": 70},
+            "action_fee_drag_pct": {"exit": 0.024, "flip": 0.040, "reduce": 0.014},
+            "action_profit_factor": {"reduce": 1.20},
+        }
+
+        strict = _hostile_proxy_diagnostics(params, metrics)
+        relaxed = _hostile_proxy_diagnostics({**params, "research_relaxed_fee_probe_enabled": 1.0}, metrics)
+
+        self.assertEqual(strict["research_relaxed_fee_probe_enabled"], 0.0)
+        self.assertEqual(relaxed["research_relaxed_fee_probe_enabled"], 1.0)
+        self.assertEqual(relaxed["fee_efficiency_thresholds"]["max_fee_drag_pct_absolute"], 0.15)
+        self.assertEqual(relaxed["fee_efficiency_thresholds"]["min_profit_factor_after_fee"], 0.95)
+        self.assertGreater(strict["train_fee_drag_cap_penalty"], relaxed["train_fee_drag_cap_penalty"])
+        self.assertGreater(strict["flip_reduce_fee_drag_penalty"], relaxed["flip_reduce_fee_drag_penalty"])
+        self.assertGreater(strict["exit_fee_drag_penalty"], relaxed["exit_fee_drag_penalty"])
+        self.assertGreater(strict["flip_action_fee_drag_penalty"], relaxed["flip_action_fee_drag_penalty"])
+        self.assertGreater(relaxed["hostile_proxy_score"], strict["hostile_proxy_score"])
+
     def test_hostile_proxy_rewards_balanced_tranche_build_and_unwind(self) -> None:
         params = {
             "target_vol_4h": 0.95,
@@ -598,7 +639,7 @@ class TestStage1HostileProxy(unittest.TestCase):
             params,
             {
                 "sharpe": 1.6,
-                "max_drawdown": 0.05,
+                "max_drawdown": 0.11,
                 "profit_factor": 1.4,
                 "fee_drag_pct": 0.01,
                 "trade_count": 120,
@@ -610,7 +651,7 @@ class TestStage1HostileProxy(unittest.TestCase):
             params,
             {
                 "sharpe": 1.6,
-                "max_drawdown": 0.09,
+                "max_drawdown": 0.14,
                 "profit_factor": 1.4,
                 "fee_drag_pct": 0.01,
                 "trade_count": 120,
@@ -663,11 +704,24 @@ class TestStage1HostileProxy(unittest.TestCase):
             {**params, "max_leverage": 3.5, "intent_time_leverage_add_deadband_pct": 0.0},
             {**safe_metrics, "max_drawdown": 0.12, "fee_drag_pct": 0.04},
         )
+        relaxed_upside = _hostile_proxy_diagnostics(
+            {
+                **params,
+                "max_leverage": 4.0,
+                "research_relaxed_fee_probe_enabled": 1.0,
+            },
+            {
+                **safe_metrics,
+                "max_drawdown": 0.19,
+                "fee_drag_pct": 0.10,
+            },
+        )
 
         self.assertGreater(safe["paulwei_early_convexity_proxy_bonus"], 0.0)
         self.assertGreater(safe["paulwei_mature_control_proxy_bonus"], 0.0)
         self.assertEqual(safe["paulwei_dual_phase_usdt_safety_penalty"], 0.0)
         self.assertGreater(unsafe["paulwei_dual_phase_usdt_safety_penalty"], 0.0)
+        self.assertEqual(relaxed_upside["paulwei_dual_phase_usdt_safety_penalty"], 0.0)
         self.assertLess(unsafe["hostile_proxy_score"], safe["hostile_proxy_score"])
 
     def test_stage1_sort_metric_prefers_hostile_proxy_score_over_raw_sharpe(self) -> None:
@@ -688,6 +742,11 @@ class TestStage1HostileProxy(unittest.TestCase):
                         "sharpe": 2.0,
                         "hostile_proxy_score": 2.4,
                         "stage1_score": 2.4,
+                        "equity_multiple": 1.884081,
+                        "return_run_bonus": 0.319,
+                        "exit_fee_drag_pct": 0.004,
+                        "flip_action_fee_drag_pct": 0.003,
+                        "reduce_action_profit_factor": 1.25,
                         "paulwei_dual_phase_objective_enabled": 1.0,
                         "paulwei_early_convexity_proxy_bonus": 0.30,
                         "paulwei_mature_control_proxy_bonus": 0.20,
@@ -704,6 +763,11 @@ class TestStage1HostileProxy(unittest.TestCase):
         self.assertEqual(metrics["paulwei_early_convexity_proxy_bonus"], 0.30)
         self.assertEqual(metrics["paulwei_mature_control_proxy_bonus"], 0.20)
         self.assertEqual(metrics["paulwei_dual_phase_adjustment"], 0.50)
+        self.assertEqual(metrics["equity_multiple"], 1.884081)
+        self.assertEqual(metrics["return_run_bonus"], 0.319)
+        self.assertEqual(metrics["exit_fee_drag_pct"], 0.004)
+        self.assertEqual(metrics["flip_action_fee_drag_pct"], 0.003)
+        self.assertEqual(metrics["reduce_action_profit_factor"], 1.25)
 
     def test_hostile_guardrails_flag_new_execution_fragility_combos(self) -> None:
         violations = hostile_constraint_violations(

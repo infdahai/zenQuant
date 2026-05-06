@@ -928,6 +928,7 @@ class FrameworkCampaignTests(unittest.TestCase):
                     },
                     indicator_fast_path_enabled=True,
                     slow_enrichment_deferred=False,
+                    transfer_entropy_deferred=True,
                     terminated_early=1.0,
                     stage1_budget_mode="wall_clock_primary",
                     stage1_stop_reason="wall_clock_budget_reached",
@@ -980,6 +981,7 @@ class FrameworkCampaignTests(unittest.TestCase):
         )
         self.assertTrue(payload["indicator_fast_path_enabled"])
         self.assertFalse(payload["slow_enrichment_deferred"])
+        self.assertTrue(payload["transfer_entropy_deferred"])
         self.assertEqual(payload["stage1_budget_mode"], "wall_clock_primary")
         self.assertEqual(payload["stage1_stop_reason"], "wall_clock_budget_reached")
 

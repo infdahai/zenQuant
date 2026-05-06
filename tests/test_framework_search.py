@@ -7,15 +7,18 @@ import unittest
 from concurrent.futures import TimeoutError as FutureTimeoutError
 from dataclasses import dataclass
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from zenquant.domain import Timeframe
 from zenquant.historical import HistoricalBacktestConfig
 from zenquant.historical.storage import HistoricalKlineRow, write_parquet_rows
 from zenquant.research.auto_research import _build_strategy_config, _hostile_proxy_diagnostics
+from zenquant.research.comparison import VariantSpec
 from zenquant.research.framework_params import (
     BASE_TIMEFRAME_SMOKE_MODES,
     DEFAULT_DEV_FEE_STABILITY_LIMITS,
+    RELAXED_DEV_FEE_STABILITY_LIMITS,
     SEARCH_SPACE_MODES,
     STRICT_TRAIN_FEE_STOP_PROFILE_FLAGS,
     STRICT_TRAIN_TRUTH_PROFILE_FLAGS,
@@ -46,6 +49,10 @@ from zenquant.research.framework_params import (
     paulwei_dual_phase_fee_repair_seed_trials,
     paulwei_dual_phase_param_grid,
     paulwei_dual_phase_seed_trials,
+    paulwei_dual_phase_spot_context_param_grid,
+    paulwei_dual_phase_spot_context_relaxed_fee_param_grid,
+    paulwei_dual_phase_spot_context_relaxed_fee_seed_trials,
+    paulwei_dual_phase_spot_context_seed_trials,
     ralph_execution_fee_cooldown_param_grid,
     ralph_execution_fee_cooldown_seed_trials,
     ralph_intent_reduce_cadence_param_grid,
@@ -70,9 +77,13 @@ from zenquant.research.framework_search import (
     _classify_post_smoke_scenario,
     _dev_fee_stability_summary,
     _hostile_regression_summary,
+    _late_dev_regime_window,
     _run_validation_bundle,
     _run_variant_backtest_with_timeout,
+    _spot_context_score,
     _stage1_fail_fast_reason,
+    _temporal_robustness_audit,
+    _train_temporal_robustness_windows,
     build_markdown_report,
     run_optuna_search,
     write_search_report,
@@ -127,6 +138,8 @@ class FrameworkParamTests(unittest.TestCase):
         self.assertIn("paulwei_balanced_tranche_train_only", SEARCH_SPACE_MODES)
         self.assertIn("paulwei_dual_phase_train_only", SEARCH_SPACE_MODES)
         self.assertIn("paulwei_dual_phase_fee_repair_train_only", SEARCH_SPACE_MODES)
+        self.assertIn("paulwei_dual_phase_spot_context_train_only", SEARCH_SPACE_MODES)
+        self.assertIn("paulwei_dual_phase_spot_context_relaxed_fee_train_only", SEARCH_SPACE_MODES)
         self.assertIn("intent_churn_ablation_train_only", BASE_TIMEFRAME_SMOKE_MODES)
         self.assertTrue(
             smoke_uses_base_timeframe(budget="smoke", search_space_mode="ralph_intent_reduce_cadence_train_only")
@@ -138,6 +151,18 @@ class FrameworkParamTests(unittest.TestCase):
         self.assertTrue(
             smoke_uses_base_timeframe(budget="smoke", search_space_mode="paulwei_dual_phase_fee_repair_train_only")
         )
+        self.assertTrue(
+            smoke_uses_base_timeframe(
+                budget="smoke",
+                search_space_mode="paulwei_dual_phase_spot_context_train_only",
+            )
+        )
+        self.assertTrue(
+            smoke_uses_base_timeframe(
+                budget="smoke",
+                search_space_mode="paulwei_dual_phase_spot_context_relaxed_fee_train_only",
+            )
+        )
         self.assertFalse(smoke_uses_base_timeframe(budget="smoke", search_space_mode="baseline_anchored_train_only"))
         self.assertIn("intent_churn_ablation_search", STRICT_TRAIN_FEE_STOP_PROFILE_FLAGS)
         self.assertIn("ralph_intent_reduce_cadence_search", STRICT_TRAIN_TRUTH_PROFILE_FLAGS)
@@ -147,7 +172,10 @@ class FrameworkParamTests(unittest.TestCase):
         self.assertIn("paulwei_dual_phase_search", STRICT_TRAIN_TRUTH_PROFILE_FLAGS)
         self.assertIn("paulwei_dual_phase_fee_repair_search", STRICT_TRAIN_FEE_STOP_PROFILE_FLAGS)
         self.assertIn("paulwei_dual_phase_fee_repair_search", STRICT_TRAIN_TRUTH_PROFILE_FLAGS)
+        self.assertIn("paulwei_dual_phase_spot_context_search", STRICT_TRAIN_FEE_STOP_PROFILE_FLAGS)
+        self.assertIn("paulwei_dual_phase_spot_context_search", STRICT_TRAIN_TRUTH_PROFILE_FLAGS)
         self.assertEqual(DEFAULT_DEV_FEE_STABILITY_LIMITS.dev_fee_drag_fail_fast_cap, 0.075)
+        self.assertEqual(RELAXED_DEV_FEE_STABILITY_LIMITS.dev_fee_drag_fail_fast_cap, 0.25)
 
     def test_hostile_constraint_violations_reject_aggressive_combo(self) -> None:
         params = {
@@ -555,6 +583,102 @@ class FrameworkParamTests(unittest.TestCase):
             profile["paulwei_phase_learning_contract"]["templates"],
             ["early_convexity_usdt_projection", "mature_low_switch_control", "dual_phase_fee_repair"],
         )
+
+    def test_paulwei_dual_phase_spot_context_grid_targets_profit_running(self) -> None:
+        grid = paulwei_dual_phase_spot_context_param_grid()
+        seeds = paulwei_dual_phase_spot_context_seed_trials()
+
+        self.assertEqual(grid["paulwei_dual_phase_objective_enabled"], [1.0])
+        self.assertEqual(grid["target_vol_4h"], [0.50, 0.65, 0.80, 0.95])
+        self.assertEqual(grid["target_vol_5m"], [0.65, 0.70, 0.75, 0.80])
+        self.assertEqual(grid["max_leverage"], [3.0])
+        self.assertEqual(grid["direction_signal_threshold"], [0.25, 0.30, 0.35, 0.40])
+        self.assertEqual(grid["intent_add_signal_threshold"], [0.25, 0.30, 0.35, 0.40])
+        self.assertEqual(grid["intent_flip_confirmation_bars"], [36, 48, 72, 96, 120])
+        self.assertEqual(grid["intent_time_leverage_min_hold_bars"], [672, 960, 1344])
+        self.assertEqual(grid["intent_time_leverage_reduce_deadband_pct"], [1.00, 1.25, 1.50, 1.75])
+        self.assertEqual(grid["time_decay_long_loss_threshold"], [-0.12, -0.16])
+        self.assertGreaterEqual(len(seeds), 24)
+        self.assertTrue(all(seed["paulwei_dual_phase_objective_enabled"] == 1.0 for seed in seeds))
+        self.assertTrue(all(seed["max_leverage"] == 3.0 for seed in seeds))
+        self.assertGreater(max(seed["intent_time_leverage_min_hold_bars"] for seed in seeds), 480)
+        self.assertTrue(all(seed.get("intent_time_leverage_long_bias_enabled") == 1.0 for seed in seeds[:12]))
+        self.assertTrue(any(seed["target_vol_4h"] == 0.50 for seed in seeds[:12]))
+        self.assertTrue(any(seed["target_vol_4h"] == 0.95 for seed in seeds[:12]))
+        self.assertTrue(any(seed["intent_bearish_override_confirmation_bars"] == 8 for seed in seeds[:6]))
+
+    def test_search_space_profile_marks_paulwei_dual_phase_spot_context_mode(self) -> None:
+        profile = search_space_profile(mode="paulwei_dual_phase_spot_context_train_only")
+
+        self.assertEqual(profile["profile"], "paulwei_dual_phase_spot_context_train_only")
+        self.assertEqual(profile["search_space_mode"], "paulwei_dual_phase_spot_context_train_only")
+        self.assertTrue(profile["paulwei_dual_phase_search"])
+        self.assertFalse(profile["paulwei_dual_phase_fee_repair_search"])
+        self.assertTrue(profile["paulwei_dual_phase_spot_context_search"])
+        self.assertEqual(
+            profile["paulwei_phase_learning_contract"]["templates"],
+            [
+                "early_convexity_usdt_projection",
+                "mature_low_switch_control",
+                "dual_phase_fee_repair",
+                "spot_era_context_profit_run",
+            ],
+        )
+
+    def test_search_space_profile_marks_paulwei_dual_phase_relaxed_fee_probe_mode(self) -> None:
+        profile = search_space_profile(mode="paulwei_dual_phase_spot_context_relaxed_fee_train_only")
+        grid = paulwei_dual_phase_spot_context_relaxed_fee_param_grid()
+        seeds = paulwei_dual_phase_spot_context_relaxed_fee_seed_trials()
+
+        self.assertEqual(profile["profile"], "paulwei_dual_phase_spot_context_relaxed_fee_train_only")
+        self.assertTrue(profile["paulwei_dual_phase_search"])
+        self.assertTrue(profile["paulwei_dual_phase_spot_context_search"])
+        self.assertTrue(profile["paulwei_dual_phase_spot_context_relaxed_fee_search"])
+        self.assertTrue(profile["research_relaxed_fee_probe"])
+        self.assertIn("research_relaxed_fee_probe", profile["paulwei_phase_learning_contract"]["templates"])
+        self.assertEqual(grid["research_relaxed_fee_probe_enabled"], [1.0])
+        self.assertIn(1.25, grid["target_vol_4h"])
+        self.assertIn(4.0, grid["max_leverage"])
+        self.assertIn(0.0, grid["intent_time_leverage_long_bias_block_short"])
+        self.assertTrue(all(seed["research_relaxed_fee_probe_enabled"] == 1.0 for seed in seeds[:12]))
+        self.assertTrue(any(seed["max_leverage"] == 4.0 for seed in seeds[:12]))
+        self.assertTrue(any(seed["intent_time_leverage_long_bias_block_short"] == 0.0 for seed in seeds[:12]))
+
+    def test_spot_context_score_penalizes_bull_undercapture(self) -> None:
+        weak_bull = {
+            "spot_context_full_2017_2019": {
+                "equity_multiple": 1.21,
+                "max_drawdown": 0.05,
+                "sharpe": 2.4,
+            },
+            "spot_context_bull_expansion_2017": {
+                "equity_multiple": 1.01,
+                "fee_drag_pct": 0.028,
+            },
+            "spot_context_bear_crash_2018": {
+                "max_drawdown": 0.03,
+                "sharpe": 0.4,
+                "fee_drag_pct": 0.078,
+            },
+            "spot_context_recovery_2019": {
+                "equity_multiple": 1.19,
+            },
+        }
+        captured_bull = {
+            **weak_bull,
+            "spot_context_bull_expansion_2017": {
+                "equity_multiple": 1.12,
+                "fee_drag_pct": 0.012,
+            },
+            "spot_context_bear_crash_2018": {
+                "max_drawdown": 0.03,
+                "sharpe": 0.4,
+                "fee_drag_pct": 0.030,
+            },
+        }
+
+        self.assertLess(_spot_context_score(weak_bull), 0.25)
+        self.assertGreater(_spot_context_score(captured_bull), _spot_context_score(weak_bull))
 
     def test_build_signal_weight_overrides_maps_audited_state_factor_weights(self) -> None:
         weights = build_signal_weight_overrides(
@@ -1168,6 +1292,72 @@ class FrameworkParamTests(unittest.TestCase):
 
 
 class FrameworkEvaluatorTests(unittest.TestCase):
+    def test_temporal_robustness_windows_are_train_dev_only(self) -> None:
+        split = default_btc_split_spec()
+
+        train_windows = _train_temporal_robustness_windows(split)
+        late_dev_window = _late_dev_regime_window(split)
+
+        self.assertEqual(
+            [window.label for window in train_windows], [f"train_temporal_{year}" for year in range(2020, 2024)]
+        )
+        self.assertTrue(all(window.start_ns >= split.train.start_ns for window in train_windows))
+        self.assertTrue(
+            all(window.end_ns is not None and window.end_ns <= split.train.end_ns for window in train_windows)
+        )
+        self.assertIsNotNone(late_dev_window)
+        assert late_dev_window is not None
+        self.assertGreaterEqual(late_dev_window.start_ns or 0, split.dev.start_ns)
+        self.assertEqual(late_dev_window.end_ns, split.dev.end_ns)
+        self.assertLessEqual(late_dev_window.end_ns or 0, split.test.start_ns)
+
+    def test_temporal_robustness_audit_blocks_unstable_train_and_late_dev(self) -> None:
+        split = default_btc_split_spec()
+        base_config = HistoricalBacktestConfig(profile_path=None)
+        evaluator = SimpleNamespace(
+            search_space_profile={"paulwei_dual_phase_spot_context_relaxed_fee_search": True},
+            _split_spec=split,
+            _base_config=base_config,
+            candidate_variant=lambda _params, name, label: VariantSpec(name=name, label=label),
+        )
+
+        def fake_snapshot(_base_config, _variant, *, start_ns, end_ns):
+            del end_ns
+            if start_ns == split.train.start_ns:
+                return BacktestSnapshot(
+                    sharpe=-0.75,
+                    net_pnl=-1_000.0,
+                    max_drawdown=0.08,
+                    win_rate=0.4,
+                    profit_factor=0.8,
+                )
+            if start_ns and start_ns >= (split.dev.end_ns or 0) - 200 * 86_400 * 1_000_000_000:
+                return BacktestSnapshot(
+                    sharpe=-0.40,
+                    net_pnl=-500.0,
+                    max_drawdown=0.05,
+                    win_rate=0.45,
+                    profit_factor=0.9,
+                )
+            return BacktestSnapshot(
+                sharpe=1.20,
+                net_pnl=2_000.0,
+                max_drawdown=0.04,
+                win_rate=0.55,
+                profit_factor=1.4,
+            )
+
+        with patch("zenquant.research.framework_search._run_variant_backtest_snapshot", side_effect=fake_snapshot):
+            audit = _temporal_robustness_audit(evaluator, {"target_vol_4h": 0.65})
+
+        self.assertIsNotNone(audit)
+        assert audit is not None
+        self.assertFalse(audit["test_evaluated"])
+        self.assertEqual(audit["scope"], "train_dev_only_temporal_robustness")
+        self.assertIn("temporal_train_min_sharpe_fail_fast", audit["blocked_by"])
+        self.assertIn("late_dev_regime_fail_fast", audit["blocked_by"])
+        self.assertLess(audit["score_adjustment"], 0.0)
+
     def test_training_input_contract_treats_missing_train_1h_as_derived_from_5m(self) -> None:
         @dataclass
         class Readiness:
@@ -2875,7 +3065,29 @@ class SearchReportSerializationTests(unittest.TestCase):
                     "spot_train_leg_blocked_by": ["spot_context_only_not_formal_train_truth"],
                     "candidate_window_start": "2017-08-17T00:00:00+00:00",
                     "candidate_window_end": "2026-04-17T00:00:00+00:00",
+                    "allowed_uses": [
+                        "pre_2020_regime_context",
+                        "train_side_regime_context_objective",
+                    ],
                     "source_boundary": "spot context only",
+                },
+            ),
+            patch(
+                "zenquant.research.framework_search._spot_context_replay_audit",
+                return_value={
+                    "scope": "train_side_regime_context_objective",
+                    "formal_train_truth": False,
+                    "promotion_allowed": False,
+                    "test_evaluated": False,
+                    "windows": {
+                        "spot_context_full_2017_2019": {
+                            "sharpe": 1.5,
+                            "net_pnl": 50_000.0,
+                            "equity_multiple": 1.5,
+                            "max_drawdown": 0.2,
+                        }
+                    },
+                    "context_score_adjustment": 0.4,
                 },
             ),
         ):
@@ -2885,6 +3097,10 @@ class SearchReportSerializationTests(unittest.TestCase):
         self.assertEqual(best, {"w_momentum": 0.3})
         self.assertEqual(ranked[0]["params"], {"w_momentum": 0.3})
         self.assertIsNone(ranked[0]["spot_train_leg_metrics"])
+        self.assertIsNotNone(ranked[0]["spot_context_metrics"])
+        self.assertEqual(ranked[0]["spot_context_metrics"]["formal_train_truth"], False)
+        self.assertEqual(ranked[0]["train_metrics"]["spot_context_score_adjustment"], 0.4)
+        self.assertTrue(diagnostics["spot_era_context_replay_audit"]["enabled"])
         self.assertEqual(diagnostics["historical_extension_mode"], "spot_context_only")
 
     def test_final_report_passes_smoke_minimal_comparison_mode_and_heartbeat(self) -> None:
