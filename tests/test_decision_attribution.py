@@ -385,6 +385,74 @@ class DecisionAttributionTests(unittest.TestCase):
         )
         self.assertIn("risk_overlay_not_reducing_bear_exposure", attribution["diagnosis"]["failure_flags"])
 
+    def test_bear_window_attribution_flags_range_bear_profit_context_without_short(self) -> None:
+        metrics = BacktestMetrics(
+            symbol="BTCUSDT_PERP",
+            start_ns=1,
+            end_ns=3,
+            total_bars=3,
+            net_pnl=-6.0,
+            gross_pnl=-6.0,
+            total_fees=0.0,
+            total_funding=0.0,
+            sharpe=-1.0,
+            sortino=-1.0,
+            max_drawdown=0.04,
+            max_dd_duration_bars=2,
+            win_rate=0.0,
+            profit_factor=0.0,
+            avg_win=0.0,
+            avg_loss=-6.0,
+            trade_count=0,
+            turnover_per_day=0.0,
+            fee_drag_pct=0.0,
+        )
+        runner = SimpleNamespace(
+            _reports=[],
+            build_analysis_rows=lambda: [
+                {
+                    "cutoff_time_ns": idx,
+                    "close_price": price,
+                    "target_qty": 0.0,
+                    "target_leverage": 0.0,
+                    "equity": 100000.0 - idx,
+                    "regime": "RANGE",
+                    "directional_state": "DOWNTREND",
+                    "direction_signal": -0.4,
+                    "cycle_position": 0.92,
+                    "momentum_roc_z": -0.4,
+                    "multi_momentum_z": -0.5,
+                    "playbook_id": "RANGE_LIGHT",
+                }
+                for idx, price in enumerate((100.0, 90.0, 82.0), start=1)
+            ],
+        )
+
+        attribution = build_bear_window_direction_exposure_attribution(
+            runner,
+            SimpleNamespace(metrics=metrics),
+            variant="candidate",
+            window_label="train_temporal_2022",
+            source="post_2020_futures_train",
+            role="bear_survival_direction_exposure",
+            formal_train_truth=True,
+            execution_truth=True,
+            starting_equity=100000.0,
+        )
+
+        self.assertEqual(attribution["summary"]["range_bear_profit_candidate_bar_pct"], 1.0)
+        self.assertEqual(attribution["summary"]["short_when_range_bear_profit_candidate_pct"], 0.0)
+        self.assertEqual(attribution["counts"]["range_bear_profit_candidate_playbooks"]["RANGE_LIGHT"], 3)
+        self.assertEqual(attribution["counts"]["range_bear_profit_candidate_blockers"]["no_short_target"], 3)
+        self.assertNotIn(
+            "playbook_not_bear_profit_allowed",
+            attribution["counts"]["range_bear_profit_candidate_blockers"],
+        )
+        self.assertEqual(
+            attribution["diagnosis"]["primary_failure_mode"],
+            "range_bear_profit_context_not_converted_to_short_intent",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

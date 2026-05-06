@@ -33,10 +33,14 @@ def _pack(
     ob_liq_z: float = 0.3,
     funding_oi_z: float = 0.1,
     momentum_roc_z: float = 0.8,
+    multi_momentum_z: float | None = None,
     structure_state: str = "UPTREND",
+    cycle_position: float = 1.0,
     last_price: float = 60000.0,
     zen_pulse: float = 65.0,
 ) -> IndicatorPack:
+    if multi_momentum_z is None:
+        multi_momentum_z = momentum_roc_z
     return IndicatorPack(
         ts_ns=1,
         symbol=symbol,
@@ -53,7 +57,9 @@ def _pack(
             "ob_liq_z": ob_liq_z,
             "funding_oi_z": funding_oi_z,
             "momentum_roc_z": momentum_roc_z,
+            "multi_momentum_z": multi_momentum_z,
             "structure_state": structure_state,
+            "cycle_position": cycle_position,
             "last_price": last_price,
             "zen_pulse": zen_pulse,
             "overall_ob_liq_z": 0.0,
@@ -78,6 +84,7 @@ def _state(
     positioning_state: str = "HEALTHY",
     quality_state: str = "TRADABLE",
     transition_risk: float = 0.2,
+    direction_signal: float = 1.0,
 ) -> MarketState:
     return MarketState(
         symbol="BTCUSDT_PERP",
@@ -93,7 +100,7 @@ def _state(
         quality_confidence=0.9,
         regime=regime,
         regime_confidence=0.8,
-        direction_signal=1.0,
+        direction_signal=direction_signal,
         transition_risk=transition_risk,
         quality_flags=["OK"],
     )
@@ -1213,6 +1220,87 @@ class TestStrategyIntentConfirmation(unittest.TestCase):
         self.assertEqual(qty, 0.0)
         self.assertEqual(leverage, 0.0)
         self.assertIn("TIME_LEVERAGE_SHORT_BLOCKED", reason_codes)
+
+    def test_range_bear_profit_run_override_requires_bear_context(self):
+        engine = ARCStrategyEngine(
+            bus=_strategy_bus(),
+            config=ARCStrategyConfig(
+                intent_range_bear_profit_run_override_enabled=True,
+                intent_range_bear_profit_run_direction_signal=-0.25,
+                intent_range_bear_profit_run_momentum_threshold=-0.20,
+                intent_range_bear_profit_run_confidence_floor=0.50,
+                intent_range_bear_profit_run_max_transition_risk=0.55,
+            ),
+        )
+
+        self.assertTrue(
+            engine._range_bear_profit_run_override_ready(
+                pack=_pack(
+                    momentum_roc_z=-0.35,
+                    multi_momentum_z=-0.40,
+                    structure_state="DOWNTREND",
+                    cycle_position=0.92,
+                ),
+                state=_state(
+                    regime="RANGE",
+                    directional_state="DOWNTREND",
+                    transition_risk=0.35,
+                    direction_signal=-0.30,
+                ),
+                playbook=_playbook(playbook_id="RANGE_LIGHT"),
+            )
+        )
+        self.assertTrue(
+            engine._range_bear_profit_run_override_ready(
+                pack=_pack(
+                    momentum_roc_z=-0.35,
+                    multi_momentum_z=-0.40,
+                    structure_state="DOWNTREND",
+                    cycle_position=0.92,
+                ),
+                state=_state(
+                    regime="RANGE",
+                    directional_state="DOWNTREND",
+                    transition_risk=0.35,
+                    direction_signal=-0.30,
+                ),
+                playbook=_playbook(playbook_id="BEAR_DEFENSE"),
+            )
+        )
+        self.assertFalse(
+            engine._range_bear_profit_run_override_ready(
+                pack=_pack(
+                    momentum_roc_z=-0.35,
+                    multi_momentum_z=-0.40,
+                    structure_state="DOWNTREND",
+                    cycle_position=0.92,
+                ),
+                state=_state(
+                    regime="RANGE",
+                    directional_state="TRANSITION",
+                    transition_risk=0.35,
+                    direction_signal=0.35,
+                ),
+                playbook=_playbook(playbook_id="RANGE_LIGHT"),
+            )
+        )
+        self.assertTrue(
+            engine._range_bear_profit_run_override_ready(
+                pack=_pack(
+                    momentum_roc_z=-0.35,
+                    multi_momentum_z=-0.40,
+                    structure_state="NEUTRAL",
+                    cycle_position=0.90,
+                ),
+                state=_state(
+                    regime="RANGE",
+                    directional_state="TRANSITION",
+                    transition_risk=0.35,
+                    direction_signal=0.0,
+                ),
+                playbook=_playbook(playbook_id="RANGE_LIGHT"),
+            )
+        )
 
 
 class TestLegacyPathUnchanged(unittest.TestCase):

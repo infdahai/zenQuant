@@ -171,6 +171,63 @@ class MultiMomentumSignalTests(unittest.TestCase):
         self.assertEqual(result.value, 0.0)
         self.assertIn("MULTI_MOM_RANGE_BULL_PROFIT_RUN_GUARDED_STATE_DIRECTION_SIGNAL", result.reason_codes)
 
+    def test_range_bear_profit_run_is_opt_in(self) -> None:
+        """Research profiles may opt into slow short intent inside RANGE bear states."""
+        result = self._compute(
+            {"multi_momentum_z": -0.8, "structure_state": "DOWNTREND", "cycle_position": 0.93},
+            state={
+                "regime": "RANGE",
+                "transition_risk": 0.35,
+                "directional_state": "DOWNTREND",
+                "directional_confidence": 0.62,
+                "direction_signal": -0.35,
+            },
+            config={
+                "momentum_threshold": 0.3,
+                "signal_sign": 1.0,
+                "use_single_fallback": True,
+                "range_bear_profit_run_enabled": True,
+                "range_bear_profit_run_threshold": 0.2,
+                "range_bear_profit_run_value": 0.70,
+                "range_bear_profit_run_confidence": 0.65,
+                "range_bear_profit_run_max_transition_risk": 0.55,
+                "range_bear_profit_run_cycle_fallback_enabled": True,
+                "range_bear_profit_run_cycle_threshold": 0.95,
+                "range_bear_profit_run_cycle_momentum_threshold": 0.10,
+            },
+        )
+
+        self.assertEqual(result.value, -0.70)
+        self.assertGreaterEqual(result.confidence, 0.65)
+        self.assertIn("MULTI_MOM_RANGE_BEAR_PROFIT_RUN", result.reason_codes)
+        self.assertIn("STRUCTURE_DOWNTREND", result.reason_codes)
+
+    def test_range_bear_profit_run_guard_blocks_bullish_state_signal(self) -> None:
+        """Bear profit-run intent must not fight a positive state direction signal."""
+        result = self._compute(
+            {"multi_momentum_z": -0.8, "structure_state": "DOWNTREND", "cycle_position": 0.93},
+            state={
+                "regime": "RANGE",
+                "transition_risk": 0.35,
+                "directional_state": "TRANSITION",
+                "directional_confidence": 0.50,
+                "direction_signal": 0.45,
+            },
+            config={
+                "momentum_threshold": 0.3,
+                "signal_sign": 1.0,
+                "use_single_fallback": True,
+                "range_bear_profit_run_enabled": True,
+                "range_bear_profit_run_threshold": 0.2,
+                "range_bear_profit_run_value": 0.70,
+                "range_bear_profit_run_confidence": 0.65,
+                "range_bear_profit_run_max_state_direction_signal": 0.20,
+            },
+        )
+
+        self.assertEqual(result.value, 0.0)
+        self.assertIn("MULTI_MOM_RANGE_BEAR_PROFIT_RUN_GUARDED_STATE_DIRECTION_SIGNAL", result.reason_codes)
+
     # ── None / missing key handling ──
 
     def test_none_momentum_with_fallback(self) -> None:

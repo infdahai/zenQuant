@@ -32,6 +32,7 @@ from zenquant.research.framework_params import (
     build_execution_config,
     build_plugin_config_overrides,
     build_replay_toggles,
+    build_risk_config,
     build_signal_weight_overrides,
     build_strategy_config,
     core_param_grid,
@@ -653,6 +654,22 @@ class FrameworkParamTests(unittest.TestCase):
         self.assertIn(1.0, grid["multi_momentum_range_profit_run_cycle_fallback_enabled"])
         self.assertIn(0.10, grid["multi_momentum_range_profit_run_cycle_momentum_threshold"])
         self.assertIn(-0.55, grid["multi_momentum_range_profit_run_min_state_direction_signal"])
+        self.assertIn(1.0, grid["multi_momentum_range_bear_profit_run_enabled"])
+        self.assertIn(0.20, grid["multi_momentum_range_bear_profit_run_threshold"])
+        self.assertIn(0.70, grid["multi_momentum_range_bear_profit_run_value"])
+        self.assertIn(0.55, grid["multi_momentum_range_bear_profit_run_max_transition_risk"])
+        self.assertIn(1.0, grid["multi_momentum_range_bear_profit_run_cycle_fallback_enabled"])
+        self.assertIn(0.95, grid["multi_momentum_range_bear_profit_run_cycle_threshold"])
+        self.assertIn(0.20, grid["multi_momentum_range_bear_profit_run_max_state_direction_signal"])
+        self.assertIn(0.14, grid["dd_step_1_short"])
+        self.assertIn(0.22, grid["dd_step_2_short"])
+        self.assertIn(0.28, grid["dd_step_3_short"])
+        self.assertIn(6.0, grid["bear_trailing_stop_atr_mult"])
+        self.assertIn(1.0, grid["intent_range_bear_profit_run_override_enabled"])
+        self.assertIn(-0.25, grid["intent_range_bear_profit_run_direction_signal"])
+        self.assertIn(-0.20, grid["intent_range_bear_profit_run_momentum_threshold"])
+        self.assertIn(0.55, grid["intent_range_bear_profit_run_max_transition_risk"])
+        self.assertIn(-0.24, grid["time_decay_short_loss_threshold"])
         self.assertIn(0.0, grid["intent_time_leverage_long_bias_block_short"])
         self.assertTrue(all(seed["research_relaxed_fee_probe_enabled"] == 1.0 for seed in seeds[:12]))
         self.assertTrue(any(seed["max_leverage"] == 4.0 for seed in seeds[:12]))
@@ -673,6 +690,13 @@ class FrameworkParamTests(unittest.TestCase):
         self.assertTrue(
             any(seed["multi_momentum_range_profit_run_min_state_direction_signal"] == -0.55 for seed in seeds[:12])
         )
+        self.assertTrue(any(seed["multi_momentum_range_bear_profit_run_enabled"] == 1.0 for seed in seeds[:12]))
+        self.assertTrue(any(seed["multi_momentum_range_bear_profit_run_value"] == 0.85 for seed in seeds[:12]))
+        self.assertTrue(any(seed["dd_step_3_short"] == 0.28 for seed in seeds[:12]))
+        self.assertTrue(any(seed["bear_trailing_stop_atr_mult"] == 6.0 for seed in seeds[:12]))
+        self.assertTrue(any(seed["intent_range_bear_profit_run_override_enabled"] == 1.0 for seed in seeds[:12]))
+        self.assertTrue(any(seed["intent_range_bear_profit_run_max_transition_risk"] == 0.65 for seed in seeds[:12]))
+        self.assertTrue(any(seed["time_decay_short_loss_threshold"] == -0.24 for seed in seeds[:12]))
         self.assertTrue(any(seed["intent_time_leverage_long_bias_block_short"] == 0.0 for seed in seeds[:12]))
 
     def test_spot_context_score_penalizes_bull_undercapture(self) -> None:
@@ -754,6 +778,16 @@ class FrameworkParamTests(unittest.TestCase):
                 "multi_momentum_range_profit_run_cycle_momentum_threshold": 0.10,
                 "multi_momentum_range_profit_run_block_confirmed_downtrend": 1.0,
                 "multi_momentum_range_profit_run_min_state_direction_signal": -0.25,
+                "multi_momentum_range_bear_profit_run_enabled": 1.0,
+                "multi_momentum_range_bear_profit_run_threshold": 0.20,
+                "multi_momentum_range_bear_profit_run_value": 0.70,
+                "multi_momentum_range_bear_profit_run_confidence": 0.65,
+                "multi_momentum_range_bear_profit_run_max_transition_risk": 0.55,
+                "multi_momentum_range_bear_profit_run_cycle_fallback_enabled": 1.0,
+                "multi_momentum_range_bear_profit_run_cycle_threshold": 0.95,
+                "multi_momentum_range_bear_profit_run_cycle_momentum_threshold": 0.10,
+                "multi_momentum_range_bear_profit_run_block_confirmed_uptrend": 1.0,
+                "multi_momentum_range_bear_profit_run_max_state_direction_signal": 0.20,
             }
         )
 
@@ -785,6 +819,35 @@ class FrameworkParamTests(unittest.TestCase):
         self.assertEqual(
             overrides["signals"]["multi_momentum_signal"]["range_profit_run_min_state_direction_signal"], -0.25
         )
+        self.assertTrue(overrides["signals"]["multi_momentum_signal"]["range_bear_profit_run_enabled"])
+        self.assertEqual(overrides["signals"]["multi_momentum_signal"]["range_bear_profit_run_threshold"], 0.20)
+        self.assertEqual(overrides["signals"]["multi_momentum_signal"]["range_bear_profit_run_value"], 0.70)
+        self.assertEqual(overrides["signals"]["multi_momentum_signal"]["range_bear_profit_run_confidence"], 0.65)
+        self.assertEqual(
+            overrides["signals"]["multi_momentum_signal"]["range_bear_profit_run_max_transition_risk"], 0.55
+        )
+        self.assertTrue(overrides["signals"]["multi_momentum_signal"]["range_bear_profit_run_cycle_fallback_enabled"])
+        self.assertEqual(overrides["signals"]["multi_momentum_signal"]["range_bear_profit_run_cycle_threshold"], 0.95)
+        self.assertEqual(
+            overrides["signals"]["multi_momentum_signal"]["range_bear_profit_run_cycle_momentum_threshold"], 0.10
+        )
+        self.assertTrue(overrides["signals"]["multi_momentum_signal"]["range_bear_profit_run_block_confirmed_uptrend"])
+        self.assertEqual(
+            overrides["signals"]["multi_momentum_signal"]["range_bear_profit_run_max_state_direction_signal"], 0.20
+        )
+
+    def test_build_risk_config_maps_full_short_dd_ladder(self) -> None:
+        config = build_risk_config(
+            {
+                "dd_step_1_short": 0.12,
+                "dd_step_2_short": 0.20,
+                "dd_step_3_short": 0.26,
+            }
+        )
+
+        self.assertEqual(config.dd_step_1_short, 0.12)
+        self.assertEqual(config.dd_step_2_short, 0.20)
+        self.assertEqual(config.dd_step_3_short, 0.26)
 
     def test_build_strategy_config_maps_intent_churn_controls(self) -> None:
         config = build_strategy_config(
@@ -824,6 +887,11 @@ class FrameworkParamTests(unittest.TestCase):
                 "intent_time_leverage_dip_max_adverse_atr": 3.0,
                 "intent_time_leverage_dip_add_pct": 0.15,
                 "intent_time_leverage_dip_max_leverage": 3.0,
+                "intent_range_bear_profit_run_override_enabled": 1.0,
+                "intent_range_bear_profit_run_direction_signal": -0.25,
+                "intent_range_bear_profit_run_momentum_threshold": -0.20,
+                "intent_range_bear_profit_run_confidence_floor": 0.50,
+                "intent_range_bear_profit_run_max_transition_risk": 0.55,
             }
         )
 
@@ -866,6 +934,11 @@ class FrameworkParamTests(unittest.TestCase):
         self.assertEqual(config.intent_time_leverage_dip_max_adverse_atr, 3.0)
         self.assertEqual(config.intent_time_leverage_dip_add_pct, 0.15)
         self.assertEqual(config.intent_time_leverage_dip_max_leverage, 3.0)
+        self.assertTrue(config.intent_range_bear_profit_run_override_enabled)
+        self.assertEqual(config.intent_range_bear_profit_run_direction_signal, -0.25)
+        self.assertEqual(config.intent_range_bear_profit_run_momentum_threshold, -0.20)
+        self.assertEqual(config.intent_range_bear_profit_run_confidence_floor, 0.50)
+        self.assertEqual(config.intent_range_bear_profit_run_max_transition_risk, 0.55)
 
     def test_autoresearch_strategy_config_accepts_shared_intent_churn_config(self) -> None:
         config = _build_strategy_config(
