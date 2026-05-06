@@ -351,6 +351,49 @@ def _ns_from_utc(year: int, month: int, day: int) -> int:
     return int(datetime(year, month, day, tzinfo=UTC).timestamp() * 1_000_000_000)
 
 
+PAULWEI_SPOT_AUXILIARY_TRAIN_OBJECTIVES = (
+    "regime_context",
+    "direction_selection",
+    "profit_run",
+    "low_switch_trend_hold",
+)
+
+
+PAULWEI_TEMPORAL_WINDOW_TARGETS: dict[str, dict[str, Any]] = {
+    "train_temporal_2020": {
+        "source": "paulwei_public_btc_2020_behavior",
+        "role": "bull_expansion_profit_run",
+        "min_equity_multiple": 1.02,
+        "min_sharpe": 0.0,
+        "max_drawdown": 0.20,
+        "primary_blocker": "paulwei_2020_profit_run_fail_fast",
+        "reference": {
+            "btc_episode_long_share": 0.676,
+            "btc_position_switches_per_30d": 8.449,
+            "median_hold_hours": 10.14,
+            "median_add_fills_per_episode": 14.0,
+            "median_reduce_fills_per_episode": 10.0,
+        },
+    },
+    "train_temporal_2022": {
+        "source": "paulwei_public_btc_2022_behavior",
+        "role": "bear_market_cash_flow_adjusted_survival",
+        "min_equity_multiple": 1.00,
+        "min_sharpe": -0.25,
+        "max_drawdown": 0.20,
+        "primary_blocker": "paulwei_2022_bear_survival_fail_fast",
+        "reference": {
+            "btc_episode_long_share": 0.61,
+            "btc_position_switches_per_30d": 5.671,
+            "median_hold_hours": 15.20,
+            "loss_median_hold_hours": 28.62,
+            "cash_flow_adjusted_btc_multiple": 1.0353,
+            "cash_flow_adjusted_btc_max_drawdown": 0.1911,
+        },
+    },
+}
+
+
 def _spot_context_windows(contract: dict[str, Any]) -> list[WindowSpec]:
     start_ns = _iso_to_ns(contract.get("candidate_window_start"))
     end_ns = min(
@@ -417,13 +460,14 @@ def _spot_context_score(windows: dict[str, dict[str, Any]]) -> float:
     bear_fee_drag_pct = float(bear.get("fee_drag_pct", 0.0) or 0.0)
 
     expansion_bonus = min(0.85, math.log(max(1.0, full_multiple), 2.0) * 0.30)
-    bull_bonus = min(0.45, math.log(max(1.0, bull_multiple), 2.0) * 0.25)
+    bull_bonus = min(0.55, math.log(max(1.0, bull_multiple), 2.0) * 0.32)
     recovery_bonus = min(0.35, math.log(max(1.0, recovery_multiple), 2.0) * 0.20)
     bear_survival_bonus = min(0.25, max(0.0, 0.35 - bear_drawdown) * 0.80)
     trend_quality_bonus = min(0.25, max(0.0, full_sharpe) * 0.05)
 
     full_loss_penalty = min(1.25, max(0.0, 1.0 - full_multiple) * 1.25)
-    bull_undercapture_penalty = min(0.90, max(0.0, 1.08 - bull_multiple) * 4.0)
+    bull_undercapture_penalty = min(1.00, max(0.0, 1.20 - bull_multiple) * 4.0)
+    full_profit_run_penalty = min(0.55, max(0.0, 1.25 - full_multiple) * 1.10)
     bull_fee_drag_penalty = min(0.35, max(0.0, bull_fee_drag_pct - 0.018) * 6.0)
     drawdown_penalty = min(0.85, max(0.0, full_drawdown - 0.35) * 1.80)
     bear_collapse_penalty = min(0.60, max(0.0, bear_drawdown - 0.45) * 1.20)
@@ -438,6 +482,7 @@ def _spot_context_score(windows: dict[str, dict[str, Any]]) -> float:
         + trend_quality_bonus
         - full_loss_penalty
         - bull_undercapture_penalty
+        - full_profit_run_penalty
         - bull_fee_drag_penalty
         - drawdown_penalty
         - bear_collapse_penalty
@@ -473,8 +518,10 @@ def _spot_context_replay_audit(
         end_ns=full_window.end_ns,
     ):
         return {
-            "scope": "train_side_regime_context_objective",
+            "scope": "formal_auxiliary_train_regime_direction_profit_run",
             "formal_train_truth": False,
+            "formal_auxiliary_train_leg": True,
+            "execution_truth": False,
             "promotion_allowed": False,
             "test_evaluated": False,
             "blocked_by": "spot_context_1h_missing",
@@ -532,15 +579,18 @@ def _spot_context_replay_audit(
             starting_equity=evaluator._base_config.starting_equity,
         )
     return {
-        "scope": "train_side_regime_context_objective",
+        "scope": "formal_auxiliary_train_regime_direction_profit_run",
         "formal_train_truth": False,
+        "formal_auxiliary_train_leg": True,
+        "execution_truth": False,
         "promotion_allowed": False,
         "test_evaluated": False,
         "source": "binance_spot",
         "context_only": True,
         "formal_execution_truth_source": "post_2020_futures_train",
         "execution_timeframe": Timeframe.TF_1H.value,
-        "objective": "early_direction_selection_profit_run_and_bear_survival_context_only",
+        "allowed_training_objectives": list(PAULWEI_SPOT_AUXILIARY_TRAIN_OBJECTIVES),
+        "objective": "spot_era_regime_direction_profit_run_auxiliary_train_only",
         "windows": window_payloads,
         "context_score_adjustment": _spot_context_score(window_payloads),
     }
@@ -619,6 +669,9 @@ def _combine_train_leg_metrics(
     combined_metrics["score"] = combined_score
     combined_metrics["combined_train_score"] = combined_score
     combined_metrics["spot_context_score_adjustment"] = context_adjustment
+    combined_metrics["spot_context_formal_auxiliary_train_leg"] = bool(
+        spot_context_audit.get("formal_auxiliary_train_leg")
+    )
     combined_metrics["spot_context_equity_multiple"] = float(full_context.get("equity_multiple", 1.0) or 1.0)
     combined_metrics["spot_context_sharpe"] = float(full_context.get("sharpe", 0.0) or 0.0)
     combined_metrics["spot_context_drawdown"] = float(full_context.get("max_drawdown", 0.0) or 0.0)
@@ -664,6 +717,54 @@ def _late_dev_regime_window(split_spec: DatasetSplitSpec) -> WindowSpec | None:
         start_ns=start_ns,
         end_ns=split_spec.dev.end_ns,
     )
+
+
+def _paulwei_temporal_target_audit(train_payloads: dict[str, dict[str, Any]]) -> dict[str, Any]:
+    windows: dict[str, dict[str, Any]] = {}
+    blockers: list[str] = []
+    penalty = 0.0
+    for label, target in PAULWEI_TEMPORAL_WINDOW_TARGETS.items():
+        payload = dict(train_payloads.get(label) or {})
+        if not payload:
+            continue
+        equity_multiple = float(payload.get("equity_multiple", 1.0) or 1.0)
+        sharpe = float(payload.get("sharpe", 0.0) or 0.0)
+        max_drawdown = float(payload.get("max_drawdown", 0.0) or 0.0)
+        min_equity_multiple = float(target["min_equity_multiple"])
+        min_sharpe = float(target["min_sharpe"])
+        max_allowed_drawdown = float(target["max_drawdown"])
+        window_blockers: list[str] = []
+        if equity_multiple < min_equity_multiple or sharpe < min_sharpe:
+            window_blockers.append(str(target["primary_blocker"]))
+            penalty += 0.65 * max(0.0, min_equity_multiple - equity_multiple) / max(0.01, min_equity_multiple - 1.0)
+            penalty += 0.35 * max(0.0, min_sharpe - sharpe)
+        if max_drawdown > max_allowed_drawdown:
+            window_blockers.append("paulwei_temporal_drawdown_budget_fail_fast")
+            penalty += 0.60 * (max_drawdown - max_allowed_drawdown) / max_allowed_drawdown
+        blockers.extend(item for item in window_blockers if item not in blockers)
+        windows[label] = {
+            "source": target["source"],
+            "role": target["role"],
+            "reference": dict(target["reference"]),
+            "target": {
+                "min_equity_multiple": min_equity_multiple,
+                "min_sharpe": min_sharpe,
+                "max_drawdown": max_allowed_drawdown,
+            },
+            "metrics": payload,
+            "blocked_by": window_blockers,
+        }
+    return {
+        "scope": "paulwei_2020_2022_temporal_behavior_target",
+        "source": "paulwei_public_archive_btc_behavior",
+        "formal_train_truth": False,
+        "promotion_allowed": False,
+        "test_evaluated": False,
+        "windows": windows,
+        "blocked_by": blockers,
+        "score_penalty": round(min(1.5, penalty), 6),
+        "primary_blocker": blockers[0] if blockers else None,
+    }
 
 
 def _temporal_robustness_audit(
@@ -730,17 +831,21 @@ def _temporal_robustness_audit(
     )
     train_sharpe_std = math.sqrt(max(0.0, variance))
     negative_train_windows = sum(1 for value in train_sharpes if value < 0.0)
+    paulwei_target_audit = _paulwei_temporal_target_audit(train_payloads)
 
     blockers: list[str] = []
+    blockers.extend(paulwei_target_audit["blocked_by"])
     if negative_train_windows > 1:
         blockers.append("temporal_train_negative_window_count")
     if min_train_sharpe < -0.50:
         blockers.append("temporal_train_min_sharpe_fail_fast")
     if late_dev_payload is not None and late_dev_sharpe < -0.25:
         blockers.append("late_dev_regime_fail_fast")
+    blockers = list(dict.fromkeys(blockers))
 
     consistency_penalty = (
-        0.20 * train_sharpe_std
+        float(paulwei_target_audit["score_penalty"])
+        + 0.20 * train_sharpe_std
         + 0.45 * negative_train_windows
         + 0.25 * max(0.0, -min_train_sharpe)
         + 0.35 * max(0.0, -0.25 - late_dev_sharpe if late_dev_payload is not None else 0.0)
@@ -758,6 +863,7 @@ def _temporal_robustness_audit(
         "train_sharpe_std": round(train_sharpe_std, 6),
         "train_negative_window_count": negative_train_windows,
         "late_dev_sharpe": round(late_dev_sharpe, 6),
+        "paulwei_temporal_target_audit": paulwei_target_audit,
         "score_adjustment": score_adjustment,
         "blocked_by": blockers,
         "primary_blocker": blockers[0] if blockers else None,
@@ -3458,7 +3564,7 @@ def run_optuna_search(
     temporal_rejection_count = sum(
         int(count)
         for reason, count in fail_fast_reason_counts.items()
-        if str(reason).startswith("temporal_") or str(reason).startswith("late_dev_")
+        if str(reason).startswith(("temporal_", "late_dev_", "paulwei_2020_", "paulwei_2022_", "paulwei_temporal_"))
     )
     diagnostics["train_candidate_diagnostics"]["temporal_robustness_enabled"] = bool(temporal_ranked) or any(
         "temporal_robustness_audit" in item for item in rejected_candidate_diagnostics
@@ -3470,10 +3576,13 @@ def run_optuna_search(
     spot_context_ranked = [item for item in ranked if item.get("spot_context_metrics")]
     diagnostics["spot_era_context_replay_audit"] = {
         "enabled": bool(spot_context_ranked),
-        "scope": "train_side_regime_context_objective",
+        "scope": "formal_auxiliary_train_regime_direction_profit_run",
         "formal_train_truth": False,
+        "formal_auxiliary_train_leg": True,
+        "execution_truth": False,
         "promotion_allowed": False,
         "test_evaluated": False,
+        "allowed_training_objectives": list(PAULWEI_SPOT_AUXILIARY_TRAIN_OBJECTIVES),
         "candidate_count": len(spot_context_ranked),
         "best_candidate": {
             "params": spot_context_ranked[0]["params"],

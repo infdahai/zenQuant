@@ -78,6 +78,7 @@ from zenquant.research.framework_search import (
     _dev_fee_stability_summary,
     _hostile_regression_summary,
     _late_dev_regime_window,
+    _ns_from_utc,
     _run_validation_bundle,
     _run_variant_backtest_with_timeout,
     _spot_context_score,
@@ -677,8 +678,9 @@ class FrameworkParamTests(unittest.TestCase):
             },
         }
 
-        self.assertLess(_spot_context_score(weak_bull), 0.25)
+        self.assertLess(_spot_context_score(weak_bull), 0.0)
         self.assertGreater(_spot_context_score(captured_bull), _spot_context_score(weak_bull))
+        self.assertGreater(_spot_context_score(captured_bull), 0.0)
 
     def test_build_signal_weight_overrides_maps_audited_state_factor_weights(self) -> None:
         weights = build_signal_weight_overrides(
@@ -1331,6 +1333,14 @@ class FrameworkEvaluatorTests(unittest.TestCase):
                     win_rate=0.4,
                     profit_factor=0.8,
                 )
+            if start_ns == _ns_from_utc(2022, 1, 1):
+                return BacktestSnapshot(
+                    sharpe=-0.60,
+                    net_pnl=-1_500.0,
+                    max_drawdown=0.18,
+                    win_rate=0.42,
+                    profit_factor=0.85,
+                )
             if start_ns and start_ns >= (split.dev.end_ns or 0) - 200 * 86_400 * 1_000_000_000:
                 return BacktestSnapshot(
                     sharpe=-0.40,
@@ -1354,8 +1364,15 @@ class FrameworkEvaluatorTests(unittest.TestCase):
         assert audit is not None
         self.assertFalse(audit["test_evaluated"])
         self.assertEqual(audit["scope"], "train_dev_only_temporal_robustness")
+        self.assertIn("paulwei_2020_profit_run_fail_fast", audit["blocked_by"])
+        self.assertIn("paulwei_2022_bear_survival_fail_fast", audit["blocked_by"])
         self.assertIn("temporal_train_min_sharpe_fail_fast", audit["blocked_by"])
         self.assertIn("late_dev_regime_fail_fast", audit["blocked_by"])
+        self.assertEqual(audit["primary_blocker"], "paulwei_2020_profit_run_fail_fast")
+        self.assertEqual(
+            audit["paulwei_temporal_target_audit"]["scope"],
+            "paulwei_2020_2022_temporal_behavior_target",
+        )
         self.assertLess(audit["score_adjustment"], 0.0)
 
     def test_training_input_contract_treats_missing_train_1h_as_derived_from_5m(self) -> None:
@@ -3075,8 +3092,10 @@ class SearchReportSerializationTests(unittest.TestCase):
             patch(
                 "zenquant.research.framework_search._spot_context_replay_audit",
                 return_value={
-                    "scope": "train_side_regime_context_objective",
+                    "scope": "formal_auxiliary_train_regime_direction_profit_run",
                     "formal_train_truth": False,
+                    "formal_auxiliary_train_leg": True,
+                    "execution_truth": False,
                     "promotion_allowed": False,
                     "test_evaluated": False,
                     "windows": {
@@ -3099,8 +3118,12 @@ class SearchReportSerializationTests(unittest.TestCase):
         self.assertIsNone(ranked[0]["spot_train_leg_metrics"])
         self.assertIsNotNone(ranked[0]["spot_context_metrics"])
         self.assertEqual(ranked[0]["spot_context_metrics"]["formal_train_truth"], False)
+        self.assertEqual(ranked[0]["spot_context_metrics"]["formal_auxiliary_train_leg"], True)
         self.assertEqual(ranked[0]["train_metrics"]["spot_context_score_adjustment"], 0.4)
+        self.assertEqual(ranked[0]["train_metrics"]["spot_context_formal_auxiliary_train_leg"], True)
         self.assertTrue(diagnostics["spot_era_context_replay_audit"]["enabled"])
+        self.assertTrue(diagnostics["spot_era_context_replay_audit"]["formal_auxiliary_train_leg"])
+        self.assertFalse(diagnostics["spot_era_context_replay_audit"]["execution_truth"])
         self.assertEqual(diagnostics["historical_extension_mode"], "spot_context_only")
 
     def test_final_report_passes_smoke_minimal_comparison_mode_and_heartbeat(self) -> None:
