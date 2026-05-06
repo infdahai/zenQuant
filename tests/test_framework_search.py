@@ -643,11 +643,16 @@ class FrameworkParamTests(unittest.TestCase):
         self.assertIn(36, grid["intent_flip_confirmation_bars"])
         self.assertIn(672, grid["intent_time_leverage_min_hold_bars"])
         self.assertIn(4, grid["intent_bearish_override_confirmation_bars"])
+        self.assertIn(0.50, grid["intent_time_leverage_long_bias_confidence_floor"])
+        self.assertIn(0.65, grid["intent_time_leverage_long_bias_transition_ceiling"])
+        self.assertIn(0.25, grid["intent_time_leverage_dip_add_pct"])
         self.assertIn(0.0, grid["intent_time_leverage_long_bias_block_short"])
         self.assertTrue(all(seed["research_relaxed_fee_probe_enabled"] == 1.0 for seed in seeds[:12]))
         self.assertTrue(any(seed["max_leverage"] == 4.0 for seed in seeds[:12]))
         self.assertTrue(any(seed["intent_flip_confirmation_bars"] == 36 for seed in seeds[:12]))
         self.assertTrue(any(seed["intent_time_leverage_min_hold_bars"] == 672 for seed in seeds[:12]))
+        self.assertTrue(any(seed["intent_time_leverage_long_bias_confidence_floor"] == 0.50 for seed in seeds[:12]))
+        self.assertTrue(any(seed["intent_time_leverage_dip_add_pct"] == 0.25 for seed in seeds[:12]))
         self.assertTrue(any(seed["intent_time_leverage_long_bias_block_short"] == 0.0 for seed in seeds[:12]))
 
     def test_spot_context_score_penalizes_bull_undercapture(self) -> None:
