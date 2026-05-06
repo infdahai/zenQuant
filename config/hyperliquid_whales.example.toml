@@ -1,0 +1,8 @@
+# Copy to config/hyperliquid_whales.toml and replace addresses with reviewed public accounts.
+# Keep this watchlist curated; automatic whale discovery is a separate source-admission problem.
+
+[[accounts]]
+name = "example_whale"
+address = "0x0000000000000000000000000000000000000000"
+enabled = false
+notes = "Disabled placeholder; replace with a reviewed public Hyperliquid account."

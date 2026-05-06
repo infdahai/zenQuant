@@ -29,6 +29,7 @@ class ForwardDataCollectTests(unittest.TestCase):
                 patch("zenquant.app.forward_data_collect._collect_deribit", return_value={"ok": True}),
                 patch("zenquant.app.forward_data_collect._collect_deribit_block_flow", return_value={"ok": True}),
                 patch("zenquant.app.forward_data_collect._collect_hyperliquid", return_value={"ok": True}),
+                patch("zenquant.app.forward_data_collect._collect_hyperliquid_whales", return_value={"ok": True}),
                 patch("zenquant.app.forward_data_collect._merge_liquidations", return_value={"ok": True}),
                 patch("zenquant.app.forward_data_collect._refresh_readiness", return_value={"ok": True}),
             ):
@@ -41,6 +42,7 @@ class ForwardDataCollectTests(unittest.TestCase):
                     "deribit_collect",
                     "deribit_block_flow_collect",
                     "hyperliquid_collect",
+                    "hyperliquid_whales_collect",
                     "merge_liquidation",
                     "readiness_refresh",
                 ],
