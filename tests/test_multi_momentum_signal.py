@@ -83,6 +83,64 @@ class MultiMomentumSignalTests(unittest.TestCase):
         self.assertIn("MULTI_MOM_RANGE_BULL_PROFIT_RUN_GUARDED_CYCLE_POSITION", result.reason_codes)
         self.assertIn("MULTI_MOM_RANGE_BULL_PROFIT_RUN_GUARDED_VOLATILITY_STATE", result.reason_codes)
 
+    def test_range_profit_run_cycle_fallback_is_opt_in(self) -> None:
+        """Cycle context can provide profit-run intent when structure lags."""
+        result = self._compute(
+            {"multi_momentum_z": 0.25, "structure_state": "NEUTRAL", "cycle_position": 1.08},
+            state={
+                "regime": "RANGE",
+                "transition_risk": 0.30,
+                "directional_state": "TRANSITION",
+                "directional_confidence": 0.50,
+            },
+            config={
+                "momentum_threshold": 0.3,
+                "signal_sign": 1.0,
+                "use_single_fallback": True,
+                "range_profit_run_enabled": True,
+                "range_profit_run_threshold": 0.3,
+                "range_profit_run_value": 0.75,
+                "range_profit_run_confidence": 0.55,
+                "range_profit_run_max_transition_risk": 0.45,
+                "range_profit_run_cycle_fallback_enabled": True,
+                "range_profit_run_cycle_threshold": 1.0,
+                "range_profit_run_cycle_momentum_threshold": 0.10,
+                "range_profit_run_block_confirmed_downtrend": True,
+            },
+        )
+
+        self.assertEqual(result.value, 0.75)
+        self.assertIn("CYCLE_PROFIT_RUN", result.reason_codes)
+
+    def test_range_profit_run_cycle_fallback_blocks_confirmed_downtrend(self) -> None:
+        """Cycle fallback must respect confirmed state downtrends."""
+        result = self._compute(
+            {"multi_momentum_z": 0.25, "structure_state": "NEUTRAL", "cycle_position": 1.08},
+            state={
+                "regime": "RANGE",
+                "transition_risk": 0.30,
+                "directional_state": "DOWNTREND",
+                "directional_confidence": 0.65,
+            },
+            config={
+                "momentum_threshold": 0.3,
+                "signal_sign": 1.0,
+                "use_single_fallback": True,
+                "range_profit_run_enabled": True,
+                "range_profit_run_threshold": 0.3,
+                "range_profit_run_value": 0.75,
+                "range_profit_run_confidence": 0.55,
+                "range_profit_run_max_transition_risk": 0.45,
+                "range_profit_run_cycle_fallback_enabled": True,
+                "range_profit_run_cycle_threshold": 1.0,
+                "range_profit_run_cycle_momentum_threshold": 0.10,
+                "range_profit_run_block_confirmed_downtrend": True,
+            },
+        )
+
+        self.assertEqual(result.value, 0.0)
+        self.assertIn("MULTI_MOM_RANGE_BULL_PROFIT_RUN_GUARDED_CONFIRMED_DOWNTREND", result.reason_codes)
+
     # ── None / missing key handling ──
 
     def test_none_momentum_with_fallback(self) -> None:

@@ -650,6 +650,8 @@ class FrameworkParamTests(unittest.TestCase):
         self.assertIn(0.15, grid["multi_momentum_range_profit_run_threshold"])
         self.assertIn(0.45, grid["multi_momentum_range_profit_run_max_transition_risk"])
         self.assertIn(1.00, grid["multi_momentum_range_profit_run_min_cycle_position"])
+        self.assertIn(1.0, grid["multi_momentum_range_profit_run_cycle_fallback_enabled"])
+        self.assertIn(0.10, grid["multi_momentum_range_profit_run_cycle_momentum_threshold"])
         self.assertIn(0.0, grid["intent_time_leverage_long_bias_block_short"])
         self.assertTrue(all(seed["research_relaxed_fee_probe_enabled"] == 1.0 for seed in seeds[:12]))
         self.assertTrue(any(seed["max_leverage"] == 4.0 for seed in seeds[:12]))
@@ -661,6 +663,12 @@ class FrameworkParamTests(unittest.TestCase):
         self.assertTrue(any(seed["multi_momentum_range_profit_run_threshold"] == 0.15 for seed in seeds[:12]))
         self.assertTrue(any(seed["multi_momentum_range_profit_run_max_transition_risk"] == 0.45 for seed in seeds[:12]))
         self.assertTrue(any(seed["multi_momentum_range_profit_run_min_cycle_position"] == 1.00 for seed in seeds[:12]))
+        self.assertTrue(
+            any(seed["multi_momentum_range_profit_run_cycle_fallback_enabled"] == 1.0 for seed in seeds[:12])
+        )
+        self.assertTrue(
+            any(seed["multi_momentum_range_profit_run_cycle_momentum_threshold"] == 0.10 for seed in seeds[:12])
+        )
         self.assertTrue(any(seed["intent_time_leverage_long_bias_block_short"] == 0.0 for seed in seeds[:12]))
 
     def test_spot_context_score_penalizes_bull_undercapture(self) -> None:
@@ -737,6 +745,10 @@ class FrameworkParamTests(unittest.TestCase):
                 "multi_momentum_range_profit_run_min_cycle_position": 1.00,
                 "multi_momentum_range_profit_run_block_distorted_volatility": 1.0,
                 "multi_momentum_range_profit_run_block_unsafe_quality": 1.0,
+                "multi_momentum_range_profit_run_cycle_fallback_enabled": 1.0,
+                "multi_momentum_range_profit_run_cycle_threshold": 1.00,
+                "multi_momentum_range_profit_run_cycle_momentum_threshold": 0.10,
+                "multi_momentum_range_profit_run_block_confirmed_downtrend": 1.0,
             }
         )
 
@@ -759,6 +771,12 @@ class FrameworkParamTests(unittest.TestCase):
         self.assertEqual(overrides["signals"]["multi_momentum_signal"]["range_profit_run_min_cycle_position"], 1.00)
         self.assertTrue(overrides["signals"]["multi_momentum_signal"]["range_profit_run_block_distorted_volatility"])
         self.assertTrue(overrides["signals"]["multi_momentum_signal"]["range_profit_run_block_unsafe_quality"])
+        self.assertTrue(overrides["signals"]["multi_momentum_signal"]["range_profit_run_cycle_fallback_enabled"])
+        self.assertEqual(overrides["signals"]["multi_momentum_signal"]["range_profit_run_cycle_threshold"], 1.00)
+        self.assertEqual(
+            overrides["signals"]["multi_momentum_signal"]["range_profit_run_cycle_momentum_threshold"], 0.10
+        )
+        self.assertTrue(overrides["signals"]["multi_momentum_signal"]["range_profit_run_block_confirmed_downtrend"])
 
     def test_build_strategy_config_maps_intent_churn_controls(self) -> None:
         config = build_strategy_config(

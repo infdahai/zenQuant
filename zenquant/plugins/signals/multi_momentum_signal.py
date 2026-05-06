@@ -50,17 +50,32 @@ def compute(
     range_profit_run_min_cycle_position = float(config.get("range_profit_run_min_cycle_position", 0.0))
     range_profit_run_block_distorted_volatility = bool(config.get("range_profit_run_block_distorted_volatility", False))
     range_profit_run_block_unsafe_quality = bool(config.get("range_profit_run_block_unsafe_quality", False))
+    range_profit_run_cycle_fallback_enabled = bool(config.get("range_profit_run_cycle_fallback_enabled", False))
+    range_profit_run_cycle_threshold = float(config.get("range_profit_run_cycle_threshold", 1.0))
+    range_profit_run_cycle_momentum_threshold = float(
+        config.get("range_profit_run_cycle_momentum_threshold", range_profit_run_threshold)
+    )
+    range_profit_run_block_confirmed_downtrend = bool(config.get("range_profit_run_block_confirmed_downtrend", False))
 
     # Confidence naturally encodes regime suitability.
     # Orchestrator uses confidence to weight direction contribution.
     # No manual dampening — confidence does the work.
 
     if regime == "RANGE" and range_profit_run_enabled:
-        if structure == "UPTREND" and roc_z > range_profit_run_threshold:
+        cycle_position = float(indicators.get("cycle_position", 1.0) or 1.0)
+        structure_candidate = structure == "UPTREND" and roc_z > range_profit_run_threshold
+        cycle_candidate = (
+            range_profit_run_cycle_fallback_enabled
+            and structure != "DOWNTREND"
+            and cycle_position >= range_profit_run_cycle_threshold
+            and roc_z > range_profit_run_cycle_momentum_threshold
+        )
+        if structure_candidate or cycle_candidate:
             transition_risk = float(state.get("transition_risk", 0.0) or 0.0)
             volatility_state = str(state.get("volatility_state") or "NORMAL")
             quality_state = str(state.get("quality_state") or "TRADABLE")
-            cycle_position = float(indicators.get("cycle_position", 1.0) or 1.0)
+            directional_state = str(state.get("directional_state") or "NEUTRAL")
+            directional_confidence = float(state.get("directional_confidence", 0.0) or 0.0)
             guard_reasons: list[str] = []
             if transition_risk > range_profit_run_max_transition_risk:
                 guard_reasons.append("TRANSITION_RISK")
@@ -70,6 +85,12 @@ def compute(
                 guard_reasons.append("VOLATILITY_STATE")
             if range_profit_run_block_unsafe_quality and quality_state == "UNSAFE":
                 guard_reasons.append("QUALITY_STATE")
+            if (
+                range_profit_run_block_confirmed_downtrend
+                and directional_state == "DOWNTREND"
+                and directional_confidence >= 0.55
+            ):
+                guard_reasons.append("CONFIRMED_DOWNTREND")
             if guard_reasons:
                 return SignalResult(
                     value=0.0,
@@ -77,10 +98,15 @@ def compute(
                     reason_codes=tuple(f"MULTI_MOM_RANGE_BULL_PROFIT_RUN_GUARDED_{reason}" for reason in guard_reasons),
                 )
             confidence = min(1.0, max(0.0, range_profit_run_confidence + min(0.15, abs(roc_z) / 10.0)))
+            reason_codes = ["MULTI_MOM_RANGE_BULL_PROFIT_RUN"]
+            if structure_candidate:
+                reason_codes.append("STRUCTURE_UPTREND")
+            if cycle_candidate:
+                reason_codes.append("CYCLE_PROFIT_RUN")
             return SignalResult(
                 value=sign * min(1.0, max(0.0, range_profit_run_value)),
                 confidence=confidence,
-                reason_codes=("MULTI_MOM_RANGE_BULL_PROFIT_RUN", "STRUCTURE_UPTREND"),
+                reason_codes=tuple(reason_codes),
             )
 
     if regime == "TREND":
