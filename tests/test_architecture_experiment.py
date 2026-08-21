@@ -29,6 +29,7 @@ from zenquant.research.architecture_experiment import (
     ArchitectureObservation,
     ArchitectureRunEvidence,
     ArchitectureStage,
+    ArchitectureStageExecutionRow,
     apply_target_no_trade_band,
     bind_stage_inputs_from_snapshot,
     build_architecture_attribution_report,
@@ -36,6 +37,7 @@ from zenquant.research.architecture_experiment import (
     observe_cost_shadow,
     stage_exposure,
 )
+from zenquant.research.architecture_stage_replay import run_architecture_stage_replay
 from zenquant.strategy.decision_snapshot import build_decision_snapshot
 from zenquant.strategy.engine import ARCStrategyConfig, ARCStrategyEngine
 
@@ -594,6 +596,184 @@ def test_a4_report_path_converts_exchange_quantity_to_fixed_notional_exposure():
     ) == pytest.approx(0.50)
 
 
+def test_stage_replay_uses_actual_filled_position_for_next_a4_cutoff():
+    observations = tuple(
+        replace(
+            _observation(alpha_id=f"alpha-{cutoff}", cutoff_time_ns=cutoff, raw_score=0.4),
+            annualized_volatility=0.10,
+            risk_regime="NORMAL",
+            frozen_regime_multiplier=1.0,
+            reference_price=100.0,
+            forward_return_3=0.02,
+            forward_return_6=0.03,
+        )
+        for cutoff in (100, 200)
+    )
+
+    replay = run_architecture_stage_replay(
+        observations,
+        stage=ArchitectureStage.A4,
+        fixed_notional=1_000.0,
+        symbol="BTCUSDT_PERP",
+        portfolio="arc",
+        max_trade_qty_per_bar=1.0,
+    )
+
+    assert isinstance(replay.rows[0], ArchitectureStageExecutionRow)
+    assert replay.rows[0].approved_exposure == pytest.approx(1.2)
+    assert replay.rows[0].filled_exposure_before == pytest.approx(0.0)
+    assert replay.rows[0].filled_exposure_after == pytest.approx(0.1)
+    assert replay.rows[1].filled_exposure_before == pytest.approx(0.1)
+    assert replay.rows[1].approved_exposure == pytest.approx(1.2)
+    assert replay.metrics.target_tracking_error > 0.0
+    assert replay.metrics.time_to_target_bars == pytest.approx(1.0)
+    assert replay.metrics.executor_created_exposure == 0
+    assert all(snapshot.volatility_target == pytest.approx(0.20) for snapshot in replay.snapshots)
+    assert all(snapshot.exposure_cap == pytest.approx(1.50) for snapshot in replay.snapshots)
+
+
+def test_stage_snapshot_data_identity_changes_with_pit_risk_inputs():
+    baseline = replace(
+        _observation(raw_score=0.4),
+        annualized_volatility=0.20,
+        risk_regime="NORMAL",
+        frozen_regime_multiplier=1.0,
+        reference_price=100.0,
+    )
+    changed = replace(
+        baseline,
+        annualized_volatility=0.40,
+        volatility_state="HIGH",
+    )
+
+    baseline_replay = run_architecture_stage_replay(
+        (baseline,),
+        stage=ArchitectureStage.A2,
+        fixed_notional=1_000.0,
+        symbol="BTCUSDT_PERP",
+        portfolio="arc",
+    )
+    changed_replay = run_architecture_stage_replay(
+        (changed,),
+        stage=ArchitectureStage.A2,
+        fixed_notional=1_000.0,
+        symbol="BTCUSDT_PERP",
+        portfolio="arc",
+    )
+
+    assert baseline_replay.snapshots[0].data_identity != changed_replay.snapshots[0].data_identity
+
+
+def test_frozen_stage_sidecars_fail_closed_when_every_stage_is_flat():
+    module = _load_cli_module()
+    manifest = load_architecture_experiment_manifest()
+    window = next(item for item in manifest.windows if item.label == "late_dev_2025")
+    config, _config_hash = module.build_frozen_backtest_config(
+        root=Path("/read-only-data"),
+        manifest=manifest,
+        window=window,
+        seed=42,
+    )
+    flat_observation = replace(
+        _observation(),
+        annualized_volatility=None,
+        risk_regime="UNKNOWN",
+        reference_price=100.0,
+    )
+
+    class _FlatStageRunner:
+        @staticmethod
+        def build_architecture_stage_rows(**_kwargs):
+            return {"observations": [asdict(flat_observation)]}
+
+    with pytest.raises(ValueError, match="all-flat"):
+        module.run_frozen_stage_sidecars(
+            _FlatStageRunner(),
+            config=config,
+            manifest=manifest,
+        )
+
+
+def test_a5_stage_replay_produces_actual_fill_cost_and_forward_labels():
+    observation = replace(
+        _observation(raw_score=0.4, frozen_confidence=0.6),
+        annualized_volatility=0.20,
+        risk_regime="STRESS",
+        frozen_regime_multiplier=0.1,
+        reference_price=100.0,
+        estimated_fee_bps=4.0,
+        estimated_slippage_bps=1.5,
+        forward_return_3=None,
+        forward_return_6=-0.02,
+    )
+
+    replay = run_architecture_stage_replay(
+        (observation,),
+        stage=ArchitectureStage.A5_SHADOW,
+        fixed_notional=1_000.0,
+        symbol="BTCUSDT_PERP",
+        portfolio="arc",
+    )
+
+    row = replay.rows[0]
+    assert row.approved_exposure == pytest.approx(0.06)
+    assert row.actual_fill_price == pytest.approx(100.015)
+    assert row.fee > 0.0
+    assert row.actual_implementation_shortfall > 0.0
+    assert row.forward_return_1 == pytest.approx(observation.forward_return)
+    assert row.forward_return_3 is None
+    assert row.forward_return_6 == pytest.approx(-0.02)
+    assert replay.metrics.slippage > 0.0
+    assert replay.metrics.target_overshoot == 0
+
+
+def test_cumulative_report_consumes_real_stage_rows_without_unobserved_metrics():
+    observations = tuple(
+        replace(
+            _observation(alpha_id=f"alpha-{cutoff}", cutoff_time_ns=cutoff, raw_score=0.4),
+            annualized_volatility=0.10,
+            risk_regime="NORMAL",
+            frozen_regime_multiplier=1.0,
+            reference_price=100.0,
+            estimated_fee_bps=4.0,
+            estimated_slippage_bps=1.5,
+        )
+        for cutoff in (100, 200)
+    )
+    replays = {
+        stage.value: run_architecture_stage_replay(
+            observations,
+            stage=stage,
+            fixed_notional=1_000.0,
+            symbol="BTCUSDT_PERP",
+            portfolio="arc",
+            max_trade_qty_per_bar=1.0,
+        )
+        for stage in (
+            ArchitectureStage.A2,
+            ArchitectureStage.A3,
+            ArchitectureStage.A4,
+            ArchitectureStage.A5_SHADOW,
+        )
+    }
+    first = replace(
+        _run_evidence("train_full", 42, observations=observations),
+        execution_metrics_by_stage={stage: replay.metrics for stage, replay in replays.items()},
+        stage_execution_rows_by_stage={stage: replay.rows for stage, replay in replays.items()},
+    )
+
+    report = build_architecture_attribution_report(
+        _complete_matrix(replace_run=first),
+        manifest=load_architecture_experiment_manifest(),
+        fixed_notional=1_000.0,
+    )
+
+    stages = report["runs"][0]["stages"]
+    assert all(stages[stage]["execution_metrics"]["status"] == "OBSERVED" for stage in replays)
+    assert stages["A4"]["attribution_rows"][1]["execution"]["filled_exposure_before"] == pytest.approx(0.1)
+    assert stages["A5_SHADOW"]["cost_shadow"]["actual_shortfall_observation_count"] == 2
+
+
 def test_a5_shadow_records_costs_and_forward_labels_without_blocking():
     shadow = observe_cost_shadow(
         target_delta=0.5,
@@ -879,6 +1059,7 @@ def test_report_requires_exact_matrix_and_carries_frozen_identities():
         "signal_roles": ["direction"],
     }
     assert report["constraints"] == {
+        "scope": "A0_A1_DIRECTION_ATTRIBUTION_ONLY",
         "fixed_notional": 100_000.0,
         "max_abs_exposure": 1.0,
         "compounding": False,
@@ -1069,6 +1250,60 @@ def test_replay_bridge_uses_confirmed_4h_rows_and_excludes_terminal_alpha():
     }
     prohibited_fields = {"options_state_id", "regime_risk_multiplier", "annualized_volatility", "risk_flags"}
     assert not (prohibited_fields & set(batch["observations"][0]))
+
+
+def test_replay_bridge_builds_complete_pit_stage_inputs_and_true_4h_labels():
+    runner = object.__new__(HistoricalBacktest)
+    runner._confirmed_four_hour_rows = [
+        {"close_time_ns": cutoff, "close": 100.0 + index * 10.0}
+        for index, cutoff in enumerate((100, 200, 300, 400, 500, 600, 700))
+    ]
+    alpha = ArchitectureAlphaSnapshot(
+        alpha_id="alpha-100",
+        symbol="BTCUSDT_PERP",
+        timeframe=Timeframe.TF_4H,
+        cutoff_time_ns=100,
+        formula_hash="formula-v1",
+        indicator_version="pack.v1",
+        alpha_config_hash="alpha-config-v1",
+        raw_score=0.4,
+        confidence=0.6,
+        direction=1.0,
+        regime="TREND",
+        direction_plugin_names=("multi_momentum_signal",),
+    )
+    runner._architecture_alphas = [
+        replace(alpha, alpha_id=f"alpha-{cutoff}", cutoff_time_ns=cutoff)
+        for cutoff in (100, 200, 300, 400, 500, 600, 700)
+    ]
+    pack = replace(
+        _alpha_pack(),
+        values={**_alpha_pack().values, "realized_vol": 0.40},
+    )
+    state = _alpha_state()
+    runner._indicators = [
+        replace(pack, cutoff_time_ns=cutoff, ts_ns=cutoff) for cutoff in (100, 200, 300, 400, 500, 600)
+    ]
+    runner._market_states = [replace(state, cutoff_time_ns=cutoff) for cutoff in (100, 200, 300, 400, 500, 600)]
+    runner._risk_snapshots = []
+
+    batch = runner.build_architecture_stage_rows(
+        exchange_min_quantity=0.001,
+        estimated_fee_bps=4.0,
+        estimated_slippage_bps=1.5,
+    )
+
+    first = batch["observations"][0]
+    assert first["annualized_volatility"] == pytest.approx(0.40)
+    assert first["risk_regime"] == "TRADABLE"
+    assert first["frozen_regime_multiplier"] == pytest.approx(1.0)
+    assert first["reference_price"] == pytest.approx(100.0)
+    assert first["forward_return"] == pytest.approx(0.10)
+    assert first["forward_return_3"] == pytest.approx(0.30)
+    assert first["forward_return_6"] == pytest.approx(0.60)
+    assert first["estimated_fee_bps"] == pytest.approx(4.0)
+    assert first["estimated_slippage_bps"] == pytest.approx(1.5)
+    assert batch["missing_stage_input_count"] == 0
 
 
 def test_replay_bridge_excludes_bounded_terminal_cutoff_without_alpha():
