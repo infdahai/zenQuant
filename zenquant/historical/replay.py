@@ -1197,12 +1197,9 @@ class HistoricalBacktest:
         indicator_config = getattr(indicator_engine, "_config", None)
         if indicator_config is not None:
             terminal_alpha_lag += max(0, int(getattr(indicator_config, "pending_ttl_bars", 0)))
-        missing_is_bounded_suffix = (
-            not missing_cutoffs
-            or (
-                len(missing_cutoffs) <= terminal_alpha_lag
-                and missing_cutoffs == ordered_confirmed_cutoffs[-len(missing_cutoffs) :]
-            )
+        missing_is_bounded_suffix = not missing_cutoffs or (
+            len(missing_cutoffs) <= terminal_alpha_lag
+            and missing_cutoffs == ordered_confirmed_cutoffs[-len(missing_cutoffs) :]
         )
         if extra_cutoffs or not missing_is_bounded_suffix:
             raise ValueError(
@@ -1243,6 +1240,77 @@ class HistoricalBacktest:
             "alpha_snapshot_count": len(alpha_snapshots),
             "missing_alpha_count": 0,
             "terminal_excluded_count": terminal_excluded_count,
+        }
+
+    def build_architecture_stage_rows(
+        self,
+        *,
+        exchange_min_quantity: float,
+        estimated_fee_bps: float,
+        estimated_slippage_bps: float,
+    ) -> dict[str, Any]:
+        """Join complete point-in-time A2-A5 inputs to eligible A1 cutoffs."""
+        batch = self.build_architecture_attribution_rows(horizon=1)
+        confirmed_rows = sorted(self._confirmed_four_hour_rows, key=lambda row: int(row["close_time_ns"]))
+        confirmed_index = {int(row["close_time_ns"]): index for index, row in enumerate(confirmed_rows)}
+        indicator_points = [item for item in self._indicators if item.timeframe == Timeframe.TF_4H]
+        state_points = [item for item in self._market_states if item.timeframe == Timeframe.TF_4H]
+        _reject_duplicate_stage_points(indicator_points, label="indicator")
+        _reject_duplicate_stage_points(state_points, label="market_state")
+        indicators = {item.cutoff_time_ns: item for item in indicator_points}
+        states = {item.cutoff_time_ns: item for item in state_points}
+        risk_snapshots = {item.ts_ns: item for item in self._risk_snapshots}
+
+        rows: list[dict[str, Any]] = []
+        missing: list[int] = []
+        for alpha_row in batch["observations"]:
+            cutoff = int(alpha_row["cutoff_time_ns"])
+            indicator = indicators.get(cutoff)
+            state = states.get(cutoff)
+            index = confirmed_index.get(cutoff)
+            if indicator is None or state is None or index is None:
+                missing.append(cutoff)
+                continue
+            risk_snapshot = risk_snapshots.get(cutoff)
+            risk_regime = _architecture_risk_regime(state)
+            multiplier = {
+                "TRADABLE": 1.0,
+                "NOISY": 0.5,
+                "STRESS": 0.1,
+                "UNSAFE": 0.0,
+            }[risk_regime]
+            safety_reasons: set[str] = set()
+            if risk_regime == "UNSAFE":
+                safety_reasons.add("UNSAFE")
+            if risk_snapshot is not None and any("KILL" in flag.upper() for flag in risk_snapshot.flags):
+                safety_reasons.add("KILL")
+            row = {
+                **alpha_row,
+                "annualized_volatility": float(indicator.values.get("realized_vol", 0.0) or 0.0),
+                "risk_regime": risk_regime,
+                "frozen_regime_multiplier": multiplier,
+                "exchange_min_quantity": exchange_min_quantity,
+                "reduce_only": bool(risk_snapshot.reduce_only_mode) if risk_snapshot is not None else False,
+                "safety_reasons": tuple(sorted(safety_reasons)),
+                "estimated_fee_bps": estimated_fee_bps,
+                "estimated_slippage_bps": estimated_slippage_bps,
+                "reference_price": float(confirmed_rows[index]["close"]),
+                "actual_fill_price": None,
+                "forward_return_3": _forward_return(confirmed_rows, index, 3),
+                "forward_return_6": _forward_return(confirmed_rows, index, 6),
+                "directional_state": state.directional_state,
+                "volatility_state": state.volatility_state,
+                "positioning_state": state.positioning_state,
+                "quality_state": state.quality_state,
+                "quality_flags": tuple(indicator.quality_flags),
+            }
+            rows.append(row)
+        if missing:
+            raise ValueError(f"missing point-in-time A2-A5 stage inputs at cutoffs={missing!r}")
+        return {
+            **batch,
+            "observations": rows,
+            "missing_stage_input_count": 0,
         }
 
 
@@ -1567,6 +1635,27 @@ def _forward_return(rows: list[dict[str, Any]], index: int, horizon: int) -> flo
     if current_close <= 0:
         return None
     return (future_close - current_close) / current_close
+
+
+def _reject_duplicate_stage_points(points: list[Any], *, label: str) -> None:
+    counts = Counter(int(item.cutoff_time_ns) for item in points)
+    duplicates = sorted(cutoff for cutoff, count in counts.items() if count != 1)
+    if duplicates:
+        raise ValueError(f"duplicate point-in-time {label} inputs at cutoffs={duplicates!r}")
+
+
+def _architecture_risk_regime(state: MarketState) -> str:
+    quality = state.quality_state.upper()
+    volatility = state.volatility_state.upper()
+    directional = state.directional_state.upper()
+    regime = state.regime.upper()
+    if quality in {"UNSAFE", "DEGRADED"} or volatility == "DISTORTED":
+        return "UNSAFE"
+    if regime == "STRESS":
+        return "STRESS"
+    if quality == "NOISY" or directional == "TRANSITION":
+        return "NOISY"
+    return "TRADABLE"
 
 
 def _max_adverse_excursion(rows: list[dict[str, Any]], index: int, horizon: int) -> float | None:
