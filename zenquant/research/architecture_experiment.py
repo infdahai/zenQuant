@@ -271,6 +271,7 @@ def stage_exposure(
     stage: ArchitectureStage | str,
     *,
     current_position: float = 0.0,
+    fixed_notional: float = 1.0,
 ) -> float:
     """Return one pure cumulative stage exposure."""
     resolved_stage = ArchitectureStage(stage)
@@ -310,7 +311,11 @@ def stage_exposure(
     return apply_target_no_trade_band(
         a3_exposure,
         current_position=current_position,
-        exchange_min_quantity=observation.exchange_min_quantity,
+        exchange_min_quantity=_exchange_minimum_exposure(
+            observation.exchange_min_quantity,
+            reference_price=observation.reference_price,
+            fixed_notional=fixed_notional,
+        ),
         reduce_only=observation.reduce_only,
         safety_reasons=safety_reasons,
     )
@@ -593,7 +598,12 @@ def _summarize_stage(
     cost_shadow_rows: list[dict[str, Any]] = []
 
     for observation in observations:
-        exposure = stage_exposure(observation, stage, current_position=previous_exposure)
+        exposure = stage_exposure(
+            observation,
+            stage,
+            current_position=previous_exposure,
+            fixed_notional=fixed_notional,
+        )
         forward_return = _finite_float(observation.forward_return, name="forward_return")
         row: dict[str, Any] = {
             "alpha_id": observation.alpha_id,
@@ -829,6 +839,28 @@ def _finite_float(value: float, *, name: str) -> float:
 
 def _optional_finite_float(value: float | None, *, name: str) -> float | None:
     return None if value is None else _finite_float(value, name=name)
+
+
+def _exchange_minimum_exposure(
+    exchange_minimum_quantity: float,
+    *,
+    reference_price: float | None,
+    fixed_notional: float,
+) -> float:
+    minimum_quantity = _finite_float(exchange_minimum_quantity, name="exchange_minimum_quantity")
+    if minimum_quantity < 0.0:
+        raise ValueError("exchange_minimum_quantity must be non-negative")
+    if minimum_quantity == 0.0:
+        return 0.0
+    notional = _finite_float(fixed_notional, name="fixed_notional")
+    if notional <= 0.0:
+        raise ValueError("fixed_notional must be positive")
+    if reference_price is None:
+        raise ValueError("reference_price is required when exchange_minimum_quantity is positive")
+    price = _finite_float(reference_price, name="reference_price")
+    if price <= 0.0:
+        raise ValueError("reference_price must be positive")
+    return minimum_quantity * price / notional
 
 
 def _ratio(numerator: int, denominator: int) -> float | None:

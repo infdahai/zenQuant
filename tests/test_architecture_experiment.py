@@ -464,10 +464,33 @@ def test_a4_stage_is_cumulative_and_does_not_change_a3():
         annualized_volatility=0.20,
         risk_regime="NORMAL",
         exchange_min_quantity=0.001,
+        reference_price=100.0,
     )
 
     assert stage_exposure(observation, ArchitectureStage.A3) == pytest.approx(0.60)
-    assert stage_exposure(observation, ArchitectureStage.A4, current_position=0.59) == pytest.approx(0.59)
+    assert stage_exposure(
+        observation,
+        ArchitectureStage.A4,
+        current_position=0.59,
+        fixed_notional=100_000.0,
+    ) == pytest.approx(0.59)
+
+
+def test_a4_report_path_converts_exchange_quantity_to_fixed_notional_exposure():
+    observation = replace(
+        _observation(raw_score=0.4, frozen_confidence=0.6),
+        annualized_volatility=0.20,
+        risk_regime="NORMAL",
+        exchange_min_quantity=2.0,
+        reference_price=100.0,
+    )
+
+    assert stage_exposure(
+        observation,
+        ArchitectureStage.A4,
+        current_position=0.50,
+        fixed_notional=1_000.0,
+    ) == pytest.approx(0.50)
 
 
 def test_a5_shadow_records_costs_and_forward_labels_without_blocking():
