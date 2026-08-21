@@ -8,6 +8,7 @@ Z-scores use the same robust median/MAD algorithm as the indicator engine.
 from __future__ import annotations
 
 import bisect
+import math
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -150,14 +151,29 @@ class OptionsDataStore:
                 if not _REQUIRED_CHAIN_COLUMNS.issubset(df.columns):
                     continue
 
-                # Extract snapshot timestamp (same for all rows)
-                snapshot_ts = int(df["snapshot_ts_ns"].iloc[0])
-                spot = float(df["underlying_price"].iloc[0])
+                ordered_rows = tuple(df.to_dict("records"))
+                timestamp_values = sorted(
+                    value
+                    for row in ordered_rows
+                    if (value := _finite_number(row.get("snapshot_ts_ns"))) is not None and value > 0
+                )
+                if not timestamp_values:
+                    continue
+                # Mixed-source chains remain visible at the earliest source so
+                # the public OptionsState lookup can quarantine them without
+                # leaking any later row into calculations.
+                snapshot_ts = int(timestamp_values[0])
+                spot_values = sorted(
+                    value
+                    for row in ordered_rows
+                    if (value := _finite_number(row.get("underlying_price"))) is not None and value > 0
+                )
+                spot = spot_values[len(spot_values) // 2] if spot_values else 0.0
 
                 # Compute metrics from this snapshot
-                atm_iv = self._compute_atm_iv(df)
-                skew = self._compute_moneyness_skew_proxy(df)
-                term_slope = self._compute_term_structure(df)
+                atm_iv = _safe_metric(lambda frame=df: self._compute_atm_iv(frame), None)
+                skew = _safe_metric(lambda frame=df: self._compute_moneyness_skew_proxy(frame), None)
+                term_slope = _safe_metric(lambda frame=df: self._compute_term_structure(frame), None)
 
                 # Compute GEX from full options chain
                 net_gex, gamma_wall, flip_strike, gex_regime = self._compute_gex(df, spot)
@@ -172,17 +188,6 @@ class OptionsDataStore:
                 self._gamma_wall.append(gamma_wall)
                 self._flip_strike.append(flip_strike)
                 self._gex_regime.append(gex_regime)
-                ordered_rows = tuple(
-                    sorted(
-                        df.to_dict("records"),
-                        key=lambda row: (
-                            int(row.get("expiry_ts_ms", 0) or 0),
-                            float(row.get("strike", 0.0) or 0.0),
-                            str(row.get("option_type", "")),
-                            str(row.get("instrument_name", "")),
-                        ),
-                    )
-                )
                 self._chain_rows.append(ordered_rows)
 
             except Exception as e:
@@ -529,3 +534,18 @@ class OptionsDataStore:
             return None
 
         return float((far_iv - near_iv) / far_iv)
+
+
+def _finite_number(value: object) -> float | None:
+    try:
+        parsed = float(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return None
+    return parsed if math.isfinite(parsed) else None
+
+
+def _safe_metric(compute, fallback):
+    try:
+        return compute()
+    except (ArithmeticError, KeyError, TypeError, ValueError):
+        return fallback

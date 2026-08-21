@@ -19,6 +19,44 @@ DAY_NS = 86_400 * 1_000_000_000
 
 
 class OptionsDataStoreTests(unittest.TestCase):
+    def test_lookup_malformed_chain_returns_unknown_instead_of_skipping_or_raising(self) -> None:
+        from zenquant.data import OptionsDataStore, OptionsDataStoreConfig
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            options_dir = Path(tmpdir)
+            source_ns = 2 * DAY_NS
+            rows = []
+            for dte in (7, 30, 90):
+                for strike in (80.0, 100.0, 120.0):
+                    for option_type in ("call", "put"):
+                        rows.append(
+                            {
+                                "snapshot_ts_ns": source_ns,
+                                "currency": "BTC",
+                                "instrument_name": f"BTC-{dte}-{strike}-{option_type}",
+                                "expiry_ts_ms": (source_ns + dte * DAY_NS) // 1_000_000,
+                                "strike": strike,
+                                "option_type": option_type,
+                                "underlying_price": 100.0,
+                                "open_interest": "100",
+                                "mark_iv": 60.0,
+                            }
+                        )
+            rows[0]["open_interest"] = "bad"
+            _write_parquet(options_dir / "BTC" / "2026-04" / "malformed.parquet", rows)
+            store = OptionsDataStore(OptionsDataStoreConfig(options_dir=options_dir))
+            store.load()
+            cutoff = source_ns + 4 * 3_600 * 1_000_000_000
+            state = store.lookup_options_state(
+                cutoff,
+                realized_vol_30d=0.45,
+                realized_vol_source_timestamp_ns=cutoff,
+            )
+
+        self.assertEqual(state.trend_quality, "UNKNOWN")
+        self.assertEqual(state.shadow_risk_multiplier, 1.0)
+        self.assertIn("OPTIONS_MALFORMED_OPEN_INTEREST", state.quality_flags)
+
     def test_indicator_runtime_exposes_proxy_without_25delta_mislabel(self) -> None:
         from zenquant.data import OptionsSnapshot
         from zenquant.domain import Candle, MarketSnapshot, Timeframe
