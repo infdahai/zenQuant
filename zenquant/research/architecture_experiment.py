@@ -196,6 +196,11 @@ class ArchitectureObservation:
     actual_fill_price: float | None = None
     forward_return_3: float | None = None
     forward_return_6: float | None = None
+    directional_state: str = "UNKNOWN"
+    volatility_state: str = "UNKNOWN"
+    positioning_state: str = "UNKNOWN"
+    quality_state: str = "UNKNOWN"
+    quality_flags: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -247,6 +252,34 @@ class CostShadowObservation:
 
 
 @dataclass(frozen=True, slots=True)
+class ArchitectureStageExecutionRow:
+    """One actual target-tracking observation for a later architecture stage."""
+
+    cutoff_time_ns: int
+    decision_id: str
+    approved_exposure: float
+    approved_target_qty: float
+    filled_exposure_before: float
+    filled_exposure_after: float
+    filled_position_before: float
+    filled_position_after: float
+    target_delta_exposure: float
+    reference_price: float
+    actual_fill_price: float | None
+    filled_qty: float
+    fee: float
+    actual_slippage: float
+    actual_implementation_shortfall: float
+    target_tracking_error: float
+    time_to_target_bars: int | None
+    reduce_only: bool
+    safety_reasons: tuple[str, ...]
+    forward_return_1: float | None
+    forward_return_3: float | None
+    forward_return_6: float | None
+
+
+@dataclass(frozen=True, slots=True)
 class ArchitectureRunEvidence:
     """Complete A0 replay result and A1 causal rows for one frozen run."""
 
@@ -265,6 +298,7 @@ class ArchitectureRunEvidence:
     terminal_excluded_count: int
     position_episodes: tuple[PositionEpisode, ...] = ()
     execution_metrics_by_stage: Mapping[str, ArchitectureExecutionMetrics] = field(default_factory=dict)
+    stage_execution_rows_by_stage: Mapping[str, tuple[ArchitectureStageExecutionRow, ...]] = field(default_factory=dict)
 
 
 def stage_exposure(
@@ -528,24 +562,28 @@ def build_architecture_attribution_report(
                     stage=ArchitectureStage.A2,
                     fixed_notional=notional,
                     cost_stress_bps=costs,
+                    execution_rows=evidence.stage_execution_rows_by_stage.get(ArchitectureStage.A2.value),
                 ),
                 ArchitectureStage.A3.value: _summarize_stage(
                     ordered,
                     stage=ArchitectureStage.A3,
                     fixed_notional=notional,
                     cost_stress_bps=costs,
+                    execution_rows=evidence.stage_execution_rows_by_stage.get(ArchitectureStage.A3.value),
                 ),
                 ArchitectureStage.A4.value: _summarize_stage(
                     ordered,
                     stage=ArchitectureStage.A4,
                     fixed_notional=notional,
                     cost_stress_bps=costs,
+                    execution_rows=evidence.stage_execution_rows_by_stage.get(ArchitectureStage.A4.value),
                 ),
                 ArchitectureStage.A5_SHADOW.value: _summarize_stage(
                     ordered,
                     stage=ArchitectureStage.A5_SHADOW,
                     fixed_notional=notional,
                     cost_stress_bps=costs,
+                    execution_rows=evidence.stage_execution_rows_by_stage.get(ArchitectureStage.A5_SHADOW.value),
                 ),
             }
             _attach_execution_metrics(stages, evidence.execution_metrics_by_stage)
@@ -602,6 +640,7 @@ def build_architecture_attribution_report(
             },
         },
         "constraints": {
+            "scope": "A0_A1_DIRECTION_ATTRIBUTION_ONLY",
             "fixed_notional": notional,
             "max_abs_exposure": 1.0,
             "compounding": False,
@@ -649,6 +688,7 @@ def _summarize_stage(
     stage: ArchitectureStage,
     fixed_notional: float,
     cost_stress_bps: tuple[float, ...],
+    execution_rows: tuple[ArchitectureStageExecutionRow, ...] | None = None,
 ) -> dict[str, Any]:
     attribution_rows: list[dict[str, Any]] = []
     previous_exposure = 0.0
@@ -660,13 +700,19 @@ def _summarize_stage(
     turnover_notional = 0.0
     regime_rows: defaultdict[str, list[dict[str, Any]]] = defaultdict(list)
     cost_shadow_rows: list[dict[str, Any]] = []
+    execution_by_cutoff = _validated_stage_execution_rows(observations, execution_rows)
 
     for observation in observations:
-        exposure = stage_exposure(
-            observation,
-            stage,
-            current_position=previous_exposure,
-            fixed_notional=fixed_notional,
+        execution_row = execution_by_cutoff.get(observation.cutoff_time_ns)
+        exposure = (
+            execution_row.approved_exposure
+            if execution_row is not None
+            else stage_exposure(
+                observation,
+                stage,
+                current_position=previous_exposure,
+                fixed_notional=fixed_notional,
+            )
         )
         forward_return = _finite_float(observation.forward_return, name="forward_return")
         row: dict[str, Any] = {
@@ -679,25 +725,40 @@ def _summarize_stage(
             "turnover_notional": 0.0,
         }
         realized_return = forward_return
-        row_turnover = abs(exposure - previous_exposure) * fixed_notional
+        row_turnover = (
+            abs(execution_row.target_delta_exposure) * fixed_notional
+            if execution_row is not None
+            else abs(exposure - previous_exposure) * fixed_notional
+        )
         row_gross_pnl = exposure * realized_return * fixed_notional
         row["gross_pnl"] = row_gross_pnl
         row["turnover_notional"] = row_turnover
+        if execution_row is not None:
+            row["execution"] = asdict(execution_row)
         evaluable_count += 1
         gross_pnl += row_gross_pnl
         turnover_notional += row_turnover
         if stage == ArchitectureStage.A5_SHADOW:
             shadow = observe_cost_shadow(
-                target_delta=exposure - previous_exposure,
+                target_delta=(
+                    execution_row.target_delta_exposure if execution_row is not None else exposure - previous_exposure
+                ),
                 fixed_notional=fixed_notional,
                 estimated_fee_bps=observation.estimated_fee_bps,
                 estimated_slippage_bps=observation.estimated_slippage_bps,
                 reference_price=observation.reference_price,
-                actual_fill_price=observation.actual_fill_price,
+                actual_fill_price=(
+                    execution_row.actual_fill_price if execution_row is not None else observation.actual_fill_price
+                ),
                 forward_return_1=observation.forward_return,
                 forward_return_3=observation.forward_return_3,
                 forward_return_6=observation.forward_return_6,
             )
+            if execution_row is not None:
+                shadow = replace(
+                    shadow,
+                    actual_implementation_shortfall=execution_row.actual_implementation_shortfall,
+                )
             shadow_payload = asdict(shadow)
             row["cost_shadow"] = shadow_payload
             cost_shadow_rows.append(shadow_payload)
@@ -756,6 +817,22 @@ def _summarize_stage(
             },
         }
     return summary
+
+
+def _validated_stage_execution_rows(
+    observations: list[ArchitectureObservation],
+    execution_rows: tuple[ArchitectureStageExecutionRow, ...] | None,
+) -> dict[int, ArchitectureStageExecutionRow]:
+    if execution_rows is None:
+        return {}
+    expected = {item.cutoff_time_ns for item in observations}
+    indexed = {item.cutoff_time_ns: item for item in execution_rows}
+    if len(indexed) != len(execution_rows) or set(indexed) != expected:
+        raise ValueError(
+            "architecture stage execution rows do not match evaluable observations: "
+            f"missing={sorted(expected - set(indexed))!r} extra={sorted(set(indexed) - expected)!r}"
+        )
+    return indexed
 
 
 def _attach_execution_metrics(
