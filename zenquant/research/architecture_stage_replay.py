@@ -133,7 +133,7 @@ def run_architecture_stage_replay(
     rows: list[ArchitectureStageExecutionRow] = []
     snapshots: list[DecisionSnapshot] = []
     tracking_errors: list[float] = []
-    time_to_target: list[float] = []
+    immediate_target_reached_count = 0
     total_shortfall = 0.0
     total_slippage = 0.0
 
@@ -266,18 +266,29 @@ def run_architecture_stage_replay(
         )
         rows.append(row)
         tracking_errors.append(error)
-        # A new 4h decision supersedes the prior authority. Unreached targets
-        # are therefore right-censored at one decision bar, not silently
-        # dropped from the aggregate.
-        time_to_target.append(0.0 if reached else 1.0)
+        if reached:
+            immediate_target_reached_count += 1
         total_slippage += actual_shortfall
         total_shortfall += actual_shortfall + fee
 
     elapsed_days = max(1.0, (ordered[-1].cutoff_time_ns - ordered[0].cutoff_time_ns) / 1e9 / 86_400.0)
     pf = calculate_episode_profit_factor(episode_ledger.closed_episodes)
+    immediate_target_reached_rate = immediate_target_reached_count / len(rows)
+    right_censored_target_rate = 1.0 - immediate_target_reached_rate
+    # Each new 4h snapshot supersedes the prior target authority. A target not
+    # reached immediately is therefore right-censored, not observed at one bar.
+    time_to_target_bars = 0.0 if immediate_target_reached_count == len(rows) else None
+    time_to_target_status = (
+        "OBSERVED_ALL_IMMEDIATE"
+        if time_to_target_bars is not None
+        else "RIGHT_CENSORED_AT_NEXT_DECISION"
+    )
     metrics = ArchitectureExecutionMetrics(
         target_tracking_error=sum(tracking_errors) / len(tracking_errors),
-        time_to_target_bars=sum(time_to_target) / len(time_to_target),
+        time_to_target_bars=time_to_target_bars,
+        time_to_target_status=time_to_target_status,
+        immediate_target_reached_rate=immediate_target_reached_rate,
+        right_censored_target_rate=right_censored_target_rate,
         implementation_shortfall=total_shortfall,
         slippage=total_slippage,
         target_overshoot=kernel.purity_counters["target_overshoot"],

@@ -209,7 +209,10 @@ class ArchitectureExecutionMetrics:
     """Observed Task-3/4 metrics for one concrete stage replay."""
 
     target_tracking_error: float
-    time_to_target_bars: float
+    time_to_target_bars: float | None
+    time_to_target_status: str
+    immediate_target_reached_rate: float
+    right_censored_target_rate: float
     implementation_shortfall: float
     slippage: float
     target_overshoot: int
@@ -222,13 +225,23 @@ class ArchitectureExecutionMetrics:
     def __post_init__(self) -> None:
         for name in (
             "target_tracking_error",
-            "time_to_target_bars",
+            "immediate_target_reached_rate",
+            "right_censored_target_rate",
             "implementation_shortfall",
             "slippage",
             "position_switches_per_day",
         ):
             if not math.isfinite(float(getattr(self, name))):
                 raise ValueError(f"{name} must be finite")
+        if self.time_to_target_bars is not None and not math.isfinite(
+            float(self.time_to_target_bars)
+        ):
+            raise ValueError("time_to_target_bars must be finite when observed")
+        if not self.time_to_target_status:
+            raise ValueError("time_to_target_status must be explicit")
+        for name in ("immediate_target_reached_rate", "right_censored_target_rate"):
+            if not 0.0 <= float(getattr(self, name)) <= 1.0:
+                raise ValueError(f"{name} must be between zero and one")
         for name in ("target_overshoot", "unexpected_reversal", "executor_created_exposure"):
             if int(getattr(self, name)) < 0:
                 raise ValueError(f"{name} must be non-negative")
