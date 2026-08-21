@@ -12,6 +12,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from zenquant.data._z_utils import robust_z as _robust_z
+from zenquant.domain import OptionsState
 
 
 @dataclass(slots=True)
@@ -28,13 +29,18 @@ class OptionsDataStoreConfig:
 
 @dataclass(slots=True, frozen=True)
 class OptionsSnapshot:
-    """Point-in-time options IV metrics with z-scores."""
+    """Legacy point-in-time options metrics with z-scores.
+
+    ``put_call_moneyness_skew_proxy`` is the 90%-put minus 110%-call IV
+    proxy. The compatibility property must not be interpreted as true 25-delta
+    skew; true Black-76 25-delta fields live on :class:`OptionsState`.
+    """
 
     atm_iv_30d: float | None  # ATM implied vol at 30-day tenor
     atm_iv_z: float
     term_structure_slope: float | None  # (90d_IV - 7d_IV) / 90d_IV
     term_slope_z: float
-    put_call_skew_25d: float | None  # (90% put IV) - (110% call IV)
+    put_call_moneyness_skew_proxy: float | None
     skew_z: float
     underlying_price: float
     # Skew velocity (dSkew/dt per hour) — informed traders buy puts before selling
@@ -45,6 +51,11 @@ class OptionsSnapshot:
     flip_strike: float | None = None  # Below this = volatile
     gex_regime: str = ""  # PINNING | AMPLIFYING | NEUTRAL
     quality_flags: list[str] = field(default_factory=list)
+
+    @property
+    def put_call_skew_25d(self) -> float | None:
+        """Deprecated legacy alias for the 90%/110% moneyness proxy."""
+        return self.put_call_moneyness_skew_proxy
 
 
 _REQUIRED_CHAIN_COLUMNS = frozenset(
@@ -86,6 +97,8 @@ class OptionsDataStore:
         self._flip_strike: list[float | None] = []
         self._gex_regime: list[str] = []
         self._lookup_cache: dict[tuple[int, bool], OptionsSnapshot] = {}
+        self._chain_rows: list[tuple[dict[str, object], ...]] = []
+        self._state_lookup_cache: dict[tuple[int, float | None, int], OptionsState] = {}
 
     @property
     def loaded(self) -> bool:
@@ -104,6 +117,18 @@ class OptionsDataStore:
     def load(self) -> None:
         """Load all options chain snapshots and compute IV metrics."""
         self._lookup_cache.clear()
+        self._state_lookup_cache.clear()
+        self._timestamps.clear()
+        self._atm_iv.clear()
+        self._skew.clear()
+        self._term_slope.clear()
+        self._spot.clear()
+        self._skew_velocity.clear()
+        self._net_gex.clear()
+        self._gamma_wall.clear()
+        self._flip_strike.clear()
+        self._gex_regime.clear()
+        self._chain_rows.clear()
         currency_dir = self._config.options_dir / self._config.currency
         if not currency_dir.exists():
             return
@@ -131,7 +156,7 @@ class OptionsDataStore:
 
                 # Compute metrics from this snapshot
                 atm_iv = self._compute_atm_iv(df)
-                skew = self._compute_skew(df)
+                skew = self._compute_moneyness_skew_proxy(df)
                 term_slope = self._compute_term_structure(df)
 
                 # Compute GEX from full options chain
@@ -147,6 +172,18 @@ class OptionsDataStore:
                 self._gamma_wall.append(gamma_wall)
                 self._flip_strike.append(flip_strike)
                 self._gex_regime.append(gex_regime)
+                ordered_rows = tuple(
+                    sorted(
+                        df.to_dict("records"),
+                        key=lambda row: (
+                            int(row.get("expiry_ts_ms", 0) or 0),
+                            float(row.get("strike", 0.0) or 0.0),
+                            str(row.get("option_type", "")),
+                            str(row.get("instrument_name", "")),
+                        ),
+                    )
+                )
+                self._chain_rows.append(ordered_rows)
 
             except Exception as e:
                 print(f"  Warning: Failed to load {path}: {e}")
@@ -164,6 +201,7 @@ class OptionsDataStore:
             self._gamma_wall = [self._gamma_wall[i] for i in indices]
             self._flip_strike = [self._flip_strike[i] for i in indices]
             self._gex_regime = [self._gex_regime[i] for i in indices]
+            self._chain_rows = [self._chain_rows[i] for i in indices]
 
             # Compute skew velocity (dSkew/dt) after sorting
             self._skew_velocity = [0.0]  # First snapshot has no previous
@@ -184,7 +222,7 @@ class OptionsDataStore:
                 atm_iv_z=0.0,
                 term_structure_slope=None,
                 term_slope_z=0.0,
-                put_call_skew_25d=None,
+                put_call_moneyness_skew_proxy=None,
                 skew_z=0.0,
                 underlying_price=0.0,
                 quality_flags=[],
@@ -199,7 +237,7 @@ class OptionsDataStore:
                 atm_iv_z=0.0,
                 term_structure_slope=None,
                 term_slope_z=0.0,
-                put_call_skew_25d=None,
+                put_call_moneyness_skew_proxy=None,
                 skew_z=0.0,
                 underlying_price=0.0,
                 quality_flags=[],
@@ -262,7 +300,7 @@ class OptionsDataStore:
             atm_iv_z=atm_iv_z,
             term_structure_slope=term_slope,
             term_slope_z=term_slope_z,
-            put_call_skew_25d=skew,
+            put_call_moneyness_skew_proxy=skew,
             skew_z=skew_z,
             underlying_price=spot,
             skew_velocity=self._skew_velocity[idx] if idx < len(self._skew_velocity) else 0.0,
@@ -274,6 +312,50 @@ class OptionsDataStore:
         )
         self._lookup_cache[cache_key] = snapshot
         return snapshot
+
+    def lookup_options_state(
+        self,
+        cutoff_time_ns: int,
+        *,
+        realized_vol_30d: float | None,
+        realized_vol_source_timestamp_ns: int,
+    ) -> OptionsState:
+        """Return the immutable OptionsState visible at a confirmed 4h cutoff.
+
+        The 24-hour comparison is an ASOF lookup: the latest snapshot whose
+        source timestamp is no later than ``current_source - 24h``. Future
+        chain files are never read into the selected state.
+        """
+        from zenquant.data.options_state import DAY_NS, build_options_state
+
+        cache_key = (cutoff_time_ns, realized_vol_30d, realized_vol_source_timestamp_ns)
+        cached = self._state_lookup_cache.get(cache_key)
+        if cached is not None:
+            return cached
+        idx = bisect.bisect_right(self._timestamps, cutoff_time_ns) - 1
+        if idx < 0:
+            state = build_options_state(
+                (),
+                cutoff_time_ns=cutoff_time_ns,
+                realized_vol_30d=realized_vol_30d,
+                realized_vol_source_timestamp_ns=realized_vol_source_timestamp_ns,
+                stale_after_ns=self._config.staleness_threshold_ns,
+            )
+            self._state_lookup_cache[cache_key] = state
+            return state
+        source_ns = self._timestamps[idx]
+        history_idx = bisect.bisect_right(self._timestamps, source_ns - DAY_NS) - 1
+        history_rows = self._chain_rows[history_idx] if history_idx >= 0 else ()
+        state = build_options_state(
+            self._chain_rows[idx],
+            cutoff_time_ns=cutoff_time_ns,
+            realized_vol_30d=realized_vol_30d,
+            realized_vol_source_timestamp_ns=realized_vol_source_timestamp_ns,
+            history_24h_rows=history_rows,
+            stale_after_ns=self._config.staleness_threshold_ns,
+        )
+        self._state_lookup_cache[cache_key] = state
+        return state
 
     def _compute_gex(self, df, spot: float) -> tuple[float, float | None, float | None, str]:
         """Compute GEX metrics from full options chain."""
@@ -337,11 +419,12 @@ class OptionsDataStore:
 
         return (total_iv_weighted / total_oi) if total_oi > 0 else None
 
-    def _compute_skew(self, df) -> float | None:
-        """Compute 25-delta put/call skew: (OTM put IV) - (OTM call IV).
+    def _compute_moneyness_skew_proxy(self, df) -> float | None:
+        """Compute the legacy 90%-put minus 110%-call moneyness proxy.
 
         Use 90% strike (0.9*spot) for put, 110% strike (1.1*spot) for call.
-        Positive skew = puts more expensive = bearish skew.
+        This is explicitly not a Black-76 25-delta risk reversal. Positive
+        values mean the selected OTM put IV exceeds the selected OTM call IV.
         """
         import pandas as pd
 

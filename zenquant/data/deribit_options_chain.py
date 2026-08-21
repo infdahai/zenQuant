@@ -35,6 +35,7 @@ class OptionChainRow:
     mid_price: float | None
     underlying_index: str
     settlement_period: str
+    mark_iv_unit: str = "percent"
 
 
 def _fetch_json(endpoint: str, query: dict[str, str]) -> Any:

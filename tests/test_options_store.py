@@ -19,6 +19,142 @@ DAY_NS = 86_400 * 1_000_000_000
 
 
 class OptionsDataStoreTests(unittest.TestCase):
+    def test_options_state_lookup_is_point_in_time_and_future_invariant(self) -> None:
+        from zenquant.data import OptionsDataStore, OptionsDataStoreConfig
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            options_dir = Path(tmpdir)
+            month_dir = options_dir / "BTC" / "2026-04"
+
+            def write_day(day: int, spot: float) -> None:
+                source_ns = day * DAY_NS
+                rows: list[dict] = []
+                for dte, iv in ((7, 50.0), (30, 60.0), (90, 70.0)):
+                    for strike in (70.0, 85.0, 100.0, 115.0, 130.0):
+                        for option_type in ("call", "put"):
+                            rows.append(
+                                {
+                                    "snapshot_ts_ns": source_ns,
+                                    "currency": "BTC",
+                                    "instrument_name": f"BTC-{dte}D-{strike:g}-{option_type[0].upper()}",
+                                    "expiry_ts_ms": (source_ns + dte * DAY_NS) // 1_000_000,
+                                    "expiry_date": "2026-04-01",
+                                    "strike": strike,
+                                    "option_type": option_type,
+                                    "underlying_price": spot,
+                                    "open_interest": 100.0,
+                                    "volume_usd": 1000.0,
+                                    "mark_iv": iv,
+                                    "bid_price": 0.1,
+                                    "ask_price": 0.15,
+                                    "mid_price": 0.125,
+                                    "underlying_index": "BTC",
+                                    "settlement_period": "day",
+                                }
+                            )
+                _write_parquet(month_dir / f"options_chain_day_{day}.parquet", rows)
+
+            write_day(2, 100.0)
+            write_day(3, 105.0)
+
+            store = OptionsDataStore(OptionsDataStoreConfig(options_dir=options_dir))
+            store.load()
+            cutoff = 3 * DAY_NS
+            first = store.lookup_options_state(
+                cutoff,
+                realized_vol_30d=0.45,
+                realized_vol_source_timestamp_ns=cutoff,
+            )
+            self.assertEqual(first.source_timestamp_ns, 3 * DAY_NS)
+            self.assertAlmostEqual(first.underlying_price, 105.0)
+
+            # Adding and loading a future source cannot change the earlier state.
+            write_day(4, 80.0)
+            store.load()
+            second = store.lookup_options_state(
+                cutoff,
+                realized_vol_30d=0.45,
+                realized_vol_source_timestamp_ns=cutoff,
+            )
+            self.assertEqual(first, second)
+            self.assertEqual(first.options_state_id, second.options_state_id)
+
+    def test_missing_options_state_is_unknown_with_neutral_shadow_multiplier(self) -> None:
+        from zenquant.data import OptionsDataStore, OptionsDataStoreConfig
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            store = OptionsDataStore(OptionsDataStoreConfig(options_dir=Path(tmpdir)))
+            store.load()
+            cutoff = 4 * 3_600 * 1_000_000_000
+            state = store.lookup_options_state(
+                cutoff,
+                realized_vol_30d=0.45,
+                realized_vol_source_timestamp_ns=cutoff,
+            )
+
+        self.assertEqual(state.trend_quality, "UNKNOWN")
+        self.assertEqual(state.shadow_risk_multiplier, 1.0)
+        self.assertIn("OPTIONS_MISSING", state.quality_flags)
+
+    def test_options_state_lookup_uses_asof_24h_history(self) -> None:
+        from zenquant.data import OptionsDataStore, OptionsDataStoreConfig
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            options_dir = Path(tmpdir)
+            month_dir = options_dir / "BTC" / "2026-04"
+            for day, spot in ((2, 100.0), (3, 110.0)):
+                source_ns = day * DAY_NS
+                rows = []
+                for dte in (7, 30, 90):
+                    for strike in (75.0, 90.0, 100.0, 110.0, 125.0):
+                        for option_type in ("call", "put"):
+                            rows.append(
+                                {
+                                    "snapshot_ts_ns": source_ns,
+                                    "currency": "BTC",
+                                    "instrument_name": f"BTC-{dte}D-{strike:g}-{option_type[0].upper()}",
+                                    "expiry_ts_ms": (source_ns + dte * DAY_NS) // 1_000_000,
+                                    "expiry_date": "2026-04-01",
+                                    "strike": strike,
+                                    "option_type": option_type,
+                                    "underlying_price": spot,
+                                    "open_interest": 100.0,
+                                    "volume_usd": 1000.0,
+                                    "mark_iv": 60.0,
+                                    "bid_price": 0.1,
+                                    "ask_price": 0.15,
+                                    "mid_price": 0.125,
+                                    "underlying_index": "BTC",
+                                    "settlement_period": "day",
+                                }
+                            )
+                _write_parquet(month_dir / f"options_chain_day_{day}.parquet", rows)
+
+            store = OptionsDataStore(OptionsDataStoreConfig(options_dir=options_dir))
+            store.load()
+            state = store.lookup_options_state(
+                3 * DAY_NS,
+                realized_vol_30d=0.45,
+                realized_vol_source_timestamp_ns=3 * DAY_NS,
+            )
+            self.assertAlmostEqual(state.spot_return_24h or 0.0, 0.10)
+            self.assertNotIn("OPTIONS_24H_HISTORY_MISSING", state.quality_flags)
+
+    def test_legacy_skew_is_explicitly_named_moneyness_proxy(self) -> None:
+        from zenquant.data import OptionsSnapshot
+
+        snapshot = OptionsSnapshot(
+            atm_iv_30d=0.60,
+            atm_iv_z=0.0,
+            term_structure_slope=0.1,
+            term_slope_z=0.0,
+            put_call_moneyness_skew_proxy=0.05,
+            skew_z=0.0,
+            underlying_price=100.0,
+        )
+        self.assertEqual(snapshot.put_call_moneyness_skew_proxy, 0.05)
+        self.assertEqual(snapshot.put_call_skew_25d, 0.05)
+
     def test_load_snapshots(self) -> None:
         """Test that OptionsDataStore loads parquet snapshots."""
         from zenquant.data import OptionsDataStore, OptionsDataStoreConfig
