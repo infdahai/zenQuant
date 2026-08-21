@@ -38,7 +38,10 @@ from zenquant.research.architecture_experiment import (
     observe_cost_shadow,
     stage_exposure,
 )
-from zenquant.research.architecture_stage_replay import run_architecture_stage_replay
+from zenquant.research.architecture_stage_replay import (
+    ArchitectureFundingSettlement,
+    run_architecture_stage_replay,
+)
 from zenquant.strategy.decision_snapshot import build_decision_snapshot
 from zenquant.strategy.engine import ARCStrategyConfig, ARCStrategyEngine
 
@@ -816,6 +819,48 @@ def test_a5_stage_replay_produces_actual_fill_cost_and_forward_labels():
     assert replay.metrics.target_overshoot == 0
 
 
+def test_stage_replay_allocates_visible_funding_to_position_episode():
+    first = replace(
+        _observation(alpha_id="alpha-100", cutoff_time_ns=100, raw_score=0.4),
+        annualized_volatility=0.20,
+        risk_regime="NORMAL",
+        frozen_regime_multiplier=1.0,
+        reference_price=100.0,
+    )
+    second = replace(
+        _observation(alpha_id="alpha-200", cutoff_time_ns=200, raw_score=0.0),
+        annualized_volatility=0.20,
+        risk_regime="NORMAL",
+        frozen_regime_multiplier=1.0,
+        reference_price=110.0,
+    )
+    settlement = ArchitectureFundingSettlement(
+        source_time_ns=150,
+        available_at_ns=200,
+        funding_rate=0.01,
+        mark_price=110.0,
+    )
+
+    replay = run_architecture_stage_replay(
+        (first, second),
+        stage=ArchitectureStage.A2,
+        fixed_notional=1_000.0,
+        symbol="BTCUSDT_PERP",
+        portfolio="arc",
+        max_trade_qty_per_bar=10.0,
+        funding_settlements_by_cutoff={200: (settlement,)},
+    )
+
+    assert replay.rows[1].funding_pnl == pytest.approx(-6.6)
+    assert len(replay.closed_episodes) == 1
+    assert replay.closed_episodes[0].funding_pnl == pytest.approx(-6.6)
+    assert replay.closed_episodes[0].net_pnl == pytest.approx(
+        replay.closed_episodes[0].gross_realized_pnl
+        + replay.closed_episodes[0].funding_pnl
+        - replay.closed_episodes[0].fees
+    )
+
+
 def test_cumulative_report_consumes_real_stage_rows_without_unobserved_metrics():
     observations = tuple(
         replace(
@@ -860,6 +905,26 @@ def test_cumulative_report_consumes_real_stage_rows_without_unobserved_metrics()
     stages = report["runs"][0]["stages"]
     assert all(stages[stage]["execution_metrics"]["status"] == "OBSERVED" for stage in replays)
     assert stages["A4"]["attribution_rows"][1]["execution"]["filled_exposure_before"] == pytest.approx(0.1)
+    a4 = stages["A4"]
+    expected_gross = sum(
+        row["execution"]["filled_exposure_after"] * row["forward_return"] * 1_000.0
+        for row in a4["attribution_rows"]
+    )
+    expected_baseline_cost = sum(
+        row["execution"]["fee"] + row["execution"]["actual_slippage"]
+        for row in a4["attribution_rows"]
+    )
+    expected_additional_15bp = sum(
+        row["execution"]["filled_qty"] * row["execution"]["actual_fill_price"] * 15.0 / 10_000.0
+        for row in a4["attribution_rows"]
+    )
+    assert a4["pnl_basis"] == "ACTUAL_FILLED_EXPOSURE"
+    assert a4["gross_pnl"] == pytest.approx(expected_gross)
+    assert a4["cost_stress"]["0"]["baseline_execution_cost"] == pytest.approx(expected_baseline_cost)
+    assert a4["cost_stress"]["15"]["additional_stress_cost"] == pytest.approx(expected_additional_15bp)
+    assert a4["cost_stress"]["15"]["net_pnl"] == pytest.approx(
+        expected_gross - expected_baseline_cost - expected_additional_15bp
+    )
     assert stages["A5_SHADOW"]["cost_shadow"]["actual_shortfall_observation_count"] == 2
 
 
@@ -1407,6 +1472,12 @@ def test_replay_bridge_builds_complete_pit_stage_inputs_and_true_4h_labels():
     ]
     runner._market_states = [replace(state, cutoff_time_ns=cutoff) for cutoff in (100, 200, 300, 400, 500, 600)]
     runner._risk_snapshots = []
+    runner._funding_rows = [{"funding_time_ns": 150, "funding_rate": 0.001}]
+    runner._execution_rows = [
+        {"close_time_ns": 100, "close": 100.0},
+        {"close_time_ns": 150, "close": 105.0},
+        {"close_time_ns": 200, "close": 110.0},
+    ]
 
     batch = runner.build_architecture_stage_rows(
         exchange_min_quantity=0.001,
@@ -1426,6 +1497,16 @@ def test_replay_bridge_builds_complete_pit_stage_inputs_and_true_4h_labels():
     assert first["forward_return_6"] == pytest.approx(0.60)
     assert first["estimated_fee_bps"] == pytest.approx(4.0)
     assert first["estimated_slippage_bps"] == pytest.approx(1.5)
+    assert batch["funding_settlements_by_cutoff"] == {
+        200: (
+            ArchitectureFundingSettlement(
+                source_time_ns=150,
+                available_at_ns=200,
+                funding_rate=0.001,
+                mark_price=105.0,
+            ),
+        )
+    }
     assert batch["missing_stage_input_count"] == 0
 
 
