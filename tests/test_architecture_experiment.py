@@ -34,6 +34,7 @@ from zenquant.research.architecture_experiment import (
     bind_stage_inputs_from_snapshot,
     build_architecture_attribution_report,
     load_architecture_experiment_manifest,
+    observations_from_rows,
     observe_cost_shadow,
     stage_exposure,
 )
@@ -150,6 +151,7 @@ def test_cli_builds_exact_august_candidate_and_original_a0_execution_contract():
     assert config.strategy_config.max_leverage == 4.5
     assert config.strategy_config.target_vol_4h == 1.1
     assert config.strategy_config.emit_architecture_alpha_snapshots_v2 is True
+    assert config.indicator_config.expected_symbols == (manifest.portfolio_symbol,)
     assert config.risk_config.dd_step_1_long == 0.15
     assert config.perturbation.seed == 42
     assert config.perturbation.price_noise_pct == 0.001
@@ -276,6 +278,7 @@ def test_a1_alpha_is_identical_before_exit_for_different_positions():
 
     assert len(flat_alphas) == len(positioned_alphas) == 1
     assert asdict(flat_alphas[0]) == asdict(positioned_alphas[0])
+    assert flat_alphas[0].available_at_ns == flat_alphas[0].cutoff_time_ns
 
     def _a1_row(snapshot):
         observation = _observation(raw_score=snapshot.raw_score, frozen_confidence=snapshot.confidence)
@@ -311,6 +314,7 @@ def _observation(
     return ArchitectureObservation(
         alpha_id=alpha_id,
         cutoff_time_ns=cutoff_time_ns,
+        available_at_ns=cutoff_time_ns,
         regime=regime,
         raw_score=raw_score,
         frozen_confidence=frozen_confidence,
@@ -664,6 +668,26 @@ def test_stage_snapshot_data_identity_changes_with_pit_risk_inputs():
     assert baseline_replay.snapshots[0].data_identity != changed_replay.snapshots[0].data_identity
 
 
+def test_stage_replay_rejects_alpha_not_available_at_decision_cutoff():
+    observation = replace(
+        _observation(),
+        available_at_ns=200,
+        annualized_volatility=0.20,
+        risk_regime="NORMAL",
+        frozen_regime_multiplier=1.0,
+        reference_price=100.0,
+    )
+
+    with pytest.raises(ValueError, match="availability must equal its decision cutoff"):
+        run_architecture_stage_replay(
+            (observation,),
+            stage=ArchitectureStage.A2,
+            fixed_notional=1_000.0,
+            symbol="BTCUSDT_PERP",
+            portfolio="arc",
+        )
+
+
 def test_stage_replay_reduce_only_never_increases_actual_filled_position():
     first = replace(
         _observation(alpha_id="alpha-100", cutoff_time_ns=100, raw_score=0.4),
@@ -676,6 +700,7 @@ def test_stage_replay_reduce_only_never_increases_actual_filled_position():
         first,
         alpha_id="alpha-200",
         cutoff_time_ns=200,
+        available_at_ns=200,
         frozen_confidence=0.8,
         reduce_only=True,
     )
@@ -707,6 +732,7 @@ def test_stage_replay_kill_flattens_without_reversal():
         first,
         alpha_id="alpha-200",
         cutoff_time_ns=200,
+        available_at_ns=200,
         raw_score=-0.4,
         safety_reasons=("KILL",),
     )
@@ -1278,6 +1304,7 @@ def test_replay_bridge_uses_confirmed_4h_rows_and_excludes_terminal_alpha():
             symbol="BTCUSDT_PERP",
             timeframe=Timeframe.TF_4H,
             cutoff_time_ns=cutoff,
+            available_at_ns=cutoff,
             formula_hash="formula-v1",
             indicator_version="pack.v1",
             alpha_config_hash="alpha-config-v1",
@@ -1297,6 +1324,7 @@ def test_replay_bridge_uses_confirmed_4h_rows_and_excludes_terminal_alpha():
             {
                 "alpha_id": "alpha-100",
                 "cutoff_time_ns": 100,
+                "available_at_ns": 100,
                 "regime": "TREND",
                 "raw_score": -0.4,
                 "frozen_confidence": 0.6,
@@ -1315,6 +1343,30 @@ def test_replay_bridge_uses_confirmed_4h_rows_and_excludes_terminal_alpha():
     assert not (prohibited_fields & set(batch["observations"][0]))
 
 
+def test_replay_collector_rejects_backdated_architecture_alpha():
+    runner = object.__new__(HistoricalBacktest)
+    runner._current_event_cutoff_ns = 200
+    runner._architecture_alphas = []
+    alpha = ArchitectureAlphaSnapshot(
+        alpha_id="alpha-100",
+        symbol="BTCUSDT_PERP",
+        timeframe=Timeframe.TF_4H,
+        cutoff_time_ns=100,
+        available_at_ns=100,
+        formula_hash="formula-v1",
+        indicator_version="pack.v1",
+        alpha_config_hash="alpha-config-v1",
+        raw_score=0.4,
+        confidence=0.6,
+        direction=1.0,
+        regime="TREND",
+        direction_plugin_names=("multi_momentum_signal",),
+    )
+
+    with pytest.raises(ValueError, match="backdated architecture alpha"):
+        runner._collect_architecture_alpha("strategy.architecture_alpha.4h.BTCUSDT_PERP", alpha)
+
+
 def test_replay_bridge_builds_complete_pit_stage_inputs_and_true_4h_labels():
     runner = object.__new__(HistoricalBacktest)
     runner._confirmed_four_hour_rows = [
@@ -1326,6 +1378,7 @@ def test_replay_bridge_builds_complete_pit_stage_inputs_and_true_4h_labels():
         symbol="BTCUSDT_PERP",
         timeframe=Timeframe.TF_4H,
         cutoff_time_ns=100,
+        available_at_ns=100,
         formula_hash="formula-v1",
         indicator_version="pack.v1",
         alpha_config_hash="alpha-config-v1",
@@ -1336,7 +1389,12 @@ def test_replay_bridge_builds_complete_pit_stage_inputs_and_true_4h_labels():
         direction_plugin_names=("multi_momentum_signal",),
     )
     runner._architecture_alphas = [
-        replace(alpha, alpha_id=f"alpha-{cutoff}", cutoff_time_ns=cutoff)
+        replace(
+            alpha,
+            alpha_id=f"alpha-{cutoff}",
+            cutoff_time_ns=cutoff,
+            available_at_ns=cutoff,
+        )
         for cutoff in (100, 200, 300, 400, 500, 600, 700)
     ]
     pack = replace(
@@ -1357,6 +1415,8 @@ def test_replay_bridge_builds_complete_pit_stage_inputs_and_true_4h_labels():
     )
 
     first = batch["observations"][0]
+    typed_first = observations_from_rows(batch["observations"])[0]
+    assert typed_first.available_at_ns == typed_first.cutoff_time_ns == 100
     assert first["annualized_volatility"] == pytest.approx(0.40)
     assert first["risk_regime"] == "TRADABLE"
     assert first["frozen_regime_multiplier"] == pytest.approx(1.0)
@@ -1369,7 +1429,7 @@ def test_replay_bridge_builds_complete_pit_stage_inputs_and_true_4h_labels():
     assert batch["missing_stage_input_count"] == 0
 
 
-def test_replay_bridge_excludes_bounded_terminal_cutoff_without_alpha():
+def test_replay_bridge_rejects_missing_alpha_even_when_label_is_terminal():
     runner = object.__new__(HistoricalBacktest)
     runner._confirmed_four_hour_rows = [
         {"close_time_ns": 100, "close": 100.0},
@@ -1381,6 +1441,7 @@ def test_replay_bridge_excludes_bounded_terminal_cutoff_without_alpha():
             symbol="BTCUSDT_PERP",
             timeframe=Timeframe.TF_4H,
             cutoff_time_ns=100,
+            available_at_ns=100,
             formula_hash="formula-v1",
             indicator_version="pack.v1",
             alpha_config_hash="alpha-config-v1",
@@ -1392,12 +1453,8 @@ def test_replay_bridge_excludes_bounded_terminal_cutoff_without_alpha():
         )
     ]
 
-    batch = runner.build_architecture_attribution_rows(horizon=1)
-
-    assert len(batch["observations"]) == 1
-    assert batch["alpha_snapshot_count"] == 1
-    assert batch["terminal_excluded_count"] == 1
-    assert batch["missing_alpha_count"] == 0
+    with pytest.raises(ValueError, match=r"missing_cutoffs=\[200\]"):
+        runner.build_architecture_attribution_rows(horizon=1)
 
 
 @pytest.mark.parametrize("failure", ["interior", "duplicate"])
@@ -1414,6 +1471,7 @@ def test_replay_bridge_fails_closed_before_terminal_exclusion_on_alpha_gaps(fail
         symbol="BTCUSDT_PERP",
         timeframe=Timeframe.TF_4H,
         cutoff_time_ns=100,
+        available_at_ns=100,
         formula_hash="formula-v1",
         indicator_version="pack.v1",
         alpha_config_hash="alpha-config-v1",
@@ -1423,11 +1481,11 @@ def test_replay_bridge_fails_closed_before_terminal_exclusion_on_alpha_gaps(fail
         regime="TREND",
         direction_plugin_names=("multi_momentum_signal",),
     )
-    terminal = replace(alpha, alpha_id="alpha-300", cutoff_time_ns=300)
+    terminal = replace(alpha, alpha_id="alpha-300", cutoff_time_ns=300, available_at_ns=300)
     runner._architecture_alphas = [alpha, terminal] if failure == "interior" else [alpha, alpha, terminal]
 
     pattern = (
-        r"unexplained evaluable alpha gaps.*missing_cutoffs=\[200\]"
+        r"requires one bar-close alpha.*missing_cutoffs=\[200\]"
         if failure == "interior"
         else r"confirmed=3 alpha=3.*duplicate_cutoffs=\[100\]"
     )
