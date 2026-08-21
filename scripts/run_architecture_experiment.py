@@ -164,6 +164,7 @@ def main() -> None:
                     alpha_snapshot_count=int(batch["alpha_snapshot_count"]),
                     missing_alpha_count=int(batch["missing_alpha_count"]),
                     terminal_excluded_count=int(batch["terminal_excluded_count"]),
+                    position_episodes=result.position_episodes,
                 )
             )
 

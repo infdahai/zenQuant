@@ -12,11 +12,15 @@ import json
 import math
 from collections import defaultdict
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from enum import StrEnum
 from pathlib import Path
 from types import MappingProxyType
 from typing import Any
+
+from zenquant.domain import PositionEpisode
+
+from .gate_v3 import evaluate_gate_v3
 
 ARCHITECTURE_ATTRIBUTION_SCHEMA_VERSION = "architecture_attribution.v1"
 DEFAULT_COST_STRESS_BPS = (0.0, 5.0, 15.0)
@@ -179,6 +183,7 @@ class ArchitectureRunEvidence:
     alpha_snapshot_count: int
     missing_alpha_count: int
     terminal_excluded_count: int
+    position_episodes: tuple[PositionEpisode, ...] = ()
 
 
 def stage_exposure(observation: ArchitectureObservation, stage: ArchitectureStage | str) -> float:
@@ -229,6 +234,21 @@ def build_architecture_attribution_report(
             }
             if not evidence.a0_metrics or not evidence.a0_config_hash:
                 raise ValueError(f"missing A0 identity in window={window.label!r} seed={seed}")
+            elapsed_days = max(1.0, (evidence.end_ns - evidence.start_ns) / 1_000_000_000 / 86_400)
+            gate_v3 = evaluate_gate_v3(
+                evidence.position_episodes,
+                elapsed_days=elapsed_days,
+                fill_profit_factor=evidence.a0_metrics.get("profit_factor"),
+                action_profit_factor=evidence.a0_metrics.get("action_profit_factor"),
+            )
+            a0_stage["gate_v3"] = gate_v3.to_dict()
+            a0_stage["position_episodes"] = [
+                asdict(episode)
+                for _, episode in sorted(
+                    enumerate(evidence.position_episodes),
+                    key=lambda item: (item[1].opened_at_ns, item[1].symbol, item[0]),
+                )
+            ]
             stages = {
                 ArchitectureStage.A0.value: a0_stage,
                 ArchitectureStage.A1_SIGN.value: _summarize_stage(

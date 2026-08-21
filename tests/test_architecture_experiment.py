@@ -16,6 +16,7 @@ from zenquant.domain import (
     IndicatorPack,
     MarketState,
     OpenPositionState,
+    PositionEpisode,
     Timeframe,
 )
 from zenquant.historical.replay import HistoricalBacktest
@@ -543,6 +544,70 @@ def test_a0_stage_preserves_actual_frozen_replay_metrics():
     assert a0["metrics"] == actual_metrics
     assert a0["final_equity"] == 123_450.0
     assert "attribution_rows" not in a0
+
+
+def _gate_episode(index: int, net_pnl: float) -> PositionEpisode:
+    return PositionEpisode(
+        episode_id=f"gate-{index}",
+        symbol="BTCUSDT_PERP",
+        side=1,
+        opened_at_ns=index * 10,
+        closed_at_ns=index * 10 + 1,
+        entry_price=100.0,
+        exit_price=100.0 + net_pnl,
+        max_abs_qty=1.0,
+        remaining_qty=0.0,
+        gross_realized_pnl=net_pnl,
+        fees=0.0,
+        funding_pnl=0.0,
+        net_pnl=net_pnl,
+        mfe_pnl=max(0.0, net_pnl),
+        mae_pnl=min(0.0, net_pnl),
+        unrealized_pnl=0.0,
+        fill_count=2,
+        closed=True,
+        reduce_count=1,
+        holding_duration_ns=1,
+    )
+
+
+def test_a0_report_operationally_gates_episode_pf_not_fill_or_action_pf():
+    passing = replace(
+        _complete_matrix()[0],
+        a0_metrics={
+            "profit_factor": 0.1,
+            "action_profit_factor": {"reduce": 0.2},
+        },
+        position_episodes=(_gate_episode(1, 5.0), _gate_episode(2, 1.0)),
+    )
+    failing = replace(
+        passing,
+        a0_metrics={
+            "profit_factor": 99.0,
+            "action_profit_factor": {"reduce": 99.0},
+        },
+        position_episodes=(_gate_episode(1, 4.0), _gate_episode(2, -5.0)),
+    )
+
+    passing_report = build_architecture_attribution_report(
+        _complete_matrix(replace_run=passing),
+        manifest=load_architecture_experiment_manifest(),
+        fixed_notional=100_000.0,
+    )
+    failing_report = build_architecture_attribution_report(
+        _complete_matrix(replace_run=failing),
+        manifest=load_architecture_experiment_manifest(),
+        fixed_notional=100_000.0,
+    )
+    passing_a0 = passing_report["runs"][0]["stages"]["A0"]
+    failing_a0 = failing_report["runs"][0]["stages"]["A0"]
+
+    assert passing_a0["gate_v3"]["hard_failed"] is False
+    assert passing_a0["gate_v3"]["diagnostics"]["fill_profit_factor"] == pytest.approx(0.1)
+    assert failing_a0["gate_v3"]["hard_failed"] is True
+    assert "episode_profit_factor_below_minimum" in failing_a0["gate_v3"]["hard_failures"]
+    assert passing_a0["position_episodes"][0]["reduce_count"] == 1
+    json.dumps(passing_report, sort_keys=True)
 
 
 def test_replay_bridge_uses_confirmed_4h_rows_and_excludes_terminal_alpha():

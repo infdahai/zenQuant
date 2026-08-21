@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import json
+from dataclasses import asdict
+
 import pytest
 
 from zenquant.domain import ExecutionReport
@@ -62,6 +65,9 @@ def test_episode_tracks_add_partial_reduction_exit_and_excursions() -> None:
     assert episode.funding_pnl == pytest.approx(0.0)
     assert episode.net_pnl == pytest.approx(36.0)
     assert episode.fill_count == 4
+    assert episode.add_count == 1
+    assert episode.reduce_count == 2
+    assert episode.holding_duration_ns == 4
 
 
 def test_flip_splits_at_zero_and_allocates_fee_proportionally() -> None:
@@ -77,6 +83,9 @@ def test_flip_splits_at_zero_and_allocates_fee_proportionally() -> None:
     assert closed_long.fees == pytest.approx(4.0)
     assert closed_long.net_pnl == pytest.approx(-24.0)
     assert closed_long.closed_at_ns == 2
+    assert closed_long.add_count == 0
+    assert closed_long.reduce_count == 1
+    assert closed_long.holding_duration_ns == 1
     assert open_short.side == -1
     assert open_short.entry_price == pytest.approx(90.0)
     assert open_short.remaining_qty == pytest.approx(1.0)
@@ -187,3 +196,29 @@ def test_exact_flatten_with_float_dust_does_not_open_phantom_flip() -> None:
 
     assert len(ledger.closed_episodes) == 1
     assert ledger.open_episodes == ()
+
+
+def test_ledger_counts_only_side_changes_across_flips_and_flat_reopens() -> None:
+    ledger = PositionEpisodeLedger()
+    ledger.on_fill(_fill(side=1, qty=1.0, price=100.0, fee=0.0, ts_ns=1))
+    ledger.on_fill(_fill(side=-1, qty=1.0, price=101.0, fee=0.0, ts_ns=2))
+    ledger.on_fill(_fill(side=1, qty=1.0, price=102.0, fee=0.0, ts_ns=3))
+    ledger.on_fill(_fill(side=-1, qty=2.0, price=103.0, fee=0.0, ts_ns=4))
+
+    assert [episode.side for episode in ledger.episodes] == [1, 1, -1]
+    assert ledger.position_switch_count == 1
+
+
+def test_episode_ledger_is_deterministically_json_serializable() -> None:
+    ledger = PositionEpisodeLedger()
+    ledger.on_fill(_fill(side=1, qty=1.0, price=100.0, fee=1.0, ts_ns=1))
+    ledger.on_fill(_fill(side=1, qty=1.0, price=105.0, fee=1.0, ts_ns=2))
+    ledger.on_fill(_fill(side=-1, qty=2.0, price=110.0, fee=2.0, ts_ns=3))
+
+    first = json.dumps([asdict(episode) for episode in ledger.episodes], sort_keys=True)
+    second = json.dumps([asdict(episode) for episode in ledger.episodes], sort_keys=True)
+
+    assert first == second
+    assert '"add_count": 1' in first
+    assert '"reduce_count": 1' in first
+    assert '"holding_duration_ns": 2' in first

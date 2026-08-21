@@ -54,16 +54,40 @@ class GateV3Result:
     def passed(self) -> bool:
         return not self.hard_failed
 
+    def to_dict(self) -> dict[str, Any]:
+        """Return a deterministic JSON-safe acceptance report."""
+        return {
+            "episode_profit_factor": {
+                "value": self.episode_profit_factor.value,
+                "status": self.episode_profit_factor.status.value,
+                "closed_episode_count": self.episode_profit_factor.closed_episode_count,
+                "gross_profit": self.episode_profit_factor.gross_profit,
+                "gross_loss": self.episode_profit_factor.gross_loss,
+            },
+            "cadence": {
+                "switches_per_day": self.cadence.switches_per_day,
+                "severity": self.cadence.severity.value,
+                "policy": self.cadence.policy,
+                "reason": self.cadence.reason,
+            },
+            "hard_failed": self.hard_failed,
+            "passed": self.passed,
+            "hard_failures": list(self.hard_failures),
+            "soft_flags": list(self.soft_flags),
+            "diagnostics": self.diagnostics,
+        }
+
 
 def calculate_episode_profit_factor(
     episodes: list[PositionEpisode] | tuple[PositionEpisode, ...],
     *,
-    min_closed_episodes: int = 1,
+    min_closed_episodes: int = 2,
 ) -> ProfitFactorResult:
     """Return nullable profit factor from net PnL of closed episodes only."""
     if min_closed_episodes < 1:
         raise ValueError("min_closed_episodes must be at least one")
     closed = [episode for episode in episodes if episode.closed]
+    positive_episode_count = sum(1 for episode in closed if episode.net_pnl > 0.0)
     gross_profit = sum(max(0.0, episode.net_pnl) for episode in closed)
     gross_loss = abs(sum(min(0.0, episode.net_pnl) for episode in closed))
     if len(closed) < min_closed_episodes:
@@ -74,7 +98,23 @@ def calculate_episode_profit_factor(
             gross_profit=gross_profit,
             gross_loss=gross_loss,
         )
+    if gross_profit == 0.0:
+        return ProfitFactorResult(
+            value=0.0,
+            status=ProfitFactorStatus.DEFINED,
+            closed_episode_count=len(closed),
+            gross_profit=0.0,
+            gross_loss=gross_loss,
+        )
     if gross_loss == 0.0:
+        if positive_episode_count < min_closed_episodes:
+            return ProfitFactorResult(
+                value=None,
+                status=ProfitFactorStatus.INSUFFICIENT_SAMPLE,
+                closed_episode_count=len(closed),
+                gross_profit=gross_profit,
+                gross_loss=0.0,
+            )
         return ProfitFactorResult(
             value=None,
             status=ProfitFactorStatus.NO_LOSS_EPISODES,
@@ -92,6 +132,28 @@ def calculate_episode_profit_factor(
 
 
 episode_profit_factor = calculate_episode_profit_factor
+
+
+def position_switch_count(episodes: list[PositionEpisode] | tuple[PositionEpisode, ...]) -> int:
+    """Count per-symbol side transitions across direct flips and flat gaps.
+
+    The first episode for a symbol is not a switch. Reopening the same side
+    after flat is not a switch; reopening the opposite side is one switch.
+    """
+    previous_side: dict[str, int] = {}
+    count = 0
+    ordered = sorted(
+        enumerate(episodes),
+        key=lambda item: (item[1].opened_at_ns, item[1].symbol, item[0]),
+    )
+    for _, episode in ordered:
+        if episode.side not in {-1, 1}:
+            raise ValueError("episode side must be -1 or 1")
+        prior = previous_side.get(episode.symbol)
+        if prior is not None and prior != episode.side:
+            count += 1
+        previous_side[episode.symbol] = episode.side
+    return count
 
 
 def evaluate_cadence(switches_per_day: float, *, policy: str = "normal") -> CadenceAssessment:
@@ -125,9 +187,10 @@ assess_cadence = evaluate_cadence
 def evaluate_gate_v3(
     episodes: list[PositionEpisode] | tuple[PositionEpisode, ...],
     *,
-    switches_per_day: float,
+    switches_per_day: float | None = None,
+    elapsed_days: float | None = None,
     min_episode_profit_factor: float = 1.0,
-    min_closed_episodes: int = 1,
+    min_closed_episodes: int = 2,
     policy: str = "normal",
     fill_profit_factor: float | None = None,
     action_profit_factor: dict[str, float] | None = None,
@@ -135,6 +198,11 @@ def evaluate_gate_v3(
     """Evaluate hard episode PF and cadence while retaining legacy diagnostics."""
     if min_episode_profit_factor < 0.0:
         raise ValueError("min_episode_profit_factor cannot be negative")
+    actual_switch_count = position_switch_count(episodes)
+    if switches_per_day is None:
+        if elapsed_days is None or elapsed_days <= 0.0:
+            raise ValueError("positive elapsed_days is required when switches_per_day is omitted")
+        switches_per_day = actual_switch_count / elapsed_days
     pf = calculate_episode_profit_factor(episodes, min_closed_episodes=min_closed_episodes)
     cadence = evaluate_cadence(switches_per_day, policy=policy)
     hard_failures: list[str] = []
@@ -161,5 +229,6 @@ def evaluate_gate_v3(
         diagnostics={
             "fill_profit_factor": fill_profit_factor,
             "action_profit_factor": dict(sorted((action_profit_factor or {}).items())),
+            "position_switch_count": actual_switch_count,
         },
     )

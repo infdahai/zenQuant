@@ -54,6 +54,7 @@ from zenquant.domain import (
     MarkPriceUpdate,
     OpenPositionState,
     PlaybookSelection,
+    PositionEpisode,
     RiskOverlayDecision,
     RiskSnapshot,
     SizingDecision,
@@ -164,6 +165,7 @@ class HistoricalBacktestResult:
     terminated_early: bool = False
     termination_reason: str | None = None
     processed_event_ratio: float = 1.0
+    position_episodes: tuple[PositionEpisode, ...] = ()
 
 
 @dataclass(slots=True)
@@ -465,6 +467,7 @@ class HistoricalBacktest:
             terminated_early=terminated_early,
             termination_reason=termination_reason,
             processed_event_ratio=(round(processed_events / max(1, len(events)), 6) if events else 1.0),
+            position_episodes=self._episode_ledger.episodes,
         )
 
     def _should_early_stop(
@@ -808,7 +811,8 @@ class HistoricalBacktest:
         closed_episodes = self._episode_ledger.closed_episodes
         open_episodes = self._episode_ledger.open_episodes
         episode_pf = calculate_episode_profit_factor(closed_episodes)
-        position_switches_per_day = (len(closed_episodes) + len(open_episodes)) / elapsed_days
+        position_switch_count = self._episode_ledger.position_switch_count
+        position_switches_per_day = position_switch_count / elapsed_days
         total_bars = sum(1 for item in events if item["event_timeframe"] == self._config.execution_timeframe.value)
         return BacktestMetrics(
             symbol=self._config.portfolio_symbol,
@@ -856,6 +860,7 @@ class HistoricalBacktest:
             episode_profit_factor_status=episode_pf.status.value,
             closed_episode_count=len(closed_episodes),
             open_episode_count=len(open_episodes),
+            position_switch_count=position_switch_count,
             position_switches_per_day=round(position_switches_per_day, 6),
         )
 

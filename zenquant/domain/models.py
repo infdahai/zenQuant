@@ -280,6 +280,9 @@ class PositionEpisode:
     unrealized_pnl: float
     fill_count: int
     closed: bool
+    add_count: int = 0
+    reduce_count: int = 0
+    holding_duration_ns: int = 0
 
 
 # ---------------------------------------------------------------------------
@@ -556,6 +559,7 @@ class BacktestMetrics:
     episode_profit_factor_status: str = "INSUFFICIENT_SAMPLE"
     closed_episode_count: int = 0
     open_episode_count: int = 0
+    position_switch_count: int = 0
     position_switches_per_day: float = 0.0
 
 

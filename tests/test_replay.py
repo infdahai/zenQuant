@@ -1,4 +1,6 @@
+import json
 import unittest
+from dataclasses import asdict
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from types import SimpleNamespace
@@ -502,6 +504,9 @@ class ReplayTests(unittest.TestCase):
                 )
             )
             second = second_bt.run()
+
+            self.assertEqual(first.position_episodes, second.position_episodes)
+            json.dumps([asdict(episode) for episode in first.position_episodes], sort_keys=True)
 
             first_pack = [p for p in first_bt._indicators if p.timeframe == Timeframe.TF_4H][-1]
             second_pack = [p for p in second_bt._indicators if p.timeframe == Timeframe.TF_4H][-1]

@@ -45,6 +45,9 @@ class _EpisodeState:
     mae_pnl: float = 0.0
     unrealized_pnl: float = 0.0
     fill_count: int = 1
+    add_count: int = 0
+    reduce_count: int = 0
+    last_event_ns: int = 0
     exit_qty: float = 0.0
     exit_notional: float = 0.0
 
@@ -70,6 +73,9 @@ class _EpisodeState:
             unrealized_pnl=0.0 if closed else self.unrealized_pnl,
             fill_count=self.fill_count,
             closed=closed,
+            add_count=self.add_count,
+            reduce_count=self.reduce_count,
+            holding_duration_ns=max(0, (closed_at_ns or self.last_event_ns) - self.opened_at_ns),
         )
 
 
@@ -81,6 +87,8 @@ class PositionEpisodeLedger:
         self._closed: list[PositionEpisode] = []
         self._last_timestamp_ns: dict[str, int] = {}
         self._episode_sequences: dict[str, int] = {}
+        self._previous_episode_side: dict[str, int] = {}
+        self._position_switch_count = 0
 
     @property
     def closed_episodes(self) -> tuple[PositionEpisode, ...]:
@@ -93,6 +101,11 @@ class PositionEpisodeLedger:
     @property
     def episodes(self) -> tuple[PositionEpisode, ...]:
         return tuple(sorted((*self._closed, *self.open_episodes), key=lambda item: (item.opened_at_ns, item.symbol)))
+
+    @property
+    def position_switch_count(self) -> int:
+        """Count side changes, including opposite-side reopens after flat gaps."""
+        return self._position_switch_count
 
     def position_qty(self, symbol: str) -> float:
         state = self._open.get(symbol)
@@ -118,6 +131,7 @@ class PositionEpisodeLedger:
             return
 
         self._observe_state(state, high=report.avg_price, low=report.avg_price, close=report.avg_price)
+        state.last_event_ns = report.transaction_time_ns
         if state.side == report.side:
             previous_qty = state.remaining_qty
             next_qty = previous_qty + report.filled_qty
@@ -126,6 +140,7 @@ class PositionEpisodeLedger:
             state.max_abs_qty = max(state.max_abs_qty, next_qty)
             state.fees += report.fee
             state.fill_count += 1
+            state.add_count += 1
             return
 
         close_qty = min(state.remaining_qty, report.filled_qty)
@@ -137,6 +152,7 @@ class PositionEpisodeLedger:
             close_fee = report.fee * (close_qty / report.filled_qty)
         self._reduce_state(state, qty=close_qty, price=report.avg_price, fee=close_fee)
         state.fill_count += 1
+        state.reduce_count += 1
         if state.remaining_qty > 0.0:
             return
 
@@ -158,6 +174,7 @@ class PositionEpisodeLedger:
         state = self._open.get(allocation.symbol)
         if state is not None:
             state.funding_pnl += allocation.pnl
+            state.last_event_ns = allocation.timestamp_ns
 
     on_funding = allocate_funding
 
@@ -176,6 +193,7 @@ class PositionEpisodeLedger:
                 low=observation.low,
                 close=observation.close,
             )
+            state.last_event_ns = observation.timestamp_ns
 
     def _new_episode(
         self,
@@ -189,6 +207,10 @@ class PositionEpisodeLedger:
     ) -> _EpisodeState:
         sequence = self._episode_sequences.get(symbol, 0) + 1
         self._episode_sequences[symbol] = sequence
+        previous_side = self._previous_episode_side.get(symbol)
+        if previous_side is not None and previous_side != side:
+            self._position_switch_count += 1
+        self._previous_episode_side[symbol] = side
         identity = f"{symbol}|{timestamp_ns}|{side}|{sequence}"
         return _EpisodeState(
             episode_id=sha256(identity.encode("utf-8")).hexdigest(),
@@ -199,6 +221,7 @@ class PositionEpisodeLedger:
             remaining_qty=qty,
             max_abs_qty=qty,
             fees=fee,
+            last_event_ns=timestamp_ns,
         )
 
     @staticmethod

@@ -13,14 +13,15 @@ from zenquant.research.gate_v3 import (
     calculate_episode_profit_factor,
     evaluate_cadence,
     evaluate_gate_v3,
+    position_switch_count,
 )
 
 
-def _episode(index: int, net_pnl: float) -> PositionEpisode:
+def _episode(index: int, net_pnl: float, *, side: int = 1) -> PositionEpisode:
     return PositionEpisode(
         episode_id=f"episode-{index}",
         symbol="BTCUSDT",
-        side=1,
+        side=side,
         opened_at_ns=index * 10,
         closed_at_ns=index * 10 + 1,
         entry_price=100.0,
@@ -89,6 +90,52 @@ def test_more_than_five_switches_per_day_is_hard_under_every_policy(policy: str)
     assert evaluate_cadence(5.000001, policy=policy).severity is GateSeverity.HARD
 
 
+def test_position_switch_count_ignores_same_side_flat_reopen_and_counts_opposite_reopen() -> None:
+    episodes = [
+        _episode(1, 1.0, side=1),
+        _episode(2, 1.0, side=1),
+        _episode(3, 1.0, side=-1),
+        _episode(4, 1.0, side=-1),
+        _episode(5, 1.0, side=1),
+    ]
+
+    assert position_switch_count(episodes) == 2
+
+
+def test_position_switch_count_preserves_input_order_for_same_timestamp_flips() -> None:
+    episodes = [
+        replace(_episode(1, 1.0, side=1), episode_id="z", opened_at_ns=10),
+        replace(_episode(2, 1.0, side=-1), episode_id="a", opened_at_ns=10),
+        replace(_episode(3, 1.0, side=1), episode_id="m", opened_at_ns=10),
+    ]
+
+    assert position_switch_count(episodes) == 2
+
+
+@pytest.mark.parametrize(
+    ("sides", "expected_switches", "expected_severity"),
+    [
+        ((1, 1), 0, GateSeverity.NONE),
+        ((1, -1), 1, GateSeverity.NONE),
+        ((1, -1, 1), 2, GateSeverity.SOFT),
+        ((1, -1, 1, -1), 3, GateSeverity.HARD),
+        ((1, -1, 1, -1, 1, -1, 1), 6, GateSeverity.HARD),
+    ],
+)
+def test_gate_v3_cadence_uses_real_episode_side_transitions(
+    sides: tuple[int, ...],
+    expected_switches: int,
+    expected_severity: GateSeverity,
+) -> None:
+    episodes = [_episode(index, 1.0, side=side) for index, side in enumerate(sides, start=1)]
+
+    verdict = evaluate_gate_v3(episodes, elapsed_days=1.0)
+
+    assert verdict.diagnostics["position_switch_count"] == expected_switches
+    assert verdict.cadence.switches_per_day == pytest.approx(float(expected_switches))
+    assert verdict.cadence.severity is expected_severity
+
+
 def test_gate_v3_uses_episode_pf_and_keeps_fill_pf_diagnostic_only() -> None:
     episodes = [_episode(1, 10.0), _episode(2, -5.0)]
 
@@ -112,12 +159,36 @@ def test_gate_v3_uses_episode_pf_and_keeps_fill_pf_diagnostic_only() -> None:
     assert "episode_profit_factor_below_minimum" in failing.hard_failures
 
 
-def test_gate_v3_distinguishes_no_losses_from_insufficient_sample() -> None:
-    no_losses = evaluate_gate_v3([_episode(1, 5.0)], switches_per_day=0.0)
-    insufficient = evaluate_gate_v3([], switches_per_day=0.0)
+def test_gate_v3_requires_two_closed_episodes_before_no_loss_pass() -> None:
+    one_positive = evaluate_gate_v3([_episode(1, 5.0)], switches_per_day=0.0)
+    one_positive_one_flat = evaluate_gate_v3(
+        [_episode(1, 5.0), _episode(2, 0.0)],
+        switches_per_day=0.0,
+    )
+    no_losses = evaluate_gate_v3([_episode(1, 5.0), _episode(2, 1.0)], switches_per_day=0.0)
 
+    assert one_positive.hard_failed is True
+    assert one_positive.episode_profit_factor.status is ProfitFactorStatus.INSUFFICIENT_SAMPLE
+    assert "episode_profit_factor_insufficient_sample" in one_positive.hard_failures
+    assert one_positive_one_flat.hard_failed is True
+    assert one_positive_one_flat.episode_profit_factor.status is ProfitFactorStatus.INSUFFICIENT_SAMPLE
     assert no_losses.hard_failed is False
     assert no_losses.episode_profit_factor.status is ProfitFactorStatus.NO_LOSS_EPISODES
+
+
+def test_zero_only_closed_sample_reports_defined_zero_profit_factor() -> None:
+    result = calculate_episode_profit_factor([_episode(1, 0.0), _episode(2, 0.0)])
+    verdict = evaluate_gate_v3([_episode(1, 0.0), _episode(2, 0.0)], switches_per_day=0.0)
+
+    assert result.status is ProfitFactorStatus.DEFINED
+    assert result.value == pytest.approx(0.0)
+    assert verdict.hard_failed is True
+    assert "episode_profit_factor_below_minimum" in verdict.hard_failures
+
+
+def test_gate_v3_reports_empty_sample_as_insufficient() -> None:
+    insufficient = evaluate_gate_v3([], switches_per_day=0.0)
+
     assert insufficient.hard_failed is True
     assert "episode_profit_factor_insufficient_sample" in insufficient.hard_failures
 
@@ -158,4 +229,5 @@ def test_replay_exposes_episode_pf_without_replacing_fill_pf_diagnostic() -> Non
     assert metrics.episode_profit_factor_status == "DEFINED"
     assert metrics.closed_episode_count == 2
     assert metrics.open_episode_count == 0
-    assert metrics.position_switches_per_day == pytest.approx(2.0)
+    assert metrics.position_switch_count == 0
+    assert metrics.position_switches_per_day == pytest.approx(0.0)
