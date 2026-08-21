@@ -333,6 +333,10 @@ class HistoricalBacktest:
         self._execution_rows: list[dict[str, Any]] = []
         self._confirmed_four_hour_rows: list[dict[str, Any]] = []
         self._trade_ledger = _TradeLedger()
+        from zenquant.research.episode_ledger import PositionEpisodeLedger
+
+        self._episode_ledger = PositionEpisodeLedger()
+        self._episode_funding_time_ns = 0
         self._funding_accumulator = _FundingAccumulator()
         self._funding_rows: list[dict[str, Any]] = []
         self._open_interest_rows: list[dict[str, Any]] = []
@@ -586,6 +590,8 @@ class HistoricalBacktest:
             stream_seq=cutoff_ns,
         )
         last_price = float(row["close"])
+        if timeframe == self._config.execution_timeframe:
+            self._update_episode_market_accounting(row, funding_row)
         if timeframe == Timeframe.TF_4H:
             self._confirmed_four_hour_rows.append(dict(row))
 
@@ -675,6 +681,39 @@ class HistoricalBacktest:
             return None
         return self._funding_rows[self._funding_index]
 
+    def _update_episode_market_accounting(
+        self,
+        row: dict[str, Any],
+        funding_row: dict[str, Any] | None,
+    ) -> None:
+        """Accrue funding and excursions before any close-triggered fill."""
+        from zenquant.research.episode_ledger import FundingAllocation, PriceObservation
+
+        symbol = self._config.portfolio_symbol
+        close_price = float(row["close"])
+        if funding_row is not None:
+            funding_time_ns = int(funding_row.get("funding_time_ns", row["close_time_ns"]))
+            if funding_time_ns > self._episode_funding_time_ns:
+                position_qty = self._episode_ledger.position_qty(symbol)
+                funding_cost = position_qty * close_price * float(funding_row.get("funding_rate", 0.0))
+                self._episode_ledger.allocate_funding(
+                    FundingAllocation(
+                        symbol=symbol,
+                        timestamp_ns=funding_time_ns,
+                        pnl=-funding_cost,
+                    )
+                )
+                self._episode_funding_time_ns = funding_time_ns
+        self._episode_ledger.observe_price(
+            PriceObservation(
+                symbol=symbol,
+                timestamp_ns=int(row["close_time_ns"]),
+                high=float(row["high"]),
+                low=float(row["low"]),
+                close=close_price,
+            )
+        )
+
     def _latest_open_interest(self, cutoff_ns: int) -> dict[str, Any] | None:
         while (
             self._open_interest_index + 1 < len(self._open_interest_rows)
@@ -729,6 +768,7 @@ class HistoricalBacktest:
         if isinstance(payload, ExecutionReport):
             self._reports.append(payload)
             self._trade_ledger.on_execution_report(payload)
+            self._episode_ledger.on_fill(payload)
 
     def _collect_risk_snapshot(self, _: str, payload: object) -> None:
         if isinstance(payload, RiskSnapshot):

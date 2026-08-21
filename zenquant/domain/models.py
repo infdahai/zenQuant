@@ -258,6 +258,30 @@ class ExecutionReport:
     reject_reason: str = ""
 
 
+@dataclass(slots=True, frozen=True)
+class PositionEpisode:
+    """Deterministic flat-to-flat (or flip-to-zero) position record."""
+
+    episode_id: str
+    symbol: str
+    side: int
+    opened_at_ns: int
+    closed_at_ns: int | None
+    entry_price: float
+    exit_price: float | None
+    max_abs_qty: float
+    remaining_qty: float
+    gross_realized_pnl: float
+    fees: float
+    funding_pnl: float
+    net_pnl: float
+    mfe_pnl: float
+    mae_pnl: float
+    unrealized_pnl: float
+    fill_count: int
+    closed: bool
+
+
 # ---------------------------------------------------------------------------
 # Phase 2 domain types
 # ---------------------------------------------------------------------------
@@ -528,6 +552,11 @@ class BacktestMetrics:
     action_realized_counts: dict[str, int] = field(default_factory=dict)
     action_realized_pnl: dict[str, float] = field(default_factory=dict)
     action_profit_factor: dict[str, float] = field(default_factory=dict)
+    episode_profit_factor: float | None = None
+    episode_profit_factor_status: str = "INSUFFICIENT_SAMPLE"
+    closed_episode_count: int = 0
+    open_episode_count: int = 0
+    position_switches_per_day: float = 0.0
 
 
 @dataclass(slots=True)
