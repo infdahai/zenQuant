@@ -42,6 +42,7 @@ from zenquant.domain import (
     BacktestMetrics,
     BarCloseEvent,
     Candle,
+    DecisionSnapshot,
     DirectionalBias,
     EventMeta,
     ExecutionReport,
@@ -323,6 +324,7 @@ class HistoricalBacktest:
         self._exits: list[ExitDecision] = []
         self._position_states: list[OpenPositionState] = []
         self._targets: list[TargetPosition] = []
+        self._decision_snapshots: list[DecisionSnapshot] = []
         self._reports: list[ExecutionReport] = []
         self._risk_decisions: list[RiskOverlayDecision] = []
         self._risk_snapshots: list[RiskSnapshot] = []
@@ -342,6 +344,7 @@ class HistoricalBacktest:
             self.bus.subscribe("strategy.sizing.>", self._collect_sizing)
             self.bus.subscribe("strategy.exit.>", self._collect_exit)
             self.bus.subscribe("strategy.position_state.>", self._collect_position_state)
+            self.bus.subscribe("strategy.decision_snapshot.4h.>", self._collect_decision_snapshot)
             self.bus.subscribe("risk.overlay.decision", self._collect_risk_decision)
             self.bus.subscribe("intent.target_position.final.>", self._collect_target)
         self.bus.subscribe("exec.order.report", self._collect_report)
@@ -683,6 +686,10 @@ class HistoricalBacktest:
     def _collect_target(self, _: str, payload: object) -> None:
         if isinstance(payload, TargetPosition):
             self._targets.append(payload)
+
+    def _collect_decision_snapshot(self, _: str, payload: object) -> None:
+        if isinstance(payload, DecisionSnapshot):
+            self._decision_snapshots.append(payload)
 
     def _collect_market_state(self, _: str, payload: object) -> None:
         if isinstance(payload, MarketState):
@@ -1052,6 +1059,49 @@ class HistoricalBacktest:
                 )
 
             rows.append(row)
+        return rows
+
+    def build_architecture_attribution_rows(
+        self,
+        *,
+        window: str,
+        seed: int,
+        fixed_notional: float,
+        horizon: int = 1,
+    ) -> list[dict[str, Any]]:
+        """Expose only the frozen fields permitted by the A0/A1 experiment."""
+        if not math.isfinite(fixed_notional) or fixed_notional <= 0.0:
+            raise ValueError("fixed_notional must be positive and finite")
+        if horizon <= 0:
+            raise ValueError("horizon must be positive")
+
+        execution_rows = sorted(self._execution_rows, key=lambda row: int(row["close_time_ns"]))
+        snapshots = {
+            snapshot.cutoff_time_ns: snapshot
+            for snapshot in self._decision_snapshots
+            if snapshot.timeframe == Timeframe.TF_4H
+        }
+        rows: list[dict[str, Any]] = []
+        for index, event_row in enumerate(execution_rows):
+            cutoff_time_ns = int(event_row["close_time_ns"])
+            snapshot = snapshots.get(cutoff_time_ns)
+            if snapshot is None:
+                continue
+            target_direction = 1.0 if snapshot.target_qty > 0.0 else -1.0 if snapshot.target_qty < 0.0 else 0.0
+            baseline_exposure = target_direction * min(abs(snapshot.target_leverage), 1.0)
+            rows.append(
+                {
+                    "decision_id": snapshot.decision_id,
+                    "cutoff_time_ns": cutoff_time_ns,
+                    "window": window,
+                    "seed": seed,
+                    "regime": snapshot.regime,
+                    "baseline_exposure": baseline_exposure,
+                    "raw_score": snapshot.alpha_raw_score,
+                    "frozen_confidence": snapshot.alpha_confidence,
+                    "forward_return": _forward_return(execution_rows, index, horizon),
+                }
+            )
         return rows
 
 
