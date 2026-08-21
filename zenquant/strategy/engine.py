@@ -10,6 +10,7 @@ from math import ceil
 from typing import Any
 
 from zenquant.domain import (
+    ArchitectureAlphaSnapshot,
     DirectionalBias,
     ExecutionReport,
     ExitDecision,
@@ -136,6 +137,7 @@ class ARCStrategyConfig:
     intent_range_bear_profit_run_confidence_floor: float = 0.50
     intent_range_bear_profit_run_max_transition_risk: float = 0.65
     emit_decision_snapshots_v2: bool = False
+    emit_architecture_alpha_snapshots_v2: bool = False
 
 
 class ARCStrategyEngine:
@@ -287,6 +289,9 @@ class ARCStrategyEngine:
             f"strategy.playbook.{state.timeframe.value}.{state.symbol}",
             playbook,
         )
+        pack = self._latest_packs.get((state.symbol, state.timeframe))
+        if pack is not None:
+            self._publish_architecture_alpha_if_enabled(pack, state)
         if state.timeframe == Timeframe.TF_1D:
             self._update_directional_bias(state)
             return
@@ -370,6 +375,79 @@ class ARCStrategyEngine:
         )
         self._bus.publish(f"intent.target_position.{self._config.portfolio}.{target.symbol}", target)
         self._bus.publish(f"intent.reason.{self._config.portfolio}", reason)
+
+    def _publish_architecture_alpha_if_enabled(self, pack: IndicatorPack, state: MarketState) -> None:
+        """Publish a pure market alpha before position, exit, or execution logic."""
+        if (
+            not self._config.emit_architecture_alpha_snapshots_v2
+            or state.timeframe != Timeframe.TF_4H
+            or self._plugins is None
+        ):
+            return
+
+        direction_plugins = sorted(
+            (plugin for plugin in self._plugins.signals if plugin.role == "direction"),
+            key=lambda plugin: plugin.meta.name,
+        )
+        if not direction_plugins:
+            return
+        direction_plugin_names = tuple(plugin.meta.name for plugin in direction_plugins)
+        weights = {plugin.meta.name: self._plugins.signal_weights[plugin.meta.name] for plugin in direction_plugins}
+        pure_market_state = {
+            "regime": state.regime,
+            "directional_state": state.directional_state,
+            "volatility_state": state.volatility_state,
+            "positioning_state": state.positioning_state,
+            "quality_state": state.quality_state,
+            "direction_signal": state.direction_signal,
+            "overall_confidence": state.overall_confidence(),
+            "directional_confidence": state.directional_confidence,
+            "volatility_confidence": state.volatility_confidence,
+            "positioning_confidence": state.positioning_confidence,
+            "quality_confidence": state.quality_confidence,
+            "transition_risk": state.transition_risk,
+            "timeframe": state.timeframe.value,
+        }
+        composed = compose_signals(direction_plugins, weights, dict(pack.values), pure_market_state)
+        alpha_contract = {
+            "plugins": [
+                {
+                    "name": plugin.meta.name,
+                    "version": plugin.meta.version,
+                    "config": to_jsonable(plugin.config),
+                    "weight": weights[plugin.meta.name],
+                }
+                for plugin in direction_plugins
+            ],
+            "timeframe": Timeframe.TF_4H.value,
+        }
+        alpha_config_hash = f"sha256:{hashlib.sha256(json.dumps(alpha_contract, sort_keys=True, separators=(',', ':')).encode()).hexdigest()}"
+        raw_score = float(composed.direction)
+        alpha_identity = {
+            "symbol": pack.symbol,
+            "cutoff_time_ns": pack.cutoff_time_ns,
+            "formula_hash": pack.formula_hash,
+            "alpha_config_hash": alpha_config_hash,
+            "raw_score": raw_score,
+            "confidence": float(composed.confidence),
+            "regime": state.regime,
+        }
+        alpha_id = f"sha256:{hashlib.sha256(json.dumps(alpha_identity, sort_keys=True, separators=(',', ':')).encode()).hexdigest()}"
+        snapshot = ArchitectureAlphaSnapshot(
+            alpha_id=alpha_id,
+            symbol=pack.symbol,
+            timeframe=pack.timeframe,
+            cutoff_time_ns=pack.cutoff_time_ns,
+            formula_hash=pack.formula_hash,
+            indicator_version=pack.indicator_version,
+            alpha_config_hash=alpha_config_hash,
+            raw_score=raw_score,
+            confidence=float(composed.confidence),
+            direction=1.0 if raw_score > 0 else (-1.0 if raw_score < 0 else 0.0),
+            regime=state.regime,
+            direction_plugin_names=direction_plugin_names,
+        )
+        self._bus.publish(f"strategy.architecture_alpha.4h.{pack.symbol}", snapshot)
 
     def _update_directional_bias(self, state: MarketState) -> None:
         """Compute and store 1d directional bias for multi-timeframe coordination."""

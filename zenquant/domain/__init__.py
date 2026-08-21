@@ -1,4 +1,5 @@
 from .models import (
+    ArchitectureAlphaSnapshot,
     BacktestCycleContext,
     BacktestDiagnostics,
     BacktestMetrics,
@@ -34,6 +35,7 @@ from .models import (
 )
 
 __all__ = [
+    "ArchitectureAlphaSnapshot",
     "BacktestCycleContext",
     "BacktestDiagnostics",
     "BacktestMetrics",

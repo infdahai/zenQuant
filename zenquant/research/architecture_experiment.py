@@ -7,14 +7,125 @@ attributes one-bar returns to three frozen exposure transforms only.
 
 from __future__ import annotations
 
+import hashlib
+import json
 import math
 from collections import defaultdict
 from dataclasses import dataclass
 from enum import StrEnum
+from pathlib import Path
 from typing import Any
 
 ARCHITECTURE_ATTRIBUTION_SCHEMA_VERSION = "architecture_attribution.v1"
 DEFAULT_COST_STRESS_BPS = (0.0, 5.0, 15.0)
+DEFAULT_ARCHITECTURE_MANIFEST_PATH = Path("config/research/architecture_experiment_v1.json")
+ARCHITECTURE_EXPERIMENT_V1_MANIFEST_SHA256 = "c982d074b24ec21235dfefbd972d936dc4f5a4ab0360964013576c90729bfbe0"
+
+
+@dataclass(frozen=True, slots=True)
+class ArchitectureWindow:
+    label: str
+    start_ns: int
+    end_ns: int
+
+
+@dataclass(frozen=True, slots=True)
+class ArchitectureExperimentManifest:
+    version: str
+    sha256: str
+    candidate_id: str
+    candidate_source_path: str
+    candidate_source_json_path: str
+    candidate_source_sha256: str
+    candidate_params_sha256: str
+    candidate_params: dict[str, Any]
+    profile_path: str
+    profile_sha256: str
+    symbol: str
+    portfolio_symbol: str
+    alpha_timeframe: str
+    alpha_horizon_bars: int
+    alpha_label: str
+    alpha_signal_roles: tuple[str, ...]
+    a0_execution_timeframe: str
+    a0_context_timeframe: str
+    a0_direction_timeframe: str
+    a0_bias_timeframe: str
+    windows: tuple[ArchitectureWindow, ...]
+    seeds: tuple[int, ...]
+    perturbation: dict[str, float]
+    cost_stress_bps: tuple[float, ...]
+
+    @property
+    def expected_run_keys(self) -> tuple[tuple[str, int], ...]:
+        return tuple((window.label, seed) for window in self.windows for seed in self.seeds)
+
+
+def load_architecture_experiment_manifest(
+    path: Path = DEFAULT_ARCHITECTURE_MANIFEST_PATH,
+) -> ArchitectureExperimentManifest:
+    """Load the immutable V1 experiment manifest and reject any drift."""
+    resolved_path = path
+    if path == DEFAULT_ARCHITECTURE_MANIFEST_PATH and not path.exists():
+        resolved_path = Path(__file__).parents[2] / path
+    raw = resolved_path.read_bytes()
+    digest = hashlib.sha256(raw).hexdigest()
+    if digest != ARCHITECTURE_EXPERIMENT_V1_MANIFEST_SHA256:
+        raise ValueError(
+            "architecture experiment manifest SHA-256 mismatch: "
+            f"expected {ARCHITECTURE_EXPERIMENT_V1_MANIFEST_SHA256}, got {digest}"
+        )
+    payload = json.loads(raw)
+    candidate = payload["candidate"]
+    params = dict(candidate["params"])
+    params_digest = hashlib.sha256(
+        json.dumps(params, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+    if params_digest != candidate["params_sha256"]:
+        raise ValueError("architecture experiment candidate params SHA-256 mismatch")
+    profile = payload["profile"]
+    repository_root = Path(__file__).parents[2]
+    profile_path = repository_root / str(profile["path"])
+    profile_digest = hashlib.sha256(profile_path.read_bytes()).hexdigest()
+    if profile_digest != profile["sha256"]:
+        raise ValueError(
+            f"architecture experiment profile SHA-256 mismatch: expected {profile['sha256']}, got {profile_digest}"
+        )
+    alpha = payload["alpha"]
+    execution = payload["a0_execution_contract"]
+    return ArchitectureExperimentManifest(
+        version=str(payload["version"]),
+        sha256=digest,
+        candidate_id=str(candidate["id"]),
+        candidate_source_path=str(candidate["source_path"]),
+        candidate_source_json_path=str(candidate["source_json_path"]),
+        candidate_source_sha256=str(candidate["source_sha256"]),
+        candidate_params_sha256=str(candidate["params_sha256"]),
+        candidate_params=params,
+        profile_path=str(profile["path"]),
+        profile_sha256=str(profile["sha256"]),
+        symbol=str(payload["symbol"]),
+        portfolio_symbol=str(payload["portfolio_symbol"]),
+        alpha_timeframe=str(alpha["timeframe"]),
+        alpha_horizon_bars=int(alpha["horizon_bars"]),
+        alpha_label=str(alpha["label"]),
+        alpha_signal_roles=tuple(str(role) for role in alpha["signal_roles"]),
+        a0_execution_timeframe=str(execution["execution_timeframe"]),
+        a0_context_timeframe=str(execution["context_timeframe"]),
+        a0_direction_timeframe=str(execution["direction_timeframe"]),
+        a0_bias_timeframe=str(execution["bias_timeframe"]),
+        windows=tuple(
+            ArchitectureWindow(
+                label=str(window["label"]),
+                start_ns=int(window["start_ns"]),
+                end_ns=int(window["end_ns"]),
+            )
+            for window in payload["windows"]
+        ),
+        seeds=tuple(int(seed) for seed in payload["seeds"]),
+        perturbation={key: float(value) for key, value in payload["perturbation"].items()},
+        cost_stress_bps=tuple(float(value) for value in payload["cost_stress_bps"]),
+    )
 
 
 class ArchitectureStage(StrEnum):
@@ -27,27 +138,39 @@ class ArchitectureStage(StrEnum):
 
 @dataclass(frozen=True, slots=True)
 class ArchitectureObservation:
-    """Minimal point-in-time input accepted by the attribution experiment."""
+    """One evaluable point-in-time 4h alpha and its next retained 4h return."""
 
-    decision_id: str
+    alpha_id: str
     cutoff_time_ns: int
-    window: str
-    seed: int
     regime: str
-    baseline_exposure: float
     raw_score: float
     frozen_confidence: float
-    forward_return: float | None
+    forward_return: float
+    formula_hash: str
+    alpha_config_hash: str
+
+
+@dataclass(frozen=True, slots=True)
+class ArchitectureRunEvidence:
+    """Complete A0 replay result and A1 causal rows for one frozen run."""
+
+    window: str
+    start_ns: int
+    end_ns: int
+    seed: int
+    a0_metrics: dict[str, Any]
+    a0_final_equity: float
+    a0_config_hash: str
+    observations: tuple[ArchitectureObservation, ...]
+    excluded_non_evaluable_count: int
+    confirmed_4h_row_count: int
 
 
 def stage_exposure(observation: ArchitectureObservation, stage: ArchitectureStage | str) -> float:
     """Return one pure stage exposure, bounded by the fixed 1x contract."""
     resolved_stage = ArchitectureStage(stage)
     if resolved_stage == ArchitectureStage.A0:
-        exposure = _finite_float(observation.baseline_exposure, name="baseline_exposure")
-        if abs(exposure) > 1.0:
-            raise ValueError("baseline_exposure must remain within the fixed 1x contract")
-        return exposure
+        raise ValueError("A0 is represented by actual frozen replay metrics, not an exposure transform")
 
     raw_score = _finite_float(observation.raw_score, name="raw_score")
     direction = 1.0 if raw_score > 0.0 else -1.0 if raw_score < 0.0 else 0.0
@@ -61,44 +184,100 @@ def stage_exposure(observation: ArchitectureObservation, stage: ArchitectureStag
 
 
 def build_architecture_attribution_report(
-    observations: list[ArchitectureObservation],
+    run_evidence: list[ArchitectureRunEvidence],
     *,
+    manifest: ArchitectureExperimentManifest,
     fixed_notional: float,
-    cost_stress_bps: tuple[float, ...] = DEFAULT_COST_STRESS_BPS,
 ) -> dict[str, Any]:
-    """Aggregate deterministic per-window/per-seed A0/A1 attribution."""
+    """Validate and aggregate the complete immutable window-by-seed matrix."""
     notional = _finite_float(fixed_notional, name="fixed_notional")
     if notional <= 0.0:
         raise ValueError("fixed_notional must be positive")
-    costs = _normalize_cost_stress(cost_stress_bps)
-
-    grouped: defaultdict[tuple[str, int], list[ArchitectureObservation]] = defaultdict(list)
-    for observation in observations:
-        grouped[(observation.window, observation.seed)].append(observation)
+    costs = _normalize_cost_stress(manifest.cost_stress_bps)
+    indexed = _validate_run_matrix(run_evidence, manifest=manifest)
 
     runs: list[dict[str, Any]] = []
-    for (window, seed), group in sorted(grouped.items()):
-        ordered = sorted(group, key=lambda item: (item.cutoff_time_ns, item.decision_id))
-        _reject_duplicate_cutoffs(ordered, window=window, seed=seed)
-        runs.append(
-            {
-                "window": window,
-                "seed": seed,
-                "stages": {
-                    stage.value: _summarize_stage(
-                        ordered,
-                        stage=stage,
-                        fixed_notional=notional,
-                        cost_stress_bps=costs,
-                    )
-                    for stage in ArchitectureStage
-                },
+    for window in manifest.windows:
+        for seed in manifest.seeds:
+            evidence = indexed[(window.label, seed)]
+            ordered = sorted(evidence.observations, key=lambda item: (item.cutoff_time_ns, item.alpha_id))
+            _reject_duplicate_cutoffs(ordered, window=window.label, seed=seed)
+            formula_hashes = sorted({item.formula_hash for item in ordered})
+            alpha_config_hashes = sorted({item.alpha_config_hash for item in ordered})
+            if not all(formula_hashes) or not all(alpha_config_hashes):
+                raise ValueError(f"missing A1 identity in window={window.label!r} seed={seed}")
+            a0_stage = {
+                "stage": ArchitectureStage.A0.value,
+                "metrics": dict(evidence.a0_metrics),
+                "final_equity": _finite_float(evidence.a0_final_equity, name="a0_final_equity"),
+                "config_hash": evidence.a0_config_hash,
             }
-        )
+            if not evidence.a0_metrics or not evidence.a0_config_hash:
+                raise ValueError(f"missing A0 identity in window={window.label!r} seed={seed}")
+            stages = {
+                ArchitectureStage.A0.value: a0_stage,
+                ArchitectureStage.A1_SIGN.value: _summarize_stage(
+                    ordered,
+                    stage=ArchitectureStage.A1_SIGN,
+                    fixed_notional=notional,
+                    cost_stress_bps=costs,
+                ),
+                ArchitectureStage.A1_SCORE.value: _summarize_stage(
+                    ordered,
+                    stage=ArchitectureStage.A1_SCORE,
+                    fixed_notional=notional,
+                    cost_stress_bps=costs,
+                ),
+            }
+            runs.append(
+                {
+                    "window": window.label,
+                    "start_ns": window.start_ns,
+                    "end_ns": window.end_ns,
+                    "seed": seed,
+                    "confirmed_4h_row_count": evidence.confirmed_4h_row_count,
+                    "excluded_non_evaluable_count": evidence.excluded_non_evaluable_count,
+                    "identities": {
+                        "a0_config_hash": evidence.a0_config_hash,
+                        "formula_hashes": formula_hashes,
+                        "alpha_config_hashes": alpha_config_hashes,
+                    },
+                    "stages": stages,
+                }
+            )
 
     return {
         "schema_version": ARCHITECTURE_ATTRIBUTION_SCHEMA_VERSION,
         "stages": [stage.value for stage in ArchitectureStage],
+        "manifest": {
+            "version": manifest.version,
+            "sha256": manifest.sha256,
+            "candidate_id": manifest.candidate_id,
+            "candidate_source_sha256": manifest.candidate_source_sha256,
+            "candidate_params_sha256": manifest.candidate_params_sha256,
+            "profile_path": manifest.profile_path,
+            "profile_sha256": manifest.profile_sha256,
+            "windows": [
+                {"label": window.label, "start_ns": window.start_ns, "end_ns": window.end_ns}
+                for window in manifest.windows
+            ],
+            "seeds": list(manifest.seeds),
+            "perturbation": dict(manifest.perturbation),
+            "cost_stress_bps": list(manifest.cost_stress_bps),
+            "alpha": {
+                "symbol": manifest.portfolio_symbol,
+                "timeframe": manifest.alpha_timeframe,
+                "horizon_bars": manifest.alpha_horizon_bars,
+                "label": manifest.alpha_label,
+                "signal_roles": list(manifest.alpha_signal_roles),
+            },
+            "a0_execution_contract": {
+                "execution_timeframe": manifest.a0_execution_timeframe,
+                "context_timeframe": manifest.a0_context_timeframe,
+                "direction_timeframe": manifest.a0_direction_timeframe,
+                "bias_timeframe": manifest.a0_bias_timeframe,
+            },
+        },
         "constraints": {
             "fixed_notional": notional,
             "max_abs_exposure": 1.0,
@@ -139,33 +318,32 @@ def _summarize_stage(
 
     for observation in observations:
         exposure = stage_exposure(observation, stage)
-        forward_return = observation.forward_return
+        forward_return = _finite_float(observation.forward_return, name="forward_return")
         row: dict[str, Any] = {
-            "decision_id": observation.decision_id,
+            "alpha_id": observation.alpha_id,
             "cutoff_time_ns": observation.cutoff_time_ns,
             "regime": observation.regime,
             "exposure": exposure,
             "forward_return": forward_return,
-            "gross_pnl": None,
+            "gross_pnl": 0.0,
             "turnover_notional": 0.0,
         }
-        if forward_return is not None:
-            realized_return = _finite_float(forward_return, name="forward_return")
-            row_turnover = abs(exposure - previous_exposure) * fixed_notional
-            row_gross_pnl = exposure * realized_return * fixed_notional
-            row["gross_pnl"] = row_gross_pnl
-            row["turnover_notional"] = row_turnover
-            evaluable_count += 1
-            gross_pnl += row_gross_pnl
-            turnover_notional += row_turnover
-            previous_exposure = exposure
-            if exposure != 0.0:
-                active_evaluable_count += 1
-                if realized_return != 0.0:
-                    direction_opportunity_count += 1
-                    if exposure * realized_return > 0.0:
-                        direction_hit_count += 1
-            regime_rows[observation.regime].append(row)
+        realized_return = forward_return
+        row_turnover = abs(exposure - previous_exposure) * fixed_notional
+        row_gross_pnl = exposure * realized_return * fixed_notional
+        row["gross_pnl"] = row_gross_pnl
+        row["turnover_notional"] = row_turnover
+        evaluable_count += 1
+        gross_pnl += row_gross_pnl
+        turnover_notional += row_turnover
+        previous_exposure = exposure
+        if exposure != 0.0:
+            active_evaluable_count += 1
+            if realized_return != 0.0:
+                direction_opportunity_count += 1
+                if exposure * realized_return > 0.0:
+                    direction_hit_count += 1
+        regime_rows[observation.regime].append(row)
         attribution_rows.append(row)
 
     return {
@@ -247,6 +425,38 @@ def _normalize_cost_stress(cost_stress_bps: tuple[float, ...]) -> tuple[float, .
     if normalized[0] < 0.0:
         raise ValueError("cost_stress_bps must be non-negative")
     return normalized
+
+
+def _validate_run_matrix(
+    runs: list[ArchitectureRunEvidence],
+    *,
+    manifest: ArchitectureExperimentManifest,
+) -> dict[tuple[str, int], ArchitectureRunEvidence]:
+    expected = set(manifest.expected_run_keys)
+    indexed: dict[tuple[str, int], ArchitectureRunEvidence] = {}
+    duplicate_keys: set[tuple[str, int]] = set()
+    window_by_label = {window.label: window for window in manifest.windows}
+    for run in runs:
+        key = (run.window, run.seed)
+        if key in indexed:
+            duplicate_keys.add(key)
+        indexed[key] = run
+    actual = set(indexed)
+    if len(runs) != len(expected) or actual != expected or duplicate_keys:
+        raise ValueError(
+            "architecture run matrix mismatch: "
+            f"missing={sorted(expected - actual)!r} extra={sorted(actual - expected)!r} "
+            f"duplicates={sorted(duplicate_keys)!r}"
+        )
+    for key, run in indexed.items():
+        window = window_by_label[run.window]
+        if (run.start_ns, run.end_ns) != (window.start_ns, window.end_ns):
+            raise ValueError(f"architecture run matrix boundary mismatch for {key!r}")
+        if not run.observations:
+            raise ValueError(f"architecture run observations must not be empty for {key!r}")
+        if run.excluded_non_evaluable_count < 0 or run.confirmed_4h_row_count <= 0:
+            raise ValueError(f"invalid architecture row counts for {key!r}")
+    return indexed
 
 
 def _reject_duplicate_cutoffs(

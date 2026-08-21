@@ -37,6 +37,7 @@ from zenquant.data import (
 )
 from zenquant.data.eth_store import EthDataStore, EthStoreConfig
 from zenquant.domain import (
+    ArchitectureAlphaSnapshot,
     BacktestCycleContext,
     BacktestDiagnostics,
     BacktestMetrics,
@@ -325,10 +326,12 @@ class HistoricalBacktest:
         self._position_states: list[OpenPositionState] = []
         self._targets: list[TargetPosition] = []
         self._decision_snapshots: list[DecisionSnapshot] = []
+        self._architecture_alphas: list[ArchitectureAlphaSnapshot] = []
         self._reports: list[ExecutionReport] = []
         self._risk_decisions: list[RiskOverlayDecision] = []
         self._risk_snapshots: list[RiskSnapshot] = []
         self._execution_rows: list[dict[str, Any]] = []
+        self._confirmed_four_hour_rows: list[dict[str, Any]] = []
         self._trade_ledger = _TradeLedger()
         self._funding_accumulator = _FundingAccumulator()
         self._funding_rows: list[dict[str, Any]] = []
@@ -345,6 +348,7 @@ class HistoricalBacktest:
             self.bus.subscribe("strategy.exit.>", self._collect_exit)
             self.bus.subscribe("strategy.position_state.>", self._collect_position_state)
             self.bus.subscribe("strategy.decision_snapshot.4h.>", self._collect_decision_snapshot)
+            self.bus.subscribe("strategy.architecture_alpha.4h.>", self._collect_architecture_alpha)
             self.bus.subscribe("risk.overlay.decision", self._collect_risk_decision)
             self.bus.subscribe("intent.target_position.final.>", self._collect_target)
         self.bus.subscribe("exec.order.report", self._collect_report)
@@ -582,6 +586,8 @@ class HistoricalBacktest:
             stream_seq=cutoff_ns,
         )
         last_price = float(row["close"])
+        if timeframe == Timeframe.TF_4H:
+            self._confirmed_four_hour_rows.append(dict(row))
 
         self.bus.publish(
             f"md.mark.BINANCE_HISTORICAL.{self._config.portfolio_symbol}",
@@ -690,6 +696,10 @@ class HistoricalBacktest:
     def _collect_decision_snapshot(self, _: str, payload: object) -> None:
         if isinstance(payload, DecisionSnapshot):
             self._decision_snapshots.append(payload)
+
+    def _collect_architecture_alpha(self, _: str, payload: object) -> None:
+        if isinstance(payload, ArchitectureAlphaSnapshot):
+            self._architecture_alphas.append(payload)
 
     def _collect_market_state(self, _: str, payload: object) -> None:
         if isinstance(payload, MarketState):
@@ -1064,45 +1074,44 @@ class HistoricalBacktest:
     def build_architecture_attribution_rows(
         self,
         *,
-        window: str,
-        seed: int,
-        fixed_notional: float,
         horizon: int = 1,
-    ) -> list[dict[str, Any]]:
-        """Expose only the frozen fields permitted by the A0/A1 experiment."""
-        if not math.isfinite(fixed_notional) or fixed_notional <= 0.0:
-            raise ValueError("fixed_notional must be positive and finite")
+    ) -> dict[str, Any]:
+        """Build evaluable A1 rows from retained confirmed 4h closes only."""
         if horizon <= 0:
             raise ValueError("horizon must be positive")
 
-        execution_rows = sorted(self._execution_rows, key=lambda row: int(row["close_time_ns"]))
-        snapshots = {
-            snapshot.cutoff_time_ns: snapshot
-            for snapshot in self._decision_snapshots
-            if snapshot.timeframe == Timeframe.TF_4H
+        confirmed_rows = sorted(self._confirmed_four_hour_rows, key=lambda row: int(row["close_time_ns"]))
+        alphas = {
+            alpha.cutoff_time_ns: alpha for alpha in self._architecture_alphas if alpha.timeframe == Timeframe.TF_4H
         }
         rows: list[dict[str, Any]] = []
-        for index, event_row in enumerate(execution_rows):
+        excluded_non_evaluable_count = 0
+        for index, event_row in enumerate(confirmed_rows):
             cutoff_time_ns = int(event_row["close_time_ns"])
-            snapshot = snapshots.get(cutoff_time_ns)
-            if snapshot is None:
+            alpha = alphas.get(cutoff_time_ns)
+            if alpha is None:
                 continue
-            target_direction = 1.0 if snapshot.target_qty > 0.0 else -1.0 if snapshot.target_qty < 0.0 else 0.0
-            baseline_exposure = target_direction * min(abs(snapshot.target_leverage), 1.0)
+            forward_return = _forward_return(confirmed_rows, index, horizon)
+            if forward_return is None:
+                excluded_non_evaluable_count += 1
+                continue
             rows.append(
                 {
-                    "decision_id": snapshot.decision_id,
+                    "alpha_id": alpha.alpha_id,
                     "cutoff_time_ns": cutoff_time_ns,
-                    "window": window,
-                    "seed": seed,
-                    "regime": snapshot.regime,
-                    "baseline_exposure": baseline_exposure,
-                    "raw_score": snapshot.alpha_raw_score,
-                    "frozen_confidence": snapshot.alpha_confidence,
-                    "forward_return": _forward_return(execution_rows, index, horizon),
+                    "regime": alpha.regime,
+                    "raw_score": alpha.raw_score,
+                    "frozen_confidence": alpha.confidence,
+                    "forward_return": forward_return,
+                    "formula_hash": alpha.formula_hash,
+                    "alpha_config_hash": alpha.alpha_config_hash,
                 }
             )
-        return rows
+        return {
+            "observations": rows,
+            "excluded_non_evaluable_count": excluded_non_evaluable_count,
+            "confirmed_4h_row_count": len(confirmed_rows),
+        }
 
 
 class _TradeLedger:

@@ -183,6 +183,24 @@ class DecisionSnapshot:
     options_state_id: str | None
 
 
+@dataclass(slots=True, frozen=True)
+class ArchitectureAlphaSnapshot:
+    """Immutable pre-position four-hour alpha used by causal attribution."""
+
+    alpha_id: str
+    symbol: str
+    timeframe: Timeframe
+    cutoff_time_ns: int
+    formula_hash: str
+    indicator_version: str
+    alpha_config_hash: str
+    raw_score: float
+    confidence: float
+    direction: float
+    regime: str
+    direction_plugin_names: tuple[str, ...]
+
+
 @dataclass(slots=True)
 class IntentReason:
     portfolio: str
