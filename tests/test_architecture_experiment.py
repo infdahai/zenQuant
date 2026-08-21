@@ -664,6 +664,69 @@ def test_stage_snapshot_data_identity_changes_with_pit_risk_inputs():
     assert baseline_replay.snapshots[0].data_identity != changed_replay.snapshots[0].data_identity
 
 
+def test_stage_replay_reduce_only_never_increases_actual_filled_position():
+    first = replace(
+        _observation(alpha_id="alpha-100", cutoff_time_ns=100, raw_score=0.4),
+        annualized_volatility=0.20,
+        risk_regime="NORMAL",
+        frozen_regime_multiplier=1.0,
+        reference_price=100.0,
+    )
+    reduce_only = replace(
+        first,
+        alpha_id="alpha-200",
+        cutoff_time_ns=200,
+        frozen_confidence=0.8,
+        reduce_only=True,
+    )
+
+    replay = run_architecture_stage_replay(
+        (first, reduce_only),
+        stage=ArchitectureStage.A4,
+        fixed_notional=1_000.0,
+        symbol="BTCUSDT_PERP",
+        portfolio="arc",
+        max_trade_qty_per_bar=10.0,
+    )
+
+    assert replay.rows[0].filled_position_after == pytest.approx(6.0)
+    assert replay.rows[1].approved_target_qty == pytest.approx(6.0)
+    assert replay.rows[1].filled_qty == pytest.approx(0.0)
+    assert replay.rows[1].filled_position_after == pytest.approx(6.0)
+
+
+def test_stage_replay_kill_flattens_without_reversal():
+    first = replace(
+        _observation(alpha_id="alpha-100", cutoff_time_ns=100, raw_score=0.4),
+        annualized_volatility=0.20,
+        risk_regime="NORMAL",
+        frozen_regime_multiplier=1.0,
+        reference_price=100.0,
+    )
+    killed = replace(
+        first,
+        alpha_id="alpha-200",
+        cutoff_time_ns=200,
+        raw_score=-0.4,
+        safety_reasons=("KILL",),
+    )
+
+    replay = run_architecture_stage_replay(
+        (first, killed),
+        stage=ArchitectureStage.A4,
+        fixed_notional=1_000.0,
+        symbol="BTCUSDT_PERP",
+        portfolio="arc",
+        max_trade_qty_per_bar=10.0,
+    )
+
+    assert replay.rows[1].approved_target_qty == pytest.approx(0.0)
+    assert replay.rows[1].reduce_only is True
+    assert replay.rows[1].safety_reasons == ("KILL",)
+    assert replay.rows[1].filled_position_after == pytest.approx(0.0)
+    assert replay.metrics.unexpected_reversal == 0
+
+
 def test_frozen_stage_sidecars_fail_closed_when_every_stage_is_flat():
     module = _load_cli_module()
     manifest = load_architecture_experiment_manifest()
