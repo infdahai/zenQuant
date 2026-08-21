@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
-from dataclasses import asdict, replace
+from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 from types import MappingProxyType
 
@@ -155,12 +155,90 @@ def test_cli_builds_exact_august_candidate_and_original_a0_execution_contract():
     assert config.strategy_config.max_leverage == 4.5
     assert config.strategy_config.target_vol_4h == 1.1
     assert config.strategy_config.emit_architecture_alpha_snapshots_v2 is True
-    assert config.indicator_config.expected_symbols == (manifest.portfolio_symbol,)
+    assert config.indicator_config.expected_symbols == ("BTCUSDT_PERP", "ETHUSDT_PERP")
     assert config.risk_config.dd_step_1_long == 0.15
     assert config.perturbation.seed == 42
     assert config.perturbation.price_noise_pct == 0.001
     assert config.profile_path == PROFILE_PATH.resolve()
-    assert config_hash.startswith("sha256:")
+    assert config_hash == "sha256:b683f79efb618c223a24ed829e52cee926089267a2cc8862cac86d44f140b1de"
+
+
+def test_cli_builds_separate_zero_lag_causal_donor_without_rewriting_a0():
+    module = _load_cli_module()
+    manifest = load_architecture_experiment_manifest()
+    window = manifest.windows[0]
+    a0_config, a0_hash = module.build_frozen_backtest_config(
+        root=Path("/data"), manifest=manifest, window=window, seed=42
+    )
+    donor_config, donor_hash = module.build_causal_donor_backtest_config(
+        root=Path("/data"), manifest=manifest, window=window, seed=42
+    )
+
+    assert a0_config.indicator_config.expected_symbols == ("BTCUSDT_PERP", "ETHUSDT_PERP")
+    assert donor_config.indicator_config.expected_symbols == (manifest.portfolio_symbol,)
+    assert donor_config.strategy_config == a0_config.strategy_config
+    assert donor_config.execution_config == a0_config.execution_config
+    assert donor_config.perturbation == a0_config.perturbation
+    assert donor_config.start_ns == a0_config.start_ns
+    assert donor_config.end_ns == a0_config.end_ns
+    assert donor_hash != a0_hash
+
+
+def test_matrix_entry_sources_a0_only_from_original_runner(monkeypatch):
+    module = _load_cli_module()
+    manifest = load_architecture_experiment_manifest()
+    window = manifest.windows[-1]
+
+    @dataclass
+    class _Metrics:
+        original_a0_marker: float
+
+    class _Result:
+        metrics = _Metrics(original_a0_marker=7.0)
+        final_equity = 123_456.0
+        position_episodes = ()
+
+    runner_configs = []
+
+    class _Runner:
+
+        def __init__(self, config):
+            self.config = config
+            runner_configs.append(config)
+
+        def run(self):
+            return _Result()
+
+        def build_architecture_attribution_rows(self, *, horizon):
+            assert horizon == 1
+            return {
+                "excluded_non_evaluable_count": 1,
+                "confirmed_4h_row_count": 2,
+                "alpha_snapshot_count": 2,
+                "missing_alpha_count": 0,
+                "terminal_excluded_count": 1,
+            }
+
+    observation = _observation()
+    monkeypatch.setattr(module, "HistoricalBacktest", _Runner)
+    monkeypatch.setattr(
+        module,
+        "run_frozen_stage_sidecars",
+        lambda runner, *, config, manifest: ((observation,), {}, {}),
+    )
+
+    evidence = module.run_frozen_matrix_entry(
+        root=Path("/data"), manifest=manifest, window=window, seed=42
+    )
+
+    assert runner_configs[0].indicator_config.expected_symbols == (
+        "BTCUSDT_PERP",
+        "ETHUSDT_PERP",
+    )
+    assert runner_configs[1].indicator_config.expected_symbols == (manifest.portfolio_symbol,)
+    assert evidence.a0_metrics == {"original_a0_marker": 7.0}
+    assert evidence.a0_final_equity == pytest.approx(123_456.0)
+    assert evidence.a0_config_hash != evidence.donor_config_hash
 
 
 def test_builder_revalidates_frozen_params_and_hashes_actual_constructed_configs(monkeypatch):
@@ -348,6 +426,7 @@ def _run_evidence(
         a0_metrics={"total_return": seed / 10_000.0, "max_drawdown": 0.123},
         a0_final_equity=100_000.0 + seed,
         a0_config_hash="a0-config-v1",
+        donor_config_hash="donor-config-v1",
         observations=resolved_observations,
         excluded_non_evaluable_count=1,
         confirmed_4h_row_count=alpha_snapshot_count,
@@ -1220,6 +1299,12 @@ def test_report_requires_exact_matrix_and_carries_frozen_identities():
         "label": "next_retained_confirmed_4h_close",
         "signal_roles": ["direction"],
     }
+    assert report["manifest"]["runner_contracts"] == {
+        "a0": "ORIGINAL_AUGUST_RANK1",
+        "a1_a5": "BTC_ONLY_CAUSAL_DONOR",
+    }
+    assert report["runs"][0]["identities"]["a0_config_hash"] == "a0-config-v1"
+    assert report["runs"][0]["identities"]["donor_config_hash"] == "donor-config-v1"
     assert report["constraints"] == {
         "scope": "A0_A1_DIRECTION_ATTRIBUTION_ONLY",
         "fixed_notional": 100_000.0,
