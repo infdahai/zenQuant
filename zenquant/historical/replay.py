@@ -114,6 +114,8 @@ class HistoricalBacktestConfig:
     microstructure_sidecar_dir: Path = Path("data/raw/microstructure_sidecar/bybit/BTCUSDT/1000ms")
     # Options data directory (Deribit IV, skew, term structure)
     options_dir: Path = Path("data/raw/deribit_options")
+    # Observation-only OptionsState attachment. It cannot alter the replay.
+    options_state_shadow_enabled: bool = False
     # CFTC COT data path
     cot_path: Path = Path("data/raw/cftc/cot_btc.parquet")
     # Aggregated liquidation data path
@@ -167,6 +169,9 @@ class HistoricalBacktestResult:
     termination_reason: str | None = None
     processed_event_ratio: float = 1.0
     position_episodes: tuple[PositionEpisode, ...] = ()
+    decision_snapshots: tuple[DecisionSnapshot, ...] = ()
+    options_state_sidecar: tuple[Any, ...] = ()
+    options_state_links: tuple[Any, ...] = ()
 
 
 @dataclass(slots=True)
@@ -356,6 +361,14 @@ class HistoricalBacktest:
         self._funding_index = -1
         self._open_interest_index = -1
 
+        from zenquant.research.options_shadow import OptionsShadowConfig, OptionsShadowObserver
+
+        self.options_shadow_observer = OptionsShadowObserver(
+            bus=self.bus,
+            config=OptionsShadowConfig(enabled=self._config.options_state_shadow_enabled),
+            state_resolver=self._resolve_options_state_shadow,
+        )
+
         if self._collect_decision_ledgers:
             self.bus.subscribe("indicator.>", self._collect_indicator)
             self.bus.subscribe("state.market.>", self._collect_market_state)
@@ -364,7 +377,12 @@ class HistoricalBacktest:
             self.bus.subscribe("strategy.sizing.>", self._collect_sizing)
             self.bus.subscribe("strategy.exit.>", self._collect_exit)
             self.bus.subscribe("strategy.position_state.>", self._collect_position_state)
-            self.bus.subscribe("strategy.decision_snapshot.4h.>", self._collect_decision_snapshot)
+            snapshot_subject = (
+                "research.options_shadow.snapshot.4h.>"
+                if self._config.options_state_shadow_enabled
+                else "strategy.decision_snapshot.4h.>"
+            )
+            self.bus.subscribe(snapshot_subject, self._collect_decision_snapshot)
             self.bus.subscribe("strategy.architecture_alpha.4h.>", self._collect_architecture_alpha)
             self.bus.subscribe("risk.overlay.decision", self._collect_risk_decision)
             self.bus.subscribe("intent.target_position.final.>", self._collect_target)
@@ -479,6 +497,16 @@ class HistoricalBacktest:
             termination_reason=termination_reason,
             processed_event_ratio=(round(processed_events / max(1, len(events)), 6) if events else 1.0),
             position_episodes=self._episode_ledger.episodes,
+            decision_snapshots=tuple(self._decision_snapshots),
+            options_state_sidecar=self.options_shadow_observer.ledger.states,
+            options_state_links=self.options_shadow_observer.ledger.links,
+        )
+
+    def _resolve_options_state_shadow(self, snapshot: DecisionSnapshot):
+        return self._options_store.lookup_options_state(
+            snapshot.cutoff_time_ns,
+            realized_vol_30d=(snapshot.annualized_volatility if snapshot.annualized_volatility > 0.0 else None),
+            realized_vol_source_timestamp_ns=snapshot.cutoff_time_ns,
         )
 
     def _should_early_stop(

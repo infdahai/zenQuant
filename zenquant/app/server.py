@@ -68,6 +68,11 @@ from zenquant.ingestor import (
     SyntheticIngestorConfig,
 )
 from zenquant.market import BarClockService, SnapshotBuilder, SnapshotBuilderConfig
+from zenquant.research.options_shadow import (
+    OptionsShadowConfig,
+    OptionsShadowObserver,
+    OptionsStateResolver,
+)
 from zenquant.risk import RiskOverlay
 from zenquant.state import StateEngine
 from zenquant.strategy import ARCStrategyConfig, ARCStrategyEngine
@@ -101,6 +106,8 @@ class ZenQuantWebRuntime:
         tick_interval_s: float = 0.04,
         warmup_steps: int = 300,
         execution_config: ExecutionKernelConfig | None = None,
+        options_state_shadow_enabled: bool = False,
+        options_state_resolver: OptionsStateResolver | None = None,
     ) -> None:
         self._runtime_mode = runtime_mode
         self._tick_interval_s = tick_interval_s
@@ -127,6 +134,11 @@ class ZenQuantWebRuntime:
         self.bus.add_stream(StreamConfig(name="STREAM_INDICATORS", subjects=["indicator.>"]))
         self.bus.add_stream(StreamConfig(name="STREAM_INTENTS", subjects=["intent.>"]))
         self.bus.add_stream(StreamConfig(name="STREAM_EXEC", subjects=["exec.>"]))
+        self.options_shadow_observer = OptionsShadowObserver(
+            bus=self.bus,
+            config=OptionsShadowConfig(enabled=options_state_shadow_enabled),
+            state_resolver=options_state_resolver,
+        )
 
         self.state = DashboardStateStore()
         self.state.on_runtime_status({"mode": self._runtime_mode})

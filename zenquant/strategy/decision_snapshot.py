@@ -5,8 +5,43 @@ from __future__ import annotations
 import hashlib
 import json
 from collections.abc import Sequence
+from dataclasses import asdict, replace
+from enum import Enum
+from typing import Any
 
 from zenquant.domain import DecisionSnapshot, TargetPosition, Timeframe, target_position_hash
+
+
+def _json_value(value: Any) -> Any:
+    if isinstance(value, Enum):
+        return value.value
+    if isinstance(value, dict):
+        return {str(key): _json_value(item) for key, item in sorted(value.items())}
+    if isinstance(value, (list, tuple)):
+        return [_json_value(item) for item in value]
+    return value
+
+
+def _decision_id(snapshot: DecisionSnapshot) -> str:
+    payload = asdict(snapshot)
+    payload.pop("decision_id")
+    payload.pop("approved_target_hash")
+    return hashlib.sha256(
+        json.dumps(
+            _json_value(payload),
+            sort_keys=True,
+            separators=(",", ":"),
+            allow_nan=False,
+        ).encode("utf-8")
+    ).hexdigest()
+
+
+def attach_options_state_id(snapshot: DecisionSnapshot, options_state_id: str) -> DecisionSnapshot:
+    """Return an observation-only copy linked to one OptionsState payload."""
+    if not options_state_id:
+        raise ValueError("options_state_id must be non-empty")
+    observed = replace(snapshot, options_state_id=options_state_id, decision_id="")
+    return replace(observed, decision_id=_decision_id(observed))
 
 
 def build_decision_snapshot(
