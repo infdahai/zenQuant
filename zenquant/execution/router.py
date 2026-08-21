@@ -667,7 +667,7 @@ class ExecutionKernel:
             approved_delta == 0.0 or math.copysign(1.0, order_delta) != math.copysign(1.0, approved_delta)
         ):
             self._purity_counters["executor_created_exposure"] += 1
-        if position_before * position_after < -(epsilon**2) and approved_target * position_after <= epsilon:
+        if position_before * position_after < -(epsilon**2) and approved_target * position_after <= epsilon**2:
             self._purity_counters["unexpected_reversal"] += 1
         if abs(order_delta) > abs(approved_delta) + epsilon:
             self._purity_counters["target_overshoot"] += 1

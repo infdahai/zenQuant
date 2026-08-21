@@ -260,6 +260,14 @@ class TargetTrackingV2Tests(unittest.TestCase):
             },
         )
 
+    def test_v2_expected_small_quantity_reversal_is_not_a_purity_violation(self) -> None:
+        bus, kernel, _orders, _reports, _audits = self._setup()
+        self._publish_approved(bus, self._target(qty=-0.0002, cutoff_ns=2))
+        self._publish_approved(bus, self._target(qty=0.0002, cutoff_ns=3))
+
+        self.assertEqual(kernel.positions["BTCUSDT_PERP"], 0.0002)
+        self.assertEqual(kernel.purity_counters["unexpected_reversal"], 0)
+
     def test_v2_slices_and_floors_to_quantity_precision_without_overshoot(self) -> None:
         bus, kernel, orders, _reports, _audits = self._setup(
             max_trade_qty_per_bar=0.3333339,
