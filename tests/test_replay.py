@@ -9,7 +9,7 @@ from unittest.mock import patch
 import pandas as pd
 
 from zenquant.domain import IndicatorPack, MarketState, Timeframe
-from zenquant.execution import ExecutionGateway, ExecutionKernel
+from zenquant.execution import ExecutionGateway, ExecutionKernel, ExecutionKernelConfig
 from zenquant.historical import HistoricalBacktest, HistoricalBacktestConfig
 from zenquant.historical.replay import _build_replay_context
 from zenquant.historical.storage import HistoricalKlineRow, write_parquet_rows
@@ -24,6 +24,87 @@ from zenquant.strategy import ARCStrategyEngine
 
 
 class ReplayTests(unittest.TestCase):
+    def test_v2_replay_enables_risk_final_snapshots_and_exposes_zero_purity_counters(self) -> None:
+        empty_store = SimpleNamespace(loaded=False)
+        replay_context = SimpleNamespace(
+            funding_rows=[],
+            open_interest_rows=[],
+            aggtrades={},
+            events=[],
+            macro_store=empty_store,
+            options_store=empty_store,
+            hf_store=empty_store,
+            cot_store=empty_store,
+            liquidation_store=empty_store,
+            eth_store=empty_store,
+            basis_store=empty_store,
+            cross_asset_context_store=empty_store,
+            onchain_factor_store=empty_store,
+            binance_metrics_factor_store=empty_store,
+            cache_stats={},
+        )
+
+        with patch("zenquant.historical.replay._build_replay_context", return_value=replay_context):
+            replay = HistoricalBacktest(
+                HistoricalBacktestConfig(
+                    profile_path=None,
+                    execution_config=ExecutionKernelConfig(
+                        execution_authority_mode="target_tracking_v2",
+                    ),
+                )
+            )
+
+        self.assertTrue(replay.strategy_engine._config.emit_decision_snapshots_v2)
+        self.assertEqual(
+            replay.execution_kernel.purity_counters,
+            {
+                "executor_created_exposure": 0,
+                "unexpected_reversal": 0,
+                "target_overshoot": 0,
+            },
+        )
+
+    def test_replay_metrics_copy_execution_purity_counters(self) -> None:
+        replay = HistoricalBacktest.__new__(HistoricalBacktest)
+        replay._config = HistoricalBacktestConfig(profile_path=None)
+        replay._risk_snapshots = []
+        replay._funding_accumulator = SimpleNamespace(total_funding_cost=0.0)
+        replay.risk_overlay = SimpleNamespace(equity=100_000.0)
+        replay._trade_ledger = SimpleNamespace(
+            total_fees=0.0,
+            realized_pnls=[],
+            action_realized_pnls={},
+            turnover_notional=0.0,
+            action_trade_counts={},
+            action_fees={},
+        )
+        replay._episode_ledger = SimpleNamespace(
+            closed_episodes=(),
+            open_episodes=(),
+            position_switch_count=0,
+        )
+        replay._reports = []
+        replay.execution_kernel = SimpleNamespace(
+            purity_counters={
+                "executor_created_exposure": 2,
+                "unexpected_reversal": 3,
+                "target_overshoot": 4,
+            }
+        )
+        events = [
+            {
+                "open_time_ns": 1,
+                "close_time_ns": Timeframe.TF_4H.seconds * 1_000_000_000,
+                "event_timeframe": "4h",
+            }
+        ]
+
+        metrics = replay._build_metrics(events)
+
+        self.assertEqual(metrics.executor_created_exposure, 2)
+        self.assertEqual(metrics.unexpected_reversal, 3)
+        self.assertEqual(metrics.target_overshoot, 4)
+
     def test_lightweight_early_stop_rejects_extreme_trade_count_per_day(self) -> None:
         replay = HistoricalBacktest.__new__(HistoricalBacktest)
         replay._config = HistoricalBacktestConfig(

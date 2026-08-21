@@ -577,6 +577,9 @@ class BacktestMetrics:
     open_episode_count: int = 0
     position_switch_count: int = 0
     position_switches_per_day: float = 0.0
+    executor_created_exposure: int = 0
+    unexpected_reversal: int = 0
+    target_overshoot: int = 0
 
 
 @dataclass(slots=True)

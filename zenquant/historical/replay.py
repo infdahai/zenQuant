@@ -294,11 +294,20 @@ class HistoricalBacktest:
             # Apply RL tuner weight overrides (dynamic, bypass default.toml)
             if self._config.signal_weight_overrides and plugin_registry is not None:
                 plugin_registry.weight_overrides = dict(self._config.signal_weight_overrides)
+        strategy_config = self._config.strategy_config
+        execution_config = self._config.execution_config
+        if execution_config is not None and execution_config.execution_authority_mode == "target_tracking_v2":
+            if self._config.execution_timeframe != Timeframe.TF_4H:
+                raise ValueError("target_tracking_v2 requires a 4h execution timeframe")
+            strategy_config = replace(
+                strategy_config or ARCStrategyConfig(execution_timeframe=Timeframe.TF_4H),
+                emit_decision_snapshots_v2=True,
+            )
         self.strategy_engine = self._subscribe_with_profile(
             "strategy_step_total_s",
             lambda: ARCStrategyEngine(
                 bus=self.bus,
-                config=self._config.strategy_config,
+                config=strategy_config,
                 plugin_registry=plugin_registry,
             ),
         )
@@ -813,6 +822,7 @@ class HistoricalBacktest:
         episode_pf = calculate_episode_profit_factor(closed_episodes)
         position_switch_count = self._episode_ledger.position_switch_count
         position_switches_per_day = position_switch_count / elapsed_days
+        purity_counters = self.execution_kernel.purity_counters
         total_bars = sum(1 for item in events if item["event_timeframe"] == self._config.execution_timeframe.value)
         return BacktestMetrics(
             symbol=self._config.portfolio_symbol,
@@ -862,6 +872,9 @@ class HistoricalBacktest:
             open_episode_count=len(open_episodes),
             position_switch_count=position_switch_count,
             position_switches_per_day=round(position_switches_per_day, 6),
+            executor_created_exposure=purity_counters["executor_created_exposure"],
+            unexpected_reversal=purity_counters["unexpected_reversal"],
+            target_overshoot=purity_counters["target_overshoot"],
         )
 
     def _build_diagnostics(self) -> BacktestDiagnostics:
