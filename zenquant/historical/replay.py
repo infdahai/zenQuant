@@ -822,7 +822,16 @@ class HistoricalBacktest:
         episode_pf = calculate_episode_profit_factor(closed_episodes)
         position_switch_count = self._episode_ledger.position_switch_count
         position_switches_per_day = position_switch_count / elapsed_days
-        purity_counters = self.execution_kernel.purity_counters
+        execution_kernel = getattr(self, "execution_kernel", None)
+        purity_counters = (
+            execution_kernel.purity_counters
+            if execution_kernel is not None
+            else {
+                "executor_created_exposure": 0,
+                "unexpected_reversal": 0,
+                "target_overshoot": 0,
+            }
+        )
         total_bars = sum(1 for item in events if item["event_timeframe"] == self._config.execution_timeframe.value)
         return BacktestMetrics(
             symbol=self._config.portfolio_symbol,
