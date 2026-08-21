@@ -183,6 +183,7 @@ def run_frozen_stage_sidecars(
             quantity_precision=execution_config.quantity_precision,
             taker_fee_bps=FROZEN_TAKER_FEE_BPS,
             fallback_slippage_bps=FROZEN_FALLBACK_SLIPPAGE_BPS,
+            funding_settlements_by_cutoff=batch.get("funding_settlements_by_cutoff", {}),
         )
         if not any(abs(row.approved_exposure) > 0.0 for row in replay.rows):
             raise ValueError(

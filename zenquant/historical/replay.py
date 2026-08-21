@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import math
 import time
+from bisect import bisect_left, bisect_right
 from collections import Counter, defaultdict
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
@@ -1306,11 +1307,61 @@ class HistoricalBacktest:
             rows.append(row)
         if missing:
             raise ValueError(f"missing point-in-time A2-A5 stage inputs at cutoffs={missing!r}")
+        funding_settlements = self._build_architecture_funding_settlements(
+            tuple(int(row["cutoff_time_ns"]) for row in rows)
+        )
         return {
             **batch,
             "observations": rows,
             "missing_stage_input_count": 0,
+            "funding_settlements_by_cutoff": funding_settlements,
         }
+
+    def _build_architecture_funding_settlements(
+        self,
+        decision_cutoffs: tuple[int, ...],
+    ) -> dict[int, tuple[Any, ...]]:
+        """Assign each PIT funding row to its first actionable 4h cutoff."""
+        from zenquant.research.architecture_stage_replay import ArchitectureFundingSettlement
+
+        if not decision_cutoffs:
+            return {}
+        ordered_cutoffs = tuple(sorted(decision_cutoffs))
+        funding_rows = sorted(
+            getattr(self, "_funding_rows", ()),
+            key=lambda row: int(row["funding_time_ns"]),
+        )
+        source_counts = Counter(int(row["funding_time_ns"]) for row in funding_rows)
+        duplicates = sorted(source for source, count in source_counts.items() if count != 1)
+        if duplicates:
+            raise ValueError(f"duplicate funding settlements at source times={duplicates!r}")
+        price_rows = sorted(
+            getattr(self, "_execution_rows", ()),
+            key=lambda row: int(row["close_time_ns"]),
+        )
+        price_cutoffs = [int(row["close_time_ns"]) for row in price_rows]
+        grouped: defaultdict[int, list[ArchitectureFundingSettlement]] = defaultdict(list)
+        for funding_row in funding_rows:
+            source_time_ns = int(funding_row["funding_time_ns"])
+            decision_index = bisect_left(ordered_cutoffs, source_time_ns)
+            if decision_index >= len(ordered_cutoffs):
+                continue
+            price_index = bisect_right(price_cutoffs, source_time_ns) - 1
+            if price_index < 0:
+                raise ValueError(
+                    "funding settlement has no point-in-time execution price: "
+                    f"source_time_ns={source_time_ns}"
+                )
+            available_at_ns = ordered_cutoffs[decision_index]
+            grouped[available_at_ns].append(
+                ArchitectureFundingSettlement(
+                    source_time_ns=source_time_ns,
+                    available_at_ns=available_at_ns,
+                    funding_rate=float(funding_row.get("funding_rate", 0.0)),
+                    mark_price=float(price_rows[price_index]["close"]),
+                )
+            )
+        return {cutoff: tuple(settlements) for cutoff, settlements in sorted(grouped.items())}
 
 
 class _TradeLedger:

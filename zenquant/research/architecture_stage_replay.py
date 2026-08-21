@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+from collections.abc import Mapping
 from dataclasses import dataclass, replace
 
 from zenquant.domain import (
@@ -13,6 +14,7 @@ from zenquant.domain import (
     ExecutionOrderAudit,
     ExecutionReport,
     MarkPriceUpdate,
+    PositionEpisode,
     TargetPosition,
     Timeframe,
 )
@@ -29,7 +31,7 @@ from .architecture_experiment import (
     frozen_regime_multiplier,
     stage_exposure,
 )
-from .episode_ledger import PositionEpisodeLedger, PriceObservation
+from .episode_ledger import FundingAllocation, PositionEpisodeLedger, PriceObservation
 from .gate_v3 import calculate_episode_profit_factor
 
 
@@ -39,6 +41,17 @@ class ArchitectureStageReplayResult:
     rows: tuple[ArchitectureStageExecutionRow, ...]
     snapshots: tuple[DecisionSnapshot, ...]
     metrics: ArchitectureExecutionMetrics
+    closed_episodes: tuple[PositionEpisode, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class ArchitectureFundingSettlement:
+    """One funding rate visible to the stage replay at a confirmed cutoff."""
+
+    source_time_ns: int
+    available_at_ns: int
+    funding_rate: float
+    mark_price: float
 
 
 class _FeeAccumulator:
@@ -61,6 +74,10 @@ def run_architecture_stage_replay(
     quantity_precision: int = 6,
     taker_fee_bps: float = 4.0,
     fallback_slippage_bps: float = 1.5,
+    funding_settlements_by_cutoff: Mapping[
+        int, tuple[ArchitectureFundingSettlement, ...]
+    ]
+    | None = None,
 ) -> ArchitectureStageReplayResult:
     """Execute one frozen later stage without invoking strategy parameter search."""
     resolved_stage = ArchitectureStage(stage)
@@ -84,6 +101,10 @@ def run_architecture_stage_replay(
         raise ValueError(
             f"architecture alpha availability must equal its decision cutoff: cutoffs={invalid_availability!r}"
         )
+    funding_by_cutoff = funding_settlements_by_cutoff or {}
+    extra_funding_cutoffs = sorted(set(funding_by_cutoff) - {item.cutoff_time_ns for item in ordered})
+    if extra_funding_cutoffs:
+        raise ValueError(f"funding settlements have unknown decision cutoffs={extra_funding_cutoffs!r}")
 
     bus = InMemoryJetStream()
     fee_accumulator = _FeeAccumulator()
@@ -119,10 +140,18 @@ def run_architecture_stage_replay(
     for observation in ordered:
         price = _positive(observation.reference_price, name="reference_price")
         cutoff = observation.cutoff_time_ns
+        current_qty = kernel.positions.get(symbol, 0.0)
+        funding_pnl = 0.0
+        for settlement in funding_by_cutoff.get(cutoff, ()):
+            _validate_funding_settlement(settlement, cutoff_time_ns=cutoff)
+            pnl = -current_qty * settlement.mark_price * settlement.funding_rate
+            episode_ledger.allocate_funding(
+                FundingAllocation(symbol=symbol, timestamp_ns=cutoff, pnl=pnl)
+            )
+            funding_pnl += pnl
         episode_ledger.observe_price(
             PriceObservation(symbol=symbol, timestamp_ns=cutoff, high=price, low=price, close=price)
         )
-        current_qty = kernel.positions.get(symbol, 0.0)
         current_exposure = current_qty * price / fixed_notional
         safety_reasons = set(observation.safety_reasons)
         if _uncapped_a2_exposure(observation) > A2_MAX_ABS_EXPOSURE:
@@ -226,6 +255,7 @@ def run_architecture_stage_replay(
             fee=fee,
             actual_slippage=actual_shortfall,
             actual_implementation_shortfall=actual_shortfall + fee,
+            funding_pnl=funding_pnl,
             target_tracking_error=error,
             time_to_target_bars=0 if reached else None,
             reduce_only=reduce_only,
@@ -264,6 +294,7 @@ def run_architecture_stage_replay(
         rows=tuple(rows),
         snapshots=tuple(snapshots),
         metrics=metrics,
+        closed_episodes=episode_ledger.closed_episodes,
     )
 
 
@@ -354,3 +385,17 @@ def _apply_hard_safety_target(
     if abs(approved_exposure) >= abs(current_exposure):
         return current_exposure
     return approved_exposure
+
+
+def _validate_funding_settlement(
+    settlement: ArchitectureFundingSettlement,
+    *,
+    cutoff_time_ns: int,
+) -> None:
+    if settlement.available_at_ns != cutoff_time_ns:
+        raise ValueError("funding settlement availability must equal its assigned decision cutoff")
+    if settlement.source_time_ns > settlement.available_at_ns:
+        raise ValueError("funding settlement source time cannot be in the future")
+    if not math.isfinite(settlement.funding_rate):
+        raise ValueError("funding settlement rate must be finite")
+    _positive(settlement.mark_price, name="funding settlement mark_price")
