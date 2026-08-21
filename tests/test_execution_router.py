@@ -1,5 +1,5 @@
 import unittest
-from dataclasses import asdict
+from dataclasses import asdict, replace
 
 from zenquant.domain import (
     EventMeta,
@@ -285,6 +285,28 @@ class TargetTrackingV2Tests(unittest.TestCase):
         self.assertEqual(len(orders), order_count)
         self.assertEqual(kernel.positions["BTCUSDT_PERP"], 0.0)
         self.assertEqual(kernel.latest_decision_cutoffs[("arc", "BTCUSDT_PERP")], 3)
+
+    def test_v2_snapshot_rejects_mutated_final_target_metadata(self) -> None:
+        mutations = {
+            "regime": "RANGE",
+            "regime_confidence": 0.1,
+            "reason_codes": ["SPOOFED_FINAL"],
+            "realized_vol": 0.9,
+            "atr": 999.0,
+        }
+        for field_name, new_value in mutations.items():
+            with self.subTest(field_name=field_name):
+                bus, kernel, orders, _reports, _audits = self._setup()
+                target = self._target(qty=1.0, cutoff_ns=2)
+                bus.publish(f"strategy.decision_snapshot.4h.{target.symbol}", self._snapshot(target))
+
+                bus.publish(
+                    f"intent.target_position.final.{target.symbol}",
+                    replace(target, **{field_name: new_value}),
+                )
+
+                self.assertEqual(orders, [])
+                self.assertEqual(kernel.positions, {})
 
     def test_v2_completed_decision_is_consumed_and_cannot_reopen_exposure(self) -> None:
         bus, kernel, orders, _reports, _audits = self._setup()

@@ -8,6 +8,7 @@ from zenquant.domain import (
     IndicatorPack,
     TargetPosition,
     Timeframe,
+    target_position_hash,
 )
 from zenquant.infra import InMemoryJetStream
 from zenquant.risk import RiskOverlay, RiskOverlayConfig
@@ -68,6 +69,21 @@ class AsymmetricDDTests(unittest.TestCase):
         self.assertGreater(config.dd_step_1_long, config.dd_step_1_short)
         self.assertGreater(config.dd_step_2_long, config.dd_step_2_short)
         self.assertGreater(config.dd_step_3_long, config.dd_step_3_short)
+
+    def test_overlay_decision_hashes_exact_original_and_revised_targets(self) -> None:
+        bus = InMemoryJetStream()
+        RiskOverlay(bus=bus, config=RiskOverlayConfig(max_leverage=0.1))
+        decisions = []
+        finals = []
+        bus.subscribe("risk.overlay.decision", lambda _, payload: decisions.append(payload))
+        bus.subscribe("intent.target_position.final.>", lambda _, payload: finals.append(payload))
+        original = _make_target(qty=1.0)
+        bus.publish("indicator.pack.v1.4h.BTCUSDT_PERP", _make_pack())
+
+        bus.publish("intent.target_position.arc.BTCUSDT_PERP", original)
+
+        self.assertEqual(decisions[0].original_target_hash, target_position_hash(original))
+        self.assertEqual(decisions[0].revised_target_hash, target_position_hash(finals[0]))
 
     def test_long_position_no_dd_flag_at_10pct(self) -> None:
         """10% DD should NOT trigger DD_STEP_1 for longs (threshold=15%)."""

@@ -181,6 +181,7 @@ class DecisionSnapshot:
     exposure_cap: float
     quality_flags: tuple[str, ...]
     options_state_id: str | None
+    approved_target_hash: str = ""
 
 
 @dataclass(slots=True, frozen=True)
@@ -222,6 +223,8 @@ class RiskOverlayDecision:
     portfolio: str = ""
     timeframe: Timeframe | None = None
     original_intent_id: str = ""
+    original_target_hash: str = ""
+    revised_target_hash: str = ""
 
 
 @dataclass(slots=True)

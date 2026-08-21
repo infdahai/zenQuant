@@ -13,6 +13,7 @@ from zenquant.domain import (
     RiskSnapshot,
     TargetPosition,
     Timeframe,
+    target_position_hash,
 )
 from zenquant.infra import EventBus
 
@@ -474,6 +475,8 @@ class RiskOverlay:
             portfolio=target.portfolio,
             timeframe=target.timeframe,
             original_intent_id=target.intent_id,
+            original_target_hash=target_position_hash(target),
+            revised_target_hash=target_position_hash(revised),
         )
 
         snapshot = RiskSnapshot(

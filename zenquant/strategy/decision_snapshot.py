@@ -6,7 +6,7 @@ import hashlib
 import json
 from collections.abc import Sequence
 
-from zenquant.domain import DecisionSnapshot, TargetPosition, Timeframe
+from zenquant.domain import DecisionSnapshot, TargetPosition, Timeframe, target_position_hash
 
 
 def build_decision_snapshot(
@@ -103,4 +103,5 @@ def build_decision_snapshot(
         exposure_cap=exposure_cap,
         quality_flags=frozen_quality_flags,
         options_state_id=options_state_id,
+        approved_target_hash=target_position_hash(target),
     )

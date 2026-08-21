@@ -16,6 +16,7 @@ from zenquant.domain import (
     RiskSnapshot,
     TargetPosition,
     TradeTick,
+    target_position_hash,
 )
 from zenquant.execution.gateway import ExecutionGateway
 from zenquant.infra import EventBus
@@ -674,6 +675,8 @@ class ExecutionKernel:
             and abs(snapshot.target_qty - target.target_qty) <= epsilon
             and abs(snapshot.target_leverage - target.target_leverage) <= epsilon
             and snapshot.reduce_only == target.reduce_only
+            and bool(snapshot.approved_target_hash)
+            and snapshot.approved_target_hash == target_position_hash(target)
         )
 
     def _is_valid_hard_safety_target(self, approved_target: float, current_position: float) -> bool:

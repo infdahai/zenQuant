@@ -35,6 +35,7 @@ from .models import (
     Timeframe,
     TradeTick,
 )
+from .target_identity import canonical_target_position, target_position_hash
 
 __all__ = [
     "ArchitectureAlphaSnapshot",
@@ -72,4 +73,6 @@ __all__ = [
     "TargetPosition",
     "Timeframe",
     "TradeTick",
+    "canonical_target_position",
+    "target_position_hash",
 ]

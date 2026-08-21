@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import unittest
+from dataclasses import replace
 from pathlib import Path
+
+import pytest
 
 from zenquant.domain import (
     ExitDecision,
@@ -15,6 +18,7 @@ from zenquant.domain import (
     RiskOverlayDecision,
     TargetPosition,
     Timeframe,
+    target_position_hash,
 )
 from zenquant.infra.event_bus import InMemoryJetStream
 from zenquant.plugins.profile import build_from_profile
@@ -23,6 +27,54 @@ from zenquant.strategy.engine import ARCStrategyConfig, ARCStrategyEngine
 
 PLUGIN_ROOT = Path(__file__).parent.parent / "zenquant" / "plugins"
 PROFILE_PATH = Path(__file__).parent.parent / "config" / "profiles" / "default.toml"
+
+
+@pytest.mark.parametrize(
+    ("field_name", "new_value"),
+    [
+        ("target_leverage", 2.0),
+        ("reason_codes", ["SPOOFED_FINAL"]),
+        ("regime", "RANGE"),
+        ("regime_confidence", 0.1),
+        ("realized_vol", 0.7),
+        ("atr", 999.0),
+    ],
+)
+def test_v2_snapshot_rejects_mutated_risk_final_target(field_name: str, new_value: object) -> None:
+    if not PROFILE_PATH.exists():
+        pytest.skip("default.toml not found")
+    _, registry = build_from_profile(PROFILE_PATH, plugin_root=PLUGIN_ROOT)
+    bus = InMemoryJetStream()
+    engine = ARCStrategyEngine(
+        bus=bus,
+        config=ARCStrategyConfig(emit_decision_snapshots_v2=True),
+        plugin_registry=registry,
+    )
+    snapshots = []
+    target = _target(qty=1.0)
+    bus.subscribe("strategy.decision_snapshot.>", lambda _subject, payload: snapshots.append(payload))
+    engine._publish_decision_snapshot_if_enabled(_pack(), _state(), _playbook(), target)
+    bus.publish(
+        "risk.overlay.decision",
+        RiskOverlayDecision(
+            symbol=target.symbol,
+            cutoff_time_ns=target.cutoff_time_ns,
+            original_target_qty=target.target_qty,
+            revised_target_qty=target.target_qty,
+            lev_cap=2.5,
+            reduce_only=target.reduce_only,
+            flags=["OK"],
+            portfolio=target.portfolio,
+            timeframe=target.timeframe,
+            original_intent_id=target.intent_id,
+            original_target_hash=target_position_hash(target),
+            revised_target_hash=target_position_hash(target),
+        ),
+    )
+
+    bus.publish("intent.target_position.final.BTCUSDT_PERP", replace(target, **{field_name: new_value}))
+
+    assert snapshots == []
 
 
 def _pack(
@@ -287,6 +339,8 @@ class TestPluginPathProducesValidOutput(unittest.TestCase):
                 portfolio=requested_targets[0].portfolio,
                 timeframe=requested_targets[0].timeframe,
                 original_intent_id=requested_targets[0].intent_id,
+                original_target_hash=target_position_hash(requested_targets[0]),
+                revised_target_hash=target_position_hash(requested_targets[0]),
             ),
         )
         bus.publish("intent.target_position.final.BTCUSDT_PERP", requested_targets[0])
@@ -380,6 +434,8 @@ class TestPluginPathProducesValidOutput(unittest.TestCase):
                 portfolio=target.portfolio,
                 timeframe=target.timeframe,
                 original_intent_id=target.intent_id,
+                original_target_hash=target_position_hash(target),
+                revised_target_hash=target_position_hash(target),
             ),
         )
         bus.publish("intent.target_position.final.BTCUSDT_PERP", target)
@@ -533,6 +589,8 @@ class TestPluginPathProducesValidOutput(unittest.TestCase):
             portfolio=target.portfolio,
             timeframe=target.timeframe,
             original_intent_id=target.intent_id,
+            original_target_hash=target_position_hash(target),
+            revised_target_hash=target_position_hash(target),
         )
         bus.publish("risk.overlay.decision", decision)
 

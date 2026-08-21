@@ -24,6 +24,7 @@ from zenquant.domain import (
     SizingDecision,
     TargetPosition,
     Timeframe,
+    target_position_hash,
 )
 from zenquant.domain.serde import to_jsonable
 from zenquant.infra import EventBus
@@ -89,6 +90,7 @@ class _DecisionSnapshotEnvelope:
     timeframe: Timeframe
     original_target_qty: float
     original_intent_id: str
+    original_target_hash: str
 
 
 # Minimum absolute signal strength to take a directional position.
@@ -258,6 +260,8 @@ class ARCStrategyEngine:
             if (
                 self._latest_staged_decision_cutoff.get(authority_key) == payload.cutoff_time_ns
                 and decision_key in self._pending_decision_snapshots
+                and payload.original_target_hash == self._pending_decision_snapshots[decision_key].original_target_hash
+                and payload.revised_target_hash
             ):
                 self._risk_final_decisions[decision_key] = payload
 
@@ -335,6 +339,8 @@ class ARCStrategyEngine:
             or payload.timeframe != envelope.timeframe
             or risk_decision.original_intent_id != envelope.original_intent_id
             or payload.intent_id != envelope.original_intent_id
+            or risk_decision.original_target_hash != envelope.original_target_hash
+            or risk_decision.revised_target_hash != target_position_hash(payload)
             or risk_decision.reduce_only != payload.reduce_only
             or payload.target_leverage > risk_decision.lev_cap + 1e-9
         ):
@@ -2415,6 +2421,7 @@ class ARCStrategyEngine:
             timeframe=target.timeframe,
             original_target_qty=target.target_qty,
             original_intent_id=target.intent_id,
+            original_target_hash=target_position_hash(target),
         )
 
     def _decision_snapshot_config_hash(self) -> str:
