@@ -80,21 +80,16 @@ class GateV3Result:
 
 def calculate_episode_profit_factor(
     episodes: list[PositionEpisode] | tuple[PositionEpisode, ...],
-    *,
-    min_closed_episodes: int = 2,
 ) -> ProfitFactorResult:
     """Return nullable profit factor from net PnL of closed episodes only."""
-    if min_closed_episodes < 1:
-        raise ValueError("min_closed_episodes must be at least one")
     closed = [episode for episode in episodes if episode.closed]
-    positive_episode_count = sum(1 for episode in closed if episode.net_pnl > 0.0)
     gross_profit = sum(max(0.0, episode.net_pnl) for episode in closed)
     gross_loss = abs(sum(min(0.0, episode.net_pnl) for episode in closed))
-    if len(closed) < min_closed_episodes:
+    if not closed:
         return ProfitFactorResult(
             value=None,
             status=ProfitFactorStatus.INSUFFICIENT_SAMPLE,
-            closed_episode_count=len(closed),
+            closed_episode_count=0,
             gross_profit=gross_profit,
             gross_loss=gross_loss,
         )
@@ -107,14 +102,6 @@ def calculate_episode_profit_factor(
             gross_loss=gross_loss,
         )
     if gross_loss == 0.0:
-        if positive_episode_count < min_closed_episodes:
-            return ProfitFactorResult(
-                value=None,
-                status=ProfitFactorStatus.INSUFFICIENT_SAMPLE,
-                closed_episode_count=len(closed),
-                gross_profit=gross_profit,
-                gross_loss=0.0,
-            )
         return ProfitFactorResult(
             value=None,
             status=ProfitFactorStatus.NO_LOSS_EPISODES,
@@ -190,7 +177,6 @@ def evaluate_gate_v3(
     switches_per_day: float | None = None,
     elapsed_days: float | None = None,
     min_episode_profit_factor: float = 1.0,
-    min_closed_episodes: int = 2,
     policy: str = "normal",
     fill_profit_factor: float | None = None,
     action_profit_factor: dict[str, float] | None = None,
@@ -203,7 +189,7 @@ def evaluate_gate_v3(
         if elapsed_days is None or elapsed_days <= 0.0:
             raise ValueError("positive elapsed_days is required when switches_per_day is omitted")
         switches_per_day = actual_switch_count / elapsed_days
-    pf = calculate_episode_profit_factor(episodes, min_closed_episodes=min_closed_episodes)
+    pf = calculate_episode_profit_factor(episodes)
     cadence = evaluate_cadence(switches_per_day, policy=policy)
     hard_failures: list[str] = []
     soft_flags: list[str] = []
@@ -211,8 +197,8 @@ def evaluate_gate_v3(
     if pf.status is ProfitFactorStatus.INSUFFICIENT_SAMPLE:
         hard_failures.append("episode_profit_factor_insufficient_sample")
     elif pf.status is ProfitFactorStatus.NO_LOSS_EPISODES:
-        if pf.gross_profit <= 0.0:
-            hard_failures.append("episode_profit_factor_no_positive_episodes")
+        if pf.closed_episode_count < 2:
+            hard_failures.append("episode_profit_factor_no_loss_sample_too_small")
     elif pf.value is not None and pf.value < min_episode_profit_factor:
         hard_failures.append("episode_profit_factor_below_minimum")
 

@@ -168,22 +168,41 @@ def test_gate_v3_requires_two_closed_episodes_before_no_loss_pass() -> None:
     no_losses = evaluate_gate_v3([_episode(1, 5.0), _episode(2, 1.0)], switches_per_day=0.0)
 
     assert one_positive.hard_failed is True
-    assert one_positive.episode_profit_factor.status is ProfitFactorStatus.INSUFFICIENT_SAMPLE
-    assert "episode_profit_factor_insufficient_sample" in one_positive.hard_failures
-    assert one_positive_one_flat.hard_failed is True
-    assert one_positive_one_flat.episode_profit_factor.status is ProfitFactorStatus.INSUFFICIENT_SAMPLE
+    assert one_positive.episode_profit_factor.status is ProfitFactorStatus.NO_LOSS_EPISODES
+    assert "episode_profit_factor_no_loss_sample_too_small" in one_positive.hard_failures
+    assert one_positive_one_flat.hard_failed is False
+    assert one_positive_one_flat.episode_profit_factor.status is ProfitFactorStatus.NO_LOSS_EPISODES
     assert no_losses.hard_failed is False
     assert no_losses.episode_profit_factor.status is ProfitFactorStatus.NO_LOSS_EPISODES
 
 
-def test_zero_only_closed_sample_reports_defined_zero_profit_factor() -> None:
-    result = calculate_episode_profit_factor([_episode(1, 0.0), _episode(2, 0.0)])
-    verdict = evaluate_gate_v3([_episode(1, 0.0), _episode(2, 0.0)], switches_per_day=0.0)
+@pytest.mark.parametrize(
+    "net_pnls",
+    [
+        (0.0,),
+        (-5.0,),
+        (-5.0, 0.0),
+    ],
+)
+def test_closed_sample_without_gross_profit_reports_defined_zero(
+    net_pnls: tuple[float, ...],
+) -> None:
+    episodes = [_episode(index, pnl) for index, pnl in enumerate(net_pnls, start=1)]
+    result = calculate_episode_profit_factor(episodes)
+    verdict = evaluate_gate_v3(episodes, switches_per_day=0.0)
 
     assert result.status is ProfitFactorStatus.DEFINED
     assert result.value == pytest.approx(0.0)
+    assert result.closed_episode_count == len(net_pnls)
     assert verdict.hard_failed is True
     assert "episode_profit_factor_below_minimum" in verdict.hard_failures
+
+
+def test_mixed_profit_and_loss_reports_ratio_without_global_sample_minimum() -> None:
+    result = calculate_episode_profit_factor([_episode(1, 10.0), _episode(2, -4.0)])
+
+    assert result.status is ProfitFactorStatus.DEFINED
+    assert result.value == pytest.approx(2.5)
 
 
 def test_gate_v3_reports_empty_sample_as_insufficient() -> None:
