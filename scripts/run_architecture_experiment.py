@@ -16,13 +16,18 @@ from zenquant.domain import Timeframe
 from zenquant.domain.serde import to_jsonable
 from zenquant.historical import HistoricalBacktest, HistoricalBacktestConfig, PerturbationConfig
 from zenquant.research.architecture_experiment import (
+    ArchitectureExecutionMetrics,
     ArchitectureExperimentManifest,
+    ArchitectureObservation,
     ArchitectureRunEvidence,
+    ArchitectureStage,
+    ArchitectureStageExecutionRow,
     ArchitectureWindow,
     build_architecture_attribution_report,
     load_architecture_experiment_manifest,
     observations_from_rows,
 )
+from zenquant.research.architecture_stage_replay import run_architecture_stage_replay
 from zenquant.research.framework_params import (
     build_execution_config,
     build_indicator_config,
@@ -34,6 +39,8 @@ from zenquant.research.framework_params import (
 )
 
 FIXED_NOTIONAL = 100_000.0
+FROZEN_TAKER_FEE_BPS = 4.0
+FROZEN_FALLBACK_SLIPPAGE_BPS = 1.5
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -133,6 +140,54 @@ def _revalidate_manifest(manifest: ArchitectureExperimentManifest) -> None:
         raise ValueError("architecture experiment in-memory manifest payload diverged from validated bytes")
 
 
+def run_frozen_stage_sidecars(
+    runner: HistoricalBacktest,
+    *,
+    config: HistoricalBacktestConfig,
+    manifest: ArchitectureExperimentManifest,
+) -> tuple[
+    tuple[ArchitectureObservation, ...],
+    dict[str, ArchitectureExecutionMetrics],
+    dict[str, tuple[ArchitectureStageExecutionRow, ...]],
+]:
+    """Run A2-A5 from complete PIT 4h inputs through target_tracking_v2."""
+    execution_config = config.execution_config or build_execution_config(dict(manifest.candidate_params))
+    batch = runner.build_architecture_stage_rows(
+        exchange_min_quantity=execution_config.min_trade_qty,
+        estimated_fee_bps=FROZEN_TAKER_FEE_BPS,
+        estimated_slippage_bps=FROZEN_FALLBACK_SLIPPAGE_BPS,
+    )
+    observations = tuple(observations_from_rows(batch["observations"]))
+    metrics_by_stage: dict[str, ArchitectureExecutionMetrics] = {}
+    rows_by_stage: dict[str, tuple[ArchitectureStageExecutionRow, ...]] = {}
+    for stage in (
+        ArchitectureStage.A2,
+        ArchitectureStage.A3,
+        ArchitectureStage.A4,
+        ArchitectureStage.A5_SHADOW,
+    ):
+        replay = run_architecture_stage_replay(
+            observations,
+            stage=stage,
+            fixed_notional=FIXED_NOTIONAL,
+            symbol=manifest.portfolio_symbol,
+            portfolio="architecture-v2",
+            min_trade_qty=execution_config.min_trade_qty,
+            max_trade_qty_per_bar=execution_config.max_trade_qty_per_bar,
+            quantity_precision=execution_config.quantity_precision,
+            taker_fee_bps=FROZEN_TAKER_FEE_BPS,
+            fallback_slippage_bps=FROZEN_FALLBACK_SLIPPAGE_BPS,
+        )
+        if not any(abs(row.approved_exposure) > 0.0 for row in replay.rows):
+            raise ValueError(
+                f"frozen architecture stage {stage.value} produced an all-flat replay; "
+                "point-in-time stage inputs are incomplete or non-evaluable"
+            )
+        metrics_by_stage[stage.value] = replay.metrics
+        rows_by_stage[stage.value] = replay.rows
+    return observations, metrics_by_stage, rows_by_stage
+
+
 def main() -> None:
     args = build_parser().parse_args()
 
@@ -149,6 +204,11 @@ def main() -> None:
             runner = HistoricalBacktest(config)
             result = runner.run()
             batch = runner.build_architecture_attribution_rows(horizon=manifest.alpha_horizon_bars)
+            stage_observations, stage_metrics, stage_rows = run_frozen_stage_sidecars(
+                runner,
+                config=config,
+                manifest=manifest,
+            )
             runs.append(
                 ArchitectureRunEvidence(
                     window=window.label,
@@ -158,13 +218,15 @@ def main() -> None:
                     a0_metrics=asdict(result.metrics),
                     a0_final_equity=result.final_equity,
                     a0_config_hash=config_hash,
-                    observations=tuple(observations_from_rows(batch["observations"])),
+                    observations=stage_observations,
                     excluded_non_evaluable_count=int(batch["excluded_non_evaluable_count"]),
                     confirmed_4h_row_count=int(batch["confirmed_4h_row_count"]),
                     alpha_snapshot_count=int(batch["alpha_snapshot_count"]),
                     missing_alpha_count=int(batch["missing_alpha_count"]),
                     terminal_excluded_count=int(batch["terminal_excluded_count"]),
                     position_episodes=result.position_episodes,
+                    execution_metrics_by_stage=stage_metrics,
+                    stage_execution_rows_by_stage=stage_rows,
                 )
             )
 
