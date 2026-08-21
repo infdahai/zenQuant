@@ -12,11 +12,13 @@ from zenquant.domain import (
     MarketState,
     OpenPositionState,
     PlaybookSelection,
+    RiskOverlayDecision,
     TargetPosition,
     Timeframe,
 )
 from zenquant.infra.event_bus import InMemoryJetStream
 from zenquant.plugins.profile import build_from_profile
+from zenquant.risk import RiskOverlay, RiskOverlayConfig
 from zenquant.strategy.engine import ARCStrategyConfig, ARCStrategyEngine
 
 PLUGIN_ROOT = Path(__file__).parent.parent / "zenquant" / "plugins"
@@ -262,10 +264,17 @@ class TestPluginPathProducesValidOutput(unittest.TestCase):
         """Catches a missing V2 audit event or accidental default-path publication."""
         engine, bus = self._build_engine_with_plugins(ARCStrategyConfig(emit_decision_snapshots_v2=True))
         snapshots = []
+        requested_targets = []
         bus.subscribe("strategy.decision_snapshot.4h.BTCUSDT_PERP", lambda _subject, payload: snapshots.append(payload))
+        bus.subscribe(
+            "intent.target_position.arc.BTCUSDT_PERP", lambda _subject, payload: requested_targets.append(payload)
+        )
 
         engine.prime_indicator(_pack())
         engine.prime_state(_state())
+        self.assertEqual(snapshots, [])
+        self.assertEqual(len(requested_targets), 1)
+        bus.publish("intent.target_position.final.BTCUSDT_PERP", requested_targets[0])
 
         self.assertEqual(len(snapshots), 1)
         self.assertEqual(snapshots[0].timeframe, Timeframe.TF_4H)
@@ -287,6 +296,19 @@ class TestPluginPathProducesValidOutput(unittest.TestCase):
         engine.prime_state(_state())
 
         self.assertEqual(snapshots, [])
+        bus.publish(
+            "risk.overlay.decision",
+            RiskOverlayDecision(
+                symbol="BTCUSDT_PERP",
+                cutoff_time_ns=1,
+                original_target_qty=1.0,
+                revised_target_qty=0.5,
+                lev_cap=0.5,
+                reduce_only=False,
+                flags=["OK"],
+            ),
+        )
+        self.assertEqual(engine._risk_final_decisions, {})
 
     def test_v2_snapshot_never_publishes_for_non_4h_state_path(self):
         """Catches a 1h or 5m strategy route bypassing the fixed V2 4h boundary."""
@@ -328,12 +350,52 @@ class TestPluginPathProducesValidOutput(unittest.TestCase):
             "signal_confidence": 0.9,
         }
 
-        engine._publish_decision_snapshot_if_enabled(pack, state, _playbook(), _target(qty=1.0))
+        target = _target(qty=1.0)
+        engine._publish_decision_snapshot_if_enabled(pack, state, _playbook(), target)
+        bus.publish("intent.target_position.final.BTCUSDT_PERP", target)
 
         self.assertEqual(len(snapshots), 1)
         self.assertEqual(snapshots[0].alpha_direction, 1.0)
         self.assertEqual(snapshots[0].alpha_raw_score, 1.0)
         self.assertEqual(snapshots[0].alpha_confidence, 0.8)
+
+    def test_v2_snapshot_is_published_only_after_risk_and_binds_final_target(self):
+        """Catches the snapshot identity approving a pre-risk strategy quantity."""
+        if not PROFILE_PATH.exists():
+            self.skipTest("default.toml not found")
+        _, registry = build_from_profile(PROFILE_PATH, plugin_root=PLUGIN_ROOT)
+        bus = _strategy_bus()
+        risk = RiskOverlay(
+            bus,
+            RiskOverlayConfig(starting_equity=100_000.0, max_leverage=0.1),
+        )
+        engine = ARCStrategyEngine(
+            bus=bus,
+            config=ARCStrategyConfig(emit_decision_snapshots_v2=True),
+            plugin_registry=registry,
+        )
+        pack = _pack(last_price=60_000.0)
+        state = _state()
+        requested = _target(qty=2.0)
+        final_targets = []
+        risk_decisions = []
+        snapshots = []
+        bus.subscribe("intent.target_position.final.>", lambda _subject, payload: final_targets.append(payload))
+        bus.subscribe("risk.overlay.decision", lambda _subject, payload: risk_decisions.append(payload))
+        bus.subscribe("strategy.decision_snapshot.4h.>", lambda _subject, payload: snapshots.append(payload))
+        risk.prime_indicator(pack)
+
+        engine._publish_decision_snapshot_if_enabled(pack, state, _playbook(), requested)
+        self.assertEqual(snapshots, [])
+        bus.publish("intent.target_position.arc.BTCUSDT_PERP", requested)
+
+        self.assertEqual(len(final_targets), 1)
+        self.assertEqual(len(snapshots), 1)
+        self.assertNotEqual(final_targets[0].target_qty, requested.target_qty)
+        self.assertEqual(snapshots[0].target_qty, final_targets[0].target_qty)
+        self.assertEqual(snapshots[0].target_leverage, final_targets[0].target_leverage)
+        self.assertEqual(snapshots[0].reduce_only, final_targets[0].reduce_only)
+        self.assertEqual(snapshots[0].exposure_cap, risk_decisions[0].lev_cap)
 
     def test_plugin_direction_uptrend(self):
         engine, bus = self._build_engine_with_plugins()

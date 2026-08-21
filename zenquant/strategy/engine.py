@@ -19,6 +19,7 @@ from zenquant.domain import (
     MarketState,
     OpenPositionState,
     PlaybookSelection,
+    RiskOverlayDecision,
     RiskSnapshot,
     SizingDecision,
     TargetPosition,
@@ -61,6 +62,29 @@ class _IntentReduceConfirmationState:
     direction: float
     target_qty: float
     bars: int
+
+
+@dataclass(slots=True, frozen=True)
+class _DecisionSnapshotEnvelope:
+    """Immutable pre-risk context waiting for the risk-final target."""
+
+    formula_hash: str
+    config_hash: str
+    indicator_version: str
+    data_identity: str
+    alpha_direction: float
+    alpha_raw_score: float
+    alpha_confidence: float
+    directional_state: str
+    volatility_state: str
+    positioning_state: str
+    quality_state: str
+    regime_risk_multiplier: float
+    annualized_volatility: float
+    volatility_target: float
+    exposure_cap: float
+    quality_flags: tuple[str, ...]
+    options_state_id: str | None
 
 
 # Minimum absolute signal strength to take a directional position.
@@ -199,6 +223,8 @@ class ARCStrategyEngine:
         self._intent_add_confirmation: dict[tuple[str, Timeframe], _IntentConfirmationState] = {}
         self._intent_reduce_confirmation: dict[tuple[str, Timeframe], _IntentReduceConfirmationState] = {}
         self._intent_flat_step_cooldowns: dict[tuple[str, Timeframe], int] = {}
+        self._pending_decision_snapshots: dict[tuple[str, int], _DecisionSnapshotEnvelope] = {}
+        self._risk_final_decisions: dict[tuple[str, int], RiskOverlayDecision] = {}
 
         # Phase 2: position tracking for trailing stops
         self._positions: dict[tuple[str, Timeframe], OpenPositionState] = {}
@@ -206,11 +232,17 @@ class ARCStrategyEngine:
         self._bus.subscribe("indicator.>", self._on_indicator)
         self._bus.subscribe("state.market.>", self._on_market_state)
         self._bus.subscribe("risk.snapshot", self._on_risk_snapshot)
+        self._bus.subscribe("risk.overlay.decision", self._on_risk_overlay_decision)
         self._bus.subscribe("exec.order.report", self._on_execution_report)
+        self._bus.subscribe("intent.target_position.final.>", self._on_final_target)
 
     def _on_risk_snapshot(self, _: str, payload: object) -> None:
         if isinstance(payload, RiskSnapshot):
             self._equity = max(0.0, payload.equity)
+
+    def _on_risk_overlay_decision(self, _: str, payload: object) -> None:
+        if self._config.emit_decision_snapshots_v2 and isinstance(payload, RiskOverlayDecision):
+            self._risk_final_decisions[(payload.symbol, payload.cutoff_time_ns)] = payload
 
     def _on_execution_report(self, _: str, payload: object) -> None:
         """Track filled positions for trailing stop logic."""
@@ -264,6 +296,39 @@ class ARCStrategyEngine:
         current_pos.direction = 1.0 if new_signed_qty > 0 else -1.0
         current_pos.current_qty = abs(new_signed_qty)
         self._publish_position_state(payload.symbol, self._config.execution_timeframe)
+
+    def _on_final_target(self, _: str, payload: object) -> None:
+        """Publish a V2 decision only after risk has approved the final target."""
+        if not isinstance(payload, TargetPosition) or not self._config.emit_decision_snapshots_v2:
+            return
+        envelope = self._pending_decision_snapshots.pop((payload.symbol, payload.cutoff_time_ns), None)
+        if envelope is None:
+            return
+        risk_decision = self._risk_final_decisions.pop((payload.symbol, payload.cutoff_time_ns), None)
+        snapshot = build_decision_snapshot(
+            target=payload,
+            formula_hash=envelope.formula_hash,
+            config_hash=envelope.config_hash,
+            indicator_version=envelope.indicator_version,
+            data_identity=envelope.data_identity,
+            alpha_direction=envelope.alpha_direction,
+            alpha_raw_score=envelope.alpha_raw_score,
+            alpha_confidence=envelope.alpha_confidence,
+            directional_state=envelope.directional_state,
+            volatility_state=envelope.volatility_state,
+            positioning_state=envelope.positioning_state,
+            quality_state=envelope.quality_state,
+            regime_risk_multiplier=envelope.regime_risk_multiplier,
+            annualized_volatility=envelope.annualized_volatility,
+            volatility_target=envelope.volatility_target,
+            exposure_cap=min(
+                envelope.exposure_cap,
+                risk_decision.lev_cap if risk_decision is not None else envelope.exposure_cap,
+            ),
+            quality_flags=envelope.quality_flags,
+            options_state_id=envelope.options_state_id,
+        )
+        self._bus.publish(f"strategy.decision_snapshot.4h.{payload.symbol}", snapshot)
 
     def _on_indicator(self, _: str, payload: object) -> None:
         """Cache the latest pack so state events can build targets deterministically."""
@@ -2264,7 +2329,7 @@ class ARCStrategyEngine:
         playbook: PlaybookSelection,
         target: TargetPosition,
     ) -> None:
-        """Emit the isolated V2 audit event without changing legacy intent flow."""
+        """Stage immutable V2 context until risk publishes its final target."""
         if not self._config.emit_decision_snapshots_v2:
             return
         if pack.timeframe != Timeframe.TF_4H or target.timeframe != Timeframe.TF_4H:
@@ -2276,8 +2341,7 @@ class ARCStrategyEngine:
             plugin_context = {}
         alpha_raw_score = float(plugin_context.get("effective_direction", state.direction_signal) or 0.0)
         alpha_direction = 1.0 if alpha_raw_score > 0.0 else -1.0 if alpha_raw_score < 0.0 else 0.0
-        snapshot = build_decision_snapshot(
-            target=target,
+        self._pending_decision_snapshots[(target.symbol, target.cutoff_time_ns)] = _DecisionSnapshotEnvelope(
             formula_hash=pack.formula_hash,
             config_hash=self._decision_snapshot_config_hash(),
             indicator_version=pack.indicator_version,
@@ -2293,10 +2357,9 @@ class ARCStrategyEngine:
             annualized_volatility=target.realized_vol,
             volatility_target=self._config.target_vol_4h,
             exposure_cap=min(self._config.max_leverage, playbook.max_leverage),
-            quality_flags=pack.quality_flags,
+            quality_flags=tuple(pack.quality_flags),
             options_state_id=None,
         )
-        self._bus.publish(f"strategy.decision_snapshot.4h.{target.symbol}", snapshot)
 
     def _decision_snapshot_config_hash(self) -> str:
         """Fingerprint the active strategy configuration in a canonical form."""
