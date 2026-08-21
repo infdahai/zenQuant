@@ -25,9 +25,22 @@ from .liquidation_store import LiquidationDataStore, LiquidationSnapshot, Liquid
 from .macro_store import MacroDataStore, MacroDataStoreConfig, MacroSnapshot
 from .microstructure_store import MicrostructureFeatureStore, MicrostructureFeatureStoreConfig
 from .onchain_factor_store import OnchainFactorSnapshot, OnchainFactorStore, OnchainFactorStoreConfig
+from .options_state import (
+    CALCULATION_METHOD as OPTIONS_STATE_CALCULATION_METHOD,
+)
+from .options_state import (
+    CALCULATION_VERSION as OPTIONS_STATE_CALCULATION_VERSION,
+)
+from .options_state import (
+    OptionsState,
+    black76_forward_delta,
+    build_options_state,
+)
 from .options_store import OptionsDataStore, OptionsDataStoreConfig, OptionsSnapshot
 
 __all__ = [
+    "OPTIONS_STATE_CALCULATION_METHOD",
+    "OPTIONS_STATE_CALCULATION_VERSION",
     "BasisDataStore",
     "BasisSnapshot",
     "BasisStoreConfig",
@@ -56,6 +69,9 @@ __all__ = [
     "OptionsDataStore",
     "OptionsDataStoreConfig",
     "OptionsSnapshot",
+    "OptionsState",
+    "black76_forward_delta",
+    "build_options_state",
     "collect_deribit_block_flow_status",
     "fetch_public_block_rfq_trades",
     "fetch_public_option_trades",

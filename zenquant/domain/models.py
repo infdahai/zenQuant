@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from enum import StrEnum
 from typing import Any
 
@@ -182,6 +182,72 @@ class DecisionSnapshot:
     quality_flags: tuple[str, ...]
     options_state_id: str | None
     approved_target_hash: str = ""
+
+
+@dataclass(slots=True, frozen=True)
+class OptionsState:
+    """Immutable observation-only BTC options state at a confirmed 4h cutoff.
+
+    Implied and realized volatility fields use annualized decimal units. GEX
+    distances use signed spot-relative returns: ``(level - spot) / spot``.
+    ``shadow_risk_multiplier`` is research metadata and is not execution
+    authority.
+    """
+
+    options_state_id: str
+    symbol: str
+    cutoff_time_ns: int
+    source_timestamp_ns: int
+    history_24h_source_timestamp_ns: int
+    data_identity: str
+    history_24h_data_identity: str
+    calculation_method: str
+    calculation_version: str
+    underlying_price: float
+    atm_iv_7d: float | None
+    atm_iv_30d: float | None
+    atm_iv_90d: float | None
+    put_iv_25d_30d: float | None
+    call_iv_25d_30d: float | None
+    risk_reversal_25d_30d: float | None
+    moneyness_skew_proxy_30d: float | None
+    realized_vol_30d: float | None
+    realized_vol_source_timestamp_ns: int
+    iv_minus_rv_30d: float | None
+    term_slope_7d_30d: float | None
+    term_slope_30d_90d: float | None
+    spot_return_24h: float | None
+    skew_change_24h: float | None
+    spot_skew_joint_label: str
+    strike_oi_concentration: float
+    expiry_oi_concentration: float
+    normalized_net_gex: float
+    gex_normalization: str
+    gamma_wall_strike: float | None
+    gamma_wall_distance: float | None
+    gamma_flip_strike: float | None
+    gamma_flip_distance: float | None
+    source_age_seconds: float
+    is_stale: bool
+    chain_row_count: int
+    valid_row_count: int
+    coverage: float
+    trend_quality: str
+    shadow_risk_multiplier: float
+    quality_flags: tuple[str, ...]
+
+    def to_dict(self) -> dict[str, Any]:
+        """Return a deterministic JSON-compatible serialization payload."""
+        payload = asdict(self)
+        payload["quality_flags"] = list(self.quality_flags)
+        return payload
+
+    @classmethod
+    def from_dict(cls, payload: dict[str, Any]) -> OptionsState:
+        """Reconstruct a state from :meth:`to_dict` output."""
+        values = dict(payload)
+        values["quality_flags"] = tuple(values.get("quality_flags", ()))
+        return cls(**values)
 
 
 @dataclass(slots=True, frozen=True)
