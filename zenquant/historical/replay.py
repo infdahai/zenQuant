@@ -1359,8 +1359,7 @@ class HistoricalBacktest:
                     # allocation. Never invent a pre-window mark price.
                     continue
                 raise ValueError(
-                    "funding settlement has no point-in-time execution price: "
-                    f"source_time_ns={source_time_ns}"
+                    f"funding settlement has no point-in-time execution price: source_time_ns={source_time_ns}"
                 )
             available_at_ns = ordered_cutoffs[decision_index]
             grouped[available_at_ns].append(

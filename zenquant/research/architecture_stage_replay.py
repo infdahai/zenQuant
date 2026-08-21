@@ -74,10 +74,7 @@ def run_architecture_stage_replay(
     quantity_precision: int = 6,
     taker_fee_bps: float = 4.0,
     fallback_slippage_bps: float = 1.5,
-    funding_settlements_by_cutoff: Mapping[
-        int, tuple[ArchitectureFundingSettlement, ...]
-    ]
-    | None = None,
+    funding_settlements_by_cutoff: Mapping[int, tuple[ArchitectureFundingSettlement, ...]] | None = None,
 ) -> ArchitectureStageReplayResult:
     """Execute one frozen later stage without invoking strategy parameter search."""
     resolved_stage = ArchitectureStage(stage)
@@ -145,9 +142,7 @@ def run_architecture_stage_replay(
         for settlement in funding_by_cutoff.get(cutoff, ()):
             _validate_funding_settlement(settlement, cutoff_time_ns=cutoff)
             pnl = -current_qty * settlement.mark_price * settlement.funding_rate
-            episode_ledger.allocate_funding(
-                FundingAllocation(symbol=symbol, timestamp_ns=cutoff, pnl=pnl)
-            )
+            episode_ledger.allocate_funding(FundingAllocation(symbol=symbol, timestamp_ns=cutoff, pnl=pnl))
             funding_pnl += pnl
         episode_ledger.observe_price(
             PriceObservation(symbol=symbol, timestamp_ns=cutoff, high=price, low=price, close=price)
@@ -279,9 +274,7 @@ def run_architecture_stage_replay(
     # reached immediately is therefore right-censored, not observed at one bar.
     time_to_target_bars = 0.0 if immediate_target_reached_count == len(rows) else None
     time_to_target_status = (
-        "OBSERVED_ALL_IMMEDIATE"
-        if time_to_target_bars is not None
-        else "RIGHT_CENSORED_AT_NEXT_DECISION"
+        "OBSERVED_ALL_IMMEDIATE" if time_to_target_bars is not None else "RIGHT_CENSORED_AT_NEXT_DECISION"
     )
     metrics = ArchitectureExecutionMetrics(
         target_tracking_error=sum(tracking_errors) / len(tracking_errors),

@@ -911,12 +911,10 @@ def test_cumulative_report_consumes_real_stage_rows_without_unobserved_metrics()
     assert stages["A4"]["attribution_rows"][1]["execution"]["filled_exposure_before"] == pytest.approx(0.1)
     a4 = stages["A4"]
     expected_gross = sum(
-        row["execution"]["filled_exposure_after"] * row["forward_return"] * 1_000.0
-        for row in a4["attribution_rows"]
+        row["execution"]["filled_exposure_after"] * row["forward_return"] * 1_000.0 for row in a4["attribution_rows"]
     )
     expected_baseline_cost = sum(
-        row["execution"]["fee"] + row["execution"]["actual_slippage"]
-        for row in a4["attribution_rows"]
+        row["execution"]["fee"] + row["execution"]["actual_slippage"] for row in a4["attribution_rows"]
     )
     expected_additional_15bp = sum(
         row["execution"]["filled_qty"] * row["execution"]["actual_fill_price"] * 15.0 / 10_000.0
