@@ -17,6 +17,7 @@ from zenquant.domain import (
     MarketState,
     OpenPositionState,
     PositionEpisode,
+    RiskSnapshot,
     TargetPosition,
     Timeframe,
 )
@@ -1480,7 +1481,18 @@ def test_replay_bridge_builds_complete_pit_stage_inputs_and_true_4h_labels():
         replace(pack, cutoff_time_ns=cutoff, ts_ns=cutoff) for cutoff in (100, 200, 300, 400, 500, 600)
     ]
     runner._market_states = [replace(state, cutoff_time_ns=cutoff) for cutoff in (100, 200, 300, 400, 500, 600)]
-    runner._risk_snapshots = []
+    runner._risk_snapshots = [
+        RiskSnapshot(
+            portfolio="arc",
+            ts_ns=150,
+            equity=1_000.0,
+            high_water_mark=1_000.0,
+            drawdown=0.0,
+            lev_cap=1.0,
+            reduce_only_mode=True,
+            flags=["PORTFOLIO_KILL"],
+        )
+    ]
     runner._funding_rows = [{"funding_time_ns": 150, "funding_rate": 0.001}]
     runner._execution_rows = [
         {"close_time_ns": 100, "close": 100.0},
@@ -1506,6 +1518,13 @@ def test_replay_bridge_builds_complete_pit_stage_inputs_and_true_4h_labels():
     assert first["forward_return_6"] == pytest.approx(0.60)
     assert first["estimated_fee_bps"] == pytest.approx(4.0)
     assert first["estimated_slippage_bps"] == pytest.approx(1.5)
+    assert first["risk_snapshot_status"] == "NO_PRIOR_SNAPSHOT_NEUTRAL"
+    assert first["risk_snapshot_ts_ns"] is None
+    second = batch["observations"][1]
+    assert second["risk_snapshot_status"] == "ASOF"
+    assert second["risk_snapshot_ts_ns"] == 150
+    assert second["reduce_only"] is True
+    assert second["safety_reasons"] == ("KILL",)
     assert batch["funding_settlements_by_cutoff"] == {
         200: (
             ArchitectureFundingSettlement(
@@ -1517,6 +1536,25 @@ def test_replay_bridge_builds_complete_pit_stage_inputs_and_true_4h_labels():
         )
     }
     assert batch["missing_stage_input_count"] == 0
+
+    runner._risk_snapshots.append(
+        RiskSnapshot(
+            portfolio="arc",
+            ts_ns=150,
+            equity=900.0,
+            high_water_mark=1_000.0,
+            drawdown=0.1,
+            lev_cap=0.5,
+            reduce_only_mode=False,
+            flags=[],
+        )
+    )
+    with pytest.raises(ValueError, match="conflicting risk snapshots"):
+        runner.build_architecture_stage_rows(
+            exchange_min_quantity=0.001,
+            estimated_fee_bps=4.0,
+            estimated_slippage_bps=1.5,
+        )
 
 
 def test_replay_bridge_rejects_missing_alpha_even_when_label_is_terminal():
