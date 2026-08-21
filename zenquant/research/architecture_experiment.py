@@ -12,13 +12,13 @@ import json
 import math
 from collections import defaultdict
 from collections.abc import Mapping
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from enum import StrEnum
 from pathlib import Path
 from types import MappingProxyType
 from typing import Any
 
-from zenquant.domain import PositionEpisode
+from zenquant.domain import DecisionSnapshot, PositionEpisode
 
 from .gate_v3 import evaluate_gate_v3
 
@@ -186,6 +186,7 @@ class ArchitectureObservation:
     alpha_config_hash: str
     annualized_volatility: float | None = None
     risk_regime: str = "UNKNOWN"
+    frozen_regime_multiplier: float | None = None
     exchange_min_quantity: float = 0.0
     reduce_only: bool = False
     safety_reasons: tuple[str, ...] = ()
@@ -300,7 +301,15 @@ def stage_exposure(
     a2_exposure = max(-A2_MAX_ABS_EXPOSURE, min(A2_MAX_ABS_EXPOSURE, a1_score * volatility_scalar))
     if resolved_stage == ArchitectureStage.A2:
         return a2_exposure
-    a3_exposure = a2_exposure * frozen_regime_multiplier(observation.risk_regime)
+    mapped_multiplier = frozen_regime_multiplier(observation.risk_regime)
+    regime_multiplier = observation.frozen_regime_multiplier
+    if regime_multiplier is None:
+        regime_multiplier = mapped_multiplier
+    else:
+        regime_multiplier = _finite_float(regime_multiplier, name="frozen_regime_multiplier")
+        if not math.isclose(regime_multiplier, mapped_multiplier, rel_tol=0.0, abs_tol=1e-12):
+            raise ValueError("frozen regime multiplier does not match A3 mapping")
+    a3_exposure = a2_exposure * regime_multiplier
     if resolved_stage == ArchitectureStage.A3:
         return a3_exposure
 
@@ -324,6 +333,61 @@ def stage_exposure(
 def frozen_regime_multiplier(risk_regime: str) -> float:
     """Resolve the immutable A3 mapping and fail closed for new labels."""
     return A3_REGIME_MULTIPLIERS.get(str(risk_regime).strip().upper(), 0.0)
+
+
+def bind_stage_inputs_from_snapshot(
+    observation: ArchitectureObservation,
+    *,
+    snapshot: DecisionSnapshot,
+    risk_regime: str,
+    exchange_min_quantity: float,
+    reference_price: float,
+) -> ArchitectureObservation:
+    """Bind A2-A4 inputs to the matching immutable 4h decision snapshot."""
+    if snapshot.cutoff_time_ns != observation.cutoff_time_ns:
+        raise ValueError("DecisionSnapshot cutoff does not match architecture observation")
+    if snapshot.formula_hash != observation.formula_hash:
+        raise ValueError("DecisionSnapshot formula hash does not match architecture observation")
+    if not math.isclose(snapshot.alpha_raw_score, observation.raw_score, rel_tol=0.0, abs_tol=1e-12):
+        raise ValueError("DecisionSnapshot raw alpha does not match architecture observation")
+    if not math.isclose(
+        snapshot.alpha_confidence,
+        observation.frozen_confidence,
+        rel_tol=0.0,
+        abs_tol=1e-12,
+    ):
+        raise ValueError("DecisionSnapshot confidence does not match architecture observation")
+    if not math.isclose(
+        snapshot.volatility_target,
+        A2_ANNUALIZED_VOLATILITY_TARGET,
+        rel_tol=0.0,
+        abs_tol=1e-12,
+    ):
+        raise ValueError("DecisionSnapshot does not use the frozen A2 volatility target")
+    if not math.isclose(snapshot.exposure_cap, A2_MAX_ABS_EXPOSURE, rel_tol=0.0, abs_tol=1e-12):
+        raise ValueError("DecisionSnapshot does not use the frozen A2 exposure cap")
+    expected_multiplier = frozen_regime_multiplier(risk_regime)
+    if not math.isclose(
+        snapshot.regime_risk_multiplier,
+        expected_multiplier,
+        rel_tol=0.0,
+        abs_tol=1e-12,
+    ):
+        raise ValueError("DecisionSnapshot regime multiplier does not match the frozen A3 mapping")
+    _exchange_minimum_exposure(
+        exchange_min_quantity,
+        reference_price=reference_price,
+        fixed_notional=1.0,
+    )
+    return replace(
+        observation,
+        annualized_volatility=snapshot.annualized_volatility,
+        risk_regime=str(risk_regime).strip().upper(),
+        frozen_regime_multiplier=snapshot.regime_risk_multiplier,
+        exchange_min_quantity=exchange_min_quantity,
+        reduce_only=snapshot.reduce_only,
+        reference_price=reference_price,
+    )
 
 
 def apply_target_no_trade_band(

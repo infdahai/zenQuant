@@ -17,6 +17,7 @@ from zenquant.domain import (
     MarketState,
     OpenPositionState,
     PositionEpisode,
+    TargetPosition,
     Timeframe,
 )
 from zenquant.historical.replay import HistoricalBacktest
@@ -29,11 +30,13 @@ from zenquant.research.architecture_experiment import (
     ArchitectureRunEvidence,
     ArchitectureStage,
     apply_target_no_trade_band,
+    bind_stage_inputs_from_snapshot,
     build_architecture_attribution_report,
     load_architecture_experiment_manifest,
     observe_cost_shadow,
     stage_exposure,
 )
+from zenquant.strategy.decision_snapshot import build_decision_snapshot
 from zenquant.strategy.engine import ARCStrategyConfig, ARCStrategyEngine
 
 EXPECTED_AUGUST_RANK1_PARAMS = {
@@ -428,6 +431,104 @@ def test_a3_input_does_not_change_a2_or_earlier_stages():
 
     for stage in (ArchitectureStage.A1_SIGN, ArchitectureStage.A1_SCORE, ArchitectureStage.A2):
         assert stage_exposure(changed_later_input, stage) == stage_exposure(baseline, stage)
+
+
+def test_later_stage_inputs_bind_to_the_same_frozen_4h_snapshot():
+    observation = _observation(raw_score=0.4, frozen_confidence=0.6)
+    target = TargetPosition(
+        intent_id="intent-1",
+        portfolio="arc",
+        symbol="BTCUSDT_PERP",
+        timeframe=Timeframe.TF_4H,
+        cutoff_time_ns=observation.cutoff_time_ns,
+        target_qty=0.06,
+        target_leverage=0.06,
+        reduce_only=False,
+        regime="STRESS",
+        regime_confidence=0.8,
+        reason_codes=["STRESS"],
+        realized_vol=0.40,
+    )
+    snapshot = build_decision_snapshot(
+        target=target,
+        formula_hash=observation.formula_hash,
+        config_hash="config-v2",
+        indicator_version="pack.v1",
+        data_identity="data-v1",
+        alpha_direction=1.0,
+        alpha_raw_score=observation.raw_score,
+        alpha_confidence=observation.frozen_confidence,
+        directional_state="UPTREND",
+        volatility_state="HIGH",
+        positioning_state="HEALTHY",
+        quality_state="TRADABLE",
+        regime_risk_multiplier=0.1,
+        annualized_volatility=0.40,
+        volatility_target=0.20,
+        exposure_cap=1.50,
+        quality_flags=("OK",),
+        options_state_id=None,
+    )
+
+    bound = bind_stage_inputs_from_snapshot(
+        observation,
+        snapshot=snapshot,
+        risk_regime="STRESS",
+        exchange_min_quantity=0.001,
+        reference_price=100.0,
+    )
+
+    assert bound.annualized_volatility == pytest.approx(0.40)
+    assert bound.risk_regime == "STRESS"
+    assert bound.frozen_regime_multiplier == pytest.approx(0.1)
+    assert bound.exchange_min_quantity == pytest.approx(0.001)
+    assert stage_exposure(bound, ArchitectureStage.A3) == pytest.approx(0.03)
+
+
+def test_snapshot_binding_rejects_non_frozen_a2_a3_contract():
+    observation = _observation(raw_score=0.4, frozen_confidence=0.6)
+    target = TargetPosition(
+        intent_id="intent-1",
+        portfolio="arc",
+        symbol="BTCUSDT_PERP",
+        timeframe=Timeframe.TF_4H,
+        cutoff_time_ns=observation.cutoff_time_ns,
+        target_qty=0.0,
+        target_leverage=0.0,
+        reduce_only=False,
+        regime="STRESS",
+        regime_confidence=0.8,
+        reason_codes=["STRESS"],
+    )
+    snapshot = build_decision_snapshot(
+        target=target,
+        formula_hash=observation.formula_hash,
+        config_hash="config-v2",
+        indicator_version="pack.v1",
+        data_identity="data-v1",
+        alpha_direction=1.0,
+        alpha_raw_score=observation.raw_score,
+        alpha_confidence=observation.frozen_confidence,
+        directional_state="UPTREND",
+        volatility_state="HIGH",
+        positioning_state="HEALTHY",
+        quality_state="TRADABLE",
+        regime_risk_multiplier=0.5,
+        annualized_volatility=0.40,
+        volatility_target=0.20,
+        exposure_cap=1.50,
+        quality_flags=("OK",),
+        options_state_id=None,
+    )
+
+    with pytest.raises(ValueError, match="regime multiplier"):
+        bind_stage_inputs_from_snapshot(
+            observation,
+            snapshot=snapshot,
+            risk_regime="STRESS",
+            exchange_min_quantity=0.001,
+            reference_price=100.0,
+        )
 
 
 def test_a4_applies_the_only_four_percent_target_position_band():
