@@ -633,7 +633,10 @@ def test_stage_replay_uses_actual_filled_position_for_next_a4_cutoff():
     assert replay.rows[1].filled_exposure_before == pytest.approx(0.1)
     assert replay.rows[1].approved_exposure == pytest.approx(1.2)
     assert replay.metrics.target_tracking_error > 0.0
-    assert replay.metrics.time_to_target_bars == pytest.approx(1.0)
+    assert replay.metrics.time_to_target_bars is None
+    assert replay.metrics.time_to_target_status == "RIGHT_CENSORED_AT_NEXT_DECISION"
+    assert replay.metrics.immediate_target_reached_rate == pytest.approx(0.0)
+    assert replay.metrics.right_censored_target_rate == pytest.approx(1.0)
     assert replay.metrics.executor_created_exposure == 0
     assert all(snapshot.volatility_target == pytest.approx(0.20) for snapshot in replay.snapshots)
     assert all(snapshot.exposure_cap == pytest.approx(1.50) for snapshot in replay.snapshots)
@@ -991,6 +994,9 @@ def test_cumulative_report_carries_exact_task3_and_task4_execution_metrics():
     execution_metrics = ArchitectureExecutionMetrics(
         target_tracking_error=0.012,
         time_to_target_bars=2.0,
+        time_to_target_status="OBSERVED",
+        immediate_target_reached_rate=0.25,
+        right_censored_target_rate=0.0,
         implementation_shortfall=14.5,
         slippage=3.25,
         target_overshoot=0,
@@ -1018,6 +1024,9 @@ def test_cumulative_report_carries_exact_task3_and_task4_execution_metrics():
         "status": "OBSERVED",
         "target_tracking_error": 0.012,
         "time_to_target_bars": 2.0,
+        "time_to_target_status": "OBSERVED",
+        "immediate_target_reached_rate": 0.25,
+        "right_censored_target_rate": 0.0,
         "implementation_shortfall": 14.5,
         "slippage": 3.25,
         "target_overshoot": 0,
