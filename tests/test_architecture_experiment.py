@@ -1493,7 +1493,10 @@ def test_replay_bridge_builds_complete_pit_stage_inputs_and_true_4h_labels():
             flags=["PORTFOLIO_KILL"],
         )
     ]
-    runner._funding_rows = [{"funding_time_ns": 150, "funding_rate": 0.001}]
+    runner._funding_rows = [
+        {"funding_time_ns": 50, "funding_rate": 0.002},
+        {"funding_time_ns": 150, "funding_rate": 0.001},
+    ]
     runner._execution_rows = [
         {"close_time_ns": 100, "close": 100.0},
         {"close_time_ns": 150, "close": 105.0},
