@@ -308,6 +308,8 @@ class OptionsStateCalculationTests(unittest.TestCase):
             {"exact_delta", "linear_delta_interpolation", "nearest_delta"},
         )
         self.assertEqual(state.selected_expiry_ts_ms_30d, (source_ns + 30 * DAY_NS) // 1_000_000)
+        self.assertIn("mark_iv_unit=percent_or_decimal", state.calculation_method)
+        self.assertIn("normalized_to_annualized_decimal", state.calculation_method)
         self.assertIn("per_leg_selection_recorded", state.calculation_method)
         self.assertNotIn(";linear_delta_interpolation;", state.calculation_method)
 

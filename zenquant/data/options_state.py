@@ -20,7 +20,8 @@ FOUR_HOURS_NS = 4 * 60 * 60 * 1_000_000_000
 DAY_NS = 24 * 60 * 60 * 1_000_000_000
 CALCULATION_VERSION = "options-state-v2"
 CALCULATION_METHOD = (
-    "deribit_mark_iv_pct_to_decimal;nearest_expiry_atm_oi_weighted;"
+    "mark_iv_unit=percent_or_decimal;normalized_to_annualized_decimal;"
+    "nearest_expiry_atm_oi_weighted;"
     "black76_forward=index_price;delta_selection=per_leg_selection_recorded;"
     "25d_skew=put_minus_call;25d_risk_reversal=call_minus_put;"
     "gex_call_positive_put_negative"
