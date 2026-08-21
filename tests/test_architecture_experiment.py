@@ -24,12 +24,14 @@ from zenquant.infra import InMemoryJetStream, StreamConfig
 from zenquant.plugins.profile import build_from_profile
 from zenquant.research.architecture_experiment import (
     DEFAULT_ARCHITECTURE_MANIFEST_PATH,
+    ArchitectureExecutionMetrics,
     ArchitectureObservation,
     ArchitectureRunEvidence,
     ArchitectureStage,
     apply_target_no_trade_band,
     build_architecture_attribution_report,
     load_architecture_experiment_manifest,
+    observe_cost_shadow,
     stage_exposure,
 )
 from zenquant.strategy.engine import ARCStrategyConfig, ARCStrategyEngine
@@ -474,6 +476,145 @@ def test_a4_stage_is_cumulative_and_does_not_change_a3():
     assert stage_exposure(observation, ArchitectureStage.A4, current_position=0.59) == pytest.approx(0.59)
 
 
+def test_a5_shadow_records_costs_and_forward_labels_without_blocking():
+    shadow = observe_cost_shadow(
+        target_delta=0.5,
+        fixed_notional=1_000.0,
+        estimated_fee_bps=10.0,
+        estimated_slippage_bps=5.0,
+        reference_price=100.0,
+        actual_fill_price=100.2,
+        forward_return_1=0.01,
+        forward_return_3=None,
+        forward_return_6=-0.02,
+    )
+
+    assert shadow.target_delta == pytest.approx(0.5)
+    assert shadow.estimated_fee == pytest.approx(0.5)
+    assert shadow.estimated_slippage == pytest.approx(0.25)
+    assert shadow.round_trip_cost == pytest.approx(1.5)
+    assert shadow.breakeven_move == pytest.approx(0.003)
+    assert shadow.actual_implementation_shortfall == pytest.approx(1.0)
+    assert shadow.forward_return_1 == pytest.approx(0.01)
+    assert shadow.forward_return_3 is None
+    assert shadow.forward_return_6 == pytest.approx(-0.02)
+    assert shadow.blocks_order is False
+
+
+def test_a5_shadow_preserves_a4_target_and_keeps_missing_fill_explicit():
+    observation = replace(
+        _observation(raw_score=0.4, frozen_confidence=0.6),
+        annualized_volatility=0.20,
+        risk_regime="NORMAL",
+        estimated_fee_bps=10.0,
+        estimated_slippage_bps=5.0,
+        reference_price=100.0,
+        actual_fill_price=None,
+        forward_return_3=None,
+        forward_return_6=None,
+    )
+
+    a4_target = stage_exposure(observation, ArchitectureStage.A4, current_position=0.0)
+    a5_target = stage_exposure(observation, ArchitectureStage.A5_SHADOW, current_position=0.0)
+    shadow = observe_cost_shadow(
+        target_delta=a5_target,
+        fixed_notional=1_000.0,
+        estimated_fee_bps=observation.estimated_fee_bps,
+        estimated_slippage_bps=observation.estimated_slippage_bps,
+        reference_price=observation.reference_price,
+        actual_fill_price=observation.actual_fill_price,
+        forward_return_1=observation.forward_return,
+        forward_return_3=observation.forward_return_3,
+        forward_return_6=observation.forward_return_6,
+    )
+
+    assert a5_target == a4_target
+    assert shadow.actual_implementation_shortfall is None
+    assert shadow.forward_return_3 is None
+    assert shadow.forward_return_6 is None
+    assert shadow.blocks_order is False
+
+
+def test_cumulative_report_carries_exact_task3_and_task4_execution_metrics():
+    execution_metrics = ArchitectureExecutionMetrics(
+        target_tracking_error=0.012,
+        time_to_target_bars=2.0,
+        implementation_shortfall=14.5,
+        slippage=3.25,
+        target_overshoot=0,
+        unexpected_reversal=0,
+        executor_created_exposure=0,
+        episode_profit_factor=1.42,
+        episode_profit_factor_status="DEFINED",
+        position_switches_per_day=0.75,
+    )
+    first = replace(
+        _complete_matrix()[0],
+        execution_metrics_by_stage={ArchitectureStage.A5_SHADOW.value: execution_metrics},
+    )
+    report = build_architecture_attribution_report(
+        _complete_matrix(replace_run=first),
+        manifest=load_architecture_experiment_manifest(),
+        fixed_notional=100_000.0,
+    )
+
+    stages = report["runs"][0]["stages"]
+    assert list(stages) == ["A0", "A1_SIGN", "A1_SCORE", "A2", "A3", "A4", "A5_SHADOW"]
+    assert "execution_metrics" not in stages["A1_SCORE"]
+    assert stages["A2"]["execution_metrics"]["status"] == "NOT_OBSERVED"
+    assert stages["A5_SHADOW"]["execution_metrics"] == {
+        "status": "OBSERVED",
+        "target_tracking_error": 0.012,
+        "time_to_target_bars": 2.0,
+        "implementation_shortfall": 14.5,
+        "slippage": 3.25,
+        "target_overshoot": 0,
+        "unexpected_reversal": 0,
+        "executor_created_exposure": 0,
+        "episode_profit_factor": 1.42,
+        "episode_profit_factor_status": "DEFINED",
+        "position_switches_per_day": 0.75,
+    }
+    assert stages["A5_SHADOW"]["cost_shadow"]["blocks_order"] is False
+
+
+def test_later_stage_inputs_leave_a1_report_payloads_byte_identical():
+    baseline_run = _complete_matrix()[0]
+    changed_observations = tuple(
+        replace(
+            observation,
+            annualized_volatility=0.10,
+            risk_regime="STRESS",
+            exchange_min_quantity=0.01,
+            safety_reasons=("KILL",),
+            estimated_fee_bps=12.0,
+            estimated_slippage_bps=8.0,
+            reference_price=100.0,
+            actual_fill_price=100.1,
+            forward_return_3=0.03,
+            forward_return_6=0.06,
+        )
+        for observation in baseline_run.observations
+    )
+    changed_run = replace(baseline_run, observations=changed_observations)
+    manifest = load_architecture_experiment_manifest()
+    baseline_report = build_architecture_attribution_report(
+        _complete_matrix(),
+        manifest=manifest,
+        fixed_notional=100_000.0,
+    )
+    changed_report = build_architecture_attribution_report(
+        _complete_matrix(replace_run=changed_run),
+        manifest=manifest,
+        fixed_notional=100_000.0,
+    )
+
+    for stage in ("A1_SIGN", "A1_SCORE"):
+        baseline_payload = json.dumps(baseline_report["runs"][0]["stages"][stage], sort_keys=True).encode()
+        changed_payload = json.dumps(changed_report["runs"][0]["stages"][stage], sort_keys=True).encode()
+        assert changed_payload == baseline_payload
+
+
 @pytest.mark.parametrize("confidence", [-0.01, 1.01])
 def test_stage_transforms_reject_confidence_outside_one_x_contract(confidence):
     """Catches malformed confidence silently creating leverage above 1x."""
@@ -600,7 +741,7 @@ def test_report_requires_exact_matrix_and_carries_frozen_identities():
 
     assert [(run["window"], run["seed"]) for run in report["runs"]] == list(manifest.expected_run_keys)
     assert all(
-        list(run["stages"]) == ["A0", "A1_SIGN", "A1_SCORE", "A2", "A3", "A4"]
+        list(run["stages"]) == ["A0", "A1_SIGN", "A1_SCORE", "A2", "A3", "A4", "A5_SHADOW"]
         for run in report["runs"]
     )
     assert report["manifest"]["sha256"] == manifest.sha256
@@ -653,6 +794,11 @@ def test_report_requires_exact_matrix_and_carries_frozen_identities():
         "no_trade_band_fraction": 0.04,
         "exchange_minimum_floor": True,
         "safety_bypass_reasons": ["CAP_VIOLATION", "KILL", "UNSAFE"],
+    }
+    assert report["stage_constraints"]["A5_SHADOW"] == {
+        "observation_only": True,
+        "blocks_orders": False,
+        "forward_horizons_4h": [1, 3, 6],
     }
 
 

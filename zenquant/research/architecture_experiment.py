@@ -1,8 +1,8 @@
-"""Pure fixed-notional attribution for the frozen A0/A1 architecture stages.
+"""Pure transforms for the frozen A0-A5 architecture experiment.
 
-This module deliberately knows nothing about risk, volatility sizing, options,
-no-trade bands, or execution behavior.  It receives a minimal causal record and
-attributes one-bar returns to three frozen exposure transforms only.
+A0/A1 remain isolated direction attribution. Later transforms add volatility,
+regime, one target band, and observation-only cost instrumentation in the
+approved causal order. Options state is deliberately outside this module.
 """
 
 from __future__ import annotations
@@ -12,7 +12,7 @@ import json
 import math
 from collections import defaultdict
 from collections.abc import Mapping
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from enum import StrEnum
 from pathlib import Path
 from types import MappingProxyType
@@ -22,7 +22,7 @@ from zenquant.domain import PositionEpisode
 
 from .gate_v3 import evaluate_gate_v3
 
-ARCHITECTURE_ATTRIBUTION_SCHEMA_VERSION = "architecture_attribution.v1"
+ARCHITECTURE_ATTRIBUTION_SCHEMA_VERSION = "architecture_attribution.v2"
 DEFAULT_COST_STRESS_BPS = (0.0, 5.0, 15.0)
 DEFAULT_ARCHITECTURE_MANIFEST_PATH = Path("config/research/architecture_experiment_v1.json")
 ARCHITECTURE_EXPERIMENT_V1_MANIFEST_SHA256 = "c982d074b24ec21235dfefbd972d936dc4f5a4ab0360964013576c90729bfbe0"
@@ -169,6 +169,7 @@ class ArchitectureStage(StrEnum):
     A2 = "A2"
     A3 = "A3"
     A4 = "A4"
+    A5_SHADOW = "A5_SHADOW"
 
 
 @dataclass(frozen=True, slots=True)
@@ -188,6 +189,60 @@ class ArchitectureObservation:
     exchange_min_quantity: float = 0.0
     reduce_only: bool = False
     safety_reasons: tuple[str, ...] = ()
+    estimated_fee_bps: float = 0.0
+    estimated_slippage_bps: float = 0.0
+    reference_price: float | None = None
+    actual_fill_price: float | None = None
+    forward_return_3: float | None = None
+    forward_return_6: float | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class ArchitectureExecutionMetrics:
+    """Observed Task-3/4 metrics for one concrete stage replay."""
+
+    target_tracking_error: float
+    time_to_target_bars: float
+    implementation_shortfall: float
+    slippage: float
+    target_overshoot: int
+    unexpected_reversal: int
+    executor_created_exposure: int
+    episode_profit_factor: float | None
+    episode_profit_factor_status: str
+    position_switches_per_day: float
+
+    def __post_init__(self) -> None:
+        for name in (
+            "target_tracking_error",
+            "time_to_target_bars",
+            "implementation_shortfall",
+            "slippage",
+            "position_switches_per_day",
+        ):
+            if not math.isfinite(float(getattr(self, name))):
+                raise ValueError(f"{name} must be finite")
+        for name in ("target_overshoot", "unexpected_reversal", "executor_created_exposure"):
+            if int(getattr(self, name)) < 0:
+                raise ValueError(f"{name} must be non-negative")
+        if self.episode_profit_factor is not None and not math.isfinite(float(self.episode_profit_factor)):
+            raise ValueError("episode_profit_factor must be finite when observed")
+
+
+@dataclass(frozen=True, slots=True)
+class CostShadowObservation:
+    """Non-authoritative A5 cost observation for one target transition."""
+
+    target_delta: float
+    estimated_fee: float
+    estimated_slippage: float
+    round_trip_cost: float
+    breakeven_move: float
+    actual_implementation_shortfall: float | None
+    forward_return_1: float | None
+    forward_return_3: float | None
+    forward_return_6: float | None
+    blocks_order: bool = field(default=False, init=False)
 
 
 @dataclass(frozen=True, slots=True)
@@ -208,6 +263,7 @@ class ArchitectureRunEvidence:
     missing_alpha_count: int
     terminal_excluded_count: int
     position_episodes: tuple[PositionEpisode, ...] = ()
+    execution_metrics_by_stage: Mapping[str, ArchitectureExecutionMetrics] = field(default_factory=dict)
 
 
 def stage_exposure(
@@ -289,6 +345,55 @@ def apply_target_no_trade_band(
     return current if abs(target - current) < threshold else target
 
 
+def observe_cost_shadow(
+    *,
+    target_delta: float,
+    fixed_notional: float,
+    estimated_fee_bps: float,
+    estimated_slippage_bps: float,
+    reference_price: float | None,
+    actual_fill_price: float | None,
+    forward_return_1: float | None,
+    forward_return_3: float | None,
+    forward_return_6: float | None,
+) -> CostShadowObservation:
+    """Measure A5 costs without returning an execution decision."""
+    delta = _finite_float(target_delta, name="target_delta")
+    notional = _finite_float(fixed_notional, name="fixed_notional")
+    fee_bps = _finite_float(estimated_fee_bps, name="estimated_fee_bps")
+    slippage_bps = _finite_float(estimated_slippage_bps, name="estimated_slippage_bps")
+    if notional <= 0.0:
+        raise ValueError("fixed_notional must be positive")
+    if fee_bps < 0.0 or slippage_bps < 0.0:
+        raise ValueError("estimated cost bps must be non-negative")
+
+    turnover_notional = abs(delta) * notional
+    estimated_fee = turnover_notional * fee_bps / 10_000.0
+    estimated_slippage = turnover_notional * slippage_bps / 10_000.0
+    round_trip_cost = 2.0 * (estimated_fee + estimated_slippage)
+    breakeven_move = round_trip_cost / turnover_notional if turnover_notional else 0.0
+    actual_shortfall: float | None = None
+    if reference_price is not None and actual_fill_price is not None:
+        reference = _finite_float(reference_price, name="reference_price")
+        fill_price = _finite_float(actual_fill_price, name="actual_fill_price")
+        if reference <= 0.0 or fill_price <= 0.0:
+            raise ValueError("observed prices must be positive")
+        direction = 1.0 if delta > 0.0 else -1.0 if delta < 0.0 else 0.0
+        actual_shortfall = direction * ((fill_price / reference) - 1.0) * turnover_notional
+
+    return CostShadowObservation(
+        target_delta=delta,
+        estimated_fee=estimated_fee,
+        estimated_slippage=estimated_slippage,
+        round_trip_cost=round_trip_cost,
+        breakeven_move=breakeven_move,
+        actual_implementation_shortfall=actual_shortfall,
+        forward_return_1=_optional_finite_float(forward_return_1, name="forward_return_1"),
+        forward_return_3=_optional_finite_float(forward_return_3, name="forward_return_3"),
+        forward_return_6=_optional_finite_float(forward_return_6, name="forward_return_6"),
+    )
+
+
 def build_architecture_attribution_report(
     run_evidence: list[ArchitectureRunEvidence],
     *,
@@ -367,7 +472,14 @@ def build_architecture_attribution_report(
                     fixed_notional=notional,
                     cost_stress_bps=costs,
                 ),
+                ArchitectureStage.A5_SHADOW.value: _summarize_stage(
+                    ordered,
+                    stage=ArchitectureStage.A5_SHADOW,
+                    fixed_notional=notional,
+                    cost_stress_bps=costs,
+                ),
             }
+            _attach_execution_metrics(stages, evidence.execution_metrics_by_stage)
             runs.append(
                 {
                     "window": window.label,
@@ -446,6 +558,11 @@ def build_architecture_attribution_report(
                 "exchange_minimum_floor": True,
                 "safety_bypass_reasons": sorted(A4_SAFETY_BYPASS_REASONS),
             },
+            ArchitectureStage.A5_SHADOW.value: {
+                "observation_only": True,
+                "blocks_orders": False,
+                "forward_horizons_4h": [1, 3, 6],
+            },
         },
         "cost_stress_bps": list(costs),
         "runs": runs,
@@ -473,6 +590,7 @@ def _summarize_stage(
     gross_pnl = 0.0
     turnover_notional = 0.0
     regime_rows: defaultdict[str, list[dict[str, Any]]] = defaultdict(list)
+    cost_shadow_rows: list[dict[str, Any]] = []
 
     for observation in observations:
         exposure = stage_exposure(observation, stage, current_position=previous_exposure)
@@ -494,6 +612,21 @@ def _summarize_stage(
         evaluable_count += 1
         gross_pnl += row_gross_pnl
         turnover_notional += row_turnover
+        if stage == ArchitectureStage.A5_SHADOW:
+            shadow = observe_cost_shadow(
+                target_delta=exposure - previous_exposure,
+                fixed_notional=fixed_notional,
+                estimated_fee_bps=observation.estimated_fee_bps,
+                estimated_slippage_bps=observation.estimated_slippage_bps,
+                reference_price=observation.reference_price,
+                actual_fill_price=observation.actual_fill_price,
+                forward_return_1=observation.forward_return,
+                forward_return_3=observation.forward_return_3,
+                forward_return_6=observation.forward_return_6,
+            )
+            shadow_payload = asdict(shadow)
+            row["cost_shadow"] = shadow_payload
+            cost_shadow_rows.append(shadow_payload)
         previous_exposure = exposure
         if exposure != 0.0:
             active_evaluable_count += 1
@@ -504,7 +637,7 @@ def _summarize_stage(
         regime_rows[observation.regime].append(row)
         attribution_rows.append(row)
 
-    return {
+    summary = {
         "stage": stage.value,
         "observation_count": len(observations),
         "evaluable_count": evaluable_count,
@@ -529,6 +662,54 @@ def _summarize_stage(
         },
         "attribution_rows": attribution_rows,
     }
+    if stage == ArchitectureStage.A5_SHADOW:
+        observed_shortfall = [
+            float(row["actual_implementation_shortfall"])
+            for row in cost_shadow_rows
+            if row["actual_implementation_shortfall"] is not None
+        ]
+        summary["cost_shadow"] = {
+            "blocks_order": False,
+            "observation_count": len(cost_shadow_rows),
+            "estimated_fee": sum(float(row["estimated_fee"]) for row in cost_shadow_rows),
+            "estimated_slippage": sum(float(row["estimated_slippage"]) for row in cost_shadow_rows),
+            "round_trip_cost": sum(float(row["round_trip_cost"]) for row in cost_shadow_rows),
+            "actual_implementation_shortfall": sum(observed_shortfall) if observed_shortfall else None,
+            "actual_shortfall_observation_count": len(observed_shortfall),
+            "forward_label_counts": {
+                str(horizon): sum(
+                    1 for row in cost_shadow_rows if row[f"forward_return_{horizon}"] is not None
+                )
+                for horizon in (1, 3, 6)
+            },
+        }
+    return summary
+
+
+def _attach_execution_metrics(
+    stages: dict[str, dict[str, Any]],
+    observed_metrics: Mapping[str, ArchitectureExecutionMetrics],
+) -> None:
+    tracked_stages = tuple(
+        stage.value
+        for stage in (
+            ArchitectureStage.A2,
+            ArchitectureStage.A3,
+            ArchitectureStage.A4,
+            ArchitectureStage.A5_SHADOW,
+        )
+    )
+    extra = sorted(set(observed_metrics) - set(tracked_stages))
+    if extra:
+        raise ValueError(f"execution metrics contain unapproved architecture stages: {extra!r}")
+    metric_names = tuple(ArchitectureExecutionMetrics.__dataclass_fields__)
+    for stage in tracked_stages:
+        metrics = observed_metrics.get(stage)
+        stages[stage]["execution_metrics"] = (
+            {"status": "OBSERVED", **asdict(metrics)}
+            if metrics is not None
+            else {"status": "NOT_OBSERVED", **dict.fromkeys(metric_names)}
+        )
 
 
 def _cost_summary(
@@ -646,6 +827,10 @@ def _finite_float(value: float, *, name: str) -> float:
     if not math.isfinite(resolved):
         raise ValueError(f"{name} must be finite")
     return resolved
+
+
+def _optional_finite_float(value: float | None, *, name: str) -> float | None:
+    return None if value is None else _finite_float(value, name=name)
 
 
 def _ratio(numerator: int, denominator: int) -> float | None:
