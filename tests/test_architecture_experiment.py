@@ -6,6 +6,7 @@ import importlib.util
 import json
 from dataclasses import asdict, replace
 from pathlib import Path
+from types import MappingProxyType
 
 import pytest
 
@@ -90,6 +91,13 @@ def test_checked_in_manifest_freezes_august_rank1_and_exact_matrix():
     assert manifest.alpha_label == "next_retained_confirmed_4h_close"
     assert manifest.a0_execution_timeframe == "5m"
     assert manifest.a0_context_timeframe == "1h"
+    assert manifest.profile_path == PROFILE_PATH.resolve()
+    assert manifest.profile_path.is_absolute()
+
+    with pytest.raises(TypeError):
+        manifest.candidate_params["max_leverage"] = 99.0
+    with pytest.raises(TypeError):
+        manifest.perturbation["price_noise_pct"] = 99.0
 
 
 def test_manifest_loader_fails_closed_when_matrix_is_altered(tmp_path):
@@ -136,8 +144,34 @@ def test_cli_builds_exact_august_candidate_and_original_a0_execution_contract():
     assert config.risk_config.dd_step_1_long == 0.15
     assert config.perturbation.seed == 42
     assert config.perturbation.price_noise_pct == 0.001
-    assert config.profile_path == Path("config/profiles/default.toml")
+    assert config.profile_path == PROFILE_PATH.resolve()
     assert config_hash.startswith("sha256:")
+
+
+def test_builder_revalidates_frozen_params_and_hashes_actual_constructed_configs(monkeypatch):
+    """Catches post-load mutation or builder/default drift retaining A0 identity."""
+    module = _load_cli_module()
+    manifest = load_architecture_experiment_manifest()
+    window = manifest.windows[0]
+    _, baseline_hash = module.build_frozen_backtest_config(
+        root=Path("/data"), manifest=manifest, window=window, seed=42
+    )
+
+    altered_manifest = replace(
+        manifest,
+        candidate_params=MappingProxyType({**dict(manifest.candidate_params), "max_leverage": 99.0}),
+    )
+    with pytest.raises(ValueError, match="candidate params SHA-256"):
+        module.build_frozen_backtest_config(root=Path("/data"), manifest=altered_manifest, window=window, seed=42)
+
+    original_builder = module.build_strategy_config
+    monkeypatch.setattr(
+        module,
+        "build_strategy_config",
+        lambda params: replace(original_builder(params), target_vol_1h=0.123456),
+    )
+    _, drifted_hash = module.build_frozen_backtest_config(root=Path("/data"), manifest=manifest, window=window, seed=42)
+    assert drifted_hash != baseline_hash
 
 
 def _alpha_pack() -> IndicatorPack:
@@ -285,6 +319,10 @@ def _run_evidence(
 ) -> ArchitectureRunEvidence:
     manifest = load_architecture_experiment_manifest()
     window = next(item for item in manifest.windows if item.label == window_label)
+    resolved_observations = (
+        observations if observations is not None else (_observation(alpha_id=f"{window_label}-{seed}"),)
+    )
+    alpha_snapshot_count = len(resolved_observations) + 1
     return ArchitectureRunEvidence(
         window=window_label,
         start_ns=window.start_ns,
@@ -293,9 +331,12 @@ def _run_evidence(
         a0_metrics={"total_return": seed / 10_000.0, "max_drawdown": 0.123},
         a0_final_equity=100_000.0 + seed,
         a0_config_hash="a0-config-v1",
-        observations=observations if observations is not None else (_observation(alpha_id=f"{window_label}-{seed}"),),
+        observations=resolved_observations,
         excluded_non_evaluable_count=1,
-        confirmed_4h_row_count=2,
+        confirmed_4h_row_count=alpha_snapshot_count,
+        alpha_snapshot_count=alpha_snapshot_count,
+        missing_alpha_count=0,
+        terminal_excluded_count=1,
     )
 
 
@@ -551,6 +592,43 @@ def test_replay_bridge_uses_confirmed_4h_rows_and_excludes_terminal_alpha():
         ],
         "excluded_non_evaluable_count": 1,
         "confirmed_4h_row_count": 2,
+        "alpha_snapshot_count": 2,
+        "missing_alpha_count": 0,
+        "terminal_excluded_count": 1,
     }
     prohibited_fields = {"options_state_id", "regime_risk_multiplier", "annualized_volatility", "risk_flags"}
     assert not (prohibited_fields & set(batch["observations"][0]))
+
+
+@pytest.mark.parametrize("failure", ["missing", "duplicate"])
+def test_replay_bridge_fails_closed_before_terminal_exclusion_on_alpha_gaps(failure):
+    """Catches missing or duplicate same-cutoff alpha being hidden as warm-up/terminal loss."""
+    runner = object.__new__(HistoricalBacktest)
+    runner._confirmed_four_hour_rows = [
+        {"close_time_ns": 100, "close": 100.0},
+        {"close_time_ns": 200, "close": 110.0},
+    ]
+    alpha = ArchitectureAlphaSnapshot(
+        alpha_id="alpha-100",
+        symbol="BTCUSDT_PERP",
+        timeframe=Timeframe.TF_4H,
+        cutoff_time_ns=100,
+        formula_hash="formula-v1",
+        indicator_version="pack.v1",
+        alpha_config_hash="alpha-config-v1",
+        raw_score=0.4,
+        confidence=0.6,
+        direction=1.0,
+        regime="TREND",
+        direction_plugin_names=("multi_momentum_signal",),
+    )
+    terminal = replace(alpha, alpha_id="alpha-200", cutoff_time_ns=200)
+    runner._architecture_alphas = [alpha] if failure == "missing" else [alpha, alpha, terminal]
+
+    pattern = (
+        r"confirmed=2 alpha=1 missing=1 terminal_excluded=0"
+        if failure == "missing"
+        else r"confirmed=2 alpha=3 missing=0 terminal_excluded=0 duplicate_cutoffs=\[100\]"
+    )
+    with pytest.raises(ValueError, match=pattern):
+        runner.build_architecture_attribution_rows(horizon=1)

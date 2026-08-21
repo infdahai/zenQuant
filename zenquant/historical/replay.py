@@ -1081,19 +1081,41 @@ class HistoricalBacktest:
             raise ValueError("horizon must be positive")
 
         confirmed_rows = sorted(self._confirmed_four_hour_rows, key=lambda row: int(row["close_time_ns"]))
-        alphas = {
-            alpha.cutoff_time_ns: alpha for alpha in self._architecture_alphas if alpha.timeframe == Timeframe.TF_4H
-        }
+        confirmed_counts = Counter(int(row["close_time_ns"]) for row in confirmed_rows)
+        duplicate_confirmed = sorted(cutoff for cutoff, count in confirmed_counts.items() if count != 1)
+        if duplicate_confirmed:
+            raise ValueError(f"duplicate confirmed 4h rows at cutoffs={duplicate_confirmed!r}")
+
+        alpha_snapshots = [alpha for alpha in self._architecture_alphas if alpha.timeframe == Timeframe.TF_4H]
+        alpha_counts = Counter(alpha.cutoff_time_ns for alpha in alpha_snapshots)
+        duplicate_alpha = sorted(cutoff for cutoff, count in alpha_counts.items() if count != 1)
+        if duplicate_alpha:
+            missing_count = len(set(confirmed_counts) - set(alpha_counts))
+            raise ValueError(
+                "architecture alpha cutoff reconciliation failed before terminal exclusion: "
+                f"confirmed={len(confirmed_rows)} alpha={len(alpha_snapshots)} "
+                f"missing={missing_count} terminal_excluded=0 duplicate_cutoffs={duplicate_alpha!r}"
+            )
+        confirmed_cutoffs = set(confirmed_counts)
+        alpha_cutoffs = set(alpha_counts)
+        missing_cutoffs = sorted(confirmed_cutoffs - alpha_cutoffs)
+        extra_cutoffs = sorted(alpha_cutoffs - confirmed_cutoffs)
+        if missing_cutoffs or extra_cutoffs:
+            raise ValueError(
+                "architecture alpha cutoff reconciliation failed before terminal exclusion: "
+                f"confirmed={len(confirmed_rows)} alpha={len(alpha_snapshots)} "
+                f"missing={len(missing_cutoffs)} terminal_excluded=0 "
+                f"missing_cutoffs={missing_cutoffs!r} extra_cutoffs={extra_cutoffs!r}"
+            )
+        alphas = {alpha.cutoff_time_ns: alpha for alpha in alpha_snapshots}
         rows: list[dict[str, Any]] = []
-        excluded_non_evaluable_count = 0
+        terminal_excluded_count = 0
         for index, event_row in enumerate(confirmed_rows):
             cutoff_time_ns = int(event_row["close_time_ns"])
-            alpha = alphas.get(cutoff_time_ns)
-            if alpha is None:
-                continue
+            alpha = alphas[cutoff_time_ns]
             forward_return = _forward_return(confirmed_rows, index, horizon)
             if forward_return is None:
-                excluded_non_evaluable_count += 1
+                terminal_excluded_count += 1
                 continue
             rows.append(
                 {
@@ -1109,8 +1131,11 @@ class HistoricalBacktest:
             )
         return {
             "observations": rows,
-            "excluded_non_evaluable_count": excluded_non_evaluable_count,
+            "excluded_non_evaluable_count": terminal_excluded_count,
             "confirmed_4h_row_count": len(confirmed_rows),
+            "alpha_snapshot_count": len(alpha_snapshots),
+            "missing_alpha_count": len(missing_cutoffs),
+            "terminal_excluded_count": terminal_excluded_count,
         }
 
 

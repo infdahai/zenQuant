@@ -11,9 +11,11 @@ import hashlib
 import json
 import math
 from collections import defaultdict
+from collections.abc import Mapping
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
+from types import MappingProxyType
 from typing import Any
 
 ARCHITECTURE_ATTRIBUTION_SCHEMA_VERSION = "architecture_attribution.v1"
@@ -33,13 +35,14 @@ class ArchitectureWindow:
 class ArchitectureExperimentManifest:
     version: str
     sha256: str
+    manifest_path: Path
     candidate_id: str
     candidate_source_path: str
     candidate_source_json_path: str
     candidate_source_sha256: str
     candidate_params_sha256: str
-    candidate_params: dict[str, Any]
-    profile_path: str
+    candidate_params: Mapping[str, Any]
+    profile_path: Path
     profile_sha256: str
     symbol: str
     portfolio_symbol: str
@@ -53,7 +56,7 @@ class ArchitectureExperimentManifest:
     a0_bias_timeframe: str
     windows: tuple[ArchitectureWindow, ...]
     seeds: tuple[int, ...]
-    perturbation: dict[str, float]
+    perturbation: Mapping[str, float]
     cost_stress_bps: tuple[float, ...]
 
     @property
@@ -85,7 +88,7 @@ def load_architecture_experiment_manifest(
         raise ValueError("architecture experiment candidate params SHA-256 mismatch")
     profile = payload["profile"]
     repository_root = Path(__file__).parents[2]
-    profile_path = repository_root / str(profile["path"])
+    profile_path = (repository_root / str(profile["path"])).resolve()
     profile_digest = hashlib.sha256(profile_path.read_bytes()).hexdigest()
     if profile_digest != profile["sha256"]:
         raise ValueError(
@@ -96,13 +99,14 @@ def load_architecture_experiment_manifest(
     return ArchitectureExperimentManifest(
         version=str(payload["version"]),
         sha256=digest,
+        manifest_path=resolved_path.resolve(),
         candidate_id=str(candidate["id"]),
         candidate_source_path=str(candidate["source_path"]),
         candidate_source_json_path=str(candidate["source_json_path"]),
         candidate_source_sha256=str(candidate["source_sha256"]),
         candidate_params_sha256=str(candidate["params_sha256"]),
-        candidate_params=params,
-        profile_path=str(profile["path"]),
+        candidate_params=_deep_freeze(params),
+        profile_path=profile_path,
         profile_sha256=str(profile["sha256"]),
         symbol=str(payload["symbol"]),
         portfolio_symbol=str(payload["portfolio_symbol"]),
@@ -123,9 +127,17 @@ def load_architecture_experiment_manifest(
             for window in payload["windows"]
         ),
         seeds=tuple(int(seed) for seed in payload["seeds"]),
-        perturbation={key: float(value) for key, value in payload["perturbation"].items()},
+        perturbation=_deep_freeze({key: float(value) for key, value in payload["perturbation"].items()}),
         cost_stress_bps=tuple(float(value) for value in payload["cost_stress_bps"]),
     )
+
+
+def _deep_freeze(value: Any) -> Any:
+    if isinstance(value, dict):
+        return MappingProxyType({key: _deep_freeze(item) for key, item in value.items()})
+    if isinstance(value, list | tuple):
+        return tuple(_deep_freeze(item) for item in value)
+    return value
 
 
 class ArchitectureStage(StrEnum):
@@ -164,6 +176,9 @@ class ArchitectureRunEvidence:
     observations: tuple[ArchitectureObservation, ...]
     excluded_non_evaluable_count: int
     confirmed_4h_row_count: int
+    alpha_snapshot_count: int
+    missing_alpha_count: int
+    terminal_excluded_count: int
 
 
 def stage_exposure(observation: ArchitectureObservation, stage: ArchitectureStage | str) -> float:
@@ -236,6 +251,9 @@ def build_architecture_attribution_report(
                     "end_ns": window.end_ns,
                     "seed": seed,
                     "confirmed_4h_row_count": evidence.confirmed_4h_row_count,
+                    "alpha_snapshot_count": evidence.alpha_snapshot_count,
+                    "missing_alpha_count": evidence.missing_alpha_count,
+                    "terminal_excluded_count": evidence.terminal_excluded_count,
                     "excluded_non_evaluable_count": evidence.excluded_non_evaluable_count,
                     "identities": {
                         "a0_config_hash": evidence.a0_config_hash,
@@ -255,7 +273,7 @@ def build_architecture_attribution_report(
             "candidate_id": manifest.candidate_id,
             "candidate_source_sha256": manifest.candidate_source_sha256,
             "candidate_params_sha256": manifest.candidate_params_sha256,
-            "profile_path": manifest.profile_path,
+            "profile_path": str(manifest.profile_path),
             "profile_sha256": manifest.profile_sha256,
             "windows": [
                 {"label": window.label, "start_ns": window.start_ns, "end_ns": window.end_ns}
@@ -456,6 +474,17 @@ def _validate_run_matrix(
             raise ValueError(f"architecture run observations must not be empty for {key!r}")
         if run.excluded_non_evaluable_count < 0 or run.confirmed_4h_row_count <= 0:
             raise ValueError(f"invalid architecture row counts for {key!r}")
+        if (
+            run.missing_alpha_count != 0
+            or run.alpha_snapshot_count != run.confirmed_4h_row_count
+            or run.terminal_excluded_count != run.excluded_non_evaluable_count
+            or len(run.observations) + run.terminal_excluded_count != run.alpha_snapshot_count
+        ):
+            raise ValueError(
+                f"architecture alpha coverage mismatch for {key!r}: "
+                f"confirmed={run.confirmed_4h_row_count} alpha={run.alpha_snapshot_count} "
+                f"missing={run.missing_alpha_count} terminal_excluded={run.terminal_excluded_count}"
+            )
     return indexed
 
 
