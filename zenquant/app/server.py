@@ -56,7 +56,7 @@ from zenquant.domain import (
     Timeframe,
 )
 from zenquant.domain.serde import ns_to_iso, to_jsonable
-from zenquant.execution import ExecutionGateway, ExecutionKernel, SimulatedGateway
+from zenquant.execution import ExecutionGateway, ExecutionKernel, ExecutionKernelConfig, SimulatedGateway
 from zenquant.indicator import IndicatorEngine, IndicatorEngineConfig, IndicatorStore
 from zenquant.infra import InMemoryJetStream, OnlineStateStore, OnlineStateStoreConfig, StreamConfig
 from zenquant.ingestor import (
@@ -70,7 +70,7 @@ from zenquant.ingestor import (
 from zenquant.market import BarClockService, SnapshotBuilder, SnapshotBuilderConfig
 from zenquant.risk import RiskOverlay
 from zenquant.state import StateEngine
-from zenquant.strategy import ARCStrategyEngine
+from zenquant.strategy import ARCStrategyConfig, ARCStrategyEngine
 
 
 @dataclass(slots=True)
@@ -100,10 +100,18 @@ class ZenQuantWebRuntime:
         runtime_mode: str = "demo",
         tick_interval_s: float = 0.04,
         warmup_steps: int = 300,
+        execution_config: ExecutionKernelConfig | None = None,
     ) -> None:
         self._runtime_mode = runtime_mode
         self._tick_interval_s = tick_interval_s
         self._warmup_steps = max(0, warmup_steps)
+        self._execution_config = execution_config
+        self._strategy_config: ARCStrategyConfig | None = None
+        if execution_config is not None and execution_config.execution_authority_mode == "target_tracking_v2":
+            self._strategy_config = ARCStrategyConfig(
+                execution_timeframe=Timeframe.TF_4H,
+                emit_decision_snapshots_v2=True,
+            )
         self._state_connections: list[_StateConnection] = []
         self._indicator_connections: list[_IndicatorConnection] = []
         self._tick_task: asyncio.Task[None] | None = None
@@ -365,12 +373,13 @@ class ZenQuantWebRuntime:
         if self.risk_overlay is not None:
             return
         self.risk_overlay = RiskOverlay(bus=self.bus)
-        self.strategy_engine = ARCStrategyEngine(bus=self.bus)
+        self.strategy_engine = ARCStrategyEngine(bus=self.bus, config=self._strategy_config)
         self.state_engine = StateEngine(bus=self.bus)
         self.execution_kernel = ExecutionKernel(
             bus=self.bus,
             gateway=self.execution_gateway,
             risk_overlay=self.risk_overlay,
+            config=self._execution_config,
         )
         self.online_state = OnlineStateStore(
             bus=self.bus,

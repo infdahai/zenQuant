@@ -13,7 +13,10 @@ from __future__ import annotations
 import unittest
 from dataclasses import asdict
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
 
+from zenquant.app.server import ZenQuantWebRuntime
 from zenquant.domain import (
     EventMeta,
     IndicatorCoverage,
@@ -23,13 +26,12 @@ from zenquant.domain import (
     TargetPosition,
     Timeframe,
 )
-from zenquant.execution import ExecutionKernel, ExecutionKernelConfig, SimulatedGateway
+from zenquant.execution import ExecutionKernelConfig
+from zenquant.historical import HistoricalBacktest, HistoricalBacktestConfig
 from zenquant.infra.event_bus import InMemoryJetStream, StreamConfig
 from zenquant.plugins.profile import build_from_profile
 from zenquant.plugins.protocols import PluginMeta, SignalResult, SizerResult
 from zenquant.plugins.registry import LoadedPlugin, PluginRegistry
-from zenquant.risk import RiskOverlay
-from zenquant.strategy.decision_snapshot import build_decision_snapshot
 from zenquant.strategy.engine import ARCStrategyConfig, ARCStrategyEngine
 
 PLUGIN_ROOT = Path(__file__).parent.parent / "zenquant" / "plugins"
@@ -267,28 +269,60 @@ class TestPluginRuntimeContracts(unittest.TestCase):
 
 
 class TestTargetTrackingRuntimeParity(unittest.TestCase):
-    def test_replay_and_live_adapter_inputs_produce_identical_v2_order_and_audit_bytes(self):
-        def run_adapter() -> tuple[list[dict], list[dict], list[dict]]:
-            bus = InMemoryJetStream()
-            risk = RiskOverlay(bus)
-            ExecutionKernel(
-                bus,
-                SimulatedGateway(),
-                risk,
-                config=ExecutionKernelConfig(execution_authority_mode="target_tracking_v2"),
+    def test_historical_and_live_runtime_compositions_have_byte_identical_v2_trace(self):
+        empty_store = SimpleNamespace(loaded=False)
+        replay_context = SimpleNamespace(
+            funding_rows=[],
+            open_interest_rows=[],
+            aggtrades={},
+            events=[],
+            macro_store=empty_store,
+            options_store=empty_store,
+            hf_store=empty_store,
+            cot_store=empty_store,
+            liquidation_store=empty_store,
+            eth_store=empty_store,
+            basis_store=empty_store,
+            cross_asset_context_store=empty_store,
+            onchain_factor_store=empty_store,
+            binance_metrics_factor_store=empty_store,
+            cache_stats={},
+        )
+        execution_config = ExecutionKernelConfig(execution_authority_mode="target_tracking_v2")
+        with patch("zenquant.historical.replay._build_replay_context", return_value=replay_context):
+            historical = HistoricalBacktest(
+                HistoricalBacktestConfig(
+                    profile_path=None,
+                    execution_config=execution_config,
+                )
             )
+        with patch.dict("os.environ", {"ZENQUANT_MICROSTRUCTURE_SIDECAR_ENABLED": "0"}):
+            live = ZenQuantWebRuntime(
+                runtime_mode="live",
+                execution_config=ExecutionKernelConfig(execution_authority_mode="target_tracking_v2"),
+            )
+            live._initialize_trading_chain()
+
+        def run_trace(bus, strategy, risk, kernel):
+            snapshots = []
             orders = []
             reports = []
             audits = []
+            bus.subscribe(
+                "strategy.decision_snapshot.4h.>", lambda _subject, payload: snapshots.append(asdict(payload))
+            )
             bus.subscribe("exec.order.submit", lambda _subject, payload: orders.append(asdict(payload)))
             bus.subscribe("exec.order.report", lambda _subject, payload: reports.append(asdict(payload)))
             bus.subscribe("exec.order.audit", lambda _subject, payload: audits.append(asdict(payload)))
+            pack = _make_pack(last_price=60_000.0)
+            state = _make_state()
+            playbook = strategy._playbook_engine.select(state)
             target = TargetPosition(
-                intent_id="parity-target",
+                intent_id="composition-parity-target",
                 portfolio="arc",
                 symbol="BTCUSDT_PERP",
                 timeframe=Timeframe.TF_4H,
-                cutoff_time_ns=14_400_000_000_000,
+                cutoff_time_ns=pack.cutoff_time_ns,
                 target_qty=0.75,
                 target_leverage=0.75,
                 reduce_only=False,
@@ -298,26 +332,7 @@ class TestTargetTrackingRuntimeParity(unittest.TestCase):
                 realized_vol=0.4,
                 atr=500.0,
             )
-            snapshot = build_decision_snapshot(
-                target=target,
-                formula_hash="formula-v2",
-                config_hash="config-v2",
-                indicator_version="pack.v1",
-                data_identity="parity-data",
-                alpha_direction=1.0,
-                alpha_raw_score=0.5,
-                alpha_confidence=0.8,
-                directional_state="UPTREND",
-                volatility_state="NORMAL",
-                positioning_state="HEALTHY",
-                quality_state="TRADABLE",
-                regime_risk_multiplier=1.0,
-                annualized_volatility=0.4,
-                volatility_target=0.2,
-                exposure_cap=1.5,
-                quality_flags=["OK"],
-                options_state_id=None,
-            )
+            risk.prime_indicator(pack)
             bus.publish(
                 "md.mark.BINANCE.BTCUSDT_PERP",
                 MarkPriceUpdate(
@@ -331,14 +346,27 @@ class TestTargetTrackingRuntimeParity(unittest.TestCase):
                     mark_price=60_000.0,
                 ),
             )
-            bus.publish(f"strategy.decision_snapshot.4h.{target.symbol}", snapshot)
-            bus.publish(f"intent.target_position.final.{target.symbol}", target)
-            return orders, reports, audits
+            strategy._publish_decision_snapshot_if_enabled(pack, state, playbook, target)
+            bus.publish(f"intent.target_position.{target.portfolio}.{target.symbol}", target)
+            return snapshots, orders, reports, audits, kernel.positions
 
-        replay_bytes = run_adapter()
-        live_bytes = run_adapter()
+        historical_trace = run_trace(
+            historical.bus,
+            historical.strategy_engine,
+            historical.risk_overlay,
+            historical.execution_kernel,
+        )
+        assert live.strategy_engine is not None
+        assert live.risk_overlay is not None
+        assert live.execution_kernel is not None
+        live_trace = run_trace(
+            live.bus,
+            live.strategy_engine,
+            live.risk_overlay,
+            live.execution_kernel,
+        )
 
-        self.assertEqual(replay_bytes, live_bytes)
+        self.assertEqual(historical_trace, live_trace)
 
 
 if __name__ == "__main__":
