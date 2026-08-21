@@ -22,6 +22,7 @@ CALCULATION_VERSION = "options-state-v1"
 CALCULATION_METHOD = (
     "deribit_mark_iv_pct_to_decimal;nearest_expiry_atm_oi_weighted;"
     "black76_forward=index_price;linear_delta_interpolation;"
+    "25d_skew=put_minus_call;25d_risk_reversal=call_minus_put;"
     "gex_call_positive_put_negative"
 )
 GEX_NORMALIZATION = "net_gex/total_absolute_gex"
@@ -288,7 +289,7 @@ def _quality_and_multiplier(
     *,
     complete: bool,
     stale: bool,
-    rr: float | None,
+    put_call_skew: float | None,
     normalized_gex: float,
     joint_label: str,
     atm_7d: float | None,
@@ -297,12 +298,16 @@ def _quality_and_multiplier(
     if not complete or stale:
         return "UNKNOWN", 1.0
     if (
-        (rr is not None and rr >= 0.08)
+        (put_call_skew is not None and put_call_skew >= 0.08)
         or normalized_gex <= -0.35
         or (atm_7d is not None and atm_30d is not None and atm_7d - atm_30d >= 0.08)
     ):
         return "STRESS", 0.50
-    if (rr is not None and rr >= 0.04) or normalized_gex < -0.10 or joint_label == "SPOT_DOWN_SKEW_STEEPENING":
+    if (
+        (put_call_skew is not None and put_call_skew >= 0.04)
+        or normalized_gex < -0.10
+        or joint_label == "SPOT_DOWN_SKEW_STEEPENING"
+    ):
         return "FRAGILE", 0.75
     if joint_label == "SPOT_UP_SKEW_FLATTENING" and normalized_gex >= 0:
         return "CONFIRMING", 1.0
@@ -375,7 +380,8 @@ def build_options_state(
     call_25d = _delta_iv(tenor_rows[30], source_ns, spot, "call")
     put_iv = put_25d.iv if put_25d else None
     call_iv = call_25d.iv if call_25d else None
-    rr = put_iv - call_iv if put_iv is not None and call_iv is not None else None
+    put_call_skew = put_iv - call_iv if put_iv is not None and call_iv is not None else None
+    risk_reversal = -put_call_skew if put_call_skew is not None else None
     proxy = _moneyness_proxy(tenor_rows[30], spot) if tenor_rows[30] else None
 
     rv = _finite_float(realized_vol_30d)
@@ -396,9 +402,9 @@ def build_options_state(
     history_30d = _expiry_rows(history, history_source_ns, 30) if history else []
     history_put = _delta_iv(history_30d, history_source_ns, history_spot, "put") if history_30d else None
     history_call = _delta_iv(history_30d, history_source_ns, history_spot, "call") if history_30d else None
-    history_rr = history_put.iv - history_call.iv if history_put is not None and history_call is not None else None
+    history_skew = history_put.iv - history_call.iv if history_put is not None and history_call is not None else None
     spot_return = spot / history_spot - 1.0 if spot > 0 and history_spot > 0 else None
-    skew_change = rr - history_rr if rr is not None and history_rr is not None else None
+    skew_change = put_call_skew - history_skew if put_call_skew is not None and history_skew is not None else None
     joint_label = _joint_label(spot_return, skew_change)
 
     strike_concentration, expiry_concentration = _oi_concentrations(ordered)
@@ -438,7 +444,7 @@ def build_options_state(
     trend_quality, multiplier = _quality_and_multiplier(
         complete=complete,
         stale=stale,
-        rr=rr,
+        put_call_skew=put_call_skew,
         normalized_gex=normalized_gex,
         joint_label=joint_label,
         atm_7d=atm_7d,
@@ -460,7 +466,8 @@ def build_options_state(
         "atm_iv_90d": atm_90d,
         "put_iv_25d_30d": put_iv,
         "call_iv_25d_30d": call_iv,
-        "risk_reversal_25d_30d": rr,
+        "put_call_skew_25d_30d": put_call_skew,
+        "risk_reversal_25d_30d": risk_reversal,
         "moneyness_skew_proxy_30d": proxy,
         "realized_vol_30d": rv,
         "realized_vol_source_timestamp_ns": realized_vol_source_timestamp_ns if rv is not None else 0,

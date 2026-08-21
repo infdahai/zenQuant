@@ -209,6 +209,7 @@ class OptionsState:
     atm_iv_90d: float | None
     put_iv_25d_30d: float | None
     call_iv_25d_30d: float | None
+    put_call_skew_25d_30d: float | None
     risk_reversal_25d_30d: float | None
     moneyness_skew_proxy_30d: float | None
     realized_vol_30d: float | None

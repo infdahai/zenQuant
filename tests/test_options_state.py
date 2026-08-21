@@ -125,7 +125,12 @@ class Black76DeltaTests(unittest.TestCase):
             realized_vol_source_timestamp_ns=source_ns + FOUR_HOURS_NS,
         )
         self.assertIsNotNone(state.risk_reversal_25d_30d)
+        self.assertIsNotNone(state.put_call_skew_25d_30d)
         self.assertIsNotNone(state.moneyness_skew_proxy_30d)
+        self.assertAlmostEqual(
+            state.risk_reversal_25d_30d or 0.0,
+            -(state.put_call_skew_25d_30d or 0.0),
+        )
         self.assertNotAlmostEqual(
             state.risk_reversal_25d_30d or 0.0,
             state.moneyness_skew_proxy_30d or 0.0,
