@@ -1,7 +1,7 @@
 import json
 import tempfile
 import unittest
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from unittest.mock import patch
 
@@ -18,6 +18,28 @@ from zenquant.data.liquidation_pipeline import LiquidationBucket, write_aggregat
 
 def _ts(year: int, month: int, day: int, hour: int) -> int:
     return int(datetime(year, month, day, hour, tzinfo=UTC).timestamp() * 1_000_000_000)
+
+
+def _write_deribit_snapshot(path: Path, ts: datetime) -> None:
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    source_ns = int(ts.timestamp() * 1_000_000_000)
+    rows = []
+    for dte in (7, 30, 90):
+        for option_type in ("call", "put"):
+            rows.append(
+                {
+                    "snapshot_ts_ns": source_ns,
+                    "expiry_ts_ms": int((ts + timedelta(days=dte)).timestamp() * 1_000),
+                    "strike": 100_000.0,
+                    "option_type": option_type,
+                    "underlying_price": 100_000.0,
+                    "open_interest": 100.0,
+                    "mark_iv": 60.0,
+                }
+            )
+    pq.write_table(pa.Table.from_pylist(rows), path)
 
 
 class ForwardDataCollectTests(unittest.TestCase):
@@ -75,8 +97,9 @@ class ForwardDataCollectTests(unittest.TestCase):
             block_flow_root = root / "block_flow"
             snapshot_dir = deribit_root / "BTC" / now.strftime("%Y-%m")
             snapshot_dir.mkdir(parents=True, exist_ok=True)
-            (snapshot_dir / f"options_chain_{now.strftime('%Y%m%dT%H%M%SZ')}.parquet").write_text(
-                "ok", encoding="utf-8"
+            _write_deribit_snapshot(
+                snapshot_dir / f"options_chain_{now.strftime('%Y%m%dT%H%M%SZ')}.parquet",
+                now,
             )
             write_deribit_status(deribit_root)
             save_block_flow_rows(
@@ -168,8 +191,9 @@ class ForwardDataCollectTests(unittest.TestCase):
             block_flow_root = root / "block_flow"
             snapshot_dir = deribit_root / "BTC" / now.strftime("%Y-%m")
             snapshot_dir.mkdir(parents=True, exist_ok=True)
-            (snapshot_dir / f"options_chain_{now.strftime('%Y%m%dT%H%M%SZ')}.parquet").write_text(
-                "ok", encoding="utf-8"
+            _write_deribit_snapshot(
+                snapshot_dir / f"options_chain_{now.strftime('%Y%m%dT%H%M%SZ')}.parquet",
+                now,
             )
             write_deribit_status(deribit_root)
             save_block_flow_rows(
