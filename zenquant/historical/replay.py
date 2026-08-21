@@ -1353,6 +1353,11 @@ class HistoricalBacktest:
                 continue
             price_index = bisect_right(price_cutoffs, source_time_ns) - 1
             if price_index < 0:
+                if source_time_ns <= ordered_cutoffs[0]:
+                    # No stage exposure exists before the first architecture
+                    # decision, so this window-opening settlement has zero
+                    # allocation. Never invent a pre-window mark price.
+                    continue
                 raise ValueError(
                     "funding settlement has no point-in-time execution price: "
                     f"source_time_ns={source_time_ns}"
