@@ -503,7 +503,7 @@ class IndicatorEngine:
                     "atm_iv_z": options_snap.atm_iv_z,
                     "term_structure_slope": options_snap.term_structure_slope,
                     "term_slope_z": options_snap.term_slope_z,
-                    "put_call_skew_25d": options_snap.put_call_skew_25d,
+                    "put_call_moneyness_skew_proxy": options_snap.put_call_moneyness_skew_proxy,
                     "skew_z": options_snap.skew_z,
                     "skew_velocity": options_snap.skew_velocity,
                     "gex_net": options_snap.net_gex,

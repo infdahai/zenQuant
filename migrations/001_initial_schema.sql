@@ -169,7 +169,7 @@ CREATE TABLE IF NOT EXISTS deribit_risk_packs (
     ts_ns BIGINT NOT NULL,
     atm_iv_30d DOUBLE PRECISION NOT NULL,
     term_structure_slope DOUBLE PRECISION NOT NULL,
-    put_call_skew_25d DOUBLE PRECISION NOT NULL,
+    put_call_moneyness_skew_proxy DOUBLE PRECISION NOT NULL,
     oi_concentration DOUBLE PRECISION NOT NULL,
     block_flow_imbalance DOUBLE PRECISION NOT NULL,
     quality_flags JSONB NOT NULL,
@@ -178,6 +178,20 @@ CREATE TABLE IF NOT EXISTS deribit_risk_packs (
 
 CREATE INDEX IF NOT EXISTS idx_deribit_risk_packs_symbol_ts
     ON deribit_risk_packs (symbol, ts_ns DESC);
+
+DO $$
+BEGIN
+    IF EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_name = 'deribit_risk_packs' AND column_name = 'put_call_skew_25d'
+    ) AND NOT EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_name = 'deribit_risk_packs' AND column_name = 'put_call_moneyness_skew_proxy'
+    ) THEN
+        ALTER TABLE deribit_risk_packs
+            RENAME COLUMN put_call_skew_25d TO put_call_moneyness_skew_proxy;
+    END IF;
+END $$;
 
 CREATE TABLE IF NOT EXISTS data_quality_log (
     id BIGSERIAL PRIMARY KEY,

@@ -311,7 +311,7 @@ def _build_snapshot_features(options: pd.DataFrame, *, rolling_window: int) -> p
     z_columns = {
         "iv_level_30d": "iv_level_30d_z",
         "iv_term_structure_slope": "iv_term_structure_slope_z",
-        "put_call_skew_25d": "put_call_skew_25d_z",
+        "put_call_moneyness_skew_proxy": "put_call_moneyness_skew_proxy_z",
         "oi_concentration": "oi_concentration_z",
     }
     for source, target in z_columns.items():
@@ -356,7 +356,7 @@ def _snapshot_to_features(snapshot: pd.DataFrame) -> dict[str, float]:
     return {
         "iv_level_30d": float(atm_iv) if atm_iv is not None else np.nan,
         "iv_term_structure_slope": float(term_slope) if term_slope is not None else np.nan,
-        "put_call_skew_25d": float(skew) if skew is not None else np.nan,
+        "put_call_moneyness_skew_proxy": float(skew) if skew is not None else np.nan,
         "oi_concentration": float(top_oi / total_oi) if total_oi > 0 else np.nan,
         "call_put_oi_imbalance": float((call_oi - put_oi) / total_oi) if total_oi > 0 else np.nan,
         "call_put_volume_imbalance": float((call_volume - put_volume) / total_volume) if total_volume > 0 else np.nan,

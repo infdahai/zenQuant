@@ -56,7 +56,7 @@ class DeribitPostgreSQLTests(unittest.IsolatedAsyncioTestCase):
         with connect(self.dsn) as conn, conn.cursor() as cur:
             cur.execute(
                 """
-                    SELECT symbol, atm_iv_30d, term_structure_slope, put_call_skew_25d,
+                    SELECT symbol, atm_iv_30d, term_structure_slope, put_call_moneyness_skew_proxy,
                            oi_concentration, block_flow_imbalance, quality_flags
                     FROM deribit_risk_packs
                     ORDER BY ts_ns DESC

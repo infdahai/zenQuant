@@ -408,7 +408,7 @@ class OnlineStateStore:
         self._enqueue(
             """
             INSERT INTO deribit_risk_packs (
-                symbol, ts_ns, atm_iv_30d, term_structure_slope, put_call_skew_25d,
+                symbol, ts_ns, atm_iv_30d, term_structure_slope, put_call_moneyness_skew_proxy,
                 oi_concentration, block_flow_imbalance, quality_flags
             ) VALUES (
                 %s, %s, %s, %s, %s,
@@ -420,7 +420,7 @@ class OnlineStateStore:
                 payload.ts_ns,
                 payload.atm_iv_30d,
                 payload.term_structure_slope,
-                payload.put_call_skew_25d,
+                payload.put_call_moneyness_skew_proxy,
                 payload.oi_concentration,
                 payload.block_flow_imbalance,
                 json.dumps(list(payload.quality_flags)),
