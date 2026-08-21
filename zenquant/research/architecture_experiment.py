@@ -271,6 +271,7 @@ class ArchitectureStageExecutionRow:
     fee: float
     actual_slippage: float
     actual_implementation_shortfall: float
+    funding_pnl: float
     target_tracking_error: float
     time_to_target_bars: int | None
     reduce_only: bool
@@ -705,7 +706,7 @@ def _summarize_stage(
 
     for observation in observations:
         execution_row = execution_by_cutoff.get(observation.cutoff_time_ns)
-        exposure = (
+        approved_exposure = (
             execution_row.approved_exposure
             if execution_row is not None
             else stage_exposure(
@@ -715,27 +716,44 @@ def _summarize_stage(
                 fixed_notional=fixed_notional,
             )
         )
+        exposure = (
+            execution_row.filled_exposure_after if execution_row is not None else approved_exposure
+        )
         forward_return = _finite_float(observation.forward_return, name="forward_return")
         row: dict[str, Any] = {
             "alpha_id": observation.alpha_id,
             "cutoff_time_ns": observation.cutoff_time_ns,
             "regime": observation.regime,
             "exposure": exposure,
+            "approved_exposure": approved_exposure,
             "forward_return": forward_return,
             "gross_pnl": 0.0,
             "turnover_notional": 0.0,
+            "baseline_execution_cost": 0.0,
+            "funding_pnl": 0.0,
         }
         realized_return = forward_return
         row_turnover = (
-            abs(execution_row.target_delta_exposure) * fixed_notional
+            execution_row.filled_qty
+            * (execution_row.actual_fill_price or execution_row.reference_price)
             if execution_row is not None
-            else abs(exposure - previous_exposure) * fixed_notional
+            else abs(approved_exposure - previous_exposure) * fixed_notional
         )
         row_gross_pnl = exposure * realized_return * fixed_notional
         row["gross_pnl"] = row_gross_pnl
         row["turnover_notional"] = row_turnover
         if execution_row is not None:
             row["execution"] = asdict(execution_row)
+            row["approved_target_gross_pnl"] = (
+                approved_exposure * realized_return * fixed_notional
+            )
+            row["baseline_execution_cost"] = execution_row.fee + execution_row.actual_slippage
+            row["funding_pnl"] = execution_row.funding_pnl
+            row["execution_net_pnl"] = (
+                row_gross_pnl
+                + execution_row.funding_pnl
+                - float(row["baseline_execution_cost"])
+            )
         evaluable_count += 1
         gross_pnl += row_gross_pnl
         turnover_notional += row_turnover
@@ -763,7 +781,7 @@ def _summarize_stage(
             shadow_payload = asdict(shadow)
             row["cost_shadow"] = shadow_payload
             cost_shadow_rows.append(shadow_payload)
-        previous_exposure = exposure
+        previous_exposure = approved_exposure
         if exposure != 0.0:
             active_evaluable_count += 1
             if realized_return != 0.0:
@@ -775,6 +793,9 @@ def _summarize_stage(
 
     summary = {
         "stage": stage.value,
+        "pnl_basis": (
+            "ACTUAL_FILLED_EXPOSURE" if execution_by_cutoff else "APPROVED_TARGET_EXPOSURE"
+        ),
         "observation_count": len(observations),
         "evaluable_count": evaluable_count,
         "coverage": _ratio(evaluable_count, len(observations)),
@@ -868,23 +889,33 @@ def _cost_summary(
     fixed_notional: float,
     cost_bps: float,
 ) -> dict[str, float]:
-    transaction_cost = sum(float(row["turnover_notional"]) for row in rows) * cost_bps / 10_000.0
+    baseline_execution_cost = sum(float(row.get("baseline_execution_cost", 0.0)) for row in rows)
+    additional_stress_cost = (
+        sum(float(row["turnover_notional"]) for row in rows) * cost_bps / 10_000.0
+    )
+    transaction_cost = baseline_execution_cost + additional_stress_cost
+    funding_pnl = sum(float(row.get("funding_pnl", 0.0)) for row in rows)
     gross_pnl = sum(float(row["gross_pnl"]) for row in rows if row["gross_pnl"] is not None)
-    net_pnl = gross_pnl - transaction_cost
+    net_pnl = gross_pnl + funding_pnl - transaction_cost
     equity = fixed_notional
     peak = fixed_notional
     max_drawdown = 0.0
     for row in rows:
         if row["gross_pnl"] is None:
             continue
-        row_cost = float(row["turnover_notional"]) * cost_bps / 10_000.0
-        equity += float(row["gross_pnl"]) - row_cost
+        row_cost = float(row.get("baseline_execution_cost", 0.0)) + (
+            float(row["turnover_notional"]) * cost_bps / 10_000.0
+        )
+        equity += float(row["gross_pnl"]) + float(row.get("funding_pnl", 0.0)) - row_cost
         peak = max(peak, equity)
         if peak > 0.0:
             max_drawdown = max(max_drawdown, (peak - equity) / peak)
     return {
         "cost_bps": cost_bps,
+        "baseline_execution_cost": baseline_execution_cost,
+        "additional_stress_cost": additional_stress_cost,
         "transaction_cost": transaction_cost,
+        "funding_pnl": funding_pnl,
         "net_pnl": net_pnl,
         "return_on_fixed_capital": net_pnl / fixed_notional,
         "max_drawdown": max_drawdown,
