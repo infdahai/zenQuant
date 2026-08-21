@@ -301,10 +301,11 @@ class ARCStrategyEngine:
         """Publish a V2 decision only after risk has approved the final target."""
         if not isinstance(payload, TargetPosition) or not self._config.emit_decision_snapshots_v2:
             return
-        envelope = self._pending_decision_snapshots.pop((payload.symbol, payload.cutoff_time_ns), None)
-        if envelope is None:
+        key = (payload.symbol, payload.cutoff_time_ns)
+        envelope = self._pending_decision_snapshots.pop(key, None)
+        risk_decision = self._risk_final_decisions.pop(key, None)
+        if envelope is None or risk_decision is None:
             return
-        risk_decision = self._risk_final_decisions.pop((payload.symbol, payload.cutoff_time_ns), None)
         snapshot = build_decision_snapshot(
             target=payload,
             formula_hash=envelope.formula_hash,
@@ -321,10 +322,7 @@ class ARCStrategyEngine:
             regime_risk_multiplier=envelope.regime_risk_multiplier,
             annualized_volatility=envelope.annualized_volatility,
             volatility_target=envelope.volatility_target,
-            exposure_cap=min(
-                envelope.exposure_cap,
-                risk_decision.lev_cap if risk_decision is not None else envelope.exposure_cap,
-            ),
+            exposure_cap=min(envelope.exposure_cap, risk_decision.lev_cap),
             quality_flags=envelope.quality_flags,
             options_state_id=envelope.options_state_id,
         )

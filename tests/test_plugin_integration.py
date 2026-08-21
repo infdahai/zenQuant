@@ -274,6 +274,18 @@ class TestPluginPathProducesValidOutput(unittest.TestCase):
         engine.prime_state(_state())
         self.assertEqual(snapshots, [])
         self.assertEqual(len(requested_targets), 1)
+        bus.publish(
+            "risk.overlay.decision",
+            RiskOverlayDecision(
+                symbol=requested_targets[0].symbol,
+                cutoff_time_ns=requested_targets[0].cutoff_time_ns,
+                original_target_qty=requested_targets[0].target_qty,
+                revised_target_qty=requested_targets[0].target_qty,
+                lev_cap=2.5,
+                reduce_only=requested_targets[0].reduce_only,
+                flags=["OK"],
+            ),
+        )
         bus.publish("intent.target_position.final.BTCUSDT_PERP", requested_targets[0])
 
         self.assertEqual(len(snapshots), 1)
@@ -352,6 +364,18 @@ class TestPluginPathProducesValidOutput(unittest.TestCase):
 
         target = _target(qty=1.0)
         engine._publish_decision_snapshot_if_enabled(pack, state, _playbook(), target)
+        bus.publish(
+            "risk.overlay.decision",
+            RiskOverlayDecision(
+                symbol=target.symbol,
+                cutoff_time_ns=target.cutoff_time_ns,
+                original_target_qty=target.target_qty,
+                revised_target_qty=target.target_qty,
+                lev_cap=2.5,
+                reduce_only=target.reduce_only,
+                flags=["OK"],
+            ),
+        )
         bus.publish("intent.target_position.final.BTCUSDT_PERP", target)
 
         self.assertEqual(len(snapshots), 1)
@@ -396,6 +420,18 @@ class TestPluginPathProducesValidOutput(unittest.TestCase):
         self.assertEqual(snapshots[0].target_leverage, final_targets[0].target_leverage)
         self.assertEqual(snapshots[0].reduce_only, final_targets[0].reduce_only)
         self.assertEqual(snapshots[0].exposure_cap, risk_decisions[0].lev_cap)
+
+    def test_v2_snapshot_rejects_final_subject_without_risk_decision(self):
+        """Catches a caller bypassing the risk overlay by spoofing a final target."""
+        engine, bus = self._build_engine_with_plugins(ARCStrategyConfig(emit_decision_snapshots_v2=True))
+        snapshots = []
+        target = _target(qty=1.0)
+        bus.subscribe("strategy.decision_snapshot.>", lambda _subject, payload: snapshots.append(payload))
+
+        engine._publish_decision_snapshot_if_enabled(_pack(), _state(), _playbook(), target)
+        bus.publish("intent.target_position.final.BTCUSDT_PERP", target)
+
+        self.assertEqual(snapshots, [])
 
     def test_plugin_direction_uptrend(self):
         engine, bus = self._build_engine_with_plugins()
