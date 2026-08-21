@@ -9,6 +9,7 @@ from zenquant.research.gex import (
     GexProfile,
     StrikeGex,
     _black_scholes_gamma,
+    _find_gamma_flip,
     compute_gex_profile,
     gex_to_signal,
 )
@@ -55,6 +56,14 @@ class TestBlackScholesGamma(unittest.TestCase):
 
 
 class TestComputeGexProfile(unittest.TestCase):
+    def test_gamma_flip_requires_an_actual_cumulative_sign_crossing(self):
+        positive = [StrikeGex(90.0, 2.0, 0.0), StrikeGex(100.0, 3.0, 0.0)]
+        negative = [StrikeGex(90.0, 0.0, -2.0), StrikeGex(100.0, 0.0, -3.0)]
+        crossing = [StrikeGex(90.0, 2.0, 0.0), StrikeGex(100.0, 0.0, -4.0)]
+        self.assertIsNone(_find_gamma_flip(positive, spot=100.0))
+        self.assertIsNone(_find_gamma_flip(negative, spot=100.0))
+        self.assertAlmostEqual(_find_gamma_flip(crossing, spot=100.0) or 0.0, 95.0)
+
     def test_empty_rows_returns_neutral(self):
         profile = compute_gex_profile([], spot=95000.0)
         self.assertEqual(profile.regime, "NEUTRAL")

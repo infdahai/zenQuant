@@ -229,15 +229,23 @@ def _find_gamma_flip(strikes: list[StrikeGex], spot: float) -> float | None:
     if not near_strikes:
         near_strikes = strikes
 
-    # Find where cumulative (call + put) GEX transitions from positive to negative
+    # Find an actual sign change in cumulative (call + put) GEX. A profile
+    # that starts and remains entirely positive or entirely negative has no
+    # gamma-flip level.
     sorted_strikes = sorted(near_strikes, key=lambda s: s.strike)
-    cumulative = 0.0
-    prev_strike = None
-    for s in sorted_strikes:
-        cumulative += s.net_gex
-        if prev_strike is not None and cumulative <= 0:
-            return s.strike  # flip happened here
-        prev_strike = s.strike
+    previous_strike = sorted_strikes[0].strike
+    previous_cumulative = sorted_strikes[0].net_gex
+    if math.isclose(previous_cumulative, 0.0, abs_tol=1e-12):
+        return previous_strike
+    for strike_gex in sorted_strikes[1:]:
+        cumulative = previous_cumulative + strike_gex.net_gex
+        if math.isclose(cumulative, 0.0, abs_tol=1e-12):
+            return strike_gex.strike
+        if previous_cumulative * cumulative < 0:
+            crossing_weight = abs(previous_cumulative) / (abs(previous_cumulative) + abs(cumulative))
+            return previous_strike + crossing_weight * (strike_gex.strike - previous_strike)
+        previous_strike = strike_gex.strike
+        previous_cumulative = cumulative
     return None
 
 

@@ -207,8 +207,17 @@ class OptionsState:
     atm_iv_7d: float | None
     atm_iv_30d: float | None
     atm_iv_90d: float | None
+    selected_expiry_ts_ms_7d: int | None
+    selected_expiry_ts_ms_30d: int | None
+    selected_expiry_ts_ms_90d: int | None
     put_iv_25d_30d: float | None
     call_iv_25d_30d: float | None
+    put_25d_selection_method: str
+    call_25d_selection_method: str
+    put_25d_lower_delta: float | None
+    put_25d_upper_delta: float | None
+    call_25d_lower_delta: float | None
+    call_25d_upper_delta: float | None
     put_call_skew_25d_30d: float | None
     risk_reversal_25d_30d: float | None
     moneyness_skew_proxy_30d: float | None

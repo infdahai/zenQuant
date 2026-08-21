@@ -139,6 +139,50 @@ class Black76DeltaTests(unittest.TestCase):
 
 
 class OptionsStateCalculationTests(unittest.TestCase):
+    def test_malformed_chain_fields_degrade_to_unknown_neutral(self) -> None:
+        source_ns = 18 * DAY_NS
+        mutations = {
+            "mark_iv": "bad",
+            "open_interest": "bad",
+            "strike": "bad",
+            "expiry_ts_ms": "bad",
+            "gamma": "bad",
+        }
+        for field, value in mutations.items():
+            with self.subTest(field=field):
+                chain = _complete_chain(source_ns)
+                chain[0][field] = value
+                state = build_options_state(
+                    chain,
+                    cutoff_time_ns=source_ns + FOUR_HOURS_NS,
+                    realized_vol_30d=0.45,
+                    realized_vol_source_timestamp_ns=source_ns + FOUR_HOURS_NS,
+                )
+                self.assertEqual(state.trend_quality, "UNKNOWN")
+                self.assertEqual(state.shadow_risk_multiplier, 1.0)
+                self.assertTrue(any("MALFORMED" in flag for flag in state.quality_flags))
+
+    def test_mixed_or_missing_source_timestamps_degrade_to_unknown(self) -> None:
+        source_ns = 19 * DAY_NS
+        chains = []
+        mixed = _complete_chain(source_ns)
+        mixed[0]["snapshot_ts_ns"] = source_ns - FOUR_HOURS_NS
+        chains.append(mixed)
+        missing = _complete_chain(source_ns)
+        missing[0].pop("snapshot_ts_ns")
+        chains.append(missing)
+        for chain in chains:
+            state = build_options_state(
+                chain,
+                cutoff_time_ns=source_ns + FOUR_HOURS_NS,
+                realized_vol_30d=0.45,
+                realized_vol_source_timestamp_ns=source_ns + FOUR_HOURS_NS,
+            )
+            self.assertEqual(state.trend_quality, "UNKNOWN")
+            self.assertEqual(state.shadow_risk_multiplier, 1.0)
+            self.assertEqual(state.source_timestamp_ns, 0)
+            self.assertTrue(any("SOURCE_TIMESTAMP" in flag for flag in state.quality_flags))
+
     def test_computes_iv_rv_term_oi_and_normalized_gex(self) -> None:
         source_ns = 20 * DAY_NS
         state = build_options_state(
@@ -198,6 +242,88 @@ class OptionsStateCalculationTests(unittest.TestCase):
         self.assertEqual(OptionsState.from_dict(first.to_dict()), first)
         with self.assertRaises(dataclasses.FrozenInstanceError):
             first.trend_quality = "STRESS"  # type: ignore[misc]
+
+    def test_duplicate_instruments_have_order_invariant_identity(self) -> None:
+        source_ns = 42 * DAY_NS
+        chain = _complete_chain(source_ns)
+        duplicate = dict(chain[0])
+        duplicate["volume_usd"] = 77_777.0
+        chain.append(duplicate)
+        kwargs = {
+            "cutoff_time_ns": source_ns + FOUR_HOURS_NS,
+            "realized_vol_30d": 0.50,
+            "realized_vol_source_timestamp_ns": source_ns + FOUR_HOURS_NS,
+        }
+        first = build_options_state(chain, **kwargs)
+        second = build_options_state(list(reversed(chain)), **kwargs)
+        self.assertEqual(first, second)
+        self.assertEqual(first.options_state_id, second.options_state_id)
+        self.assertIn("OPTIONS_DUPLICATE_INSTRUMENTS", first.quality_flags)
+        self.assertEqual(first.trend_quality, "UNKNOWN")
+
+    def test_percent_and_decimal_iv_have_identical_calculated_metrics(self) -> None:
+        source_ns = 43 * DAY_NS
+        percent_chain = _complete_chain(source_ns)
+        decimal_chain = [dict(row) for row in percent_chain]
+        for row in decimal_chain:
+            row["mark_iv"] = float(row["mark_iv"]) / 100.0
+            row["mark_iv_unit"] = "decimal"
+        kwargs = {
+            "cutoff_time_ns": source_ns + FOUR_HOURS_NS,
+            "realized_vol_30d": 0.50,
+            "realized_vol_source_timestamp_ns": source_ns + FOUR_HOURS_NS,
+        }
+        percent = build_options_state(percent_chain, **kwargs)
+        decimal = build_options_state(decimal_chain, **kwargs)
+        metric_names = (
+            "atm_iv_7d",
+            "atm_iv_30d",
+            "atm_iv_90d",
+            "put_iv_25d_30d",
+            "call_iv_25d_30d",
+            "put_call_skew_25d_30d",
+            "normalized_net_gex",
+            "gamma_wall_strike",
+            "gamma_flip_strike",
+        )
+        self.assertEqual(
+            tuple(getattr(percent, name) for name in metric_names),
+            tuple(getattr(decimal, name) for name in metric_names),
+        )
+
+    def test_records_actual_delta_selection_and_expiry_methods(self) -> None:
+        source_ns = 44 * DAY_NS
+        state = build_options_state(
+            _complete_chain(source_ns),
+            cutoff_time_ns=source_ns + FOUR_HOURS_NS,
+            realized_vol_30d=0.50,
+            realized_vol_source_timestamp_ns=source_ns + FOUR_HOURS_NS,
+        )
+        self.assertIn(
+            state.put_25d_selection_method,
+            {"exact_delta", "linear_delta_interpolation", "nearest_delta"},
+        )
+        self.assertIn(
+            state.call_25d_selection_method,
+            {"exact_delta", "linear_delta_interpolation", "nearest_delta"},
+        )
+        self.assertEqual(state.selected_expiry_ts_ms_30d, (source_ns + 30 * DAY_NS) // 1_000_000)
+        self.assertIn("per_leg_selection_recorded", state.calculation_method)
+        self.assertNotIn(";linear_delta_interpolation;", state.calculation_method)
+
+    def test_unknown_iv_unit_is_malformed_and_neutral(self) -> None:
+        source_ns = 44 * DAY_NS
+        chain = _complete_chain(source_ns)
+        chain[0]["mark_iv_unit"] = "mystery"
+        state = build_options_state(
+            chain,
+            cutoff_time_ns=source_ns + FOUR_HOURS_NS,
+            realized_vol_30d=0.50,
+            realized_vol_source_timestamp_ns=source_ns + FOUR_HOURS_NS,
+        )
+        self.assertEqual(state.trend_quality, "UNKNOWN")
+        self.assertEqual(state.shadow_risk_multiplier, 1.0)
+        self.assertIn("OPTIONS_MALFORMED_IV_UNIT", state.quality_flags)
 
     def test_identity_binds_raw_chain_and_24h_source_identity(self) -> None:
         source_ns = 45 * DAY_NS

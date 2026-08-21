@@ -21,7 +21,7 @@ DAY_NS = 24 * 60 * 60 * 1_000_000_000
 CALCULATION_VERSION = "options-state-v1"
 CALCULATION_METHOD = (
     "deribit_mark_iv_pct_to_decimal;nearest_expiry_atm_oi_weighted;"
-    "black76_forward=index_price;linear_delta_interpolation;"
+    "black76_forward=index_price;delta_selection=per_leg_selection_recorded;"
     "25d_skew=put_minus_call;25d_risk_reversal=call_minus_put;"
     "gex_call_positive_put_negative"
 )
@@ -117,15 +117,106 @@ def interpolate_25_delta_iv(points: Sequence[Mapping[str, float]]) -> DeltaIvSel
     )
 
 
-def _source_timestamp(rows: Sequence[Mapping[str, Any]]) -> int:
-    timestamps = {
-        int(value) for row in rows if (value := _finite_float(row.get("snapshot_ts_ns"))) is not None and value >= 0
-    }
-    if not timestamps:
-        return 0
-    if len(timestamps) != 1:
-        raise ValueError("OptionsState requires one source snapshot timestamp")
-    return timestamps.pop()
+def _canonical_scalar(value: object) -> object:
+    if hasattr(value, "item"):
+        value = value.item()  # type: ignore[union-attr]
+    if value is None or isinstance(value, (str, bool, int)):
+        return value
+    if isinstance(value, float):
+        return value if math.isfinite(value) else None
+    return str(value)
+
+
+def _canonical_row(row: Mapping[str, Any]) -> dict[str, object]:
+    return {str(key): _canonical_scalar(row[key]) for key in sorted(row)}
+
+
+def _canonical_row_text(row: Mapping[str, Any]) -> str:
+    return json.dumps(_canonical_row(row), sort_keys=True, separators=(",", ":"), allow_nan=False)
+
+
+def _prepare_rows(
+    rows: Iterable[Mapping[str, Any]],
+    *,
+    history: bool = False,
+) -> tuple[tuple[dict[str, Any], ...], tuple[dict[str, Any], ...], int, list[str]]:
+    """Canonicalize rows, resolve duplicate instruments, and flag bad data."""
+    prefix = "OPTIONS_HISTORY" if history else "OPTIONS"
+    raw: list[dict[str, Any]] = []
+    flags: list[str] = []
+    for row in rows:
+        try:
+            raw.append(dict(row))
+        except (TypeError, ValueError):
+            flags.append(f"{prefix}_MALFORMED_ROW")
+    raw_ordered = tuple(sorted(raw, key=_canonical_row_text))
+
+    currencies = {str(row.get("currency", "")).upper() for row in raw_ordered if row.get("currency") is not None}
+    if currencies - {"BTC"}:
+        raise ValueError("OptionsState is a BTC-only contract")
+    if raw_ordered and (not currencies or any(not str(row.get("currency", "")).strip() for row in raw_ordered)):
+        flags.append(f"{prefix}_MALFORMED_CURRENCY")
+
+    timestamps: list[int] = []
+    bad_timestamp = False
+    for row in raw_ordered:
+        value = _finite_float(row.get("snapshot_ts_ns"))
+        if value is None or value <= 0:
+            bad_timestamp = True
+        else:
+            timestamps.append(int(value))
+    unique_timestamps = set(timestamps)
+    if bad_timestamp or len(unique_timestamps) != 1 or len(timestamps) != len(raw_ordered):
+        source_ns = 0
+        if raw_ordered:
+            flags.append(f"{prefix}_MALFORMED_SOURCE_TIMESTAMP")
+    else:
+        source_ns = unique_timestamps.pop()
+
+    groups: dict[tuple[object, ...], list[dict[str, Any]]] = {}
+    for row in raw_ordered:
+        instrument_name = str(row.get("instrument_name", "")).strip()
+        if instrument_name:
+            key: tuple[object, ...] = ("instrument", instrument_name)
+        else:
+            key = (
+                "coordinates",
+                _canonical_scalar(row.get("expiry_ts_ms")),
+                _canonical_scalar(row.get("strike")),
+                str(row.get("option_type", "")).lower(),
+            )
+        groups.setdefault(key, []).append(row)
+    selected: list[dict[str, Any]] = []
+    for key in sorted(groups, key=lambda value: repr(value)):
+        candidates = groups[key]
+        if len(candidates) > 1:
+            flags.append(f"{prefix}_DUPLICATE_INSTRUMENTS")
+        selected.append(min(candidates, key=_canonical_row_text))
+    selected.sort(key=_canonical_row_text)
+
+    for row in selected:
+        unit = str(row.get("mark_iv_unit", "percent")).lower()
+        if unit not in {"percent", "pct", "decimal", "annualized_decimal"}:
+            flags.append(f"{prefix}_MALFORMED_IV_UNIT")
+        if _normalized_iv(row) is None:
+            flags.append(f"{prefix}_MALFORMED_IV")
+        oi = _finite_float(row.get("open_interest"))
+        if oi is None or oi < 0:
+            flags.append(f"{prefix}_MALFORMED_OPEN_INTEREST")
+        strike = _finite_float(row.get("strike"))
+        if strike is None or strike <= 0:
+            flags.append(f"{prefix}_MALFORMED_STRIKE")
+        expiry = _finite_float(row.get("expiry_ts_ms"))
+        if expiry is None or expiry <= 0:
+            flags.append(f"{prefix}_MALFORMED_EXPIRY")
+        if str(row.get("option_type", "")).lower() not in {"call", "put"}:
+            flags.append(f"{prefix}_MALFORMED_OPTION_TYPE")
+        underlying = _finite_float(row.get("underlying_price"))
+        if underlying is None or underlying <= 0:
+            flags.append(f"{prefix}_MALFORMED_UNDERLYING")
+        if "gamma" in row and _finite_float(row.get("gamma")) is None:
+            flags.append(f"{prefix}_MALFORMED_GREEKS")
+    return raw_ordered, tuple(selected), source_ns, sorted(set(flags))
 
 
 def _spot(rows: Sequence[Mapping[str, Any]]) -> float:
@@ -142,7 +233,9 @@ def _normalized_iv(row: Mapping[str, Any]) -> float | None:
     unit = str(row.get("mark_iv_unit", "percent")).lower()
     if unit in {"decimal", "annualized_decimal"}:
         return iv if iv <= 5 else None
-    return iv / 100.0 if iv <= 500 else None
+    if unit in {"percent", "pct"}:
+        return iv / 100.0 if iv <= 500 else None
+    return None
 
 
 def _dte(row: Mapping[str, Any], source_timestamp_ns: int) -> float | None:
@@ -153,11 +246,13 @@ def _dte(row: Mapping[str, Any], source_timestamp_ns: int) -> float | None:
     return value if value > 0 else None
 
 
-def _expiry_rows(
+def _selected_expiry_ts_ms(
     rows: Sequence[Mapping[str, Any]],
     source_timestamp_ns: int,
     target_days: int,
-) -> list[Mapping[str, Any]]:
+) -> int | None:
+    if source_timestamp_ns <= 0:
+        return None
     max_distance = {7: 5.0, 30: 15.0, 90: 35.0}[target_days]
     expiries: dict[int, float] = {}
     for row in rows:
@@ -167,8 +262,19 @@ def _expiry_rows(
             expiries[int(expiry)] = dte
     eligible = [item for item in expiries.items() if abs(item[1] - target_days) <= max_distance]
     if not eligible:
-        return []
+        return None
     expiry_ms, _ = min(eligible, key=lambda item: (abs(item[1] - target_days), item[0]))
+    return expiry_ms
+
+
+def _expiry_rows(
+    rows: Sequence[Mapping[str, Any]],
+    source_timestamp_ns: int,
+    target_days: int,
+) -> list[Mapping[str, Any]]:
+    expiry_ms = _selected_expiry_ts_ms(rows, source_timestamp_ns, target_days)
+    if expiry_ms is None:
+        return []
     return [row for row in rows if int(_finite_float(row.get("expiry_ts_ms")) or -1) == expiry_ms]
 
 
@@ -257,8 +363,40 @@ def _gex_fields(
     # creating a data-package import cycle during application bootstrap.
     from zenquant.research.gex import compute_gex_profile
 
+    normalized_rows: list[dict[str, Any]] = []
+    for row in rows:
+        oi = _finite_float(row.get("open_interest"))
+        strike = _finite_float(row.get("strike"))
+        expiry = _finite_float(row.get("expiry_ts_ms"))
+        iv = _normalized_iv(row)
+        option_type = str(row.get("option_type", "")).lower()
+        if (
+            oi is None
+            or oi < 0
+            or strike is None
+            or strike <= 0
+            or expiry is None
+            or expiry <= 0
+            or iv is None
+            or option_type not in {"call", "put"}
+        ):
+            continue
+        normalized_rows.append(
+            {
+                "snapshot_ts_ns": source_timestamp_ns,
+                "strike": strike,
+                "option_type": option_type,
+                "open_interest": oi,
+                # The legacy helper consumes Deribit percent units.
+                "mark_iv": iv * 100.0,
+                "expiry_ts_ms": int(expiry),
+                "underlying_price": spot,
+            }
+        )
+    if not normalized_rows or source_timestamp_ns <= 0:
+        return 0.0, None, None, None, None, False
     profile = compute_gex_profile(
-        [dict(row) for row in rows],
+        normalized_rows,
         spot=spot,
         snapshot_ts_ns=source_timestamp_ns,
         max_dte=365,
@@ -321,17 +459,7 @@ def _canonical_id(payload: Mapping[str, Any]) -> str:
 
 def _row_data_identity(rows: Sequence[Mapping[str, Any]]) -> str:
     """Hash the full selected raw-chain payload after scalar normalization."""
-
-    def scalar(value: object) -> object:
-        if hasattr(value, "item"):
-            value = value.item()  # type: ignore[union-attr]
-        if value is None or isinstance(value, (str, bool, int)):
-            return value
-        if isinstance(value, float):
-            return value if math.isfinite(value) else None
-        return str(value)
-
-    normalized = [{str(key): scalar(row[key]) for key in sorted(row)} for row in rows]
+    normalized = sorted((_canonical_row(row) for row in rows), key=lambda row: _canonical_row_text(row))
     return _canonical_id({"rows": normalized})
 
 
@@ -347,31 +475,17 @@ def build_options_state(
     """Build one immutable observation-only state using information visible at cutoff."""
     if cutoff_time_ns <= 0 or cutoff_time_ns % FOUR_HOURS_NS != 0:
         raise ValueError("OptionsState requires a confirmed 4h cutoff")
-    ordered = tuple(
-        sorted(
-            (dict(row) for row in rows),
-            key=lambda row: (
-                int(_finite_float(row.get("expiry_ts_ms")) or 0),
-                float(_finite_float(row.get("strike")) or 0.0),
-                str(row.get("option_type", "")),
-                str(row.get("instrument_name", "")),
-            ),
-        )
-    )
-    currencies = {str(row.get("currency", "BTC")).upper() for row in ordered}
-    if currencies - {"BTC"}:
-        raise ValueError("OptionsState is a BTC-only contract")
-    source_ns = _source_timestamp(ordered)
+    raw_ordered, ordered, source_ns, preflight_flags = _prepare_rows(rows)
     if source_ns > cutoff_time_ns:
         raise ValueError("OptionsState source timestamp is after cutoff")
     if realized_vol_source_timestamp_ns > cutoff_time_ns:
         raise ValueError("OptionsState realized volatility source is after cutoff")
     spot = _spot(ordered)
-    history = tuple(dict(row) for row in (history_24h_rows or ()))
-    history_source_ns = _source_timestamp(history) if history else 0
+    raw_history, history, history_source_ns, history_flags = _prepare_rows(history_24h_rows or (), history=True)
     if history_source_ns > cutoff_time_ns:
         raise ValueError("OptionsState history source timestamp is after cutoff")
 
+    selected_expiries = {days: _selected_expiry_ts_ms(ordered, source_ns, days) for days in (7, 30, 90)}
     tenor_rows = {days: _expiry_rows(ordered, source_ns, days) for days in (7, 30, 90)}
     atm_7d = _atm_iv(tenor_rows[7], spot)
     atm_30d = _atm_iv(tenor_rows[30], spot)
@@ -421,13 +535,13 @@ def build_options_state(
     age_ns = cutoff_time_ns - source_ns if source_ns else cutoff_time_ns
     stale = not source_ns or age_ns > stale_after_ns
 
-    flags: list[str] = []
-    if not ordered:
+    flags: list[str] = [*preflight_flags, *history_flags]
+    if not raw_ordered:
         flags.append("OPTIONS_MISSING")
     if stale:
         flags.append("OPTIONS_STALE")
-    if valid_rows < len(ordered):
-        flags.append("OPTIONS_MALFORMED_IV")
+    if valid_rows < len(ordered) and not any("MALFORMED" in flag for flag in preflight_flags):
+        flags.append("OPTIONS_MALFORMED_ROW")
     if any(value is None for value in (atm_7d, atm_30d, atm_90d)):
         flags.append("OPTIONS_TENOR_COVERAGE_INCOMPLETE")
     if put_iv is None or call_iv is None:
@@ -456,16 +570,25 @@ def build_options_state(
         "cutoff_time_ns": cutoff_time_ns,
         "source_timestamp_ns": source_ns,
         "history_24h_source_timestamp_ns": history_source_ns,
-        "data_identity": _row_data_identity(ordered),
-        "history_24h_data_identity": _row_data_identity(history) if history else "",
+        "data_identity": _row_data_identity(raw_ordered),
+        "history_24h_data_identity": _row_data_identity(raw_history) if history else "",
         "calculation_method": CALCULATION_METHOD,
         "calculation_version": CALCULATION_VERSION,
         "underlying_price": spot,
         "atm_iv_7d": atm_7d,
         "atm_iv_30d": atm_30d,
         "atm_iv_90d": atm_90d,
+        "selected_expiry_ts_ms_7d": selected_expiries[7],
+        "selected_expiry_ts_ms_30d": selected_expiries[30],
+        "selected_expiry_ts_ms_90d": selected_expiries[90],
         "put_iv_25d_30d": put_iv,
         "call_iv_25d_30d": call_iv,
+        "put_25d_selection_method": put_25d.method if put_25d is not None else "unavailable",
+        "call_25d_selection_method": call_25d.method if call_25d is not None else "unavailable",
+        "put_25d_lower_delta": put_25d.lower_delta if put_25d is not None else None,
+        "put_25d_upper_delta": put_25d.upper_delta if put_25d is not None else None,
+        "call_25d_lower_delta": call_25d.lower_delta if call_25d is not None else None,
+        "call_25d_upper_delta": call_25d.upper_delta if call_25d is not None else None,
         "put_call_skew_25d_30d": put_call_skew,
         "risk_reversal_25d_30d": risk_reversal,
         "moneyness_skew_proxy_30d": proxy,
@@ -487,12 +610,12 @@ def build_options_state(
         "gamma_flip_distance": flip_distance,
         "source_age_seconds": age_ns / 1_000_000_000,
         "is_stale": stale,
-        "chain_row_count": len(ordered),
+        "chain_row_count": len(raw_ordered),
         "valid_row_count": valid_rows,
         "coverage": coverage,
         "trend_quality": trend_quality,
         "shadow_risk_multiplier": multiplier,
-        "quality_flags": tuple(sorted(flags)),
+        "quality_flags": tuple(sorted(set(flags))),
     }
     return OptionsState(options_state_id=_canonical_id(payload), **payload)
 
