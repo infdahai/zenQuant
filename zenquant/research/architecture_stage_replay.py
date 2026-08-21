@@ -340,6 +340,8 @@ def _build_stage_snapshot(
         "quality_flags": observation.quality_flags,
         "reduce_only": observation.reduce_only,
         "safety_reasons": observation.safety_reasons,
+        "risk_snapshot_status": observation.risk_snapshot_status,
+        "risk_snapshot_ts_ns": observation.risk_snapshot_ts_ns,
     }
     data_identity = hashlib.sha256(json.dumps(data_payload, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
     return build_decision_snapshot(

@@ -1259,7 +1259,10 @@ class HistoricalBacktest:
         _reject_duplicate_stage_points(state_points, label="market_state")
         indicators = {item.cutoff_time_ns: item for item in indicator_points}
         states = {item.cutoff_time_ns: item for item in state_points}
-        risk_snapshots = {item.ts_ns: item for item in self._risk_snapshots}
+        risk_snapshots = _architecture_risk_donors(
+            self._risk_snapshots,
+            decision_cutoffs=tuple(int(item["cutoff_time_ns"]) for item in batch["observations"]),
+        )
 
         rows: list[dict[str, Any]] = []
         missing: list[int] = []
@@ -1271,7 +1274,7 @@ class HistoricalBacktest:
             if indicator is None or state is None or index is None:
                 missing.append(cutoff)
                 continue
-            risk_snapshot = risk_snapshots.get(cutoff)
+            risk_snapshot, risk_snapshot_status = risk_snapshots[cutoff]
             risk_regime = _architecture_risk_regime(state)
             multiplier = {
                 "TRADABLE": 1.0,
@@ -1292,6 +1295,8 @@ class HistoricalBacktest:
                 "exchange_min_quantity": exchange_min_quantity,
                 "reduce_only": bool(risk_snapshot.reduce_only_mode) if risk_snapshot is not None else False,
                 "safety_reasons": tuple(sorted(safety_reasons)),
+                "risk_snapshot_status": risk_snapshot_status,
+                "risk_snapshot_ts_ns": risk_snapshot.ts_ns if risk_snapshot is not None else None,
                 "estimated_fee_bps": estimated_fee_bps,
                 "estimated_slippage_bps": estimated_slippage_bps,
                 "reference_price": float(confirmed_rows[index]["close"]),
@@ -1692,6 +1697,30 @@ def _reject_duplicate_stage_points(points: list[Any], *, label: str) -> None:
     duplicates = sorted(cutoff for cutoff, count in counts.items() if count != 1)
     if duplicates:
         raise ValueError(f"duplicate point-in-time {label} inputs at cutoffs={duplicates!r}")
+
+
+def _architecture_risk_donors(
+    snapshots: list[RiskSnapshot],
+    *,
+    decision_cutoffs: tuple[int, ...],
+) -> dict[int, tuple[RiskSnapshot | None, str]]:
+    """Freeze the latest authoritative risk snapshot visible at each cutoff."""
+    by_source_time: dict[int, RiskSnapshot] = {}
+    for snapshot in snapshots:
+        source_time = int(snapshot.ts_ns)
+        prior = by_source_time.get(source_time)
+        if prior is not None and prior != snapshot:
+            raise ValueError(f"conflicting risk snapshots at source_time_ns={source_time}")
+        by_source_time[source_time] = snapshot
+    source_times = sorted(by_source_time)
+    donors: dict[int, tuple[RiskSnapshot | None, str]] = {}
+    for cutoff in decision_cutoffs:
+        source_index = bisect_right(source_times, cutoff) - 1
+        if source_index < 0:
+            donors[cutoff] = (None, "NO_PRIOR_SNAPSHOT_NEUTRAL")
+            continue
+        donors[cutoff] = (by_source_time[source_times[source_index]], "ASOF")
+    return donors
 
 
 def _architecture_risk_regime(state: MarketState) -> str:

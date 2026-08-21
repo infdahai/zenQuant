@@ -191,6 +191,8 @@ class ArchitectureObservation:
     exchange_min_quantity: float = 0.0
     reduce_only: bool = False
     safety_reasons: tuple[str, ...] = ()
+    risk_snapshot_status: str = "NO_PRIOR_SNAPSHOT_NEUTRAL"
+    risk_snapshot_ts_ns: int | None = None
     estimated_fee_bps: float = 0.0
     estimated_slippage_bps: float = 0.0
     reference_price: float | None = None
@@ -744,6 +746,8 @@ def _summarize_stage(
             "turnover_notional": 0.0,
             "baseline_execution_cost": 0.0,
             "funding_pnl": 0.0,
+            "risk_snapshot_status": observation.risk_snapshot_status,
+            "risk_snapshot_ts_ns": observation.risk_snapshot_ts_ns,
         }
         realized_return = forward_return
         row_turnover = (
