@@ -125,6 +125,8 @@ def run_architecture_stage_replay(
         normalized_regime = observation.risk_regime.strip().upper()
         if normalized_regime in {"UNSAFE", "UNKNOWN"}:
             safety_reasons.add("UNSAFE")
+        if observation.reduce_only:
+            safety_reasons.add("REDUCE_ONLY")
         stage_observation = replace(observation, safety_reasons=tuple(sorted(safety_reasons)))
         approved_exposure = stage_exposure(
             stage_observation,
@@ -132,11 +134,17 @@ def run_architecture_stage_replay(
             current_position=current_exposure,
             fixed_notional=fixed_notional,
         )
+        approved_exposure = _apply_hard_safety_target(
+            approved_exposure,
+            current_exposure=current_exposure,
+            safety_reasons=safety_reasons,
+        )
         target_qty = approved_exposure * fixed_notional / price
         is_reduction = abs(current_qty) > min_trade_qty and (
             abs(target_qty) < abs(current_qty) and (abs(target_qty) <= min_trade_qty or target_qty * current_qty > 0.0)
         )
-        reduce_only = is_reduction and (observation.reduce_only or bool(safety_reasons))
+        hard_safety_reasons = safety_reasons & {"KILL", "UNSAFE", "REDUCE_ONLY"}
+        reduce_only = is_reduction and bool(hard_safety_reasons)
         reasons = tuple(sorted(safety_reasons))
         target = TargetPosition(
             intent_id=f"architecture-{resolved_stage.value}-{observation.alpha_id}",
@@ -156,7 +164,7 @@ def run_architecture_stage_replay(
         multiplier = frozen_regime_multiplier(observation.risk_regime)
         snapshot = _build_stage_snapshot(
             target=target,
-            observation=observation,
+            observation=stage_observation,
             stage=resolved_stage,
             multiplier=multiplier,
             reference_price=price,
@@ -322,3 +330,22 @@ def _uncapped_a2_exposure(observation: ArchitectureObservation) -> float:
         return 0.0
     confidence = float(observation.frozen_confidence)
     return abs(confidence * A2_ANNUALIZED_VOLATILITY_TARGET / volatility)
+
+
+def _apply_hard_safety_target(
+    approved_exposure: float,
+    *,
+    current_exposure: float,
+    safety_reasons: set[str],
+) -> float:
+    if safety_reasons & {"KILL", "UNSAFE"}:
+        return 0.0
+    if "REDUCE_ONLY" not in safety_reasons:
+        return approved_exposure
+    if current_exposure == 0.0:
+        return 0.0
+    if approved_exposure * current_exposure <= 0.0:
+        return 0.0
+    if abs(approved_exposure) >= abs(current_exposure):
+        return current_exposure
+    return approved_exposure
