@@ -1191,11 +1191,24 @@ class HistoricalBacktest:
         alpha_cutoffs = set(alpha_counts)
         missing_cutoffs = sorted(confirmed_cutoffs - alpha_cutoffs)
         extra_cutoffs = sorted(alpha_cutoffs - confirmed_cutoffs)
-        if missing_cutoffs or extra_cutoffs:
+        ordered_confirmed_cutoffs = [int(row["close_time_ns"]) for row in confirmed_rows]
+        terminal_alpha_lag = horizon
+        indicator_engine = getattr(self, "indicator_engine", None)
+        indicator_config = getattr(indicator_engine, "_config", None)
+        if indicator_config is not None:
+            terminal_alpha_lag += max(0, int(getattr(indicator_config, "pending_ttl_bars", 0)))
+        missing_is_bounded_suffix = (
+            not missing_cutoffs
+            or (
+                len(missing_cutoffs) <= terminal_alpha_lag
+                and missing_cutoffs == ordered_confirmed_cutoffs[-len(missing_cutoffs) :]
+            )
+        )
+        if extra_cutoffs or not missing_is_bounded_suffix:
             raise ValueError(
-                "architecture alpha cutoff reconciliation failed before terminal exclusion: "
+                "architecture alpha cutoff reconciliation found unexplained evaluable alpha gaps: "
                 f"confirmed={len(confirmed_rows)} alpha={len(alpha_snapshots)} "
-                f"missing={len(missing_cutoffs)} terminal_excluded=0 "
+                f"missing={len(missing_cutoffs)} terminal_limit={terminal_alpha_lag} "
                 f"missing_cutoffs={missing_cutoffs!r} extra_cutoffs={extra_cutoffs!r}"
             )
         alphas = {alpha.cutoff_time_ns: alpha for alpha in alpha_snapshots}
@@ -1203,7 +1216,10 @@ class HistoricalBacktest:
         terminal_excluded_count = 0
         for index, event_row in enumerate(confirmed_rows):
             cutoff_time_ns = int(event_row["close_time_ns"])
-            alpha = alphas[cutoff_time_ns]
+            alpha = alphas.get(cutoff_time_ns)
+            if alpha is None:
+                terminal_excluded_count += 1
+                continue
             forward_return = _forward_return(confirmed_rows, index, horizon)
             if forward_return is None:
                 terminal_excluded_count += 1
@@ -1225,7 +1241,7 @@ class HistoricalBacktest:
             "excluded_non_evaluable_count": terminal_excluded_count,
             "confirmed_4h_row_count": len(confirmed_rows),
             "alpha_snapshot_count": len(alpha_snapshots),
-            "missing_alpha_count": len(missing_cutoffs),
+            "missing_alpha_count": 0,
             "terminal_excluded_count": terminal_excluded_count,
         }
 

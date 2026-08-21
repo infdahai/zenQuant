@@ -1071,13 +1071,45 @@ def test_replay_bridge_uses_confirmed_4h_rows_and_excludes_terminal_alpha():
     assert not (prohibited_fields & set(batch["observations"][0]))
 
 
-@pytest.mark.parametrize("failure", ["missing", "duplicate"])
+def test_replay_bridge_excludes_bounded_terminal_cutoff_without_alpha():
+    runner = object.__new__(HistoricalBacktest)
+    runner._confirmed_four_hour_rows = [
+        {"close_time_ns": 100, "close": 100.0},
+        {"close_time_ns": 200, "close": 110.0},
+    ]
+    runner._architecture_alphas = [
+        ArchitectureAlphaSnapshot(
+            alpha_id="alpha-100",
+            symbol="BTCUSDT_PERP",
+            timeframe=Timeframe.TF_4H,
+            cutoff_time_ns=100,
+            formula_hash="formula-v1",
+            indicator_version="pack.v1",
+            alpha_config_hash="alpha-config-v1",
+            raw_score=0.4,
+            confidence=0.6,
+            direction=1.0,
+            regime="TREND",
+            direction_plugin_names=("multi_momentum_signal",),
+        )
+    ]
+
+    batch = runner.build_architecture_attribution_rows(horizon=1)
+
+    assert len(batch["observations"]) == 1
+    assert batch["alpha_snapshot_count"] == 1
+    assert batch["terminal_excluded_count"] == 1
+    assert batch["missing_alpha_count"] == 0
+
+
+@pytest.mark.parametrize("failure", ["interior", "duplicate"])
 def test_replay_bridge_fails_closed_before_terminal_exclusion_on_alpha_gaps(failure):
     """Catches missing or duplicate same-cutoff alpha being hidden as warm-up/terminal loss."""
     runner = object.__new__(HistoricalBacktest)
     runner._confirmed_four_hour_rows = [
         {"close_time_ns": 100, "close": 100.0},
         {"close_time_ns": 200, "close": 110.0},
+        {"close_time_ns": 300, "close": 120.0},
     ]
     alpha = ArchitectureAlphaSnapshot(
         alpha_id="alpha-100",
@@ -1093,13 +1125,13 @@ def test_replay_bridge_fails_closed_before_terminal_exclusion_on_alpha_gaps(fail
         regime="TREND",
         direction_plugin_names=("multi_momentum_signal",),
     )
-    terminal = replace(alpha, alpha_id="alpha-200", cutoff_time_ns=200)
-    runner._architecture_alphas = [alpha] if failure == "missing" else [alpha, alpha, terminal]
+    terminal = replace(alpha, alpha_id="alpha-300", cutoff_time_ns=300)
+    runner._architecture_alphas = [alpha, terminal] if failure == "interior" else [alpha, alpha, terminal]
 
     pattern = (
-        r"confirmed=2 alpha=1 missing=1 terminal_excluded=0"
-        if failure == "missing"
-        else r"confirmed=2 alpha=3 missing=0 terminal_excluded=0 duplicate_cutoffs=\[100\]"
+        r"unexplained evaluable alpha gaps.*missing_cutoffs=\[200\]"
+        if failure == "interior"
+        else r"confirmed=3 alpha=3.*duplicate_cutoffs=\[100\]"
     )
     with pytest.raises(ValueError, match=pattern):
         runner.build_architecture_attribution_rows(horizon=1)

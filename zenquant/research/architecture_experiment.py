@@ -869,9 +869,10 @@ def _validate_run_matrix(
             raise ValueError(f"invalid architecture row counts for {key!r}")
         if (
             run.missing_alpha_count != 0
-            or run.alpha_snapshot_count != run.confirmed_4h_row_count
+            or run.alpha_snapshot_count > run.confirmed_4h_row_count
             or run.terminal_excluded_count != run.excluded_non_evaluable_count
-            or len(run.observations) + run.terminal_excluded_count != run.alpha_snapshot_count
+            or len(run.observations) + run.terminal_excluded_count != run.confirmed_4h_row_count
+            or run.terminal_excluded_count < run.confirmed_4h_row_count - run.alpha_snapshot_count
         ):
             raise ValueError(
                 f"architecture alpha coverage mismatch for {key!r}: "
