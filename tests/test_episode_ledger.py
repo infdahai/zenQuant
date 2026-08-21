@@ -164,3 +164,26 @@ def test_replay_allocates_each_funding_settlement_before_new_close_fills() -> No
     assert episode.funding_pnl == pytest.approx(-1.1)
     assert episode.mfe_pnl == pytest.approx(20.0)
     assert episode.mae_pnl == pytest.approx(-10.0)
+
+
+def test_excursions_include_realized_pnl_after_partial_reduction() -> None:
+    ledger = PositionEpisodeLedger()
+    ledger.on_fill(_fill(side=1, qty=2.0, price=100.0, fee=0.0, ts_ns=1))
+    ledger.on_fill(_fill(side=-1, qty=1.0, price=110.0, fee=0.0, ts_ns=2))
+
+    ledger.observe_price(PriceObservation("BTCUSDT", 3, high=120.0, low=80.0, close=105.0))
+
+    episode = ledger.open_episodes[0]
+    assert episode.gross_realized_pnl == pytest.approx(10.0)
+    assert episode.mfe_pnl == pytest.approx(30.0)
+    assert episode.mae_pnl == pytest.approx(-10.0)
+
+
+def test_exact_flatten_with_float_dust_does_not_open_phantom_flip() -> None:
+    ledger = PositionEpisodeLedger()
+    ledger.on_fill(_fill(side=1, qty=0.3, price=100.0, fee=0.0, ts_ns=1))
+
+    ledger.on_fill(_fill(side=-1, qty=0.1 + 0.2, price=101.0, fee=0.0, ts_ns=2))
+
+    assert len(ledger.closed_episodes) == 1
+    assert ledger.open_episodes == ()

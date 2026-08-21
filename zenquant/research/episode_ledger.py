@@ -129,10 +129,14 @@ class PositionEpisodeLedger:
             return
 
         close_qty = min(state.remaining_qty, report.filled_qty)
-        close_fee = report.fee * (close_qty / report.filled_qty)
+        remainder = report.filled_qty - close_qty
+        if remainder <= 1e-12:
+            remainder = 0.0
+            close_fee = report.fee
+        else:
+            close_fee = report.fee * (close_qty / report.filled_qty)
         self._reduce_state(state, qty=close_qty, price=report.avg_price, fee=close_fee)
         state.fill_count += 1
-        remainder = report.filled_qty - close_qty
         if state.remaining_qty > 0.0:
             return
 
@@ -213,11 +217,11 @@ class PositionEpisodeLedger:
     @staticmethod
     def _observe_state(state: _EpisodeState, *, high: float, low: float, close: float) -> None:
         if state.side > 0:
-            favorable = (high - state.entry_price) * state.remaining_qty
-            adverse = (low - state.entry_price) * state.remaining_qty
+            favorable = state.gross_realized_pnl + (high - state.entry_price) * state.remaining_qty
+            adverse = state.gross_realized_pnl + (low - state.entry_price) * state.remaining_qty
         else:
-            favorable = (state.entry_price - low) * state.remaining_qty
-            adverse = (state.entry_price - high) * state.remaining_qty
+            favorable = state.gross_realized_pnl + (state.entry_price - low) * state.remaining_qty
+            adverse = state.gross_realized_pnl + (state.entry_price - high) * state.remaining_qty
         state.mfe_pnl = max(state.mfe_pnl, favorable)
         state.mae_pnl = min(state.mae_pnl, adverse)
         state.unrealized_pnl = (close - state.entry_price) * state.remaining_qty * state.side
