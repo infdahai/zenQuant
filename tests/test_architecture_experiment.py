@@ -394,6 +394,39 @@ def test_a2_does_not_change_a1_outputs():
     )
 
 
+@pytest.mark.parametrize(
+    ("risk_regime", "multiplier"),
+    [
+        ("normal", 1.0),
+        ("TRADABLE", 1.0),
+        ("transition", 0.5),
+        ("NOISY", 0.5),
+        ("hostile", 0.1),
+        ("STRESS", 0.1),
+        ("unsafe", 0.0),
+        ("UNKNOWN", 0.0),
+        ("new_unapproved_regime", 0.0),
+    ],
+)
+def test_a3_uses_frozen_fail_closed_regime_mapping(risk_regime, multiplier):
+    observation = replace(
+        _observation(raw_score=0.4, frozen_confidence=0.6),
+        annualized_volatility=0.20,
+        risk_regime=risk_regime,
+    )
+
+    assert stage_exposure(observation, ArchitectureStage.A2) == pytest.approx(0.6)
+    assert stage_exposure(observation, ArchitectureStage.A3) == pytest.approx(0.6 * multiplier)
+
+
+def test_a3_input_does_not_change_a2_or_earlier_stages():
+    baseline = replace(_observation(raw_score=0.4), annualized_volatility=0.20)
+    changed_later_input = replace(baseline, risk_regime="STRESS")
+
+    for stage in (ArchitectureStage.A1_SIGN, ArchitectureStage.A1_SCORE, ArchitectureStage.A2):
+        assert stage_exposure(changed_later_input, stage) == stage_exposure(baseline, stage)
+
+
 @pytest.mark.parametrize("confidence", [-0.01, 1.01])
 def test_stage_transforms_reject_confidence_outside_one_x_contract(confidence):
     """Catches malformed confidence silently creating leverage above 1x."""
@@ -519,7 +552,7 @@ def test_report_requires_exact_matrix_and_carries_frozen_identities():
     )
 
     assert [(run["window"], run["seed"]) for run in report["runs"]] == list(manifest.expected_run_keys)
-    assert all(list(run["stages"]) == ["A0", "A1_SIGN", "A1_SCORE", "A2"] for run in report["runs"])
+    assert all(list(run["stages"]) == ["A0", "A1_SIGN", "A1_SCORE", "A2", "A3"] for run in report["runs"])
     assert report["manifest"]["sha256"] == manifest.sha256
     assert report["manifest"]["candidate_params_sha256"] == manifest.candidate_params_sha256
     assert report["manifest"]["profile_sha256"] == manifest.profile_sha256
@@ -552,6 +585,19 @@ def test_report_requires_exact_matrix_and_carries_frozen_identities():
         "annualized_volatility_target": 0.2,
         "max_abs_exposure": 1.5,
         "invalid_volatility_target": 0.0,
+    }
+    assert report["stage_constraints"]["A3"] == {
+        "regime_multipliers": {
+            "NORMAL": 1.0,
+            "TRADABLE": 1.0,
+            "TRANSITION": 0.5,
+            "NOISY": 0.5,
+            "HOSTILE": 0.1,
+            "STRESS": 0.1,
+            "UNSAFE": 0.0,
+            "UNKNOWN": 0.0,
+        },
+        "unrecognized_multiplier": 0.0,
     }
 
 

@@ -28,6 +28,18 @@ DEFAULT_ARCHITECTURE_MANIFEST_PATH = Path("config/research/architecture_experime
 ARCHITECTURE_EXPERIMENT_V1_MANIFEST_SHA256 = "c982d074b24ec21235dfefbd972d936dc4f5a4ab0360964013576c90729bfbe0"
 A2_ANNUALIZED_VOLATILITY_TARGET = 0.20
 A2_MAX_ABS_EXPOSURE = 1.50
+A3_REGIME_MULTIPLIERS = MappingProxyType(
+    {
+        "NORMAL": 1.0,
+        "TRADABLE": 1.0,
+        "TRANSITION": 0.5,
+        "NOISY": 0.5,
+        "HOSTILE": 0.1,
+        "STRESS": 0.1,
+        "UNSAFE": 0.0,
+        "UNKNOWN": 0.0,
+    }
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -153,6 +165,7 @@ class ArchitectureStage(StrEnum):
     A1_SIGN = "A1_SIGN"
     A1_SCORE = "A1_SCORE"
     A2 = "A2"
+    A3 = "A3"
 
 
 @dataclass(frozen=True, slots=True)
@@ -168,6 +181,7 @@ class ArchitectureObservation:
     formula_hash: str
     alpha_config_hash: str
     annualized_volatility: float | None = None
+    risk_regime: str = "UNKNOWN"
 
 
 @dataclass(frozen=True, slots=True)
@@ -215,7 +229,15 @@ def stage_exposure(observation: ArchitectureObservation, stage: ArchitectureStag
     if not math.isfinite(resolved_volatility) or resolved_volatility <= 0.0:
         return 0.0
     volatility_scalar = A2_ANNUALIZED_VOLATILITY_TARGET / resolved_volatility
-    return max(-A2_MAX_ABS_EXPOSURE, min(A2_MAX_ABS_EXPOSURE, a1_score * volatility_scalar))
+    a2_exposure = max(-A2_MAX_ABS_EXPOSURE, min(A2_MAX_ABS_EXPOSURE, a1_score * volatility_scalar))
+    if resolved_stage == ArchitectureStage.A2:
+        return a2_exposure
+    return a2_exposure * frozen_regime_multiplier(observation.risk_regime)
+
+
+def frozen_regime_multiplier(risk_regime: str) -> float:
+    """Resolve the immutable A3 mapping and fail closed for new labels."""
+    return A3_REGIME_MULTIPLIERS.get(str(risk_regime).strip().upper(), 0.0)
 
 
 def build_architecture_attribution_report(
@@ -281,6 +303,12 @@ def build_architecture_attribution_report(
                 ArchitectureStage.A2.value: _summarize_stage(
                     ordered,
                     stage=ArchitectureStage.A2,
+                    fixed_notional=notional,
+                    cost_stress_bps=costs,
+                ),
+                ArchitectureStage.A3.value: _summarize_stage(
+                    ordered,
+                    stage=ArchitectureStage.A3,
                     fixed_notional=notional,
                     cost_stress_bps=costs,
                 ),
@@ -353,7 +381,11 @@ def build_architecture_attribution_report(
                 "annualized_volatility_target": A2_ANNUALIZED_VOLATILITY_TARGET,
                 "max_abs_exposure": A2_MAX_ABS_EXPOSURE,
                 "invalid_volatility_target": 0.0,
-            }
+            },
+            ArchitectureStage.A3.value: {
+                "regime_multipliers": dict(A3_REGIME_MULTIPLIERS),
+                "unrecognized_multiplier": 0.0,
+            },
         },
         "cost_stress_bps": list(costs),
         "runs": runs,
