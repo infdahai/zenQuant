@@ -677,9 +677,7 @@ def _summarize_stage(
             "actual_implementation_shortfall": sum(observed_shortfall) if observed_shortfall else None,
             "actual_shortfall_observation_count": len(observed_shortfall),
             "forward_label_counts": {
-                str(horizon): sum(
-                    1 for row in cost_shadow_rows if row[f"forward_return_{horizon}"] is not None
-                )
+                str(horizon): sum(1 for row in cost_shadow_rows if row[f"forward_return_{horizon}"] is not None)
                 for horizon in (1, 3, 6)
             },
         }

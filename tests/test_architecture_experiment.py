@@ -431,18 +431,12 @@ def test_a3_input_does_not_change_a2_or_earlier_stages():
 
 
 def test_a4_applies_the_only_four_percent_target_position_band():
-    assert apply_target_no_trade_band(0.60, current_position=0.59, exchange_min_quantity=0.001) == pytest.approx(
-        0.59
-    )
-    assert apply_target_no_trade_band(0.60, current_position=0.50, exchange_min_quantity=0.001) == pytest.approx(
-        0.60
-    )
+    assert apply_target_no_trade_band(0.60, current_position=0.59, exchange_min_quantity=0.001) == pytest.approx(0.59)
+    assert apply_target_no_trade_band(0.60, current_position=0.50, exchange_min_quantity=0.001) == pytest.approx(0.60)
 
 
 def test_a4_band_is_floored_by_exchange_minimum_quantity():
-    assert apply_target_no_trade_band(0.60, current_position=0.50, exchange_min_quantity=0.20) == pytest.approx(
-        0.50
-    )
+    assert apply_target_no_trade_band(0.60, current_position=0.50, exchange_min_quantity=0.20) == pytest.approx(0.50)
 
 
 @pytest.mark.parametrize("safety_reason", ["KILL", "UNSAFE", "CAP_VIOLATION"])
@@ -741,8 +735,7 @@ def test_report_requires_exact_matrix_and_carries_frozen_identities():
 
     assert [(run["window"], run["seed"]) for run in report["runs"]] == list(manifest.expected_run_keys)
     assert all(
-        list(run["stages"]) == ["A0", "A1_SIGN", "A1_SCORE", "A2", "A3", "A4", "A5_SHADOW"]
-        for run in report["runs"]
+        list(run["stages"]) == ["A0", "A1_SIGN", "A1_SCORE", "A2", "A3", "A4", "A5_SHADOW"] for run in report["runs"]
     )
     assert report["manifest"]["sha256"] == manifest.sha256
     assert report["manifest"]["candidate_params_sha256"] == manifest.candidate_params_sha256
