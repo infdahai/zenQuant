@@ -1,4 +1,5 @@
 import unittest
+from dataclasses import asdict
 
 from zenquant.domain import (
     EventMeta,
@@ -12,6 +13,7 @@ from zenquant.domain import (
 from zenquant.execution import ExecutionGateway, ExecutionKernel, ExecutionKernelConfig, SimulatedGateway
 from zenquant.infra import InMemoryJetStream
 from zenquant.risk import RiskOverlay
+from zenquant.strategy.decision_snapshot import build_decision_snapshot
 
 
 class ExecutionRouterTests(unittest.TestCase):
@@ -138,6 +140,202 @@ class ExecutionRouterTests(unittest.TestCase):
 
         self.assertEqual(len(reports), 1)
         self.assertEqual(reports[0].avg_price, 100.5)
+
+
+class TargetTrackingV2Tests(unittest.TestCase):
+    """V2 execution is a pure, audited tracker of one approved 4h target."""
+
+    @staticmethod
+    def _target(
+        *,
+        qty: float,
+        cutoff_ns: int,
+        reduce_only: bool = False,
+        reason_codes: list[str] | None = None,
+    ) -> TargetPosition:
+        return TargetPosition(
+            intent_id=f"target-{cutoff_ns}",
+            portfolio="arc",
+            symbol="BTCUSDT_PERP",
+            timeframe=Timeframe.TF_4H,
+            cutoff_time_ns=cutoff_ns,
+            target_qty=qty,
+            target_leverage=abs(qty),
+            reduce_only=reduce_only,
+            regime="TREND",
+            regime_confidence=0.9,
+            reason_codes=reason_codes or ["APPROVED_4H_TARGET"],
+            realized_vol=0.4,
+            atr=500.0,
+        )
+
+    @staticmethod
+    def _snapshot(target: TargetPosition):
+        return build_decision_snapshot(
+            target=target,
+            formula_hash="formula-v2",
+            config_hash="config-v2",
+            indicator_version="pack.v1",
+            data_identity=f"data-{target.cutoff_time_ns}",
+            alpha_direction=1.0 if target.target_qty > 0 else -1.0 if target.target_qty < 0 else 0.0,
+            alpha_raw_score=target.target_qty,
+            alpha_confidence=0.8,
+            directional_state="UPTREND",
+            volatility_state="NORMAL",
+            positioning_state="HEALTHY",
+            quality_state="TRADABLE",
+            regime_risk_multiplier=1.0,
+            annualized_volatility=0.4,
+            volatility_target=0.2,
+            exposure_cap=1.5,
+            quality_flags=["OK"],
+            options_state_id=None,
+        )
+
+    def _setup(self, **config_overrides):
+        bus = InMemoryJetStream()
+        risk = RiskOverlay(bus)
+        config = ExecutionKernelConfig(execution_authority_mode="target_tracking_v2", **config_overrides)
+        kernel = ExecutionKernel(bus, SimulatedGateway(), risk, config=config)
+        orders = []
+        reports = []
+        audits = []
+        bus.subscribe("exec.order.submit", lambda _subject, payload: orders.append(payload))
+        bus.subscribe("exec.order.report", lambda _subject, payload: reports.append(payload))
+        bus.subscribe("exec.order.audit", lambda _subject, payload: audits.append(payload))
+        bus.publish(
+            "md.mark.BINANCE.BTCUSDT_PERP",
+            MarkPriceUpdate(
+                meta=EventMeta(
+                    event_time_ns=1,
+                    ingest_time_ns=1,
+                    venue="BINANCE",
+                    symbol="BTCUSDT_PERP",
+                    stream_seq=1,
+                ),
+                mark_price=40_000.0,
+            ),
+        )
+        return bus, kernel, orders, reports, audits
+
+    @staticmethod
+    def _publish_approved(bus: InMemoryJetStream, target: TargetPosition) -> None:
+        snapshot = TargetTrackingV2Tests._snapshot(target)
+        bus.publish(f"strategy.decision_snapshot.4h.{target.symbol}", snapshot)
+        bus.publish(f"intent.target_position.final.{target.symbol}", target)
+
+    def test_legacy_remains_default_and_invalid_authority_mode_is_rejected(self) -> None:
+        self.assertEqual(ExecutionKernelConfig().execution_authority_mode, "legacy")
+        positional_legacy = ExecutionKernelConfig(0.001, 2.0, 5.0)
+        self.assertEqual(positional_legacy.min_trade_qty, 0.001)
+        self.assertEqual(positional_legacy.max_trade_qty_per_bar, 2.0)
+        self.assertEqual(positional_legacy.max_slippage_bps, 5.0)
+        with self.assertRaisesRegex(ValueError, "execution_authority_mode"):
+            ExecutionKernelConfig(execution_authority_mode="autonomous")
+
+    def test_v2_tracks_direct_add_reduce_and_requested_reversal_without_overshoot(self) -> None:
+        bus, kernel, orders, reports, audits = self._setup(max_trade_qty_per_bar=1.0)
+
+        expected_positions = [0.75, 1.25, 0.5, -0.5]
+        targets = [
+            self._target(qty=0.75, cutoff_ns=2),
+            self._target(qty=1.25, cutoff_ns=3),
+            self._target(qty=0.5, cutoff_ns=4),
+            self._target(qty=-0.5, cutoff_ns=5),
+        ]
+        for target, expected in zip(targets, expected_positions, strict=True):
+            self._publish_approved(bus, target)
+            self.assertAlmostEqual(kernel.positions[target.symbol], expected)
+
+        self.assertEqual([order.side for order in orders], [1, 1, -1, -1])
+        self.assertEqual([order.quantity for order in orders], [0.75, 0.5, 0.75, 1.0])
+        self.assertEqual(len(reports), 4)
+        self.assertEqual(len(audits), 4)
+        self.assertEqual(
+            kernel.purity_counters,
+            {
+                "executor_created_exposure": 0,
+                "unexpected_reversal": 0,
+                "target_overshoot": 0,
+            },
+        )
+
+    def test_v2_slices_and_floors_to_quantity_precision_without_overshoot(self) -> None:
+        bus, kernel, orders, _reports, _audits = self._setup(
+            max_trade_qty_per_bar=0.3333339,
+            quantity_precision=6,
+        )
+        target = self._target(qty=1.0, cutoff_ns=2)
+
+        self._publish_approved(bus, target)
+
+        self.assertEqual(orders[0].quantity, 0.333333)
+        self.assertLessEqual(kernel.positions[target.symbol], target.target_qty + kernel.quantity_epsilon)
+
+    def test_legacy_market_judgment_options_cannot_change_v2_order_bytes(self) -> None:
+        baseline_bus, _baseline_kernel, baseline_orders, _reports, _audits = self._setup()
+        noisy_bus, _noisy_kernel, noisy_orders, _reports, _audits = self._setup(
+            pyramid_enabled=True,
+            dca_on_loss_long=True,
+            profit_protect_reduce_enabled=True,
+            target_delta_deadband_qty=10.0,
+            target_delta_deadband_pct=10.0,
+            entry_cooldown_bars=10,
+            weak_signal_no_flip_enabled=True,
+            flip_immediate=False,
+            squeeze_flip_flatten_only_enabled=True,
+            squeeze_flip_cooldown_enabled=True,
+            range_entry_block_enabled=True,
+            degraded_entry_block_enabled=True,
+        )
+        target = self._target(qty=0.75, cutoff_ns=2)
+
+        self._publish_approved(baseline_bus, target)
+        self._publish_approved(noisy_bus, target)
+
+        self.assertEqual(asdict(baseline_orders[0]), asdict(noisy_orders[0]))
+
+    def test_v2_hard_safety_can_reduce_but_cannot_increase_or_reverse_risk(self) -> None:
+        bus, kernel, orders, reports, audits = self._setup()
+        self._publish_approved(bus, self._target(qty=1.0, cutoff_ns=2))
+
+        reduce_target = self._target(
+            qty=0.5,
+            cutoff_ns=3,
+            reduce_only=True,
+            reason_codes=["KILL_SWITCH"],
+        )
+        self._publish_approved(bus, reduce_target)
+        self.assertAlmostEqual(kernel.positions[reduce_target.symbol], 0.5)
+        self.assertTrue(orders[-1].reduce_only)
+        self.assertEqual(audits[-1].hard_safety_reason, "KILL_SWITCH")
+
+        report_count = len(reports)
+        self._publish_approved(
+            bus,
+            self._target(qty=1.5, cutoff_ns=4, reduce_only=True, reason_codes=["KILL_SWITCH"]),
+        )
+        self._publish_approved(
+            bus,
+            self._target(qty=-1.0, cutoff_ns=5, reduce_only=True, reason_codes=["KILL_SWITCH"]),
+        )
+        self.assertEqual(len(reports), report_count)
+        self.assertAlmostEqual(kernel.positions[reduce_target.symbol], 0.5)
+
+    def test_v2_audit_is_complete_and_bound_to_approved_snapshot(self) -> None:
+        bus, _kernel, _orders, _reports, audits = self._setup()
+        target = self._target(qty=0.75, cutoff_ns=2)
+        snapshot = self._snapshot(target)
+
+        self._publish_approved(bus, target)
+
+        audit = audits[0]
+        self.assertEqual(audit.decision_id, snapshot.decision_id)
+        self.assertEqual(audit.approved_target_qty, 0.75)
+        self.assertEqual(audit.position_before_order, 0.0)
+        self.assertEqual(audit.position_after_fill, 0.75)
+        self.assertIsNone(audit.hard_safety_reason)
+        self.assertEqual(audit.client_order_id, _orders[0].client_order_id)
 
 
 class PyramidExecutionTests(unittest.TestCase):

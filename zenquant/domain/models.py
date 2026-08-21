@@ -245,6 +245,22 @@ class ExecutionOrder:
     limit_price: float | None = None  # Required for LIMIT orders
 
 
+@dataclass(slots=True, frozen=True)
+class ExecutionOrderAudit:
+    """Immutable audit record for one target-tracking V2 order attempt."""
+
+    decision_id: str
+    client_order_id: str
+    symbol: str
+    cutoff_time_ns: int
+    approved_target_qty: float
+    position_before_order: float
+    position_after_fill: float
+    order_delta_qty: float
+    hard_safety_reason: str | None
+    status: str
+
+
 @dataclass(slots=True)
 class ExecutionReport:
     client_order_id: str

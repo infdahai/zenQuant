@@ -11,18 +11,25 @@ Mechanical enforcement: two paths, same inputs, consistent outputs.
 from __future__ import annotations
 
 import unittest
+from dataclasses import asdict
 from pathlib import Path
 
 from zenquant.domain import (
+    EventMeta,
     IndicatorCoverage,
     IndicatorPack,
     MarketState,
+    MarkPriceUpdate,
+    TargetPosition,
     Timeframe,
 )
+from zenquant.execution import ExecutionKernel, ExecutionKernelConfig, SimulatedGateway
 from zenquant.infra.event_bus import InMemoryJetStream, StreamConfig
 from zenquant.plugins.profile import build_from_profile
 from zenquant.plugins.protocols import PluginMeta, SignalResult, SizerResult
 from zenquant.plugins.registry import LoadedPlugin, PluginRegistry
+from zenquant.risk import RiskOverlay
+from zenquant.strategy.decision_snapshot import build_decision_snapshot
 from zenquant.strategy.engine import ARCStrategyConfig, ARCStrategyEngine
 
 PLUGIN_ROOT = Path(__file__).parent.parent / "zenquant" / "plugins"
@@ -257,6 +264,81 @@ class TestPluginRuntimeContracts(unittest.TestCase):
         self.assertNotIn("ADAPTIVE_SIGNAL_WEIGHTS_ENABLED", warm_target.reason_codes)
         self.assertEqual(warm_target.target_qty, cold_target.target_qty)
         self.assertEqual(warm_target.target_leverage, cold_target.target_leverage)
+
+
+class TestTargetTrackingRuntimeParity(unittest.TestCase):
+    def test_replay_and_live_adapter_inputs_produce_identical_v2_order_and_audit_bytes(self):
+        def run_adapter() -> tuple[list[dict], list[dict], list[dict]]:
+            bus = InMemoryJetStream()
+            risk = RiskOverlay(bus)
+            ExecutionKernel(
+                bus,
+                SimulatedGateway(),
+                risk,
+                config=ExecutionKernelConfig(execution_authority_mode="target_tracking_v2"),
+            )
+            orders = []
+            reports = []
+            audits = []
+            bus.subscribe("exec.order.submit", lambda _subject, payload: orders.append(asdict(payload)))
+            bus.subscribe("exec.order.report", lambda _subject, payload: reports.append(asdict(payload)))
+            bus.subscribe("exec.order.audit", lambda _subject, payload: audits.append(asdict(payload)))
+            target = TargetPosition(
+                intent_id="parity-target",
+                portfolio="arc",
+                symbol="BTCUSDT_PERP",
+                timeframe=Timeframe.TF_4H,
+                cutoff_time_ns=14_400_000_000_000,
+                target_qty=0.75,
+                target_leverage=0.75,
+                reduce_only=False,
+                regime="TREND",
+                regime_confidence=0.8,
+                reason_codes=["APPROVED_4H_TARGET"],
+                realized_vol=0.4,
+                atr=500.0,
+            )
+            snapshot = build_decision_snapshot(
+                target=target,
+                formula_hash="formula-v2",
+                config_hash="config-v2",
+                indicator_version="pack.v1",
+                data_identity="parity-data",
+                alpha_direction=1.0,
+                alpha_raw_score=0.5,
+                alpha_confidence=0.8,
+                directional_state="UPTREND",
+                volatility_state="NORMAL",
+                positioning_state="HEALTHY",
+                quality_state="TRADABLE",
+                regime_risk_multiplier=1.0,
+                annualized_volatility=0.4,
+                volatility_target=0.2,
+                exposure_cap=1.5,
+                quality_flags=["OK"],
+                options_state_id=None,
+            )
+            bus.publish(
+                "md.mark.BINANCE.BTCUSDT_PERP",
+                MarkPriceUpdate(
+                    meta=EventMeta(
+                        event_time_ns=target.cutoff_time_ns,
+                        ingest_time_ns=target.cutoff_time_ns,
+                        venue="BINANCE",
+                        symbol=target.symbol,
+                        stream_seq=1,
+                    ),
+                    mark_price=60_000.0,
+                ),
+            )
+            bus.publish(f"strategy.decision_snapshot.4h.{target.symbol}", snapshot)
+            bus.publish(f"intent.target_position.final.{target.symbol}", target)
+            return orders, reports, audits
+
+        replay_bytes = run_adapter()
+        live_bytes = run_adapter()
+
+        self.assertEqual(replay_bytes, live_bytes)
 
 
 if __name__ == "__main__":
