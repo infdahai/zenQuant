@@ -147,6 +147,25 @@ class TargetPosition:
     atr: float = 0.0  # DCA distance gating
 
 
+@dataclass(slots=True, frozen=True)
+class DecisionSnapshot:
+    """Immutable V2 audit record of an approved four-hour target position."""
+
+    decision_id: str
+    portfolio: str
+    symbol: str
+    timeframe: Timeframe
+    cutoff_time_ns: int
+    formula_hash: str
+    config_hash: str
+    target_qty: float
+    target_leverage: float
+    reduce_only: bool
+    regime: str
+    regime_confidence: float
+    reason_codes: tuple[str, ...]
+
+
 @dataclass(slots=True)
 class IntentReason:
     portfolio: str

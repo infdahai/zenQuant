@@ -258,6 +258,19 @@ class TestPluginPathProducesValidOutput(unittest.TestCase):
         engine = ARCStrategyEngine(bus=bus, config=config or ARCStrategyConfig(), plugin_registry=registry)
         return engine, bus
 
+    def test_v2_snapshot_publishes_only_for_explicit_4h_path(self):
+        """Catches a missing V2 audit event or accidental default-path publication."""
+        engine, bus = self._build_engine_with_plugins(ARCStrategyConfig(emit_decision_snapshots_v2=True))
+        snapshots = []
+        bus.subscribe("strategy.decision_snapshot.4h.BTCUSDT_PERP", lambda _subject, payload: snapshots.append(payload))
+
+        engine.prime_indicator(_pack())
+        engine.prime_state(_state())
+
+        self.assertEqual(len(snapshots), 1)
+        self.assertEqual(snapshots[0].timeframe, Timeframe.TF_4H)
+        self.assertEqual(snapshots[0].symbol, "BTCUSDT_PERP")
+
     def test_plugin_direction_uptrend(self):
         engine, bus = self._build_engine_with_plugins()
 

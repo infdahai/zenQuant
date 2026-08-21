@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 import uuid
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from math import ceil
 from typing import Any
 
@@ -25,6 +27,7 @@ from zenquant.infra import EventBus
 from zenquant.plugins.orchestrator import compose_exits, compose_filters, compose_signals, compose_sizers
 from zenquant.plugins.registry import PluginRegistry
 
+from .decision_snapshot import build_decision_snapshot
 from .exit_engine import ExitEngine, ExitEngineConfig
 from .playbook_engine import PlaybookEngine, PlaybookEngineConfig
 from .sizing_engine import SizingEngine, SizingEngineConfig
@@ -131,6 +134,7 @@ class ARCStrategyConfig:
     intent_range_bear_profit_run_momentum_threshold: float = -0.20
     intent_range_bear_profit_run_confidence_floor: float = 0.50
     intent_range_bear_profit_run_max_transition_risk: float = 0.65
+    emit_decision_snapshots_v2: bool = False
 
 
 class ARCStrategyEngine:
@@ -298,6 +302,7 @@ class ARCStrategyEngine:
                     target, price=float(pack.values.get("last_price", 0.0) or 0.0)
                 )
                 if target is not None:
+                    self._publish_decision_snapshot_if_enabled(pack, target)
                     self._pending_4h_target[state.symbol] = target
                     self._pending_4h_bars[state.symbol] = 0
                     self._pending_1h_target.pop(state.symbol, None)
@@ -356,6 +361,7 @@ class ARCStrategyEngine:
         target = self._confirm_directional_intent(target, price=float(pack.values.get("last_price", 0.0) or 0.0))
         if target is None:
             return
+        self._publish_decision_snapshot_if_enabled(pack, target)
         reason = self._build_reason(target)
         self._bus.publish(
             f"strategy.regime.{self._config.portfolio}",
@@ -2171,6 +2177,33 @@ class ARCStrategyEngine:
             f"strategy.exit.{exit_decision.timeframe.value}.{exit_decision.symbol}",
             exit_decision,
         )
+
+    def _publish_decision_snapshot_if_enabled(
+        self,
+        pack: IndicatorPack,
+        target: TargetPosition,
+    ) -> None:
+        """Emit the isolated V2 audit event without changing legacy intent flow."""
+        if not self._config.emit_decision_snapshots_v2:
+            return
+        if pack.timeframe != Timeframe.TF_4H or target.timeframe != Timeframe.TF_4H:
+            return
+        snapshot = build_decision_snapshot(
+            target=target,
+            formula_hash=pack.formula_hash,
+            config_hash=self._decision_snapshot_config_hash(),
+        )
+        self._bus.publish(f"strategy.decision_snapshot.4h.{target.symbol}", snapshot)
+
+    def _decision_snapshot_config_hash(self) -> str:
+        """Fingerprint the active strategy configuration in a canonical form."""
+        payload = json.dumps(
+            asdict(self._config),
+            default=str,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        return f"sha256:{hashlib.sha256(payload.encode('utf-8')).hexdigest()}"
 
     def _build_exit_target(
         self,
