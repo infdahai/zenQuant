@@ -100,10 +100,12 @@ class DeribitOptionsIngestorTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(pack.symbol, "BTC")
         self.assertAlmostEqual(pack.atm_iv_30d, 66.0323, places=4)
         self.assertAlmostEqual(pack.term_structure_slope, 0.141169, places=6)
+        self.assertAlmostEqual(pack.put_call_moneyness_skew_proxy, 14.0, places=4)
         self.assertAlmostEqual(pack.put_call_skew_25d, 14.0, places=4)
         self.assertAlmostEqual(pack.oi_concentration, 0.594142, places=6)
         self.assertAlmostEqual(pack.block_flow_imbalance, 0.181818, places=6)
         self.assertIn("FLOW_PROXY_VOLUME", pack.quality_flags)
+        self.assertIn("SKEW_PROXY_MONEYNESS_90_110", pack.quality_flags)
         self.assertEqual(len(published), 1)
 
     async def test_poll_once_returns_none_on_empty_surface(self) -> None:

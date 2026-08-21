@@ -611,10 +611,15 @@ class DeribitRiskPack:
     ts_ns: int
     atm_iv_30d: float
     term_structure_slope: float
-    put_call_skew_25d: float
+    put_call_moneyness_skew_proxy: float
     oi_concentration: float
     block_flow_imbalance: float
     quality_flags: list[str] = field(default_factory=list)
+
+    @property
+    def put_call_skew_25d(self) -> float:
+        """Deprecated legacy alias for the 90%/110% moneyness proxy."""
+        return self.put_call_moneyness_skew_proxy
 
 
 @dataclass(slots=True)

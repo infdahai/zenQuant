@@ -129,7 +129,7 @@ class DashboardStateTests(unittest.TestCase):
                 ts_ns=12,
                 atm_iv_30d=62.5,
                 term_structure_slope=0.08,
-                put_call_skew_25d=4.2,
+                put_call_moneyness_skew_proxy=4.2,
                 oi_concentration=0.41,
                 block_flow_imbalance=0.18,
                 quality_flags=["OK"],
