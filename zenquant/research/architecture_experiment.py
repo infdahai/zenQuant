@@ -26,6 +26,8 @@ ARCHITECTURE_ATTRIBUTION_SCHEMA_VERSION = "architecture_attribution.v1"
 DEFAULT_COST_STRESS_BPS = (0.0, 5.0, 15.0)
 DEFAULT_ARCHITECTURE_MANIFEST_PATH = Path("config/research/architecture_experiment_v1.json")
 ARCHITECTURE_EXPERIMENT_V1_MANIFEST_SHA256 = "c982d074b24ec21235dfefbd972d936dc4f5a4ab0360964013576c90729bfbe0"
+A2_ANNUALIZED_VOLATILITY_TARGET = 0.20
+A2_MAX_ABS_EXPOSURE = 1.50
 
 
 @dataclass(frozen=True, slots=True)
@@ -145,11 +147,12 @@ def _deep_freeze(value: Any) -> Any:
 
 
 class ArchitectureStage(StrEnum):
-    """Task-2 stages, in causal experiment order."""
+    """Frozen stages in causal experiment order."""
 
     A0 = "A0"
     A1_SIGN = "A1_SIGN"
     A1_SCORE = "A1_SCORE"
+    A2 = "A2"
 
 
 @dataclass(frozen=True, slots=True)
@@ -164,6 +167,7 @@ class ArchitectureObservation:
     forward_return: float
     formula_hash: str
     alpha_config_hash: str
+    annualized_volatility: float | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -187,7 +191,7 @@ class ArchitectureRunEvidence:
 
 
 def stage_exposure(observation: ArchitectureObservation, stage: ArchitectureStage | str) -> float:
-    """Return one pure stage exposure, bounded by the fixed 1x contract."""
+    """Return one pure cumulative stage exposure."""
     resolved_stage = ArchitectureStage(stage)
     if resolved_stage == ArchitectureStage.A0:
         raise ValueError("A0 is represented by actual frozen replay metrics, not an exposure transform")
@@ -200,7 +204,18 @@ def stage_exposure(observation: ArchitectureObservation, stage: ArchitectureStag
     confidence = _finite_float(observation.frozen_confidence, name="frozen_confidence")
     if not 0.0 <= confidence <= 1.0:
         raise ValueError("frozen_confidence must be between 0 and 1")
-    return direction * confidence
+    a1_score = direction * confidence
+    if resolved_stage == ArchitectureStage.A1_SCORE:
+        return a1_score
+
+    annualized_volatility = observation.annualized_volatility
+    if annualized_volatility is None:
+        return 0.0
+    resolved_volatility = float(annualized_volatility)
+    if not math.isfinite(resolved_volatility) or resolved_volatility <= 0.0:
+        return 0.0
+    volatility_scalar = A2_ANNUALIZED_VOLATILITY_TARGET / resolved_volatility
+    return max(-A2_MAX_ABS_EXPOSURE, min(A2_MAX_ABS_EXPOSURE, a1_score * volatility_scalar))
 
 
 def build_architecture_attribution_report(
@@ -260,6 +275,12 @@ def build_architecture_attribution_report(
                 ArchitectureStage.A1_SCORE.value: _summarize_stage(
                     ordered,
                     stage=ArchitectureStage.A1_SCORE,
+                    fixed_notional=notional,
+                    cost_stress_bps=costs,
+                ),
+                ArchitectureStage.A2.value: _summarize_stage(
+                    ordered,
+                    stage=ArchitectureStage.A2,
                     fixed_notional=notional,
                     cost_stress_bps=costs,
                 ),
@@ -326,6 +347,13 @@ def build_architecture_attribution_report(
             "no_trade_band": False,
             "options_state": False,
             "execution_market_logic": False,
+        },
+        "stage_constraints": {
+            ArchitectureStage.A2.value: {
+                "annualized_volatility_target": A2_ANNUALIZED_VOLATILITY_TARGET,
+                "max_abs_exposure": A2_MAX_ABS_EXPOSURE,
+                "invalid_volatility_target": 0.0,
+            }
         },
         "cost_stress_bps": list(costs),
         "runs": runs,
