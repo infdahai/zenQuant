@@ -21,6 +21,7 @@ The calculation path performs no network I/O and is not attached to
 - `7a63a99 test(data): cover proxy runtime boundaries`
 - `859e225 fix(data): quarantine malformed options store rows`
 - `2a98f65 test(data): use valid forward health snapshots`
+- `2942661 fix(data): describe options IV unit normalization`
 
 ## Contracts implemented
 
@@ -43,6 +44,9 @@ The calculation path performs no network I/O and is not attached to
 - Selected 7d/30d/90d expiries, actual per-leg 25-delta methods
   (`exact_delta`, `linear_delta_interpolation`, or `nearest_delta`), and delta
   brackets are serialized into the state and formula identity.
+- The calculation-method string explicitly records percent-or-decimal IV input
+  normalization to annualized decimal units rather than claiming a percent-only
+  path.
 - Conventional 25d risk reversal is `call IV - put IV`; bearish put-call skew
   is separately recorded as `put IV - call IV`.
 - The old 90%-put minus 110%-call field is explicitly named
