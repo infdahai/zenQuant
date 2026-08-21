@@ -6,8 +6,8 @@ import json
 import re
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
+from itertools import pairwise
 from pathlib import Path
-
 
 _SNAPSHOT_RE = re.compile(r"options_chain_(\d{8}T\d{6}Z)\.parquet$")
 _STALE_HOURS = 8.1
@@ -21,6 +21,10 @@ class DeribitCollectorStatus:
     last_error: str | None
     snapshot_count_24h: int
     snapshot_count_7d: int
+    expected_snapshot_count_24h: int
+    expected_snapshot_count_7d: int
+    snapshot_coverage_ratio_24h: float
+    snapshot_coverage_ratio_7d: float
     max_gap_hours_7d: float
     observation_ready: bool
     research_ready: bool
@@ -53,6 +57,10 @@ def collect_deribit_status(root: Path, currency: str = "BTC") -> DeribitCollecto
             last_error="no_deribit_snapshots_found",
             snapshot_count_24h=0,
             snapshot_count_7d=0,
+            expected_snapshot_count_24h=6,
+            expected_snapshot_count_7d=42,
+            snapshot_coverage_ratio_24h=0.0,
+            snapshot_coverage_ratio_7d=0.0,
             max_gap_hours_7d=0.0,
             observation_ready=False,
             research_ready=False,
@@ -67,7 +75,7 @@ def collect_deribit_status(root: Path, currency: str = "BTC") -> DeribitCollecto
     snapshot_count_7d = sum(1 for ts in times if (now - ts).total_seconds() <= 7 * 24 * 3600)
     recent_7d = [ts for ts in times if (now - ts).total_seconds() <= 7 * 24 * 3600]
     max_gap_hours_7d = 0.0
-    for prev, curr in zip(recent_7d, recent_7d[1:]):
+    for prev, curr in pairwise(recent_7d):
         max_gap_hours_7d = max(max_gap_hours_7d, round((curr - prev).total_seconds() / 3600.0, 2))
     stale = (now - last).total_seconds() > _STALE_HOURS * 3600
     observation_ready = snapshot_count_7d >= 35 and max_gap_hours_7d <= _STALE_HOURS and not stale
@@ -82,6 +90,10 @@ def collect_deribit_status(root: Path, currency: str = "BTC") -> DeribitCollecto
         last_error=None,
         snapshot_count_24h=snapshot_count_24h,
         snapshot_count_7d=snapshot_count_7d,
+        expected_snapshot_count_24h=6,
+        expected_snapshot_count_7d=42,
+        snapshot_coverage_ratio_24h=min(1.0, snapshot_count_24h / 6),
+        snapshot_coverage_ratio_7d=min(1.0, snapshot_count_7d / 42),
         max_gap_hours_7d=max_gap_hours_7d,
         observation_ready=observation_ready,
         research_ready=research_ready,

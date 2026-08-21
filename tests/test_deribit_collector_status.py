@@ -40,6 +40,10 @@ class DeribitCollectorStatusTests(unittest.TestCase):
         self.assertEqual(status.next_action, "keep_collector_running")
         self.assertGreaterEqual(status.snapshot_count_24h, 5)
         self.assertGreaterEqual(status.snapshot_count_7d, 35)
+        self.assertEqual(status.expected_snapshot_count_24h, 6)
+        self.assertGreaterEqual(status.snapshot_coverage_ratio_24h, 5 / 6)
+        self.assertEqual(status.expected_snapshot_count_7d, 42)
+        self.assertGreaterEqual(status.snapshot_coverage_ratio_7d, 35 / 42)
 
     def test_write_status_creates_json_artifact(self) -> None:
         now = datetime.now(UTC)
