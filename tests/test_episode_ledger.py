@@ -192,6 +192,27 @@ def test_replay_allocates_each_funding_settlement_before_new_close_fills() -> No
     assert episode.mae_pnl == pytest.approx(-10.0)
 
 
+def test_replay_orders_delayed_funding_by_visible_cutoff_not_stale_source_time() -> None:
+    replay = HistoricalBacktest.__new__(HistoricalBacktest)
+    replay._config = type("Config", (), {"portfolio_symbol": "BTCUSDT"})()
+    replay._episode_ledger = PositionEpisodeLedger()
+    replay._episode_funding_time_ns = 0
+    replay._episode_ledger.on_fill(_fill(side=1, qty=1.0, price=100.0, fee=0.0, ts_ns=1))
+    replay._update_episode_market_accounting(
+        {"close_time_ns": 3, "high": 102.0, "low": 99.0, "close": 101.0},
+        None,
+    )
+
+    replay._update_episode_market_accounting(
+        {"close_time_ns": 5, "high": 104.0, "low": 100.0, "close": 103.0},
+        {"funding_time_ns": 2, "funding_rate": 0.01},
+    )
+
+    episode = replay._episode_ledger.open_episodes[0]
+    assert episode.funding_pnl == pytest.approx(-1.03)
+    assert episode.holding_duration_ns == 4
+
+
 def test_excursions_include_realized_pnl_after_partial_reduction() -> None:
     ledger = PositionEpisodeLedger()
     ledger.on_fill(_fill(side=1, qty=2.0, price=100.0, fee=0.0, ts_ns=1))

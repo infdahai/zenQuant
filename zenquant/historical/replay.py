@@ -711,7 +711,12 @@ class HistoricalBacktest:
                 self._episode_ledger.allocate_funding(
                     FundingAllocation(
                         symbol=symbol,
-                        timestamp_ns=funding_time_ns,
+                        # Auxiliary rows can become visible after their economic
+                        # source timestamp. Order ledger events by the confirmed
+                        # cutoff at which replay can first consume the row; using
+                        # the stale source timestamp would move the ledger clock
+                        # backwards after prior bar observations/fills.
+                        timestamp_ns=int(row["close_time_ns"]),
                         pnl=-funding_cost,
                     )
                 )
