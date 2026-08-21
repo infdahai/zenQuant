@@ -27,6 +27,7 @@ from zenquant.research.architecture_experiment import (
     ArchitectureObservation,
     ArchitectureRunEvidence,
     ArchitectureStage,
+    apply_target_no_trade_band,
     build_architecture_attribution_report,
     load_architecture_experiment_manifest,
     stage_exposure,
@@ -427,6 +428,52 @@ def test_a3_input_does_not_change_a2_or_earlier_stages():
         assert stage_exposure(changed_later_input, stage) == stage_exposure(baseline, stage)
 
 
+def test_a4_applies_the_only_four_percent_target_position_band():
+    assert apply_target_no_trade_band(0.60, current_position=0.59, exchange_min_quantity=0.001) == pytest.approx(
+        0.59
+    )
+    assert apply_target_no_trade_band(0.60, current_position=0.50, exchange_min_quantity=0.001) == pytest.approx(
+        0.60
+    )
+
+
+def test_a4_band_is_floored_by_exchange_minimum_quantity():
+    assert apply_target_no_trade_band(0.60, current_position=0.50, exchange_min_quantity=0.20) == pytest.approx(
+        0.50
+    )
+
+
+@pytest.mark.parametrize("safety_reason", ["KILL", "UNSAFE", "CAP_VIOLATION"])
+def test_a4_safety_corrections_bypass_band(safety_reason):
+    assert apply_target_no_trade_band(
+        0.0,
+        current_position=0.01,
+        exchange_min_quantity=0.10,
+        safety_reasons=(safety_reason,),
+    ) == pytest.approx(0.0)
+
+
+def test_a4_reduce_only_bypasses_band():
+    assert apply_target_no_trade_band(
+        0.50,
+        current_position=0.60,
+        exchange_min_quantity=0.20,
+        reduce_only=True,
+    ) == pytest.approx(0.50)
+
+
+def test_a4_stage_is_cumulative_and_does_not_change_a3():
+    observation = replace(
+        _observation(raw_score=0.4, frozen_confidence=0.6),
+        annualized_volatility=0.20,
+        risk_regime="NORMAL",
+        exchange_min_quantity=0.001,
+    )
+
+    assert stage_exposure(observation, ArchitectureStage.A3) == pytest.approx(0.60)
+    assert stage_exposure(observation, ArchitectureStage.A4, current_position=0.59) == pytest.approx(0.59)
+
+
 @pytest.mark.parametrize("confidence", [-0.01, 1.01])
 def test_stage_transforms_reject_confidence_outside_one_x_contract(confidence):
     """Catches malformed confidence silently creating leverage above 1x."""
@@ -552,7 +599,10 @@ def test_report_requires_exact_matrix_and_carries_frozen_identities():
     )
 
     assert [(run["window"], run["seed"]) for run in report["runs"]] == list(manifest.expected_run_keys)
-    assert all(list(run["stages"]) == ["A0", "A1_SIGN", "A1_SCORE", "A2", "A3"] for run in report["runs"])
+    assert all(
+        list(run["stages"]) == ["A0", "A1_SIGN", "A1_SCORE", "A2", "A3", "A4"]
+        for run in report["runs"]
+    )
     assert report["manifest"]["sha256"] == manifest.sha256
     assert report["manifest"]["candidate_params_sha256"] == manifest.candidate_params_sha256
     assert report["manifest"]["profile_sha256"] == manifest.profile_sha256
@@ -598,6 +648,11 @@ def test_report_requires_exact_matrix_and_carries_frozen_identities():
             "UNKNOWN": 0.0,
         },
         "unrecognized_multiplier": 0.0,
+    }
+    assert report["stage_constraints"]["A4"] == {
+        "no_trade_band_fraction": 0.04,
+        "exchange_minimum_floor": True,
+        "safety_bypass_reasons": ["CAP_VIOLATION", "KILL", "UNSAFE"],
     }
 
 

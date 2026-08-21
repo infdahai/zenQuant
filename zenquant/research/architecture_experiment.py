@@ -28,6 +28,8 @@ DEFAULT_ARCHITECTURE_MANIFEST_PATH = Path("config/research/architecture_experime
 ARCHITECTURE_EXPERIMENT_V1_MANIFEST_SHA256 = "c982d074b24ec21235dfefbd972d936dc4f5a4ab0360964013576c90729bfbe0"
 A2_ANNUALIZED_VOLATILITY_TARGET = 0.20
 A2_MAX_ABS_EXPOSURE = 1.50
+A4_NO_TRADE_BAND_FRACTION = 0.04
+A4_SAFETY_BYPASS_REASONS = frozenset({"KILL", "UNSAFE", "CAP_VIOLATION"})
 A3_REGIME_MULTIPLIERS = MappingProxyType(
     {
         "NORMAL": 1.0,
@@ -166,6 +168,7 @@ class ArchitectureStage(StrEnum):
     A1_SCORE = "A1_SCORE"
     A2 = "A2"
     A3 = "A3"
+    A4 = "A4"
 
 
 @dataclass(frozen=True, slots=True)
@@ -182,6 +185,9 @@ class ArchitectureObservation:
     alpha_config_hash: str
     annualized_volatility: float | None = None
     risk_regime: str = "UNKNOWN"
+    exchange_min_quantity: float = 0.0
+    reduce_only: bool = False
+    safety_reasons: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -204,7 +210,12 @@ class ArchitectureRunEvidence:
     position_episodes: tuple[PositionEpisode, ...] = ()
 
 
-def stage_exposure(observation: ArchitectureObservation, stage: ArchitectureStage | str) -> float:
+def stage_exposure(
+    observation: ArchitectureObservation,
+    stage: ArchitectureStage | str,
+    *,
+    current_position: float = 0.0,
+) -> float:
     """Return one pure cumulative stage exposure."""
     resolved_stage = ArchitectureStage(stage)
     if resolved_stage == ArchitectureStage.A0:
@@ -232,12 +243,50 @@ def stage_exposure(observation: ArchitectureObservation, stage: ArchitectureStag
     a2_exposure = max(-A2_MAX_ABS_EXPOSURE, min(A2_MAX_ABS_EXPOSURE, a1_score * volatility_scalar))
     if resolved_stage == ArchitectureStage.A2:
         return a2_exposure
-    return a2_exposure * frozen_regime_multiplier(observation.risk_regime)
+    a3_exposure = a2_exposure * frozen_regime_multiplier(observation.risk_regime)
+    if resolved_stage == ArchitectureStage.A3:
+        return a3_exposure
+
+    normalized_regime = str(observation.risk_regime).strip().upper()
+    safety_reasons = observation.safety_reasons
+    if normalized_regime not in A3_REGIME_MULTIPLIERS or normalized_regime in {"UNSAFE", "UNKNOWN"}:
+        safety_reasons = (*safety_reasons, "UNSAFE")
+    return apply_target_no_trade_band(
+        a3_exposure,
+        current_position=current_position,
+        exchange_min_quantity=observation.exchange_min_quantity,
+        reduce_only=observation.reduce_only,
+        safety_reasons=safety_reasons,
+    )
 
 
 def frozen_regime_multiplier(risk_regime: str) -> float:
     """Resolve the immutable A3 mapping and fail closed for new labels."""
     return A3_REGIME_MULTIPLIERS.get(str(risk_regime).strip().upper(), 0.0)
+
+
+def apply_target_no_trade_band(
+    target_position: float,
+    *,
+    current_position: float,
+    exchange_min_quantity: float,
+    reduce_only: bool = False,
+    safety_reasons: tuple[str, ...] = (),
+) -> float:
+    """Apply A4's sole target-position deadband as a deterministic transform."""
+    target = _finite_float(target_position, name="target_position")
+    current = _finite_float(current_position, name="current_position")
+    minimum_quantity = _finite_float(exchange_min_quantity, name="exchange_min_quantity")
+    if minimum_quantity < 0.0:
+        raise ValueError("exchange_min_quantity must be non-negative")
+    normalized_safety_reasons = {str(reason).strip().upper() for reason in safety_reasons}
+    if reduce_only or normalized_safety_reasons & A4_SAFETY_BYPASS_REASONS:
+        return target
+    threshold = max(
+        A4_NO_TRADE_BAND_FRACTION * max(abs(current), abs(target)),
+        minimum_quantity,
+    )
+    return current if abs(target - current) < threshold else target
 
 
 def build_architecture_attribution_report(
@@ -309,6 +358,12 @@ def build_architecture_attribution_report(
                 ArchitectureStage.A3.value: _summarize_stage(
                     ordered,
                     stage=ArchitectureStage.A3,
+                    fixed_notional=notional,
+                    cost_stress_bps=costs,
+                ),
+                ArchitectureStage.A4.value: _summarize_stage(
+                    ordered,
+                    stage=ArchitectureStage.A4,
                     fixed_notional=notional,
                     cost_stress_bps=costs,
                 ),
@@ -386,6 +441,11 @@ def build_architecture_attribution_report(
                 "regime_multipliers": dict(A3_REGIME_MULTIPLIERS),
                 "unrecognized_multiplier": 0.0,
             },
+            ArchitectureStage.A4.value: {
+                "no_trade_band_fraction": A4_NO_TRADE_BAND_FRACTION,
+                "exchange_minimum_floor": True,
+                "safety_bypass_reasons": sorted(A4_SAFETY_BYPASS_REASONS),
+            },
         },
         "cost_stress_bps": list(costs),
         "runs": runs,
@@ -415,7 +475,7 @@ def _summarize_stage(
     regime_rows: defaultdict[str, list[dict[str, Any]]] = defaultdict(list)
 
     for observation in observations:
-        exposure = stage_exposure(observation, stage)
+        exposure = stage_exposure(observation, stage, current_position=previous_exposure)
         forward_return = _finite_float(observation.forward_return, name="forward_return")
         row: dict[str, Any] = {
             "alpha_id": observation.alpha_id,
