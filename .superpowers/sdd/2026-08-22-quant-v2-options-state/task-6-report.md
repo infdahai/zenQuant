@@ -22,11 +22,21 @@ The calculation path performs no network I/O and is not attached to
 - `859e225 fix(data): quarantine malformed options store rows`
 - `2a98f65 test(data): use valid forward health snapshots`
 - `2942661 fix(data): describe options IV unit normalization`
+- `361e38d fix(data): preserve options timestamp precision`
 
 ## Contracts implemented
 
 - Confirmed 4h cutoff, BTC-only, current source `<= cutoff`, and realized-vol
   source `<= cutoff` are mechanically enforced.
+- Cutoff, current/history source nanoseconds, expiry milliseconds, realized-vol
+  source timestamps, store ASOF indexes, and collector filename/row checks use
+  lossless signed-int64 parsing. Python/NumPy integral scalars and exact integer
+  strings are accepted; floats, fractional strings, booleans, NaN/Inf, and
+  out-of-range values are never coerced through binary floating point.
+- At a realistic `1.728e18` epoch, exact cutoff is accepted while sources at
+  `+1`, `+32`, `+64`, `+127`, and `+128ns` are rejected. A history source at
+  the 24h target plus 1ns is not used, and the store cannot select a snapshot
+  one nanosecond after cutoff.
 - Stable identity binds the complete selected current chain, the accepted 24h
   ASOF history chain, cutoff, formulas, inputs, outputs, and quality state.
 - Input canonicalization uses a total ordering over full normalized rows.
@@ -91,11 +101,13 @@ The calculation path performs no network I/O and is not attached to
   timestamps, IV-unit-equivalent GEX, true gamma crossing, duplicate-order
   identity, per-leg calculation audit fields, explicit proxy boundaries, and
   validated four-hour readiness.
-- Independent-review reproductions: `11 passed, 5 subtests passed`.
-- Focused options/data suite: `81 passed, 4 skipped, 5 subtests passed`
+- Independent-review precision boundary regressions include exact/current,
+  future-nanosecond, 24h ASOF, store bisect, expiry-ms, integral-string/NumPy,
+  and malformed timestamp cases.
+- Focused options/data suite: `92 passed, 4 skipped, 26 subtests passed`
   (network tests skipped).
 - Full suite (outside the filesystem sandbox because ProcessPool tests need
-  macOS semaphore-limit access): `1273 passed, 10 skipped, 10 subtests passed`.
+  macOS semaphore-limit access): `1284 passed, 10 skipped, 31 subtests passed`.
 - Gate B import boundaries: pass.
 - Gate C golden output: pass.
 - Gate D legacy/plugin parity: pass.
