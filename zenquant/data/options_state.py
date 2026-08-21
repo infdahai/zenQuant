@@ -18,7 +18,7 @@ from zenquant.domain import OptionsState
 
 FOUR_HOURS_NS = 4 * 60 * 60 * 1_000_000_000
 DAY_NS = 24 * 60 * 60 * 1_000_000_000
-CALCULATION_VERSION = "options-state-v1"
+CALCULATION_VERSION = "options-state-v2"
 CALCULATION_METHOD = (
     "deribit_mark_iv_pct_to_decimal;nearest_expiry_atm_oi_weighted;"
     "black76_forward=index_price;delta_selection=per_leg_selection_recorded;"
