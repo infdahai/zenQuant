@@ -19,6 +19,64 @@ DAY_NS = 86_400 * 1_000_000_000
 
 
 class OptionsDataStoreTests(unittest.TestCase):
+    def test_indicator_runtime_exposes_proxy_without_25delta_mislabel(self) -> None:
+        from zenquant.data import OptionsSnapshot
+        from zenquant.domain import Candle, MarketSnapshot, Timeframe
+        from zenquant.indicator import IndicatorEngine, IndicatorStore
+        from zenquant.infra import InMemoryJetStream
+
+        snapshot = OptionsSnapshot(
+            atm_iv_30d=0.60,
+            atm_iv_z=0.0,
+            term_structure_slope=0.1,
+            term_slope_z=0.0,
+            put_call_moneyness_skew_proxy=0.05,
+            skew_z=0.0,
+            underlying_price=100.0,
+        )
+        options_store = type("OptionsStore", (), {"lookup": lambda self, _cutoff: snapshot})()
+        engine = IndicatorEngine(
+            bus=InMemoryJetStream(),
+            store=IndicatorStore(),
+            options_store=options_store,
+        )
+        candle = Candle(
+            symbol="BTCUSDT_PERP",
+            timeframe=Timeframe.TF_4H,
+            bar_start_ns=0,
+            bar_end_ns=4 * 3_600 * 1_000_000_000,
+            open=100.0,
+            high=101.0,
+            low=99.0,
+            close=100.0,
+            volume=1.0,
+            trade_count=1,
+        )
+        market = MarketSnapshot(
+            symbol=candle.symbol,
+            timeframe=candle.timeframe,
+            cutoff_time_ns=candle.bar_end_ns,
+            last_price=100.0,
+            bid_depth=100.0,
+            ask_depth=100.0,
+            book_age_ms=0,
+            venue_count=1,
+            cvd_delta=0.0,
+            funding_oi_weighted=None,
+            oi_coverage=0.0,
+            staleness_ms=0,
+            quality_flags=[],
+        )
+        values, _flags = engine._compute_slow_feature_enrichment(
+            history_key=(candle.symbol, candle.timeframe),
+            candle=candle,
+            snapshot=market,
+            candles=[candle],
+            structure_state="RANGE",
+        )
+        self.assertEqual(values["put_call_moneyness_skew_proxy"], 0.05)
+        self.assertNotIn("put_call_skew_25d", values)
+
     def test_options_state_lookup_is_point_in_time_and_future_invariant(self) -> None:
         from zenquant.data import OptionsDataStore, OptionsDataStoreConfig
 
