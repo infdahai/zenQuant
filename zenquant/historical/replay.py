@@ -764,8 +764,7 @@ class HistoricalBacktest:
                 getattr(getattr(self, "_config", None), "portfolio_symbol", payload.symbol),
             )
             if causal_donor_mode and (
-                payload.available_at_ns != payload.cutoff_time_ns
-                or visible_at_ns != payload.available_at_ns
+                payload.available_at_ns != payload.cutoff_time_ns or visible_at_ns != payload.available_at_ns
             ):
                 raise ValueError(
                     "backdated architecture alpha rejected: "

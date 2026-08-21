@@ -245,9 +245,7 @@ def run_frozen_matrix_entry(
     )
     donor_runner = HistoricalBacktest(donor_config)
     donor_runner.run()
-    batch = donor_runner.build_architecture_attribution_rows(
-        horizon=manifest.alpha_horizon_bars
-    )
+    batch = donor_runner.build_architecture_attribution_rows(horizon=manifest.alpha_horizon_bars)
     stage_observations, stage_metrics, stage_rows = run_frozen_stage_sidecars(
         donor_runner,
         config=donor_config,

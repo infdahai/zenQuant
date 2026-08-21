@@ -545,9 +545,7 @@ def build_architecture_attribution_report(
             if not evidence.a0_metrics or not evidence.a0_config_hash:
                 raise ValueError(f"missing A0 identity in window={window.label!r} seed={seed}")
             if not evidence.donor_config_hash:
-                raise ValueError(
-                    f"missing causal donor identity in window={window.label!r} seed={seed}"
-                )
+                raise ValueError(f"missing causal donor identity in window={window.label!r} seed={seed}")
             elapsed_days = max(1.0, (evidence.end_ns - evidence.start_ns) / 1_000_000_000 / 86_400)
             gate_v3 = evaluate_gate_v3(
                 evidence.position_episodes,

@@ -201,7 +201,6 @@ def test_matrix_entry_sources_a0_only_from_original_runner(monkeypatch):
     runner_configs = []
 
     class _Runner:
-
         def __init__(self, config):
             self.config = config
             runner_configs.append(config)
@@ -227,9 +226,7 @@ def test_matrix_entry_sources_a0_only_from_original_runner(monkeypatch):
         lambda runner, *, config, manifest: ((observation,), {}, {}),
     )
 
-    evidence = module.run_frozen_matrix_entry(
-        root=Path("/data"), manifest=manifest, window=window, seed=42
-    )
+    evidence = module.run_frozen_matrix_entry(root=Path("/data"), manifest=manifest, window=window, seed=42)
 
     assert runner_configs[0].indicator_config.expected_symbols == (
         "BTCUSDT_PERP",
