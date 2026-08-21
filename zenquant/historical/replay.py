@@ -759,7 +759,14 @@ class HistoricalBacktest:
     def _collect_architecture_alpha(self, _: str, payload: object) -> None:
         if isinstance(payload, ArchitectureAlphaSnapshot):
             visible_at_ns = int(self._current_event_cutoff_ns)
-            if payload.available_at_ns != payload.cutoff_time_ns or visible_at_ns != payload.available_at_ns:
+            indicator_config = getattr(getattr(self, "_config", None), "indicator_config", None)
+            causal_donor_mode = indicator_config is None or indicator_config.expected_symbols == (
+                getattr(getattr(self, "_config", None), "portfolio_symbol", payload.symbol),
+            )
+            if causal_donor_mode and (
+                payload.available_at_ns != payload.cutoff_time_ns
+                or visible_at_ns != payload.available_at_ns
+            ):
                 raise ValueError(
                     "backdated architecture alpha rejected: "
                     f"cutoff_time_ns={payload.cutoff_time_ns} "

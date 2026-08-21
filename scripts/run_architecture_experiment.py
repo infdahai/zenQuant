@@ -86,13 +86,7 @@ def build_frozen_backtest_config(
         strategy_config=strategy_config,
         risk_config=build_risk_config(params),
         execution_config=build_execution_config(params),
-        indicator_config=replace(
-            build_indicator_config(params),
-            # The frozen donor stream contains BTC only. Waiting for the
-            # default BTC+ETH cross-symbol quorum backdates every 4h pack by
-            # the pending TTL and makes the next-bar label look-ahead.
-            expected_symbols=(manifest.portfolio_symbol,),
-        ),
+        indicator_config=build_indicator_config(params),
         signal_weight_overrides=build_signal_weight_overrides(params),
         plugin_config_overrides=build_plugin_config_overrides(params),
         perturbation=PerturbationConfig(seed=seed, **dict(manifest.perturbation)),
@@ -100,6 +94,38 @@ def build_frozen_backtest_config(
         state_liquidation_overlay_enabled=state_liquidation_overlay_enabled,
         profile_path=manifest.profile_path,
     )
+    return config, _frozen_config_hash(config, manifest=manifest)
+
+
+def build_causal_donor_backtest_config(
+    *,
+    root: Path,
+    manifest: ArchitectureExperimentManifest,
+    window: ArchitectureWindow,
+    seed: int,
+) -> tuple[HistoricalBacktestConfig, str]:
+    """Build the isolated zero-lag A1-A5 donor without rewriting A0."""
+    a0_config, _a0_hash = build_frozen_backtest_config(
+        root=root,
+        manifest=manifest,
+        window=window,
+        seed=seed,
+    )
+    donor_config = replace(
+        a0_config,
+        indicator_config=replace(
+            a0_config.indicator_config,
+            expected_symbols=(manifest.portfolio_symbol,),
+        ),
+    )
+    return donor_config, _frozen_config_hash(donor_config, manifest=manifest)
+
+
+def _frozen_config_hash(
+    config: HistoricalBacktestConfig,
+    *,
+    manifest: ArchitectureExperimentManifest,
+) -> str:
     identity = {
         "strategy_config": to_jsonable(config.strategy_config),
         "risk_config": to_jsonable(config.risk_config),
@@ -128,7 +154,7 @@ def build_frozen_backtest_config(
         },
     }
     canonical = json.dumps(identity, sort_keys=True, separators=(",", ":")).encode("utf-8")
-    return config, f"sha256:{hashlib.sha256(canonical).hexdigest()}"
+    return f"sha256:{hashlib.sha256(canonical).hexdigest()}"
 
 
 def _revalidate_manifest(manifest: ArchitectureExperimentManifest) -> None:
@@ -195,6 +221,59 @@ def run_frozen_stage_sidecars(
     return observations, metrics_by_stage, rows_by_stage
 
 
+def run_frozen_matrix_entry(
+    *,
+    root: Path,
+    manifest: ArchitectureExperimentManifest,
+    window: ArchitectureWindow,
+    seed: int,
+) -> ArchitectureRunEvidence:
+    """Combine original A0 evidence with an isolated causal A1-A5 donor."""
+    a0_config, a0_config_hash = build_frozen_backtest_config(
+        root=root,
+        manifest=manifest,
+        window=window,
+        seed=seed,
+    )
+    a0_runner = HistoricalBacktest(a0_config)
+    a0_result = a0_runner.run()
+    donor_config, donor_config_hash = build_causal_donor_backtest_config(
+        root=root,
+        manifest=manifest,
+        window=window,
+        seed=seed,
+    )
+    donor_runner = HistoricalBacktest(donor_config)
+    donor_runner.run()
+    batch = donor_runner.build_architecture_attribution_rows(
+        horizon=manifest.alpha_horizon_bars
+    )
+    stage_observations, stage_metrics, stage_rows = run_frozen_stage_sidecars(
+        donor_runner,
+        config=donor_config,
+        manifest=manifest,
+    )
+    return ArchitectureRunEvidence(
+        window=window.label,
+        start_ns=window.start_ns,
+        end_ns=window.end_ns,
+        seed=seed,
+        a0_metrics=asdict(a0_result.metrics),
+        a0_final_equity=a0_result.final_equity,
+        a0_config_hash=a0_config_hash,
+        donor_config_hash=donor_config_hash,
+        observations=stage_observations,
+        excluded_non_evaluable_count=int(batch["excluded_non_evaluable_count"]),
+        confirmed_4h_row_count=int(batch["confirmed_4h_row_count"]),
+        alpha_snapshot_count=int(batch["alpha_snapshot_count"]),
+        missing_alpha_count=int(batch["missing_alpha_count"]),
+        terminal_excluded_count=int(batch["terminal_excluded_count"]),
+        position_episodes=a0_result.position_episodes,
+        execution_metrics_by_stage=stage_metrics,
+        stage_execution_rows_by_stage=stage_rows,
+    )
+
+
 def main() -> None:
     args = build_parser().parse_args()
 
@@ -202,38 +281,12 @@ def main() -> None:
     runs: list[ArchitectureRunEvidence] = []
     for window in manifest.windows:
         for seed in manifest.seeds:
-            config, config_hash = build_frozen_backtest_config(
-                root=args.root,
-                manifest=manifest,
-                window=window,
-                seed=seed,
-            )
-            runner = HistoricalBacktest(config)
-            result = runner.run()
-            batch = runner.build_architecture_attribution_rows(horizon=manifest.alpha_horizon_bars)
-            stage_observations, stage_metrics, stage_rows = run_frozen_stage_sidecars(
-                runner,
-                config=config,
-                manifest=manifest,
-            )
             runs.append(
-                ArchitectureRunEvidence(
-                    window=window.label,
-                    start_ns=window.start_ns,
-                    end_ns=window.end_ns,
+                run_frozen_matrix_entry(
+                    root=args.root,
+                    manifest=manifest,
+                    window=window,
                     seed=seed,
-                    a0_metrics=asdict(result.metrics),
-                    a0_final_equity=result.final_equity,
-                    a0_config_hash=config_hash,
-                    observations=stage_observations,
-                    excluded_non_evaluable_count=int(batch["excluded_non_evaluable_count"]),
-                    confirmed_4h_row_count=int(batch["confirmed_4h_row_count"]),
-                    alpha_snapshot_count=int(batch["alpha_snapshot_count"]),
-                    missing_alpha_count=int(batch["missing_alpha_count"]),
-                    terminal_excluded_count=int(batch["terminal_excluded_count"]),
-                    position_episodes=result.position_episodes,
-                    execution_metrics_by_stage=stage_metrics,
-                    stage_execution_rows_by_stage=stage_rows,
                 )
             )
 
