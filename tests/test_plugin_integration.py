@@ -516,6 +516,34 @@ class TestPluginPathProducesValidOutput(unittest.TestCase):
 
         self.assertEqual(engine._risk_final_decisions, {})
 
+    def test_v2_snapshot_consumes_duplicate_final_authority_once(self):
+        engine, bus = self._build_engine_with_plugins(ARCStrategyConfig(emit_decision_snapshots_v2=True))
+        snapshots = []
+        target = _target(qty=1.0)
+        bus.subscribe("strategy.decision_snapshot.>", lambda _subject, payload: snapshots.append(payload))
+        engine._publish_decision_snapshot_if_enabled(_pack(), _state(), _playbook(), target)
+        decision = RiskOverlayDecision(
+            symbol=target.symbol,
+            cutoff_time_ns=target.cutoff_time_ns,
+            original_target_qty=target.target_qty,
+            revised_target_qty=target.target_qty,
+            lev_cap=target.target_leverage,
+            reduce_only=target.reduce_only,
+            flags=["OK"],
+            portfolio=target.portfolio,
+            timeframe=target.timeframe,
+            original_intent_id=target.intent_id,
+        )
+        bus.publish("risk.overlay.decision", decision)
+
+        bus.publish("intent.target_position.final.BTCUSDT_PERP", target)
+        bus.publish("risk.overlay.decision", decision)
+        bus.publish("intent.target_position.final.BTCUSDT_PERP", target)
+
+        self.assertEqual(len(snapshots), 1)
+        self.assertEqual(engine._pending_decision_snapshots, {})
+        self.assertEqual(engine._risk_final_decisions, {})
+
     def test_v2_snapshot_rejects_out_of_order_risk_decision(self):
         engine, bus = self._build_engine_with_plugins(ARCStrategyConfig(emit_decision_snapshots_v2=True))
         old_target = _target(qty=1.0, cutoff_time_ns=1)
@@ -544,6 +572,8 @@ class TestPluginPathProducesValidOutput(unittest.TestCase):
                 original_intent_id=old_target.intent_id,
             ),
         )
+
+        bus.publish("intent.target_position.final.BTCUSDT_PERP", old_target)
 
         self.assertEqual(engine._risk_final_decisions, {})
 
