@@ -301,6 +301,20 @@ class TestPluginPathProducesValidOutput(unittest.TestCase):
 
         self.assertEqual(snapshots, [])
 
+    def test_v2_snapshot_never_publishes_for_non_btc_symbol(self):
+        """Catches enabled V2 publication crossing the BTC-only experiment boundary."""
+        engine, bus = self._build_engine_with_plugins(ARCStrategyConfig(emit_decision_snapshots_v2=True))
+        snapshots = []
+        bus.subscribe("strategy.decision_snapshot.>", lambda _subject, payload: snapshots.append(payload))
+        pack = _pack(symbol="ETHUSDT_PERP")
+        state = _state()
+        state.symbol = "ETHUSDT_PERP"
+
+        engine.prime_indicator(pack)
+        engine.prime_state(state)
+
+        self.assertEqual(snapshots, [])
+
     def test_v2_snapshot_does_not_reuse_stale_plugin_alpha_context(self):
         """Catches an exit-only bar inheriting raw alpha from an earlier cutoff."""
         engine, bus = self._build_engine_with_plugins(ARCStrategyConfig(emit_decision_snapshots_v2=True))

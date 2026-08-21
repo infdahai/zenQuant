@@ -14,25 +14,27 @@ def build_decision_snapshot(
     target: TargetPosition,
     formula_hash: str,
     config_hash: str,
-    indicator_version: str = "unknown",
-    data_identity: str = "unknown",
-    alpha_direction: float = 0.0,
-    alpha_raw_score: float = 0.0,
-    alpha_confidence: float = 0.0,
-    directional_state: str = "UNKNOWN",
-    volatility_state: str = "UNKNOWN",
-    positioning_state: str = "UNKNOWN",
-    quality_state: str = "UNKNOWN",
-    regime_risk_multiplier: float = 1.0,
-    annualized_volatility: float = 0.0,
-    volatility_target: float = 0.0,
-    exposure_cap: float = 0.0,
-    quality_flags: Sequence[str] = (),
-    options_state_id: str | None = None,
+    indicator_version: str,
+    data_identity: str,
+    alpha_direction: float,
+    alpha_raw_score: float,
+    alpha_confidence: float,
+    directional_state: str,
+    volatility_state: str,
+    positioning_state: str,
+    quality_state: str,
+    regime_risk_multiplier: float,
+    annualized_volatility: float,
+    volatility_target: float,
+    exposure_cap: float,
+    quality_flags: Sequence[str],
+    options_state_id: str | None,
 ) -> DecisionSnapshot:
     """Freeze one approved four-hour target behind a content-addressed ID."""
     if target.timeframe != Timeframe.TF_4H:
         raise ValueError("DecisionSnapshot only supports 4h targets")
+    if not target.symbol.upper().startswith("BTC"):
+        raise ValueError("DecisionSnapshot only supports BTC symbols")
 
     reason_codes = tuple(target.reason_codes)
     frozen_quality_flags = tuple(quality_flags)

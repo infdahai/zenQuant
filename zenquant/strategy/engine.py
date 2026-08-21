@@ -2191,6 +2191,8 @@ class ARCStrategyEngine:
             return
         if pack.timeframe != Timeframe.TF_4H or target.timeframe != Timeframe.TF_4H:
             return
+        if not target.symbol.upper().startswith("BTC"):
+            return
         plugin_context = self._plugin_signal_context.get((pack.symbol, pack.timeframe), {})
         if plugin_context.get("cutoff_time_ns") != pack.cutoff_time_ns:
             plugin_context = {}
@@ -2214,6 +2216,7 @@ class ARCStrategyEngine:
             volatility_target=self._config.target_vol_4h,
             exposure_cap=min(self._config.max_leverage, playbook.max_leverage),
             quality_flags=pack.quality_flags,
+            options_state_id=None,
         )
         self._bus.publish(f"strategy.decision_snapshot.4h.{target.symbol}", snapshot)
 

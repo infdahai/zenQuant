@@ -14,11 +14,12 @@ def _target(
     *,
     timeframe: Timeframe = Timeframe.TF_4H,
     target_qty: float = 1.25,
+    symbol: str = "BTCUSDT_PERP",
 ) -> TargetPosition:
     return TargetPosition(
         intent_id="non-deterministic-intent-id",
         portfolio="arc",
-        symbol="BTCUSDT_PERP",
+        symbol=symbol,
         timeframe=timeframe,
         cutoff_time_ns=1_725_667_200_000_000_000,
         target_qty=target_qty,
@@ -32,6 +33,26 @@ def _target(
     )
 
 
+def _audit_envelope() -> dict[str, object]:
+    return {
+        "indicator_version": "pack.v1",
+        "data_identity": "sha256:input-data-v1",
+        "alpha_direction": 1.0,
+        "alpha_raw_score": 0.37,
+        "alpha_confidence": 0.72,
+        "directional_state": "UPTREND",
+        "volatility_state": "NORMAL",
+        "positioning_state": "HEALTHY",
+        "quality_state": "TRADABLE",
+        "regime_risk_multiplier": 1.0,
+        "annualized_volatility": 0.42,
+        "volatility_target": 1.10,
+        "exposure_cap": 2.5,
+        "quality_flags": ["OK"],
+        "options_state_id": None,
+    }
+
+
 def _snapshot(
     *, target: TargetPosition | None = None, formula_hash: str = "formula-v1", config_hash: str = "config-v1"
 ):
@@ -39,6 +60,7 @@ def _snapshot(
         target=target or _target(),
         formula_hash=formula_hash,
         config_hash=config_hash,
+        **_audit_envelope(),
     )
 
 
@@ -54,6 +76,35 @@ def test_snapshot_rejects_non_4h_target():
     """Catches an intraday or daily target entering the BTC 4h V2 contract."""
     with pytest.raises(ValueError, match="4h"):
         _snapshot(target=_target(timeframe=Timeframe.TF_1H))
+
+
+@pytest.mark.parametrize("missing_field", _audit_envelope())
+def test_snapshot_requires_every_explicit_audit_field(missing_field):
+    """Catches a caller silently creating an incomplete Task-4 handoff."""
+    envelope = _audit_envelope()
+    del envelope[missing_field]
+
+    with pytest.raises(TypeError):
+        build_decision_snapshot(
+            target=_target(),
+            formula_hash="formula-v1",
+            config_hash="config-v1",
+            **envelope,
+        )
+
+
+def test_snapshot_rejects_non_btc_symbol():
+    """Catches an ETH target entering the BTC-only V2 contract."""
+    with pytest.raises(ValueError, match="BTC"):
+        _snapshot(target=_target(symbol="ETHUSDT_PERP"))
+
+
+@pytest.mark.parametrize("symbol", ["BTCUSDT_PERP", "btcusdt", "BTC-PERP"])
+def test_snapshot_accepts_btc_symbol_variants(symbol):
+    """Catches adapter-owned BTC venue suffixes being rejected by V2 scope checks."""
+    snapshot = _snapshot(target=_target(symbol=symbol))
+
+    assert snapshot.symbol == symbol
 
 
 def test_snapshot_id_is_stable_across_replay_of_identical_inputs():
@@ -151,25 +202,8 @@ def test_snapshot_records_complete_execution_and_audit_envelope():
 )
 def test_snapshot_id_includes_every_execution_and_audit_material_field(target, changes):
     """Catches content-addressed IDs omitting material target or audit fields."""
-    snapshot_inputs = {
-        "formula_hash": "formula-v1",
-        "config_hash": "config-v1",
-        "indicator_version": "pack.v1",
-        "data_identity": "sha256:input-data-v1",
-        "alpha_direction": 1.0,
-        "alpha_raw_score": 0.37,
-        "alpha_confidence": 0.72,
-        "directional_state": "UPTREND",
-        "volatility_state": "NORMAL",
-        "positioning_state": "HEALTHY",
-        "quality_state": "TRADABLE",
-        "regime_risk_multiplier": 1.0,
-        "annualized_volatility": 0.42,
-        "volatility_target": 1.10,
-        "exposure_cap": 2.5,
-        "quality_flags": ["OK"],
-        "options_state_id": None,
-    }
+    snapshot_inputs = _audit_envelope()
+    snapshot_inputs.update(formula_hash="formula-v1", config_hash="config-v1")
     baseline = build_decision_snapshot(target=_target(), **snapshot_inputs)
     changed = build_decision_snapshot(target=target, **{**snapshot_inputs, **changes})
 
