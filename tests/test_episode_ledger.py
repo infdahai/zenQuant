@@ -136,6 +136,9 @@ def test_ledger_ignores_unfilled_reports_and_rejects_per_symbol_time_reversal() 
     ledger = PositionEpisodeLedger()
     rejected = _fill(side=1, qty=1.0, price=100.0, fee=1.0, ts_ns=2)
     rejected.status = "REJECTED"
+    rejected.filled_qty = 0.0
+    rejected.avg_price = 0.0
+    rejected.fee = 0.0
     ledger.on_fill(rejected)
     assert ledger.episodes == ()
 
@@ -155,6 +158,20 @@ def test_replay_report_collection_feeds_legacy_and_episode_diagnostics() -> None
 
     assert replay._trade_ledger.position_qty == pytest.approx(1.0)
     assert replay._episode_ledger.position_qty("BTCUSDT") == pytest.approx(1.0)
+
+
+def test_partial_fill_updates_trade_and_episode_ledgers() -> None:
+    replay = HistoricalBacktest.__new__(HistoricalBacktest)
+    replay._reports = []
+    replay._trade_ledger = _TradeLedger()
+    replay._episode_ledger = PositionEpisodeLedger()
+    report = _fill(side=1, qty=0.4, price=100.0, fee=0.4, ts_ns=1)
+    report.status = "PARTIALLY_FILLED"
+
+    replay._collect_report("exec.order.report", report)
+
+    assert replay._trade_ledger.position_qty == pytest.approx(0.4)
+    assert replay._episode_ledger.position_qty("BTCUSDT") == pytest.approx(0.4)
 
 
 def test_replay_allocates_each_funding_settlement_before_new_close_fills() -> None:

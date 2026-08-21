@@ -248,7 +248,7 @@ class ARCStrategyEngine:
         """Track filled positions for trailing stop logic."""
         if not isinstance(payload, ExecutionReport):
             return
-        if payload.status != "FILLED":
+        if payload.filled_qty <= 0:
             return
 
         pos_key = (payload.symbol, self._config.execution_timeframe)

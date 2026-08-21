@@ -236,7 +236,10 @@ class ExecutionKernel:
         self._profit_protect_cooldowns: dict[str, int] = {}
         self._position_bars_held: dict[str, int] = {}
         self._latest_drawdown_by_portfolio: dict[str, float] = {}
-        self._approved_snapshots: dict[tuple[str, int], DecisionSnapshot] = {}
+        self._active_snapshots: dict[tuple[str, str], DecisionSnapshot] = {}
+        self._latest_decision_cutoffs: dict[tuple[str, str], int] = {}
+        self._remaining_target_delta: dict[tuple[str, str], float] = {}
+        self._completed_decisions: set[tuple[str, str, str]] = set()
         self._purity_counters = {
             "executor_created_exposure": 0,
             "unexpected_reversal": 0,
@@ -253,7 +256,16 @@ class ExecutionKernel:
     def _on_decision_snapshot(self, _: str, payload: object) -> None:
         if not isinstance(payload, DecisionSnapshot):
             return
-        self._approved_snapshots[(payload.symbol, payload.cutoff_time_ns)] = payload
+        key = (payload.portfolio, payload.symbol)
+        latest_cutoff = self._latest_decision_cutoffs.get(key)
+        active = self._active_snapshots.get(key)
+        if latest_cutoff is not None and payload.cutoff_time_ns < latest_cutoff:
+            return
+        if latest_cutoff == payload.cutoff_time_ns and active is not None and active.decision_id != payload.decision_id:
+            return
+        self._latest_decision_cutoffs[key] = payload.cutoff_time_ns
+        self._active_snapshots[key] = payload
+        self._remaining_target_delta[key] = payload.target_qty - self._positions.get(payload.symbol, 0.0)
 
     def _on_trade(self, _: str, payload: object) -> None:
         if not isinstance(payload, TradeTick):
@@ -564,12 +576,22 @@ class ExecutionKernel:
         mark_price: float,
     ) -> None:
         """Track exactly one risk-final approved target without market judgment."""
-        snapshot = self._approved_snapshots.get((payload.symbol, payload.cutoff_time_ns))
-        if snapshot is None or not self._snapshot_approves_target(snapshot, payload):
+        decision_key = (payload.portfolio, payload.symbol)
+        snapshot = self._active_snapshots.get(decision_key)
+        latest_cutoff = self._latest_decision_cutoffs.get(decision_key)
+        completion_key = (*decision_key, snapshot.decision_id) if snapshot is not None else None
+        if (
+            snapshot is None
+            or latest_cutoff != payload.cutoff_time_ns
+            or completion_key in self._completed_decisions
+            or not self._snapshot_approves_target(snapshot, payload)
+        ):
             return
 
         delta_qty = payload.target_qty - current_position
         if abs(delta_qty) < self._config.min_trade_qty:
+            self._remaining_target_delta[decision_key] = delta_qty
+            self._completed_decisions.add((*decision_key, snapshot.decision_id))
             return
 
         safety_reason: str | None = None
@@ -603,19 +625,27 @@ class ExecutionKernel:
         )
         self._bus.publish("exec.order.report", report)
 
+        filled_qty = max(0.0, report.filled_qty)
+        signed_filled_qty = side * filled_qty
         position_after = current_position
-        if report.status == "FILLED" and report.filled_qty > 0.0:
-            position_after = current_position + side * report.filled_qty
+        if filled_qty > 0.0:
+            position_after = current_position + signed_filled_qty
             if abs(position_after) <= self._config.quantity_epsilon:
                 position_after = 0.0
             self._positions[payload.symbol] = position_after
             self._risk_overlay.apply_fee(report.fee)
+        remaining_delta = payload.target_qty - position_after
+        if abs(remaining_delta) <= self._config.quantity_epsilon:
+            remaining_delta = 0.0
+        self._remaining_target_delta[decision_key] = remaining_delta
+        if abs(remaining_delta) < self._config.min_trade_qty:
+            self._completed_decisions.add((*decision_key, snapshot.decision_id))
 
         self._record_purity_observation(
             approved_target=payload.target_qty,
             position_before=current_position,
             position_after=position_after,
-            order_delta=side * report.filled_qty if report.status == "FILLED" else 0.0,
+            order_delta=signed_filled_qty,
         )
         self._bus.publish(
             "exec.order.audit",
@@ -627,9 +657,10 @@ class ExecutionKernel:
                 approved_target_qty=payload.target_qty,
                 position_before_order=current_position,
                 position_after_fill=position_after,
-                order_delta_qty=side * report.filled_qty if report.status == "FILLED" else 0.0,
+                order_delta_qty=signed_filled_qty,
                 hard_safety_reason=safety_reason,
                 status=report.status,
+                remaining_target_delta_qty=remaining_delta,
             ),
         )
 
@@ -1267,3 +1298,8 @@ class ExecutionKernel:
     def purity_counters(self) -> dict[str, int]:
         """Return immutable-by-copy execution-authority violation counts."""
         return dict(self._purity_counters)
+
+    @property
+    def latest_decision_cutoffs(self) -> dict[tuple[str, str], int]:
+        """Return the monotonic current decision cutoff per portfolio and symbol."""
+        return dict(self._latest_decision_cutoffs)

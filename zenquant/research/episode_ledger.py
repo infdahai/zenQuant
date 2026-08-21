@@ -113,7 +113,7 @@ class PositionEpisodeLedger:
 
     def on_fill(self, report: ExecutionReport) -> None:
         """Apply one filled execution report, splitting flips exactly at zero."""
-        if report.status != "FILLED" or report.filled_qty <= 0.0 or report.avg_price <= 0.0:
+        if report.filled_qty <= 0.0 or report.avg_price <= 0.0:
             return
         if report.side not in {-1, 1}:
             raise ValueError("filled execution report side must be -1 or 1")

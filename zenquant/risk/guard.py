@@ -170,7 +170,7 @@ class RiskOverlay:
     def _on_execution_report(self, _: str, payload: object) -> None:
         if not isinstance(payload, ExecutionReport):
             return
-        if payload.status != "FILLED" or payload.filled_qty <= 0:
+        if payload.filled_qty <= 0:
             return
 
         current = self._actual_positions.get(payload.symbol, 0.0)

@@ -1232,7 +1232,7 @@ class _TradeLedger:
 
     def on_execution_report(self, report: ExecutionReport) -> None:
         """Update realized PnL state from a single filled report."""
-        if report.status != "FILLED" or report.filled_qty <= 0 or report.avg_price <= 0:
+        if report.filled_qty <= 0 or report.avg_price <= 0:
             return
         signed_qty = report.side * report.filled_qty
         next_position = self.position_qty + signed_qty

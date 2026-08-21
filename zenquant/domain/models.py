@@ -259,6 +259,7 @@ class ExecutionOrderAudit:
     order_delta_qty: float
     hard_safety_reason: str | None
     status: str
+    remaining_target_delta_qty: float = 0.0
 
 
 @dataclass(slots=True)

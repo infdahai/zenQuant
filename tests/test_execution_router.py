@@ -3,6 +3,7 @@ from dataclasses import asdict
 
 from zenquant.domain import (
     EventMeta,
+    ExecutionReport,
     MarkPriceUpdate,
     OrderBookLevel,
     OrderBookSnapshot,
@@ -13,6 +14,7 @@ from zenquant.domain import (
 from zenquant.execution import ExecutionGateway, ExecutionKernel, ExecutionKernelConfig, SimulatedGateway
 from zenquant.infra import InMemoryJetStream
 from zenquant.risk import RiskOverlay
+from zenquant.strategy import ARCStrategyEngine
 from zenquant.strategy.decision_snapshot import build_decision_snapshot
 
 
@@ -267,6 +269,158 @@ class TargetTrackingV2Tests(unittest.TestCase):
 
         self.assertEqual(kernel.positions["BTCUSDT_PERP"], 0.0002)
         self.assertEqual(kernel.purity_counters["unexpected_reversal"], 0)
+
+    def test_v2_obsolete_snapshot_and_final_target_cannot_reopen_exposure(self) -> None:
+        bus, kernel, orders, _reports, _audits = self._setup()
+        old_target = self._target(qty=1.0, cutoff_ns=2)
+        new_target = self._target(qty=0.0, cutoff_ns=3)
+        self._publish_approved(bus, old_target)
+        self._publish_approved(bus, new_target)
+        self.assertEqual(kernel.positions["BTCUSDT_PERP"], 0.0)
+        order_count = len(orders)
+
+        bus.publish(f"strategy.decision_snapshot.4h.{old_target.symbol}", self._snapshot(old_target))
+        bus.publish(f"intent.target_position.final.{old_target.symbol}", old_target)
+
+        self.assertEqual(len(orders), order_count)
+        self.assertEqual(kernel.positions["BTCUSDT_PERP"], 0.0)
+        self.assertEqual(kernel.latest_decision_cutoffs[("arc", "BTCUSDT_PERP")], 3)
+
+    def test_v2_completed_decision_is_consumed_and_cannot_reopen_exposure(self) -> None:
+        bus, kernel, orders, _reports, _audits = self._setup()
+        target = self._target(qty=1.0, cutoff_ns=2)
+        self._publish_approved(bus, target)
+        self.assertEqual(kernel.positions[target.symbol], 1.0)
+        order_count = len(orders)
+        kernel._positions[target.symbol] = 0.0  # external reconciliation after completion
+
+        bus.publish(f"intent.target_position.final.{target.symbol}", target)
+
+        self.assertEqual(len(orders), order_count)
+        self.assertEqual(kernel.positions[target.symbol], 0.0)
+
+    def test_v2_partial_fill_updates_all_positions_and_retry_uses_remaining_delta(self) -> None:
+        class PartialThenFillGateway(ExecutionGateway):
+            def __init__(self) -> None:
+                super().__init__()
+                self.calls = 0
+
+            def submit_order(self, order, mark_price, best_bid=None, best_ask=None, now_ns=None):
+                self.calls += 1
+                filled_qty = 0.4 if self.calls == 1 else order.quantity
+                return ExecutionReport(
+                    client_order_id=order.client_order_id,
+                    symbol=order.symbol,
+                    side=order.side,
+                    status="PARTIALLY_FILLED" if self.calls == 1 else "FILLED",
+                    filled_qty=filled_qty,
+                    avg_price=mark_price,
+                    fee=filled_qty * mark_price * 0.0004,
+                    transaction_time_ns=now_ns or 0,
+                )
+
+        bus = InMemoryJetStream()
+        risk = RiskOverlay(bus)
+        strategy = ARCStrategyEngine(bus)
+        gateway = PartialThenFillGateway()
+        kernel = ExecutionKernel(
+            bus,
+            gateway,
+            risk,
+            config=ExecutionKernelConfig(execution_authority_mode="target_tracking_v2"),
+        )
+        orders = []
+        audits = []
+        bus.subscribe("exec.order.submit", lambda _subject, payload: orders.append(payload))
+        bus.subscribe("exec.order.audit", lambda _subject, payload: audits.append(payload))
+        kernel._last_price["BTCUSDT_PERP"] = 100.0
+        target = self._target(qty=1.0, cutoff_ns=2)
+        snapshot = self._snapshot(target)
+        bus.publish(f"strategy.decision_snapshot.4h.{target.symbol}", snapshot)
+
+        bus.publish(f"intent.target_position.final.{target.symbol}", target)
+        self.assertEqual(kernel.positions[target.symbol], 0.4)
+        self.assertEqual(risk._actual_positions[target.symbol], 0.4)
+        tracked = strategy._positions[(target.symbol, Timeframe.TF_4H)]
+        self.assertEqual(tracked.current_qty, 0.4)
+        self.assertEqual(audits[0].position_after_fill, 0.4)
+        self.assertEqual(audits[0].order_delta_qty, 0.4)
+        self.assertEqual(audits[0].remaining_target_delta_qty, 0.6)
+
+        bus.publish(f"intent.target_position.final.{target.symbol}", target)
+        self.assertEqual(orders[1].quantity, 0.6)
+        self.assertEqual(kernel.positions[target.symbol], 1.0)
+        self.assertEqual(risk._actual_positions[target.symbol], 1.0)
+        self.assertEqual(strategy._positions[(target.symbol, Timeframe.TF_4H)].current_qty, 1.0)
+        self.assertEqual(audits[1].remaining_target_delta_qty, 0.0)
+        self.assertEqual(kernel.purity_counters["target_overshoot"], 0)
+
+        bus.publish(f"intent.target_position.final.{target.symbol}", target)
+        self.assertEqual(len(orders), 2)
+
+    def test_v2_partial_reversal_overfill_and_zero_rejection_are_accounted(self) -> None:
+        class FractionGateway(ExecutionGateway):
+            def __init__(self, fills: list[tuple[str, float]]) -> None:
+                super().__init__()
+                self.fills = iter(fills)
+
+            def submit_order(self, order, mark_price, best_bid=None, best_ask=None, now_ns=None):
+                status, filled_qty = next(self.fills)
+                return ExecutionReport(
+                    client_order_id=order.client_order_id,
+                    symbol=order.symbol,
+                    side=order.side,
+                    status=status,
+                    filled_qty=filled_qty,
+                    avg_price=mark_price if filled_qty > 0 else 0.0,
+                    fee=filled_qty,
+                    transaction_time_ns=now_ns or 0,
+                    reject_reason="rejected" if filled_qty == 0 else "",
+                )
+
+        bus = InMemoryJetStream()
+        risk = RiskOverlay(bus)
+        gateway = FractionGateway(
+            [
+                ("FILLED", 0.6),
+                ("PARTIALLY_FILLED", 0.7),
+                ("FILLED", 0.3),
+                ("PARTIALLY_FILLED", 0.6),
+                ("REJECTED", 0.0),
+            ]
+        )
+        kernel = ExecutionKernel(
+            bus,
+            gateway,
+            risk,
+            config=ExecutionKernelConfig(execution_authority_mode="target_tracking_v2"),
+        )
+        audits = []
+        bus.subscribe("exec.order.audit", lambda _subject, payload: audits.append(payload))
+        kernel._last_price["BTCUSDT_PERP"] = 100.0
+
+        long_target = self._target(qty=0.6, cutoff_ns=2)
+        self._publish_approved(bus, long_target)
+        reverse_target = self._target(qty=-0.4, cutoff_ns=3)
+        bus.publish(f"strategy.decision_snapshot.4h.{reverse_target.symbol}", self._snapshot(reverse_target))
+        bus.publish(f"intent.target_position.final.{reverse_target.symbol}", reverse_target)
+        self.assertAlmostEqual(kernel.positions[reverse_target.symbol], -0.1)
+        self.assertEqual(kernel.purity_counters["unexpected_reversal"], 0)
+        bus.publish(f"intent.target_position.final.{reverse_target.symbol}", reverse_target)
+        self.assertAlmostEqual(kernel.positions[reverse_target.symbol], -0.4)
+
+        overfill_target = self._target(qty=0.0, cutoff_ns=4)
+        bus.publish(f"strategy.decision_snapshot.4h.{overfill_target.symbol}", self._snapshot(overfill_target))
+        bus.publish(f"intent.target_position.final.{overfill_target.symbol}", overfill_target)
+        self.assertAlmostEqual(kernel.positions[overfill_target.symbol], 0.2)
+        self.assertEqual(kernel.purity_counters["target_overshoot"], 1)
+
+        flat_target = self._target(qty=0.0, cutoff_ns=5)
+        bus.publish(f"strategy.decision_snapshot.4h.{flat_target.symbol}", self._snapshot(flat_target))
+        bus.publish(f"intent.target_position.final.{flat_target.symbol}", flat_target)
+        self.assertEqual(audits[-1].status, "REJECTED")
+        self.assertEqual(audits[-1].order_delta_qty, 0.0)
+        self.assertAlmostEqual(kernel.positions[flat_target.symbol], 0.2)
 
     def test_v2_slices_and_floors_to_quantity_precision_without_overshoot(self) -> None:
         bus, kernel, orders, _reports, _audits = self._setup(
