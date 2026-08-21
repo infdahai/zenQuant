@@ -219,6 +219,9 @@ class RiskOverlayDecision:
     lev_cap: float
     reduce_only: bool
     flags: list[str]
+    portfolio: str = ""
+    timeframe: Timeframe | None = None
+    original_intent_id: str = ""
 
 
 @dataclass(slots=True)

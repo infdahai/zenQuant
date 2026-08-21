@@ -284,6 +284,9 @@ class TestPluginPathProducesValidOutput(unittest.TestCase):
                 lev_cap=2.5,
                 reduce_only=requested_targets[0].reduce_only,
                 flags=["OK"],
+                portfolio=requested_targets[0].portfolio,
+                timeframe=requested_targets[0].timeframe,
+                original_intent_id=requested_targets[0].intent_id,
             ),
         )
         bus.publish("intent.target_position.final.BTCUSDT_PERP", requested_targets[0])
@@ -374,6 +377,9 @@ class TestPluginPathProducesValidOutput(unittest.TestCase):
                 lev_cap=2.5,
                 reduce_only=target.reduce_only,
                 flags=["OK"],
+                portfolio=target.portfolio,
+                timeframe=target.timeframe,
+                original_intent_id=target.intent_id,
             ),
         )
         bus.publish("intent.target_position.final.BTCUSDT_PERP", target)
@@ -450,12 +456,96 @@ class TestPluginPathProducesValidOutput(unittest.TestCase):
                 lev_cap=0.5,
                 reduce_only=True,
                 flags=["KILL_SWITCH"],
+                portfolio=target.portfolio,
+                timeframe=target.timeframe,
+                original_intent_id=target.intent_id,
             ),
         )
 
         bus.publish("intent.target_position.final.BTCUSDT_PERP", target)
 
         self.assertEqual(snapshots, [])
+
+    def test_v2_snapshot_rejects_risk_decision_for_wrong_original_target(self):
+        """Catches risk authorization detached from the staged strategy intent."""
+        engine, bus = self._build_engine_with_plugins(ARCStrategyConfig(emit_decision_snapshots_v2=True))
+        snapshots = []
+        target = _target(qty=1.0)
+        bus.subscribe("strategy.decision_snapshot.>", lambda _subject, payload: snapshots.append(payload))
+        engine._publish_decision_snapshot_if_enabled(_pack(), _state(), _playbook(), target)
+        bus.publish(
+            "risk.overlay.decision",
+            RiskOverlayDecision(
+                symbol=target.symbol,
+                cutoff_time_ns=target.cutoff_time_ns,
+                original_target_qty=999.0,
+                revised_target_qty=target.target_qty,
+                lev_cap=target.target_leverage,
+                reduce_only=target.reduce_only,
+                flags=["OK"],
+                portfolio=target.portfolio,
+                timeframe=target.timeframe,
+                original_intent_id=target.intent_id,
+            ),
+        )
+
+        bus.publish("intent.target_position.final.BTCUSDT_PERP", target)
+
+        self.assertEqual(snapshots, [])
+
+    def test_v2_snapshot_rejects_wrong_portfolio_risk_authority(self):
+        engine, bus = self._build_engine_with_plugins(ARCStrategyConfig(emit_decision_snapshots_v2=True))
+        target = _target(qty=1.0)
+        engine._publish_decision_snapshot_if_enabled(_pack(), _state(), _playbook(), target)
+
+        bus.publish(
+            "risk.overlay.decision",
+            RiskOverlayDecision(
+                symbol=target.symbol,
+                cutoff_time_ns=target.cutoff_time_ns,
+                original_target_qty=target.target_qty,
+                revised_target_qty=target.target_qty,
+                lev_cap=target.target_leverage,
+                reduce_only=target.reduce_only,
+                flags=["OK"],
+                portfolio="research",
+                timeframe=target.timeframe,
+                original_intent_id=target.intent_id,
+            ),
+        )
+
+        self.assertEqual(engine._risk_final_decisions, {})
+
+    def test_v2_snapshot_rejects_out_of_order_risk_decision(self):
+        engine, bus = self._build_engine_with_plugins(ARCStrategyConfig(emit_decision_snapshots_v2=True))
+        old_target = _target(qty=1.0, cutoff_time_ns=1)
+        new_target = _target(qty=0.5, cutoff_time_ns=2)
+        engine._publish_decision_snapshot_if_enabled(_pack(), _state(), _playbook(), old_target)
+        new_pack = _pack()
+        new_pack.cutoff_time_ns = 2
+        new_state = _state()
+        new_state.cutoff_time_ns = 2
+        new_playbook = _playbook()
+        new_playbook.cutoff_time_ns = 2
+        engine._publish_decision_snapshot_if_enabled(new_pack, new_state, new_playbook, new_target)
+
+        bus.publish(
+            "risk.overlay.decision",
+            RiskOverlayDecision(
+                symbol=old_target.symbol,
+                cutoff_time_ns=old_target.cutoff_time_ns,
+                original_target_qty=old_target.target_qty,
+                revised_target_qty=old_target.target_qty,
+                lev_cap=old_target.target_leverage,
+                reduce_only=old_target.reduce_only,
+                flags=["OK"],
+                portfolio=old_target.portfolio,
+                timeframe=old_target.timeframe,
+                original_intent_id=old_target.intent_id,
+            ),
+        )
+
+        self.assertEqual(engine._risk_final_decisions, {})
 
     def test_plugin_direction_uptrend(self):
         engine, bus = self._build_engine_with_plugins()

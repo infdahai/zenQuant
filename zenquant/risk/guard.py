@@ -471,6 +471,9 @@ class RiskOverlay:
             lev_cap=round(lev_cap, 4),
             reduce_only=reduce_only,
             flags=sorted(set(flags)) or ["OK"],
+            portfolio=target.portfolio,
+            timeframe=target.timeframe,
+            original_intent_id=target.intent_id,
         )
 
         snapshot = RiskSnapshot(

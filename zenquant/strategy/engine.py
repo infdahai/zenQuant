@@ -85,6 +85,10 @@ class _DecisionSnapshotEnvelope:
     exposure_cap: float
     quality_flags: tuple[str, ...]
     options_state_id: str | None
+    portfolio: str
+    timeframe: Timeframe
+    original_target_qty: float
+    original_intent_id: str
 
 
 # Minimum absolute signal strength to take a directional position.
@@ -223,8 +227,9 @@ class ARCStrategyEngine:
         self._intent_add_confirmation: dict[tuple[str, Timeframe], _IntentConfirmationState] = {}
         self._intent_reduce_confirmation: dict[tuple[str, Timeframe], _IntentReduceConfirmationState] = {}
         self._intent_flat_step_cooldowns: dict[tuple[str, Timeframe], int] = {}
-        self._pending_decision_snapshots: dict[tuple[str, int], _DecisionSnapshotEnvelope] = {}
-        self._risk_final_decisions: dict[tuple[str, int], RiskOverlayDecision] = {}
+        self._pending_decision_snapshots: dict[tuple[str, str, int], _DecisionSnapshotEnvelope] = {}
+        self._risk_final_decisions: dict[tuple[str, str, int], RiskOverlayDecision] = {}
+        self._latest_staged_decision_cutoff: dict[tuple[str, str], int] = {}
 
         # Phase 2: position tracking for trailing stops
         self._positions: dict[tuple[str, Timeframe], OpenPositionState] = {}
@@ -241,8 +246,20 @@ class ARCStrategyEngine:
             self._equity = max(0.0, payload.equity)
 
     def _on_risk_overlay_decision(self, _: str, payload: object) -> None:
-        if self._config.emit_decision_snapshots_v2 and isinstance(payload, RiskOverlayDecision):
-            self._risk_final_decisions[(payload.symbol, payload.cutoff_time_ns)] = payload
+        if (
+            self._config.emit_decision_snapshots_v2
+            and isinstance(payload, RiskOverlayDecision)
+            and payload.portfolio
+            and payload.timeframe == Timeframe.TF_4H
+            and payload.original_intent_id
+        ):
+            authority_key = (payload.portfolio, payload.symbol)
+            decision_key = (payload.portfolio, payload.symbol, payload.cutoff_time_ns)
+            if (
+                self._latest_staged_decision_cutoff.get(authority_key) == payload.cutoff_time_ns
+                and decision_key in self._pending_decision_snapshots
+            ):
+                self._risk_final_decisions[decision_key] = payload
 
     def _on_execution_report(self, _: str, payload: object) -> None:
         """Track filled positions for trailing stop logic."""
@@ -301,13 +318,23 @@ class ARCStrategyEngine:
         """Publish a V2 decision only after risk has approved the final target."""
         if not isinstance(payload, TargetPosition) or not self._config.emit_decision_snapshots_v2:
             return
-        key = (payload.symbol, payload.cutoff_time_ns)
+        authority_key = (payload.portfolio, payload.symbol)
+        if self._latest_staged_decision_cutoff.get(authority_key) != payload.cutoff_time_ns:
+            return
+        key = (payload.portfolio, payload.symbol, payload.cutoff_time_ns)
         envelope = self._pending_decision_snapshots.pop(key, None)
         risk_decision = self._risk_final_decisions.pop(key, None)
         if envelope is None or risk_decision is None:
             return
         if (
             abs(risk_decision.revised_target_qty - payload.target_qty) > 1e-9
+            or abs(risk_decision.original_target_qty - envelope.original_target_qty) > 1e-9
+            or risk_decision.portfolio != envelope.portfolio
+            or payload.portfolio != envelope.portfolio
+            or risk_decision.timeframe != envelope.timeframe
+            or payload.timeframe != envelope.timeframe
+            or risk_decision.original_intent_id != envelope.original_intent_id
+            or payload.intent_id != envelope.original_intent_id
             or risk_decision.reduce_only != payload.reduce_only
             or payload.target_leverage > risk_decision.lev_cap + 1e-9
         ):
@@ -2345,7 +2372,28 @@ class ARCStrategyEngine:
             plugin_context = {}
         alpha_raw_score = float(plugin_context.get("effective_direction", state.direction_signal) or 0.0)
         alpha_direction = 1.0 if alpha_raw_score > 0.0 else -1.0 if alpha_raw_score < 0.0 else 0.0
-        self._pending_decision_snapshots[(target.symbol, target.cutoff_time_ns)] = _DecisionSnapshotEnvelope(
+        authority_key = (target.portfolio, target.symbol)
+        latest_cutoff = self._latest_staged_decision_cutoff.get(authority_key)
+        if latest_cutoff is not None and target.cutoff_time_ns < latest_cutoff:
+            return
+        key = (target.portfolio, target.symbol, target.cutoff_time_ns)
+        existing = self._pending_decision_snapshots.get(key)
+        if existing is not None and (
+            existing.original_intent_id != target.intent_id
+            or abs(existing.original_target_qty - target.target_qty) > 1e-9
+        ):
+            return
+        if latest_cutoff is None or target.cutoff_time_ns > latest_cutoff:
+            self._latest_staged_decision_cutoff[authority_key] = target.cutoff_time_ns
+            stale_keys = [
+                pending_key
+                for pending_key in self._pending_decision_snapshots
+                if pending_key[:2] == authority_key and pending_key[2] < target.cutoff_time_ns
+            ]
+            for stale_key in stale_keys:
+                self._pending_decision_snapshots.pop(stale_key, None)
+                self._risk_final_decisions.pop(stale_key, None)
+        self._pending_decision_snapshots[key] = _DecisionSnapshotEnvelope(
             formula_hash=pack.formula_hash,
             config_hash=self._decision_snapshot_config_hash(),
             indicator_version=pack.indicator_version,
@@ -2363,6 +2411,10 @@ class ARCStrategyEngine:
             exposure_cap=min(self._config.max_leverage, playbook.max_leverage),
             quality_flags=tuple(pack.quality_flags),
             options_state_id=None,
+            portfolio=target.portfolio,
+            timeframe=target.timeframe,
+            original_target_qty=target.target_qty,
+            original_intent_id=target.intent_id,
         )
 
     def _decision_snapshot_config_hash(self) -> str:
