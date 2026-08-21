@@ -803,6 +803,12 @@ class HistoricalBacktest:
         wins = [value for value in realized if value > 0]
         losses = [value for value in realized if value < 0]
         action_realized = {key: list(values) for key, values in sorted(self._trade_ledger.action_realized_pnls.items())}
+        from zenquant.research.gate_v3 import calculate_episode_profit_factor
+
+        closed_episodes = self._episode_ledger.closed_episodes
+        open_episodes = self._episode_ledger.open_episodes
+        episode_pf = calculate_episode_profit_factor(closed_episodes)
+        position_switches_per_day = (len(closed_episodes) + len(open_episodes)) / elapsed_days
         total_bars = sum(1 for item in events if item["event_timeframe"] == self._config.execution_timeframe.value)
         return BacktestMetrics(
             symbol=self._config.portfolio_symbol,
@@ -846,6 +852,11 @@ class HistoricalBacktest:
                 )
                 for key, values in action_realized.items()
             },
+            episode_profit_factor=round(episode_pf.value, 6) if episode_pf.value is not None else None,
+            episode_profit_factor_status=episode_pf.status.value,
+            closed_episode_count=len(closed_episodes),
+            open_episode_count=len(open_episodes),
+            position_switches_per_day=round(position_switches_per_day, 6),
         )
 
     def _build_diagnostics(self) -> BacktestDiagnostics:
