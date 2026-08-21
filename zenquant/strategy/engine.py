@@ -306,6 +306,12 @@ class ARCStrategyEngine:
         risk_decision = self._risk_final_decisions.pop(key, None)
         if envelope is None or risk_decision is None:
             return
+        if (
+            abs(risk_decision.revised_target_qty - payload.target_qty) > 1e-9
+            or risk_decision.reduce_only != payload.reduce_only
+            or payload.target_leverage > risk_decision.lev_cap + 1e-9
+        ):
+            return
         snapshot = build_decision_snapshot(
             target=payload,
             formula_hash=envelope.formula_hash,

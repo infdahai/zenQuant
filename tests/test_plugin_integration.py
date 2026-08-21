@@ -433,6 +433,30 @@ class TestPluginPathProducesValidOutput(unittest.TestCase):
 
         self.assertEqual(snapshots, [])
 
+    def test_v2_snapshot_rejects_final_target_mismatching_risk_decision(self):
+        """Catches a final event reusing a real risk decision for another quantity."""
+        engine, bus = self._build_engine_with_plugins(ARCStrategyConfig(emit_decision_snapshots_v2=True))
+        snapshots = []
+        target = _target(qty=1.0)
+        bus.subscribe("strategy.decision_snapshot.>", lambda _subject, payload: snapshots.append(payload))
+        engine._publish_decision_snapshot_if_enabled(_pack(), _state(), _playbook(), target)
+        bus.publish(
+            "risk.overlay.decision",
+            RiskOverlayDecision(
+                symbol=target.symbol,
+                cutoff_time_ns=target.cutoff_time_ns,
+                original_target_qty=target.target_qty,
+                revised_target_qty=0.5,
+                lev_cap=0.5,
+                reduce_only=True,
+                flags=["KILL_SWITCH"],
+            ),
+        )
+
+        bus.publish("intent.target_position.final.BTCUSDT_PERP", target)
+
+        self.assertEqual(snapshots, [])
+
     def test_plugin_direction_uptrend(self):
         engine, bus = self._build_engine_with_plugins()
 
