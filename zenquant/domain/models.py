@@ -164,6 +164,23 @@ class DecisionSnapshot:
     regime: str
     regime_confidence: float
     reason_codes: tuple[str, ...]
+    realized_vol: float
+    atr: float
+    indicator_version: str
+    data_identity: str
+    alpha_direction: float
+    alpha_raw_score: float
+    alpha_confidence: float
+    directional_state: str
+    volatility_state: str
+    positioning_state: str
+    quality_state: str
+    regime_risk_multiplier: float
+    annualized_volatility: float
+    volatility_target: float
+    exposure_cap: float
+    quality_flags: tuple[str, ...]
+    options_state_id: str | None
 
 
 @dataclass(slots=True)

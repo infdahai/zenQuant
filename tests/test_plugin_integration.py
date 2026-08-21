@@ -270,6 +270,56 @@ class TestPluginPathProducesValidOutput(unittest.TestCase):
         self.assertEqual(len(snapshots), 1)
         self.assertEqual(snapshots[0].timeframe, Timeframe.TF_4H)
         self.assertEqual(snapshots[0].symbol, "BTCUSDT_PERP")
+        self.assertEqual(snapshots[0].realized_vol, 0.6)
+        self.assertEqual(snapshots[0].atr, 500.0)
+        self.assertEqual(snapshots[0].indicator_version, "pack.v1")
+        self.assertEqual(snapshots[0].quality_flags, ("OK",))
+        self.assertEqual(snapshots[0].volatility_target, 1.1)
+        self.assertGreater(snapshots[0].exposure_cap, 0.0)
+
+    def test_legacy_default_does_not_publish_v2_snapshot(self):
+        """Catches default strategy operation leaking into the opt-in V2 event path."""
+        engine, bus = self._build_engine_with_plugins()
+        snapshots = []
+        bus.subscribe("strategy.decision_snapshot.>", lambda _subject, payload: snapshots.append(payload))
+
+        engine.prime_indicator(_pack())
+        engine.prime_state(_state())
+
+        self.assertEqual(snapshots, [])
+
+    def test_v2_snapshot_never_publishes_for_non_4h_state_path(self):
+        """Catches a 1h or 5m strategy route bypassing the fixed V2 4h boundary."""
+        engine, bus = self._build_engine_with_plugins(ARCStrategyConfig(emit_decision_snapshots_v2=True))
+        snapshots = []
+        bus.subscribe("strategy.decision_snapshot.>", lambda _subject, payload: snapshots.append(payload))
+        state = _state()
+        state.timeframe = Timeframe.TF_1H
+
+        engine.prime_indicator(_pack(timeframe=Timeframe.TF_1H))
+        engine.prime_state(state)
+
+        self.assertEqual(snapshots, [])
+
+    def test_v2_snapshot_does_not_reuse_stale_plugin_alpha_context(self):
+        """Catches an exit-only bar inheriting raw alpha from an earlier cutoff."""
+        engine, bus = self._build_engine_with_plugins(ARCStrategyConfig(emit_decision_snapshots_v2=True))
+        snapshots = []
+        bus.subscribe("strategy.decision_snapshot.>", lambda _subject, payload: snapshots.append(payload))
+        pack = _pack()
+        state = _state(direction_signal=1.0)
+        engine._plugin_signal_context[(pack.symbol, pack.timeframe)] = {
+            "cutoff_time_ns": 0,
+            "effective_direction": -0.7,
+            "signal_confidence": 0.9,
+        }
+
+        engine._publish_decision_snapshot_if_enabled(pack, state, _playbook(), _target(qty=1.0))
+
+        self.assertEqual(len(snapshots), 1)
+        self.assertEqual(snapshots[0].alpha_direction, 1.0)
+        self.assertEqual(snapshots[0].alpha_raw_score, 1.0)
+        self.assertEqual(snapshots[0].alpha_confidence, 0.8)
 
     def test_plugin_direction_uptrend(self):
         engine, bus = self._build_engine_with_plugins()

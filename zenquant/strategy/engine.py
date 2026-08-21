@@ -23,6 +23,7 @@ from zenquant.domain import (
     TargetPosition,
     Timeframe,
 )
+from zenquant.domain.serde import to_jsonable
 from zenquant.infra import EventBus
 from zenquant.plugins.orchestrator import compose_exits, compose_filters, compose_signals, compose_sizers
 from zenquant.plugins.registry import PluginRegistry
@@ -302,7 +303,7 @@ class ARCStrategyEngine:
                     target, price=float(pack.values.get("last_price", 0.0) or 0.0)
                 )
                 if target is not None:
-                    self._publish_decision_snapshot_if_enabled(pack, target)
+                    self._publish_decision_snapshot_if_enabled(pack, state, playbook, target)
                     self._pending_4h_target[state.symbol] = target
                     self._pending_4h_bars[state.symbol] = 0
                     self._pending_1h_target.pop(state.symbol, None)
@@ -361,7 +362,7 @@ class ARCStrategyEngine:
         target = self._confirm_directional_intent(target, price=float(pack.values.get("last_price", 0.0) or 0.0))
         if target is None:
             return
-        self._publish_decision_snapshot_if_enabled(pack, target)
+        self._publish_decision_snapshot_if_enabled(pack, state, playbook, target)
         reason = self._build_reason(target)
         self._bus.publish(
             f"strategy.regime.{self._config.portfolio}",
@@ -2181,6 +2182,8 @@ class ARCStrategyEngine:
     def _publish_decision_snapshot_if_enabled(
         self,
         pack: IndicatorPack,
+        state: MarketState,
+        playbook: PlaybookSelection,
         target: TargetPosition,
     ) -> None:
         """Emit the isolated V2 audit event without changing legacy intent flow."""
@@ -2188,10 +2191,29 @@ class ARCStrategyEngine:
             return
         if pack.timeframe != Timeframe.TF_4H or target.timeframe != Timeframe.TF_4H:
             return
+        plugin_context = self._plugin_signal_context.get((pack.symbol, pack.timeframe), {})
+        if plugin_context.get("cutoff_time_ns") != pack.cutoff_time_ns:
+            plugin_context = {}
+        alpha_raw_score = float(plugin_context.get("effective_direction", state.direction_signal) or 0.0)
+        alpha_direction = 1.0 if alpha_raw_score > 0.0 else -1.0 if alpha_raw_score < 0.0 else 0.0
         snapshot = build_decision_snapshot(
             target=target,
             formula_hash=pack.formula_hash,
             config_hash=self._decision_snapshot_config_hash(),
+            indicator_version=pack.indicator_version,
+            data_identity=self._decision_snapshot_data_identity(pack),
+            alpha_direction=alpha_direction,
+            alpha_raw_score=alpha_raw_score,
+            alpha_confidence=float(plugin_context.get("signal_confidence", state.directional_confidence) or 0.0),
+            directional_state=state.directional_state,
+            volatility_state=state.volatility_state,
+            positioning_state=state.positioning_state,
+            quality_state=state.quality_state,
+            regime_risk_multiplier=1.0,
+            annualized_volatility=target.realized_vol,
+            volatility_target=self._config.target_vol_4h,
+            exposure_cap=min(self._config.max_leverage, playbook.max_leverage),
+            quality_flags=pack.quality_flags,
         )
         self._bus.publish(f"strategy.decision_snapshot.4h.{target.symbol}", snapshot)
 
@@ -2204,6 +2226,32 @@ class ARCStrategyEngine:
             separators=(",", ":"),
         )
         return f"sha256:{hashlib.sha256(payload.encode('utf-8')).hexdigest()}"
+
+    @staticmethod
+    def _decision_snapshot_data_identity(pack: IndicatorPack) -> str:
+        """Fingerprint the point-in-time 4h input data without wall-clock metadata."""
+        payload = {
+            "components": pack.components,
+            "coverage": {
+                "oi_coverage": pack.coverage.oi_coverage,
+                "staleness_ms": pack.coverage.staleness_ms,
+                "venue_count": pack.coverage.venue_count,
+            },
+            "cutoff_time_ns": pack.cutoff_time_ns,
+            "formula_hash": pack.formula_hash,
+            "indicator_version": pack.indicator_version,
+            "quality_flags": pack.quality_flags,
+            "symbol": pack.symbol,
+            "timeframe": pack.timeframe.value,
+            "values": pack.values,
+        }
+        canonical = json.dumps(
+            to_jsonable(payload),
+            default=str,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        return f"sha256:{hashlib.sha256(canonical.encode('utf-8')).hexdigest()}"
 
     def _build_exit_target(
         self,
@@ -2404,6 +2452,7 @@ class ARCStrategyEngine:
         )
         effective_direction = composed.direction * composed.state_confidence_haircut
         self._plugin_signal_context[(pack.symbol, pack.timeframe)] = {
+            "cutoff_time_ns": pack.cutoff_time_ns,
             "state_confidence_haircut": composed.state_confidence_haircut,
             "execution_bias": composed.execution_bias,
             "effective_direction": effective_direction,
