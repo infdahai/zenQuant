@@ -343,6 +343,7 @@ class HistoricalBacktest:
         self._risk_snapshots: list[RiskSnapshot] = []
         self._execution_rows: list[dict[str, Any]] = []
         self._confirmed_four_hour_rows: list[dict[str, Any]] = []
+        self._current_event_cutoff_ns = 0
         self._trade_ledger = _TradeLedger()
         from zenquant.research.episode_ledger import PositionEpisodeLedger
 
@@ -592,6 +593,7 @@ class HistoricalBacktest:
         """Publish the same core event families the live runtime consumes."""
         timeframe = _parse_timeframe(str(row["event_timeframe"]))
         cutoff_ns = int(row["close_time_ns"])
+        self._current_event_cutoff_ns = cutoff_ns
         funding_row = self._latest_funding(cutoff_ns)
         oi_row = self._latest_open_interest(cutoff_ns)
         meta = EventMeta(
@@ -783,9 +785,15 @@ class HistoricalBacktest:
 
     def _collect_report(self, _: str, payload: object) -> None:
         if isinstance(payload, ExecutionReport):
-            self._reports.append(payload)
-            self._trade_ledger.on_execution_report(payload)
-            self._episode_ledger.on_fill(payload)
+            visible_cutoff_ns = getattr(self, "_current_event_cutoff_ns", payload.transaction_time_ns)
+            observed_report = (
+                replace(payload, transaction_time_ns=visible_cutoff_ns)
+                if payload.transaction_time_ns < visible_cutoff_ns
+                else payload
+            )
+            self._reports.append(observed_report)
+            self._trade_ledger.on_execution_report(observed_report)
+            self._episode_ledger.on_fill(observed_report)
 
     def _collect_risk_snapshot(self, _: str, payload: object) -> None:
         if isinstance(payload, RiskSnapshot):

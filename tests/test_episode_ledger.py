@@ -213,6 +213,23 @@ def test_replay_orders_delayed_funding_by_visible_cutoff_not_stale_source_time()
     assert episode.holding_duration_ns == 4
 
 
+def test_replay_normalizes_delayed_fill_to_current_visible_cutoff() -> None:
+    replay = HistoricalBacktest.__new__(HistoricalBacktest)
+    replay._reports = []
+    replay._trade_ledger = _TradeLedger()
+    replay._episode_ledger = PositionEpisodeLedger()
+    replay._current_event_cutoff_ns = 5
+    replay._episode_ledger.observe_price(PriceObservation("BTCUSDT", 3, high=101.0, low=99.0, close=100.0))
+
+    replay._collect_report(
+        "exec.order.report",
+        _fill(side=1, qty=1.0, price=100.0, fee=0.0, ts_ns=2),
+    )
+
+    assert replay._reports[0].transaction_time_ns == 5
+    assert replay._episode_ledger.open_episodes[0].opened_at_ns == 5
+
+
 def test_excursions_include_realized_pnl_after_partial_reduction() -> None:
     ledger = PositionEpisodeLedger()
     ledger.on_fill(_fill(side=1, qty=2.0, price=100.0, fee=0.0, ts_ns=1))

@@ -252,7 +252,10 @@ class PositionEpisodeLedger:
     def _check_chronological(self, symbol: str, timestamp_ns: int) -> None:
         last_timestamp = self._last_timestamp_ns.get(symbol)
         if last_timestamp is not None and timestamp_ns < last_timestamp:
-            raise ValueError(f"events for {symbol} must be chronological")
+            raise ValueError(
+                f"events for {symbol} must be chronological: timestamp_ns={timestamp_ns} "
+                f"last_timestamp_ns={last_timestamp}"
+            )
         self._last_timestamp_ns[symbol] = timestamp_ns
 
 
