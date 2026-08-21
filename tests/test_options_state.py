@@ -139,6 +139,117 @@ class Black76DeltaTests(unittest.TestCase):
 
 
 class OptionsStateCalculationTests(unittest.TestCase):
+    def test_realistic_nanosecond_source_boundaries_are_lossless(self) -> None:
+        cutoff_ns = 1_728_000_000_000_000_000
+        accepted = build_options_state(
+            _complete_chain(cutoff_ns),
+            cutoff_time_ns=cutoff_ns,
+            realized_vol_30d=0.50,
+            realized_vol_source_timestamp_ns=cutoff_ns,
+        )
+        self.assertEqual(accepted.cutoff_time_ns, cutoff_ns)
+        self.assertEqual(accepted.source_timestamp_ns, cutoff_ns)
+
+        for offset_ns in (1, 32, 64, 127, 128):
+            with (
+                self.subTest(offset_ns=offset_ns),
+                self.assertRaisesRegex(ValueError, "source timestamp is after cutoff"),
+            ):
+                build_options_state(
+                    _complete_chain(cutoff_ns + offset_ns),
+                    cutoff_time_ns=cutoff_ns,
+                    realized_vol_30d=0.50,
+                    realized_vol_source_timestamp_ns=cutoff_ns,
+                )
+
+    def test_integral_timestamp_scalars_and_exact_strings_are_accepted(self) -> None:
+        import numpy as np
+
+        cutoff_ns = 1_728_000_000_000_000_000
+        chain = _complete_chain(cutoff_ns)
+        for row in chain:
+            row["snapshot_ts_ns"] = str(cutoff_ns)
+            row["expiry_ts_ms"] = np.int64(row["expiry_ts_ms"])
+        state = build_options_state(
+            chain,
+            cutoff_time_ns=np.int64(cutoff_ns),
+            realized_vol_30d=0.50,
+            realized_vol_source_timestamp_ns=str(cutoff_ns),
+        )
+        self.assertEqual(state.cutoff_time_ns, cutoff_ns)
+        self.assertEqual(state.source_timestamp_ns, cutoff_ns)
+        self.assertEqual(state.selected_expiry_ts_ms_30d, 1_730_592_000_000)
+
+    def test_invalid_cutoff_timestamp_types_are_programmer_errors(self) -> None:
+        cutoff_ns = 1_728_000_000_000_000_000
+        for invalid in (
+            True,
+            float(cutoff_ns),
+            math.nan,
+            math.inf,
+            "1728000000000000000.0",
+            "nan",
+            2**63,
+        ):
+            with self.subTest(invalid=invalid), self.assertRaisesRegex(ValueError, "confirmed 4h cutoff"):
+                build_options_state(
+                    _complete_chain(cutoff_ns),
+                    cutoff_time_ns=invalid,  # type: ignore[arg-type]
+                    realized_vol_30d=0.50,
+                    realized_vol_source_timestamp_ns=cutoff_ns,
+                )
+
+    def test_invalid_source_and_expiry_timestamps_degrade_to_unknown(self) -> None:
+        cutoff_ns = 1_728_000_000_000_000_000
+        timestamp_mutations = (
+            ("snapshot_ts_ns", True, "SOURCE_TIMESTAMP"),
+            ("snapshot_ts_ns", float(cutoff_ns), "SOURCE_TIMESTAMP"),
+            ("snapshot_ts_ns", math.nan, "SOURCE_TIMESTAMP"),
+            ("snapshot_ts_ns", math.inf, "SOURCE_TIMESTAMP"),
+            ("snapshot_ts_ns", "1728000000000000000.5", "SOURCE_TIMESTAMP"),
+            ("snapshot_ts_ns", 2**63, "SOURCE_TIMESTAMP"),
+            ("expiry_ts_ms", 1_730_592_000_000.0, "MALFORMED_EXPIRY"),
+            ("expiry_ts_ms", "1730592000000.5", "MALFORMED_EXPIRY"),
+            ("expiry_ts_ms", 2**63, "MALFORMED_EXPIRY"),
+        )
+        for field, invalid, expected_flag in timestamp_mutations:
+            with self.subTest(field=field, invalid=invalid):
+                chain = _complete_chain(cutoff_ns)
+                chain[0][field] = invalid
+                state = build_options_state(
+                    chain,
+                    cutoff_time_ns=cutoff_ns,
+                    realized_vol_30d=0.50,
+                    realized_vol_source_timestamp_ns=cutoff_ns,
+                )
+                self.assertEqual(state.trend_quality, "UNKNOWN")
+                self.assertEqual(state.shadow_risk_multiplier, 1.0)
+                self.assertTrue(any(expected_flag in flag for flag in state.quality_flags))
+
+    def test_history_one_nanosecond_newer_than_24h_target_is_not_used(self) -> None:
+        current_ns = 1_728_000_000_000_000_000
+        history_ns = current_ns - DAY_NS + 1
+        state = build_options_state(
+            _complete_chain(current_ns, spot=110.0),
+            cutoff_time_ns=current_ns,
+            realized_vol_30d=0.50,
+            realized_vol_source_timestamp_ns=current_ns,
+            history_24h_rows=_complete_chain(history_ns, spot=100.0),
+        )
+        self.assertEqual(state.history_24h_source_timestamp_ns, 0)
+        self.assertIsNone(state.spot_return_24h)
+        self.assertIn("OPTIONS_24H_HISTORY_MISSING", state.quality_flags)
+
+    def test_realized_vol_source_one_nanosecond_after_cutoff_is_rejected(self) -> None:
+        cutoff_ns = 1_728_000_000_000_000_000
+        with self.assertRaisesRegex(ValueError, "realized volatility source is after cutoff"):
+            build_options_state(
+                _complete_chain(cutoff_ns),
+                cutoff_time_ns=cutoff_ns,
+                realized_vol_30d=0.50,
+                realized_vol_source_timestamp_ns=cutoff_ns + 1,
+            )
+
     def test_malformed_chain_fields_degrade_to_unknown_neutral(self) -> None:
         source_ns = 18 * DAY_NS
         mutations = {

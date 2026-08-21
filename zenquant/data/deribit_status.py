@@ -5,12 +5,26 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import asdict, dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from itertools import pairwise
 from pathlib import Path
 
+from zenquant.data._timestamp import lossless_timestamp
+
 _SNAPSHOT_RE = re.compile(r"options_chain_(\d{8}T\d{6}Z)\.parquet$")
 _STALE_HOURS = 8.1
+_EPOCH = datetime(1970, 1, 1, tzinfo=UTC)
+_HOUR_NS = 3_600 * 1_000_000_000
+
+
+def _datetime_to_ns(value: datetime) -> int:
+    delta = value - _EPOCH
+    return ((delta.days * 86_400 + delta.seconds) * 1_000_000 + delta.microseconds) * 1_000
+
+
+def _ns_to_datetime(value: int) -> datetime:
+    seconds, remainder_ns = divmod(value, 1_000_000_000)
+    return _EPOCH + timedelta(seconds=seconds, microseconds=remainder_ns // 1_000)
 
 
 @dataclass(slots=True)
@@ -49,7 +63,7 @@ def _snapshot_candidates(root: Path, currency: str) -> list[tuple[Path, datetime
     return found
 
 
-def _validated_snapshot_time(path: Path, filename_ts: datetime) -> datetime | None:
+def _validated_snapshot_time(path: Path, filename_ts: datetime) -> int | None:
     """Return the embedded source timestamp for a readable full-chain snapshot."""
     try:
         import pyarrow.compute as pc
@@ -73,15 +87,21 @@ def _validated_snapshot_time(path: Path, filename_ts: datetime) -> datetime | No
         timestamps = pc.unique(table["snapshot_ts_ns"]).to_pylist()
         if len(timestamps) != 1 or timestamps[0] is None:
             return None
-        source_ns = int(timestamps[0])
-        source_ts = datetime.fromtimestamp(source_ns / 1_000_000_000, tz=UTC)
-        if abs((source_ts - filename_ts).total_seconds()) > 300:
+        source_ns = lossless_timestamp(timestamps[0])
+        if source_ns is None:
+            return None
+        if abs(source_ns - _datetime_to_ns(filename_ts)) > 300 * 1_000_000_000:
             return None
         option_types = {str(value).lower() for value in pc.unique(table["option_type"]).to_pylist()}
         if not {"call", "put"}.issubset(option_types):
             return None
-        expiries = [int(value) for value in pc.unique(table["expiry_ts_ms"]).to_pylist() if value is not None]
-        dtes = [(expiry_ms / 1_000 - source_ns / 1_000_000_000) / 86_400 for expiry_ms in expiries]
+        raw_expiries = pc.unique(table["expiry_ts_ms"]).to_pylist()
+        expiries = [lossless_timestamp(value) for value in raw_expiries]
+        if not expiries or any(expiry_ms is None for expiry_ms in expiries):
+            return None
+        dtes = [
+            (expiry_ms * 1_000_000 - source_ns) / (24 * _HOUR_NS) for expiry_ms in expiries if expiry_ms is not None
+        ]
         tenor_tolerances = ((7, 5), (30, 15), (90, 35))
         if any(not any(abs(dte - target) <= tolerance for dte in dtes) for target, tolerance in tenor_tolerances):
             return None
@@ -90,7 +110,7 @@ def _validated_snapshot_time(path: Path, filename_ts: datetime) -> datetime | No
             values = table[column].to_pylist()
             if not values or any(value is None for value in values):
                 return None
-        return source_ts
+        return source_ns
     except (ArithmeticError, OSError, TypeError, ValueError):
         return None
 
@@ -99,27 +119,28 @@ def _validated_snapshot_times(
     root: Path,
     currency: str,
     now: datetime,
-) -> tuple[list[datetime], int, int, bool]:
+) -> tuple[list[int], int, int, bool]:
     candidates = _snapshot_candidates(root, currency)
     if not candidates:
         return [], 0, 0, False
     recent_candidates = [item for item in candidates if (now - item[1]).total_seconds() <= 7 * 24 * 3_600]
     if not recent_candidates:
         recent_candidates = [candidates[-1]]
-    valid: list[datetime] = []
+    valid: list[int] = []
     invalid = 0
     for path, filename_ts in recent_candidates:
-        source_ts = _validated_snapshot_time(path, filename_ts)
-        if source_ts is None:
+        source_ns = _validated_snapshot_time(path, filename_ts)
+        if source_ns is None:
             invalid += 1
         else:
-            valid.append(source_ts)
+            valid.append(source_ns)
     duplicate_count = len(valid) - len(set(valid))
     return sorted(set(valid)), invalid, duplicate_count, True
 
 
 def collect_deribit_status(root: Path, currency: str = "BTC") -> DeribitCollectorStatus:
     now = datetime.now(UTC)
+    now_ns = _datetime_to_ns(now)
     times, invalid_count, duplicate_count, has_candidates = _validated_snapshot_times(root, currency, now)
     if not has_candidates:
         return DeribitCollectorStatus(
@@ -165,14 +186,14 @@ def collect_deribit_status(root: Path, currency: str = "BTC") -> DeribitCollecto
             next_action="inspect_invalid_snapshots",
         )
 
-    last = times[-1]
-    snapshot_count_24h = sum(1 for ts in times if (now - ts).total_seconds() <= 24 * 3600)
-    snapshot_count_7d = sum(1 for ts in times if (now - ts).total_seconds() <= 7 * 24 * 3600)
-    recent_7d = [ts for ts in times if (now - ts).total_seconds() <= 7 * 24 * 3600]
+    last_ns = times[-1]
+    snapshot_count_24h = sum(1 for ts_ns in times if now_ns - ts_ns <= 24 * _HOUR_NS)
+    snapshot_count_7d = sum(1 for ts_ns in times if now_ns - ts_ns <= 7 * 24 * _HOUR_NS)
+    recent_7d = [ts_ns for ts_ns in times if now_ns - ts_ns <= 7 * 24 * _HOUR_NS]
     max_gap_hours_7d = 0.0
-    for prev, curr in pairwise(recent_7d):
-        max_gap_hours_7d = max(max_gap_hours_7d, round((curr - prev).total_seconds() / 3600.0, 2))
-    stale = (now - last).total_seconds() > _STALE_HOURS * 3600
+    for prev_ns, curr_ns in pairwise(recent_7d):
+        max_gap_hours_7d = max(max_gap_hours_7d, round((curr_ns - prev_ns) / _HOUR_NS, 2))
+    stale = now_ns - last_ns > _STALE_HOURS * _HOUR_NS
     integrity_complete = invalid_count == 0 and duplicate_count == 0
     observation_ready = (
         snapshot_count_7d >= 35 and max_gap_hours_7d <= _STALE_HOURS and not stale and integrity_complete
@@ -191,7 +212,7 @@ def collect_deribit_status(root: Path, currency: str = "BTC") -> DeribitCollecto
     return DeribitCollectorStatus(
         enabled=True,
         collector_running=not stale,
-        last_success_ts=last.isoformat(),
+        last_success_ts=_ns_to_datetime(last_ns).isoformat(),
         last_error=None,
         snapshot_count_24h=snapshot_count_24h,
         snapshot_count_7d=snapshot_count_7d,

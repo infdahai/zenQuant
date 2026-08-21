@@ -12,6 +12,7 @@ import math
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from zenquant.data._timestamp import lossless_timestamp
 from zenquant.data._z_utils import robust_z as _robust_z
 from zenquant.domain import OptionsState
 
@@ -70,6 +71,23 @@ _REQUIRED_CHAIN_COLUMNS = frozenset(
         "mark_iv",
     }
 )
+_DAY_NS = 86_400 * 1_000_000_000
+
+
+def _lossless_dte_days(df):
+    """Calculate DTE after losslessly parsing source-ns and expiry-ms."""
+    import pandas as pd
+
+    sources = [lossless_timestamp(value) for value in df["snapshot_ts_ns"]]
+    expiries = [lossless_timestamp(value) for value in df["expiry_ts_ms"]]
+    if any(value is None for value in sources) or any(value is None for value in expiries):
+        raise ValueError("options timestamp columns must contain exact integers")
+    source_values = {value for value in sources if value is not None}
+    if len(source_values) != 1:
+        raise ValueError("options chain must contain one source timestamp")
+    source_ns = source_values.pop()
+    dtes = [(expiry_ms * 1_000_000 - source_ns) / _DAY_NS for expiry_ms in expiries if expiry_ms is not None]
+    return pd.Series(dtes, index=df.index, dtype=float)
 
 
 class OptionsDataStore:
@@ -155,14 +173,14 @@ class OptionsDataStore:
                 timestamp_values = sorted(
                     value
                     for row in ordered_rows
-                    if (value := _finite_number(row.get("snapshot_ts_ns"))) is not None and value > 0
+                    if (value := lossless_timestamp(row.get("snapshot_ts_ns"))) is not None
                 )
                 if not timestamp_values:
                     continue
                 # Mixed-source chains remain visible at the earliest source so
                 # the public OptionsState lookup can quarantine them without
                 # leaking any later row into calculations.
-                snapshot_ts = int(timestamp_values[0])
+                snapshot_ts = timestamp_values[0]
                 spot_values = sorted(
                     value
                     for row in ordered_rows
@@ -221,6 +239,9 @@ class OptionsDataStore:
 
     def lookup(self, cutoff_time_ns: int) -> OptionsSnapshot:
         """Return latest options snapshot before cutoff (point-in-time correct)."""
+        cutoff_ns = lossless_timestamp(cutoff_time_ns)
+        if cutoff_ns is None:
+            raise ValueError("OptionsDataStore requires an exact integer cutoff timestamp")
         if not self._timestamps:
             return OptionsSnapshot(
                 atm_iv_30d=None,
@@ -234,7 +255,7 @@ class OptionsDataStore:
             )
 
         # Bisect to find latest snapshot before cutoff
-        idx = bisect.bisect_right(self._timestamps, cutoff_time_ns) - 1
+        idx = bisect.bisect_right(self._timestamps, cutoff_ns) - 1
         if idx < 0:
             # Before any data
             return OptionsSnapshot(
@@ -258,7 +279,7 @@ class OptionsDataStore:
         quality_flags: list[str] = []
 
         # Staleness check
-        age_ns = cutoff_time_ns - snapshot_ts
+        age_ns = cutoff_ns - snapshot_ts
         is_stale = age_ns > self._config.staleness_threshold_ns
         cache_key = (idx, is_stale)
         cached = self._lookup_cache.get(cache_key)
@@ -331,17 +352,21 @@ class OptionsDataStore:
         source timestamp is no later than ``current_source - 24h``. Future
         chain files are never read into the selected state.
         """
-        from zenquant.data.options_state import DAY_NS, build_options_state
+        from zenquant.data.options_state import DAY_NS, FOUR_HOURS_NS, build_options_state
 
-        cache_key = (cutoff_time_ns, realized_vol_30d, realized_vol_source_timestamp_ns)
+        cutoff_ns = lossless_timestamp(cutoff_time_ns)
+        if cutoff_ns is None or cutoff_ns % FOUR_HOURS_NS != 0:
+            raise ValueError("OptionsState requires a confirmed 4h cutoff")
+        realized_vol_source_ns = lossless_timestamp(realized_vol_source_timestamp_ns)
+        cache_key = (cutoff_ns, realized_vol_30d, realized_vol_source_ns or 0)
         cached = self._state_lookup_cache.get(cache_key)
         if cached is not None:
             return cached
-        idx = bisect.bisect_right(self._timestamps, cutoff_time_ns) - 1
+        idx = bisect.bisect_right(self._timestamps, cutoff_ns) - 1
         if idx < 0:
             state = build_options_state(
                 (),
-                cutoff_time_ns=cutoff_time_ns,
+                cutoff_time_ns=cutoff_ns,
                 realized_vol_30d=realized_vol_30d,
                 realized_vol_source_timestamp_ns=realized_vol_source_timestamp_ns,
                 stale_after_ns=self._config.staleness_threshold_ns,
@@ -353,7 +378,7 @@ class OptionsDataStore:
         history_rows = self._chain_rows[history_idx] if history_idx >= 0 else ()
         state = build_options_state(
             self._chain_rows[idx],
-            cutoff_time_ns=cutoff_time_ns,
+            cutoff_time_ns=cutoff_ns,
             realized_vol_30d=realized_vol_30d,
             realized_vol_source_timestamp_ns=realized_vol_source_timestamp_ns,
             history_24h_rows=history_rows,
@@ -392,9 +417,8 @@ class OptionsDataStore:
         target_dte = 30
 
         # Compute DTE (days to expiry)
-        now_ts = df["snapshot_ts_ns"].iloc[0] / 1e9
         df = df.copy()
-        df["dte"] = (df["expiry_ts_ms"] / 1000 - now_ts) / 86400
+        df["dte"] = _lossless_dte_days(df)
 
         # Find closest available expiry to 30 days (within 7-90 day range)
         eligible = df[(df["dte"] >= 7) & (df["dte"] <= 90)]
@@ -436,9 +460,8 @@ class OptionsDataStore:
         target_dte = 30
 
         # Filter by DTE
-        now_ts = df["snapshot_ts_ns"].iloc[0] / 1e9
         df = df.copy()
-        df["dte"] = (df["expiry_ts_ms"] / 1000 - now_ts) / 86400
+        df["dte"] = _lossless_dte_days(df)
 
         # Find closest expiry to 30 days
         eligible = df[(df["dte"] >= 7) & (df["dte"] <= 90)]
@@ -489,9 +512,8 @@ class OptionsDataStore:
         import pandas as pd
 
         # Compute DTE
-        now_ts = df["snapshot_ts_ns"].iloc[0] / 1e9
         df = df.copy()
-        df["dte"] = (df["expiry_ts_ms"] / 1000 - now_ts) / 86400
+        df["dte"] = _lossless_dte_days(df)
 
         # Find near-term (closest to 7d, must be 3-30d)
         near_eligible = df[(df["dte"] >= 3) & (df["dte"] <= 30)]

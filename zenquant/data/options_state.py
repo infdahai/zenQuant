@@ -14,6 +14,7 @@ from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
+from zenquant.data._timestamp import lossless_timestamp
 from zenquant.domain import OptionsState
 
 FOUR_HOURS_NS = 4 * 60 * 60 * 1_000_000_000
@@ -161,11 +162,11 @@ def _prepare_rows(
     timestamps: list[int] = []
     bad_timestamp = False
     for row in raw_ordered:
-        value = _finite_float(row.get("snapshot_ts_ns"))
-        if value is None or value <= 0:
+        value = lossless_timestamp(row.get("snapshot_ts_ns"))
+        if value is None:
             bad_timestamp = True
         else:
-            timestamps.append(int(value))
+            timestamps.append(value)
     unique_timestamps = set(timestamps)
     if bad_timestamp or len(unique_timestamps) != 1 or len(timestamps) != len(raw_ordered):
         source_ns = 0
@@ -207,8 +208,8 @@ def _prepare_rows(
         strike = _finite_float(row.get("strike"))
         if strike is None or strike <= 0:
             flags.append(f"{prefix}_MALFORMED_STRIKE")
-        expiry = _finite_float(row.get("expiry_ts_ms"))
-        if expiry is None or expiry <= 0:
+        expiry = lossless_timestamp(row.get("expiry_ts_ms"))
+        if expiry is None:
             flags.append(f"{prefix}_MALFORMED_EXPIRY")
         if str(row.get("option_type", "")).lower() not in {"call", "put"}:
             flags.append(f"{prefix}_MALFORMED_OPTION_TYPE")
@@ -240,7 +241,7 @@ def _normalized_iv(row: Mapping[str, Any]) -> float | None:
 
 
 def _dte(row: Mapping[str, Any], source_timestamp_ns: int) -> float | None:
-    expiry_ms = _finite_float(row.get("expiry_ts_ms"))
+    expiry_ms = lossless_timestamp(row.get("expiry_ts_ms"))
     if expiry_ms is None:
         return None
     value = (expiry_ms * 1_000_000 - source_timestamp_ns) / DAY_NS
@@ -257,10 +258,10 @@ def _selected_expiry_ts_ms(
     max_distance = {7: 5.0, 30: 15.0, 90: 35.0}[target_days]
     expiries: dict[int, float] = {}
     for row in rows:
-        expiry = _finite_float(row.get("expiry_ts_ms"))
+        expiry = lossless_timestamp(row.get("expiry_ts_ms"))
         dte = _dte(row, source_timestamp_ns)
         if expiry is not None and dte is not None:
-            expiries[int(expiry)] = dte
+            expiries[expiry] = dte
     eligible = [item for item in expiries.items() if abs(item[1] - target_days) <= max_distance]
     if not eligible:
         return None
@@ -276,7 +277,7 @@ def _expiry_rows(
     expiry_ms = _selected_expiry_ts_ms(rows, source_timestamp_ns, target_days)
     if expiry_ms is None:
         return []
-    return [row for row in rows if int(_finite_float(row.get("expiry_ts_ms")) or -1) == expiry_ms]
+    return [row for row in rows if lossless_timestamp(row.get("expiry_ts_ms")) == expiry_ms]
 
 
 def _atm_iv(rows: Sequence[Mapping[str, Any]], spot: float) -> float | None:
@@ -343,12 +344,12 @@ def _oi_concentrations(rows: Sequence[Mapping[str, Any]]) -> tuple[float, float]
     total = 0.0
     for row in rows:
         strike = _finite_float(row.get("strike"))
-        expiry = _finite_float(row.get("expiry_ts_ms"))
+        expiry = lossless_timestamp(row.get("expiry_ts_ms"))
         oi = _finite_float(row.get("open_interest"))
         if strike is None or expiry is None or oi is None or oi <= 0:
             continue
         by_strike[strike] = by_strike.get(strike, 0.0) + oi
-        by_expiry[int(expiry)] = by_expiry.get(int(expiry), 0.0) + oi
+        by_expiry[expiry] = by_expiry.get(expiry, 0.0) + oi
         total += oi
     if total <= 0:
         return 0.0, 0.0
@@ -368,7 +369,7 @@ def _gex_fields(
     for row in rows:
         oi = _finite_float(row.get("open_interest"))
         strike = _finite_float(row.get("strike"))
-        expiry = _finite_float(row.get("expiry_ts_ms"))
+        expiry = lossless_timestamp(row.get("expiry_ts_ms"))
         iv = _normalized_iv(row)
         option_type = str(row.get("option_type", "")).lower()
         if (
@@ -377,7 +378,6 @@ def _gex_fields(
             or strike is None
             or strike <= 0
             or expiry is None
-            or expiry <= 0
             or iv is None
             or option_type not in {"call", "put"}
         ):
@@ -390,7 +390,7 @@ def _gex_fields(
                 "open_interest": oi,
                 # The legacy helper consumes Deribit percent units.
                 "mark_iv": iv * 100.0,
-                "expiry_ts_ms": int(expiry),
+                "expiry_ts_ms": expiry,
                 "underlying_price": spot,
             }
         )
@@ -474,16 +474,18 @@ def build_options_state(
     stale_after_ns: int = DAY_NS,
 ) -> OptionsState:
     """Build one immutable observation-only state using information visible at cutoff."""
-    if cutoff_time_ns <= 0 or cutoff_time_ns % FOUR_HOURS_NS != 0:
+    cutoff_ns = lossless_timestamp(cutoff_time_ns)
+    if cutoff_ns is None or cutoff_ns % FOUR_HOURS_NS != 0:
         raise ValueError("OptionsState requires a confirmed 4h cutoff")
     raw_ordered, ordered, source_ns, preflight_flags = _prepare_rows(rows)
-    if source_ns > cutoff_time_ns:
+    if source_ns > cutoff_ns:
         raise ValueError("OptionsState source timestamp is after cutoff")
-    if realized_vol_source_timestamp_ns > cutoff_time_ns:
+    realized_vol_source_ns = lossless_timestamp(realized_vol_source_timestamp_ns)
+    if realized_vol_source_ns is not None and realized_vol_source_ns > cutoff_ns:
         raise ValueError("OptionsState realized volatility source is after cutoff")
     spot = _spot(ordered)
     raw_history, history, history_source_ns, history_flags = _prepare_rows(history_24h_rows or (), history=True)
-    if history_source_ns > cutoff_time_ns:
+    if history_source_ns > cutoff_ns:
         raise ValueError("OptionsState history source timestamp is after cutoff")
 
     selected_expiries = {days: _selected_expiry_ts_ms(ordered, source_ns, days) for days in (7, 30, 90)}
@@ -502,7 +504,7 @@ def build_options_state(
     rv = _finite_float(realized_vol_30d)
     if rv is not None and (rv < 0 or rv > 5):
         rv = None
-    if realized_vol_source_timestamp_ns <= 0:
+    if realized_vol_source_ns is None:
         rv = None
     iv_minus_rv = atm_30d - rv if atm_30d is not None and rv is not None else None
     slope_7_30 = atm_30d - atm_7d if atm_30d is not None and atm_7d is not None else None
@@ -533,10 +535,12 @@ def build_options_state(
         and (_finite_float(row.get("open_interest")) or 0) >= 0
     )
     coverage = valid_rows / len(ordered) if ordered else 0.0
-    age_ns = cutoff_time_ns - source_ns if source_ns else cutoff_time_ns
+    age_ns = cutoff_ns - source_ns if source_ns else cutoff_ns
     stale = not source_ns or age_ns > stale_after_ns
 
     flags: list[str] = [*preflight_flags, *history_flags]
+    if realized_vol_source_ns is None:
+        flags.append("OPTIONS_REALIZED_VOL_SOURCE_TIMESTAMP_MALFORMED")
     if not raw_ordered:
         flags.append("OPTIONS_MISSING")
     if stale:
@@ -568,7 +572,7 @@ def build_options_state(
 
     payload: dict[str, Any] = {
         "symbol": "BTC",
-        "cutoff_time_ns": cutoff_time_ns,
+        "cutoff_time_ns": cutoff_ns,
         "source_timestamp_ns": source_ns,
         "history_24h_source_timestamp_ns": history_source_ns,
         "data_identity": _row_data_identity(raw_ordered),
@@ -594,7 +598,7 @@ def build_options_state(
         "risk_reversal_25d_30d": risk_reversal,
         "moneyness_skew_proxy_30d": proxy,
         "realized_vol_30d": rv,
-        "realized_vol_source_timestamp_ns": realized_vol_source_timestamp_ns if rv is not None else 0,
+        "realized_vol_source_timestamp_ns": realized_vol_source_ns if rv is not None else 0,
         "iv_minus_rv_30d": iv_minus_rv,
         "term_slope_7d_30d": slope_7_30,
         "term_slope_30d_90d": slope_30_90,

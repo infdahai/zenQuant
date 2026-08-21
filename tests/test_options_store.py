@@ -18,7 +18,81 @@ def _write_parquet(path: Path, records: list[dict]) -> None:
 DAY_NS = 86_400 * 1_000_000_000
 
 
+def _options_state_chain(source_ns: int, *, spot: float) -> list[dict]:
+    rows: list[dict] = []
+    for dte in (7, 30, 90):
+        for strike in (80.0, 100.0, 120.0):
+            for option_type in ("call", "put"):
+                rows.append(
+                    {
+                        "snapshot_ts_ns": source_ns,
+                        "currency": "BTC",
+                        "instrument_name": f"BTC-{dte}D-{strike:g}-{option_type[0].upper()}",
+                        "expiry_ts_ms": (source_ns + dte * DAY_NS) // 1_000_000,
+                        "strike": strike,
+                        "option_type": option_type,
+                        "underlying_price": spot,
+                        "open_interest": 100.0,
+                        "mark_iv": 60.0,
+                    }
+                )
+    return rows
+
+
 class OptionsDataStoreTests(unittest.TestCase):
+    def test_store_asof_never_selects_a_snapshot_one_nanosecond_after_cutoff(self) -> None:
+        from zenquant.data import OptionsDataStore, OptionsDataStoreConfig
+
+        cutoff_ns = 1_728_000_000_000_000_000
+        with tempfile.TemporaryDirectory() as tmpdir:
+            options_dir = Path(tmpdir)
+            month_dir = options_dir / "BTC" / "2026-04"
+            _write_parquet(month_dir / "current.parquet", _options_state_chain(cutoff_ns, spot=100.0))
+            _write_parquet(month_dir / "future.parquet", _options_state_chain(cutoff_ns + 1, spot=999.0))
+            store = OptionsDataStore(OptionsDataStoreConfig(options_dir=options_dir))
+            store.load()
+            state = store.lookup_options_state(
+                cutoff_ns,
+                realized_vol_30d=0.45,
+                realized_vol_source_timestamp_ns=cutoff_ns,
+            )
+
+        self.assertEqual(state.source_timestamp_ns, cutoff_ns)
+        self.assertEqual(state.underlying_price, 100.0)
+
+    def test_legacy_store_metrics_accept_exact_integer_timestamp_strings(self) -> None:
+        from zenquant.data import OptionsDataStore, OptionsDataStoreConfig
+
+        cutoff_ns = 1_728_000_000_000_000_000
+        rows = _options_state_chain(cutoff_ns, spot=100.0)
+        for row in rows:
+            row["snapshot_ts_ns"] = str(row["snapshot_ts_ns"])
+            row["expiry_ts_ms"] = str(row["expiry_ts_ms"])
+        with tempfile.TemporaryDirectory() as tmpdir:
+            options_dir = Path(tmpdir)
+            _write_parquet(options_dir / "BTC" / "2026-04" / "strings.parquet", rows)
+            store = OptionsDataStore(OptionsDataStoreConfig(options_dir=options_dir))
+            store.load()
+            snapshot = store.lookup(cutoff_ns)
+
+        self.assertIsNotNone(snapshot.atm_iv_30d)
+        self.assertIsNotNone(snapshot.term_structure_slope)
+
+    def test_legacy_lookup_rejects_float_cutoff_instead_of_rounding_it(self) -> None:
+        from zenquant.data import OptionsDataStore, OptionsDataStoreConfig
+
+        cutoff_ns = 1_728_000_000_000_000_000
+        with tempfile.TemporaryDirectory() as tmpdir:
+            options_dir = Path(tmpdir)
+            _write_parquet(
+                options_dir / "BTC" / "2026-04" / "current.parquet",
+                _options_state_chain(cutoff_ns, spot=100.0),
+            )
+            store = OptionsDataStore(OptionsDataStoreConfig(options_dir=options_dir))
+            store.load()
+            with self.assertRaisesRegex(ValueError, "exact integer cutoff"):
+                store.lookup(float(cutoff_ns))  # type: ignore[arg-type]
+
     def test_lookup_malformed_chain_returns_unknown_instead_of_skipping_or_raising(self) -> None:
         from zenquant.data import OptionsDataStore, OptionsDataStoreConfig
 

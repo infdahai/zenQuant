@@ -11,7 +11,13 @@ def _snapshot_name(ts: datetime) -> str:
     return f"options_chain_{ts.strftime('%Y%m%dT%H%M%SZ')}.parquet"
 
 
-def _write_snapshot(path: Path, ts: datetime) -> None:
+def _write_snapshot(
+    path: Path,
+    ts: datetime,
+    *,
+    float_source: bool = False,
+    float_expiry: bool = False,
+) -> None:
     import pyarrow as pa
     import pyarrow.parquet as pq
 
@@ -21,8 +27,12 @@ def _write_snapshot(path: Path, ts: datetime) -> None:
         for option_type in ("call", "put"):
             rows.append(
                 {
-                    "snapshot_ts_ns": source_ns,
-                    "expiry_ts_ms": int((ts + timedelta(days=dte)).timestamp() * 1_000),
+                    "snapshot_ts_ns": float(source_ns) if float_source else source_ns,
+                    "expiry_ts_ms": (
+                        float(int((ts + timedelta(days=dte)).timestamp() * 1_000))
+                        if float_expiry
+                        else int((ts + timedelta(days=dte)).timestamp() * 1_000)
+                    ),
                     "strike": 100_000.0,
                     "option_type": option_type,
                     "underlying_price": 100_000.0,
@@ -83,6 +93,34 @@ class DeribitCollectorStatusTests(unittest.TestCase):
         self.assertEqual(status.snapshot_count_7d, 1)
         self.assertEqual(status.invalid_snapshot_count_7d, 1)
         self.assertFalse(status.observation_ready)
+        self.assertEqual(status.blocked_by, "deribit_snapshot_integrity_incomplete")
+
+    def test_fractional_typed_embedded_timestamp_is_not_a_valid_snapshot(self) -> None:
+        now = datetime.now(UTC).replace(microsecond=0)
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            target = root / "BTC" / "2026-04"
+            target.mkdir(parents=True, exist_ok=True)
+            path = target / _snapshot_name(now)
+            _write_snapshot(path, now, float_source=True)
+            status = collect_deribit_status(root)
+
+        self.assertEqual(status.snapshot_count_7d, 0)
+        self.assertEqual(status.invalid_snapshot_count_7d, 1)
+        self.assertEqual(status.blocked_by, "deribit_snapshot_integrity_incomplete")
+
+    def test_fractional_typed_expiry_is_not_a_valid_snapshot(self) -> None:
+        now = datetime.now(UTC).replace(microsecond=0)
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            target = root / "BTC" / "2026-04"
+            target.mkdir(parents=True, exist_ok=True)
+            path = target / _snapshot_name(now)
+            _write_snapshot(path, now, float_expiry=True)
+            status = collect_deribit_status(root)
+
+        self.assertEqual(status.snapshot_count_7d, 0)
+        self.assertEqual(status.invalid_snapshot_count_7d, 1)
         self.assertEqual(status.blocked_by, "deribit_snapshot_integrity_incomplete")
 
     def test_write_status_creates_json_artifact(self) -> None:
