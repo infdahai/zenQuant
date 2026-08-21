@@ -757,6 +757,14 @@ class HistoricalBacktest:
 
     def _collect_architecture_alpha(self, _: str, payload: object) -> None:
         if isinstance(payload, ArchitectureAlphaSnapshot):
+            visible_at_ns = int(self._current_event_cutoff_ns)
+            if payload.available_at_ns != payload.cutoff_time_ns or visible_at_ns != payload.available_at_ns:
+                raise ValueError(
+                    "backdated architecture alpha rejected: "
+                    f"cutoff_time_ns={payload.cutoff_time_ns} "
+                    f"available_at_ns={payload.available_at_ns} "
+                    f"visible_at_ns={visible_at_ns}"
+                )
             self._architecture_alphas.append(payload)
 
     def _collect_market_state(self, _: str, payload: object) -> None:
@@ -1191,21 +1199,11 @@ class HistoricalBacktest:
         alpha_cutoffs = set(alpha_counts)
         missing_cutoffs = sorted(confirmed_cutoffs - alpha_cutoffs)
         extra_cutoffs = sorted(alpha_cutoffs - confirmed_cutoffs)
-        ordered_confirmed_cutoffs = [int(row["close_time_ns"]) for row in confirmed_rows]
-        terminal_alpha_lag = horizon
-        indicator_engine = getattr(self, "indicator_engine", None)
-        indicator_config = getattr(indicator_engine, "_config", None)
-        if indicator_config is not None:
-            terminal_alpha_lag += max(0, int(getattr(indicator_config, "pending_ttl_bars", 0)))
-        missing_is_bounded_suffix = not missing_cutoffs or (
-            len(missing_cutoffs) <= terminal_alpha_lag
-            and missing_cutoffs == ordered_confirmed_cutoffs[-len(missing_cutoffs) :]
-        )
-        if extra_cutoffs or not missing_is_bounded_suffix:
+        if missing_cutoffs or extra_cutoffs:
             raise ValueError(
-                "architecture alpha cutoff reconciliation found unexplained evaluable alpha gaps: "
+                "architecture alpha cutoff reconciliation requires one bar-close alpha per confirmed 4h row: "
                 f"confirmed={len(confirmed_rows)} alpha={len(alpha_snapshots)} "
-                f"missing={len(missing_cutoffs)} terminal_limit={terminal_alpha_lag} "
+                f"missing={len(missing_cutoffs)} "
                 f"missing_cutoffs={missing_cutoffs!r} extra_cutoffs={extra_cutoffs!r}"
             )
         alphas = {alpha.cutoff_time_ns: alpha for alpha in alpha_snapshots}
@@ -1225,6 +1223,7 @@ class HistoricalBacktest:
                 {
                     "alpha_id": alpha.alpha_id,
                     "cutoff_time_ns": cutoff_time_ns,
+                    "available_at_ns": alpha.available_at_ns,
                     "regime": alpha.regime,
                     "raw_score": alpha.raw_score,
                     "frozen_confidence": alpha.confidence,

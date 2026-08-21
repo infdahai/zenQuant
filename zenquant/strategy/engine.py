@@ -540,6 +540,7 @@ class ARCStrategyEngine:
             symbol=pack.symbol,
             timeframe=pack.timeframe,
             cutoff_time_ns=pack.cutoff_time_ns,
+            available_at_ns=pack.cutoff_time_ns,
             formula_hash=pack.formula_hash,
             indicator_version=pack.indicator_version,
             alpha_config_hash=alpha_config_hash,

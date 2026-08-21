@@ -192,6 +192,7 @@ class ArchitectureAlphaSnapshot:
     symbol: str
     timeframe: Timeframe
     cutoff_time_ns: int
+    available_at_ns: int
     formula_hash: str
     indicator_version: str
     alpha_config_hash: str

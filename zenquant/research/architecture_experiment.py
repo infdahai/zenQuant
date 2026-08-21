@@ -184,6 +184,7 @@ class ArchitectureObservation:
     forward_return: float
     formula_hash: str
     alpha_config_hash: str
+    available_at_ns: int | None = None
     annualized_volatility: float | None = None
     risk_regime: str = "UNKNOWN"
     frozen_regime_multiplier: float | None = None

@@ -79,6 +79,11 @@ def run_architecture_stage_replay(
     ordered = tuple(sorted(observations, key=lambda item: (item.cutoff_time_ns, item.alpha_id)))
     if len({item.cutoff_time_ns for item in ordered}) != len(ordered):
         raise ValueError("stage replay observations contain duplicate cutoffs")
+    invalid_availability = [item.cutoff_time_ns for item in ordered if item.available_at_ns != item.cutoff_time_ns]
+    if invalid_availability:
+        raise ValueError(
+            f"architecture alpha availability must equal its decision cutoff: cutoffs={invalid_availability!r}"
+        )
 
     bus = InMemoryJetStream()
     fee_accumulator = _FeeAccumulator()

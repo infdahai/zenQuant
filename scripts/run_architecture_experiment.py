@@ -86,7 +86,13 @@ def build_frozen_backtest_config(
         strategy_config=strategy_config,
         risk_config=build_risk_config(params),
         execution_config=build_execution_config(params),
-        indicator_config=build_indicator_config(params),
+        indicator_config=replace(
+            build_indicator_config(params),
+            # The frozen donor stream contains BTC only. Waiting for the
+            # default BTC+ETH cross-symbol quorum backdates every 4h pack by
+            # the pending TTL and makes the next-bar label look-ahead.
+            expected_symbols=(manifest.portfolio_symbol,),
+        ),
         signal_weight_overrides=build_signal_weight_overrides(params),
         plugin_config_overrides=build_plugin_config_overrides(params),
         perturbation=PerturbationConfig(seed=seed, **dict(manifest.perturbation)),
