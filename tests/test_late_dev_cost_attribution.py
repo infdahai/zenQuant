@@ -578,6 +578,25 @@ def test_present_non_mapping_cost_stress_is_invalid_not_structurally_incomplete(
         _build(report)
 
 
+def test_present_cost_stress_mapping_missing_15bp_entry_is_invalid():
+    report = _complete_raw_report()
+    late_dev = next(run for run in report["runs"] if run["window"] == "late_dev_2025")  # type: ignore[index]
+    late_dev["stages"][ArchitectureStage.A1_SIGN.value]["cost_stress"].pop("15")  # type: ignore[index]
+
+    with pytest.raises(LateDevAttributionValidationError, match="A1_SIGN cost stress"):
+        _build(report)
+
+
+@pytest.mark.parametrize("fifteen_bp_entry", [[], {}], ids=["non_mapping", "missing_net_pnl"])
+def test_present_15bp_cost_stress_entry_requires_a_mapping_net_pnl(fifteen_bp_entry: object):
+    report = _complete_raw_report()
+    late_dev = next(run for run in report["runs"] if run["window"] == "late_dev_2025")  # type: ignore[index]
+    late_dev["stages"][ArchitectureStage.A1_SIGN.value]["cost_stress"]["15"] = fifteen_bp_entry  # type: ignore[index]
+
+    with pytest.raises(LateDevAttributionValidationError, match="A1_SIGN cost stress"):
+        _build(report)
+
+
 def test_confidence_failure_requires_equal_direction_hit_rates_and_nonpositive_score_pnl():
     report = _complete_raw_report()
     for run in report["runs"]:  # type: ignore[index]

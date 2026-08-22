@@ -232,7 +232,18 @@ def _has_cost_structure(run: Mapping[str, Any], stage_name: str) -> bool:
     if "cost_stress" not in stage:
         return False
     costs = _mapping(stage["cost_stress"], f"{stage_name} cost stress")
-    return "0" in costs and "15" in costs
+    for stress_bps in ("0", "15"):
+        if stress_bps not in costs:
+            raise LateDevAttributionValidationError(
+                f"{stage_name} cost stress must include {stress_bps!r} when present"
+            )
+        cost_row = _mapping(costs[stress_bps], f"{stage_name} cost stress {stress_bps}")
+        if "net_pnl" not in cost_row:
+            raise LateDevAttributionValidationError(
+                f"{stage_name} cost stress {stress_bps} must include net_pnl when present"
+            )
+        _finite(cost_row["net_pnl"], f"{stage_name} cost stress {stress_bps} net PnL")
+    return True
 
 
 def _has_a5_episode_inputs(run: Mapping[str, Any]) -> bool:
