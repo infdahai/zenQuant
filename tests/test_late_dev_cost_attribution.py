@@ -2,7 +2,12 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
+import subprocess
+import sys
 from copy import deepcopy
+from pathlib import Path
 
 import pytest
 
@@ -17,6 +22,17 @@ from zenquant.research.late_dev_cost_attribution import (
     build_regime_objective_hypothesis,
     canonical_late_dev_attribution_bytes,
 )
+
+CLI = Path(__file__).parent.parent / "scripts" / "analyze_quant_v2_late_dev_cost.py"
+
+
+def _run_cli(source: Path, output_dir: Path) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        [sys.executable, str(CLI), "--input", str(source), "--output-dir", str(output_dir)],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
 
 
 def _cost_stage(stage: str, *, include_episodes: bool = False) -> dict[str, object]:
@@ -670,3 +686,120 @@ def test_regime_hypothesis_is_single_family_research_only_record():
             "localized loss pattern recurs in at least four of five perturbation seeds."
         ),
     }
+
+
+def test_cli_writes_complete_stop_donor_reports_without_hypothesis(tmp_path: Path):
+    """A complete directional failure must publish diagnostics but no redesign artifact."""
+    source = tmp_path / "architecture_attribution.json"
+    source.write_text(
+        json.dumps(_complete_raw_report(direction_hit_rate=0.47, a1_sign_15bp=-10.0)),
+        encoding="utf-8",
+    )
+
+    completed = _run_cli(source, tmp_path / "out")
+
+    output_dir = tmp_path / "out"
+    report_path = output_dir / "late_dev_cost_attribution.json"
+    markdown_path = output_dir / "late_dev_cost_attribution.md"
+    assert completed.returncode == 0, completed.stderr
+    assert json.loads(report_path.read_text(encoding="utf-8"))["terminal_recommendation"] == "stop_donor_training"
+    markdown = markdown_path.read_text(encoding="utf-8")
+    assert "## Identities" in markdown
+    assert "## Five-seed bridges" in markdown
+    assert "## Evidence" in markdown
+    assert "## Regime, action, and episode summaries" in markdown
+    assert "## Limitations" in markdown
+    assert "stop_donor_training" in markdown
+    assert not (output_dir / "regime_objective_redesign_from_late_dev.json").exists()
+    assert not list(output_dir.glob("*.tmp"))
+
+
+def test_cli_writes_hypothesis_only_for_regime_objective_redesign(tmp_path: Path):
+    """A four-of-five localized failure is the sole hypothesis-publication path."""
+    source = tmp_path / "architecture_attribution.json"
+    source.write_text(json.dumps(_complete_raw_report(regime_localized_seed_count=4)), encoding="utf-8")
+
+    completed = _run_cli(source, tmp_path / "out")
+
+    hypothesis_path = tmp_path / "out" / "regime_objective_redesign_from_late_dev.json"
+    assert completed.returncode == 0, completed.stderr
+    hypothesis = json.loads(hypothesis_path.read_text(encoding="utf-8"))
+    assert hypothesis["failure_family"] == "regime_localization"
+    assert hypothesis["excluded_prior_exploration_families"] == [
+        "threshold sweeping",
+        "leverage expansion",
+        "donor continuation",
+    ]
+    assert "out-of-sample-only" in hypothesis["oos_only_falsification_gate"]
+    assert "grid" not in json.dumps(hypothesis).lower()
+    assert "command" not in json.dumps(hypothesis).lower()
+
+
+def test_cli_removes_stale_hypothesis_when_recommendation_changes(tmp_path: Path):
+    """A prior redesign artifact must not survive a later stop-donor diagnosis."""
+    redesign_source = tmp_path / "redesign.json"
+    redesign_source.write_text(json.dumps(_complete_raw_report(regime_localized_seed_count=4)), encoding="utf-8")
+    stop_source = tmp_path / "stop.json"
+    stop_source.write_text(
+        json.dumps(_complete_raw_report(direction_hit_rate=0.47, a1_sign_15bp=-10.0)),
+        encoding="utf-8",
+    )
+    output_dir = tmp_path / "out"
+
+    assert _run_cli(redesign_source, output_dir).returncode == 0
+    assert (output_dir / "regime_objective_redesign_from_late_dev.json").exists()
+
+    completed = _run_cli(stop_source, output_dir)
+
+    assert completed.returncode == 0, completed.stderr
+    assert not (output_dir / "regime_objective_redesign_from_late_dev.json").exists()
+
+
+def test_cli_insufficient_valid_input_writes_reports_and_returns_one(tmp_path: Path):
+    """Missing required diagnostics is valid evidence, not an invalid input error."""
+    report = _complete_raw_report()
+    late_dev = next(run for run in report["runs"] if run["window"] == "late_dev_2025")  # type: ignore[index]
+    late_dev["stages"][ArchitectureStage.A5_SHADOW.value].pop("position_episodes")  # type: ignore[index]
+    source = tmp_path / "architecture_attribution.json"
+    source.write_text(json.dumps(report), encoding="utf-8")
+
+    completed = _run_cli(source, tmp_path / "out")
+
+    report_path = tmp_path / "out" / "late_dev_cost_attribution.json"
+    assert completed.returncode == 1, completed.stderr
+    assert json.loads(report_path.read_text(encoding="utf-8"))["terminal_recommendation"] == (
+        "insufficient_evidence_no_strategy_change"
+    )
+    assert (tmp_path / "out" / "late_dev_cost_attribution.md").exists()
+    assert not (tmp_path / "out" / "regime_objective_redesign_from_late_dev.json").exists()
+
+
+@pytest.mark.parametrize("contents", ["{}", "not json"], ids=["invalid_envelope", "malformed_json"])
+def test_cli_invalid_input_writes_nothing_and_returns_two(tmp_path: Path, contents: str):
+    """Invalid raw input must not create an output directory or a partial report."""
+    source = tmp_path / "bad.json"
+    source.write_text(contents, encoding="utf-8")
+
+    completed = _run_cli(source, tmp_path / "out")
+
+    assert completed.returncode == 2
+    assert not (tmp_path / "out").exists()
+    assert "invalid input" in completed.stderr.lower()
+
+
+def test_cli_records_exact_source_identity_and_publishes_only_complete_files(tmp_path: Path):
+    """Published diagnostics must retain the bytes they diagnose and leave no staging files."""
+    source = tmp_path / "architecture_attribution.json"
+    source_bytes = json.dumps(_complete_raw_report(), indent=1).encode("utf-8")
+    source.write_bytes(source_bytes)
+
+    completed = _run_cli(source, tmp_path / "out")
+
+    report = json.loads((tmp_path / "out" / "late_dev_cost_attribution.json").read_text(encoding="utf-8"))
+    assert completed.returncode == 0, completed.stderr
+    assert report["source"] == {
+        "artifact": str(source),
+        "sha256": hashlib.sha256(source_bytes).hexdigest(),
+        "size_bytes": len(source_bytes),
+    }
+    assert not list((tmp_path / "out").glob("*.tmp"))

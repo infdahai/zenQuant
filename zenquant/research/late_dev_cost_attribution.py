@@ -113,6 +113,101 @@ def canonical_late_dev_attribution_bytes(report: Mapping[str, Any]) -> bytes:
     return json.dumps(report, allow_nan=False, indent=2, sort_keys=True).encode("utf-8")
 
 
+def build_late_dev_cost_attribution_markdown(report: Mapping[str, Any]) -> str:
+    """Render an auditable Markdown view of an already-built attribution report."""
+    source = _mapping(report.get("source"), "attribution source")
+    evidence = _mapping(report.get("evidence"), "attribution evidence")
+    lines = [
+        "# Quant V2 late-development cost attribution",
+        "",
+        "## Identities",
+        "",
+        f"- Schema version: `{report['schema_version']}`",
+        f"- Source artifact: `{source['artifact']}`",
+        f"- Source SHA-256: `{source['sha256']}`",
+        f"- Source size bytes: `{source['size_bytes']}`",
+        f"- Manifest SHA-256: `{report['manifest_sha256']}`",
+        f"- Validated run count: `{report['validated_run_count']}`",
+        "",
+        "## Five-seed bridges",
+        "",
+        "| Seed | Stage | Baseline net PnL | Turnover notional | Additional 15bp cost | 15bp net PnL | Reconciliation error |",
+        "| --- | --- | ---: | ---: | ---: | ---: | ---: |",
+    ]
+    for bridge in report["seed_stage_bridges"]:
+        item = _mapping(bridge, "seed stage bridge")
+        lines.append(
+            "| {seed} | {stage} | {baseline} | {turnover} | {cost} | {stressed} | {error} |".format(
+                seed=item["seed"],
+                stage=item["stage"],
+                baseline=item["baseline_net_pnl"],
+                turnover=item["turnover_notional"],
+                cost=item["additional_15bp_cost"],
+                stressed=item["extra_15bp_net_pnl"],
+                error=item["reconciliation_error"],
+            )
+        )
+
+    lines.extend(
+        [
+            "",
+            "## Evidence",
+            "",
+            "| Family | Status | Supporting seeds | Insufficient-sample seeds | Inapplicable seeds |",
+            "| --- | --- | ---: | --- | --- |",
+        ]
+    )
+    for family in (
+        "directional_edge",
+        "confidence_no_incremental_edge",
+        "cost_flip",
+        "regime_localization",
+        "episode_tail",
+        "execution_shortfall",
+    ):
+        item = _mapping(evidence[family], f"{family} evidence")
+        lines.append(
+            "| {family} | {status} | {count} | {insufficient} | {inapplicable} |".format(
+                family=family,
+                status=item["status"],
+                count=item["supporting_seed_count"],
+                insufficient=", ".join(str(seed) for seed in item["insufficient_sample_seeds"]) or "-",
+                inapplicable=", ".join(str(seed) for seed in item["inapplicable_seeds"]) or "-",
+            )
+        )
+
+    lines.extend(["", "## Regime, action, and episode summaries", ""])
+    for summary in report["episode_attribution"]:
+        item = _mapping(summary, "episode attribution")
+        lines.extend(
+            [
+                f"### Seed {item['seed']} / {item['stage']}",
+                "",
+                f"- Episode ledger: `{item['episode_ledger_status']}`; closed `{item['closed_episode_count']}`, open `{item['open_episode_count']}`.",
+                f"- Closed net PnL: `{item['closed_net_pnl']}`; open unrealized PnL: `{item['open_unrealized_pnl']}`.",
+                f"- Regime summary: `{json.dumps(item['regime_groups'], sort_keys=True)}`.",
+                f"- Execution-action summary: `{json.dumps(item['execution_actions'], sort_keys=True)}`.",
+            ]
+        )
+
+    lines.extend(
+        [
+            "",
+            "## Limitations",
+            "",
+            f"- Required inputs incomplete: `{evidence['required_inputs_incomplete']}`.",
+            f"- Research-only non-promotable: `{report['research_only_non_promotable']}`.",
+            f"- Promotion state: `{report['promotion_state']}`.",
+            "",
+            "## Recommendation",
+            "",
+            f"`{report['terminal_recommendation']}`",
+            "",
+        ]
+    )
+    return "\n".join(lines)
+
+
 def _validate_source_identity(*, source_sha256: str, source_size_bytes: int) -> None:
     if (
         not isinstance(source_sha256, str)

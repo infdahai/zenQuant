@@ -35,6 +35,7 @@ FORBIDDEN_PLUGIN_IMPORTS = [
 ]
 
 STRATEGY_DIR = PROJECT_ROOT / "zenquant" / "strategy"
+LATE_DEV_ATTRIBUTION_MODULE = PROJECT_ROOT / "zenquant" / "research" / "late_dev_cost_attribution.py"
 
 FORBIDDEN_STRATEGY_IMPORTS = [
     "zenquant.app",
@@ -127,6 +128,18 @@ class TestImportBoundaries(unittest.TestCase):
             ["zenquant.strategy"],
             "STATE",
         )
+        if violations:
+            msg = "\n".join(["Import boundary violations:"] + violations)
+            self.fail(msg)
+
+    def test_late_dev_attribution_does_not_import_live_strategy_layers(self):
+        """The diagnostic envelope stays isolated from strategy and operational layers."""
+        violations = _check_boundary(
+            [LATE_DEV_ATTRIBUTION_MODULE.parent],
+            ["zenquant.strategy", "zenquant.execution", "zenquant.risk", "zenquant.app"],
+            "LATE_DEV_ATTRIBUTION",
+        )
+        violations = [violation for violation in violations if "late_dev_cost_attribution.py" in violation]
         if violations:
             msg = "\n".join(["Import boundary violations:"] + violations)
             self.fail(msg)
