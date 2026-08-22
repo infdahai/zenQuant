@@ -7,6 +7,7 @@ import argparse
 import hashlib
 import json
 import os
+import re
 import shutil
 import sys
 import tempfile
@@ -44,6 +45,9 @@ OUTPUT_FILENAMES = (
 _JSON_HASH_CHUNK_BYTES = 1024 * 1024
 _FIXED_EVENT_SCHEMA_VERSION = "legacy-accounting-fixed-event-attribution.v1"
 _RERUN_SUMMARY_SCHEMA_VERSION = "legacy-accounting-rerun-summary.v1"
+EXPECTED_REPAIRED_FORMULA_HASH = "sha256:82af23a08c68a94641e1d7769ecdf9619059dddbeb531dd3703cc4d2ff809f4a"
+_SHA256_IDENTITY_PATTERN = re.compile(r"sha256:[0-9a-f]{64}")
+_RUNS_DECLARATION_PATTERN = re.compile(r'^\s*"runs"\s*:\s*\[\s*$')
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -59,6 +63,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--output-dir",
         type=Path,
         default=Path("results/accounting_integrity_20260823"),
+        help="Brand-new versioned output directory; must not already exist.",
     )
     return parser
 
@@ -67,6 +72,7 @@ def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     manifest = load_architecture_experiment_manifest(FROZEN_MANIFEST_PATH)
     _assert_safe_paths(args.legacy_input, args.output_dir)
+    _assert_new_output_directory(args.output_dir)
     legacy_source = _source_identity(args.legacy_input)
 
     args.output_dir.parent.mkdir(parents=True, exist_ok=True)
@@ -126,6 +132,10 @@ def main(argv: list[str] | None = None) -> int:
         _write_json(staging_dir / "fixed_event_attribution.json", fixed_event)
         _write_json(staging_dir / "stage_validity.json", stage_validity)
         _write_json(staging_dir / "summary.json", summary)
+        _assert_safe_paths(args.legacy_input, args.output_dir)
+        final_legacy_source = _source_identity(args.legacy_input)
+        if final_legacy_source != legacy_source:
+            raise ValueError("legacy source changed during rerun; refusing publication")
         _publish_staged_outputs(staging_dir=staging_dir, output_dir=args.output_dir)
     finally:
         shutil.rmtree(staging_dir, ignore_errors=True)
@@ -135,6 +145,15 @@ def main(argv: list[str] | None = None) -> int:
         f"(parameter_search=false, legacy={legacy_source['sha256']})"
     )
     return 0
+
+
+def cli(argv: list[str] | None = None) -> int:
+    """Return a clean invalid-input exit instead of publishing a traceback."""
+    try:
+        return main(argv)
+    except (OSError, ValueError) as exc:
+        print(f"INVALID: {exc}", file=sys.stderr)
+        return 2
 
 
 def _run_frozen_matrix(
@@ -203,12 +222,20 @@ def _validate_repaired_report(
     raw_runs = report.get("runs")
     if not isinstance(raw_runs, list) or not all(isinstance(run, Mapping) for run in raw_runs):
         raise ValueError("repaired report runs must be a list of objects")
-    observed_keys = [(run.get("window"), run.get("seed")) for run in raw_runs]
+    observed_keys: list[tuple[str, int]] = []
+    for index, run in enumerate(raw_runs):
+        window = run.get("window")
+        seed = run.get("seed")
+        if not isinstance(window, str) or not window:
+            raise ValueError(f"repaired run {index} requires an exact window string")
+        if isinstance(seed, bool) or not isinstance(seed, int):
+            raise ValueError(f"repaired run {index} requires an integer seed")
+        observed_keys.append((window, seed))
     if observed_keys != list(manifest.expected_run_keys):
         raise ValueError("repaired report does not contain the exact frozen matrix")
     formula_hashes = sorted({formula_hash for run in raw_runs for formula_hash in _formula_hashes_from_run(run)})
-    if len(formula_hashes) != 1:
-        raise ValueError("repaired frozen matrix must contain exactly one formula hash")
+    if formula_hashes != [EXPECTED_REPAIRED_FORMULA_HASH]:
+        raise ValueError("repaired report does not use the frozen repaired formula hash")
     return formula_hashes
 
 
@@ -219,10 +246,12 @@ def _formula_hashes_from_run(run: Mapping[str, Any]) -> list[str]:
     value = identities.get("formula_hashes")
     if (
         not isinstance(value, list)
-        or not value
-        or not all(isinstance(item, str) and item.startswith("sha256:") for item in value)
+        or len(value) != 1
+        or not isinstance(value[0], str)
+        or _SHA256_IDENTITY_PATTERN.fullmatch(value[0]) is None
+        or value[0] != EXPECTED_REPAIRED_FORMULA_HASH
     ):
-        raise ValueError("repaired run formula_hashes must contain SHA-256 identities")
+        raise ValueError("repaired run does not contain the exact frozen repaired formula hash")
     return value
 
 
@@ -275,35 +304,56 @@ def _stream_stage_validity(
 
 def _iter_legacy_runs(path: Path) -> Iterator[dict[str, Any]]:
     """Decode one pretty-printed top-level run at a time, never the 1GB report."""
+    structure = _JsonStructure()
     found_runs = False
+    closed_runs = False
     collecting = False
-    depth = 0
-    in_string = False
-    escaped = False
     fragments: list[str] = []
+    envelope_fragments: list[str] = []
     with path.open(encoding="utf-8") as source:
         for line in source:
             if not found_runs:
-                if line.strip() == '"runs": [':
+                if (
+                    _RUNS_DECLARATION_PATTERN.fullmatch(line.rstrip("\r\n")) is not None
+                    and structure.stack == ["}"]
+                    and not structure.in_string
+                ):
                     found_runs = True
-                continue
-            if not collecting:
-                stripped = line.strip()
-                if stripped in {"]", "],"}:
-                    break
-                if not stripped:
+                    structure.consume(line)
+                    if structure.stack != ["}", "]"]:
+                        raise ValueError("legacy top-level runs key must open an array")
+                    declaration = line.rstrip("\r\n")
+                    envelope_fragments.append(f"{declaration[: declaration.rfind('[')]}[]\n")
                     continue
-                if not stripped.startswith("{"):
+                envelope_fragments.append(line)
+                structure.consume(line)
+                continue
+            if not closed_runs and not collecting:
+                stripped = line.strip()
+                if structure.stack == ["}", "]"] and stripped in {"]", "],"}:
+                    structure.consume(line)
+                    closed_runs = True
+                    envelope_fragments.append(",\n" if stripped.endswith(",") else "\n")
+                    continue
+                if not stripped:
+                    structure.consume(line)
+                    continue
+                if structure.stack != ["}", "]"] or not stripped.startswith("{"):
                     raise ValueError("legacy report runs array contains a non-object value")
                 collecting = True
-            fragments.append(line)
-            depth, in_string, escaped = _update_json_depth(
-                line,
-                depth=depth,
-                in_string=in_string,
-                escaped=escaped,
-            )
-            if depth == 0 and not in_string:
+            if not closed_runs and collecting:
+                fragments.append(line)
+                structure.consume(line)
+            else:
+                if (
+                    _RUNS_DECLARATION_PATTERN.fullmatch(line.rstrip("\r\n")) is not None
+                    and structure.stack == ["}"]
+                    and not structure.in_string
+                ):
+                    raise ValueError("legacy report contains duplicate top-level runs keys")
+                envelope_fragments.append(line)
+                structure.consume(line)
+            if collecting and structure.stack == ["}", "]"] and not structure.in_string:
                 encoded = "".join(fragments).rstrip()
                 if encoded.endswith(","):
                     encoded = encoded[:-1]
@@ -313,38 +363,64 @@ def _iter_legacy_runs(path: Path) -> Iterator[dict[str, Any]]:
                 yield value
                 fragments.clear()
                 collecting = False
-                escaped = False
     if not found_runs:
         raise ValueError("legacy report is missing its top-level runs array")
-    if collecting or depth != 0 or in_string:
-        raise ValueError("legacy report contains an incomplete run object")
+    if collecting or not closed_runs:
+        raise ValueError("legacy report runs array is incomplete")
+    if not structure.root_closed or structure.stack or structure.in_string:
+        raise ValueError("legacy top-level JSON object is incomplete")
+    try:
+        envelope = json.loads("".join(envelope_fragments))
+    except json.JSONDecodeError as exc:
+        raise ValueError("legacy top-level JSON is malformed outside the streamed runs array") from exc
+    if not isinstance(envelope, dict) or not isinstance(envelope.get("runs"), list):
+        raise ValueError("legacy report is missing its top-level runs array")
 
 
-def _update_json_depth(
-    text: str,
-    *,
-    depth: int,
-    in_string: bool,
-    escaped: bool,
-) -> tuple[int, bool, bool]:
-    for character in text:
-        if in_string:
-            if escaped:
-                escaped = False
-            elif character == "\\":
-                escaped = True
-            elif character == '"':
-                in_string = False
-            continue
-        if character == '"':
-            in_string = True
-        elif character in "{[":
-            depth += 1
-        elif character in "}]":
-            depth -= 1
-            if depth < 0:
-                raise ValueError("legacy report contains unbalanced JSON delimiters")
-    return depth, in_string, escaped
+class _JsonStructure:
+    __slots__ = ("escaped", "in_string", "root_closed", "root_started", "stack")
+
+    def __init__(self) -> None:
+        self.stack: list[str] = []
+        self.in_string = False
+        self.escaped = False
+        self.root_started = False
+        self.root_closed = False
+
+    def consume(self, text: str) -> None:
+        for character in text:
+            if self.root_closed:
+                if not character.isspace():
+                    raise ValueError("legacy report contains trailing content after top-level JSON object")
+                continue
+            if not self.root_started:
+                if character.isspace():
+                    continue
+                if character != "{":
+                    raise ValueError("legacy report top-level JSON value must be an object")
+                self.root_started = True
+                self.stack.append("}")
+                continue
+            if self.in_string:
+                if self.escaped:
+                    self.escaped = False
+                elif character == "\\":
+                    self.escaped = True
+                elif character == '"':
+                    self.in_string = False
+                continue
+            if character == '"':
+                self.in_string = True
+            elif character == "{":
+                self.stack.append("}")
+            elif character == "[":
+                self.stack.append("]")
+            elif character in "}]":
+                if not self.stack or self.stack[-1] != character:
+                    raise ValueError("legacy report contains mismatched JSON delimiters")
+                self.stack.pop()
+                if not self.stack:
+                    self.root_closed = True
 
 
 def _run_key(run: Mapping[str, Any], *, label: str) -> tuple[str, int]:
@@ -378,13 +454,27 @@ def build_full_system_comparison(records: list[Mapping[str, Any]]) -> dict[str, 
         "first_confirmed_divergence": _stage_key_payload(first_confirmed),
         "first_unverified_comparison": _stage_key_payload(first_unverified),
         "reason": (
-            "legacy_stage_provenance_incomplete"
+            _unverified_comparison_reason(first_unverified)
             if status == ValidityState.UNVERIFIED_LEGACY.value
             else "first_exact_stage_payload_change"
             if status == ValidityState.CONFIRMED_AFFECTED.value
             else "all_extracted_stage_payloads_match"
         ),
     }
+
+
+def _unverified_comparison_reason(record: Mapping[str, Any] | None) -> str:
+    if record is None:
+        return "stage_comparison_unverified"
+    legacy_incomplete = bool(record.get("legacy_error"))
+    repaired_incomplete = bool(record.get("repaired_error"))
+    if legacy_incomplete and repaired_incomplete:
+        return "legacy_and_repaired_stage_provenance_incomplete"
+    if legacy_incomplete:
+        return "legacy_stage_provenance_incomplete"
+    if repaired_incomplete:
+        return "repaired_stage_provenance_incomplete"
+    return "stage_comparison_unverified"
 
 
 def _stage_key_payload(record: Mapping[str, Any] | None) -> dict[str, Any] | None:
@@ -477,7 +567,7 @@ def _build_summary(
         "full_system_comparison": dict(full_system_comparison),
         "stage_validity_counts": dict(stage_validity["counts"]),
         "resource_behavior": {
-            "legacy_sha256_stream_passes": 1,
+            "legacy_sha256_stream_passes": 2,
             "legacy_stage_stream_passes": 1,
             "legacy_full_json_load_count": 0,
             "legacy_peak_loaded_scope": "single_run",
@@ -511,46 +601,9 @@ def _publish_staged_outputs(*, staging_dir: Path, output_dir: Path) -> None:
     missing = [name for name in OUTPUT_FILENAMES if not (staging_dir / name).is_file()]
     if missing:
         raise ValueError(f"staged rerun is incomplete: missing={missing!r}")
-    if not output_dir.exists():
-        os.replace(staging_dir, output_dir)
-        _fsync_directory(output_dir.parent)
-        return
-    if not output_dir.is_dir():
-        raise ValueError("output-dir must be a directory")
-    rollback_dir = Path(
-        tempfile.mkdtemp(
-            prefix=f".{output_dir.name}.rollback-",
-            dir=output_dir.parent,
-        )
-    )
-    previously_present: set[str] = set()
-    published: set[str] = set()
-    try:
-        for name in OUTPUT_FILENAMES:
-            target = output_dir / name
-            if target.exists():
-                previously_present.add(name)
-                try:
-                    os.link(target, rollback_dir / name)
-                except OSError:
-                    shutil.copy2(target, rollback_dir / name)
-        try:
-            for name in OUTPUT_FILENAMES:
-                os.replace(staging_dir / name, output_dir / name)
-                published.add(name)
-            _fsync_directory(output_dir)
-        except BaseException:
-            for name in OUTPUT_FILENAMES:
-                backup = rollback_dir / name
-                target = output_dir / name
-                if name in previously_present:
-                    os.replace(backup, target)
-                elif name in published:
-                    target.unlink(missing_ok=True)
-            _fsync_directory(output_dir)
-            raise
-    finally:
-        shutil.rmtree(rollback_dir, ignore_errors=True)
+    _assert_new_output_directory(output_dir)
+    os.rename(staging_dir, output_dir)
+    _fsync_directory(output_dir.parent)
 
 
 def _fsync_directory(path: Path) -> None:
@@ -562,13 +615,27 @@ def _fsync_directory(path: Path) -> None:
 
 
 def _assert_safe_paths(legacy_input: Path, output_dir: Path) -> None:
-    legacy_resolved = legacy_input.resolve()
-    if legacy_resolved == output_dir.resolve():
-        raise ValueError("legacy-input and output-dir must be distinct")
+    if _paths_alias(legacy_input, output_dir):
+        raise ValueError("legacy-input must not alias output-dir")
     for name in OUTPUT_FILENAMES:
-        if legacy_resolved == (output_dir / name).resolve():
+        if _paths_alias(legacy_input, output_dir / name):
             raise ValueError("legacy-input cannot alias a generated output")
 
 
+def _paths_alias(first: Path, second: Path) -> bool:
+    if os.path.lexists(first) and os.path.lexists(second):
+        try:
+            if os.path.samefile(first, second):
+                return True
+        except OSError:
+            pass
+    return str(first.resolve(strict=False)).casefold() == str(second.resolve(strict=False)).casefold()
+
+
+def _assert_new_output_directory(output_dir: Path) -> None:
+    if os.path.lexists(output_dir):
+        raise FileExistsError(f"output-dir already exists; choose a new versioned output directory: {output_dir}")
+
+
 if __name__ == "__main__":
-    raise SystemExit(main())
+    raise SystemExit(cli())
