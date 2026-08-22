@@ -114,6 +114,17 @@ current payload and donor proof needed for a field-identical comparison.
 Funding and financing remain `OUT_OF_SCOPE_NOT_EQUITY_INTEGRATED`; diagnostic
 accumulators are not portfolio-equity parity. No promotion or parameter search is authorized by the repair or rerun.
 
+### 2.2 Current product-gate blockers
+
+The full data-present `zenquant-check` is **NOT green**. Gate E preserves two
+independent product thresholds: DCA-off Sharpe sensitivity is approximately
+`45%`, above the `40%` limit, and corrected max drawdown is `26.8%`, above the
+`25%` limit. Gate F's code gate passes its four windows with zero `OVERFIT`
+classifications, but its average OOS ratio is `-4.12` and emits a severe
+train-to-dev overfitting warning. These are preserved product blockers, not
+implementation defects. Do not weaken these thresholds. No promotion or
+parameter search is authorized while they remain unresolved.
+
 ## 3. Current Implemented Architecture
 
 ### 3.1 Runtime topology
@@ -371,8 +382,9 @@ The historical Gate v2 terminal recommendation was:
 design_regime_router_before_more_training
 ```
 
-That recommendation led to the V2 architecture experiment. The experiment is
-now complete. Its current terminal recommendation is:
+That recommendation led to the frozen V2 architecture runs. Those runs were
+executed, but their comparative/causal stage validity remains unverified. The
+current terminal recommendation is:
 
 ```text
 stop_donor_training
@@ -532,9 +544,12 @@ after this shadow evidence exists and its expected-edge definition is explicit.
 
 ## 7. A0–A5 Architecture Experiment
 
-The completed experiment froze candidate parameters and changed one architecture property at a time.
+The frozen A0-A5 runs completed; comparative/causal stage validity is
+**UNVERIFIED**. Candidate parameters were frozen and each stage was designed to
+change one architecture property at a time, but the legacy and repaired stage
+schemas do not prove that those interventions are comparable.
 
-| Stage | Single change | Question answered |
+| Stage | Intended single change | Intended question |
 |---|---|---|
 | A0 | Historical August rank1 replay, accounting-affected | What did the old candidate path report? |
 | A1-sign | `sign(signal)` with fixed capital, fixed notional, no compounding, maximum 1x | Does direction alone contain alpha? |
@@ -548,9 +563,10 @@ Every stage uses fixed capital, the same five seeds, and the same windows. A1-si
 and A1-score both use maximum 1x exposure and no compounding. No stage may
 introduce parameter search.
 
-These stages are causal attribution experiments, not a leaderboard. A later
-stage does not need to produce more raw profit than every prior stage. It must
-answer its assigned question without degrading the relevant safety contract.
+These stages are intervention designs, not completed causal attribution and
+not a leaderboard. A later stage does not need to produce more raw profit than
+every prior stage. Any future validated rerun must answer its assigned question
+without degrading the relevant safety contract.
 
 Required reporting:
 
@@ -618,7 +634,7 @@ violation is an immediate architecture Gate failure, independent of return.
 
 ## 8. Deferred Work
 
-The following items remain outside the completed V2 experiment:
+The following items remain outside the frozen A0-A5 run scope:
 
 - new Optuna or RL campaigns;
 - end-to-end ML position or order control;
@@ -646,8 +662,8 @@ The validation stack remains:
 4. paper-live incremental validation;
 5. separately approved capital deployment.
 
-Neither Gate v2 nor the completed Quant V2 acceptance authorizes paper-live. The
-current operator contract remains
+Neither Gate v2 nor the frozen Quant V2 run authorizes paper-live. The current
+operator contract remains
 [`LIVE_VALIDATION_HANDOFF_SPEC.md`](LIVE_VALIDATION_HANDOFF_SPEC.md).
 
 ## 10. Questions for Expert Review

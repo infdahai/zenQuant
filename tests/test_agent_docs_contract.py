@@ -34,10 +34,36 @@ def test_handoff_spec_mentions_hyperliquid_as_supplemental() -> None:
 
 def test_architecture_records_repaired_accounting_boundary() -> None:
     content = Path("docs/ARCHITECTURE.md").read_text(encoding="utf-8")
+    normalized = " ".join(content.split())
     assert "August huge-profit claim is invalid" in content
     assert "sha256:82af23a08c68a94641e1d7769ecdf9619059dddbeb531dd3703cc4d2ff809f4a" in content
     assert "OUT_OF_SCOPE_NOT_EQUITY_INTEGRATED" in content
     assert "No promotion or parameter search is authorized" in content
+    assert "runs completed; comparative/causal stage validity is **UNVERIFIED**" in normalized
+    for contradictory_claim in (
+        "The experiment is now complete",
+        "The completed experiment",
+        "These stages are causal attribution experiments",
+        "the completed Quant V2 acceptance",
+    ):
+        assert contradictory_claim not in normalized
+
+
+def test_authoritative_docs_preserve_product_gate_blockers() -> None:
+    architecture = Path("docs/ARCHITECTURE.md").read_text(encoding="utf-8")
+    handoff = Path("docs/QUANT_V2_ACCEPTANCE_HANDOFF.md").read_text(encoding="utf-8")
+    for content in (architecture, handoff):
+        normalized = " ".join(content.split())
+        assert "DCA-off Sharpe sensitivity" in normalized
+        assert "45%" in normalized
+        assert "40%" in normalized
+        assert "26.8%" in normalized
+        assert "25%" in normalized
+        assert "-4.12" in normalized
+        assert "full data-present `zenquant-check` is **NOT green**" in normalized
+        assert "preserved product blockers, not implementation defects" in normalized
+        assert "Do not weaken these thresholds" in normalized
+        assert "No promotion or parameter search" in normalized
 
 
 def test_quant_v2_handoff_records_current_blocked_evidence() -> None:

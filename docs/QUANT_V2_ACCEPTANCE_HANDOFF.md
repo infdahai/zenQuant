@@ -132,6 +132,21 @@ Passing safety and purity diagnostics answer narrow questions. They do not
 rescue negative cost-stressed economics, satisfy robustness or authorize a
 promotion.
 
+## Current repository gate blockers
+
+The full data-present `zenquant-check` is **NOT green**. Its Gate E historical
+checks preserve two product thresholds: DCA-off Sharpe sensitivity is
+approximately `45%`, above the `40%` limit, and corrected max drawdown is
+`26.8%`, above the `25%` limit. Gate F passes its code-level four-window check
+with zero `OVERFIT` classifications, but the average OOS ratio is `-4.12` and
+the runner emits a severe train-to-dev overfitting warning. These are preserved
+product blockers, not implementation defects. Do not weaken these thresholds.
+No promotion or parameter search is authorized while they remain unresolved.
+
+The two Gate E failures do not invalidate the accounting implementation or the
+30/30 identity checks. They block product promotion on their own terms. No
+product-owner acceptance is claimed by this handoff.
+
 ## Accounting boundary and limitations
 
 - Cash is signed; each finite non-negative fee is subtracted exactly once.
