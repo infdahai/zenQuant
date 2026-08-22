@@ -344,6 +344,7 @@ class HistoricalBacktest:
         self._targets: list[TargetPosition] = []
         self._decision_snapshots: list[DecisionSnapshot] = []
         self._architecture_alphas: list[ArchitectureAlphaSnapshot] = []
+        self._intent_promotion_audits: list[dict[str, Any]] = []
         self._reports: list[ExecutionReport] = []
         self._risk_decisions: list[RiskOverlayDecision] = []
         self._risk_snapshots: list[RiskSnapshot] = []
@@ -384,6 +385,7 @@ class HistoricalBacktest:
             )
             self.bus.subscribe(snapshot_subject, self._collect_decision_snapshot)
             self.bus.subscribe("strategy.architecture_alpha.4h.>", self._collect_architecture_alpha)
+            self.bus.subscribe("strategy.intent_promotion.>", self._collect_intent_promotion_audit)
             self.bus.subscribe("risk.overlay.decision", self._collect_risk_decision)
             self.bus.subscribe("intent.target_position.final.>", self._collect_target)
         self.bus.subscribe("exec.order.report", self._collect_report)
@@ -807,6 +809,10 @@ class HistoricalBacktest:
                 )
             self._architecture_alphas.append(payload)
 
+    def _collect_intent_promotion_audit(self, _: str, payload: object) -> None:
+        if isinstance(payload, dict):
+            self._intent_promotion_audits.append(dict(payload))
+
     def _collect_market_state(self, _: str, payload: object) -> None:
         if isinstance(payload, MarketState):
             self._market_states.append(payload)
@@ -1040,6 +1046,15 @@ class HistoricalBacktest:
             for payload in self._targets
             if payload.timeframe == self._config.execution_timeframe
         }
+        intent_promotion_map: dict[int, list[dict[str, Any]]] = defaultdict(list)
+        for payload in self._intent_promotion_audits:
+            intent_promotion_map[int(payload.get("cutoff_time_ns", 0) or 0)].append(payload)
+        intent_promotion_points = sorted(
+            self._intent_promotion_audits,
+            key=lambda payload: int(payload.get("cutoff_time_ns", 0) or 0),
+        )
+        intent_promotion_index = 0
+        latest_intent_promotion: dict[str, Any] | None = None
         risk_decision_map = {payload.cutoff_time_ns: payload for payload in self._risk_decisions}
         risk_map = {payload.ts_ns: payload for payload in self._risk_snapshots}
         bias_points = sorted(self._biases, key=lambda payload: payload.cutoff_time_ns)
@@ -1050,6 +1065,12 @@ class HistoricalBacktest:
         total = len(execution_rows)
         for index, event_row in enumerate(execution_rows):
             cutoff_ns = int(event_row["close_time_ns"])
+            while (
+                intent_promotion_index < len(intent_promotion_points)
+                and int(intent_promotion_points[intent_promotion_index].get("cutoff_time_ns", 0) or 0) <= cutoff_ns
+            ):
+                latest_intent_promotion = intent_promotion_points[intent_promotion_index]
+                intent_promotion_index += 1
             while bias_index < len(bias_points) and bias_points[bias_index].cutoff_time_ns <= cutoff_ns:
                 latest_bias = bias_points[bias_index]
                 bias_index += 1
@@ -1182,6 +1203,72 @@ class HistoricalBacktest:
                         "target_regime_confidence": target.regime_confidence,
                         "target_reason_codes": "|".join(target.reason_codes),
                         "target_direction": 1.0 if target.target_qty > 0 else -1.0 if target.target_qty < 0 else 0.0,
+                    }
+                )
+
+            intent_promotion_events = intent_promotion_map.get(cutoff_ns, [])
+            if intent_promotion_events:
+                latest_promotion = intent_promotion_events[-1]
+                row.update(
+                    {
+                        "intent_promotion_event_count": len(intent_promotion_events),
+                        "intent_promotion_stages": "|".join(
+                            str(event.get("stage") or "") for event in intent_promotion_events
+                        ),
+                        "intent_promotion_reasons": "|".join(
+                            str(event.get("reason") or "") for event in intent_promotion_events
+                        ),
+                        "intent_promotion_pending_reason_codes": str(
+                            latest_promotion.get("pending_reason_codes") or ""
+                        ),
+                        "intent_promotion_pending_intent_id": str(latest_promotion.get("pending_intent_id") or ""),
+                        "intent_promotion_pending_direction": float(
+                            latest_promotion.get("pending_direction", 0.0) or 0.0
+                        ),
+                        "intent_promotion_pending_target_qty": float(
+                            latest_promotion.get("pending_target_qty", 0.0) or 0.0
+                        ),
+                        "intent_promotion_bars_waited": int(latest_promotion.get("bars_waited", 0) or 0),
+                        "intent_promotion_entry_score": float(latest_promotion.get("entry_score", 0.0) or 0.0),
+                        "intent_promotion_entry_score_threshold": float(
+                            latest_promotion.get("entry_score_threshold", 0.0) or 0.0
+                        ),
+                        "intent_promotion_diagnostic_reason_codes": str(
+                            latest_promotion.get("diagnostic_reason_codes") or ""
+                        ),
+                    }
+                )
+
+            if latest_intent_promotion is not None:
+                latest_cutoff_ns = int(latest_intent_promotion.get("cutoff_time_ns", 0) or 0)
+                row.update(
+                    {
+                        "intent_promotion_latest_cutoff_time_ns": latest_cutoff_ns,
+                        "intent_promotion_latest_stage": str(latest_intent_promotion.get("stage") or ""),
+                        "intent_promotion_latest_reason": str(latest_intent_promotion.get("reason") or ""),
+                        "intent_promotion_latest_age_ns": max(0, cutoff_ns - latest_cutoff_ns),
+                        "intent_promotion_latest_pending_reason_codes": str(
+                            latest_intent_promotion.get("pending_reason_codes") or ""
+                        ),
+                        "intent_promotion_latest_pending_intent_id": str(
+                            latest_intent_promotion.get("pending_intent_id") or ""
+                        ),
+                        "intent_promotion_latest_pending_direction": float(
+                            latest_intent_promotion.get("pending_direction", 0.0) or 0.0
+                        ),
+                        "intent_promotion_latest_pending_target_qty": float(
+                            latest_intent_promotion.get("pending_target_qty", 0.0) or 0.0
+                        ),
+                        "intent_promotion_latest_bars_waited": int(latest_intent_promotion.get("bars_waited", 0) or 0),
+                        "intent_promotion_latest_entry_score": float(
+                            latest_intent_promotion.get("entry_score", 0.0) or 0.0
+                        ),
+                        "intent_promotion_latest_entry_score_threshold": float(
+                            latest_intent_promotion.get("entry_score_threshold", 0.0) or 0.0
+                        ),
+                        "intent_promotion_latest_diagnostic_reason_codes": str(
+                            latest_intent_promotion.get("diagnostic_reason_codes") or ""
+                        ),
                     }
                 )
 

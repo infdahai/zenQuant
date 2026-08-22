@@ -57,6 +57,7 @@ def compute(
     )
     range_profit_run_block_confirmed_downtrend = bool(config.get("range_profit_run_block_confirmed_downtrend", False))
     range_profit_run_min_state_direction_signal = float(config.get("range_profit_run_min_state_direction_signal", -1.0))
+    range_profit_run_require_uptrend_state = bool(config.get("range_profit_run_require_uptrend_state", False))
     range_bear_profit_run_enabled = bool(config.get("range_bear_profit_run_enabled", False))
     range_bear_profit_run_threshold = float(config.get("range_bear_profit_run_threshold", range_profit_run_threshold))
     range_bear_profit_run_value = float(config.get("range_bear_profit_run_value", range_profit_run_value))
@@ -78,6 +79,15 @@ def compute(
     )
     range_bear_profit_run_max_state_direction_signal = float(
         config.get("range_bear_profit_run_max_state_direction_signal", 0.25)
+    )
+    range_bear_profit_run_panic_exhaustion_veto_enabled = bool(
+        config.get("range_bear_profit_run_panic_exhaustion_veto_enabled", False)
+    )
+    range_bear_profit_run_panic_exhaustion_momentum_threshold = float(
+        config.get("range_bear_profit_run_panic_exhaustion_momentum_threshold", -0.85)
+    )
+    range_bear_profit_run_panic_exhaustion_transition_ceiling = float(
+        config.get("range_bear_profit_run_panic_exhaustion_transition_ceiling", 0.48)
     )
 
     # Confidence naturally encodes regime suitability.
@@ -115,6 +125,13 @@ def compute(
                 guard_reasons.append("CONFIRMED_UPTREND")
             if state_direction_signal > range_bear_profit_run_max_state_direction_signal:
                 guard_reasons.append("STATE_DIRECTION_SIGNAL")
+            if (
+                range_bear_profit_run_panic_exhaustion_veto_enabled
+                and volatility_state == "HIGH"
+                and roc_z <= range_bear_profit_run_panic_exhaustion_momentum_threshold
+                and transition_risk <= range_bear_profit_run_panic_exhaustion_transition_ceiling
+            ):
+                guard_reasons.append("PANIC_EXHAUSTION")
             if guard_reasons:
                 return SignalResult(
                     value=0.0,
@@ -164,6 +181,10 @@ def compute(
                 and directional_confidence >= 0.55
             ):
                 guard_reasons.append("CONFIRMED_DOWNTREND")
+            if range_profit_run_require_uptrend_state and (
+                directional_state != "UPTREND" or directional_confidence < 0.55
+            ):
+                guard_reasons.append("UPTREND_STATE")
             if state_direction_signal < range_profit_run_min_state_direction_signal:
                 guard_reasons.append("STATE_DIRECTION_SIGNAL")
             if guard_reasons:

@@ -105,6 +105,77 @@ class ReplayTests(unittest.TestCase):
         self.assertEqual(metrics.unexpected_reversal, 3)
         self.assertEqual(metrics.target_overshoot, 4)
 
+    def test_analysis_rows_include_intent_promotion_audit(self) -> None:
+        replay = HistoricalBacktest.__new__(HistoricalBacktest)
+        replay._config = HistoricalBacktestConfig(execution_timeframe=Timeframe.TF_5M)
+        replay._execution_rows = [
+            {
+                "close_time_ns": 1,
+                "open": 100.0,
+                "high": 101.0,
+                "low": 99.0,
+                "close": 100.0,
+                "volume": 10.0,
+                "trade_count": 3,
+            },
+            {
+                "close_time_ns": 2,
+                "open": 100.0,
+                "high": 102.0,
+                "low": 99.0,
+                "close": 101.0,
+                "volume": 12.0,
+                "trade_count": 4,
+            },
+        ]
+        replay._indicators = []
+        replay._market_states = []
+        replay._playbooks = []
+        replay._sizings = []
+        replay._exits = []
+        replay._targets = []
+        replay._risk_decisions = []
+        replay._risk_snapshots = []
+        replay._biases = []
+        replay._intent_promotion_audits = [
+            {
+                "cutoff_time_ns": 1,
+                "stage": "1h_context",
+                "reason": "1H_CONTEXT_SCORE_TOO_WEAK",
+                "pending_intent_id": "intent-1",
+                "pending_reason_codes": "STATE_RANGE_BEAR_PROFIT_RUN_OVERRIDE|TREND_SHORT",
+                "pending_direction": -1.0,
+                "pending_target_qty": -0.5,
+                "bars_waited": 2,
+                "entry_score": 0.1,
+                "entry_score_threshold": 0.5,
+                "diagnostic_reason_codes": "RANGE_BEAR_PROFIT_MOMENTUM_TOO_WEAK",
+            }
+        ]
+
+        rows = replay.build_analysis_rows()
+
+        self.assertEqual(rows[0]["intent_promotion_reasons"], "1H_CONTEXT_SCORE_TOO_WEAK")
+        self.assertEqual(rows[0]["intent_promotion_stages"], "1h_context")
+        self.assertEqual(
+            rows[0]["intent_promotion_pending_reason_codes"],
+            "STATE_RANGE_BEAR_PROFIT_RUN_OVERRIDE|TREND_SHORT",
+        )
+        self.assertEqual(rows[0]["intent_promotion_pending_intent_id"], "intent-1")
+        self.assertEqual(rows[0]["intent_promotion_pending_direction"], -1.0)
+        self.assertEqual(
+            rows[0]["intent_promotion_diagnostic_reason_codes"],
+            "RANGE_BEAR_PROFIT_MOMENTUM_TOO_WEAK",
+        )
+        self.assertEqual(rows[1]["intent_promotion_latest_reason"], "1H_CONTEXT_SCORE_TOO_WEAK")
+        self.assertEqual(rows[1]["intent_promotion_latest_stage"], "1h_context")
+        self.assertEqual(rows[1]["intent_promotion_latest_pending_intent_id"], "intent-1")
+        self.assertEqual(rows[1]["intent_promotion_latest_age_ns"], 1)
+        self.assertEqual(
+            rows[1]["intent_promotion_latest_diagnostic_reason_codes"],
+            "RANGE_BEAR_PROFIT_MOMENTUM_TOO_WEAK",
+        )
+
     def test_lightweight_early_stop_rejects_extreme_trade_count_per_day(self) -> None:
         replay = HistoricalBacktest.__new__(HistoricalBacktest)
         replay._config = HistoricalBacktestConfig(
