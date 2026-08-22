@@ -2,6 +2,8 @@
 
 import unittest
 
+import pytest
+
 from zenquant.domain import (
     ExecutionReport,
     IndicatorCoverage,
@@ -59,6 +61,58 @@ def _fill(qty: float, price: float = 40000.0) -> ExecutionReport:
         fee=0.0,
         transaction_time_ns=1,
     )
+
+
+def test_leveraged_fill_fee_preserves_negative_cash_liability() -> None:
+    bus = InMemoryJetStream()
+    overlay = RiskOverlay(bus=bus, config=RiskOverlayConfig(starting_equity=100_000.0))
+
+    bus.publish("exec.order.report", _fill(2.0, price=100_000.0))
+    overlay.apply_fee(80.0)
+
+    assert overlay.cash == pytest.approx(-100_080.0)
+    assert overlay.equity == pytest.approx(99_920.0)
+
+
+@pytest.mark.parametrize(
+    ("fee", "expected_cash"),
+    [
+        (0.0, 100_000.0),
+        (100_000.0, 0.0),
+        (100_001.0, -1.0),
+    ],
+)
+def test_fee_subtraction_preserves_signed_cash_boundaries(fee: float, expected_cash: float) -> None:
+    bus = InMemoryJetStream()
+    overlay = RiskOverlay(bus=bus, config=RiskOverlayConfig(starting_equity=100_000.0))
+
+    overlay.apply_fee(fee)
+
+    assert overlay.cash == pytest.approx(expected_cash)
+    assert overlay.equity == pytest.approx(expected_cash)
+
+
+def test_fee_subtraction_preserves_existing_negative_cash() -> None:
+    bus = InMemoryJetStream()
+    overlay = RiskOverlay(bus=bus, config=RiskOverlayConfig(starting_equity=100_000.0))
+    overlay.apply_fee(100_001.0)
+
+    overlay.apply_fee(80.0)
+
+    assert overlay.cash == pytest.approx(-81.0)
+    assert overlay.equity == pytest.approx(-81.0)
+
+
+@pytest.mark.parametrize("fee", [-1.0, float("nan"), float("inf"), float("-inf")])
+def test_invalid_fee_is_atomic(fee: float) -> None:
+    bus = InMemoryJetStream()
+    overlay = RiskOverlay(bus=bus, config=RiskOverlayConfig(starting_equity=100_000.0))
+    before = (overlay.cash, overlay.equity, overlay.high_water_mark)
+
+    with pytest.raises(ValueError, match="fee must be finite and non-negative"):
+        overlay.apply_fee(fee)
+
+    assert (overlay.cash, overlay.equity, overlay.high_water_mark) == before
 
 
 class AsymmetricDDTests(unittest.TestCase):

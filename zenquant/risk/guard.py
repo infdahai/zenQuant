@@ -14,6 +14,7 @@ from zenquant.domain import (
     TargetPosition,
     Timeframe,
     target_position_hash,
+    validate_execution_fee,
 )
 from zenquant.infra import EventBus
 
@@ -149,6 +150,11 @@ class RiskOverlay:
     def equity(self) -> float:
         """Current portfolio equity after mark-to-market revaluation."""
         return self._equity
+
+    @property
+    def cash(self) -> float:
+        """Current signed cash balance, including any financing liability."""
+        return self._cash
 
     @property
     def high_water_mark(self) -> float:
@@ -493,9 +499,10 @@ class RiskOverlay:
 
     def apply_fee(self, fee: float) -> None:
         """Apply fees after fills so equity stays aligned with execution."""
-        if fee <= 0:
+        validate_execution_fee(fee)
+        if fee == 0.0:
             return
-        self._cash = max(0.0, self._cash - fee)
+        self._cash -= fee
         self._revalue_equity()
 
     def _revalue_equity(self) -> None:

@@ -19,6 +19,49 @@ from zenquant.strategy.decision_snapshot import build_decision_snapshot
 
 
 class ExecutionRouterTests(unittest.TestCase):
+    def test_non_finite_report_fee_is_rejected_before_publication_or_state_change(self) -> None:
+        class NonFiniteFeeGateway(ExecutionGateway):
+            def submit_order(self, order, mark_price, best_bid=None, best_ask=None, now_ns=None):
+                return ExecutionReport(
+                    client_order_id=order.client_order_id,
+                    symbol=order.symbol,
+                    side=order.side,
+                    status="FILLED",
+                    filled_qty=order.quantity,
+                    avg_price=mark_price,
+                    fee=float("nan"),
+                    transaction_time_ns=now_ns or 0,
+                )
+
+        bus = InMemoryJetStream()
+        risk = RiskOverlay(bus)
+        kernel = ExecutionKernel(bus, NonFiniteFeeGateway(), risk)
+        reports = []
+        bus.subscribe("exec.order.report", lambda _subject, payload: reports.append(payload))
+        kernel._last_price["BTCUSDT_PERP"] = 100.0
+        before = (dict(kernel.positions), risk._cash, risk.equity)
+
+        with self.assertRaisesRegex(ValueError, "fee must be finite and non-negative"):
+            bus.publish(
+                "intent.target_position.final.BTCUSDT_PERP",
+                TargetPosition(
+                    intent_id="invalid-fee",
+                    portfolio="arc",
+                    symbol="BTCUSDT_PERP",
+                    timeframe=Timeframe.TF_4H,
+                    cutoff_time_ns=1,
+                    target_qty=1.0,
+                    target_leverage=1.0,
+                    reduce_only=False,
+                    regime="TREND",
+                    regime_confidence=0.9,
+                    reason_codes=["REGIME_TREND"],
+                ),
+            )
+
+        self.assertEqual(reports, [])
+        self.assertEqual((dict(kernel.positions), risk._cash, risk.equity), before)
+
     def test_reduce_only_ignores_zero_position(self) -> None:
         bus = InMemoryJetStream()
         risk = RiskOverlay(bus)

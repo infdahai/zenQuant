@@ -17,6 +17,7 @@ from zenquant.domain import (
     TargetPosition,
     TradeTick,
     target_position_hash,
+    validate_execution_fee,
 )
 from zenquant.execution.gateway import ExecutionGateway
 from zenquant.infra import EventBus
@@ -526,6 +527,7 @@ class ExecutionKernel:
             best_ask=self._best_ask.get(symbol),
             now_ns=payload.cutoff_time_ns,
         )
+        validate_execution_fee(report.fee)
         self._bus.publish("exec.order.report", report)
         if report.status == "FILLED" and report.filled_qty > 0:
             new_position = current_position + (side * report.filled_qty)
@@ -624,6 +626,7 @@ class ExecutionKernel:
             best_ask=self._best_ask.get(payload.symbol),
             now_ns=payload.cutoff_time_ns,
         )
+        validate_execution_fee(report.fee)
         self._bus.publish("exec.order.report", report)
 
         filled_qty = max(0.0, report.filled_qty)
@@ -733,6 +736,7 @@ class ExecutionKernel:
             best_ask=self._best_ask.get(symbol),
             now_ns=payload.cutoff_time_ns,
         )
+        validate_execution_fee(close_report.fee)
         self._bus.publish("exec.order.report", close_report)
         if close_report.status != "FILLED":
             return
@@ -776,6 +780,7 @@ class ExecutionKernel:
             best_ask=self._best_ask.get(symbol),
             now_ns=payload.cutoff_time_ns,
         )
+        validate_execution_fee(open_report.fee)
         self._bus.publish("exec.order.report", open_report)
         if open_report.status == "FILLED" and open_report.filled_qty > 0:
             self._positions[symbol] = open_side * open_report.filled_qty
@@ -815,6 +820,7 @@ class ExecutionKernel:
             best_ask=self._best_ask.get(symbol),
             now_ns=payload.cutoff_time_ns,
         )
+        validate_execution_fee(close_report.fee)
         self._bus.publish("exec.order.report", close_report)
         if close_report.status != "FILLED":
             return
@@ -858,6 +864,7 @@ class ExecutionKernel:
             best_ask=self._best_ask.get(symbol),
             now_ns=payload.cutoff_time_ns,
         )
+        validate_execution_fee(report.fee)
         self._bus.publish("exec.order.report", report)
         if report.status != "FILLED" or report.filled_qty <= 0:
             return False
