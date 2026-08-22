@@ -709,7 +709,9 @@ def test_not_observed_empty_episode_ledger_remains_distinct_from_observed_empty_
         "open_episode_count": 0,
     }
 
-    summary = _build(report)["episode_attribution"][0]  # type: ignore[index]
+    summary = next(
+        item for item in _build(report)["episode_attribution"] if item["stage"] == ArchitectureStage.A5_SHADOW.value
+    )  # type: ignore[index]
 
     assert summary["episode_ledger_status"] == "NOT_OBSERVED"
     assert summary["closed_episode_count"] == 0
@@ -719,7 +721,11 @@ def test_not_observed_empty_episode_ledger_remains_distinct_from_observed_empty_
     observed_late_dev = next(run for run in observed_report["runs"] if run["window"] == "late_dev_2025")  # type: ignore[index]
     observed_late_dev["stages"]["A5_SHADOW"]["episode_ledger"]["status"] = "OBSERVED"  # type: ignore[index]
 
-    observed_summary = _build(observed_report)["episode_attribution"][0]  # type: ignore[index]
+    observed_summary = next(
+        item
+        for item in _build(observed_report)["episode_attribution"]
+        if item["stage"] == ArchitectureStage.A5_SHADOW.value
+    )  # type: ignore[index]
     assert observed_summary["episode_ledger_status"] == "OBSERVED"
 
 
