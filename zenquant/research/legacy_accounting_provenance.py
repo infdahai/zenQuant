@@ -13,6 +13,7 @@ from .legacy_accounting_validity import ValidityState
 
 STAGE_PROVENANCE_SCHEMA_VERSION = "legacy-accounting-stage-provenance.v1"
 _SHA256_PATTERN = re.compile(r"sha256:[0-9a-f]{64}")
+_RISK_SNAPSHOT_ASOF_STATUS = "ASOF"
 _RISK_DONOR_FIELDS = (
     "ts_ns",
     "equity",
@@ -187,7 +188,7 @@ def _audit_stage(
     elif legacy_error is not None or repaired_error is not None:
         state = ValidityState.UNVERIFIED_LEGACY
         reason = "stage_provenance_incomplete"
-    elif legacy_payload == repaired_payload:
+    elif legacy_sha256 == repaired_sha256:
         state = ValidityState.PROVEN_UNAFFECTED
         reason = "exact_extracted_stage_payload_match"
     else:
@@ -297,8 +298,25 @@ def _extract_attribution_row(row: object, *, index: int, stage: str) -> dict[str
     input_row_sha256 = _validated_sha256(row["input_row_sha256"], label=f"attribution row {index} input row")
     if _canonical_payload_sha256(input_row) != input_row_sha256:
         raise ValueError(f"attribution row {index} input_row_sha256 does not match input_row")
-    if input_row["risk_donor"] != donor_payload or input_row["risk_donor_sha256"] != row["risk_donor_sha256"]:
+    input_donor = input_row["risk_donor"]
+    if (
+        not isinstance(input_donor, Mapping)
+        or not _canonical_values_equal(input_donor, donor_payload)
+        or input_row["risk_donor_sha256"] != row["risk_donor_sha256"]
+    ):
         raise ValueError(f"attribution row {index} input donor provenance does not match attribution row")
+    if (
+        row["risk_snapshot_status"] != _RISK_SNAPSHOT_ASOF_STATUS
+        or input_row["risk_snapshot_status"] != _RISK_SNAPSHOT_ASOF_STATUS
+    ):
+        raise ValueError(f"attribution row {index} risk_snapshot_status must be ASOF")
+    snapshot_ts_ns = row["risk_snapshot_ts_ns"]
+    if (
+        isinstance(snapshot_ts_ns, bool)
+        or not isinstance(snapshot_ts_ns, int)
+        or not _canonical_values_equal(snapshot_ts_ns, donor_payload["ts_ns"])
+    ):
+        raise ValueError(f"attribution row {index} risk_snapshot_ts_ns does not match risk_donor ts_ns")
     execution = row.get("execution")
     if not isinstance(execution, Mapping):
         raise ValueError(f"attribution row {index} execution must be an object")
@@ -323,7 +341,7 @@ def _extract_attribution_row(row: object, *, index: int, stage: str) -> dict[str
         ("safety_reasons", row_safety_reasons, execution_safety_reasons),
     )
     for field, row_value, source_value in mirrored_values:
-        if row_value != source_value:
+        if not _canonical_values_equal(row_value, source_value):
             raise ValueError(f"attribution row {index} {field} does not match its source evidence")
     extracted = {
         field: row[field] for field in _ATTRIBUTION_ROW_FIELDS if field not in {"input_row", "risk_donor", "execution"}
@@ -414,6 +432,14 @@ def _sorted_strings(value: object, label: str) -> list[str]:
     return sorted(value)
 
 
-def _canonical_payload_sha256(payload: Mapping[str, Any]) -> str:
-    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+def _canonical_values_equal(left: object, right: object) -> bool:
+    return _canonical_payload_bytes(left) == _canonical_payload_bytes(right)
+
+
+def _canonical_payload_bytes(payload: object) -> bytes:
+    return json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+
+
+def _canonical_payload_sha256(payload: object) -> str:
+    encoded = _canonical_payload_bytes(payload)
     return f"sha256:{hashlib.sha256(encoded).hexdigest()}"

@@ -281,6 +281,15 @@ def _replace_donor(row: dict[str, object], donor: dict[str, object], *, donor_sh
     row["input_row_sha256"] = _canonical_sha256(input_row)
 
 
+def _replace_snapshot_identity(row: dict[str, object], *, status: str, ts_ns: object) -> None:
+    row["risk_snapshot_status"] = status
+    row["risk_snapshot_ts_ns"] = ts_ns
+    input_row = row["input_row"]
+    input_row["risk_snapshot_status"] = status
+    input_row["risk_snapshot_ts_ns"] = ts_ns
+    row["input_row_sha256"] = _canonical_sha256(input_row)
+
+
 def test_identical_extracted_stage_payloads_are_proven_unaffected_despite_envelope_change():
     legacy = _report()
     repaired = deepcopy(legacy)
@@ -293,6 +302,72 @@ def test_identical_extracted_stage_payloads_are_proven_unaffected_despite_envelo
     assert states == {
         ("late_dev_2025", 42, stage.value): ValidityState.PROVEN_UNAFFECTED.value for stage in ArchitectureStage
     }
+
+
+@pytest.mark.parametrize(
+    ("stage", "path", "changed_value"),
+    [
+        pytest.param(
+            "A5_SHADOW",
+            ("attribution_rows", 0, "cost_shadow", "blocks_order"),
+            0,
+            id="false-to-zero",
+        ),
+        pytest.param("A4", ("position_episodes", 0, "closed"), 1, id="true-to-one"),
+        pytest.param("A3", ("position_episodes", 0, "fill_count"), 2.0, id="integer-to-equal-float"),
+        pytest.param("A2", ("position_episodes", 0, "add_count"), False, id="zero-to-false"),
+    ],
+)
+def test_canonical_bool_numeric_payload_difference_is_confirmed_affected(stage, path, changed_value):
+    legacy = _report()
+    repaired = deepcopy(legacy)
+    target = repaired["runs"][0]["stages"][stage]
+    for key in path[:-1]:
+        target = target[key]
+    target[path[-1]] = changed_value
+
+    states = _states(audit_stage_provenance(legacy, repaired))
+
+    assert states[("late_dev_2025", 42, stage)] == ValidityState.CONFIRMED_AFFECTED.value
+
+
+def test_snapshot_timestamp_must_exactly_match_validated_donor_timestamp():
+    legacy = _report()
+    repaired = deepcopy(legacy)
+    for report in (legacy, repaired):
+        row = report["runs"][0]["stages"]["A2"]["attribution_rows"][0]
+        _replace_snapshot_identity(row, status="ASOF", ts_ns=999)
+
+    states = _states(audit_stage_provenance(legacy, repaired))
+
+    assert states[("late_dev_2025", 42, "A2")] == ValidityState.UNVERIFIED_LEGACY.value
+
+
+def test_no_prior_snapshot_status_with_non_null_donor_is_unverified():
+    legacy = _report()
+    repaired = deepcopy(legacy)
+    for report in (legacy, repaired):
+        row = report["runs"][0]["stages"]["A2"]["attribution_rows"][0]
+        _replace_snapshot_identity(row, status="NO_PRIOR_SNAPSHOT_NEUTRAL", ts_ns=100)
+
+    states = _states(audit_stage_provenance(legacy, repaired))
+
+    assert states[("late_dev_2025", 42, "A2")] == ValidityState.UNVERIFIED_LEGACY.value
+
+
+def test_python_equal_input_attribution_and_execution_identities_are_unverified():
+    legacy = _report()
+    repaired = deepcopy(legacy)
+    for report in (legacy, repaired):
+        row = report["runs"][0]["stages"]["A2"]["attribution_rows"][0]
+        row["cutoff_time_ns"] = False
+        row["input_row"]["cutoff_time_ns"] = 0
+        row["execution"]["cutoff_time_ns"] = 0
+        row["input_row_sha256"] = _canonical_sha256(row["input_row"])
+
+    states = _states(audit_stage_provenance(legacy, repaired))
+
+    assert states[("late_dev_2025", 42, "A2")] == ValidityState.UNVERIFIED_LEGACY.value
 
 
 def test_changed_risk_donor_flags_confirm_the_dependent_stage_is_affected():
