@@ -162,7 +162,7 @@ def test_cli_builds_exact_august_candidate_and_original_a0_execution_contract():
     assert config.perturbation.seed == 42
     assert config.perturbation.price_noise_pct == 0.001
     assert config.profile_path == PROFILE_PATH.resolve()
-    assert config_hash == "sha256:b683f79efb618c223a24ed829e52cee926089267a2cc8862cac86d44f140b1de"
+    assert config_hash == "sha256:aa38978773f3220f0a67b4d543d541670fe4652dbccb29d7da55a0672e72eeab"
 
 
 def test_cli_builds_separate_zero_lag_causal_donor_without_rewriting_a0():

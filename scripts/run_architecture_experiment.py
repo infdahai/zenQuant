@@ -150,7 +150,6 @@ def _frozen_config_hash(
             "research_compute_mode": config.research_compute_mode,
         },
         "profile": {
-            "resolved_path": str(manifest.profile_path),
             "sha256": hashlib.sha256(manifest.profile_path.read_bytes()).hexdigest(),
         },
     }
