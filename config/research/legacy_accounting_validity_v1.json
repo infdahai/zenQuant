@@ -1,0 +1,25 @@
+{
+  "schema_version": "legacy-accounting-validity.v1",
+  "records": [
+    {
+      "artifact_path": "results/remediation_20260821/train_dev_smoke_daily_switch_policy/framework_optimization.json",
+      "source_sha256": "37946e91c0fa601f688ebedfa5729192a8ac9c74de08585e23c64cc05b21bd4c",
+      "selector": "train_candidate_diagnostics.top_train_trial_diagnostics[0].params",
+      "state": "CONFIRMED_AFFECTED",
+      "reason": "legacy_fee_cash_floor_can_create_equity",
+      "metric_families": [
+        "equity",
+        "return",
+        "net_pnl",
+        "sharpe",
+        "sortino",
+        "drawdown",
+        "promotion_gate"
+      ],
+      "stages": [
+        "A0"
+      ],
+      "superseding_artifact": null
+    }
+  ]
+}
