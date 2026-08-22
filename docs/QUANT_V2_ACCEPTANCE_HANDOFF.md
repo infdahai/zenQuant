@@ -109,8 +109,16 @@ history begins in 2026, so all five OOS artifacts correctly report
 
 ## Known limitations
 
-- `zenquant-check` results and any unrelated baseline blockers are recorded in
-  the Task 8 report; do not silently format or alter unrelated user-owned files.
+- Changed-file Ruff and format checks passed for all 50 changed Python files.
+- Focused V2 suites passed: `443 passed, 34 subtests passed`.
+- Full pytest outside the restricted macOS sandbox passed:
+  `1325 passed, 4 skipped, 34 subtests passed`.
+- `zenquant-check` passed Gates 0/B/C/D/F. Gate A is blocked only by pre-existing
+  format drift in `scripts/analyze_intent_churn_attribution.py`,
+  `zenquant/data/event_calendar.py`, and `zenquant/data/liquidation_pipeline.py`.
+  Gate E's sandbox run had seven `ProcessPoolExecutor` tests fail because
+  `os.sysconf("SC_SEM_NSEMS_MAX")` is forbidden; those exact seven tests passed
+  outside the sandbox. No unrelated files were reformatted.
 - A hostile-window label and threshold must be added only through a newly frozen,
   separately approved acceptance contract.
 - OptionsState remains shadow-only. Activating its multiplier requires separate approval.
