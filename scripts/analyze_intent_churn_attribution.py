@@ -281,7 +281,10 @@ def _selected_windows(*, split: Any, train_only: bool, window_labels: list[str])
             windows.append(split_window_spec(split, "dev"))
         return windows
 
-    available = {window.label: window for window in [split_window_spec(split, "train"), *default_comparison_windows(split, "dev")]}
+    available = {
+        window.label: window
+        for window in [split_window_spec(split, "train"), *default_comparison_windows(split, "dev")]
+    }
     selected: list[WindowSpec] = []
     for label in window_labels:
         if label not in available:

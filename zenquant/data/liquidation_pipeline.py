@@ -258,8 +258,7 @@ def liquidation_readiness(
     elif not promotion_ready:
         blocked_by = "not_promotion_ready"
     detail = (
-        f"aggregated liquidation history loaded: nonzero_bars={nonzero_bars} "
-        f"max_total_liq_usd={max_total_liq_usd:,.2f}"
+        f"aggregated liquidation history loaded: nonzero_bars={nonzero_bars} max_total_liq_usd={max_total_liq_usd:,.2f}"
     )
     return LiquidationReadiness(
         total_bars=total_bars,
