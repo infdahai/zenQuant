@@ -5,7 +5,6 @@ from __future__ import annotations
 import argparse
 import asyncio
 import os
-import threading
 import time
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
@@ -32,6 +31,7 @@ except ModuleNotFoundError as exc:
     _FASTAPI_IMPORT_ERROR = exc
 
 from zenquant.app.live_state import DashboardStateStore
+from zenquant.app.options_shadow_refresh import OptionsShadowStoreRefresher, OptionsStoreFactory
 from zenquant.app.paper_live_scorecard import (
     SCORECARD_ROOT,
     build_runtime_scorecard,
@@ -104,6 +104,7 @@ class OptionsStateShadowRuntimeConfig:
 
     enabled: bool = False
     options_dir: Path = Path("data/raw/deribit_options")
+    refresh_interval_s: float = 30.0
 
 
 class ZenQuantWebRuntime:
@@ -123,6 +124,7 @@ class ZenQuantWebRuntime:
         options_state_shadow_enabled: bool = False,
         options_state_resolver: OptionsStateResolver | None = None,
         options_state_shadow_config: OptionsStateShadowRuntimeConfig | None = None,
+        options_state_store_factory: OptionsStoreFactory = OptionsDataStore,
     ) -> None:
         self._runtime_mode = runtime_mode
         self._tick_interval_s = tick_interval_s
@@ -152,17 +154,16 @@ class ZenQuantWebRuntime:
         shadow_config = options_state_shadow_config or OptionsStateShadowRuntimeConfig(
             enabled=options_state_shadow_enabled
         )
-        self.options_shadow_store: OptionsDataStore | None = None
-        self._options_shadow_lock = threading.RLock()
-        self._options_shadow_dir = shadow_config.options_dir
-        self._options_shadow_file_identity: tuple[tuple[str, int, int], ...] = ()
+        self._options_shadow_store: OptionsDataStore | None = None
+        self._options_shadow_refresher: OptionsShadowStoreRefresher | None = None
         resolved_options_state_resolver = options_state_resolver
         if shadow_config.enabled and resolved_options_state_resolver is None:
-            self.options_shadow_store = OptionsDataStore(
-                OptionsDataStoreConfig(options_dir=shadow_config.options_dir, currency="BTC")
+            self._options_shadow_refresher = OptionsShadowStoreRefresher(
+                config=OptionsDataStoreConfig(options_dir=shadow_config.options_dir, currency="BTC"),
+                refresh_interval_s=shadow_config.refresh_interval_s,
+                store_factory=options_state_store_factory,
             )
-            self.options_shadow_store.load()
-            self._options_shadow_file_identity = self._options_shadow_files()
+            self._options_shadow_store = self._options_shadow_refresher.preload()
             resolved_options_state_resolver = self._resolve_live_options_state
         self.options_shadow_observer = OptionsShadowObserver(
             bus=self.bus,
@@ -229,30 +230,32 @@ class ZenQuantWebRuntime:
 
         self._subscribe_all()
 
+    @property
+    def options_shadow_store(self) -> OptionsDataStore | None:
+        refresher = self._options_shadow_refresher
+        if refresher is not None:
+            return refresher.current_store
+        return self._options_shadow_store
+
+    @property
+    def options_shadow_refresh_running(self) -> bool:
+        refresher = self._options_shadow_refresher
+        return refresher is not None and refresher.is_running
+
     def _resolve_live_options_state(self, snapshot):
-        if self.options_shadow_store is None:
+        store = self.options_shadow_store
+        if store is None:
             raise ValueError("options shadow store is not configured")
-        with self._options_shadow_lock:
-            current_identity = self._options_shadow_files()
-            if current_identity != self._options_shadow_file_identity:
-                self.options_shadow_store.load()
-                self._options_shadow_file_identity = current_identity
-            return self.options_shadow_store.lookup_options_state(
+        try:
+            return store.lookup_options_state(
                 snapshot.cutoff_time_ns,
                 realized_vol_30d=(snapshot.annualized_volatility if snapshot.annualized_volatility > 0.0 else None),
                 realized_vol_source_timestamp_ns=snapshot.cutoff_time_ns,
             )
-
-    def _options_shadow_files(self) -> tuple[tuple[str, int, int], ...]:
-        currency_dir = self._options_shadow_dir / "BTC"
-        files: list[tuple[str, int, int]] = []
-        for path in sorted(currency_dir.glob("**/*.parquet")) if currency_dir.exists() else ():
-            try:
-                stat = path.stat()
-            except OSError:
-                continue
-            files.append((str(path), stat.st_mtime_ns, stat.st_size))
-        return tuple(files)
+        finally:
+            refresher = self._options_shadow_refresher
+            if refresher is not None:
+                refresher.request_refresh()
 
     def _build_microstructure_store(self) -> MicrostructureFeatureStore | None:
         if os.getenv("ZENQUANT_MICROSTRUCTURE_SIDECAR_ENABLED", "").lower() not in {"1", "true", "yes"}:
@@ -300,9 +303,11 @@ class ZenQuantWebRuntime:
             self._start_online_state()
             await self._start_deribit()
             await self._start_telegram()
+            self._start_options_shadow_refresh()
             self._live_start_task = asyncio.create_task(self._start_live_runtime())
             return
         self._start_online_state()
+        self._start_options_shadow_refresh()
         self._tick_task = asyncio.create_task(self._run_tick_loop())
 
     async def stop(self) -> None:
@@ -332,7 +337,18 @@ class ZenQuantWebRuntime:
             self._tick_task = None
         if self.online_state is not None:
             self.online_state.stop()
+        await self._stop_options_shadow_refresh()
         self.state.on_runtime_status({"database": self._online_state_snapshot()})
+
+    def _start_options_shadow_refresh(self) -> None:
+        refresher = self._options_shadow_refresher
+        if refresher is not None:
+            refresher.start()
+
+    async def _stop_options_shadow_refresh(self) -> None:
+        refresher = self._options_shadow_refresher
+        if refresher is not None:
+            await asyncio.to_thread(refresher.stop)
 
     def prime_history(self) -> None:
         """Warm the demo-mode pipeline before the UI starts polling it."""
@@ -720,6 +736,7 @@ def create_app(
     runtime_mode: str = "demo",
     bus: Any = None,
     options_state_shadow_config: OptionsStateShadowRuntimeConfig | None = None,
+    options_state_store_factory: OptionsStoreFactory = OptionsDataStore,
 ) -> FastAPI:
     """Create the FastAPI application used by ``zenquant-web``.
 
@@ -735,6 +752,7 @@ def create_app(
     runtime = ZenQuantWebRuntime(
         runtime_mode=runtime_mode,
         options_state_shadow_config=options_state_shadow_config,
+        options_state_store_factory=options_state_store_factory,
     )
     # Allow external bus injection (e.g., from paper trading)
     if bus is not None:
