@@ -48,7 +48,7 @@ def main(argv: list[str] | None = None) -> int:
             source_size_bytes=source_size_bytes,
         )
         encoded = canonical_acceptance_summary_bytes(summary)
-    except (AcceptanceValidationError, json.JSONDecodeError, OSError) as exc:
+    except (AcceptanceValidationError, json.JSONDecodeError, OSError, UnicodeError) as exc:
         print(f"INVALID: {exc}", file=sys.stderr)
         return 2
     args.output.parent.mkdir(parents=True, exist_ok=True)

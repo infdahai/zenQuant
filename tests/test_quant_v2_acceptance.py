@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import subprocess
+import sys
 from copy import deepcopy
 from pathlib import Path
 
@@ -264,3 +266,94 @@ def test_acceptance_cli_writes_canonical_bytes_and_returns_blocked_exit(tmp_path
     assert exit_code == 1
     assert output.read_bytes() == canonical_acceptance_summary_bytes(summary)
     assert summary["source_artifact"] == str(source)
+
+
+def test_acceptance_cli_entrypoint_returns_zero_for_valid_acceptance(tmp_path):
+    source = tmp_path / "architecture_attribution.json"
+    output = tmp_path / "acceptance_summary.json"
+    source.write_text("{}", encoding="utf-8")
+    script = Path(__file__).parent.parent / "scripts" / "build_quant_v2_acceptance_summary.py"
+    wrapper = f"""
+import runpy
+import sys
+import zenquant.research.quant_v2_acceptance as acceptance
+acceptance.build_quant_v2_acceptance_summary = lambda *args, **kwargs: {{"verdict": acceptance.ACCEPT_VERDICT}}
+sys.argv = [{str(script)!r}, "--input", {str(source)!r}, "--output", {str(output)!r}]
+runpy.run_path({str(script)!r}, run_name="__main__")
+"""
+
+    completed = subprocess.run(
+        [sys.executable, "-c", wrapper],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert completed.returncode == 0
+    assert "ACCEPT_CONTINUE_TRAINING" in completed.stdout
+    assert json.loads(output.read_bytes()) == {"verdict": "ACCEPT_CONTINUE_TRAINING"}
+
+
+def test_acceptance_cli_entrypoint_returns_one_for_valid_blocked_report(tmp_path):
+    source = tmp_path / "architecture_attribution.json"
+    output = tmp_path / "acceptance_summary.json"
+    source.write_text(json.dumps(_complete_raw_report(), indent=2, sort_keys=True), encoding="utf-8")
+    script = Path(__file__).parent.parent / "scripts" / "build_quant_v2_acceptance_summary.py"
+
+    completed = subprocess.run(
+        [sys.executable, str(script), "--input", str(source), "--output", str(output)],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert completed.returncode == 1
+    assert "BLOCKED_PAUSE_PROMOTION_AND_TRAINING" in completed.stdout
+    assert output.exists()
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        "{",
+        "[]",
+        lambda: _raw_report_with_nested_wrong_type(),
+        lambda: _raw_report_with_blocker_like_wrong_type(),
+    ],
+    ids=("malformed-json", "top-level-array", "nested-wrong-type", "blocker-like-wrong-type"),
+)
+def test_acceptance_cli_entrypoint_returns_two_without_output_for_invalid_input(tmp_path, payload):
+    source = tmp_path / "architecture_attribution.json"
+    output = tmp_path / "acceptance_summary.json"
+    resolved_payload = payload() if callable(payload) else payload
+    source.write_text(
+        json.dumps(resolved_payload, indent=2, sort_keys=True)
+        if not isinstance(resolved_payload, str)
+        else resolved_payload,
+        encoding="utf-8",
+    )
+    script = Path(__file__).parent.parent / "scripts" / "build_quant_v2_acceptance_summary.py"
+
+    completed = subprocess.run(
+        [sys.executable, str(script), "--input", str(source), "--output", str(output)],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert completed.returncode == 2
+    assert completed.stdout == ""
+    assert completed.stderr.startswith("INVALID:")
+    assert not output.exists()
+
+
+def _raw_report_with_nested_wrong_type() -> dict[str, object]:
+    report = _complete_raw_report()
+    report["runs"][0]["seed"] = []
+    return report
+
+
+def _raw_report_with_blocker_like_wrong_type() -> dict[str, object]:
+    report = _complete_raw_report()
+    report["options_shadow_stability"]["status"] = []
+    return report

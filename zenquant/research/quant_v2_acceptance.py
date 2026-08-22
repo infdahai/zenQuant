@@ -37,13 +37,35 @@ class AcceptanceValidationError(ValueError):
 
 
 def build_quant_v2_acceptance_summary(
-    report: Mapping[str, Any],
+    report: Any,
     *,
     source_artifact: str,
     source_sha256: str,
     source_size_bytes: int,
 ) -> dict[str, Any]:
     """Validate the exact 30-run report and derive the frozen product verdict."""
+    if not isinstance(report, Mapping):
+        raise AcceptanceValidationError("raw report must be a JSON object")
+    try:
+        return _build_quant_v2_acceptance_summary(
+            report,
+            source_artifact=source_artifact,
+            source_sha256=source_sha256,
+            source_size_bytes=source_size_bytes,
+        )
+    except AcceptanceValidationError:
+        raise
+    except (KeyError, OverflowError, TypeError, ValueError) as exc:
+        raise AcceptanceValidationError("raw report contains an invalid or incomplete nested value") from exc
+
+
+def _build_quant_v2_acceptance_summary(
+    report: Mapping[str, Any],
+    *,
+    source_artifact: str,
+    source_sha256: str,
+    source_size_bytes: int,
+) -> dict[str, Any]:
     manifest = load_architecture_experiment_manifest()
     _validate_source_identity(source_sha256=source_sha256, source_size_bytes=source_size_bytes)
     _validate_report_manifest(report, manifest=manifest)
@@ -113,7 +135,11 @@ def build_quant_v2_acceptance_summary(
         if (value := _metric(stage, "execution_metrics", "episode_profit_factor", allow_none=True)) is not None
     ]
     seed_pass_count = sum(1 for item in seed_results if item["passed"])
-    options_summary = dict(_mapping(report.get("options_shadow_stability"), "options_shadow_stability"))
+    options_summary = _validate_options_shadow_stability(
+        report.get("options_shadow_stability"),
+        oos_labels=oos_labels,
+        expected_seed_count=len(manifest.seeds),
+    )
 
     gates: dict[str, Any] = {
         "all_seed_a5_mdd_below_20pct": {
@@ -325,6 +351,80 @@ def _validate_episode_pf(stage: Mapping[str, Any], *, stage_name: str) -> None:
         or not _optional_number_equal(ledger.get("gross_loss"), pf.gross_loss)
     ):
         raise AcceptanceValidationError(f"{stage_name} episode ledger does not reproduce reported PF")
+
+
+def _validate_options_shadow_stability(
+    value: Any,
+    *,
+    oos_labels: tuple[str, ...],
+    expected_seed_count: int,
+) -> dict[str, Any]:
+    payload = _mapping(value, "options_shadow_stability")
+    _choice(payload.get("status"), name="options status", allowed={"SUFFICIENT", "INSUFFICIENT_SAMPLE"})
+    _choice(
+        payload.get("coverage_status"),
+        name="options coverage status",
+        allowed={"SUFFICIENT", "INSUFFICIENT_SAMPLE"},
+    )
+    _choice(
+        payload.get("stability_status"),
+        name="options stability status",
+        allowed={"STABLE", "UNSTABLE", "INSUFFICIENT_SAMPLE"},
+    )
+    required_seeds = payload.get("required_sufficient_seeds_per_oos_window")
+    if isinstance(required_seeds, bool) or not isinstance(required_seeds, int) or required_seeds <= 0:
+        raise AcceptanceValidationError("options required sufficient seed count must be a positive integer")
+    seed_counts = _validated_count_mapping(
+        payload.get("oos_window_seed_counts"),
+        name="options OOS seed counts",
+        expected_keys=set(oos_labels),
+        maximum=expected_seed_count,
+    )
+    sufficient_counts = _validated_count_mapping(
+        payload.get("oos_window_sufficient_seed_counts"),
+        name="options OOS sufficient seed counts",
+        expected_keys=set(oos_labels),
+        maximum=expected_seed_count,
+    )
+    if any(sufficient_counts[label] > seed_counts[label] for label in oos_labels):
+        raise AcceptanceValidationError("options sufficient seed count exceeds observed seed count")
+    quality = _mapping(payload.get("quality_stability"), "options quality stability")
+    for label, diagnostic in quality.items():
+        if not isinstance(label, str) or not label:
+            raise AcceptanceValidationError("options quality labels must be non-empty strings")
+        item = _mapping(diagnostic, f"options quality stability {label}")
+        _choice(
+            item.get("status"),
+            name=f"options quality stability {label} status",
+            allowed={"STABLE", "UNSTABLE", "INSUFFICIENT_SAMPLE"},
+        )
+    if payload.get("activation_recommendation") is not None:
+        raise AcceptanceValidationError("options activation recommendation must remain null in shadow mode")
+    return dict(payload)
+
+
+def _validated_count_mapping(
+    value: Any,
+    *,
+    name: str,
+    expected_keys: set[str],
+    maximum: int,
+) -> dict[str, int]:
+    payload = _mapping(value, name)
+    if set(payload) != expected_keys:
+        raise AcceptanceValidationError(f"{name} keys do not match frozen OOS windows")
+    counts: dict[str, int] = {}
+    for key, count in payload.items():
+        if isinstance(count, bool) or not isinstance(count, int) or not 0 <= count <= maximum:
+            raise AcceptanceValidationError(f"{name} values must be bounded non-negative integers")
+        counts[str(key)] = count
+    return counts
+
+
+def _choice(value: Any, *, name: str, allowed: set[str]) -> str:
+    if not isinstance(value, str) or value not in allowed:
+        raise AcceptanceValidationError(f"{name} is invalid")
+    return value
 
 
 def _episode_pf_gate_passed(stage: Mapping[str, Any]) -> bool:
