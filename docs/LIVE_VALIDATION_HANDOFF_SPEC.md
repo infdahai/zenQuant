@@ -1,9 +1,10 @@
 # Live Validation Handoff Spec
 
 > Architecture scope: this file remains the current tester/operator contract for
-> the existing production baseline. It does not claim that the proposed Quant
-> System v2 has been implemented or promoted. See [`ARCHITECTURE.md`](ARCHITECTURE.md)
-> for the current implementation, Gate v2 evidence, and target architecture.
+> the existing production baseline. Quant System v2 is implemented only as an
+> explicit research path and has not been promoted. See
+> [`QUANT_V2_ACCEPTANCE_HANDOFF.md`](QUANT_V2_ACCEPTANCE_HANDOFF.md) for its
+> current blocked verdict and [`ARCHITECTURE.md`](ARCHITECTURE.md) for boundaries.
 
 本文件是当前版本唯一的 tester / operator 交付规格。
 
@@ -36,10 +37,11 @@ paper-live**。权威结论见：
 - [`QUANT_V2_ARCHITECTURE_EXPERT_REVIEW.md`](QUANT_V2_ARCHITECTURE_EXPERT_REVIEW.md)
 - [`QUANT_V2_ACCEPTANCE_HANDOFF.md`](QUANT_V2_ACCEPTANCE_HANDOFF.md)
 
-冻结 `6 windows x 5 seeds` 矩阵完整通过执行；A5 baseline MDD、train episode
-PF、switch cadence、execution purity 通过。但 late-dev 在额外 15bp 下 5/5
-为负，robustness 为 `0/5`。OptionsState 对订单和仓位严格零影响，但 2026
-options 数据与 2025 OOS 无重叠，状态仍为 `INSUFFICIENT_SAMPLE`，禁止激活。
+冻结 `6 windows x 5 seeds` 矩阵完整通过执行；A5 MDD、train episode PF、
+switch cadence、execution purity 通过。但 late-dev baseline 与额外 15bp 下
+均 5/5 为负，robustness 为 `0/5`，归因终态为 `stop_donor_training`。
+OptionsState 对订单和仓位严格零影响，但 2026 options 数据与 2025 OOS 无
+重叠，状态仍为 `INSUFFICIENT_SAMPLE`，禁止激活。
 
 本结论优先于本文后续保留的旧 baseline/paper-live 说明。只有新的、单独审批
 的冻结实验通过全部 Quant V2 hard gates 后，才可重新讨论 promotion。
@@ -154,12 +156,13 @@ options 数据与 2025 OOS 无重叠，状态仍为 `INSUFFICIENT_SAMPLE`，禁�
 
 ### 1.5 当前历史结论
 
-最新架构评估与 Gate v2 结果见：
+最新架构评估与 Quant V2 结果见：
 
 - [`ARCHITECTURE.md`](ARCHITECTURE.md)
-- [`gate_v2_rescore.md`](../results/remediation_20260821/gate_v2_rescore/gate_v2_rescore.md)
+- [`QUANT_V2_ACCEPTANCE_HANDOFF.md`](QUANT_V2_ACCEPTANCE_HANDOFF.md)
+- 历史 Gate v2：[`gate_v2_rescore.md`](../results/remediation_20260821/gate_v2_rescore/gate_v2_rescore.md)
 
-下列旧基线结论仅用于解释当前 operator contract，不覆盖 Gate v2 的最新研究判断：
+下列旧基线结论仅用于解释当前 operator contract，不覆盖 Quant V2 的最新研究判断：
 
 当前用于交付判断的历史结论：
 

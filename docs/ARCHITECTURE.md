@@ -2,7 +2,7 @@
 
 **Status:** canonical architecture review entrypoint
 
-**Snapshot date:** 2026-08-22
+**Snapshot date:** 2026-08-23
 
 **Asset scope:** BTC first
 
@@ -10,17 +10,22 @@
 
 This document separates three things that must not be confused:
 
-1. the architecture implemented in the repository today;
-2. the evidence produced by the latest bounded Gate v2 rescore;
-3. the proposed Quant System v2 architecture that has not yet been implemented.
+1. the production-default legacy architecture;
+2. the implemented, explicit research-only Quant System v2 path;
+3. the historical Gate v2 evidence and current frozen V2 acceptance result.
 
 For product principles and non-negotiable invariants, read [`../AGENTS.md`](../AGENTS.md). For the current tester and operator contract, read [`LIVE_VALIDATION_HANDOFF_SPEC.md`](LIVE_VALIDATION_HANDOFF_SPEC.md). Neither document is replaced by this architecture review.
 
 ## 1. Executive Decision
 
-ZenQuant remains a deterministic, regime-aware BTC trading system. The immediate research direction is no longer “train a stronger model.” It is to determine whether the August rank1 candidate contains durable directional alpha after removing sizing, compounding, capacity, and execution effects.
+ZenQuant remains a deterministic, regime-aware BTC trading system. Quant V2
+has completed the attribution needed to separate direction, sizing, risk and
+execution effects. The August rank1 donor fails late-dev at baseline and under
+extra 15bp costs on all five seeds; its terminal recommendation is
+`stop_donor_training`. The architecture remains useful, but this donor must not
+receive another optimizer or parameter-training round.
 
-The proposed V2 chain is:
+The implemented research-only V2 chain is:
 
 ```text
 confirmed 4h data
@@ -251,9 +256,16 @@ This is known architecture debt:
 - status: rejected historical line, not the current research recommendation;
 - constraint: do not delete until the campaign contract is migrated into `config/research/` and its behavior is redesigned and tested.
 
-## 5. Latest Gate v2 Evidence
+## 5. Historical Gate v2 Evidence
 
-The latest bounded rescore is defined by [`superpowers/specs/2026-08-21-gate-v2-rescore.md`](superpowers/specs/2026-08-21-gate-v2-rescore.md). Its summary result is [`../results/remediation_20260821/gate_v2_rescore/gate_v2_rescore.md`](../results/remediation_20260821/gate_v2_rescore/gate_v2_rescore.md), with full seed-level evidence in the adjacent JSON file.
+The bounded Gate v2 rescore is the historical selection baseline. It is defined
+by [`superpowers/specs/2026-08-21-gate-v2-rescore.md`](superpowers/specs/2026-08-21-gate-v2-rescore.md).
+Its summary result is
+[`../results/remediation_20260821/gate_v2_rescore/gate_v2_rescore.md`](../results/remediation_20260821/gate_v2_rescore/gate_v2_rescore.md),
+with full seed-level evidence in the adjacent JSON file. The newer Quant V2
+acceptance and attribution result supersedes Gate v2 as the current decision
+authority; see
+[`QUANT_V2_ACCEPTANCE_HANDOFF.md`](QUANT_V2_ACCEPTANCE_HANDOFF.md).
 
 Experiment constraints:
 
@@ -302,22 +314,35 @@ The user-approved diagnostic policy is:
 
 Gate v2 did not identify position-switch frequency as the main failure. August performs roughly one switch per day while producing more fill actions through staged adds and reductions. Cost and action quality matter more than a crude fill-count cap.
 
-### 5.4 Current recommendation
+### 5.4 Historical recommendation and current decision
 
-The Gate v2 terminal recommendation is:
+The historical Gate v2 terminal recommendation was:
 
 ```text
 design_regime_router_before_more_training
 ```
 
-The architecture interpretation is narrower than “build a new predictive router”:
+That recommendation led to the V2 architecture experiment. The experiment is
+now complete. Its current terminal recommendation is:
+
+```text
+stop_donor_training
+```
+
+Current evidence shows late-dev A5 baseline and extra-15bp PnL are negative on
+all five seeds. Confidence compresses loss but rescues no seed. Direction
+failure and execution shortfall are consistent at 5/5 support, while cost flip,
+regime localization and episode tail remain unattributable. Consequently, the
+following architecture principles remain valid, but they no longer authorize
+training this donor:
 
 - freeze the directional alpha candidate;
 - make risk scaling explicit;
 - normalize position and capacity assumptions;
 - remove low-value target changes;
 - prevent execution from becoming a second alpha model;
-- only resume parameter search after the architecture experiment produces interpretable attribution.
+- only resume parameter search for a separately approved donor after a
+  pre-registered hypothesis produces interpretable OOS evidence.
 
 ## 6. Quant System v2 Target Architecture
 
@@ -458,7 +483,7 @@ after this shadow evidence exists and its expected-edge definition is explicit.
 
 ## 7. A0–A5 Architecture Experiment
 
-The next experiment freezes candidate parameters and changes one architecture property at a time.
+The completed experiment froze candidate parameters and changed one architecture property at a time.
 
 | Stage | Single change | Question answered |
 |---|---|---|
@@ -568,7 +593,9 @@ The validation stack remains:
 4. paper-live incremental validation;
 5. separately approved capital deployment.
 
-Gate v2 did not open frozen test and did not authorize paper-live. The current operator contract remains [`LIVE_VALIDATION_HANDOFF_SPEC.md`](LIVE_VALIDATION_HANDOFF_SPEC.md).
+Neither Gate v2 nor the completed Quant V2 acceptance authorizes paper-live. The
+current operator contract remains
+[`LIVE_VALIDATION_HANDOFF_SPEC.md`](LIVE_VALIDATION_HANDOFF_SPEC.md).
 
 ## 10. Questions for Expert Review
 
@@ -593,7 +620,9 @@ Experts reviewing this architecture should focus on the following decisions:
 | Agent current-state hints | [`../CLAUDE.md`](../CLAUDE.md) |
 | Operator and paper-live contract | [`LIVE_VALIDATION_HANDOFF_SPEC.md`](LIVE_VALIDATION_HANDOFF_SPEC.md) |
 | Temporal split policy | [`DATASET_SPLIT_POLICY.md`](DATASET_SPLIT_POLICY.md) |
-| Gate v2 policy | [`superpowers/specs/2026-08-21-gate-v2-rescore.md`](superpowers/specs/2026-08-21-gate-v2-rescore.md) |
+| Current Quant V2 verdict | [`QUANT_V2_ACCEPTANCE_HANDOFF.md`](QUANT_V2_ACCEPTANCE_HANDOFF.md) |
+| Expert review and next hypothesis boundary | [`QUANT_V2_ARCHITECTURE_EXPERT_REVIEW.md`](QUANT_V2_ARCHITECTURE_EXPERT_REVIEW.md) |
+| Historical Gate v2 policy | [`superpowers/specs/2026-08-21-gate-v2-rescore.md`](superpowers/specs/2026-08-21-gate-v2-rescore.md) |
 | Gate v2 summary | [`../results/remediation_20260821/gate_v2_rescore/gate_v2_rescore.md`](../results/remediation_20260821/gate_v2_rescore/gate_v2_rescore.md) |
 | Gate v2 full evidence | [`../results/remediation_20260821/gate_v2_rescore/gate_v2_rescore.json`](../results/remediation_20260821/gate_v2_rescore/gate_v2_rescore.json) |
 | Candidate manifest | [`../config/research/gate_v2_candidates_20260821.json`](../config/research/gate_v2_candidates_20260821.json) |

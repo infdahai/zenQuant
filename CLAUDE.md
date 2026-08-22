@@ -17,14 +17,14 @@
 - 资产：`BTC`
 - 当前 production/handoff 基线：`4h` bar-close 决策与执行语义
 - 最新 research replay：`4h` 方向、`1h` context、`5m` execution replay
-- Quant System v2 目标：`4h` 方向、risk budget、`5m` 纯执行；尚未实施或 promote
+- Quant System v2：`4h` 方向、risk budget、`5m` 纯执行；research path 已实施，尚未 promote
 - 大周期偏置：`1d`
 - 数据切分：
   - `train = 2020-01-01 ~ 2023-12-31`
   - `dev = 2024-01-01 ~ 2025-12-31`
   - `test = 2026-01-01 ~ latest`
 - 当前最可信 live 候选：`current / paulwei_baseline`
-- RL / Optuna：研究工具；Gate v2 后暂停新搜索，先执行架构归因
+- RL / Optuna：研究工具；架构归因已完成，当前 donor 返回 `stop_donor_training`，继续暂停新搜索
 
 ## Current Research Truth
 
@@ -40,7 +40,9 @@
   - 冻结实验与复跑：`docs/QUANT_V2_ACCEPTANCE_HANDOFF.md`
   - compact verdict 唯一生成入口：`scripts/build_quant_v2_acceptance_summary.py`
   - 当前 verdict：`BLOCKED_PAUSE_PROMOTION_AND_TRAINING`
-  - 原因：late-dev 额外 15bp 下 5/5 为负，strict robustness `0/5`
+  - 原因：late-dev baseline 与额外 15bp 下均 5/5 为负，strict robustness `0/5`
+  - attribution：`stop_donor_training`；confidence 压缩亏损但 `0/5` rescue
+  - 下一候选假设：时空关系仅允许预注册 shadow attribution，尚未获证据支持或交易权限
   - 禁止：继续调参/训练、promotion、激活 OptionsState multiplier
 - 数据完成度：
   - `results/data_readiness/data_readiness.json`
@@ -56,8 +58,9 @@
 ## Current Status Summary
 
 - liquidation：
-  - 已从 `insufficient_data` 进入 `data_ready=true`
-  - 当前是否可 promote，以 `results/data_readiness/data_readiness.json` 为准
+  - 2026-08-23 只读复查仍存在 Binance 历史缺口与 Hyperliquid 部分覆盖
+  - merged 数据仅达到最低研究口径，当前不可 promote
+  - 实时状态仍以 `results/data_readiness/data_readiness.json` 为准
 - Deribit：
   - 独立 collector 已恢复
   - 是否达到 `observation_ready / research_ready`，以 `_collector_status.json` 与 `data_readiness.json` 为准

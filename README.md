@@ -12,14 +12,16 @@ This is **not** an HFT engine, black-box AI bot, copy-trading platform, or "supp
 
 The V2 architecture experiment is implemented behind explicit, default-off
 research modes. Its frozen 30-run acceptance result is **blocked**: engineering
-purity gates pass, but late-dev remains negative under the additional 15bp cost
-stress on all five seeds. Do not promote it or start another tuning round.
+purity gates pass, but late-dev is negative at baseline and under the additional
+15bp cost stress on all five seeds. Completed attribution returns
+`stop_donor_training`. Do not promote it or start another tuning round.
 
 - Architecture review: [docs/QUANT_V2_ARCHITECTURE_EXPERT_REVIEW.md](docs/QUANT_V2_ARCHITECTURE_EXPERT_REVIEW.md)
 - Reproducible result/runbook: [docs/QUANT_V2_ACCEPTANCE_HANDOFF.md](docs/QUANT_V2_ACCEPTANCE_HANDOFF.md)
 - Tester/operator authority: [docs/LIVE_VALIDATION_HANDOFF_SPEC.md](docs/LIVE_VALIDATION_HANDOFF_SPEC.md)
 
-Current implementation, Gate v2 evidence, and the proposed Quant System v2 boundaries are documented in [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
+Current implementation, historical Gate v2 evidence, and Quant System v2
+boundaries are documented in [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
 
 ---
 
@@ -64,10 +66,10 @@ This repo is large enough that careless Claude CLI usage can waste a lot of toke
 
 `RL` is supported as a research-only parameter tuner. It may tune weights, risk thresholds, indicator windows, and execution speeds, but it must not rewrite strategy architecture, regime logic, or risk precedence.
 
-The current research decision is to freeze the leading candidate and perform
-architecture attribution before starting another Optuna or RL campaign. See
-[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for the implemented research
-boundary and the A0-A5 target experiment.
+The architecture attribution is complete. The current research decision is to
+stop training the August rank1 donor and keep Optuna/RL campaigns paused. See
+[`docs/QUANT_V2_ARCHITECTURE_EXPERT_REVIEW.md`](docs/QUANT_V2_ARCHITECTURE_EXPERT_REVIEW.md)
+for the next independently falsifiable hypothesis boundary.
 
 ## Dataset Split Discipline
 
@@ -100,15 +102,16 @@ Execution defaults follow the PaulWei pattern:
 
 ## Historical Validation Snapshot
 
-The current BTC strategy remains research-only. The latest bounded Gate v2
-rescore evaluated seven frozen candidates across five deterministic perturbation
-seeds without opening the frozen test split. No candidate passed the complete
-Gate policy; the terminal recommendation is to redesign the risk and execution
-boundaries before more training.
+The current BTC strategy remains research-only. Gate v2 first rejected all
+seven frozen candidates. Quant V2 then completed 30/30 frozen runs and improved
+the architecture's risk/execution attribution, but August rank1 remained
+negative in late-dev at baseline and at extra 15bp on 5/5 seeds. The current
+terminal recommendation is `stop_donor_training`.
 
 - Architecture and interpretation: [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)
 - Operator contract: [`docs/LIVE_VALIDATION_HANDOFF_SPEC.md`](docs/LIVE_VALIDATION_HANDOFF_SPEC.md)
-- Gate v2 summary: [`results/remediation_20260821/gate_v2_rescore/gate_v2_rescore.md`](results/remediation_20260821/gate_v2_rescore/gate_v2_rescore.md)
+- Current acceptance ledger: [`docs/QUANT_V2_ACCEPTANCE_HANDOFF.md`](docs/QUANT_V2_ACCEPTANCE_HANDOFF.md)
+- Historical Gate v2 summary: [`results/remediation_20260821/gate_v2_rescore/gate_v2_rescore.md`](results/remediation_20260821/gate_v2_rescore/gate_v2_rescore.md)
 - Final promotion still requires the strict `train/dev/test` contract and a valid positive promotion verdict.
 
 Minimal re-check commands:
