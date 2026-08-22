@@ -38,7 +38,7 @@ uv run zenquant-backtest --root data/raw/binance --symbol BTCUSDT
 export ZENQUANT_PG_DSN='postgresql://user:pass@host:5432/zenQuant'
 uv run zenquant-web --host 127.0.0.1 --port 8090 --mode live
 
-# Run a train/dev framework smoke campaign
+# Run only for a separately approved donor; August rank1 training is blocked.
 uv run python scripts/run_framework_campaign.py --budget smoke --optuna-trials 12 --rl-episodes 0 --search-space-mode intent_churn_ablation_train_only --development-dev-gate --output-dir results/framework_optimization_smoke
 
 # Export a labeled research dataset from live/paper PostgreSQL audit logs
@@ -89,7 +89,7 @@ What each layer is allowed to do:
 Reference: [`docs/DATASET_SPLIT_POLICY.md`](/Users/disaster/workspace/code/zenQuant/docs/DATASET_SPLIT_POLICY.md)
 
 ```bash
-# Supported RL tuner entrypoint
+# Supported RL tuner entrypoint for a separately approved donor only
 uv run zenquant-rl-tune --episodes 200 --output results/rl_tuner.json
 ```
 

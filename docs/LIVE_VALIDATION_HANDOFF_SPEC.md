@@ -12,7 +12,8 @@
 
 - 开发负责人完成当前功能、验证与运行闭环
 - 测试负责人按本文件执行并记录结果
-- 只有在 `framework_optimization.json.final_verdict` 满足历史准入条件后，系统才具备进入 `paper-live` 的资格
+- `framework_optimization.json.final_verdict` 满足历史准入条件只是必要条件；
+  新 donor 还必须通过单独冻结的 Quant V2 acceptance，才具备进入 `paper-live` 的资格
 
 本文件是测试负责人与 `paper-live` 操作人的唯一入口。研究型文档仅作内部参考，不作为交付依据。
 

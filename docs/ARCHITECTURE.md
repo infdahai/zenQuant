@@ -155,7 +155,7 @@ Plugin functions receive plain dictionaries and must remain deterministic and si
 
 ### 3.3 Current timeframe truth
 
-There are two distinct contracts in the repository:
+There are three distinct contracts in the repository:
 
 1. **Current production/handoff baseline**
    - BTCUSDT perpetual;
@@ -163,13 +163,20 @@ There are two distinct contracts in the repository:
    - 1d context;
    - PaulWei-style execution and risk baseline.
 
-2. **Latest Gate v2 research replay contract**
+2. **Historical Gate v2 research replay contract**
    - 4h remains the directional decision horizon;
    - 1h provides context;
    - 5m is the execution replay timeframe;
    - the frozen test split was not opened.
 
-The second contract is research evidence, not a claim that production has already migrated to a 4h-direction/5m-execution runtime.
+3. **Quant V2 research contract**
+   - immutable 4h risk-final decisions;
+   - A0-A5 attribution and episode accounting;
+   - target-only 5m execution scheduling;
+   - default-off and not promoted.
+
+The second and third contracts are research evidence, not a claim that
+production has migrated to V2.
 
 ### 3.4 Sizing and risk behavior
 
@@ -207,7 +214,8 @@ They are not yet one authoritative, cost-aware no-trade contract. Running simila
 
 `ExecutionRouter` currently contains behavior based on regime, confidence, squeeze state, panic reversal, bearish grind, range state, DCA quality, and profit protection. Some of these checks are valid safety controls, but some influence whether a direction is opened, reversed, or expanded.
 
-This means 5m execution has not fully lost directional authority. V2 must distinguish:
+This means legacy 5m execution has not fully lost directional authority. The
+implemented V2 research path distinguishes:
 
 - exchange mechanics and scheduling;
 - hard execution safety checks;
@@ -232,13 +240,16 @@ Exposure can be changed by:
 - risk overlay multipliers and caps;
 - execution pyramiding, DCA, deadbands, and reversal handling.
 
-All of these mechanisms are individually auditable, but their combined output does not provide clean causal attribution. The V2 experiment must establish a single signed target-exposure calculation before execution scheduling begins.
+All of these mechanisms are individually auditable, but their combined legacy
+output does not provide clean causal attribution. The V2 research path
+establishes a single signed target-exposure calculation before execution
+scheduling begins; production migration remains deferred.
 
 ### 4.3 Raw compounded return is not capacity evidence
 
 The latest results include equity multiples that vary sharply across deterministic perturbation seeds. These outcomes are useful for detecting sensitivity, not for estimating deployable profit.
 
-V2 must report separately:
+The V2 experiment reports separately:
 
 - fixed-notional alpha;
 - volatility-targeted return;
@@ -391,9 +402,9 @@ training this donor:
 | 5m execution | Slice, delay, cancel, and retry within approved limits | Re-score alpha, resize from a new market view, DCA beyond target, or invent reverse exposure |
 | Gateway | Submit and reconcile venue-specific orders | Assume fills or rewrite portfolio intent |
 
-### 6.3 Frozen decision snapshot and hard safety
+### 6.3 Implemented frozen decision snapshot and hard safety
 
-At every confirmed 4h decision cutoff, V2 must create one immutable decision
+At every confirmed 4h decision cutoff, V2 creates one immutable decision
 snapshot:
 
 ```text
@@ -432,11 +443,11 @@ abs(position_after_safety) <= abs(approved_target) + epsilon
 Any later reversal requires a new confirmed 4h snapshot. A safety response is
 not allowed to open the opposite side.
 
-### 6.4 Proposed V1 regime behavior
+### 6.4 Implemented fixed research regime behavior
 
-V1 should remain deterministic and point-in-time. It does not require a new probabilistic model.
+The research path is deterministic and point-in-time. It does not use a new probabilistic model.
 
-Illustrative fixed multipliers for the experiment:
+Frozen fixed multipliers for the experiment:
 
 | Risk state | Multiplier |
 |---|---:|
@@ -447,9 +458,9 @@ Illustrative fixed multipliers for the experiment:
 
 These are fixed architecture-test values, not optimized production parameters. A later soft probability model is only justified if the deterministic version exposes a concrete weakness and preserves replay parity.
 
-### 6.5 Proposed position contract
+### 6.5 Implemented research position contract
 
-The target exposure should have one auditable formula:
+The target exposure has one auditable formula:
 
 ```text
 signed_target_exposure
@@ -522,7 +533,7 @@ Required reporting:
 - target overshoot and unexpected reversal counts;
 - executor-created exposure count.
 
-Proposed hard acceptance conditions:
+Frozen hard acceptance conditions:
 
 - no seed reaches `20%` maximum drawdown;
 - episode-level full-train net profit factor after fees is at least `1.0`;
@@ -539,8 +550,8 @@ The current fill-level `profit_factor_after_fee` and action profit factors are
 not Gate v3 hard metrics. The former is currently a proxy derived by multiplying
 gross profit factor by `1 - fee_drag_pct`; the latter is computed from realized
 PnL fragments attached to individual actions. Both can produce pathological zero
-or extreme values. Gate v3 requires a new episode ledger that measures one
-complete flat-to-flat or flat-to-flip position episode after fees.
+or extreme values. Gate v3 therefore uses the implemented episode ledger to
+measure one complete flat-to-flat or flat-to-flip position episode after fees.
 
 For action-quality research, add and reduce PF remain diagnostics. A later
 counterfactual metric may compare actual post-action PnL against a frozen
@@ -568,7 +579,7 @@ violation is an immediate architecture Gate failure, independent of return.
 
 ## 8. Deferred Work
 
-The following items are intentionally outside the immediate V2 experiment:
+The following items remain outside the completed V2 experiment:
 
 - new Optuna or RL campaigns;
 - end-to-end ML position or order control;
@@ -579,7 +590,10 @@ The following items are intentionally outside the immediate V2 experiment:
 - migration to NautilusTrader or Qlib;
 - production or paper-live promotion.
 
-v164 only enters a second-stage ensemble test after August passes fixed-notional alpha validation. Multi-asset breadth only begins after the single-asset contracts are stable.
+v164 remains deferred. Any future v164 work must treat it as an independent
+donor under a separately approved, pre-registered experiment; it cannot inherit
+authority from the retired August donor. Multi-asset breadth only begins after
+the single-asset contracts are stable.
 
 ## 9. Validation and Promotion Boundary
 
@@ -599,18 +613,17 @@ current operator contract remains
 
 ## 10. Questions for Expert Review
 
-Experts reviewing this architecture should focus on the following decisions:
+Experts reviewing this architecture should focus on unresolved decisions:
 
-1. Is the Alpha → State → Risk → Target → Execution authority split complete and enforceable?
-2. Which existing `ExecutionRouter` behaviors must move to strategy or risk, and which are legitimate execution safety checks?
-3. Is fixed 20% volatility and 1.5x exposure a sound falsification baseline for BTC, rather than a production recommendation?
-4. Is the deterministic regime multiplier sufficient for V1 attribution?
-5. Which shadow measurements are sufficient before proposing a cost-aware trade filter?
-6. Which capacity and market-impact model is minimally credible for BTC perpetual execution?
-7. What evidence is required before v164 can be treated as an independent slow sleeve?
-8. Is flat-to-flat / flat-to-flip the correct episode boundary for net PF, including partial reductions and fees?
-9. Which replay/live parity tests are missing for 4h directional decisions with 5m scheduling?
-10. What would falsify the entire August alpha hypothesis?
+1. Is the current evidence sufficient to retire August rank1 from further training?
+2. How should the hostile window and quantitative loss threshold be frozen?
+3. Is the time-space hypothesis in the expert review coherent enough for a
+   pre-registered, shadow-only OOS test?
+4. How should trend age, breakout age, weekly structural integrity and reversal
+   hazard be defined without hindsight?
+5. Which capacity and market-impact model is minimally credible for BTC perpetual execution?
+6. What evidence would justify or falsify an independent v164 donor study?
+7. What forward sample is sufficient to evaluate OptionsState without granting it trading authority?
 
 ## 11. Repository Sources of Truth
 

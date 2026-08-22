@@ -172,8 +172,10 @@ A shadow-only study should pre-register, without tuning:
 - current weekly-bar completion fraction;
 - an explicit point-in-time structural-integrity definition;
 - reversal hazard conditional on age and structural integrity;
-- early-reversal versus mature-trend net PnL, MFE, MAE, episode PF and 15bp
-  sensitivity;
+- point-in-time definitions for long decline, long base and confirmed breakout,
+  plus frozen age-bucket boundaries;
+- early-reversal versus mature-trend net PnL, MFE, MAE, episode PF, trend-return
+  retention, valid-stop losses and 15bp sensitivity;
 - the cost of early flips versus a frozen no-flip counterfactual.
 
 The 2025 late-dev window helped generate this hypothesis and therefore cannot
@@ -188,8 +190,8 @@ or execution.
 The 2026-08-23 read-only readiness check shows:
 
 - Deribit option-chain collection: observation-ready and research-ready;
-- Deribit block flow: observation-ready, `609` rows in 24h and `584` block/RFQ
-  rows in 7d;
+- Deribit block flow: collector running and observation-ready; exact rolling
+  counts remain time-sensitive and belong in the readiness artifact;
 - Binance liquidation history: blocked by missing history;
 - Hyperliquid public history: partial, approximately `65.09%` estimated coverage;
 - merged liquidation history: minimum research-ready but not promotion-ready.

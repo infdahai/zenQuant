@@ -100,7 +100,7 @@ Confidence weighting improved every A1 extra-15bp result but rescued none:
 | 1024 | `-156,132.90` | `-50,961.44` | `+105,171.46` | no |
 
 The correct reading is that confidence compresses loss magnitude but does not
-restore positive OOS expectancy. No regime-objective redesign artifact was
+restore positive OOS net profitability. No regime-objective redesign artifact was
 created because the real evidence does not support that recommendation.
 
 ## Execution attribution
@@ -130,7 +130,8 @@ activation recommendation.
 Read-only status on 2026-08-23:
 
 - Deribit option chain: collector running, observation-ready and research-ready;
-- Deribit block flow: collector running, observation-ready, `609` rows in 24h;
+- Deribit block flow: collector running and observation-ready; exact rolling
+  counts remain time-sensitive and belong in the readiness artifact;
 - Binance liquidation history: blocked by missing history;
 - Hyperliquid public history: partial, estimated coverage `0.6509`;
 - merged liquidations: minimum research-ready, not promotion-ready.

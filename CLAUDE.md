@@ -9,7 +9,7 @@
 - 先读 `AGENTS.md`、本文件，以及当前任务直接相关的 1-3 个文件。
 - 优先使用已有权威状态文件，不要凭聊天记忆判断项目状态。
 - 长任务、后台任务、持续采集与 campaign 状态，以仓库中的状态文件为准，不以终端输出为准。
-- 当前实现、Gate v2 证据与 Quant System v2 目标边界统一见 `docs/ARCHITECTURE.md`。
+- 当前实现、历史 Gate v2 证据与 Quant System v2 research-path 边界统一见 `docs/ARCHITECTURE.md`。
 - tester / operator 的唯一交付入口始终是 `docs/LIVE_VALIDATION_HANDOFF_SPEC.md`。
 
 ## Current Product Defaults
@@ -30,7 +30,7 @@
 
 - 统一架构入口：
   - `docs/ARCHITECTURE.md`
-- 最新 Gate v2：
+- 历史 Gate v2：
   - `results/remediation_20260821/gate_v2_rescore/gate_v2_rescore.json`
   - `results/remediation_20260821/gate_v2_rescore/gate_v2_rescore.md`
 - 权威交付规格：
