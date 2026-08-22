@@ -400,6 +400,21 @@ def test_oos_adapter_marks_train_window_as_not_oos():
     assert artifact["rows"] == []
 
 
+def test_oos_adapter_excludes_forward_label_available_after_window_end():
+    """Catches a next-bar label crossing outside the frozen OOS window."""
+    evidence = replace(_oos_evidence(), end_ns=CUTOFF_NS + FOUR_HOURS_NS - 1)
+
+    artifact = build_options_shadow_oos_artifact(
+        evidence,
+        options_store=OptionsDataStore(),
+        manifest_identity="manifest-sha256",
+    )
+
+    assert artifact["status"] == "INSUFFICIENT_SAMPLE"
+    assert artifact["sample_count"] == 0
+    assert artifact["rows"] == []
+
+
 def test_strategy_risk_and_execution_cannot_import_or_read_shadow_multiplier():
     """Catches observation metadata gaining formula authority through a direct dependency."""
     project_root = Path(__file__).parent.parent

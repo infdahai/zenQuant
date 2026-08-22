@@ -387,7 +387,12 @@ def build_options_shadow_oos_artifact(
     states: list[OptionsState] = []
     for cutoff, stage_row in sorted(a5_by_cutoff.items()):
         observation = observations.get(cutoff)
-        if observation is None or not (evidence.start_ns <= cutoff < evidence.end_ns):
+        label_available_at_ns = cutoff + 4 * 60 * 60 * 1_000_000_000
+        if (
+            observation is None
+            or not (evidence.start_ns <= cutoff < evidence.end_ns)
+            or label_available_at_ns > evidence.end_ns
+        ):
             continue
         label = stage_row.forward_return_1
         if label is None:
@@ -419,7 +424,7 @@ def build_options_shadow_oos_artifact(
         artifact_rows.append(
             {
                 "cutoff_time_ns": cutoff,
-                "label_available_at_ns": cutoff + 4 * 60 * 60 * 1_000_000_000,
+                "label_available_at_ns": label_available_at_ns,
                 "options_state_id": state.options_state_id,
                 "options_source_timestamp_ns": state.source_timestamp_ns,
                 "trend_quality": state.trend_quality,
