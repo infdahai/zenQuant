@@ -44,6 +44,7 @@ def _complete_raw_report() -> dict[str, object]:
         "stages": stage_order,
         "manifest": {
             "sha256": manifest.sha256,
+            "candidate_source_sha256": manifest.candidate_source_sha256,
             "candidate_params_sha256": manifest.candidate_params_sha256,
             "profile_sha256": manifest.profile_sha256,
             "windows": [
@@ -84,3 +85,20 @@ def test_canonical_bytes_are_deterministic():
 
     assert canonical_late_dev_attribution_bytes(first) == canonical_late_dev_attribution_bytes(second)
     assert b'"created_at"' not in canonical_late_dev_attribution_bytes(first)
+
+
+def test_build_report_requires_frozen_candidate_source_identity():
+    report = _complete_raw_report()
+    report["manifest"].pop("candidate_source_sha256")  # type: ignore[union-attr]
+
+    with pytest.raises(LateDevAttributionValidationError, match="candidate_source_sha256"):
+        _build(report)
+
+
+def test_build_report_rejects_stage_payload_declared_under_wrong_key():
+    report = _complete_raw_report()
+    first_run = report["runs"][0]  # type: ignore[index]
+    first_run["stages"]["A1_SIGN"]["stage"] = "A5_SHADOW"  # type: ignore[index]
+
+    with pytest.raises(LateDevAttributionValidationError, match="stage"):
+        _build(report)

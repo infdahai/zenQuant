@@ -102,6 +102,7 @@ def _validate_report_envelope(report: Mapping[str, Any], *, manifest: Any) -> li
     ]
     expected_manifest = {
         "sha256": manifest.sha256,
+        "candidate_source_sha256": manifest.candidate_source_sha256,
         "candidate_params_sha256": manifest.candidate_params_sha256,
         "profile_sha256": manifest.profile_sha256,
         "windows": expected_windows,
@@ -111,8 +112,6 @@ def _validate_report_envelope(report: Mapping[str, Any], *, manifest: Any) -> li
     for key, expected in expected_manifest.items():
         if payload.get(key) != expected:
             raise LateDevAttributionValidationError(f"raw report manifest identity mismatch: {key}")
-    if "candidate_source_sha256" in payload and payload["candidate_source_sha256"] != manifest.candidate_source_sha256:
-        raise LateDevAttributionValidationError("raw report manifest identity mismatch: candidate_source_sha256")
 
     oos_windows = [window["label"] for window in expected_windows if window["role"] == "OOS"]
     if oos_windows != ["late_dev_2025"]:
@@ -137,8 +136,11 @@ def _validate_report_envelope(report: Mapping[str, Any], *, manifest: Any) -> li
         stages = _mapping(run.get("stages"), "run stages")
         if list(stages) != expected_stages:
             raise LateDevAttributionValidationError("run stage order does not match the frozen architecture")
-        if not all(isinstance(stage_payload, Mapping) for stage_payload in stages.values()):
-            raise LateDevAttributionValidationError("run stage payloads must be JSON objects")
+        for expected_stage, stage_payload in stages.items():
+            if not isinstance(stage_payload, Mapping):
+                raise LateDevAttributionValidationError("run stage payloads must be JSON objects")
+            if stage_payload.get("stage") != expected_stage:
+                raise LateDevAttributionValidationError("run stage payload declaration does not match its key")
     return runs
 
 
