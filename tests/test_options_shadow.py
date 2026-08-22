@@ -3,16 +3,23 @@
 from __future__ import annotations
 
 import ast
+import asyncio
+import inspect
+import textwrap
+import threading
+import time
 from dataclasses import asdict, replace
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
+from fastapi.testclient import TestClient
 
+from zenquant.app.options_shadow_refresh import OptionsShadowStoreRefresher
 from zenquant.app.server import OptionsStateShadowRuntimeConfig, ZenQuantWebRuntime, create_app
 from zenquant.data.options_state import build_options_state, validate_options_state_identity
-from zenquant.data.options_store import OptionsDataStore
+from zenquant.data.options_store import OptionsDataStore, OptionsDataStoreConfig
 from zenquant.domain import EventMeta, MarkPriceUpdate, TargetPosition, Timeframe
 from zenquant.execution import ExecutionKernelConfig
 from zenquant.historical import HistoricalBacktest, HistoricalBacktestConfig
@@ -673,6 +680,8 @@ def test_runtime_shadow_switch_defaults_off():
 
     assert replay.options_shadow_observer.config.enabled is False
     assert live.options_shadow_observer.config.enabled is False
+    assert live.options_shadow_refresh_running is False
+    assert live._options_shadow_refresher is None
 
 
 def test_live_runtime_and_app_use_explicit_local_options_store_seam(tmp_path):
@@ -692,26 +701,18 @@ def test_live_runtime_and_app_use_explicit_local_options_store_seam(tmp_path):
     assert isinstance(app.state.zenquant_runtime.options_shadow_store, OptionsDataStore)
 
 
-def test_live_store_refreshes_when_collector_adds_parquet_after_startup(tmp_path):
-    """Catches a long-running live shadow staying frozen at startup files."""
-    options_dir = tmp_path / "deribit"
-    runtime = ZenQuantWebRuntime(
-        runtime_mode="live",
-        options_state_shadow_config=OptionsStateShadowRuntimeConfig(enabled=True, options_dir=options_dir),
-    )
-    assert runtime.options_shadow_store is not None
-    assert runtime.options_shadow_store.snapshot_count == 0
-    rows = []
+def _options_chain_rows(source_ns: int) -> list[dict[str, object]]:
+    rows: list[dict[str, object]] = []
     day_ns = 86_400 * 1_000_000_000
     for dte in (7, 30, 90):
         for strike in (80.0, 100.0, 120.0):
             for option_type in ("call", "put"):
                 rows.append(
                     {
-                        "snapshot_ts_ns": CUTOFF_NS,
+                        "snapshot_ts_ns": source_ns,
                         "currency": "BTC",
                         "instrument_name": f"BTC-{dte}D-{strike:g}-{option_type[0].upper()}",
-                        "expiry_ts_ms": (CUTOFF_NS + dte * day_ns) // 1_000_000,
+                        "expiry_ts_ms": (source_ns + dte * day_ns) // 1_000_000,
                         "strike": strike,
                         "option_type": option_type,
                         "underlying_price": 60_000.0,
@@ -719,14 +720,204 @@ def test_live_store_refreshes_when_collector_adds_parquet_after_startup(tmp_path
                         "mark_iv": 60.0,
                     }
                 )
+    return rows
+
+
+def test_live_store_preloads_existing_parquet_before_event_processing(tmp_path):
+    """Catches initial local options data becoming dependent on the background worker."""
+    options_dir = tmp_path / "deribit"
     import pyarrow as pa
     import pyarrow.parquet as pq
 
-    path = options_dir / "BTC" / "2026-08" / "new.parquet"
+    path = options_dir / "BTC" / "2026-08" / "initial.parquet"
     path.parent.mkdir(parents=True)
-    pq.write_table(pa.Table.from_pylist(rows), path)
+    pq.write_table(pa.Table.from_pylist(_options_chain_rows(CUTOFF_NS)), path)
 
-    state = runtime._resolve_live_options_state(_snapshot())
+    runtime = ZenQuantWebRuntime(
+        runtime_mode="live",
+        options_state_shadow_config=OptionsStateShadowRuntimeConfig(enabled=True, options_dir=options_dir),
+    )
 
+    assert runtime.options_shadow_store is not None
     assert runtime.options_shadow_store.snapshot_count == 1
-    assert state.source_timestamp_ns == CUTOFF_NS
+    assert runtime.options_shadow_refresh_running is False
+    assert runtime._resolve_live_options_state(_snapshot()).source_timestamp_ns == CUTOFF_NS
+
+
+def test_live_options_resolver_has_no_blocking_refresh_operations():
+    """Mechanically keeps file discovery, load, locks, and joins out of the event handler."""
+    tree = ast.parse(textwrap.dedent(inspect.getsource(ZenQuantWebRuntime._resolve_live_options_state)))
+    called_attributes = {
+        node.func.attr for node in ast.walk(tree) if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+    }
+
+    assert called_attributes.isdisjoint({"load", "glob", "read_table", "join", "acquire"})
+    assert not any(isinstance(node, (ast.With, ast.AsyncWith)) for node in ast.walk(tree))
+
+
+def test_options_refresh_failure_retains_last_good_and_retries(tmp_path):
+    """Catches a failed off-chain candidate replacing the live last-good store."""
+    options_dir = tmp_path / "deribit"
+    failed = threading.Event()
+    created: list[OptionsDataStore] = []
+
+    class RetryStore(OptionsDataStore):
+        def __init__(self, config, generation: int) -> None:
+            super().__init__(config)
+            self.generation = generation
+
+        def load(self) -> None:
+            if self.generation == 1:
+                failed.set()
+                raise RuntimeError("candidate is incomplete")
+
+    def store_factory(config):
+        store = RetryStore(config, generation=len(created))
+        created.append(store)
+        return store
+
+    refresher = OptionsShadowStoreRefresher(
+        config=OptionsDataStoreConfig(options_dir=options_dir, currency="BTC"),
+        refresh_interval_s=60.0,
+        store_factory=store_factory,
+    )
+    refresher.preload()
+    last_good = refresher.current_store
+    refresher.start()
+    try:
+        marker = options_dir / "BTC" / "2026-08" / "new.parquet"
+        marker.parent.mkdir(parents=True)
+        marker.write_bytes(b"new local snapshot")
+        refresher.request_refresh()
+        assert failed.wait(timeout=1.0)
+        deadline = time.monotonic() + 1.0
+        while time.monotonic() < deadline and not refresher.last_error:
+            time.sleep(0.01)
+        assert refresher.current_store is last_good
+        assert refresher.last_error.startswith("RuntimeError:")
+
+        refresher.request_refresh()
+        deadline = time.monotonic() + 1.0
+        while time.monotonic() < deadline and refresher.current_store is last_good:
+            time.sleep(0.01)
+        assert getattr(refresher.current_store, "generation", 0) == 2
+        assert refresher.last_error == ""
+    finally:
+        refresher.stop()
+    assert refresher.is_running is False
+
+
+def test_create_app_owns_options_refresh_worker_lifecycle(tmp_path):
+    """Catches FastAPI shutdown leaking an enabled options refresh thread."""
+    app = create_app(
+        runtime_mode="demo",
+        options_state_shadow_config=OptionsStateShadowRuntimeConfig(
+            enabled=True,
+            options_dir=tmp_path / "deribit",
+            refresh_interval_s=60.0,
+        ),
+    )
+    runtime = app.state.zenquant_runtime
+    assert runtime.options_shadow_refresh_running is False
+
+    with TestClient(app):
+        assert runtime.options_shadow_refresh_running is True
+
+    assert runtime.options_shadow_refresh_running is False
+
+
+def test_blocked_options_refresh_never_blocks_decision_or_execution_dispatch(tmp_path):
+    """Catches Parquet reload latency entering the risk-final event handler."""
+    options_dir = tmp_path / "deribit"
+    refresh_started = threading.Event()
+    release_refresh = threading.Event()
+    created: list[OptionsDataStore] = []
+
+    class BlockingOptionsStore(OptionsDataStore):
+        def __init__(self, config, generation: int) -> None:
+            super().__init__(config)
+            self.generation = generation
+
+        def load(self) -> None:
+            if self.generation > 0:
+                refresh_started.set()
+                if not release_refresh.wait(timeout=5.0):
+                    raise TimeoutError("test refresh was not released")
+
+        def lookup_options_state(
+            self,
+            cutoff_time_ns: int,
+            *,
+            realized_vol_30d: float | None,
+            realized_vol_source_timestamp_ns: int,
+        ):
+            rows = _options_chain_rows(CUTOFF_NS) if self.generation > 0 else ()
+            return build_options_state(
+                rows,
+                cutoff_time_ns=cutoff_time_ns,
+                realized_vol_30d=realized_vol_30d,
+                realized_vol_source_timestamp_ns=realized_vol_source_timestamp_ns,
+            )
+
+    def store_factory(config):
+        store = BlockingOptionsStore(config, generation=len(created))
+        created.append(store)
+        return store
+
+    async def scenario() -> None:
+        def latest_linked_state(runtime: ZenQuantWebRuntime):
+            linked_id = runtime.options_shadow_observer.ledger.links[-1].options_state_id
+            return next(
+                state for state in runtime.options_shadow_observer.ledger.states if state.options_state_id == linked_id
+            )
+
+        runtime = ZenQuantWebRuntime(
+            runtime_mode="demo",
+            warmup_steps=0,
+            tick_interval_s=60.0,
+            execution_config=ExecutionKernelConfig(execution_authority_mode="target_tracking_v2"),
+            options_state_shadow_config=OptionsStateShadowRuntimeConfig(
+                enabled=True,
+                options_dir=options_dir,
+                refresh_interval_s=60.0,
+            ),
+            options_state_store_factory=store_factory,
+        )
+        await runtime.start()
+        try:
+            marker = options_dir / "BTC" / "2026-08" / "new.parquet"
+            marker.parent.mkdir(parents=True)
+            marker.write_bytes(b"new local snapshot")
+
+            dispatch_started = time.monotonic()
+            runtime.bus.publish("strategy.decision_snapshot.4h.BTCUSDT_PERP", _snapshot())
+            assert time.monotonic() - dispatch_started < 0.25
+            assert refresh_started.wait(timeout=1.0)
+            assert latest_linked_state(runtime).source_timestamp_ns == 0
+
+            trace_started = time.monotonic()
+            trace = _run_execution_trace(runtime)
+            assert time.monotonic() - trace_started < 1.0
+            assert trace["orders"]
+            assert trace["reports"]
+            assert trace["audits"]
+            assert latest_linked_state(runtime).source_timestamp_ns == 0
+
+            release_refresh.set()
+            deadline = time.monotonic() + 1.0
+            while time.monotonic() < deadline and getattr(runtime.options_shadow_store, "generation", 0) == 0:
+                await asyncio.sleep(0.01)
+            assert getattr(runtime.options_shadow_store, "generation", 0) == 1
+
+            next_cutoff = CUTOFF_NS + 4 * FOUR_HOURS_NS
+            runtime.bus.publish(
+                "strategy.decision_snapshot.4h.BTCUSDT_PERP",
+                _snapshot(cutoff_time_ns=next_cutoff),
+            )
+            assert latest_linked_state(runtime).source_timestamp_ns == CUTOFF_NS
+        finally:
+            release_refresh.set()
+            await runtime.stop()
+        assert runtime.options_shadow_refresh_running is False
+
+    asyncio.run(scenario())
