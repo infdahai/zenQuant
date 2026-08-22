@@ -109,7 +109,7 @@ def main() -> int:
 
     recommendation = attribution["terminal_recommendation"]
     print(json.dumps({"output_dir": str(args.output_dir), "terminal_recommendation": recommendation}, sort_keys=True))
-    return 1 if recommendation == "insufficient_evidence_no_strategy_change" else 0
+    return 1 if attribution["evidence"]["required_inputs_incomplete"] is True else 0
 
 
 if __name__ == "__main__":
