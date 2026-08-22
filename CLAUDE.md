@@ -28,6 +28,12 @@
 
 - 权威交付规格：
   - `docs/LIVE_VALIDATION_HANDOFF_SPEC.md`
+- Quant V2：
+  - 架构审查：`docs/QUANT_V2_ARCHITECTURE_EXPERT_REVIEW.md`
+  - 冻结实验与复跑：`docs/QUANT_V2_ACCEPTANCE_HANDOFF.md`
+  - 当前 verdict：`BLOCKED_PAUSE_PROMOTION_AND_TRAINING`
+  - 原因：late-dev 额外 15bp 下 5/5 为负，strict robustness `0/5`
+  - 禁止：继续调参/训练、promotion、激活 OptionsState multiplier
 - 数据完成度：
   - `results/data_readiness/data_readiness.json`
   - `results/data_readiness/data_readiness.md`
@@ -47,6 +53,7 @@
 - Deribit：
   - 独立 collector 已恢复
   - 是否达到 `observation_ready / research_ready`，以 `_collector_status.json` 与 `data_readiness.json` 为准
+  - `2026-08-22T02:00:04.953009Z` 的只读核验为两者均 `true`，但 2026 options 历史与 frozen 2025 OOS 不重叠，不能据此激活 sidecar
 - 调优：
   - 高预算 campaign 已可运行并可恢复
   - 是否存在可 promote tuned winner，以最终 `framework_optimization.json.final_verdict` 为准

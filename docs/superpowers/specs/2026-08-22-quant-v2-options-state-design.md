@@ -49,4 +49,3 @@ hostile windows must remain controlled. Normal policy permits at most two
 position switches per day and any accepted operating condition permits at most
 five. Executor-created exposure, unexpected reversals, target overshoots, and
 OptionsState-induced order differences must all equal zero.
-

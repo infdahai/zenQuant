@@ -8,6 +8,17 @@ ZenQuant delivers:
 
 This is **not** an HFT engine, black-box AI bot, copy-trading platform, or "support every idea" framework. It's a trading product that is trustworthy before flashy, and modular before overcomplicated.
 
+## Quant V2 Research Status
+
+The V2 architecture experiment is implemented behind explicit, default-off
+research modes. Its frozen 30-run acceptance result is **blocked**: engineering
+purity gates pass, but late-dev remains negative under the additional 15bp cost
+stress on all five seeds. Do not promote it or start another tuning round.
+
+- Architecture review: [docs/QUANT_V2_ARCHITECTURE_EXPERT_REVIEW.md](docs/QUANT_V2_ARCHITECTURE_EXPERT_REVIEW.md)
+- Reproducible result/runbook: [docs/QUANT_V2_ACCEPTANCE_HANDOFF.md](docs/QUANT_V2_ACCEPTANCE_HANDOFF.md)
+- Tester/operator authority: [docs/LIVE_VALIDATION_HANDOFF_SPEC.md](docs/LIVE_VALIDATION_HANDOFF_SPEC.md)
+
 ---
 
 ## Quick Start

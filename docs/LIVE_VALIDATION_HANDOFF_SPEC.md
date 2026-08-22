@@ -23,6 +23,22 @@
 
 ## 1. 当前交付状态
 
+### 1.0 Quant V2 冻结验收
+
+Quant V2 的工程实现已完成，但当前 **不得进入 promotion、继续参数训练或
+paper-live**。权威结论见：
+
+- [`QUANT_V2_ARCHITECTURE_EXPERT_REVIEW.md`](QUANT_V2_ARCHITECTURE_EXPERT_REVIEW.md)
+- [`QUANT_V2_ACCEPTANCE_HANDOFF.md`](QUANT_V2_ACCEPTANCE_HANDOFF.md)
+
+冻结 `6 windows x 5 seeds` 矩阵完整通过执行；A5 baseline MDD、train episode
+PF、switch cadence、execution purity 通过。但 late-dev 在额外 15bp 下 5/5
+为负，robustness 为 `0/5`。OptionsState 对订单和仓位严格零影响，但 2026
+options 数据与 2025 OOS 无重叠，状态仍为 `INSUFFICIENT_SAMPLE`，禁止激活。
+
+本结论优先于本文后续保留的旧 baseline/paper-live 说明。只有新的、单独审批
+的冻结实验通过全部 Quant V2 hard gates 后，才可重新讨论 promotion。
+
 ### 1.1 当前主策略
 
 - 资产：`BTC`

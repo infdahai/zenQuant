@@ -142,4 +142,3 @@
 - [ ] Run `uv run zenquant-check` and the full pytest suite.
 - [ ] Document commands, artifacts, stage gates, known limitations, and the explicit prohibition on activating OptionsState without new approval.
 - [ ] Commit documentation separately as `docs: document Quant V2 architecture experiment`.
-
