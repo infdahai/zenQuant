@@ -314,6 +314,7 @@ def _iter_legacy_runs(path: Path) -> Iterator[dict[str, Any]]:
     found_runs = False
     closed_runs = False
     collecting = False
+    array_state = "initial"
     fragments: list[str] = []
     envelope_fragments: list[str] = []
     with path.open(encoding="utf-8") as source:
@@ -337,6 +338,8 @@ def _iter_legacy_runs(path: Path) -> Iterator[dict[str, Any]]:
             if not closed_runs and not collecting:
                 stripped = line.strip()
                 if structure.stack == ["}", "]"] and stripped in {"]", "],"}:
+                    if array_state == "value_after_comma":
+                        raise ValueError("legacy report runs array contains a trailing comma")
                     structure.consume(line)
                     closed_runs = True
                     envelope_fragments.append(",\n" if stripped.endswith(",") else "\n")
@@ -344,8 +347,10 @@ def _iter_legacy_runs(path: Path) -> Iterator[dict[str, Any]]:
                 if not stripped:
                     structure.consume(line)
                     continue
+                if stripped.startswith("{") and array_state == "close_after_value":
+                    raise ValueError("legacy report runs array requires a comma between run objects")
                 if structure.stack != ["}", "]"] or not stripped.startswith("{"):
-                    raise ValueError("legacy report runs array contains a non-object value")
+                    raise ValueError("legacy report runs array contains an unexpected separator or empty entry")
                 collecting = True
             if not closed_runs and collecting:
                 fragments.append(line)
@@ -361,12 +366,17 @@ def _iter_legacy_runs(path: Path) -> Iterator[dict[str, Any]]:
                 structure.consume(line)
             if collecting and structure.stack == ["}", "]"] and not structure.in_string:
                 encoded = "".join(fragments).rstrip()
-                if encoded.endswith(","):
+                has_separator = encoded.endswith(",")
+                if has_separator:
                     encoded = encoded[:-1]
-                value = json.loads(encoded)
+                try:
+                    value = json.loads(encoded)
+                except json.JSONDecodeError as exc:
+                    raise ValueError("legacy report runs array contains a malformed run object") from exc
                 if not isinstance(value, dict):
                     raise ValueError("legacy report run must be an object")
                 yield value
+                array_state = "value_after_comma" if has_separator else "close_after_value"
                 fragments.clear()
                 collecting = False
     if not found_runs:

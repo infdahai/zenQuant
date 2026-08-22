@@ -413,6 +413,25 @@ def test_legacy_run_streamer_accepts_nested_and_escaped_run_payloads(tmp_path):
 
 
 @pytest.mark.parametrize(
+    "runs_body",
+    [
+        '    {"window": "x", "seed": 1}\n    {"window": "y", "seed": 2}',
+        '    {"window": "x", "seed": 1},',
+        '    {"window": "x", "seed": 1},,\n    {"window": "y", "seed": 2}',
+        '    ,\n    {"window": "x", "seed": 1}',
+        '    {"window": "x", "seed": 1},\n    ,\n    {"window": "y", "seed": 2}',
+    ],
+)
+def test_legacy_run_streamer_rejects_invalid_array_separators(tmp_path, runs_body):
+    module = _load_cli_module()
+    source = tmp_path / "legacy.json"
+    source.write_text('{\n  "runs": [\n' + runs_body + "\n  ]\n}\n", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="runs array"):
+        list(module._iter_legacy_runs(source))
+
+
+@pytest.mark.parametrize(
     ("payload", "error"),
     [
         ({"outer": {"runs": [{"window": "nested", "seed": 1}]}}, "top-level runs array"),
