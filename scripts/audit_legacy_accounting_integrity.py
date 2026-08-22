@@ -33,6 +33,8 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     try:
+        if args.source.resolve() == args.output.resolve():
+            raise AccountingValidityRegistryError("output must not replace the source artifact")
         registry = load_accounting_validity_registry(args.registry)
         source_sha256, source_size_bytes = _source_identity(args.source)
         records = registry.records_for_artifact(str(args.source))

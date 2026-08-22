@@ -176,3 +176,24 @@ def test_audit_cli_writes_canonical_sidecar_without_mutating_source(tmp_path: Pa
     assert sidecar["records"][0]["state"] == "CONFIRMED_AFFECTED"
     assert output.read_bytes() == json.dumps(sidecar, allow_nan=False, indent=2, sort_keys=True).encode("utf-8")
     assert not list(tmp_path.glob("*.tmp"))
+
+
+def test_audit_cli_rejects_source_as_output_without_mutating_it(tmp_path: Path) -> None:
+    cli = _load_audit_script()
+    source = tmp_path / "source.json"
+    source_bytes = b'{"raw":"legacy evidence"}\n'
+    source.write_bytes(source_bytes)
+    registry_path = _write_registry(
+        tmp_path,
+        [
+            _record(
+                artifact_path=str(source),
+                source_sha256=hashlib.sha256(source_bytes).hexdigest(),
+            )
+        ],
+    )
+
+    exit_code = cli.main(["--source", str(source), "--registry", str(registry_path), "--output", str(source)])
+
+    assert exit_code == 2
+    assert source.read_bytes() == source_bytes
