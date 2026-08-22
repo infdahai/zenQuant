@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import importlib.util
 import json
 import subprocess
 import sys
@@ -33,6 +34,14 @@ def _run_cli(source: Path, output_dir: Path) -> subprocess.CompletedProcess[str]
         capture_output=True,
         check=False,
     )
+
+
+def _load_cli_module():
+    spec = importlib.util.spec_from_file_location("late_dev_cost_cli_test", CLI)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
 def _cost_stage(stage: str, *, include_episodes: bool = False) -> dict[str, object]:
@@ -803,3 +812,58 @@ def test_cli_records_exact_source_identity_and_publishes_only_complete_files(tmp
         "size_bytes": len(source_bytes),
     }
     assert not list((tmp_path / "out").glob("*.tmp"))
+
+
+def test_cli_read_input_hashes_and_decodes_the_same_single_byte_sequence(monkeypatch: pytest.MonkeyPatch):
+    """The source identity must describe precisely the bytes decoded into the report."""
+    cli_module = _load_cli_module()
+    source_bytes = json.dumps(_complete_raw_report()).encode("utf-8")
+    calls = 0
+
+    def read_bytes_once(_: Path) -> bytes:
+        nonlocal calls
+        calls += 1
+        return source_bytes
+
+    monkeypatch.setattr(Path, "read_bytes", read_bytes_once)
+
+    report, source_sha256, source_size_bytes = cli_module._read_input(Path("ignored-by-controlled-read.json"))
+
+    assert calls == 1
+    assert report == json.loads(source_bytes)
+    assert source_sha256 == hashlib.sha256(source_bytes).hexdigest()
+    assert source_size_bytes == len(source_bytes)
+
+
+def test_cli_atomic_publish_cleans_partial_temp_file_after_write_error(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    """A failed temp write must not leave a partial artifact beside a report."""
+    cli_module = _load_cli_module()
+    original_write_bytes = Path.write_bytes
+
+    def write_partial_temp_then_fail(path: Path, content: bytes) -> int:
+        if path.suffix == ".tmp":
+            original_write_bytes(path, b"partial")
+            raise OSError("simulated partial temporary write")
+        return original_write_bytes(path, content)
+
+    monkeypatch.setattr(Path, "write_bytes", write_partial_temp_then_fail)
+
+    with pytest.raises(OSError, match="partial temporary write"):
+        cli_module._publish_atomically(tmp_path / "out", {"late_dev_cost_attribution.json": b"complete"})
+
+    assert not list((tmp_path / "out").glob("*.tmp"))
+
+
+@pytest.mark.parametrize("constant", ["NaN", "Infinity", "-Infinity"])
+def test_cli_rejects_nonfinite_json_constants_without_writing_artifacts(tmp_path: Path, constant: str):
+    """Non-finite JSON constants are invalid even when placed in an ignored raw field."""
+    report = _complete_raw_report()
+    report["ignored_nonfinite_probe"] = float(constant.replace("Infinity", "inf").replace("NaN", "nan"))
+    source = tmp_path / "architecture_attribution.json"
+    source.write_text(json.dumps(report), encoding="utf-8")
+
+    completed = _run_cli(source, tmp_path / "out")
+
+    assert completed.returncode == 2
+    assert not (tmp_path / "out").exists()
+    assert "invalid input" in completed.stderr.lower()

@@ -13,6 +13,8 @@ import ast
 import unittest
 from pathlib import Path
 
+import pytest
+
 PROJECT_ROOT = Path(__file__).parent.parent
 PLUGIN_IMPL_DIRS = [
     PROJECT_ROOT / "zenquant" / "plugins" / "signals",
@@ -43,7 +45,7 @@ FORBIDDEN_STRATEGY_IMPORTS = [
 ]
 
 
-def _collect_imports(filepath: Path) -> list[str]:
+def _collect_imports(filepath: Path, *, project_root: Path = PROJECT_ROOT) -> list[str]:
     """Extract all import module paths from a Python file."""
     try:
         tree = ast.parse(filepath.read_text(), filename=str(filepath))
@@ -56,9 +58,29 @@ def _collect_imports(filepath: Path) -> list[str]:
             for alias in node.names:
                 modules.append(alias.name)
         elif isinstance(node, ast.ImportFrom):
-            if node.module:
-                modules.append(node.module)
+            modules.extend(_resolve_from_import_targets(filepath, node, project_root=project_root))
     return modules
+
+
+def _resolve_from_import_targets(filepath: Path, node: ast.ImportFrom, *, project_root: Path) -> list[str]:
+    """Return absolute module targets for an AST ``from`` import and its aliases."""
+    try:
+        relative_path = filepath.relative_to(project_root).with_suffix("")
+    except ValueError:
+        return []
+    package_parts = list(relative_path.parts[:-1])
+    if node.level:
+        prefix_length = len(package_parts) - node.level + 1
+        if prefix_length < 1:
+            return []
+        target_parts = package_parts[:prefix_length]
+    else:
+        target_parts = []
+    if node.module:
+        target_parts.extend(node.module.split("."))
+    targets = [".".join(target_parts)] if target_parts else []
+    targets.extend(".".join([*target_parts, alias.name]) for alias in node.names if alias.name != "*")
+    return targets
 
 
 def _check_boundary(
@@ -143,6 +165,25 @@ class TestImportBoundaries(unittest.TestCase):
         if violations:
             msg = "\n".join(["Import boundary violations:"] + violations)
             self.fail(msg)
+
+
+@pytest.mark.parametrize(
+    ("source", "forbidden_import"),
+    [
+        ("from ..strategy import PlaybookEngine\n", "zenquant.strategy"),
+        ("from .. import execution\n", "zenquant.execution"),
+        ("from zenquant import app, risk\n", "zenquant.app"),
+    ],
+)
+def test_collect_imports_resolves_relative_and_alias_import_targets(tmp_path: Path, source: str, forbidden_import: str):
+    """AST import collection must expose strategy/live-layer targets in every syntax form."""
+    filepath = tmp_path / "zenquant" / "research" / "probe.py"
+    filepath.parent.mkdir(parents=True)
+    filepath.write_text(source)
+
+    imports = _collect_imports(filepath, project_root=tmp_path)
+
+    assert forbidden_import in imports
 
 
 if __name__ == "__main__":

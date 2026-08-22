@@ -42,17 +42,18 @@ def _parse_args() -> argparse.Namespace:
 
 
 def _read_input(path: Path) -> tuple[dict[str, Any], str, int]:
+    source_bytes = path.read_bytes()
     digest = hashlib.sha256()
-    size_bytes = 0
-    with path.open("rb") as source_file:
-        while chunk := source_file.read(_HASH_CHUNK_BYTES):
-            digest.update(chunk)
-            size_bytes += len(chunk)
-    with path.open(encoding="utf-8") as source_file:
-        payload = json.load(source_file)
+    for offset in range(0, len(source_bytes), _HASH_CHUNK_BYTES):
+        digest.update(source_bytes[offset : offset + _HASH_CHUNK_BYTES])
+    payload = json.loads(source_bytes.decode("utf-8"), parse_constant=_reject_nonfinite_json_constant)
     if not isinstance(payload, dict):
         raise LateDevAttributionValidationError("raw report must be a JSON object")
-    return payload, digest.hexdigest(), size_bytes
+    return payload, digest.hexdigest(), len(source_bytes)
+
+
+def _reject_nonfinite_json_constant(value: str) -> None:
+    raise LateDevAttributionValidationError(f"raw report contains forbidden JSON constant: {value}")
 
 
 def _canonical_json_bytes(payload: Any) -> bytes:
@@ -66,8 +67,8 @@ def _publish_atomically(output_dir: Path, files: dict[str, bytes]) -> None:
         for filename, content in files.items():
             target = output_dir / filename
             temporary = target.with_suffix(target.suffix + ".tmp")
-            temporary.write_bytes(content)
             temporary_paths.append(temporary)
+            temporary.write_bytes(content)
         for temporary in temporary_paths:
             temporary.replace(temporary.with_suffix(""))
         if _HYPOTHESIS_FILENAME not in files:
