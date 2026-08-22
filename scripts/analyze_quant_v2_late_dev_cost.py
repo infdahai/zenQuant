@@ -62,7 +62,13 @@ def _canonical_json_bytes(payload: Any) -> bytes:
 
 def _publish_atomically(output_dir: Path, files: dict[str, bytes]) -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
+    targets = [output_dir / filename for filename in files]
+    hypothesis_target = output_dir / _HYPOTHESIS_FILENAME
+    if hypothesis_target not in targets:
+        targets.append(hypothesis_target)
+    snapshots = {target: target.read_bytes() if target.exists() else None for target in targets}
     temporary_paths: list[Path] = []
+    changed_targets: list[Path] = []
     try:
         for filename, content in files.items():
             target = output_dir / filename
@@ -70,12 +76,35 @@ def _publish_atomically(output_dir: Path, files: dict[str, bytes]) -> None:
             temporary_paths.append(temporary)
             temporary.write_bytes(content)
         for temporary in temporary_paths:
-            temporary.replace(temporary.with_suffix(""))
+            target = temporary.with_suffix("")
+            temporary.replace(target)
+            changed_targets.append(target)
         if _HYPOTHESIS_FILENAME not in files:
-            (output_dir / _HYPOTHESIS_FILENAME).unlink(missing_ok=True)
+            changed_targets.append(hypothesis_target)
+            hypothesis_target.unlink(missing_ok=True)
+    except OSError:
+        _restore_publication(changed_targets, snapshots)
+        raise
     finally:
         for temporary in temporary_paths:
             temporary.unlink(missing_ok=True)
+
+
+def _restore_publication(changed_targets: list[Path], snapshots: dict[Path, bytes | None]) -> None:
+    rollback_paths: list[Path] = []
+    try:
+        for target in reversed(changed_targets):
+            previous = snapshots[target]
+            if previous is None:
+                target.unlink(missing_ok=True)
+                continue
+            rollback = target.with_suffix(target.suffix + ".rollback.tmp")
+            rollback_paths.append(rollback)
+            rollback.write_bytes(previous)
+            rollback.replace(target)
+    finally:
+        for rollback in rollback_paths:
+            rollback.unlink(missing_ok=True)
 
 
 def main() -> int:
