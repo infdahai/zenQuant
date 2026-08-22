@@ -229,8 +229,10 @@ def _required_seed_inputs_incomplete(run: Mapping[str, Any]) -> bool:
 
 def _has_cost_structure(run: Mapping[str, Any], stage_name: str) -> bool:
     stage = _stage(run, stage_name)
-    costs = stage.get("cost_stress")
-    return isinstance(costs, Mapping) and "0" in costs and "15" in costs
+    if "cost_stress" not in stage:
+        return False
+    costs = _mapping(stage["cost_stress"], f"{stage_name} cost stress")
+    return "0" in costs and "15" in costs
 
 
 def _has_a5_episode_inputs(run: Mapping[str, Any]) -> bool:
@@ -249,6 +251,12 @@ def _build_seed_evidence(
     evidence: list[dict[str, Any]] = []
     for run in runs:
         seed = int(run["seed"])
+        sign_hit_rate = _finite(
+            _stage(run, ArchitectureStage.A1_SIGN.value)["direction_hit_rate"], "A1_SIGN direction hit rate"
+        )
+        score_hit_rate = _finite(
+            _stage(run, ArchitectureStage.A1_SCORE.value)["direction_hit_rate"], "A1_SCORE direction hit rate"
+        )
         sign_bridge = bridge_by_seed_stage.get((seed, ArchitectureStage.A1_SIGN.value))
         score_bridge = bridge_by_seed_stage.get((seed, ArchitectureStage.A1_SCORE.value))
         a5_bridge = bridge_by_seed_stage.get((seed, ArchitectureStage.A5_SHADOW.value))
@@ -256,12 +264,6 @@ def _build_seed_evidence(
         if sign_bridge is None or score_bridge is None or a5_bridge is None or summary is None:
             evidence.append({"seed": seed, "required_inputs_complete": False})
             continue
-        sign_hit_rate = _finite(
-            _stage(run, ArchitectureStage.A1_SIGN.value)["direction_hit_rate"], "A1_SIGN direction hit rate"
-        )
-        score_hit_rate = _finite(
-            _stage(run, ArchitectureStage.A1_SCORE.value)["direction_hit_rate"], "A1_SCORE direction hit rate"
-        )
         regime_groups = _mapping(summary["regime_groups"], "regime groups")
         closed_episode_count = _nonnegative_int(summary["closed_episode_count"], "closed episode count")
         negative_tail_share = summary["negative_tail_share"]
@@ -359,13 +361,14 @@ def _classify_family(
     sample_floor: int | None = None,
     inapplicable: Any = None,
 ) -> dict[str, Any]:
-    supporting_seeds = [int(row["seed"]) for row in seed_evidence if row.get(support_key) is True]
+    inapplicable_seeds = [int(row["seed"]) for row in seed_evidence if inapplicable is not None and inapplicable(row)]
+    applicable_evidence = [row for row in seed_evidence if int(row["seed"]) not in inapplicable_seeds]
+    supporting_seeds = [int(row["seed"]) for row in applicable_evidence if row.get(support_key) is True]
     insufficient_sample_seeds = (
-        [int(row["seed"]) for row in seed_evidence if int(row.get(sample_floor_key, 0)) < sample_floor]
+        [int(row["seed"]) for row in applicable_evidence if int(row.get(sample_floor_key, 0)) < sample_floor]
         if sample_floor_key is not None and sample_floor is not None
         else []
     )
-    inapplicable_seeds = [int(row["seed"]) for row in seed_evidence if inapplicable is not None and inapplicable(row)]
     if insufficient_sample_seeds:
         status = EvidenceStatus.INSUFFICIENT_SAMPLE.value
     elif len(supporting_seeds) >= 4:

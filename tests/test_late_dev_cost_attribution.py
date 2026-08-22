@@ -496,6 +496,88 @@ def test_execution_shortfall_does_not_divide_a_non_loss_baseline():
     assert evidence["execution_shortfall"]["status"] == "UNATTRIBUTABLE"
 
 
+def test_non_loss_shortfall_below_floor_is_unattributable_not_insufficient_sample():
+    evidence = _classify_evidence(
+        [
+            {
+                "seed": seed,
+                "directional_edge_support": False,
+                "confidence_no_incremental_edge_support": False,
+                "cost_flip_support": False,
+                "regime_localization_support": False,
+                "closed_episode_count": 20,
+                "negative_tail_share": 0.0,
+                "implementation_shortfall_observation_count": 19,
+                "implementation_shortfall": 100.0,
+                "a5_baseline_net_pnl": 50.0,
+            }
+            for seed in (42, 1729, 2718, 3141, 9001)
+        ]
+    )
+
+    assert evidence["execution_shortfall"]["status"] == "UNATTRIBUTABLE"
+    assert evidence["execution_shortfall"]["insufficient_sample_seeds"] == []
+
+
+def test_four_loss_seed_shortfalls_remain_consistent_with_one_non_loss_seed_below_floor():
+    evidence = _classify_evidence(
+        [
+            {
+                "seed": seed,
+                "directional_edge_support": False,
+                "confidence_no_incremental_edge_support": False,
+                "cost_flip_support": False,
+                "regime_localization_support": False,
+                "closed_episode_count": 20,
+                "negative_tail_share": 0.0,
+                "implementation_shortfall_observation_count": 20,
+                "implementation_shortfall": 25.0,
+                "a5_baseline_net_pnl": -100.0,
+                "execution_shortfall_support": True,
+            }
+            for seed in (42, 1729, 2718, 3141)
+        ]
+        + [
+            {
+                "seed": 9001,
+                "directional_edge_support": False,
+                "confidence_no_incremental_edge_support": False,
+                "cost_flip_support": False,
+                "regime_localization_support": False,
+                "closed_episode_count": 20,
+                "negative_tail_share": 0.0,
+                "implementation_shortfall_observation_count": 0,
+                "implementation_shortfall": 0.0,
+                "a5_baseline_net_pnl": 50.0,
+                "execution_shortfall_support": False,
+            }
+        ]
+    )
+
+    assert evidence["execution_shortfall"]["status"] == "CONSISTENT"
+    assert evidence["execution_shortfall"]["supporting_seed_count"] == 4
+    assert evidence["execution_shortfall"]["inapplicable_seeds"] == [9001]
+
+
+def test_missing_episode_collection_does_not_mask_a_present_nonfinite_hit_rate():
+    report = _complete_raw_report()
+    late_dev = next(run for run in report["runs"] if run["window"] == "late_dev_2025")  # type: ignore[index]
+    late_dev["stages"][ArchitectureStage.A5_SHADOW.value].pop("position_episodes")  # type: ignore[index]
+    late_dev["stages"][ArchitectureStage.A1_SIGN.value]["direction_hit_rate"] = float("nan")  # type: ignore[index]
+
+    with pytest.raises(LateDevAttributionValidationError, match="A1_SIGN direction hit rate"):
+        _build(report)
+
+
+def test_present_non_mapping_cost_stress_is_invalid_not_structurally_incomplete():
+    report = _complete_raw_report()
+    late_dev = next(run for run in report["runs"] if run["window"] == "late_dev_2025")  # type: ignore[index]
+    late_dev["stages"][ArchitectureStage.A1_SIGN.value]["cost_stress"] = []  # type: ignore[index]
+
+    with pytest.raises(LateDevAttributionValidationError, match="A1_SIGN cost stress"):
+        _build(report)
+
+
 def test_confidence_failure_requires_equal_direction_hit_rates_and_nonpositive_score_pnl():
     report = _complete_raw_report()
     for run in report["runs"]:  # type: ignore[index]
