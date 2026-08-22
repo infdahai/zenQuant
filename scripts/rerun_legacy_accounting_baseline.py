@@ -572,7 +572,7 @@ def _build_summary(
             "legacy_full_json_load_count": 0,
             "legacy_peak_loaded_scope": "single_run",
             "sha256_chunk_bytes": _JSON_HASH_CHUNK_BYTES,
-            "publication": "temporary_sibling_directory_then_atomic_replace",
+            "publication": "temporary_sibling_directory_then_atomic_directory_rename",
         },
     }
 

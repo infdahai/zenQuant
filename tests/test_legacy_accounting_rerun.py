@@ -165,6 +165,7 @@ def test_rerun_preserves_legacy_and_publishes_frozen_identities(tmp_path, monkey
     assert summary["resource_behavior"]["legacy_full_json_load_count"] == 0
     assert summary["resource_behavior"]["legacy_peak_loaded_scope"] == "single_run"
     assert summary["resource_behavior"]["legacy_sha256_stream_passes"] == 2
+    assert summary["resource_behavior"]["publication"] == ("temporary_sibling_directory_then_atomic_directory_rename")
 
 
 def test_existing_output_dir_fails_before_compute_and_preserves_last_good_outputs(tmp_path, monkeypatch):
