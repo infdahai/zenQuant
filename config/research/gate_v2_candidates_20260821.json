@@ -1,0 +1,51 @@
+{
+  "version": "gate_v2_candidates_20260821",
+  "candidates": [
+    {
+      "name": "paulwei_baseline",
+      "kind": "builtin"
+    },
+    {
+      "name": "v118_rank1",
+      "kind": "ranked_params",
+      "source": "results/regime_objective_candidate_search_v118_paulwei_dual_phase_return_quality_dd20_smoke_12trial/checkpoints/stage1_search.json",
+      "selector": "top_optuna_trials",
+      "rank": 1
+    },
+    {
+      "name": "v163_rank1",
+      "kind": "ranked_params",
+      "source": "results/temporal_robustness_v163_trailing_exit_hold_search_smoke/framework_optimization.json",
+      "selector": "train_candidate_diagnostics.top_train_trial_diagnostics",
+      "rank": 1
+    },
+    {
+      "name": "v164_rank1",
+      "kind": "ranked_params",
+      "source": "results/temporal_robustness_v164_trailing_exit_downtrend_guard_smoke/framework_optimization.json",
+      "selector": "train_candidate_diagnostics.top_train_trial_diagnostics",
+      "rank": 1
+    },
+    {
+      "name": "august_rank1",
+      "kind": "ranked_params",
+      "source": "results/remediation_20260821/train_dev_smoke_daily_switch_policy/framework_optimization.json",
+      "selector": "train_candidate_diagnostics.top_train_trial_diagnostics",
+      "rank": 1
+    },
+    {
+      "name": "august_rank2",
+      "kind": "ranked_params",
+      "source": "results/remediation_20260821/train_dev_smoke_daily_switch_policy/framework_optimization.json",
+      "selector": "train_candidate_diagnostics.top_train_trial_diagnostics",
+      "rank": 2
+    },
+    {
+      "name": "august_rank3",
+      "kind": "ranked_params",
+      "source": "results/remediation_20260821/train_dev_smoke_daily_switch_policy/framework_optimization.json",
+      "selector": "train_candidate_diagnostics.top_train_trial_diagnostics",
+      "rank": 3
+    }
+  ]
+}

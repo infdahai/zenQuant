@@ -357,7 +357,7 @@ class RegimeObjectiveRedesignTests(unittest.TestCase):
         self.assertEqual(relaxed["bucket_blockers"], [])
         self.assertTrue(relaxed["allow_dev_diagnostic_review"])
 
-    def test_candidate_generation_scorer_penalizes_weak_time_leverage_cadence(self) -> None:
+    def test_candidate_generation_scorer_penalizes_weak_time_leverage_without_normal_switch_block(self) -> None:
         score = score_regime_objective_candidate_generation(
             {
                 "sharpe": 2.3,
@@ -384,11 +384,13 @@ class RegimeObjectiveRedesignTests(unittest.TestCase):
         )
 
         self.assertFalse(score["allow_dev_diagnostic_review"])
-        self.assertIn("train_position_switch_cadence_worse", score["bucket_blockers"])
+        self.assertNotIn("train_position_switch_cadence_worse", score["bucket_blockers"])
+        self.assertNotIn("train_position_switch_rate_excessive", score["bucket_blockers"])
         self.assertIn("train_flip_reduce_fee_drag_worse", score["bucket_blockers"])
         self.assertIn("train_time_leverage_efficiency_weak", score["bucket_blockers"])
-        self.assertGreater(score["position_switch_penalty"], 0.0)
-        self.assertGreater(score["mature_position_switch_penalty"], 0.0)
+        self.assertAlmostEqual(score["position_switches_per_day"], 8.0 / 30.0, places=6)
+        self.assertEqual(score["position_switch_penalty"], 0.0)
+        self.assertEqual(score["mature_position_switch_penalty"], 0.0)
         self.assertGreater(score["flip_reduce_fee_drag_penalty"], 0.0)
         self.assertLess(score["net_pnl_per_position_switch"], 90.0)
 
@@ -420,8 +422,9 @@ class RegimeObjectiveRedesignTests(unittest.TestCase):
 
         self.assertTrue(score["allow_dev_diagnostic_review"])
         self.assertEqual(score["target_position_switches_per_30d"], 1.6807)
+        self.assertAlmostEqual(score["position_switches_per_day"], 1.8 / 30.0, places=6)
         self.assertEqual(score["position_switch_penalty"], 0.0)
-        self.assertGreater(score["mature_position_switch_penalty"], 0.0)
+        self.assertEqual(score["mature_position_switch_penalty"], 0.0)
         self.assertEqual(score["flip_reduce_fee_drag_penalty"], 0.0)
         self.assertGreater(score["time_leverage_bonus"], 0.0)
 

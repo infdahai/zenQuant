@@ -132,6 +132,8 @@ def build_strategy_config(params: dict[str, Any]) -> ARCStrategyConfig:
             strategy_kwargs["intent_flat_step_cadence_bars"] = int(value)
         elif key == "intent_range_entry_confirmation_bars":
             strategy_kwargs["intent_range_entry_confirmation_bars"] = int(value)
+        elif key == "intent_range_bear_profit_entry_confirmation_bars":
+            strategy_kwargs["intent_range_bear_profit_entry_confirmation_bars"] = int(value)
         elif key == "intent_range_reentry_cooldown_bars":
             strategy_kwargs["intent_range_reentry_cooldown_bars"] = int(value)
         elif key == "intent_bearish_override_confirmation_bars":
@@ -184,6 +186,24 @@ def build_strategy_config(params: dict[str, Any]) -> ARCStrategyConfig:
             strategy_kwargs["intent_time_leverage_long_bias_block_short"] = bool(round(float(value)))
         elif key == "intent_time_leverage_long_bias_hold_reductions":
             strategy_kwargs["intent_time_leverage_long_bias_hold_reductions"] = bool(round(float(value)))
+        elif key == "intent_time_leverage_bear_carry_enabled":
+            strategy_kwargs["intent_time_leverage_bear_carry_enabled"] = bool(round(float(value)))
+        elif key == "intent_time_leverage_bear_carry_max_leverage":
+            strategy_kwargs["intent_time_leverage_bear_carry_max_leverage"] = float(value)
+        elif key == "intent_time_leverage_bear_carry_confidence_floor":
+            strategy_kwargs["intent_time_leverage_bear_carry_confidence_floor"] = float(value)
+        elif key == "intent_time_leverage_bear_carry_transition_ceiling":
+            strategy_kwargs["intent_time_leverage_bear_carry_transition_ceiling"] = float(value)
+        elif key == "intent_time_leverage_bear_carry_allow_range_bear_profit_short":
+            strategy_kwargs["intent_time_leverage_bear_carry_allow_range_bear_profit_short"] = bool(round(float(value)))
+        elif key == "intent_confirmed_downtrend_long_cap_enabled":
+            strategy_kwargs["intent_confirmed_downtrend_long_cap_enabled"] = bool(round(float(value)))
+        elif key == "intent_confirmed_downtrend_long_cap_max_leverage":
+            strategy_kwargs["intent_confirmed_downtrend_long_cap_max_leverage"] = float(value)
+        elif key == "intent_confirmed_downtrend_long_cap_confidence_floor":
+            strategy_kwargs["intent_confirmed_downtrend_long_cap_confidence_floor"] = float(value)
+        elif key == "intent_confirmed_downtrend_long_cap_direction_signal_ceiling":
+            strategy_kwargs["intent_confirmed_downtrend_long_cap_direction_signal_ceiling"] = float(value)
         elif key == "intent_time_leverage_dip_accumulation_enabled":
             strategy_kwargs["intent_time_leverage_dip_accumulation_enabled"] = bool(round(float(value)))
         elif key == "intent_time_leverage_dip_min_adverse_atr":
@@ -204,6 +224,42 @@ def build_strategy_config(params: dict[str, Any]) -> ARCStrategyConfig:
             strategy_kwargs["intent_range_bear_profit_run_confidence_floor"] = float(value)
         elif key == "intent_range_bear_profit_run_max_transition_risk":
             strategy_kwargs["intent_range_bear_profit_run_max_transition_risk"] = float(value)
+        elif key == "intent_range_bear_profit_panic_exhaustion_veto_enabled":
+            strategy_kwargs["intent_range_bear_profit_panic_exhaustion_veto_enabled"] = bool(round(float(value)))
+        elif key == "intent_range_bear_profit_panic_exhaustion_momentum_threshold":
+            strategy_kwargs["intent_range_bear_profit_panic_exhaustion_momentum_threshold"] = float(value)
+        elif key == "intent_range_bear_profit_panic_exhaustion_transition_ceiling":
+            strategy_kwargs["intent_range_bear_profit_panic_exhaustion_transition_ceiling"] = float(value)
+        elif key == "intent_range_bull_profit_run_override_enabled":
+            strategy_kwargs["intent_range_bull_profit_run_override_enabled"] = bool(round(float(value)))
+        elif key == "intent_range_bull_profit_run_direction_signal":
+            strategy_kwargs["intent_range_bull_profit_run_direction_signal"] = float(value)
+        elif key == "intent_range_bull_profit_run_momentum_threshold":
+            strategy_kwargs["intent_range_bull_profit_run_momentum_threshold"] = float(value)
+        elif key == "intent_range_bull_profit_run_confidence_floor":
+            strategy_kwargs["intent_range_bull_profit_run_confidence_floor"] = float(value)
+        elif key == "intent_range_bull_profit_run_max_transition_risk":
+            strategy_kwargs["intent_range_bull_profit_run_max_transition_risk"] = float(value)
+        elif key == "intent_transition_rebound_sleeve_enabled":
+            strategy_kwargs["intent_transition_rebound_sleeve_enabled"] = bool(round(float(value)))
+        elif key == "intent_transition_rebound_sleeve_max_leverage":
+            strategy_kwargs["intent_transition_rebound_sleeve_max_leverage"] = float(value)
+        elif key == "intent_transition_rebound_sleeve_uptrend_confidence_floor":
+            strategy_kwargs["intent_transition_rebound_sleeve_uptrend_confidence_floor"] = float(value)
+        elif key == "intent_range_bear_profit_confirmed_bear_transition_override_enabled":
+            strategy_kwargs["intent_range_bear_profit_confirmed_bear_transition_override_enabled"] = bool(
+                round(float(value))
+            )
+        elif key == "intent_range_bear_profit_confirmed_bear_max_transition_risk":
+            strategy_kwargs["intent_range_bear_profit_confirmed_bear_max_transition_risk"] = float(value)
+        elif key == "intent_range_bear_profit_context_score_threshold":
+            strategy_kwargs["intent_range_bear_profit_context_score_threshold"] = float(value)
+        elif key == "intent_range_bear_profit_timing_score_threshold":
+            strategy_kwargs["intent_range_bear_profit_timing_score_threshold"] = float(value)
+        elif key == "intent_range_bull_profit_context_score_threshold":
+            strategy_kwargs["intent_range_bull_profit_context_score_threshold"] = float(value)
+        elif key == "intent_range_bull_profit_timing_score_threshold":
+            strategy_kwargs["intent_range_bull_profit_timing_score_threshold"] = float(value)
         elif key == "preserve_capital_risk":
             playbook_kwargs["preserve_capital_transition_risk"] = value
         elif key == "bull_leverage":
@@ -323,6 +379,7 @@ def build_plugin_config_overrides(params: dict[str, Any]) -> dict[str, dict[str,
         "multi_momentum_range_profit_run_cycle_momentum_threshold",
         "multi_momentum_range_profit_run_block_confirmed_downtrend",
         "multi_momentum_range_profit_run_min_state_direction_signal",
+        "multi_momentum_range_profit_run_require_uptrend_state",
         "multi_momentum_range_bear_profit_run_enabled",
         "multi_momentum_range_bear_profit_run_threshold",
         "multi_momentum_range_bear_profit_run_value",
@@ -333,6 +390,9 @@ def build_plugin_config_overrides(params: dict[str, Any]) -> dict[str, dict[str,
         "multi_momentum_range_bear_profit_run_cycle_momentum_threshold",
         "multi_momentum_range_bear_profit_run_block_confirmed_uptrend",
         "multi_momentum_range_bear_profit_run_max_state_direction_signal",
+        "multi_momentum_range_bear_profit_run_panic_exhaustion_veto_enabled",
+        "multi_momentum_range_bear_profit_run_panic_exhaustion_momentum_threshold",
+        "multi_momentum_range_bear_profit_run_panic_exhaustion_transition_ceiling",
     )
     if any(key in params for key in multi_momentum_profit_run_keys):
         multi_momentum_config = overrides.setdefault("signals", {}).setdefault("multi_momentum_signal", {})
@@ -386,6 +446,10 @@ def build_plugin_config_overrides(params: dict[str, Any]) -> dict[str, dict[str,
             multi_momentum_config["range_profit_run_min_state_direction_signal"] = float(
                 params["multi_momentum_range_profit_run_min_state_direction_signal"]
             )
+        if "multi_momentum_range_profit_run_require_uptrend_state" in params:
+            multi_momentum_config["range_profit_run_require_uptrend_state"] = bool(
+                round(float(params["multi_momentum_range_profit_run_require_uptrend_state"]))
+            )
         if "multi_momentum_range_bear_profit_run_enabled" in params:
             multi_momentum_config["range_bear_profit_run_enabled"] = bool(
                 round(float(params["multi_momentum_range_bear_profit_run_enabled"]))
@@ -425,6 +489,18 @@ def build_plugin_config_overrides(params: dict[str, Any]) -> dict[str, dict[str,
         if "multi_momentum_range_bear_profit_run_max_state_direction_signal" in params:
             multi_momentum_config["range_bear_profit_run_max_state_direction_signal"] = float(
                 params["multi_momentum_range_bear_profit_run_max_state_direction_signal"]
+            )
+        if "multi_momentum_range_bear_profit_run_panic_exhaustion_veto_enabled" in params:
+            multi_momentum_config["range_bear_profit_run_panic_exhaustion_veto_enabled"] = bool(
+                round(float(params["multi_momentum_range_bear_profit_run_panic_exhaustion_veto_enabled"]))
+            )
+        if "multi_momentum_range_bear_profit_run_panic_exhaustion_momentum_threshold" in params:
+            multi_momentum_config["range_bear_profit_run_panic_exhaustion_momentum_threshold"] = float(
+                params["multi_momentum_range_bear_profit_run_panic_exhaustion_momentum_threshold"]
+            )
+        if "multi_momentum_range_bear_profit_run_panic_exhaustion_transition_ceiling" in params:
+            multi_momentum_config["range_bear_profit_run_panic_exhaustion_transition_ceiling"] = float(
+                params["multi_momentum_range_bear_profit_run_panic_exhaustion_transition_ceiling"]
             )
 
     if "binance_metrics_risk_sizer_enabled" in params:
@@ -1160,28 +1236,41 @@ def paulwei_dual_phase_spot_context_relaxed_fee_param_grid(
             "dd_step_1_short": [0.10, 0.12, 0.14],
             "dd_step_2_short": [0.18, 0.20, 0.22],
             "dd_step_3_short": [0.24, 0.26, 0.28],
-            "target_vol_4h": [0.65, 0.80, 0.95, 1.10, 1.25],
+            "target_vol_4h": [0.65, 0.80, 0.95, 1.10],
             "target_vol_5m": [0.70, 0.80, 0.90, 1.00],
-            "max_leverage": [3.0, 3.5, 4.0],
+            "max_leverage": [3.0, 3.5],
             "direction_signal_threshold": [0.20, 0.25, 0.30, 0.35],
             "intent_add_signal_threshold": [0.20, 0.25, 0.30, 0.35],
             "intent_entry_confirmation_bars": [2, 4, 6],
             "intent_flip_confirmation_bars": [36, 48, 72, 96, 120, 168],
             "intent_flat_confirmation_bars": [24, 36, 48, 72],
+            "intent_range_entry_confirmation_bars": [4, 6],
+            "intent_range_bear_profit_entry_confirmation_bars": [0, 2, 4],
             "intent_bearish_override_confirmation_bars": [4, 8, 12, 16, 24],
             "intent_time_leverage_min_hold_bars": [672, 960, 1344, 2016],
             "intent_time_leverage_reduce_deadband_pct": [1.00, 1.25, 1.50, 1.75, 2.00],
             "intent_time_leverage_long_bias_confidence_floor": [0.50, 0.55, 0.60, 0.65],
             "intent_time_leverage_long_bias_transition_ceiling": [0.35, 0.45, 0.55, 0.65],
-            "intent_time_leverage_long_bias_block_short": [0.0, 1.0],
+            "intent_time_leverage_long_bias_block_short": [1.0],
+            "intent_time_leverage_bear_carry_enabled": [1.0],
+            "intent_time_leverage_bear_carry_max_leverage": [0.20, 0.35],
+            "intent_time_leverage_bear_carry_confidence_floor": [0.60, 0.65, 0.70],
+            "intent_time_leverage_bear_carry_transition_ceiling": [0.45, 0.55, 0.65],
+            "intent_time_leverage_bear_carry_allow_range_bear_profit_short": [0.0, 1.0],
+            "intent_confirmed_downtrend_long_cap_enabled": [0.0, 1.0],
+            "intent_confirmed_downtrend_long_cap_max_leverage": [0.0, 0.10, 0.20],
+            "intent_confirmed_downtrend_long_cap_confidence_floor": [0.60, 0.65, 0.70],
+            "intent_confirmed_downtrend_long_cap_direction_signal_ceiling": [0.0, -0.20, -0.40],
+            "intent_time_leverage_trailing_exit_hold_enabled": [0.0, 1.0],
+            "intent_time_leverage_trailing_exit_max_adverse_atr": [1.5, 2.0, 2.5],
             "intent_time_leverage_dip_min_adverse_atr": [0.50, 0.75, 1.00, 1.25],
             "intent_time_leverage_dip_add_pct": [0.10, 0.15, 0.20, 0.25],
-            "intent_time_leverage_dip_max_leverage": [3.0, 3.5, 4.0],
+            "intent_time_leverage_dip_max_leverage": [3.0, 3.5],
             "bear_trailing_stop_atr_mult": [3.0, 4.5, 6.0],
-            "multi_momentum_range_profit_run_enabled": [0.0, 1.0],
+            "multi_momentum_range_profit_run_enabled": [1.0],
             "multi_momentum_range_profit_run_threshold": [0.15, 0.20, 0.25, 0.30],
-            "multi_momentum_range_profit_run_value": [0.75, 0.85, 1.00],
-            "multi_momentum_range_profit_run_confidence": [0.55, 0.65, 0.75],
+            "multi_momentum_range_profit_run_value": [0.25, 0.35, 0.50],
+            "multi_momentum_range_profit_run_confidence": [0.45, 0.55, 0.65],
             "multi_momentum_range_profit_run_max_transition_risk": [0.35, 0.45, 0.55, 0.65],
             "multi_momentum_range_profit_run_min_cycle_position": [0.90, 0.95, 1.00, 1.05],
             "multi_momentum_range_profit_run_block_distorted_volatility": [0.0, 1.0],
@@ -1190,7 +1279,18 @@ def paulwei_dual_phase_spot_context_relaxed_fee_param_grid(
             "multi_momentum_range_profit_run_cycle_threshold": [0.90, 0.95, 1.00, 1.05],
             "multi_momentum_range_profit_run_cycle_momentum_threshold": [0.00, 0.10, 0.20],
             "multi_momentum_range_profit_run_block_confirmed_downtrend": [1.0],
-            "multi_momentum_range_profit_run_min_state_direction_signal": [-0.75, -0.55, -0.35, -0.25],
+            "multi_momentum_range_profit_run_min_state_direction_signal": [-0.55, -0.35, -0.25],
+            "multi_momentum_range_profit_run_require_uptrend_state": [0.0],
+            "intent_range_bull_profit_run_override_enabled": [1.0],
+            "intent_range_bull_profit_run_direction_signal": [0.20, 0.25],
+            "intent_range_bull_profit_run_momentum_threshold": [0.15, 0.20],
+            "intent_range_bull_profit_run_confidence_floor": [0.50, 0.55],
+            "intent_range_bull_profit_run_max_transition_risk": [0.45, 0.55],
+            "intent_transition_rebound_sleeve_enabled": [1.0],
+            "intent_transition_rebound_sleeve_max_leverage": [0.25, 0.35, 0.50],
+            "intent_transition_rebound_sleeve_uptrend_confidence_floor": [0.55, 0.60],
+            "intent_range_bull_profit_context_score_threshold": [0.05, 0.10, 0.20, 0.30],
+            "intent_range_bull_profit_timing_score_threshold": [0.05, 0.10, 0.20, 0.30],
             "multi_momentum_range_bear_profit_run_enabled": [0.0, 1.0],
             "multi_momentum_range_bear_profit_run_threshold": [0.15, 0.20, 0.25],
             "multi_momentum_range_bear_profit_run_value": [0.55, 0.70, 0.85],
@@ -1201,11 +1301,26 @@ def paulwei_dual_phase_spot_context_relaxed_fee_param_grid(
             "multi_momentum_range_bear_profit_run_cycle_momentum_threshold": [0.05, 0.10, 0.20],
             "multi_momentum_range_bear_profit_run_block_confirmed_uptrend": [1.0],
             "multi_momentum_range_bear_profit_run_max_state_direction_signal": [0.10, 0.20, 0.30],
+            "multi_momentum_range_bear_profit_run_panic_exhaustion_veto_enabled": [0.0, 1.0],
+            "multi_momentum_range_bear_profit_run_panic_exhaustion_momentum_threshold": [-1.00, -0.85, -0.70],
+            "multi_momentum_range_bear_profit_run_panic_exhaustion_transition_ceiling": [0.40, 0.48, 0.55],
             "intent_range_bear_profit_run_override_enabled": [0.0, 1.0],
             "intent_range_bear_profit_run_direction_signal": [-0.35, -0.25, -0.15],
             "intent_range_bear_profit_run_momentum_threshold": [-0.30, -0.20, -0.15],
             "intent_range_bear_profit_run_confidence_floor": [0.45, 0.50, 0.55],
             "intent_range_bear_profit_run_max_transition_risk": [0.45, 0.55, 0.65],
+            "intent_range_bear_profit_panic_exhaustion_veto_enabled": [0.0, 1.0],
+            "intent_range_bear_profit_panic_exhaustion_momentum_threshold": [-1.00, -0.85, -0.70],
+            "intent_range_bear_profit_panic_exhaustion_transition_ceiling": [0.40, 0.48, 0.55],
+            "intent_range_bear_profit_confirmed_bear_transition_override_enabled": [0.0, 1.0],
+            "intent_range_bear_profit_confirmed_bear_max_transition_risk": [0.65, 0.75, 0.85],
+            "intent_range_bear_profit_context_score_threshold": [0.35, 0.40, 0.45, 0.50],
+            "intent_range_bear_profit_timing_score_threshold": [0.30, 0.35, 0.40, 0.45],
+            "profit_protect_reduce_enabled": [0.0, 1.0],
+            "profit_protect_min_move_atr": [1.25, 1.75, 2.25],
+            "profit_protect_unwind_pct": [0.25, 0.35, 0.50],
+            "profit_protect_confidence_ceiling": [0.65, 0.75],
+            "profit_protect_cooldown_bars": [6, 12, 24],
             "time_decay_long_loss_threshold": [-0.16, -0.20, -0.24],
             "time_decay_short_loss_threshold": [-0.12, -0.16, -0.20, -0.24],
         }
@@ -2971,11 +3086,28 @@ def paulwei_dual_phase_spot_context_relaxed_fee_seed_trials() -> list[dict[str, 
         "multi_momentum_range_bear_profit_run_cycle_momentum_threshold": 0.10,
         "multi_momentum_range_bear_profit_run_block_confirmed_uptrend": 1.0,
         "multi_momentum_range_bear_profit_run_max_state_direction_signal": 0.20,
+        "multi_momentum_range_bear_profit_run_panic_exhaustion_veto_enabled": 1.0,
+        "multi_momentum_range_bear_profit_run_panic_exhaustion_momentum_threshold": -0.85,
+        "multi_momentum_range_bear_profit_run_panic_exhaustion_transition_ceiling": 0.48,
+        "intent_range_bull_profit_run_override_enabled": 1.0,
+        "intent_range_bull_profit_run_direction_signal": 0.20,
+        "intent_range_bull_profit_run_momentum_threshold": 0.15,
+        "intent_range_bull_profit_run_confidence_floor": 0.50,
+        "intent_range_bull_profit_run_max_transition_risk": 0.55,
         "intent_range_bear_profit_run_override_enabled": 1.0,
         "intent_range_bear_profit_run_direction_signal": -0.25,
         "intent_range_bear_profit_run_momentum_threshold": -0.20,
         "intent_range_bear_profit_run_confidence_floor": 0.50,
         "intent_range_bear_profit_run_max_transition_risk": 0.55,
+        "intent_range_bear_profit_panic_exhaustion_veto_enabled": 1.0,
+        "intent_range_bear_profit_panic_exhaustion_momentum_threshold": -0.85,
+        "intent_range_bear_profit_panic_exhaustion_transition_ceiling": 0.48,
+        "intent_range_bear_profit_confirmed_bear_transition_override_enabled": 0.0,
+        "intent_range_bear_profit_confirmed_bear_max_transition_risk": 0.75,
+        "intent_range_bear_profit_context_score_threshold": 0.50,
+        "intent_range_bear_profit_timing_score_threshold": 0.45,
+        "intent_range_bull_profit_context_score_threshold": 0.50,
+        "intent_range_bull_profit_timing_score_threshold": 0.45,
         "time_decay_short_loss_threshold": -0.20,
     }
     relaxed_variants = [
@@ -2986,6 +3118,7 @@ def paulwei_dual_phase_spot_context_relaxed_fee_seed_trials() -> list[dict[str, 
             "direction_signal_threshold": 0.20,
             "intent_add_signal_threshold": 0.20,
             "intent_entry_confirmation_bars": 2,
+            "intent_range_entry_confirmation_bars": 4,
             "intent_flip_confirmation_bars": 36,
             "intent_flat_confirmation_bars": 24,
             "intent_bearish_override_confirmation_bars": 4,
@@ -2993,10 +3126,15 @@ def paulwei_dual_phase_spot_context_relaxed_fee_seed_trials() -> list[dict[str, 
             "intent_time_leverage_reduce_deadband_pct": 1.00,
             "intent_time_leverage_long_bias_confidence_floor": 0.50,
             "intent_time_leverage_long_bias_transition_ceiling": 0.65,
-            "intent_time_leverage_long_bias_block_short": 0.0,
+            "intent_time_leverage_long_bias_block_short": 1.0,
+            "intent_time_leverage_bear_carry_enabled": 1.0,
+            "intent_time_leverage_bear_carry_max_leverage": 0.35,
+            "intent_time_leverage_bear_carry_confidence_floor": 0.60,
+            "intent_time_leverage_bear_carry_transition_ceiling": 0.65,
+            "intent_time_leverage_bear_carry_allow_range_bear_profit_short": 1.0,
             "intent_time_leverage_dip_min_adverse_atr": 0.50,
-            "intent_time_leverage_dip_add_pct": 0.25,
-            "intent_time_leverage_dip_max_leverage": 4.0,
+            "intent_time_leverage_dip_add_pct": 0.10,
+            "intent_time_leverage_dip_max_leverage": 0.35,
             "multi_momentum_range_profit_run_enabled": 1.0,
             "multi_momentum_range_profit_run_threshold": 0.15,
             "multi_momentum_range_profit_run_value": 1.00,
@@ -3010,15 +3148,25 @@ def paulwei_dual_phase_spot_context_relaxed_fee_seed_trials() -> list[dict[str, 
             "multi_momentum_range_profit_run_cycle_momentum_threshold": 0.10,
             "multi_momentum_range_profit_run_block_confirmed_downtrend": 1.0,
             "multi_momentum_range_profit_run_min_state_direction_signal": -0.55,
+            "intent_range_bull_profit_run_direction_signal": 0.10,
+            "intent_range_bull_profit_run_momentum_threshold": 0.10,
+            "intent_range_bull_profit_run_confidence_floor": 0.45,
+            "intent_range_bull_profit_run_max_transition_risk": 0.65,
             "dd_step_1_short": 0.14,
             "dd_step_2_short": 0.22,
             "dd_step_3_short": 0.28,
             "bear_trailing_stop_atr_mult": 6.0,
+            "multi_momentum_range_bear_profit_run_enabled": 0.0,
             "multi_momentum_range_bear_profit_run_threshold": 0.15,
             "multi_momentum_range_bear_profit_run_value": 0.85,
             "multi_momentum_range_bear_profit_run_confidence": 0.75,
             "multi_momentum_range_bear_profit_run_max_transition_risk": 0.65,
+            "intent_range_bear_profit_run_override_enabled": 0.0,
             "intent_range_bear_profit_run_max_transition_risk": 0.65,
+            "intent_range_bear_profit_confirmed_bear_transition_override_enabled": 0.0,
+            "intent_range_bear_profit_confirmed_bear_max_transition_risk": 0.75,
+            "intent_range_bear_profit_context_score_threshold": 0.35,
+            "intent_range_bear_profit_timing_score_threshold": 0.30,
             "time_decay_long_loss_threshold": -0.20,
             "time_decay_short_loss_threshold": -0.24,
         },
@@ -3029,6 +3177,7 @@ def paulwei_dual_phase_spot_context_relaxed_fee_seed_trials() -> list[dict[str, 
             "direction_signal_threshold": 0.25,
             "intent_add_signal_threshold": 0.25,
             "intent_entry_confirmation_bars": 4,
+            "intent_range_entry_confirmation_bars": 6,
             "intent_flip_confirmation_bars": 48,
             "intent_flat_confirmation_bars": 24,
             "intent_bearish_override_confirmation_bars": 4,
@@ -3036,10 +3185,15 @@ def paulwei_dual_phase_spot_context_relaxed_fee_seed_trials() -> list[dict[str, 
             "intent_time_leverage_reduce_deadband_pct": 1.00,
             "intent_time_leverage_long_bias_confidence_floor": 0.55,
             "intent_time_leverage_long_bias_transition_ceiling": 0.55,
-            "intent_time_leverage_long_bias_block_short": 0.0,
+            "intent_time_leverage_long_bias_block_short": 1.0,
+            "intent_time_leverage_bear_carry_enabled": 1.0,
+            "intent_time_leverage_bear_carry_max_leverage": 0.20,
+            "intent_time_leverage_bear_carry_confidence_floor": 0.65,
+            "intent_time_leverage_bear_carry_transition_ceiling": 0.55,
+            "intent_time_leverage_bear_carry_allow_range_bear_profit_short": 1.0,
             "intent_time_leverage_dip_min_adverse_atr": 0.75,
-            "intent_time_leverage_dip_add_pct": 0.20,
-            "intent_time_leverage_dip_max_leverage": 3.0,
+            "intent_time_leverage_dip_add_pct": 0.10,
+            "intent_time_leverage_dip_max_leverage": 0.20,
             "multi_momentum_range_profit_run_enabled": 1.0,
             "multi_momentum_range_profit_run_threshold": 0.20,
             "multi_momentum_range_profit_run_value": 0.85,
@@ -3053,6 +3207,10 @@ def paulwei_dual_phase_spot_context_relaxed_fee_seed_trials() -> list[dict[str, 
             "multi_momentum_range_profit_run_cycle_momentum_threshold": 0.20,
             "multi_momentum_range_profit_run_block_confirmed_downtrend": 1.0,
             "multi_momentum_range_profit_run_min_state_direction_signal": -0.35,
+            "intent_range_bull_profit_run_direction_signal": 0.25,
+            "intent_range_bull_profit_run_momentum_threshold": 0.20,
+            "intent_range_bull_profit_run_confidence_floor": 0.55,
+            "intent_range_bull_profit_run_max_transition_risk": 0.45,
             "dd_step_1_short": 0.10,
             "dd_step_2_short": 0.18,
             "dd_step_3_short": 0.24,
@@ -3063,6 +3221,10 @@ def paulwei_dual_phase_spot_context_relaxed_fee_seed_trials() -> list[dict[str, 
             "intent_range_bear_profit_run_direction_signal": -0.35,
             "intent_range_bear_profit_run_momentum_threshold": -0.30,
             "intent_range_bear_profit_run_max_transition_risk": 0.45,
+            "intent_range_bear_profit_confirmed_bear_transition_override_enabled": 1.0,
+            "intent_range_bear_profit_confirmed_bear_max_transition_risk": 0.75,
+            "intent_range_bear_profit_context_score_threshold": 0.40,
+            "intent_range_bear_profit_timing_score_threshold": 0.35,
             "time_decay_short_loss_threshold": -0.16,
         },
         {
@@ -3072,6 +3234,7 @@ def paulwei_dual_phase_spot_context_relaxed_fee_seed_trials() -> list[dict[str, 
             "direction_signal_threshold": 0.25,
             "intent_add_signal_threshold": 0.25,
             "intent_entry_confirmation_bars": 4,
+            "intent_range_entry_confirmation_bars": 8,
             "intent_flip_confirmation_bars": 72,
             "intent_flat_confirmation_bars": 48,
             "intent_bearish_override_confirmation_bars": 8,
@@ -3079,10 +3242,15 @@ def paulwei_dual_phase_spot_context_relaxed_fee_seed_trials() -> list[dict[str, 
             "intent_time_leverage_reduce_deadband_pct": 1.25,
             "intent_time_leverage_long_bias_confidence_floor": 0.55,
             "intent_time_leverage_long_bias_transition_ceiling": 0.55,
-            "intent_time_leverage_long_bias_block_short": 0.0,
+            "intent_time_leverage_long_bias_block_short": 1.0,
+            "intent_time_leverage_bear_carry_enabled": 1.0,
+            "intent_time_leverage_bear_carry_max_leverage": 0.35,
+            "intent_time_leverage_bear_carry_confidence_floor": 0.65,
+            "intent_time_leverage_bear_carry_transition_ceiling": 0.55,
+            "intent_time_leverage_bear_carry_allow_range_bear_profit_short": 1.0,
             "intent_time_leverage_dip_min_adverse_atr": 0.75,
-            "intent_time_leverage_dip_add_pct": 0.20,
-            "intent_time_leverage_dip_max_leverage": 3.5,
+            "intent_time_leverage_dip_add_pct": 0.15,
+            "intent_time_leverage_dip_max_leverage": 0.35,
             "multi_momentum_range_profit_run_enabled": 1.0,
             "multi_momentum_range_profit_run_threshold": 0.20,
             "multi_momentum_range_profit_run_value": 0.85,
@@ -3096,10 +3264,18 @@ def paulwei_dual_phase_spot_context_relaxed_fee_seed_trials() -> list[dict[str, 
             "multi_momentum_range_profit_run_cycle_momentum_threshold": 0.10,
             "multi_momentum_range_profit_run_block_confirmed_downtrend": 1.0,
             "multi_momentum_range_profit_run_min_state_direction_signal": -0.55,
+            "intent_range_bull_profit_run_direction_signal": 0.20,
+            "intent_range_bull_profit_run_momentum_threshold": 0.15,
+            "intent_range_bull_profit_run_confidence_floor": 0.50,
+            "intent_range_bull_profit_run_max_transition_risk": 0.55,
             "bear_trailing_stop_atr_mult": 6.0,
             "multi_momentum_range_bear_profit_run_threshold": 0.20,
             "multi_momentum_range_bear_profit_run_value": 0.70,
             "multi_momentum_range_bear_profit_run_max_transition_risk": 0.55,
+            "intent_range_bear_profit_confirmed_bear_transition_override_enabled": 1.0,
+            "intent_range_bear_profit_confirmed_bear_max_transition_risk": 0.85,
+            "intent_range_bear_profit_context_score_threshold": 0.45,
+            "intent_range_bear_profit_timing_score_threshold": 0.35,
             "time_decay_short_loss_threshold": -0.20,
         },
         {
@@ -3239,14 +3415,87 @@ def paulwei_dual_phase_spot_context_relaxed_fee_seed_trials() -> list[dict[str, 
     ]
     seeds: list[dict[str, float]] = []
     for index, base_seed in enumerate(paulwei_dual_phase_spot_context_seed_trials()):
-        seeds.append(
-            {
-                **base_seed,
-                **bear_duration_common,
-                **relaxed_variants[index % len(relaxed_variants)],
-                "research_relaxed_fee_probe_enabled": 1.0,
-            }
+        seed = {
+            **base_seed,
+            **bear_duration_common,
+            **relaxed_variants[index % len(relaxed_variants)],
+            "research_relaxed_fee_probe_enabled": 1.0,
+        }
+        seed["intent_time_leverage_bear_carry_enabled"] = 1.0
+        seed["intent_time_leverage_bear_carry_allow_range_bear_profit_short"] = 1.0 if index % 3 != 0 else 0.0
+        seed["intent_time_leverage_long_bias_block_short"] = 1.0
+        seed["intent_range_bear_profit_entry_confirmation_bars"] = [0, 2, 4][index % 3]
+        seed["intent_range_bull_profit_run_override_enabled"] = 1.0
+        seed["intent_transition_rebound_sleeve_enabled"] = 1.0
+        seed["intent_transition_rebound_sleeve_max_leverage"] = min(
+            float(seed.get("intent_transition_rebound_sleeve_max_leverage", 0.50) or 0.50),
+            0.50,
         )
+        seed["multi_momentum_range_profit_run_require_uptrend_state"] = 0.0
+        seed["multi_momentum_range_profit_run_value"] = min(
+            float(seed.get("multi_momentum_range_profit_run_value", 0.50) or 0.50),
+            0.50,
+        )
+        seed["multi_momentum_range_profit_run_confidence"] = min(
+            float(seed.get("multi_momentum_range_profit_run_confidence", 0.65) or 0.65),
+            0.65,
+        )
+        seed["multi_momentum_range_profit_run_min_state_direction_signal"] = max(
+            float(seed.get("multi_momentum_range_profit_run_min_state_direction_signal", -0.55) or -0.55),
+            -0.55,
+        )
+        seed["target_vol_4h"] = min(float(seed.get("target_vol_4h", 1.10) or 1.10), 1.10)
+        seed["max_leverage"] = min(float(seed.get("max_leverage", 3.5) or 3.5), 3.5)
+        seed["intent_time_leverage_dip_max_leverage"] = min(
+            float(seed.get("intent_time_leverage_dip_max_leverage", 3.5) or 3.5),
+            3.5,
+        )
+        seed["intent_range_bull_profit_run_direction_signal"] = max(
+            float(seed.get("intent_range_bull_profit_run_direction_signal", 0.20) or 0.20),
+            0.20,
+        )
+        seed["intent_range_bull_profit_run_momentum_threshold"] = max(
+            float(seed.get("intent_range_bull_profit_run_momentum_threshold", 0.15) or 0.15),
+            0.15,
+        )
+        seed["intent_range_bull_profit_run_confidence_floor"] = max(
+            float(seed.get("intent_range_bull_profit_run_confidence_floor", 0.50) or 0.50),
+            0.50,
+        )
+        seed["intent_range_bull_profit_run_max_transition_risk"] = min(
+            float(seed.get("intent_range_bull_profit_run_max_transition_risk", 0.55) or 0.55),
+            0.55,
+        )
+        seed["intent_range_bull_profit_context_score_threshold"] = [0.05, 0.10, 0.20, 0.30][index % 4]
+        seed["intent_range_bull_profit_timing_score_threshold"] = [0.05, 0.10, 0.20, 0.30][index % 4]
+        seed["intent_time_leverage_bear_carry_max_leverage"] = min(
+            float(seed.get("intent_time_leverage_bear_carry_max_leverage", 0.35) or 0.35),
+            0.35,
+        )
+        seed["intent_confirmed_downtrend_long_cap_enabled"] = 1.0 if index % 4 != 1 else 0.0
+        seed["intent_confirmed_downtrend_long_cap_max_leverage"] = [0.0, 0.10, 0.20, 0.10][index % 4]
+        seed["intent_confirmed_downtrend_long_cap_confidence_floor"] = [0.60, 0.65, 0.70, 0.65][index % 4]
+        seed["intent_confirmed_downtrend_long_cap_direction_signal_ceiling"] = [0.0, -0.20, -0.40, -0.20][index % 4]
+        seed["multi_momentum_range_bear_profit_run_panic_exhaustion_veto_enabled"] = 1.0 if index % 4 != 0 else 0.0
+        seed["intent_range_bear_profit_panic_exhaustion_veto_enabled"] = 1.0 if index % 4 != 0 else 0.0
+        seed["multi_momentum_range_bear_profit_run_panic_exhaustion_momentum_threshold"] = [-1.00, -0.85, -0.70][
+            index % 3
+        ]
+        seed["intent_range_bear_profit_panic_exhaustion_momentum_threshold"] = [-1.00, -0.85, -0.70][index % 3]
+        seed["multi_momentum_range_bear_profit_run_panic_exhaustion_transition_ceiling"] = [0.40, 0.48, 0.55][index % 3]
+        seed["intent_range_bear_profit_panic_exhaustion_transition_ceiling"] = [0.40, 0.48, 0.55][index % 3]
+        seed["intent_time_leverage_trailing_exit_hold_enabled"] = 1.0 if index % 3 != 1 else 0.0
+        seed["intent_time_leverage_trailing_exit_max_adverse_atr"] = [1.5, 2.0, 2.5][index % 3]
+        seed["profit_protect_reduce_enabled"] = 1.0
+        seed["profit_protect_min_move_atr"] = [1.25, 1.75, 2.25][index % 3]
+        seed["profit_protect_unwind_pct"] = [0.25, 0.35, 0.50][index % 3]
+        seed["profit_protect_confidence_ceiling"] = [0.65, 0.75, 0.75][index % 3]
+        seed["profit_protect_cooldown_bars"] = [6, 12, 24][index % 3]
+        seed["intent_range_entry_confirmation_bars"] = min(
+            int(seed.get("intent_range_entry_confirmation_bars", 6) or 6),
+            6,
+        )
+        seeds.append(seed)
     return seeds
 
 

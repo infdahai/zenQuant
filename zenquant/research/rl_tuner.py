@@ -208,6 +208,9 @@ def build_strategy_config(params: dict[str, float]) -> ARCStrategyConfig:
         intent_flat_reduce_step_pct=params.get("intent_flat_reduce_step_pct", 0.0),
         intent_flat_step_cadence_bars=int(params.get("intent_flat_step_cadence_bars", 0)),
         intent_range_entry_confirmation_bars=int(params.get("intent_range_entry_confirmation_bars", 0)),
+        intent_range_bear_profit_entry_confirmation_bars=int(
+            params.get("intent_range_bear_profit_entry_confirmation_bars", -1)
+        ),
         intent_range_reentry_cooldown_bars=int(params.get("intent_range_reentry_cooldown_bars", 0)),
         intent_bearish_override_confirmation_bars=int(params.get("intent_bearish_override_confirmation_bars", 0)),
         intent_bearish_override_chop_guard_enabled=bool(
@@ -255,6 +258,31 @@ def build_strategy_config(params: dict[str, float]) -> ARCStrategyConfig:
         intent_time_leverage_long_bias_hold_reductions=bool(
             round(float(params.get("intent_time_leverage_long_bias_hold_reductions", 1.0)))
         ),
+        intent_time_leverage_bear_carry_enabled=bool(
+            round(float(params.get("intent_time_leverage_bear_carry_enabled", 0.0)))
+        ),
+        intent_time_leverage_bear_carry_max_leverage=params.get("intent_time_leverage_bear_carry_max_leverage", 0.35),
+        intent_time_leverage_bear_carry_confidence_floor=params.get(
+            "intent_time_leverage_bear_carry_confidence_floor", 0.65
+        ),
+        intent_time_leverage_bear_carry_transition_ceiling=params.get(
+            "intent_time_leverage_bear_carry_transition_ceiling", 0.55
+        ),
+        intent_time_leverage_bear_carry_allow_range_bear_profit_short=bool(
+            round(float(params.get("intent_time_leverage_bear_carry_allow_range_bear_profit_short", 0.0)))
+        ),
+        intent_confirmed_downtrend_long_cap_enabled=bool(
+            round(float(params.get("intent_confirmed_downtrend_long_cap_enabled", 0.0)))
+        ),
+        intent_confirmed_downtrend_long_cap_max_leverage=params.get(
+            "intent_confirmed_downtrend_long_cap_max_leverage", 0.0
+        ),
+        intent_confirmed_downtrend_long_cap_confidence_floor=params.get(
+            "intent_confirmed_downtrend_long_cap_confidence_floor", 0.65
+        ),
+        intent_confirmed_downtrend_long_cap_direction_signal_ceiling=params.get(
+            "intent_confirmed_downtrend_long_cap_direction_signal_ceiling", 0.0
+        ),
         intent_time_leverage_dip_accumulation_enabled=bool(
             round(float(params.get("intent_time_leverage_dip_accumulation_enabled", 0.0)))
         ),
@@ -274,6 +302,45 @@ def build_strategy_config(params: dict[str, float]) -> ARCStrategyConfig:
         intent_range_bear_profit_run_confidence_floor=params.get("intent_range_bear_profit_run_confidence_floor", 0.50),
         intent_range_bear_profit_run_max_transition_risk=params.get(
             "intent_range_bear_profit_run_max_transition_risk", 0.65
+        ),
+        intent_range_bear_profit_panic_exhaustion_veto_enabled=bool(
+            round(float(params.get("intent_range_bear_profit_panic_exhaustion_veto_enabled", 0.0)))
+        ),
+        intent_range_bear_profit_panic_exhaustion_momentum_threshold=params.get(
+            "intent_range_bear_profit_panic_exhaustion_momentum_threshold", -0.85
+        ),
+        intent_range_bear_profit_panic_exhaustion_transition_ceiling=params.get(
+            "intent_range_bear_profit_panic_exhaustion_transition_ceiling", 0.48
+        ),
+        intent_range_bull_profit_run_override_enabled=bool(
+            round(float(params.get("intent_range_bull_profit_run_override_enabled", 0.0)))
+        ),
+        intent_range_bull_profit_run_direction_signal=params.get("intent_range_bull_profit_run_direction_signal", 0.25),
+        intent_range_bull_profit_run_momentum_threshold=params.get(
+            "intent_range_bull_profit_run_momentum_threshold", 0.20
+        ),
+        intent_range_bull_profit_run_confidence_floor=params.get("intent_range_bull_profit_run_confidence_floor", 0.50),
+        intent_range_bull_profit_run_max_transition_risk=params.get(
+            "intent_range_bull_profit_run_max_transition_risk", 0.65
+        ),
+        intent_transition_rebound_sleeve_enabled=bool(
+            round(float(params.get("intent_transition_rebound_sleeve_enabled", 0.0)))
+        ),
+        intent_transition_rebound_sleeve_max_leverage=params.get("intent_transition_rebound_sleeve_max_leverage", 0.50),
+        intent_transition_rebound_sleeve_uptrend_confidence_floor=params.get(
+            "intent_transition_rebound_sleeve_uptrend_confidence_floor", 0.55
+        ),
+        intent_range_bull_profit_context_score_threshold=params.get(
+            "intent_range_bull_profit_context_score_threshold", 0.50
+        ),
+        intent_range_bull_profit_timing_score_threshold=params.get(
+            "intent_range_bull_profit_timing_score_threshold", 0.45
+        ),
+        intent_range_bear_profit_context_score_threshold=params.get(
+            "intent_range_bear_profit_context_score_threshold", 0.50
+        ),
+        intent_range_bear_profit_timing_score_threshold=params.get(
+            "intent_range_bear_profit_timing_score_threshold", 0.45
         ),
     )
 

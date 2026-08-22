@@ -96,7 +96,7 @@ MAX_TRADE_COUNT_PER_DAY = 1.50
 MIN_PROFIT_FACTOR_AFTER_FEE = 1.05
 RESEARCH_RELAXED_MIN_PROFIT_FACTOR_AFTER_FEE = 0.95
 PAULWEI_MATURE_POSITION_SWITCHES_PER_30D = 1.6807
-MAX_POSITION_SWITCHES_PER_30D = 3.0
+POSITION_SWITCH_SOFT_LIMIT_PER_DAY = 1.0
 MAX_FLIP_REDUCE_FEE_DRAG_PCT_ABSOLUTE = 0.016
 MAX_EXIT_FEE_DRAG_PCT_ABSOLUTE = 0.018
 MAX_FLIP_ACTION_FEE_DRAG_PCT_ABSOLUTE = 0.018
@@ -227,6 +227,7 @@ def _hostile_proxy_diagnostics(params: dict[str, Any], metrics: dict[str, float]
     )
     terminated_early = float(metrics.get("terminated_early", 0.0) or 0.0)
     position_switches_per_30d = float(metrics.get("position_switches_per_30d", 0.0) or 0.0)
+    position_switches_per_day = position_switches_per_30d / 30.0
     flip_reduce_fee_drag_pct = float(metrics.get("flip_reduce_fee_drag_pct", 0.0) or 0.0)
     exit_fee_drag_pct = _metric_action_value(metrics, "action_fee_drag_pct", "exit")
     flip_action_fee_drag_pct = _metric_action_value(metrics, "action_fee_drag_pct", "flip")
@@ -306,13 +307,9 @@ def _hostile_proxy_diagnostics(params: dict[str, Any], metrics: dict[str, float]
     net_pnl_per_trade_penalty = 1.0 if trade_count > 0 and net_pnl_per_trade <= 0.0 else 0.0
     position_switch_penalty = max(
         0.0,
-        (position_switches_per_30d - MAX_POSITION_SWITCHES_PER_30D) / MAX_POSITION_SWITCHES_PER_30D,
+        (position_switches_per_day - POSITION_SWITCH_SOFT_LIMIT_PER_DAY) / POSITION_SWITCH_SOFT_LIMIT_PER_DAY,
     )
-    mature_position_switch_penalty = max(
-        0.0,
-        (position_switches_per_30d - PAULWEI_MATURE_POSITION_SWITCHES_PER_30D)
-        / PAULWEI_MATURE_POSITION_SWITCHES_PER_30D,
-    )
+    mature_position_switch_penalty = 0.0
     flip_reduce_fee_drag_penalty = max(
         0.0,
         (flip_reduce_fee_drag_pct - flip_reduce_fee_drag_cap) / flip_reduce_fee_drag_cap,
@@ -366,7 +363,6 @@ def _hostile_proxy_diagnostics(params: dict[str, Any], metrics: dict[str, float]
         min(0.20, 0.04 * min(5.0, tranche_actions_per_position_switch))
         if tranche_actions_per_position_switch >= MIN_TRANCHE_ACTIONS_PER_POSITION_SWITCH
         and staged_inventory_balance_ratio >= MIN_STAGED_BUILD_UNWIND_BALANCE_RATIO
-        and position_switches_per_30d <= PAULWEI_MATURE_POSITION_SWITCHES_PER_30D
         and reduce_profit_factor_penalty == 0.0
         and flip_reduce_fee_drag_penalty == 0.0
         else 0.0
@@ -398,7 +394,7 @@ def _hostile_proxy_diagnostics(params: dict[str, Any], metrics: dict[str, float]
     )
     mature_cadence_bonus = (
         0.10
-        if position_switches_per_30d <= PAULWEI_MATURE_POSITION_SWITCHES_PER_30D and position_switches_per_30d > 0.0
+        if position_switches_per_day <= POSITION_SWITCH_SOFT_LIMIT_PER_DAY and position_switches_per_day > 0.0
         else 0.0
     )
     mature_tranche_control_bonus = (
@@ -509,7 +505,9 @@ def _hostile_proxy_diagnostics(params: dict[str, Any], metrics: dict[str, float]
         "trade_count_per_day": round(trade_count_per_day, 6),
         "profit_factor_after_fee": round(profit_factor_after_fee, 6),
         "position_switches_per_30d": round(position_switches_per_30d, 6),
+        "position_switches_per_day": round(position_switches_per_day, 6),
         "target_position_switches_per_30d": PAULWEI_MATURE_POSITION_SWITCHES_PER_30D,
+        "position_switch_soft_limit_per_day": POSITION_SWITCH_SOFT_LIMIT_PER_DAY,
         "flip_reduce_fee_drag_pct": round(flip_reduce_fee_drag_pct, 6),
         "exit_fee_drag_pct": round(exit_fee_drag_pct, 6),
         "flip_action_fee_drag_pct": round(flip_action_fee_drag_pct, 6),
@@ -600,6 +598,7 @@ def _compact_train_trial_diagnostics(
         "terminated_early",
         "termination_reason",
         "processed_event_ratio",
+        "constraint_violations",
         "action_trade_counts",
         "action_fee_drag_pct",
         "action_profit_factor",
@@ -1050,16 +1049,26 @@ class Campaign:
         eligible_results: list[dict[str, Any]],
     ) -> tuple[dict[str, Any], str | None]:
         raw_trial_count = len(results)
-        raw_nonzero_trade_trials = sum(1 for item in results if int(item["metrics"].get("trade_count", 0) or 0) > 0)
+        executed_results = [item for item in results if not item["metrics"].get("constraint_violations")]
+        constraint_filtered_trial_count = raw_trial_count - len(executed_results)
+        raw_nonzero_trade_trials = sum(
+            1 for item in executed_results if int(item["metrics"].get("trade_count", 0) or 0) > 0
+        )
         eligible_trade_count_trials = len(eligible_results)
-        max_train_trade_count = max((int(item["metrics"].get("trade_count", 0) or 0) for item in results), default=0)
-        max_train_sharpe = max((float(item["metrics"].get("sharpe", 0.0) or 0.0) for item in results), default=0.0)
+        max_train_trade_count = max(
+            (int(item["metrics"].get("trade_count", 0) or 0) for item in executed_results),
+            default=0,
+        )
+        max_train_sharpe = max(
+            (float(item["metrics"].get("sharpe", 0.0) or 0.0) for item in executed_results),
+            default=0.0,
+        )
         max_hostile_proxy_score = max(
-            (float(item["metrics"].get("hostile_proxy_score", 0.0) or 0.0) for item in results),
+            (float(item["metrics"].get("hostile_proxy_score", 0.0) or 0.0) for item in executed_results),
             default=0.0,
         )
         max_hostile_proxy_penalty_applied = max(
-            (float(item["metrics"].get("hostile_proxy_penalty_applied", 0.0) or 0.0) for item in results),
+            (float(item["metrics"].get("hostile_proxy_penalty_applied", 0.0) or 0.0) for item in executed_results),
             default=0.0,
         )
         min_execution_fragility_score = min(
@@ -1072,7 +1081,9 @@ class Campaign:
         )
         empty_shortlist_reason = None
         if not eligible_results:
-            if raw_nonzero_trade_trials == 0:
+            if raw_trial_count > 0 and not executed_results:
+                empty_shortlist_reason = "all_constraint_filtered"
+            elif raw_nonzero_trade_trials == 0:
                 empty_shortlist_reason = "all_zero_trade"
             elif max_train_trade_count < self._config.minimum_train_trade_count:
                 empty_shortlist_reason = "below_min_trade_threshold"
@@ -1081,6 +1092,8 @@ class Campaign:
         return (
             {
                 "raw_trial_count": raw_trial_count,
+                "executed_trial_count": len(executed_results),
+                "constraint_filtered_trial_count": constraint_filtered_trial_count,
                 "raw_nonzero_trade_trials": raw_nonzero_trade_trials,
                 "eligible_trade_count_trials": eligible_trade_count_trials,
                 "max_train_trade_count": max_train_trade_count,

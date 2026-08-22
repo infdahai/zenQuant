@@ -304,7 +304,7 @@ class TestStage1HostileProxy(unittest.TestCase):
             stable["hostile_proxy_penalty_applied"],
         )
 
-    def test_hostile_proxy_penalizes_flip_reduce_cadence_over_time_leverage(self) -> None:
+    def test_hostile_proxy_penalizes_fee_and_efficiency_not_normal_switch_cadence(self) -> None:
         efficient = _hostile_proxy_diagnostics(
             {
                 "target_vol_4h": 0.95,
@@ -359,15 +359,16 @@ class TestStage1HostileProxy(unittest.TestCase):
         )
 
         self.assertGreater(efficient["time_leverage_bonus"], churny["time_leverage_bonus"])
-        self.assertGreater(
-            churny["mature_position_switch_penalty"],
-            efficient["mature_position_switch_penalty"],
-        )
-        self.assertGreater(churny["position_switch_penalty"], efficient["position_switch_penalty"])
+        self.assertAlmostEqual(efficient["position_switches_per_day"], 2.0 / 30.0, places=6)
+        self.assertAlmostEqual(churny["position_switches_per_day"], 8.0 / 30.0, places=6)
+        self.assertEqual(efficient["mature_position_switch_penalty"], 0.0)
+        self.assertEqual(churny["mature_position_switch_penalty"], 0.0)
+        self.assertEqual(efficient["position_switch_penalty"], 0.0)
+        self.assertEqual(churny["position_switch_penalty"], 0.0)
         self.assertGreater(churny["flip_reduce_fee_drag_penalty"], efficient["flip_reduce_fee_drag_penalty"])
         self.assertLess(churny["hostile_proxy_score"], efficient["hostile_proxy_score"])
 
-    def test_hostile_proxy_soft_targets_paulwei_mature_switch_cadence(self) -> None:
+    def test_hostile_proxy_treats_monthly_switch_cadence_as_diagnostic(self) -> None:
         params = {
             "target_vol_4h": 0.95,
             "max_leverage": 4.5,
@@ -414,9 +415,12 @@ class TestStage1HostileProxy(unittest.TestCase):
 
         self.assertEqual(below_mature_cadence["mature_position_switch_penalty"], 0.0)
         self.assertEqual(below_mature_cadence["target_position_switches_per_30d"], 1.6807)
-        self.assertGreater(above_mature_cadence["mature_position_switch_penalty"], 0.0)
+        self.assertEqual(above_mature_cadence["mature_position_switch_penalty"], 0.0)
+        self.assertAlmostEqual(below_mature_cadence["position_switches_per_day"], 1.6 / 30.0, places=6)
+        self.assertAlmostEqual(above_mature_cadence["position_switches_per_day"], 2.6 / 30.0, places=6)
+        self.assertEqual(below_mature_cadence["position_switch_penalty"], 0.0)
         self.assertEqual(above_mature_cadence["position_switch_penalty"], 0.0)
-        self.assertGreater(
+        self.assertEqual(
             below_mature_cadence["hostile_proxy_score"],
             above_mature_cadence["hostile_proxy_score"],
         )

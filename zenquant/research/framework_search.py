@@ -59,6 +59,7 @@ from zenquant.research.framework_params import (
     build_signal_weight_overrides,
     build_strategy_config,
     execution_inventory_rethink_seed_trials,
+    hostile_constraint_violations,
     intent_churn_ablation_seed_trials,
     intent_churn_repair_seed_trials,
     param_grid_for_mode,
@@ -3499,7 +3500,9 @@ def run_optuna_search(
     elif evaluator.search_space_profile.get("execution_inventory_rethink_search", False):
         resolved_seed_trials = execution_inventory_rethink_seed_trials()[:n_trials]
     elif evaluator.search_space_profile.get("baseline_anchored_search", False):
-        resolved_seed_trials = baseline_anchor_seed_trials()[:n_trials]
+        resolved_seed_trials = [
+            seed for seed in baseline_anchor_seed_trials() if not hostile_constraint_violations(seed)
+        ][:n_trials]
     else:
         resolved_seed_trials = []
     if seed_trials:

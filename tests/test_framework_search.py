@@ -639,21 +639,43 @@ class FrameworkParamTests(unittest.TestCase):
         self.assertTrue(profile["research_relaxed_fee_probe"])
         self.assertIn("research_relaxed_fee_probe", profile["paulwei_phase_learning_contract"]["templates"])
         self.assertEqual(grid["research_relaxed_fee_probe_enabled"], [1.0])
-        self.assertIn(1.25, grid["target_vol_4h"])
-        self.assertIn(4.0, grid["max_leverage"])
+        self.assertNotIn(1.25, grid["target_vol_4h"])
+        self.assertTrue(all(value <= 1.10 for value in grid["target_vol_4h"]))
+        self.assertEqual(grid["max_leverage"], [3.0, 3.5])
         self.assertIn(36, grid["intent_flip_confirmation_bars"])
+        self.assertEqual(grid["intent_range_entry_confirmation_bars"], [4, 6])
+        self.assertEqual(grid["intent_range_bear_profit_entry_confirmation_bars"], [0, 2, 4])
         self.assertIn(672, grid["intent_time_leverage_min_hold_bars"])
         self.assertIn(4, grid["intent_bearish_override_confirmation_bars"])
         self.assertIn(0.50, grid["intent_time_leverage_long_bias_confidence_floor"])
         self.assertIn(0.65, grid["intent_time_leverage_long_bias_transition_ceiling"])
+        self.assertEqual(grid["intent_time_leverage_bear_carry_enabled"], [1.0])
+        self.assertEqual(grid["intent_time_leverage_bear_carry_max_leverage"], [0.20, 0.35])
+        self.assertEqual(grid["intent_time_leverage_bear_carry_confidence_floor"], [0.60, 0.65, 0.70])
+        self.assertEqual(grid["intent_time_leverage_bear_carry_transition_ceiling"], [0.45, 0.55, 0.65])
+        self.assertEqual(grid["intent_time_leverage_bear_carry_allow_range_bear_profit_short"], [0.0, 1.0])
+        self.assertEqual(grid["intent_confirmed_downtrend_long_cap_enabled"], [0.0, 1.0])
+        self.assertEqual(grid["intent_confirmed_downtrend_long_cap_max_leverage"], [0.0, 0.10, 0.20])
+        self.assertEqual(grid["intent_confirmed_downtrend_long_cap_confidence_floor"], [0.60, 0.65, 0.70])
+        self.assertEqual(grid["intent_confirmed_downtrend_long_cap_direction_signal_ceiling"], [0.0, -0.20, -0.40])
         self.assertIn(0.25, grid["intent_time_leverage_dip_add_pct"])
-        self.assertIn(1.0, grid["multi_momentum_range_profit_run_enabled"])
+        self.assertEqual(grid["multi_momentum_range_profit_run_enabled"], [1.0])
         self.assertIn(0.15, grid["multi_momentum_range_profit_run_threshold"])
+        self.assertEqual(grid["multi_momentum_range_profit_run_value"], [0.25, 0.35, 0.50])
+        self.assertEqual(grid["multi_momentum_range_profit_run_confidence"], [0.45, 0.55, 0.65])
         self.assertIn(0.45, grid["multi_momentum_range_profit_run_max_transition_risk"])
         self.assertIn(1.00, grid["multi_momentum_range_profit_run_min_cycle_position"])
         self.assertIn(1.0, grid["multi_momentum_range_profit_run_cycle_fallback_enabled"])
         self.assertIn(0.10, grid["multi_momentum_range_profit_run_cycle_momentum_threshold"])
-        self.assertIn(-0.55, grid["multi_momentum_range_profit_run_min_state_direction_signal"])
+        self.assertEqual(grid["multi_momentum_range_profit_run_min_state_direction_signal"], [-0.55, -0.35, -0.25])
+        self.assertEqual(grid["multi_momentum_range_profit_run_require_uptrend_state"], [0.0])
+        self.assertEqual(grid["intent_range_bull_profit_run_override_enabled"], [1.0])
+        self.assertEqual(grid["intent_range_bull_profit_run_direction_signal"], [0.20, 0.25])
+        self.assertEqual(grid["intent_range_bull_profit_run_momentum_threshold"], [0.15, 0.20])
+        self.assertEqual(grid["intent_range_bull_profit_run_confidence_floor"], [0.50, 0.55])
+        self.assertEqual(grid["intent_range_bull_profit_run_max_transition_risk"], [0.45, 0.55])
+        self.assertEqual(grid["intent_transition_rebound_sleeve_enabled"], [1.0])
+        self.assertEqual(grid["intent_transition_rebound_sleeve_max_leverage"], [0.25, 0.35, 0.50])
         self.assertIn(1.0, grid["multi_momentum_range_bear_profit_run_enabled"])
         self.assertIn(0.20, grid["multi_momentum_range_bear_profit_run_threshold"])
         self.assertIn(0.70, grid["multi_momentum_range_bear_profit_run_value"])
@@ -665,20 +687,69 @@ class FrameworkParamTests(unittest.TestCase):
         self.assertIn(0.22, grid["dd_step_2_short"])
         self.assertIn(0.28, grid["dd_step_3_short"])
         self.assertIn(6.0, grid["bear_trailing_stop_atr_mult"])
+        self.assertEqual(grid["intent_time_leverage_trailing_exit_hold_enabled"], [0.0, 1.0])
+        self.assertEqual(grid["intent_time_leverage_trailing_exit_max_adverse_atr"], [1.5, 2.0, 2.5])
         self.assertIn(1.0, grid["intent_range_bear_profit_run_override_enabled"])
         self.assertIn(-0.25, grid["intent_range_bear_profit_run_direction_signal"])
         self.assertIn(-0.20, grid["intent_range_bear_profit_run_momentum_threshold"])
         self.assertIn(0.55, grid["intent_range_bear_profit_run_max_transition_risk"])
+        self.assertIn(1.0, grid["intent_range_bear_profit_confirmed_bear_transition_override_enabled"])
+        self.assertIn(0.75, grid["intent_range_bear_profit_confirmed_bear_max_transition_risk"])
+        self.assertEqual(grid["intent_range_bull_profit_context_score_threshold"], [0.05, 0.10, 0.20, 0.30])
+        self.assertEqual(grid["intent_range_bull_profit_timing_score_threshold"], [0.05, 0.10, 0.20, 0.30])
+        self.assertEqual(grid["intent_range_bear_profit_context_score_threshold"], [0.35, 0.40, 0.45, 0.50])
+        self.assertEqual(grid["intent_range_bear_profit_timing_score_threshold"], [0.30, 0.35, 0.40, 0.45])
         self.assertIn(-0.24, grid["time_decay_short_loss_threshold"])
-        self.assertIn(0.0, grid["intent_time_leverage_long_bias_block_short"])
+        self.assertEqual(grid["intent_time_leverage_long_bias_block_short"], [1.0])
         self.assertTrue(all(seed["research_relaxed_fee_probe_enabled"] == 1.0 for seed in seeds[:12]))
-        self.assertTrue(any(seed["max_leverage"] == 4.0 for seed in seeds[:12]))
+        self.assertTrue(all(seed["target_vol_4h"] <= 1.10 for seed in seeds[:12]))
+        self.assertTrue(all(seed["max_leverage"] <= 3.5 for seed in seeds[:12]))
         self.assertTrue(any(seed["intent_flip_confirmation_bars"] == 36 for seed in seeds[:12]))
+        self.assertEqual(seeds[0]["intent_range_entry_confirmation_bars"], 4)
+        self.assertEqual(seeds[1]["intent_range_entry_confirmation_bars"], 6)
+        self.assertEqual(seeds[2]["intent_range_entry_confirmation_bars"], 6)
+        self.assertTrue(all(seed["intent_range_entry_confirmation_bars"] <= 6 for seed in seeds[:12]))
+        self.assertEqual(seeds[0]["intent_range_bear_profit_entry_confirmation_bars"], 0)
+        self.assertEqual(seeds[1]["intent_range_bear_profit_entry_confirmation_bars"], 2)
+        self.assertEqual(seeds[2]["intent_range_bear_profit_entry_confirmation_bars"], 4)
+        self.assertEqual(seeds[0]["intent_range_bear_profit_context_score_threshold"], 0.35)
+        self.assertEqual(seeds[0]["intent_range_bear_profit_timing_score_threshold"], 0.30)
+        self.assertEqual(seeds[0]["intent_range_bull_profit_context_score_threshold"], 0.05)
+        self.assertEqual(seeds[0]["intent_range_bull_profit_timing_score_threshold"], 0.05)
+        self.assertEqual(seeds[1]["intent_range_bear_profit_context_score_threshold"], 0.40)
+        self.assertEqual(seeds[1]["intent_range_bear_profit_timing_score_threshold"], 0.35)
+        self.assertEqual(seeds[1]["intent_range_bull_profit_context_score_threshold"], 0.10)
+        self.assertEqual(seeds[1]["intent_range_bull_profit_timing_score_threshold"], 0.10)
+        self.assertEqual(seeds[2]["intent_range_bear_profit_context_score_threshold"], 0.45)
+        self.assertEqual(seeds[2]["intent_range_bear_profit_timing_score_threshold"], 0.35)
+        self.assertEqual(seeds[2]["intent_range_bull_profit_context_score_threshold"], 0.20)
+        self.assertEqual(seeds[2]["intent_range_bull_profit_timing_score_threshold"], 0.20)
         self.assertTrue(any(seed["intent_time_leverage_min_hold_bars"] == 672 for seed in seeds[:12]))
         self.assertTrue(any(seed["intent_time_leverage_long_bias_confidence_floor"] == 0.50 for seed in seeds[:12]))
-        self.assertTrue(any(seed["intent_time_leverage_dip_add_pct"] == 0.25 for seed in seeds[:12]))
+        self.assertEqual(seeds[0]["intent_time_leverage_bear_carry_enabled"], 1.0)
+        self.assertEqual(seeds[0]["intent_time_leverage_bear_carry_max_leverage"], 0.35)
+        self.assertEqual(seeds[0]["intent_time_leverage_bear_carry_transition_ceiling"], 0.65)
+        self.assertEqual(seeds[0]["intent_confirmed_downtrend_long_cap_enabled"], 1.0)
+        self.assertEqual(seeds[0]["intent_confirmed_downtrend_long_cap_max_leverage"], 0.0)
+        self.assertEqual(seeds[0]["intent_confirmed_downtrend_long_cap_confidence_floor"], 0.60)
+        self.assertEqual(seeds[0]["intent_confirmed_downtrend_long_cap_direction_signal_ceiling"], 0.0)
+        self.assertEqual(seeds[1]["intent_confirmed_downtrend_long_cap_enabled"], 0.0)
+        self.assertEqual(seeds[2]["intent_confirmed_downtrend_long_cap_max_leverage"], 0.20)
+        self.assertEqual(seeds[2]["intent_confirmed_downtrend_long_cap_direction_signal_ceiling"], -0.40)
+        self.assertEqual(seeds[0]["intent_time_leverage_trailing_exit_hold_enabled"], 1.0)
+        self.assertEqual(seeds[0]["intent_time_leverage_trailing_exit_max_adverse_atr"], 1.5)
+        self.assertTrue(all(seed["intent_time_leverage_bear_carry_enabled"] == 1.0 for seed in seeds[:12]))
+        self.assertTrue(
+            any(seed["intent_time_leverage_bear_carry_allow_range_bear_profit_short"] == 1.0 for seed in seeds[:12])
+        )
+        self.assertTrue(all(seed["intent_time_leverage_long_bias_block_short"] == 1.0 for seed in seeds[:12]))
+        self.assertTrue(all(seed["intent_time_leverage_bear_carry_max_leverage"] <= 0.35 for seed in seeds[:12]))
+        self.assertTrue(any(seed["intent_time_leverage_bear_carry_max_leverage"] == 0.20 for seed in seeds[:12]))
+        self.assertEqual(seeds[0]["intent_time_leverage_dip_add_pct"], 0.10)
         self.assertTrue(any(seed["multi_momentum_range_profit_run_enabled"] == 1.0 for seed in seeds[:12]))
         self.assertTrue(any(seed["multi_momentum_range_profit_run_threshold"] == 0.15 for seed in seeds[:12]))
+        self.assertTrue(all(seed["multi_momentum_range_profit_run_value"] <= 0.50 for seed in seeds[:12]))
+        self.assertTrue(all(seed["multi_momentum_range_profit_run_confidence"] <= 0.65 for seed in seeds[:12]))
         self.assertTrue(any(seed["multi_momentum_range_profit_run_max_transition_risk"] == 0.45 for seed in seeds[:12]))
         self.assertTrue(any(seed["multi_momentum_range_profit_run_min_cycle_position"] == 1.00 for seed in seeds[:12]))
         self.assertTrue(
@@ -688,16 +759,62 @@ class FrameworkParamTests(unittest.TestCase):
             any(seed["multi_momentum_range_profit_run_cycle_momentum_threshold"] == 0.10 for seed in seeds[:12])
         )
         self.assertTrue(
-            any(seed["multi_momentum_range_profit_run_min_state_direction_signal"] == -0.55 for seed in seeds[:12])
+            all(seed["multi_momentum_range_profit_run_min_state_direction_signal"] >= -0.55 for seed in seeds[:12])
         )
+        self.assertTrue(
+            all(seed["multi_momentum_range_profit_run_require_uptrend_state"] == 0.0 for seed in seeds[:12])
+        )
+        self.assertTrue(all(seed["intent_range_bull_profit_run_override_enabled"] == 1.0 for seed in seeds[:12]))
+        self.assertTrue(all(seed["intent_transition_rebound_sleeve_enabled"] == 1.0 for seed in seeds[:12]))
+        self.assertTrue(all(seed["intent_transition_rebound_sleeve_max_leverage"] <= 0.50 for seed in seeds[:12]))
+        self.assertTrue(all(seed["intent_range_bull_profit_run_direction_signal"] >= 0.20 for seed in seeds[:12]))
+        self.assertTrue(all(seed["intent_range_bull_profit_run_momentum_threshold"] >= 0.15 for seed in seeds[:12]))
+        self.assertTrue(all(seed["intent_range_bull_profit_run_max_transition_risk"] <= 0.55 for seed in seeds[:12]))
         self.assertTrue(any(seed["multi_momentum_range_bear_profit_run_enabled"] == 1.0 for seed in seeds[:12]))
         self.assertTrue(any(seed["multi_momentum_range_bear_profit_run_value"] == 0.85 for seed in seeds[:12]))
         self.assertTrue(any(seed["dd_step_3_short"] == 0.28 for seed in seeds[:12]))
         self.assertTrue(any(seed["bear_trailing_stop_atr_mult"] == 6.0 for seed in seeds[:12]))
         self.assertTrue(any(seed["intent_range_bear_profit_run_override_enabled"] == 1.0 for seed in seeds[:12]))
         self.assertTrue(any(seed["intent_range_bear_profit_run_max_transition_risk"] == 0.65 for seed in seeds[:12]))
+        self.assertTrue(
+            any(
+                seed["intent_range_bear_profit_confirmed_bear_transition_override_enabled"] == 1.0
+                for seed in seeds[:12]
+            )
+        )
+        self.assertTrue(
+            any(seed["intent_range_bear_profit_confirmed_bear_max_transition_risk"] == 0.85 for seed in seeds[:12])
+        )
+        self.assertEqual(grid["multi_momentum_range_bear_profit_run_panic_exhaustion_veto_enabled"], [0.0, 1.0])
+        self.assertEqual(
+            grid["multi_momentum_range_bear_profit_run_panic_exhaustion_momentum_threshold"],
+            [-1.00, -0.85, -0.70],
+        )
+        self.assertEqual(
+            grid["multi_momentum_range_bear_profit_run_panic_exhaustion_transition_ceiling"],
+            [0.40, 0.48, 0.55],
+        )
+        self.assertEqual(grid["intent_range_bear_profit_panic_exhaustion_veto_enabled"], [0.0, 1.0])
+        self.assertEqual(grid["intent_range_bear_profit_panic_exhaustion_momentum_threshold"], [-1.00, -0.85, -0.70])
+        self.assertEqual(grid["intent_range_bear_profit_panic_exhaustion_transition_ceiling"], [0.40, 0.48, 0.55])
+        self.assertEqual(grid["profit_protect_reduce_enabled"], [0.0, 1.0])
+        self.assertEqual(grid["profit_protect_min_move_atr"], [1.25, 1.75, 2.25])
+        self.assertEqual(grid["profit_protect_unwind_pct"], [0.25, 0.35, 0.50])
+        self.assertEqual(grid["profit_protect_confidence_ceiling"], [0.65, 0.75])
+        self.assertEqual(grid["profit_protect_cooldown_bars"], [6, 12, 24])
+        self.assertTrue(
+            any(seed["intent_range_bear_profit_panic_exhaustion_veto_enabled"] == 1.0 for seed in seeds[:12])
+        )
+        self.assertTrue(
+            any(
+                seed["multi_momentum_range_bear_profit_run_panic_exhaustion_veto_enabled"] == 1.0 for seed in seeds[:12]
+            )
+        )
+        self.assertTrue(all(seed["profit_protect_reduce_enabled"] == 1.0 for seed in seeds[:12]))
+        self.assertTrue(all(seed["profit_protect_min_move_atr"] >= 1.25 for seed in seeds[:12]))
+        self.assertTrue(all(seed["profit_protect_cooldown_bars"] >= 6 for seed in seeds[:12]))
         self.assertTrue(any(seed["time_decay_short_loss_threshold"] == -0.24 for seed in seeds[:12]))
-        self.assertTrue(any(seed["intent_time_leverage_long_bias_block_short"] == 0.0 for seed in seeds[:12]))
+        self.assertTrue(all(seed["intent_time_leverage_long_bias_block_short"] == 1.0 for seed in seeds[:12]))
 
     def test_spot_context_score_penalizes_bull_undercapture(self) -> None:
         weak_bull = {
@@ -778,6 +895,7 @@ class FrameworkParamTests(unittest.TestCase):
                 "multi_momentum_range_profit_run_cycle_momentum_threshold": 0.10,
                 "multi_momentum_range_profit_run_block_confirmed_downtrend": 1.0,
                 "multi_momentum_range_profit_run_min_state_direction_signal": -0.25,
+                "multi_momentum_range_profit_run_require_uptrend_state": 1.0,
                 "multi_momentum_range_bear_profit_run_enabled": 1.0,
                 "multi_momentum_range_bear_profit_run_threshold": 0.20,
                 "multi_momentum_range_bear_profit_run_value": 0.70,
@@ -788,6 +906,9 @@ class FrameworkParamTests(unittest.TestCase):
                 "multi_momentum_range_bear_profit_run_cycle_momentum_threshold": 0.10,
                 "multi_momentum_range_bear_profit_run_block_confirmed_uptrend": 1.0,
                 "multi_momentum_range_bear_profit_run_max_state_direction_signal": 0.20,
+                "multi_momentum_range_bear_profit_run_panic_exhaustion_veto_enabled": 1.0,
+                "multi_momentum_range_bear_profit_run_panic_exhaustion_momentum_threshold": -0.85,
+                "multi_momentum_range_bear_profit_run_panic_exhaustion_transition_ceiling": 0.48,
             }
         )
 
@@ -819,6 +940,7 @@ class FrameworkParamTests(unittest.TestCase):
         self.assertEqual(
             overrides["signals"]["multi_momentum_signal"]["range_profit_run_min_state_direction_signal"], -0.25
         )
+        self.assertTrue(overrides["signals"]["multi_momentum_signal"]["range_profit_run_require_uptrend_state"])
         self.assertTrue(overrides["signals"]["multi_momentum_signal"]["range_bear_profit_run_enabled"])
         self.assertEqual(overrides["signals"]["multi_momentum_signal"]["range_bear_profit_run_threshold"], 0.20)
         self.assertEqual(overrides["signals"]["multi_momentum_signal"]["range_bear_profit_run_value"], 0.70)
@@ -834,6 +956,17 @@ class FrameworkParamTests(unittest.TestCase):
         self.assertTrue(overrides["signals"]["multi_momentum_signal"]["range_bear_profit_run_block_confirmed_uptrend"])
         self.assertEqual(
             overrides["signals"]["multi_momentum_signal"]["range_bear_profit_run_max_state_direction_signal"], 0.20
+        )
+        self.assertTrue(
+            overrides["signals"]["multi_momentum_signal"]["range_bear_profit_run_panic_exhaustion_veto_enabled"]
+        )
+        self.assertEqual(
+            overrides["signals"]["multi_momentum_signal"]["range_bear_profit_run_panic_exhaustion_momentum_threshold"],
+            -0.85,
+        )
+        self.assertEqual(
+            overrides["signals"]["multi_momentum_signal"]["range_bear_profit_run_panic_exhaustion_transition_ceiling"],
+            0.48,
         )
 
     def test_build_risk_config_maps_full_short_dd_ladder(self) -> None:
@@ -865,6 +998,7 @@ class FrameworkParamTests(unittest.TestCase):
                 "intent_flat_reduce_step_pct": 0.50,
                 "intent_flat_step_cadence_bars": 8,
                 "intent_range_entry_confirmation_bars": 36,
+                "intent_range_bear_profit_entry_confirmation_bars": 2,
                 "intent_range_reentry_cooldown_bars": 72,
                 "intent_bearish_override_confirmation_bars": 48,
                 "intent_time_leverage_hold_enabled": 1.0,
@@ -882,6 +1016,15 @@ class FrameworkParamTests(unittest.TestCase):
                 "intent_time_leverage_long_bias_enabled": 1.0,
                 "intent_time_leverage_long_bias_confidence_floor": 0.70,
                 "intent_time_leverage_long_bias_transition_ceiling": 0.35,
+                "intent_time_leverage_bear_carry_enabled": 1.0,
+                "intent_time_leverage_bear_carry_max_leverage": 0.25,
+                "intent_time_leverage_bear_carry_confidence_floor": 0.60,
+                "intent_time_leverage_bear_carry_transition_ceiling": 0.55,
+                "intent_time_leverage_bear_carry_allow_range_bear_profit_short": 1.0,
+                "intent_confirmed_downtrend_long_cap_enabled": 1.0,
+                "intent_confirmed_downtrend_long_cap_max_leverage": 0.10,
+                "intent_confirmed_downtrend_long_cap_confidence_floor": 0.65,
+                "intent_confirmed_downtrend_long_cap_direction_signal_ceiling": -0.20,
                 "intent_time_leverage_dip_accumulation_enabled": 1.0,
                 "intent_time_leverage_dip_min_adverse_atr": 1.25,
                 "intent_time_leverage_dip_max_adverse_atr": 3.0,
@@ -892,6 +1035,19 @@ class FrameworkParamTests(unittest.TestCase):
                 "intent_range_bear_profit_run_momentum_threshold": -0.20,
                 "intent_range_bear_profit_run_confidence_floor": 0.50,
                 "intent_range_bear_profit_run_max_transition_risk": 0.55,
+                "intent_range_bear_profit_panic_exhaustion_veto_enabled": 1.0,
+                "intent_range_bear_profit_panic_exhaustion_momentum_threshold": -0.85,
+                "intent_range_bear_profit_panic_exhaustion_transition_ceiling": 0.48,
+                "intent_range_bull_profit_run_override_enabled": 1.0,
+                "intent_range_bull_profit_run_direction_signal": 0.20,
+                "intent_range_bull_profit_run_momentum_threshold": 0.15,
+                "intent_range_bull_profit_run_confidence_floor": 0.50,
+                "intent_range_bull_profit_run_max_transition_risk": 0.55,
+                "intent_transition_rebound_sleeve_enabled": 1.0,
+                "intent_transition_rebound_sleeve_max_leverage": 0.35,
+                "intent_transition_rebound_sleeve_uptrend_confidence_floor": 0.60,
+                "intent_range_bear_profit_confirmed_bear_transition_override_enabled": 1.0,
+                "intent_range_bear_profit_confirmed_bear_max_transition_risk": 0.75,
             }
         )
 
@@ -912,6 +1068,7 @@ class FrameworkParamTests(unittest.TestCase):
         self.assertEqual(config.intent_flat_reduce_step_pct, 0.50)
         self.assertEqual(config.intent_flat_step_cadence_bars, 8)
         self.assertEqual(config.intent_range_entry_confirmation_bars, 36)
+        self.assertEqual(config.intent_range_bear_profit_entry_confirmation_bars, 2)
         self.assertEqual(config.intent_range_reentry_cooldown_bars, 72)
         self.assertEqual(config.intent_bearish_override_confirmation_bars, 48)
         self.assertTrue(config.intent_time_leverage_hold_enabled)
@@ -929,6 +1086,15 @@ class FrameworkParamTests(unittest.TestCase):
         self.assertTrue(config.intent_time_leverage_long_bias_enabled)
         self.assertEqual(config.intent_time_leverage_long_bias_confidence_floor, 0.70)
         self.assertEqual(config.intent_time_leverage_long_bias_transition_ceiling, 0.35)
+        self.assertTrue(config.intent_time_leverage_bear_carry_enabled)
+        self.assertEqual(config.intent_time_leverage_bear_carry_max_leverage, 0.25)
+        self.assertEqual(config.intent_time_leverage_bear_carry_confidence_floor, 0.60)
+        self.assertEqual(config.intent_time_leverage_bear_carry_transition_ceiling, 0.55)
+        self.assertTrue(config.intent_time_leverage_bear_carry_allow_range_bear_profit_short)
+        self.assertTrue(config.intent_confirmed_downtrend_long_cap_enabled)
+        self.assertEqual(config.intent_confirmed_downtrend_long_cap_max_leverage, 0.10)
+        self.assertEqual(config.intent_confirmed_downtrend_long_cap_confidence_floor, 0.65)
+        self.assertEqual(config.intent_confirmed_downtrend_long_cap_direction_signal_ceiling, -0.20)
         self.assertTrue(config.intent_time_leverage_dip_accumulation_enabled)
         self.assertEqual(config.intent_time_leverage_dip_min_adverse_atr, 1.25)
         self.assertEqual(config.intent_time_leverage_dip_max_adverse_atr, 3.0)
@@ -939,6 +1105,19 @@ class FrameworkParamTests(unittest.TestCase):
         self.assertEqual(config.intent_range_bear_profit_run_momentum_threshold, -0.20)
         self.assertEqual(config.intent_range_bear_profit_run_confidence_floor, 0.50)
         self.assertEqual(config.intent_range_bear_profit_run_max_transition_risk, 0.55)
+        self.assertTrue(config.intent_range_bear_profit_panic_exhaustion_veto_enabled)
+        self.assertEqual(config.intent_range_bear_profit_panic_exhaustion_momentum_threshold, -0.85)
+        self.assertEqual(config.intent_range_bear_profit_panic_exhaustion_transition_ceiling, 0.48)
+        self.assertTrue(config.intent_range_bull_profit_run_override_enabled)
+        self.assertEqual(config.intent_range_bull_profit_run_direction_signal, 0.20)
+        self.assertEqual(config.intent_range_bull_profit_run_momentum_threshold, 0.15)
+        self.assertEqual(config.intent_range_bull_profit_run_confidence_floor, 0.50)
+        self.assertEqual(config.intent_range_bull_profit_run_max_transition_risk, 0.55)
+        self.assertTrue(config.intent_transition_rebound_sleeve_enabled)
+        self.assertEqual(config.intent_transition_rebound_sleeve_max_leverage, 0.35)
+        self.assertEqual(config.intent_transition_rebound_sleeve_uptrend_confidence_floor, 0.60)
+        self.assertTrue(config.intent_range_bear_profit_confirmed_bear_transition_override_enabled)
+        self.assertEqual(config.intent_range_bear_profit_confirmed_bear_max_transition_risk, 0.75)
 
     def test_autoresearch_strategy_config_accepts_shared_intent_churn_config(self) -> None:
         config = _build_strategy_config(
@@ -965,6 +1144,8 @@ class FrameworkParamTests(unittest.TestCase):
                 "intent_time_leverage_size_hysteresis_enabled": 1.0,
                 "intent_time_leverage_reduce_deadband_pct": 0.20,
                 "intent_time_leverage_long_bias_enabled": 1.0,
+                "intent_time_leverage_bear_carry_enabled": 1.0,
+                "intent_time_leverage_bear_carry_max_leverage": 0.35,
                 "intent_time_leverage_dip_accumulation_enabled": 1.0,
             },
             execution_timeframe=Timeframe.TF_4H,
@@ -988,6 +1169,8 @@ class FrameworkParamTests(unittest.TestCase):
         self.assertTrue(config.intent_time_leverage_size_hysteresis_enabled)
         self.assertEqual(config.intent_time_leverage_reduce_deadband_pct, 0.20)
         self.assertTrue(config.intent_time_leverage_long_bias_enabled)
+        self.assertTrue(config.intent_time_leverage_bear_carry_enabled)
+        self.assertEqual(config.intent_time_leverage_bear_carry_max_leverage, 0.35)
         self.assertTrue(config.intent_time_leverage_dip_accumulation_enabled)
         self.assertIsNotNone(config.playbook_config)
         self.assertIsNotNone(config.exit_config)

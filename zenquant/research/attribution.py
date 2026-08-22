@@ -264,6 +264,28 @@ def build_bull_window_direction_exposure_attribution(
     positive_momentum_bars = 0
     range_cycle_profit_candidate_bars = 0
     range_cycle_profit_candidate_long_bars = 0
+    range_cycle_profit_candidate_playbooks: Counter[str] = Counter()
+    range_cycle_profit_candidate_target_reason_codes: Counter[str] = Counter()
+    range_cycle_profit_candidate_promotion_reasons: Counter[str] = Counter()
+    range_cycle_profit_candidate_promotion_stages: Counter[str] = Counter()
+    range_cycle_profit_candidate_pending_reason_codes: Counter[str] = Counter()
+    range_cycle_profit_candidate_promotion_context_sources: Counter[str] = Counter()
+    range_cycle_profit_candidate_promotion_entry_score_buckets: Counter[str] = Counter()
+    range_cycle_profit_candidate_context_entry_score_buckets: Counter[str] = Counter()
+    range_cycle_profit_candidate_timing_entry_score_buckets: Counter[str] = Counter()
+    range_cycle_profit_candidate_entry_score_gap_buckets: Counter[str] = Counter()
+    range_cycle_profit_candidate_no_direction_diagnostic_reason_codes: Counter[str] = Counter()
+    range_cycle_profit_candidate_confirmed_long_promotion_bars = 0
+    range_cycle_profit_candidate_confirmed_long_target_bars = 0
+    range_cycle_profit_candidate_confirmed_long_target_directions: Counter[str] = Counter()
+    range_cycle_profit_candidate_confirmed_long_target_actions: Counter[str] = Counter()
+    range_cycle_profit_candidate_confirmed_long_target_reason_codes: Counter[str] = Counter()
+    range_cycle_profit_candidate_confirmed_long_promotion_reasons: Counter[str] = Counter()
+    range_cycle_profit_candidate_confirmed_long_promotion_stages: Counter[str] = Counter()
+    range_cycle_profit_candidate_confirmed_long_promotion_context_sources: Counter[str] = Counter()
+    range_cycle_profit_candidate_confirmed_long_latest_age_buckets: Counter[str] = Counter()
+    range_cycle_profit_candidate_confirmed_long_blockers: Counter[str] = Counter()
+    range_cycle_profit_candidate_blockers: Counter[str] = Counter()
     trend_regime_bars = 0
     bull_playbook_bars = 0
     exit_active_bars = 0
@@ -291,10 +313,16 @@ def build_bull_window_direction_exposure_attribution(
         regime = str(row.get("regime") or row.get("target_regime") or "UNKNOWN")
         playbook_id = str(row.get("playbook_id") or "UNKNOWN")
         exit_type = str(row.get("exit_type") or "NONE")
+        quality_state = str(row.get("quality_state") or "UNKNOWN")
+        volatility_state = str(row.get("volatility_state") or "UNKNOWN")
+        positioning_state = str(row.get("positioning_state") or "UNKNOWN")
+        transition_risk = _safe_float(row.get("transition_risk"))
         cycle_position = _safe_float(row.get("cycle_position")) if row.get("cycle_position") is not None else 1.0
         momentum_roc_z = _safe_float(row.get("momentum_roc_z"))
         multi_momentum_z = _safe_float(row.get("multi_momentum_z"))
+        direction_signal = _safe_float(row.get("direction_signal"))
         target_action = _target_action(previous_target_qty, target_qty)
+        target_codes = _pipe_codes(row.get("target_reason_codes"))
         target_actions[target_action] += 1
         playbooks[playbook_id] += 1
         regimes[regime] += 1
@@ -326,8 +354,128 @@ def build_bull_window_direction_exposure_attribution(
         )
         if is_range_cycle_profit_candidate:
             range_cycle_profit_candidate_bars += 1
+            range_cycle_profit_candidate_playbooks[playbook_id] += 1
+            range_cycle_profit_candidate_target_reason_codes.update(target_codes)
+            promotion_reasons = _pipe_codes(row.get("intent_promotion_reasons"))
+            promotion_context_source = "exact_bar"
+            if not promotion_reasons:
+                promotion_reasons = _pipe_codes(row.get("intent_promotion_latest_reason"))
+                promotion_context_source = "latest_prior"
+            promotion_stages = _pipe_codes(row.get("intent_promotion_stages"))
+            if not promotion_stages:
+                promotion_stages = _pipe_codes(row.get("intent_promotion_latest_stage"))
+            pending_reason_codes = _pipe_codes(row.get("intent_promotion_pending_reason_codes"))
+            if not pending_reason_codes:
+                pending_reason_codes = _pipe_codes(row.get("intent_promotion_latest_pending_reason_codes"))
+            if promotion_context_source == "exact_bar":
+                promotion_entry_score = _optional_float(row, "intent_promotion_entry_score")
+                promotion_entry_score_threshold = _optional_float(row, "intent_promotion_entry_score_threshold")
+                promotion_pending_direction = _optional_float(row, "intent_promotion_pending_direction")
+                promotion_diagnostic_reason_codes = _pipe_codes(row.get("intent_promotion_diagnostic_reason_codes"))
+                promotion_latest_age_ns = None
+            else:
+                promotion_entry_score = _optional_float(row, "intent_promotion_latest_entry_score")
+                promotion_entry_score_threshold = _optional_float(row, "intent_promotion_latest_entry_score_threshold")
+                promotion_pending_direction = _optional_float(row, "intent_promotion_latest_pending_direction")
+                promotion_diagnostic_reason_codes = _pipe_codes(
+                    row.get("intent_promotion_latest_diagnostic_reason_codes")
+                )
+                promotion_latest_age_ns = _optional_float(row, "intent_promotion_latest_age_ns")
+            range_cycle_profit_candidate_promotion_reasons.update(promotion_reasons)
+            range_cycle_profit_candidate_promotion_stages.update(promotion_stages)
+            range_cycle_profit_candidate_pending_reason_codes.update(pending_reason_codes)
+            if "4H_PENDING_NO_DIRECTION" in promotion_reasons:
+                range_cycle_profit_candidate_no_direction_diagnostic_reason_codes.update(
+                    promotion_diagnostic_reason_codes
+                )
+            if promotion_reasons:
+                range_cycle_profit_candidate_promotion_context_sources[promotion_context_source] += 1
+            if promotion_entry_score is not None:
+                score_bucket = _score_bucket(promotion_entry_score)
+                range_cycle_profit_candidate_promotion_entry_score_buckets[score_bucket] += 1
+                if any(reason.startswith("1H_") for reason in promotion_reasons):
+                    range_cycle_profit_candidate_context_entry_score_buckets[score_bucket] += 1
+                if any(reason.startswith("5M_") for reason in promotion_reasons):
+                    range_cycle_profit_candidate_timing_entry_score_buckets[score_bucket] += 1
+                if promotion_entry_score_threshold is not None:
+                    range_cycle_profit_candidate_entry_score_gap_buckets[
+                        _score_gap_bucket(promotion_entry_score - promotion_entry_score_threshold)
+                    ] += 1
+            is_confirmed_long_promotion = (
+                promotion_pending_direction is not None
+                and promotion_pending_direction > 0.0
+                and any(reason in {"1H_CONTEXT_CONFIRMED", "5M_TIMING_CONFIRMED"} for reason in promotion_reasons)
+            )
+            if is_confirmed_long_promotion:
+                range_cycle_profit_candidate_confirmed_long_promotion_bars += 1
+                range_cycle_profit_candidate_confirmed_long_target_reason_codes.update(target_codes)
+                range_cycle_profit_candidate_confirmed_long_promotion_reasons.update(promotion_reasons)
+                range_cycle_profit_candidate_confirmed_long_promotion_stages.update(promotion_stages)
+                range_cycle_profit_candidate_confirmed_long_promotion_context_sources[promotion_context_source] += 1
+                range_cycle_profit_candidate_confirmed_long_latest_age_buckets[
+                    _latest_promotion_age_bucket(promotion_latest_age_ns)
+                ] += 1
+                target_direction_bucket = _direction_bucket(target_qty)
+                range_cycle_profit_candidate_confirmed_long_target_directions[target_direction_bucket] += 1
+                range_cycle_profit_candidate_confirmed_long_target_actions[target_action] += 1
+                if target_qty > 0.0:
+                    range_cycle_profit_candidate_confirmed_long_target_bars += 1
+                else:
+                    range_cycle_profit_candidate_confirmed_long_blockers[
+                        "no_long_target_after_confirmed_promotion"
+                    ] += 1
+                    if target_qty == 0.0:
+                        range_cycle_profit_candidate_confirmed_long_blockers[
+                            "flat_target_after_confirmed_promotion"
+                        ] += 1
+                    if target_qty < 0.0:
+                        range_cycle_profit_candidate_confirmed_long_blockers[
+                            "short_target_after_confirmed_promotion"
+                        ] += 1
+                    if "HOLD_EXECUTION_POSITION" in target_codes:
+                        range_cycle_profit_candidate_confirmed_long_blockers[
+                            "hold_execution_position_after_confirmed_promotion"
+                        ] += 1
+                    if "NO_DIRECTION" in target_codes:
+                        range_cycle_profit_candidate_confirmed_long_blockers[
+                            "no_direction_after_confirmed_promotion"
+                        ] += 1
+                    if _risk_reduced_target(row):
+                        range_cycle_profit_candidate_confirmed_long_blockers[
+                            "risk_reduced_after_confirmed_promotion"
+                        ] += 1
+                    if bool(row.get("risk_reduce_only")) or bool(row.get("reduce_only")):
+                        range_cycle_profit_candidate_confirmed_long_blockers[
+                            "reduce_only_after_confirmed_promotion"
+                        ] += 1
+            if playbook_id not in {"RANGE_LIGHT", "BULL_CONTINUATION"}:
+                range_cycle_profit_candidate_blockers["playbook_not_bull_profit_allowed"] += 1
+            if quality_state == "UNSAFE":
+                range_cycle_profit_candidate_blockers["quality_unsafe"] += 1
+            if volatility_state == "DISTORTED":
+                range_cycle_profit_candidate_blockers["volatility_distorted"] += 1
+            if positioning_state == "CROWDED_LONG":
+                range_cycle_profit_candidate_blockers["positioning_crowded_long"] += 1
+            if transition_risk > 0.65:
+                range_cycle_profit_candidate_blockers["transition_risk_gt_0_65"] += 1
+            if direction_signal < 0.0:
+                range_cycle_profit_candidate_blockers["bearish_direction_signal"] += 1
+            if not promotion_reasons:
+                range_cycle_profit_candidate_blockers["no_intent_promotion_audit"] += 1
+            if any(reason.endswith("SCORE_TOO_WEAK") for reason in promotion_reasons):
+                range_cycle_profit_candidate_blockers["lower_timeframe_score_too_weak"] += 1
+            if "4H_PENDING_NO_DIRECTION" in promotion_reasons:
+                range_cycle_profit_candidate_blockers["4h_pending_no_direction"] += 1
+            if any("RANGE_ENTRY_CONFIRMATION_PENDING" in reason for reason in promotion_reasons):
+                range_cycle_profit_candidate_blockers["range_entry_confirmation_pending"] += 1
+            if any("COOLDOWN_PENDING" in reason for reason in promotion_reasons):
+                range_cycle_profit_candidate_blockers["range_reentry_cooldown_pending"] += 1
+            if any("PACK_MISSING" in reason for reason in promotion_reasons):
+                range_cycle_profit_candidate_blockers["lower_timeframe_pack_missing"] += 1
             if target_qty > 0.0:
                 range_cycle_profit_candidate_long_bars += 1
+            else:
+                range_cycle_profit_candidate_blockers["no_long_target"] += 1
         if regime == "TREND":
             trend_regime_bars += 1
         if "BULL" in playbook_id:
@@ -344,7 +492,7 @@ def build_bull_window_direction_exposure_attribution(
 
         for flag in _pipe_codes(row.get("risk_decision_flags") or row.get("risk_flags")):
             risk_flags[flag] += 1
-        target_reason_codes.update(_pipe_codes(row.get("target_reason_codes")))
+        target_reason_codes.update(target_codes)
         exit_reason_codes.update(_pipe_codes(row.get("exit_reason_codes")))
         for report in reports_by_ts.get(int(row.get("cutoff_time_ns", 0) or 0), []):
             execution_actions[str(report.get("action") or "none")] += 1
@@ -366,6 +514,14 @@ def build_bull_window_direction_exposure_attribution(
     long_when_range_cycle_profit_candidate_pct = _pct(
         range_cycle_profit_candidate_long_bars,
         range_cycle_profit_candidate_bars,
+    )
+    confirmed_long_promotion_when_range_cycle_profit_candidate_pct = _pct(
+        range_cycle_profit_candidate_confirmed_long_promotion_bars,
+        range_cycle_profit_candidate_bars,
+    )
+    long_when_confirmed_long_promotion_pct = _pct(
+        range_cycle_profit_candidate_confirmed_long_target_bars,
+        range_cycle_profit_candidate_confirmed_long_promotion_bars,
     )
     avg_abs_target_leverage = target_abs_leverage_sum / bar_count if bar_count else 0.0
     avg_long_target_leverage = long_target_leverage_sum / long_target_bars if long_target_bars else 0.0
@@ -434,6 +590,11 @@ def build_bull_window_direction_exposure_attribution(
             "positive_momentum_bar_pct": round(positive_momentum_bar_pct, 6),
             "range_cycle_profit_candidate_bar_pct": round(range_cycle_profit_candidate_bar_pct, 6),
             "long_when_range_cycle_profit_candidate_pct": round(long_when_range_cycle_profit_candidate_pct, 6),
+            "confirmed_long_promotion_when_range_cycle_profit_candidate_pct": round(
+                confirmed_long_promotion_when_range_cycle_profit_candidate_pct,
+                6,
+            ),
+            "long_when_confirmed_long_promotion_pct": round(long_when_confirmed_long_promotion_pct, 6),
             "avg_abs_target_leverage": round(avg_abs_target_leverage, 6),
             "avg_long_target_leverage": round(avg_long_target_leverage, 6),
             "exit_active_bar_pct": round(exit_active_bar_pct, 6),
@@ -452,6 +613,62 @@ def build_bull_window_direction_exposure_attribution(
             "top_risk_flags": dict(risk_flags.most_common(12)),
             "top_target_reason_codes": dict(target_reason_codes.most_common(12)),
             "top_exit_reason_codes": dict(exit_reason_codes.most_common(12)),
+            "range_cycle_profit_candidate_playbooks": dict(range_cycle_profit_candidate_playbooks.most_common(8)),
+            "range_cycle_profit_candidate_target_reason_codes": dict(
+                range_cycle_profit_candidate_target_reason_codes.most_common(12)
+            ),
+            "range_cycle_profit_candidate_promotion_reasons": dict(
+                range_cycle_profit_candidate_promotion_reasons.most_common(12)
+            ),
+            "range_cycle_profit_candidate_promotion_stages": dict(
+                range_cycle_profit_candidate_promotion_stages.most_common(8)
+            ),
+            "range_cycle_profit_candidate_pending_reason_codes": dict(
+                range_cycle_profit_candidate_pending_reason_codes.most_common(12)
+            ),
+            "range_cycle_profit_candidate_promotion_context_sources": dict(
+                range_cycle_profit_candidate_promotion_context_sources.most_common(4)
+            ),
+            "range_cycle_profit_candidate_promotion_entry_score_buckets": dict(
+                range_cycle_profit_candidate_promotion_entry_score_buckets.most_common(12)
+            ),
+            "range_cycle_profit_candidate_context_entry_score_buckets": dict(
+                range_cycle_profit_candidate_context_entry_score_buckets.most_common(12)
+            ),
+            "range_cycle_profit_candidate_timing_entry_score_buckets": dict(
+                range_cycle_profit_candidate_timing_entry_score_buckets.most_common(12)
+            ),
+            "range_cycle_profit_candidate_entry_score_gap_buckets": dict(
+                range_cycle_profit_candidate_entry_score_gap_buckets.most_common(12)
+            ),
+            "range_cycle_profit_candidate_no_direction_diagnostic_reason_codes": dict(
+                range_cycle_profit_candidate_no_direction_diagnostic_reason_codes.most_common(12)
+            ),
+            "range_cycle_profit_candidate_confirmed_long_promotion_reasons": dict(
+                range_cycle_profit_candidate_confirmed_long_promotion_reasons.most_common(12)
+            ),
+            "range_cycle_profit_candidate_confirmed_long_promotion_stages": dict(
+                range_cycle_profit_candidate_confirmed_long_promotion_stages.most_common(8)
+            ),
+            "range_cycle_profit_candidate_confirmed_long_promotion_context_sources": dict(
+                range_cycle_profit_candidate_confirmed_long_promotion_context_sources.most_common(4)
+            ),
+            "range_cycle_profit_candidate_confirmed_long_latest_age_buckets": dict(
+                range_cycle_profit_candidate_confirmed_long_latest_age_buckets.most_common(8)
+            ),
+            "range_cycle_profit_candidate_confirmed_long_target_directions": dict(
+                range_cycle_profit_candidate_confirmed_long_target_directions.most_common(4)
+            ),
+            "range_cycle_profit_candidate_confirmed_long_target_actions": dict(
+                range_cycle_profit_candidate_confirmed_long_target_actions.most_common(8)
+            ),
+            "range_cycle_profit_candidate_confirmed_long_target_reason_codes": dict(
+                range_cycle_profit_candidate_confirmed_long_target_reason_codes.most_common(12)
+            ),
+            "range_cycle_profit_candidate_confirmed_long_blockers": dict(
+                range_cycle_profit_candidate_confirmed_long_blockers.most_common(12)
+            ),
+            "range_cycle_profit_candidate_blockers": dict(range_cycle_profit_candidate_blockers.most_common(12)),
         },
         "diagnosis": {
             "primary_failure_mode": failure_flags[0] if failure_flags else None,
@@ -536,7 +753,30 @@ def build_bear_window_direction_exposure_attribution(
     range_bear_profit_candidate_short_bars = 0
     range_bear_profit_candidate_playbooks: Counter[str] = Counter()
     range_bear_profit_candidate_target_reason_codes: Counter[str] = Counter()
+    range_bear_profit_candidate_promotion_reasons: Counter[str] = Counter()
+    range_bear_profit_candidate_promotion_stages: Counter[str] = Counter()
+    range_bear_profit_candidate_pending_reason_codes: Counter[str] = Counter()
+    range_bear_profit_candidate_promotion_context_sources: Counter[str] = Counter()
+    range_bear_profit_candidate_promotion_entry_score_buckets: Counter[str] = Counter()
+    range_bear_profit_candidate_context_entry_score_buckets: Counter[str] = Counter()
+    range_bear_profit_candidate_timing_entry_score_buckets: Counter[str] = Counter()
+    range_bear_profit_candidate_entry_score_gap_buckets: Counter[str] = Counter()
+    range_bear_profit_candidate_no_direction_diagnostic_reason_codes: Counter[str] = Counter()
+    range_bear_profit_candidate_confirmed_short_promotion_bars = 0
+    range_bear_profit_candidate_confirmed_short_target_bars = 0
+    range_bear_profit_candidate_confirmed_short_target_directions: Counter[str] = Counter()
+    range_bear_profit_candidate_confirmed_short_target_actions: Counter[str] = Counter()
+    range_bear_profit_candidate_confirmed_short_target_reason_codes: Counter[str] = Counter()
+    range_bear_profit_candidate_confirmed_short_promotion_reasons: Counter[str] = Counter()
+    range_bear_profit_candidate_confirmed_short_promotion_stages: Counter[str] = Counter()
+    range_bear_profit_candidate_confirmed_short_promotion_context_sources: Counter[str] = Counter()
+    range_bear_profit_candidate_confirmed_short_latest_age_buckets: Counter[str] = Counter()
+    range_bear_profit_candidate_confirmed_short_blockers: Counter[str] = Counter()
     range_bear_profit_candidate_blockers: Counter[str] = Counter()
+    bear_carry_reason_codes: Counter[str] = Counter()
+    bear_carry_bars = 0
+    bear_carry_long_bars = 0
+    bear_carry_leverage_sum = 0.0
     trend_regime_bars = 0
     bear_playbook_bars = 0
     exit_active_bars = 0
@@ -587,6 +827,14 @@ def build_bear_window_direction_exposure_attribution(
         playbooks[playbook_id] += 1
         regimes[regime] += 1
         directional_states[directional_state] += 1
+        target_codes = _pipe_codes(row.get("target_reason_codes"))
+        bear_carry_codes = [code for code in target_codes if code.startswith("TIME_LEVERAGE_BEAR_CARRY")]
+        if bear_carry_codes:
+            bear_carry_bars += 1
+            bear_carry_reason_codes.update(bear_carry_codes)
+            bear_carry_leverage_sum += target_leverage
+            if target_qty > 0.0:
+                bear_carry_long_bars += 1
 
         is_downtrend = directional_state == "DOWNTREND"
         if is_downtrend:
@@ -628,6 +876,100 @@ def build_bear_window_direction_exposure_attribution(
             range_bear_profit_candidate_bars += 1
             range_bear_profit_candidate_playbooks[playbook_id] += 1
             range_bear_profit_candidate_target_reason_codes.update(_pipe_codes(row.get("target_reason_codes")))
+            promotion_reasons = _pipe_codes(row.get("intent_promotion_reasons"))
+            promotion_context_source = "exact_bar"
+            if not promotion_reasons:
+                promotion_reasons = _pipe_codes(row.get("intent_promotion_latest_reason"))
+                promotion_context_source = "latest_prior"
+            promotion_stages = _pipe_codes(row.get("intent_promotion_stages"))
+            if not promotion_stages:
+                promotion_stages = _pipe_codes(row.get("intent_promotion_latest_stage"))
+            pending_reason_codes = _pipe_codes(row.get("intent_promotion_pending_reason_codes"))
+            if not pending_reason_codes:
+                pending_reason_codes = _pipe_codes(row.get("intent_promotion_latest_pending_reason_codes"))
+            if promotion_context_source == "exact_bar":
+                promotion_entry_score = _optional_float(row, "intent_promotion_entry_score")
+                promotion_entry_score_threshold = _optional_float(row, "intent_promotion_entry_score_threshold")
+                promotion_pending_direction = _optional_float(row, "intent_promotion_pending_direction")
+                promotion_diagnostic_reason_codes = _pipe_codes(row.get("intent_promotion_diagnostic_reason_codes"))
+                promotion_latest_age_ns = None
+            else:
+                promotion_entry_score = _optional_float(row, "intent_promotion_latest_entry_score")
+                promotion_entry_score_threshold = _optional_float(row, "intent_promotion_latest_entry_score_threshold")
+                promotion_pending_direction = _optional_float(row, "intent_promotion_latest_pending_direction")
+                promotion_diagnostic_reason_codes = _pipe_codes(
+                    row.get("intent_promotion_latest_diagnostic_reason_codes")
+                )
+                promotion_latest_age_ns = _optional_float(row, "intent_promotion_latest_age_ns")
+            range_bear_profit_candidate_promotion_reasons.update(promotion_reasons)
+            range_bear_profit_candidate_promotion_stages.update(promotion_stages)
+            range_bear_profit_candidate_pending_reason_codes.update(pending_reason_codes)
+            if "4H_PENDING_NO_DIRECTION" in promotion_reasons:
+                range_bear_profit_candidate_no_direction_diagnostic_reason_codes.update(
+                    promotion_diagnostic_reason_codes
+                )
+            if promotion_reasons:
+                range_bear_profit_candidate_promotion_context_sources[promotion_context_source] += 1
+            if promotion_entry_score is not None:
+                score_bucket = _score_bucket(promotion_entry_score)
+                range_bear_profit_candidate_promotion_entry_score_buckets[score_bucket] += 1
+                if any(reason.startswith("1H_") for reason in promotion_reasons):
+                    range_bear_profit_candidate_context_entry_score_buckets[score_bucket] += 1
+                if any(reason.startswith("5M_") for reason in promotion_reasons):
+                    range_bear_profit_candidate_timing_entry_score_buckets[score_bucket] += 1
+                if promotion_entry_score_threshold is not None:
+                    range_bear_profit_candidate_entry_score_gap_buckets[
+                        _score_gap_bucket(promotion_entry_score - promotion_entry_score_threshold)
+                    ] += 1
+            is_confirmed_short_promotion = (
+                promotion_pending_direction is not None
+                and promotion_pending_direction < 0.0
+                and any(reason in {"1H_CONTEXT_CONFIRMED", "5M_TIMING_CONFIRMED"} for reason in promotion_reasons)
+            )
+            if is_confirmed_short_promotion:
+                range_bear_profit_candidate_confirmed_short_promotion_bars += 1
+                range_bear_profit_candidate_confirmed_short_target_reason_codes.update(
+                    _pipe_codes(row.get("target_reason_codes"))
+                )
+                range_bear_profit_candidate_confirmed_short_promotion_reasons.update(promotion_reasons)
+                range_bear_profit_candidate_confirmed_short_promotion_stages.update(promotion_stages)
+                range_bear_profit_candidate_confirmed_short_promotion_context_sources[promotion_context_source] += 1
+                range_bear_profit_candidate_confirmed_short_latest_age_buckets[
+                    _latest_promotion_age_bucket(promotion_latest_age_ns)
+                ] += 1
+                target_direction_bucket = _direction_bucket(target_qty)
+                range_bear_profit_candidate_confirmed_short_target_directions[target_direction_bucket] += 1
+                range_bear_profit_candidate_confirmed_short_target_actions[target_action] += 1
+                if target_qty < 0.0:
+                    range_bear_profit_candidate_confirmed_short_target_bars += 1
+                else:
+                    range_bear_profit_candidate_confirmed_short_blockers[
+                        "no_short_target_after_confirmed_promotion"
+                    ] += 1
+                    if target_qty == 0.0:
+                        range_bear_profit_candidate_confirmed_short_blockers[
+                            "flat_target_after_confirmed_promotion"
+                        ] += 1
+                    if target_qty > 0.0:
+                        range_bear_profit_candidate_confirmed_short_blockers[
+                            "long_target_after_confirmed_promotion"
+                        ] += 1
+                    if "HOLD_EXECUTION_POSITION" in target_codes:
+                        range_bear_profit_candidate_confirmed_short_blockers[
+                            "hold_execution_position_after_confirmed_promotion"
+                        ] += 1
+                    if "NO_DIRECTION" in target_codes:
+                        range_bear_profit_candidate_confirmed_short_blockers[
+                            "no_direction_after_confirmed_promotion"
+                        ] += 1
+                    if _risk_reduced_target(row):
+                        range_bear_profit_candidate_confirmed_short_blockers[
+                            "risk_reduced_after_confirmed_promotion"
+                        ] += 1
+                    if bool(row.get("risk_reduce_only")) or bool(row.get("reduce_only")):
+                        range_bear_profit_candidate_confirmed_short_blockers[
+                            "reduce_only_after_confirmed_promotion"
+                        ] += 1
             if playbook_id not in {"RANGE_LIGHT", "BEAR_DEFENSE"}:
                 range_bear_profit_candidate_blockers["playbook_not_bear_profit_allowed"] += 1
             if quality_state == "UNSAFE":
@@ -640,6 +982,20 @@ def build_bear_window_direction_exposure_attribution(
                 range_bear_profit_candidate_blockers["transition_risk_gt_0_65"] += 1
             if direction_signal > 0.0:
                 range_bear_profit_candidate_blockers["bullish_direction_signal"] += 1
+            if not promotion_reasons:
+                range_bear_profit_candidate_blockers["no_intent_promotion_audit"] += 1
+            if any(reason.endswith("SCORE_TOO_WEAK") for reason in promotion_reasons):
+                range_bear_profit_candidate_blockers["lower_timeframe_score_too_weak"] += 1
+            if "4H_PENDING_NO_DIRECTION" in promotion_reasons:
+                range_bear_profit_candidate_blockers["4h_pending_no_direction"] += 1
+            if any("RANGE_ENTRY_CONFIRMATION_PENDING" in reason for reason in promotion_reasons):
+                range_bear_profit_candidate_blockers["range_entry_confirmation_pending"] += 1
+            if any("COOLDOWN_PENDING" in reason for reason in promotion_reasons):
+                range_bear_profit_candidate_blockers["range_reentry_cooldown_pending"] += 1
+            if any("CHOP_GUARD_PENDING" in reason for reason in promotion_reasons):
+                range_bear_profit_candidate_blockers["bearish_override_chop_guard_pending"] += 1
+            if any("PACK_MISSING" in reason for reason in promotion_reasons):
+                range_bear_profit_candidate_blockers["lower_timeframe_pack_missing"] += 1
             if target_qty < 0.0:
                 range_bear_profit_candidate_short_bars += 1
             else:
@@ -688,8 +1044,19 @@ def build_bear_window_direction_exposure_attribution(
         range_bear_profit_candidate_short_bars,
         range_bear_profit_candidate_bars,
     )
+    confirmed_short_promotion_when_range_bear_profit_candidate_pct = _pct(
+        range_bear_profit_candidate_confirmed_short_promotion_bars,
+        range_bear_profit_candidate_bars,
+    )
+    short_when_confirmed_short_promotion_pct = _pct(
+        range_bear_profit_candidate_confirmed_short_target_bars,
+        range_bear_profit_candidate_confirmed_short_promotion_bars,
+    )
     avg_abs_target_leverage = target_abs_leverage_sum / bar_count if bar_count else 0.0
     avg_short_target_leverage = short_target_leverage_sum / short_target_bars if short_target_bars else 0.0
+    bear_carry_bar_pct = _pct(bear_carry_bars, bar_count)
+    long_when_bear_carry_pct = _pct(bear_carry_long_bars, bear_carry_bars)
+    avg_bear_carry_target_leverage = bear_carry_leverage_sum / bear_carry_bars if bear_carry_bars else 0.0
     exit_active_bar_pct = _pct(exit_active_bars, bar_count)
     risk_reduced_bar_pct = _pct(risk_reduced_bars, bar_count)
     target_reduce_action_pct = _pct(target_reduce_bars, bar_count)
@@ -761,6 +1128,14 @@ def build_bear_window_direction_exposure_attribution(
             "long_when_range_cycle_profit_candidate_pct": round(long_when_range_cycle_profit_candidate_pct, 6),
             "range_bear_profit_candidate_bar_pct": round(range_bear_profit_candidate_bar_pct, 6),
             "short_when_range_bear_profit_candidate_pct": round(short_when_range_bear_profit_candidate_pct, 6),
+            "confirmed_short_promotion_when_range_bear_profit_candidate_pct": round(
+                confirmed_short_promotion_when_range_bear_profit_candidate_pct,
+                6,
+            ),
+            "short_when_confirmed_short_promotion_pct": round(short_when_confirmed_short_promotion_pct, 6),
+            "bear_carry_bar_pct": round(bear_carry_bar_pct, 6),
+            "long_when_bear_carry_pct": round(long_when_bear_carry_pct, 6),
+            "avg_bear_carry_target_leverage": round(avg_bear_carry_target_leverage, 6),
             "avg_abs_target_leverage": round(avg_abs_target_leverage, 6),
             "avg_short_target_leverage": round(avg_short_target_leverage, 6),
             "exit_active_bar_pct": round(exit_active_bar_pct, 6),
@@ -783,7 +1158,59 @@ def build_bear_window_direction_exposure_attribution(
             "range_bear_profit_candidate_target_reason_codes": dict(
                 range_bear_profit_candidate_target_reason_codes.most_common(12)
             ),
+            "range_bear_profit_candidate_promotion_reasons": dict(
+                range_bear_profit_candidate_promotion_reasons.most_common(12)
+            ),
+            "range_bear_profit_candidate_promotion_stages": dict(
+                range_bear_profit_candidate_promotion_stages.most_common(8)
+            ),
+            "range_bear_profit_candidate_pending_reason_codes": dict(
+                range_bear_profit_candidate_pending_reason_codes.most_common(12)
+            ),
+            "range_bear_profit_candidate_promotion_context_sources": dict(
+                range_bear_profit_candidate_promotion_context_sources.most_common(4)
+            ),
+            "range_bear_profit_candidate_promotion_entry_score_buckets": dict(
+                range_bear_profit_candidate_promotion_entry_score_buckets.most_common(12)
+            ),
+            "range_bear_profit_candidate_context_entry_score_buckets": dict(
+                range_bear_profit_candidate_context_entry_score_buckets.most_common(12)
+            ),
+            "range_bear_profit_candidate_timing_entry_score_buckets": dict(
+                range_bear_profit_candidate_timing_entry_score_buckets.most_common(12)
+            ),
+            "range_bear_profit_candidate_entry_score_gap_buckets": dict(
+                range_bear_profit_candidate_entry_score_gap_buckets.most_common(12)
+            ),
+            "range_bear_profit_candidate_no_direction_diagnostic_reason_codes": dict(
+                range_bear_profit_candidate_no_direction_diagnostic_reason_codes.most_common(12)
+            ),
+            "range_bear_profit_candidate_confirmed_short_promotion_reasons": dict(
+                range_bear_profit_candidate_confirmed_short_promotion_reasons.most_common(12)
+            ),
+            "range_bear_profit_candidate_confirmed_short_promotion_stages": dict(
+                range_bear_profit_candidate_confirmed_short_promotion_stages.most_common(8)
+            ),
+            "range_bear_profit_candidate_confirmed_short_promotion_context_sources": dict(
+                range_bear_profit_candidate_confirmed_short_promotion_context_sources.most_common(4)
+            ),
+            "range_bear_profit_candidate_confirmed_short_latest_age_buckets": dict(
+                range_bear_profit_candidate_confirmed_short_latest_age_buckets.most_common(8)
+            ),
+            "range_bear_profit_candidate_confirmed_short_target_directions": dict(
+                range_bear_profit_candidate_confirmed_short_target_directions.most_common(4)
+            ),
+            "range_bear_profit_candidate_confirmed_short_target_actions": dict(
+                range_bear_profit_candidate_confirmed_short_target_actions.most_common(8)
+            ),
+            "range_bear_profit_candidate_confirmed_short_target_reason_codes": dict(
+                range_bear_profit_candidate_confirmed_short_target_reason_codes.most_common(12)
+            ),
+            "range_bear_profit_candidate_confirmed_short_blockers": dict(
+                range_bear_profit_candidate_confirmed_short_blockers.most_common(12)
+            ),
             "range_bear_profit_candidate_blockers": dict(range_bear_profit_candidate_blockers.most_common(12)),
+            "bear_carry_reason_codes": dict(bear_carry_reason_codes.most_common(8)),
         },
         "diagnosis": {
             "primary_failure_mode": failure_flags[0] if failure_flags else None,
@@ -1306,6 +1733,70 @@ def _pipe_codes(value: Any) -> list[str]:
     if not value:
         return []
     return [part for part in str(value).split("|") if part]
+
+
+def _optional_float(row: dict[str, Any], key: str) -> float | None:
+    if key not in row:
+        return None
+    value = row.get(key)
+    if value is None or value == "":
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _score_bucket(score: float) -> str:
+    if score < 0.10:
+        return "lt_0_10"
+    if score < 0.20:
+        return "0_10_0_20"
+    if score < 0.30:
+        return "0_20_0_30"
+    if score < 0.35:
+        return "0_30_0_35"
+    if score < 0.40:
+        return "0_35_0_40"
+    if score < 0.45:
+        return "0_40_0_45"
+    if score < 0.50:
+        return "0_45_0_50"
+    return "gte_0_50"
+
+
+def _score_gap_bucket(score_gap: float) -> str:
+    if score_gap <= -0.30:
+        return "lte_neg_0_30"
+    if score_gap <= -0.20:
+        return "neg_0_30_neg_0_20"
+    if score_gap <= -0.10:
+        return "neg_0_20_neg_0_10"
+    if score_gap < 0.0:
+        return "neg_0_10_0_00"
+    return "gte_0_00"
+
+
+def _direction_bucket(qty: float) -> str:
+    if qty < 0.0:
+        return "short"
+    if qty > 0.0:
+        return "long"
+    return "flat"
+
+
+def _latest_promotion_age_bucket(age_ns: float | None) -> str:
+    if age_ns is None:
+        return "exact_bar"
+    if age_ns < 5 * 60 * 1_000_000_000:
+        return "lt_5m"
+    if age_ns < 60 * 60 * 1_000_000_000:
+        return "5m_1h"
+    if age_ns < 4 * 60 * 60 * 1_000_000_000:
+        return "1h_4h"
+    if age_ns < 24 * 60 * 60 * 1_000_000_000:
+        return "4h_1d"
+    return "gte_1d"
 
 
 def _has_exit_code(codes: list[str]) -> bool:
