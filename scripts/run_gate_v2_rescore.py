@@ -23,6 +23,7 @@ from zenquant.research.framework_search import FrameworkEvaluator
 from zenquant.research.gate_v2 import DEFAULT_COST_BPS, build_campaign_verdict
 from zenquant.research.legacy_accounting_validity import (
     DEFAULT_ACCOUNTING_VALIDITY_REGISTRY,
+    REPOSITORY_ROOT,
     assert_metric_family_allowed,
     load_accounting_validity_registry,
 )
@@ -72,8 +73,10 @@ def load_candidate_manifest(
     path: Path,
     *,
     validity_registry_path: Path = DEFAULT_ACCOUNTING_VALIDITY_REGISTRY,
+    repository_root: Path = REPOSITORY_ROOT,
 ) -> list[CandidateRecord]:
     """Load ranked train/dev candidates while failing closed on test evidence."""
+    repository_root = repository_root.resolve()
     manifest = _read_json(path)
     entries = manifest.get("candidates")
     if not isinstance(entries, list) or not entries:
@@ -99,7 +102,8 @@ def load_candidate_manifest(
         if kind != "ranked_params":
             raise ValueError(f"unsupported_candidate_kind:{kind}")
 
-        source = Path(str(entry.get("source") or ""))
+        source_input = Path(str(entry.get("source") or ""))
+        source = (source_input if source_input.is_absolute() else repository_root / source_input).resolve(strict=False)
         selector = str(entry.get("selector") or "")
         rank = int(entry.get("rank") or 0)
         if not source.is_file():
@@ -107,15 +111,19 @@ def load_candidate_manifest(
         if not selector or rank < 1:
             raise ValueError(f"candidate_selector_and_positive_rank_required:{name}")
         if validity_registry is None:
-            validity_registry = load_accounting_validity_registry(validity_registry_path)
-        registered_records = validity_registry.records_for_artifact(str(source))
-        source_sha256 = _sha256_file(source) if registered_records else None
+            validity_registry = load_accounting_validity_registry(
+                validity_registry_path,
+                repository_root=repository_root,
+            )
+        source_sha256 = _sha256_file(source)
+        selected_selector = f"{selector}[{rank - 1}].params"
         assert_metric_family_allowed(
             validity_registry,
             artifact_path=str(source),
             source_sha256=source_sha256,
             metric_family="promotion_gate",
             stage="A0",
+            selector=selected_selector,
         )
         source_payload = _read_json(source)
         _reject_frozen_test_source(source_payload, source=source)
