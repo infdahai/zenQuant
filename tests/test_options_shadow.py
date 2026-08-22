@@ -301,6 +301,26 @@ def test_counterfactual_reports_observational_oos_buckets_with_unknown_separate(
     assert report.by_trend_quality["CONFIRMING"].trend_return_retention == pytest.approx(0.4)
 
 
+def test_counterfactual_cannot_be_sufficient_when_every_quality_bucket_is_insufficient():
+    """Catches total coverage being mislabeled as quality-conditioned evidence."""
+    observations = tuple(
+        OptionsShadowObservation(
+            CUTOFF_NS + index * FOUR_HOURS_NS,
+            f"state-{index}",
+            ("CONFIRMING", "NEUTRAL", "FRAGILE", "STRESS")[index % 4],
+            "HOSTILE" if index % 2 == 0 else "BULL",
+            -0.01 if index % 2 == 0 else 0.02,
+        )
+        for index in range(30)
+    )
+
+    report = build_options_shadow_counterfactual(observations, oos_label="late_dev_2025")
+
+    assert report.off.status == "SUFFICIENT"
+    assert all(bucket.status == "INSUFFICIENT_SAMPLE" for bucket in report.by_trend_quality.values())
+    assert report.status == "INSUFFICIENT_SAMPLE"
+
+
 def _stage_row(cutoff_ns: int, forward_return: float) -> ArchitectureStageExecutionRow:
     return ArchitectureStageExecutionRow(
         cutoff_time_ns=cutoff_ns,
@@ -326,6 +346,7 @@ def _stage_row(cutoff_ns: int, forward_return: float) -> ArchitectureStageExecut
         forward_return_1=forward_return,
         forward_return_3=None,
         forward_return_6=None,
+        forward_return_1_available_at_ns=cutoff_ns + FOUR_HOURS_NS,
     )
 
 
@@ -338,6 +359,7 @@ def _oos_evidence(*, window: str = "late_dev_2025") -> ArchitectureRunEvidence:
         raw_score=0.4,
         frozen_confidence=0.75,
         forward_return=0.08,
+        forward_return_available_at_ns=CUTOFF_NS + FOUR_HOURS_NS,
         formula_hash="formula-v2",
         alpha_config_hash="alpha-config-v2",
         annualized_volatility=0.4,
@@ -361,6 +383,7 @@ def _oos_evidence(*, window: str = "late_dev_2025") -> ArchitectureRunEvidence:
         missing_alpha_count=0,
         terminal_excluded_count=0,
         stage_execution_rows_by_stage={"A4": (row,), "A5_SHADOW": (row,)},
+        window_role="OOS",
     )
 
 
@@ -379,7 +402,7 @@ def test_real_oos_adapter_joins_options_store_and_returns_insufficient_artifact_
     assert artifact["sample_count"] == 1
     assert artifact["known_sample_count"] == 0
     assert artifact["unknown_sample_count"] == 1
-    assert artifact["label_contract"] == "forward_return_1_available_at_cutoff_plus_1_confirmed_4h_bar"
+    assert artifact["label_contract"] == "forward_return_1_available_at_exact_next_retained_confirmed_4h_cutoff"
     assert artifact["rows"][0]["label_available_at_ns"] == CUTOFF_NS + FOUR_HOURS_NS
     assert artifact["identities"]["manifest"] == "manifest-sha256"
     assert artifact["identities"]["donor_config"] == "donor-config"
@@ -407,15 +430,35 @@ def test_oos_adapter_rejects_a5_target_drift_from_a4():
         )
 
 
-def test_oos_adapter_marks_train_window_as_not_oos():
+def test_oos_adapter_rejects_any_a5_execution_row_drift_from_a4():
+    """Catches non-target execution evidence drifting under cost-only A5."""
+    evidence = _oos_evidence()
+    changed = replace(
+        evidence.stage_execution_rows_by_stage["A5_SHADOW"][0],
+        actual_implementation_shortfall=9.0,
+    )
+    evidence = replace(
+        evidence,
+        stage_execution_rows_by_stage={"A4": evidence.stage_execution_rows_by_stage["A4"], "A5_SHADOW": (changed,)},
+    )
+
+    with pytest.raises(ValueError, match="execution-material row"):
+        build_options_shadow_oos_artifact(
+            evidence,
+            options_store=OptionsDataStore(),
+            manifest_identity="manifest-sha256",
+        )
+
+
+def test_oos_adapter_marks_train_diagnostic_role_as_not_oos():
     """Catches in-sample evidence being presented as an OOS options result."""
     artifact = build_options_shadow_oos_artifact(
-        _oos_evidence(window="train_full"),
+        replace(_oos_evidence(window="2020"), window_role="TRAIN_DIAGNOSTIC"),
         options_store=OptionsDataStore(),
         manifest_identity="manifest-sha256",
     )
 
-    assert artifact["status"] == "NOT_OOS"
+    assert artifact["status"] == "TRAIN_DIAGNOSTIC"
     assert artifact["rows"] == []
 
 
@@ -432,6 +475,31 @@ def test_oos_adapter_excludes_forward_label_available_after_window_end():
     assert artifact["status"] == "INSUFFICIENT_SAMPLE"
     assert artifact["sample_count"] == 0
     assert artifact["rows"] == []
+
+
+def test_oos_adapter_uses_exact_retained_label_availability_after_dropout():
+    """Catches assuming the next retained confirmed bar is always cutoff plus 4h."""
+    evidence = _oos_evidence()
+    actual_available_at = CUTOFF_NS + 2 * FOUR_HOURS_NS
+    observation = replace(evidence.observations[0], forward_return_available_at_ns=actual_available_at)
+    a4 = replace(evidence.stage_execution_rows_by_stage["A4"][0], forward_return_1_available_at_ns=actual_available_at)
+    a5 = replace(
+        evidence.stage_execution_rows_by_stage["A5_SHADOW"][0], forward_return_1_available_at_ns=actual_available_at
+    )
+    evidence = replace(
+        evidence,
+        end_ns=CUTOFF_NS + FOUR_HOURS_NS,
+        observations=(observation,),
+        stage_execution_rows_by_stage={"A4": (a4,), "A5_SHADOW": (a5,)},
+    )
+
+    artifact = build_options_shadow_oos_artifact(
+        evidence,
+        options_store=OptionsDataStore(),
+        manifest_identity="manifest-sha256",
+    )
+
+    assert artifact["sample_count"] == 0
 
 
 def test_strategy_risk_and_execution_cannot_import_or_read_shadow_multiplier():
@@ -622,3 +690,43 @@ def test_live_runtime_and_app_use_explicit_local_options_store_seam(tmp_path):
     app = create_app(runtime_mode="live", options_state_shadow_config=config)
     assert app.state.zenquant_runtime.options_shadow_observer.config.enabled is True
     assert isinstance(app.state.zenquant_runtime.options_shadow_store, OptionsDataStore)
+
+
+def test_live_store_refreshes_when_collector_adds_parquet_after_startup(tmp_path):
+    """Catches a long-running live shadow staying frozen at startup files."""
+    options_dir = tmp_path / "deribit"
+    runtime = ZenQuantWebRuntime(
+        runtime_mode="live",
+        options_state_shadow_config=OptionsStateShadowRuntimeConfig(enabled=True, options_dir=options_dir),
+    )
+    assert runtime.options_shadow_store is not None
+    assert runtime.options_shadow_store.snapshot_count == 0
+    rows = []
+    day_ns = 86_400 * 1_000_000_000
+    for dte in (7, 30, 90):
+        for strike in (80.0, 100.0, 120.0):
+            for option_type in ("call", "put"):
+                rows.append(
+                    {
+                        "snapshot_ts_ns": CUTOFF_NS,
+                        "currency": "BTC",
+                        "instrument_name": f"BTC-{dte}D-{strike:g}-{option_type[0].upper()}",
+                        "expiry_ts_ms": (CUTOFF_NS + dte * day_ns) // 1_000_000,
+                        "strike": strike,
+                        "option_type": option_type,
+                        "underlying_price": 60_000.0,
+                        "open_interest": 100.0,
+                        "mark_iv": 60.0,
+                    }
+                )
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    path = options_dir / "BTC" / "2026-08" / "new.parquet"
+    path.parent.mkdir(parents=True)
+    pq.write_table(pa.Table.from_pylist(rows), path)
+
+    state = runtime._resolve_live_options_state(_snapshot())
+
+    assert runtime.options_shadow_store.snapshot_count == 1
+    assert state.source_timestamp_ns == CUTOFF_NS

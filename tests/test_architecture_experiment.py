@@ -227,6 +227,11 @@ def test_matrix_entry_sources_a0_only_from_original_runner(monkeypatch):
         "run_frozen_stage_sidecars",
         lambda runner, *, config, manifest: ((observation,), {}, {}),
     )
+    monkeypatch.setattr(
+        module,
+        "build_options_shadow_oos_artifact",
+        lambda evidence, *, options_store, manifest_identity: {"status": "INSUFFICIENT_SAMPLE"},
+    )
 
     evidence = module.run_frozen_matrix_entry(root=Path("/data"), manifest=manifest, window=window, seed=42)
 
@@ -426,6 +431,7 @@ def _run_evidence(
         a0_final_equity=100_000.0 + seed,
         a0_config_hash="a0-config-v1",
         donor_config_hash="donor-config-v1",
+        window_role=window.role,
         observations=resolved_observations,
         excluded_non_evaluable_count=1,
         confirmed_4h_row_count=alpha_snapshot_count,
@@ -1288,6 +1294,7 @@ def test_report_requires_exact_matrix_and_carries_frozen_identities():
         "label": "train_full",
         "start_ns": 1577836800000000000,
         "end_ns": 1704067200000000000,
+        "role": "TRAIN",
     }
     assert report["manifest"]["seeds"] == [42, 123, 456, 789, 1024]
     assert report["manifest"]["perturbation"] == manifest.perturbation
@@ -1372,17 +1379,127 @@ def test_report_embeds_real_options_shadow_artifact_per_oos_run():
     assert embedded["schema_version"] == "options-shadow-counterfactual-v1"
     assert report["options_shadow_stability"] == {
         "status": "INSUFFICIENT_SAMPLE",
+        "coverage_status": "INSUFFICIENT_SAMPLE",
+        "stability_status": "INSUFFICIENT_SAMPLE",
         "required_sufficient_seeds_per_oos_window": 4,
-        "oos_window_seed_counts": {"2020": 0, "2021": 0, "2022": 0, "2023": 0, "late_dev_2025": 1},
-        "oos_window_sufficient_seed_counts": {
-            "2020": 0,
-            "2021": 0,
-            "2022": 0,
-            "2023": 0,
-            "late_dev_2025": 0,
-        },
+        "oos_window_seed_counts": {"late_dev_2025": 1},
+        "oos_window_sufficient_seed_counts": {"late_dev_2025": 0},
+        "quality_stability": {},
         "activation_recommendation": None,
     }
+
+
+def test_manifest_assigns_explicit_frozen_window_roles():
+    """Catches train diagnostic slices entering the OOS options gate."""
+    manifest = load_architecture_experiment_manifest()
+
+    assert {window.label: window.role for window in manifest.windows} == {
+        "train_full": "TRAIN",
+        "2020": "TRAIN_DIAGNOSTIC",
+        "2021": "TRAIN_DIAGNOSTIC",
+        "2022": "TRAIN_DIAGNOSTIC",
+        "2023": "TRAIN_DIAGNOSTIC",
+        "late_dev_2025": "OOS",
+    }
+
+
+def test_options_shadow_stability_requires_cross_seed_metric_consistency():
+    """Catches five contradictory sufficient reports being called stable."""
+    manifest = load_architecture_experiment_manifest()
+    runs = _complete_matrix()
+    for index, run in enumerate(runs):
+        if run.window != "late_dev_2025":
+            continue
+        retention = -0.8 if run.seed == 1024 else 0.8
+        metrics = {
+            "status": "SUFFICIENT",
+            "hostile_max_drawdown": 0.10,
+            "cvar_95": -0.04,
+            "tail_loss_mean": -0.05,
+            "trend_return_retention": retention,
+        }
+        runs[index] = replace(
+            run,
+            options_shadow_report={
+                "status": "SUFFICIENT",
+                "report": {"by_trend_quality": {"CONFIRMING": metrics}},
+            },
+        )
+
+    report = build_architecture_attribution_report(runs, manifest=manifest, fixed_notional=100_000.0)
+
+    stability = report["options_shadow_stability"]
+    assert stability["coverage_status"] == "SUFFICIENT"
+    assert stability["quality_stability"]["CONFIRMING"]["status"] == "UNSTABLE"
+    assert stability["stability_status"] == "INSUFFICIENT_SAMPLE"
+    assert stability["status"] == "INSUFFICIENT_SAMPLE"
+
+
+def test_options_shadow_stability_ignores_buckets_from_insufficient_seed_artifacts():
+    """Catches a locally populated bucket bypassing the run-level OOS sample gate."""
+    manifest = load_architecture_experiment_manifest()
+    runs = _complete_matrix()
+    for index, run in enumerate(runs):
+        if run.window != "late_dev_2025":
+            continue
+        runs[index] = replace(
+            run,
+            options_shadow_report={
+                "status": "INSUFFICIENT_SAMPLE",
+                "report": {
+                    "by_trend_quality": {
+                        "CONFIRMING": {
+                            "status": "SUFFICIENT",
+                            "hostile_max_drawdown": 0.10,
+                            "cvar_95": -0.04,
+                            "tail_loss_mean": -0.05,
+                            "trend_return_retention": 0.80,
+                        }
+                    }
+                },
+            },
+        )
+
+    report = build_architecture_attribution_report(runs, manifest=manifest, fixed_notional=100_000.0)
+
+    stability = report["options_shadow_stability"]
+    assert stability["quality_stability"] == {}
+    assert stability["stability_status"] == "INSUFFICIENT_SAMPLE"
+
+
+def test_options_shadow_quality_stability_reports_less_than_four_seeds_as_insufficient():
+    """Catches sparse cross-seed evidence being mislabeled as contradictory evidence."""
+    manifest = load_architecture_experiment_manifest()
+    runs = _complete_matrix()
+    sufficient_seeds = set(manifest.seeds[:3])
+    for index, run in enumerate(runs):
+        if run.window != "late_dev_2025":
+            continue
+        status = "SUFFICIENT" if run.seed in sufficient_seeds else "INSUFFICIENT_SAMPLE"
+        runs[index] = replace(
+            run,
+            options_shadow_report={
+                "status": status,
+                "report": {
+                    "by_trend_quality": {
+                        "CONFIRMING": {
+                            "status": "SUFFICIENT",
+                            "hostile_max_drawdown": 0.10,
+                            "cvar_95": -0.04,
+                            "tail_loss_mean": -0.05,
+                            "trend_return_retention": 0.80,
+                        }
+                    }
+                },
+            },
+        )
+
+    report = build_architecture_attribution_report(runs, manifest=manifest, fixed_notional=100_000.0)
+
+    stability = report["options_shadow_stability"]
+    assert stability["quality_stability"]["CONFIRMING"]["status"] == "INSUFFICIENT_SAMPLE"
+    assert stability["quality_stability"]["CONFIRMING"]["sufficient_seed_count"] == 3
+    assert stability["stability_status"] == "INSUFFICIENT_SAMPLE"
 
 
 @pytest.mark.parametrize("mutation", ["missing", "duplicate", "extra", "empty"])
@@ -1525,6 +1642,7 @@ def test_replay_bridge_uses_confirmed_4h_rows_and_excludes_terminal_alpha():
                 "raw_score": -0.4,
                 "frozen_confidence": 0.6,
                 "forward_return": 0.1,
+                "forward_return_available_at_ns": 200,
                 "formula_hash": "formula-v1",
                 "alpha_config_hash": "alpha-config-v1",
             }
