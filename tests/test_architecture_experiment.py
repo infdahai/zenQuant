@@ -44,6 +44,7 @@ from zenquant.research.architecture_stage_replay import (
     ArchitectureFundingSettlement,
     run_architecture_stage_replay,
 )
+from zenquant.research.gate_v3 import calculate_episode_profit_factor
 from zenquant.strategy.decision_snapshot import build_decision_snapshot
 from zenquant.strategy.engine import ARCStrategyConfig, ARCStrategyEngine
 
@@ -225,7 +226,7 @@ def test_matrix_entry_sources_a0_only_from_original_runner(monkeypatch):
     monkeypatch.setattr(
         module,
         "run_frozen_stage_sidecars",
-        lambda runner, *, config, manifest: ((observation,), {}, {}),
+        lambda runner, *, config, manifest: ((observation,), {}, {}, {}),
     )
     monkeypatch.setattr(
         module,
@@ -949,6 +950,44 @@ def test_stage_replay_allocates_visible_funding_to_position_episode():
     )
 
 
+def test_stage_replay_preserves_closed_and_open_position_episodes():
+    observations = tuple(
+        replace(
+            _observation(
+                alpha_id=f"alpha-{cutoff}",
+                cutoff_time_ns=cutoff,
+                raw_score=raw_score,
+            ),
+            annualized_volatility=0.20,
+            risk_regime="NORMAL",
+            frozen_regime_multiplier=1.0,
+            reference_price=price,
+        )
+        for cutoff, raw_score, price in (
+            (100, 0.4, 100.0),
+            (200, 0.0, 110.0),
+            (300, -0.4, 110.0),
+            (400, 0.0, 120.0),
+            (500, 0.4, 120.0),
+        )
+    )
+
+    replay = run_architecture_stage_replay(
+        observations,
+        stage=ArchitectureStage.A2,
+        fixed_notional=1_000.0,
+        symbol="BTCUSDT_PERP",
+        portfolio="arc",
+        max_trade_qty_per_bar=100.0,
+    )
+
+    assert len(replay.closed_episodes) == 2
+    assert len(replay.open_episodes) == 1
+    assert replay.position_episodes == (*replay.closed_episodes, *replay.open_episodes)
+    assert replay.open_episodes[0].closed is False
+    assert replay.open_episodes[0].remaining_qty > 0.0
+
+
 def test_cumulative_report_consumes_real_stage_rows_without_unobserved_metrics():
     observations = tuple(
         replace(
@@ -982,6 +1021,7 @@ def test_cumulative_report_consumes_real_stage_rows_without_unobserved_metrics()
         _run_evidence("train_full", 42, observations=observations),
         execution_metrics_by_stage={stage: replay.metrics for stage, replay in replays.items()},
         stage_execution_rows_by_stage={stage: replay.rows for stage, replay in replays.items()},
+        stage_position_episodes_by_stage={stage: replay.position_episodes for stage, replay in replays.items()},
     )
 
     report = build_architecture_attribution_report(
@@ -1012,6 +1052,64 @@ def test_cumulative_report_consumes_real_stage_rows_without_unobserved_metrics()
         expected_gross - expected_baseline_cost - expected_additional_15bp
     )
     assert stages["A5_SHADOW"]["cost_shadow"]["actual_shortfall_observation_count"] == 2
+
+
+def test_stage_serialized_closed_ledger_recomputes_reported_pf_and_excludes_open_episode():
+    observations = tuple(
+        replace(
+            _observation(
+                alpha_id=f"alpha-{cutoff}",
+                cutoff_time_ns=cutoff,
+                raw_score=raw_score,
+            ),
+            annualized_volatility=0.20,
+            risk_regime="NORMAL",
+            frozen_regime_multiplier=1.0,
+            reference_price=price,
+        )
+        for cutoff, raw_score, price in (
+            (100, 0.4, 100.0),
+            (200, 0.0, 110.0),
+            (300, -0.4, 110.0),
+            (400, 0.0, 120.0),
+            (500, 0.4, 120.0),
+        )
+    )
+    replay = run_architecture_stage_replay(
+        observations,
+        stage=ArchitectureStage.A5_SHADOW,
+        fixed_notional=1_000.0,
+        symbol="BTCUSDT_PERP",
+        portfolio="arc",
+        max_trade_qty_per_bar=100.0,
+    )
+    first = replace(
+        _run_evidence("train_full", 42, observations=observations),
+        execution_metrics_by_stage={ArchitectureStage.A5_SHADOW.value: replay.metrics},
+        stage_execution_rows_by_stage={ArchitectureStage.A5_SHADOW.value: replay.rows},
+        stage_position_episodes_by_stage={ArchitectureStage.A5_SHADOW.value: replay.position_episodes},
+    )
+
+    report = build_architecture_attribution_report(
+        _complete_matrix(replace_run=first),
+        manifest=load_architecture_experiment_manifest(),
+        fixed_notional=1_000.0,
+    )
+    stage = report["runs"][0]["stages"][ArchitectureStage.A5_SHADOW.value]
+    serialized = tuple(PositionEpisode(**item) for item in stage["position_episodes"])
+    closed = tuple(episode for episode in serialized if episode.closed)
+    open_episodes = tuple(episode for episode in serialized if not episode.closed)
+    recomputed = calculate_episode_profit_factor(closed)
+
+    assert len(closed) == 2
+    assert len(open_episodes) == 1
+    assert stage["episode_ledger"]["closed_episode_count"] == 2
+    assert stage["episode_ledger"]["open_episode_count"] == 1
+    assert recomputed.value == pytest.approx(stage["execution_metrics"]["episode_profit_factor"])
+    assert recomputed.status.value == stage["execution_metrics"]["episode_profit_factor_status"]
+    assert calculate_episode_profit_factor((*closed, replace(open_episodes[0], net_pnl=1e12))).value == pytest.approx(
+        recomputed.value
+    )
 
 
 def test_a5_shadow_records_costs_and_forward_labels_without_blocking():
@@ -1092,6 +1190,9 @@ def test_cumulative_report_carries_exact_task3_and_task4_execution_metrics():
     first = replace(
         _complete_matrix()[0],
         execution_metrics_by_stage={ArchitectureStage.A5_SHADOW.value: execution_metrics},
+        stage_position_episodes_by_stage={
+            ArchitectureStage.A5_SHADOW.value: (_gate_episode(1, 1.42), _gate_episode(2, -1.0))
+        },
     )
     report = build_architecture_attribution_report(
         _complete_matrix(replace_run=first),

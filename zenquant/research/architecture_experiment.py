@@ -20,9 +20,9 @@ from typing import Any
 
 from zenquant.domain import DecisionSnapshot, PositionEpisode
 
-from .gate_v3 import evaluate_gate_v3
+from .gate_v3 import calculate_episode_profit_factor, evaluate_gate_v3
 
-ARCHITECTURE_ATTRIBUTION_SCHEMA_VERSION = "architecture_attribution.v3"
+ARCHITECTURE_ATTRIBUTION_SCHEMA_VERSION = "architecture_attribution.v4"
 DEFAULT_COST_STRESS_BPS = (0.0, 5.0, 15.0)
 DEFAULT_ARCHITECTURE_MANIFEST_PATH = Path("config/research/architecture_experiment_v1.json")
 ARCHITECTURE_EXPERIMENT_V1_MANIFEST_SHA256 = "c982d074b24ec21235dfefbd972d936dc4f5a4ab0360964013576c90729bfbe0"
@@ -336,6 +336,7 @@ class ArchitectureRunEvidence:
     position_episodes: tuple[PositionEpisode, ...] = ()
     execution_metrics_by_stage: Mapping[str, ArchitectureExecutionMetrics] = field(default_factory=dict)
     stage_execution_rows_by_stage: Mapping[str, tuple[ArchitectureStageExecutionRow, ...]] = field(default_factory=dict)
+    stage_position_episodes_by_stage: Mapping[str, tuple[PositionEpisode, ...]] = field(default_factory=dict)
     options_shadow_report: Mapping[str, Any] | None = None
 
 
@@ -631,6 +632,11 @@ def build_architecture_attribution_report(
                 ),
             }
             _attach_execution_metrics(stages, evidence.execution_metrics_by_stage)
+            _attach_stage_position_episodes(
+                stages,
+                evidence.stage_position_episodes_by_stage,
+                evidence.execution_metrics_by_stage,
+            )
             runs.append(
                 {
                     "window": window.label,
@@ -1005,6 +1011,74 @@ def _attach_execution_metrics(
             if metrics is not None
             else {"status": "NOT_OBSERVED", **dict.fromkeys(metric_names)}
         )
+
+
+def _attach_stage_position_episodes(
+    stages: dict[str, dict[str, Any]],
+    episodes_by_stage: Mapping[str, tuple[PositionEpisode, ...]],
+    observed_metrics: Mapping[str, ArchitectureExecutionMetrics],
+) -> None:
+    """Serialize complete A2-A5 ledgers and prove PF parity before emission."""
+    tracked_stages = tuple(
+        stage.value
+        for stage in (
+            ArchitectureStage.A2,
+            ArchitectureStage.A3,
+            ArchitectureStage.A4,
+            ArchitectureStage.A5_SHADOW,
+        )
+    )
+    extra = sorted(set(episodes_by_stage) - set(tracked_stages))
+    if extra:
+        raise ValueError(f"position episode ledgers contain unapproved architecture stages: {extra!r}")
+    for stage in tracked_stages:
+        episodes = episodes_by_stage.get(stage)
+        metrics = observed_metrics.get(stage)
+        if episodes is None:
+            if metrics is not None:
+                raise ValueError(f"observed execution metrics are missing the {stage} position episode ledger")
+            stages[stage]["position_episodes"] = []
+            stages[stage]["episode_ledger"] = {
+                "status": "NOT_OBSERVED",
+                "closed_episode_count": 0,
+                "open_episode_count": 0,
+                "episode_profit_factor": None,
+                "episode_profit_factor_status": None,
+                "gross_profit": None,
+                "gross_loss": None,
+            }
+            continue
+        ordered = tuple(
+            episode
+            for _, episode in sorted(
+                enumerate(episodes),
+                key=lambda item: (item[1].opened_at_ns, item[1].symbol, item[0]),
+            )
+        )
+        pf = calculate_episode_profit_factor(ordered)
+        if metrics is None:
+            raise ValueError(f"{stage} position episode ledger is missing observed execution metrics")
+        if pf.status.value != metrics.episode_profit_factor_status or not _optional_float_equal(
+            pf.value,
+            metrics.episode_profit_factor,
+        ):
+            raise ValueError(f"{stage} serialized episode ledger does not reproduce execution profit factor")
+        stages[stage]["position_episodes"] = [asdict(episode) for episode in ordered]
+        stages[stage]["episode_ledger"] = {
+            "status": "OBSERVED",
+            "closed_episode_count": pf.closed_episode_count,
+            "open_episode_count": sum(1 for episode in ordered if not episode.closed),
+            "episode_profit_factor": pf.value,
+            "episode_profit_factor_status": pf.status.value,
+            "gross_profit": pf.gross_profit,
+            "gross_loss": pf.gross_loss,
+        }
+
+
+def _optional_float_equal(left: float | None, right: float | None) -> bool:
+    if left is None or right is None:
+        return left is right
+    return math.isclose(left, right, rel_tol=0.0, abs_tol=1e-12)
 
 
 def _cost_summary(

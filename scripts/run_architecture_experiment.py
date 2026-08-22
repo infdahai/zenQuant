@@ -12,7 +12,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from zenquant.domain import Timeframe
+from zenquant.domain import PositionEpisode, Timeframe
 from zenquant.domain.serde import to_jsonable
 from zenquant.historical import HistoricalBacktest, HistoricalBacktestConfig, PerturbationConfig
 from zenquant.research.architecture_experiment import (
@@ -182,6 +182,7 @@ def run_frozen_stage_sidecars(
     tuple[ArchitectureObservation, ...],
     dict[str, ArchitectureExecutionMetrics],
     dict[str, tuple[ArchitectureStageExecutionRow, ...]],
+    dict[str, tuple[PositionEpisode, ...]],
 ]:
     """Run A2-A5 from complete PIT 4h inputs through target_tracking_v2."""
     execution_config = config.execution_config or build_execution_config(dict(manifest.candidate_params))
@@ -193,6 +194,7 @@ def run_frozen_stage_sidecars(
     observations = tuple(observations_from_rows(batch["observations"]))
     metrics_by_stage: dict[str, ArchitectureExecutionMetrics] = {}
     rows_by_stage: dict[str, tuple[ArchitectureStageExecutionRow, ...]] = {}
+    episodes_by_stage: dict[str, tuple[PositionEpisode, ...]] = {}
     for stage in (
         ArchitectureStage.A2,
         ArchitectureStage.A3,
@@ -219,7 +221,8 @@ def run_frozen_stage_sidecars(
             )
         metrics_by_stage[stage.value] = replay.metrics
         rows_by_stage[stage.value] = replay.rows
-    return observations, metrics_by_stage, rows_by_stage
+        episodes_by_stage[stage.value] = replay.position_episodes
+    return observations, metrics_by_stage, rows_by_stage, episodes_by_stage
 
 
 def run_frozen_matrix_entry(
@@ -247,7 +250,7 @@ def run_frozen_matrix_entry(
     donor_runner = HistoricalBacktest(donor_config)
     donor_runner.run()
     batch = donor_runner.build_architecture_attribution_rows(horizon=manifest.alpha_horizon_bars)
-    stage_observations, stage_metrics, stage_rows = run_frozen_stage_sidecars(
+    stage_observations, stage_metrics, stage_rows, stage_episodes = run_frozen_stage_sidecars(
         donor_runner,
         config=donor_config,
         manifest=manifest,
@@ -270,6 +273,7 @@ def run_frozen_matrix_entry(
         position_episodes=a0_result.position_episodes,
         execution_metrics_by_stage=stage_metrics,
         stage_execution_rows_by_stage=stage_rows,
+        stage_position_episodes_by_stage=stage_episodes,
         window_role=window.role,
     )
     options_shadow_report = build_options_shadow_oos_artifact(

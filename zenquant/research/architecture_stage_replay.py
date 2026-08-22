@@ -42,6 +42,17 @@ class ArchitectureStageReplayResult:
     snapshots: tuple[DecisionSnapshot, ...]
     metrics: ArchitectureExecutionMetrics
     closed_episodes: tuple[PositionEpisode, ...]
+    open_episodes: tuple[PositionEpisode, ...] = ()
+
+    @property
+    def position_episodes(self) -> tuple[PositionEpisode, ...]:
+        """Return the complete deterministic ledger, including right-censored episodes."""
+        return tuple(
+            sorted(
+                (*self.closed_episodes, *self.open_episodes),
+                key=lambda episode: (episode.opened_at_ns, episode.symbol, episode.episode_id),
+            )
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -300,6 +311,7 @@ def run_architecture_stage_replay(
         snapshots=tuple(snapshots),
         metrics=metrics,
         closed_episodes=episode_ledger.closed_episodes,
+        open_episodes=episode_ledger.open_episodes,
     )
 
 
