@@ -1,191 +1,208 @@
-# Quant V2 Acceptance Handoff — 2026-08-23
+# Quant V2 Accounting Repair and Acceptance Handoff — 2026-08-23
 
-This file is the canonical compact evidence ledger for the frozen Quant V2
-experiment and its late-development attribution. It contains one current set of
-numbers. Earlier superseded hashes and tables have been removed.
+This file is the authoritative compact handoff for the frozen August donor
+after the legacy portfolio-accounting repair. Generated results remain ignored
+under `results/`; their hashes below bind this document to the reviewed bytes.
 
 ## Decision
 
 ```text
 verdict                 = BLOCKED_PAUSE_PROMOTION_AND_TRAINING
 terminal_recommendation = stop_donor_training
+parameter_search        = false
 ```
 
-The complete frozen matrix ran successfully with no parameter search: six
-windows times five perturbation seeds, 30/30 runs. V2 passes MDD, train episode
-PF, cadence and execution-purity gates. It fails late-dev at baseline and under
-the additional 15bp cost stress on all five seeds. Robustness is `0/5`, below
-the required `4/5`.
+The August huge-profit result is invalid. Legacy fee application floored
+negative cash at zero and erased financing liability after leveraged fills.
+The affected equity, return, net PnL, equity-multiple, Sharpe, Sortino,
+drawdown and promotion-gate families cannot be used as performance evidence.
 
-## Frozen identity
+The corrected frozen matrix completed 30/30 runs with no search. Late-dev A5
+extra-15bp net PnL is negative on all five seeds, from `-3,068.23` to
+`-624.15`. Robustness is `0/5`, below the required `4/5`. Passing MDD,
+train-episode-PF, switch-cadence and execution-purity checks do not override
+the blocked economic verdict.
+
+## Frozen and repaired identity
 
 - Candidate: `august_rank1_20260821`
 - Manifest SHA-256: `c982d074b24ec21235dfefbd972d936dc4f5a4ab0360964013576c90729bfbe0`
 - Candidate params SHA-256: `d86c92e8837c2febc04d0c2935299abc30b0636fb5d9a7c9e244d670d3499381`
 - Profile SHA-256: `ce4fc640b3a0ae2dfb8b6d4bd96652f431a20b5581ce5d2fa67e0722f4841d05`
+- Repaired formula hash: `sha256:82af23a08c68a94641e1d7769ecdf9619059dddbeb531dd3703cc4d2ff809f4a`
 - Seeds: `42, 123, 456, 789, 1024`
+- Windows: `train_full, 2020, 2021, 2022, 2023, late_dev_2025`
 - Perturbation: price noise `0.001`, volume noise `0.05`, bar dropout `0.02`
 - Cost stress: `0 / 5 / 15bp`, with 15bp added to observed baseline cost
-- Formula identity sets across 30 runs: `1`
-- Alpha-config identity sets across 30 runs: `1`
 
-## Canonical artifact identity
+Every one of the 30/30 repaired entries matched the exact ordered manifest,
+candidate-parameter hash, profile hash and repaired formula hash. The report
+contains one formula identity set and one alpha-config identity set. These
+checks establish repaired-run identity and determinism; they do not prove that
+the old and repaired stage paths are comparable.
 
-Generated files remain ignored and non-promotable under `results/`.
+## Artifact identity
 
 | Artifact | SHA-256 | Size |
 | --- | --- | ---: |
-| `results/quant_v2_acceptance/architecture_attribution.json` | `1f327c7c786f511fbba6ac1dd2ca4df395891f1aeb1879714c0ed2af1a87bea2` | `1,003,639,954` bytes |
-| `results/quant_v2_acceptance/acceptance_summary.json` | `7d21e514e18f27611f793e2c7f06071ddb121de4654d0bf57a31d23f2f7da637` | `5,822` bytes |
-| `results/quant_v2_late_dev_cost_attribution/late_dev_cost_attribution.json` | `b7cb1c84c70fab54b728f0cd6287fcde6fa4c107bf8f3de541a6cffd36de734e` | `92,571` bytes |
-| `results/quant_v2_late_dev_cost_attribution/late_dev_cost_attribution.md` | `3f551c6f94ab9c40d8ee5fc4bbf134284c4d2b21981120c5ce562cef166f68a4` | `28,173` bytes |
+| Legacy `results/quant_v2_acceptance/architecture_attribution.json` | `1f327c7c786f511fbba6ac1dd2ca4df395891f1aeb1879714c0ed2af1a87bea2` | `1,003,639,954` bytes |
+| Repaired `full_system_attribution.json` | `101fdaaafa8b46bd3266838485022e5d42e85ea026e85bd42d077b5c3c7b08f3` | `2,114,612,999` bytes |
+| `fixed_event_attribution.json` | `30395969363d2ae57b1414c7f93e7914088f23d4e6b20c161d8e5768cafda6d9` | `1,103` bytes |
+| `stage_validity.json` | `3207f2c3d04308e8feab1f92dd63d2c3607896da32f4a3782cab22b5a3cf8e12` | `103,871` bytes |
+| `summary.json` | `68a50ad3407938556fa7a8eac257e842cfc50887e70f45acdaba2e356d629495` | `1,984` bytes |
+| `acceptance_summary.json` | `eb91d38c86b650e75dacb9a954e71ef34fd61de6dcc7bdade266b4e7ce6a8589` | `5,830` bytes |
 
-The frozen 1GB experiment was run once. Final attribution fixes reused that
-exact artifact and reran only the deterministic analyzer.
+The legacy input hash remained unchanged across the rerun. Generated artifacts
+remain ignored and are evidence, not commit payloads.
 
-## Hard-gate result
+## Attribution validity
 
-| Gate | Result | Evidence |
+### Fixed-event comparison
+
+```text
+status                         = INSUFFICIENT_EVIDENCE
+legacy_state                   = UNVERIFIED_LEGACY
+event_stream_identity          = null
+first_affected_fee             = null
+fills_marks_and_fees_identical = null
+accounting_delta               = null
+reason                         = legacy_artifact_has_no_replayable_fixed_event_ledger
+funding_and_financing          = OUT_OF_SCOPE_NOT_EQUITY_INTEGRATED
+```
+
+The old artifact does not contain a replayable fill/mark/fee ledger. Therefore
+the exact first clamped fee, fixed-event cash/equity delta and first downstream
+risk, target, order or fill divergence are not known. Aggregate results must
+not be used to invent that missing path.
+
+### Stage comparison
+
+All 210/210 comparisons—30 runs times A0, A1_SIGN, A1_SCORE, A2, A3, A4 and
+A5_SHADOW—remain `UNVERIFIED_LEGACY`:
+
+```json
+{
+  "CONFIRMED_AFFECTED": 0,
+  "PROVEN_UNAFFECTED": 0,
+  "SUPERSEDED_REPAIRED": 0,
+  "UNVERIFIED_LEGACY": 210
+}
+```
+
+Both sides lack proof required by the current auditor. The old artifact omits
+current stage payload and donor identities; repaired A0/A1 schemas omit required
+episode payloads, and repaired A2-A5 donor rows do not satisfy the current
+canonical donor schema. Thus none of the 210 comparisons can prove
+field-identical behavior. The first unverified key is
+`train_full / seed 42 / A0`; there is no confirmed first divergence.
+
+The retained generated `summary.json` says
+`legacy_stage_provenance_incomplete`. That wording is historical output from
+the pre-hardening rerun and is not the authoritative explanation. The detailed
+stage records and Task 5 report prove that both sides are incomplete. Future
+reruns use the corrected two-sided reason:
+`legacy_and_repaired_stage_provenance_incomplete`.
+
+## Corrected economic result
+
+| Gate | Result | Repaired evidence |
 | --- | --- | --- |
-| A5 MDD below 20% on all seeds | PASS | worst `7.4169%` |
-| Train A5 episode PF >= 1.0 | PASS | minimum `1.1479` |
-| Late-dev baseline positive | **FAIL** | net PnL range `-6,677.03` to `-1,579.17` |
-| Late-dev positive at extra 15bp | **FAIL** | net PnL range `-17,814.95` to `-10,736.90` |
-| Hostile risk controlled | **NOT EVALUABLE** | no frozen hostile window/threshold |
-| Switch cadence | PASS | `0.4305–0.5210/day`, below `1/day` |
-| Execution purity | PASS | created exposure/reversal/overshoot all `0` |
-| OptionsState order/position effect | PASS | OFF/ON execution material identical |
+| A5 MDD below 20% on all seeds | PASS | maximum `5.0611%` |
+| Train A5 episode PF >= 1.0 | PASS | minimum `1.2856` |
+| Late-dev A5 extra 15bp positive | **FAIL** | all five negative; `-3,068.23` to `-624.15` |
 | Robustness at least 4/5 | **FAIL** | `0/5` |
+| Hostile risk controlled | **NOT EVALUABLE** | no frozen hostile window or threshold |
+| Switch cadence | PASS | `0.1426–0.1920/day` |
+| Execution purity | PASS | created exposure, reversal and overshoot all `0` |
+| OptionsState execution influence | PASS | A4/A5 execution material remains equal |
 
-Per-seed final-stage evidence:
+The repaired A5 baseline late-dev range is `-596.20` to `1,013.77`; it spans
+loss and profit and is not a five-seed positive result. The extra-15bp result
+is negative for every seed:
 
-| Seed | Max A5 MDD | Train episode PF | Late-dev baseline net | Late-dev extra-15bp net | Max switches/day |
-| ---: | ---: | ---: | ---: | ---: | ---: |
-| 42 | `6.6310%` | `1.2019` | `-1,579.17` | `-10,736.90` | `0.4305` |
-| 123 | `6.5914%` | `1.1479` | `-5,911.57` | `-15,196.07` | `0.4497` |
-| 456 | `5.7272%` | `1.3328` | `-4,714.50` | `-14,148.18` | `0.4717` |
-| 789 | `7.4169%` | `1.2871` | `-6,677.03` | `-17,814.95` | `0.5210` |
-| 1024 | `4.8447%` | `1.1998` | `-2,170.89` | `-12,503.99` | `0.4497` |
+| Seed | A5 extra-15bp net PnL | Max A5 MDD | Train episode PF | Max switches/day |
+| ---: | ---: | ---: | ---: | ---: |
+| 42 | `-1,967.52` | `3.0357%` | `1.4472` | `0.1563` |
+| 123 | `-2,180.62` | `5.0611%` | `1.4465` | `0.1673` |
+| 456 | `-1,253.11` | `3.3602%` | `1.5810` | `0.1426` |
+| 789 | `-3,068.23` | `4.0254%` | `1.3849` | `0.1920` |
+| 1024 | `-624.15` | `2.6843%` | `1.2856` | `0.1536` |
 
-## Direction and cost attribution
+Passing safety and purity diagnostics answer narrow questions. They do not
+rescue negative cost-stressed economics, satisfy robustness or authorize a
+promotion.
 
-Late-dev direction hit rate is below 50% on every seed:
+## Accounting boundary and limitations
 
-- A1 sign-only: `47.21–48.22%`; baseline net `-61,034.58` to `11,717.10`;
-  extra-15bp negative for 5/5.
-- A1 confidence-weighted: the same hit rate; baseline net `-22,544.75` to
-  `3,132.11`; extra-15bp negative for 5/5.
-- A5: `46.38–49.38%`; baseline and extra-15bp negative for 5/5.
+- Cash is signed; each finite non-negative fee is subtracted exactly once.
+- Funding and financing are `OUT_OF_SCOPE_NOT_EQUITY_INTEGRATED`. Their
+  diagnostic accumulators are not included in legacy equity and no total-net
+  parity is claimed.
+- Fixed-event attribution remains insufficient; the repaired full-system run
+  cannot reconstruct the missing historical event ledger.
+- Stage comparison remains unverified because both legacy and repaired stage
+  schemas lack current proof fields.
+- The repaired full-system report is 2.11 GB and the real run peaked near
+  10.52 GiB RSS; streaming the legacy source does not remove the repaired
+  report builder's in-memory aggregation cost.
+- The frozen manifest has no explicit hostile window/threshold. That gate is
+  not evaluable, not passed.
+- Options shadow OOS overlap remains insufficient. There is no activation
+  recommendation.
 
-| Evidence family | Status | Supporting seeds |
-| --- | --- | ---: |
-| `directional_edge` | `CONSISTENT` | `5/5` |
-| `confidence_failed_to_rescue` | `CONSISTENT` | `5/5` |
-| `cost_flip` | `UNATTRIBUTABLE` | `0/5` |
-| `regime_localization` | `UNATTRIBUTABLE` | `0/5` |
-| `episode_tail` | `UNATTRIBUTABLE` | `0/5` |
-| `execution_shortfall` | `CONSISTENT` | `5/5` |
+## Reproduction and verification
 
-Here `directional_edge=CONSISTENT` means that direction-failure attribution is
-consistent across seeds; it does not assert positive directional alpha.
-
-Confidence weighting improved every A1 extra-15bp result but rescued none:
-
-| Seed | A1_SIGN 15bp PnL | A1_SCORE 15bp PnL | Improvement | Rescued |
-| ---: | ---: | ---: | ---: | --- |
-| 42 | `-226,512.04` | `-72,673.40` | `+153,838.65` | no |
-| 123 | `-184,678.85` | `-62,604.80` | `+122,074.05` | no |
-| 456 | `-235,784.58` | `-77,817.96` | `+157,966.62` | no |
-| 789 | `-202,088.14` | `-65,273.33` | `+136,814.81` | no |
-| 1024 | `-156,132.90` | `-50,961.44` | `+105,171.46` | no |
-
-The correct reading is that confidence compresses loss magnitude but does not
-restore positive OOS net profitability. No regime-objective redesign artifact was
-created because the real evidence does not support that recommendation.
-
-## Execution attribution
-
-All five A5 execution surfaces are complete. Actual fee, slippage and
-implementation shortfall are serialized observations, not recomputed strategy
-decisions.
-
-| Seed | Positive fills | Fills/day | Switches/day | Actual shortfall | Extra 15bp cost |
-| ---: | ---: | ---: | ---: | ---: | ---: |
-| 42 | `645` | `1.7671` | `0.4004` | `3,357.83` | `9,157.73` |
-| 123 | `665` | `1.8219` | `0.4497` | `3,404.32` | `9,284.50` |
-| 456 | `673` | `1.8438` | `0.4442` | `3,459.01` | `9,433.67` |
-| 789 | `763` | `2.0904` | `0.5210` | `4,083.91` | `11,137.93` |
-| 1024 | `725` | `1.9863` | `0.4497` | `3,788.80` | `10,333.10` |
-
-The baseline-to-15bp bridge reconciles to floating-point tolerance for every
-seed. `execution_shortfall` corroborates failed economics but does not establish
-that execution is the primary causal defect.
-
-## Options and data readiness
-
-Frozen OptionsState OOS evidence remains `INSUFFICIENT_SAMPLE`: the real chain
-begins in 2026 and does not overlap the frozen 2025 late-dev window. There is no
-activation recommendation.
-
-Read-only status on 2026-08-23:
-
-- Deribit option chain: collector running, observation-ready and research-ready;
-- Deribit block flow: collector running and observation-ready; exact rolling
-  counts remain time-sensitive and belong in the readiness artifact;
-- Binance liquidation history: blocked by missing history;
-- Hyperliquid public history: partial, estimated coverage `0.6509`;
-- merged liquidations: minimum research-ready, not promotion-ready.
-
-Continue collection. Do not use partial liquidation history or OptionsState to
-promote or alter the current strategy.
-
-## Verification state
-
-- Changed-file Ruff and format checks: pass.
-- Full pytest: `1480 passed, 10 skipped, 34 subtests passed`.
-- `zenquant-check` Gates 0/B/C/D/E: pass.
-- Gate A is blocked only by three unchanged pre-existing format drifts:
-  `scripts/analyze_intent_churn_attribution.py`,
-  `zenquant/data/event_calendar.py`, and
-  `zenquant/data/liquidation_pipeline.py`.
-- Gate F passed when the current worktree code was run against the parent
-  checkout's read-only data: 4/4 windows, 0 overfit, average OOS ratio `1.19`.
-
-## Rerun
-
-Use historical data read-only and write generated outputs into the current
-worktree:
+The reviewed real rerun used this exact command before immutable-output
+hardening:
 
 ```bash
-uv run python scripts/run_architecture_experiment.py \
-  --root /Users/disaster/workspace/code/zenQuant/data/raw/binance \
-  --output results/quant_v2_acceptance/architecture_attribution.json
+uv run python scripts/rerun_legacy_accounting_baseline.py \
+  --root data/raw/binance \
+  --legacy-input results/quant_v2_acceptance/architecture_attribution.json \
+  --output-dir results/accounting_integrity_20260823
+```
+
+Current code rejects every existing output path. A future rerun must use a new,
+versioned output directory and may not change seed, window, parameter, cost or
+search-space inputs:
+
+```bash
+uv run python scripts/rerun_legacy_accounting_baseline.py \
+  --root data/raw/binance \
+  --legacy-input results/quant_v2_acceptance/architecture_attribution.json \
+  --output-dir results/accounting_integrity_<new-version>
 
 uv run python scripts/build_quant_v2_acceptance_summary.py \
-  --input results/quant_v2_acceptance/architecture_attribution.json \
-  --output results/quant_v2_acceptance/acceptance_summary.json
+  --input results/accounting_integrity_<new-version>/full_system_attribution.json \
+  --output results/accounting_integrity_<new-version>/acceptance_summary.json
 
-uv run python scripts/analyze_quant_v2_late_dev_cost.py \
-  --input results/quant_v2_acceptance/architecture_attribution.json \
-  --output-dir results/quant_v2_late_dev_cost_attribution
-
-shasum -a 256 results/quant_v2_acceptance/architecture_attribution.json \
-  results/quant_v2_acceptance/acceptance_summary.json \
-  results/quant_v2_late_dev_cost_attribution/late_dev_cost_attribution.json
-uv run pytest -q
+uv run pytest -q \
+  tests/test_risk_guard.py \
+  tests/test_execution_router.py \
+  tests/test_parity.py \
+  tests/test_legacy_accounting_validity.py \
+  tests/test_legacy_accounting_provenance.py \
+  tests/test_legacy_accounting_rerun.py \
+  tests/test_architecture_experiment.py \
+  tests/test_quant_v2_acceptance.py
 uv run zenquant-check
 ```
 
 The acceptance summary exits `0` only for acceptance, `1` for a valid blocked
-verdict and `2` for invalid or incomplete input. The current valid result exits
-`1`. Do not hide this exit code in automation and do not rerun the 1GB experiment
-merely to regenerate the attribution report.
+verdict and `2` for invalid input. The reviewed result exits `1`; automation
+must preserve rather than mask that blocked decision.
 
 ## Current boundary
 
-- Do not promote, paper-live or continue parameter training.
-- Do not reinterpret `UNATTRIBUTABLE` as evidence for a regime redesign.
-- Do not activate OptionsState.
-- Do not modify frozen windows, seeds, costs or identities in response to failure.
-- Any time-space hypothesis is a new, separately approved shadow study; 2025
-  late-dev cannot be reused as its unbiased confirmation set.
+- Do not promote, paper-live, train or run parameter search for this donor.
+- Do not compare or rank candidates using invalidated legacy performance.
+- Do not describe passing MDD, PF, cadence or purity checks as economic
+  acceptance.
+- Do not claim a fixed-event delta, first affected fee or first downstream
+  divergence without a replayable historical event ledger.
+- Do not classify any A0-A5 stage as proven unaffected while its provenance is
+  incomplete.
+- Do not integrate funding/financing into portfolio-equity claims without a
+  separately approved accounting design.
+- Any future hypothesis is a separately approved, pre-registered study. This
+  repair authorizes no promotion or search.

@@ -18,10 +18,12 @@ For product principles and non-negotiable invariants, read [`../AGENTS.md`](../A
 
 ## 1. Executive Decision
 
-ZenQuant remains a deterministic, regime-aware BTC trading system. Quant V2
-has completed the attribution needed to separate direction, sizing, risk and
-execution effects. The August rank1 donor fails late-dev at baseline and under
-extra 15bp costs on all five seeds; its terminal recommendation is
+ZenQuant remains a deterministic, regime-aware BTC trading system. The August
+rank1 performance history was produced by defective legacy fee accounting and
+is not valid evidence of return, equity, Sharpe, Sortino, drawdown or promotion
+readiness. A frozen repaired matrix completed 30/30 runs with one verified
+formula identity. Its A5 extra-15bp late-dev net PnL is negative on all five
+seeds and robustness is `0/5`; the terminal recommendation remains
 `stop_donor_training`. The architecture remains useful, but this donor must not
 receive another optimizer or parameter-training round.
 
@@ -76,6 +78,41 @@ The following invariants apply to both the current implementation and the V2 tar
 - Fees, slippage, fill state, and position transitions must remain realistic.
 - Every material decision must be attributable after the fact.
 - The production legacy path is not modified by research experiments without explicit promotion approval.
+
+### 2.1 Legacy accounting integrity boundary
+
+Legacy portfolio cash is a signed balance. A fill and fee must conserve the
+following identity without flooring negative cash:
+
+```text
+cash_after = cash_before - signed_quantity * fill_price - fee
+equity      = cash + sum(position_quantity * mark_price)
+```
+
+The removed `max(0, cash - fee)` floor erased financing liability after
+leveraged purchases and created equity. The August huge-profit claim is invalid.
+The checked-in validity manifest classifies its equity (including final equity
+and multiples), return, net PnL, Sharpe, Sortino, drawdown and promotion-gate
+families as `CONFIRMED_AFFECTED`. Historical artifacts stay available for
+audit, but their performance metrics cannot be used for comparison or
+promotion.
+
+The repaired formula identity is:
+
+```text
+sha256:82af23a08c68a94641e1d7769ecdf9619059dddbeb531dd3703cc4d2ff809f4a
+```
+
+The frozen rerun verified this exact identity, manifest hash, candidate hash
+and profile hash for all 30/30 entries. That establishes the repaired run's
+identity, not legacy comparability. The old artifact has no replayable
+fixed-event ledger, so the exact first affected fee and downstream divergence
+remain `INSUFFICIENT_EVIDENCE`. All 210/210 legacy-to-repaired stage records are
+`UNVERIFIED_LEGACY`: the historical schema and repaired stage schemas lack the
+current payload and donor proof needed for a field-identical comparison.
+
+Funding and financing remain `OUT_OF_SCOPE_NOT_EQUITY_INTEGRATED`; diagnostic
+accumulators are not portfolio-equity parity. No promotion or parameter search is authorized by the repair or rerun.
 
 ## 3. Current Implemented Architecture
 
@@ -247,7 +284,11 @@ scheduling begins; production migration remains deferred.
 
 ### 4.3 Raw compounded return is not capacity evidence
 
-The latest results include equity multiples that vary sharply across deterministic perturbation seeds. These outcomes are useful for detecting sensitivity, not for estimating deployable profit.
+Pre-repair results included equity multiples that varied sharply across
+deterministic perturbation seeds. Those performance families are now invalid,
+not merely weak capacity estimates. Repaired fixed-notional results remain
+useful for rejecting fragile economics, but they do not estimate deployable
+profit.
 
 The V2 experiment reports separately:
 
@@ -269,7 +310,7 @@ This is known architecture debt:
 
 ## 5. Historical Gate v2 Evidence
 
-The bounded Gate v2 rescore is the historical selection baseline. It is defined
+The bounded Gate v2 rescore is preserved as a historical selection record. It is defined
 by [`superpowers/specs/2026-08-21-gate-v2-rescore.md`](superpowers/specs/2026-08-21-gate-v2-rescore.md).
 Its summary result is
 [`../results/remediation_20260821/gate_v2_rescore/gate_v2_rescore.md`](../results/remediation_20260821/gate_v2_rescore/gate_v2_rescore.md),
@@ -287,31 +328,28 @@ Experiment constraints:
 - additional 0/5/10/15bp cost stress;
 - no Optuna, RL, full training, or frozen-test access.
 
-All candidates passed `0/5` seeds under the complete Gate v2 policy. That result does not mean all candidate information is worthless.
+The historical report recorded no candidate passing any of the five seeds
+under the complete Gate v2 policy. The legacy performance families in that
+result are not current economic evidence; only identities and non-performance
+historical context survive the accounting invalidation.
 
 ### 5.1 August rank1
 
-August rank1 is the leading alpha donor, not a deployable strategy:
-
-- raw late-dev PnL was positive for all five seeds;
-- late-dev Sharpe ranged approximately `3.56–4.55`;
-- blocker counts concentrate on capacity, drawdown, after-fee profit factor, and reduction efficiency;
-- it did not show the broad late-dev or temporal rejection pattern seen in weaker candidates;
-- train PnL scale varied from roughly `0.71m` to `44.88m`, proving that raw scale is path and sizing sensitive.
-
-Its research value is the directional signal. Its current return scale must not be treated as deployable expected profit.
+August rank1 is a retired historical donor, not a deployable strategy. The old
+claims of positive late-dev PnL, Sharpe around `3.56–4.55` and train PnL up to
+tens of millions were produced on the affected ledger. They are explicitly
+invalid, not conservative estimates of alpha or capacity. Parameter and market
+data identities remain auditable, but the old A0 event path is not canonical
+repaired performance evidence.
 
 ### 5.2 v164 rank1
 
-v164 is a useful low-frequency comparison sleeve, not a proven bear-market expert:
-
-- low switch and fill frequency;
-- lower drawdown than August in the full-train replay;
-- positive raw late-dev PnL for all seeds;
-- unstable 2021 behavior and weak 2022 behavior;
-- different seeds fail for different reasons.
-
-It may complement August, but that claim requires fixed-notional return correlation and marginal portfolio contribution tests.
+v164 remains a historical low-frequency comparison sleeve, not a proven
+bear-market expert. Its low switch and fill frequency describes the old event
+path, but its legacy PnL, Sharpe and drawdown claims are not current performance
+evidence. Any future v164 study requires repaired fixed-notional return,
+correlation and marginal-portfolio-contribution tests under a separately
+approved contract.
 
 ### 5.3 Frequency conclusion
 
@@ -340,12 +378,12 @@ now complete. Its current terminal recommendation is:
 stop_donor_training
 ```
 
-Current evidence shows late-dev A5 baseline and extra-15bp PnL are negative on
-all five seeds. Confidence compresses loss but rescues no seed. Direction
-failure and execution shortfall are consistent at 5/5 support, while cost flip,
-regime localization and episode tail remain unattributable. Consequently, the
-following architecture principles remain valid, but they no longer authorize
-training this donor:
+Corrected evidence shows late-dev A5 baseline net PnL spanning a small loss to
+a small gain, while extra-15bp PnL is negative on all five seeds at
+`-3,068.23` to `-624.15`. Robustness is `0/5`. Passing MDD, episode-PF, switch
+cadence and execution-purity diagnostics do not override that blocked economic
+verdict. Consequently, the following architecture principles remain valid,
+but they no longer authorize training this donor:
 
 - freeze the directional alpha candidate;
 - make risk scaling explicit;
@@ -498,7 +536,7 @@ The completed experiment froze candidate parameters and changed one architecture
 
 | Stage | Single change | Question answered |
 |---|---|---|
-| A0 | Original August rank1 replay | What does the current candidate report? |
+| A0 | Historical August rank1 replay, accounting-affected | What did the old candidate path report? |
 | A1-sign | `sign(signal)` with fixed capital, fixed notional, no compounding, maximum 1x | Does direction alone contain alpha? |
 | A1-score | Direction multiplied by frozen confidence, otherwise identical to A1-sign | Does confidence add information or only sizing noise? |
 | A2 | Frozen direction and confidence, fixed 20% annualized volatility target, maximum 1.5x | Does normalized risk improve robustness? |
@@ -640,6 +678,8 @@ Experts reviewing this architecture should focus on unresolved decisions:
 | Gate v2 summary | [`../results/remediation_20260821/gate_v2_rescore/gate_v2_rescore.md`](../results/remediation_20260821/gate_v2_rescore/gate_v2_rescore.md) |
 | Gate v2 full evidence | [`../results/remediation_20260821/gate_v2_rescore/gate_v2_rescore.json`](../results/remediation_20260821/gate_v2_rescore/gate_v2_rescore.json) |
 | Candidate manifest | [`../config/research/gate_v2_candidates_20260821.json`](../config/research/gate_v2_candidates_20260821.json) |
+| Legacy accounting validity | [`../config/research/legacy_accounting_validity_v1.json`](../config/research/legacy_accounting_validity_v1.json) |
+| Repaired accounting evidence | [`QUANT_V2_ACCEPTANCE_HANDOFF.md`](QUANT_V2_ACCEPTANCE_HANDOFF.md) |
 | Operations | [`OPERATIONS.md`](OPERATIONS.md) |
 | Data freshness | [`../results/data_readiness/data_readiness.md`](../results/data_readiness/data_readiness.md) |
 
