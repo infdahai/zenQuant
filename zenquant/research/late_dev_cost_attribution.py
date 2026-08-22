@@ -195,6 +195,20 @@ def _summarize_episodes(stage: Mapping[str, Any]) -> dict[str, Any]:
         raise LateDevAttributionValidationError("position episodes must be a list of objects")
     closed = [episode for episode in episodes if _closed(episode)]
     open_episodes = [episode for episode in episodes if not _closed(episode)]
+    episode_ledger = _mapping(stage.get("episode_ledger"), "episode ledger")
+    episode_ledger_status = episode_ledger.get("status")
+    if episode_ledger_status not in {"OBSERVED", "NOT_OBSERVED"}:
+        raise LateDevAttributionValidationError("episode ledger status must be OBSERVED or NOT_OBSERVED")
+    ledger_closed_count = _nonnegative_int(
+        episode_ledger.get("closed_episode_count"), "episode ledger closed episode count"
+    )
+    ledger_open_count = _nonnegative_int(episode_ledger.get("open_episode_count"), "episode ledger open episode count")
+    if ledger_closed_count != len(closed):
+        raise LateDevAttributionValidationError("episode ledger closed episode count mismatch")
+    if ledger_open_count != len(open_episodes):
+        raise LateDevAttributionValidationError("episode ledger open episode count mismatch")
+    if episode_ledger_status == "NOT_OBSERVED" and (episodes or ledger_closed_count or ledger_open_count):
+        raise LateDevAttributionValidationError("not observed episode ledger must be empty")
     closed_totals = _episode_totals(closed)
     by_side = {
         side: {"closed_episode_count": len(items), **_episode_totals(items)}
@@ -208,6 +222,7 @@ def _summarize_episodes(stage: Mapping[str, Any]) -> dict[str, Any]:
     if not isinstance(rows, list) or not all(isinstance(row, Mapping) for row in rows):
         raise LateDevAttributionValidationError("attribution rows must be a list of objects")
     return {
+        "episode_ledger_status": episode_ledger_status,
         "closed_episode_count": len(closed),
         "open_episode_count": len(open_episodes),
         "closed_net_pnl": closed_totals["net_pnl"],

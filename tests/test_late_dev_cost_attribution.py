@@ -375,3 +375,37 @@ def test_execution_and_explicit_regime_groups_are_accounted_without_playbook_inf
         "implementation_shortfall_observation_count": 5,
         "implementation_shortfall": 15.0,
     }
+
+
+def test_episode_ledger_count_mismatch_fails_closed():
+    report = _complete_raw_report()
+    late_dev = next(run for run in report["runs"] if run["window"] == "late_dev_2025")  # type: ignore[index]
+    late_dev["stages"]["A5_SHADOW"]["episode_ledger"]["closed_episode_count"] = 3  # type: ignore[index]
+
+    with pytest.raises(LateDevAttributionValidationError, match="episode ledger closed episode count mismatch"):
+        _build(report)
+
+
+def test_not_observed_empty_episode_ledger_remains_distinct_from_observed_empty_ledger():
+    report = _complete_raw_report()
+    late_dev = next(run for run in report["runs"] if run["window"] == "late_dev_2025")  # type: ignore[index]
+    stage = late_dev["stages"]["A5_SHADOW"]  # type: ignore[index]
+    stage["position_episodes"] = []
+    stage["episode_ledger"] = {
+        "status": "NOT_OBSERVED",
+        "closed_episode_count": 0,
+        "open_episode_count": 0,
+    }
+
+    summary = _build(report)["episode_attribution"][0]  # type: ignore[index]
+
+    assert summary["episode_ledger_status"] == "NOT_OBSERVED"
+    assert summary["closed_episode_count"] == 0
+    assert summary["open_episode_count"] == 0
+
+    observed_report = deepcopy(report)
+    observed_late_dev = next(run for run in observed_report["runs"] if run["window"] == "late_dev_2025")  # type: ignore[index]
+    observed_late_dev["stages"]["A5_SHADOW"]["episode_ledger"]["status"] = "OBSERVED"  # type: ignore[index]
+
+    observed_summary = _build(observed_report)["episode_attribution"][0]  # type: ignore[index]
+    assert observed_summary["episode_ledger_status"] == "OBSERVED"
