@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import sys
 from collections.abc import Sequence
@@ -20,6 +21,11 @@ from zenquant.historical.perturbation import PerturbationConfig
 from zenquant.research.comparison import VariantSpec, WindowSpec, compare_variants, default_variant_specs
 from zenquant.research.framework_search import FrameworkEvaluator
 from zenquant.research.gate_v2 import DEFAULT_COST_BPS, build_campaign_verdict
+from zenquant.research.legacy_accounting_validity import (
+    DEFAULT_ACCOUNTING_VALIDITY_REGISTRY,
+    assert_metric_family_allowed,
+    load_accounting_validity_registry,
+)
 from zenquant.research.splits import default_btc_split_spec
 from zenquant.strategy import ARCStrategyConfig
 
@@ -62,7 +68,11 @@ def _select_path(payload: dict[str, Any], selector: str, *, source: Path) -> Any
     return value
 
 
-def load_candidate_manifest(path: Path) -> list[CandidateRecord]:
+def load_candidate_manifest(
+    path: Path,
+    *,
+    validity_registry_path: Path = DEFAULT_ACCOUNTING_VALIDITY_REGISTRY,
+) -> list[CandidateRecord]:
     """Load ranked train/dev candidates while failing closed on test evidence."""
     manifest = _read_json(path)
     entries = manifest.get("candidates")
@@ -71,6 +81,7 @@ def load_candidate_manifest(path: Path) -> list[CandidateRecord]:
 
     records: list[CandidateRecord] = []
     names: set[str] = set()
+    validity_registry = None
     for entry in entries:
         if not isinstance(entry, dict):
             raise ValueError("candidate_manifest_entry_must_be_object")
@@ -95,6 +106,17 @@ def load_candidate_manifest(path: Path) -> list[CandidateRecord]:
             raise ValueError(f"candidate_source_missing:{source}")
         if not selector or rank < 1:
             raise ValueError(f"candidate_selector_and_positive_rank_required:{name}")
+        if validity_registry is None:
+            validity_registry = load_accounting_validity_registry(validity_registry_path)
+        registered_records = validity_registry.records_for_artifact(str(source))
+        source_sha256 = _sha256_file(source) if registered_records else None
+        assert_metric_family_allowed(
+            validity_registry,
+            artifact_path=str(source),
+            source_sha256=source_sha256,
+            metric_family="promotion_gate",
+            stage="A0",
+        )
         source_payload = _read_json(source)
         _reject_frozen_test_source(source_payload, source=source)
         ranked = _select_path(source_payload, selector, source=source)
@@ -114,6 +136,14 @@ def load_candidate_manifest(path: Path) -> list[CandidateRecord]:
             )
         )
     return records
+
+
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as source:
+        for chunk in iter(lambda: source.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 def _utc_ns(year: int, month: int = 1, day: int = 1) -> int:
