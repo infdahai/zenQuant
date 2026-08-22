@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import errno
 import importlib.util
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -165,7 +167,9 @@ def test_rerun_preserves_legacy_and_publishes_frozen_identities(tmp_path, monkey
     assert summary["resource_behavior"]["legacy_full_json_load_count"] == 0
     assert summary["resource_behavior"]["legacy_peak_loaded_scope"] == "single_run"
     assert summary["resource_behavior"]["legacy_sha256_stream_passes"] == 2
-    assert summary["resource_behavior"]["publication"] == ("temporary_sibling_directory_then_atomic_directory_rename")
+    assert summary["resource_behavior"]["publication"] == (
+        "temporary_sibling_directory_then_atomic_noreplace_directory_rename"
+    )
 
 
 def test_existing_output_dir_fails_before_compute_and_preserves_last_good_outputs(tmp_path, monkeypatch):
@@ -247,6 +251,74 @@ def test_publisher_refuses_an_existing_empty_output_directory(tmp_path):
 
     assert not list(output_dir.iterdir())
     assert {path.name for path in staging_dir.iterdir()} == set(module.OUTPUT_FILENAMES)
+
+
+@pytest.mark.parametrize("collision_errno", [errno.EEXIST, errno.ENOTEMPTY])
+def test_publisher_race_preserves_concurrently_created_destination(tmp_path, monkeypatch, collision_errno):
+    module = _load_cli_module()
+    output_dir = tmp_path / "accounting"
+    staging_dir = tmp_path / ".accounting.rerun-ready"
+    staging_dir.mkdir()
+    for name in module.OUTPUT_FILENAMES:
+        (staging_dir / name).write_bytes(f"new:{name}".encode())
+
+    def race_at_atomic_boundary(source, destination):
+        assert source == staging_dir
+        assert destination == output_dir
+        destination.mkdir()
+        (destination / "concurrent-last-good").write_bytes(b"preserve-me")
+        raise OSError(collision_errno, "destination exists", destination)
+
+    monkeypatch.setattr(module, "_atomic_rename_directory_noreplace", race_at_atomic_boundary)
+
+    with pytest.raises(FileExistsError, match="new versioned output directory") as exc_info:
+        module._publish_staged_outputs(staging_dir=staging_dir, output_dir=output_dir)
+
+    assert exc_info.value.errno == errno.EEXIST
+    assert (output_dir / "concurrent-last-good").read_bytes() == b"preserve-me"
+    assert {path.name for path in staging_dir.iterdir()} == set(module.OUTPUT_FILENAMES)
+
+
+def test_publisher_uses_controlled_atomic_noreplace_primitive(tmp_path, monkeypatch):
+    module = _load_cli_module()
+    output_dir = tmp_path / "accounting"
+    staging_dir = tmp_path / ".accounting.rerun-ready"
+    staging_dir.mkdir()
+    for name in module.OUTPUT_FILENAMES:
+        (staging_dir / name).write_bytes(f"new:{name}".encode())
+    calls = []
+
+    def controlled_atomic_noreplace(source, destination):
+        calls.append((source, destination))
+        os.rename(source, destination)
+
+    monkeypatch.setattr(module, "_atomic_rename_directory_noreplace", controlled_atomic_noreplace)
+
+    module._publish_staged_outputs(staging_dir=staging_dir, output_dir=output_dir)
+
+    assert calls == [(staging_dir, output_dir)]
+    assert not staging_dir.exists()
+    assert {path.name for path in output_dir.iterdir()} == set(module.OUTPUT_FILENAMES)
+
+
+def test_atomic_noreplace_fails_closed_on_unsupported_platform(tmp_path, monkeypatch):
+    module = _load_cli_module()
+    source = tmp_path / "source"
+    destination = tmp_path / "destination"
+    source.mkdir()
+    monkeypatch.setattr(module.sys, "platform", "unsupported")
+
+    def unsafe_fallback(*args, **kwargs):
+        raise AssertionError("must not fall back to unsafe os.rename")
+
+    monkeypatch.setattr(module.os, "rename", unsafe_fallback)
+
+    with pytest.raises(OSError) as exc_info:
+        module._atomic_rename_directory_noreplace(source, destination)
+
+    assert exc_info.value.errno == errno.ENOTSUP
+    assert source.is_dir()
+    assert not destination.exists()
 
 
 def test_alias_protection_uses_samefile_for_existing_paths(tmp_path):

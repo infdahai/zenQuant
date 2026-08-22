@@ -4,6 +4,8 @@
 from __future__ import annotations
 
 import argparse
+import ctypes
+import errno
 import hashlib
 import json
 import os
@@ -48,6 +50,10 @@ _RERUN_SUMMARY_SCHEMA_VERSION = "legacy-accounting-rerun-summary.v1"
 EXPECTED_REPAIRED_FORMULA_HASH = "sha256:82af23a08c68a94641e1d7769ecdf9619059dddbeb531dd3703cc4d2ff809f4a"
 _SHA256_IDENTITY_PATTERN = re.compile(r"sha256:[0-9a-f]{64}")
 _RUNS_DECLARATION_PATTERN = re.compile(r'^\s*"runs"\s*:\s*\[\s*$')
+_DARWIN_AT_FDCWD = -2
+_DARWIN_RENAME_EXCL = 0x00000004
+_LINUX_AT_FDCWD = -100
+_LINUX_RENAME_NOREPLACE = 0x00000001
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -572,7 +578,7 @@ def _build_summary(
             "legacy_full_json_load_count": 0,
             "legacy_peak_loaded_scope": "single_run",
             "sha256_chunk_bytes": _JSON_HASH_CHUNK_BYTES,
-            "publication": "temporary_sibling_directory_then_atomic_directory_rename",
+            "publication": "temporary_sibling_directory_then_atomic_noreplace_directory_rename",
         },
     }
 
@@ -602,8 +608,55 @@ def _publish_staged_outputs(*, staging_dir: Path, output_dir: Path) -> None:
     if missing:
         raise ValueError(f"staged rerun is incomplete: missing={missing!r}")
     _assert_new_output_directory(output_dir)
-    os.rename(staging_dir, output_dir)
+    try:
+        _atomic_rename_directory_noreplace(staging_dir, output_dir)
+    except OSError as exc:
+        if exc.errno in {errno.EEXIST, errno.ENOTEMPTY}:
+            raise _output_dir_exists_error(output_dir) from None
+        raise
     _fsync_directory(output_dir.parent)
+
+
+def _atomic_rename_directory_noreplace(source: Path, destination: Path) -> None:
+    """Atomically rename a directory only when the destination is absent."""
+    if sys.platform == "darwin":
+        function_name = "renameatx_np"
+        at_fdcwd = _DARWIN_AT_FDCWD
+        flag = _DARWIN_RENAME_EXCL
+    elif sys.platform.startswith("linux"):
+        function_name = "renameat2"
+        at_fdcwd = _LINUX_AT_FDCWD
+        flag = _LINUX_RENAME_NOREPLACE
+    else:
+        raise OSError(errno.ENOTSUP, "atomic no-replace directory rename is unsupported on this platform")
+
+    libc = ctypes.CDLL(None, use_errno=True)
+    try:
+        rename_noreplace = getattr(libc, function_name)
+    except AttributeError as exc:
+        raise OSError(
+            errno.ENOTSUP,
+            f"atomic no-replace directory rename primitive {function_name} is unavailable",
+        ) from exc
+    rename_noreplace.argtypes = [
+        ctypes.c_int,
+        ctypes.c_char_p,
+        ctypes.c_int,
+        ctypes.c_char_p,
+        ctypes.c_uint,
+    ]
+    rename_noreplace.restype = ctypes.c_int
+    ctypes.set_errno(0)
+    result = rename_noreplace(
+        at_fdcwd,
+        os.fsencode(source),
+        at_fdcwd,
+        os.fsencode(destination),
+        flag,
+    )
+    if result != 0:
+        error_number = ctypes.get_errno() or errno.EIO
+        raise OSError(error_number, os.strerror(error_number), os.fspath(destination))
 
 
 def _fsync_directory(path: Path) -> None:
@@ -634,7 +687,15 @@ def _paths_alias(first: Path, second: Path) -> bool:
 
 def _assert_new_output_directory(output_dir: Path) -> None:
     if os.path.lexists(output_dir):
-        raise FileExistsError(f"output-dir already exists; choose a new versioned output directory: {output_dir}")
+        raise _output_dir_exists_error(output_dir)
+
+
+def _output_dir_exists_error(output_dir: Path) -> FileExistsError:
+    return FileExistsError(
+        errno.EEXIST,
+        f"output-dir already exists; choose a new versioned output directory: {output_dir}",
+        output_dir,
+    )
 
 
 if __name__ == "__main__":
