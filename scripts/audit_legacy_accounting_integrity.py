@@ -6,7 +6,9 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import sys
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -37,11 +39,15 @@ def main(argv: list[str] | None = None) -> int:
             raise AccountingValidityRegistryError("output must not replace the source artifact")
         registry = load_accounting_validity_registry(args.registry)
         source_sha256, source_size_bytes = _source_identity(args.source)
-        records = registry.records_for_artifact(str(args.source))
-        if records and records[0].source_sha256 != source_sha256:
+        path_records = registry.records_for_artifact(str(args.source))
+        if path_records and source_sha256 not in {record.source_sha256 for record in path_records}:
             raise AccountingValidityRegistryError(
-                f"source_sha256_mismatch:{args.source}:expected={records[0].source_sha256}:actual={source_sha256}"
+                f"source_sha256_mismatch:{args.source}:"
+                f"expected={sorted({record.source_sha256 for record in path_records})}:actual={source_sha256}"
             )
+        records = tuple(dict.fromkeys((*path_records, *registry.records_for_sha256(source_sha256))))
+        if not records:
+            raise AccountingValidityRegistryError(f"source has no accounting validity classification:{args.source}")
         sidecar = {
             "schema_version": ACCOUNTING_AUDIT_SCHEMA_VERSION,
             "source": {
@@ -56,7 +62,7 @@ def main(argv: list[str] | None = None) -> int:
             "records": [record.to_dict() for record in records],
         }
         encoded = _canonical_json_bytes(sidecar)
-        _write_atomically(args.output, encoded)
+        _write_atomically(args.output, encoded, protected_source=args.source)
     except (AccountingValidityRegistryError, OSError) as exc:
         print(f"invalid input: {exc}", file=sys.stderr)
         return 2
@@ -78,14 +84,27 @@ def _canonical_json_bytes(payload: Any) -> bytes:
     return json.dumps(payload, allow_nan=False, indent=2, sort_keys=True).encode("utf-8")
 
 
-def _write_atomically(path: Path, content: bytes) -> None:
+def _write_atomically(path: Path, content: bytes, *, protected_source: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_suffix(path.suffix + ".tmp")
+    temporary: Path | None = None
     try:
-        temporary.write_bytes(content)
-        temporary.replace(path)
+        with tempfile.NamedTemporaryFile(
+            mode="wb",
+            dir=path.parent,
+            prefix=f".{path.name}.",
+            suffix=".tmp",
+            delete=False,
+        ) as output:
+            temporary = Path(output.name)
+            if temporary.resolve() == protected_source.resolve():
+                raise AccountingValidityRegistryError("temporary output must not alias the source artifact")
+            output.write(content)
+            output.flush()
+            os.fsync(output.fileno())
+        os.replace(temporary, path)
     finally:
-        temporary.unlink(missing_ok=True)
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
 
 
 if __name__ == "__main__":
