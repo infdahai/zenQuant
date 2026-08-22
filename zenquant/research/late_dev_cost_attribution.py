@@ -269,9 +269,10 @@ def _validate_report_envelope(report: Mapping[str, Any], *, manifest: Any) -> li
         raise LateDevAttributionValidationError("raw report matrix mismatch")
     for run in runs:
         stages = _mapping(run.get("stages"), "run stages")
-        if list(stages) != expected_stages:
-            raise LateDevAttributionValidationError("run stage order does not match the frozen architecture")
-        for expected_stage, stage_payload in stages.items():
+        if len(stages) != len(expected_stages) or set(stages) != set(expected_stages):
+            raise LateDevAttributionValidationError("run stage keys do not match the frozen architecture")
+        for expected_stage in expected_stages:
+            stage_payload = stages[expected_stage]
             if not isinstance(stage_payload, Mapping):
                 raise LateDevAttributionValidationError("run stage payloads must be JSON objects")
             if stage_payload.get("stage") != expected_stage:

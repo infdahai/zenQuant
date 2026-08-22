@@ -285,6 +285,27 @@ def test_build_report_rejects_duplicate_or_missing_frozen_matrix():
         _build(report)
 
 
+def test_build_report_accepts_sorted_json_roundtrip_with_all_frozen_stages():
+    report = json.loads(json.dumps(_complete_raw_report(), sort_keys=True))
+
+    result = _build(report)
+
+    assert result["validated_run_count"] == 30
+
+
+@pytest.mark.parametrize("mutation", ["missing", "extra"])
+def test_build_report_rejects_missing_or_extra_run_stage_keys(mutation: str):
+    report = _complete_raw_report()
+    first_run_stages = report["runs"][0]["stages"]  # type: ignore[index]
+    if mutation == "missing":
+        first_run_stages.pop(ArchitectureStage.A3.value)
+    else:
+        first_run_stages["A6"] = {"stage": "A6"}
+
+    with pytest.raises(LateDevAttributionValidationError, match="stage"):
+        _build(report)
+
+
 def test_canonical_bytes_are_deterministic():
     first = _build(_complete_raw_report())
     second = _build(deepcopy(_complete_raw_report()))
