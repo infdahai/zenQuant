@@ -130,7 +130,7 @@ incremental information” and not “promote confidence as a standalone edge.�
 Established:
 
 - the donor fails late-dev at baseline and under extra 15bp costs;
-- confidence compresses loss but does not restore positive expectancy;
+- confidence compresses loss but does not restore positive OOS net profitability;
 - execution does not create unauthorized exposure;
 - OptionsState has no order or position effect;
 - more training on this donor is not justified.

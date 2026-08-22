@@ -533,12 +533,13 @@ Required reporting:
 - target overshoot and unexpected reversal counts;
 - executor-created exposure count.
 
-Frozen hard acceptance conditions:
+Declared hard acceptance conditions:
 
 - no seed reaches `20%` maximum drawdown;
 - episode-level full-train net profit factor after fees is at least `1.0`;
 - late-dev remains positive under 15bp additional cost;
-- hostile windows remain controlled;
+- hostile windows remain controlled; this condition was not frozen in the
+  manifest and is `NOT_EVALUABLE` in the current run;
 - no more than two switches per day under the normal Gate policy;
 - no more than five switches per day under any accepted operating condition;
 - no unexplained multi-order-of-magnitude seed dispersion;
