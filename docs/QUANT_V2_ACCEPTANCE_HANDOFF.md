@@ -105,7 +105,8 @@ uv run zenquant-check
 The summary command exits `0` only for an acceptance verdict, `1` for a valid
 blocked verdict, and `2` for an invalid/incomplete raw artifact. The current
 frozen result is valid and intentionally exits `1` after writing the summary.
-Do not hide that exit code in automation.
+Invalid input writes no new summary, emits `INVALID:` on stderr, and cannot be
+reported as a valid blocked verdict. Do not hide these exit codes in automation.
 
 The runner rejects missing, extra, duplicate or empty matrix entries. Do not add
 CLI tuning knobs or alter the manifest in response to a failed result.
@@ -126,14 +127,13 @@ history begins in 2026, so all five OOS artifacts correctly report
 ## Known limitations
 
 - Changed-file Ruff and format checks passed for all 53 changed Python files.
-- Focused V2 suites passed: `449 passed, 34 subtests passed`.
+- Focused V2 suites passed: `455 passed, 34 subtests passed`.
 - Full pytest outside the restricted macOS sandbox passed:
-  `1331 passed, 4 skipped, 34 subtests passed`.
+  `1337 passed, 4 skipped, 34 subtests passed`.
 - `zenquant-check` passed Gates 0/B/C/D/E/F. Gate A is blocked only by pre-existing
   format drift in `scripts/analyze_intent_churn_attribution.py`,
   `zenquant/data/event_calendar.py`, and `zenquant/data/liquidation_pipeline.py`.
-  Gate E passed outside the sandbox with `1320 passed, 4 skipped, 34 subtests`.
-  No unrelated files were reformatted.
+  Gate E passed outside the sandbox. No unrelated files were reformatted.
 - A hostile-window label and threshold must be added only through a newly frozen,
   separately approved acceptance contract.
 - OptionsState remains shadow-only. Activating its multiplier requires separate approval.
