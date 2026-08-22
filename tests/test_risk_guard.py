@@ -5,9 +5,11 @@ import unittest
 import pytest
 
 from zenquant.domain import (
+    EventMeta,
     ExecutionReport,
     IndicatorCoverage,
     IndicatorPack,
+    MarkPriceUpdate,
     TargetPosition,
     Timeframe,
     target_position_hash,
@@ -61,6 +63,60 @@ def _fill(qty: float, price: float = 40000.0) -> ExecutionReport:
         fee=0.0,
         transaction_time_ns=1,
     )
+
+
+def _mark(price: float) -> MarkPriceUpdate:
+    return MarkPriceUpdate(
+        meta=EventMeta(
+            event_time_ns=1,
+            ingest_time_ns=1,
+            venue="BINANCE",
+            symbol="BTCUSDT_PERP",
+            stream_seq=1,
+        ),
+        mark_price=price,
+    )
+
+
+def test_mark_price_event_revalues_filled_position() -> None:
+    bus = InMemoryJetStream()
+    overlay = RiskOverlay(bus=bus, config=RiskOverlayConfig(starting_equity=100_000.0))
+
+    bus.publish("exec.order.report", _fill(2.0, price=100_000.0))
+    overlay.apply_fee(80.0)
+    equity_before_mark = overlay.equity
+
+    bus.publish("md.mark.BINANCE.BTCUSDT_PERP", _mark(101_000.0))
+
+    assert overlay.equity - equity_before_mark == pytest.approx(2_000.0)
+
+
+@pytest.mark.parametrize("invalid_mark", [0.0, -1.0, float("nan"), float("inf"), float("-inf")])
+def test_invalid_mark_price_event_does_not_change_equity(invalid_mark: float) -> None:
+    bus = InMemoryJetStream()
+    overlay = RiskOverlay(bus=bus, config=RiskOverlayConfig(starting_equity=100_000.0))
+    bus.publish("exec.order.report", _fill(1.0, price=100_000.0))
+    bus.publish("md.mark.BINANCE.BTCUSDT_PERP", _mark(101_000.0))
+    before = overlay.equity
+
+    bus.publish("md.mark.BINANCE.BTCUSDT_PERP", _mark(invalid_mark))
+
+    assert overlay.equity == pytest.approx(before)
+
+
+def test_positions_returns_immutable_snapshot() -> None:
+    bus = InMemoryJetStream()
+    overlay = RiskOverlay(bus=bus, config=RiskOverlayConfig(starting_equity=100_000.0))
+    bus.publish("exec.order.report", _fill(1.0, price=100_000.0))
+    positions = overlay.positions
+
+    with pytest.raises(TypeError):
+        positions["BTCUSDT_PERP"] = 0.0
+
+    bus.publish("exec.order.report", _fill(1.0, price=100_000.0))
+
+    assert positions == {"BTCUSDT_PERP": 1.0}
+    assert overlay.positions == {"BTCUSDT_PERP": 2.0}
 
 
 def test_leveraged_fill_fee_preserves_negative_cash_liability() -> None:

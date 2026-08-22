@@ -2,13 +2,17 @@
 
 from __future__ import annotations
 
+import math
+from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
+from types import MappingProxyType
 
 from zenquant.data.event_calendar import is_macro_event_bar
 from zenquant.domain import (
     ExecutionReport,
     IndicatorPack,
+    MarkPriceUpdate,
     RiskOverlayDecision,
     RiskSnapshot,
     TargetPosition,
@@ -129,6 +133,7 @@ class RiskOverlay:
         self._equity = self._config.starting_equity
         self._high_water_mark = self._config.starting_equity
         self._last_price: dict[str, float] = {}
+        self._marked_symbols: set[str] = set()
         self._actual_positions: dict[str, float] = {}
         self._latest_indicator: dict[tuple[str, Timeframe], IndicatorPack] = {}
         self._day_anchor: tuple[int, float] | None = None
@@ -143,6 +148,7 @@ class RiskOverlay:
         self._degraded_mode_bars = 0
 
         self._bus.subscribe("indicator.>", self._on_indicator)
+        self._bus.subscribe("md.mark.>", self._on_mark_price)
         self._bus.subscribe("intent.target_position.>", self._on_target_position)
         self._bus.subscribe("exec.order.report", self._on_execution_report)
 
@@ -161,10 +167,24 @@ class RiskOverlay:
         """Peak equity observed since process start."""
         return self._high_water_mark
 
+    @property
+    def positions(self) -> Mapping[str, float]:
+        """Immutable snapshot of actual filled positions for accounting audit."""
+        return MappingProxyType(dict(self._actual_positions))
+
     def _on_indicator(self, _: str, payload: object) -> None:
         if not isinstance(payload, IndicatorPack):
             return
         self.prime_indicator(payload)
+
+    def _on_mark_price(self, _: str, payload: object) -> None:
+        if not isinstance(payload, MarkPriceUpdate):
+            return
+        if not math.isfinite(payload.mark_price) or payload.mark_price <= 0.0:
+            return
+        self._last_price[payload.meta.symbol] = payload.mark_price
+        self._marked_symbols.add(payload.meta.symbol)
+        self._revalue_equity()
 
     def prime_indicator(self, pack: IndicatorPack) -> None:
         """Seed indicator and price context without requiring a bus publish."""
@@ -183,7 +203,7 @@ class RiskOverlay:
 
         current = self._actual_positions.get(payload.symbol, 0.0)
         self._actual_positions[payload.symbol] = current + (payload.side * payload.filled_qty)
-        if payload.avg_price > 0:
+        if payload.avg_price > 0 and payload.symbol not in self._marked_symbols:
             self._last_price[payload.symbol] = payload.avg_price
 
         self._cash -= payload.side * payload.filled_qty * payload.avg_price

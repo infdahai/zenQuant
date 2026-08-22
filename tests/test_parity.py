@@ -19,6 +19,7 @@ from unittest.mock import patch
 from zenquant.app.server import ZenQuantWebRuntime
 from zenquant.domain import (
     EventMeta,
+    ExecutionReport,
     IndicatorCoverage,
     IndicatorPack,
     MarketState,
@@ -32,6 +33,7 @@ from zenquant.infra.event_bus import InMemoryJetStream, StreamConfig
 from zenquant.plugins.profile import build_from_profile
 from zenquant.plugins.protocols import PluginMeta, SignalResult, SizerResult
 from zenquant.plugins.registry import LoadedPlugin, PluginRegistry
+from zenquant.risk import RiskOverlay, RiskOverlayConfig
 from zenquant.strategy.engine import ARCStrategyConfig, ARCStrategyEngine
 
 PLUGIN_ROOT = Path(__file__).parent.parent / "zenquant" / "plugins"
@@ -102,6 +104,72 @@ def _make_state(
         transition_risk=0.2,
         quality_flags=["OK"],
     )
+
+
+def _fixed_event_fill(*, quantity: float, price: float, fee: float, sequence: int) -> ExecutionReport:
+    return ExecutionReport(
+        client_order_id=f"fixed-event-{sequence}",
+        symbol="BTCUSDT_PERP",
+        side=1 if quantity > 0 else -1,
+        status="FILLED",
+        filled_qty=abs(quantity),
+        avg_price=price,
+        fee=fee,
+        transaction_time_ns=sequence,
+    )
+
+
+def _fixed_event_mark(*, price: float, sequence: int) -> MarkPriceUpdate:
+    return MarkPriceUpdate(
+        meta=EventMeta(
+            event_time_ns=sequence,
+            ingest_time_ns=sequence,
+            venue="BINANCE",
+            symbol="BTCUSDT_PERP",
+            stream_seq=sequence,
+        ),
+        mark_price=price,
+    )
+
+
+class TestFixedEventMarkToMarketParity(unittest.TestCase):
+    def _run_fixed_events(self) -> tuple[RiskOverlay, float, float]:
+        bus = InMemoryJetStream()
+        overlay = RiskOverlay(bus=bus, config=RiskOverlayConfig(starting_equity=100_000.0))
+
+        bus.publish(
+            "exec.order.report",
+            _fixed_event_fill(quantity=2.0, price=100_000.0, fee=80.0, sequence=1),
+        )
+        overlay.apply_fee(80.0)
+        equity_before_first_mark = overlay.equity
+        bus.publish("md.mark.BINANCE.BTCUSDT_PERP", _fixed_event_mark(price=101_000.0, sequence=2))
+        first_mark_change = overlay.equity - equity_before_first_mark
+
+        equity_before_partial_sell = overlay.equity
+        bus.publish(
+            "exec.order.report",
+            _fixed_event_fill(quantity=-1.0, price=100_500.0, fee=40.2, sequence=3),
+        )
+        overlay.apply_fee(40.2)
+        partial_sell_change = overlay.equity - equity_before_partial_sell
+        bus.publish("md.mark.BINANCE.BTCUSDT_PERP", _fixed_event_mark(price=99_000.0, sequence=4))
+
+        return overlay, first_mark_change, partial_sell_change
+
+    def test_same_fixed_events_have_identical_mark_to_market_accounting(self) -> None:
+        left, left_first_mark_change, left_partial_sell_change = self._run_fixed_events()
+        right, right_first_mark_change, right_partial_sell_change = self._run_fixed_events()
+
+        self.assertEqual(left.cash, right.cash)
+        self.assertEqual(left.positions, right.positions)
+        self.assertEqual(left.equity, right.equity)
+        self.assertEqual(left.high_water_mark, right.high_water_mark)
+        self.assertEqual(left._drawdown(), right._drawdown())
+        self.assertEqual(left_first_mark_change, 2 * 1_000)
+        self.assertEqual(right_first_mark_change, 2 * 1_000)
+        self.assertAlmostEqual(left_partial_sell_change, -1 * (101_000 - 100_500) - 40.2)
+        self.assertAlmostEqual(right_partial_sell_change, -1 * (101_000 - 100_500) - 40.2)
 
 
 class TestPluginLegacyParity(unittest.TestCase):
