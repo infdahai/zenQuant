@@ -35,6 +35,7 @@ from .options_state import (
     OptionsState,
     black76_forward_delta,
     build_options_state,
+    validate_options_state_identity,
 )
 from .options_store import OptionsDataStore, OptionsDataStoreConfig, OptionsSnapshot
 
@@ -76,5 +77,6 @@ __all__ = [
     "fetch_public_block_rfq_trades",
     "fetch_public_option_trades",
     "save_block_flow_rows",
+    "validate_options_state_identity",
     "write_deribit_block_flow_status",
 ]

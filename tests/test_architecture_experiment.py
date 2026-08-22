@@ -10,6 +10,7 @@ from types import MappingProxyType
 
 import pytest
 
+from zenquant.data import OptionsDataStore
 from zenquant.domain import (
     ArchitectureAlphaSnapshot,
     IndicatorCoverage,
@@ -203,6 +204,7 @@ def test_matrix_entry_sources_a0_only_from_original_runner(monkeypatch):
     class _Runner:
         def __init__(self, config):
             self.config = config
+            self.options_store = OptionsDataStore()
             runner_configs.append(config)
 
         def run(self):
@@ -1341,6 +1343,45 @@ def test_report_requires_exact_matrix_and_carries_frozen_identities():
         "observation_only": True,
         "blocks_orders": False,
         "forward_horizons_4h": [1, 3, 6],
+    }
+
+
+def test_report_embeds_real_options_shadow_artifact_per_oos_run():
+    """Catches the frozen CLI computing options evidence that its JSON drops."""
+    manifest = load_architecture_experiment_manifest()
+    runs = _complete_matrix()
+    late_dev_index = next(index for index, run in enumerate(runs) if run.window == "late_dev_2025")
+    runs[late_dev_index] = replace(
+        runs[late_dev_index],
+        options_shadow_report={
+            "schema_version": "options-shadow-counterfactual-v1",
+            "status": "INSUFFICIENT_SAMPLE",
+            "window": "late_dev_2025",
+            "seed": runs[late_dev_index].seed,
+        },
+    )
+
+    report = build_architecture_attribution_report(runs, manifest=manifest, fixed_notional=100_000.0)
+    embedded = next(
+        run["options_shadow"]
+        for run in report["runs"]
+        if run["window"] == "late_dev_2025" and run["seed"] == runs[late_dev_index].seed
+    )
+
+    assert embedded["status"] == "INSUFFICIENT_SAMPLE"
+    assert embedded["schema_version"] == "options-shadow-counterfactual-v1"
+    assert report["options_shadow_stability"] == {
+        "status": "INSUFFICIENT_SAMPLE",
+        "required_sufficient_seeds_per_oos_window": 4,
+        "oos_window_seed_counts": {"2020": 0, "2021": 0, "2022": 0, "2023": 0, "late_dev_2025": 1},
+        "oos_window_sufficient_seed_counts": {
+            "2020": 0,
+            "2021": 0,
+            "2022": 0,
+            "2023": 0,
+            "late_dev_2025": 0,
+        },
+        "activation_recommendation": None,
     }
 
 

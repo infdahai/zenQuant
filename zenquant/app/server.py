@@ -36,7 +36,12 @@ from zenquant.app.paper_live_scorecard import (
     build_runtime_scorecard,
     load_scorecard_history_payloads,
 )
-from zenquant.data import MicrostructureFeatureStore, MicrostructureFeatureStoreConfig
+from zenquant.data import (
+    MicrostructureFeatureStore,
+    MicrostructureFeatureStoreConfig,
+    OptionsDataStore,
+    OptionsDataStoreConfig,
+)
 from zenquant.domain import (
     Candle,
     DeribitRiskPack,
@@ -92,6 +97,14 @@ class _StateConnection:
     tf: str
 
 
+@dataclass(frozen=True, slots=True)
+class OptionsStateShadowRuntimeConfig:
+    """Default-off local store configuration for live options observation."""
+
+    enabled: bool = False
+    options_dir: Path = Path("data/raw/deribit_options")
+
+
 class ZenQuantWebRuntime:
     """Own the web runtime, event bus, and dashboard-facing subscriptions.
 
@@ -108,6 +121,7 @@ class ZenQuantWebRuntime:
         execution_config: ExecutionKernelConfig | None = None,
         options_state_shadow_enabled: bool = False,
         options_state_resolver: OptionsStateResolver | None = None,
+        options_state_shadow_config: OptionsStateShadowRuntimeConfig | None = None,
     ) -> None:
         self._runtime_mode = runtime_mode
         self._tick_interval_s = tick_interval_s
@@ -134,10 +148,21 @@ class ZenQuantWebRuntime:
         self.bus.add_stream(StreamConfig(name="STREAM_INDICATORS", subjects=["indicator.>"]))
         self.bus.add_stream(StreamConfig(name="STREAM_INTENTS", subjects=["intent.>"]))
         self.bus.add_stream(StreamConfig(name="STREAM_EXEC", subjects=["exec.>"]))
+        shadow_config = options_state_shadow_config or OptionsStateShadowRuntimeConfig(
+            enabled=options_state_shadow_enabled
+        )
+        self.options_shadow_store: OptionsDataStore | None = None
+        resolved_options_state_resolver = options_state_resolver
+        if shadow_config.enabled and resolved_options_state_resolver is None:
+            self.options_shadow_store = OptionsDataStore(
+                OptionsDataStoreConfig(options_dir=shadow_config.options_dir, currency="BTC")
+            )
+            self.options_shadow_store.load()
+            resolved_options_state_resolver = self._resolve_live_options_state
         self.options_shadow_observer = OptionsShadowObserver(
             bus=self.bus,
-            config=OptionsShadowConfig(enabled=options_state_shadow_enabled),
-            state_resolver=options_state_resolver,
+            config=OptionsShadowConfig(enabled=shadow_config.enabled),
+            state_resolver=resolved_options_state_resolver,
         )
 
         self.state = DashboardStateStore()
@@ -198,6 +223,15 @@ class ZenQuantWebRuntime:
             self._initialize_trading_chain()
 
         self._subscribe_all()
+
+    def _resolve_live_options_state(self, snapshot):
+        if self.options_shadow_store is None:
+            raise ValueError("options shadow store is not configured")
+        return self.options_shadow_store.lookup_options_state(
+            snapshot.cutoff_time_ns,
+            realized_vol_30d=(snapshot.annualized_volatility if snapshot.annualized_volatility > 0.0 else None),
+            realized_vol_source_timestamp_ns=snapshot.cutoff_time_ns,
+        )
 
     def _build_microstructure_store(self) -> MicrostructureFeatureStore | None:
         if os.getenv("ZENQUANT_MICROSTRUCTURE_SIDECAR_ENABLED", "").lower() not in {"1", "true", "yes"}:
@@ -661,7 +695,11 @@ class ZenQuantWebRuntime:
             self._schedule_state_broadcast()
 
 
-def create_app(runtime_mode: str = "demo", bus: Any = None) -> FastAPI:
+def create_app(
+    runtime_mode: str = "demo",
+    bus: Any = None,
+    options_state_shadow_config: OptionsStateShadowRuntimeConfig | None = None,
+) -> FastAPI:
     """Create the FastAPI application used by ``zenquant-web``.
 
     Example:
@@ -673,7 +711,10 @@ def create_app(runtime_mode: str = "demo", bus: Any = None) -> FastAPI:
             "`python3 -m pip install -e .` and retry."
         ) from _FASTAPI_IMPORT_ERROR
 
-    runtime = ZenQuantWebRuntime(runtime_mode=runtime_mode)
+    runtime = ZenQuantWebRuntime(
+        runtime_mode=runtime_mode,
+        options_state_shadow_config=options_state_shadow_config,
+    )
     # Allow external bus injection (e.g., from paper trading)
     if bus is not None:
         runtime.bus = bus
@@ -690,6 +731,7 @@ def create_app(runtime_mode: str = "demo", bus: Any = None) -> FastAPI:
 
     title = "ZenQuant 4.0 Live Sim" if runtime_mode == "live" else "ZenQuant 4.0 Demo"
     app = FastAPI(title=title, version="0.3.0", lifespan=lifespan)
+    app.state.zenquant_runtime = runtime
     web_root = Path(__file__).resolve().parents[1] / "web"
 
     app.mount("/static", StaticFiles(directory=str(web_root)), name="static")
@@ -857,7 +899,25 @@ def main() -> None:
         default=int(os.getenv("ZENQUANT_WEB_PORT", "8090")),
         help="TCP port to bind.",
     )
+    parser.add_argument(
+        "--options-state-shadow",
+        action=argparse.BooleanOptionalAction,
+        default=os.getenv("ZENQUANT_OPTIONS_STATE_SHADOW_ENABLED", "").lower() in {"1", "true", "yes"},
+        help="Enable the observation-only local OptionsState sidecar.",
+    )
+    parser.add_argument(
+        "--options-dir",
+        type=Path,
+        default=Path(os.getenv("ZENQUANT_OPTIONS_DIR", "data/raw/deribit_options")),
+        help="Local Deribit chain snapshot directory for OptionsState shadow.",
+    )
     args = parser.parse_args()
 
-    app = create_app(runtime_mode=args.mode)
+    app = create_app(
+        runtime_mode=args.mode,
+        options_state_shadow_config=OptionsStateShadowRuntimeConfig(
+            enabled=args.options_state_shadow,
+            options_dir=args.options_dir,
+        ),
+    )
     uvicorn.run(app, host=args.host, port=args.port, reload=False)

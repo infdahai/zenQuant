@@ -37,6 +37,7 @@ from zenquant.research.framework_params import (
     build_signal_weight_overrides,
     build_strategy_config,
 )
+from zenquant.research.options_shadow import build_options_shadow_oos_artifact
 
 FIXED_NOTIONAL = 100_000.0
 FROZEN_TAKER_FEE_BPS = 4.0
@@ -251,7 +252,7 @@ def run_frozen_matrix_entry(
         config=donor_config,
         manifest=manifest,
     )
-    return ArchitectureRunEvidence(
+    evidence = ArchitectureRunEvidence(
         window=window.label,
         start_ns=window.start_ns,
         end_ns=window.end_ns,
@@ -270,6 +271,12 @@ def run_frozen_matrix_entry(
         execution_metrics_by_stage=stage_metrics,
         stage_execution_rows_by_stage=stage_rows,
     )
+    options_shadow_report = build_options_shadow_oos_artifact(
+        evidence,
+        options_store=donor_runner.options_store,
+        manifest_identity=manifest.sha256,
+    )
+    return replace(evidence, options_shadow_report=options_shadow_report)
 
 
 def main() -> None:

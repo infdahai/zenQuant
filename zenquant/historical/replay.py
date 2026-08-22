@@ -389,6 +389,11 @@ class HistoricalBacktest:
         self.bus.subscribe("exec.order.report", self._collect_report)
         self.bus.subscribe("risk.snapshot", self._collect_risk_snapshot)
 
+    @property
+    def options_store(self) -> OptionsDataStore:
+        """Expose the loaded PIT store to observation-only research adapters."""
+        return self._options_store
+
     def run(self) -> HistoricalBacktestResult:
         """Run the historical replay and return summary metrics.
 

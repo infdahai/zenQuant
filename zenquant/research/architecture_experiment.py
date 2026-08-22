@@ -315,6 +315,7 @@ class ArchitectureRunEvidence:
     position_episodes: tuple[PositionEpisode, ...] = ()
     execution_metrics_by_stage: Mapping[str, ArchitectureExecutionMetrics] = field(default_factory=dict)
     stage_execution_rows_by_stage: Mapping[str, tuple[ArchitectureStageExecutionRow, ...]] = field(default_factory=dict)
+    options_shadow_report: Mapping[str, Any] | None = None
 
 
 def stage_exposure(
@@ -623,8 +624,26 @@ def build_architecture_attribution_report(
                         "alpha_config_hashes": alpha_config_hashes,
                     },
                     "stages": stages,
+                    "options_shadow": (
+                        dict(evidence.options_shadow_report) if evidence.options_shadow_report is not None else None
+                    ),
                 }
             )
+
+    oos_windows = [window.label for window in manifest.windows if not window.label.lower().startswith("train")]
+    options_seed_counts = {label: 0 for label in oos_windows}
+    options_sufficient_counts = {label: 0 for label in oos_windows}
+    for run in runs:
+        artifact = run.get("options_shadow")
+        if run["window"] not in options_seed_counts or not isinstance(artifact, dict):
+            continue
+        options_seed_counts[run["window"]] += 1
+        if artifact.get("status") == "SUFFICIENT":
+            options_sufficient_counts[run["window"]] += 1
+    options_stable = bool(oos_windows) and all(
+        options_seed_counts[label] == len(manifest.seeds) and options_sufficient_counts[label] >= 4
+        for label in oos_windows
+    )
 
     return {
         "schema_version": ARCHITECTURE_ATTRIBUTION_SCHEMA_VERSION,
@@ -697,6 +716,13 @@ def build_architecture_attribution_report(
         },
         "cost_stress_bps": list(costs),
         "runs": runs,
+        "options_shadow_stability": {
+            "status": "SUFFICIENT" if options_stable else "INSUFFICIENT_SAMPLE",
+            "required_sufficient_seeds_per_oos_window": 4,
+            "oos_window_seed_counts": options_seed_counts,
+            "oos_window_sufficient_seed_counts": options_sufficient_counts,
+            "activation_recommendation": None,
+        },
     }
 
 

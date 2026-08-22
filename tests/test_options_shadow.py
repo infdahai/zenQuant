@@ -10,19 +10,25 @@ from unittest.mock import patch
 
 import pytest
 
-from zenquant.app.server import ZenQuantWebRuntime
-from zenquant.data.options_state import build_options_state
+from zenquant.app.server import OptionsStateShadowRuntimeConfig, ZenQuantWebRuntime, create_app
+from zenquant.data.options_state import build_options_state, validate_options_state_identity
 from zenquant.data.options_store import OptionsDataStore
 from zenquant.domain import EventMeta, MarkPriceUpdate, TargetPosition, Timeframe
 from zenquant.execution import ExecutionKernelConfig
 from zenquant.historical import HistoricalBacktest, HistoricalBacktestConfig
 from zenquant.infra import InMemoryJetStream
+from zenquant.research.architecture_experiment import (
+    ArchitectureObservation,
+    ArchitectureRunEvidence,
+    ArchitectureStageExecutionRow,
+)
 from zenquant.research.options_shadow import (
     OptionsShadowConfig,
     OptionsShadowObservation,
     OptionsShadowObserver,
     OptionsStateSidecarLedger,
     build_options_shadow_counterfactual,
+    build_options_shadow_oos_artifact,
     execution_material_snapshot_bytes,
 )
 from zenquant.strategy.decision_snapshot import build_decision_snapshot
@@ -31,15 +37,15 @@ FOUR_HOURS_NS = 4 * 60 * 60 * 1_000_000_000
 CUTOFF_NS = 1_725_667_200_000_000_000
 
 
-def _target(*, cutoff_time_ns: int = CUTOFF_NS) -> TargetPosition:
+def _target(*, cutoff_time_ns: int = CUTOFF_NS, target_qty: float = 0.5) -> TargetPosition:
     return TargetPosition(
         intent_id="risk-final",
         portfolio="arc",
         symbol="BTCUSDT_PERP",
         timeframe=Timeframe.TF_4H,
         cutoff_time_ns=cutoff_time_ns,
-        target_qty=0.5,
-        target_leverage=0.5,
+        target_qty=target_qty,
+        target_leverage=abs(target_qty),
         reduce_only=False,
         regime="TREND",
         regime_confidence=0.8,
@@ -49,8 +55,8 @@ def _target(*, cutoff_time_ns: int = CUTOFF_NS) -> TargetPosition:
     )
 
 
-def _snapshot(*, cutoff_time_ns: int = CUTOFF_NS):
-    target = _target(cutoff_time_ns=cutoff_time_ns)
+def _snapshot(*, cutoff_time_ns: int = CUTOFF_NS, target_qty: float = 0.5):
+    target = _target(cutoff_time_ns=cutoff_time_ns, target_qty=target_qty)
     return build_decision_snapshot(
         target=target,
         formula_hash="formula-v2",
@@ -109,7 +115,12 @@ def test_shadow_is_default_off_and_emits_no_attached_snapshot():
 def test_shadow_attaches_exact_point_in_time_state_and_keeps_target_identity():
     """Catches the sidecar linking any state other than the resolver's ASOF result."""
     bus = InMemoryJetStream()
-    state = _state(state_id="options-visible", cutoff_ns=CUTOFF_NS, source_ns=CUTOFF_NS - FOUR_HOURS_NS)
+    state = build_options_state(
+        (),
+        cutoff_time_ns=CUTOFF_NS,
+        realized_vol_30d=0.4,
+        realized_vol_source_timestamp_ns=CUTOFF_NS,
+    )
     attached = []
     observer = OptionsShadowObserver(
         bus=bus,
@@ -122,7 +133,7 @@ def test_shadow_attaches_exact_point_in_time_state_and_keeps_target_identity():
     bus.publish("strategy.decision_snapshot.4h.BTCUSDT_PERP", original)
 
     assert len(attached) == 1
-    assert attached[0].options_state_id == "options-visible"
+    assert attached[0].options_state_id == state.options_state_id
     assert attached[0].decision_id != original.decision_id
     assert attached[0].approved_target_hash == original.approved_target_hash
     assert execution_material_snapshot_bytes(attached[0]) == execution_material_snapshot_bytes(original)
@@ -155,6 +166,32 @@ def test_future_state_is_replaced_by_deterministic_unknown_without_execution_eff
     assert execution_material_snapshot_bytes(attached[0]) == execution_material_snapshot_bytes(original)
 
 
+def test_tampered_options_state_identity_degrades_to_canonical_unknown():
+    """Catches a modified OptionsState payload being trusted under a forged identity."""
+    canonical = build_options_state(
+        (),
+        cutoff_time_ns=CUTOFF_NS,
+        realized_vol_30d=0.4,
+        realized_vol_source_timestamp_ns=CUTOFF_NS,
+    )
+    tampered = replace(canonical, options_state_id="forged", trend_quality="CONFIRMING")
+    assert validate_options_state_identity(canonical) is True
+    assert validate_options_state_identity(tampered) is False
+    bus = InMemoryJetStream()
+    observer = OptionsShadowObserver(
+        bus=bus,
+        config=OptionsShadowConfig(enabled=True),
+        state_resolver=lambda _snapshot: tampered,
+    )
+    attached = []
+    bus.subscribe("research.options_shadow.snapshot.4h.>", lambda _subject, value: attached.append(value))
+
+    bus.publish("strategy.decision_snapshot.4h.BTCUSDT_PERP", _snapshot())
+
+    assert attached[0].options_state_id == canonical.options_state_id
+    assert observer.ledger.states == (canonical,)
+
+
 def test_shadow_resolver_failure_cannot_block_downstream_execution_authority():
     """Catches a sidecar calculation failure interrupting the risk-final event path."""
     bus = InMemoryJetStream()
@@ -180,7 +217,7 @@ def test_shadow_resolver_failure_cannot_block_downstream_execution_authority():
 def test_shadow_report_consumer_failure_cannot_block_downstream_execution_authority():
     """Catches a broken research consumer interrupting the risk-final event path."""
     bus = InMemoryJetStream()
-    OptionsShadowObserver(bus=bus, config=OptionsShadowConfig(enabled=True))
+    observer = OptionsShadowObserver(bus=bus, config=OptionsShadowConfig(enabled=True))
 
     def broken_report_consumer(_subject, _value):
         raise RuntimeError("broken report")
@@ -193,6 +230,10 @@ def test_shadow_report_consumer_failure_cannot_block_downstream_execution_author
     bus.publish("strategy.decision_snapshot.4h.BTCUSDT_PERP", original)
 
     assert execution_authority == [original]
+    assert observer.ledger.states[0].trend_quality == "UNKNOWN"
+    assert observer.ledger.links == ()
+    assert observer.ledger.failures[0].stage == "ATTACHED_SNAPSHOT_PUBLICATION"
+    assert observer.ledger.failures[0].error_type == "RuntimeError"
 
 
 def test_sidecar_ledger_rejects_identity_collision():
@@ -225,16 +266,138 @@ def test_counterfactual_reports_observational_oos_buckets_with_unknown_separate(
 
     assert report.oos_label == "late_dev_2025"
     assert report.observation_only is True
+    assert report.activation_recommendation is None
+    assert report.status == "INSUFFICIENT_SAMPLE"
+    assert report.minimum_total_samples == 30
     assert report.off.sample_count == 5
     assert report.off.hostile_sample_count == 3
     assert report.off.hostile_max_drawdown == 0.10224999999999995
     assert report.off.cvar_95 == -0.10
+    assert report.off.tail_threshold == -0.10
     assert report.off.tail_loss_count == 1
     assert report.off.trend_return == 0.20
     assert report.by_trend_quality["UNKNOWN"].sample_count == 2
     assert report.by_trend_quality["UNKNOWN"].options_state_count == 1
     assert report.by_trend_quality["STRESS"].trend_return_retention == 0.6
     assert report.by_trend_quality["CONFIRMING"].trend_return_retention == pytest.approx(0.4)
+
+
+def _stage_row(cutoff_ns: int, forward_return: float) -> ArchitectureStageExecutionRow:
+    return ArchitectureStageExecutionRow(
+        cutoff_time_ns=cutoff_ns,
+        decision_id=f"decision-{cutoff_ns}",
+        approved_exposure=0.5,
+        approved_target_qty=0.5,
+        filled_exposure_before=0.0,
+        filled_exposure_after=0.5,
+        filled_position_before=0.0,
+        filled_position_after=0.5,
+        target_delta_exposure=0.5,
+        reference_price=60_000.0,
+        actual_fill_price=60_001.0,
+        filled_qty=0.5,
+        fee=1.0,
+        actual_slippage=0.5,
+        actual_implementation_shortfall=1.5,
+        funding_pnl=0.0,
+        target_tracking_error=0.0,
+        time_to_target_bars=0,
+        reduce_only=False,
+        safety_reasons=(),
+        forward_return_1=forward_return,
+        forward_return_3=None,
+        forward_return_6=None,
+    )
+
+
+def _oos_evidence(*, window: str = "late_dev_2025") -> ArchitectureRunEvidence:
+    observation = ArchitectureObservation(
+        alpha_id="alpha-1",
+        cutoff_time_ns=CUTOFF_NS,
+        available_at_ns=CUTOFF_NS,
+        regime="TREND",
+        raw_score=0.4,
+        frozen_confidence=0.75,
+        forward_return=0.08,
+        formula_hash="formula-v2",
+        alpha_config_hash="alpha-config-v2",
+        annualized_volatility=0.4,
+        risk_regime="BULL",
+        reference_price=60_000.0,
+    )
+    row = _stage_row(CUTOFF_NS, 0.08)
+    return ArchitectureRunEvidence(
+        window=window,
+        start_ns=CUTOFF_NS,
+        end_ns=CUTOFF_NS + FOUR_HOURS_NS,
+        seed=42,
+        a0_metrics={"net_pnl": 1.0},
+        a0_final_equity=100_001.0,
+        a0_config_hash="a0-config",
+        donor_config_hash="donor-config",
+        observations=(observation,),
+        excluded_non_evaluable_count=0,
+        confirmed_4h_row_count=1,
+        alpha_snapshot_count=1,
+        missing_alpha_count=0,
+        terminal_excluded_count=0,
+        stage_execution_rows_by_stage={"A4": (row,), "A5_SHADOW": (row,)},
+    )
+
+
+def test_real_oos_adapter_joins_options_store_and_returns_insufficient_artifact_without_overlap():
+    """Catches the frozen runner reporting synthetic success when options coverage is absent."""
+    artifact = build_options_shadow_oos_artifact(
+        _oos_evidence(),
+        options_store=OptionsDataStore(),
+        manifest_identity="manifest-sha256",
+    )
+
+    assert artifact["status"] == "INSUFFICIENT_SAMPLE"
+    assert artifact["window"] == "late_dev_2025"
+    assert artifact["seed"] == 42
+    assert artifact["stage"] == "A5_SHADOW"
+    assert artifact["sample_count"] == 1
+    assert artifact["known_sample_count"] == 0
+    assert artifact["unknown_sample_count"] == 1
+    assert artifact["label_contract"] == "forward_return_1_available_at_cutoff_plus_1_confirmed_4h_bar"
+    assert artifact["rows"][0]["label_available_at_ns"] == CUTOFF_NS + FOUR_HOURS_NS
+    assert artifact["identities"]["manifest"] == "manifest-sha256"
+    assert artifact["identities"]["donor_config"] == "donor-config"
+    assert artifact["identities"]["options_data"].startswith("sha256:")
+    assert artifact["activation_recommendation"] is None
+
+
+def test_oos_adapter_rejects_a5_target_drift_from_a4():
+    """Catches A5 shadow changing the A4 approved target before reporting."""
+    evidence = _oos_evidence()
+    changed = replace(evidence.stage_execution_rows_by_stage["A5_SHADOW"][0], approved_target_qty=0.6)
+    evidence = replace(
+        evidence,
+        stage_execution_rows_by_stage={
+            **evidence.stage_execution_rows_by_stage,
+            "A5_SHADOW": (changed,),
+        },
+    )
+
+    with pytest.raises(ValueError, match=r"A5_SHADOW.*A4"):
+        build_options_shadow_oos_artifact(
+            evidence,
+            options_store=OptionsDataStore(),
+            manifest_identity="manifest-sha256",
+        )
+
+
+def test_oos_adapter_marks_train_window_as_not_oos():
+    """Catches in-sample evidence being presented as an OOS options result."""
+    artifact = build_options_shadow_oos_artifact(
+        _oos_evidence(window="train_full"),
+        options_store=OptionsDataStore(),
+        manifest_identity="manifest-sha256",
+    )
+
+    assert artifact["status"] == "NOT_OOS"
+    assert artifact["rows"] == []
 
 
 def test_strategy_risk_and_execution_cannot_import_or_read_shadow_multiplier():
@@ -323,43 +486,56 @@ def _run_execution_trace(runtime) -> dict[str, object]:
     reports: list[dict[str, object]] = []
     audits: list[dict[str, object]] = []
     risk_decisions: list[dict[str, object]] = []
+    final_targets: list[dict[str, object]] = []
+    approved_snapshots: list[bytes] = []
+    target_hashes: list[str] = []
+    position_curve: list[dict[str, float]] = []
+    equity_curve: list[float] = []
     bus.subscribe("exec.order.submit", lambda _subject, value: orders.append(asdict(value)))
     bus.subscribe("exec.order.report", lambda _subject, value: reports.append(asdict(value)))
     bus.subscribe("exec.order.audit", lambda _subject, value: audits.append(asdict(value)))
     bus.subscribe("risk.overlay.decision", lambda _subject, value: risk_decisions.append(asdict(value)))
-    snapshot = _snapshot()
-    target = _target()
-    bus.publish(
-        "md.mark.BINANCE.BTCUSDT_PERP",
-        MarkPriceUpdate(
-            meta=EventMeta(
-                event_time_ns=CUTOFF_NS,
-                ingest_time_ns=CUTOFF_NS,
-                venue="BINANCE",
-                symbol="BTCUSDT_PERP",
-                stream_seq=1,
-            ),
-            mark_price=60_000.0,
-            index_price=60_000.0,
-        ),
-    )
-    bus.publish("strategy.decision_snapshot.4h.BTCUSDT_PERP", snapshot)
-    bus.publish("intent.target_position.final.BTCUSDT_PERP", target)
+    bus.subscribe("intent.target_position.final.>", lambda _subject, value: final_targets.append(asdict(value)))
     kernel = runtime.execution_kernel
     risk = runtime.risk_overlay
     assert kernel is not None
     assert risk is not None
+    for index, (target_qty, mark_price) in enumerate(((0.5, 60_000.0), (-0.25, 61_000.0), (0.0, 59_000.0))):
+        cutoff = CUTOFF_NS + index * FOUR_HOURS_NS
+        snapshot = _snapshot(cutoff_time_ns=cutoff, target_qty=target_qty)
+        target = _target(cutoff_time_ns=cutoff, target_qty=target_qty)
+        approved_snapshots.append(execution_material_snapshot_bytes(snapshot))
+        target_hashes.append(snapshot.approved_target_hash)
+        bus.publish(
+            "md.mark.BINANCE.BTCUSDT_PERP",
+            MarkPriceUpdate(
+                meta=EventMeta(
+                    event_time_ns=cutoff,
+                    ingest_time_ns=cutoff,
+                    venue="BINANCE",
+                    symbol="BTCUSDT_PERP",
+                    stream_seq=index + 1,
+                ),
+                mark_price=mark_price,
+                index_price=mark_price,
+            ),
+        )
+        bus.publish("strategy.decision_snapshot.4h.BTCUSDT_PERP", snapshot)
+        bus.publish(f"intent.target_position.{target.portfolio}.{target.symbol}", target)
+        position_curve.append(dict(kernel.positions))
+        equity_curve.append(risk.equity)
     return {
-        "snapshot_target": execution_material_snapshot_bytes(snapshot),
-        "approved_target_hash": snapshot.approved_target_hash,
+        "snapshot_targets": approved_snapshots,
+        "approved_target_hashes": target_hashes,
+        "final_targets": final_targets,
         "orders": orders,
         "reports": reports,
-        "audits_without_decision_id": [
-            {key: value for key, value in row.items() if key != "decision_id"} for row in audits
-        ],
+        "audits": audits,
         "risk_decisions": risk_decisions,
         "positions": dict(kernel.positions),
         "equity": risk.equity,
+        "position_curve": position_curve,
+        "equity_curve": equity_curve,
         "purity": kernel.purity_counters,
     }
 
@@ -395,3 +571,20 @@ def test_runtime_shadow_switch_defaults_off():
 
     assert replay.options_shadow_observer.config.enabled is False
     assert live.options_shadow_observer.config.enabled is False
+
+
+def test_live_runtime_and_app_use_explicit_local_options_store_seam(tmp_path):
+    """Catches the app factory enabling shadow without a real PIT store resolver."""
+    config = OptionsStateShadowRuntimeConfig(enabled=True, options_dir=tmp_path / "deribit")
+    runtime = ZenQuantWebRuntime(runtime_mode="live", options_state_shadow_config=config)
+
+    assert isinstance(runtime.options_shadow_store, OptionsDataStore)
+    assert runtime.options_shadow_observer.config.enabled is True
+    bus_attached = []
+    runtime.bus.subscribe("research.options_shadow.snapshot.4h.>", lambda _subject, value: bus_attached.append(value))
+    runtime.bus.publish("strategy.decision_snapshot.4h.BTCUSDT_PERP", _snapshot())
+    assert bus_attached[0].options_state_id == runtime.options_shadow_observer.ledger.states[0].options_state_id
+
+    app = create_app(runtime_mode="live", options_state_shadow_config=config)
+    assert app.state.zenquant_runtime.options_shadow_observer.config.enabled is True
+    assert isinstance(app.state.zenquant_runtime.options_shadow_store, OptionsDataStore)

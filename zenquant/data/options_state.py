@@ -458,6 +458,16 @@ def _canonical_id(payload: Mapping[str, Any]) -> str:
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
+def validate_options_state_identity(state: OptionsState) -> bool:
+    """Return whether the claimed ID hashes the complete immutable payload."""
+    try:
+        payload = state.to_dict()
+        claimed = str(payload.pop("options_state_id"))
+        return bool(claimed) and claimed == _canonical_id(payload)
+    except (TypeError, ValueError):
+        return False
+
+
 def _row_data_identity(rows: Sequence[Mapping[str, Any]]) -> str:
     """Hash the full selected raw-chain payload after scalar normalization."""
     normalized = sorted((_canonical_row(row) for row in rows), key=lambda row: _canonical_row_text(row))
@@ -633,4 +643,5 @@ __all__ = [
     "black76_forward_delta",
     "build_options_state",
     "interpolate_25_delta_iv",
+    "validate_options_state_identity",
 ]
