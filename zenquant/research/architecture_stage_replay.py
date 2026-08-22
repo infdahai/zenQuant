@@ -258,6 +258,7 @@ def run_architecture_stage_replay(
             forward_return_1=observation.forward_return,
             forward_return_3=observation.forward_return_3,
             forward_return_6=observation.forward_return_6,
+            forward_return_1_available_at_ns=observation.forward_return_available_at_ns,
         )
         rows.append(row)
         tracking_errors.append(error)

@@ -270,6 +270,7 @@ def run_frozen_matrix_entry(
         position_episodes=a0_result.position_episodes,
         execution_metrics_by_stage=stage_metrics,
         stage_execution_rows_by_stage=stage_rows,
+        window_role=window.role,
     )
     options_shadow_report = build_options_shadow_oos_artifact(
         evidence,

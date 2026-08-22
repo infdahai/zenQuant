@@ -49,6 +49,17 @@ class ArchitectureWindow:
     label: str
     start_ns: int
     end_ns: int
+    role: str
+
+
+FROZEN_WINDOW_ROLES = {
+    "train_full": "TRAIN",
+    "2020": "TRAIN_DIAGNOSTIC",
+    "2021": "TRAIN_DIAGNOSTIC",
+    "2022": "TRAIN_DIAGNOSTIC",
+    "2023": "TRAIN_DIAGNOSTIC",
+    "late_dev_2025": "OOS",
+}
 
 
 @dataclass(frozen=True, slots=True)
@@ -99,6 +110,12 @@ def load_architecture_experiment_manifest(
             f"expected {ARCHITECTURE_EXPERIMENT_V1_MANIFEST_SHA256}, got {digest}"
         )
     payload = json.loads(raw)
+    window_labels = {str(window["label"]) for window in payload["windows"]}
+    if window_labels != set(FROZEN_WINDOW_ROLES):
+        raise ValueError(
+            "architecture experiment window-role mapping mismatch: "
+            f"expected={sorted(FROZEN_WINDOW_ROLES)!r} got={sorted(window_labels)!r}"
+        )
     candidate = payload["candidate"]
     params = dict(candidate["params"])
     params_digest = hashlib.sha256(
@@ -143,6 +160,7 @@ def load_architecture_experiment_manifest(
                 label=str(window["label"]),
                 start_ns=int(window["start_ns"]),
                 end_ns=int(window["end_ns"]),
+                role=FROZEN_WINDOW_ROLES[str(window["label"])],
             )
             for window in payload["windows"]
         ),
@@ -184,6 +202,7 @@ class ArchitectureObservation:
     forward_return: float
     formula_hash: str
     alpha_config_hash: str
+    forward_return_available_at_ns: int | None = None
     available_at_ns: int | None = None
     annualized_volatility: float | None = None
     risk_regime: str = "UNKNOWN"
@@ -292,6 +311,7 @@ class ArchitectureStageExecutionRow:
     forward_return_1: float | None
     forward_return_3: float | None
     forward_return_6: float | None
+    forward_return_1_available_at_ns: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -306,6 +326,7 @@ class ArchitectureRunEvidence:
     a0_final_equity: float
     a0_config_hash: str
     donor_config_hash: str
+    window_role: str
     observations: tuple[ArchitectureObservation, ...]
     excluded_non_evaluable_count: int
     confirmed_4h_row_count: int
@@ -531,6 +552,10 @@ def build_architecture_attribution_report(
     for window in manifest.windows:
         for seed in manifest.seeds:
             evidence = indexed[(window.label, seed)]
+            if evidence.window_role != window.role:
+                raise ValueError(
+                    f"window role mismatch for {window.label}: expected={window.role} got={evidence.window_role}"
+                )
             ordered = sorted(evidence.observations, key=lambda item: (item.cutoff_time_ns, item.alpha_id))
             _reject_duplicate_cutoffs(ordered, window=window.label, seed=seed)
             formula_hashes = sorted({item.formula_hash for item in ordered})
@@ -630,7 +655,7 @@ def build_architecture_attribution_report(
                 }
             )
 
-    oos_windows = [window.label for window in manifest.windows if not window.label.lower().startswith("train")]
+    oos_windows = [window.label for window in manifest.windows if window.role == "OOS"]
     options_seed_counts = {label: 0 for label in oos_windows}
     options_sufficient_counts = {label: 0 for label in oos_windows}
     for run in runs:
@@ -640,10 +665,11 @@ def build_architecture_attribution_report(
         options_seed_counts[run["window"]] += 1
         if artifact.get("status") == "SUFFICIENT":
             options_sufficient_counts[run["window"]] += 1
-    options_stable = bool(oos_windows) and all(
-        options_seed_counts[label] == len(manifest.seeds) and options_sufficient_counts[label] >= 4
-        for label in oos_windows
+    coverage_sufficient = bool(oos_windows) and all(
+        options_seed_counts[label] == len(manifest.seeds) for label in oos_windows
     )
+    quality_stability = _options_shadow_quality_stability(runs, oos_windows=set(oos_windows))
+    stability_sufficient = any(item["status"] == "STABLE" for item in quality_stability.values())
 
     return {
         "schema_version": ARCHITECTURE_ATTRIBUTION_SCHEMA_VERSION,
@@ -657,7 +683,7 @@ def build_architecture_attribution_report(
             "profile_path": str(manifest.profile_path),
             "profile_sha256": manifest.profile_sha256,
             "windows": [
-                {"label": window.label, "start_ns": window.start_ns, "end_ns": window.end_ns}
+                {"label": window.label, "start_ns": window.start_ns, "end_ns": window.end_ns, "role": window.role}
                 for window in manifest.windows
             ],
             "seeds": list(manifest.seeds),
@@ -717,13 +743,73 @@ def build_architecture_attribution_report(
         "cost_stress_bps": list(costs),
         "runs": runs,
         "options_shadow_stability": {
-            "status": "SUFFICIENT" if options_stable else "INSUFFICIENT_SAMPLE",
+            "status": "STABLE" if stability_sufficient else "INSUFFICIENT_SAMPLE",
+            "coverage_status": "SUFFICIENT" if coverage_sufficient else "INSUFFICIENT_SAMPLE",
+            "stability_status": "STABLE" if stability_sufficient else "INSUFFICIENT_SAMPLE",
             "required_sufficient_seeds_per_oos_window": 4,
             "oos_window_seed_counts": options_seed_counts,
             "oos_window_sufficient_seed_counts": options_sufficient_counts,
+            "quality_stability": quality_stability,
             "activation_recommendation": None,
         },
     }
+
+
+def _options_shadow_quality_stability(
+    runs: list[dict[str, Any]],
+    *,
+    oos_windows: set[str],
+) -> dict[str, dict[str, Any]]:
+    metric_names = ("hostile_max_drawdown", "cvar_95", "tail_loss_mean", "trend_return_retention")
+    by_quality: defaultdict[str, list[dict[str, Any]]] = defaultdict(list)
+    for run in runs:
+        artifact = run.get("options_shadow")
+        if run["window"] not in oos_windows or not isinstance(artifact, dict):
+            continue
+        if artifact.get("status") != "SUFFICIENT":
+            continue
+        report = artifact.get("report")
+        if not isinstance(report, dict):
+            continue
+        for quality, metrics in report.get("by_trend_quality", {}).items():
+            if quality == "UNKNOWN" or metrics.get("status") != "SUFFICIENT":
+                continue
+            by_quality[str(quality)].append(metrics)
+    output: dict[str, dict[str, Any]] = {}
+    for quality, rows in sorted(by_quality.items()):
+        diagnostics: dict[str, Any] = {}
+        sufficient_seed_count = len(rows)
+        stable = sufficient_seed_count >= 4
+        for name in metric_names:
+            values = [float(row[name]) for row in rows if row.get(name) is not None]
+            if len(values) < 4:
+                diagnostics[name] = {"status": "INSUFFICIENT_SAMPLE", "count": len(values)}
+                stable = False
+                continue
+            ordered = sorted(values)
+            median = ordered[len(ordered) // 2]
+            signs = {1 if value > 0 else -1 if value < 0 else 0 for value in values}
+            relative_dispersion = max(abs(value - median) for value in values) / max(abs(median), 0.01)
+            consistent = len(signs) == 1 and relative_dispersion <= 1.0
+            diagnostics[name] = {
+                "status": "CONSISTENT" if consistent else "UNSTABLE",
+                "count": len(values),
+                "median": median,
+                "relative_max_deviation": relative_dispersion,
+                "signs": sorted(signs),
+            }
+            stable = stable and consistent
+        if sufficient_seed_count < 4:
+            status = "INSUFFICIENT_SAMPLE"
+        else:
+            status = "STABLE" if stable else "UNSTABLE"
+        output[quality] = {
+            "status": status,
+            "sufficient_seed_count": sufficient_seed_count,
+            "required_seed_count": 4,
+            "metrics": diagnostics,
+        }
+    return output
 
 
 def observations_from_rows(rows: list[dict[str, Any]]) -> list[ArchitectureObservation]:

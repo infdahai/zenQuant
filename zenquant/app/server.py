@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import os
+import threading
 import time
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
@@ -152,12 +153,16 @@ class ZenQuantWebRuntime:
             enabled=options_state_shadow_enabled
         )
         self.options_shadow_store: OptionsDataStore | None = None
+        self._options_shadow_lock = threading.RLock()
+        self._options_shadow_dir = shadow_config.options_dir
+        self._options_shadow_file_identity: tuple[tuple[str, int, int], ...] = ()
         resolved_options_state_resolver = options_state_resolver
         if shadow_config.enabled and resolved_options_state_resolver is None:
             self.options_shadow_store = OptionsDataStore(
                 OptionsDataStoreConfig(options_dir=shadow_config.options_dir, currency="BTC")
             )
             self.options_shadow_store.load()
+            self._options_shadow_file_identity = self._options_shadow_files()
             resolved_options_state_resolver = self._resolve_live_options_state
         self.options_shadow_observer = OptionsShadowObserver(
             bus=self.bus,
@@ -227,11 +232,27 @@ class ZenQuantWebRuntime:
     def _resolve_live_options_state(self, snapshot):
         if self.options_shadow_store is None:
             raise ValueError("options shadow store is not configured")
-        return self.options_shadow_store.lookup_options_state(
-            snapshot.cutoff_time_ns,
-            realized_vol_30d=(snapshot.annualized_volatility if snapshot.annualized_volatility > 0.0 else None),
-            realized_vol_source_timestamp_ns=snapshot.cutoff_time_ns,
-        )
+        with self._options_shadow_lock:
+            current_identity = self._options_shadow_files()
+            if current_identity != self._options_shadow_file_identity:
+                self.options_shadow_store.load()
+                self._options_shadow_file_identity = current_identity
+            return self.options_shadow_store.lookup_options_state(
+                snapshot.cutoff_time_ns,
+                realized_vol_30d=(snapshot.annualized_volatility if snapshot.annualized_volatility > 0.0 else None),
+                realized_vol_source_timestamp_ns=snapshot.cutoff_time_ns,
+            )
+
+    def _options_shadow_files(self) -> tuple[tuple[str, int, int], ...]:
+        currency_dir = self._options_shadow_dir / "BTC"
+        files: list[tuple[str, int, int]] = []
+        for path in sorted(currency_dir.glob("**/*.parquet")) if currency_dir.exists() else ():
+            try:
+                stat = path.stat()
+            except OSError:
+                continue
+            files.append((str(path), stat.st_mtime_ns, stat.st_size))
+        return tuple(files)
 
     def _build_microstructure_store(self) -> MicrostructureFeatureStore | None:
         if os.getenv("ZENQUANT_MICROSTRUCTURE_SIDECAR_ENABLED", "").lower() not in {"1", "true", "yes"}:

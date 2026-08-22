@@ -1268,6 +1268,7 @@ class HistoricalBacktest:
                     "raw_score": alpha.raw_score,
                     "frozen_confidence": alpha.confidence,
                     "forward_return": forward_return,
+                    "forward_return_available_at_ns": int(confirmed_rows[index + horizon]["close_time_ns"]),
                     "formula_hash": alpha.formula_hash,
                     "alpha_config_hash": alpha.alpha_config_hash,
                 }

@@ -272,6 +272,7 @@ def build_options_shadow_counterfactual(
         and known_count >= minimum_known_samples
         and off.hostile_sample_count >= minimum_hostile_samples
         and off.trend_sample_count >= minimum_trend_samples
+        and any(quality != "UNKNOWN" and metrics.status == "SUFFICIENT" for quality, metrics in by_quality.items())
     )
     return OptionsShadowCounterfactualReport(
         oos_label=oos_label,
@@ -339,11 +340,12 @@ def build_options_shadow_oos_artifact(
     base = {
         "schema_version": "options-shadow-counterfactual-v1",
         "window": window,
+        "window_role": str(evidence.window_role),
         "seed": int(evidence.seed),
         "stage": "A5_SHADOW",
         "observation_only": True,
         "activation_recommendation": None,
-        "label_contract": "forward_return_1_available_at_cutoff_plus_1_confirmed_4h_bar",
+        "label_contract": "forward_return_1_available_at_exact_next_retained_confirmed_4h_cutoff",
         "metric_definitions": {
             "hostile_mdd": "full_chronological_timeline_non_hostile_returns_zeroed",
             "cvar_95": "mean_of_worst_ceil_5pct_observed_4h_returns",
@@ -358,8 +360,14 @@ def build_options_shadow_oos_artifact(
         },
         "rows": [],
     }
-    if window.lower().startswith("train"):
-        return {**base, "status": "NOT_OOS", "sample_count": 0, "known_sample_count": 0, "unknown_sample_count": 0}
+    if evidence.window_role != "OOS":
+        return {
+            **base,
+            "status": str(evidence.window_role),
+            "sample_count": 0,
+            "known_sample_count": 0,
+            "unknown_sample_count": 0,
+        }
 
     rows_by_stage = evidence.stage_execution_rows_by_stage
     a4_rows = tuple(rows_by_stage.get("A4", ()))
@@ -374,25 +382,34 @@ def build_options_shadow_oos_artifact(
         raise ValueError("A5_SHADOW cutoffs differ from A4")
     for cutoff, a5 in a5_by_cutoff.items():
         a4 = a4_by_cutoff[cutoff]
-        if (a5.approved_exposure, a5.approved_target_qty, a5.reduce_only) != (
-            a4.approved_exposure,
-            a4.approved_target_qty,
-            a4.reduce_only,
-        ):
-            raise ValueError("A5_SHADOW approved target differs from A4")
+        a4_payload = asdict(a4)
+        a5_payload = asdict(a5)
+        a4_payload.pop("decision_id")
+        a5_payload.pop("decision_id")
+        if a5_payload != a4_payload:
+            raise ValueError("A5_SHADOW execution-material row differs from A4")
 
     observations = {item.cutoff_time_ns: item for item in evidence.observations}
     if len(observations) != len(evidence.observations):
         raise ValueError("OOS observations require unique cutoffs")
+    if set(observations) != set(a5_by_cutoff):
+        raise ValueError(
+            "A4/A5_SHADOW cutoffs do not match frozen observations: "
+            f"missing={sorted(set(observations) - set(a5_by_cutoff))!r} "
+            f"extra={sorted(set(a5_by_cutoff) - set(observations))!r}"
+        )
     joined: list[OptionsShadowObservation] = []
     artifact_rows: list[dict[str, Any]] = []
     states: list[OptionsState] = []
     for cutoff, stage_row in sorted(a5_by_cutoff.items()):
         observation = observations.get(cutoff)
-        label_available_at_ns = cutoff + 4 * 60 * 60 * 1_000_000_000
+        label_available_at_ns = observation.forward_return_available_at_ns if observation is not None else None
+        if label_available_at_ns != stage_row.forward_return_1_available_at_ns:
+            raise ValueError("A5_SHADOW forward label availability differs from frozen observation")
         if (
             observation is None
             or not (evidence.start_ns <= cutoff < evidence.end_ns)
+            or label_available_at_ns is None
             or label_available_at_ns > evidence.end_ns
         ):
             continue
@@ -406,7 +423,12 @@ def build_options_shadow_oos_artifact(
             realized_vol_30d=observation.annualized_volatility,
             realized_vol_source_timestamp_ns=cutoff,
         )
-        if not validate_options_state_identity(state) or state.source_timestamp_ns > cutoff:
+        if not (
+            validate_options_state_identity(state)
+            and state.symbol.upper().startswith("BTC")
+            and state.cutoff_time_ns == cutoff
+            and 0 <= state.source_timestamp_ns <= cutoff
+        ):
             state = build_options_state(
                 (),
                 cutoff_time_ns=cutoff,
