@@ -865,11 +865,58 @@ def test_frozen_stage_sidecars_fail_closed_when_every_stage_is_flat():
     class _FlatStageRunner:
         @staticmethod
         def build_architecture_stage_rows(**_kwargs):
-            return {"observations": [asdict(flat_observation)]}
+            row = asdict(flat_observation)
+            row.update(
+                {
+                    "input_row_sha256": "sha256:flat-input",
+                    "risk_donor_sha256": "sha256:flat-donor",
+                    "risk_donor": {
+                        "ts_ns": None,
+                        "equity": None,
+                        "high_water_mark": None,
+                        "drawdown": None,
+                        "lev_cap": None,
+                        "reduce_only_mode": None,
+                        "flags": [],
+                    },
+                }
+            )
+            return {"observations": [row]}
 
     with pytest.raises(ValueError, match="all-flat"):
         module.run_frozen_stage_sidecars(
             _FlatStageRunner(),
+            config=config,
+            manifest=manifest,
+        )
+
+
+def test_frozen_stage_sidecars_reject_missing_risk_donor_provenance():
+    module = _load_cli_module()
+    manifest = load_architecture_experiment_manifest()
+    window = next(item for item in manifest.windows if item.label == "late_dev_2025")
+    config, _config_hash = module.build_frozen_backtest_config(
+        root=Path("/read-only-data"),
+        manifest=manifest,
+        window=window,
+        seed=42,
+    )
+    observation_without_provenance = replace(
+        _observation(raw_score=0.4),
+        annualized_volatility=0.20,
+        risk_regime="TRADABLE",
+        frozen_regime_multiplier=1.0,
+        reference_price=100.0,
+    )
+
+    class _MissingProvenanceRunner:
+        @staticmethod
+        def build_architecture_stage_rows(**_kwargs):
+            return {"observations": [asdict(observation_without_provenance)]}
+
+    with pytest.raises(ValueError, match="missing risk donor provenance"):
+        module.run_frozen_stage_sidecars(
+            _MissingProvenanceRunner(),
             config=config,
             manifest=manifest,
         )
@@ -1821,18 +1868,17 @@ def test_replay_bridge_builds_complete_pit_stage_inputs_and_true_4h_labels():
         replace(pack, cutoff_time_ns=cutoff, ts_ns=cutoff) for cutoff in (100, 200, 300, 400, 500, 600)
     ]
     runner._market_states = [replace(state, cutoff_time_ns=cutoff) for cutoff in (100, 200, 300, 400, 500, 600)]
-    runner._risk_snapshots = [
-        RiskSnapshot(
-            portfolio="arc",
-            ts_ns=150,
-            equity=1_000.0,
-            high_water_mark=1_000.0,
-            drawdown=0.0,
-            lev_cap=1.0,
-            reduce_only_mode=True,
-            flags=["PORTFOLIO_KILL"],
-        )
-    ]
+    baseline_risk_snapshot = RiskSnapshot(
+        portfolio="arc",
+        ts_ns=150,
+        equity=1_000.0,
+        high_water_mark=1_000.0,
+        drawdown=0.0,
+        lev_cap=1.0,
+        reduce_only_mode=True,
+        flags=["PORTFOLIO_KILL", "ALPHA"],
+    )
+    runner._risk_snapshots = [baseline_risk_snapshot]
     runner._funding_rows = [
         {"funding_time_ns": 50, "funding_rate": 0.002},
         {"funding_time_ns": 150, "funding_rate": 0.001},
@@ -1868,6 +1914,17 @@ def test_replay_bridge_builds_complete_pit_stage_inputs_and_true_4h_labels():
     assert second["risk_snapshot_ts_ns"] == 150
     assert second["reduce_only"] is True
     assert second["safety_reasons"] == ("KILL",)
+    assert second["risk_donor"] == {
+        "ts_ns": 150,
+        "equity": 1_000.0,
+        "high_water_mark": 1_000.0,
+        "drawdown": 0.0,
+        "lev_cap": 1.0,
+        "reduce_only_mode": True,
+        "flags": ["ALPHA", "PORTFOLIO_KILL"],
+    }
+    assert second["risk_donor_sha256"] == ("sha256:de9fbad3302632c0a9cfde77a680d142d8da38e7c9ac175bddcc1536b35cc543")
+    assert second["input_row_sha256"].startswith("sha256:")
     assert batch["funding_settlements_by_cutoff"] == {
         200: (
             ArchitectureFundingSettlement(
@@ -1880,18 +1937,24 @@ def test_replay_bridge_builds_complete_pit_stage_inputs_and_true_4h_labels():
     }
     assert batch["missing_stage_input_count"] == 0
 
-    runner._risk_snapshots.append(
-        RiskSnapshot(
-            portfolio="arc",
-            ts_ns=150,
-            equity=900.0,
-            high_water_mark=1_000.0,
+    runner._risk_snapshots = [
+        replace(
+            baseline_risk_snapshot,
             drawdown=0.1,
-            lev_cap=0.5,
             reduce_only_mode=False,
-            flags=[],
+            flags=["WATCH"],
         )
+    ]
+    changed_batch = runner.build_architecture_stage_rows(
+        exchange_min_quantity=0.001,
+        estimated_fee_bps=4.0,
+        estimated_slippage_bps=1.5,
     )
+    changed_second = changed_batch["observations"][1]
+    assert changed_second["risk_donor_sha256"] != second["risk_donor_sha256"]
+    assert changed_second["input_row_sha256"] != second["input_row_sha256"]
+
+    runner._risk_snapshots.append(baseline_risk_snapshot)
     with pytest.raises(ValueError, match="conflicting risk snapshots"):
         runner.build_architecture_stage_rows(
             exchange_min_quantity=0.001,

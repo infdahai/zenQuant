@@ -7,6 +7,8 @@ risk, and execution behavior stays auditable across modes.
 
 from __future__ import annotations
 
+import hashlib
+import json
 import math
 import time
 from bisect import bisect_left, bisect_right
@@ -1402,6 +1404,7 @@ class HistoricalBacktest:
                 missing.append(cutoff)
                 continue
             risk_snapshot, risk_snapshot_status = risk_snapshots[cutoff]
+            risk_donor = _architecture_risk_donor_payload(risk_snapshot)
             risk_regime = _architecture_risk_regime(state)
             multiplier = {
                 "TRADABLE": 1.0,
@@ -1424,6 +1427,8 @@ class HistoricalBacktest:
                 "safety_reasons": tuple(sorted(safety_reasons)),
                 "risk_snapshot_status": risk_snapshot_status,
                 "risk_snapshot_ts_ns": risk_snapshot.ts_ns if risk_snapshot is not None else None,
+                "risk_donor": risk_donor,
+                "risk_donor_sha256": _canonical_architecture_payload_sha256(risk_donor),
                 "estimated_fee_bps": estimated_fee_bps,
                 "estimated_slippage_bps": estimated_slippage_bps,
                 "reference_price": float(confirmed_rows[index]["close"]),
@@ -1436,6 +1441,7 @@ class HistoricalBacktest:
                 "quality_state": state.quality_state,
                 "quality_flags": tuple(indicator.quality_flags),
             }
+            row["input_row_sha256"] = _canonical_architecture_payload_sha256(row)
             rows.append(row)
         if missing:
             raise ValueError(f"missing point-in-time A2-A5 stage inputs at cutoffs={missing!r}")
@@ -1852,6 +1858,34 @@ def _architecture_risk_donors(
             continue
         donors[cutoff] = (by_source_time[source_times[source_index]], "ASOF")
     return donors
+
+
+def _architecture_risk_donor_payload(snapshot: RiskSnapshot | None) -> dict[str, Any]:
+    """Return the complete legacy risk state visible to one V2 cutoff."""
+    if snapshot is None:
+        return {
+            "ts_ns": None,
+            "equity": None,
+            "high_water_mark": None,
+            "drawdown": None,
+            "lev_cap": None,
+            "reduce_only_mode": None,
+            "flags": [],
+        }
+    return {
+        "ts_ns": snapshot.ts_ns,
+        "equity": snapshot.equity,
+        "high_water_mark": snapshot.high_water_mark,
+        "drawdown": snapshot.drawdown,
+        "lev_cap": snapshot.lev_cap,
+        "reduce_only_mode": snapshot.reduce_only_mode,
+        "flags": sorted(snapshot.flags),
+    }
+
+
+def _canonical_architecture_payload_sha256(payload: dict[str, Any]) -> str:
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return f"sha256:{hashlib.sha256(encoded).hexdigest()}"
 
 
 def _architecture_risk_regime(state: MarketState) -> str:

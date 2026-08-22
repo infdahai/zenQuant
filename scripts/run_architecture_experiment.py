@@ -191,6 +191,13 @@ def run_frozen_stage_sidecars(
         estimated_slippage_bps=FROZEN_FALLBACK_SLIPPAGE_BPS,
     )
     observations = tuple(observations_from_rows(batch["observations"]))
+    missing_provenance = [
+        observation.cutoff_time_ns
+        for observation in observations
+        if not observation.input_row_sha256 or not observation.risk_donor_sha256 or not observation.risk_donor
+    ]
+    if missing_provenance:
+        raise ValueError(f"architecture stage rows are missing risk donor provenance at cutoffs={missing_provenance!r}")
     metrics_by_stage: dict[str, ArchitectureExecutionMetrics] = {}
     rows_by_stage: dict[str, tuple[ArchitectureStageExecutionRow, ...]] = {}
     episodes_by_stage: dict[str, tuple[PositionEpisode, ...]] = {}

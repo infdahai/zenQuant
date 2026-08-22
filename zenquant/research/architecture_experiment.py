@@ -212,6 +212,9 @@ class ArchitectureObservation:
     safety_reasons: tuple[str, ...] = ()
     risk_snapshot_status: str = "NO_PRIOR_SNAPSHOT_NEUTRAL"
     risk_snapshot_ts_ns: int | None = None
+    risk_donor: Mapping[str, Any] = field(default_factory=dict)
+    risk_donor_sha256: str = ""
+    input_row_sha256: str = ""
     estimated_fee_bps: float = 0.0
     estimated_slippage_bps: float = 0.0
     reference_price: float | None = None
@@ -871,6 +874,19 @@ def _summarize_stage(
             "risk_snapshot_status": observation.risk_snapshot_status,
             "risk_snapshot_ts_ns": observation.risk_snapshot_ts_ns,
         }
+        if (
+            stage
+            in {
+                ArchitectureStage.A2,
+                ArchitectureStage.A3,
+                ArchitectureStage.A4,
+                ArchitectureStage.A5_SHADOW,
+            }
+            and observation.risk_donor_sha256
+        ):
+            row["input_row_sha256"] = observation.input_row_sha256
+            row["risk_donor_sha256"] = observation.risk_donor_sha256
+            row["risk_donor"] = dict(observation.risk_donor)
         realized_return = forward_return
         row_turnover = (
             execution_row.filled_qty * (execution_row.actual_fill_price or execution_row.reference_price)
