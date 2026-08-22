@@ -137,3 +137,57 @@ history begins in 2026, so all five OOS artifacts correctly report
 - A hostile-window label and threshold must be added only through a newly frozen,
   separately approved acceptance contract.
 - OptionsState remains shadow-only. Activating its multiplier requires separate approval.
+
+## Late-development cost attribution — 2026-08-22 reproduction
+
+The frozen runner was executed exactly once against
+`/Users/disaster/workspace/code/zenQuant/data/raw/binance` with no campaign,
+training, parameter search, or manifest change. It emitted the complete 30/30
+matrix. The canonical acceptance summary again exited `1` with
+`BLOCKED_PAUSE_PROMOTION_AND_TRAINING`; promotion and training remain paused.
+
+Current artifact identity:
+
+| Artifact | SHA-256 | Size |
+| --- | --- | ---: |
+| `results/quant_v2_acceptance/architecture_attribution.json` | `1f327c7c786f511fbba6ac1dd2ca4df395891f1aeb1879714c0ed2af1a87bea2` | `1,003,639,954` bytes |
+| `results/quant_v2_acceptance/acceptance_summary.json` | `7d21e514e18f27611f793e2c7f06071ddb121de4654d0bf57a31d23f2f7da637` | `5,822` bytes |
+| `results/quant_v2_late_dev_cost_attribution/late_dev_cost_attribution.json` | `2118a0e22a7a802471b50c7024e5ca31c3b537c8b249b9f8e80a5cb7439a7b88` | `27,876` bytes |
+| `results/quant_v2_late_dev_cost_attribution/late_dev_cost_attribution.md` | `2d19983f9da140a551979866d4281c23150eedd8afbd1bbdc79a666492a192ba` | `7,414` bytes |
+
+The attribution report validates all 30 runs and returns
+`stop_donor_training`. Directional failure is the decision-leading strongest
+supported family; confidence weighting and execution shortfall independently
+corroborate the diagnosis at the same five-seed support count.
+
+| Evidence family | Status | Supporting seeds |
+| --- | --- | ---: |
+| `directional_edge` | `CONSISTENT` | `5/5` |
+| `confidence_no_incremental_edge` | `CONSISTENT` | `5/5` |
+| `cost_flip` | `UNATTRIBUTABLE` | `0/5` |
+| `regime_localization` | `UNATTRIBUTABLE` | `0/5` |
+| `episode_tail` | `UNATTRIBUTABLE` | `0/5` |
+| `execution_shortfall` | `CONSISTENT` | `5/5` |
+
+The per-seed A5 bridge reconciles baseline net PnL to the extra-15bp result:
+
+| Seed | Baseline net PnL | Additional 15bp cost | Extra-15bp net PnL | Reconciliation error |
+| ---: | ---: | ---: | ---: | ---: |
+| 42 | `-1,579.17` | `9,157.73` | `-10,736.90` | `7.28e-12` |
+| 123 | `-5,911.57` | `9,284.50` | `-15,196.07` | `7.28e-12` |
+| 456 | `-4,714.50` | `9,433.67` | `-14,148.18` | `5.46e-12` |
+| 789 | `-6,677.03` | `11,137.93` | `-17,814.95` | `-1.46e-11` |
+| 1024 | `-2,170.89` | `10,333.10` | `-12,503.99` | `3.64e-12` |
+| Range | `-6,677.03` to `-1,579.17` | `9,157.73` to `11,137.93` | `-17,814.95` to `-10,736.90` | `-1.46e-11` to `7.28e-12` |
+
+No regime-objective redesign hypothesis was created. That artifact is allowed
+only for the exact recommendation `prepare_regime_objective_redesign`, which the
+real evidence does not support. All generated result files remain ignored and
+non-promotable.
+
+The first attribution attempt exposed a JSON boundary mismatch: the frozen
+producer canonicalizes object keys, while the analyzer incorrectly treated a
+per-run JSON object order as causal meaning. Commit `ac89021` preserves the
+ordered top-level stage contract and validates each run by exact stage key set
+and payload declaration. The 1GB frozen experiment was not rerun after this
+read-only validator correction.
