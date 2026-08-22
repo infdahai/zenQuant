@@ -61,6 +61,11 @@ The causal A1-A5 donor is BTC-only so each confirmed 4h decision has zero alpha
 availability lag. Its identity and results are separate from A0; donor metrics
 must never be relabeled as the original August baseline.
 
+Every A2-A5 raw stage carries both its execution rows and its complete closed +
+right-censored open episode ledger. Report construction recomputes the stage PF
+from closed serialized episodes and rejects missing ledgers or scalar drift;
+open episodes remain visible for audit but cannot enter the hard PF gate.
+
 ## Time semantics
 
 Live 4h decisions use the exact bar boundary. Historical Binance files encode
@@ -89,8 +94,9 @@ cannot explain the frozen 2025 OOS window; activation remains prohibited.
 - Economic edge is not robust to the frozen late-dev 15bp stress.
 - The manifest has no explicit hostile window or quantitative hostile threshold;
   that hard gate is currently not evaluable and must be frozen before a future run.
-- The 952MB integrated artifact is intentionally ignored by Git. Its SHA-256 and
-  compact verdict are recorded in the handoff.
+- The large integrated artifact is intentionally ignored by Git. Its SHA-256
+  and compact verdict are recorded in the handoff; the compact verdict is
+  regenerated only by the tracked deterministic acceptance-summary CLI.
 - Any real OptionsState multiplier, new parameter search, new asset, or change to
   the frozen windows/seeds/costs requires a separate product-owner approval.
 

@@ -63,16 +63,22 @@ optimization or training from this donor until the late-dev failure is explained
 Generated files are intentionally under ignored `results/` and are not committed:
 
 - `results/quant_v2_acceptance/architecture_attribution.json`
-  - size: `997,761,787` bytes
-  - SHA-256: `b24e805be9a65f6e805b69c1ed956e84d3b9cbe8eff04fa712596bfc65868ac5`
+  - size: `1,056,561,733` bytes
+  - SHA-256: `cae501b9ef86477552d78494e24036cb12b990db814ff5c32101719ffd2f370f`
   - contains all A0 episodes, A1-A5 attribution rows, A2-A5 execution rows,
-    Gate v3, cost shadows and Options OFF-vs-shadow rows.
+    complete A2-A5 closed/open position-episode ledgers, Gate v3, cost shadows
+    and Options OFF-vs-shadow rows. Each stage PF is mechanically recomputed
+    from its serialized closed episodes before the report can be written.
 - `results/quant_v2_acceptance/acceptance_summary.json`
-  - SHA-256: `bfbbe11df4c681cda20f1c61f362ee568e44cf4d046da6977cab5d1a67494f70`
+  - size: `5,814` bytes
+  - SHA-256: `1c545f99bf9a6d7aa49dfb0eb4ccc183fa7643f3b42e91505e1484f9cdfbd393`
 
-The canonical sorted JSON reserialization is byte-identical to the integrated
-artifact. Snapshot, target and OptionsState identities have deterministic unit
-and parity coverage.
+Across 120 A2-A5 stage ledgers, the raw artifact contains 62,494 episodes:
+62,445 closed and 49 right-censored open.
+
+The compact summary is emitted by tracked repository code in one canonical
+sorted-JSON representation. Snapshot, target and OptionsState identities have
+deterministic unit and parity coverage.
 
 ## Rerun
 
@@ -83,13 +89,23 @@ uv run python scripts/run_architecture_experiment.py \
   --root /Users/disaster/workspace/code/zenQuant/data/raw/binance \
   --output results/quant_v2_acceptance/architecture_attribution.json
 
+uv run python scripts/build_quant_v2_acceptance_summary.py \
+  --input results/quant_v2_acceptance/architecture_attribution.json \
+  --output results/quant_v2_acceptance/acceptance_summary.json
+
 shasum -a 256 results/quant_v2_acceptance/architecture_attribution.json
+shasum -a 256 results/quant_v2_acceptance/acceptance_summary.json
 uv run pytest tests/test_architecture_experiment.py tests/test_decision_snapshot.py \
   tests/test_episode_ledger.py tests/test_gate_v3.py tests/test_execution_router.py \
   tests/test_options_state.py tests/test_options_store.py tests/test_options_shadow.py \
-  tests/test_replay.py tests/test_parity.py -q --tb=short
+  tests/test_quant_v2_acceptance.py tests/test_replay.py tests/test_parity.py -q --tb=short
 uv run zenquant-check
 ```
+
+The summary command exits `0` only for an acceptance verdict, `1` for a valid
+blocked verdict, and `2` for an invalid/incomplete raw artifact. The current
+frozen result is valid and intentionally exits `1` after writing the summary.
+Do not hide that exit code in automation.
 
 The runner rejects missing, extra, duplicate or empty matrix entries. Do not add
 CLI tuning knobs or alter the manifest in response to a failed result.
@@ -109,16 +125,15 @@ history begins in 2026, so all five OOS artifacts correctly report
 
 ## Known limitations
 
-- Changed-file Ruff and format checks passed for all 50 changed Python files.
-- Focused V2 suites passed: `443 passed, 34 subtests passed`.
+- Changed-file Ruff and format checks passed for all 53 changed Python files.
+- Focused V2 suites passed: `449 passed, 34 subtests passed`.
 - Full pytest outside the restricted macOS sandbox passed:
-  `1325 passed, 4 skipped, 34 subtests passed`.
-- `zenquant-check` passed Gates 0/B/C/D/F. Gate A is blocked only by pre-existing
+  `1331 passed, 4 skipped, 34 subtests passed`.
+- `zenquant-check` passed Gates 0/B/C/D/E/F. Gate A is blocked only by pre-existing
   format drift in `scripts/analyze_intent_churn_attribution.py`,
   `zenquant/data/event_calendar.py`, and `zenquant/data/liquidation_pipeline.py`.
-  Gate E's sandbox run had seven `ProcessPoolExecutor` tests fail because
-  `os.sysconf("SC_SEM_NSEMS_MAX")` is forbidden; those exact seven tests passed
-  outside the sandbox. No unrelated files were reformatted.
+  Gate E passed outside the sandbox with `1320 passed, 4 skipped, 34 subtests`.
+  No unrelated files were reformatted.
 - A hostile-window label and threshold must be added only through a newly frozen,
   separately approved acceptance contract.
 - OptionsState remains shadow-only. Activating its multiplier requires separate approval.

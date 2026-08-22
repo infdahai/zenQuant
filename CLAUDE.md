@@ -31,6 +31,7 @@
 - Quant V2：
   - 架构审查：`docs/QUANT_V2_ARCHITECTURE_EXPERT_REVIEW.md`
   - 冻结实验与复跑：`docs/QUANT_V2_ACCEPTANCE_HANDOFF.md`
+  - compact verdict 唯一生成入口：`scripts/build_quant_v2_acceptance_summary.py`
   - 当前 verdict：`BLOCKED_PAUSE_PROMOTION_AND_TRAINING`
   - 原因：late-dev 额外 15bp 下 5/5 为负，strict robustness `0/5`
   - 禁止：继续调参/训练、promotion、激活 OptionsState multiplier
