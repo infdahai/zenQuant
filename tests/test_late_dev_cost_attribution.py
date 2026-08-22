@@ -12,7 +12,9 @@ from zenquant.research.architecture_experiment import (
 )
 from zenquant.research.late_dev_cost_attribution import (
     LateDevAttributionValidationError,
+    _classify_evidence,
     build_late_dev_cost_attribution,
+    build_regime_objective_hypothesis,
     canonical_late_dev_attribution_bytes,
 )
 
@@ -169,7 +171,12 @@ def _cost_stage(stage: str, *, include_episodes: bool = False) -> dict[str, obje
     return payload
 
 
-def _complete_raw_report() -> dict[str, object]:
+def _complete_raw_report(
+    *,
+    direction_hit_rate: float = 0.6,
+    a1_sign_15bp: float = 105.0,
+    regime_localized_seed_count: int = 5,
+) -> dict[str, object]:
     """Build a complete frozen matrix from the checked-in manifest.
 
     The stage payloads are intentionally literal rather than borrowed from
@@ -203,7 +210,7 @@ def _complete_raw_report() -> dict[str, object]:
                     },
                 }
             )
-    return {
+    report: dict[str, object] = {
         "schema_version": "architecture_attribution.v4",
         "stages": stage_order,
         "manifest": {
@@ -225,6 +232,16 @@ def _complete_raw_report() -> dict[str, object]:
         },
         "runs": runs,
     }
+    late_dev_runs = [run for run in runs if run["window"] == "late_dev_2025"]
+    for index, run in enumerate(late_dev_runs):
+        a1_sign = run["stages"][ArchitectureStage.A1_SIGN.value]  # type: ignore[index]
+        a1_sign["direction_hit_rate"] = direction_hit_rate
+        a1_sign["cost_stress"]["15"]["net_pnl"] = a1_sign_15bp
+        a1_sign["turnover_notional"] = (120.0 - a1_sign_15bp) * 10_000.0 / 15.0
+        if index >= regime_localized_seed_count:
+            a5_rows = run["stages"][ArchitectureStage.A5_SHADOW.value]["attribution_rows"]  # type: ignore[index]
+            a5_rows[1]["gross_pnl"] = -20.0
+    return report
 
 
 def _build(report: dict[str, object]) -> dict[str, object]:
@@ -409,3 +426,146 @@ def test_not_observed_empty_episode_ledger_remains_distinct_from_observed_empty_
 
     observed_summary = _build(observed_report)["episode_attribution"][0]  # type: ignore[index]
     assert observed_summary["episode_ledger_status"] == "OBSERVED"
+
+
+def test_global_direction_failure_stops_donor_training():
+    result = _build(_complete_raw_report(direction_hit_rate=0.47, a1_sign_15bp=-10.0))
+
+    assert result["evidence"]["directional_edge"]["status"] == "CONSISTENT"  # type: ignore[index]
+    assert result["terminal_recommendation"] == "stop_donor_training"
+    assert build_regime_objective_hypothesis(result) is None
+
+
+def test_regime_localized_failure_prepares_redesign_at_four_of_five():
+    result = _build(_complete_raw_report(regime_localized_seed_count=4))
+
+    assert result["evidence"]["regime_localization"]["supporting_seed_count"] == 4  # type: ignore[index]
+    assert result["terminal_recommendation"] == "prepare_regime_objective_redesign"
+
+
+def test_three_of_five_is_mixed_and_cannot_open_redesign():
+    result = _build(_complete_raw_report(regime_localized_seed_count=3))
+
+    assert result["evidence"]["regime_localization"]["status"] == "MIXED"  # type: ignore[index]
+    assert result["terminal_recommendation"] == "insufficient_evidence_no_strategy_change"
+
+
+def test_episode_and_shortfall_sample_floors_are_family_local():
+    evidence = _classify_evidence(
+        [
+            {
+                "seed": seed,
+                "directional_edge_support": True,
+                "confidence_no_incremental_edge_support": False,
+                "cost_flip_support": False,
+                "regime_localization_support": False,
+                "closed_episode_count": 19,
+                "negative_tail_share": 1.0,
+                "implementation_shortfall_observation_count": 19,
+                "implementation_shortfall": 100.0,
+                "a5_baseline_net_pnl": -100.0,
+            }
+            for seed in (42, 1729, 2718, 3141, 9001)
+        ]
+    )
+
+    assert evidence["directional_edge"]["status"] == "CONSISTENT"
+    assert evidence["episode_tail"]["status"] == "INSUFFICIENT_SAMPLE"
+    assert evidence["execution_shortfall"]["status"] == "INSUFFICIENT_SAMPLE"
+
+
+def test_execution_shortfall_does_not_divide_a_non_loss_baseline():
+    evidence = _classify_evidence(
+        [
+            {
+                "seed": seed,
+                "directional_edge_support": False,
+                "confidence_no_incremental_edge_support": False,
+                "cost_flip_support": False,
+                "regime_localization_support": False,
+                "closed_episode_count": 20,
+                "negative_tail_share": 0.0,
+                "implementation_shortfall_observation_count": 20,
+                "implementation_shortfall": 100.0,
+                "a5_baseline_net_pnl": 50.0,
+            }
+            for seed in (42, 1729, 2718, 3141, 9001)
+        ]
+    )
+
+    assert evidence["execution_shortfall"]["status"] == "UNATTRIBUTABLE"
+
+
+def test_confidence_failure_requires_equal_direction_hit_rates_and_nonpositive_score_pnl():
+    report = _complete_raw_report()
+    for run in report["runs"]:  # type: ignore[index]
+        if run["window"] != "late_dev_2025":
+            continue
+        score = run["stages"][ArchitectureStage.A1_SCORE.value]  # type: ignore[index]
+        score["direction_hit_rate"] = 0.6
+        score["cost_stress"]["15"]["net_pnl"] = -10.0
+        score["turnover_notional"] = 130.0 * 10_000.0 / 15.0
+
+    result = _build(report)
+
+    assert result["evidence"]["confidence_no_incremental_edge"] == {  # type: ignore[index]
+        "status": "CONSISTENT",
+        "supporting_seed_count": 5,
+        "supporting_seeds": [42, 123, 456, 789, 1024],
+        "insufficient_sample_seeds": [],
+        "inapplicable_seeds": [],
+    }
+
+
+def test_cost_flip_requires_positive_baseline_and_nonpositive_15bp_pnl():
+    report = _complete_raw_report()
+    for run in report["runs"]:  # type: ignore[index]
+        if run["window"] != "late_dev_2025":
+            continue
+        a5 = run["stages"][ArchitectureStage.A5_SHADOW.value]  # type: ignore[index]
+        a5["cost_stress"]["15"]["net_pnl"] = 0.0
+        a5["turnover_notional"] = 80_000.0
+
+    result = _build(report)
+
+    assert result["evidence"]["cost_flip"]["status"] == "CONSISTENT"  # type: ignore[index]
+    assert result["evidence"]["cost_flip"]["supporting_seed_count"] == 5  # type: ignore[index]
+
+
+def test_missing_a5_episode_collection_is_insufficient_not_invalid():
+    report = _complete_raw_report(regime_localized_seed_count=4)
+    late_dev = next(run for run in report["runs"] if run["window"] == "late_dev_2025")  # type: ignore[index]
+    late_dev["stages"][ArchitectureStage.A5_SHADOW.value].pop("position_episodes")  # type: ignore[index]
+
+    result = _build(report)
+
+    assert result["evidence"]["required_inputs_incomplete"] is True  # type: ignore[index]
+    assert result["evidence"]["regime_localization"]["status"] == "INSUFFICIENT_SAMPLE"  # type: ignore[index]
+    assert result["terminal_recommendation"] == "insufficient_evidence_no_strategy_change"
+    assert result["promotion_state"] == "BLOCKED_PAUSE_PROMOTION_AND_TRAINING"
+
+
+def test_regime_hypothesis_is_single_family_research_only_record():
+    result = _build(_complete_raw_report(regime_localized_seed_count=4))
+
+    hypothesis = build_regime_objective_hypothesis(result)
+
+    assert hypothesis == {
+        "schema_version": "quant-v2-regime-objective-hypothesis.v1",
+        "research_only_non_promotable": True,
+        "promotion_state": "BLOCKED_PAUSE_PROMOTION_AND_TRAINING",
+        "failure_family": "regime_localization",
+        "market_behavior_hypothesis": (
+            "Late-development loss is concentrated in one observed regime while the other observed regimes "
+            "remain net positive after the fixed 15bp turnover cost allocation."
+        ),
+        "excluded_prior_exploration_families": [
+            "threshold sweeping",
+            "leverage expansion",
+            "donor continuation",
+        ],
+        "oos_only_falsification_gate": (
+            "A separately authorized out-of-sample-only evaluation falsifies this hypothesis unless the same "
+            "localized loss pattern recurs in at least four of five perturbation seeds."
+        ),
+    }

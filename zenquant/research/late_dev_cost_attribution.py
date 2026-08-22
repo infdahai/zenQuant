@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import json
 import math
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from enum import StrEnum
 from typing import Any
 
@@ -20,6 +20,7 @@ from .architecture_experiment import (
 )
 
 LATE_DEV_ATTRIBUTION_SCHEMA_VERSION = "quant-v2-late-dev-cost-attribution.v1"
+BLOCKED_PROMOTION_STATE = "BLOCKED_PAUSE_PROMOTION_AND_TRAINING"
 
 
 class EvidenceStatus(StrEnum):
@@ -50,20 +51,36 @@ def build_late_dev_cost_attribution(
         _validate_source_identity(source_sha256=source_sha256, source_size_bytes=source_size_bytes)
         runs = _validate_report_envelope(report, manifest=manifest)
         late_dev_runs = [run for run in runs if run["window"] == "late_dev_2025"]
+        required_inputs_incomplete = any(_required_seed_inputs_incomplete(run) for run in late_dev_runs)
         bridge_stages = (
             ArchitectureStage.A1_SIGN.value,
             ArchitectureStage.A1_SCORE.value,
             ArchitectureStage.A5_SHADOW.value,
         )
         seed_stage_bridges = [
-            _build_seed_stage_bridge(run, stage_name) for run in late_dev_runs for stage_name in bridge_stages
+            _build_seed_stage_bridge(run, stage_name)
+            for run in late_dev_runs
+            for stage_name in bridge_stages
+            if _has_cost_structure(run, stage_name)
         ]
         episode_attribution = []
         for run in late_dev_runs:
+            if not _has_a5_episode_inputs(run):
+                continue
             summary = _summarize_episodes(_stage(run, ArchitectureStage.A5_SHADOW.value))
             summary["seed"] = int(run["seed"])
             summary["stage"] = ArchitectureStage.A5_SHADOW.value
             episode_attribution.append(summary)
+        seed_evidence = _build_seed_evidence(late_dev_runs, seed_stage_bridges, episode_attribution)
+        evidence = (
+            _insufficient_sample_evidence(seed_evidence)
+            if required_inputs_incomplete
+            else _classify_evidence(seed_evidence)
+        )
+        terminal_recommendation = _terminal_recommendation(
+            required_inputs_incomplete=required_inputs_incomplete,
+            evidence=evidence,
+        )
     except LateDevAttributionValidationError:
         raise
     except (KeyError, OverflowError, TypeError, ValueError) as exc:
@@ -80,8 +97,14 @@ def build_late_dev_cost_attribution(
         "validated_run_count": len(runs),
         "seed_stage_bridges": seed_stage_bridges,
         "episode_attribution": episode_attribution,
-        "evidence": {},
+        "seed_evidence": seed_evidence,
+        "evidence": {
+            "required_inputs_incomplete": required_inputs_incomplete,
+            **evidence,
+        },
+        "terminal_recommendation": terminal_recommendation,
         "research_only_non_promotable": True,
+        "promotion_state": BLOCKED_PROMOTION_STATE,
     }
 
 
@@ -185,6 +208,236 @@ def _build_seed_stage_bridge(run: Mapping[str, Any], stage_name: str) -> dict[st
         "additional_15bp_cost": additional_cost,
         "extra_15bp_net_pnl": stressed,
         "reconciliation_error": error,
+    }
+
+
+def _required_seed_inputs_incomplete(run: Mapping[str, Any]) -> bool:
+    """Return whether a required diagnostic collection is structurally absent."""
+    required_cost_stages = (
+        ArchitectureStage.A1_SIGN.value,
+        ArchitectureStage.A1_SCORE.value,
+        ArchitectureStage.A5_SHADOW.value,
+    )
+    if any(not _has_cost_structure(run, stage_name) for stage_name in required_cost_stages):
+        return True
+    stage = _stage(run, ArchitectureStage.A5_SHADOW.value)
+    if not _has_a5_episode_inputs(run) or "attribution_rows" not in stage:
+        return True
+    rows = stage["attribution_rows"]
+    return isinstance(rows, list) and all(isinstance(row, Mapping) and row.get("execution") is None for row in rows)
+
+
+def _has_cost_structure(run: Mapping[str, Any], stage_name: str) -> bool:
+    stage = _stage(run, stage_name)
+    costs = stage.get("cost_stress")
+    return isinstance(costs, Mapping) and "0" in costs and "15" in costs
+
+
+def _has_a5_episode_inputs(run: Mapping[str, Any]) -> bool:
+    stage = _stage(run, ArchitectureStage.A5_SHADOW.value)
+    return "attribution_rows" in stage and "position_episodes" in stage and "episode_ledger" in stage
+
+
+def _build_seed_evidence(
+    runs: Sequence[Mapping[str, Any]],
+    bridges: Sequence[Mapping[str, Any]],
+    episode_attribution: Sequence[Mapping[str, Any]],
+) -> list[dict[str, Any]]:
+    """Serialize only factual inputs and frozen per-family predicates for each seed."""
+    bridge_by_seed_stage = {(bridge["seed"], bridge["stage"]): bridge for bridge in bridges}
+    episode_by_seed = {summary["seed"]: summary for summary in episode_attribution}
+    evidence: list[dict[str, Any]] = []
+    for run in runs:
+        seed = int(run["seed"])
+        sign_bridge = bridge_by_seed_stage.get((seed, ArchitectureStage.A1_SIGN.value))
+        score_bridge = bridge_by_seed_stage.get((seed, ArchitectureStage.A1_SCORE.value))
+        a5_bridge = bridge_by_seed_stage.get((seed, ArchitectureStage.A5_SHADOW.value))
+        summary = episode_by_seed.get(seed)
+        if sign_bridge is None or score_bridge is None or a5_bridge is None or summary is None:
+            evidence.append({"seed": seed, "required_inputs_complete": False})
+            continue
+        sign_hit_rate = _finite(
+            _stage(run, ArchitectureStage.A1_SIGN.value)["direction_hit_rate"], "A1_SIGN direction hit rate"
+        )
+        score_hit_rate = _finite(
+            _stage(run, ArchitectureStage.A1_SCORE.value)["direction_hit_rate"], "A1_SCORE direction hit rate"
+        )
+        regime_groups = _mapping(summary["regime_groups"], "regime groups")
+        closed_episode_count = _nonnegative_int(summary["closed_episode_count"], "closed episode count")
+        negative_tail_share = summary["negative_tail_share"]
+        if negative_tail_share is not None:
+            negative_tail_share = _finite(negative_tail_share, "negative tail share")
+        execution_actions = _mapping(summary["execution_actions"], "execution actions")
+        shortfall_count = _nonnegative_int(
+            execution_actions["implementation_shortfall_observation_count"],
+            "implementation shortfall observation count",
+        )
+        shortfall = _finite(execution_actions["implementation_shortfall"], "implementation shortfall")
+        sign_pnl = _finite(sign_bridge["extra_15bp_net_pnl"], "A1_SIGN 15bp net PnL")
+        score_pnl = _finite(score_bridge["extra_15bp_net_pnl"], "A1_SCORE 15bp net PnL")
+        baseline_pnl = _finite(a5_bridge["baseline_net_pnl"], "A5 baseline net PnL")
+        a5_15bp_pnl = _finite(a5_bridge["extra_15bp_net_pnl"], "A5 15bp net PnL")
+        evidence.append(
+            {
+                "seed": seed,
+                "required_inputs_complete": True,
+                "a1_sign_hit_rate": sign_hit_rate,
+                "a1_sign_15bp_net_pnl": sign_pnl,
+                "a1_score_hit_rate": score_hit_rate,
+                "a1_score_15bp_net_pnl": score_pnl,
+                "a5_baseline_net_pnl": baseline_pnl,
+                "a5_15bp_net_pnl": a5_15bp_pnl,
+                "regime_groups": regime_groups,
+                "closed_episode_count": closed_episode_count,
+                "negative_tail_share": negative_tail_share,
+                "implementation_shortfall_observation_count": shortfall_count,
+                "implementation_shortfall": shortfall,
+                "directional_edge_support": sign_pnl <= 0.0 and sign_hit_rate < 0.50,
+                "confidence_no_incremental_edge_support": (
+                    math.isclose(score_hit_rate, sign_hit_rate, rel_tol=0.0, abs_tol=1e-12) and score_pnl <= 0.0
+                ),
+                "cost_flip_support": baseline_pnl > 0.0 and a5_15bp_pnl <= 0.0,
+                "regime_localization_support": _regime_localization_support(regime_groups),
+                "episode_tail_support": (
+                    closed_episode_count >= 20 and negative_tail_share is not None and negative_tail_share >= 0.60
+                ),
+                "execution_shortfall_support": (
+                    shortfall_count >= 20 and baseline_pnl < 0.0 and shortfall >= 0.25 * abs(baseline_pnl)
+                ),
+            }
+        )
+    return evidence
+
+
+def _regime_localization_support(regime_groups: Mapping[str, Any]) -> bool:
+    """Apply the frozen single-regime loss concentration rule."""
+    net_pnls = {
+        regime: _finite(_mapping(values, "regime group")["net_pnl_15bp"], "regime net PnL")
+        for regime, values in regime_groups.items()
+    }
+    negative = {regime: -pnl for regime, pnl in net_pnls.items() if pnl < 0.0}
+    total_negative = sum(negative.values())
+    if total_negative == 0.0:
+        return False
+    return any(
+        contribution / total_negative >= 0.60
+        and all(other_pnl > 0.0 for other_regime, other_pnl in net_pnls.items() if other_regime != regime)
+        for regime, contribution in negative.items()
+    )
+
+
+def _classify_evidence(seed_evidence: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+    """Apply fixed four-of-five evidence classification to serialized seed facts."""
+    families = (
+        ("directional_edge", "directional_edge_support"),
+        ("confidence_no_incremental_edge", "confidence_no_incremental_edge_support"),
+        ("cost_flip", "cost_flip_support"),
+        ("regime_localization", "regime_localization_support"),
+    )
+    classified = {name: _classify_family(seed_evidence, support_key=support_key) for name, support_key in families}
+    classified["episode_tail"] = _classify_family(
+        seed_evidence,
+        support_key="episode_tail_support",
+        sample_floor_key="closed_episode_count",
+        sample_floor=20,
+    )
+    classified["execution_shortfall"] = _classify_family(
+        seed_evidence,
+        support_key="execution_shortfall_support",
+        sample_floor_key="implementation_shortfall_observation_count",
+        sample_floor=20,
+        inapplicable=lambda row: float(row["a5_baseline_net_pnl"]) >= 0.0,
+    )
+    return classified
+
+
+def _classify_family(
+    seed_evidence: Sequence[Mapping[str, Any]],
+    *,
+    support_key: str,
+    sample_floor_key: str | None = None,
+    sample_floor: int | None = None,
+    inapplicable: Any = None,
+) -> dict[str, Any]:
+    supporting_seeds = [int(row["seed"]) for row in seed_evidence if row.get(support_key) is True]
+    insufficient_sample_seeds = (
+        [int(row["seed"]) for row in seed_evidence if int(row.get(sample_floor_key, 0)) < sample_floor]
+        if sample_floor_key is not None and sample_floor is not None
+        else []
+    )
+    inapplicable_seeds = [int(row["seed"]) for row in seed_evidence if inapplicable is not None and inapplicable(row)]
+    if insufficient_sample_seeds:
+        status = EvidenceStatus.INSUFFICIENT_SAMPLE.value
+    elif len(supporting_seeds) >= 4:
+        status = EvidenceStatus.CONSISTENT.value
+    elif supporting_seeds:
+        status = EvidenceStatus.MIXED.value
+    else:
+        status = EvidenceStatus.UNATTRIBUTABLE.value
+    return {
+        "status": status,
+        "supporting_seed_count": len(supporting_seeds),
+        "supporting_seeds": supporting_seeds,
+        "insufficient_sample_seeds": insufficient_sample_seeds,
+        "inapplicable_seeds": inapplicable_seeds,
+    }
+
+
+def _insufficient_sample_evidence(seed_evidence: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+    """Fail closed when a required diagnostic collection is absent."""
+    families = (
+        "directional_edge",
+        "confidence_no_incremental_edge",
+        "cost_flip",
+        "regime_localization",
+        "episode_tail",
+        "execution_shortfall",
+    )
+    incomplete_seeds = [int(row["seed"]) for row in seed_evidence if not row.get("required_inputs_complete")]
+    return {
+        family: {
+            "status": EvidenceStatus.INSUFFICIENT_SAMPLE.value,
+            "supporting_seed_count": 0,
+            "supporting_seeds": [],
+            "insufficient_sample_seeds": incomplete_seeds,
+            "inapplicable_seeds": [],
+        }
+        for family in families
+    }
+
+
+def _terminal_recommendation(*, required_inputs_incomplete: bool, evidence: Mapping[str, Any]) -> str:
+    if required_inputs_incomplete:
+        return "insufficient_evidence_no_strategy_change"
+    if evidence["directional_edge"]["supporting_seed_count"] >= 4:
+        return "stop_donor_training"
+    if evidence["regime_localization"]["supporting_seed_count"] >= 4:
+        return "prepare_regime_objective_redesign"
+    return "insufficient_evidence_no_strategy_change"
+
+
+def build_regime_objective_hypothesis(attribution: Mapping[str, Any]) -> dict[str, Any] | None:
+    """Return a non-promotable regime hypothesis only for a localized failure."""
+    if attribution.get("terminal_recommendation") != "prepare_regime_objective_redesign":
+        return None
+    return {
+        "schema_version": "quant-v2-regime-objective-hypothesis.v1",
+        "research_only_non_promotable": True,
+        "promotion_state": BLOCKED_PROMOTION_STATE,
+        "failure_family": "regime_localization",
+        "market_behavior_hypothesis": (
+            "Late-development loss is concentrated in one observed regime while the other observed regimes "
+            "remain net positive after the fixed 15bp turnover cost allocation."
+        ),
+        "excluded_prior_exploration_families": [
+            "threshold sweeping",
+            "leverage expansion",
+            "donor continuation",
+        ],
+        "oos_only_falsification_gate": (
+            "A separately authorized out-of-sample-only evaluation falsifies this hypothesis unless the same "
+            "localized loss pattern recurs in at least four of five perturbation seeds."
+        ),
     }
 
 
