@@ -29,6 +29,12 @@ It must reject incomplete, duplicate, altered, or mismatched matrix inputs.
 No live data, current OptionsState data, or repo-local auxiliary factor is a
 permitted attribution input.
 
+The raw artifact is reproducible but is not present in the current checkout
+after temporary-worktree cleanup. After the analyzer passes all tests, regenerate
+it once with the frozen `run_architecture_experiment.py` command recorded in the
+acceptance handoff. This replay is not training or search. The analyzer still
+fails closed when its input is absent; it never starts regeneration implicitly.
+
 ## Track 1: late-dev cost-failure attribution
 
 ### Questions
