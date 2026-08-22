@@ -37,13 +37,15 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     try:
-        raw = args.input.read_bytes()
-        report = json.loads(raw)
+        source_size_bytes = args.input.stat().st_size
+        source_sha256 = _sha256_file(args.input)
+        with args.input.open(encoding="utf-8") as source:
+            report = json.load(source)
         summary = build_quant_v2_acceptance_summary(
             report,
             source_artifact=str(args.input),
-            source_sha256=hashlib.sha256(raw).hexdigest(),
-            source_size_bytes=len(raw),
+            source_sha256=source_sha256,
+            source_size_bytes=source_size_bytes,
         )
         encoded = canonical_acceptance_summary_bytes(summary)
     except (AcceptanceValidationError, json.JSONDecodeError, OSError) as exc:
@@ -54,6 +56,14 @@ def main(argv: list[str] | None = None) -> int:
     exit_code = acceptance_exit_code(summary)
     print(f"{summary['verdict']}: {args.output} (exit={exit_code})")
     return exit_code
+
+
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as source:
+        for chunk in iter(lambda: source.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 if __name__ == "__main__":
