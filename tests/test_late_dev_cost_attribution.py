@@ -20,6 +20,7 @@ from zenquant.research.late_dev_cost_attribution import (
     LateDevAttributionValidationError,
     _classify_evidence,
     build_late_dev_cost_attribution,
+    build_late_dev_cost_attribution_markdown,
     build_regime_objective_hypothesis,
     canonical_late_dev_attribution_bytes,
 )
@@ -44,13 +45,19 @@ def _load_cli_module():
     return module
 
 
-def _cost_stage(stage: str, *, include_episodes: bool = False) -> dict[str, object]:
+def _cost_stage(
+    stage: str,
+    *,
+    include_episodes: bool = False,
+    include_execution: bool = False,
+) -> dict[str, object]:
     payload: dict[str, object] = {
         "stage": stage,
         "direction_hit_rate": 0.6,
         "turnover_notional": 10_000.0,
         "cost_stress": {
             "0": {"net_pnl": 120.0},
+            "5": {"net_pnl": 115.0},
             "15": {"net_pnl": 105.0},
         },
         "attribution_rows": [
@@ -60,11 +67,6 @@ def _cost_stage(stage: str, *, include_episodes: bool = False) -> dict[str, obje
                 "turnover_notional": 4_000.0,
                 "baseline_execution_cost": 1.0,
                 "funding_pnl": -1.0,
-                "execution": {
-                    "filled_position_before": 0.0,
-                    "filled_position_after": 1.0,
-                    "actual_implementation_shortfall": 1.0,
-                },
             },
             {
                 "regime": "NORMAL",
@@ -72,11 +74,6 @@ def _cost_stage(stage: str, *, include_episodes: bool = False) -> dict[str, obje
                 "turnover_notional": 6_000.0,
                 "baseline_execution_cost": 2.0,
                 "funding_pnl": 0.0,
-                "execution": {
-                    "filled_position_before": 1.0,
-                    "filled_position_after": 2.0,
-                    "actual_implementation_shortfall": 2.0,
-                },
             },
             {
                 "regime": "NORMAL",
@@ -84,11 +81,6 @@ def _cost_stage(stage: str, *, include_episodes: bool = False) -> dict[str, obje
                 "turnover_notional": 0.0,
                 "baseline_execution_cost": 0.0,
                 "funding_pnl": 0.0,
-                "execution": {
-                    "filled_position_before": 2.0,
-                    "filled_position_after": 1.0,
-                    "actual_implementation_shortfall": 3.0,
-                },
             },
             {
                 "regime": "NORMAL",
@@ -96,11 +88,6 @@ def _cost_stage(stage: str, *, include_episodes: bool = False) -> dict[str, obje
                 "turnover_notional": 0.0,
                 "baseline_execution_cost": 0.0,
                 "funding_pnl": 0.0,
-                "execution": {
-                    "filled_position_before": 1.0,
-                    "filled_position_after": 0.0,
-                    "actual_implementation_shortfall": 4.0,
-                },
             },
             {
                 "regime": "NORMAL",
@@ -108,14 +95,85 @@ def _cost_stage(stage: str, *, include_episodes: bool = False) -> dict[str, obje
                 "turnover_notional": 0.0,
                 "baseline_execution_cost": 0.0,
                 "funding_pnl": 0.0,
-                "execution": {
-                    "filled_position_before": 1.0,
-                    "filled_position_after": -1.0,
-                    "actual_implementation_shortfall": 5.0,
-                },
             },
         ],
     }
+    if include_execution:
+        transitions = (
+            (0.0, 1.0, 1.0, 1.0),
+            (1.0, 2.0, 1.0, 2.0),
+            (2.0, 1.0, 1.0, 3.0),
+            (1.0, 0.0, 1.0, 4.0),
+            (1.0, -1.0, 2.0, 5.0),
+        )
+        for index, (before, after, filled_qty, shortfall) in enumerate(transitions):
+            row = payload["attribution_rows"][index]  # type: ignore[index]
+            row["execution"] = {
+                "cutoff_time_ns": index + 1,
+                "decision_id": f"decision-{index}",
+                "approved_exposure": after,
+                "approved_target_qty": after,
+                "filled_exposure_before": before,
+                "filled_exposure_after": after,
+                "filled_position_before": before,
+                "filled_position_after": after,
+                "target_delta_exposure": after - before,
+                "reference_price": 100.0,
+                "actual_fill_price": 100.0,
+                "filled_qty": filled_qty,
+                "fee": 0.5,
+                "actual_slippage": 0.25,
+                "actual_implementation_shortfall": shortfall,
+                "funding_pnl": 0.0,
+                "target_tracking_error": 0.0,
+                "time_to_target_bars": 0,
+                "reduce_only": False,
+                "safety_reasons": [],
+                "forward_return_1": 0.01,
+                "forward_return_3": None,
+                "forward_return_6": -0.02,
+                "forward_return_1_available_at_ns": index + 2,
+            }
+            if stage == ArchitectureStage.A5_SHADOW.value:
+                row["cost_shadow"] = {
+                    "target_delta": after - before,
+                    "estimated_fee": 0.1,
+                    "estimated_slippage": 0.2,
+                    "round_trip_cost": 0.6,
+                    "breakeven_move": 0.003,
+                    "actual_implementation_shortfall": shortfall,
+                    "forward_return_1": 0.01,
+                    "forward_return_3": None,
+                    "forward_return_6": -0.02,
+                    "blocks_order": False,
+                }
+        payload["execution_metrics"] = {
+            "status": "OBSERVED",
+            "target_tracking_error": 0.0,
+            "time_to_target_bars": 0.0,
+            "time_to_target_status": "OBSERVED",
+            "immediate_target_reached_rate": 1.0,
+            "right_censored_target_rate": 0.0,
+            "implementation_shortfall": 15.0,
+            "slippage": 1.25,
+            "target_overshoot": 0,
+            "unexpected_reversal": 0,
+            "executor_created_exposure": 0,
+            "episode_profit_factor": 5.0 / 3.0,
+            "episode_profit_factor_status": "DEFINED",
+            "position_switches_per_day": 0.75,
+        }
+        if stage == ArchitectureStage.A5_SHADOW.value:
+            payload["cost_shadow"] = {
+                "blocks_order": False,
+                "observation_count": 5,
+                "estimated_fee": 0.5,
+                "estimated_slippage": 1.0,
+                "round_trip_cost": 3.0,
+                "actual_implementation_shortfall": 15.0,
+                "actual_shortfall_observation_count": 5,
+                "forward_label_counts": {"1": 5, "3": 0, "6": 5},
+            }
     if include_episodes:
         payload["position_episodes"] = [
             {
@@ -215,6 +273,8 @@ def _complete_raw_report(
             runs.append(
                 {
                     "window": window.label,
+                    "start_ns": window.start_ns,
+                    "end_ns": window.end_ns,
                     "seed": seed,
                     "identities": {
                         "formula_hashes": ["formula-v1"],
@@ -222,13 +282,24 @@ def _complete_raw_report(
                     },
                     "stages": {
                         stage: (
-                            _cost_stage(stage, include_episodes=stage == ArchitectureStage.A5_SHADOW.value)
-                            if stage
-                            in {
-                                ArchitectureStage.A1_SIGN.value,
-                                ArchitectureStage.A1_SCORE.value,
-                                ArchitectureStage.A5_SHADOW.value,
-                            }
+                            _cost_stage(
+                                stage,
+                                include_episodes=stage
+                                in {
+                                    ArchitectureStage.A2.value,
+                                    ArchitectureStage.A3.value,
+                                    ArchitectureStage.A4.value,
+                                    ArchitectureStage.A5_SHADOW.value,
+                                },
+                                include_execution=stage
+                                in {
+                                    ArchitectureStage.A2.value,
+                                    ArchitectureStage.A3.value,
+                                    ArchitectureStage.A4.value,
+                                    ArchitectureStage.A5_SHADOW.value,
+                                },
+                            )
+                            if stage != ArchitectureStage.A0.value
                             else {"stage": stage, "literal": True}
                         )
                         for stage in stage_order
@@ -331,6 +402,99 @@ def test_build_report_rejects_stage_payload_declared_under_wrong_key():
         _build(report)
 
 
+@pytest.mark.parametrize("invalid_seed", [42.5, "42", True], ids=["fractional", "string", "boolean"])
+def test_build_report_rejects_non_integer_seed_types(invalid_seed: object):
+    report = _complete_raw_report()
+    first_run = report["runs"][0]  # type: ignore[index]
+    first_run["seed"] = invalid_seed
+
+    with pytest.raises(LateDevAttributionValidationError, match="matrix"):
+        _build(report)
+
+
+@pytest.mark.parametrize("mutation", ["missing", "extra"])
+def test_required_a1_to_a5_cost_stress_keys_are_exact(mutation: str):
+    report = _complete_raw_report()
+    late_dev = next(run for run in report["runs"] if run["window"] == "late_dev_2025")  # type: ignore[index]
+    costs = late_dev["stages"][ArchitectureStage.A2.value]["cost_stress"]  # type: ignore[index]
+    if mutation == "missing":
+        costs.pop("5")
+    else:
+        costs["10"] = {"net_pnl": 110.0}
+
+    with pytest.raises(LateDevAttributionValidationError, match="exactly"):
+        _build(report)
+
+
+def test_cost_stress_net_pnl_rejects_numeric_strings():
+    report = _complete_raw_report()
+    late_dev = next(run for run in report["runs"] if run["window"] == "late_dev_2025")  # type: ignore[index]
+    late_dev["stages"][ArchitectureStage.A1_SIGN.value]["cost_stress"]["0"]["net_pnl"] = "120.0"  # type: ignore[index]
+
+    with pytest.raises(LateDevAttributionValidationError, match="net PnL"):
+        _build(report)
+
+
+def test_all_required_stage_hit_rates_are_probabilities():
+    report = _complete_raw_report()
+    late_dev = next(run for run in report["runs"] if run["window"] == "late_dev_2025")  # type: ignore[index]
+    late_dev["stages"][ArchitectureStage.A3.value]["direction_hit_rate"] = 1.01  # type: ignore[index]
+
+    with pytest.raises(LateDevAttributionValidationError, match="direction hit rate"):
+        _build(report)
+
+
+@pytest.mark.parametrize(
+    ("field", "expected_error"),
+    [
+        ("stage_turnover", "turnover"),
+        ("attribution_cost", "execution cost"),
+        ("episode_count", "fill_count"),
+        ("episode_duration", "holding_duration"),
+        ("run_duration", "duration"),
+        ("filled_qty", "filled quantity"),
+        ("actual_fee", "actual fee"),
+        ("actual_slippage", "actual slippage"),
+        ("actual_shortfall", "implementation shortfall"),
+        ("switch_cadence", "position switches"),
+        ("estimated_fee", "estimated fee"),
+        ("breakeven", "breakeven"),
+    ],
+)
+def test_diagnostic_nonnegative_domains_fail_closed(field: str, expected_error: str):
+    report = _complete_raw_report()
+    late_dev = next(run for run in report["runs"] if run["window"] == "late_dev_2025")  # type: ignore[index]
+    a2 = late_dev["stages"][ArchitectureStage.A2.value]  # type: ignore[index]
+    a5 = late_dev["stages"][ArchitectureStage.A5_SHADOW.value]  # type: ignore[index]
+    if field == "stage_turnover":
+        a2["turnover_notional"] = -1.0
+    elif field == "attribution_cost":
+        a2["attribution_rows"][0]["baseline_execution_cost"] = -1.0
+    elif field == "episode_count":
+        a2["position_episodes"][0]["fill_count"] = -1
+    elif field == "episode_duration":
+        a2["position_episodes"][0]["holding_duration_ns"] = -1
+    elif field == "run_duration":
+        late_dev["end_ns"] = late_dev["start_ns"]
+    elif field == "filled_qty":
+        a2["attribution_rows"][0]["execution"]["filled_qty"] = -1.0
+    elif field == "actual_fee":
+        a2["attribution_rows"][0]["execution"]["fee"] = -1.0
+    elif field == "actual_slippage":
+        a2["attribution_rows"][0]["execution"]["actual_slippage"] = -1.0
+    elif field == "actual_shortfall":
+        a2["attribution_rows"][0]["execution"]["actual_implementation_shortfall"] = -1.0
+    elif field == "switch_cadence":
+        a2["execution_metrics"]["position_switches_per_day"] = -1.0
+    elif field == "estimated_fee":
+        a5["attribution_rows"][0]["cost_shadow"]["estimated_fee"] = -1.0
+    elif field == "breakeven":
+        a5["attribution_rows"][0]["cost_shadow"]["breakeven_move"] = -1.0
+
+    with pytest.raises(LateDevAttributionValidationError, match=expected_error):
+        _build(report)
+
+
 def test_seed_bridge_reconciles_baseline_to_extra_15bp():
     bridge = _build(_complete_raw_report())["seed_stage_bridges"][0]  # type: ignore[index]
 
@@ -343,6 +507,25 @@ def test_seed_bridge_reconciles_baseline_to_extra_15bp():
         "extra_15bp_net_pnl": 105.0,
         "reconciliation_error": 0.0,
     }
+
+
+def test_complete_report_emits_frozen_a1_to_a5_bridge_and_episode_orders():
+    result = _build(_complete_raw_report())
+
+    assert [item["stage"] for item in result["seed_stage_bridges"][:6]] == [  # type: ignore[index]
+        "A1_SIGN",
+        "A1_SCORE",
+        "A2",
+        "A3",
+        "A4",
+        "A5_SHADOW",
+    ]
+    assert [item["stage"] for item in result["episode_attribution"][:4]] == [  # type: ignore[index]
+        "A2",
+        "A3",
+        "A4",
+        "A5_SHADOW",
+    ]
 
 
 def test_seed_bridge_rejects_a_non_reconciling_15bp_total():
@@ -440,6 +623,72 @@ def test_execution_and_explicit_regime_groups_are_accounted_without_playbook_inf
     }
 
 
+def test_execution_attribution_reports_observed_fills_costs_and_cadence_from_serialized_rows():
+    execution = _build(_complete_raw_report())["execution_attribution"][0]  # type: ignore[index]
+
+    assert execution == {
+        "seed": 42,
+        "stage": "A2",
+        "execution_status": "OBSERVED",
+        "attribution_row_count": 5,
+        "execution_observation_count": 5,
+        "positive_fill_count": 5,
+        "fills_per_day": pytest.approx(5.0 / 365.0),
+        "position_switches_per_day": 0.75,
+        "action_counts": {
+            "entry": 1,
+            "exit": 1,
+            "flip": 1,
+            "add": 1,
+            "reduce": 1,
+            "unchanged": 0,
+        },
+        "actual_fee_observation_count": 5,
+        "actual_fee_sum": 2.5,
+        "actual_slippage_observation_count": 5,
+        "actual_slippage_sum": 1.25,
+        "actual_implementation_shortfall_observation_count": 5,
+        "actual_implementation_shortfall_sum": 15.0,
+        "cost_shadow": None,
+    }
+
+
+def test_a5_execution_attribution_reports_cost_shadow_breakeven_and_forward_labels():
+    result = _build(_complete_raw_report())
+    execution = next(item for item in result["execution_attribution"] if item["stage"] == "A5_SHADOW")  # type: ignore[index]
+
+    assert execution["cost_shadow"] == {
+        "observation_count": 5,
+        "estimated_fee_sum": 0.5,
+        "estimated_slippage_sum": 1.0,
+        "estimated_round_trip_cost_sum": 3.0,
+        "breakeven_observation_count": 5,
+        "breakeven_mean": 0.003,
+        "forward_label_counts": {"1": 5, "3": 0, "6": 5},
+    }
+
+
+@pytest.mark.parametrize("missing_key", ["execution_metrics", "position_episodes", "episode_ledger"])
+def test_missing_required_a2_to_a5_execution_collection_is_structurally_incomplete(missing_key: str):
+    report = _complete_raw_report()
+    late_dev = next(run for run in report["runs"] if run["window"] == "late_dev_2025")  # type: ignore[index]
+    late_dev["stages"][ArchitectureStage.A2.value].pop(missing_key)  # type: ignore[index]
+
+    result = _build(report)
+
+    assert result["evidence"]["required_inputs_incomplete"] is True  # type: ignore[index]
+    assert result["terminal_recommendation"] == "insufficient_evidence_no_strategy_change"
+
+
+def test_present_malformed_execution_collection_is_invalid_not_incomplete():
+    report = _complete_raw_report()
+    late_dev = next(run for run in report["runs"] if run["window"] == "late_dev_2025")  # type: ignore[index]
+    late_dev["stages"][ArchitectureStage.A2.value]["execution_metrics"] = []  # type: ignore[index]
+
+    with pytest.raises(LateDevAttributionValidationError, match="execution metrics"):
+        _build(report)
+
+
 def test_episode_ledger_count_mismatch_fails_closed():
     report = _complete_raw_report()
     late_dev = next(run for run in report["runs"] if run["window"] == "late_dev_2025")  # type: ignore[index]
@@ -502,7 +751,7 @@ def test_episode_and_shortfall_sample_floors_are_family_local():
             {
                 "seed": seed,
                 "directional_edge_support": True,
-                "confidence_no_incremental_edge_support": False,
+                "confidence_failed_to_rescue_support": False,
                 "cost_flip_support": False,
                 "regime_localization_support": False,
                 "closed_episode_count": 19,
@@ -520,13 +769,71 @@ def test_episode_and_shortfall_sample_floors_are_family_local():
     assert evidence["execution_shortfall"]["status"] == "INSUFFICIENT_SAMPLE"
 
 
+@pytest.mark.parametrize(
+    ("supporting_count", "expected_status"),
+    [(4, "CONSISTENT"), (3, "INSUFFICIENT_SAMPLE")],
+)
+def test_episode_four_of_five_precedes_one_sparse_seed(supporting_count: int, expected_status: str):
+    rows = []
+    for index, seed in enumerate((42, 123, 456, 789, 1024)):
+        rows.append(
+            {
+                "seed": seed,
+                "directional_edge_support": False,
+                "confidence_failed_to_rescue_support": False,
+                "cost_flip_support": False,
+                "regime_localization_support": False,
+                "closed_episode_count": 19 if index == 4 else 20,
+                "episode_tail_support": index < supporting_count,
+                "implementation_shortfall_observation_count": 20,
+                "execution_shortfall_support": False,
+                "a5_baseline_net_pnl": -100.0,
+            }
+        )
+
+    evidence = _classify_evidence(rows)
+
+    assert evidence["episode_tail"]["status"] == expected_status
+    assert evidence["episode_tail"]["supporting_seed_count"] == supporting_count
+    assert evidence["episode_tail"]["insufficient_sample_seeds"] == [1024]
+
+
+@pytest.mark.parametrize(
+    ("supporting_count", "expected_status"),
+    [(4, "CONSISTENT"), (3, "INSUFFICIENT_SAMPLE")],
+)
+def test_shortfall_four_of_five_precedes_one_sparse_seed(supporting_count: int, expected_status: str):
+    rows = []
+    for index, seed in enumerate((42, 123, 456, 789, 1024)):
+        rows.append(
+            {
+                "seed": seed,
+                "directional_edge_support": False,
+                "confidence_failed_to_rescue_support": False,
+                "cost_flip_support": False,
+                "regime_localization_support": False,
+                "closed_episode_count": 20,
+                "episode_tail_support": False,
+                "implementation_shortfall_observation_count": 19 if index == 4 else 20,
+                "execution_shortfall_support": index < supporting_count,
+                "a5_baseline_net_pnl": -100.0,
+            }
+        )
+
+    evidence = _classify_evidence(rows)
+
+    assert evidence["execution_shortfall"]["status"] == expected_status
+    assert evidence["execution_shortfall"]["supporting_seed_count"] == supporting_count
+    assert evidence["execution_shortfall"]["insufficient_sample_seeds"] == [1024]
+
+
 def test_execution_shortfall_does_not_divide_a_non_loss_baseline():
     evidence = _classify_evidence(
         [
             {
                 "seed": seed,
                 "directional_edge_support": False,
-                "confidence_no_incremental_edge_support": False,
+                "confidence_failed_to_rescue_support": False,
                 "cost_flip_support": False,
                 "regime_localization_support": False,
                 "closed_episode_count": 20,
@@ -548,7 +855,7 @@ def test_non_loss_shortfall_below_floor_is_unattributable_not_insufficient_sampl
             {
                 "seed": seed,
                 "directional_edge_support": False,
-                "confidence_no_incremental_edge_support": False,
+                "confidence_failed_to_rescue_support": False,
                 "cost_flip_support": False,
                 "regime_localization_support": False,
                 "closed_episode_count": 20,
@@ -571,7 +878,7 @@ def test_four_loss_seed_shortfalls_remain_consistent_with_one_non_loss_seed_belo
             {
                 "seed": seed,
                 "directional_edge_support": False,
-                "confidence_no_incremental_edge_support": False,
+                "confidence_failed_to_rescue_support": False,
                 "cost_flip_support": False,
                 "regime_localization_support": False,
                 "closed_episode_count": 20,
@@ -587,7 +894,7 @@ def test_four_loss_seed_shortfalls_remain_consistent_with_one_non_loss_seed_belo
             {
                 "seed": 9001,
                 "directional_edge_support": False,
-                "confidence_no_incremental_edge_support": False,
+                "confidence_failed_to_rescue_support": False,
                 "cost_flip_support": False,
                 "regime_localization_support": False,
                 "closed_episode_count": 20,
@@ -643,25 +950,56 @@ def test_present_15bp_cost_stress_entry_requires_a_mapping_net_pnl(fifteen_bp_en
         _build(report)
 
 
-def test_confidence_failure_requires_equal_direction_hit_rates_and_nonpositive_score_pnl():
+def test_confidence_failure_reports_improvement_without_overclaiming_no_incremental_edge():
     report = _complete_raw_report()
     for run in report["runs"]:  # type: ignore[index]
         if run["window"] != "late_dev_2025":
             continue
+        sign = run["stages"][ArchitectureStage.A1_SIGN.value]  # type: ignore[index]
         score = run["stages"][ArchitectureStage.A1_SCORE.value]  # type: ignore[index]
-        score["direction_hit_rate"] = 0.6
+        sign["direction_hit_rate"] = 0.47
+        sign["cost_stress"]["15"]["net_pnl"] = -100.0
+        sign["turnover_notional"] = 220.0 * 10_000.0 / 15.0
+        score["direction_hit_rate"] = 0.61
         score["cost_stress"]["15"]["net_pnl"] = -10.0
         score["turnover_notional"] = 130.0 * 10_000.0 / 15.0
 
     result = _build(report)
 
-    assert result["evidence"]["confidence_no_incremental_edge"] == {  # type: ignore[index]
+    assert result["seed_evidence"][0]["confidence_pnl_delta_15bp"] == 90.0  # type: ignore[index]
+    assert result["seed_evidence"][0]["confidence_hit_rate_equal"] is False  # type: ignore[index]
+    assert result["evidence"]["confidence_failed_to_rescue"] == {  # type: ignore[index]
         "status": "CONSISTENT",
         "supporting_seed_count": 5,
         "supporting_seeds": [42, 123, 456, 789, 1024],
         "insufficient_sample_seeds": [],
         "inapplicable_seeds": [],
+        "improving_seed_count": 5,
+        "improving_seeds": [42, 123, 456, 789, 1024],
+        "rescued_seed_count": 0,
+        "rescued_seeds": [],
     }
+
+
+def test_confidence_rescue_count_requires_positive_a1_score_15bp_pnl():
+    report = _complete_raw_report()
+    late_dev_runs = [run for run in report["runs"] if run["window"] == "late_dev_2025"]  # type: ignore[index]
+    for run in late_dev_runs:
+        sign = run["stages"][ArchitectureStage.A1_SIGN.value]  # type: ignore[index]
+        score = run["stages"][ArchitectureStage.A1_SCORE.value]  # type: ignore[index]
+        sign["cost_stress"]["15"]["net_pnl"] = -10.0
+        sign["turnover_notional"] = 130.0 * 10_000.0 / 15.0
+        score["cost_stress"]["15"]["net_pnl"] = -1.0
+        score["turnover_notional"] = 121.0 * 10_000.0 / 15.0
+    rescued_score = late_dev_runs[0]["stages"][ArchitectureStage.A1_SCORE.value]  # type: ignore[index]
+    rescued_score["cost_stress"]["15"]["net_pnl"] = 1.0
+    rescued_score["turnover_notional"] = 119.0 * 10_000.0 / 15.0
+
+    confidence = _build(report)["evidence"]["confidence_failed_to_rescue"]  # type: ignore[index]
+
+    assert confidence["improving_seed_count"] == 5
+    assert confidence["rescued_seed_count"] == 1
+    assert confidence["rescued_seeds"] == [42]
 
 
 def test_cost_flip_requires_positive_baseline_and_nonpositive_15bp_pnl():
@@ -744,6 +1082,32 @@ def test_cli_writes_complete_stop_donor_reports_without_hypothesis(tmp_path: Pat
     assert not list(output_dir.glob("*.tmp"))
 
 
+def test_markdown_renders_execution_cost_cadence_and_confidence_rescue_diagnostics():
+    markdown = build_late_dev_cost_attribution_markdown(_build(_complete_raw_report()))
+
+    assert "## A2-A5 execution, cost, and cadence" in markdown
+    assert "Fills/day" in markdown
+    assert "Position switches/day" in markdown
+    assert "A5 cost-shadow" in markdown
+    assert "## Confidence rescue diagnostics" in markdown
+    assert "A1_SCORE - A1_SIGN 15bp PnL" in markdown
+    assert "confidence_failed_to_rescue" in markdown
+    assert "confidence_no_incremental_edge" not in markdown
+
+
+def test_cli_complete_mixed_diagnostic_writes_reports_and_returns_zero(tmp_path: Path):
+    source = tmp_path / "architecture_attribution.json"
+    source.write_text(json.dumps(_complete_raw_report(regime_localized_seed_count=3)), encoding="utf-8")
+
+    completed = _run_cli(source, tmp_path / "out")
+
+    report = json.loads((tmp_path / "out" / "late_dev_cost_attribution.json").read_text(encoding="utf-8"))
+    assert completed.returncode == 0, completed.stderr
+    assert report["evidence"]["required_inputs_incomplete"] is False
+    assert report["evidence"]["regime_localization"]["status"] == "MIXED"
+    assert report["terminal_recommendation"] == "insufficient_evidence_no_strategy_change"
+
+
 def test_cli_writes_hypothesis_only_for_regime_objective_redesign(tmp_path: Path):
     """A four-of-five localized failure is the sole hypothesis-publication path."""
     source = tmp_path / "architecture_attribution.json"
@@ -817,6 +1181,25 @@ def test_cli_invalid_input_writes_nothing_and_returns_two(tmp_path: Path, conten
     assert "invalid input" in completed.stderr.lower()
 
 
+def test_cli_invalid_input_preserves_preexisting_outputs_byte_for_byte(tmp_path: Path):
+    source = tmp_path / "bad.json"
+    source.write_text("{}", encoding="utf-8")
+    output_dir = tmp_path / "out"
+    output_dir.mkdir()
+    previous = {
+        "late_dev_cost_attribution.json": b"old-json",
+        "late_dev_cost_attribution.md": b"old-markdown",
+        "regime_objective_redesign_from_late_dev.json": b"old-hypothesis",
+    }
+    for filename, content in previous.items():
+        (output_dir / filename).write_bytes(content)
+
+    completed = _run_cli(source, output_dir)
+
+    assert completed.returncode == 2
+    assert {filename: (output_dir / filename).read_bytes() for filename in previous} == previous
+
+
 def test_cli_records_exact_source_identity_and_publishes_only_complete_files(tmp_path: Path):
     """Published diagnostics must retain the bytes they diagnose and leave no staging files."""
     source = tmp_path / "architecture_attribution.json"
@@ -873,6 +1256,79 @@ def test_cli_atomic_publish_cleans_partial_temp_file_after_write_error(tmp_path:
         cli_module._publish_atomically(tmp_path / "out", {"late_dev_cost_attribution.json": b"complete"})
 
     assert not list((tmp_path / "out").glob("*.tmp"))
+
+
+def test_cli_publication_rolls_back_first_replace_when_second_replace_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    cli_module = _load_cli_module()
+    output_dir = tmp_path / "out"
+    output_dir.mkdir()
+    report_path = output_dir / "late_dev_cost_attribution.json"
+    markdown_path = output_dir / "late_dev_cost_attribution.md"
+    report_path.write_bytes(b"old-json")
+    original_replace = Path.replace
+    replace_calls = 0
+
+    def fail_second_replace(path: Path, target: Path) -> Path:
+        nonlocal replace_calls
+        if path.suffix == ".tmp":
+            replace_calls += 1
+            if replace_calls == 2:
+                raise OSError("simulated second replace failure")
+        return original_replace(path, target)
+
+    monkeypatch.setattr(Path, "replace", fail_second_replace)
+
+    with pytest.raises(OSError, match="second replace failure"):
+        cli_module._publish_atomically(
+            output_dir,
+            {
+                "late_dev_cost_attribution.json": b"new-json",
+                "late_dev_cost_attribution.md": b"new-markdown",
+            },
+        )
+
+    assert report_path.read_bytes() == b"old-json"
+    assert not markdown_path.exists()
+    assert not list(output_dir.glob("*.tmp"))
+
+
+def test_cli_publication_rolls_back_reports_when_stale_hypothesis_unlink_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    cli_module = _load_cli_module()
+    output_dir = tmp_path / "out"
+    output_dir.mkdir()
+    previous = {
+        "late_dev_cost_attribution.json": b"old-json",
+        "late_dev_cost_attribution.md": b"old-markdown",
+        "regime_objective_redesign_from_late_dev.json": b"old-hypothesis",
+    }
+    for filename, content in previous.items():
+        (output_dir / filename).write_bytes(content)
+    original_unlink = Path.unlink
+
+    def fail_stale_hypothesis_unlink(path: Path, missing_ok: bool = False) -> None:
+        if path.name == "regime_objective_redesign_from_late_dev.json":
+            raise OSError("simulated stale hypothesis unlink failure")
+        original_unlink(path, missing_ok=missing_ok)
+
+    monkeypatch.setattr(Path, "unlink", fail_stale_hypothesis_unlink)
+
+    with pytest.raises(OSError, match="stale hypothesis unlink failure"):
+        cli_module._publish_atomically(
+            output_dir,
+            {
+                "late_dev_cost_attribution.json": b"new-json",
+                "late_dev_cost_attribution.md": b"new-markdown",
+            },
+        )
+
+    assert {filename: (output_dir / filename).read_bytes() for filename in previous} == previous
+    assert not list(output_dir.glob("*.tmp"))
 
 
 @pytest.mark.parametrize("constant", ["NaN", "Infinity", "-Infinity"])
