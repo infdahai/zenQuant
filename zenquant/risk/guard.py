@@ -179,6 +179,7 @@ class RiskOverlay:
             return
         if payload.filled_qty <= 0:
             return
+        validate_execution_fee(payload.fee)
 
         current = self._actual_positions.get(payload.symbol, 0.0)
         self._actual_positions[payload.symbol] = current + (payload.side * payload.filled_qty)

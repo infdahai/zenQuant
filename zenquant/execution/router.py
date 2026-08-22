@@ -399,6 +399,7 @@ class ExecutionKernel:
             trade_qty = min(abs(delta_qty), self._config.max_trade_qty_per_bar)
 
         # Pyramid execution (PaulWei pattern)
+        pyramid_filled_pct_after_fill: float | None = None
         if self._config.pyramid_enabled and not is_reducing and not payload.reduce_only:
             is_new_direction = abs(current_position) < self._config.min_trade_qty or current_position * delta_qty < 0
             entry_px = self._entry_prices.get(symbol, 0)
@@ -442,7 +443,6 @@ class ExecutionKernel:
 
             if is_new_direction:
                 trade_qty = abs(payload.target_qty) * init_pct
-                self._pyramid_filled_pct[symbol] = init_pct
             elif is_profitable:
                 # Profitable: add another slice
                 filled = self._pyramid_filled_pct.get(symbol, 1.0)
@@ -456,7 +456,7 @@ class ExecutionKernel:
                 if filled < 1.0 and tranche_count < max_tranches and spacing_ok:
                     actual_add = min(add_pct, 1.0 - filled)
                     trade_qty = abs(payload.target_qty) * actual_add
-                    self._pyramid_filled_pct[symbol] = filled + actual_add
+                    pyramid_filled_pct_after_fill = filled + actual_add
                 else:
                     trade_qty = 0  # Fully positioned
             elif not is_short and self._config.dca_on_loss_long:
@@ -491,11 +491,11 @@ class ExecutionKernel:
                                 distance_scalar = max(0.3, 1.0 - adverse_distance / self._config.dca_max_adverse_atr)
                                 dca_add = min(dca_base * distance_scalar, 1.0 - filled)
                                 trade_qty = abs(payload.target_qty) * dca_add
-                                self._pyramid_filled_pct[symbol] = filled + dca_add
+                                pyramid_filled_pct_after_fill = filled + dca_add
                         else:
                             dca_add = min(dca_base, 1.0 - filled)
                             trade_qty = abs(payload.target_qty) * dca_add
-                            self._pyramid_filled_pct[symbol] = filled + dca_add
+                            pyramid_filled_pct_after_fill = filled + dca_add
                     else:
                         trade_qty = 0
             else:
@@ -568,6 +568,8 @@ class ExecutionKernel:
                 self._arm_entry_cooldown(symbol)
             elif abs(new_position) > abs(current_position):
                 self._last_fill_prices[symbol] = report.avg_price
+                if pyramid_filled_pct_after_fill is not None:
+                    self._pyramid_filled_pct[symbol] = pyramid_filled_pct_after_fill
                 self._inventory_tranches[symbol] = self._inventory_tranches.get(symbol, 1) + 1
             self._risk_overlay.apply_fee(report.fee)
 

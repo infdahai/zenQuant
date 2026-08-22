@@ -62,6 +62,66 @@ class ExecutionRouterTests(unittest.TestCase):
         self.assertEqual(reports, [])
         self.assertEqual((dict(kernel.positions), risk._cash, risk.equity), before)
 
+    def test_invalid_report_fee_leaves_pyramid_fill_tracking_unchanged(self) -> None:
+        class NonFiniteFeeGateway(ExecutionGateway):
+            def submit_order(self, order, mark_price, best_bid=None, best_ask=None, now_ns=None):
+                return ExecutionReport(
+                    client_order_id=order.client_order_id,
+                    symbol=order.symbol,
+                    side=order.side,
+                    status="FILLED",
+                    filled_qty=order.quantity,
+                    avg_price=mark_price,
+                    fee=float("nan"),
+                    transaction_time_ns=now_ns or 0,
+                )
+
+        def target(cutoff_time_ns: int) -> TargetPosition:
+            return TargetPosition(
+                intent_id=f"invalid-fee-{cutoff_time_ns}",
+                portfolio="arc",
+                symbol="BTCUSDT_PERP",
+                timeframe=Timeframe.TF_4H,
+                cutoff_time_ns=cutoff_time_ns,
+                target_qty=1.0,
+                target_leverage=1.0,
+                reduce_only=False,
+                regime="TREND",
+                regime_confidence=0.9,
+                reason_codes=["REGIME_TREND"],
+                atr=10.0,
+            )
+
+        cases = (
+            ("initial_entry", 100.0, {}),
+            ("profitable_add", 110.0, {"BTCUSDT_PERP": 0.3}),
+            ("loss_side_dca", 90.0, {"BTCUSDT_PERP": 0.3}),
+        )
+        for index, (name, mark_price, expected_pyramid_fill) in enumerate(cases, start=1):
+            with self.subTest(name=name):
+                bus = InMemoryJetStream()
+                risk = RiskOverlay(bus)
+                kernel = ExecutionKernel(
+                    bus,
+                    NonFiniteFeeGateway(),
+                    risk,
+                    config=ExecutionKernelConfig(adaptive_pyramid_enabled=False),
+                )
+                symbol = "BTCUSDT_PERP"
+                kernel._last_price[symbol] = mark_price
+                if expected_pyramid_fill:
+                    kernel._positions[symbol] = 0.3
+                    kernel._entry_prices[symbol] = 100.0
+                    kernel._last_fill_prices[symbol] = 100.0
+                    kernel._pyramid_filled_pct.update(expected_pyramid_fill)
+                    kernel._inventory_tranches[symbol] = 1
+                before = dict(kernel._pyramid_filled_pct)
+
+                with self.assertRaisesRegex(ValueError, "fee must be finite and non-negative"):
+                    bus.publish(f"intent.target_position.final.{symbol}", target(index))
+
+                self.assertEqual(kernel._pyramid_filled_pct, before)
+
     def test_reduce_only_ignores_zero_position(self) -> None:
         bus = InMemoryJetStream()
         risk = RiskOverlay(bus)

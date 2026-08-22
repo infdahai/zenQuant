@@ -115,6 +115,29 @@ def test_invalid_fee_is_atomic(fee: float) -> None:
     assert (overlay.cash, overlay.equity, overlay.high_water_mark) == before
 
 
+def test_invalid_direct_execution_report_fee_is_atomic() -> None:
+    bus = InMemoryJetStream()
+    overlay = RiskOverlay(bus=bus, config=RiskOverlayConfig(starting_equity=100_000.0))
+    before = (dict(overlay._actual_positions), overlay.cash, overlay.equity, overlay.high_water_mark)
+
+    with pytest.raises(ValueError, match="fee must be finite and non-negative"):
+        bus.publish(
+            "exec.order.report",
+            ExecutionReport(
+                client_order_id="invalid-direct-fill",
+                symbol="BTCUSDT_PERP",
+                side=1,
+                status="FILLED",
+                filled_qty=1.0,
+                avg_price=100_000.0,
+                fee=float("nan"),
+                transaction_time_ns=1,
+            ),
+        )
+
+    assert (dict(overlay._actual_positions), overlay.cash, overlay.equity, overlay.high_water_mark) == before
+
+
 class AsymmetricDDTests(unittest.TestCase):
     """Verify long DD steps are wider than short DD steps (PaulWei philosophy)."""
 
