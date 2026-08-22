@@ -104,6 +104,18 @@ def test_invalid_mark_price_event_does_not_change_equity(invalid_mark: float) ->
     assert overlay.equity == pytest.approx(before)
 
 
+def test_non_mark_payload_event_does_not_change_accounting_state() -> None:
+    bus = InMemoryJetStream()
+    overlay = RiskOverlay(bus=bus, config=RiskOverlayConfig(starting_equity=100_000.0))
+    bus.publish("exec.order.report", _fill(1.0, price=100_000.0))
+    bus.publish("md.mark.BINANCE.BTCUSDT_PERP", _mark(101_000.0))
+    before = (overlay.positions, overlay.cash, overlay.equity, overlay.high_water_mark)
+
+    bus.publish("md.mark.BINANCE.BTCUSDT_PERP", object())
+
+    assert (overlay.positions, overlay.cash, overlay.equity, overlay.high_water_mark) == before
+
+
 def test_positions_returns_immutable_snapshot() -> None:
     bus = InMemoryJetStream()
     overlay = RiskOverlay(bus=bus, config=RiskOverlayConfig(starting_equity=100_000.0))

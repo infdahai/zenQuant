@@ -133,7 +133,7 @@ def _fixed_event_mark(*, price: float, sequence: int) -> MarkPriceUpdate:
 
 
 class TestFixedEventMarkToMarketParity(unittest.TestCase):
-    def _run_fixed_events(self) -> tuple[RiskOverlay, float, float]:
+    def _run_fixed_events(self) -> tuple[RiskOverlay, float, float, float]:
         bus = InMemoryJetStream()
         overlay = RiskOverlay(bus=bus, config=RiskOverlayConfig(starting_equity=100_000.0))
 
@@ -153,13 +153,15 @@ class TestFixedEventMarkToMarketParity(unittest.TestCase):
         )
         overlay.apply_fee(40.2)
         partial_sell_change = overlay.equity - equity_before_partial_sell
+        equity_before_final_mark = overlay.equity
         bus.publish("md.mark.BINANCE.BTCUSDT_PERP", _fixed_event_mark(price=99_000.0, sequence=4))
+        final_mark_change = overlay.equity - equity_before_final_mark
 
-        return overlay, first_mark_change, partial_sell_change
+        return overlay, first_mark_change, partial_sell_change, final_mark_change
 
     def test_same_fixed_events_have_identical_mark_to_market_accounting(self) -> None:
-        left, left_first_mark_change, left_partial_sell_change = self._run_fixed_events()
-        right, right_first_mark_change, right_partial_sell_change = self._run_fixed_events()
+        left, left_first_mark_change, left_partial_sell_change, _ = self._run_fixed_events()
+        right, right_first_mark_change, right_partial_sell_change, _ = self._run_fixed_events()
 
         self.assertEqual(left.cash, right.cash)
         self.assertEqual(left.positions, right.positions)
@@ -170,6 +172,12 @@ class TestFixedEventMarkToMarketParity(unittest.TestCase):
         self.assertEqual(right_first_mark_change, 2 * 1_000)
         self.assertAlmostEqual(left_partial_sell_change, -1 * (101_000 - 100_500) - 40.2)
         self.assertAlmostEqual(right_partial_sell_change, -1 * (101_000 - 100_500) - 40.2)
+
+    def test_final_canonical_mark_revalues_one_remaining_unit(self) -> None:
+        overlay, _, _, final_mark_change = self._run_fixed_events()
+
+        self.assertEqual(overlay.positions, {"BTCUSDT_PERP": 1.0})
+        self.assertAlmostEqual(final_mark_change, -1 * (101_000 - 99_000))
 
 
 class TestPluginLegacyParity(unittest.TestCase):
