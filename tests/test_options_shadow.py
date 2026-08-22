@@ -239,7 +239,12 @@ def test_shadow_report_consumer_failure_cannot_block_downstream_execution_author
 def test_sidecar_ledger_rejects_identity_collision():
     """Catches two different calculation payloads hiding behind one options_state_id."""
     ledger = OptionsStateSidecarLedger()
-    first = _state(state_id="collision", cutoff_ns=CUTOFF_NS, source_ns=CUTOFF_NS - FOUR_HOURS_NS)
+    first = build_options_state(
+        (),
+        cutoff_time_ns=CUTOFF_NS,
+        realized_vol_30d=0.4,
+        realized_vol_source_timestamp_ns=CUTOFF_NS,
+    )
     second = replace(first, source_timestamp_ns=CUTOFF_NS - 2 * FOUR_HOURS_NS)
 
     ledger.record_state(first)
@@ -247,9 +252,23 @@ def test_sidecar_ledger_rejects_identity_collision():
     try:
         ledger.record_state(second)
     except ValueError as exc:
-        assert "collision" in str(exc)
+        assert "identity" in str(exc)
     else:
         raise AssertionError("sidecar identity collision was accepted")
+
+
+def test_sidecar_ledger_rejects_noncanonical_first_state():
+    """Catches a forged state entering the audit ledger before observer validation."""
+    ledger = OptionsStateSidecarLedger()
+    canonical = build_options_state(
+        (),
+        cutoff_time_ns=CUTOFF_NS,
+        realized_vol_30d=0.4,
+        realized_vol_source_timestamp_ns=CUTOFF_NS,
+    )
+
+    with pytest.raises(ValueError, match="canonical"):
+        ledger.record_state(replace(canonical, options_state_id="forged"))
 
 
 def test_counterfactual_reports_observational_oos_buckets_with_unknown_separate():

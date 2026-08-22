@@ -69,6 +69,8 @@ class OptionsStateSidecarLedger:
         return tuple(self._failures)
 
     def record_state(self, state: OptionsState) -> None:
+        if not validate_options_state_identity(state):
+            raise ValueError(f"non-canonical OptionsState identity: {state.options_state_id}")
         existing = self._states.get(state.options_state_id)
         if existing is not None and existing != state:
             raise ValueError(f"OptionsState identity collision: {state.options_state_id}")
