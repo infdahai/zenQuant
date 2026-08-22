@@ -884,9 +884,15 @@ def _summarize_stage(
             }
             and observation.risk_donor_sha256
         ):
+            input_row = asdict(observation)
+            del input_row["input_row_sha256"]
+            row["input_row"] = input_row
             row["input_row_sha256"] = observation.input_row_sha256
             row["risk_donor_sha256"] = observation.risk_donor_sha256
             row["risk_donor"] = dict(observation.risk_donor)
+            row["safety_reasons"] = (
+                execution_row.safety_reasons if execution_row is not None else observation.safety_reasons
+            )
         realized_return = forward_return
         row_turnover = (
             execution_row.filled_qty * (execution_row.actual_fill_price or execution_row.reference_price)

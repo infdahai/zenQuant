@@ -4,12 +4,15 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
+import re
 from collections.abc import Mapping
 from typing import Any
 
 from .legacy_accounting_validity import ValidityState
 
 STAGE_PROVENANCE_SCHEMA_VERSION = "legacy-accounting-stage-provenance.v1"
+_SHA256_PATTERN = re.compile(r"sha256:[0-9a-f]{64}")
 _RISK_DONOR_FIELDS = (
     "ts_ns",
     "equity",
@@ -19,19 +22,130 @@ _RISK_DONOR_FIELDS = (
     "reduce_only_mode",
     "flags",
 )
-_ROW_PNL_FIELDS = (
+_INPUT_ROW_FIELDS = (
+    "alpha_id",
+    "cutoff_time_ns",
+    "regime",
+    "raw_score",
+    "frozen_confidence",
+    "forward_return",
+    "formula_hash",
+    "alpha_config_hash",
+    "forward_return_available_at_ns",
+    "available_at_ns",
+    "annualized_volatility",
+    "risk_regime",
+    "frozen_regime_multiplier",
+    "exchange_min_quantity",
+    "reduce_only",
+    "safety_reasons",
+    "risk_snapshot_status",
+    "risk_snapshot_ts_ns",
+    "risk_donor",
+    "risk_donor_sha256",
+    "estimated_fee_bps",
+    "estimated_slippage_bps",
+    "reference_price",
+    "actual_fill_price",
+    "forward_return_3",
+    "forward_return_6",
+    "directional_state",
+    "volatility_state",
+    "positioning_state",
+    "quality_state",
+    "quality_flags",
+)
+_ATTRIBUTION_ROW_FIELDS = (
+    "alpha_id",
+    "cutoff_time_ns",
+    "regime",
+    "input_row",
+    "input_row_sha256",
+    "risk_donor",
+    "risk_donor_sha256",
+    "safety_reasons",
+    "approved_exposure",
+    "exposure",
+    "forward_return",
     "gross_pnl",
     "approved_target_gross_pnl",
+    "turnover_notional",
     "funding_pnl",
     "baseline_execution_cost",
     "execution_net_pnl",
+    "risk_snapshot_status",
+    "risk_snapshot_ts_ns",
+    "execution",
 )
-_EPISODE_PNL_FIELDS = (
+_EXECUTION_FIELDS = (
+    "cutoff_time_ns",
+    "decision_id",
+    "approved_exposure",
+    "approved_target_qty",
+    "filled_exposure_before",
+    "filled_exposure_after",
+    "filled_position_before",
+    "filled_position_after",
+    "target_delta_exposure",
+    "reference_price",
+    "actual_fill_price",
+    "filled_qty",
+    "fee",
+    "actual_slippage",
+    "actual_implementation_shortfall",
+    "funding_pnl",
+    "target_tracking_error",
+    "time_to_target_bars",
+    "reduce_only",
+    "safety_reasons",
+    "forward_return_1",
+    "forward_return_3",
+    "forward_return_6",
+    "forward_return_1_available_at_ns",
+)
+_EPISODE_FIELDS = (
+    "episode_id",
+    "symbol",
+    "side",
+    "opened_at_ns",
+    "closed_at_ns",
+    "entry_price",
+    "exit_price",
+    "max_abs_qty",
+    "remaining_qty",
     "gross_realized_pnl",
     "fees",
     "funding_pnl",
     "net_pnl",
+    "mfe_pnl",
+    "mae_pnl",
     "unrealized_pnl",
+    "fill_count",
+    "closed",
+    "add_count",
+    "reduce_count",
+    "holding_duration_ns",
+)
+_EPISODE_LEDGER_FIELDS = (
+    "status",
+    "closed_episode_count",
+    "open_episode_count",
+    "episode_profit_factor",
+    "episode_profit_factor_status",
+    "gross_profit",
+    "gross_loss",
+)
+_COST_SHADOW_FIELDS = (
+    "target_delta",
+    "estimated_fee",
+    "estimated_slippage",
+    "round_trip_cost",
+    "breakeven_move",
+    "actual_implementation_shortfall",
+    "forward_return_1",
+    "forward_return_3",
+    "forward_return_6",
+    "blocks_order",
 )
 _StageKey = tuple[str, int, str]
 
@@ -136,75 +250,161 @@ def _try_extract_stage_payload(
 def _extract_stage_payload(stage_payload: Mapping[str, Any], *, stage: str) -> dict[str, Any]:
     if stage_payload.get("stage") != stage:
         raise ValueError("stage declaration does not match its key")
+    _require_fields(
+        stage_payload,
+        ("pnl_basis", "gross_pnl", "turnover_notional", "cost_stress", "position_episodes", "episode_ledger"),
+        label=f"{stage} stage",
+    )
     rows = stage_payload.get("attribution_rows")
     if not isinstance(rows, list) or not rows:
         raise ValueError("attribution_rows must be a non-empty list")
-    extracted_rows = [_extract_attribution_row(row, index=index) for index, row in enumerate(rows)]
-    stage_pnl: dict[str, Any] = {}
-    if "gross_pnl" in stage_payload:
-        stage_pnl["gross_pnl"] = stage_payload["gross_pnl"]
-    if "cost_stress" in stage_payload:
-        stage_pnl["cost_stress"] = stage_payload["cost_stress"]
-    if not stage_pnl:
-        raise ValueError("stage PnL evidence is missing")
-    episodes = stage_payload.get("position_episodes", [])
-    if not isinstance(episodes, list):
-        raise ValueError("position_episodes must be a list when present")
+    extracted_rows = [_extract_attribution_row(row, index=index, stage=stage) for index, row in enumerate(rows)]
+    episodes = stage_payload["position_episodes"]
+    if not isinstance(episodes, list) or not episodes:
+        raise ValueError("position_episodes must be a non-empty list")
+    episode_ledger = stage_payload["episode_ledger"]
+    if not isinstance(episode_ledger, Mapping):
+        raise ValueError("episode_ledger must be an object")
+    _require_fields(episode_ledger, _EPISODE_LEDGER_FIELDS, label="episode_ledger")
     return {
         "stage": stage,
         "rows": extracted_rows,
-        "stage_pnl": stage_pnl,
-        "episode_pnl": [_extract_episode_pnl(episode, index=index) for index, episode in enumerate(episodes)],
+        "pnl_basis": stage_payload["pnl_basis"],
+        "gross_pnl": stage_payload["gross_pnl"],
+        "turnover_notional": stage_payload["turnover_notional"],
+        "cost_stress": stage_payload["cost_stress"],
+        "episodes": [_extract_episode(episode, index=index) for index, episode in enumerate(episodes)],
+        "episode_ledger": {field: episode_ledger[field] for field in _EPISODE_LEDGER_FIELDS},
     }
 
 
-def _extract_attribution_row(row: object, *, index: int) -> dict[str, Any]:
+def _extract_attribution_row(row: object, *, index: int, stage: str) -> dict[str, Any]:
     if not isinstance(row, Mapping):
         raise ValueError(f"attribution row {index} must be an object")
-    input_row_sha256 = _required_string(row, "input_row_sha256", index=index)
-    risk_donor_sha256 = _required_string(row, "risk_donor_sha256", index=index)
+    _require_fields(row, _ATTRIBUTION_ROW_FIELDS, label=f"attribution row {index}")
     donor = row.get("risk_donor")
     if not isinstance(donor, Mapping):
         raise ValueError(f"attribution row {index} risk_donor must be an object")
-    donor_payload = {field: donor[field] for field in _RISK_DONOR_FIELDS}
-    donor_payload["flags"] = _sorted_strings(donor_payload["flags"], f"attribution row {index} donor flags")
+    donor_payload = _validated_risk_donor(
+        donor,
+        declared_sha256=row["risk_donor_sha256"],
+        label=f"attribution row {index}",
+    )
+    input_row = row["input_row"]
+    if not isinstance(input_row, Mapping):
+        raise ValueError(f"attribution row {index} input_row must be an object")
+    _require_exact_fields(input_row, _INPUT_ROW_FIELDS, label=f"attribution row {index} input_row")
+    input_row_sha256 = _validated_sha256(row["input_row_sha256"], label=f"attribution row {index} input row")
+    if _canonical_payload_sha256(input_row) != input_row_sha256:
+        raise ValueError(f"attribution row {index} input_row_sha256 does not match input_row")
+    if input_row["risk_donor"] != donor_payload or input_row["risk_donor_sha256"] != row["risk_donor_sha256"]:
+        raise ValueError(f"attribution row {index} input donor provenance does not match attribution row")
     execution = row.get("execution")
-    if execution is not None and not isinstance(execution, Mapping):
+    if not isinstance(execution, Mapping):
         raise ValueError(f"attribution row {index} execution must be an object")
-    execution = execution or {}
-    if "gross_pnl" not in row:
-        raise ValueError(f"attribution row {index} requires gross_pnl")
-    return {
-        "input_row_sha256": input_row_sha256,
-        "risk_donor_sha256": risk_donor_sha256,
-        "risk_donor": donor_payload,
-        "safety_reasons": _sorted_strings(
-            row.get("safety_reasons", ()),
-            f"attribution row {index} safety_reasons",
-        ),
-        "execution_safety_reasons": _sorted_strings(
-            execution.get("safety_reasons", ()),
-            f"attribution row {index} execution safety_reasons",
-        ),
-        "approved_exposure": row["approved_exposure"],
-        "execution_approved_exposure": execution.get("approved_exposure"),
-        "filled_exposure": row["exposure"],
-        "filled_exposure_before": execution.get("filled_exposure_before"),
-        "filled_exposure_after": execution.get("filled_exposure_after"),
-        "pnl": {field: row[field] for field in _ROW_PNL_FIELDS if field in row},
+    _require_fields(execution, _EXECUTION_FIELDS, label=f"attribution row {index} execution")
+    row_safety_reasons = _sorted_strings(
+        row["safety_reasons"],
+        f"attribution row {index} safety_reasons",
+    )
+    execution_safety_reasons = _sorted_strings(
+        execution["safety_reasons"],
+        f"attribution row {index} execution safety_reasons",
+    )
+    mirrored_values = (
+        ("alpha_id", row["alpha_id"], input_row["alpha_id"]),
+        ("cutoff_time_ns", row["cutoff_time_ns"], input_row["cutoff_time_ns"]),
+        ("execution cutoff_time_ns", row["cutoff_time_ns"], execution["cutoff_time_ns"]),
+        ("approved_exposure", row["approved_exposure"], execution["approved_exposure"]),
+        ("filled_exposure_after", row["exposure"], execution["filled_exposure_after"]),
+        ("funding_pnl", row["funding_pnl"], execution["funding_pnl"]),
+        ("risk_snapshot_status", row["risk_snapshot_status"], input_row["risk_snapshot_status"]),
+        ("risk_snapshot_ts_ns", row["risk_snapshot_ts_ns"], input_row["risk_snapshot_ts_ns"]),
+        ("safety_reasons", row_safety_reasons, execution_safety_reasons),
+    )
+    for field, row_value, source_value in mirrored_values:
+        if row_value != source_value:
+            raise ValueError(f"attribution row {index} {field} does not match its source evidence")
+    extracted = {
+        field: row[field] for field in _ATTRIBUTION_ROW_FIELDS if field not in {"input_row", "risk_donor", "execution"}
     }
+    extracted.update(
+        {
+            "input_row": {field: input_row[field] for field in _INPUT_ROW_FIELDS},
+            "risk_donor": donor_payload,
+            "safety_reasons": row_safety_reasons,
+            "execution": {field: execution[field] for field in _EXECUTION_FIELDS},
+        }
+    )
+    extracted["execution"]["safety_reasons"] = execution_safety_reasons
+    if stage == "A5_SHADOW":
+        cost_shadow = row.get("cost_shadow")
+        if not isinstance(cost_shadow, Mapping):
+            raise ValueError(f"attribution row {index} cost_shadow must be an object")
+        _require_fields(cost_shadow, _COST_SHADOW_FIELDS, label=f"attribution row {index} cost_shadow")
+        extracted["cost_shadow"] = {field: cost_shadow[field] for field in _COST_SHADOW_FIELDS}
+    return extracted
 
 
-def _extract_episode_pnl(episode: object, *, index: int) -> dict[str, Any]:
+def _validated_risk_donor(
+    donor: Mapping[str, Any],
+    *,
+    declared_sha256: object,
+    label: str,
+) -> dict[str, Any]:
+    _require_exact_fields(donor, _RISK_DONOR_FIELDS, label=f"{label} risk_donor")
+    ts_ns = donor["ts_ns"]
+    if isinstance(ts_ns, bool) or not isinstance(ts_ns, int):
+        raise ValueError(f"{label} risk_donor ts_ns must be an integer")
+    for field in ("equity", "high_water_mark", "drawdown", "lev_cap"):
+        value = donor[field]
+        if isinstance(value, bool) or not isinstance(value, int | float) or not math.isfinite(float(value)):
+            raise ValueError(f"{label} risk_donor {field} must be a finite number")
+    if not isinstance(donor["reduce_only_mode"], bool):
+        raise ValueError(f"{label} risk_donor reduce_only_mode must be a boolean")
+    flags = _sorted_strings(donor["flags"], f"{label} risk_donor flags")
+    if donor["flags"] != flags:
+        raise ValueError(f"{label} risk_donor flags must be sorted")
+    payload = {
+        "ts_ns": ts_ns,
+        "equity": donor["equity"],
+        "high_water_mark": donor["high_water_mark"],
+        "drawdown": donor["drawdown"],
+        "lev_cap": donor["lev_cap"],
+        "reduce_only_mode": donor["reduce_only_mode"],
+        "flags": flags,
+    }
+    digest = _validated_sha256(declared_sha256, label=f"{label} risk donor")
+    if _canonical_payload_sha256(payload) != digest:
+        raise ValueError(f"{label} risk_donor_sha256 does not match risk_donor")
+    return payload
+
+
+def _extract_episode(episode: object, *, index: int) -> dict[str, Any]:
     if not isinstance(episode, Mapping):
         raise ValueError(f"position episode {index} must be an object")
-    return {field: episode[field] for field in _EPISODE_PNL_FIELDS if field in episode}
+    _require_fields(episode, _EPISODE_FIELDS, label=f"position episode {index}")
+    return {field: episode[field] for field in _EPISODE_FIELDS}
 
 
-def _required_string(row: Mapping[str, Any], field: str, *, index: int) -> str:
-    value = row.get(field)
-    if not isinstance(value, str) or not value:
-        raise ValueError(f"attribution row {index} requires {field}")
+def _require_fields(value: Mapping[str, Any], fields: tuple[str, ...], *, label: str) -> None:
+    missing = [field for field in fields if field not in value]
+    if missing:
+        raise ValueError(f"{label} is missing required fields {missing!r}")
+
+
+def _require_exact_fields(value: Mapping[str, Any], fields: tuple[str, ...], *, label: str) -> None:
+    expected = set(fields)
+    actual = set(value)
+    if actual != expected:
+        raise ValueError(
+            f"{label} fields mismatch: missing={sorted(expected - actual)!r} extra={sorted(actual - expected)!r}"
+        )
+
+
+def _validated_sha256(value: object, *, label: str) -> str:
+    if not isinstance(value, str) or _SHA256_PATTERN.fullmatch(value) is None:
+        raise ValueError(f"{label} SHA-256 must be sha256:<64 lowercase hex>")
     return value
 
 

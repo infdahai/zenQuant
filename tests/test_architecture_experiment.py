@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import importlib.util
 import json
 from dataclasses import asdict, dataclass, replace
@@ -1099,6 +1100,58 @@ def test_cumulative_report_consumes_real_stage_rows_without_unobserved_metrics()
         expected_gross - expected_baseline_cost - expected_additional_15bp
     )
     assert stages["A5_SHADOW"]["cost_shadow"]["actual_shortfall_observation_count"] == 2
+
+
+def test_cumulative_report_serializes_recomputable_stage_input_provenance():
+    donor = {
+        "ts_ns": 100,
+        "equity": 1_000.0,
+        "high_water_mark": 1_000.0,
+        "drawdown": 0.0,
+        "lev_cap": 1.0,
+        "reduce_only_mode": False,
+        "flags": [],
+    }
+    donor_encoded = json.dumps(donor, sort_keys=True, separators=(",", ":")).encode()
+    donor_sha256 = f"sha256:{hashlib.sha256(donor_encoded).hexdigest()}"
+    observation_without_input_hash = replace(
+        _observation(raw_score=0.4),
+        annualized_volatility=0.20,
+        risk_regime="TRADABLE",
+        frozen_regime_multiplier=1.0,
+        reference_price=100.0,
+        risk_donor=donor,
+        risk_donor_sha256=donor_sha256,
+    )
+    input_row = asdict(observation_without_input_hash)
+    del input_row["input_row_sha256"]
+    input_encoded = json.dumps(input_row, sort_keys=True, separators=(",", ":")).encode()
+    observation = replace(
+        observation_without_input_hash,
+        input_row_sha256=f"sha256:{hashlib.sha256(input_encoded).hexdigest()}",
+    )
+    replay = run_architecture_stage_replay(
+        (observation,),
+        stage=ArchitectureStage.A2,
+        fixed_notional=1_000.0,
+        symbol="BTCUSDT_PERP",
+        portfolio="arc",
+    )
+    evidence = replace(
+        _run_evidence("train_full", 42, observations=(observation,)),
+        stage_execution_rows_by_stage={ArchitectureStage.A2.value: replay.rows},
+    )
+
+    report = build_architecture_attribution_report(
+        _complete_matrix(replace_run=evidence),
+        manifest=load_architecture_experiment_manifest(),
+        fixed_notional=1_000.0,
+    )
+
+    row = report["runs"][0]["stages"]["A2"]["attribution_rows"][0]
+    assert row["input_row"] == input_row
+    assert row["input_row_sha256"] == observation.input_row_sha256
+    assert row["safety_reasons"] == replay.rows[0].safety_reasons
 
 
 def test_stage_serialized_closed_ledger_recomputes_reported_pf_and_excludes_open_episode():
