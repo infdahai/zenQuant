@@ -417,6 +417,43 @@ def test_real_oos_adapter_joins_options_store_and_returns_insufficient_artifact_
     assert artifact["activation_recommendation"] is None
 
 
+def test_real_oos_adapter_canonicalizes_binance_end_inclusive_cutoff_only_for_options_join():
+    evidence = _oos_evidence()
+    raw_cutoff = evidence.observations[0].cutoff_time_ns - 1_000_000
+    raw_label_cutoff = evidence.observations[0].forward_return_available_at_ns - 1_000_000
+    observation = replace(
+        evidence.observations[0],
+        cutoff_time_ns=raw_cutoff,
+        forward_return_available_at_ns=raw_label_cutoff,
+    )
+    a4 = replace(
+        evidence.stage_execution_rows_by_stage["A4"][0],
+        cutoff_time_ns=raw_cutoff,
+        forward_return_1_available_at_ns=raw_label_cutoff,
+    )
+    a5 = replace(
+        evidence.stage_execution_rows_by_stage["A5_SHADOW"][0],
+        cutoff_time_ns=raw_cutoff,
+        forward_return_1_available_at_ns=raw_label_cutoff,
+    )
+    evidence = replace(
+        evidence,
+        start_ns=raw_cutoff,
+        observations=(observation,),
+        stage_execution_rows_by_stage={"A4": (a4,), "A5_SHADOW": (a5,)},
+    )
+
+    artifact = build_options_shadow_oos_artifact(
+        evidence,
+        options_store=OptionsDataStore(),
+        manifest_identity="manifest-sha256",
+    )
+
+    assert artifact["rows"][0]["source_decision_cutoff_time_ns"] == raw_cutoff
+    assert artifact["rows"][0]["cutoff_time_ns"] == CUTOFF_NS
+    assert artifact["rows"][0]["label_available_at_ns"] == raw_label_cutoff
+
+
 def test_oos_adapter_rejects_a5_target_drift_from_a4():
     """Catches A5 shadow changing the A4 approved target before reporting."""
     evidence = _oos_evidence()

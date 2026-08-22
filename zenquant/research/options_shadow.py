@@ -15,7 +15,11 @@ from dataclasses import asdict, dataclass
 from enum import Enum
 from typing import Any
 
-from zenquant.data.options_state import build_options_state, validate_options_state_identity
+from zenquant.data.options_state import (
+    build_options_state,
+    canonical_confirmed_4h_cutoff_ns,
+    validate_options_state_identity,
+)
 from zenquant.domain import DecisionSnapshot, OptionsState, Timeframe
 from zenquant.infra import InMemoryJetStream
 from zenquant.strategy.decision_snapshot import attach_options_state_id
@@ -156,12 +160,16 @@ class OptionsShadowObserver:
 def _is_visible_state(state: OptionsState | None, snapshot: DecisionSnapshot) -> bool:
     if state is None:
         return False
+    try:
+        canonical_cutoff_ns = canonical_confirmed_4h_cutoff_ns(snapshot.cutoff_time_ns)
+    except ValueError:
+        return False
     return (
         bool(state.options_state_id)
         and validate_options_state_identity(state)
         and state.symbol.upper().startswith("BTC")
-        and state.cutoff_time_ns == snapshot.cutoff_time_ns
-        and 0 <= state.source_timestamp_ns <= snapshot.cutoff_time_ns
+        and state.cutoff_time_ns == canonical_cutoff_ns
+        and 0 <= state.source_timestamp_ns <= canonical_cutoff_ns
     )
 
 
@@ -401,14 +409,14 @@ def build_options_shadow_oos_artifact(
     joined: list[OptionsShadowObservation] = []
     artifact_rows: list[dict[str, Any]] = []
     states: list[OptionsState] = []
-    for cutoff, stage_row in sorted(a5_by_cutoff.items()):
-        observation = observations.get(cutoff)
+    for source_decision_cutoff, stage_row in sorted(a5_by_cutoff.items()):
+        observation = observations.get(source_decision_cutoff)
         label_available_at_ns = observation.forward_return_available_at_ns if observation is not None else None
         if label_available_at_ns != stage_row.forward_return_1_available_at_ns:
             raise ValueError("A5_SHADOW forward label availability differs from frozen observation")
         if (
             observation is None
-            or not (evidence.start_ns <= cutoff < evidence.end_ns)
+            or not (evidence.start_ns <= source_decision_cutoff < evidence.end_ns)
             or label_available_at_ns is None
             or label_available_at_ns > evidence.end_ns
         ):
@@ -418,27 +426,28 @@ def build_options_shadow_oos_artifact(
             continue
         if not math.isclose(float(label), float(observation.forward_return), rel_tol=0.0, abs_tol=1e-12):
             raise ValueError("A5_SHADOW forward label differs from frozen observation")
+        canonical_cutoff = canonical_confirmed_4h_cutoff_ns(source_decision_cutoff)
         state = options_store.lookup_options_state(
-            cutoff,
+            source_decision_cutoff,
             realized_vol_30d=observation.annualized_volatility,
-            realized_vol_source_timestamp_ns=cutoff,
+            realized_vol_source_timestamp_ns=source_decision_cutoff,
         )
         if not (
             validate_options_state_identity(state)
             and state.symbol.upper().startswith("BTC")
-            and state.cutoff_time_ns == cutoff
-            and 0 <= state.source_timestamp_ns <= cutoff
+            and state.cutoff_time_ns == canonical_cutoff
+            and 0 <= state.source_timestamp_ns <= canonical_cutoff
         ):
             state = build_options_state(
                 (),
-                cutoff_time_ns=cutoff,
+                cutoff_time_ns=source_decision_cutoff,
                 realized_vol_30d=observation.annualized_volatility,
-                realized_vol_source_timestamp_ns=cutoff,
+                realized_vol_source_timestamp_ns=source_decision_cutoff,
             )
         states.append(state)
         joined.append(
             OptionsShadowObservation(
-                cutoff_time_ns=cutoff,
+                cutoff_time_ns=canonical_cutoff,
                 options_state_id=state.options_state_id,
                 trend_quality=state.trend_quality,
                 market_regime=observation.risk_regime,
@@ -447,7 +456,8 @@ def build_options_shadow_oos_artifact(
         )
         artifact_rows.append(
             {
-                "cutoff_time_ns": cutoff,
+                "cutoff_time_ns": canonical_cutoff,
+                "source_decision_cutoff_time_ns": source_decision_cutoff,
                 "label_available_at_ns": label_available_at_ns,
                 "options_state_id": state.options_state_id,
                 "options_source_timestamp_ns": state.source_timestamp_ns,

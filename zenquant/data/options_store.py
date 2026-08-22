@@ -352,11 +352,13 @@ class OptionsDataStore:
         source timestamp is no later than ``current_source - 24h``. Future
         chain files are never read into the selected state.
         """
-        from zenquant.data.options_state import DAY_NS, FOUR_HOURS_NS, build_options_state
+        from zenquant.data.options_state import (
+            DAY_NS,
+            build_options_state,
+            canonical_confirmed_4h_cutoff_ns,
+        )
 
-        cutoff_ns = lossless_timestamp(cutoff_time_ns)
-        if cutoff_ns is None or cutoff_ns % FOUR_HOURS_NS != 0:
-            raise ValueError("OptionsState requires a confirmed 4h cutoff")
+        cutoff_ns = canonical_confirmed_4h_cutoff_ns(cutoff_time_ns)
         realized_vol_source_ns = lossless_timestamp(realized_vol_source_timestamp_ns)
         cache_key = (cutoff_ns, realized_vol_30d, realized_vol_source_ns or 0)
         cached = self._state_lookup_cache.get(cache_key)

@@ -18,6 +18,7 @@ from zenquant.data._timestamp import lossless_timestamp
 from zenquant.domain import OptionsState
 
 FOUR_HOURS_NS = 4 * 60 * 60 * 1_000_000_000
+BINANCE_END_INCLUSIVE_TICK_NS = 1_000_000
 DAY_NS = 24 * 60 * 60 * 1_000_000_000
 CALCULATION_VERSION = "options-state-v2"
 CALCULATION_METHOD = (
@@ -28,6 +29,25 @@ CALCULATION_METHOD = (
     "gex_call_positive_put_negative"
 )
 GEX_NORMALIZATION = "net_gex/total_absolute_gex"
+
+
+def canonical_confirmed_4h_cutoff_ns(value: object) -> int:
+    """Return the exact 4h boundary for supported confirmed-close encodings.
+
+    Live decisions already use the exact boundary. Historical Binance candles
+    encode the same confirmed close as ``boundary - 1ms``. Only those two
+    representations are accepted; arbitrary rounding would admit an
+    unconfirmed or future timestamp.
+    """
+    cutoff_ns = lossless_timestamp(value)
+    if cutoff_ns is None:
+        raise ValueError("OptionsState requires a confirmed 4h cutoff")
+    if cutoff_ns % FOUR_HOURS_NS == 0:
+        return cutoff_ns
+    boundary_ns = cutoff_ns + BINANCE_END_INCLUSIVE_TICK_NS
+    if boundary_ns % FOUR_HOURS_NS == 0:
+        return boundary_ns
+    raise ValueError("OptionsState requires a confirmed 4h cutoff")
 
 
 @dataclass(frozen=True, slots=True)
@@ -484,9 +504,7 @@ def build_options_state(
     stale_after_ns: int = DAY_NS,
 ) -> OptionsState:
     """Build one immutable observation-only state using information visible at cutoff."""
-    cutoff_ns = lossless_timestamp(cutoff_time_ns)
-    if cutoff_ns is None or cutoff_ns % FOUR_HOURS_NS != 0:
-        raise ValueError("OptionsState requires a confirmed 4h cutoff")
+    cutoff_ns = canonical_confirmed_4h_cutoff_ns(cutoff_time_ns)
     raw_ordered, ordered, source_ns, preflight_flags = _prepare_rows(rows)
     if source_ns > cutoff_ns:
         raise ValueError("OptionsState source timestamp is after cutoff")

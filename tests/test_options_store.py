@@ -266,6 +266,23 @@ class OptionsDataStoreTests(unittest.TestCase):
         self.assertEqual(state.shadow_risk_multiplier, 1.0)
         self.assertIn("OPTIONS_MISSING", state.quality_flags)
 
+    def test_options_state_lookup_accepts_binance_end_inclusive_4h_close(self) -> None:
+        from zenquant.data import OptionsDataStore, OptionsDataStoreConfig
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            store = OptionsDataStore(OptionsDataStoreConfig(options_dir=Path(tmpdir)))
+            store.load()
+            boundary = 8 * 3_600 * 1_000_000_000
+            end_inclusive = boundary - 1_000_000
+            state = store.lookup_options_state(
+                end_inclusive,
+                realized_vol_30d=0.45,
+                realized_vol_source_timestamp_ns=end_inclusive,
+            )
+
+        self.assertEqual(state.cutoff_time_ns, boundary)
+        self.assertEqual(state.trend_quality, "UNKNOWN")
+
     def test_options_state_lookup_uses_asof_24h_history(self) -> None:
         from zenquant.data import OptionsDataStore, OptionsDataStoreConfig
 

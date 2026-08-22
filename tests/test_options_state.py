@@ -139,6 +139,38 @@ class Black76DeltaTests(unittest.TestCase):
 
 
 class OptionsStateCalculationTests(unittest.TestCase):
+    def test_binance_end_inclusive_close_maps_only_to_next_confirmed_boundary(self) -> None:
+        from zenquant.data.options_state import canonical_confirmed_4h_cutoff_ns
+
+        boundary_ns = 120 * FOUR_HOURS_NS
+        end_inclusive_ns = boundary_ns - 1_000_000
+
+        self.assertEqual(canonical_confirmed_4h_cutoff_ns(boundary_ns), boundary_ns)
+        self.assertEqual(canonical_confirmed_4h_cutoff_ns(end_inclusive_ns), boundary_ns)
+        for invalid in (boundary_ns - 1, boundary_ns - 2_000_000, boundary_ns + 1):
+            with self.subTest(invalid=invalid), self.assertRaisesRegex(ValueError, "confirmed 4h cutoff"):
+                canonical_confirmed_4h_cutoff_ns(invalid)
+
+    def test_end_inclusive_cutoff_preserves_future_invariance(self) -> None:
+        boundary_ns = 120 * FOUR_HOURS_NS
+        end_inclusive_ns = boundary_ns - 1_000_000
+        state = build_options_state(
+            _complete_chain(boundary_ns),
+            cutoff_time_ns=end_inclusive_ns,
+            realized_vol_30d=0.50,
+            realized_vol_source_timestamp_ns=end_inclusive_ns,
+        )
+        self.assertEqual(state.cutoff_time_ns, boundary_ns)
+        self.assertEqual(state.source_timestamp_ns, boundary_ns)
+
+        with self.assertRaisesRegex(ValueError, "source timestamp is after cutoff"):
+            build_options_state(
+                _complete_chain(boundary_ns + 1),
+                cutoff_time_ns=end_inclusive_ns,
+                realized_vol_30d=0.50,
+                realized_vol_source_timestamp_ns=end_inclusive_ns,
+            )
+
     def test_realistic_nanosecond_source_boundaries_are_lossless(self) -> None:
         cutoff_ns = 1_728_000_000_000_000_000
         accepted = build_options_state(
