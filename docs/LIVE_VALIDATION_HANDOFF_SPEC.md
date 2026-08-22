@@ -1,5 +1,10 @@
 # Live Validation Handoff Spec
 
+> Architecture scope: this file remains the current tester/operator contract for
+> the existing production baseline. It does not claim that the proposed Quant
+> System v2 has been implemented or promoted. See [`ARCHITECTURE.md`](ARCHITECTURE.md)
+> for the current implementation, Gate v2 evidence, and target architecture.
+
 本文件是当前版本唯一的 tester / operator 交付规格。
 
 目标只有一个：
@@ -149,7 +154,12 @@ options 数据与 2025 OOS 无重叠，状态仍为 `INSUFFICIENT_SAMPLE`，禁�
 
 ### 1.5 当前历史结论
 
-权威历史记录：[`HISTORICAL_VALIDATION_2026_04_07.md`](/Users/disaster/workspace/code/zenQuant/docs/HISTORICAL_VALIDATION_2026_04_07.md)
+最新架构评估与 Gate v2 结果见：
+
+- [`ARCHITECTURE.md`](ARCHITECTURE.md)
+- [`gate_v2_rescore.md`](../results/remediation_20260821/gate_v2_rescore/gate_v2_rescore.md)
+
+下列旧基线结论仅用于解释当前 operator contract，不覆盖 Gate v2 的最新研究判断：
 
 当前用于交付判断的历史结论：
 
@@ -160,11 +170,6 @@ options 数据与 2025 OOS 无重叠，状态仍为 `INSUFFICIENT_SAMPLE`，禁�
 - liquidation research 当前结论必须是：
   - `data_ready=false` 时为 `insufficient_data`
   - 不得假阳性 promote
-- `v27 round_003` 当前不是活跃训练，而是一个 `stale_running_state`
-  - [`results/framework_optimization_loop_v27/loop_status.json`](/Users/disaster/workspace/code/zenQuant/results/framework_optimization_loop_v27/loop_status.json) 仍显示 `campaign_running`
-  - [`results/framework_optimization_loop_v27/runs/round_003/campaign_status.json`](/Users/disaster/workspace/code/zenQuant/results/framework_optimization_loop_v27/runs/round_003/campaign_status.json) 停在 `stage2_prepare_variants progress=12/16`
-  - 但对应 `run_framework_*` / campaign 进程已经不存在
-  - 该状态应解释为 `terminal_state_not_written`，不得解释为“仍在后台继续训练”
 - benchmark rerun 的正式结论是：
   - clean completion
   - stage2 reuse visible
