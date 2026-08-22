@@ -340,9 +340,7 @@ def _validate_report_envelope(report: Mapping[str, Any], *, manifest: Any) -> li
         raise LateDevAttributionValidationError("raw report runs must be a list of objects")
     runs = list(raw_runs)
     observed = []
-    expected_window_bounds = {
-        window["label"]: (window["start_ns"], window["end_ns"]) for window in expected_windows
-    }
+    expected_window_bounds = {window["label"]: (window["start_ns"], window["end_ns"]) for window in expected_windows}
     for run in runs:
         window = run.get("window")
         seed = run.get("seed")
@@ -799,8 +797,7 @@ def _summarize_cost_shadow(stage: Mapping[str, Any], rows: list[Mapping[str, Any
         "breakeven_observation_count": len(observations),
         "breakeven_mean": sum(row["breakeven"] for row in observations) / len(observations) if observations else None,
         "forward_label_counts": {
-            str(horizon): sum(1 for row in observations if row["forward_labels"][str(horizon)])
-            for horizon in (1, 3, 6)
+            str(horizon): sum(1 for row in observations if row["forward_labels"][str(horizon)]) for horizon in (1, 3, 6)
         },
     }
 
@@ -962,9 +959,7 @@ def _attribution_groups(rows: list[Mapping[str, Any]], *, field: str) -> dict[st
 
 def _attribution_totals(rows: list[Mapping[str, Any]]) -> dict[str, float | int]:
     gross_pnl = sum(_finite(row["gross_pnl"], "attribution gross PnL") for row in rows)
-    turnover = sum(
-        _nonnegative_finite(row["turnover_notional"], "attribution turnover notional") for row in rows
-    )
+    turnover = sum(_nonnegative_finite(row["turnover_notional"], "attribution turnover notional") for row in rows)
     baseline_cost = sum(
         _nonnegative_finite(row["baseline_execution_cost"], "attribution baseline execution cost") for row in rows
     )
