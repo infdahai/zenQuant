@@ -78,15 +78,17 @@ def test_quant_v2_handoff_records_current_blocked_evidence() -> None:
     assert "BLOCKED_PAUSE_PROMOTION_AND_TRAINING" in content
 
 
-def test_operator_docs_require_identity_complete_rerun_before_economic_authority() -> None:
+def test_operator_docs_publish_identity_complete_rerun_verdict() -> None:
     for path in (Path("CLAUDE.md"), Path("docs/LIVE_VALIDATION_HANDOFF_SPEC.md")):
         normalized = " ".join(path.read_text(encoding="utf-8").split())
         assert "pre-contract diagnostic only" in normalized
-        assert "requires_reinstrumented_30_run_rerun" in normalized
-        assert "accounting-kernel and full replay-input identity" in normalized
-        assert "new immutable output directory" in normalized
+        assert "identity_complete_30_run_rerun_completed" in normalized
+        assert "results/accounting_integrity_20260823_v2/acceptance_summary.json" in normalized
+        assert "3259f41a54a4ca688fd17cc59ad5c784564c49032f1c2a34721ea0ad237916d9" in normalized
+        assert "+379.21" in normalized
+        assert "-1,818.72" in normalized
         assert "0/5" in normalized
-        assert "stop_donor_training" in normalized
+        assert "BLOCKED_PAUSE_PROMOTION_AND_TRAINING" in normalized
         assert "promotion or training" in normalized
 
 
@@ -97,5 +99,6 @@ def test_authoritative_docs_mark_old_rerun_identity_insufficient() -> None:
         normalized = " ".join(content.split())
         assert "sha256:a2e7a4039556aa427ec258a2f38d302c6edf5e37e8e81b9cedd4a36897b66c1a" in content
         assert "sha256:17fe13a2b55cfd8a34fb0e9b2c0c616e7af4c38a25e9eed705eb4b9cc0d6be04" in content
-        assert "requires_reinstrumented_30_run_rerun" in content
-        assert "economic values are diagnostic only" in normalized
+        assert "identity_complete_30_run_rerun_completed" in content
+        assert "old pre-contract" in normalized
+        assert "diagnostic only" in normalized
