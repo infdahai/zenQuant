@@ -40,7 +40,7 @@ from zenquant.research.legacy_accounting_validity import ValidityState
 
 FROZEN_MANIFEST_PATH = DEFAULT_ARCHITECTURE_MANIFEST_PATH
 FROZEN_RERUN_CONTRACT_PATH = Path("config/research/legacy_accounting_rerun_v1.json")
-FROZEN_RERUN_CONTRACT_SHA256 = "610e3b51f18e6b527d1af2335cafa74f657513dacbc34469816a9ff20260276b"
+FROZEN_RERUN_CONTRACT_SHA256 = "8f4fb2d834500f5381c54b4288d841e7915dbf63d3bef94918560cf623490986"
 OUTPUT_FILENAMES = (
     "fixed_event_attribution.json",
     "full_system_attribution.json",
