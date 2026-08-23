@@ -83,12 +83,24 @@ def _build_quant_v2_acceptance_summary(
     seed_results: list[dict[str, Any]] = []
     all_purity = dict.fromkeys(PURITY_FIELDS, 0)
     all_a5_switches: list[float] = []
+    absolute_switch_violations: list[dict[str, Any]] = []
+    absolute_switch_limit = 5.0
     for seed in manifest.seeds:
         seed_runs = [runs_by_key[(window.label, seed)] for window in manifest.windows]
         a5_stages = [_stage(run, ArchitectureStage.A5_SHADOW.value) for run in seed_runs]
         max_mdd = max(_metric(stage, "cost_stress", "0", "max_drawdown") for stage in a5_stages)
         max_switches = max(_metric(stage, "execution_metrics", "position_switches_per_day") for stage in a5_stages)
-        all_a5_switches.extend(_metric(stage, "execution_metrics", "position_switches_per_day") for stage in a5_stages)
+        for run, stage in zip(seed_runs, a5_stages, strict=True):
+            switches = _metric(stage, "execution_metrics", "position_switches_per_day")
+            all_a5_switches.append(switches)
+            if switches > absolute_switch_limit:
+                absolute_switch_violations.append(
+                    {
+                        "window": str(run["window"]),
+                        "seed": int(run["seed"]),
+                        "position_switches_per_day": switches,
+                    }
+                )
         train_stage = _stage(runs_by_key[(train_label, seed)], ArchitectureStage.A5_SHADOW.value)
         train_pf = _metric(train_stage, "execution_metrics", "episode_profit_factor")
         train_pf_passed = _episode_pf_gate_passed(train_stage)
@@ -168,6 +180,13 @@ def _build_quant_v2_acceptance_summary(
             "severity": _cadence_severity(max(all_a5_switches)),
             "absolute_over_5_count": sum(1 for value in all_a5_switches if value > 5.0),
         },
+        "absolute_switch_ceiling": {
+            "passed": not absolute_switch_violations,
+            "limit": absolute_switch_limit,
+            "violations": absolute_switch_violations,
+            "count": len(absolute_switch_violations),
+            "range": [min(all_a5_switches), max(all_a5_switches)],
+        },
         "execution_purity": {
             "passed": all(value == 0 for value in all_purity.values()),
             "totals": all_purity,
@@ -195,6 +214,8 @@ def _build_quant_v2_acceptance_summary(
     blocked_by.append("hostile_window_gate_not_frozen_in_manifest")
     if not gates["switch_cadence"]["passed"]:
         blocked_by.append("switch_cadence_above_2_per_day")
+    if not gates["absolute_switch_ceiling"]["passed"]:
+        blocked_by.append("absolute_switch_ceiling_above_5_per_day")
     if not gates["execution_purity"]["passed"]:
         blocked_by.append("execution_purity_violation")
     if not gates["options_zero_execution_influence"]["passed"]:

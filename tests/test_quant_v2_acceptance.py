@@ -242,6 +242,77 @@ def test_acceptance_gate_logic_blocks_late_dev_and_tampered_episode_pf():
         _build(report)
 
 
+def test_absolute_switch_ceiling_accepts_exactly_five_switches_per_day():
+    report = _complete_raw_report()
+    report["runs"][0]["stages"]["A5_SHADOW"]["execution_metrics"]["position_switches_per_day"] = 5.0
+
+    summary = _build(report)
+
+    assert summary["gates"]["switch_cadence"] == {
+        "passed": False,
+        "range": [0.5, 5.0],
+        "severity": "HARD",
+        "absolute_over_5_count": 0,
+    }
+    assert summary["gates"]["absolute_switch_ceiling"] == {
+        "passed": True,
+        "limit": 5.0,
+        "violations": [],
+        "count": 0,
+        "range": [0.5, 5.0],
+    }
+    assert "switch_cadence_above_2_per_day" in summary["blocked_by"]
+    assert "absolute_switch_ceiling_above_5_per_day" not in summary["blocked_by"]
+
+
+def test_absolute_switch_ceiling_audits_values_above_five_independently():
+    report = _complete_raw_report()
+    violating_run = report["runs"][0]
+    violating_run["stages"]["A5_SHADOW"]["execution_metrics"]["position_switches_per_day"] = 5.01
+
+    summary = _build(report)
+
+    assert summary["gates"]["switch_cadence"]["passed"] is False
+    assert summary["gates"]["absolute_switch_ceiling"] == {
+        "passed": False,
+        "limit": 5.0,
+        "violations": [
+            {
+                "window": violating_run["window"],
+                "seed": violating_run["seed"],
+                "position_switches_per_day": 5.01,
+            }
+        ],
+        "count": 1,
+        "range": [0.5, 5.01],
+    }
+    assert "switch_cadence_above_2_per_day" in summary["blocked_by"]
+    assert "absolute_switch_ceiling_above_5_per_day" in summary["blocked_by"]
+
+
+@pytest.mark.parametrize(
+    ("switches_per_day", "passed", "severity"),
+    [
+        (1.0, True, "NONE"),
+        (1.01, True, "SOFT"),
+        (2.0, True, "SOFT"),
+        (2.01, False, "HARD"),
+    ],
+)
+def test_normal_switch_cadence_policy_keeps_existing_thresholds(
+    switches_per_day: float,
+    passed: bool,
+    severity: str,
+):
+    report = _complete_raw_report()
+    report["runs"][0]["stages"]["A5_SHADOW"]["execution_metrics"]["position_switches_per_day"] = switches_per_day
+
+    gate = _build(report)["gates"]["switch_cadence"]
+
+    assert gate["passed"] is passed
+    assert gate["severity"] == severity
+
+
 def test_acceptance_summary_rejects_missing_or_duplicate_matrix_identity():
     missing = _complete_raw_report()
     missing["runs"].pop()
