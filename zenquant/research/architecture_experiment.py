@@ -10,6 +10,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import re
 from collections import defaultdict
 from collections.abc import Mapping
 from dataclasses import asdict, dataclass, field, replace
@@ -23,6 +24,7 @@ from zenquant.domain import DecisionSnapshot, PositionEpisode
 from .gate_v3 import calculate_episode_profit_factor, evaluate_gate_v3
 
 ARCHITECTURE_ATTRIBUTION_SCHEMA_VERSION = "architecture_attribution.v4"
+_SHA256_IDENTITY_PATTERN = re.compile(r"sha256:[0-9a-f]{64}")
 DEFAULT_COST_STRESS_BPS = (0.0, 5.0, 15.0)
 DEFAULT_ARCHITECTURE_MANIFEST_PATH = Path("config/research/architecture_experiment_v1.json")
 ARCHITECTURE_EXPERIMENT_V1_MANIFEST_SHA256 = "c982d074b24ec21235dfefbd972d936dc4f5a4ab0360964013576c90729bfbe0"
@@ -329,6 +331,7 @@ class ArchitectureRunEvidence:
     a0_final_equity: float
     a0_config_hash: str
     donor_config_hash: str
+    accounting_kernel_sha256: str
     window_role: str
     observations: tuple[ArchitectureObservation, ...]
     excluded_non_evaluable_count: int
@@ -576,6 +579,8 @@ def build_architecture_attribution_report(
                 raise ValueError(f"missing A0 identity in window={window.label!r} seed={seed}")
             if not evidence.donor_config_hash:
                 raise ValueError(f"missing causal donor identity in window={window.label!r} seed={seed}")
+            if _SHA256_IDENTITY_PATTERN.fullmatch(evidence.accounting_kernel_sha256) is None:
+                raise ValueError(f"missing accounting kernel identity in window={window.label!r} seed={seed}")
             elapsed_days = max(1.0, (evidence.end_ns - evidence.start_ns) / 1_000_000_000 / 86_400)
             gate_v3 = evaluate_gate_v3(
                 evidence.position_episodes,
@@ -654,6 +659,7 @@ def build_architecture_attribution_report(
                     "identities": {
                         "a0_config_hash": evidence.a0_config_hash,
                         "donor_config_hash": evidence.donor_config_hash,
+                        "accounting_kernel_sha256": evidence.accounting_kernel_sha256,
                         "formula_hashes": formula_hashes,
                         "alpha_config_hashes": alpha_config_hashes,
                     },

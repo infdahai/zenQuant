@@ -15,6 +15,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from zenquant.domain import PositionEpisode, Timeframe
 from zenquant.domain.serde import to_jsonable
 from zenquant.historical import HistoricalBacktest, HistoricalBacktestConfig, PerturbationConfig
+from zenquant.research.accounting_kernel_identity import build_accounting_kernel_identity
 from zenquant.research.architecture_experiment import (
     ArchitectureExecutionMetrics,
     ArchitectureExperimentManifest,
@@ -270,6 +271,7 @@ def run_frozen_matrix_entry(
         a0_final_equity=a0_result.final_equity,
         a0_config_hash=a0_config_hash,
         donor_config_hash=donor_config_hash,
+        accounting_kernel_sha256=build_accounting_kernel_identity()["sha256"],
         observations=stage_observations,
         excluded_non_evaluable_count=int(batch["excluded_non_evaluable_count"]),
         confirmed_4h_row_count=int(batch["confirmed_4h_row_count"]),

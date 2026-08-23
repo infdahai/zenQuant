@@ -433,6 +433,7 @@ def _run_evidence(
         a0_final_equity=100_000.0 + seed,
         a0_config_hash="a0-config-v1",
         donor_config_hash="donor-config-v1",
+        accounting_kernel_sha256="sha256:" + "d" * 64,
         window_role=window.role,
         observations=resolved_observations,
         excluded_non_evaluable_count=1,
@@ -1512,6 +1513,7 @@ def test_report_requires_exact_matrix_and_carries_frozen_identities():
     }
     assert report["runs"][0]["identities"]["a0_config_hash"] == "a0-config-v1"
     assert report["runs"][0]["identities"]["donor_config_hash"] == "donor-config-v1"
+    assert report["runs"][0]["identities"]["accounting_kernel_sha256"] == "sha256:" + "d" * 64
     assert report["constraints"] == {
         "scope": "A0_A1_DIRECTION_ATTRIBUTION_ONLY",
         "fixed_notional": 100_000.0,
@@ -1552,6 +1554,17 @@ def test_report_requires_exact_matrix_and_carries_frozen_identities():
         "blocks_orders": False,
         "forward_horizons_4h": [1, 3, 6],
     }
+
+
+def test_report_rejects_missing_accounting_kernel_identity():
+    run = replace(_run_evidence("train_full", 42), accounting_kernel_sha256="")
+
+    with pytest.raises(ValueError, match="accounting kernel identity"):
+        build_architecture_attribution_report(
+            _complete_matrix(replace_run=run),
+            manifest=load_architecture_experiment_manifest(),
+            fixed_notional=100_000.0,
+        )
 
 
 def test_report_embeds_real_options_shadow_artifact_per_oos_run():
