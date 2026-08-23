@@ -14,6 +14,7 @@
         "sharpe",
         "sortino",
         "drawdown",
+        "equity_multiple",
         "promotion_gate"
       ],
       "stages": [

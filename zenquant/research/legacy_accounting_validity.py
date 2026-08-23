@@ -154,10 +154,16 @@ def assert_metric_family_allowed(
     digest_records = registry.records_for_sha256(source_sha256) if source_sha256 is not None else ()
     records = tuple(dict.fromkeys((*path_records, *digest_records)))
     if not records:
-        return
+        raise InvalidPerformanceEvidenceError(
+            f"artifact_unclassified:"
+            f"{_canonical_artifact_identity(artifact_path, repository_root=registry.repository_root)}:"
+            f"source_sha256={source_sha256}"
+        )
     metric_records = [record for record in records if metric_family in record.metric_families]
     if not metric_records:
-        return
+        raise InvalidPerformanceEvidenceError(
+            f"metric_family_unclassified:{artifact_path}:metric_family={metric_family}"
+        )
     if selector is None:
         selectors = {record.selector for record in metric_records}
         if len(selectors) != 1:

@@ -309,3 +309,55 @@ def test_repo_relative_candidate_and_default_registry_are_anchored_outside_cwd(
             _write_manifest(tmp_path, source="config/research/legacy_accounting_validity_v1.json", rank=1),
             validity_registry_path=registry,
         )
+
+
+def test_reserialized_ranked_artifact_cannot_bypass_unknown_identity_policy(tmp_path: Path) -> None:
+    source, _source_bytes = _write_ranked_source(tmp_path)
+    source.write_text(
+        json.dumps(json.loads(source.read_text(encoding="utf-8")), indent=2, sort_keys=True),
+        encoding="utf-8",
+    )
+    registry = _write_registry(
+        tmp_path,
+        artifact_path=str(tmp_path / "original-august.json"),
+        source_sha256="a" * 64,
+        records=[
+            {
+                "selector": "train_candidate_diagnostics.top_train_trial_diagnostics[0].params",
+                "state": "CONFIRMED_AFFECTED",
+            }
+        ],
+    )
+
+    with pytest.raises(InvalidPerformanceEvidenceError, match="artifact_unclassified"):
+        _load_rescore_script().load_candidate_manifest(
+            _write_manifest(tmp_path, source=str(source), rank=1),
+            validity_registry_path=registry,
+        )
+
+
+def test_explicit_params_are_new_input_without_historical_ranking_evidence(tmp_path: Path) -> None:
+    manifest = tmp_path / "explicit.json"
+    manifest.write_text(
+        json.dumps(
+            {
+                "candidates": [
+                    {
+                        "name": "new-fixed-candidate",
+                        "kind": "explicit_params",
+                        "params": {"max_leverage": 1.25},
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    records = _load_rescore_script().load_candidate_manifest(
+        manifest,
+        validity_registry_path=tmp_path / "does-not-need-a-registry.json",
+    )
+
+    assert records[0].kind == "explicit_params"
+    assert records[0].params == {"max_leverage": 1.25}
+    assert records[0].source is None

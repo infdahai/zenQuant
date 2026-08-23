@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import importlib.util
 import json
 import sys
@@ -198,6 +199,36 @@ def _write_manifest_fixture(tmp_path: Path, source_payload: dict, *, duplicate: 
     return manifest
 
 
+def _load_registered_manifest_fixture(tmp_path: Path, source_payload: dict):
+    manifest = _write_manifest_fixture(tmp_path, source_payload)
+    source = tmp_path / "source.json"
+    registry = tmp_path / "validity.json"
+    registry.write_text(
+        json.dumps(
+            {
+                "schema_version": "legacy-accounting-validity.v1",
+                "records": [
+                    {
+                        "artifact_path": str(source),
+                        "source_sha256": hashlib.sha256(source.read_bytes()).hexdigest(),
+                        "selector": "train_candidate_diagnostics.top_train_trial_diagnostics[1].params",
+                        "state": "PROVEN_UNAFFECTED",
+                        "reason": "corrected_accounting_candidate",
+                        "metric_families": ["promotion_gate"],
+                        "stages": ["A0"],
+                        "superseding_artifact": None,
+                        "ledger_formula_hash": "sha256:" + "c" * 64,
+                        "decision_at": "2026-08-23T00:00:00Z",
+                        "approving_decision": "registered-test-evidence",
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    return load_candidate_manifest(manifest, validity_registry_path=registry)
+
+
 def _safe_source_payload() -> dict:
     return {
         "evaluation_role": "development",
@@ -213,7 +244,7 @@ def _safe_source_payload() -> dict:
 
 
 def test_manifest_loads_ranked_params_from_train_dev_report(tmp_path: Path) -> None:
-    records = load_candidate_manifest(_write_manifest_fixture(tmp_path, _safe_source_payload()))
+    records = _load_registered_manifest_fixture(tmp_path, _safe_source_payload())
 
     assert [record.name for record in records] == ["paulwei_baseline", "ranked_candidate"]
     assert records[0].params is None
@@ -225,7 +256,7 @@ def test_manifest_rejects_test_evaluated_source(tmp_path: Path) -> None:
     payload["test_evaluated"] = True
 
     with pytest.raises(ValueError, match="frozen_test_source_rejected"):
-        load_candidate_manifest(_write_manifest_fixture(tmp_path, payload))
+        _load_registered_manifest_fixture(tmp_path, payload)
 
 
 @pytest.mark.parametrize(
@@ -244,7 +275,7 @@ def test_manifest_rejects_acceptance_or_test_comparison_payload(
     payload[field] = value
 
     with pytest.raises(ValueError, match="frozen_test_source_rejected"):
-        load_candidate_manifest(_write_manifest_fixture(tmp_path, payload))
+        _load_registered_manifest_fixture(tmp_path, payload)
 
 
 def test_manifest_requires_unique_candidate_names(tmp_path: Path) -> None:

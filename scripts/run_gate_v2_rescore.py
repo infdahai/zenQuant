@@ -95,9 +95,18 @@ def load_candidate_manifest(
             raise ValueError(f"duplicate_candidate_name:{name}")
         names.add(name)
 
+    for entry in entries:
+        name = str(entry["name"])
+
         kind = str(entry.get("kind") or "")
         if kind == "builtin":
             records.append(CandidateRecord(name=name, kind=kind, params=None))
+            continue
+        if kind == "explicit_params":
+            params = entry.get("params")
+            if not isinstance(params, dict) or not params:
+                raise ValueError(f"candidate_params_missing:{name}:explicit")
+            records.append(CandidateRecord(name=name, kind=kind, params=dict(params)))
             continue
         if kind != "ranked_params":
             raise ValueError(f"unsupported_candidate_kind:{kind}")

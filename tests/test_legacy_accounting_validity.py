@@ -194,6 +194,40 @@ def test_stage_none_fails_closed_for_stage_scoped_governed_evidence(tmp_path: Pa
         )
 
 
+def test_unregistered_artifact_identity_fails_closed(tmp_path: Path) -> None:
+    registry = load_accounting_validity_registry(_write_registry(tmp_path, [_record()]))
+
+    with pytest.raises(InvalidPerformanceEvidenceError, match="artifact_unclassified"):
+        assert_metric_family_allowed(
+            registry,
+            artifact_path="results/reserialized-copy.json",
+            source_sha256="b" * 64,
+            metric_family="promotion_gate",
+            stage="A0",
+            selector="train_candidate_diagnostics.top_train_trial_diagnostics[0].params",
+        )
+
+
+def test_unregistered_metric_family_fails_closed(tmp_path: Path) -> None:
+    registry = load_accounting_validity_registry(_write_registry(tmp_path, [_record()]))
+
+    with pytest.raises(InvalidPerformanceEvidenceError, match="metric_family_unclassified"):
+        assert_metric_family_allowed(
+            registry,
+            artifact_path="results/source.json",
+            source_sha256="a" * 64,
+            metric_family="equity_multiple",
+            stage="A0",
+            selector="train_candidate_diagnostics.top_train_trial_diagnostics[0].params",
+        )
+
+
+def test_default_registry_governs_equity_multiple() -> None:
+    registry = load_accounting_validity_registry()
+
+    assert any("equity_multiple" in record.metric_families for record in registry.records)
+
+
 def _load_audit_script():
     path = Path("scripts/audit_legacy_accounting_integrity.py")
     spec = importlib.util.spec_from_file_location("audit_legacy_accounting_integrity_script", path)
