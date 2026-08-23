@@ -41,8 +41,8 @@ from zenquant.research.legacy_accounting_provenance import (
 from zenquant.research.legacy_accounting_validity import ValidityState
 
 FROZEN_MANIFEST_PATH = DEFAULT_ARCHITECTURE_MANIFEST_PATH
-FROZEN_RERUN_CONTRACT_PATH = Path("config/research/legacy_accounting_rerun_v1.json")
-FROZEN_RERUN_CONTRACT_SHA256 = "cbba2fcac426341389dbe69d59cda1d5df2681889ea4052cc083d071b992f26d"
+FROZEN_RERUN_CONTRACT_PATH = Path("config/research/legacy_accounting_rerun_v2.json")
+FROZEN_RERUN_CONTRACT_SHA256 = "c76f7c027698ac8146b549d551d38b0f6963e0d6932b1e77cabebf4fab397a19"
 OUTPUT_FILENAMES = (
     "fixed_event_attribution.json",
     "full_system_attribution.json",
@@ -52,7 +52,7 @@ OUTPUT_FILENAMES = (
 _JSON_HASH_CHUNK_BYTES = 1024 * 1024
 _FIXED_EVENT_SCHEMA_VERSION = "legacy-accounting-fixed-event-attribution.v1"
 _RERUN_SUMMARY_SCHEMA_VERSION = "legacy-accounting-rerun-summary.v1"
-_RERUN_CONTRACT_SCHEMA_VERSION = "legacy-accounting-rerun-contract.v2"
+_RERUN_CONTRACT_SCHEMA_VERSION = "legacy-accounting-rerun-contract.v3"
 _REPLAY_INPUT_PARQUET_CORPUS_SCHEMA_VERSION = "replay-input-parquet-corpus.v1"
 EXPECTED_REPAIRED_FORMULA_HASH = "sha256:82af23a08c68a94641e1d7769ecdf9619059dddbeb531dd3703cc4d2ff809f4a"
 _SHA256_IDENTITY_PATTERN = re.compile(r"sha256:[0-9a-f]{64}")
@@ -723,8 +723,21 @@ def _parquet_corpus_identity(root: Path) -> dict[str, Any]:
     }
 
 
+def _assert_read_only_parquet_corpus(root: Path) -> None:
+    resolved_root = root.resolve()
+    mutable_paths = [
+        path
+        for path in (resolved_root, *resolved_root.rglob("*"))
+        if (path.is_dir() or (path.is_file() and path.suffix == ".parquet")) and path.stat().st_mode & 0o222
+    ]
+    if mutable_paths:
+        examples = [str(path.relative_to(resolved_root)) for path in mutable_paths[:3]]
+        raise ValueError(f"replay input Parquet corpus must be read-only before rerun: mutable_paths={examples!r}")
+
+
 def _frozen_input_identities(*, legacy_input: Path, root: Path) -> dict[str, Any]:
     replay_data_root = _resolve_replay_data_root(root)
+    _assert_read_only_parquet_corpus(replay_data_root)
     return {
         "legacy_source": _source_identity(legacy_input),
         "legacy_envelope_sha256": _legacy_envelope_identity(legacy_input),
@@ -827,6 +840,8 @@ def _assert_frozen_input_contract(
         raise ValueError("legacy envelope identity mismatch")
     if contract.get("required_replay_store_availability") != {"macro": True, "options": True}:
         raise ValueError("rerun contract replay store availability identity mismatch")
+    if contract.get("replay_input_mode") != "read_only_snapshot":
+        raise ValueError("rerun contract replay input mode mismatch")
     expected_corpus = contract.get("replay_input_parquet_corpus")
     actual_corpus = observed.get("replay_input_parquet_corpus")
     if not isinstance(expected_corpus, Mapping) or not isinstance(actual_corpus, Mapping):
