@@ -23,7 +23,7 @@ rank1 performance history was produced by defective legacy fee accounting and
 is not valid evidence of return, equity, Sharpe, Sortino, drawdown or promotion
 readiness. A frozen repaired matrix completed 30/30 runs with one verified
 indicator-formula identity, but that historical rerun predates accounting-kernel
-and raw-corpus identity instrumentation. Its A5 extra-15bp late-dev net PnL is
+and full replay-input identity instrumentation. Its A5 extra-15bp late-dev net PnL is
 negative on all five seeds and robustness is `0/5`; those economic values are
 diagnostic only. The terminal recommendation remains `stop_donor_training`.
 The architecture remains useful, but this donor must not receive another
@@ -113,21 +113,39 @@ accounting-kernel semantic identity:
 sha256:a2e7a4039556aa427ec258a2f38d302c6edf5e37e8e81b9cedd4a36897b66c1a
 ```
 
-The frozen raw Parquet corpus contract is 2,523 files / 21,185,269,620 bytes:
+The frozen replay-input Parquet corpus contract covers the complete cwd
+`data/raw` surface: 5,113 files / 21,375,818,411 bytes:
 
 ```text
-sha256:182398d05f7289e25b467cb8957603bdbde5360f39fdf62d8e366a9a5c415fed
+schema: replay-input-parquet-corpus.v1
+sha256:36b7a2f2d79e8775378efe6e1ce9b02a863b9a462b2b47be0ff75f3dcce15df6
+rerun-contract: legacy-accounting-rerun-contract.v2
+rerun-contract-sha256: cbba2fcac426341389dbe69d59cda1d5df2681889ea4052cc083d071b992f26d
 ```
 
 The existing 30/30 artifact contains neither identity. Its status is
 `requires_reinstrumented_30_run_rerun`; it must not be edited or backfilled,
 and its economic values are diagnostic only until a new immutable-output rerun
-records the accounting kernel, frozen legacy envelope and raw corpus before
+records the accounting kernel, frozen legacy envelope and full replay-input corpus before
 and after compute. The old artifact also has no replayable
 fixed-event ledger, so the exact first affected fee and downstream divergence
 remain `INSUFFICIENT_EVIDENCE`. All 210/210 legacy-to-repaired stage records are
 `UNVERIFIED_LEGACY`: the historical schema and repaired stage schemas lack the
 current payload and donor proof needed for a field-identical comparison.
+
+The wrapper now requires `--root.resolve().parent == Path("data/raw").resolve()`
+(a symlink is valid when both resolve to the same root), hashes the full corpus
+before compute and publication, and constructs the first frozen donor context
+without running it to verify macro/options availability and the actual formula
+identity before matrix entry 1. The operator command is:
+
+```bash
+cd /Users/disaster/workspace/code/zenQuant
+uv run python scripts/rerun_legacy_accounting_baseline.py \
+  --root data/raw/binance \
+  --legacy-input results/quant_v2_acceptance/architecture_attribution.json \
+  --output-dir results/accounting_integrity_20260823_v2
+```
 
 Funding and financing remain `OUT_OF_SCOPE_NOT_EQUITY_INTEGRATED`; diagnostic
 accumulators are not portfolio-equity parity. No promotion or parameter search is authorized by the repair or rerun.

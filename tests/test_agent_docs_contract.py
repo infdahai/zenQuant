@@ -83,7 +83,7 @@ def test_operator_docs_require_identity_complete_rerun_before_economic_authority
         normalized = " ".join(path.read_text(encoding="utf-8").split())
         assert "pre-contract diagnostic only" in normalized
         assert "requires_reinstrumented_30_run_rerun" in normalized
-        assert "accounting-kernel and raw-corpus identity" in normalized
+        assert "accounting-kernel and full replay-input identity" in normalized
         assert "new immutable output directory" in normalized
         assert "0/5" in normalized
         assert "stop_donor_training" in normalized
@@ -96,6 +96,6 @@ def test_authoritative_docs_mark_old_rerun_identity_insufficient() -> None:
     for content in (architecture, handoff):
         normalized = " ".join(content.split())
         assert "sha256:a2e7a4039556aa427ec258a2f38d302c6edf5e37e8e81b9cedd4a36897b66c1a" in content
-        assert "sha256:182398d05f7289e25b467cb8957603bdbde5360f39fdf62d8e366a9a5c415fed" in content
+        assert "sha256:36b7a2f2d79e8775378efe6e1ce9b02a863b9a462b2b47be0ff75f3dcce15df6" in content
         assert "requires_reinstrumented_30_run_rerun" in content
         assert "economic values are diagnostic only" in normalized

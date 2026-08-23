@@ -17,7 +17,7 @@ parameter_search        = false
 These retained strings deny promotion or training; they do not restore an
 authoritative economic verdict. Operator evidence remains
 `requires_reinstrumented_30_run_rerun` until a new immutable output directory
-passes the current accounting-kernel and raw-corpus identity contract.
+passes the current accounting-kernel and full replay-input identity contract.
 
 On 2026-08-23, the product owner explicitly accepted the repaired Gate C
 golden as the new accounting regression baseline:
@@ -45,7 +45,7 @@ extra-15bp net PnL is negative on all five seeds, from `-3,068.23` to
 `-624.15`. Robustness is `0/5`, below the required `4/5`. Passing MDD,
 train-episode-PF, switch-cadence and execution-purity checks do not override
 the blocked economic verdict. This pre-instrumentation artifact does not bind
-the accounting kernel or raw corpus, so its status is
+the accounting kernel or full replay input surface, so its status is
 `requires_reinstrumented_30_run_rerun` and its economic values are diagnostic
 only. The existing bytes must not be edited or backfilled.
 
@@ -58,8 +58,11 @@ only. The existing bytes must not be edited or backfilled.
 - Indicator formula hash: `sha256:82af23a08c68a94641e1d7769ecdf9619059dddbeb531dd3703cc4d2ff809f4a`
 - Required accounting-kernel semantic SHA-256: `sha256:a2e7a4039556aa427ec258a2f38d302c6edf5e37e8e81b9cedd4a36897b66c1a`
 - Frozen legacy envelope SHA-256: `sha256:0c66255a9020985ec5b3c2c10c2da4a38e96ed070c6c7c0801beced9b26f689c`
-- Frozen raw Parquet corpus: `2,523` files / `21,185,269,620` bytes / `sha256:182398d05f7289e25b467cb8957603bdbde5360f39fdf62d8e366a9a5c415fed`
-- Rerun contract SHA-256: `8f4fb2d834500f5381c54b4288d841e7915dbf63d3bef94918560cf623490986`
+- Frozen replay input Parquet corpus (`data/raw`): `5,113` files / `21,375,818,411` bytes / `sha256:36b7a2f2d79e8775378efe6e1ce9b02a863b9a462b2b47be0ff75f3dcce15df6`
+- Rerun contract schema: `legacy-accounting-rerun-contract.v2`
+- Replay input corpus schema: `replay-input-parquet-corpus.v1`
+- Required replay store availability: `macro=true`, `options=true`
+- Rerun contract SHA-256: `cbba2fcac426341389dbe69d59cda1d5df2681889ea4052cc083d071b992f26d`
 - Seeds: `42, 123, 456, 789, 1024`
 - Windows: `train_full, 2020, 2021, 2022, 2023, late_dev_2025`
 - Perturbation: price noise `0.001`, volume noise `0.05`, bar dropout `0.02`
@@ -70,8 +73,10 @@ manifest, candidate-parameter hash, profile hash and indicator formula hash.
 Those checks do not establish the current accounting implementation or input
 corpus. A replacement 30/30 artifact is identity-complete only when every run
 also carries the current accounting-kernel hash and the wrapper verifies the
-frozen legacy source/envelope and Parquet corpus before compute and again
-before publication.
+frozen legacy source/envelope and the complete `data/raw` Parquet corpus before
+compute and again before publication. Before matrix entry 1, the wrapper also
+constructs the first frozen donor context without calling `run()` and rejects
+missing macro/options stores or any actual indicator-formula mismatch.
 
 ## Artifact identity
 
@@ -207,7 +212,7 @@ golden; it does not accept or waive these product failures.
 ## Reproduction and verification
 
 The reviewed real rerun used this exact command before accounting-kernel and
-raw-corpus identity hardening:
+full replay-input identity hardening:
 
 ```bash
 uv run python scripts/rerun_legacy_accounting_baseline.py \
@@ -216,20 +221,27 @@ uv run python scripts/rerun_legacy_accounting_baseline.py \
   --output-dir results/accounting_integrity_20260823
 ```
 
+A later attempt mixed an absolute main-repository Binance `--root` with a
+worktree cwd that had no matching `data/raw` auxiliary stores. It completed the
+30 matrix entries but failed the final formula check, published no output
+directory, and is not evidence. Do not edit old results or reuse that invocation.
+
 Current code rejects every existing output path. A future rerun must use a new,
 versioned output directory, must match
 `config/research/legacy_accounting_rerun_v1.json`, and may not change seed,
-window, parameter, cost or search-space inputs:
+window, parameter, cost or search-space inputs. Run from the canonical repository
+root so relative auxiliary stores and `--root` share one resolved `data/raw`:
 
 ```bash
+cd /Users/disaster/workspace/code/zenQuant
 uv run python scripts/rerun_legacy_accounting_baseline.py \
   --root data/raw/binance \
   --legacy-input results/quant_v2_acceptance/architecture_attribution.json \
-  --output-dir results/accounting_integrity_<new-version>
+  --output-dir results/accounting_integrity_20260823_v2
 
 uv run python scripts/build_quant_v2_acceptance_summary.py \
-  --input results/accounting_integrity_<new-version>/full_system_attribution.json \
-  --output results/accounting_integrity_<new-version>/acceptance_summary.json
+  --input results/accounting_integrity_20260823_v2/full_system_attribution.json \
+  --output results/accounting_integrity_20260823_v2/acceptance_summary.json
 
 uv run pytest -q \
   tests/test_risk_guard.py \

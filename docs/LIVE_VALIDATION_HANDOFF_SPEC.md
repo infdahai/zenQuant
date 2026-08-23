@@ -40,10 +40,27 @@ paper-live**。权威结论见：
 
 Operator evidence status 是 `requires_reinstrumented_30_run_rerun`。旧 repaired
 30/30 是 **pre-contract diagnostic only**；它缺少 **accounting-kernel and
-raw-corpus identity**。Operator 必须按
+full replay-input identity**。Operator 必须按
 `config/research/legacy_accounting_rerun_v1.json` 在 **new immutable output
 directory** 完整复跑，且不得编辑旧 artifact 或伪造缺失字段。只有新的
 identity-complete 30/30 产物通过合同校验，才能恢复权威经济结论。
+
+当前 `legacy-accounting-rerun-contract.v2` 绑定 cwd `data/raw` 的完整 replay
+Parquet input surface：`5,113` files / `21,375,818,411` bytes /
+`sha256:36b7a2f2d79e8775378efe6e1ce9b02a863b9a462b2b47be0ff75f3dcce15df6`；
+合同文件 SHA-256 是
+`cbba2fcac426341389dbe69d59cda1d5df2681889ea4052cc083d071b992f26d`。
+`--root` 的真实 parent 必须与 cwd `data/raw` 相同；脚本在 matrix entry 1 前
+只构造第一 frozen donor context（不运行 backtest），并要求 macro/options
+均 available、实际 indicator formula hash 等于冻结合同。
+
+```bash
+cd /Users/disaster/workspace/code/zenQuant
+uv run python scripts/rerun_legacy_accounting_baseline.py \
+  --root data/raw/binance \
+  --legacy-input results/quant_v2_acceptance/architecture_attribution.json \
+  --output-dir results/accounting_integrity_20260823_v2
+```
 
 旧矩阵的 late-dev baseline 与额外 15bp 下均 5/5 为负，robustness 为
 `0/5`，归因终态为 `stop_donor_training`；这些值当前仅是否定性诊断，不能
