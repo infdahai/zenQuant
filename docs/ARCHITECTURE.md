@@ -137,10 +137,11 @@ The wrapper now requires `--root.resolve().parent == Path("data/raw").resolve()`
 (a symlink is valid when both resolve to the same root), hashes the full corpus
 before compute and publication, and constructs the first frozen donor context
 without running it to verify macro/options availability and the actual formula
-identity before matrix entry 1. The operator command is:
+identity before matrix entry 1. The operator command must run from the
+snapshot-backed worktree, never the live collector repository:
 
 ```bash
-cd /Users/disaster/workspace/code/zenQuant
+cd /Users/disaster/workspace/code/zenQuant/.worktrees/late-dev-cost-attribution
 uv run python scripts/rerun_legacy_accounting_baseline.py \
   --root data/raw/binance \
   --legacy-input results/quant_v2_acceptance/architecture_attribution.json \
