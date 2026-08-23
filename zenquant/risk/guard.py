@@ -193,7 +193,7 @@ class RiskOverlay:
         """Seed indicator and price context without requiring a bus publish."""
         self._latest_indicator[(pack.symbol, pack.timeframe)] = pack
         last_price = float(pack.values.get("last_price", 0.0) or 0.0)
-        if last_price > 0:
+        if last_price > 0 and pack.symbol not in self._marked_symbols:
             self._last_price[pack.symbol] = last_price
             self._revalue_equity()
 

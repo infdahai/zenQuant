@@ -116,6 +116,35 @@ def test_non_mark_payload_event_does_not_change_accounting_state() -> None:
     assert (overlay.positions, overlay.cash, overlay.equity, overlay.high_water_mark) == before
 
 
+def test_canonical_mark_remains_authoritative_after_indicator_and_fill_fallbacks() -> None:
+    bus = InMemoryJetStream()
+    overlay = RiskOverlay(bus=bus, config=RiskOverlayConfig(starting_equity=100_000.0))
+    bus.publish("indicator.pack.v1.4h.BTCUSDT_PERP", _make_pack({"last_price": 90.0}))
+    bus.publish("exec.order.report", _fill(1.0, price=100.0))
+    bus.publish("md.mark.BINANCE.BTCUSDT_PERP", _mark(101.0))
+    equity_at_canonical_mark = overlay.equity
+
+    bus.publish("indicator.pack.v1.4h.BTCUSDT_PERP", _make_pack({"last_price": 1.0}))
+
+    assert overlay.equity == pytest.approx(equity_at_canonical_mark)
+
+    bus.publish(
+        "exec.order.report",
+        ExecutionReport(
+            client_order_id="later-fill",
+            symbol="BTCUSDT_PERP",
+            side=-1,
+            status="PARTIALLY_FILLED",
+            filled_qty=0.5,
+            avg_price=50.0,
+            fee=0.0,
+            transaction_time_ns=2,
+        ),
+    )
+
+    assert overlay.equity == pytest.approx(equity_at_canonical_mark - 25.5)
+
+
 def test_positions_returns_immutable_snapshot() -> None:
     bus = InMemoryJetStream()
     overlay = RiskOverlay(bus=bus, config=RiskOverlayConfig(starting_equity=100_000.0))
