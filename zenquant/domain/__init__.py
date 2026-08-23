@@ -1,4 +1,9 @@
-from .accounting import validate_execution_fee
+from .accounting import (
+    execution_report_identity,
+    validate_execution_fee,
+    validate_execution_report_accounting,
+    validate_execution_report_for_order,
+)
 from .models import (
     ArchitectureAlphaSnapshot,
     BacktestCycleContext,
@@ -77,6 +82,9 @@ __all__ = [
     "Timeframe",
     "TradeTick",
     "canonical_target_position",
+    "execution_report_identity",
     "target_position_hash",
     "validate_execution_fee",
+    "validate_execution_report_accounting",
+    "validate_execution_report_for_order",
 ]

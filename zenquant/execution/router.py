@@ -11,13 +11,14 @@ from zenquant.domain import (
     DecisionSnapshot,
     ExecutionOrder,
     ExecutionOrderAudit,
+    ExecutionReport,
     MarkPriceUpdate,
     OrderBookSnapshot,
     RiskSnapshot,
     TargetPosition,
     TradeTick,
     target_position_hash,
-    validate_execution_fee,
+    validate_execution_report_for_order,
 )
 from zenquant.execution.gateway import ExecutionGateway
 from zenquant.infra import EventBus
@@ -27,6 +28,12 @@ class FeeApplier(Protocol):
     """Minimal accounting hook required by execution after fills."""
 
     def apply_fee(self, fee: float) -> None: ...
+
+
+class ExecutionAccountant(FeeApplier, Protocol):
+    """Atomic fill-and-fee accounting hook used by production risk state."""
+
+    def apply_execution_report(self, report: ExecutionReport) -> bool: ...
 
 
 @dataclass(slots=True)
@@ -215,7 +222,7 @@ class ExecutionKernel:
         self,
         bus: EventBus,
         gateway: ExecutionGateway,
-        risk_overlay: FeeApplier,
+        risk_overlay: ExecutionAccountant | FeeApplier,
         config: ExecutionKernelConfig | None = None,
     ) -> None:
         self._bus = bus
@@ -527,9 +534,8 @@ class ExecutionKernel:
             best_ask=self._best_ask.get(symbol),
             now_ns=payload.cutoff_time_ns,
         )
-        validate_execution_fee(report.fee)
-        self._bus.publish("exec.order.report", report)
-        if report.status == "FILLED" and report.filled_qty > 0:
+        validate_execution_report_for_order(report, order)
+        if report.filled_qty > 0:
             new_position = current_position + (side * report.filled_qty)
             self._positions[symbol] = new_position
             # Track entry price for pyramid profitability check
@@ -571,7 +577,8 @@ class ExecutionKernel:
                 if pyramid_filled_pct_after_fill is not None:
                     self._pyramid_filled_pct[symbol] = pyramid_filled_pct_after_fill
                 self._inventory_tranches[symbol] = self._inventory_tranches.get(symbol, 1) + 1
-            self._risk_overlay.apply_fee(report.fee)
+            self._apply_report_accounting(report)
+        self._bus.publish("exec.order.report", report)
 
     def _on_target_tracking_v2(
         self,
@@ -628,8 +635,7 @@ class ExecutionKernel:
             best_ask=self._best_ask.get(payload.symbol),
             now_ns=payload.cutoff_time_ns,
         )
-        validate_execution_fee(report.fee)
-        self._bus.publish("exec.order.report", report)
+        validate_execution_report_for_order(report, order)
 
         filled_qty = max(0.0, report.filled_qty)
         signed_filled_qty = side * filled_qty
@@ -639,7 +645,7 @@ class ExecutionKernel:
             if abs(position_after) <= self._config.quantity_epsilon:
                 position_after = 0.0
             self._positions[payload.symbol] = position_after
-            self._risk_overlay.apply_fee(report.fee)
+            self._apply_report_accounting(report)
         remaining_delta = payload.target_qty - position_after
         if abs(remaining_delta) <= self._config.quantity_epsilon:
             remaining_delta = 0.0
@@ -653,6 +659,7 @@ class ExecutionKernel:
             position_after=position_after,
             order_delta=signed_filled_qty,
         )
+        self._bus.publish("exec.order.report", report)
         self._bus.publish(
             "exec.order.audit",
             ExecutionOrderAudit(
@@ -669,6 +676,13 @@ class ExecutionKernel:
                 remaining_target_delta_qty=remaining_delta,
             ),
         )
+
+    def _apply_report_accounting(self, report: ExecutionReport) -> None:
+        apply_report = getattr(self._risk_overlay, "apply_execution_report", None)
+        if apply_report is not None:
+            apply_report(report)
+            return
+        self._risk_overlay.apply_fee(report.fee)
 
     def _snapshot_approves_target(self, snapshot: DecisionSnapshot, target: TargetPosition) -> bool:
         epsilon = self._config.quantity_epsilon
@@ -738,18 +752,24 @@ class ExecutionKernel:
             best_ask=self._best_ask.get(symbol),
             now_ns=payload.cutoff_time_ns,
         )
-        validate_execution_fee(close_report.fee)
-        self._bus.publish("exec.order.report", close_report)
-        if close_report.status != "FILLED":
+        validate_execution_report_for_order(close_report, close_order)
+        if close_report.filled_qty <= 0:
+            self._bus.publish("exec.order.report", close_report)
             return
-        self._positions[symbol] = 0.0
-        self._entry_prices.pop(symbol, None)
-        self._last_fill_prices.pop(symbol, None)
-        self._pyramid_filled_pct.pop(symbol, None)
-        self._inventory_tranches.pop(symbol, None)
-        self._position_bars_held.pop(symbol, None)
-        self._profit_protect_cooldowns.pop(symbol, None)
-        self._risk_overlay.apply_fee(close_report.fee)
+        position_after_close = current_position + close_report.side * close_report.filled_qty
+        if abs(position_after_close) < self._config.min_trade_qty:
+            position_after_close = 0.0
+            self._entry_prices.pop(symbol, None)
+            self._last_fill_prices.pop(symbol, None)
+            self._pyramid_filled_pct.pop(symbol, None)
+            self._inventory_tranches.pop(symbol, None)
+            self._position_bars_held.pop(symbol, None)
+            self._profit_protect_cooldowns.pop(symbol, None)
+        self._positions[symbol] = position_after_close
+        self._apply_report_accounting(close_report)
+        self._bus.publish("exec.order.report", close_report)
+        if position_after_close != 0.0:
+            return
 
         # Step 2: Open opposite direction with pyramid initial sizing
         is_short = payload.target_qty < 0
@@ -782,10 +802,9 @@ class ExecutionKernel:
             best_ask=self._best_ask.get(symbol),
             now_ns=payload.cutoff_time_ns,
         )
-        validate_execution_fee(open_report.fee)
-        self._bus.publish("exec.order.report", open_report)
-        if open_report.status == "FILLED" and open_report.filled_qty > 0:
-            self._positions[symbol] = open_side * open_report.filled_qty
+        validate_execution_report_for_order(open_report, open_order)
+        if open_report.filled_qty > 0:
+            self._positions[symbol] = open_report.side * open_report.filled_qty
             self._entry_prices[symbol] = open_report.avg_price
             self._last_fill_prices[symbol] = open_report.avg_price
             self._pyramid_filled_pct[symbol] = init_pct
@@ -793,9 +812,10 @@ class ExecutionKernel:
             self._position_bars_held[symbol] = 0
             self._entry_cooldowns.pop(symbol, None)
             self._profit_protect_cooldowns.pop(symbol, None)
-            self._risk_overlay.apply_fee(open_report.fee)
+            self._apply_report_accounting(open_report)
         else:
             self._arm_entry_cooldown(symbol)
+        self._bus.publish("exec.order.report", open_report)
 
     def _execute_flatten_only(
         self,
@@ -822,19 +842,23 @@ class ExecutionKernel:
             best_ask=self._best_ask.get(symbol),
             now_ns=payload.cutoff_time_ns,
         )
-        validate_execution_fee(close_report.fee)
-        self._bus.publish("exec.order.report", close_report)
-        if close_report.status != "FILLED":
+        validate_execution_report_for_order(close_report, close_order)
+        if close_report.filled_qty <= 0:
+            self._bus.publish("exec.order.report", close_report)
             return
-        self._positions[symbol] = 0.0
-        self._entry_prices.pop(symbol, None)
-        self._last_fill_prices.pop(symbol, None)
-        self._pyramid_filled_pct.pop(symbol, None)
-        self._inventory_tranches.pop(symbol, None)
-        self._position_bars_held.pop(symbol, None)
-        self._profit_protect_cooldowns.pop(symbol, None)
-        self._arm_entry_cooldown(symbol)
-        self._risk_overlay.apply_fee(close_report.fee)
+        new_position = current_position + close_report.side * close_report.filled_qty
+        if abs(new_position) < self._config.min_trade_qty:
+            new_position = 0.0
+            self._entry_prices.pop(symbol, None)
+            self._last_fill_prices.pop(symbol, None)
+            self._pyramid_filled_pct.pop(symbol, None)
+            self._inventory_tranches.pop(symbol, None)
+            self._position_bars_held.pop(symbol, None)
+            self._profit_protect_cooldowns.pop(symbol, None)
+            self._arm_entry_cooldown(symbol)
+        self._positions[symbol] = new_position
+        self._apply_report_accounting(close_report)
+        self._bus.publish("exec.order.report", close_report)
 
     def _execute_reduce_only_qty(
         self,
@@ -866,11 +890,11 @@ class ExecutionKernel:
             best_ask=self._best_ask.get(symbol),
             now_ns=payload.cutoff_time_ns,
         )
-        validate_execution_fee(report.fee)
-        self._bus.publish("exec.order.report", report)
-        if report.status != "FILLED" or report.filled_qty <= 0:
+        validate_execution_report_for_order(report, order)
+        if report.filled_qty <= 0:
+            self._bus.publish("exec.order.report", report)
             return False
-        new_position = current_position + close_side * report.filled_qty
+        new_position = current_position + report.side * report.filled_qty
         if abs(new_position) < self._config.min_trade_qty:
             self._positions[symbol] = 0.0
             self._entry_prices.pop(symbol, None)
@@ -883,7 +907,8 @@ class ExecutionKernel:
         else:
             self._positions[symbol] = new_position
             self._position_bars_held[symbol] = max(0, self._position_bars_held.get(symbol, 0))
-        self._risk_overlay.apply_fee(report.fee)
+        self._apply_report_accounting(report)
+        self._bus.publish("exec.order.report", report)
         return True
 
     def _advance_position_age(self, symbol: str, current_position: float) -> None:

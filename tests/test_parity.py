@@ -141,7 +141,6 @@ class TestFixedEventMarkToMarketParity(unittest.TestCase):
             "exec.order.report",
             _fixed_event_fill(quantity=2.0, price=100_000.0, fee=80.0, sequence=1),
         )
-        overlay.apply_fee(80.0)
         equity_before_first_mark = overlay.equity
         bus.publish("md.mark.BINANCE.BTCUSDT_PERP", _fixed_event_mark(price=101_000.0, sequence=2))
         first_mark_change = overlay.equity - equity_before_first_mark
@@ -151,7 +150,6 @@ class TestFixedEventMarkToMarketParity(unittest.TestCase):
             "exec.order.report",
             _fixed_event_fill(quantity=-1.0, price=100_500.0, fee=40.2, sequence=3),
         )
-        overlay.apply_fee(40.2)
         partial_sell_change = overlay.equity - equity_before_partial_sell
         equity_before_final_mark = overlay.equity
         bus.publish("md.mark.BINANCE.BTCUSDT_PERP", _fixed_event_mark(price=99_000.0, sequence=4))

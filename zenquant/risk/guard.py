@@ -17,8 +17,10 @@ from zenquant.domain import (
     RiskSnapshot,
     TargetPosition,
     Timeframe,
+    execution_report_identity,
     target_position_hash,
     validate_execution_fee,
+    validate_execution_report_accounting,
 )
 from zenquant.infra import EventBus
 
@@ -135,6 +137,7 @@ class RiskOverlay:
         self._last_price: dict[str, float] = {}
         self._marked_symbols: set[str] = set()
         self._actual_positions: dict[str, float] = {}
+        self._accounted_execution_reports: dict[tuple[str, str, int], tuple[int, float, float, float]] = {}
         self._latest_indicator: dict[tuple[str, Timeframe], IndicatorPack] = {}
         self._day_anchor: tuple[int, float] | None = None
         # Kill switch recovery state
@@ -197,17 +200,31 @@ class RiskOverlay:
     def _on_execution_report(self, _: str, payload: object) -> None:
         if not isinstance(payload, ExecutionReport):
             return
+        self.apply_execution_report(payload)
+
+    def apply_execution_report(self, payload: ExecutionReport) -> bool:
+        """Atomically apply one unique report's filled notional and fee."""
+        validate_execution_report_accounting(payload)
         if payload.filled_qty <= 0:
-            return
-        validate_execution_fee(payload.fee)
+            return False
+
+        identity = execution_report_identity(payload)
+        signature = (payload.side, payload.filled_qty, payload.avg_price, payload.fee)
+        existing_signature = self._accounted_execution_reports.get(identity)
+        if existing_signature is not None:
+            if existing_signature != signature:
+                raise ValueError(f"conflicting execution report identity: {identity!r}")
+            return False
 
         current = self._actual_positions.get(payload.symbol, 0.0)
         self._actual_positions[payload.symbol] = current + (payload.side * payload.filled_qty)
         if payload.avg_price > 0 and payload.symbol not in self._marked_symbols:
             self._last_price[payload.symbol] = payload.avg_price
 
-        self._cash -= payload.side * payload.filled_qty * payload.avg_price
+        self._cash -= (payload.side * payload.filled_qty * payload.avg_price) + payload.fee
+        self._accounted_execution_reports[identity] = signature
         self._revalue_equity()
+        return True
 
     def _on_target_position(self, subject: str, payload: object) -> None:
         if not isinstance(payload, TargetPosition):

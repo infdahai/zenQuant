@@ -52,16 +52,16 @@ def _make_target(qty: float = 1.0, reduce_only: bool = False) -> TargetPosition:
     )
 
 
-def _fill(qty: float, price: float = 40000.0) -> ExecutionReport:
+def _fill(qty: float, price: float = 40000.0, sequence: int = 1) -> ExecutionReport:
     return ExecutionReport(
-        client_order_id="fill",
+        client_order_id=f"fill-{sequence}",
         symbol="BTCUSDT_PERP",
         side=1 if qty > 0 else -1,
         status="FILLED",
         filled_qty=abs(qty),
         avg_price=price,
         fee=0.0,
-        transaction_time_ns=1,
+        transaction_time_ns=sequence,
     )
 
 
@@ -125,7 +125,7 @@ def test_positions_returns_immutable_snapshot() -> None:
     with pytest.raises(TypeError):
         positions["BTCUSDT_PERP"] = 0.0
 
-    bus.publish("exec.order.report", _fill(1.0, price=100_000.0))
+    bus.publish("exec.order.report", _fill(1.0, price=100_000.0, sequence=2))
 
     assert positions == {"BTCUSDT_PERP": 1.0}
     assert overlay.positions == {"BTCUSDT_PERP": 2.0}
@@ -204,6 +204,119 @@ def test_invalid_direct_execution_report_fee_is_atomic() -> None:
         )
 
     assert (dict(overlay._actual_positions), overlay.cash, overlay.equity, overlay.high_water_mark) == before
+
+
+def test_duplicate_direct_execution_report_applies_fill_and_fee_exactly_once() -> None:
+    bus = InMemoryJetStream()
+    overlay = RiskOverlay(bus=bus, config=RiskOverlayConfig(starting_equity=100_000.0))
+    report = ExecutionReport(
+        client_order_id="direct-fill",
+        symbol="BTCUSDT_PERP",
+        side=1,
+        status="FILLED",
+        filled_qty=2.0,
+        avg_price=100.0,
+        fee=0.08,
+        transaction_time_ns=123,
+    )
+
+    bus.publish("exec.order.report", report)
+    bus.publish("exec.order.report", report)
+
+    assert dict(overlay.positions) == {"BTCUSDT_PERP": 2.0}
+    assert overlay.cash == pytest.approx(99_799.92)
+    assert overlay.equity == pytest.approx(99_999.92)
+
+
+def test_execution_identity_keeps_distinct_client_orders_separate() -> None:
+    bus = InMemoryJetStream()
+    overlay = RiskOverlay(bus=bus, config=RiskOverlayConfig(starting_equity=100_000.0))
+    for client_order_id in ("order-a", "order-b"):
+        bus.publish(
+            "exec.order.report",
+            ExecutionReport(
+                client_order_id=client_order_id,
+                symbol="BTCUSDT_PERP",
+                side=1,
+                status="FILLED",
+                filled_qty=1.0,
+                avg_price=100.0,
+                fee=0.04,
+                transaction_time_ns=123,
+            ),
+        )
+
+    assert dict(overlay.positions) == {"BTCUSDT_PERP": 2.0}
+    assert overlay.equity == pytest.approx(99_999.92)
+
+
+def test_conflicting_payload_for_execution_identity_is_rejected_atomically() -> None:
+    bus = InMemoryJetStream()
+    overlay = RiskOverlay(bus=bus, config=RiskOverlayConfig(starting_equity=100_000.0))
+    original = ExecutionReport(
+        client_order_id="same-order",
+        symbol="BTCUSDT_PERP",
+        side=1,
+        status="PARTIALLY_FILLED",
+        filled_qty=1.0,
+        avg_price=100.0,
+        fee=0.04,
+        transaction_time_ns=123,
+    )
+    bus.publish("exec.order.report", original)
+    before = (dict(overlay.positions), overlay.cash, overlay.equity, overlay.high_water_mark)
+
+    with pytest.raises(ValueError, match="conflicting execution report identity"):
+        bus.publish(
+            "exec.order.report",
+            ExecutionReport(
+                client_order_id="same-order",
+                symbol="BTCUSDT_PERP",
+                side=1,
+                status="FILLED",
+                filled_qty=2.0,
+                avg_price=100.0,
+                fee=0.08,
+                transaction_time_ns=123,
+            ),
+        )
+
+    assert (dict(overlay.positions), overlay.cash, overlay.equity, overlay.high_water_mark) == before
+
+
+@pytest.mark.parametrize(
+    ("changes", "message"),
+    [
+        ({"side": 0}, "side must be -1 or 1"),
+        ({"filled_qty": -1.0}, "filled_qty must be finite and non-negative"),
+        ({"filled_qty": float("nan")}, "filled_qty must be finite and non-negative"),
+        ({"filled_qty": float("inf")}, "filled_qty must be finite and non-negative"),
+        ({"avg_price": 0.0}, "avg_price must be finite and positive for a fill"),
+        ({"avg_price": float("nan")}, "avg_price must be finite and positive for a fill"),
+        ({"avg_price": float("inf")}, "avg_price must be finite and positive for a fill"),
+        ({"client_order_id": ""}, "client_order_id must be non-empty for a fill"),
+    ],
+)
+def test_invalid_execution_report_accounting_fields_are_atomic(changes: dict, message: str) -> None:
+    fields = {
+        "client_order_id": "valid-order",
+        "symbol": "BTCUSDT_PERP",
+        "side": 1,
+        "status": "PARTIALLY_FILLED",
+        "filled_qty": 1.0,
+        "avg_price": 100.0,
+        "fee": 0.04,
+        "transaction_time_ns": 123,
+    }
+    fields.update(changes)
+    bus = InMemoryJetStream()
+    overlay = RiskOverlay(bus=bus, config=RiskOverlayConfig(starting_equity=100_000.0))
+    before = (dict(overlay.positions), overlay.cash, overlay.equity, overlay.high_water_mark)
+
+    with pytest.raises(ValueError, match=message):
+        overlay.apply_execution_report(ExecutionReport(**fields))
+
+    assert (dict(overlay.positions), overlay.cash, overlay.equity, overlay.high_water_mark) == before
 
 
 class AsymmetricDDTests(unittest.TestCase):

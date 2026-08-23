@@ -19,6 +19,170 @@ from zenquant.strategy.decision_snapshot import build_decision_snapshot
 
 
 class ExecutionRouterTests(unittest.TestCase):
+    def test_legacy_partial_fill_updates_router_and_risk_by_actual_quantity(self) -> None:
+        class PartialFillGateway(ExecutionGateway):
+            def submit_order(self, order, mark_price, best_bid=None, best_ask=None, now_ns=None):
+                return ExecutionReport(
+                    client_order_id=order.client_order_id,
+                    symbol=order.symbol,
+                    side=order.side,
+                    status="PARTIALLY_FILLED",
+                    filled_qty=0.4,
+                    avg_price=mark_price,
+                    fee=0.04,
+                    transaction_time_ns=now_ns or 0,
+                )
+
+        bus = InMemoryJetStream()
+        risk = RiskOverlay(bus)
+        kernel = ExecutionKernel(
+            bus,
+            PartialFillGateway(),
+            risk,
+            config=ExecutionKernelConfig(pyramid_enabled=False),
+        )
+        kernel._last_price["BTCUSDT_PERP"] = 100.0
+
+        bus.publish(
+            "intent.target_position.final.BTCUSDT_PERP",
+            TargetPosition(
+                intent_id="legacy-partial-fill",
+                portfolio="arc",
+                symbol="BTCUSDT_PERP",
+                timeframe=Timeframe.TF_4H,
+                cutoff_time_ns=1,
+                target_qty=1.0,
+                target_leverage=1.0,
+                reduce_only=False,
+                regime="TREND",
+                regime_confidence=0.9,
+                reason_codes=["REGIME_TREND"],
+            ),
+        )
+
+        self.assertEqual(kernel.positions, {"BTCUSDT_PERP": 0.4})
+        self.assertEqual(dict(risk.positions), kernel.positions)
+        self.assertAlmostEqual(risk.cash, 99_959.96)
+        self.assertAlmostEqual(risk.equity, 99_999.96)
+
+    def test_report_subscriber_failure_cannot_split_fill_and_fee_ledgers(self) -> None:
+        class FixedFillGateway(ExecutionGateway):
+            def submit_order(self, order, mark_price, best_bid=None, best_ask=None, now_ns=None):
+                return ExecutionReport(
+                    client_order_id=order.client_order_id,
+                    symbol=order.symbol,
+                    side=order.side,
+                    status="FILLED",
+                    filled_qty=0.4,
+                    avg_price=mark_price,
+                    fee=0.04,
+                    transaction_time_ns=now_ns or 0,
+                )
+
+        bus = InMemoryJetStream()
+        risk = RiskOverlay(bus)
+        kernel = ExecutionKernel(
+            bus,
+            FixedFillGateway(),
+            risk,
+            config=ExecutionKernelConfig(pyramid_enabled=False),
+        )
+        kernel._last_price["BTCUSDT_PERP"] = 100.0
+
+        def fail_after_accounting(_subject, _payload):
+            raise RuntimeError("subscriber failed")
+
+        bus.subscribe("exec.order.report", fail_after_accounting)
+
+        with self.assertRaisesRegex(RuntimeError, "subscriber failed"):
+            bus.publish(
+                "intent.target_position.final.BTCUSDT_PERP",
+                TargetPosition(
+                    intent_id="subscriber-failure",
+                    portfolio="arc",
+                    symbol="BTCUSDT_PERP",
+                    timeframe=Timeframe.TF_4H,
+                    cutoff_time_ns=1,
+                    target_qty=1.0,
+                    target_leverage=1.0,
+                    reduce_only=False,
+                    regime="TREND",
+                    regime_confidence=0.9,
+                    reason_codes=["REGIME_TREND"],
+                ),
+            )
+
+        self.assertEqual(kernel.positions, {"BTCUSDT_PERP": 0.4})
+        self.assertEqual(dict(risk.positions), kernel.positions)
+        self.assertAlmostEqual(risk.cash, 99_959.96)
+        self.assertAlmostEqual(risk.equity, 99_999.96)
+
+    def test_legacy_flip_partial_close_updates_both_ledgers_without_opening_reverse(self) -> None:
+        class PartialCloseGateway(ExecutionGateway):
+            def __init__(self) -> None:
+                super().__init__()
+                self.calls = 0
+
+            def submit_order(self, order, mark_price, best_bid=None, best_ask=None, now_ns=None):
+                self.calls += 1
+                return ExecutionReport(
+                    client_order_id=order.client_order_id,
+                    symbol=order.symbol,
+                    side=order.side,
+                    status="PARTIALLY_FILLED",
+                    filled_qty=0.4,
+                    avg_price=mark_price,
+                    fee=0.04,
+                    transaction_time_ns=now_ns or 0,
+                )
+
+        bus = InMemoryJetStream()
+        risk = RiskOverlay(bus)
+        gateway = PartialCloseGateway()
+        kernel = ExecutionKernel(
+            bus,
+            gateway,
+            risk,
+            config=ExecutionKernelConfig(pyramid_enabled=False),
+        )
+        kernel._last_price["BTCUSDT_PERP"] = 100.0
+        kernel._positions["BTCUSDT_PERP"] = 1.0
+        bus.publish(
+            "exec.order.report",
+            ExecutionReport(
+                client_order_id="seed-long",
+                symbol="BTCUSDT_PERP",
+                side=1,
+                status="FILLED",
+                filled_qty=1.0,
+                avg_price=100.0,
+                fee=0.0,
+                transaction_time_ns=0,
+            ),
+        )
+
+        bus.publish(
+            "intent.target_position.final.BTCUSDT_PERP",
+            TargetPosition(
+                intent_id="partial-flip",
+                portfolio="arc",
+                symbol="BTCUSDT_PERP",
+                timeframe=Timeframe.TF_4H,
+                cutoff_time_ns=1,
+                target_qty=-1.0,
+                target_leverage=1.0,
+                reduce_only=False,
+                regime="TREND",
+                regime_confidence=0.9,
+                reason_codes=["REGIME_TREND"],
+            ),
+        )
+
+        self.assertEqual(gateway.calls, 1)
+        self.assertEqual(kernel.positions, {"BTCUSDT_PERP": 0.6})
+        self.assertEqual(dict(risk.positions), kernel.positions)
+        self.assertAlmostEqual(risk.equity, 99_999.96)
+
     def test_non_finite_report_fee_is_rejected_before_publication_or_state_change(self) -> None:
         class NonFiniteFeeGateway(ExecutionGateway):
             def submit_order(self, order, mark_price, best_bid=None, best_ask=None, now_ns=None):
@@ -61,6 +225,71 @@ class ExecutionRouterTests(unittest.TestCase):
 
         self.assertEqual(reports, [])
         self.assertEqual((dict(kernel.positions), risk._cash, risk.equity), before)
+
+    def test_report_identity_mismatch_is_rejected_before_publication_or_state_change(self) -> None:
+        class MismatchedReportGateway(ExecutionGateway):
+            def __init__(self, field, value) -> None:
+                super().__init__()
+                self.field = field
+                self.value = value
+
+            def submit_order(self, order, mark_price, best_bid=None, best_ask=None, now_ns=None):
+                fields = {
+                    "client_order_id": order.client_order_id,
+                    "symbol": order.symbol,
+                    "side": order.side,
+                    "status": "FILLED",
+                    "filled_qty": order.quantity,
+                    "avg_price": mark_price,
+                    "fee": 0.04,
+                    "transaction_time_ns": now_ns or 0,
+                }
+                fields[self.field] = self.value
+                return ExecutionReport(**fields)
+
+        mismatches = {
+            "client_order_id": "wrong-order",
+            "symbol": "ETHUSDT_PERP",
+            "side": -1,
+        }
+        for field, value in mismatches.items():
+            with self.subTest(field=field):
+                bus = InMemoryJetStream()
+                risk = RiskOverlay(bus)
+                kernel = ExecutionKernel(
+                    bus,
+                    MismatchedReportGateway(field, value),
+                    risk,
+                    config=ExecutionKernelConfig(pyramid_enabled=False),
+                )
+                reports = []
+                bus.subscribe(
+                    "exec.order.report",
+                    lambda _subject, payload, reports=reports: reports.append(payload),
+                )
+                kernel._last_price["BTCUSDT_PERP"] = 100.0
+
+                with self.assertRaisesRegex(ValueError, "execution report does not match submitted order"):
+                    bus.publish(
+                        "intent.target_position.final.BTCUSDT_PERP",
+                        TargetPosition(
+                            intent_id=f"mismatch-{field}",
+                            portfolio="arc",
+                            symbol="BTCUSDT_PERP",
+                            timeframe=Timeframe.TF_4H,
+                            cutoff_time_ns=1,
+                            target_qty=1.0,
+                            target_leverage=1.0,
+                            reduce_only=False,
+                            regime="TREND",
+                            regime_confidence=0.9,
+                            reason_codes=["REGIME_TREND"],
+                        ),
+                    )
+
+                self.assertEqual(reports, [])
+                self.assertEqual(kernel.positions, {})
+                self.assertEqual(dict(risk.positions), {})
 
     def test_invalid_report_fee_leaves_pyramid_fill_tracking_unchanged(self) -> None:
         class NonFiniteFeeGateway(ExecutionGateway):
