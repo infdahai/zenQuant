@@ -21,11 +21,11 @@ For product principles and non-negotiable invariants, read [`../AGENTS.md`](../A
 ZenQuant remains a deterministic, regime-aware BTC trading system. The August
 rank1 performance history was produced by defective legacy fee accounting and
 is not valid evidence of return, equity, Sharpe, Sortino, drawdown or promotion
-readiness. A frozen repaired matrix completed 30/30 runs with one verified
-indicator-formula identity, but that historical rerun predates accounting-kernel
-and full replay-input identity instrumentation. Its A5 extra-15bp late-dev net PnL is
-negative on all five seeds and robustness is `0/5`; those economic values are
-diagnostic only. The terminal recommendation remains `stop_donor_training`.
+readiness. The replacement identity-complete matrix completed 30/30 runs under
+the frozen accounting-kernel, formula and full replay-input contract. Its A5
+extra-15bp late-dev net PnL is negative on all five seeds and robustness is
+`0/5`. Operator evidence is `identity_complete_30_run_rerun_completed`; the
+verdict is `BLOCKED_PAUSE_PROMOTION_AND_TRAINING`.
 The architecture remains useful, but this donor must not receive another
 optimizer or parameter-training round.
 
@@ -123,11 +123,11 @@ rerun-contract: legacy-accounting-rerun-contract.v3
 rerun-contract-sha256: c76f7c027698ac8146b549d551d38b0f6963e0d6932b1e77cabebf4fab397a19
 ```
 
-The existing 30/30 artifact contains neither identity. Its status is
-`requires_reinstrumented_30_run_rerun`; it must not be edited or backfilled,
-and its economic values are diagnostic only until a new immutable-output rerun
-records the accounting kernel, frozen legacy envelope and full replay-input corpus before
-and after compute. The old artifact also has no replayable
+The old pre-contract 30/30 artifact contains neither identity and remains
+diagnostic only; it must not be edited or backfilled. The replacement immutable
+output records the accounting kernel, frozen legacy envelope and full replay
+input corpus before and after compute. Its operator status is
+`identity_complete_30_run_rerun_completed`. The old artifact also has no replayable
 fixed-event ledger, so the exact first affected fee and downstream divergence
 remain `INSUFFICIENT_EVIDENCE`. All 210/210 legacy-to-repaired stage records are
 `UNVERIFIED_LEGACY`: the historical schema and repaired stage schemas lack the
@@ -433,9 +433,11 @@ current terminal recommendation is:
 stop_donor_training
 ```
 
-Corrected evidence shows late-dev A5 baseline net PnL spanning a small loss to
-a small gain, while extra-15bp PnL is negative on all five seeds at
-`-3,068.23` to `-624.15`. Robustness is `0/5`. Passing MDD, episode-PF, switch
+Corrected identity-complete evidence shows late-dev A5 baseline net PnL
+averaging `+379.21` (4/5 positive), but additional 5bp cost changes the mean
+to `-353.44` (1/5 positive), and extra-15bp PnL is negative on all five seeds
+with mean `-1,818.72` and range `-3,068.23` to `-624.15`. Robustness is `0/5`.
+Passing MDD, episode-PF, switch
 cadence and execution-purity diagnostics do not override that blocked economic
 verdict. Consequently, the following architecture principles remain valid,
 but they no longer authorize training this donor:

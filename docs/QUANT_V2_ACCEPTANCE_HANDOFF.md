@@ -6,18 +6,19 @@ under `results/`; their hashes below bind this document to the reviewed bytes.
 
 ## Decision
 
-Historical pre-contract diagnostic only:
+Identity-complete 30-run verdict:
 
 ```text
 verdict                 = BLOCKED_PAUSE_PROMOTION_AND_TRAINING
-terminal_recommendation = stop_donor_training
 parameter_search        = false
+operator_evidence       = identity_complete_30_run_rerun_completed
 ```
 
-These retained strings deny promotion or training; they do not restore an
-authoritative economic verdict. Operator evidence remains
-`requires_reinstrumented_30_run_rerun` until a new immutable output directory
-passes the current accounting-kernel and full replay-input identity contract.
+The new immutable output passed the accounting-kernel, formula, legacy-envelope
+and full replay-input identity contract before compute and publication. The
+verdict is economically authoritative for this frozen donor and denies further
+parameter training or promotion. The older repaired 30/30 remains an old
+pre-contract diagnostic only and must not be edited or backfilled.
 
 On 2026-08-23, the product owner explicitly accepted the repaired Gate C
 golden as the new accounting regression baseline:
@@ -40,14 +41,13 @@ negative cash at zero and erased financing liability after leveraged fills.
 The affected equity, return, net PnL, equity-multiple, Sharpe, Sortino,
 drawdown and promotion-gate families cannot be used as performance evidence.
 
-The corrected frozen matrix completed 30/30 runs with no search. Late-dev A5
-extra-15bp net PnL is negative on all five seeds, from `-3,068.23` to
-`-624.15`. Robustness is `0/5`, below the required `4/5`. Passing MDD,
-train-episode-PF, switch-cadence and execution-purity checks do not override
-the blocked economic verdict. This pre-instrumentation artifact does not bind
-the accounting kernel or full replay input surface, so its status is
-`requires_reinstrumented_30_run_rerun` and its economic values are diagnostic
-only. The existing bytes must not be edited or backfilled.
+The identity-complete frozen matrix completed 30/30 runs with no search.
+Late-dev A5 averages `+379.21` at observed baseline costs (4/5 positive),
+`-353.44` with 5bp additional cost (1/5 positive), and `-1,818.72` with 15bp
+additional cost (0/5 positive; range `-3,068.23` to `-624.15`). The implied
+additional-cost breakeven is only about `2.59bp`. Robustness is `0/5`, below
+the required `4/5`. Passing MDD, train-episode-PF, switch-cadence and
+execution-purity checks do not override the blocked economic verdict.
 
 ## Frozen and repaired identity
 
@@ -83,16 +83,15 @@ missing macro/options stores or any actual indicator-formula mismatch.
 | Artifact | SHA-256 | Size |
 | --- | --- | ---: |
 | Legacy `results/quant_v2_acceptance/architecture_attribution.json` | `1f327c7c786f511fbba6ac1dd2ca4df395891f1aeb1879714c0ed2af1a87bea2` | `1,003,639,954` bytes |
-| Repaired `full_system_attribution.json` | `101fdaaafa8b46bd3266838485022e5d42e85ea026e85bd42d077b5c3c7b08f3` | `2,114,612,999` bytes |
-| `fixed_event_attribution.json` | `30395969363d2ae57b1414c7f93e7914088f23d4e6b20c161d8e5768cafda6d9` | `1,103` bytes |
-| `stage_validity.json` | `3207f2c3d04308e8feab1f92dd63d2c3607896da32f4a3782cab22b5a3cf8e12` | `103,871` bytes |
-| `summary.json` | `68a50ad3407938556fa7a8eac257e842cfc50887e70f45acdaba2e356d629495` | `1,984` bytes |
-| `acceptance_summary.json` | `eb91d38c86b650e75dacb9a954e71ef34fd61de6dcc7bdade266b4e7ce6a8589` | `5,830` bytes |
+| Repaired `full_system_attribution.json` | `3259f41a54a4ca688fd17cc59ad5c784564c49032f1c2a34721ea0ad237916d9` | `2,114,782,500` bytes |
+| `fixed_event_attribution.json` | `17acf89e2c796a8bfa73093e9e20351d0bf2c5f7c3f24e22f6053c2f01c85c58` | `1,654` bytes |
+| `stage_validity.json` | `bee2ff89d2257a8974ed544e24a574ab2dfef70fd6c445f8dbf40376cfe8beb3` | `104,422` bytes |
+| `summary.json` | `fb455bcbeb7ccc584748db28f3e66996845b43b5f598d148e253fc1e99469c43` | `2,585` bytes |
+| `acceptance_summary.json` | `27b344630b9737446897cc20a195c44b01584fadc25f9a739057208a0a97c723` | `6,039` bytes |
 
 The legacy input hash remained unchanged across the historical rerun. Generated
 artifacts remain ignored and are evidence, not commit payloads. The table above
-preserves their exact bytes for audit; it does not upgrade them to current
-identity-complete evidence.
+binds this handoff to the current identity-complete output bytes.
 
 ## Attribution validity
 
@@ -142,11 +141,10 @@ stage records and Task 5 report prove that both sides are incomplete. Future
 reruns use the corrected two-sided reason:
 `legacy_and_repaired_stage_provenance_incomplete`.
 
-## Historical diagnostic economic result
+## Identity-complete economic result
 
-The values below remain useful as adverse diagnostics and retain the blocked
-direction, but they are not an authoritative repaired baseline until the
-reinstrumented frozen rerun completes.
+The values below are the authoritative frozen-donor acceptance result. They do
+not authorize live use; they establish why this donor is blocked.
 
 | Gate | Result | Repaired evidence |
 | --- | --- | --- |
@@ -159,9 +157,10 @@ reinstrumented frozen rerun completes.
 | Execution purity | PASS | created exposure, reversal and overshoot all `0` |
 | OptionsState execution influence | PASS | A4/A5 execution material remains equal |
 
-The repaired A5 baseline late-dev range is `-596.20` to `1,013.77`; it spans
-loss and profit and is not a five-seed positive result. The extra-15bp result
-is negative for every seed:
+The repaired A5 baseline late-dev range is `-596.20` to `1,013.77`; its mean
+is `+379.21` with 4/5 positive seeds. At an additional 5bp, the mean is
+`-353.44` with only 1/5 positive. The extra-15bp result is negative for every
+seed and averages `-1,818.72`:
 
 | Seed | A5 extra-15bp net PnL | Max A5 MDD | Train episode PF | Max switches/day |
 | ---: | ---: | ---: | ---: | ---: |

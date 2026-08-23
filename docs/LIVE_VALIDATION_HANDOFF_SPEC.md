@@ -38,12 +38,11 @@ paper-live**。权威结论见：
 - [`QUANT_V2_ARCHITECTURE_EXPERT_REVIEW.md`](QUANT_V2_ARCHITECTURE_EXPERT_REVIEW.md)
 - [`QUANT_V2_ACCEPTANCE_HANDOFF.md`](QUANT_V2_ACCEPTANCE_HANDOFF.md)
 
-Operator evidence status 是 `requires_reinstrumented_30_run_rerun`。旧 repaired
-30/30 是 **pre-contract diagnostic only**；它缺少 **accounting-kernel and
-full replay-input identity**。Operator 必须按
-`config/research/legacy_accounting_rerun_v2.json` 在 **new immutable output
-directory** 完整复跑，且不得编辑旧 artifact 或伪造缺失字段。只有新的
-identity-complete 30/30 产物通过合同校验，才能恢复权威经济结论。
+Operator evidence status 是 `identity_complete_30_run_rerun_completed`。旧
+repaired 30/30 仍是 **pre-contract diagnostic only**；新权威 compact verdict
+位于 `results/accounting_integrity_20260823_v2/acceptance_summary.json`，其
+full-system source SHA-256 是
+`3259f41a54a4ca688fd17cc59ad5c784564c49032f1c2a34721ea0ad237916d9`。
 
 当前 `legacy-accounting-rerun-contract.v3` 绑定 2026-08-23 13:48 CST
 只读 snapshot 的完整 replay Parquet input surface：`5,114` files /
@@ -63,12 +62,12 @@ uv run python scripts/rerun_legacy_accounting_baseline.py \
   --output-dir results/accounting_integrity_20260823_v2
 ```
 
-旧矩阵的 late-dev baseline 与额外 15bp 下均 5/5 为负，robustness 为
-`0/5`，归因终态为 `stop_donor_training`；这些值当前仅是否定性诊断，不能
-授权 **promotion or training**。在新复跑完成前，不存在新的权威经济 verdict，
-同样不得进入 paper-live。旧矩阵的 A5 MDD、train episode PF、switch cadence
-和 execution purity 结果也只保留为诊断。OptionsState 对订单和仓位严格零
-影响，但 2026 options 数据与 2025 OOS 无重叠，状态仍为
+新复跑的 late-dev A5 在现有成本下均值为 `+379.21`（4/5 为正），额外
+5bp 后均值为 `-353.44`（1/5 为正），额外 15bp 后均值为 `-1,818.72`
+（0/5 为正），strict robustness 为 `0/5`。正式 verdict 是
+`BLOCKED_PAUSE_PROMOTION_AND_TRAINING`，因此不能授权 **promotion or training**，
+也不得进入 paper-live。MDD、train episode PF、switch cadence 和 execution
+purity 通过；OptionsState 对订单和仓位严格零影响，但 OOS 状态仍为
 `INSUFFICIENT_SAMPLE`，禁止激活。
 
 上述 operator 合同优先于本文后续保留的旧 baseline/paper-live 说明。只有

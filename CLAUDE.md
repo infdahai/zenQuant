@@ -39,13 +39,12 @@
   - 架构审查：`docs/QUANT_V2_ARCHITECTURE_EXPERT_REVIEW.md`
   - 冻结实验与复跑：`docs/QUANT_V2_ACCEPTANCE_HANDOFF.md`
   - compact verdict 唯一生成入口：`scripts/build_quant_v2_acceptance_summary.py`
-  - Operator evidence status：`requires_reinstrumented_30_run_rerun`
+  - Operator evidence status：`identity_complete_30_run_rerun_completed`
   - 旧 repaired 30/30 是 **pre-contract diagnostic only**；它缺少 **accounting-kernel and full replay-input identity**，不得恢复权威经济结论
-  - Operator 必须按 `config/research/legacy_accounting_rerun_v2.json` 在 **new immutable output directory** 完整复跑，旧 artifact 和 v1 合同不得编辑或补字段
+  - 新权威产物：`results/accounting_integrity_20260823_v2/acceptance_summary.json`；full-system SHA-256 为 `3259f41a54a4ca688fd17cc59ad5c784564c49032f1c2a34721ea0ad237916d9`
   - 冻结 replay 输入合同是 `legacy-accounting-rerun-contract.v3`：2026-08-23 13:48 CST 的只读 snapshot 全量 `5,114` 个 Parquet / `21,375,864,438` bytes / `sha256:17fe13a2b55cfd8a34fb0e9b2c0c616e7af4c38a25e9eed705eb4b9cc0d6be04`；合同文件 SHA-256 为 `c76f7c027698ac8146b549d551d38b0f6963e0d6932b1e77cabebf4fab397a19`
-  - 复跑必须从指向冻结只读 snapshot 的工作树执行 `uv run python scripts/rerun_legacy_accounting_baseline.py --root data/raw/binance --legacy-input results/quant_v2_acceptance/architecture_attribution.json --output-dir results/accounting_integrity_20260823_v2`；`--root` 的真实 parent 必须与 cwd `data/raw` 相同且整个 corpus 不可写，entry 1 前还会无运行构造第一 donor context 校验 macro/options 与 formula identity
-  - 历史诊断为 late-dev baseline 与额外 15bp 下均 5/5 为负、strict robustness `0/5`，attribution 为 `stop_donor_training`
-  - 上述 `0/5` / `stop_donor_training` 只是否定性诊断；当前不授权 **promotion or training**，identity-complete 复跑前也没有新的权威经济 verdict
+  - 新复跑 late-dev A5：现有成本均值 `+379.21`（4/5 为正），额外 5bp 均值 `-353.44`（1/5 为正），额外 15bp 均值 `-1,818.72`（0/5 为正）；隐含额外成本盈亏平衡仅约 `2.59bp`
+  - 正式 verdict：`BLOCKED_PAUSE_PROMOTION_AND_TRAINING`；strict robustness `0/5`，不授权 **promotion or training**
   - 下一候选假设：时空关系仅允许预注册 shadow attribution，尚未获证据支持或交易权限
   - 禁止：继续调参/训练、promotion、激活 OptionsState multiplier
 - 数据完成度：
