@@ -12,6 +12,22 @@ terminal_recommendation = stop_donor_training
 parameter_search        = false
 ```
 
+On 2026-08-23, the product owner explicitly accepted the repaired Gate C
+golden as the new accounting regression baseline:
+
+```text
+final_equity = 97549.27227977359
+net_pnl      = -2450.73
+sharpe       = -9.7916
+max_drawdown = 0.028809
+profit_factor = 2.556359
+```
+
+This acceptance approves the signed-cash accounting semantics and their
+regression fixture only. It does not validate August profitability, prove
+legacy-to-repaired causal attribution, authorize promotion or parameter
+search, or waive any product gate below.
+
 The August huge-profit result is invalid. Legacy fee application floored
 negative cash at zero and erased financing liability after leveraged fills.
 The affected equity, return, net PnL, equity-multiple, Sharpe, Sortino,
@@ -144,8 +160,9 @@ product blockers, not implementation defects. Do not weaken these thresholds.
 No promotion or parameter search is authorized while they remain unresolved.
 
 The two Gate E failures do not invalidate the accounting implementation or the
-30/30 identity checks. They block product promotion on their own terms. No
-product-owner acceptance is claimed by this handoff.
+30/30 identity checks. They block product promotion on their own terms. The
+product-owner acceptance recorded above applies only to the repaired Gate C
+golden; it does not accept or waive these product failures.
 
 ## Accounting boundary and limitations
 

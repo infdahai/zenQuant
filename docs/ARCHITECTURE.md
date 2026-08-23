@@ -114,6 +114,12 @@ current payload and donor proof needed for a field-identical comparison.
 Funding and financing remain `OUT_OF_SCOPE_NOT_EQUITY_INTEGRATED`; diagnostic
 accumulators are not portfolio-equity parity. No promotion or parameter search is authorized by the repair or rerun.
 
+The product owner accepted the repaired Gate C golden on 2026-08-23 as the
+accounting regression baseline (`final_equity=97549.27227977359`,
+`net_pnl=-2450.73`, `sharpe=-9.7916`). This accepts the corrected signed-cash
+semantics only; it does not establish strategy profitability, prove the
+unavailable legacy fixed-event attribution, or waive product gates.
+
 ### 2.2 Current product-gate blockers
 
 The full data-present `zenquant-check` is **NOT green**. Gate E preserves two
