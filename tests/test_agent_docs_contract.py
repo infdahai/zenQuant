@@ -76,3 +76,14 @@ def test_quant_v2_handoff_records_current_blocked_evidence() -> None:
     assert "-624.15" in content
     assert "Robustness is `0/5`" in content
     assert "BLOCKED_PAUSE_PROMOTION_AND_TRAINING" in content
+
+
+def test_authoritative_docs_mark_old_rerun_identity_insufficient() -> None:
+    architecture = Path("docs/ARCHITECTURE.md").read_text(encoding="utf-8")
+    handoff = Path("docs/QUANT_V2_ACCEPTANCE_HANDOFF.md").read_text(encoding="utf-8")
+    for content in (architecture, handoff):
+        normalized = " ".join(content.split())
+        assert "sha256:44fbafe8d88db40a618f2742f7a5cdd602310bf5869e1bac33c587d281c1b160" in content
+        assert "sha256:182398d05f7289e25b467cb8957603bdbde5360f39fdf62d8e366a9a5c415fed" in content
+        assert "requires_reinstrumented_30_run_rerun" in content
+        assert "economic values are diagnostic only" in normalized

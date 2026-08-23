@@ -22,10 +22,12 @@ ZenQuant remains a deterministic, regime-aware BTC trading system. The August
 rank1 performance history was produced by defective legacy fee accounting and
 is not valid evidence of return, equity, Sharpe, Sortino, drawdown or promotion
 readiness. A frozen repaired matrix completed 30/30 runs with one verified
-formula identity. Its A5 extra-15bp late-dev net PnL is negative on all five
-seeds and robustness is `0/5`; the terminal recommendation remains
-`stop_donor_training`. The architecture remains useful, but this donor must not
-receive another optimizer or parameter-training round.
+indicator-formula identity, but that historical rerun predates accounting-kernel
+and raw-corpus identity instrumentation. Its A5 extra-15bp late-dev net PnL is
+negative on all five seeds and robustness is `0/5`; those economic values are
+diagnostic only. The terminal recommendation remains `stop_donor_training`.
+The architecture remains useful, but this donor must not receive another
+optimizer or parameter-training round.
 
 The implemented research-only V2 chain is:
 
@@ -97,15 +99,31 @@ families as `CONFIRMED_AFFECTED`. Historical artifacts stay available for
 audit, but their performance metrics cannot be used for comparison or
 promotion.
 
-The repaired formula identity is:
+The historical report's indicator formula identity is:
 
 ```text
 sha256:82af23a08c68a94641e1d7769ecdf9619059dddbeb531dd3703cc4d2ff809f4a
 ```
 
-The frozen rerun verified this exact identity, manifest hash, candidate hash
-and profile hash for all 30/30 entries. That establishes the repaired run's
-identity, not legacy comparability. The old artifact has no replayable
+That hash fingerprints the indicator formula; it does not fingerprint fee,
+fill, cash or mark-to-market accounting. Current code separately computes the
+accounting-kernel semantic identity:
+
+```text
+sha256:44fbafe8d88db40a618f2742f7a5cdd602310bf5869e1bac33c587d281c1b160
+```
+
+The frozen raw Parquet corpus contract is 2,523 files / 21,185,269,620 bytes:
+
+```text
+sha256:182398d05f7289e25b467cb8957603bdbde5360f39fdf62d8e366a9a5c415fed
+```
+
+The existing 30/30 artifact contains neither identity. Its status is
+`requires_reinstrumented_30_run_rerun`; it must not be edited or backfilled,
+and its economic values are diagnostic only until a new immutable-output rerun
+records the accounting kernel, frozen legacy envelope and raw corpus before
+and after compute. The old artifact also has no replayable
 fixed-event ledger, so the exact first affected fee and downstream divergence
 remain `INSUFFICIENT_EVIDENCE`. All 210/210 legacy-to-repaired stage records are
 `UNVERIFIED_LEGACY`: the historical schema and repaired stage schemas lack the
