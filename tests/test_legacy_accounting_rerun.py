@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import errno
+import hashlib
 import importlib.util
 import json
 import os
@@ -10,10 +11,12 @@ from pathlib import Path
 
 import pytest
 
+from zenquant.research.accounting_kernel_identity import build_accounting_kernel_identity
 from zenquant.research.architecture_experiment import ArchitectureStage
 from zenquant.research.legacy_accounting_validity import ValidityState
 
 FORMULA_HASH = "sha256:82af23a08c68a94641e1d7769ecdf9619059dddbeb531dd3703cc4d2ff809f4a"
+ACCOUNTING_KERNEL_SHA256 = build_accounting_kernel_identity()["sha256"]
 
 
 def _load_cli_module():
@@ -49,7 +52,10 @@ def _minimal_report(manifest, entries: list[tuple[str, int]]) -> dict[str, objec
             {
                 "window": window,
                 "seed": seed,
-                "identities": {"formula_hashes": [FORMULA_HASH]},
+                "identities": {
+                    "formula_hashes": [FORMULA_HASH],
+                    "accounting_kernel_sha256": ACCOUNTING_KERNEL_SHA256,
+                },
                 "stages": {stage.value: {"stage": stage.value} for stage in ArchitectureStage},
             }
             for window, seed in entries
@@ -72,6 +78,23 @@ def _install_fast_frozen_runner(monkeypatch, module) -> None:
         "build_architecture_attribution_report",
         fake_build_architecture_attribution_report,
     )
+    monkeypatch.setattr(module, "_load_frozen_rerun_contract", lambda: {})
+
+    def fake_input_identities(*, legacy_input, root):
+        del root
+        return {
+            "legacy_source": module._source_identity(legacy_input),
+            "legacy_envelope_sha256": "sha256:" + "e" * 64,
+            "raw_parquet_corpus": {
+                "schema_version": "raw-parquet-corpus.v1",
+                "sha256": "sha256:" + "f" * 64,
+                "file_count": 1,
+                "total_size_bytes": 1,
+            },
+        }
+
+    monkeypatch.setattr(module, "_frozen_input_identities", fake_input_identities)
+    monkeypatch.setattr(module, "_assert_frozen_input_contract", lambda *args, **kwargs: None)
 
 
 def test_parser_exposes_only_frozen_io_arguments():
@@ -162,6 +185,10 @@ def test_rerun_preserves_legacy_and_publishes_frozen_identities(tmp_path, monkey
     assert summary["matrix"] == {"expected_runs": 30, "observed_runs": 30}
     assert summary["identities"]["manifest_sha256"] == manifest.sha256
     assert summary["identities"]["formula_hashes"] == [FORMULA_HASH]
+    assert summary["identities"]["accounting_kernel_sha256"] == ACCOUNTING_KERNEL_SHA256
+    assert stage_validity["accounting_kernel_sha256"] == ACCOUNTING_KERNEL_SHA256
+    assert fixed_event["accounting_kernel_sha256"] == ACCOUNTING_KERNEL_SHA256
+    assert full_system["accounting_rerun"]["accounting_kernel_sha256"] == ACCOUNTING_KERNEL_SHA256
     assert summary["full_system_comparison"]["status"] == ValidityState.UNVERIFIED_LEGACY.value
     assert summary["full_system_comparison"]["first_confirmed_divergence"] is None
     assert summary["resource_behavior"]["legacy_full_json_load_count"] == 0
@@ -494,6 +521,16 @@ def test_repaired_report_requires_exact_frozen_formula_identity(formula_hash):
         module._validate_repaired_report(report, manifest=manifest)
 
 
+def test_repaired_report_requires_accounting_kernel_identity():
+    module = _load_cli_module()
+    manifest = module.load_architecture_experiment_manifest(module.FROZEN_MANIFEST_PATH)
+    report = _minimal_report(manifest, list(manifest.expected_run_keys))
+    report["runs"][0]["identities"].pop("accounting_kernel_sha256")
+
+    with pytest.raises(ValueError, match="accounting kernel identity"):
+        module._validate_repaired_report(report, manifest=manifest)
+
+
 def test_first_confirmed_divergence_uses_frozen_matrix_and_stage_order():
     module = _load_cli_module()
     records = [
@@ -576,3 +613,182 @@ def test_unverified_reason_identifies_the_incomplete_side(legacy_error, repaired
 
     assert comparison["status"] == ValidityState.UNVERIFIED_LEGACY.value
     assert comparison["reason"] == expected_reason
+
+
+def test_parquet_corpus_identity_binds_paths_sizes_and_bytes(tmp_path):
+    module = _load_cli_module()
+    root = tmp_path / "raw"
+    first = root / "klines/BTCUSDT/5m/2025-01.parquet"
+    second = root / "funding/BTCUSDT/2025-01.parquet"
+    first.parent.mkdir(parents=True)
+    second.parent.mkdir(parents=True)
+    first.write_bytes(b"first")
+    second.write_bytes(b"second")
+
+    baseline = module._parquet_corpus_identity(root)
+    second.write_bytes(b"changed")
+    changed = module._parquet_corpus_identity(root)
+
+    assert baseline["schema_version"] == "raw-parquet-corpus.v1"
+    assert baseline["file_count"] == 2
+    assert baseline["total_size_bytes"] == 11
+    assert baseline["sha256"] != changed["sha256"]
+
+
+def test_legacy_envelope_identity_excludes_runs_but_binds_outer_contract(tmp_path):
+    module = _load_cli_module()
+    first = tmp_path / "first.json"
+    second = tmp_path / "second.json"
+    third = tmp_path / "third.json"
+    first.write_text(
+        json.dumps({"manifest": {"sha256": "frozen"}, "runs": [{"window": "2020", "seed": 42}]}, indent=2),
+        encoding="utf-8",
+    )
+    second.write_text(
+        json.dumps({"manifest": {"sha256": "frozen"}, "runs": [{"window": "2021", "seed": 123}]}, indent=2),
+        encoding="utf-8",
+    )
+    third.write_text(
+        json.dumps({"manifest": {"sha256": "changed"}, "runs": [{"window": "2020", "seed": 42}]}, indent=2),
+        encoding="utf-8",
+    )
+
+    assert module._legacy_envelope_identity(first) == module._legacy_envelope_identity(second)
+    assert module._legacy_envelope_identity(first) != module._legacy_envelope_identity(third)
+
+
+def test_frozen_input_contract_rejects_legacy_and_corpus_identity_drift(tmp_path):
+    module = _load_cli_module()
+    manifest = module.load_architecture_experiment_manifest(module.FROZEN_MANIFEST_PATH)
+    legacy_input = tmp_path / "legacy.json"
+    legacy_input.write_text(
+        json.dumps(_minimal_report(manifest, list(manifest.expected_run_keys)), indent=2, sort_keys=True),
+        encoding="utf-8",
+    )
+    root = tmp_path / "raw"
+    parquet = root / "klines/BTCUSDT/5m/2025-01.parquet"
+    parquet.parent.mkdir(parents=True)
+    parquet.write_bytes(b"frozen")
+    observed = module._frozen_input_identities(legacy_input=legacy_input, root=root)
+    contract = {
+        "schema_version": "legacy-accounting-rerun-contract.v1",
+        "architecture_manifest_sha256": manifest.sha256,
+        "indicator_formula_hash": FORMULA_HASH,
+        "accounting_kernel_sha256": ACCOUNTING_KERNEL_SHA256,
+        "legacy_source": observed["legacy_source"],
+        "legacy_envelope_sha256": observed["legacy_envelope_sha256"],
+        "raw_parquet_corpus": observed["raw_parquet_corpus"],
+    }
+
+    module._assert_frozen_input_contract(contract, observed=observed, manifest=manifest)
+
+    changed_legacy = json.loads(json.dumps(contract))
+    changed_legacy["legacy_source"]["sha256"] = "a" * 64
+    with pytest.raises(ValueError, match="legacy source identity mismatch"):
+        module._assert_frozen_input_contract(changed_legacy, observed=observed, manifest=manifest)
+
+    changed_corpus = json.loads(json.dumps(contract))
+    changed_corpus["raw_parquet_corpus"]["sha256"] = "sha256:" + "b" * 64
+    with pytest.raises(ValueError, match="raw Parquet corpus identity mismatch"):
+        module._assert_frozen_input_contract(changed_corpus, observed=observed, manifest=manifest)
+
+
+def _write_frozen_rerun_contract(module, tmp_path, payload, monkeypatch):
+    path = tmp_path / "rerun-contract.json"
+    encoded = json.dumps(payload, indent=2, sort_keys=True).encode("utf-8")
+    path.write_bytes(encoded)
+    monkeypatch.setattr(module, "FROZEN_RERUN_CONTRACT_PATH", path)
+    monkeypatch.setattr(module, "FROZEN_RERUN_CONTRACT_SHA256", hashlib.sha256(encoded).hexdigest())
+
+
+def test_rerun_rejects_non_frozen_legacy_before_compute(tmp_path, monkeypatch):
+    module = _load_cli_module()
+    manifest = module.load_architecture_experiment_manifest(module.FROZEN_MANIFEST_PATH)
+    legacy_input = tmp_path / "legacy.json"
+    legacy_input.write_text(
+        json.dumps(_minimal_report(manifest, list(manifest.expected_run_keys)), indent=2, sort_keys=True),
+        encoding="utf-8",
+    )
+    root = tmp_path / "raw"
+    parquet = root / "klines/BTCUSDT/5m/2025-01.parquet"
+    parquet.parent.mkdir(parents=True)
+    parquet.write_bytes(b"frozen")
+    observed = module._frozen_input_identities(legacy_input=legacy_input, root=root)
+    contract = {
+        "schema_version": "legacy-accounting-rerun-contract.v1",
+        "architecture_manifest_sha256": manifest.sha256,
+        "indicator_formula_hash": FORMULA_HASH,
+        "accounting_kernel_sha256": ACCOUNTING_KERNEL_SHA256,
+        "legacy_source": {**observed["legacy_source"], "sha256": "a" * 64},
+        "legacy_envelope_sha256": observed["legacy_envelope_sha256"],
+        "raw_parquet_corpus": observed["raw_parquet_corpus"],
+    }
+    _write_frozen_rerun_contract(module, tmp_path, contract, monkeypatch)
+
+    def forbidden_compute(*args, **kwargs):
+        raise AssertionError("identity mismatch must fail before compute")
+
+    monkeypatch.setattr(module, "_run_frozen_matrix", forbidden_compute)
+
+    with pytest.raises(ValueError, match="legacy source identity mismatch"):
+        module.main(
+            [
+                "--root",
+                str(root),
+                "--legacy-input",
+                str(legacy_input),
+                "--output-dir",
+                str(tmp_path / "output"),
+            ]
+        )
+
+
+def test_raw_corpus_mutation_during_rerun_aborts_publication(tmp_path, monkeypatch):
+    module = _load_cli_module()
+    manifest = module.load_architecture_experiment_manifest(module.FROZEN_MANIFEST_PATH)
+    entries = list(manifest.expected_run_keys)
+    legacy_input = tmp_path / "legacy.json"
+    legacy_input.write_text(json.dumps(_minimal_report(manifest, entries), indent=2, sort_keys=True), encoding="utf-8")
+    root = tmp_path / "raw"
+    parquet = root / "klines/BTCUSDT/5m/2025-01.parquet"
+    parquet.parent.mkdir(parents=True)
+    parquet.write_bytes(b"frozen")
+    observed = module._frozen_input_identities(legacy_input=legacy_input, root=root)
+    contract = {
+        "schema_version": "legacy-accounting-rerun-contract.v1",
+        "architecture_manifest_sha256": manifest.sha256,
+        "indicator_formula_hash": FORMULA_HASH,
+        "accounting_kernel_sha256": ACCOUNTING_KERNEL_SHA256,
+        "legacy_source": observed["legacy_source"],
+        "legacy_envelope_sha256": observed["legacy_envelope_sha256"],
+        "raw_parquet_corpus": observed["raw_parquet_corpus"],
+    }
+    _write_frozen_rerun_contract(module, tmp_path, contract, monkeypatch)
+    monkeypatch.setattr(module, "_run_frozen_matrix", lambda **kwargs: _minimal_report(manifest, entries))
+    real_stream = module._stream_stage_validity
+
+    def mutate_after_stream(*, legacy_input, repaired_report, manifest):
+        result = real_stream(
+            legacy_input=legacy_input,
+            repaired_report=repaired_report,
+            manifest=manifest,
+        )
+        parquet.write_bytes(b"changed-during-rerun")
+        return result
+
+    monkeypatch.setattr(module, "_stream_stage_validity", mutate_after_stream)
+    output_dir = tmp_path / "output"
+
+    with pytest.raises(ValueError, match="raw Parquet corpus changed during rerun"):
+        module.main(
+            [
+                "--root",
+                str(root),
+                "--legacy-input",
+                str(legacy_input),
+                "--output-dir",
+                str(output_dir),
+            ]
+        )
+
+    assert not output_dir.exists()

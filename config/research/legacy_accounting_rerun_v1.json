@@ -1,0 +1,18 @@
+{
+  "accounting_kernel_sha256": "sha256:44fbafe8d88db40a618f2742f7a5cdd602310bf5869e1bac33c587d281c1b160",
+  "architecture_manifest_sha256": "c982d074b24ec21235dfefbd972d936dc4f5a4ab0360964013576c90729bfbe0",
+  "indicator_formula_hash": "sha256:82af23a08c68a94641e1d7769ecdf9619059dddbeb531dd3703cc4d2ff809f4a",
+  "legacy_envelope_sha256": "sha256:0c66255a9020985ec5b3c2c10c2da4a38e96ed070c6c7c0801beced9b26f689c",
+  "legacy_source": {
+    "path": "results/quant_v2_acceptance/architecture_attribution.json",
+    "sha256": "1f327c7c786f511fbba6ac1dd2ca4df395891f1aeb1879714c0ed2af1a87bea2",
+    "size_bytes": 1003639954
+  },
+  "raw_parquet_corpus": {
+    "file_count": 2523,
+    "schema_version": "raw-parquet-corpus.v1",
+    "sha256": "sha256:182398d05f7289e25b467cb8957603bdbde5360f39fdf62d8e366a9a5c415fed",
+    "total_size_bytes": 21185269620
+  },
+  "schema_version": "legacy-accounting-rerun-contract.v1"
+}
