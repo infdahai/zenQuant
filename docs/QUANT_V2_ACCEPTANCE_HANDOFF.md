@@ -6,11 +6,18 @@ under `results/`; their hashes below bind this document to the reviewed bytes.
 
 ## Decision
 
+Historical pre-contract diagnostic only:
+
 ```text
 verdict                 = BLOCKED_PAUSE_PROMOTION_AND_TRAINING
 terminal_recommendation = stop_donor_training
 parameter_search        = false
 ```
+
+These retained strings deny promotion or training; they do not restore an
+authoritative economic verdict. Operator evidence remains
+`requires_reinstrumented_30_run_rerun` until a new immutable output directory
+passes the current accounting-kernel and raw-corpus identity contract.
 
 On 2026-08-23, the product owner explicitly accepted the repaired Gate C
 golden as the new accounting regression baseline:
@@ -49,10 +56,10 @@ only. The existing bytes must not be edited or backfilled.
 - Candidate params SHA-256: `d86c92e8837c2febc04d0c2935299abc30b0636fb5d9a7c9e244d670d3499381`
 - Profile SHA-256: `ce4fc640b3a0ae2dfb8b6d4bd96652f431a20b5581ce5d2fa67e0722f4841d05`
 - Indicator formula hash: `sha256:82af23a08c68a94641e1d7769ecdf9619059dddbeb531dd3703cc4d2ff809f4a`
-- Required accounting-kernel semantic SHA-256: `sha256:44fbafe8d88db40a618f2742f7a5cdd602310bf5869e1bac33c587d281c1b160`
+- Required accounting-kernel semantic SHA-256: `sha256:a2e7a4039556aa427ec258a2f38d302c6edf5e37e8e81b9cedd4a36897b66c1a`
 - Frozen legacy envelope SHA-256: `sha256:0c66255a9020985ec5b3c2c10c2da4a38e96ed070c6c7c0801beced9b26f689c`
 - Frozen raw Parquet corpus: `2,523` files / `21,185,269,620` bytes / `sha256:182398d05f7289e25b467cb8957603bdbde5360f39fdf62d8e366a9a5c415fed`
-- Rerun contract SHA-256: `610e3b51f18e6b527d1af2335cafa74f657513dacbc34469816a9ff20260276b`
+- Rerun contract SHA-256: `8f4fb2d834500f5381c54b4288d841e7915dbf63d3bef94918560cf623490986`
 - Seeds: `42, 123, 456, 789, 1024`
 - Windows: `train_full, 2020, 2021, 2022, 2023, late_dev_2025`
 - Perturbation: price noise `0.001`, volume noise `0.05`, bar dropout `0.02`

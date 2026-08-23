@@ -24,7 +24,7 @@
   - `dev = 2024-01-01 ~ 2025-12-31`
   - `test = 2026-01-01 ~ latest`
 - 当前最可信 live 候选：`current / paulwei_baseline`
-- RL / Optuna：研究工具；架构归因已完成，当前 donor 返回 `stop_donor_training`，继续暂停新搜索
+- RL / Optuna：研究工具；旧 pre-contract 归因仅诊断性返回 `stop_donor_training`，当前仍未授权新搜索
 
 ## Current Research Truth
 
@@ -39,9 +39,11 @@
   - 架构审查：`docs/QUANT_V2_ARCHITECTURE_EXPERT_REVIEW.md`
   - 冻结实验与复跑：`docs/QUANT_V2_ACCEPTANCE_HANDOFF.md`
   - compact verdict 唯一生成入口：`scripts/build_quant_v2_acceptance_summary.py`
-  - 当前 verdict：`BLOCKED_PAUSE_PROMOTION_AND_TRAINING`
-  - 原因：late-dev baseline 与额外 15bp 下均 5/5 为负，strict robustness `0/5`
-  - attribution：`stop_donor_training`；confidence 压缩亏损但 `0/5` rescue
+  - Operator evidence status：`requires_reinstrumented_30_run_rerun`
+  - 旧 repaired 30/30 是 **pre-contract diagnostic only**；它缺少 **accounting-kernel and raw-corpus identity**，不得恢复权威经济结论
+  - Operator 必须按 `config/research/legacy_accounting_rerun_v1.json` 在 **new immutable output directory** 完整复跑，旧 artifact 不得编辑或补字段
+  - 历史诊断为 late-dev baseline 与额外 15bp 下均 5/5 为负、strict robustness `0/5`，attribution 为 `stop_donor_training`
+  - 上述 `0/5` / `stop_donor_training` 只是否定性诊断；当前不授权 **promotion or training**，identity-complete 复跑前也没有新的权威经济 verdict
   - 下一候选假设：时空关系仅允许预注册 shadow attribution，尚未获证据支持或交易权限
   - 禁止：继续调参/训练、promotion、激活 OptionsState multiplier
 - 数据完成度：

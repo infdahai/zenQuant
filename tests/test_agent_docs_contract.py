@@ -78,12 +78,24 @@ def test_quant_v2_handoff_records_current_blocked_evidence() -> None:
     assert "BLOCKED_PAUSE_PROMOTION_AND_TRAINING" in content
 
 
+def test_operator_docs_require_identity_complete_rerun_before_economic_authority() -> None:
+    for path in (Path("CLAUDE.md"), Path("docs/LIVE_VALIDATION_HANDOFF_SPEC.md")):
+        normalized = " ".join(path.read_text(encoding="utf-8").split())
+        assert "pre-contract diagnostic only" in normalized
+        assert "requires_reinstrumented_30_run_rerun" in normalized
+        assert "accounting-kernel and raw-corpus identity" in normalized
+        assert "new immutable output directory" in normalized
+        assert "0/5" in normalized
+        assert "stop_donor_training" in normalized
+        assert "promotion or training" in normalized
+
+
 def test_authoritative_docs_mark_old_rerun_identity_insufficient() -> None:
     architecture = Path("docs/ARCHITECTURE.md").read_text(encoding="utf-8")
     handoff = Path("docs/QUANT_V2_ACCEPTANCE_HANDOFF.md").read_text(encoding="utf-8")
     for content in (architecture, handoff):
         normalized = " ".join(content.split())
-        assert "sha256:44fbafe8d88db40a618f2742f7a5cdd602310bf5869e1bac33c587d281c1b160" in content
+        assert "sha256:a2e7a4039556aa427ec258a2f38d302c6edf5e37e8e81b9cedd4a36897b66c1a" in content
         assert "sha256:182398d05f7289e25b467cb8957603bdbde5360f39fdf62d8e366a9a5c415fed" in content
         assert "requires_reinstrumented_30_run_rerun" in content
         assert "economic values are diagnostic only" in normalized

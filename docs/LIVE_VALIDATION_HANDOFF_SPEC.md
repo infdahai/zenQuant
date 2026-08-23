@@ -38,14 +38,24 @@ paper-live**。权威结论见：
 - [`QUANT_V2_ARCHITECTURE_EXPERT_REVIEW.md`](QUANT_V2_ARCHITECTURE_EXPERT_REVIEW.md)
 - [`QUANT_V2_ACCEPTANCE_HANDOFF.md`](QUANT_V2_ACCEPTANCE_HANDOFF.md)
 
-冻结 `6 windows x 5 seeds` 矩阵完整通过执行；A5 MDD、train episode PF、
-switch cadence、execution purity 通过。但 late-dev baseline 与额外 15bp 下
-均 5/5 为负，robustness 为 `0/5`，归因终态为 `stop_donor_training`。
-OptionsState 对订单和仓位严格零影响，但 2026 options 数据与 2025 OOS 无
-重叠，状态仍为 `INSUFFICIENT_SAMPLE`，禁止激活。
+Operator evidence status 是 `requires_reinstrumented_30_run_rerun`。旧 repaired
+30/30 是 **pre-contract diagnostic only**；它缺少 **accounting-kernel and
+raw-corpus identity**。Operator 必须按
+`config/research/legacy_accounting_rerun_v1.json` 在 **new immutable output
+directory** 完整复跑，且不得编辑旧 artifact 或伪造缺失字段。只有新的
+identity-complete 30/30 产物通过合同校验，才能恢复权威经济结论。
 
-本结论优先于本文后续保留的旧 baseline/paper-live 说明。只有新的、单独审批
-的冻结实验通过全部 Quant V2 hard gates 后，才可重新讨论 promotion。
+旧矩阵的 late-dev baseline 与额外 15bp 下均 5/5 为负，robustness 为
+`0/5`，归因终态为 `stop_donor_training`；这些值当前仅是否定性诊断，不能
+授权 **promotion or training**。在新复跑完成前，不存在新的权威经济 verdict，
+同样不得进入 paper-live。旧矩阵的 A5 MDD、train episode PF、switch cadence
+和 execution purity 结果也只保留为诊断。OptionsState 对订单和仓位严格零
+影响，但 2026 options 数据与 2025 OOS 无重叠，状态仍为
+`INSUFFICIENT_SAMPLE`，禁止激活。
+
+上述 operator 合同优先于本文后续保留的旧 baseline/paper-live 说明。只有
+新的、单独审批且 identity-complete 的冻结实验通过全部 Quant V2 hard gates
+后，才可重新讨论 promotion。
 
 ### 1.1 当前主策略
 

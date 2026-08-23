@@ -110,7 +110,7 @@ fill, cash or mark-to-market accounting. Current code separately computes the
 accounting-kernel semantic identity:
 
 ```text
-sha256:44fbafe8d88db40a618f2742f7a5cdd602310bf5869e1bac33c587d281c1b160
+sha256:a2e7a4039556aa427ec258a2f38d302c6edf5e37e8e81b9cedd4a36897b66c1a
 ```
 
 The frozen raw Parquet corpus contract is 2,523 files / 21,185,269,620 bytes:
