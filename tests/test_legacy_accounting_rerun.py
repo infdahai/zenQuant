@@ -8,6 +8,7 @@ import os
 import subprocess
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -79,14 +80,15 @@ def _install_fast_frozen_runner(monkeypatch, module) -> None:
         fake_build_architecture_attribution_report,
     )
     monkeypatch.setattr(module, "_load_frozen_rerun_contract", lambda: {})
+    monkeypatch.setattr(module, "_preflight_first_frozen_donor", lambda **kwargs: None)
 
     def fake_input_identities(*, legacy_input, root):
         del root
         return {
             "legacy_source": module._source_identity(legacy_input),
             "legacy_envelope_sha256": "sha256:" + "e" * 64,
-            "raw_parquet_corpus": {
-                "schema_version": "raw-parquet-corpus.v1",
+            "replay_input_parquet_corpus": {
+                "schema_version": "replay-input-parquet-corpus.v1",
                 "sha256": "sha256:" + "f" * 64,
                 "file_count": 1,
                 "total_size_bytes": 1,
@@ -611,7 +613,7 @@ def test_unverified_reason_identifies_the_incomplete_side(legacy_error, repaired
     assert comparison["reason"] == expected_reason
 
 
-def test_parquet_corpus_identity_binds_paths_sizes_and_bytes(tmp_path):
+def test_replay_input_parquet_corpus_binds_paths_sizes_and_bytes(tmp_path):
     module = _load_cli_module()
     root = tmp_path / "raw"
     first = root / "klines/BTCUSDT/5m/2025-01.parquet"
@@ -625,10 +627,148 @@ def test_parquet_corpus_identity_binds_paths_sizes_and_bytes(tmp_path):
     second.write_bytes(b"changed")
     changed = module._parquet_corpus_identity(root)
 
-    assert baseline["schema_version"] == "raw-parquet-corpus.v1"
+    assert baseline["schema_version"] == "replay-input-parquet-corpus.v1"
     assert baseline["file_count"] == 2
     assert baseline["total_size_bytes"] == 11
     assert baseline["sha256"] != changed["sha256"]
+
+
+def test_absolute_binance_root_rejects_missing_cwd_replay_data_root(tmp_path, monkeypatch):
+    module = _load_cli_module()
+    binance_root = tmp_path / "main-repo" / "data" / "raw" / "binance"
+    binance_root.mkdir(parents=True)
+    worktree = tmp_path / "worktree"
+    worktree.mkdir()
+    monkeypatch.chdir(worktree)
+
+    with pytest.raises(ValueError, match="same replay data root"):
+        module._resolve_replay_data_root(binance_root)
+
+
+def test_replay_input_identity_binds_auxiliary_parquet_drift(tmp_path, monkeypatch):
+    module = _load_cli_module()
+    repo_root = tmp_path / "repo"
+    raw_root = repo_root / "data" / "raw"
+    binance = raw_root / "binance" / "klines" / "BTCUSDT" / "5m" / "data.parquet"
+    macro = raw_root / "macro" / "vix" / "data.parquet"
+    binance.parent.mkdir(parents=True)
+    macro.parent.mkdir(parents=True)
+    binance.write_bytes(b"binance")
+    macro.write_bytes(b"macro-v1")
+    monkeypatch.chdir(repo_root)
+
+    baseline = module._parquet_corpus_identity(module._resolve_replay_data_root(raw_root / "binance"))
+    macro.write_bytes(b"macro-v2")
+    changed = module._parquet_corpus_identity(module._resolve_replay_data_root(raw_root / "binance"))
+
+    assert baseline["file_count"] == 2
+    assert baseline["sha256"] != changed["sha256"]
+
+
+def test_symlinked_cwd_data_root_accepts_full_replay_input_surface(tmp_path, monkeypatch):
+    module = _load_cli_module()
+    shared_raw = tmp_path / "shared" / "raw"
+    binance = shared_raw / "binance" / "klines" / "BTCUSDT" / "5m" / "data.parquet"
+    options = shared_raw / "deribit_options" / "BTC" / "snapshot.parquet"
+    binance.parent.mkdir(parents=True)
+    options.parent.mkdir(parents=True)
+    binance.write_bytes(b"binance")
+    options.write_bytes(b"options")
+    worktree = tmp_path / "worktree"
+    (worktree / "data").mkdir(parents=True)
+    (worktree / "data" / "raw").symlink_to(shared_raw, target_is_directory=True)
+    monkeypatch.chdir(worktree)
+
+    replay_data_root = module._resolve_replay_data_root(shared_raw / "binance")
+    identity = module._parquet_corpus_identity(replay_data_root)
+
+    assert replay_data_root == shared_raw.resolve()
+    assert identity["file_count"] == 2
+
+
+@pytest.mark.parametrize(
+    ("formula_hash", "macro_loaded", "options_loaded", "error"),
+    [
+        ("sha256:" + "d" * 64, True, True, "indicator formula identity mismatch"),
+        (FORMULA_HASH, False, True, "replay store availability mismatch"),
+        (FORMULA_HASH, True, False, "replay store availability mismatch"),
+    ],
+)
+def test_first_frozen_donor_preflight_rejects_identity_before_run(
+    tmp_path,
+    monkeypatch,
+    formula_hash,
+    macro_loaded,
+    options_loaded,
+    error,
+):
+    module = _load_cli_module()
+    manifest = module.load_architecture_experiment_manifest(module.FROZEN_MANIFEST_PATH)
+    run_calls = []
+
+    class FakeHistoricalBacktest:
+        def __init__(self, config):
+            del config
+            self.indicator_engine = SimpleNamespace(_formula_hash=formula_hash)
+            self._macro_store = SimpleNamespace(loaded=macro_loaded)
+            self.options_store = SimpleNamespace(loaded=options_loaded)
+
+        def run(self):
+            run_calls.append(True)
+            raise AssertionError("preflight must not run the donor")
+
+    monkeypatch.setattr(module, "HistoricalBacktest", FakeHistoricalBacktest)
+    monkeypatch.setattr(
+        module,
+        "build_causal_donor_backtest_config",
+        lambda **kwargs: (SimpleNamespace(), "sha256:" + "c" * 64),
+    )
+    contract = {
+        "indicator_formula_hash": FORMULA_HASH,
+        "required_replay_store_availability": {"macro": True, "options": True},
+    }
+
+    with pytest.raises(ValueError, match=error):
+        module._preflight_first_frozen_donor(
+            root=tmp_path / "data" / "raw" / "binance",
+            manifest=manifest,
+            contract=contract,
+        )
+
+    assert not run_calls
+
+
+def test_formula_preflight_mismatch_fails_before_matrix_entry_one(tmp_path, monkeypatch):
+    module = _load_cli_module()
+    _install_fast_frozen_runner(monkeypatch, module)
+    manifest = module.load_architecture_experiment_manifest(module.FROZEN_MANIFEST_PATH)
+    legacy_input = tmp_path / "legacy.json"
+    legacy_input.write_text(
+        json.dumps(_minimal_report(manifest, list(manifest.expected_run_keys)), indent=2, sort_keys=True),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        module,
+        "_preflight_first_frozen_donor",
+        lambda **kwargs: (_ for _ in ()).throw(ValueError("first frozen donor indicator formula identity mismatch")),
+    )
+
+    def forbidden_matrix(*args, **kwargs):
+        raise AssertionError("formula mismatch must fail before matrix entry 1")
+
+    monkeypatch.setattr(module, "_run_frozen_matrix", forbidden_matrix)
+
+    with pytest.raises(ValueError, match="indicator formula identity mismatch"):
+        module.main(
+            [
+                "--root",
+                str(tmp_path / "data" / "raw" / "binance"),
+                "--legacy-input",
+                str(legacy_input),
+                "--output-dir",
+                str(tmp_path / "output"),
+            ]
+        )
 
 
 def test_legacy_envelope_identity_excludes_runs_but_binds_outer_contract(tmp_path):
@@ -653,7 +793,7 @@ def test_legacy_envelope_identity_excludes_runs_but_binds_outer_contract(tmp_pat
     assert module._legacy_envelope_identity(first) != module._legacy_envelope_identity(third)
 
 
-def test_frozen_input_contract_rejects_legacy_and_corpus_identity_drift(tmp_path):
+def test_frozen_input_contract_rejects_legacy_and_corpus_identity_drift(tmp_path, monkeypatch):
     module = _load_cli_module()
     manifest = module.load_architecture_experiment_manifest(module.FROZEN_MANIFEST_PATH)
     legacy_input = tmp_path / "legacy.json"
@@ -661,19 +801,22 @@ def test_frozen_input_contract_rejects_legacy_and_corpus_identity_drift(tmp_path
         json.dumps(_minimal_report(manifest, list(manifest.expected_run_keys)), indent=2, sort_keys=True),
         encoding="utf-8",
     )
-    root = tmp_path / "raw"
+    repo_root = tmp_path / "repo"
+    root = repo_root / "data" / "raw" / "binance"
     parquet = root / "klines/BTCUSDT/5m/2025-01.parquet"
     parquet.parent.mkdir(parents=True)
     parquet.write_bytes(b"frozen")
+    monkeypatch.chdir(repo_root)
     observed = module._frozen_input_identities(legacy_input=legacy_input, root=root)
     contract = {
-        "schema_version": "legacy-accounting-rerun-contract.v1",
+        "schema_version": "legacy-accounting-rerun-contract.v2",
         "architecture_manifest_sha256": manifest.sha256,
         "indicator_formula_hash": FORMULA_HASH,
         "accounting_kernel_sha256": ACCOUNTING_KERNEL_SHA256,
         "legacy_source": observed["legacy_source"],
         "legacy_envelope_sha256": observed["legacy_envelope_sha256"],
-        "raw_parquet_corpus": observed["raw_parquet_corpus"],
+        "replay_input_parquet_corpus": observed["replay_input_parquet_corpus"],
+        "required_replay_store_availability": {"macro": True, "options": True},
     }
 
     module._assert_frozen_input_contract(contract, observed=observed, manifest=manifest)
@@ -684,8 +827,8 @@ def test_frozen_input_contract_rejects_legacy_and_corpus_identity_drift(tmp_path
         module._assert_frozen_input_contract(changed_legacy, observed=observed, manifest=manifest)
 
     changed_corpus = json.loads(json.dumps(contract))
-    changed_corpus["raw_parquet_corpus"]["sha256"] = "sha256:" + "b" * 64
-    with pytest.raises(ValueError, match="raw Parquet corpus identity mismatch"):
+    changed_corpus["replay_input_parquet_corpus"]["sha256"] = "sha256:" + "b" * 64
+    with pytest.raises(ValueError, match="replay input Parquet corpus identity mismatch"):
         module._assert_frozen_input_contract(changed_corpus, observed=observed, manifest=manifest)
 
 
@@ -705,19 +848,22 @@ def test_rerun_rejects_non_frozen_legacy_before_compute(tmp_path, monkeypatch):
         json.dumps(_minimal_report(manifest, list(manifest.expected_run_keys)), indent=2, sort_keys=True),
         encoding="utf-8",
     )
-    root = tmp_path / "raw"
+    repo_root = tmp_path / "repo"
+    root = repo_root / "data" / "raw" / "binance"
     parquet = root / "klines/BTCUSDT/5m/2025-01.parquet"
     parquet.parent.mkdir(parents=True)
     parquet.write_bytes(b"frozen")
+    monkeypatch.chdir(repo_root)
     observed = module._frozen_input_identities(legacy_input=legacy_input, root=root)
     contract = {
-        "schema_version": "legacy-accounting-rerun-contract.v1",
+        "schema_version": "legacy-accounting-rerun-contract.v2",
         "architecture_manifest_sha256": manifest.sha256,
         "indicator_formula_hash": FORMULA_HASH,
         "accounting_kernel_sha256": ACCOUNTING_KERNEL_SHA256,
         "legacy_source": {**observed["legacy_source"], "sha256": "a" * 64},
         "legacy_envelope_sha256": observed["legacy_envelope_sha256"],
-        "raw_parquet_corpus": observed["raw_parquet_corpus"],
+        "replay_input_parquet_corpus": observed["replay_input_parquet_corpus"],
+        "required_replay_store_availability": {"macro": True, "options": True},
     }
     _write_frozen_rerun_contract(module, tmp_path, contract, monkeypatch)
 
@@ -739,27 +885,31 @@ def test_rerun_rejects_non_frozen_legacy_before_compute(tmp_path, monkeypatch):
         )
 
 
-def test_raw_corpus_mutation_during_rerun_aborts_publication(tmp_path, monkeypatch):
+def test_replay_input_corpus_mutation_during_rerun_aborts_publication(tmp_path, monkeypatch):
     module = _load_cli_module()
     manifest = module.load_architecture_experiment_manifest(module.FROZEN_MANIFEST_PATH)
     entries = list(manifest.expected_run_keys)
     legacy_input = tmp_path / "legacy.json"
     legacy_input.write_text(json.dumps(_minimal_report(manifest, entries), indent=2, sort_keys=True), encoding="utf-8")
-    root = tmp_path / "raw"
+    repo_root = tmp_path / "repo"
+    root = repo_root / "data" / "raw" / "binance"
     parquet = root / "klines/BTCUSDT/5m/2025-01.parquet"
     parquet.parent.mkdir(parents=True)
     parquet.write_bytes(b"frozen")
+    monkeypatch.chdir(repo_root)
     observed = module._frozen_input_identities(legacy_input=legacy_input, root=root)
     contract = {
-        "schema_version": "legacy-accounting-rerun-contract.v1",
+        "schema_version": "legacy-accounting-rerun-contract.v2",
         "architecture_manifest_sha256": manifest.sha256,
         "indicator_formula_hash": FORMULA_HASH,
         "accounting_kernel_sha256": ACCOUNTING_KERNEL_SHA256,
         "legacy_source": observed["legacy_source"],
         "legacy_envelope_sha256": observed["legacy_envelope_sha256"],
-        "raw_parquet_corpus": observed["raw_parquet_corpus"],
+        "replay_input_parquet_corpus": observed["replay_input_parquet_corpus"],
+        "required_replay_store_availability": {"macro": True, "options": True},
     }
     _write_frozen_rerun_contract(module, tmp_path, contract, monkeypatch)
+    monkeypatch.setattr(module, "_preflight_first_frozen_donor", lambda **kwargs: None)
     monkeypatch.setattr(module, "_run_frozen_matrix", lambda **kwargs: _minimal_report(manifest, entries))
     real_stream = module._stream_stage_validity
 
@@ -775,7 +925,7 @@ def test_raw_corpus_mutation_during_rerun_aborts_publication(tmp_path, monkeypat
     monkeypatch.setattr(module, "_stream_stage_validity", mutate_after_stream)
     output_dir = tmp_path / "output"
 
-    with pytest.raises(ValueError, match="raw Parquet corpus changed during rerun"):
+    with pytest.raises(ValueError, match="replay input Parquet corpus changed during rerun"):
         module.main(
             [
                 "--root",

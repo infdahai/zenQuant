@@ -22,9 +22,11 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from scripts.run_architecture_experiment import (
     FIXED_NOTIONAL,
     build_architecture_attribution_report,
+    build_causal_donor_backtest_config,
     run_frozen_matrix_entry,
 )
 
+from zenquant.historical import HistoricalBacktest
 from zenquant.research.accounting_kernel_identity import build_accounting_kernel_identity
 from zenquant.research.architecture_experiment import (
     DEFAULT_ARCHITECTURE_MANIFEST_PATH,
@@ -40,7 +42,7 @@ from zenquant.research.legacy_accounting_validity import ValidityState
 
 FROZEN_MANIFEST_PATH = DEFAULT_ARCHITECTURE_MANIFEST_PATH
 FROZEN_RERUN_CONTRACT_PATH = Path("config/research/legacy_accounting_rerun_v1.json")
-FROZEN_RERUN_CONTRACT_SHA256 = "8f4fb2d834500f5381c54b4288d841e7915dbf63d3bef94918560cf623490986"
+FROZEN_RERUN_CONTRACT_SHA256 = "cbba2fcac426341389dbe69d59cda1d5df2681889ea4052cc083d071b992f26d"
 OUTPUT_FILENAMES = (
     "fixed_event_attribution.json",
     "full_system_attribution.json",
@@ -50,8 +52,8 @@ OUTPUT_FILENAMES = (
 _JSON_HASH_CHUNK_BYTES = 1024 * 1024
 _FIXED_EVENT_SCHEMA_VERSION = "legacy-accounting-fixed-event-attribution.v1"
 _RERUN_SUMMARY_SCHEMA_VERSION = "legacy-accounting-rerun-summary.v1"
-_RERUN_CONTRACT_SCHEMA_VERSION = "legacy-accounting-rerun-contract.v1"
-_RAW_PARQUET_CORPUS_SCHEMA_VERSION = "raw-parquet-corpus.v1"
+_RERUN_CONTRACT_SCHEMA_VERSION = "legacy-accounting-rerun-contract.v2"
+_REPLAY_INPUT_PARQUET_CORPUS_SCHEMA_VERSION = "replay-input-parquet-corpus.v1"
 EXPECTED_REPAIRED_FORMULA_HASH = "sha256:82af23a08c68a94641e1d7769ecdf9619059dddbeb531dd3703cc4d2ff809f4a"
 _SHA256_IDENTITY_PATTERN = re.compile(r"sha256:[0-9a-f]{64}")
 _RUNS_DECLARATION_PATTERN = re.compile(r'^\s*"runs"\s*:\s*\[\s*$')
@@ -87,6 +89,7 @@ def main(argv: list[str] | None = None) -> int:
     rerun_contract = _load_frozen_rerun_contract()
     frozen_inputs = _frozen_input_identities(legacy_input=args.legacy_input, root=args.root)
     _assert_frozen_input_contract(rerun_contract, observed=frozen_inputs, manifest=manifest)
+    _preflight_first_frozen_donor(root=args.root, manifest=manifest, contract=rerun_contract)
     legacy_source = dict(frozen_inputs["legacy_source"])
 
     args.output_dir.parent.mkdir(parents=True, exist_ok=True)
@@ -107,7 +110,7 @@ def main(argv: list[str] | None = None) -> int:
             "accounting_kernel_sha256": accounting_kernel_sha256,
             "rerun_contract_sha256": FROZEN_RERUN_CONTRACT_SHA256,
             "legacy_envelope_sha256": frozen_inputs["legacy_envelope_sha256"],
-            "raw_parquet_corpus": frozen_inputs["raw_parquet_corpus"],
+            "replay_input_parquet_corpus": frozen_inputs["replay_input_parquet_corpus"],
             "legacy_source": legacy_source,
         }
 
@@ -129,7 +132,7 @@ def main(argv: list[str] | None = None) -> int:
                 "accounting_kernel_sha256": accounting_kernel_sha256,
                 "rerun_contract_sha256": FROZEN_RERUN_CONTRACT_SHA256,
                 "legacy_envelope_sha256": frozen_inputs["legacy_envelope_sha256"],
-                "raw_parquet_corpus": frozen_inputs["raw_parquet_corpus"],
+                "replay_input_parquet_corpus": frozen_inputs["replay_input_parquet_corpus"],
                 "sources": {"legacy": legacy_source, "repaired": repaired_source},
             }
         )
@@ -167,8 +170,8 @@ def main(argv: list[str] | None = None) -> int:
         final_inputs = _frozen_input_identities(legacy_input=args.legacy_input, root=args.root)
         if final_inputs["legacy_envelope_sha256"] != frozen_inputs["legacy_envelope_sha256"]:
             raise ValueError("legacy envelope changed during rerun; refusing publication")
-        if final_inputs["raw_parquet_corpus"] != frozen_inputs["raw_parquet_corpus"]:
-            raise ValueError("raw Parquet corpus changed during rerun; refusing publication")
+        if final_inputs["replay_input_parquet_corpus"] != frozen_inputs["replay_input_parquet_corpus"]:
+            raise ValueError("replay input Parquet corpus changed during rerun; refusing publication")
         _assert_frozen_input_contract(rerun_contract, observed=final_inputs, manifest=manifest)
         _publish_staged_outputs(staging_dir=staging_dir, output_dir=args.output_dir)
     finally:
@@ -596,7 +599,7 @@ def _build_fixed_event_attribution(
         "accounting_kernel_sha256": accounting_kernel_sha256,
         "rerun_contract_sha256": rerun_contract_sha256,
         "legacy_envelope_sha256": frozen_inputs["legacy_envelope_sha256"],
-        "raw_parquet_corpus": dict(frozen_inputs["raw_parquet_corpus"]),
+        "replay_input_parquet_corpus": dict(frozen_inputs["replay_input_parquet_corpus"]),
         "sources": {"legacy": dict(legacy_source), "repaired_full_system": dict(repaired_source)},
         "event_stream_identity": None,
         "first_affected_fee": None,
@@ -640,7 +643,7 @@ def _build_summary(
             "accounting_kernel_sha256": accounting_kernel_sha256,
             "rerun_contract_sha256": rerun_contract_sha256,
             "legacy_envelope_sha256": frozen_inputs["legacy_envelope_sha256"],
-            "raw_parquet_corpus": dict(frozen_inputs["raw_parquet_corpus"]),
+            "replay_input_parquet_corpus": dict(frozen_inputs["replay_input_parquet_corpus"]),
         },
         "sources": {"legacy": dict(legacy_source), "repaired": dict(repaired_source)},
         "fixed_event": {
@@ -708,12 +711,12 @@ def _parquet_corpus_identity(root: Path) -> dict[str, Any]:
             }
         )
     payload = {
-        "schema_version": _RAW_PARQUET_CORPUS_SCHEMA_VERSION,
+        "schema_version": _REPLAY_INPUT_PARQUET_CORPUS_SCHEMA_VERSION,
         "files": entries,
     }
     encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
     return {
-        "schema_version": _RAW_PARQUET_CORPUS_SCHEMA_VERSION,
+        "schema_version": _REPLAY_INPUT_PARQUET_CORPUS_SCHEMA_VERSION,
         "sha256": f"sha256:{hashlib.sha256(encoded).hexdigest()}",
         "file_count": len(entries),
         "total_size_bytes": total_size_bytes,
@@ -721,10 +724,62 @@ def _parquet_corpus_identity(root: Path) -> dict[str, Any]:
 
 
 def _frozen_input_identities(*, legacy_input: Path, root: Path) -> dict[str, Any]:
+    replay_data_root = _resolve_replay_data_root(root)
     return {
         "legacy_source": _source_identity(legacy_input),
         "legacy_envelope_sha256": _legacy_envelope_identity(legacy_input),
-        "raw_parquet_corpus": _parquet_corpus_identity(root),
+        "replay_input_parquet_corpus": _parquet_corpus_identity(replay_data_root),
+    }
+
+
+def _resolve_replay_data_root(root: Path) -> Path:
+    root_parent = root.resolve().parent
+    cwd_data_root = Path("data/raw").resolve()
+    if root_parent != cwd_data_root:
+        raise ValueError(
+            "--root parent and cwd data/raw must resolve to the same replay data root: "
+            f"root_parent={root_parent}, cwd_data_root={cwd_data_root}"
+        )
+    return cwd_data_root
+
+
+def _preflight_first_frozen_donor(
+    *,
+    root: Path,
+    manifest: ArchitectureExperimentManifest,
+    contract: Mapping[str, Any],
+) -> dict[str, Any]:
+    expected_availability = contract.get("required_replay_store_availability")
+    if expected_availability != {"macro": True, "options": True}:
+        raise ValueError("rerun contract replay store availability identity mismatch")
+    first_window = manifest.windows[0]
+    first_seed = manifest.seeds[0]
+    donor_config, _donor_config_hash = build_causal_donor_backtest_config(
+        root=root,
+        manifest=manifest,
+        window=first_window,
+        seed=first_seed,
+    )
+    donor_runner = HistoricalBacktest(donor_config)
+    actual_availability = {
+        "macro": bool(donor_runner._macro_store.loaded),
+        "options": bool(donor_runner.options_store.loaded),
+    }
+    if actual_availability != expected_availability:
+        raise ValueError(
+            "first frozen donor replay store availability mismatch: "
+            f"expected={expected_availability}, actual={actual_availability}"
+        )
+    actual_formula_hash = donor_runner.indicator_engine._formula_hash
+    expected_formula_hash = contract.get("indicator_formula_hash")
+    if actual_formula_hash != expected_formula_hash or actual_formula_hash != EXPECTED_REPAIRED_FORMULA_HASH:
+        raise ValueError(
+            "first frozen donor indicator formula identity mismatch: "
+            f"expected={expected_formula_hash}, actual={actual_formula_hash}"
+        )
+    return {
+        "indicator_formula_hash": actual_formula_hash,
+        "replay_store_availability": actual_availability,
     }
 
 
@@ -770,13 +825,15 @@ def _assert_frozen_input_contract(
             raise ValueError("legacy source identity mismatch")
     if contract.get("legacy_envelope_sha256") != observed.get("legacy_envelope_sha256"):
         raise ValueError("legacy envelope identity mismatch")
-    expected_corpus = contract.get("raw_parquet_corpus")
-    actual_corpus = observed.get("raw_parquet_corpus")
+    if contract.get("required_replay_store_availability") != {"macro": True, "options": True}:
+        raise ValueError("rerun contract replay store availability identity mismatch")
+    expected_corpus = contract.get("replay_input_parquet_corpus")
+    actual_corpus = observed.get("replay_input_parquet_corpus")
     if not isinstance(expected_corpus, Mapping) or not isinstance(actual_corpus, Mapping):
-        raise ValueError("raw Parquet corpus identity mismatch")
+        raise ValueError("replay input Parquet corpus identity mismatch")
     for field in ("schema_version", "sha256", "file_count", "total_size_bytes"):
         if expected_corpus.get(field) != actual_corpus.get(field):
-            raise ValueError("raw Parquet corpus identity mismatch")
+            raise ValueError("replay input Parquet corpus identity mismatch")
 
 
 def _write_json(path: Path, payload: Mapping[str, Any]) -> None:

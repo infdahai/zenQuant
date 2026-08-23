@@ -8,11 +8,15 @@
     "sha256": "1f327c7c786f511fbba6ac1dd2ca4df395891f1aeb1879714c0ed2af1a87bea2",
     "size_bytes": 1003639954
   },
-  "raw_parquet_corpus": {
-    "file_count": 2523,
-    "schema_version": "raw-parquet-corpus.v1",
-    "sha256": "sha256:182398d05f7289e25b467cb8957603bdbde5360f39fdf62d8e366a9a5c415fed",
-    "total_size_bytes": 21185269620
+  "replay_input_parquet_corpus": {
+    "file_count": 5113,
+    "schema_version": "replay-input-parquet-corpus.v1",
+    "sha256": "sha256:36b7a2f2d79e8775378efe6e1ce9b02a863b9a462b2b47be0ff75f3dcce15df6",
+    "total_size_bytes": 21375818411
   },
-  "schema_version": "legacy-accounting-rerun-contract.v1"
+  "required_replay_store_availability": {
+    "macro": true,
+    "options": true
+  },
+  "schema_version": "legacy-accounting-rerun-contract.v2"
 }
