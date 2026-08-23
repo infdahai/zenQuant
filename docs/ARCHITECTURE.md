@@ -625,6 +625,11 @@ Declared hard acceptance conditions:
 - unexpected executor reversal count is exactly zero;
 - executed exposure never exceeds the approved target plus quantity tolerance.
 
+The five-switch condition is an independent hard ceiling in the generated
+research/promotion acceptance summary. It audits the reported A5
+`position_switches_per_day` for every window and seed; it is not a live runtime
+position limiter, and fill counts are not treated as position switches.
+
 The current fill-level `profit_factor_after_fee` and action profit factors are
 not Gate v3 hard metrics. The former is currently a proxy derived by multiplying
 gross profit factor by `1 - fee_drag_pct`; the latter is computed from realized
