@@ -84,6 +84,7 @@ def test_operator_docs_publish_identity_complete_rerun_verdict() -> None:
         assert "pre-contract diagnostic only" in normalized
         assert "identity_complete_30_run_rerun_completed" in normalized
         assert "results/accounting_integrity_20260823_v2/acceptance_summary.json" in normalized
+        assert "data/frozen_snapshots/accounting_integrity_20260823_v2" in normalized
         assert "3259f41a54a4ca688fd17cc59ad5c784564c49032f1c2a34721ea0ad237916d9" in normalized
         assert "+379.21" in normalized
         assert "-1,818.72" in normalized
