@@ -161,6 +161,6 @@ def test_current_accounting_kernel_identity_covers_complete_runtime_modules() ->
 
 def test_current_accounting_kernel_identity_matches_frozen_rerun_contract() -> None:
     identity_module = importlib.import_module("zenquant.research.accounting_kernel_identity")
-    contract = json.loads(Path("config/research/legacy_accounting_rerun_v1.json").read_text(encoding="utf-8"))
+    contract = json.loads(Path("config/research/legacy_accounting_rerun_v2.json").read_text(encoding="utf-8"))
 
     assert contract["accounting_kernel_sha256"] == identity_module.build_accounting_kernel_identity()["sha256"]

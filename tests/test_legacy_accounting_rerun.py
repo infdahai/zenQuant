@@ -633,6 +633,34 @@ def test_replay_input_parquet_corpus_binds_paths_sizes_and_bytes(tmp_path):
     assert baseline["sha256"] != changed["sha256"]
 
 
+def test_mutable_replay_input_corpus_is_rejected_before_rerun(tmp_path):
+    module = _load_cli_module()
+    raw_root = tmp_path / "data" / "raw"
+    parquet_path = raw_root / "binance" / "BTCUSDT" / "bars.parquet"
+    parquet_path.parent.mkdir(parents=True)
+    parquet_path.write_bytes(b"mutable")
+
+    with pytest.raises(ValueError, match="must be read-only"):
+        module._assert_read_only_parquet_corpus(raw_root)
+
+
+def test_read_only_replay_input_corpus_is_accepted(tmp_path):
+    module = _load_cli_module()
+    raw_root = tmp_path / "data" / "raw"
+    parquet_path = raw_root / "binance" / "BTCUSDT" / "bars.parquet"
+    parquet_path.parent.mkdir(parents=True)
+    parquet_path.write_bytes(b"frozen")
+    for path in (parquet_path, parquet_path.parent, parquet_path.parent.parent, raw_root):
+        path.chmod(path.stat().st_mode & ~0o222)
+
+    module._assert_read_only_parquet_corpus(raw_root)
+
+
+def _freeze_test_corpus(raw_root: Path) -> None:
+    for path in (*raw_root.rglob("*"), raw_root):
+        path.chmod(path.stat().st_mode & ~0o222)
+
+
 def test_absolute_binance_root_rejects_missing_cwd_replay_data_root(tmp_path, monkeypatch):
     module = _load_cli_module()
     binance_root = tmp_path / "main-repo" / "data" / "raw" / "binance"
@@ -806,10 +834,11 @@ def test_frozen_input_contract_rejects_legacy_and_corpus_identity_drift(tmp_path
     parquet = root / "klines/BTCUSDT/5m/2025-01.parquet"
     parquet.parent.mkdir(parents=True)
     parquet.write_bytes(b"frozen")
+    _freeze_test_corpus(repo_root / "data" / "raw")
     monkeypatch.chdir(repo_root)
     observed = module._frozen_input_identities(legacy_input=legacy_input, root=root)
     contract = {
-        "schema_version": "legacy-accounting-rerun-contract.v2",
+        "schema_version": "legacy-accounting-rerun-contract.v3",
         "architecture_manifest_sha256": manifest.sha256,
         "indicator_formula_hash": FORMULA_HASH,
         "accounting_kernel_sha256": ACCOUNTING_KERNEL_SHA256,
@@ -817,6 +846,7 @@ def test_frozen_input_contract_rejects_legacy_and_corpus_identity_drift(tmp_path
         "legacy_envelope_sha256": observed["legacy_envelope_sha256"],
         "replay_input_parquet_corpus": observed["replay_input_parquet_corpus"],
         "required_replay_store_availability": {"macro": True, "options": True},
+        "replay_input_mode": "read_only_snapshot",
     }
 
     module._assert_frozen_input_contract(contract, observed=observed, manifest=manifest)
@@ -853,10 +883,11 @@ def test_rerun_rejects_non_frozen_legacy_before_compute(tmp_path, monkeypatch):
     parquet = root / "klines/BTCUSDT/5m/2025-01.parquet"
     parquet.parent.mkdir(parents=True)
     parquet.write_bytes(b"frozen")
+    _freeze_test_corpus(repo_root / "data" / "raw")
     monkeypatch.chdir(repo_root)
     observed = module._frozen_input_identities(legacy_input=legacy_input, root=root)
     contract = {
-        "schema_version": "legacy-accounting-rerun-contract.v2",
+        "schema_version": "legacy-accounting-rerun-contract.v3",
         "architecture_manifest_sha256": manifest.sha256,
         "indicator_formula_hash": FORMULA_HASH,
         "accounting_kernel_sha256": ACCOUNTING_KERNEL_SHA256,
@@ -864,6 +895,7 @@ def test_rerun_rejects_non_frozen_legacy_before_compute(tmp_path, monkeypatch):
         "legacy_envelope_sha256": observed["legacy_envelope_sha256"],
         "replay_input_parquet_corpus": observed["replay_input_parquet_corpus"],
         "required_replay_store_availability": {"macro": True, "options": True},
+        "replay_input_mode": "read_only_snapshot",
     }
     _write_frozen_rerun_contract(module, tmp_path, contract, monkeypatch)
 
@@ -896,10 +928,11 @@ def test_replay_input_corpus_mutation_during_rerun_aborts_publication(tmp_path, 
     parquet = root / "klines/BTCUSDT/5m/2025-01.parquet"
     parquet.parent.mkdir(parents=True)
     parquet.write_bytes(b"frozen")
+    _freeze_test_corpus(repo_root / "data" / "raw")
     monkeypatch.chdir(repo_root)
     observed = module._frozen_input_identities(legacy_input=legacy_input, root=root)
     contract = {
-        "schema_version": "legacy-accounting-rerun-contract.v2",
+        "schema_version": "legacy-accounting-rerun-contract.v3",
         "architecture_manifest_sha256": manifest.sha256,
         "indicator_formula_hash": FORMULA_HASH,
         "accounting_kernel_sha256": ACCOUNTING_KERNEL_SHA256,
@@ -907,6 +940,7 @@ def test_replay_input_corpus_mutation_during_rerun_aborts_publication(tmp_path, 
         "legacy_envelope_sha256": observed["legacy_envelope_sha256"],
         "replay_input_parquet_corpus": observed["replay_input_parquet_corpus"],
         "required_replay_store_availability": {"macro": True, "options": True},
+        "replay_input_mode": "read_only_snapshot",
     }
     _write_frozen_rerun_contract(module, tmp_path, contract, monkeypatch)
     monkeypatch.setattr(module, "_preflight_first_frozen_donor", lambda **kwargs: None)
@@ -919,7 +953,9 @@ def test_replay_input_corpus_mutation_during_rerun_aborts_publication(tmp_path, 
             repaired_report=repaired_report,
             manifest=manifest,
         )
+        parquet.chmod(parquet.stat().st_mode | 0o200)
         parquet.write_bytes(b"changed-during-rerun")
+        parquet.chmod(parquet.stat().st_mode & ~0o222)
         return result
 
     monkeypatch.setattr(module, "_stream_stage_validity", mutate_after_stream)

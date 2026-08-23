@@ -96,6 +96,6 @@ def test_authoritative_docs_mark_old_rerun_identity_insufficient() -> None:
     for content in (architecture, handoff):
         normalized = " ".join(content.split())
         assert "sha256:a2e7a4039556aa427ec258a2f38d302c6edf5e37e8e81b9cedd4a36897b66c1a" in content
-        assert "sha256:36b7a2f2d79e8775378efe6e1ce9b02a863b9a462b2b47be0ff75f3dcce15df6" in content
+        assert "sha256:17fe13a2b55cfd8a34fb0e9b2c0c616e7af4c38a25e9eed705eb4b9cc0d6be04" in content
         assert "requires_reinstrumented_30_run_rerun" in content
         assert "economic values are diagnostic only" in normalized
