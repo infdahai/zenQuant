@@ -138,25 +138,53 @@ def _run_worker(source_root: Path) -> dict[str, Any]:
                     profile_path=None,
                 )
             )
-            original_apply_fee = backtest.risk_overlay.apply_fee
 
-            def traced_apply_fee(fee: float) -> None:
-                before = _accounting_state(backtest)
-                report = _semantic(backtest._reports[-1]) if backtest._reports else None
-                original_apply_fee(fee)
+            def record_fee_transition(report: Any, before: dict[str, Any], after: dict[str, Any]) -> None:
+                semantic_report = _semantic(report)
+                fee = float(report.fee)
                 fees.append(
                     {
                         "index": len(fees),
-                        "report": report,
-                        "fee": float(fee),
-                        "clamp_condition": before["cash"] - float(fee) < 0.0,
-                        "expected_signed_cash_after": before["cash"] - float(fee),
+                        "report": semantic_report,
+                        "fee": fee,
+                        "clamp_condition": before["cash"] - fee < 0.0,
+                        "expected_signed_cash_after": before["cash"] - fee,
                         "before": before,
-                        "after": _accounting_state(backtest),
+                        "after": after,
                     }
                 )
 
-            backtest.risk_overlay.apply_fee = traced_apply_fee
+            original_apply_execution_report = getattr(backtest.risk_overlay, "apply_execution_report", None)
+            if original_apply_execution_report is not None:
+
+                def traced_apply_execution_report(report: Any) -> bool:
+                    atomic_before = _accounting_state(backtest)
+                    applied = original_apply_execution_report(report)
+                    if applied is not False:
+                        after = _accounting_state(backtest)
+                        fee = float(report.fee)
+                        equity_before_fee = after["equity"] + fee
+                        before = {
+                            **after,
+                            "cash": after["cash"] + fee,
+                            "equity": equity_before_fee,
+                            "high_water_mark": max(atomic_before["high_water_mark"], equity_before_fee),
+                        }
+                        record_fee_transition(report, before, after)
+                    return bool(applied)
+
+                backtest.risk_overlay.apply_execution_report = traced_apply_execution_report
+            else:
+                original_apply_fee = backtest.risk_overlay.apply_fee
+
+                def traced_apply_fee(fee: float) -> None:
+                    before = _accounting_state(backtest)
+                    report = backtest._reports[-1] if backtest._reports else None
+                    original_apply_fee(fee)
+                    if report is not None:
+                        record_fee_transition(report, before, _accounting_state(backtest))
+
+                backtest.risk_overlay.apply_fee = traced_apply_fee
             result = backtest.run()
             fixture["cwd_isolated"] = Path.cwd().resolve() == root.resolve()
         finally:
