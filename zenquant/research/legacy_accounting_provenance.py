@@ -9,6 +9,7 @@ import re
 from collections.abc import Mapping
 from typing import Any
 
+from .architecture_experiment import ArchitectureStage
 from .legacy_accounting_validity import ValidityState
 
 STAGE_PROVENANCE_SCHEMA_VERSION = "legacy-accounting-stage-provenance.v1"
@@ -156,11 +157,19 @@ def audit_stage_provenance(
     repaired_report: Mapping[str, Any],
 ) -> dict[str, Any]:
     """Classify exact window/seed/stage evidence without assuming independence."""
-    legacy_stages = _index_stages(legacy_report, label="legacy")
-    repaired_stages = _index_stages(repaired_report, label="repaired")
+    legacy_stages, legacy_run_keys = _index_stages(legacy_report, label="legacy")
+    repaired_stages, repaired_run_keys = _index_stages(repaired_report, label="repaired")
+    run_keys = legacy_run_keys | repaired_run_keys
+    if not run_keys:
+        raise ValueError("expected provenance universe cannot be empty")
+    expected_keys = {
+        (window, seed, stage.value)
+        for window, seed in run_keys
+        for stage in ArchitectureStage
+    }
     records = [
         _audit_stage(key, legacy_stages.get(key), repaired_stages.get(key))
-        for key in sorted(set(legacy_stages) | set(repaired_stages))
+        for key in sorted(expected_keys)
     ]
     counts = {state.value: 0 for state in ValidityState}
     for record in records:
@@ -208,11 +217,17 @@ def _audit_stage(
     }
 
 
-def _index_stages(report: Mapping[str, Any], *, label: str) -> dict[_StageKey, Mapping[str, Any]]:
+def _index_stages(
+    report: Mapping[str, Any],
+    *,
+    label: str,
+) -> tuple[dict[_StageKey, Mapping[str, Any]], set[tuple[str, int]]]:
     runs = report.get("runs")
     if not isinstance(runs, list):
         raise ValueError(f"{label} report runs must be a list")
     indexed: dict[_StageKey, Mapping[str, Any]] = {}
+    run_keys: set[tuple[str, int]] = set()
+    expected_stages = {stage.value for stage in ArchitectureStage}
     for run_index, run in enumerate(runs):
         if not isinstance(run, Mapping):
             raise ValueError(f"{label} report run {run_index} must be an object")
@@ -225,14 +240,20 @@ def _index_stages(report: Mapping[str, Any], *, label: str) -> dict[_StageKey, M
             raise ValueError(f"{label} report run {run_index} requires an integer seed")
         if not isinstance(stages, Mapping):
             raise ValueError(f"{label} report run {run_index} stages must be an object")
+        run_key = (window, seed)
+        if run_key in run_keys:
+            raise ValueError(f"{label} report contains duplicate run key {run_key!r}")
+        run_keys.add(run_key)
         for stage, payload in stages.items():
             if not isinstance(stage, str) or not stage or not isinstance(payload, Mapping):
                 raise ValueError(f"{label} report run {run_index} contains an invalid stage payload")
+            if stage not in expected_stages:
+                raise ValueError(f"{label} report run {run_index} contains unexpected stage {stage!r}")
             key = (window, seed, stage)
             if key in indexed:
                 raise ValueError(f"{label} report contains duplicate stage key {key!r}")
             indexed[key] = payload
-    return indexed
+    return indexed, run_keys
 
 
 def _try_extract_stage_payload(

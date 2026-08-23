@@ -521,6 +521,31 @@ def test_first_confirmed_divergence_uses_frozen_matrix_and_stage_order():
     }
 
 
+def test_streamed_validity_materializes_missing_frozen_run_on_both_sides(tmp_path):
+    module = _load_cli_module()
+    manifest = module.load_architecture_experiment_manifest(module.FROZEN_MANIFEST_PATH)
+    missing_key = manifest.expected_run_keys[-1]
+    entries = list(manifest.expected_run_keys[:-1])
+    legacy_input = tmp_path / "legacy.json"
+    legacy_input.write_text(json.dumps(_minimal_report(manifest, entries), indent=2, sort_keys=True), encoding="utf-8")
+    repaired = _minimal_report(manifest, entries)
+
+    result = module._stream_stage_validity(
+        legacy_input=legacy_input,
+        repaired_report=repaired,
+        manifest=manifest,
+    )
+
+    assert len(result["records"]) == 30 * len(ArchitectureStage)
+    missing_records = [
+        record
+        for record in result["records"]
+        if (record["window"], record["seed"]) == missing_key
+    ]
+    assert len(missing_records) == len(ArchitectureStage)
+    assert {record["state"] for record in missing_records} == {ValidityState.UNVERIFIED_LEGACY.value}
+
+
 @pytest.mark.parametrize(
     ("legacy_error", "repaired_error", "expected_reason"),
     [

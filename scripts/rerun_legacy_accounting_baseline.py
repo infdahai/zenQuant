@@ -272,11 +272,14 @@ def _stream_stage_validity(
     remaining = dict(repaired_by_key)
     records: list[dict[str, Any]] = []
     observed_legacy_keys: set[tuple[str, int]] = set()
+    expected_keys = set(manifest.expected_run_keys)
 
     for legacy_run in _iter_legacy_runs(legacy_input):
         key = _run_key(legacy_run, label="legacy")
         if key in observed_legacy_keys:
             raise ValueError(f"legacy report contains duplicate run key {key!r}")
+        if key not in expected_keys:
+            raise ValueError(f"legacy report contains unexpected run key {key!r}")
         observed_legacy_keys.add(key)
         repaired_run = remaining.pop(key, None)
         compared = audit_stage_provenance(
@@ -286,17 +289,32 @@ def _stream_stage_validity(
         records.extend(compared["records"])
 
     for key in manifest.expected_run_keys:
-        repaired_run = remaining.pop(key, None)
-        if repaired_run is None:
+        if key in observed_legacy_keys:
             continue
+        repaired_run = remaining.pop(key, None)
         compared = audit_stage_provenance(
-            {"runs": []},
-            {"runs": [repaired_run]},
+            {"runs": [{"window": key[0], "seed": key[1], "stages": {}}]},
+            (
+                {"runs": [repaired_run]}
+                if repaired_run is not None
+                else {"runs": [{"window": key[0], "seed": key[1], "stages": {}}]}
+            ),
         )
         records.extend(compared["records"])
 
     if remaining:
         raise ValueError(f"repaired report contains unexpected run keys {sorted(remaining)!r}")
+    expected_stage_keys = {
+        (window, seed, stage.value)
+        for window, seed in manifest.expected_run_keys
+        for stage in ArchitectureStage
+    }
+    observed_stage_keys = {
+        (str(record["window"]), int(record["seed"]), str(record["stage"]))
+        for record in records
+    }
+    if len(records) != len(expected_stage_keys) or observed_stage_keys != expected_stage_keys:
+        raise ValueError("stage validity does not contain the exact frozen 30x7 provenance matrix")
     records.sort(key=_stage_record_sort_key)
     counts = {state.value: 0 for state in ValidityState}
     for record in records:

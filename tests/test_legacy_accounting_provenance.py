@@ -593,3 +593,20 @@ def test_missing_exact_stage_key_is_unverified_legacy():
     states = _states(audit_stage_provenance(legacy, repaired))
 
     assert states[("late_dev_2025", 42, "A5_SHADOW")] == ValidityState.UNVERIFIED_LEGACY.value
+
+
+def test_stage_missing_from_both_reports_is_still_unverified_legacy():
+    legacy = _report()
+    repaired = deepcopy(legacy)
+    del legacy["runs"][0]["stages"]["A5_SHADOW"]
+    del repaired["runs"][0]["stages"]["A5_SHADOW"]
+
+    states = _states(audit_stage_provenance(legacy, repaired))
+
+    assert len(states) == len(ArchitectureStage)
+    assert states[("late_dev_2025", 42, "A5_SHADOW")] == ValidityState.UNVERIFIED_LEGACY.value
+
+
+def test_empty_matrix_cannot_be_classified_as_proven_unaffected():
+    with pytest.raises(ValueError, match="expected provenance universe cannot be empty"):
+        audit_stage_provenance({"runs": []}, {"runs": []})
