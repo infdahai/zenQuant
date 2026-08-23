@@ -383,6 +383,7 @@ def _oos_evidence(*, window: str = "late_dev_2025") -> ArchitectureRunEvidence:
         a0_final_equity=100_001.0,
         a0_config_hash="a0-config",
         donor_config_hash="donor-config",
+        accounting_kernel_sha256="sha256:" + "d" * 64,
         observations=(observation,),
         excluded_non_evaluable_count=0,
         confirmed_4h_row_count=1,
