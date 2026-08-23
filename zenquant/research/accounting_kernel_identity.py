@@ -44,9 +44,7 @@ def build_accounting_kernel_identity(
     execution_tree = _parse_module(root / _EXECUTION_ROUTER_PATH)
     execution_class = _required_class(execution_tree, "ExecutionKernel", path=_EXECUTION_ROUTER_PATH)
     execution_methods = {
-        node.name: node
-        for node in execution_class.body
-        if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef)
+        node.name: node for node in execution_class.body if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef)
     }
     hook = execution_methods.get(_EXECUTION_ACCOUNTING_HOOK)
     if hook is None:
@@ -56,11 +54,7 @@ def build_accounting_kernel_identity(
         )
     selected_execution_methods = {
         _EXECUTION_ACCOUNTING_HOOK,
-        *(
-            name
-            for name, node in execution_methods.items()
-            if _calls_method(node, _EXECUTION_ACCOUNTING_HOOK)
-        ),
+        *(name for name, node in execution_methods.items() if _calls_method(node, _EXECUTION_ACCOUNTING_HOOK)),
     }
     for method_name in sorted(selected_execution_methods):
         components.append(
@@ -116,9 +110,7 @@ def _required_method(class_node: ast.ClassDef, name: str, *, path: Path) -> ast.
 
 def _calls_method(node: ast.AST, method_name: str) -> bool:
     return any(
-        isinstance(item, ast.Call)
-        and isinstance(item.func, ast.Attribute)
-        and item.func.attr == method_name
+        isinstance(item, ast.Call) and isinstance(item.func, ast.Attribute) and item.func.attr == method_name
         for item in ast.walk(node)
     )
 

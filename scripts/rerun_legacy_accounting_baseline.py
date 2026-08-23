@@ -340,14 +340,9 @@ def _stream_stage_validity(
     if remaining:
         raise ValueError(f"repaired report contains unexpected run keys {sorted(remaining)!r}")
     expected_stage_keys = {
-        (window, seed, stage.value)
-        for window, seed in manifest.expected_run_keys
-        for stage in ArchitectureStage
+        (window, seed, stage.value) for window, seed in manifest.expected_run_keys for stage in ArchitectureStage
     }
-    observed_stage_keys = {
-        (str(record["window"]), int(record["seed"]), str(record["stage"]))
-        for record in records
-    }
+    observed_stage_keys = {(str(record["window"]), int(record["seed"]), str(record["stage"])) for record in records}
     if len(records) != len(expected_stage_keys) or observed_stage_keys != expected_stage_keys:
         raise ValueError("stage validity does not contain the exact frozen 30x7 provenance matrix")
     records.sort(key=_stage_record_sort_key)
@@ -741,8 +736,7 @@ def _load_frozen_rerun_contract() -> dict[str, Any]:
     actual_sha256 = hashlib.sha256(raw).hexdigest()
     if actual_sha256 != FROZEN_RERUN_CONTRACT_SHA256:
         raise ValueError(
-            "frozen rerun contract SHA-256 mismatch: "
-            f"expected {FROZEN_RERUN_CONTRACT_SHA256}, got {actual_sha256}"
+            f"frozen rerun contract SHA-256 mismatch: expected {FROZEN_RERUN_CONTRACT_SHA256}, got {actual_sha256}"
         )
     try:
         payload = json.loads(raw)

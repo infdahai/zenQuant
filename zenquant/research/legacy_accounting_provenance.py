@@ -162,15 +162,8 @@ def audit_stage_provenance(
     run_keys = legacy_run_keys | repaired_run_keys
     if not run_keys:
         raise ValueError("expected provenance universe cannot be empty")
-    expected_keys = {
-        (window, seed, stage.value)
-        for window, seed in run_keys
-        for stage in ArchitectureStage
-    }
-    records = [
-        _audit_stage(key, legacy_stages.get(key), repaired_stages.get(key))
-        for key in sorted(expected_keys)
-    ]
+    expected_keys = {(window, seed, stage.value) for window, seed in run_keys for stage in ArchitectureStage}
+    records = [_audit_stage(key, legacy_stages.get(key), repaired_stages.get(key)) for key in sorted(expected_keys)]
     counts = {state.value: 0 for state in ValidityState}
     for record in records:
         counts[record["state"]] += 1

@@ -574,11 +574,7 @@ def test_streamed_validity_materializes_missing_frozen_run_on_both_sides(tmp_pat
     )
 
     assert len(result["records"]) == 30 * len(ArchitectureStage)
-    missing_records = [
-        record
-        for record in result["records"]
-        if (record["window"], record["seed"]) == missing_key
-    ]
+    missing_records = [record for record in result["records"] if (record["window"], record["seed"]) == missing_key]
     assert len(missing_records) == len(ArchitectureStage)
     assert {record["state"] for record in missing_records} == {ValidityState.UNVERIFIED_LEGACY.value}
 
