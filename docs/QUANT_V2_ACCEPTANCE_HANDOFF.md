@@ -63,6 +63,7 @@ execution-purity checks do not override the blocked economic verdict.
 - Replay input corpus schema: `replay-input-parquet-corpus.v1`
 - Required replay store availability: `macro=true`, `options=true`
 - Rerun contract SHA-256: `c76f7c027698ac8146b549d551d38b0f6963e0d6932b1e77cabebf4fab397a19`
+- Persistent snapshot: `data/frozen_snapshots/accounting_integrity_20260823_v2`
 - Seeds: `42, 123, 456, 789, 1024`
 - Windows: `train_full, 2020, 2021, 2022, 2023, late_dev_2025`
 - Perturbation: price noise `0.001`, volume noise `0.05`, bar dropout `0.02`
@@ -161,6 +162,13 @@ The repaired A5 baseline late-dev range is `-596.20` to `1,013.77`; its mean
 is `+379.21` with 4/5 positive seeds. At an additional 5bp, the mean is
 `-353.44` with only 1/5 positive. The extra-15bp result is negative for every
 seed and averages `-1,818.72`:
+
+The loss mechanism is thin edge density, not excessive switching. Across the
+five late-dev seeds, mean gross PnL is `+1,218.97`, observed execution cost is
+`-805.91`, and funding is `-33.85`, leaving only `+379.21`. Gross edge is about
+`8.32bp` per turnover; observed execution consumes about `5.50bp`, so the
+remaining additional-cost breakeven is only `2.59bp`. Late-dev switches are
+`0.044–0.099/day`; lowering the 5/day ceiling cannot create the missing edge.
 
 | Seed | A5 extra-15bp net PnL | Max A5 MDD | Train episode PF | Max switches/day |
 | ---: | ---: | ---: | ---: | ---: |

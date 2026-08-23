@@ -123,6 +123,10 @@ rerun-contract: legacy-accounting-rerun-contract.v3
 rerun-contract-sha256: c76f7c027698ac8146b549d551d38b0f6963e0d6932b1e77cabebf4fab397a19
 ```
 
+The read-only source is retained at
+`data/frozen_snapshots/accounting_integrity_20260823_v2`; it is not the mutable
+hourly collector corpus.
+
 The old pre-contract 30/30 artifact contains neither identity and remains
 diagnostic only; it must not be edited or backfilled. The replacement immutable
 output records the accounting kernel, frozen legacy envelope and full replay

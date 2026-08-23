@@ -43,6 +43,7 @@
   - 旧 repaired 30/30 是 **pre-contract diagnostic only**；它缺少 **accounting-kernel and full replay-input identity**，不得恢复权威经济结论
   - 新权威产物：`results/accounting_integrity_20260823_v2/acceptance_summary.json`；full-system SHA-256 为 `3259f41a54a4ca688fd17cc59ad5c784564c49032f1c2a34721ea0ad237916d9`
   - 冻结 replay 输入合同是 `legacy-accounting-rerun-contract.v3`：2026-08-23 13:48 CST 的只读 snapshot 全量 `5,114` 个 Parquet / `21,375,864,438` bytes / `sha256:17fe13a2b55cfd8a34fb0e9b2c0c616e7af4c38a25e9eed705eb4b9cc0d6be04`；合同文件 SHA-256 为 `c76f7c027698ac8146b549d551d38b0f6963e0d6932b1e77cabebf4fab397a19`
+  - 冻结源持久保存在 `data/frozen_snapshots/accounting_integrity_20260823_v2`；工作树 `data` symlink 指向该 snapshot，不得改回 live corpus 后复用同一合同
   - 新复跑 late-dev A5：现有成本均值 `+379.21`（4/5 为正），额外 5bp 均值 `-353.44`（1/5 为正），额外 15bp 均值 `-1,818.72`（0/5 为正）；隐含额外成本盈亏平衡仅约 `2.59bp`
   - 正式 verdict：`BLOCKED_PAUSE_PROMOTION_AND_TRAINING`；strict robustness `0/5`，不授权 **promotion or training**
   - 下一候选假设：时空关系仅允许预注册 shadow attribution，尚未获证据支持或交易权限

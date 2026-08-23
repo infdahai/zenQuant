@@ -50,6 +50,9 @@ full-system source SHA-256 是
 `sha256:17fe13a2b55cfd8a34fb0e9b2c0c616e7af4c38a25e9eed705eb4b9cc0d6be04`；
 合同文件 SHA-256 是
 `c76f7c027698ac8146b549d551d38b0f6963e0d6932b1e77cabebf4fab397a19`。
+冻结源持久保存在
+`data/frozen_snapshots/accounting_integrity_20260823_v2`，snapshot-backed
+工作树的 `data` symlink 必须解析到该目录下的 `data`。
 `--root` 的真实 parent 必须与 cwd `data/raw` 相同，且完整 corpus 必须只读；脚本在 matrix entry 1 前
 只构造第一 frozen donor context（不运行 backtest），并要求 macro/options
 均 available、实际 indicator formula hash 等于冻结合同。
