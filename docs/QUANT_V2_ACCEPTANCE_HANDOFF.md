@@ -58,11 +58,11 @@ only. The existing bytes must not be edited or backfilled.
 - Indicator formula hash: `sha256:82af23a08c68a94641e1d7769ecdf9619059dddbeb531dd3703cc4d2ff809f4a`
 - Required accounting-kernel semantic SHA-256: `sha256:a2e7a4039556aa427ec258a2f38d302c6edf5e37e8e81b9cedd4a36897b66c1a`
 - Frozen legacy envelope SHA-256: `sha256:0c66255a9020985ec5b3c2c10c2da4a38e96ed070c6c7c0801beced9b26f689c`
-- Frozen replay input Parquet corpus (`data/raw`): `5,113` files / `21,375,818,411` bytes / `sha256:36b7a2f2d79e8775378efe6e1ce9b02a863b9a462b2b47be0ff75f3dcce15df6`
-- Rerun contract schema: `legacy-accounting-rerun-contract.v2`
+- Frozen replay input Parquet corpus (read-only snapshot at 2026-08-23 13:48 CST): `5,114` files / `21,375,864,438` bytes / `sha256:17fe13a2b55cfd8a34fb0e9b2c0c616e7af4c38a25e9eed705eb4b9cc0d6be04`
+- Rerun contract schema: `legacy-accounting-rerun-contract.v3`
 - Replay input corpus schema: `replay-input-parquet-corpus.v1`
 - Required replay store availability: `macro=true`, `options=true`
-- Rerun contract SHA-256: `cbba2fcac426341389dbe69d59cda1d5df2681889ea4052cc083d071b992f26d`
+- Rerun contract SHA-256: `c76f7c027698ac8146b549d551d38b0f6963e0d6932b1e77cabebf4fab397a19`
 - Seeds: `42, 123, 456, 789, 1024`
 - Windows: `train_full, 2020, 2021, 2022, 2023, late_dev_2025`
 - Perturbation: price noise `0.001`, volume noise `0.05`, bar dropout `0.02`
@@ -228,12 +228,13 @@ directory, and is not evidence. Do not edit old results or reuse that invocation
 
 Current code rejects every existing output path. A future rerun must use a new,
 versioned output directory, must match
-`config/research/legacy_accounting_rerun_v1.json`, and may not change seed,
-window, parameter, cost or search-space inputs. Run from the canonical repository
-root so relative auxiliary stores and `--root` share one resolved `data/raw`:
+`config/research/legacy_accounting_rerun_v2.json`, and may not change seed,
+window, parameter, cost or search-space inputs. Run from the isolated worktree
+whose `data` link resolves to the frozen read-only snapshot, so relative
+auxiliary stores and `--root` share one immutable `data/raw`:
 
 ```bash
-cd /Users/disaster/workspace/code/zenQuant
+cd /Users/disaster/workspace/code/zenQuant/.worktrees/late-dev-cost-attribution
 uv run python scripts/rerun_legacy_accounting_baseline.py \
   --root data/raw/binance \
   --legacy-input results/quant_v2_acceptance/architecture_attribution.json \

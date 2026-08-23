@@ -41,21 +41,22 @@ paper-live**。权威结论见：
 Operator evidence status 是 `requires_reinstrumented_30_run_rerun`。旧 repaired
 30/30 是 **pre-contract diagnostic only**；它缺少 **accounting-kernel and
 full replay-input identity**。Operator 必须按
-`config/research/legacy_accounting_rerun_v1.json` 在 **new immutable output
+`config/research/legacy_accounting_rerun_v2.json` 在 **new immutable output
 directory** 完整复跑，且不得编辑旧 artifact 或伪造缺失字段。只有新的
 identity-complete 30/30 产物通过合同校验，才能恢复权威经济结论。
 
-当前 `legacy-accounting-rerun-contract.v2` 绑定 cwd `data/raw` 的完整 replay
-Parquet input surface：`5,113` files / `21,375,818,411` bytes /
-`sha256:36b7a2f2d79e8775378efe6e1ce9b02a863b9a462b2b47be0ff75f3dcce15df6`；
+当前 `legacy-accounting-rerun-contract.v3` 绑定 2026-08-23 13:48 CST
+只读 snapshot 的完整 replay Parquet input surface：`5,114` files /
+`21,375,864,438` bytes /
+`sha256:17fe13a2b55cfd8a34fb0e9b2c0c616e7af4c38a25e9eed705eb4b9cc0d6be04`；
 合同文件 SHA-256 是
-`cbba2fcac426341389dbe69d59cda1d5df2681889ea4052cc083d071b992f26d`。
-`--root` 的真实 parent 必须与 cwd `data/raw` 相同；脚本在 matrix entry 1 前
+`c76f7c027698ac8146b549d551d38b0f6963e0d6932b1e77cabebf4fab397a19`。
+`--root` 的真实 parent 必须与 cwd `data/raw` 相同，且完整 corpus 必须只读；脚本在 matrix entry 1 前
 只构造第一 frozen donor context（不运行 backtest），并要求 macro/options
 均 available、实际 indicator formula hash 等于冻结合同。
 
 ```bash
-cd /Users/disaster/workspace/code/zenQuant
+cd /Users/disaster/workspace/code/zenQuant/.worktrees/late-dev-cost-attribution
 uv run python scripts/rerun_legacy_accounting_baseline.py \
   --root data/raw/binance \
   --legacy-input results/quant_v2_acceptance/architecture_attribution.json \

@@ -113,14 +113,14 @@ accounting-kernel semantic identity:
 sha256:a2e7a4039556aa427ec258a2f38d302c6edf5e37e8e81b9cedd4a36897b66c1a
 ```
 
-The frozen replay-input Parquet corpus contract covers the complete cwd
-`data/raw` surface: 5,113 files / 21,375,818,411 bytes:
+The frozen replay-input Parquet corpus contract covers the complete read-only
+snapshot taken at 2026-08-23 13:48 CST: 5,114 files / 21,375,864,438 bytes:
 
 ```text
 schema: replay-input-parquet-corpus.v1
-sha256:36b7a2f2d79e8775378efe6e1ce9b02a863b9a462b2b47be0ff75f3dcce15df6
-rerun-contract: legacy-accounting-rerun-contract.v2
-rerun-contract-sha256: cbba2fcac426341389dbe69d59cda1d5df2681889ea4052cc083d071b992f26d
+sha256:17fe13a2b55cfd8a34fb0e9b2c0c616e7af4c38a25e9eed705eb4b9cc0d6be04
+rerun-contract: legacy-accounting-rerun-contract.v3
+rerun-contract-sha256: c76f7c027698ac8146b549d551d38b0f6963e0d6932b1e77cabebf4fab397a19
 ```
 
 The existing 30/30 artifact contains neither identity. Its status is
