@@ -249,6 +249,16 @@ class DataReadinessStatusTests(unittest.TestCase):
 
         self.assertIn("--start-open-date 2025-10-08", runbook)
         self.assertIn("--end-open-date-exclusive 2026-08-24", runbook)
+        self.assertIn("--timeframes 1d", runbook)
+        self.assertIn(
+            "--spot-daily-output-path data/derived/trend_research/20260824/BTCUSDT/1d/data.parquet",
+            runbook,
+        )
+        self.assertIn(
+            "--trend-spot-path data/derived/trend_research/20260824/BTCUSDT/1d/data.parquet",
+            runbook,
+        )
+        self.assertIn("--spot-1d data/derived/trend_research/20260824/BTCUSDT/1d/data.parquet", runbook)
         self.assertIn("--output-dir config/research/registrations", runbook)
         self.assertIn("config/research/registrations/time_space_shadow_execution_v1.json", runbook)
         self.assertNotIn("--output-dir results/trend_research_execution/20260824", runbook)

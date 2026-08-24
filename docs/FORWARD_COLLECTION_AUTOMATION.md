@@ -105,11 +105,13 @@ uv run python scripts/download_spot_data.py \
 uv run python scripts/convert_csv_to_parquet.py \
   --source binance_spot \
   --symbol BTCUSDT \
+  --timeframes 1d \
   --start-open-date 2025-10-08 \
-  --end-open-date-exclusive 2026-08-24
+  --end-open-date-exclusive 2026-08-24 \
+  --spot-daily-output-path data/derived/trend_research/20260824/BTCUSDT/1d/data.parquet
 
 uv run python scripts/data_readiness_status.py \
-  --trend-spot-path data/raw/binance_spot/klines/BTCUSDT/1d/data.parquet
+  --trend-spot-path data/derived/trend_research/20260824/BTCUSDT/1d/data.parquet
 ```
 
 Do not run either donor until `results/data_readiness/data_readiness.json` reports
@@ -119,7 +121,9 @@ neutral fallback and is a blocker when `--trend-spot-path` is supplied.
 The October monthly Binance archive contains valid rows before the 85-close warmup. They remain in raw provenance,
 but the strict normalizer validates the complete raw archives and then deterministically crops the normalized corpus
 to the exact half-open research range. Readiness and the freezer reject any normalized row before the warmup or at or
-after the frozen end.
+after the frozen end. The bounded converter requires a dedicated derived output and refuses the shared canonical
+`data/raw/binance_spot/klines/BTCUSDT/1d/data.parquet`; `--timeframes 1d` also prevents this repair from rewriting
+existing `5m`, `1h`, or `4h` Parquet files used by other research paths.
 
 The execution freeze binds both normalized bytes and every raw Binance CSV as provenance. The following zsh-safe
 array uses C-locale filename order, expands each regular raw archive into the repeatable `--spot-raw` argument required
@@ -136,7 +140,7 @@ done
 
 test ! -e config/research/registrations
 uv run python scripts/freeze_trend_research_inputs.py \
-  --spot-1d data/raw/binance_spot/klines/BTCUSDT/1d/data.parquet \
+  --spot-1d data/derived/trend_research/20260824/BTCUSDT/1d/data.parquet \
   "${trend_spot_raw_args[@]}" \
   --perp-5m data/raw/binance/klines/BTCUSDT/5m/data.parquet \
   --funding data/raw/binance/funding/BTCUSDT/data.parquet \

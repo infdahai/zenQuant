@@ -42,6 +42,25 @@ def _write_open_interest_csv(path: Path, *, timestamp_ms: int) -> None:
     )
 
 
+def _write_daily_range_csv(path: Path, open_times_ns: tuple[int, ...]) -> None:
+    pd.DataFrame(
+        {
+            "open_time": [value // 1_000_000 for value in open_times_ns],
+            "open": [100.0] * len(open_times_ns),
+            "high": [110.0] * len(open_times_ns),
+            "low": [90.0] * len(open_times_ns),
+            "close": [105.0] * len(open_times_ns),
+            "volume": [10.0] * len(open_times_ns),
+            "close_time": [(value + 86_400_000_000_000) // 1_000_000 - 1 for value in open_times_ns],
+            "quote_volume": [1000.0] * len(open_times_ns),
+            "trade_count": [5] * len(open_times_ns),
+            "taker_buy_base": [6.0] * len(open_times_ns),
+            "taker_buy_quote": [600.0] * len(open_times_ns),
+            "ignore": [0] * len(open_times_ns),
+        }
+    ).to_csv(path, index=False)
+
+
 def test_csv_to_parquet_deduplicates_overlapping_monthly_and_daily_klines(tmp_path: Path) -> None:
     source_dir = tmp_path / "source"
     output_dir = tmp_path / "output"
@@ -124,7 +143,7 @@ def test_spot_daily_converter_uses_strict_conflict_detection(tmp_path: Path) -> 
 
 def test_spot_daily_converter_applies_explicit_open_date_bounds(tmp_path: Path) -> None:
     source_dir = tmp_path / "source"
-    output_dir = tmp_path / "output"
+    derived_path = tmp_path / "derived" / "data.parquet"
     source_dir.mkdir()
     for index, open_time_ms in enumerate((1_777_420_800_000, 1_777_507_200_000, 1_777_593_600_000)):
         _write_kline_csv(
@@ -135,16 +154,18 @@ def test_spot_daily_converter_applies_explicit_open_date_bounds(tmp_path: Path) 
 
     rows = csv_to_parquet(
         source_dir,
-        output_dir,
+        source_dir,
         "klines",
         source="binance_spot",
         timeframe="1d",
         start_open_ns=1_777_507_200_000_000_000,
         end_open_ns=1_777_593_600_000_000_000,
+        spot_daily_output_path=derived_path,
     )
 
     assert rows == 1
-    assert pd.read_parquet(output_dir / "data.parquet")["open_time_ns"].tolist() == [1_777_507_200_000_000_000]
+    assert pd.read_parquet(derived_path)["open_time_ns"].tolist() == [1_777_507_200_000_000_000]
+    assert not (source_dir / "data.parquet").exists()
 
 
 def test_converter_rejects_bounds_on_legacy_paths_and_parses_utc_dates() -> None:
@@ -182,6 +203,123 @@ def test_converter_rejects_bounds_on_legacy_paths_and_parses_utc_dates() -> None
             start_open_ns=1_787_529_600_000_000_000,
             end_open_ns=1_759_881_600_000_000_000,
         )
+    with pytest.raises(ValueError, match="isolated output"):
+        csv_to_parquet(
+            Path("unused"),
+            Path("unused"),
+            "klines",
+            source="binance_spot",
+            timeframe="1d",
+            start_open_ns=1_759_881_600_000_000_000,
+            end_open_ns=1_787_529_600_000_000_000,
+        )
+
+
+def test_bounded_spot_converter_rejects_shared_canonical_output(tmp_path: Path) -> None:
+    source_dir = tmp_path / "data/raw/binance_spot/klines/BTCUSDT/1d"
+    source_dir.mkdir(parents=True)
+    _write_kline_csv(
+        source_dir / "daily.csv",
+        open_time_ms=1_777_507_200_000,
+        close_time_ms=1_777_593_599_999,
+    )
+
+    with pytest.raises(ValueError, match="canonical raw"):
+        csv_to_parquet(
+            source_dir,
+            source_dir,
+            "klines",
+            source="binance_spot",
+            timeframe="1d",
+            start_open_ns=1_777_507_200_000_000_000,
+            end_open_ns=1_777_593_600_000_000_000,
+            spot_daily_output_path=source_dir / "data.parquet",
+        )
+
+
+def test_bounded_cli_rejects_canonical_output_before_writing(tmp_path: Path, monkeypatch) -> None:
+    daily_dir = tmp_path / "data/raw/binance_spot/klines/BTCUSDT/1d"
+    daily_dir.mkdir(parents=True)
+    _write_kline_csv(
+        daily_dir / "daily.csv",
+        open_time_ms=1_777_507_200_000,
+        close_time_ms=1_777_593_599_999,
+    )
+    canonical = daily_dir / "data.parquet"
+    canonical.write_bytes(b"canonical-full-history")
+    monkeypatch.chdir(tmp_path)
+
+    with pytest.raises(SystemExit):
+        CONVERTER.main(
+            [
+                "--source",
+                "binance_spot",
+                "--timeframes",
+                "1d",
+                "--start-open-date",
+                "2026-04-30",
+                "--end-open-date-exclusive",
+                "2026-05-01",
+                "--spot-daily-output-path",
+                "data/raw/binance_spot/klines/BTCUSDT/1d/data.parquet",
+            ]
+        )
+
+    assert canonical.read_bytes() == b"canonical-full-history"
+
+
+def test_bounded_cli_writes_only_isolated_1d_output(tmp_path: Path, monkeypatch) -> None:
+    day_ns = 86_400_000_000_000
+    start_ns = 1_759_881_600_000_000_000
+    end_ns = 1_787_529_600_000_000_000
+    daily_dir = tmp_path / "data/raw/binance_spot/klines/BTCUSDT/1d"
+    other_dir = tmp_path / "data/raw/binance_spot/klines/BTCUSDT/4h"
+    daily_dir.mkdir(parents=True)
+    other_dir.mkdir(parents=True)
+    _write_daily_range_csv(daily_dir / "monthly.csv", tuple(range(start_ns - 7 * day_ns, end_ns, day_ns)))
+    _write_kline_csv(
+        other_dir / "four-hour.csv",
+        open_time_ms=start_ns // 1_000_000,
+        close_time_ms=(start_ns + 4 * 3_600_000_000_000) // 1_000_000 - 1,
+    )
+    canonical = daily_dir / "data.parquet"
+    other = other_dir / "data.parquet"
+    canonical.write_bytes(b"canonical-full-history")
+    other.write_bytes(b"other-timeframe")
+    derived = tmp_path / "data/derived/trend_research/20260824/BTCUSDT/1d/data.parquet"
+    monkeypatch.chdir(tmp_path)
+
+    CONVERTER.main(
+        [
+            "--source",
+            "binance_spot",
+            "--symbol",
+            "BTCUSDT",
+            "--timeframes",
+            "1d",
+            "--start-open-date",
+            "2025-10-08",
+            "--end-open-date-exclusive",
+            "2026-08-24",
+            "--spot-daily-output-path",
+            str(derived),
+        ]
+    )
+
+    assert canonical.read_bytes() == b"canonical-full-history"
+    assert other.read_bytes() == b"other-timeframe"
+    frame = pd.read_parquet(derived)
+    assert len(frame) == 320
+    assert frame["open_time_ns"].min() == start_ns
+    assert frame["open_time_ns"].max() == end_ns - day_ns
+
+
+def test_timeframe_parser_rejects_unsupported_or_duplicate_values() -> None:
+    assert CONVERTER.parse_timeframes("1d") == ("1d",)
+    with pytest.raises(ValueError, match="unsupported"):
+        CONVERTER.parse_timeframes("2h")
+    with pytest.raises(ValueError, match="duplicate"):
+        CONVERTER.parse_timeframes("1d,1d")
 
 
 @pytest.mark.parametrize(

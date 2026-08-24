@@ -9,6 +9,8 @@ import pandas as pd
 
 from zenquant.data.spot_daily import DAY_NS, normalize_spot_daily_csvs
 
+SUPPORTED_TIMEFRAMES = ("5m", "1h", "4h", "1d")
+
 
 def _normalize_exchange_timestamp(value: int | float) -> int:
     """Normalize exchange timestamps to milliseconds before ns conversion."""
@@ -27,19 +29,29 @@ def csv_to_parquet(
     timeframe: str | None = None,
     start_open_ns: int | None = None,
     end_open_ns: int | None = None,
+    spot_daily_output_path: Path | None = None,
 ):
     """Convert all CSV files in directory to Parquet."""
     has_bounds = start_open_ns is not None or end_open_ns is not None
     is_spot_daily = data_type == "klines" and source == "binance_spot" and timeframe == "1d"
     if has_bounds and not is_spot_daily:
         raise ValueError("explicit open bounds are only valid for binance_spot 1d klines")
+    if spot_daily_output_path is not None and not is_spot_daily:
+        raise ValueError("spot_daily_output_path is only valid for binance_spot 1d klines")
     if is_spot_daily and (start_open_ns is None) != (end_open_ns is None):
         raise ValueError("start_open_ns and end_open_ns must both be provided")
+    if spot_daily_output_path is not None and not has_bounds:
+        raise ValueError("spot_daily_output_path requires explicit open bounds")
     if start_open_ns is not None and end_open_ns is not None:
         if start_open_ns % DAY_NS or end_open_ns % DAY_NS:
             raise ValueError("explicit open bounds must be UTC daily timestamps")
         if start_open_ns >= end_open_ns:
             raise ValueError("explicit open bounds must form a non-empty half-open interval")
+        if spot_daily_output_path is None:
+            raise ValueError("bounded spot daily conversion requires an explicit isolated output path")
+        canonical_path = (Path(csv_dir) / "data.parquet").resolve()
+        if Path(spot_daily_output_path).resolve() == canonical_path:
+            raise ValueError("bounded spot daily output cannot overwrite canonical raw data.parquet")
     csv_files = sorted(csv_dir.glob("*.csv"))
 
     if not csv_files:
@@ -47,9 +59,12 @@ def csv_to_parquet(
         return 0
 
     if data_type == "klines" and source == "binance_spot" and timeframe == "1d":
+        output_path = (
+            Path(spot_daily_output_path) if spot_daily_output_path is not None else output_dir / "data.parquet"
+        )
         result = normalize_spot_daily_csvs(
             csv_files,
-            output_dir / "data.parquet",
+            output_path,
             start_open_ns=start_open_ns,
             end_open_ns=end_open_ns,
         )
@@ -178,7 +193,21 @@ def parse_utc_open_date(value: str) -> int:
     return int(parsed.timestamp() * 1_000_000_000)
 
 
-def main():
+def parse_timeframes(value: str) -> tuple[str, ...]:
+    """Parse one ordered, unique subset of supported kline timeframes."""
+
+    parts = tuple(part.strip() for part in value.split(","))
+    if not parts or any(not part for part in parts):
+        raise ValueError("timeframes must be a non-empty comma-separated list")
+    unsupported = tuple(part for part in parts if part not in SUPPORTED_TIMEFRAMES)
+    if unsupported:
+        raise ValueError(f"unsupported timeframes: {unsupported}")
+    if len(set(parts)) != len(parts):
+        raise ValueError("duplicate timeframes are not allowed")
+    return parts
+
+
+def main(argv: list[str] | None = None):
     import argparse
 
     parser = argparse.ArgumentParser(description="Convert Binance CSV to Parquet")
@@ -186,12 +215,18 @@ def main():
     parser.add_argument("--source", default="binance", choices=["binance", "binance_spot"])
     parser.add_argument("--start-open-date", default=None)
     parser.add_argument("--end-open-date-exclusive", default=None)
-    args = parser.parse_args()
+    parser.add_argument("--spot-daily-output-path", type=Path, default=None)
+    parser.add_argument("--timeframes", default=",".join(SUPPORTED_TIMEFRAMES))
+    args = parser.parse_args(argv)
 
     if (args.start_open_date is None) != (args.end_open_date_exclusive is None):
         parser.error("--start-open-date and --end-open-date-exclusive must both be provided")
     if args.source != "binance_spot" and args.start_open_date is not None:
         parser.error("explicit open-date bounds are only valid for --source binance_spot")
+    if args.spot_daily_output_path is not None and args.start_open_date is None:
+        parser.error("--spot-daily-output-path requires explicit open-date bounds")
+    if args.start_open_date is not None and args.spot_daily_output_path is None:
+        parser.error("bounded spot daily conversion requires --spot-daily-output-path")
     try:
         start_open_ns = parse_utc_open_date(args.start_open_date) if args.start_open_date is not None else None
         end_open_ns = (
@@ -201,13 +236,22 @@ def main():
         parser.error(str(exc))
     if start_open_ns is not None and end_open_ns is not None and start_open_ns >= end_open_ns:
         parser.error("explicit open bounds must form a non-empty half-open interval")
+    try:
+        timeframes = parse_timeframes(args.timeframes)
+    except ValueError as exc:
+        parser.error(str(exc))
+    if start_open_ns is not None and "1d" not in timeframes:
+        parser.error("bounded spot daily conversion requires 1d in --timeframes")
 
     base_dir = Path(f"data/raw/{args.source}")
     symbol = args.symbol
+    canonical_spot_daily_path = (base_dir / "klines" / symbol / "1d" / "data.parquet").resolve()
+    if args.spot_daily_output_path is not None and args.spot_daily_output_path.resolve() == canonical_spot_daily_path:
+        parser.error("bounded spot daily output cannot overwrite canonical raw data.parquet")
     total_rows = 0
 
     # Convert all available timeframes
-    for tf in ["5m", "1h", "4h", "1d"]:
+    for tf in timeframes:
         csv_dir = base_dir / "klines" / symbol / tf
         if csv_dir.exists() and list(csv_dir.glob("*.csv")):
             rows = csv_to_parquet(
@@ -218,6 +262,7 @@ def main():
                 timeframe=tf,
                 start_open_ns=start_open_ns if tf == "1d" else None,
                 end_open_ns=end_open_ns if tf == "1d" else None,
+                spot_daily_output_path=args.spot_daily_output_path if tf == "1d" else None,
             )
             total_rows += rows
 
