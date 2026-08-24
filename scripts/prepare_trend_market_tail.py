@@ -5,6 +5,8 @@ from __future__ import annotations
 
 import argparse
 import json
+import time
+import urllib.error
 import urllib.parse
 import urllib.request
 from collections.abc import Sequence
@@ -22,11 +24,61 @@ _BASE_URL: Final = "https://fapi.binance.com"
 def _fetch(path: str, params: dict[str, int | str]) -> list[Any]:
     query = urllib.parse.urlencode(params)
     request = urllib.request.Request(f"{_BASE_URL}{path}?{query}", headers={"User-Agent": "zenquant/1"})
-    with urllib.request.urlopen(request, timeout=30) as response:
-        payload = json.loads(response.read())
-    if not isinstance(payload, list):
-        raise MarketTailError("Binance REST response must be a list")
+    payload = _request_json_with_retry(request)
+    _validate_endpoint_payload(path, payload)
     return payload
+
+
+def _request_json_with_retry(
+    request: urllib.request.Request,
+    *,
+    urlopen=urllib.request.urlopen,
+    sleep=time.sleep,
+    max_attempts: int = 3,
+) -> list[Any]:
+    if not 0 < max_attempts <= 4:
+        raise MarketTailError("max_attempts must be in [1, 4]")
+    for attempt in range(1, max_attempts + 1):
+        try:
+            with urlopen(request, timeout=30) as response:
+                payload = json.loads(response.read())
+            if not isinstance(payload, list):
+                raise MarketTailError("Binance REST response must be a list")
+            return payload
+        except urllib.error.HTTPError as exc:
+            retryable = exc.code == 429 or 500 <= exc.code <= 599
+            if not retryable or attempt == max_attempts:
+                raise MarketTailError(f"Binance REST HTTP failure: {exc.code}") from exc
+        except TimeoutError as exc:
+            if attempt == max_attempts:
+                raise MarketTailError("Binance REST request exhausted retries") from exc
+        except urllib.error.URLError as exc:
+            if not isinstance(exc.reason, TimeoutError):
+                raise MarketTailError("Binance REST transport failure is not retryable") from exc
+            if attempt == max_attempts:
+                raise MarketTailError("Binance REST request exhausted retries") from exc
+        except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+            raise MarketTailError("Binance REST response is not valid JSON") from exc
+        sleep(0.25 * (2 ** (attempt - 1)))
+    raise MarketTailError("Binance REST request exhausted retries")
+
+
+def _validate_endpoint_payload(path: str, payload: list[Any]) -> None:
+    if path == "/fapi/v1/klines":
+        if any(not isinstance(row, list) or len(row) < 12 for row in payload):
+            raise MarketTailError("Binance kline response contains a malformed element")
+        return
+    if path == "/fapi/v1/fundingRate":
+        if any(
+            not isinstance(row, dict)
+            or row.get("symbol") != "BTCUSDT"
+            or "fundingTime" not in row
+            or "fundingRate" not in row
+            for row in payload
+        ):
+            raise MarketTailError("Binance funding response contains a malformed element")
+        return
+    raise MarketTailError(f"unsupported Binance REST endpoint: {path}")
 
 
 def _fetch_perp(start_ms: int, end_ms: int, limit: int) -> list[Any]:
@@ -71,6 +123,15 @@ def main(argv: Sequence[str] | None = None) -> int:
         parser.error(f"fixed start must be {FIXED_START}")
     if args.end != FIXED_END:
         parser.error(f"fixed end must be {FIXED_END}")
+    repository_root = Path(__file__).resolve().parents[1]
+    expected_paths = {
+        "perpetual": repository_root / "data/raw/binance/klines/BTCUSDT/5m/data.parquet",
+        "funding": repository_root / "data/raw/binance/funding/BTCUSDT/data.parquet",
+    }
+    supplied_paths = {"perpetual": args.perp_source, "funding": args.funding_source}
+    for label, supplied in supplied_paths.items():
+        if supplied.is_symlink() or supplied.resolve() != expected_paths[label].resolve():
+            parser.error(f"{label} source must be the exact canonical BTCUSDT Binance path")
     try:
         prepare_market_tail(
             MarketTailInputs(
@@ -79,7 +140,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 output_root=args.output_root,
                 start_ns=REUSED_START_NS,
                 end_ns=REUSED_END_NS,
-                repository_root=Path(__file__).resolve().parents[1],
+                repository_root=repository_root,
             ),
             fetch_perp_page=_fetch_perp,
             fetch_funding_page=_fetch_funding,
