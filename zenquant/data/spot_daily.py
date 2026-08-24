@@ -183,6 +183,8 @@ def _read_daily_csv(path: Path) -> pd.DataFrame:
     close_units_ns = parsed_close.map(lambda item: item[1])
     if not open_units_ns.equals(close_units_ns):
         raise SpotDailyError(f"spot daily CSV {path.name} contains mixed timestamp units")
+    if open_units_ns.nunique(dropna=False) != 1:
+        raise SpotDailyError(f"spot daily CSV {path.name} archive mixes timestamp units")
     if any(value % DAY_NS for value in frame["open_time_ns"]):
         raise SpotDailyError(f"spot daily CSV {path.name} open_time is not a UTC day")
     expected_end = frame["open_time_ns"] + DAY_NS

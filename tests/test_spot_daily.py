@@ -187,6 +187,23 @@ def test_normalization_rejects_mixed_open_and_close_timestamp_units(tmp_path: Pa
         normalize_spot_daily_csvs((source,), tmp_path / "data.parquet")
 
 
+def test_normalization_rejects_one_archive_mixing_ms_and_us_rows(tmp_path: Path) -> None:
+    source = tmp_path / "mixed-row-units.csv"
+    _write_daily_csv(
+        source,
+        open_time=START_NS // 1_000_000,
+        close_time=(START_NS + DAY_NS) // 1_000_000 - 1,
+    )
+    next_open_ns = START_NS + DAY_NS
+    with source.open("a", encoding="utf-8") as stream:
+        stream.write(
+            f"{next_open_ns // 1_000},100,110,90,105,10,{(next_open_ns + DAY_NS) // 1_000 - 1},1000,5,6,600,0\n"
+        )
+
+    with pytest.raises(SpotDailyError, match="archive mixes timestamp units"):
+        normalize_spot_daily_csvs((source,), tmp_path / "data.parquet")
+
+
 def test_bad_overlap_does_not_replace_existing_normalized_output(tmp_path: Path) -> None:
     existing = tmp_path / "data.parquet"
     existing.write_bytes(b"trusted-existing-output")
