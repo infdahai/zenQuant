@@ -45,15 +45,27 @@
 **Interfaces:**
 - Produces: `canonical_sha256(payload: Mapping[str, Any]) -> str`
 - Produces: `load_hypothesis_manifest(path: Path) -> HypothesisManifest`
-- Produces: `derive_forward_start_ns(receipts: Sequence[RegistrationReceipt]) -> int`
+- Produces: `load_execution_manifest(path: Path) -> ExecutionManifest`
+- Produces: `derive_forward_start_ns(hypothesis, execution, receipts, *, expected provider identities) -> int`
 - Produces: `classify_evidence_role(event_cutoff_ns: int, reused_start_ns: int, reused_end_ns: int, forward_start_ns: int) -> EvidenceRole`
 
 - [ ] **Step 1: Write failing immutable-contract tests**
 
 ```python
 def test_forward_start_uses_later_receipt_plus_24h_and_ceil_4h() -> None:
-    receipts = (_receipt(100), _receipt(200))
-    assert derive_forward_start_ns(receipts) == ceil_4h_ns(200 + DAY_NS)
+    hypothesis = load_hypothesis_manifest(HYPOTHESIS_PATH)
+    execution = load_execution_manifest(EXECUTION_PATH)
+    receipts = (_receipt(hypothesis.sha256, RUN_1, COMMIT_1, 100), _receipt(execution.sha256, RUN_2, COMMIT_2, 200))
+    assert derive_forward_start_ns(
+        hypothesis,
+        execution,
+        receipts,
+        expected_remote_identity="example/repo",
+        expected_hypothesis_provider_run_id=RUN_1,
+        expected_hypothesis_commit_sha=COMMIT_1,
+        expected_execution_provider_run_id=RUN_2,
+        expected_execution_commit_sha=COMMIT_2,
+    ) == ceil_4h_ns(200 + DAY_NS)
 
 def test_backfilled_old_event_remains_reused() -> None:
     assert classify_evidence_role(99, reused_start_ns=50, reused_end_ns=100, forward_start_ns=120) is EvidenceRole.TEST_REUSED_DIAGNOSTIC
@@ -79,18 +91,37 @@ class EvidenceRole(StrEnum):
 @dataclass(frozen=True, slots=True)
 class RegistrationReceipt:
     manifest_sha256: str
+    provider_run_id: str
     commit_sha: str
     remote_identity: str
     received_at_ns: int
 
-def derive_forward_start_ns(receipts: Sequence[RegistrationReceipt]) -> int:
-    if len(receipts) != 2:
-        raise RegistrationError("two trusted receipts are required")
-    candidate = max(item.received_at_ns for item in receipts) + DAY_NS
+def derive_forward_start_ns(
+    hypothesis: HypothesisManifest,
+    execution: ExecutionManifest,
+    receipts: Sequence[RegistrationReceipt],
+    *,
+    expected_remote_identity: str,
+    expected_hypothesis_provider_run_id: int | str,
+    expected_hypothesis_commit_sha: str,
+    expected_execution_provider_run_id: int | str,
+    expected_execution_commit_sha: str,
+) -> int:
+    hypothesis_receipt, execution_receipt = validate_registration_receipt_pair(
+        hypothesis,
+        execution,
+        receipts,
+        expected_remote_identity=expected_remote_identity,
+        expected_hypothesis_provider_run_id=expected_hypothesis_provider_run_id,
+        expected_hypothesis_commit_sha=expected_hypothesis_commit_sha,
+        expected_execution_provider_run_id=expected_execution_provider_run_id,
+        expected_execution_commit_sha=expected_execution_commit_sha,
+    )
+    candidate = max(hypothesis_receipt.received_at_ns, execution_receipt.received_at_ns) + DAY_NS
     return ((candidate + FOUR_HOURS_NS - 1) // FOUR_HOURS_NS) * FOUR_HOURS_NS
 ```
 
-The loader must reject unknown keys, non-canonical SHA strings, a missing exact reused window, fallback other than `NONE`, changed seeds, and a receipt whose manifest hash/remote identity does not match.
+The hypothesis and execution descriptors must come from validated local manifest payloads. Execution v1 uses an exact top-level schema: no unknown or result keys, the exact reused window and checkpoint rule, the exact three READY/REQUIRED/NONE sources, canonical and internally recomputed source/construction/accounting/workspace identities, and recursively canonical SHA fields. The freezer calls this same validator before publication. Receipt-pair validation must plain-copy and fully revalidate both descriptor payloads, then prove every exposed field and canonical payload hash matches; frozen dataclass construction alone is not trusted. Both descriptors must name the same supported layer, and the execution manifest must embed the exact hypothesis SHA. Receipt-pair validation must reject missing, duplicate, swapped, unexpected, cross-layer, same-run, or wrong-kind evidence; bind canonical provider run IDs and 40/64-character lowercase Git SHAs; and require both receipts to match the independently expected remote/run/commit identities. Legacy numeric GitHub run IDs are canonicalized before comparing already-issued envelopes.
 
 - [ ] **Step 4: Run focused tests and confirm GREEN**
 
@@ -168,12 +199,12 @@ git commit -m "feat(research): freeze trend research hypotheses"
 
 ```python
 def test_receipt_uses_provider_created_at_not_local_git_time() -> None:
-    envelope = build_registration_envelope(_manifest(), "abc123", _github_run(created_at="2026-08-24T08:00:00Z"))
+    envelope = build_registration_envelope(_manifest(), COMMIT_SHA, _github_run(created_at="2026-08-24T08:00:00Z"))
     assert envelope["received_at_ns"] == 1787558400000000000
 
 def test_verifier_rejects_changed_commit_or_manifest() -> None:
     with pytest.raises(RegistrationError, match="provider identity mismatch"):
-        verify_github_receipt(_envelope(commit="a"), _github_run(head_sha="b"))
+        verify_github_receipt(_envelope(commit="a" * 40), _github_run(head_sha="b" * 40))
 ```
 
 - [ ] **Step 2: Run focused tests and confirm RED**
@@ -191,7 +222,7 @@ def verify_github_receipt(envelope: Mapping[str, Any], provider: Mapping[str, An
     if expected != observed:
         raise RegistrationError("provider identity mismatch")
     received_at_ns = iso8601_to_ns(str(provider["created_at"]))
-    return RegistrationReceipt(str(envelope["manifest_sha256"]), str(provider["head_sha"]), str(envelope["remote_identity"]), received_at_ns)
+    return RegistrationReceipt(str(envelope["manifest_sha256"]), provider_run_id, provider_commit_sha, remote_identity, received_at_ns)
 ```
 
 The workflow retains `workflow_dispatch` for post-merge use and accepts one
