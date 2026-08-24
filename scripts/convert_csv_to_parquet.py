@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
 """Convert Binance CSV files to Parquet format for efficient replay."""
 
+import re
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pandas as pd
 
-from zenquant.data.spot_daily import normalize_spot_daily_csvs
+from zenquant.data.spot_daily import DAY_NS, normalize_spot_daily_csvs
 
 
 def _normalize_exchange_timestamp(value: int | float) -> int:
@@ -23,8 +25,21 @@ def csv_to_parquet(
     *,
     source: str | None = None,
     timeframe: str | None = None,
+    start_open_ns: int | None = None,
+    end_open_ns: int | None = None,
 ):
     """Convert all CSV files in directory to Parquet."""
+    has_bounds = start_open_ns is not None or end_open_ns is not None
+    is_spot_daily = data_type == "klines" and source == "binance_spot" and timeframe == "1d"
+    if has_bounds and not is_spot_daily:
+        raise ValueError("explicit open bounds are only valid for binance_spot 1d klines")
+    if is_spot_daily and (start_open_ns is None) != (end_open_ns is None):
+        raise ValueError("start_open_ns and end_open_ns must both be provided")
+    if start_open_ns is not None and end_open_ns is not None:
+        if start_open_ns % DAY_NS or end_open_ns % DAY_NS:
+            raise ValueError("explicit open bounds must be UTC daily timestamps")
+        if start_open_ns >= end_open_ns:
+            raise ValueError("explicit open bounds must form a non-empty half-open interval")
     csv_files = sorted(csv_dir.glob("*.csv"))
 
     if not csv_files:
@@ -32,7 +47,12 @@ def csv_to_parquet(
         return 0
 
     if data_type == "klines" and source == "binance_spot" and timeframe == "1d":
-        result = normalize_spot_daily_csvs(csv_files, output_dir / "data.parquet")
+        result = normalize_spot_daily_csvs(
+            csv_files,
+            output_dir / "data.parquet",
+            start_open_ns=start_open_ns,
+            end_open_ns=end_open_ns,
+        )
         print(f"  Saved {result.row_count} rows to {result.output_path}")
         return result.row_count
 
@@ -146,13 +166,41 @@ def _read_funding_csv(csv_file: Path) -> pd.DataFrame:
     )
 
 
+def parse_utc_open_date(value: str) -> int:
+    """Parse one exact YYYY-MM-DD value as a UTC daily open in nanoseconds."""
+
+    if re.fullmatch(r"\d{4}-\d{2}-\d{2}", value) is None:
+        raise ValueError("open date must use exact YYYY-MM-DD format")
+    try:
+        parsed = datetime.strptime(value, "%Y-%m-%d").replace(tzinfo=UTC)
+    except ValueError as exc:
+        raise ValueError("open date must use exact YYYY-MM-DD format") from exc
+    return int(parsed.timestamp() * 1_000_000_000)
+
+
 def main():
     import argparse
 
     parser = argparse.ArgumentParser(description="Convert Binance CSV to Parquet")
     parser.add_argument("--symbol", default="BTCUSDT")
     parser.add_argument("--source", default="binance", choices=["binance", "binance_spot"])
+    parser.add_argument("--start-open-date", default=None)
+    parser.add_argument("--end-open-date-exclusive", default=None)
     args = parser.parse_args()
+
+    if (args.start_open_date is None) != (args.end_open_date_exclusive is None):
+        parser.error("--start-open-date and --end-open-date-exclusive must both be provided")
+    if args.source != "binance_spot" and args.start_open_date is not None:
+        parser.error("explicit open-date bounds are only valid for --source binance_spot")
+    try:
+        start_open_ns = parse_utc_open_date(args.start_open_date) if args.start_open_date is not None else None
+        end_open_ns = (
+            parse_utc_open_date(args.end_open_date_exclusive) if args.end_open_date_exclusive is not None else None
+        )
+    except ValueError as exc:
+        parser.error(str(exc))
+    if start_open_ns is not None and end_open_ns is not None and start_open_ns >= end_open_ns:
+        parser.error("explicit open bounds must form a non-empty half-open interval")
 
     base_dir = Path(f"data/raw/{args.source}")
     symbol = args.symbol
@@ -162,7 +210,15 @@ def main():
     for tf in ["5m", "1h", "4h", "1d"]:
         csv_dir = base_dir / "klines" / symbol / tf
         if csv_dir.exists() and list(csv_dir.glob("*.csv")):
-            rows = csv_to_parquet(csv_dir, csv_dir, "klines", source=args.source, timeframe=tf)
+            rows = csv_to_parquet(
+                csv_dir,
+                csv_dir,
+                "klines",
+                source=args.source,
+                timeframe=tf,
+                start_open_ns=start_open_ns if tf == "1d" else None,
+                end_open_ns=end_open_ns if tf == "1d" else None,
+            )
             total_rows += rows
 
     # Convert funding (futures only)

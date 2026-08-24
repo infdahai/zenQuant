@@ -141,6 +141,7 @@ def build_trend_research_status(trend_spot_path: Path | None) -> dict[str, Any]:
         "missing_count": 0,
         "duplicate_open_ns": [],
         "duplicate_count": 0,
+        "pre_start_count": 0,
         "post_end_count": 0,
         "row_count": 0,
         "ready": False,
@@ -192,6 +193,7 @@ def build_trend_research_status(trend_spot_path: Path | None) -> dict[str, Any]:
             "next_action": "normalize_trend_spot_daily_from_raw_archives",
         }
 
+    pre_start_count = int((opens < TREND_WARMUP_START_NS).sum())
     post_end_count = int((opens >= TREND_REUSED_END_NS).sum())
     first_open_ns = int(opens.min())
     last_open_ns = int(opens.max())
@@ -203,7 +205,10 @@ def build_trend_research_status(trend_spot_path: Path | None) -> dict[str, Any]:
     reused_missing = list(reused_audit.missing_open_ns)
     missing_open_ns = sorted((*warmup_missing, *reused_missing))
 
-    if post_end_count:
+    if pre_start_count:
+        status = "INSUFFICIENT_DATA_SPOT_DAILY_PRE_START"
+        next_action = "crop_and_renormalize_trend_spot_daily"
+    elif post_end_count:
         status = "INSUFFICIENT_DATA_SPOT_DAILY_POST_END"
         next_action = "remove_post_end_rows_and_renormalize_trend_spot_daily"
     elif last_required_open_ns != TREND_REUSED_END_NS - DAY_NS:
@@ -232,6 +237,7 @@ def build_trend_research_status(trend_spot_path: Path | None) -> dict[str, Any]:
         "missing_count": len(missing_open_ns),
         "duplicate_open_ns": duplicate_open_ns,
         "duplicate_count": len(duplicate_open_ns),
+        "pre_start_count": pre_start_count,
         "post_end_count": post_end_count,
         "row_count": len(frame),
         "next_action": next_action,
@@ -376,6 +382,7 @@ def build_readiness_markdown(payload: dict[str, Any]) -> str:
         f"- missing_open_ns: `{trend['missing_open_ns']}`",
         f"- duplicate_count: `{trend['duplicate_count']}`",
         f"- duplicate_open_ns: `{trend['duplicate_open_ns']}`",
+        f"- pre_start_count: `{trend['pre_start_count']}`",
         f"- post_end_count: `{trend['post_end_count']}`",
         f"- next_action: `{trend['next_action']}`",
         "",

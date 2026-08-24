@@ -227,6 +227,7 @@ def _audit_spot(inputs: FreezeInputs) -> dict[str, Any]:
         if not pd.api.types.is_integer_dtype(spot_frame["open_time_ns"].dtype):
             return _not_ready(source_id, "spot open_time_ns must use an integer nanosecond dtype")
         spot_times = spot_frame["open_time_ns"]
+        pre_start_count = int((spot_times < warmup_start_ns).sum())
         post_end_count = int((spot_times >= inputs.reused_end_ns).sum())
         required = spot_frame[(spot_times >= warmup_start_ns) & (spot_times < inputs.reused_end_ns)]
         closes = pd.to_numeric(required["close"], errors="coerce")
@@ -238,7 +239,12 @@ def _audit_spot(inputs: FreezeInputs) -> dict[str, Any]:
         diagnostic_rows = spot_frame[(spot_times >= inputs.reused_start_ns) & (spot_times < inputs.reused_end_ns)]
         with tempfile.TemporaryDirectory(prefix="trend-spot-lineage-") as temporary_directory:
             reconstructed_path = Path(temporary_directory) / "data.parquet"
-            reconstructed = normalize_spot_daily_csvs(inputs.spot_raw_paths, reconstructed_path)
+            reconstructed = normalize_spot_daily_csvs(
+                inputs.spot_raw_paths,
+                reconstructed_path,
+                start_open_ns=warmup_start_ns,
+                end_open_ns=inputs.reused_end_ns,
+            )
             reconstructed_frame = pd.read_parquet(reconstructed_path)
             supplied_frame = pd.read_parquet(inputs.spot_1d_path)
             content_matches = reconstructed_frame.equals(supplied_frame)
@@ -251,6 +257,7 @@ def _audit_spot(inputs: FreezeInputs) -> dict[str, Any]:
             and complete_audit.last_close_ns == inputs.reused_end_ns - 1
             and warmup_count == 85
             and valid_closes
+            and pre_start_count == 0
             and post_end_count == 0
             and content_matches
             and identity_matches
@@ -286,6 +293,7 @@ def _audit_spot(inputs: FreezeInputs) -> dict[str, Any]:
                 "row_count": diagnostic_count,
                 "missing_count": len(diagnostic_audit.missing_open_ns),
                 "duplicate_count": len(diagnostic_audit.duplicate_open_ns),
+                "pre_start_count": pre_start_count,
                 "post_end_count": post_end_count,
             },
         }

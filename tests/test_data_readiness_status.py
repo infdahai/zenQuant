@@ -47,12 +47,14 @@ def _write_trend_spot(
     missing_open_ns: tuple[int, ...] = (),
     duplicate_open_ns: int | None = None,
     post_end_count: int = 0,
+    pre_start_count: int = 0,
     close: float = 100_000.0,
 ) -> Path:
     opens = [
         value for value in range(TREND_WARMUP_START_NS, TREND_REUSED_END_NS, DAY_NS) if value not in missing_open_ns
     ]
     opens.extend(TREND_REUSED_END_NS + index * DAY_NS for index in range(post_end_count))
+    opens.extend(TREND_WARMUP_START_NS - (index + 1) * DAY_NS for index in range(pre_start_count))
     if duplicate_open_ns is not None:
         opens.append(duplicate_open_ns)
     frame = pd.DataFrame(
@@ -200,6 +202,23 @@ class DataReadinessStatusTests(unittest.TestCase):
             "INSUFFICIENT_DATA_SPOT_DAILY_MALFORMED",
         )
 
+    def test_trend_readiness_rejects_rows_before_exact_warmup_start(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            spot_path = _write_trend_spot(root / "spot.parquet", pre_start_count=1)
+
+            payload = DATA_READINESS.build_readiness_payload(
+                **self._empty_roots(root),
+                trend_spot_path=spot_path,
+            )
+
+        status = payload["trend_research_status"]
+        self.assertEqual(status["status"], "INSUFFICIENT_DATA_SPOT_DAILY_PRE_START")
+        self.assertEqual(status["pre_start_count"], 1)
+        self.assertEqual(status["next_action"], "crop_and_renormalize_trend_spot_daily")
+        self.assertFalse(status["ready"])
+        self.assertEqual(payload["trend_research_status"]["fallback"], "NONE")
+
     def test_omitted_trend_path_preserves_existing_overall_blockers(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -224,6 +243,15 @@ class DataReadinessStatusTests(unittest.TestCase):
         self.assertEqual(status["reused_missing_count"], 235)
         self.assertEqual(status["missing_count"], 320)
         self.assertIn("trend_research:INSUFFICIENT_DATA_SPOT_DAILY_MISSING", payload["overall_blockers"])
+
+    def test_trend_repair_runbook_uses_exact_normalization_and_registration_paths(self) -> None:
+        runbook = Path("docs/FORWARD_COLLECTION_AUTOMATION.md").read_text(encoding="utf-8")
+
+        self.assertIn("--start-open-date 2025-10-08", runbook)
+        self.assertIn("--end-open-date-exclusive 2026-08-24", runbook)
+        self.assertIn("--output-dir config/research/registrations", runbook)
+        self.assertIn("config/research/registrations/time_space_shadow_execution_v1.json", runbook)
+        self.assertNotIn("--output-dir results/trend_research_execution/20260824", runbook)
 
     def test_build_payload_marks_partial_and_blocked_states(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

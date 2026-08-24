@@ -78,8 +78,12 @@ class SpotDailyAudit:
 def normalize_spot_daily_csvs(
     paths: Sequence[Path],
     output_path: Path,
+    *,
+    start_open_ns: int | None = None,
+    end_open_ns: int | None = None,
 ) -> SpotDailyNormalizationResult:
     """Normalize Binance millisecond/microsecond daily archives fail-closed."""
+    _validate_bounds(start_open_ns, end_open_ns)
     ordered_paths = tuple(sorted((Path(path) for path in paths), key=lambda path: str(path)))
     if not ordered_paths:
         raise SpotDailyError("at least one spot daily CSV is required")
@@ -94,6 +98,12 @@ def normalize_spot_daily_csvs(
         .loc[:, _VALUE_COLUMNS]
         .reset_index(drop=True)
     )
+    if start_open_ns is not None and end_open_ns is not None:
+        normalized = normalized[
+            (normalized["open_time_ns"] >= start_open_ns) & (normalized["open_time_ns"] < end_open_ns)
+        ].reset_index(drop=True)
+        if normalized.empty:
+            raise SpotDailyError("explicit spot daily bounds contain no rows")
 
     output_path = Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -112,6 +122,17 @@ def normalize_spot_daily_csvs(
         raw_source_sha256=source_digests,
         normalized_sha256=_sha256_file(output_path),
     )
+
+
+def _validate_bounds(start_open_ns: int | None, end_open_ns: int | None) -> None:
+    if (start_open_ns is None) != (end_open_ns is None):
+        raise SpotDailyError("start_open_ns and end_open_ns must both be provided")
+    if start_open_ns is None or end_open_ns is None:
+        return
+    if start_open_ns % DAY_NS or end_open_ns % DAY_NS:
+        raise SpotDailyError("spot daily bounds must be UTC daily open timestamps")
+    if start_open_ns >= end_open_ns:
+        raise SpotDailyError("spot daily bounds must form a non-empty half-open interval")
 
 
 def audit_spot_daily(path: Path, start_ns: int, end_ns: int) -> SpotDailyAudit:

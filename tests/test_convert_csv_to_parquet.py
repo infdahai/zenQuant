@@ -16,7 +16,8 @@ def _load_converter():
     return module
 
 
-csv_to_parquet = _load_converter().csv_to_parquet
+CONVERTER = _load_converter()
+csv_to_parquet = CONVERTER.csv_to_parquet
 
 
 def _write_kline_csv(path: Path, *, open_time_ms: int, close_time_ms: int) -> None:
@@ -118,6 +119,68 @@ def test_spot_daily_converter_uses_strict_conflict_detection(tmp_path: Path) -> 
             "klines",
             source="binance_spot",
             timeframe="1d",
+        )
+
+
+def test_spot_daily_converter_applies_explicit_open_date_bounds(tmp_path: Path) -> None:
+    source_dir = tmp_path / "source"
+    output_dir = tmp_path / "output"
+    source_dir.mkdir()
+    for index, open_time_ms in enumerate((1_777_420_800_000, 1_777_507_200_000, 1_777_593_600_000)):
+        _write_kline_csv(
+            source_dir / f"row-{index}.csv",
+            open_time_ms=open_time_ms,
+            close_time_ms=open_time_ms + 86_400_000 - 1,
+        )
+
+    rows = csv_to_parquet(
+        source_dir,
+        output_dir,
+        "klines",
+        source="binance_spot",
+        timeframe="1d",
+        start_open_ns=1_777_507_200_000_000_000,
+        end_open_ns=1_777_593_600_000_000_000,
+    )
+
+    assert rows == 1
+    assert pd.read_parquet(output_dir / "data.parquet")["open_time_ns"].tolist() == [1_777_507_200_000_000_000]
+
+
+def test_converter_rejects_bounds_on_legacy_paths_and_parses_utc_dates() -> None:
+    with pytest.raises(ValueError, match="only valid for binance_spot 1d"):
+        csv_to_parquet(
+            Path("unused"),
+            Path("unused"),
+            "klines",
+            source="binance",
+            timeframe="1d",
+            start_open_ns=1,
+            end_open_ns=2,
+        )
+
+    assert CONVERTER.parse_utc_open_date("2025-10-08") == 1_759_881_600_000_000_000
+    with pytest.raises(ValueError, match="YYYY-MM-DD"):
+        CONVERTER.parse_utc_open_date("2025-10-08T04:00:00+04:00")
+
+    with pytest.raises(ValueError, match="both"):
+        csv_to_parquet(
+            Path("unused"),
+            Path("unused"),
+            "klines",
+            source="binance_spot",
+            timeframe="1d",
+            start_open_ns=1_759_881_600_000_000_000,
+        )
+    with pytest.raises(ValueError, match="non-empty"):
+        csv_to_parquet(
+            Path("unused"),
+            Path("unused"),
+            "klines",
+            source="binance_spot",
+            timeframe="1d",
+            start_open_ns=1_787_529_600_000_000_000,
+            end_open_ns=1_759_881_600_000_000_000,
         )
 
 

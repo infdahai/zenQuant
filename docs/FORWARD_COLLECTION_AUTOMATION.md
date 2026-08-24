@@ -104,7 +104,9 @@ uv run python scripts/download_spot_data.py \
 
 uv run python scripts/convert_csv_to_parquet.py \
   --source binance_spot \
-  --symbol BTCUSDT
+  --symbol BTCUSDT \
+  --start-open-date 2025-10-08 \
+  --end-open-date-exclusive 2026-08-24
 
 uv run python scripts/data_readiness_status.py \
   --trend-spot-path data/raw/binance_spot/klines/BTCUSDT/1d/data.parquet
@@ -114,16 +116,25 @@ Do not run either donor until `results/data_readiness/data_readiness.json` repor
 `trend_research_status.status == "READY"`. Missing, malformed, gapped, stale, duplicate, or post-end data has no
 neutral fallback and is a blocker when `--trend-spot-path` is supplied.
 
+The October monthly Binance archive contains valid rows before the 85-close warmup. They remain in raw provenance,
+but the strict normalizer validates the complete raw archives and then deterministically crops the normalized corpus
+to the exact half-open research range. Readiness and the freezer reject any normalized row before the warmup or at or
+after the frozen end.
+
 The execution freeze binds both normalized bytes and every raw Binance CSV as provenance. The following zsh-safe
-array expands each raw archive into the repeatable `--spot-raw` argument required by the freezer; an empty glob fails
-before a misleading manifest can be written.
+array uses C-locale filename order, expands each regular raw archive into the repeatable `--spot-raw` argument required
+by the freezer, and refuses an empty inventory.
 
 ```zsh
+export LC_ALL=C
+trend_spot_raw_paths=(data/raw/binance_spot/klines/BTCUSDT/1d/*.csv(.N))
+(( ${#trend_spot_raw_paths[@]} > 0 )) || { print -u2 "no raw BTCUSDT 1d CSV archives"; exit 1; }
 trend_spot_raw_args=()
-for trend_spot_raw_path in data/raw/binance_spot/klines/BTCUSDT/1d/*.csv; do
+for trend_spot_raw_path in "${trend_spot_raw_paths[@]}"; do
   trend_spot_raw_args+=(--spot-raw "$trend_spot_raw_path")
 done
 
+test ! -e config/research/registrations
 uv run python scripts/freeze_trend_research_inputs.py \
   --spot-1d data/raw/binance_spot/klines/BTCUSDT/1d/data.parquet \
   "${trend_spot_raw_args[@]}" \
@@ -133,8 +144,10 @@ uv run python scripts/freeze_trend_research_inputs.py \
   --trend-hypothesis config/research/trend_participation_hypothesis_v1.json \
   --reused-start 2026-01-01T00:00:00Z \
   --reused-end 2026-08-24T00:00:00Z \
-  --output-dir results/trend_research_execution/20260824
+  --output-dir config/research/registrations
 ```
 
-The output directory is immutable. Choose a new explicit directory for a later freeze; never overwrite or silently
-reuse an earlier execution envelope.
+The output directory must not already exist. The two exact generated files are
+`config/research/registrations/time_space_shadow_execution_v1.json` and
+`config/research/registrations/trend_participation_execution_v1.json`; these are the only execution paths accepted by
+the trusted registration workflow. Never overwrite or silently reuse an earlier execution envelope.

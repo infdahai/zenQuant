@@ -92,6 +92,94 @@ def test_conflicting_archive_overlap_fails_without_publishing_output(tmp_path: P
     assert not output.exists()
 
 
+def test_normalization_validates_raw_then_filters_exact_half_open_window(tmp_path: Path) -> None:
+    raw = tmp_path / "monthly.csv"
+    for index, open_ns in enumerate((START_NS - DAY_NS, START_NS, START_NS + DAY_NS)):
+        path = tmp_path / f"row-{index}.csv"
+        _write_daily_csv(
+            path,
+            open_time=open_ns // 1_000_000,
+            close_time=(open_ns + DAY_NS) // 1_000_000 - 1,
+        )
+        if index == 0:
+            raw.write_text(path.read_text(encoding="utf-8"), encoding="utf-8")
+        else:
+            with raw.open("a", encoding="utf-8") as stream:
+                stream.write(path.read_text(encoding="utf-8").splitlines()[1] + "\n")
+
+    result = normalize_spot_daily_csvs(
+        (raw,),
+        tmp_path / "bounded.parquet",
+        start_open_ns=START_NS,
+        end_open_ns=START_NS + DAY_NS,
+    )
+
+    assert result.row_count == 1
+    assert pd.read_parquet(result.output_path)["open_time_ns"].tolist() == [START_NS]
+
+    conflicting = tmp_path / "conflicting.csv"
+    _write_daily_csv(
+        conflicting,
+        open_time=(START_NS - DAY_NS) // 1_000_000,
+        close_time=START_NS // 1_000_000 - 1,
+        close=106.0,
+    )
+    with pytest.raises(SpotDailyError, match="conflicting duplicate"):
+        normalize_spot_daily_csvs(
+            (raw, conflicting),
+            tmp_path / "must-not-publish.parquet",
+            start_open_ns=START_NS,
+            end_open_ns=START_NS + DAY_NS,
+        )
+
+
+@pytest.mark.parametrize(
+    ("start_open_ns", "end_open_ns", "message"),
+    [
+        (START_NS, None, "both"),
+        (START_NS + DAY_NS, START_NS, "non-empty"),
+        (START_NS + 1, START_NS + DAY_NS, "UTC daily"),
+    ],
+)
+def test_normalization_rejects_invalid_explicit_bounds(
+    tmp_path: Path,
+    start_open_ns: int | None,
+    end_open_ns: int | None,
+    message: str,
+) -> None:
+    raw = tmp_path / "daily.csv"
+    _write_daily_csv(
+        raw,
+        open_time=START_NS // 1_000_000,
+        close_time=(START_NS + DAY_NS) // 1_000_000 - 1,
+    )
+
+    with pytest.raises(SpotDailyError, match=message):
+        normalize_spot_daily_csvs(
+            (raw,),
+            tmp_path / "data.parquet",
+            start_open_ns=start_open_ns,
+            end_open_ns=end_open_ns,
+        )
+
+
+def test_normalization_rejects_bounds_with_no_rows(tmp_path: Path) -> None:
+    raw = tmp_path / "daily.csv"
+    _write_daily_csv(
+        raw,
+        open_time=START_NS // 1_000_000,
+        close_time=(START_NS + DAY_NS) // 1_000_000 - 1,
+    )
+
+    with pytest.raises(SpotDailyError, match="no rows"):
+        normalize_spot_daily_csvs(
+            (raw,),
+            tmp_path / "data.parquet",
+            start_open_ns=START_NS + DAY_NS,
+            end_open_ns=START_NS + 2 * DAY_NS,
+        )
+
+
 @pytest.mark.parametrize(
     ("high", "low", "close", "message"),
     [

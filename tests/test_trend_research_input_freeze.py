@@ -236,6 +236,43 @@ def test_freeze_proves_raw_to_normalized_lineage_and_rejects_arbitrary_raw(tmp_p
         module.build_execution_manifest(changed)
 
 
+def test_freeze_accepts_extra_raw_prefix_only_when_normalized_corpus_is_exact(tmp_path: Path) -> None:
+    inputs = _inputs(tmp_path)
+    raw_frame = pd.read_csv(inputs.spot_raw_paths[0])
+    pre_start = raw_frame.iloc[[0]].copy()
+    warmup_start = REUSED_START_NS - 85 * DAY_NS
+    pre_start["open_time"] = (warmup_start - DAY_NS) // 1_000_000
+    pre_start["close_time"] = warmup_start // 1_000_000 - 1
+    pd.concat((pre_start, raw_frame), ignore_index=True).to_csv(inputs.spot_raw_paths[0], index=False)
+    normalize_spot_daily_csvs(
+        inputs.spot_raw_paths,
+        inputs.spot_1d_path,
+        start_open_ns=warmup_start,
+        end_open_ns=REUSED_END_NS,
+    )
+
+    payload = module.build_execution_manifest(inputs)
+
+    coverage = payload["sources"]["BINANCE_SPOT_BTCUSDT_1D"]["coverage"]
+    assert coverage["pre_start_count"] == 0
+    assert coverage["post_end_count"] == 0
+
+
+def test_freeze_rejects_normalized_spot_rows_before_warmup(tmp_path: Path) -> None:
+    inputs = _inputs(tmp_path)
+    normalized = pd.read_parquet(inputs.spot_1d_path)
+    pre_start = normalized.iloc[[0]].copy()
+    warmup_start = REUSED_START_NS - 85 * DAY_NS
+    pre_start["open_time_ns"] = warmup_start - DAY_NS
+    pre_start["close_time_ns"] = warmup_start - 1
+    pd.concat((pre_start, normalized), ignore_index=True).to_parquet(inputs.spot_1d_path, index=False)
+
+    audit = module._audit_spot(inputs)
+
+    assert audit["status"] == "INSUFFICIENT_DATA_SPOT_CONTRACT"
+    assert audit["coverage"]["pre_start_count"] == 1
+
+
 @pytest.mark.parametrize("mutation", ["missing", "gap", "zero", "nan"])
 def test_freeze_requires_exact_85_close_spot_warmup(tmp_path: Path, mutation: str) -> None:
     inputs = _inputs(tmp_path)
