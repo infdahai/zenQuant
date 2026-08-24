@@ -111,9 +111,15 @@ decline and long base are not V1 conditions; adding either is a new hypothesis.
 ## Evidence roles
 
 - 2025 late-dev: `DISCOVERY_ONLY`; may test code and reproduce motivating events.
-- data available before registration: retrospective falsification only.
-- confirmation: begins at the first confirmed 4h cutoff after the committed
-  manifest registration timestamp.
+- 2026 data through the exact frozen cutoff: `TEST_REUSED_DIAGNOSTIC`; it has
+  already informed prior testing and cannot become clean OOS evidence.
+- all data available before trusted registration: retrospective falsification
+  only.
+- confirmation begins at the first confirmed 4h cutoff at least 24 hours after
+  an append-only remote-provider or CI receipt. The receipt binds the manifest
+  hash, commit SHA, remote identity and server-side receipt time. Local Git
+  timestamps are not trusted; a missing or unverifiable receipt yields
+  `REGISTRATION_UNVERIFIED`.
 
 An unperturbed canonical path assigns every primary event a stable
 `base_flip_id`. A perturbed seed may map to that event only when old side, new
@@ -125,7 +131,9 @@ stability but are not independent statistical samples.
 
 Before forward observation begins, the manifest freezes:
 
-- registration cutoff and formula hash;
+- formula/config/source-set hashes and an exact half-open research window;
+- a separate registration envelope containing the trusted receipt and derived
+  first eligible 4h cutoff, so the manifest never hashes or timestamps itself;
 - `6` bars as the only primary horizon; `1/2/3` are descriptive and cannot
   promote the hypothesis;
 - arithmetic mean canonical-path `hold_minus_flip_6` as the primary statistic;
