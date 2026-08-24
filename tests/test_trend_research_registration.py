@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 
 import pytest
+import yaml
 
 from zenquant.research.registration import (
     DAY_NS,
@@ -18,6 +19,7 @@ from zenquant.research.registration import (
     classify_evidence_role,
     derive_forward_start_ns,
     load_hypothesis_manifest,
+    resolve_bootstrap_registration,
     validate_registration_receipts,
     verify_github_receipt,
 )
@@ -93,6 +95,56 @@ def test_receipt_uses_provider_created_at_not_local_git_time(tmp_path: Path) -> 
 def test_verifier_rejects_changed_commit_or_manifest() -> None:
     with pytest.raises(RegistrationError, match="provider identity mismatch"):
         verify_github_receipt(_envelope(commit="a"), _github_run(head_sha="b"))
+
+
+@pytest.mark.parametrize(
+    ("branch_name", "manifest_kind", "manifest_path"),
+    [
+        (
+            "feature/trend-registration-time-space-hypothesis",
+            "hypothesis",
+            "config/research/time_space_shadow_hypothesis_v1.json",
+        ),
+        (
+            "feature/trend-registration-trend-participation-hypothesis",
+            "hypothesis",
+            "config/research/trend_participation_hypothesis_v1.json",
+        ),
+        (
+            "feature/trend-registration-time-space-execution",
+            "execution",
+            "config/research/registrations/time_space_shadow_execution_v1.json",
+        ),
+        (
+            "feature/trend-registration-trend-participation-execution",
+            "execution",
+            "config/research/registrations/trend_participation_execution_v1.json",
+        ),
+    ],
+)
+def test_bootstrap_branch_selects_its_exact_registration_manifest(
+    branch_name: str, manifest_kind: str, manifest_path: str
+) -> None:
+    assert resolve_bootstrap_registration(branch_name) == (manifest_kind, manifest_path)
+
+
+def test_bootstrap_branch_rejects_arbitrary_ref_or_path_selection() -> None:
+    with pytest.raises(RegistrationError, match="unmapped bootstrap branch"):
+        resolve_bootstrap_registration("codex/late-dev-cost-attribution")
+
+
+def test_workflow_triggers_only_the_four_bootstrap_push_refs_and_dispatch() -> None:
+    workflow = yaml.load(
+        Path(".github/workflows/trend-research-registration.yml").read_text(encoding="utf-8"),
+        Loader=yaml.BaseLoader,
+    )
+    assert set(workflow["on"]) == {"push", "workflow_dispatch"}
+    assert workflow["on"]["push"]["branches"] == [
+        "feature/trend-registration-time-space-hypothesis",
+        "feature/trend-registration-trend-participation-hypothesis",
+        "feature/trend-registration-time-space-execution",
+        "feature/trend-registration-trend-participation-execution",
+    ]
 
 
 def _write_manifest(tmp_path: Path, payload: dict[str, object] | None = None) -> Path:

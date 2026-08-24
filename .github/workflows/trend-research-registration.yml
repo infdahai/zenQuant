@@ -1,6 +1,12 @@
 name: Register trend research manifest
 
 on:
+  push:
+    branches:
+      - feature/trend-registration-time-space-hypothesis
+      - feature/trend-registration-trend-participation-hypothesis
+      - feature/trend-registration-time-space-execution
+      - feature/trend-registration-trend-participation-execution
   workflow_dispatch:
     inputs:
       manifest_kind:
@@ -31,11 +37,37 @@ jobs:
           fetch-depth: 1
           persist-credentials: false
 
-      - name: Validate manifest identity
+      - name: Select immutable registration manifest
         shell: bash
         env:
-          MANIFEST_KIND: ${{ inputs.manifest_kind }}
-          MANIFEST_PATH: ${{ inputs.manifest_path }}
+          EVENT_NAME: ${{ github.event_name }}
+          REF_NAME: ${{ github.ref_name }}
+          INPUT_MANIFEST_KIND: ${{ inputs.manifest_kind }}
+          INPUT_MANIFEST_PATH: ${{ inputs.manifest_path }}
+        run: |
+          set -euo pipefail
+          case "$EVENT_NAME" in
+            push)
+              python - <<'PY'
+          import os
+          from pathlib import Path
+
+          from zenquant.research.registration import resolve_bootstrap_registration
+
+          manifest_kind, manifest_path = resolve_bootstrap_registration(os.environ["REF_NAME"])
+          with Path(os.environ["GITHUB_ENV"]).open("a", encoding="utf-8") as github_env:
+              github_env.write(f"MANIFEST_KIND={manifest_kind}\nMANIFEST_PATH={manifest_path}\n")
+          PY
+              ;;
+            workflow_dispatch)
+              case "$INPUT_MANIFEST_PATH" in *$'\n'*|*$'\r'*) exit 1 ;; esac
+              printf 'MANIFEST_KIND=%s\nMANIFEST_PATH=%s\n' "$INPUT_MANIFEST_KIND" "$INPUT_MANIFEST_PATH" >> "$GITHUB_ENV"
+              ;;
+            *) exit 1 ;;
+          esac
+
+      - name: Validate manifest identity
+        shell: bash
         run: |
           set -euo pipefail
           case "$MANIFEST_KIND" in
@@ -58,7 +90,6 @@ jobs:
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
-          MANIFEST_PATH: ${{ inputs.manifest_path }}
         run: |
           set -euo pipefail
           gh api "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" > provider-run.json

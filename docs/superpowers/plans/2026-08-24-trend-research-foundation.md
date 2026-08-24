@@ -191,12 +191,14 @@ def verify_github_receipt(envelope: Mapping[str, Any], provider: Mapping[str, An
     return RegistrationReceipt(str(envelope["manifest_sha256"]), str(provider["head_sha"]), str(envelope["remote_identity"]), received_at_ns)
 ```
 
-The workflow is `workflow_dispatch`, checks out the selected immutable commit,
-accepts one `manifest_path` plus `manifest_kind`, fetches its own run payload
-with `gh api repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID`, writes one
-JSON envelope, and uploads it as a GitHub artifact. Hypothesis and execution
-records are dispatched as separate runs. It must fail when a manifest is
-untracked, differs from the checked-out commit, or the run head SHA differs.
+The workflow retains `workflow_dispatch` for post-merge use and accepts one
+`manifest_path` plus `manifest_kind`. Before merge, it bootstraps only from the
+four fixed registration branches, each mapped to exactly one manifest. It
+checks out the selected immutable commit, fetches its own run payload with
+`gh api repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID`, writes one JSON
+envelope, and uploads it as a GitHub artifact. It must fail when a manifest is
+untracked, differs from the checked-out commit, the bootstrap branch is
+unmapped, or the run head SHA differs.
 
 - [ ] **Step 4: Run tests and workflow syntax check**
 
@@ -216,9 +218,8 @@ git commit -m "ci(research): add trusted trend registration receipt"
 - [ ] **Step 6: Push and obtain the two hypothesis receipts before Phase 0**
 
 ```bash
-git push personal codex/late-dev-cost-attribution
-gh workflow run trend-research-registration.yml --ref codex/late-dev-cost-attribution -f manifest_kind=hypothesis -f manifest_path=config/research/time_space_shadow_hypothesis_v1.json
-gh workflow run trend-research-registration.yml --ref codex/late-dev-cost-attribution -f manifest_kind=hypothesis -f manifest_path=config/research/trend_participation_hypothesis_v1.json
+git push personal HEAD:feature/trend-registration-time-space-hypothesis
+git push personal HEAD:feature/trend-registration-trend-participation-hypothesis
 ```
 
 Wait for both runs, download each `registration_receipt.json`, and verify it
@@ -445,9 +446,8 @@ If Step 4 succeeds:
 ```bash
 git add config/research/registrations/time_space_shadow_execution_v1.json config/research/registrations/trend_participation_execution_v1.json
 git commit -m "chore(research): register frozen trend input corpus"
-git push personal codex/late-dev-cost-attribution
-gh workflow run trend-research-registration.yml --ref codex/late-dev-cost-attribution -f manifest_kind=execution -f manifest_path=config/research/registrations/time_space_shadow_execution_v1.json
-gh workflow run trend-research-registration.yml --ref codex/late-dev-cost-attribution -f manifest_kind=execution -f manifest_path=config/research/registrations/trend_participation_execution_v1.json
+git push personal HEAD:feature/trend-registration-time-space-execution
+git push personal HEAD:feature/trend-registration-trend-participation-execution
 ```
 
 Download and verify both execution receipts. For each layer, derive

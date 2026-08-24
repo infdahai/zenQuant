@@ -29,6 +29,26 @@ REQUIRED_SOURCE_IDS = (
     "BINANCE_PERPETUAL_BTCUSDT_FUNDING",
 )
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+_BOOTSTRAP_REGISTRATIONS = MappingProxyType(
+    {
+        "feature/trend-registration-time-space-hypothesis": (
+            "hypothesis",
+            "config/research/time_space_shadow_hypothesis_v1.json",
+        ),
+        "feature/trend-registration-trend-participation-hypothesis": (
+            "hypothesis",
+            "config/research/trend_participation_hypothesis_v1.json",
+        ),
+        "feature/trend-registration-time-space-execution": (
+            "execution",
+            "config/research/registrations/time_space_shadow_execution_v1.json",
+        ),
+        "feature/trend-registration-trend-participation-execution": (
+            "execution",
+            "config/research/registrations/trend_participation_execution_v1.json",
+        ),
+    }
+)
 
 
 class RegistrationError(ValueError):
@@ -128,6 +148,15 @@ def canonical_sha256(payload: Mapping[str, Any]) -> str:
     except (TypeError, ValueError) as exc:
         raise RegistrationError("manifest payload is not canonical JSON") from exc
     return hashlib.sha256(encoded).hexdigest()
+
+
+def resolve_bootstrap_registration(branch_name: str) -> tuple[str, str]:
+    """Return the one manifest registration permitted for a bootstrap push."""
+
+    try:
+        return _BOOTSTRAP_REGISTRATIONS[branch_name]
+    except KeyError as exc:
+        raise RegistrationError("unmapped bootstrap branch") from exc
 
 
 def iso8601_to_ns(value: str) -> int:
