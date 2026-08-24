@@ -78,3 +78,63 @@ After scheduler installation, verify:
 - `results/data_readiness/forward_collection_latest.json` is fresh
 - `results/data_readiness/forward_collection_health.json` is fresh
 - `data_readiness.json` shows separate `deribit_status` and `deribit_block_flow_status`
+
+## Frozen Trend-Research Spot Repair
+
+The TimeSpace Shadow and Trend Participation donor share one required BTC spot-daily source. This is a manual,
+network-dependent repair and freeze operation; it is not part of the hourly collector. The source contract is
+`BINANCE_SPOT_BTCUSDT_1D`, with fallback `NONE`.
+
+The required half-open market-event range is exactly:
+
+- warmup: `[2025-10-08T00:00:00Z, 2026-01-01T00:00:00Z)` (85 daily closes)
+- reused diagnostic window: `[2026-01-01T00:00:00Z, 2026-08-24T00:00:00Z)`
+- frozen exclusive end: `2026-08-24T00:00:00Z`
+
+Run these commands from the repository root. Binance archive downloads require network access. The downloader's
+`--end-date` is inclusive, so `2026-08-23` is intentional: specifying `2026-08-24` would download a bar at or after
+the frozen exclusive end and readiness would fail closed with `INSUFFICIENT_DATA_SPOT_DAILY_POST_END`.
+
+```bash
+uv run python scripts/download_spot_data.py \
+  --symbol BTCUSDT \
+  --start-date 2025-10-08 \
+  --end-date 2026-08-23 \
+  --timeframes 1d
+
+uv run python scripts/convert_csv_to_parquet.py \
+  --source binance_spot \
+  --symbol BTCUSDT
+
+uv run python scripts/data_readiness_status.py \
+  --trend-spot-path data/raw/binance_spot/klines/BTCUSDT/1d/data.parquet
+```
+
+Do not run either donor until `results/data_readiness/data_readiness.json` reports
+`trend_research_status.status == "READY"`. Missing, malformed, gapped, stale, duplicate, or post-end data has no
+neutral fallback and is a blocker when `--trend-spot-path` is supplied.
+
+The execution freeze binds both normalized bytes and every raw Binance CSV as provenance. The following zsh-safe
+array expands each raw archive into the repeatable `--spot-raw` argument required by the freezer; an empty glob fails
+before a misleading manifest can be written.
+
+```zsh
+trend_spot_raw_args=()
+for trend_spot_raw_path in data/raw/binance_spot/klines/BTCUSDT/1d/*.csv; do
+  trend_spot_raw_args+=(--spot-raw "$trend_spot_raw_path")
+done
+
+uv run python scripts/freeze_trend_research_inputs.py \
+  --spot-1d data/raw/binance_spot/klines/BTCUSDT/1d/data.parquet \
+  "${trend_spot_raw_args[@]}" \
+  --perp-5m data/raw/binance/klines/BTCUSDT/5m/data.parquet \
+  --funding data/raw/binance/funding/BTCUSDT/data.parquet \
+  --time-space-hypothesis config/research/time_space_shadow_hypothesis_v1.json \
+  --trend-hypothesis config/research/trend_participation_hypothesis_v1.json \
+  --reused-start 2026-01-01T00:00:00Z \
+  --reused-end 2026-08-24T00:00:00Z \
+  --output-dir results/trend_research_execution/20260824
+```
+
+The output directory is immutable. Choose a new explicit directory for a later freeze; never overwrite or silently
+reuse an earlier execution envelope.

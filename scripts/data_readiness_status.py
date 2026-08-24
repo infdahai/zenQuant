@@ -24,6 +24,7 @@ def build_readiness_payload(
     deribit_block_flow_root: Path,
     hyperliquid_root: Path,
     merged_root: Path,
+    trend_spot_path: Path | None = None,
 ) -> dict[str, Any]:
     return render_readiness_payload(
         binance_root=binance_root,
@@ -32,6 +33,7 @@ def build_readiness_payload(
         deribit_block_flow_root=deribit_block_flow_root,
         hyperliquid_root=hyperliquid_root,
         merged_root=merged_root,
+        trend_spot_path=trend_spot_path,
     )
 
 
@@ -47,6 +49,12 @@ def main() -> None:
     parser.add_argument("--deribit-block-flow-root", type=Path, default=Path("data/raw/deribit_block_flow"))
     parser.add_argument("--hyperliquid-root", type=Path, default=Path("data/raw/hyperliquid/liquidations"))
     parser.add_argument("--merged-root", type=Path, default=Path("data/raw/merged_liquidations"))
+    parser.add_argument(
+        "--trend-spot-path",
+        type=Path,
+        default=None,
+        help="Explicit normalized BTCUSDT spot 1d Parquet to audit for frozen trend research",
+    )
     parser.add_argument("--output-dir", type=Path, default=Path("results/data_readiness"))
     args = parser.parse_args()
 
@@ -57,6 +65,7 @@ def main() -> None:
         deribit_block_flow_root=args.deribit_block_flow_root,
         hyperliquid_root=args.hyperliquid_root,
         merged_root=args.merged_root,
+        trend_spot_path=args.trend_spot_path,
     )
     output_dir = args.output_dir
     output_dir.mkdir(parents=True, exist_ok=True)

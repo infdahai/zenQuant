@@ -6,6 +6,8 @@ import unittest
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
+import pandas as pd
+
 from zenquant.data.deribit_block_flow import DeribitBlockFlowRow, save_block_flow_rows, write_deribit_block_flow_status
 from zenquant.data.deribit_status import write_deribit_status
 from zenquant.data.liquidation_pipeline import (
@@ -33,6 +35,38 @@ def _ts(year: int, month: int, day: int, hour: int) -> int:
     return int(datetime(year, month, day, hour, tzinfo=UTC).timestamp() * 1_000_000_000)
 
 
+DAY_NS = 86_400_000_000_000
+TREND_WARMUP_START_NS = _ts(2025, 10, 8, 0)
+TREND_REUSED_START_NS = _ts(2026, 1, 1, 0)
+TREND_REUSED_END_NS = _ts(2026, 8, 24, 0)
+
+
+def _write_trend_spot(
+    path: Path,
+    *,
+    missing_open_ns: tuple[int, ...] = (),
+    duplicate_open_ns: int | None = None,
+    post_end_count: int = 0,
+    close: float = 100_000.0,
+) -> Path:
+    opens = [
+        value for value in range(TREND_WARMUP_START_NS, TREND_REUSED_END_NS, DAY_NS) if value not in missing_open_ns
+    ]
+    opens.extend(TREND_REUSED_END_NS + index * DAY_NS for index in range(post_end_count))
+    if duplicate_open_ns is not None:
+        opens.append(duplicate_open_ns)
+    frame = pd.DataFrame(
+        {
+            "open_time_ns": opens,
+            "close_time_ns": [value + DAY_NS - 1 for value in opens],
+            "close": [close] * len(opens),
+        }
+    )
+    path.parent.mkdir(parents=True, exist_ok=True)
+    frame.to_parquet(path, index=False)
+    return path
+
+
 def _write_deribit_snapshot(path: Path, ts: datetime) -> None:
     import pyarrow as pa
     import pyarrow.parquet as pq
@@ -56,6 +90,141 @@ def _write_deribit_snapshot(path: Path, ts: datetime) -> None:
 
 
 class DataReadinessStatusTests(unittest.TestCase):
+    def _empty_roots(self, root: Path) -> dict[str, Path | str]:
+        return {
+            "binance_root": root / "binance",
+            "symbol": "BTCUSDT",
+            "deribit_root": root / "deribit",
+            "deribit_block_flow_root": root / "block_flow",
+            "hyperliquid_root": root / "hyperliquid",
+            "merged_root": root / "merged",
+        }
+
+    def test_trend_readiness_reports_separate_warmup_and_reused_gaps(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            warmup_gap = TREND_WARMUP_START_NS + DAY_NS
+            reused_gap = TREND_REUSED_START_NS + 2 * DAY_NS
+            spot_path = _write_trend_spot(
+                root / "spot.parquet",
+                missing_open_ns=(warmup_gap, reused_gap),
+            )
+
+            payload = DATA_READINESS.build_readiness_payload(
+                **self._empty_roots(root),
+                trend_spot_path=spot_path,
+            )
+
+        status = payload["trend_research_status"]
+        self.assertEqual(status["status"], "INSUFFICIENT_DATA_SPOT_DAILY_GAPS")
+        self.assertEqual(status["fallback"], "NONE")
+        self.assertEqual(status["warmup_missing_open_ns"], [warmup_gap])
+        self.assertEqual(status["warmup_missing_count"], 1)
+        self.assertEqual(status["reused_missing_open_ns"], [reused_gap])
+        self.assertEqual(status["reused_missing_count"], 1)
+        self.assertEqual(status["missing_open_ns"], [warmup_gap, reused_gap])
+        self.assertEqual(status["missing_count"], 2)
+        self.assertIn("trend_research:INSUFFICIENT_DATA_SPOT_DAILY_GAPS", payload["overall_blockers"])
+
+    def test_trend_readiness_requires_exact_frozen_daily_corpus(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            spot_path = _write_trend_spot(root / "spot.parquet")
+
+            payload = DATA_READINESS.build_readiness_payload(
+                **self._empty_roots(root),
+                trend_spot_path=spot_path,
+            )
+
+        status = payload["trend_research_status"]
+        self.assertEqual(status["status"], "READY")
+        self.assertTrue(status["ready"])
+        self.assertEqual(status["warmup_missing_count"], 0)
+        self.assertEqual(status["reused_missing_count"], 0)
+        self.assertEqual(status["duplicate_open_ns"], [])
+        self.assertEqual(status["post_end_count"], 0)
+        self.assertEqual(status["first_cutoff_ns"], TREND_WARMUP_START_NS + DAY_NS)
+        self.assertEqual(status["last_cutoff_ns"], TREND_REUSED_END_NS)
+        self.assertEqual(status["next_action"], "freeze_trend_research_inputs")
+        markdown = DATA_READINESS.build_markdown(payload)
+        self.assertIn("## Trend Research Spot Daily", markdown)
+        self.assertIn("- status: `READY`", markdown)
+
+    def test_trend_readiness_fails_closed_for_stale_post_end_and_malformed_data(self) -> None:
+        cases = (
+            (
+                "stale",
+                {"missing_open_ns": (TREND_REUSED_END_NS - DAY_NS,)},
+                "INSUFFICIENT_DATA_SPOT_DAILY_STALE",
+            ),
+            (
+                "post_end",
+                {"post_end_count": 1},
+                "INSUFFICIENT_DATA_SPOT_DAILY_POST_END",
+            ),
+        )
+        for name, kwargs, expected in cases:
+            with self.subTest(name=name), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                spot_path = _write_trend_spot(root / "spot.parquet", **kwargs)
+                payload = DATA_READINESS.build_readiness_payload(
+                    **self._empty_roots(root),
+                    trend_spot_path=spot_path,
+                )
+                self.assertEqual(payload["trend_research_status"]["status"], expected)
+                self.assertFalse(payload["trend_research_status"]["ready"])
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            malformed = root / "malformed.parquet"
+            pd.DataFrame({"wrong": [1]}).to_parquet(malformed, index=False)
+            payload = DATA_READINESS.build_readiness_payload(
+                **self._empty_roots(root),
+                trend_spot_path=malformed,
+            )
+        self.assertEqual(
+            payload["trend_research_status"]["status"],
+            "INSUFFICIENT_DATA_SPOT_DAILY_MALFORMED",
+        )
+        self.assertEqual(payload["trend_research_status"]["fallback"], "NONE")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            invalid_close = _write_trend_spot(root / "invalid-close.parquet", close=float("nan"))
+            payload = DATA_READINESS.build_readiness_payload(
+                **self._empty_roots(root),
+                trend_spot_path=invalid_close,
+            )
+        self.assertEqual(
+            payload["trend_research_status"]["status"],
+            "INSUFFICIENT_DATA_SPOT_DAILY_MALFORMED",
+        )
+
+    def test_omitted_trend_path_preserves_existing_overall_blockers(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            payload = DATA_READINESS.build_readiness_payload(**self._empty_roots(root))
+
+        self.assertEqual(payload["trend_research_status"]["status"], "NOT_CONFIGURED")
+        self.assertNotIn("trend_research:NOT_CONFIGURED", payload["overall_blockers"])
+
+    def test_explicit_missing_trend_path_fails_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            payload = DATA_READINESS.build_readiness_payload(
+                **self._empty_roots(root),
+                trend_spot_path=root / "missing.parquet",
+            )
+
+        status = payload["trend_research_status"]
+        self.assertEqual(status["status"], "INSUFFICIENT_DATA_SPOT_DAILY_MISSING")
+        self.assertEqual(status["fallback"], "NONE")
+        self.assertFalse(status["ready"])
+        self.assertEqual(status["warmup_missing_count"], 85)
+        self.assertEqual(status["reused_missing_count"], 235)
+        self.assertEqual(status["missing_count"], 320)
+        self.assertIn("trend_research:INSUFFICIENT_DATA_SPOT_DAILY_MISSING", payload["overall_blockers"])
+
     def test_build_payload_marks_partial_and_blocked_states(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
