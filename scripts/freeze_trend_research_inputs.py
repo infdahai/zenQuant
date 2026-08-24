@@ -50,7 +50,9 @@ _OUTPUT_FILES: Final = {
 _FORBIDDEN_EXECUTION_KEYS: Final = frozenset({"direction", "pnl", "signal"})
 _CONSTRUCTION_PATHS: Final = (
     "scripts/freeze_trend_research_inputs.py",
+    "scripts/prepare_trend_market_tail.py",
     "zenquant/data/spot_daily.py",
+    "zenquant/data/trend_market_tail.py",
     "zenquant/domain/accounting.py",
     "zenquant/execution/router.py",
     "zenquant/research/accounting_kernel_identity.py",
@@ -72,6 +74,7 @@ class FreezeInputs:
     spot_raw_paths: tuple[Path, ...]
     perp_5m_path: Path
     funding_path: Path | None
+    market_tail_provenance_path: Path
     reused_start_ns: int
     reused_end_ns: int
     repository_root: Path
@@ -83,6 +86,7 @@ class FreezeInputs:
         object.__setattr__(self, "perp_5m_path", Path(self.perp_5m_path))
         if self.funding_path is not None:
             object.__setattr__(self, "funding_path", Path(self.funding_path))
+        object.__setattr__(self, "market_tail_provenance_path", Path(self.market_tail_provenance_path))
         object.__setattr__(self, "repository_root", Path(self.repository_root).resolve())
 
     def all_input_paths(self) -> tuple[Path, ...]:
@@ -96,6 +100,7 @@ class FreezeInputs:
         ]
         if self.funding_path is not None:
             paths.append(self.funding_path)
+        paths.append(self.market_tail_provenance_path)
         paths.extend(self.repository_root / relative for relative in _CONSTRUCTION_PATHS)
         return tuple(paths)
 
@@ -136,6 +141,12 @@ def build_execution_manifest(inputs: FreezeInputs) -> dict[str, Any]:
     blockers = sorted(source_id for source_id, audit in audits.items() if audit["status"] != "READY")
     if blockers:
         raise InputFreezeError(f"REQUIRED sources not ready: {blockers}")
+    if before != _snapshot_inputs(inputs.all_input_paths()):
+        raise InputFreezeError("input mutated during freeze")
+
+    market_tail_provenance = _validate_market_tail_provenance(inputs)
+    for source_id in ("BINANCE_PERPETUAL_BTCUSDT_5M", "BINANCE_PERPETUAL_BTCUSDT_FUNDING"):
+        audits[source_id]["market_tail_provenance"] = market_tail_provenance
 
     sources = {key: audits[key] for key in sorted(audits)}
     construction_identity = _construction_identity(inputs.repository_root)
@@ -168,6 +179,8 @@ def build_execution_manifest(inputs: FreezeInputs) -> dict[str, Any]:
         raise InputFreezeError(f"input mutated during freeze: {changed}")
     if workspace_before != _workspace_state(inputs.repository_root):
         raise InputFreezeError("workspace state mutated during freeze")
+    if market_tail_provenance != _validate_market_tail_provenance(inputs):
+        raise InputFreezeError("market-tail provenance mutated during freeze")
     return payload
 
 
@@ -379,6 +392,90 @@ def _audit_regular_parquet(
         return _not_ready(source_id, str(exc))
 
 
+def _validate_market_tail_provenance(inputs: FreezeInputs) -> dict[str, Any]:
+    path = inputs.market_tail_provenance_path
+    try:
+        digest = _sha256_file(path)
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(payload, dict):
+            raise ValueError("root must be an object")
+        if payload.get("schema_version") != "trend-market-tail-provenance.v1":
+            raise ValueError("schema_version mismatch")
+        if payload.get("symbol") != "BTCUSDT":
+            raise ValueError("symbol mismatch")
+        if payload.get("window") != [inputs.reused_start_ns, inputs.reused_end_ns]:
+            raise ValueError("window mismatch")
+        source_ids = {
+            "BINANCE_PERPETUAL_BTCUSDT_5M": inputs.perp_5m_path,
+            "BINANCE_PERPETUAL_BTCUSDT_FUNDING": inputs.funding_path,
+        }
+        outputs = payload.get("outputs")
+        sources = payload.get("sources")
+        if not isinstance(outputs, dict) or set(outputs) != set(source_ids):
+            raise ValueError("output source IDs mismatch")
+        if not isinstance(sources, dict) or set(sources) != set(source_ids):
+            raise ValueError("canonical source IDs mismatch")
+        for source_id, supplied_path in source_ids.items():
+            if supplied_path is None:
+                raise ValueError(f"missing output for {source_id}")
+            output = outputs[source_id]
+            if not isinstance(output, dict):
+                raise ValueError(f"invalid output envelope for {source_id}")
+            if Path(str(output.get("path"))).resolve() != supplied_path.resolve():
+                raise ValueError(f"output path mismatch for {source_id}")
+            if output.get("sha256") != _sha256_file(supplied_path):
+                raise ValueError(f"output digest mismatch for {source_id}")
+            if not isinstance(output.get("row_count"), int) or int(output["row_count"]) <= 0:
+                raise ValueError(f"invalid output row count for {source_id}")
+            source = sources[source_id]
+            if not isinstance(source, dict):
+                raise ValueError(f"invalid canonical source envelope for {source_id}")
+            source_path = Path(str(source.get("path")))
+            if source.get("sha256") != _sha256_file(source_path):
+                raise ValueError(f"canonical source digest mismatch for {source_id}")
+        normalizer = payload.get("normalizer")
+        repository = payload.get("repository")
+        if not isinstance(normalizer, dict) or not _is_sha256(normalizer.get("sha256")):
+            raise ValueError("normalizer identity mismatch")
+        expected_normalizer_sha = _sha256_file(inputs.repository_root / "zenquant/data/trend_market_tail.py")
+        if (
+            normalizer.get("callable") != "zenquant.data.trend_market_tail.prepare_market_tail"
+            or normalizer.get("sha256") != expected_normalizer_sha
+        ):
+            raise ValueError("normalizer identity mismatch")
+        if not isinstance(repository, dict) or not _is_git_sha(repository.get("head")):
+            raise ValueError("repository identity mismatch")
+        pages = payload.get("rest_pages")
+        if not isinstance(pages, list):
+            raise ValueError("REST page ledger missing")
+        for page in pages:
+            if not isinstance(page, dict) or page.get("source_id") not in source_ids:
+                raise ValueError("REST page source ID mismatch")
+            if not _is_sha256(page.get("payload_sha256")) or not isinstance(page.get("query"), dict):
+                raise ValueError("REST page identity mismatch")
+    except (OSError, ValueError, TypeError, json.JSONDecodeError) as exc:
+        raise InputFreezeError(f"market-tail provenance is invalid: {exc}") from exc
+    return {
+        "path": str(path),
+        "sha256": digest,
+        "schema_version": payload["schema_version"],
+        "normalizer": payload["normalizer"],
+        "repository": payload["repository"],
+    }
+
+
+def _is_sha256(value: object) -> bool:
+    return isinstance(value, str) and len(value) == 64 and all(character in "0123456789abcdef" for character in value)
+
+
+def _is_git_sha(value: object) -> bool:
+    return (
+        isinstance(value, str)
+        and len(value) in {40, 64}
+        and all(character in "0123456789abcdef" for character in value)
+    )
+
+
 def _validate_source_values(frame: pd.DataFrame, contract: str) -> tuple[bool, int]:
     if contract == "FUNDING_RATE":
         rates = pd.to_numeric(frame["funding_rate"], errors="coerce")
@@ -565,6 +662,7 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--spot-raw", required=True, action="append", type=Path)
     parser.add_argument("--perp-5m", required=True, type=Path)
     parser.add_argument("--funding", required=True, type=Path)
+    parser.add_argument("--market-tail-provenance", required=True, type=Path)
     parser.add_argument("--time-space-hypothesis", required=True, type=Path)
     parser.add_argument("--trend-hypothesis", required=True, type=Path)
     parser.add_argument("--reused-start", required=True)
@@ -587,6 +685,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         "spot_raw_paths": tuple(args.spot_raw),
         "perp_5m_path": args.perp_5m,
         "funding_path": args.funding,
+        "market_tail_provenance_path": args.market_tail_provenance,
         "reused_start_ns": REUSED_START_NS,
         "reused_end_ns": REUSED_END_NS,
         "repository_root": repository_root,

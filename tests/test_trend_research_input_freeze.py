@@ -32,7 +32,7 @@ def _load_freezer():
 module = _load_freezer()
 
 
-def _write_complete_sources(tmp_path: Path) -> tuple[Path, tuple[Path, ...], Path, Path]:
+def _write_complete_sources(tmp_path: Path) -> tuple[Path, tuple[Path, ...], Path, Path, Path]:
     tmp_path.mkdir(parents=True, exist_ok=True)
     raw = tmp_path / "BTCUSDT-1d.csv"
     spot_open = tuple(range(REUSED_START_NS - 85 * DAY_NS, REUSED_END_NS, DAY_NS))
@@ -77,7 +77,48 @@ def _write_complete_sources(tmp_path: Path) -> tuple[Path, tuple[Path, ...], Pat
             "funding_rate": tuple(0.0001 for _ in funding_times),
         }
     ).to_parquet(funding, index=False)
-    return spot, (raw,), perp, funding
+    provenance = tmp_path / "market_tail_provenance.json"
+    provenance.write_text(
+        json.dumps(
+            {
+                "schema_version": "trend-market-tail-provenance.v1",
+                "symbol": "BTCUSDT",
+                "window": [REUSED_START_NS, REUSED_END_NS],
+                "sources": {
+                    "BINANCE_PERPETUAL_BTCUSDT_5M": {
+                        "path": str(perp),
+                        "sha256": hashlib.sha256(perp.read_bytes()).hexdigest(),
+                    },
+                    "BINANCE_PERPETUAL_BTCUSDT_FUNDING": {
+                        "path": str(funding),
+                        "sha256": hashlib.sha256(funding.read_bytes()).hexdigest(),
+                    },
+                },
+                "outputs": {
+                    "BINANCE_PERPETUAL_BTCUSDT_5M": {
+                        "path": str(perp),
+                        "sha256": hashlib.sha256(perp.read_bytes()).hexdigest(),
+                        "row_count": len(perp_open),
+                    },
+                    "BINANCE_PERPETUAL_BTCUSDT_FUNDING": {
+                        "path": str(funding),
+                        "sha256": hashlib.sha256(funding.read_bytes()).hexdigest(),
+                        "row_count": len(funding_times),
+                    },
+                },
+                "rest_pages": [],
+                "normalizer": {
+                    "callable": "zenquant.data.trend_market_tail.prepare_market_tail",
+                    "sha256": hashlib.sha256(Path("zenquant/data/trend_market_tail.py").read_bytes()).hexdigest(),
+                },
+                "repository": {"head": "b" * 40},
+            },
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    return spot, (raw,), perp, funding, provenance
 
 
 def _inputs(
@@ -86,7 +127,7 @@ def _inputs(
     hypothesis: str = "time_space_shadow_hypothesis_v1.json",
     funding: Path | None | object = ...,
 ):
-    spot, raw, perp, complete_funding = _write_complete_sources(tmp_path)
+    spot, raw, perp, complete_funding, provenance = _write_complete_sources(tmp_path)
     selected_funding = complete_funding if funding is ... else funding
     return module.FreezeInputs(
         hypothesis_path=Path("config/research") / hypothesis,
@@ -94,6 +135,7 @@ def _inputs(
         spot_raw_paths=raw,
         perp_5m_path=perp,
         funding_path=selected_funding,
+        market_tail_provenance_path=provenance,
         reused_start_ns=REUSED_START_NS,
         reused_end_ns=REUSED_END_NS,
         repository_root=Path.cwd(),
@@ -152,6 +194,9 @@ def test_envelope_binds_hypothesis_sources_and_accounting_kernel(tmp_path: Path)
     assert spot["coverage"]["last_close_ns"] == REUSED_END_NS - 1
     assert payload["sources"]["BINANCE_PERPETUAL_BTCUSDT_5M"]["path"] == str(inputs.perp_5m_path)
     assert payload["sources"]["BINANCE_PERPETUAL_BTCUSDT_FUNDING"]["path"] == str(inputs.funding_path)
+    assert payload["sources"]["BINANCE_PERPETUAL_BTCUSDT_5M"]["market_tail_provenance"]["path"] == str(
+        inputs.market_tail_provenance_path
+    )
     assert payload["sources"]["BINANCE_PERPETUAL_BTCUSDT_5M"]["coverage"]["missing_count"] == 0
     assert payload["sources"]["BINANCE_PERPETUAL_BTCUSDT_FUNDING"]["coverage"]["missing_count"] == 0
     assert payload["accounting_kernel"]["schema_version"] == "accounting-kernel-identity.v1"
@@ -162,7 +207,9 @@ def test_envelope_binds_hypothesis_sources_and_accounting_kernel(tmp_path: Path)
     construction_paths = {item["path"] for item in payload["construction_identity"]["files"]}
     assert construction_paths == {
         "scripts/freeze_trend_research_inputs.py",
+        "scripts/prepare_trend_market_tail.py",
         "zenquant/data/spot_daily.py",
+        "zenquant/data/trend_market_tail.py",
         "zenquant/domain/accounting.py",
         "zenquant/execution/router.py",
         "zenquant/research/accounting_kernel_identity.py",
@@ -186,6 +233,7 @@ def test_freeze_rejects_window_drift_and_required_source_gap(tmp_path: Path) -> 
         spot_raw_paths=drifted.spot_raw_paths,
         perp_5m_path=drifted.perp_5m_path,
         funding_path=drifted.funding_path,
+        market_tail_provenance_path=drifted.market_tail_provenance_path,
         reused_start_ns=REUSED_START_NS,
         reused_end_ns=REUSED_END_NS - DAY_NS,
         repository_root=drifted.repository_root,
@@ -334,6 +382,7 @@ def test_freeze_enforces_exact_hypothesis_filename_to_layer_mapping(tmp_path: Pa
         spot_raw_paths=(tmp_path / "unused-raw",),
         perp_5m_path=tmp_path / "unused-perp",
         funding_path=tmp_path / "unused-funding",
+        market_tail_provenance_path=tmp_path / "unused-provenance",
         reused_start_ns=REUSED_START_NS,
         reused_end_ns=REUSED_END_NS,
         repository_root=repository_root,
@@ -362,6 +411,27 @@ def test_freeze_rehashes_every_input_and_rejects_mutation(tmp_path: Path, monkey
         module.build_execution_manifest(inputs)
 
     assert all(calls[path.resolve()] >= 2 for path in inputs.all_input_paths())
+
+
+@pytest.mark.parametrize("mutation", ["output_sha", "window", "source_id", "normalizer_sha", "provenance_bytes"])
+def test_freeze_rejects_market_tail_provenance_mismatch(tmp_path: Path, mutation: str) -> None:
+    inputs = _inputs(tmp_path)
+    payload = json.loads(inputs.market_tail_provenance_path.read_text(encoding="utf-8"))
+    if mutation == "output_sha":
+        payload["outputs"]["BINANCE_PERPETUAL_BTCUSDT_5M"]["sha256"] = "f" * 64
+    elif mutation == "window":
+        payload["window"][1] -= FIVE_MINUTES_NS
+    elif mutation == "source_id":
+        payload["outputs"]["WRONG"] = payload["outputs"].pop("BINANCE_PERPETUAL_BTCUSDT_5M")
+    elif mutation == "normalizer_sha":
+        payload["normalizer"]["sha256"] = "f" * 64
+    else:
+        inputs.market_tail_provenance_path.write_text("not json\n", encoding="utf-8")
+    if mutation != "provenance_bytes":
+        inputs.market_tail_provenance_path.write_text(json.dumps(payload) + "\n", encoding="utf-8")
+
+    with pytest.raises(module.InputFreezeError, match="market-tail provenance"):
+        module.build_execution_manifest(inputs)
 
 
 def test_freeze_rejects_construction_code_mutation(tmp_path: Path, monkeypatch) -> None:
@@ -426,6 +496,8 @@ def test_cli_rejects_dynamic_end_and_never_emits_partial_output(tmp_path: Path) 
         str(inputs.perp_5m_path),
         "--funding",
         str(inputs.funding_path),
+        "--market-tail-provenance",
+        str(inputs.market_tail_provenance_path),
         "--time-space-hypothesis",
         "config/research/time_space_shadow_hypothesis_v1.json",
         "--trend-hypothesis",
@@ -460,6 +532,8 @@ def test_cli_lineage_failure_never_emits_partial_output(tmp_path: Path) -> None:
         str(inputs.perp_5m_path),
         "--funding",
         str(inputs.funding_path),
+        "--market-tail-provenance",
+        str(inputs.market_tail_provenance_path),
         "--time-space-hypothesis",
         "config/research/time_space_shadow_hypothesis_v1.json",
         "--trend-hypothesis",
@@ -493,6 +567,8 @@ def test_cli_writes_two_canonical_manifests_as_one_atomic_directory(tmp_path: Pa
         str(inputs.perp_5m_path),
         "--funding",
         str(inputs.funding_path),
+        "--market-tail-provenance",
+        str(inputs.market_tail_provenance_path),
         "--time-space-hypothesis",
         "config/research/time_space_shadow_hypothesis_v1.json",
         "--trend-hypothesis",
