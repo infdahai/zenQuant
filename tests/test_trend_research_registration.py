@@ -13,11 +13,13 @@ from zenquant.research.registration import (
     EvidenceRole,
     RegistrationError,
     RegistrationReceipt,
+    build_registration_envelope,
     canonical_sha256,
     classify_evidence_role,
     derive_forward_start_ns,
     load_hypothesis_manifest,
     validate_registration_receipts,
+    verify_github_receipt,
 )
 
 
@@ -55,6 +57,42 @@ def _manifest_payload() -> dict[str, object]:
         "parameter_search": False,
         "policy": {"formula": "frozen"},
     }
+
+
+def _github_run(
+    *,
+    run_id: int = 17,
+    head_sha: str = "abc123",
+    remote_identity: str = "example/repo",
+    created_at: str = "2026-08-24T08:00:00Z",
+) -> dict[str, object]:
+    return {
+        "id": run_id,
+        "head_sha": head_sha,
+        "repository": {"full_name": remote_identity},
+        "created_at": created_at,
+    }
+
+
+def _envelope(*, commit: str = "abc123") -> dict[str, object]:
+    return {
+        "provider_run_id": 17,
+        "commit_sha": commit,
+        "remote_identity": "example/repo",
+        "manifest_sha256": "a" * 64,
+        "received_at_ns": 1787558400000000000,
+    }
+
+
+def test_receipt_uses_provider_created_at_not_local_git_time(tmp_path: Path) -> None:
+    manifest_path = _write_manifest(tmp_path)
+    envelope = build_registration_envelope(manifest_path, "abc123", _github_run())
+    assert envelope["received_at_ns"] == 1787558400000000000
+
+
+def test_verifier_rejects_changed_commit_or_manifest() -> None:
+    with pytest.raises(RegistrationError, match="provider identity mismatch"):
+        verify_github_receipt(_envelope(commit="a"), _github_run(head_sha="b"))
 
 
 def _write_manifest(tmp_path: Path, payload: dict[str, object] | None = None) -> Path:

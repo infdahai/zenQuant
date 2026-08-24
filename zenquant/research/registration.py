@@ -12,6 +12,7 @@ import json
 import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from enum import StrEnum
 from pathlib import Path
 from types import MappingProxyType
@@ -127,6 +128,93 @@ def canonical_sha256(payload: Mapping[str, Any]) -> str:
     except (TypeError, ValueError) as exc:
         raise RegistrationError("manifest payload is not canonical JSON") from exc
     return hashlib.sha256(encoded).hexdigest()
+
+
+def iso8601_to_ns(value: str) -> int:
+    """Convert an offset-aware ISO-8601 provider timestamp to epoch nanoseconds."""
+
+    if not isinstance(value, str):
+        raise RegistrationError("provider timestamp must be an ISO-8601 string")
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise RegistrationError("provider timestamp must be ISO-8601") from exc
+    if parsed.tzinfo is None:
+        raise RegistrationError("provider timestamp must include a timezone")
+    epoch = datetime(1970, 1, 1, tzinfo=UTC)
+    delta = parsed.astimezone(UTC) - epoch
+    return (delta.days * 86_400 + delta.seconds) * 1_000_000_000 + delta.microseconds * 1_000
+
+
+def _provider_identity(provider: Mapping[str, Any]) -> tuple[Any, str, str]:
+    try:
+        provider_run_id = provider["id"]
+        commit_sha = provider["head_sha"]
+        repository = provider["repository"]
+    except KeyError as exc:
+        raise RegistrationError("provider payload is missing required identity") from exc
+    if isinstance(provider_run_id, bool) or not isinstance(provider_run_id, (int, str)):
+        raise RegistrationError("provider run id is invalid")
+    if not isinstance(commit_sha, str) or not commit_sha:
+        raise RegistrationError("provider head SHA is required")
+    if not isinstance(repository, Mapping):
+        raise RegistrationError("provider repository identity is required")
+    remote_identity = repository.get("full_name")
+    if not isinstance(remote_identity, str) or not remote_identity:
+        raise RegistrationError("provider repository identity is required")
+    return provider_run_id, commit_sha, remote_identity
+
+
+def build_registration_envelope(
+    manifest_path: Path | str,
+    commit_sha: str,
+    provider_run: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Bind one checked-in manifest to its authoritative provider run identity."""
+
+    if not isinstance(commit_sha, str) or not commit_sha:
+        raise RegistrationError("commit SHA is required")
+    path = Path(manifest_path)
+    try:
+        manifest_payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise RegistrationError(f"cannot load registration manifest: {path}") from exc
+    if not isinstance(manifest_payload, Mapping):
+        raise RegistrationError("registration manifest must be a JSON object")
+
+    provider_run_id, provider_commit_sha, remote_identity = _provider_identity(provider_run)
+    if provider_commit_sha != commit_sha:
+        raise RegistrationError("provider identity mismatch")
+    received_at_ns = iso8601_to_ns(str(provider_run.get("created_at")))
+    manifest_sha256 = canonical_sha256(manifest_payload)
+    RegistrationReceipt(manifest_sha256, provider_commit_sha, remote_identity, received_at_ns)
+    return {
+        "provider_run_id": provider_run_id,
+        "commit_sha": provider_commit_sha,
+        "remote_identity": remote_identity,
+        "manifest_sha256": manifest_sha256,
+        "received_at_ns": received_at_ns,
+    }
+
+
+def verify_github_receipt(envelope: Mapping[str, Any], provider_payload: Mapping[str, Any]) -> RegistrationReceipt:
+    """Rebuild a trusted receipt from a GitHub run API payload, never local time."""
+
+    provider_run_id, provider_commit_sha, remote_identity = _provider_identity(provider_payload)
+    try:
+        expected = (
+            envelope["provider_run_id"],
+            envelope["commit_sha"],
+            envelope["remote_identity"],
+        )
+        manifest_sha256 = str(envelope["manifest_sha256"])
+    except KeyError as exc:
+        raise RegistrationError("registration envelope is missing required identity") from exc
+    observed = (provider_run_id, provider_commit_sha, remote_identity)
+    if expected != observed:
+        raise RegistrationError("provider identity mismatch")
+    received_at_ns = iso8601_to_ns(str(provider_payload.get("created_at")))
+    return RegistrationReceipt(manifest_sha256, provider_commit_sha, remote_identity, received_at_ns)
 
 
 def _freeze(value: Any) -> Any:
