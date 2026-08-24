@@ -617,9 +617,45 @@ def test_cli_rejects_dynamic_end_and_never_emits_partial_output(tmp_path: Path) 
     assert not output_dir.exists()
 
 
-def test_cli_lineage_failure_never_emits_partial_output(tmp_path: Path) -> None:
+def test_cli_rejects_substituted_market_sources_before_any_hash_or_read(tmp_path: Path, monkeypatch) -> None:
     inputs = _inputs(tmp_path)
-    inputs.spot_raw_paths[0].write_text("not a valid daily archive\n", encoding="utf-8")
+    output_dir = tmp_path / "registrations"
+    monkeypatch.setattr(module, "_sha256_file", lambda *_: pytest.fail("hashing must not occur"))
+
+    with pytest.raises(SystemExit):
+        module.main(
+            [
+                "--spot-1d",
+                str(inputs.spot_1d_path),
+                "--spot-raw",
+                str(inputs.spot_raw_paths[0]),
+                "--perp-5m",
+                str(inputs.perp_5m_path),
+                "--perp-source",
+                str(inputs.perp_source_path),
+                "--funding",
+                str(inputs.funding_path),
+                "--funding-source",
+                str(inputs.funding_source_path),
+                "--market-tail-provenance",
+                str(inputs.market_tail_provenance_path),
+                "--time-space-hypothesis",
+                "config/research/time_space_shadow_hypothesis_v1.json",
+                "--trend-hypothesis",
+                "config/research/trend_participation_hypothesis_v1.json",
+                "--reused-start",
+                "2026-01-01T00:00:00Z",
+                "--reused-end",
+                "2026-08-24T00:00:00Z",
+                "--output-dir",
+                str(output_dir),
+            ]
+        )
+    assert not output_dir.exists()
+
+
+def test_cli_subprocess_rejects_substituted_market_sources_without_publication(tmp_path: Path) -> None:
+    inputs = _inputs(tmp_path)
     output_dir = tmp_path / "registrations"
     command = [
         sys.executable,
@@ -653,45 +689,104 @@ def test_cli_lineage_failure_never_emits_partial_output(tmp_path: Path) -> None:
     completed = subprocess.run(command, check=False, capture_output=True, text=True)
 
     assert completed.returncode != 0
-    assert "BINANCE_SPOT_BTCUSDT_1D" in completed.stderr
+    assert "canonical source path mismatch" in completed.stderr
     assert not output_dir.exists()
 
 
-def test_cli_writes_two_canonical_manifests_as_one_atomic_directory(tmp_path: Path) -> None:
+@pytest.mark.parametrize("symlinked_source", ["perp", "funding"])
+def test_cli_source_contract_rejects_leaf_symlink_even_at_expected_path(tmp_path: Path, symlinked_source: str) -> None:
+    repository = tmp_path / "repository"
+    perp_expected = repository / "data/raw/binance/klines/BTCUSDT/5m/data.parquet"
+    funding_expected = repository / "data/raw/binance/funding/BTCUSDT/data.parquet"
+    perp_expected.parent.mkdir(parents=True)
+    funding_expected.parent.mkdir(parents=True)
+    perp_expected.write_bytes(b"perp")
+    funding_expected.write_bytes(b"funding")
+    selected = {"perp": perp_expected, "funding": funding_expected}[symlinked_source]
+    target = tmp_path / f"{symlinked_source}-target.parquet"
+    target.write_bytes(symlinked_source.encode())
+    selected.unlink()
+    selected.symlink_to(target)
+
+    with pytest.raises(module.InputFreezeError, match="symlink"):
+        module._validate_cli_canonical_sources(repository, perp_expected, funding_expected)
+
+
+def test_cli_lineage_failure_never_emits_partial_output(tmp_path: Path, monkeypatch, capsys) -> None:
+    inputs = _inputs(tmp_path)
+    inputs.spot_raw_paths[0].write_text("not a valid daily archive\n", encoding="utf-8")
+    output_dir = tmp_path / "registrations"
+    monkeypatch.setattr(module, "_validate_cli_canonical_sources", lambda *_: None)
+
+    with pytest.raises(SystemExit):
+        module.main(
+            [
+                "--spot-1d",
+                str(inputs.spot_1d_path),
+                "--spot-raw",
+                str(inputs.spot_raw_paths[0]),
+                "--perp-5m",
+                str(inputs.perp_5m_path),
+                "--perp-source",
+                str(inputs.perp_source_path),
+                "--funding",
+                str(inputs.funding_path),
+                "--funding-source",
+                str(inputs.funding_source_path),
+                "--market-tail-provenance",
+                str(inputs.market_tail_provenance_path),
+                "--time-space-hypothesis",
+                "config/research/time_space_shadow_hypothesis_v1.json",
+                "--trend-hypothesis",
+                "config/research/trend_participation_hypothesis_v1.json",
+                "--reused-start",
+                "2026-01-01T00:00:00Z",
+                "--reused-end",
+                "2026-08-24T00:00:00Z",
+                "--output-dir",
+                str(output_dir),
+            ]
+        )
+
+    assert "BINANCE_SPOT_BTCUSDT_1D" in capsys.readouterr().err
+    assert not output_dir.exists()
+
+
+def test_cli_writes_two_canonical_manifests_as_one_atomic_directory(tmp_path: Path, monkeypatch) -> None:
     inputs = _inputs(tmp_path)
     output_dir = tmp_path / "registrations"
-    command = [
-        sys.executable,
-        "scripts/freeze_trend_research_inputs.py",
-        "--spot-1d",
-        str(inputs.spot_1d_path),
-        "--spot-raw",
-        str(inputs.spot_raw_paths[0]),
-        "--perp-5m",
-        str(inputs.perp_5m_path),
-        "--perp-source",
-        str(inputs.perp_source_path),
-        "--funding",
-        str(inputs.funding_path),
-        "--funding-source",
-        str(inputs.funding_source_path),
-        "--market-tail-provenance",
-        str(inputs.market_tail_provenance_path),
-        "--time-space-hypothesis",
-        "config/research/time_space_shadow_hypothesis_v1.json",
-        "--trend-hypothesis",
-        "config/research/trend_participation_hypothesis_v1.json",
-        "--reused-start",
-        "2026-01-01T00:00:00Z",
-        "--reused-end",
-        "2026-08-24T00:00:00Z",
-        "--output-dir",
-        str(output_dir),
-    ]
+    monkeypatch.setattr(module, "_validate_cli_canonical_sources", lambda *_: None)
 
-    completed = subprocess.run(command, check=False, capture_output=True, text=True)
+    result = module.main(
+        [
+            "--spot-1d",
+            str(inputs.spot_1d_path),
+            "--spot-raw",
+            str(inputs.spot_raw_paths[0]),
+            "--perp-5m",
+            str(inputs.perp_5m_path),
+            "--perp-source",
+            str(inputs.perp_source_path),
+            "--funding",
+            str(inputs.funding_path),
+            "--funding-source",
+            str(inputs.funding_source_path),
+            "--market-tail-provenance",
+            str(inputs.market_tail_provenance_path),
+            "--time-space-hypothesis",
+            "config/research/time_space_shadow_hypothesis_v1.json",
+            "--trend-hypothesis",
+            "config/research/trend_participation_hypothesis_v1.json",
+            "--reused-start",
+            "2026-01-01T00:00:00Z",
+            "--reused-end",
+            "2026-08-24T00:00:00Z",
+            "--output-dir",
+            str(output_dir),
+        ]
+    )
 
-    assert completed.returncode == 0, completed.stderr
+    assert result == 0
     outputs = sorted(output_dir.glob("*.json"))
     assert [path.name for path in outputs] == [
         "time_space_shadow_execution_v1.json",

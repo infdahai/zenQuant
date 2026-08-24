@@ -708,6 +708,29 @@ def _publish_atomic_directory(output_dir: Path, payloads: Mapping[str, Mapping[s
             shutil.rmtree(staging)
 
 
+def _validate_cli_canonical_sources(
+    repository_root: Path,
+    perp_source: Path,
+    funding_source: Path,
+) -> None:
+    """Reject substituted canonical sources before the freezer reads any bytes."""
+
+    expected_sources = {
+        PERP_SOURCE_ID: repository_root / "data/raw/binance/klines/BTCUSDT/5m/data.parquet",
+        FUNDING_SOURCE_ID: repository_root / "data/raw/binance/funding/BTCUSDT/data.parquet",
+    }
+    supplied_sources = {
+        PERP_SOURCE_ID: Path(perp_source),
+        FUNDING_SOURCE_ID: Path(funding_source),
+    }
+    for source_id, expected_path in expected_sources.items():
+        supplied_path = supplied_sources[source_id]
+        if supplied_path.is_symlink():
+            raise InputFreezeError(f"canonical source leaf may not be a symlink: {source_id}")
+        if supplied_path.resolve() != expected_path.resolve():
+            raise InputFreezeError(f"canonical source path mismatch: {source_id}")
+
+
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--spot-1d", required=True, type=Path)
@@ -734,6 +757,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         parser.error(f"fixed reused end must be {FIXED_REUSED_END}")
 
     repository_root = Path(__file__).resolve().parents[1]
+    try:
+        _validate_cli_canonical_sources(repository_root, args.perp_source, args.funding_source)
+    except InputFreezeError as exc:
+        parser.error(str(exc))
     common = {
         "spot_1d_path": args.spot_1d,
         "spot_raw_paths": tuple(args.spot_raw),
