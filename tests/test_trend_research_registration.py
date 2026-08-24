@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -184,6 +186,57 @@ def test_workflow_triggers_only_the_four_bootstrap_push_refs_and_dispatch() -> N
         "feature/trend-registration-time-space-execution",
         "feature/trend-registration-trend-participation-execution",
     ]
+
+
+def test_dependency_free_cli_selects_bootstrap_manifest(tmp_path: Path) -> None:
+    github_env = tmp_path / "github.env"
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-S",
+            "scripts/build_trend_registration_receipt.py",
+            "select-bootstrap",
+            "--branch-name",
+            "feature/trend-registration-time-space-hypothesis",
+            "--github-env",
+            str(github_env),
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stderr
+    assert github_env.read_text(encoding="utf-8") == (
+        "MANIFEST_KIND=hypothesis\nMANIFEST_PATH=config/research/time_space_shadow_hypothesis_v1.json\n"
+    )
+
+
+def test_dependency_free_cli_builds_receipt(tmp_path: Path) -> None:
+    manifest_path = _write_manifest(tmp_path)
+    provider_path = tmp_path / "provider-run.json"
+    provider_path.write_text(json.dumps(_github_run()), encoding="utf-8")
+    output_path = tmp_path / "registration-receipt.json"
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-S",
+            "scripts/build_trend_registration_receipt.py",
+            "build",
+            "--manifest-path",
+            str(manifest_path),
+            "--commit-sha",
+            "abc123",
+            "--provider-run-json",
+            str(provider_path),
+            "--output",
+            str(output_path),
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stderr
+    assert json.loads(output_path.read_text(encoding="utf-8"))["received_at_ns"] == 1787558400000000000
 
 
 def _write_manifest(tmp_path: Path, payload: dict[str, object] | None = None) -> Path:
