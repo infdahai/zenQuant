@@ -246,6 +246,7 @@ class DataReadinessStatusTests(unittest.TestCase):
 
     def test_trend_repair_runbook_uses_exact_normalization_and_registration_paths(self) -> None:
         runbook = Path("docs/FORWARD_COLLECTION_AUTOMATION.md").read_text(encoding="utf-8")
+        plan = Path("docs/superpowers/plans/2026-08-24-trend-research-foundation.md").read_text(encoding="utf-8")
 
         self.assertIn("--start-open-date 2025-10-08", runbook)
         self.assertIn("--end-open-date-exclusive 2026-08-24", runbook)
@@ -262,6 +263,15 @@ class DataReadinessStatusTests(unittest.TestCase):
         self.assertIn("--output-dir config/research/registrations", runbook)
         self.assertIn("config/research/registrations/time_space_shadow_execution_v1.json", runbook)
         self.assertNotIn("--output-dir results/trend_research_execution/20260824", runbook)
+        self.assertNotIn("data/raw/binance_spot/klines/BTCUSDT/1d/data.parquet", plan)
+        self.assertGreaterEqual(
+            plan.count("data/derived/trend_research/20260824/BTCUSDT/1d/data.parquet"),
+            3,
+        )
+        self.assertIn("--spot-raw", plan)
+        self.assertIn("--reused-start 2026-01-01T00:00:00Z", plan)
+        self.assertIn("--reused-end 2026-08-24T00:00:00Z", plan)
+        self.assertIn("--output-dir config/research/registrations", plan)
 
     def test_build_payload_marks_partial_and_blocked_states(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
