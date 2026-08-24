@@ -19,6 +19,15 @@ from typing import Any, Final
 import pandas as pd
 
 from zenquant.data.spot_daily import audit_spot_daily, normalize_spot_daily_csvs
+from zenquant.data.trend_market_tail import (
+    FUNDING_COLUMNS,
+    FUNDING_SOURCE_ID,
+    PERP_COLUMNS,
+    PERP_SOURCE_ID,
+    MarketTailError,
+    MarketTailInputs,
+    replay_market_tail_provenance,
+)
 from zenquant.research.accounting_kernel_identity import build_accounting_kernel_identity
 from zenquant.research.registration import (
     REQUIRED_SOURCE_IDS,
@@ -74,6 +83,8 @@ class FreezeInputs:
     spot_raw_paths: tuple[Path, ...]
     perp_5m_path: Path
     funding_path: Path | None
+    perp_source_path: Path
+    funding_source_path: Path
     market_tail_provenance_path: Path
     reused_start_ns: int
     reused_end_ns: int
@@ -86,6 +97,8 @@ class FreezeInputs:
         object.__setattr__(self, "perp_5m_path", Path(self.perp_5m_path))
         if self.funding_path is not None:
             object.__setattr__(self, "funding_path", Path(self.funding_path))
+        object.__setattr__(self, "perp_source_path", Path(self.perp_source_path))
+        object.__setattr__(self, "funding_source_path", Path(self.funding_source_path))
         object.__setattr__(self, "market_tail_provenance_path", Path(self.market_tail_provenance_path))
         object.__setattr__(self, "repository_root", Path(self.repository_root).resolve())
 
@@ -100,6 +113,7 @@ class FreezeInputs:
         ]
         if self.funding_path is not None:
             paths.append(self.funding_path)
+        paths.extend((self.perp_source_path, self.funding_source_path))
         paths.append(self.market_tail_provenance_path)
         paths.extend(self.repository_root / relative for relative in _CONSTRUCTION_PATHS)
         return tuple(paths)
@@ -352,6 +366,8 @@ def _audit_regular_parquet(
         missing_count = len(expected.difference(observed_window))
         off_grid_count = sum((value - start_ns) % interval_ns != 0 for value in observed_all)
         post_end_count = sum(value >= end_ns for value in observed_all)
+        pre_start_count = sum(value < start_ns for value in observed_all)
+        expected_row_count = (end_ns - start_ns) // interval_ns
         invalid_cutoff_count = 0
         if cutoff_column != timestamp_column:
             valid_deltas = {interval_ns - 1, interval_ns - 1_000_000}
@@ -365,6 +381,8 @@ def _audit_regular_parquet(
             and duplicate_count == 0
             and off_grid_count == 0
             and post_end_count == 0
+            and pre_start_count == 0
+            and len(frame) == expected_row_count
             and invalid_cutoff_count == 0
             and values_ready
         )
@@ -379,11 +397,13 @@ def _audit_regular_parquet(
                 "first_event_ns": min(observed_all),
                 "last_event_ns": max(observed_all),
                 "row_count": len(frame),
+                "expected_row_count": expected_row_count,
                 "window_row_count": len(observed_window),
                 "missing_count": missing_count,
                 "duplicate_count": duplicate_count,
                 "off_grid_count": off_grid_count,
                 "post_end_count": post_end_count,
+                "pre_start_count": pre_start_count,
                 "invalid_cutoff_count": invalid_cutoff_count,
                 "invalid_value_count": invalid_value_count,
             },
@@ -405,32 +425,46 @@ def _validate_market_tail_provenance(inputs: FreezeInputs) -> dict[str, Any]:
             raise ValueError("symbol mismatch")
         if payload.get("window") != [inputs.reused_start_ns, inputs.reused_end_ns]:
             raise ValueError("window mismatch")
-        source_ids = {
-            "BINANCE_PERPETUAL_BTCUSDT_5M": inputs.perp_5m_path,
-            "BINANCE_PERPETUAL_BTCUSDT_FUNDING": inputs.funding_path,
-        }
+        output_paths = {PERP_SOURCE_ID: inputs.perp_5m_path, FUNDING_SOURCE_ID: inputs.funding_path}
+        source_paths = {PERP_SOURCE_ID: inputs.perp_source_path, FUNDING_SOURCE_ID: inputs.funding_source_path}
         outputs = payload.get("outputs")
         sources = payload.get("sources")
-        if not isinstance(outputs, dict) or set(outputs) != set(source_ids):
+        if not isinstance(outputs, dict) or set(outputs) != set(output_paths):
             raise ValueError("output source IDs mismatch")
-        if not isinstance(sources, dict) or set(sources) != set(source_ids):
+        if not isinstance(sources, dict) or set(sources) != set(source_paths):
             raise ValueError("canonical source IDs mismatch")
-        for source_id, supplied_path in source_ids.items():
+        expected_counts = {
+            PERP_SOURCE_ID: (inputs.reused_end_ns - inputs.reused_start_ns) // FIVE_MINUTES_NS,
+            FUNDING_SOURCE_ID: (inputs.reused_end_ns - inputs.reused_start_ns) // EIGHT_HOURS_NS,
+        }
+        expected_columns = {PERP_SOURCE_ID: list(PERP_COLUMNS), FUNDING_SOURCE_ID: list(FUNDING_COLUMNS)}
+        for source_id, supplied_path in output_paths.items():
             if supplied_path is None:
                 raise ValueError(f"missing output for {source_id}")
             output = outputs[source_id]
             if not isinstance(output, dict):
                 raise ValueError(f"invalid output envelope for {source_id}")
-            if Path(str(output.get("path"))).resolve() != supplied_path.resolve():
+            if (
+                output.get("path") != str(supplied_path)
+                or Path(str(output.get("path"))).resolve() != supplied_path.resolve()
+            ):
                 raise ValueError(f"output path mismatch for {source_id}")
             if output.get("sha256") != _sha256_file(supplied_path):
                 raise ValueError(f"output digest mismatch for {source_id}")
-            if not isinstance(output.get("row_count"), int) or int(output["row_count"]) <= 0:
+            actual_row_count = len(pd.read_parquet(supplied_path))
+            if (
+                output.get("row_count") != actual_row_count
+                or output.get("expected_row_count") != expected_counts[source_id]
+                or actual_row_count != expected_counts[source_id]
+                or output.get("columns") != expected_columns[source_id]
+            ):
                 raise ValueError(f"invalid output row count for {source_id}")
+        for source_id, source_path in source_paths.items():
             source = sources[source_id]
             if not isinstance(source, dict):
                 raise ValueError(f"invalid canonical source envelope for {source_id}")
-            source_path = Path(str(source.get("path")))
+            if source.get("path") != str(source_path) or source.get("resolved_path") != str(source_path.resolve()):
+                raise ValueError(f"canonical source path mismatch for {source_id}")
             if source.get("sha256") != _sha256_file(source_path):
                 raise ValueError(f"canonical source digest mismatch for {source_id}")
         normalizer = payload.get("normalizer")
@@ -443,17 +477,35 @@ def _validate_market_tail_provenance(inputs: FreezeInputs) -> dict[str, Any]:
             or normalizer.get("sha256") != expected_normalizer_sha
         ):
             raise ValueError("normalizer identity mismatch")
-        if not isinstance(repository, dict) or not _is_git_sha(repository.get("head")):
+        current_head = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=inputs.repository_root,
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+        if (
+            not isinstance(repository, dict)
+            or not _is_git_sha(repository.get("head"))
+            or repository.get("head") != current_head
+        ):
             raise ValueError("repository identity mismatch")
-        pages = payload.get("rest_pages")
-        if not isinstance(pages, list):
-            raise ValueError("REST page ledger missing")
-        for page in pages:
-            if not isinstance(page, dict) or page.get("source_id") not in source_ids:
-                raise ValueError("REST page source ID mismatch")
-            if not _is_sha256(page.get("payload_sha256")) or not isinstance(page.get("query"), dict):
-                raise ValueError("REST page identity mismatch")
-    except (OSError, ValueError, TypeError, json.JSONDecodeError) as exc:
+        replay_inputs = MarketTailInputs(
+            perp_source_path=inputs.perp_source_path,
+            funding_source_path=inputs.funding_source_path,
+            output_root=inputs.perp_5m_path.parent.parent,
+            start_ns=inputs.reused_start_ns,
+            end_ns=inputs.reused_end_ns,
+            repository_root=inputs.repository_root,
+        )
+        replayed = replay_market_tail_provenance(payload, replay_inputs)
+        pd.testing.assert_frame_equal(
+            replayed[PERP_SOURCE_ID], pd.read_parquet(inputs.perp_5m_path), check_dtype=True, check_like=False
+        )
+        pd.testing.assert_frame_equal(
+            replayed[FUNDING_SOURCE_ID], pd.read_parquet(inputs.funding_path), check_dtype=True, check_like=False
+        )
+    except (AssertionError, MarketTailError, OSError, ValueError, TypeError, json.JSONDecodeError) as exc:
         raise InputFreezeError(f"market-tail provenance is invalid: {exc}") from exc
     return {
         "path": str(path),
@@ -661,7 +713,9 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--spot-1d", required=True, type=Path)
     parser.add_argument("--spot-raw", required=True, action="append", type=Path)
     parser.add_argument("--perp-5m", required=True, type=Path)
+    parser.add_argument("--perp-source", required=True, type=Path)
     parser.add_argument("--funding", required=True, type=Path)
+    parser.add_argument("--funding-source", required=True, type=Path)
     parser.add_argument("--market-tail-provenance", required=True, type=Path)
     parser.add_argument("--time-space-hypothesis", required=True, type=Path)
     parser.add_argument("--trend-hypothesis", required=True, type=Path)
@@ -685,6 +739,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         "spot_raw_paths": tuple(args.spot_raw),
         "perp_5m_path": args.perp_5m,
         "funding_path": args.funding,
+        "perp_source_path": args.perp_source,
+        "funding_source_path": args.funding_source,
         "market_tail_provenance_path": args.market_tail_provenance,
         "reused_start_ns": REUSED_START_NS,
         "reused_end_ns": REUSED_END_NS,

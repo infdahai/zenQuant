@@ -13,6 +13,7 @@ import pandas as pd
 import pytest
 
 from zenquant.data.spot_daily import DAY_NS, normalize_spot_daily_csvs
+from zenquant.data.trend_market_tail import MarketTailInputs, prepare_market_tail
 from zenquant.research.registration import REUSED_END_NS, REUSED_START_NS
 
 FIVE_MINUTES_NS = 300_000_000_000
@@ -32,7 +33,7 @@ def _load_freezer():
 module = _load_freezer()
 
 
-def _write_complete_sources(tmp_path: Path) -> tuple[Path, tuple[Path, ...], Path, Path, Path]:
+def _write_complete_sources(tmp_path: Path) -> tuple[Path, tuple[Path, ...], Path, Path, Path, Path, Path]:
     tmp_path.mkdir(parents=True, exist_ok=True)
     raw = tmp_path / "BTCUSDT-1d.csv"
     spot_open = tuple(range(REUSED_START_NS - 85 * DAY_NS, REUSED_END_NS, DAY_NS))
@@ -55,70 +56,75 @@ def _write_complete_sources(tmp_path: Path) -> tuple[Path, tuple[Path, ...], Pat
     spot = tmp_path / "spot.parquet"
     normalize_spot_daily_csvs((raw,), spot)
 
-    perp = tmp_path / "perp.parquet"
+    canonical_perp = tmp_path / "canonical-perp.parquet"
     perp_open = tuple(range(REUSED_START_NS, REUSED_END_NS, FIVE_MINUTES_NS))
+    missing_perp_ns = perp_open[5]
     pd.DataFrame(
         {
-            "open_time_ns": perp_open,
-            "open": tuple(100.0 for _ in perp_open),
-            "high": tuple(110.0 for _ in perp_open),
-            "low": tuple(90.0 for _ in perp_open),
-            "close": tuple(105.0 for _ in perp_open),
-            "volume": tuple(10.0 for _ in perp_open),
-            "close_time_ns": tuple(value + FIVE_MINUTES_NS - 1 for value in perp_open),
+            "open_time_ns": tuple(value for value in perp_open if value != missing_perp_ns),
+            "open": tuple(100.0 for value in perp_open if value != missing_perp_ns),
+            "high": tuple(110.0 for value in perp_open if value != missing_perp_ns),
+            "low": tuple(90.0 for value in perp_open if value != missing_perp_ns),
+            "close": tuple(105.0 for value in perp_open if value != missing_perp_ns),
+            "volume": tuple(10.0 for value in perp_open if value != missing_perp_ns),
+            "close_time_ns": tuple(
+                value + FIVE_MINUTES_NS - 1_000_000 for value in perp_open if value != missing_perp_ns
+            ),
         }
-    ).to_parquet(perp, index=False)
+    ).to_parquet(canonical_perp, index=False)
 
-    funding = tmp_path / "funding.parquet"
+    canonical_funding = tmp_path / "canonical-funding.parquet"
     funding_times = tuple(range(REUSED_START_NS, REUSED_END_NS, EIGHT_HOURS_NS))
+    missing_funding_ns = funding_times[-1]
     pd.DataFrame(
         {
-            "funding_time_ns": funding_times,
-            "funding_rate": tuple(0.0001 for _ in funding_times),
+            "symbol": tuple("BTCUSDT" for value in funding_times if value != missing_funding_ns),
+            "funding_time_ns": tuple(value for value in funding_times if value != missing_funding_ns),
+            "funding_rate": tuple(0.0001 for value in funding_times if value != missing_funding_ns),
         }
-    ).to_parquet(funding, index=False)
-    provenance = tmp_path / "market_tail_provenance.json"
-    provenance.write_text(
-        json.dumps(
-            {
-                "schema_version": "trend-market-tail-provenance.v1",
-                "symbol": "BTCUSDT",
-                "window": [REUSED_START_NS, REUSED_END_NS],
-                "sources": {
-                    "BINANCE_PERPETUAL_BTCUSDT_5M": {
-                        "path": str(perp),
-                        "sha256": hashlib.sha256(perp.read_bytes()).hexdigest(),
-                    },
-                    "BINANCE_PERPETUAL_BTCUSDT_FUNDING": {
-                        "path": str(funding),
-                        "sha256": hashlib.sha256(funding.read_bytes()).hexdigest(),
-                    },
-                },
-                "outputs": {
-                    "BINANCE_PERPETUAL_BTCUSDT_5M": {
-                        "path": str(perp),
-                        "sha256": hashlib.sha256(perp.read_bytes()).hexdigest(),
-                        "row_count": len(perp_open),
-                    },
-                    "BINANCE_PERPETUAL_BTCUSDT_FUNDING": {
-                        "path": str(funding),
-                        "sha256": hashlib.sha256(funding.read_bytes()).hexdigest(),
-                        "row_count": len(funding_times),
-                    },
-                },
-                "rest_pages": [],
-                "normalizer": {
-                    "callable": "zenquant.data.trend_market_tail.prepare_market_tail",
-                    "sha256": hashlib.sha256(Path("zenquant/data/trend_market_tail.py").read_bytes()).hexdigest(),
-                },
-                "repository": {"head": "b" * 40},
-            },
-            sort_keys=True,
-        )
-        + "\n",
-        encoding="utf-8",
+    ).to_parquet(canonical_funding, index=False)
+    market_inputs = MarketTailInputs(
+        perp_source_path=canonical_perp,
+        funding_source_path=canonical_funding,
+        output_root=tmp_path / "derived/BTCUSDT",
+        start_ns=REUSED_START_NS,
+        end_ns=REUSED_END_NS,
+        repository_root=Path.cwd(),
     )
-    return spot, (raw,), perp, funding, provenance
+    rest_row = [
+        missing_perp_ns // 1_000_000,
+        "100.0",
+        "110.0",
+        "90.0",
+        "105.0",
+        "10.0",
+        (missing_perp_ns + FIVE_MINUTES_NS - 1_000_000) // 1_000_000,
+        "1000.0",
+        5,
+        "6.0",
+        "600.0",
+        "0",
+    ]
+    prepare_market_tail(
+        market_inputs,
+        fetch_perp_page=lambda *_: [rest_row],
+        fetch_funding_page=lambda *_: [
+            {
+                "symbol": "BTCUSDT",
+                "fundingTime": missing_funding_ns // 1_000_000,
+                "fundingRate": "0.0001",
+            }
+        ],
+    )
+    return (
+        spot,
+        (raw,),
+        canonical_perp,
+        canonical_funding,
+        market_inputs.perp_output_path,
+        market_inputs.funding_output_path,
+        market_inputs.provenance_path,
+    )
 
 
 def _inputs(
@@ -127,7 +133,7 @@ def _inputs(
     hypothesis: str = "time_space_shadow_hypothesis_v1.json",
     funding: Path | None | object = ...,
 ):
-    spot, raw, perp, complete_funding, provenance = _write_complete_sources(tmp_path)
+    spot, raw, canonical_perp, canonical_funding, perp, complete_funding, provenance = _write_complete_sources(tmp_path)
     selected_funding = complete_funding if funding is ... else funding
     return module.FreezeInputs(
         hypothesis_path=Path("config/research") / hypothesis,
@@ -135,6 +141,8 @@ def _inputs(
         spot_raw_paths=raw,
         perp_5m_path=perp,
         funding_path=selected_funding,
+        perp_source_path=canonical_perp,
+        funding_source_path=canonical_funding,
         market_tail_provenance_path=provenance,
         reused_start_ns=REUSED_START_NS,
         reused_end_ns=REUSED_END_NS,
@@ -199,6 +207,14 @@ def test_envelope_binds_hypothesis_sources_and_accounting_kernel(tmp_path: Path)
     )
     assert payload["sources"]["BINANCE_PERPETUAL_BTCUSDT_5M"]["coverage"]["missing_count"] == 0
     assert payload["sources"]["BINANCE_PERPETUAL_BTCUSDT_FUNDING"]["coverage"]["missing_count"] == 0
+    assert (
+        payload["sources"]["BINANCE_PERPETUAL_BTCUSDT_5M"]["coverage"]["row_count"]
+        == (REUSED_END_NS - REUSED_START_NS) // FIVE_MINUTES_NS
+    )
+    assert (
+        payload["sources"]["BINANCE_PERPETUAL_BTCUSDT_FUNDING"]["coverage"]["row_count"]
+        == (REUSED_END_NS - REUSED_START_NS) // EIGHT_HOURS_NS
+    )
     assert payload["accounting_kernel"]["schema_version"] == "accounting-kernel-identity.v1"
     assert payload["formula_sha256"].startswith("sha256:")
     assert payload["config_sha256"].startswith("sha256:")
@@ -233,6 +249,8 @@ def test_freeze_rejects_window_drift_and_required_source_gap(tmp_path: Path) -> 
         spot_raw_paths=drifted.spot_raw_paths,
         perp_5m_path=drifted.perp_5m_path,
         funding_path=drifted.funding_path,
+        perp_source_path=drifted.perp_source_path,
+        funding_source_path=drifted.funding_source_path,
         market_tail_provenance_path=drifted.market_tail_provenance_path,
         reused_start_ns=REUSED_START_NS,
         reused_end_ns=REUSED_END_NS - DAY_NS,
@@ -267,6 +285,22 @@ def test_freeze_rejects_rows_after_the_exact_frozen_end(tmp_path: Path) -> None:
     pd.concat((frame, post_end), ignore_index=True).to_parquet(inputs.perp_5m_path, index=False)
 
     with pytest.raises(module.InputFreezeError, match=r"REQUIRED.*BINANCE_PERPETUAL_BTCUSDT_5M"):
+        module.build_execution_manifest(inputs)
+
+
+@pytest.mark.parametrize("source_id", ["perp", "funding"])
+def test_freeze_rejects_rows_before_the_exact_frozen_start(tmp_path: Path, source_id: str) -> None:
+    inputs = _inputs(tmp_path)
+    path = inputs.perp_5m_path if source_id == "perp" else inputs.funding_path
+    frame = pd.read_parquet(path)
+    extra = frame.iloc[[0]].copy()
+    timestamp_column = "open_time_ns" if source_id == "perp" else "funding_time_ns"
+    extra[timestamp_column] = REUSED_START_NS - (FIVE_MINUTES_NS if source_id == "perp" else EIGHT_HOURS_NS)
+    if source_id == "perp":
+        extra["close_time_ns"] = REUSED_START_NS - 1_000_000
+    pd.concat((extra, frame), ignore_index=True).to_parquet(path, index=False)
+
+    with pytest.raises(module.InputFreezeError, match="REQUIRED"):
         module.build_execution_manifest(inputs)
 
 
@@ -382,6 +416,8 @@ def test_freeze_enforces_exact_hypothesis_filename_to_layer_mapping(tmp_path: Pa
         spot_raw_paths=(tmp_path / "unused-raw",),
         perp_5m_path=tmp_path / "unused-perp",
         funding_path=tmp_path / "unused-funding",
+        perp_source_path=tmp_path / "unused-perp-source",
+        funding_source_path=tmp_path / "unused-funding-source",
         market_tail_provenance_path=tmp_path / "unused-provenance",
         reused_start_ns=REUSED_START_NS,
         reused_end_ns=REUSED_END_NS,
@@ -413,16 +449,76 @@ def test_freeze_rehashes_every_input_and_rejects_mutation(tmp_path: Path, monkey
     assert all(calls[path.resolve()] >= 2 for path in inputs.all_input_paths())
 
 
-@pytest.mark.parametrize("mutation", ["output_sha", "window", "source_id", "normalizer_sha", "provenance_bytes"])
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "output_sha",
+        "output_content_and_sha",
+        "output_row_count",
+        "window",
+        "source_id",
+        "source_path",
+        "source_sha",
+        "source_contract",
+        "query_symbol",
+        "query_endpoint",
+        "query_interval",
+        "query_bounds",
+        "query_limit",
+        "page_order",
+        "inserted_gap",
+        "payload",
+        "repo_head",
+        "normalizer_sha",
+        "provenance_bytes",
+    ],
+)
 def test_freeze_rejects_market_tail_provenance_mismatch(tmp_path: Path, mutation: str) -> None:
     inputs = _inputs(tmp_path)
     payload = json.loads(inputs.market_tail_provenance_path.read_text(encoding="utf-8"))
     if mutation == "output_sha":
         payload["outputs"]["BINANCE_PERPETUAL_BTCUSDT_5M"]["sha256"] = "f" * 64
+    elif mutation == "output_content_and_sha":
+        output = pd.read_parquet(inputs.perp_5m_path)
+        output.loc[5, "close"] = 106.0
+        output.to_parquet(inputs.perp_5m_path, index=False)
+        payload["outputs"]["BINANCE_PERPETUAL_BTCUSDT_5M"]["sha256"] = hashlib.sha256(
+            inputs.perp_5m_path.read_bytes()
+        ).hexdigest()
+    elif mutation == "output_row_count":
+        payload["outputs"]["BINANCE_PERPETUAL_BTCUSDT_5M"]["row_count"] -= 1
     elif mutation == "window":
         payload["window"][1] -= FIVE_MINUTES_NS
     elif mutation == "source_id":
         payload["outputs"]["WRONG"] = payload["outputs"].pop("BINANCE_PERPETUAL_BTCUSDT_5M")
+    elif mutation == "source_path":
+        payload["sources"]["BINANCE_PERPETUAL_BTCUSDT_5M"]["path"] = str(inputs.funding_source_path)
+    elif mutation == "source_sha":
+        payload["sources"]["BINANCE_PERPETUAL_BTCUSDT_5M"]["sha256"] = "f" * 64
+    elif mutation == "source_contract":
+        payload["sources"]["BINANCE_PERPETUAL_BTCUSDT_5M"]["contract"]["instrument"] = "ETHUSDT"
+    elif mutation == "query_symbol":
+        payload["rest_pages"][0]["query"]["params"]["symbol"] = "ETHUSDT"
+    elif mutation == "query_endpoint":
+        payload["rest_pages"][0]["query"]["endpoint"] = "/fapi/v1/fundingRate"
+    elif mutation == "query_interval":
+        payload["rest_pages"][0]["query"]["params"]["interval"] = "1m"
+    elif mutation == "query_bounds":
+        payload["rest_pages"][0]["query"]["params"]["endTime"] -= 1
+    elif mutation == "query_limit":
+        payload["rest_pages"][0]["query"]["params"]["limit"] = 2
+    elif mutation == "page_order":
+        payload["rest_pages"].reverse()
+    elif mutation == "inserted_gap":
+        payload["rest_pages"][0]["inserted_event_ns"][0] += FIVE_MINUTES_NS
+    elif mutation == "payload":
+        page = payload["rest_pages"][0]
+        page["payload"][0][4] = "106.0"
+        page["payload_sha256"] = hashlib.sha256(
+            (json.dumps(page["payload"], separators=(",", ":"), sort_keys=True) + "\n").encode()
+        ).hexdigest()
+    elif mutation == "repo_head":
+        payload["repository"]["head"] = "f" * 40
     elif mutation == "normalizer_sha":
         payload["normalizer"]["sha256"] = "f" * 64
     else:
@@ -494,8 +590,12 @@ def test_cli_rejects_dynamic_end_and_never_emits_partial_output(tmp_path: Path) 
         str(inputs.spot_raw_paths[0]),
         "--perp-5m",
         str(inputs.perp_5m_path),
+        "--perp-source",
+        str(inputs.perp_source_path),
         "--funding",
         str(inputs.funding_path),
+        "--funding-source",
+        str(inputs.funding_source_path),
         "--market-tail-provenance",
         str(inputs.market_tail_provenance_path),
         "--time-space-hypothesis",
@@ -530,8 +630,12 @@ def test_cli_lineage_failure_never_emits_partial_output(tmp_path: Path) -> None:
         str(inputs.spot_raw_paths[0]),
         "--perp-5m",
         str(inputs.perp_5m_path),
+        "--perp-source",
+        str(inputs.perp_source_path),
         "--funding",
         str(inputs.funding_path),
+        "--funding-source",
+        str(inputs.funding_source_path),
         "--market-tail-provenance",
         str(inputs.market_tail_provenance_path),
         "--time-space-hypothesis",
@@ -565,8 +669,12 @@ def test_cli_writes_two_canonical_manifests_as_one_atomic_directory(tmp_path: Pa
         str(inputs.spot_raw_paths[0]),
         "--perp-5m",
         str(inputs.perp_5m_path),
+        "--perp-source",
+        str(inputs.perp_source_path),
         "--funding",
         str(inputs.funding_path),
+        "--funding-source",
+        str(inputs.funding_source_path),
         "--market-tail-provenance",
         str(inputs.market_tail_provenance_path),
         "--time-space-hypothesis",
