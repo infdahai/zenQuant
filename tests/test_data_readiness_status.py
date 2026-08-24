@@ -260,6 +260,20 @@ class DataReadinessStatusTests(unittest.TestCase):
             runbook,
         )
         self.assertIn("--spot-1d data/derived/trend_research/20260824/BTCUSDT/1d/data.parquet", runbook)
+        self.assertIn("scripts/prepare_trend_market_tail.py", runbook)
+        self.assertIn("--perp-source data/raw/binance/klines/BTCUSDT/5m/data.parquet", runbook)
+        self.assertIn("--funding-source data/raw/binance/funding/BTCUSDT/data.parquet", runbook)
+        self.assertIn("--output-root data/derived/trend_research/20260824/BTCUSDT", runbook)
+        self.assertIn("--start 2026-01-01T00:00:00Z", runbook)
+        self.assertIn("--end 2026-08-24T00:00:00Z", runbook)
+        self.assertIn("--perp-5m data/derived/trend_research/20260824/BTCUSDT/5m/data.parquet", runbook)
+        self.assertIn("--funding data/derived/trend_research/20260824/BTCUSDT/funding/data.parquet", runbook)
+        self.assertIn(
+            "--market-tail-provenance data/derived/trend_research/20260824/BTCUSDT/market_tail_provenance.json",
+            runbook,
+        )
+        self.assertNotIn("--perp-5m data/raw/binance/klines/BTCUSDT/5m/data.parquet", runbook)
+        self.assertNotIn("--funding data/raw/binance/funding/BTCUSDT/data.parquet", runbook)
         self.assertIn("--output-dir config/research/registrations", runbook)
         self.assertIn("config/research/registrations/time_space_shadow_execution_v1.json", runbook)
         self.assertNotIn("--output-dir results/trend_research_execution/20260824", runbook)
@@ -272,6 +286,10 @@ class DataReadinessStatusTests(unittest.TestCase):
         self.assertIn("--reused-start 2026-01-01T00:00:00Z", plan)
         self.assertIn("--reused-end 2026-08-24T00:00:00Z", plan)
         self.assertIn("--output-dir config/research/registrations", plan)
+        self.assertIn("scripts/prepare_trend_market_tail.py", plan)
+        self.assertIn("--perp-5m data/derived/trend_research/20260824/BTCUSDT/5m/data.parquet", plan)
+        self.assertIn("--funding data/derived/trend_research/20260824/BTCUSDT/funding/data.parquet", plan)
+        self.assertIn("--market-tail-provenance", plan)
 
     def test_build_payload_marks_partial_and_blocked_states(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

@@ -25,6 +25,9 @@
 - Create `zenquant/research/registration.py`: canonical manifest hashing, receipt validation, forward-cutoff derivation, and evidence-role classification.
 - Create `zenquant/data/spot_daily.py`: deterministic CSV normalization, daily-grid audit, and immutable source-envelope construction.
 - Create `scripts/freeze_trend_research_inputs.py`: CLI that audits all REQUIRED inputs and writes an execution manifest without computing signals.
+- Create `zenquant/data/trend_market_tail.py` and `scripts/prepare_trend_market_tail.py`: isolate the exact-window
+  perpetual/funding corpus, normalize funding timestamp jitter, fetch only missing fixed-window events, and bind every
+  source/output/REST page in an immutable provenance envelope without touching canonical Parquet.
 - Create `scripts/build_trend_registration_receipt.py` and `.github/workflows/trend-research-registration.yml`: bind manifest and commit identities to a verifiable GitHub Actions run creation time.
 - Modify `scripts/convert_csv_to_parquet.py`: delegate Binance spot 1d normalization to the strict library path.
 - Modify `scripts/data_readiness_status.py`: expose trend-research readiness and blockers.
@@ -449,6 +452,23 @@ Dispatch one fresh reviewer for exact spec compliance and a second fresh reviewe
 
 Run from zsh with the complete deterministic raw provenance inventory; `--spot-raw` is mandatory and repeatable, not optional:
 
+First prepare the isolated market tail. These dates are literal frozen inputs; `latest`, the current time, and any
+dynamic end are forbidden. Binance REST is used only for missing events in this exact window. The source Parquet files
+remain byte-for-byte unchanged, while the derived 5m/funding files and provenance publish as one logical transaction:
+
+```bash
+uv run python scripts/prepare_trend_market_tail.py \
+  --perp-source data/raw/binance/klines/BTCUSDT/5m/data.parquet \
+  --funding-source data/raw/binance/funding/BTCUSDT/data.parquet \
+  --output-root data/derived/trend_research/20260824/BTCUSDT \
+  --start 2026-01-01T00:00:00Z \
+  --end 2026-08-24T00:00:00Z
+```
+
+Funding source timestamps in `[anchor, anchor + 60 seconds]` map to the exact 8h anchor, with the provider timestamp
+retained separately. Anything later, any duplicate/gap, an incomplete 5m grid, or a provenance mismatch is a hard
+blocker.
+
 ```zsh
 export LC_ALL=C
 trend_spot_raw_paths=(data/raw/binance_spot/klines/BTCUSDT/1d/*.csv(.N))
@@ -462,8 +482,9 @@ test ! -e config/research/registrations
 uv run python scripts/freeze_trend_research_inputs.py \
   --spot-1d data/derived/trend_research/20260824/BTCUSDT/1d/data.parquet \
   "${trend_spot_raw_args[@]}" \
-  --perp-5m data/raw/binance/klines/BTCUSDT/5m/data.parquet \
-  --funding data/raw/binance/funding/BTCUSDT/data.parquet \
+  --perp-5m data/derived/trend_research/20260824/BTCUSDT/5m/data.parquet \
+  --funding data/derived/trend_research/20260824/BTCUSDT/funding/data.parquet \
+  --market-tail-provenance data/derived/trend_research/20260824/BTCUSDT/market_tail_provenance.json \
   --time-space-hypothesis config/research/time_space_shadow_hypothesis_v1.json \
   --trend-hypothesis config/research/trend_participation_hypothesis_v1.json \
   --reused-start 2026-01-01T00:00:00Z \

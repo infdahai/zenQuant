@@ -110,6 +110,13 @@ uv run python scripts/convert_csv_to_parquet.py \
   --end-open-date-exclusive 2026-08-24 \
   --spot-daily-output-path data/derived/trend_research/20260824/BTCUSDT/1d/data.parquet
 
+uv run python scripts/prepare_trend_market_tail.py \
+  --perp-source data/raw/binance/klines/BTCUSDT/5m/data.parquet \
+  --funding-source data/raw/binance/funding/BTCUSDT/data.parquet \
+  --output-root data/derived/trend_research/20260824/BTCUSDT \
+  --start 2026-01-01T00:00:00Z \
+  --end 2026-08-24T00:00:00Z
+
 uv run python scripts/data_readiness_status.py \
   --trend-spot-path data/derived/trend_research/20260824/BTCUSDT/1d/data.parquet
 ```
@@ -124,6 +131,13 @@ to the exact half-open research range. Readiness and the freezer reject any norm
 after the frozen end. The bounded converter requires a dedicated derived output and refuses the shared canonical
 `data/raw/binance_spot/klines/BTCUSDT/1d/data.parquet`; `--timeframes 1d` also prevents this repair from rewriting
 existing `5m`, `1h`, or `4h` Parquet files used by other research paths.
+
+The market-tail preparer likewise never rewrites either shared canonical Parquet. It crops them into the exact frozen
+window, fills only missing fixed-window 5m bars or funding anchors from Binance REST, and publishes isolated `5m` and
+`funding` outputs together with `market_tail_provenance.json`. Every REST request and response page is digested.
+Funding provider timestamps are retained as `raw_funding_time_ns` and canonicalized to an 8h
+`funding_time_ns` anchor only when they fall in `[anchor, anchor + 60 seconds]`; gaps, duplicates, non-finite values,
+bad candles, and later timestamps fail closed. Existing isolated `1d` bytes are preserved if already present.
 
 The execution freeze binds both normalized bytes and every raw Binance CSV as provenance. The following zsh-safe
 array uses C-locale filename order, expands each regular raw archive into the repeatable `--spot-raw` argument required
@@ -142,8 +156,9 @@ test ! -e config/research/registrations
 uv run python scripts/freeze_trend_research_inputs.py \
   --spot-1d data/derived/trend_research/20260824/BTCUSDT/1d/data.parquet \
   "${trend_spot_raw_args[@]}" \
-  --perp-5m data/raw/binance/klines/BTCUSDT/5m/data.parquet \
-  --funding data/raw/binance/funding/BTCUSDT/data.parquet \
+  --perp-5m data/derived/trend_research/20260824/BTCUSDT/5m/data.parquet \
+  --funding data/derived/trend_research/20260824/BTCUSDT/funding/data.parquet \
+  --market-tail-provenance data/derived/trend_research/20260824/BTCUSDT/market_tail_provenance.json \
   --time-space-hypothesis config/research/time_space_shadow_hypothesis_v1.json \
   --trend-hypothesis config/research/trend_participation_hypothesis_v1.json \
   --reused-start 2026-01-01T00:00:00Z \
