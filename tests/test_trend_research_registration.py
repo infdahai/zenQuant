@@ -17,6 +17,7 @@ from zenquant.research.registration import (
     classify_evidence_role,
     derive_forward_start_ns,
     load_hypothesis_manifest,
+    validate_registration_receipts,
 )
 
 
@@ -32,7 +33,21 @@ def _manifest_payload() -> dict[str, object]:
         "active_signal_source": "BINANCE_SPOT_BTCUSDT_1D",
         "reused_window": [1767225600000000000, 1787529600000000000],
         "source_requirements": [
-            {"id": "spot", "fallback": "NONE", "status": "REQUIRED"},
+            {
+                "id": "BINANCE_SPOT_BTCUSDT_1D",
+                "requirement": "REQUIRED",
+                "fallback": "NONE",
+            },
+            {
+                "id": "BINANCE_PERPETUAL_BTCUSDT_5M",
+                "requirement": "REQUIRED",
+                "fallback": "NONE",
+            },
+            {
+                "id": "BINANCE_PERPETUAL_BTCUSDT_FUNDING",
+                "requirement": "REQUIRED",
+                "fallback": "NONE",
+            },
         ],
         "fallback": "NONE",
         "seeds": [42, 123, 456, 789, 1024],
@@ -55,12 +70,59 @@ def test_canonical_sha256_is_stable_for_mapping_order() -> None:
 def test_forward_start_uses_later_receipt_plus_24h_and_ceil_4h() -> None:
     receipts = (_receipt(100), _receipt(200))
     expected = ((200 + DAY_NS + FOUR_HOURS_NS - 1) // FOUR_HOURS_NS) * FOUR_HOURS_NS
-    assert derive_forward_start_ns(receipts) == expected
+    assert (
+        derive_forward_start_ns(
+            receipts,
+            expected_manifest_sha256="a" * 64,
+            expected_remote_identity="example/repo",
+        )
+        == expected
+    )
 
 
 def test_forward_start_requires_exactly_two_receipts() -> None:
     with pytest.raises(RegistrationError, match="two trusted receipts"):
-        derive_forward_start_ns((_receipt(100),))
+        derive_forward_start_ns(
+            (_receipt(100),),
+            expected_manifest_sha256="a" * 64,
+            expected_remote_identity="example/repo",
+        )
+
+
+def test_receipts_bind_to_expected_manifest_and_remote_before_forward_start() -> None:
+    receipts = (_receipt(100), _receipt(200))
+    assert (
+        validate_registration_receipts(
+            receipts,
+            expected_manifest_sha256="a" * 64,
+            expected_remote_identity="example/repo",
+        )
+        == receipts
+    )
+
+
+@pytest.mark.parametrize(
+    ("manifest_sha256", "remote_identity", "message"),
+    [
+        ("c" * 64, "example/repo", "manifest hash mismatch"),
+        ("a" * 64, "other/repo", "remote identity mismatch"),
+    ],
+)
+def test_receipt_binding_rejects_manifest_or_remote_mismatch(
+    manifest_sha256: str, remote_identity: str, message: str
+) -> None:
+    receipt = RegistrationReceipt(manifest_sha256, "b" * 40, remote_identity, 100)
+    with pytest.raises(RegistrationError, match=message):
+        validate_registration_receipts(
+            (receipt,),
+            expected_manifest_sha256="a" * 64,
+            expected_remote_identity="example/repo",
+        )
+
+
+def test_forward_start_requires_receipt_binding() -> None:
+    with pytest.raises(RegistrationError, match="receipt binding is required"):
+        derive_forward_start_ns((_receipt(100), _receipt(200)))
 
 
 def test_backfilled_old_event_remains_reused() -> None:
@@ -74,6 +136,13 @@ def test_pre_reused_window_is_discovery_only() -> None:
     assert (
         classify_evidence_role(49, reused_start_ns=50, reused_end_ns=100, forward_start_ns=120)
         is EvidenceRole.DISCOVERY_ONLY
+    )
+
+
+def test_reused_end_starts_excluded_embargo() -> None:
+    assert (
+        classify_evidence_role(100, reused_start_ns=50, reused_end_ns=100, forward_start_ns=120)
+        is EvidenceRole.EXCLUDED_EMBARGO
     )
 
 
@@ -116,4 +185,47 @@ def test_manifest_loader_rejects_noncanonical_sha_strings(tmp_path: Path) -> Non
     payload = _manifest_payload()
     payload["formula_sha256"] = "A" * 64
     with pytest.raises(RegistrationError, match="canonical SHA-256"):
+        load_hypothesis_manifest(_write_manifest(tmp_path, payload))
+
+
+@pytest.mark.parametrize(
+    "missing_id",
+    [
+        "BINANCE_SPOT_BTCUSDT_1D",
+        "BINANCE_PERPETUAL_BTCUSDT_5M",
+        "BINANCE_PERPETUAL_BTCUSDT_FUNDING",
+    ],
+)
+def test_manifest_loader_rejects_missing_required_source(tmp_path: Path, missing_id: str) -> None:
+    payload = _manifest_payload()
+    payload["source_requirements"] = [source for source in payload["source_requirements"] if source["id"] != missing_id]
+    with pytest.raises(RegistrationError, match="mandatory source"):
+        load_hypothesis_manifest(_write_manifest(tmp_path, payload))
+
+
+def test_manifest_loader_rejects_optional_source(tmp_path: Path) -> None:
+    payload = _manifest_payload()
+    payload["source_requirements"][0]["requirement"] = "OPTIONAL"
+    with pytest.raises(RegistrationError, match="requirement must be REQUIRED"):
+        load_hypothesis_manifest(_write_manifest(tmp_path, payload))
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        lambda sources: sources[0].update(extra="not-allowed"),
+        lambda sources: sources[0].pop("fallback"),
+        lambda sources: sources.append(
+            {
+                "id": "UNKNOWN_SOURCE",
+                "requirement": "REQUIRED",
+                "fallback": "NONE",
+            }
+        ),
+    ],
+)
+def test_manifest_loader_rejects_unknown_or_malformed_source(tmp_path: Path, mutation) -> None:
+    payload = _manifest_payload()
+    mutation(payload["source_requirements"])
+    with pytest.raises(RegistrationError, match="source"):
         load_hypothesis_manifest(_write_manifest(tmp_path, payload))

@@ -22,6 +22,11 @@ FOUR_HOURS_NS = 14_400_000_000_000
 REUSED_START_NS = 1_767_225_600_000_000_000
 REUSED_END_NS = 1_787_529_600_000_000_000
 EXPECTED_SEEDS = (42, 123, 456, 789, 1024)
+REQUIRED_SOURCE_IDS = (
+    "BINANCE_SPOT_BTCUSDT_1D",
+    "BINANCE_PERPETUAL_BTCUSDT_5M",
+    "BINANCE_PERPETUAL_BTCUSDT_FUNDING",
+)
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 
 
@@ -34,6 +39,7 @@ class EvidenceRole(StrEnum):
 
     DISCOVERY_ONLY = "DISCOVERY_ONLY"
     TEST_REUSED_DIAGNOSTIC = "TEST_REUSED_DIAGNOSTIC"
+    EXCLUDED_EMBARGO = "EXCLUDED_EMBARGO"
     FORWARD_CONFIRMATION = "FORWARD_CONFIRMATION"
 
 
@@ -45,6 +51,14 @@ class RegistrationReceipt:
     commit_sha: str
     remote_identity: str
     received_at_ns: int
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.manifest_sha256, str) or not _SHA256_RE.fullmatch(self.manifest_sha256):
+            raise RegistrationError("receipt manifest hash is not canonical SHA-256")
+        if not isinstance(self.remote_identity, str) or not self.remote_identity:
+            raise RegistrationError("receipt remote identity is required")
+        if isinstance(self.received_at_ns, bool) or not isinstance(self.received_at_ns, int) or self.received_at_ns < 0:
+            raise RegistrationError("receipt timestamp must be a non-negative integer")
 
 
 @dataclass(frozen=True, slots=True)
@@ -94,6 +108,7 @@ _ALLOWED_MANIFEST_KEYS = frozenset(
         "source_set_sha256",
     }
 )
+_SOURCE_KEYS = frozenset({"id", "requirement", "fallback"})
 
 
 def canonical_sha256(payload: Mapping[str, Any]) -> str:
@@ -209,8 +224,24 @@ def load_hypothesis_manifest(path: Path) -> HypothesisManifest:
         raise RegistrationError("source_requirements must be a non-empty list")
     if any(not isinstance(item, dict) for item in source_requirements):
         raise RegistrationError("source_requirements entries must be objects")
-    if any(item.get("fallback", item.get("fallback_id")) != "NONE" for item in source_requirements):
-        raise RegistrationError("source requirement fallback must be NONE")
+    source_ids: list[str] = []
+    for item in source_requirements:
+        if set(item) != _SOURCE_KEYS:
+            raise RegistrationError("source schema keys must be exactly id, requirement, fallback")
+        source_id = item["id"]
+        if not isinstance(source_id, str) or source_id not in REQUIRED_SOURCE_IDS:
+            raise RegistrationError("unknown source requirement id")
+        if source_id in source_ids:
+            raise RegistrationError("duplicate source requirement id")
+        source_ids.append(source_id)
+        if item["requirement"] != "REQUIRED":
+            raise RegistrationError("source requirement must be REQUIRED")
+        if item["fallback"] != "NONE":
+            raise RegistrationError("source requirement fallback must be NONE")
+    missing_sources = set(REQUIRED_SOURCE_IDS) - set(source_ids)
+    if missing_sources:
+        missing = ", ".join(sorted(missing_sources))
+        raise RegistrationError(f"mandatory source inputs missing: {missing}")
 
     manifest_sha256 = canonical_sha256(payload)
     frozen_payload = _freeze(payload)
@@ -231,12 +262,47 @@ def load_hypothesis_manifest(path: Path) -> HypothesisManifest:
     )
 
 
-def derive_forward_start_ns(receipts: Sequence[RegistrationReceipt]) -> int:
+def validate_registration_receipts(
+    receipts: Sequence[RegistrationReceipt],
+    *,
+    expected_manifest_sha256: str,
+    expected_remote_identity: str,
+) -> tuple[RegistrationReceipt, ...]:
+    """Bind trusted receipts to one manifest and one remote identity."""
+
+    if not isinstance(expected_manifest_sha256, str) or not _SHA256_RE.fullmatch(expected_manifest_sha256):
+        raise RegistrationError("expected manifest hash is not canonical SHA-256")
+    if not isinstance(expected_remote_identity, str) or not expected_remote_identity:
+        raise RegistrationError("expected remote identity is required")
+    bound = tuple(receipts)
+    for receipt in bound:
+        if not isinstance(receipt, RegistrationReceipt):
+            raise RegistrationError("registration receipt has an invalid type")
+        if receipt.manifest_sha256 != expected_manifest_sha256:
+            raise RegistrationError("receipt manifest hash mismatch")
+        if receipt.remote_identity != expected_remote_identity:
+            raise RegistrationError("receipt remote identity mismatch")
+    return bound
+
+
+def derive_forward_start_ns(
+    receipts: Sequence[RegistrationReceipt],
+    *,
+    expected_manifest_sha256: str | None = None,
+    expected_remote_identity: str | None = None,
+) -> int:
     """Return the first confirmed 4h cutoff after trusted registration + 24h."""
 
+    if expected_manifest_sha256 is None or expected_remote_identity is None:
+        raise RegistrationError("receipt binding is required before deriving forward start")
     if len(receipts) != 2:
         raise RegistrationError("two trusted receipts are required")
-    candidate = max(item.received_at_ns for item in receipts) + DAY_NS
+    bound_receipts = validate_registration_receipts(
+        receipts,
+        expected_manifest_sha256=expected_manifest_sha256,
+        expected_remote_identity=expected_remote_identity,
+    )
+    candidate = max(item.received_at_ns for item in bound_receipts) + DAY_NS
     return ((candidate + FOUR_HOURS_NS - 1) // FOUR_HOURS_NS) * FOUR_HOURS_NS
 
 
@@ -255,6 +321,8 @@ def classify_evidence_role(
         raise RegistrationError("evidence windows must be ordered")
     if event_cutoff_ns < reused_start_ns:
         return EvidenceRole.DISCOVERY_ONLY
-    if event_cutoff_ns < forward_start_ns:
+    if event_cutoff_ns < reused_end_ns:
         return EvidenceRole.TEST_REUSED_DIAGNOSTIC
+    if event_cutoff_ns < forward_start_ns:
+        return EvidenceRole.EXCLUDED_EMBARGO
     return EvidenceRole.FORWARD_CONFIRMATION
