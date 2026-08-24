@@ -49,6 +49,7 @@ _BOOTSTRAP_REGISTRATIONS = MappingProxyType(
         ),
     }
 )
+_ALLOWED_REGISTRATION_SELECTIONS = frozenset(_BOOTSTRAP_REGISTRATIONS.values())
 
 
 class RegistrationError(ValueError):
@@ -157,6 +158,23 @@ def resolve_bootstrap_registration(branch_name: str) -> tuple[str, str]:
         return _BOOTSTRAP_REGISTRATIONS[branch_name]
     except KeyError as exc:
         raise RegistrationError("unmapped bootstrap branch") from exc
+
+
+def validate_registration_selection(manifest_kind: str, manifest_path: str) -> tuple[str, str]:
+    """Allow only the four immutable kind/path registrations."""
+
+    selection = (manifest_kind, manifest_path)
+    if selection not in _ALLOWED_REGISTRATION_SELECTIONS:
+        raise RegistrationError("unsupported registration manifest")
+    return selection
+
+
+def resolve_manual_registration(github_ref: str, manifest_kind: str, manifest_path: str) -> tuple[str, str]:
+    """Resolve a post-merge manual registration from the default branch only."""
+
+    if github_ref != "refs/heads/main":
+        raise RegistrationError("manual registration requires refs/heads/main")
+    return validate_registration_selection(manifest_kind, manifest_path)
 
 
 def iso8601_to_ns(value: str) -> int:

@@ -20,6 +20,7 @@ from zenquant.research.registration import (
     derive_forward_start_ns,
     load_hypothesis_manifest,
     resolve_bootstrap_registration,
+    resolve_manual_registration,
     validate_registration_receipts,
     verify_github_receipt,
 )
@@ -131,6 +132,44 @@ def test_bootstrap_branch_selects_its_exact_registration_manifest(
 def test_bootstrap_branch_rejects_arbitrary_ref_or_path_selection() -> None:
     with pytest.raises(RegistrationError, match="unmapped bootstrap branch"):
         resolve_bootstrap_registration("codex/late-dev-cost-attribution")
+
+
+@pytest.mark.parametrize(
+    ("manifest_kind", "manifest_path"),
+    [
+        ("hypothesis", "config/research/time_space_shadow_hypothesis_v1.json"),
+        ("hypothesis", "config/research/trend_participation_hypothesis_v1.json"),
+        ("execution", "config/research/registrations/time_space_shadow_execution_v1.json"),
+        ("execution", "config/research/registrations/trend_participation_execution_v1.json"),
+    ],
+)
+def test_manual_main_dispatch_accepts_only_exact_registration_pairs(manifest_kind: str, manifest_path: str) -> None:
+    assert resolve_manual_registration("refs/heads/main", manifest_kind, manifest_path) == (
+        manifest_kind,
+        manifest_path,
+    )
+
+
+@pytest.mark.parametrize(
+    ("manifest_kind", "manifest_path"),
+    [
+        ("execution", "config/research/time_space_shadow_hypothesis_v1.json"),
+        ("hypothesis", "config/research/registrations/time_space_shadow_execution_v1.json"),
+        ("hypothesis", "config/research/legacy_accounting_rerun_v1.json"),
+    ],
+)
+def test_manual_main_dispatch_rejects_mismatched_or_other_tracked_paths(manifest_kind: str, manifest_path: str) -> None:
+    with pytest.raises(RegistrationError, match="unsupported registration manifest"):
+        resolve_manual_registration("refs/heads/main", manifest_kind, manifest_path)
+
+
+def test_manual_dispatch_rejects_any_non_main_ref() -> None:
+    with pytest.raises(RegistrationError, match="requires refs/heads/main"):
+        resolve_manual_registration(
+            "refs/heads/codex/late-dev-cost-attribution",
+            "hypothesis",
+            "config/research/time_space_shadow_hypothesis_v1.json",
+        )
 
 
 def test_workflow_triggers_only_the_four_bootstrap_push_refs_and_dispatch() -> None:

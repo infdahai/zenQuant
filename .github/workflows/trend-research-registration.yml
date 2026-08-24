@@ -60,8 +60,20 @@ jobs:
           PY
               ;;
             workflow_dispatch)
-              case "$INPUT_MANIFEST_PATH" in *$'\n'*|*$'\r'*) exit 1 ;; esac
-              printf 'MANIFEST_KIND=%s\nMANIFEST_PATH=%s\n' "$INPUT_MANIFEST_KIND" "$INPUT_MANIFEST_PATH" >> "$GITHUB_ENV"
+              python - <<'PY'
+          import os
+          from pathlib import Path
+
+          from zenquant.research.registration import resolve_manual_registration
+
+          manifest_kind, manifest_path = resolve_manual_registration(
+              os.environ["GITHUB_REF"],
+              os.environ["INPUT_MANIFEST_KIND"],
+              os.environ["INPUT_MANIFEST_PATH"],
+          )
+          with Path(os.environ["GITHUB_ENV"]).open("a", encoding="utf-8") as github_env:
+              github_env.write(f"MANIFEST_KIND={manifest_kind}\nMANIFEST_PATH={manifest_path}\n")
+          PY
               ;;
             *) exit 1 ;;
           esac
@@ -70,15 +82,13 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          case "$MANIFEST_KIND" in
-            hypothesis)
-              case "$MANIFEST_PATH" in config/research/*_hypothesis_v1.json) ;; *) exit 1 ;; esac
-              ;;
-            execution)
-              case "$MANIFEST_PATH" in config/research/registrations/*_execution_v1.json) ;; *) exit 1 ;; esac
-              ;;
-            *) exit 1 ;;
-          esac
+          python - <<'PY'
+          import os
+
+          from zenquant.research.registration import validate_registration_selection
+
+          validate_registration_selection(os.environ["MANIFEST_KIND"], os.environ["MANIFEST_PATH"])
+          PY
           test -f "$MANIFEST_PATH"
           git ls-files --error-unmatch -- "$MANIFEST_PATH"
           git cat-file -e "$GITHUB_SHA:$MANIFEST_PATH"
