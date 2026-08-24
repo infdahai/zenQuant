@@ -4,6 +4,7 @@ import importlib.util
 from pathlib import Path
 
 import pandas as pd
+import pytest
 
 
 def _load_converter():
@@ -91,3 +92,67 @@ def test_csv_to_parquet_deduplicates_overlapping_open_interest_rows(tmp_path: Pa
     result = pd.read_parquet(output_dir / "data.parquet")
     assert rows == 1
     assert result["ts_ns"].tolist() == [1_777_507_200_000_000_000]
+
+
+def test_spot_daily_converter_uses_strict_conflict_detection(tmp_path: Path) -> None:
+    source_dir = tmp_path / "source"
+    output_dir = tmp_path / "output"
+    source_dir.mkdir()
+    _write_kline_csv(
+        source_dir / "BTCUSDT-1d-2026-04.csv",
+        open_time_ms=1_777_507_200_000,
+        close_time_ms=1_777_593_599_999,
+    )
+    conflicting = source_dir / "BTCUSDT-1d-2026-04-30.csv"
+    _write_kline_csv(
+        conflicting,
+        open_time_ms=1_777_507_200_000,
+        close_time_ms=1_777_593_599_999,
+    )
+    conflicting.write_text(conflicting.read_text(encoding="utf-8").replace(",105,10,", ",106,10,"), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="conflicting duplicate"):
+        csv_to_parquet(
+            source_dir,
+            output_dir,
+            "klines",
+            source="binance_spot",
+            timeframe="1d",
+        )
+
+
+@pytest.mark.parametrize(
+    ("source", "timeframe"),
+    [("binance", "1d"), ("binance_spot", "4h")],
+)
+def test_non_spot_daily_converter_preserves_legacy_last_row_wins(
+    tmp_path: Path,
+    source: str,
+    timeframe: str,
+) -> None:
+    source_dir = tmp_path / "source"
+    output_dir = tmp_path / "output"
+    source_dir.mkdir()
+    _write_kline_csv(
+        source_dir / "first.csv",
+        open_time_ms=1_777_507_200_000,
+        close_time_ms=1_777_521_599_999,
+    )
+    second = source_dir / "second.csv"
+    _write_kline_csv(
+        second,
+        open_time_ms=1_777_507_200_000,
+        close_time_ms=1_777_521_599_999,
+    )
+    second.write_text(second.read_text(encoding="utf-8").replace(",105,10,", ",106,10,"), encoding="utf-8")
+
+    rows = csv_to_parquet(
+        source_dir,
+        output_dir,
+        "klines",
+        source=source,
+        timeframe=timeframe,
+    )
+
+    assert rows == 1
+    assert pd.read_parquet(output_dir / "data.parquet")["close"].tolist() == [106]

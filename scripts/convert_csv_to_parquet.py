@@ -5,6 +5,8 @@ from pathlib import Path
 
 import pandas as pd
 
+from zenquant.data.spot_daily import normalize_spot_daily_csvs
+
 
 def _normalize_exchange_timestamp(value: int | float) -> int:
     """Normalize exchange timestamps to milliseconds before ns conversion."""
@@ -14,13 +16,25 @@ def _normalize_exchange_timestamp(value: int | float) -> int:
     return parsed
 
 
-def csv_to_parquet(csv_dir: Path, output_dir: Path, data_type: str):
+def csv_to_parquet(
+    csv_dir: Path,
+    output_dir: Path,
+    data_type: str,
+    *,
+    source: str | None = None,
+    timeframe: str | None = None,
+):
     """Convert all CSV files in directory to Parquet."""
     csv_files = sorted(csv_dir.glob("*.csv"))
 
     if not csv_files:
         print(f"No CSV files found in {csv_dir}")
         return 0
+
+    if data_type == "klines" and source == "binance_spot" and timeframe == "1d":
+        result = normalize_spot_daily_csvs(csv_files, output_dir / "data.parquet")
+        print(f"  Saved {result.row_count} rows to {result.output_path}")
+        return result.row_count
 
     print(f"Converting {len(csv_files)} {data_type} files...")
 
@@ -148,7 +162,7 @@ def main():
     for tf in ["5m", "1h", "4h", "1d"]:
         csv_dir = base_dir / "klines" / symbol / tf
         if csv_dir.exists() and list(csv_dir.glob("*.csv")):
-            rows = csv_to_parquet(csv_dir, csv_dir, "klines")
+            rows = csv_to_parquet(csv_dir, csv_dir, "klines", source=args.source, timeframe=tf)
             total_rows += rows
 
     # Convert funding (futures only)
