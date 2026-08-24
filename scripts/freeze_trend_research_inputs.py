@@ -36,6 +36,7 @@ from zenquant.research.registration import (
     HypothesisManifest,
     canonical_sha256,
     load_hypothesis_manifest,
+    validate_execution_manifest_payload,
 )
 
 FIVE_MINUTES_NS: Final = 300_000_000_000
@@ -183,6 +184,10 @@ def build_execution_manifest(inputs: FreezeInputs) -> dict[str, Any]:
         "forward_checkpoint_rule": "later_trusted_receipt_plus_24h_ceil_confirmed_4h",
         "workspace_state": workspace_before,
     }
+    try:
+        validate_execution_manifest_payload(payload)
+    except ValueError as exc:
+        raise InputFreezeError(f"execution manifest contract violation: {exc}") from exc
     forbidden = _FORBIDDEN_EXECUTION_KEYS.intersection(_all_keys(payload))
     if forbidden:
         raise InputFreezeError(f"execution manifest contains forbidden result fields: {sorted(forbidden)}")
