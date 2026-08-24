@@ -175,13 +175,20 @@ def _read_daily_csv(path: Path) -> pd.DataFrame:
     if frame[non_price_columns].isna().any().any():
         raise SpotDailyError(f"spot daily CSV {path.name} contains non-numeric values")
 
-    frame["open_time_ns"] = frame["open_time"].map(_exchange_timestamp_to_ns)
-    raw_close_ns = frame["close_time"].map(_exchange_timestamp_to_ns)
+    parsed_open = frame["open_time"].map(_exchange_timestamp_to_ns_and_unit)
+    parsed_close = frame["close_time"].map(_exchange_timestamp_to_ns_and_unit)
+    frame["open_time_ns"] = parsed_open.map(lambda item: item[0])
+    open_units_ns = parsed_open.map(lambda item: item[1])
+    raw_close_ns = parsed_close.map(lambda item: item[0])
+    close_units_ns = parsed_close.map(lambda item: item[1])
+    if not open_units_ns.equals(close_units_ns):
+        raise SpotDailyError(f"spot daily CSV {path.name} contains mixed timestamp units")
     if any(value % DAY_NS for value in frame["open_time_ns"]):
         raise SpotDailyError(f"spot daily CSV {path.name} open_time is not a UTC day")
     expected_end = frame["open_time_ns"] + DAY_NS
-    if not ((raw_close_ns >= frame["open_time_ns"]) & (raw_close_ns < expected_end)).all():
-        raise SpotDailyError(f"spot daily CSV {path.name} close_time is outside its UTC daily candle")
+    expected_raw_close_ns = expected_end - open_units_ns
+    if not raw_close_ns.equals(expected_raw_close_ns):
+        raise SpotDailyError(f"spot daily CSV {path.name} close_time must be the exact daily close")
     frame["close_time_ns"] = expected_end - 1
 
     for row_index, row in frame.iterrows():
@@ -207,14 +214,15 @@ def _rows_equal(left: pd.Series, right: pd.Series) -> bool:
     return all(left[column] == right[column] for column in _VALUE_COLUMNS)
 
 
-def _exchange_timestamp_to_ns(value: object) -> int:
+def _exchange_timestamp_to_ns_and_unit(value: object) -> tuple[int, int]:
     numeric = float(value)
     if not math.isfinite(numeric) or not numeric.is_integer():
         raise SpotDailyError("exchange timestamp must be a finite integer")
     parsed = int(numeric)
-    if parsed < 1_000_000_000_000:
+    if parsed < 1_000_000_000_000 or parsed >= 1_000_000_000_000_000_000:
         raise SpotDailyError("exchange timestamp must use milliseconds or microseconds")
-    return parsed * (1_000 if parsed >= 1_000_000_000_000_000 else 1_000_000)
+    unit_ns = 1_000 if parsed >= 1_000_000_000_000_000 else 1_000_000
+    return parsed * unit_ns, unit_ns
 
 
 def _temporary_sibling(output_path: Path) -> Path:

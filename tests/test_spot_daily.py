@@ -142,6 +142,73 @@ def test_normalization_rejects_non_utc_daily_open_and_out_of_candle_close(tmp_pa
         normalize_spot_daily_csvs((overlong,), tmp_path / "overlong.parquet")
 
 
+@pytest.mark.parametrize("source_unit_ns", [1_000_000, 1_000])
+def test_normalization_requires_exact_source_precision_daily_close(
+    tmp_path: Path,
+    source_unit_ns: int,
+) -> None:
+    source = tmp_path / f"daily-{source_unit_ns}.csv"
+    _write_daily_csv(
+        source,
+        open_time=START_NS // source_unit_ns,
+        close_time=(START_NS + DAY_NS) // source_unit_ns - 1,
+    )
+
+    result = normalize_spot_daily_csvs((source,), tmp_path / "data.parquet")
+
+    assert result.last_close_ns == START_NS + DAY_NS - 1
+
+
+@pytest.mark.parametrize("source_unit_ns", [1_000_000, 1_000])
+def test_normalization_rejects_truncated_intraday_candle(
+    tmp_path: Path,
+    source_unit_ns: int,
+) -> None:
+    source = tmp_path / f"truncated-{source_unit_ns}.csv"
+    _write_daily_csv(
+        source,
+        open_time=START_NS // source_unit_ns,
+        close_time=(START_NS + 3_600_000_000_000) // source_unit_ns - 1,
+    )
+
+    with pytest.raises(SpotDailyError, match="exact daily close"):
+        normalize_spot_daily_csvs((source,), tmp_path / "data.parquet")
+
+
+def test_normalization_rejects_mixed_open_and_close_timestamp_units(tmp_path: Path) -> None:
+    source = tmp_path / "mixed-units.csv"
+    _write_daily_csv(
+        source,
+        open_time=START_NS // 1_000_000,
+        close_time=(START_NS + DAY_NS) // 1_000 - 1,
+    )
+
+    with pytest.raises(SpotDailyError, match="mixed timestamp units"):
+        normalize_spot_daily_csvs((source,), tmp_path / "data.parquet")
+
+
+def test_bad_overlap_does_not_replace_existing_normalized_output(tmp_path: Path) -> None:
+    existing = tmp_path / "data.parquet"
+    existing.write_bytes(b"trusted-existing-output")
+    exact = tmp_path / "exact.csv"
+    truncated = tmp_path / "truncated.csv"
+    _write_daily_csv(
+        exact,
+        open_time=START_NS // 1_000_000,
+        close_time=(START_NS + DAY_NS) // 1_000_000 - 1,
+    )
+    _write_daily_csv(
+        truncated,
+        open_time=START_NS // 1_000_000,
+        close_time=(START_NS + 3_600_000_000_000) // 1_000_000 - 1,
+    )
+
+    with pytest.raises(SpotDailyError, match="exact daily close"):
+        normalize_spot_daily_csvs((exact, truncated), existing)
+
+    assert existing.read_bytes() == b"trusted-existing-output"
+
+
 def test_audit_reports_missing_utc_days_and_duplicate_opens(tmp_path: Path) -> None:
     gapped = tmp_path / "gapped.parquet"
     _write_parquet(gapped, (START_NS, START_NS + 2 * DAY_NS))
