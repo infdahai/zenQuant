@@ -267,7 +267,9 @@ class DataReadinessStatusTests(unittest.TestCase):
         self.assertIn("--start 2026-01-01T00:00:00Z", runbook)
         self.assertIn("--end 2026-08-24T00:00:00Z", runbook)
         self.assertIn("--perp-5m data/derived/trend_research/20260824/BTCUSDT/5m/data.parquet", runbook)
+        self.assertIn("--perp-source data/raw/binance/klines/BTCUSDT/5m/data.parquet", runbook)
         self.assertIn("--funding data/derived/trend_research/20260824/BTCUSDT/funding/data.parquet", runbook)
+        self.assertIn("--funding-source data/raw/binance/funding/BTCUSDT/data.parquet", runbook)
         self.assertIn(
             "--market-tail-provenance data/derived/trend_research/20260824/BTCUSDT/market_tail_provenance.json",
             runbook,
@@ -288,7 +290,9 @@ class DataReadinessStatusTests(unittest.TestCase):
         self.assertIn("--output-dir config/research/registrations", plan)
         self.assertIn("scripts/prepare_trend_market_tail.py", plan)
         self.assertIn("--perp-5m data/derived/trend_research/20260824/BTCUSDT/5m/data.parquet", plan)
+        self.assertIn("--perp-source data/raw/binance/klines/BTCUSDT/5m/data.parquet", plan)
         self.assertIn("--funding data/derived/trend_research/20260824/BTCUSDT/funding/data.parquet", plan)
+        self.assertIn("--funding-source data/raw/binance/funding/BTCUSDT/data.parquet", plan)
         self.assertIn("--market-tail-provenance", plan)
 
     def test_build_payload_marks_partial_and_blocked_states(self) -> None:

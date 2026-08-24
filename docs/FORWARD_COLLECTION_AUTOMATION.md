@@ -134,10 +134,14 @@ existing `5m`, `1h`, or `4h` Parquet files used by other research paths.
 
 The market-tail preparer likewise never rewrites either shared canonical Parquet. It crops them into the exact frozen
 window, fills only missing fixed-window 5m bars or funding anchors from Binance REST, and publishes isolated `5m` and
-`funding` outputs together with `market_tail_provenance.json`. Every REST request and response page is digested.
+`funding` outputs together with `market_tail_provenance.json`. Every exact REST request, raw response page, inserted
+event list, and digest is retained so the freezer can rebuild the derived frames without network access. Retryable
+timeouts, HTTP 429, and HTTP 5xx responses use a bounded deterministic retry schedule; malformed payloads fail closed.
 Funding provider timestamps are retained as `raw_funding_time_ns` and canonicalized to an 8h
 `funding_time_ns` anchor only when they fall in `[anchor, anchor + 60 seconds]`; gaps, duplicates, non-finite values,
 bad candles, and later timestamps fail closed. Existing isolated `1d` bytes are preserved if already present.
+The provenance file is the publication commit marker. If a process stops before that marker appears, the next run
+removes only files described by the validated transaction marker; it refuses unknown or modified orphan contents.
 
 The execution freeze binds both normalized bytes and every raw Binance CSV as provenance. The following zsh-safe
 array uses C-locale filename order, expands each regular raw archive into the repeatable `--spot-raw` argument required
@@ -157,7 +161,9 @@ uv run python scripts/freeze_trend_research_inputs.py \
   --spot-1d data/derived/trend_research/20260824/BTCUSDT/1d/data.parquet \
   "${trend_spot_raw_args[@]}" \
   --perp-5m data/derived/trend_research/20260824/BTCUSDT/5m/data.parquet \
+  --perp-source data/raw/binance/klines/BTCUSDT/5m/data.parquet \
   --funding data/derived/trend_research/20260824/BTCUSDT/funding/data.parquet \
+  --funding-source data/raw/binance/funding/BTCUSDT/data.parquet \
   --market-tail-provenance data/derived/trend_research/20260824/BTCUSDT/market_tail_provenance.json \
   --time-space-hypothesis config/research/time_space_shadow_hypothesis_v1.json \
   --trend-hypothesis config/research/trend_participation_hypothesis_v1.json \

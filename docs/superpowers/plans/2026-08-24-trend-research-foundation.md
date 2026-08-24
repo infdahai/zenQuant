@@ -467,7 +467,10 @@ uv run python scripts/prepare_trend_market_tail.py \
 
 Funding source timestamps in `[anchor, anchor + 60 seconds]` map to the exact 8h anchor, with the provider timestamp
 retained separately. Anything later, any duplicate/gap, an incomplete 5m grid, or a provenance mismatch is a hard
-blocker.
+blocker. Provenance retains each exact REST query, raw response page, inserted-event list, and digest; execution freeze
+replays that lineage offline and compares exact schemas, dtypes, counts, source identities, output bytes, and repository
+HEAD. `market_tail_provenance.json` is the sole observable commit boundary, with a validated transaction marker used
+only to recover interrupted pre-commit publication.
 
 ```zsh
 export LC_ALL=C
@@ -483,7 +486,9 @@ uv run python scripts/freeze_trend_research_inputs.py \
   --spot-1d data/derived/trend_research/20260824/BTCUSDT/1d/data.parquet \
   "${trend_spot_raw_args[@]}" \
   --perp-5m data/derived/trend_research/20260824/BTCUSDT/5m/data.parquet \
+  --perp-source data/raw/binance/klines/BTCUSDT/5m/data.parquet \
   --funding data/derived/trend_research/20260824/BTCUSDT/funding/data.parquet \
+  --funding-source data/raw/binance/funding/BTCUSDT/data.parquet \
   --market-tail-provenance data/derived/trend_research/20260824/BTCUSDT/market_tail_provenance.json \
   --time-space-hypothesis config/research/time_space_shadow_hypothesis_v1.json \
   --trend-hypothesis config/research/trend_participation_hypothesis_v1.json \
