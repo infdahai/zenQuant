@@ -165,6 +165,16 @@ def test_manifest_loader_returns_frozen_identity_and_common_contract(tmp_path: P
     assert len(manifest.sha256) == 64
 
 
+@pytest.mark.parametrize("name", ["time_space_shadow", "trend_participation"])
+def test_checked_in_hypothesis_freezes_window_sources_and_search_policy(name: str) -> None:
+    manifest = load_hypothesis_manifest(Path(f"config/research/{name}_hypothesis_v1.json"))
+    assert manifest.reused_start_ns == 1767225600000000000
+    assert manifest.reused_end_ns == 1787529600000000000
+    assert manifest.training is False
+    assert manifest.parameter_search is False
+    assert manifest.seeds == (42, 123, 456, 789, 1024)
+
+
 @pytest.mark.parametrize(
     ("mutation", "message"),
     [
