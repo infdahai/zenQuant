@@ -65,6 +65,12 @@ rust/target/debug/options-workbench \
 | `hypothetical_balances`, `risk_policy` | 各钱包的明确币种现金，以及 per-intent/global/tail/window 预算 |
 | `source_identities`, `fixture_name` | 来源标签/摘要；真实 panel 的 fixture name 必须 null |
 
+现金使用 `template_id="cash"`、`template_version="v1"`、`legs=[]`、`exit_policy="expiry_only"`，可从完整请求经 decode/load 和实际 CLI 生成报告。沿用显式预算、非空情景和概率规则；不产生利息。其他模板的空 legs 是无效输入；未知现金版本（包括 `"1"`）保留为 `UNSUPPORTED`，不会别名匹配到 v1。
+
+`AnalysisInput` 可公开构造或反序列化，因此本身不是准入证明。公开 `analyze_expression`、`certify_vertical` 和报告 `render` 都强制重新验证完整观点历史、实际选中观点、scenario view hash/知识时钟、非空情景、规格/候选绑定和准入数值规则。候选参数必须完整匹配 `input.requests` 中的一项。无效结构返回 `INVALID` 和固定类型的 `INPUT_ADMISSION_*` 原因，没有资金化结果/净收益/有效证书；报告直接返回 typed error，CLI 在发布前拒绝。缺失或较晚的报价费用/规格知识仍保留证据，由成本与模型判断 `NOT_EVALUABLE`，不会视作零费用。
+
+批量库调用可用 `inputs::ValidatedAnalysis::new(&input)?`，再调用句柄上的同名分析方法；只读借用阻止验证后的修改，报告每次只做一次全输入准入。改变观点必须同时更新历史和 scenario 的观点哈希；改变候选必须更新 admitted requests。adapter 添加的 `gaps` 是诊断注释，不要求与 loader 重建的 gaps 逐字相同，也不能提升账户或执行权限。输入字段和报告身份结构保持原样；新源码会正常改变 code source hash。
+
 Panel schema 是 `options-workbench-panel.rust.v1`，exporter 是 `options-workbench-exporter.rust.v1`，字段为 `raw_source_integrity`、`projection_trust`、`pinned_sources`、`projection_sha256`、`quotes`、`gaps`。报告 schema 是 `options-workbench-report.rust.v1`。
 
 新数学方法 `exact_decimal.rust.v1` 用任意精度有理数计算。输入只有有限十进制字符串，最多 64 位有效数字、28 位小数，不接受指数。加减乘精确；除法只有能在最多 256 位小数内终止才成功。`1/8=.125`，`1/3` 返回数值限制；中间表示超过 1024 位也拒绝。不可表达的 break-even 不默默舍入。新 Python 导出只做无上下文舍入的十进制规范化，不承担 Rust 数学运行时职责。
