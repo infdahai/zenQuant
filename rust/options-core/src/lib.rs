@@ -2,6 +2,7 @@
 //! Pure native Rust diagnostic contracts. No network, filesystem, clock or execution APIs.
 pub mod canonical;
 pub mod codec;
+pub mod constraints;
 pub mod contracts;
 pub mod costs;
 pub mod decimal;
