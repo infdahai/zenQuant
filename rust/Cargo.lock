@@ -135,7 +135,10 @@ dependencies = [
 name = "options-workbench"
 version = "0.1.0"
 dependencies = [
+ "libc",
  "options-core",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
