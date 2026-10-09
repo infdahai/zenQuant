@@ -13,7 +13,7 @@ from zenquant.options.ledger import LedgerEvent, LedgerState, active_risk_native
 from zenquant.options.risk import RiskPolicy
 
 from . import panel as panel_module
-from .panel import PanelInput, _json, _ns, _payload
+from .panel import PanelInput, _json, _ns, _payload, canonical_input_hash, input_integrity
 
 _CONTEXT = Context(prec=50, rounding=ROUND_HALF_EVEN)
 _ZERO, _ONE = Decimal(0), Decimal(1)
@@ -303,12 +303,13 @@ def _hashes(panel):
 
     return {
         "code": fingerprint((code_hash(panel_module), sha256(Path(__file__).read_bytes()).hexdigest())),
-        "data": fingerprint(panel.identities),
+        "data": canonical_input_hash(panel),
+        "source_references": fingerprint(panel.identities),
         "contracts": code_hash(contracts),
         "ledger": code_hash(ledger),
         "cost": code_hash(costs),
         "risk": code_hash(risk),
-        "protocol": dict(panel.identities).get("preregistration", fingerprint(panel.protocol_json)),
+        "protocol": sha256(panel.protocol_json.encode("utf-8")).hexdigest(),
         "sealed_entries": panel.sealed_entries,
     }
 
@@ -386,7 +387,9 @@ def diagnostic_panel_report(*, panel: PanelInput, quantities_base: tuple[Decimal
             "engineering_bias": engineering_bias_report(panel=panel),
             "math_scenarios": [],
             "status": "DIAGNOSTIC_ONLY",
-            "input_integrity": "PINNED_BYTES_VERIFIED",
+            "input_integrity": input_integrity(panel),
+            "verification_binding": panel.verification,
+            "verification_note": "Local loader content binding; not exchange-signed authenticity or protection against malicious Python callers.",
             "account_eligibility": "NOT_EVALUABLE",
             "inverse_execution": "UNSUPPORTED",
         }
@@ -431,6 +434,8 @@ def engineering_bias_report(*, panel: PanelInput) -> dict:
             {
                 **_authority(),
                 "baseline_counts": baseline_counts,
+                "input_integrity": input_integrity(panel),
+                "data_hash": canonical_input_hash(panel),
                 "variants": variants,
                 "scope": "offline assumption transformations only; no opportunity ranking",
             }
