@@ -341,9 +341,10 @@ def main(argv: list[str] | None = None) -> int:
     try:
         output = args.output_dir.resolve()
         panel_root = args.panel_root.resolve() if args.panel_root is not None else None
-        if panel_root is not None and (
-            output == panel_root or output in panel_root.parents or panel_root in output.parents
-        ):
+        protected = tuple(Path(root).resolve() for root in panel_module._SEAL_PINS)
+        if panel_root is not None:
+            protected += (panel_root,)
+        if any(output == source or output in source.parents or source in output.parents for source in protected):
             raise ValueError("SOURCE_OUTPUT_OVERLAP")
         if output.exists() or args.output_dir.is_symlink():
             raise ValueError("OUTPUT_EXISTS")
