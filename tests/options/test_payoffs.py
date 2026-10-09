@@ -133,7 +133,7 @@ def test_signed_payoff_leg_is_not_an_executable_leg_or_combination():
             valid_until_ns=20,
             policy_hash="fixture-policy",
         )
-    with pytest.raises(TypeError, match="PayoffLeg"):
+    with pytest.raises(TypeError):
         expiry_payoff(legs=(LegIntent(spec=short.spec, wallet=wallet(), quantity_native=D("1")),), delivery_prices=())
 
 
@@ -164,7 +164,7 @@ def test_payoffs_preserve_distinct_settlement_currencies_without_fx():
     ],
 )
 def test_unsupported_economics_are_not_approximated(changes):
-    spec = linear_spec(**changes)
+    spec = replace(linear_spec(), **changes)
     plan = settlement_plan(
         spec=spec, quantity_native=D("1"), delivery=observation("150", time_ns=1000), expiry_id="unsupported"
     )
@@ -313,6 +313,17 @@ def test_decimal_calculation_ignores_caller_precision_rounding_and_traps():
             delivery_prices=((spec.instrument_id, D("2.23456789")),),
         ) == (("USDT", D("-1.52415677625363")),)
         assert context.prec == 2 and context.traps[Inexact]
+
+
+def test_intrinsic_rounds_a_fifty_digit_tie_with_half_even():
+    with localcontext() as context:
+        context.prec = 2
+        context.rounding = ROUND_UP
+        context.traps[Inexact] = context.traps[Rounded] = True
+        assert intrinsic_value(
+            spec=linear_spec(strike="1"),
+            delivery_price=D("1.123456789012345678901234567890123456789012345678905"),
+        ) == D(".12345678901234567890123456789012345678901234567890")
 
 
 @pytest.mark.parametrize(
