@@ -360,3 +360,15 @@ def test_sleeve_conflict_records_actual_fill_but_freezes_attribution():
     assert wallet_cash(state, wallet()) == D("960")
     assert state.positions[0].quantity_native == D("2")
     assert "SLEEVE_ATTRIBUTION_CONFLICT" in state.frozen_reasons
+
+
+def test_reused_order_across_intents_cannot_prove_fee_basis():
+    spec = linear_spec()
+    opening = fill_event(1, spec=spec, quantity="1", price="20")
+    state = apply_event(funded(), opening)
+    state = apply_event(state, fill_event(2, spec=spec, quantity="1", price="20", intent_id="i2"))
+    fee = replace(opening, key=key(3), kind="FEE", quantity_native=None, price=None, fee=D("2"))
+    state = apply_event(state, fee)
+    assert wallet_cash(state, wallet()) == D("958")
+    assert active_risk_native(state, wallet()) == D("40")
+    assert state.unapplied == (fee,)
