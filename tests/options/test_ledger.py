@@ -452,7 +452,12 @@ def test_full_fill_separate_fee_preserves_original_budget(amount, reasons, refer
     inline = apply_event(reserved, fill_event(2, spec=spec, quantity="1", price="10", fee="2"))
     opening = fill_event(2, spec=spec, quantity="1", price="10")
     fee = replace(
-        opening, key=key(3), kind="FEE", quantity_native=None, price=None, fee=D("2"),
+        opening,
+        key=key(3),
+        kind="FEE",
+        quantity_native=None,
+        price=None,
+        fee=D("2"),
         parent_id=opening.key.event_id if reference == "parent_only" else None,
         order_id=None if reference == "parent_only" else opening.order_id,
     )
@@ -483,8 +488,9 @@ def test_reused_completed_order_freezes_ambiguous_fee_budget_after_debit():
     opening = fill_event(2, spec=spec, quantity="1", price="10")
     state = apply_event(state, opening)
     state = apply_event(state, reserve(3, amount="100"))
-    fee = replace(opening, key=key(4), kind="FEE", quantity_native=None, price=None,
-                  fee=D("2"), parent_id=opening.key.event_id)
+    fee = replace(
+        opening, key=key(4), kind="FEE", quantity_native=None, price=None, fee=D("2"), parent_id=opening.key.event_id
+    )
     state = apply_event(state, fee)
     assert wallet_cash(state, wallet()) == D("988")
     assert state.positions[0].opening_fees_basis == ((wallet(), D("2")),)
@@ -497,8 +503,9 @@ def test_completed_order_foreign_fee_keeps_native_basis_without_currency_additio
     state = apply_event(funded(extra=(WalletBalance(wallet=fw, cash="1"),)), reserve(amount="10"))
     opening = fill_event(2, spec=spec, quantity="1", price="10", fee_wallet=fw)
     state = apply_event(state, opening)
-    fee = replace(opening, key=key(3), kind="FEE", quantity_native=None, price=None,
-                  fee=D(".01"), parent_id=opening.key.event_id)
+    fee = replace(
+        opening, key=key(3), kind="FEE", quantity_native=None, price=None, fee=D(".01"), parent_id=opening.key.event_id
+    )
     state = apply_event(state, fee)
     assert wallet_cash(state, wallet()) == D("990")
     assert wallet_cash(state, fw) == D(".99")

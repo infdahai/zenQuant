@@ -3,7 +3,6 @@
 import json
 from decimal import Decimal as D
 from hashlib import sha256
-from pathlib import Path
 
 import pytest
 
@@ -481,7 +480,7 @@ def test_local_panel_absence_is_skip_only_in_portable_mode(tmp_path, monkeypatch
             (root / "seal.json").write_bytes(data)
             monkeypatch.setitem(adapter._SEAL_PINS, root, sha256(data).hexdigest())
     outcome = pytest.fail.Exception if strict else pytest.skip.Exception
-    with pytest.raises(outcome, match="LOCAL_OPTIONS_PANEL_ABSENT.*verification NOT performed"):
+    with pytest.raises(outcome, match=r"LOCAL_OPTIONS_PANEL_ABSENT.*verification NOT performed"):
         require_local_options_panel(strict=strict)
 
 
@@ -497,11 +496,13 @@ def test_present_invalid_local_source_never_becomes_availability_skip(tmp_path, 
     root = tmp_path / invalid
     root.mkdir()
     payload = b'{"source":"fixture"}'
-    seal = json.dumps({"files": {"source.raw": {"bytes": len(payload), "sha256": sha256(payload).hexdigest()}}}).encode()
+    seal = json.dumps(
+        {"files": {"source.raw": {"bytes": len(payload), "sha256": sha256(payload).hexdigest()}}}
+    ).encode()
     monkeypatch.setitem(adapter._SEAL_PINS, root, sha256(seal).hexdigest())
     if fault != "missing_seal":
-        (root / "seal.json").write_bytes(b'{}' if fault == "tampered_seal" else seal)
+        (root / "seal.json").write_bytes(b"{}" if fault == "tampered_seal" else seal)
     if fault != "missing_entry":
-        (root / "source.raw").write_bytes(b'changed' if fault == "tampered_entry" else payload)
+        (root / "source.raw").write_bytes(b"changed" if fault == "tampered_entry" else payload)
     with pytest.raises((FileNotFoundError, adapter.PanelError)):
         require_local_options_panel(strict=strict)

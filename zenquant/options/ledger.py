@@ -532,9 +532,7 @@ def _opening_order_budget_error(state: LedgerState, event: LedgerEvent, order_id
         return "ORDER_ATTRIBUTION_MISMATCH"
     reserve_index, original = reserves[0]
     fills = tuple(
-        (index, r)
-        for index, r in applied
-        if r.kind == "FILL" and r.wallet == event.wallet and r.order_id == order_id
+        (index, r) for index, r in applied if r.kind == "FILL" and r.wallet == event.wallet and r.order_id == order_id
     )
     if any(index < reserve_index or r.intent_id != event.intent_id or r.quantity_native <= 0 for index, r in fills):
         return "ORDER_ATTRIBUTION_MISMATCH"

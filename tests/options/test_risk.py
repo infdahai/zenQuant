@@ -605,11 +605,20 @@ def test_unavailable_fee_policy_in_cost_is_not_zero():
 def test_full_fill_opening_fee_transport_has_same_next_approval(amount, reason, standalone):
     first = intent_for()
     state = apply_event(funded(), reserve(1, intent=first, amount=amount))
-    opening = fill_event(2, spec=linear_spec(), quantity="1", price="10", fee="0" if standalone else "2", sleeve=first.sleeve)
+    opening = fill_event(
+        2, spec=linear_spec(), quantity="1", price="10", fee="0" if standalone else "2", sleeve=first.sleeve
+    )
     state = apply_event(state, opening)
     if standalone:
-        fee = replace(opening, key=key(3), kind="FEE", quantity_native=None, price=None,
-                      fee=D("2"), parent_id=opening.key.event_id)
+        fee = replace(
+            opening,
+            key=key(3),
+            kind="FEE",
+            quantity_native=None,
+            price=None,
+            fee=D("2"),
+            parent_id=opening.key.event_id,
+        )
         state = apply_event(state, fee)
     second = intent_for(identity="i2")
     result = approve(intent=second, state=state)
