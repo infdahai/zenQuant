@@ -267,3 +267,6 @@ fn publish_internal(
     }
     Ok(())
 }
+#[cfg(test)]
+#[path = "publication_tests.rs"]
+mod tests;

@@ -222,3 +222,6 @@ fn verify_roots(
     }
     Ok(expected.into_values().collect())
 }
+#[cfg(test)]
+#[path = "io_tests.rs"]
+mod tests;
