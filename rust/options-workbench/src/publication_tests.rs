@@ -138,3 +138,53 @@ fn bounded_reader_rejects_limit_plus_one_symlinks_and_nonregular() {
     assert_eq!(read_bounded(&p, 4), Err(Failure::Invalid));
     fs::remove_dir_all(p).unwrap();
 }
+#[test]
+fn post_stage_parent_disappearance_or_symlink_is_incomplete() {
+    fn remove(out: &Path) {
+        let parent = out.parent().unwrap();
+        fs::rename(parent, parent.with_file_name("held")).unwrap();
+    }
+    fn replace(out: &Path) {
+        let parent = out.parent().unwrap();
+        fs::rename(parent, parent.with_file_name("held")).unwrap();
+        std::os::unix::fs::symlink(parent.with_file_name("held"), parent).unwrap();
+    }
+    for hook in [remove as fn(&Path), replace as fn(&Path)] {
+        let p = temp();
+        let parent = p.join("parent");
+        fs::create_dir(&parent).unwrap();
+        let target = crate::io::validate_output(&parent.join("report"), &[]).unwrap();
+        let error = publish_internal(
+            &target,
+            &artifacts(),
+            PublicationHooks {
+                before_rename: Some(hook),
+                ..Default::default()
+            },
+        );
+        assert_eq!(error, Err(Failure::Incomplete));
+        let entries: Vec<_> = fs::read_dir(p.join("held")).unwrap().collect();
+        assert_eq!(entries.len(), 1);
+        assert!(
+            entries[0]
+                .as_ref()
+                .unwrap()
+                .file_name()
+                .to_string_lossy()
+                .starts_with(".options-workbench-incomplete-")
+        );
+        assert!(!p.join("held/report").exists());
+        fs::remove_dir_all(p).unwrap();
+    }
+}
+#[test]
+fn target_prepare_rejects_original_parent_components() {
+    let p = temp();
+    fs::create_dir(p.join("child")).unwrap();
+    assert!(matches!(
+        PublicationTarget::prepare(p.join("child/../missing/report")),
+        Err(Failure::Invalid)
+    ));
+    assert!(!p.join("missing").exists());
+    fs::remove_dir_all(p).unwrap();
+}

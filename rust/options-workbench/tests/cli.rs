@@ -255,3 +255,70 @@ fn all_explicit_mathematical_fixtures_keep_null_performance() {
     }
     fs::remove_dir_all(p).unwrap();
 }
+#[test]
+fn candidate_heading_cannot_escape_into_markdown_image_or_link() {
+    let p = temp();
+    let mut request = options_core::inputs::decode_request(&fs::read(fixture()).unwrap()).unwrap();
+    request.candidates[0].request_id="safe\n\n![remote](https://example.invalid/pixel)\n\n[remote](https://example.invalid/link)\n\n".into();
+    let r = p.join("request");
+    fs::write(&r, serde_json::to_vec(&request).unwrap()).unwrap();
+    let out = p.join("out");
+    assert!(run(&r, &out).status.success());
+    let md = fs::read_to_string(out.join("REPORT.md")).unwrap();
+    let heading = md
+        .split("<h2>Candidate: ")
+        .nth(1)
+        .unwrap()
+        .split("</h2>")
+        .next()
+        .unwrap();
+    assert!(!heading.contains('\n'));
+    assert!(heading.contains("&#10;"));
+    assert!(!md.contains("\n\n![remote]"));
+    assert!(!md.contains("\n\n[remote]"));
+    fs::remove_dir_all(p).unwrap();
+}
+#[test]
+fn original_parent_traversal_paths_are_rejected_before_io_or_output_creation() {
+    use std::os::unix::fs::symlink;
+    let p = temp();
+    fs::create_dir_all(p.join("elsewhere/deep")).unwrap();
+    symlink(p.join("elsewhere/deep"), p.join("link")).unwrap();
+    let r = p.join("request");
+    fs::write(&r, fs::read(fixture()).unwrap()).unwrap();
+    for out in [
+        p.join("link/../unexpected"),
+        p.join("elsewhere/../unexpected"),
+    ] {
+        assert_eq!(run(&r, &out).status.code(), Some(2));
+        assert!(!p.join("unexpected").exists());
+        assert!(!p.join("elsewhere/unexpected").exists());
+    }
+    for req in [p.join("link/../request"), p.join("elsewhere/../request")] {
+        assert_eq!(run(&req, &p.join("missing/out")).status.code(), Some(2));
+        assert!(!p.join("missing").exists());
+    }
+    assert_eq!(
+        options_workbench::publication::read_bounded(&p.join("link/../request"), 1024 * 1024),
+        Err(options_workbench::publication::Failure::Invalid)
+    );
+    let badpanel = p.join("elsewhere/../panel");
+    fs::write(p.join("panel"), b"{}").unwrap();
+    let o = Command::new(env!("CARGO_BIN_EXE_options-workbench"))
+        .arg("--request-file")
+        .arg(&r)
+        .arg("--output-dir")
+        .arg(p.join("missing/out"))
+        .arg("--panel-file")
+        .arg(badpanel)
+        .output()
+        .unwrap();
+    assert_eq!(o.status.code(), Some(2));
+    assert!(!p.join("missing").exists());
+    assert_eq!(
+        options_workbench::publication::read_bounded(&p.join("elsewhere/../request"), 1024 * 1024),
+        Err(options_workbench::publication::Failure::Invalid)
+    );
+    assert!(options_workbench::io::validate_output(&p.join("link/../unexpected"), &[]).is_err());
+    fs::remove_dir_all(p).unwrap();
+}
