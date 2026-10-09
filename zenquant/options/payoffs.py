@@ -19,7 +19,6 @@ from .contracts import (
     _tuple,
     base_quantity,
     fingerprint,
-    validate_quantity,
 )
 
 
@@ -106,9 +105,10 @@ def settlement_plan(
     support = _support_status(spec)
     if support is not None:
         return failure(support.status, support.reason)
-    quantity_status = validate_quantity(spec, quantity_native)
-    if quantity_status.status != "VALID":
-        return failure(quantity_status.status, quantity_status.reason)
+    try:
+        quantity = _decimal(quantity_native, "quantity_native", positive=True)
+    except (TypeError, ValueError):
+        return failure("INVALID", "actual settlement quantity must be positive and finite")
     if delivery is None:
         return failure("NOT_EVALUABLE", "final delivery fixing is missing")
     if delivery.source_ns < spec.expiry_ns:
@@ -118,7 +118,6 @@ def settlement_plan(
     if delivery.value < 0:
         return failure("INVALID", "delivery price must be nonnegative")
 
-    quantity = _decimal(quantity_native, "quantity_native", positive=True)
     link_id = fingerprint((spec, quantity, delivery, expiry_id))
 
     def action(
@@ -136,7 +135,7 @@ def settlement_plan(
 
     with localcontext(Context(prec=50, rounding=ROUND_HALF_EVEN)):
         intrinsic = intrinsic_value(spec=spec, delivery_price=delivery.value)
-        q_base = base_quantity(spec, quantity)
+        q_base = quantity * spec.multiplier
         amount = _decimal(intrinsic * q_base, "settlement_amount", nonnegative=True)
         if intrinsic == 0:
             actions = (action("EXPIRY"),)
