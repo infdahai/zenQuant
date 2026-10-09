@@ -193,3 +193,64 @@ fn normalized_panel_keeps_identity_and_unverified_projection() {
     );
     assert!(a.gaps.iter().any(|g| g.status == Status::Unverified));
 }
+#[test]
+fn source_clock_lead_is_retained_for_cost_tolerance() {
+    for source_ns in [11, 20] {
+        let mut r = request();
+        r.quotes[0].timing.minimum_source_age_ns = -2;
+        r.risk_policy.fx_timing = Some(TimingPolicy {
+            max_age_ns: 100,
+            minimum_source_age_ns: -2,
+        });
+        r.quotes[0].book.source_ns = source_ns;
+        r.quotes[0].index_in_quote.as_mut().unwrap().source_ns = source_ns;
+        r.quotes[0].quote_to_report.as_mut().unwrap().source_ns = source_ns;
+        let hash = r.candidates[0].legs[0].instrument.spec_hash.clone();
+        let a = inputs::load_analysis(r)
+            .expect("lead is structurally retained, cost applies tolerance");
+        assert_eq!(
+            inputs::select_quote(&a.quotes, &hash, 10)
+                .unwrap()
+                .unwrap()
+                .book
+                .source_ns,
+            source_ns
+        );
+    }
+    let mut r = request();
+    r.quotes[0].timing.minimum_source_age_ns = 101;
+    r.quotes[0].timing.max_age_ns = 100;
+    assert!(inputs::load_analysis(r).is_err());
+}
+#[test]
+fn panel_descriptor_matches_exact_version_in_either_order() {
+    for reversed in [false, true] {
+        let mut p = panel();
+        p.quotes[0].book.spec.provenance = Provenance::SealedProxy;
+        p.quotes[0].book.spec.exercise_style = ExerciseStyle::Unknown;
+        p.quotes[0].book.spec.settlement_rule = SettlementRule::Unknown;
+        let mut newer = p.quotes[0].clone();
+        newer.quote_id = "second_version".into();
+        newer.book.spec.rule_version = "mathematical.v2".into();
+        let descriptor = InstrumentDescriptor::from_spec(&newer.book.spec).unwrap();
+        p.quotes.push(newer);
+        if reversed {
+            p.quotes.reverse();
+        }
+        p.projection_sha256 = options_core::canonical::canonical_hash(&p.quotes).unwrap();
+        let mut r = request();
+        r.fixture_name = None;
+        r.quotes.clear();
+        r.candidates[0].legs[0].instrument = descriptor.clone();
+        for s in &mut r.scenarios.scenarios {
+            for point in &mut s.points {
+                for (hash, _) in &mut point.delivery_by_spec_hash {
+                    *hash = descriptor.spec_hash.clone();
+                }
+            }
+        }
+        let a =
+            inputs::apply_panel(r, p).expect("exact descriptor matches across retained versions");
+        assert_eq!(a.requests[0].legs[0].instrument, descriptor);
+    }
+}
