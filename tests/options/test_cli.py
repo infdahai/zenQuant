@@ -196,7 +196,9 @@ def test_panel_read_or_schema_error_is_invalid_input(tmp_path, monkeypatch, caps
 
 @pytest.mark.parametrize("panel_selected", [False, True])
 @pytest.mark.parametrize("relation", ["equal", "descendant", "ancestor", "symlink"])
-def test_all_pinned_sources_are_protected_without_or_with_panel(tmp_path, monkeypatch, capsys, panel_selected, relation):
+def test_all_pinned_sources_are_protected_without_or_with_panel(
+    tmp_path, monkeypatch, capsys, panel_selected, relation
+):
     source = tmp_path / "scout"
     source.mkdir()
     registry = {**cli.panel_module._SEAL_PINS, source: "fixture-pin"}
