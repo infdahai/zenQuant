@@ -2,7 +2,6 @@
 
 from dataclasses import dataclass
 from decimal import ROUND_HALF_EVEN, Context, Decimal, localcontext
-from itertools import pairwise
 
 from .contracts import (
     Book,
@@ -104,7 +103,7 @@ def vwap(levels: tuple[BookLevel, ...], quantity_native: Decimal) -> Decimal | N
 
 def _book_status(book: Book) -> StatusResult | None:
     for levels, ascending in ((book.asks, True), (book.bids, False)):
-        for previous, current in pairwise(levels):
+        for previous, current in zip(levels, levels[1:]):
             if (ascending and previous.price >= current.price) or (not ascending and previous.price <= current.price):
                 return StatusResult(status="INVALID", reason="book prices must be strictly ordered")
         for level in levels:
