@@ -164,6 +164,16 @@ fn publish_internal(
     {
         return Err(Failure::Invalid);
     }
+    publish_admitted(target, artifacts, hooks).map_err(|error| match error {
+        Failure::PublishedDurabilityUnconfirmed => error,
+        _ => Failure::Incomplete,
+    })
+}
+fn publish_admitted(
+    target: &PublicationTarget,
+    artifacts: &[(&str, Vec<u8>)],
+    hooks: PublicationHooks,
+) -> Result<(), Failure> {
     let output = &target.path;
     let parent_path = output.parent().ok_or(Failure::Invalid)?;
     crate::io::reject_symlinks(output)?;
