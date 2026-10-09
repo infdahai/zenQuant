@@ -57,7 +57,10 @@ pub(crate) fn terminal_spec(
     need(
         s.product == Product::LinearOption
             && s.exercise_style == ExerciseStyle::European
-            && s.settlement_rule == SettlementRule::LinearCash,
+            && matches!(
+                s.settlement_rule,
+                SettlementRule::LinearCash | SettlementRule::LinearViaFuture
+            ),
         Status::Unsupported,
         "LINEAR_EUROPEAN_CASH_RULE_REQUIRED",
     )?;
@@ -72,6 +75,14 @@ pub(crate) fn terminal_spec(
         .all(|c| c.as_str() == report),
         Status::Unsupported,
         "TERMINAL_SAME_CURRENCY_REQUIRED",
+    )?;
+    let index = s.settlement_index.trim();
+    need(
+        !index.is_empty()
+            && !index.eq_ignore_ascii_case("UNKNOWN")
+            && !index.eq_ignore_ascii_case("UNVERIFIED"),
+        Status::NotEvaluable,
+        "SETTLEMENT_FIXING_UNVERIFIED",
     )?;
     need(
         s.strike > Dec::zero() && !s.settlement_index.is_empty() && s.settlement_window_ns > 0,
@@ -455,6 +466,14 @@ pub fn analyze_expression(a: &AnalysisInput, r: &CandidateRequest) -> Expression
             return Ok(());
         }
         let base = support(a, r, &quotes)?;
+        if quotes
+            .iter()
+            .any(|q| q.book.spec.settlement_rule == SettlementRule::LinearViaFuture)
+        {
+            out.reasons.push(
+                "CASH_EQUIVALENT_TERMINAL_ONLY_NO_FUTURE_EVENTS_OR_ACCOUNT_PERMISSION".into(),
+            );
+        }
         out.support.model_support =
             StatusResult::new(Status::Valid, "TERMINAL_ONLY_CONDITIONAL_MODEL");
         // Validate every same-fixing price before calculating any outcome. A conflict invalidates all.
