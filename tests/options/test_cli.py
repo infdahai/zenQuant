@@ -9,7 +9,9 @@ from pathlib import Path
 
 import pytest
 
-SPEC = importlib.util.spec_from_file_location("options_cli", Path(__file__).resolve().parents[2] / "scripts/analyze_options_portfolio.py")
+SPEC = importlib.util.spec_from_file_location(
+    "options_cli", Path(__file__).resolve().parents[2] / "scripts/analyze_options_portfolio.py"
+)
 cli = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(cli)
 
@@ -124,9 +126,20 @@ def test_panel_budget_shortfall_is_successful_diagnostic(tmp_path, monkeypatch):
         cli,
         "diagnostic_panel_report",
         lambda **kwargs: {
-            "status": "DIAGNOSTIC_ONLY", "input_integrity": "UNVERIFIED_INPUT", "hashes": {"data": "fixture-panel"},
-            "assumptions": ["fixture panel substitution"], "gaps": [],
-            "native_costs": [{"side": "BUY", "status": {"status": "VALID"}, "total_report_currency": "16.24", "report_currency": "USDT", "spec_hash": "s"}],
+            "status": "DIAGNOSTIC_ONLY",
+            "input_integrity": "UNVERIFIED_INPUT",
+            "hashes": {"data": "fixture-panel"},
+            "assumptions": ["fixture panel substitution"],
+            "gaps": [],
+            "native_costs": [
+                {
+                    "side": "BUY",
+                    "status": {"status": "VALID"},
+                    "total_report_currency": "16.24",
+                    "report_currency": "USDT",
+                    "spec_hash": "s",
+                }
+            ],
         },
     )
     out = tmp_path / "report"
