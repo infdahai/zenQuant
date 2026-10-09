@@ -498,11 +498,11 @@ def _opening_fee_attribution(state: LedgerState, event: LedgerEvent) -> tuple[Op
         r.kind == "FILL"
         and r.quantity_native is not None
         and r.quantity_native < 0
-        and r not in state.unapplied
+        and index > first_index
         and r.wallet == event.wallet
         and r.instrument_id == event.instrument_id
         and r.intent_id == event.intent_id
-        for r in state.receipts[first_index + 1 : -1]
+        for index, r in _applied_receipts(state)
     ):
         return None
     matches = tuple(
@@ -522,18 +522,17 @@ def _fee(state: LedgerState, event: LedgerEvent) -> LedgerState:
     def completed_for_fee(receipt):
         return tuple(
             r
-            for r in state.receipts[:-1]
+            for _, r in _applied_receipts(state)
             if r.parent_id == receipt.parent_id
             and r.wallet == receipt.wallet
             and r.instrument_id == receipt.instrument_id
             and r.intent_id == receipt.intent_id
             and r.kind in ("FUTURE_DELIVERY", "CASH_SETTLEMENT", "EXPIRY")
-            and r not in state.unapplied
         )
 
     prior_fees = tuple(
         r
-        for r in state.receipts[:-1]
+        for _, r in _first_receipts(state.receipts[:-1])
         if event.parent_id is not None
         and r.kind == "FEE"
         and r.parent_id == event.parent_id
@@ -596,6 +595,18 @@ def _first_receipts(receipts):
     return tuple(result)
 
 
+def _applied_receipts(state: LedgerState):
+    """Use the first native receipt's outcome, never a retransmission copy.
+
+    Exclude the currently reducing receipt. An unresolved original can already
+    contain actual cash (FEE), but cannot certify completed application. This
+    provenance view never retries or reverses such partially applied receipts.
+    """
+    return tuple(
+        (index, receipt) for index, receipt in _first_receipts(state.receipts[:-1]) if receipt not in state.unapplied
+    )
+
+
 def _lifecycle(state: LedgerState, event: LedgerEvent) -> LedgerState:
     spec, error = _spec(state, event)
     if error:
@@ -610,11 +621,8 @@ def _lifecycle(state: LedgerState, event: LedgerEvent) -> LedgerState:
         return _unapplied(state, event, "SETTLEMENT_REQUIRES_EXPLICIT_FEE")
     prior = tuple(
         r
-        for r in state.receipts[:-1]
-        if r.kind == event.kind
-        and r.wallet == event.wallet
-        and r.parent_id == event.parent_id
-        and r not in state.unapplied
+        for _, r in _applied_receipts(state)
+        if r.kind == event.kind and r.wallet == event.wallet and r.parent_id == event.parent_id
     )
     if prior:
         # A settlement link is indivisible even if the provider changes native ID.
@@ -627,11 +635,10 @@ def _lifecycle(state: LedgerState, event: LedgerEvent) -> LedgerState:
         return state if old_payload == new_payload else _unapplied(state, event, "SETTLEMENT_LINK_CONFLICT")
     previous_links = tuple(
         r
-        for r in state.receipts[:-1]
+        for _, r in _applied_receipts(state)
         if r.parent_id == event.parent_id
         and r.wallet == event.wallet
         and r.kind in ("EXPIRY", "CASH_SETTLEMENT", "EXERCISE_TO_FUTURE", "FUTURE_DELIVERY")
-        and r not in state.unapplied
     )
     if previous_links and not (
         event.kind == "FUTURE_DELIVERY" and all(r.kind == "EXERCISE_TO_FUTURE" for r in previous_links)
