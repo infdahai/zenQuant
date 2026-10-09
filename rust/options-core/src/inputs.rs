@@ -261,7 +261,7 @@ pub fn load_analysis(r: Request) -> Result<AnalysisInput> {
                 && text(&c.template_version)
                 && text(&c.exit_policy)
                 && ids.insert(&c.request_id)
-                && !c.legs.is_empty()
+                && (c.template_id == "cash" || !c.legs.is_empty())
                 && c.terminal_fee_native
                     .as_ref()
                     .is_none_or(|f| !f.is_negative()),
