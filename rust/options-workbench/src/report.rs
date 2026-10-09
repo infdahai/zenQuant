@@ -1,9 +1,8 @@
 //! Deterministic diagnostics. All authority is fixed here, never supplied by input.
 use options_core::{
     canonical::{bytes_sha256, canonical_bytes, canonical_hash},
-    constraints::certify_vertical,
     contracts::*,
-    expressions::analyze_expression,
+    inputs::ValidatedAnalysis,
 };
 use serde::Serialize;
 include!(concat!(env!("OUT_DIR"), "/identities.rs"));
@@ -41,6 +40,7 @@ pub fn render(
     request_bytes: &[u8],
     verified: Option<crate::io::VerifiedSources>,
 ) -> options_core::error::Result<Vec<(&'static str, Vec<u8>)>> {
+    let validated = ValidatedAnalysis::new(input)?;
     let panel = verified.is_some();
     let pins = verified.map(|v| v.pins().to_vec()).unwrap_or_default();
     let code: Vec<_> = CODE_FILES
@@ -69,13 +69,13 @@ pub fn render(
     let expressions = input
         .requests
         .iter()
-        .map(|r| analyze_expression(input, r))
+        .map(|r| validated.analyze_expression(r))
         .collect();
     let constraints = input
         .requests
         .iter()
         .filter(|r| matches!(r.template_id.as_str(), "call_vertical" | "put_vertical"))
-        .map(|r| certify_vertical(input, r))
+        .map(|r| validated.certify_vertical(r))
         .collect();
     let report = Report {
         schema_version: REPORT_SCHEMA,

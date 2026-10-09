@@ -390,6 +390,16 @@ fn subjective_ev(a: &AnalysisInput, outcomes: &[ScenarioOutcome]) -> Diagnostic<
 }
 /// Preserves unsupported candidates and independent displayed costs. Never grants account authority.
 pub fn analyze_expression(a: &AnalysisInput, r: &CandidateRequest) -> ExpressionAnalysis {
+    match crate::inputs::ValidatedAnalysis::new(a) {
+        Ok(validated) => validated.analyze_expression(r),
+        Err(error) => analyze_admitted(a, r, Err(error)),
+    }
+}
+pub(crate) fn analyze_admitted(
+    a: &AnalysisInput,
+    r: &CandidateRequest,
+    admission: crate::error::Result<()>,
+) -> ExpressionAnalysis {
     let unverified = StatusResult::new(Status::Unverified, "NO_ACCOUNT_OR_EXECUTION_EVIDENCE");
     let mut out = ExpressionAnalysis {
         request_id: r.request_id.clone(),
@@ -424,6 +434,7 @@ pub fn analyze_expression(a: &AnalysisInput, r: &CandidateRequest) -> Expression
         reasons: vec![],
     };
     let run = (|| -> Diagnostic<()> {
+        crate::inputs::admission_status(admission)?;
         out.request_hash = math(canonical_hash(r))?;
         out.input_hash = math(canonical_hash(a))?;
         for l in &r.legs {

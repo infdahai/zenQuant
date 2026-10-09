@@ -516,3 +516,47 @@ pub fn apply_panel(mut r: Request, p: PanelEnvelope) -> Result<AnalysisInput> {
     ));
     Ok(a)
 }
+
+/// Immutable admission proof borrowed from public, potentially deserialized input.
+/// The borrow prevents mutation until evaluation finishes. Adapter gaps are diagnostic
+/// annotations, not admission evidence, and are deliberately not compared to loader gaps.
+pub struct ValidatedAnalysis<'a> {
+    input: &'a AnalysisInput,
+}
+impl<'a> ValidatedAnalysis<'a> {
+    pub fn new(input: &'a AnalysisInput) -> Result<Self> {
+        let admitted = load_analysis(Request {
+            schema_version: input.schema_version.clone(),
+            cutoff_ns: input.cutoff_ns,
+            view_id: input.view.meta.object_id.clone(),
+            views: input.view_history.clone(),
+            scenarios: input.scenarios.clone(),
+            candidates: input.requests.clone(),
+            quotes: input.quotes.clone(),
+            hypothetical_balances: input.hypothetical_balances.clone(),
+            risk_policy: input.risk_policy.clone(),
+            source_identities: input.source_identities.clone(),
+            fixture_name: None,
+        })?;
+        require(admitted.view == input.view, ErrorCode::InvalidIdentity)?;
+        Ok(Self { input })
+    }
+    fn candidate(&self, request: &CandidateRequest) -> Result<()> {
+        require(
+            self.input.requests.contains(request),
+            ErrorCode::InvalidIdentity,
+        )
+    }
+    pub fn analyze_expression(&self, request: &CandidateRequest) -> ExpressionAnalysis {
+        crate::expressions::analyze_admitted(self.input, request, self.candidate(request))
+    }
+    pub fn certify_vertical(&self, request: &CandidateRequest) -> ConstraintCertificate {
+        crate::constraints::certify_admitted(self.input, request, self.candidate(request))
+    }
+}
+/// Safe typed failure shared by public diagnostic entry points.
+pub(crate) fn admission_status(result: Result<()>) -> std::result::Result<(), StatusResult> {
+    result.map_err(|error| {
+        StatusResult::new(Status::Invalid, format!("INPUT_ADMISSION_{:?}", error.code))
+    })
+}

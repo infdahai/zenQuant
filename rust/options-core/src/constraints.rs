@@ -9,6 +9,16 @@ use crate::{
 };
 pub const VERTICAL_MODEL: &str = "linear_vertical_payoff.rust.v1";
 pub fn certify_vertical(a: &AnalysisInput, r: &CandidateRequest) -> ConstraintCertificate {
+    match crate::inputs::ValidatedAnalysis::new(a) {
+        Ok(validated) => validated.certify_vertical(r),
+        Err(error) => certify_admitted(a, r, Err(error)),
+    }
+}
+pub(crate) fn certify_admitted(
+    a: &AnalysisInput,
+    r: &CandidateRequest,
+    admission: crate::error::Result<()>,
+) -> ConstraintCertificate {
     let mut out = ConstraintCertificate {
         request_id: r.request_id.clone(),
         input_hash: String::new(),
@@ -36,6 +46,7 @@ pub fn certify_vertical(a: &AnalysisInput, r: &CandidateRequest) -> ConstraintCe
     };
     let run =
         (|| -> Diagnostic<()> {
+            crate::inputs::admission_status(admission)?;
             out.input_hash = math(canonical_hash(&(a, r)))?;
             need(
                 r.template_version == "v1",
