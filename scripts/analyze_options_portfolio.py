@@ -124,7 +124,9 @@ def _fixture(capital: str, scenario: str) -> dict:
             quantity_native=quantity,
             index_in_quote=_observation("100", 10),
             quote_to_report=_observation("1", 10),
-            fee_policy=FeePolicy(rate=D(".02") / (D("100") * quantity), premium_cap=D("1"), fee_currency="USDT", provenance="fixture"),
+            fee_policy=FeePolicy(
+                rate=D(".02") / (D("100") * quantity), premium_cap=D("1"), fee_currency="USDT", provenance="fixture"
+            ),
             timing=TimingPolicy(max_age_ns=100, minimum_source_age_ns=0),
             asof_ns=10,
             report_currency="USDT",
