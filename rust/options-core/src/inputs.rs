@@ -481,12 +481,15 @@ pub fn apply_panel(mut r: Request, p: PanelEnvelope) -> Result<AnalysisInput> {
         .push(("panel_projection_sha256".into(), p.projection_sha256));
     for c in &r.candidates {
         for l in &c.legs {
-            if let Some(q) = quotes.iter().find(|q| {
-                q.book.spec.venue == l.instrument.venue
-                    && q.book.spec.instrument_id == l.instrument.instrument_id
+            let descriptors = quotes
+                .iter()
+                .map(|q| InstrumentDescriptor::from_spec(&q.book.spec))
+                .collect::<Result<Vec<_>>>()?;
+            if descriptors.iter().any(|d| {
+                d.venue == l.instrument.venue && d.instrument_id == l.instrument.instrument_id
             }) {
                 require(
-                    l.instrument == InstrumentDescriptor::from_spec(&q.book.spec)?,
+                    descriptors.contains(&l.instrument),
                     ErrorCode::InvalidIdentity,
                 )?;
             }
