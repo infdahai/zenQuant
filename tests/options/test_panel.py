@@ -454,3 +454,13 @@ def test_replaced_panel_cannot_keep_verified_input_binding(tmp_path, monkeypatch
     if changed_field == "protocol_json":
         assert report["hashes"]["protocol"] != original["hashes"]["protocol"]
     assert not report["execution_authority"]
+
+
+def test_bias_reports_expose_their_own_quantity_and_timing_scope(tmp_path, monkeypatch):
+    loaded = load_panel(write_minimal_panel(tmp_path, monkeypatch))
+    report = diagnostic_panel_report(panel=loaded, quantities_base=(D(".1"),))
+    assert report["quantity_filter"] == ["0.1"]
+    nested = report["engineering_bias"]
+    standalone = engineering_bias_report(panel=loaded)
+    assert nested["quantity_filter"] == standalone["quantity_filter"] == ["0.01", "0.03", "0.1"]
+    assert nested["timing_filter"] == standalone["timing_filter"] == report["timing_filter"]
