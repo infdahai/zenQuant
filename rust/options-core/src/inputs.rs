@@ -407,10 +407,10 @@ pub fn select_quote<'a>(
             continue;
         }
         let key = (q.book.source_ns, q.book.received_ns, q.book.available_ns);
-        if let Some(p) = selected {
-            if key == (p.book.source_ns, p.book.received_ns, p.book.available_ns) {
-                require(p == q, ErrorCode::ConflictingEvidence)?;
-            }
+        if let Some(p) = selected
+            && key == (p.book.source_ns, p.book.received_ns, p.book.available_ns)
+        {
+            require(p == q, ErrorCode::ConflictingEvidence)?;
         }
         if selected
             .is_none_or(|p| key > (p.book.source_ns, p.book.received_ns, p.book.available_ns))
