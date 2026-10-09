@@ -237,8 +237,14 @@ def _report(capital: str, scenario: str, panel_root: Path | None) -> dict:
         report = _fixture(capital, scenario)
         panel_report = None
         if panel_root is not None:
+            try:
+                panel = load_panel(panel_root)
+            except PanelError:
+                raise
+            except (OSError, ValueError, TypeError) as error:
+                raise PanelError("PANEL_INPUT_INVALID", type(error).__name__) from error
             panel_report = diagnostic_panel_report(
-                panel=load_panel(panel_root), quantities_base=(D(".01"), D(".03"), D(".1"))
+                panel=panel, quantities_base=(D(".01"), D(".03"), D(".1"))
             )
             report["panel_diagnostics"] = panel_report
             report["panel_budget_diagnostics"] = _panel_budgets(panel_report, report["math_scenarios"][0]["policy"])
