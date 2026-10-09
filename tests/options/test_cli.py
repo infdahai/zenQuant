@@ -178,3 +178,17 @@ def test_preflight_cost_matches_explicit_fixture_payment(tmp_path):
     assert cli.main(["--output-dir", str(out), "--capital", "3000", "--scenario", "straddle"]) == 0
     data = read_report(out)
     assert data["model_preflight"]["cash_reserve"][0][1] == "0.84"
+
+
+@pytest.mark.parametrize("error_kind", [FileNotFoundError, ValueError, TypeError])
+def test_panel_read_or_schema_error_is_invalid_input(tmp_path, monkeypatch, capsys, error_kind):
+    def fail(*args):
+        raise error_kind("secret-fixture-value")
+
+    monkeypatch.setattr(cli, "load_panel", fail)
+    out = tmp_path / "out"
+    assert cli.main(["--panel-root", str(tmp_path / "panel"), "--output-dir", str(out)]) == 2
+    stderr = capsys.readouterr().err
+    assert "PANEL_INPUT_INVALID" in stderr
+    assert "secret-fixture-value" not in stderr
+    assert not out.exists()
