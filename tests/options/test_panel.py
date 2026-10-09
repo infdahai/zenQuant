@@ -405,3 +405,52 @@ def test_decimal_context_does_not_change_diagnostic(tmp_path, monkeypatch):
         context.prec = 3
         actual = diagnostic_panel_report(panel=panel, quantities_base=(D(".1"),))
     assert actual == baseline
+
+
+def test_manual_panel_does_not_inherit_verified_seal_references(tmp_path, monkeypatch):
+    from dataclasses import fields
+
+    loaded = load_panel(write_minimal_panel(tmp_path, monkeypatch))
+    manual = adapter.PanelInput(
+        **{field.name: getattr(loaded, field.name) for field in fields(loaded) if field.name != "verification"}
+    )
+    report = diagnostic_panel_report(panel=manual, quantities_base=(D(".1"),))
+    assert report["sealed_input_identities"]
+    assert report["input_integrity"] == "UNVERIFIED_INPUT"
+    assert report["engineering_bias"]["input_integrity"] == "UNVERIFIED_INPUT"
+    assert not report["execution_authority"]
+
+
+@pytest.mark.parametrize("changed_field", ["records", "books", "protocol_json", "observations", "assumptions"])
+def test_replaced_panel_cannot_keep_verified_input_binding(tmp_path, monkeypatch, changed_field):
+    from dataclasses import replace
+
+    loaded = load_panel(write_minimal_panel(tmp_path, monkeypatch))
+    original = diagnostic_panel_report(panel=loaded, quantities_base=(D(".1"),))
+    assert original["input_integrity"] == "PINNED_BYTES_VERIFIED"
+    if changed_field in ("records", "books"):
+        book = replace(loaded.books[0], asks=(replace(loaded.books[0].asks[0], price=D(".032")),))
+        update = (
+            (replace(loaded.records[0], book=book),) + loaded.records[1:]
+            if changed_field == "records"
+            else (book,) + loaded.books[1:]
+        )
+    elif changed_field == "protocol_json":
+        protocol = json.loads(loaded.protocol_json)
+        protocol["maximum_pair_quote_age_at_receipt_ms"] = 4000
+        update = json.dumps(protocol)
+    elif changed_field == "observations":
+        update = (replace(loaded.observations[0], value=D("90000")),) + loaded.observations[1:]
+    else:
+        update = loaded.assumptions + ("caller changed assumption",)
+    changed = replace(loaded, **{changed_field: update})
+    report = diagnostic_panel_report(panel=changed, quantities_base=(D(".1"),))
+    assert report["sealed_input_identities"] == original["sealed_input_identities"]
+    assert report["input_integrity"] == "VERIFICATION_BINDING_MISMATCH"
+    assert report["hashes"]["data"] != original["hashes"]["data"]
+    assert report["hashes"]["source_references"] == original["hashes"]["source_references"]
+    assert report["engineering_bias"]["input_integrity"] == "VERIFICATION_BINDING_MISMATCH"
+    assert engineering_bias_report(panel=changed)["input_integrity"] == "VERIFICATION_BINDING_MISMATCH"
+    if changed_field == "protocol_json":
+        assert report["hashes"]["protocol"] != original["hashes"]["protocol"]
+    assert not report["execution_authority"]
