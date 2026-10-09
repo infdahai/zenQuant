@@ -243,9 +243,7 @@ def _report(capital: str, scenario: str, panel_root: Path | None) -> dict:
                 raise
             except (OSError, ValueError, TypeError) as error:
                 raise PanelError("PANEL_INPUT_INVALID", type(error).__name__) from error
-            panel_report = diagnostic_panel_report(
-                panel=panel, quantities_base=(D(".01"), D(".03"), D(".1"))
-            )
+            panel_report = diagnostic_panel_report(panel=panel, quantities_base=(D(".01"), D(".03"), D(".1")))
             report["panel_diagnostics"] = panel_report
             report["panel_budget_diagnostics"] = _panel_budgets(panel_report, report["math_scenarios"][0]["policy"])
         code_hashes = {
