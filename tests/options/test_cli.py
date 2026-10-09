@@ -149,3 +149,32 @@ def test_panel_budget_shortfall_is_successful_diagnostic(tmp_path, monkeypatch):
     assert data["panel_budget_diagnostics"][0]["reason"] == "PER_INTENT_BUDGET_EXCEEDED"
     assert data["rankable"] is False
     assert data["identity"]["panel_data"] == "fixture-panel"
+
+
+def test_internal_arithmetic_failure_is_not_an_input_error(tmp_path, monkeypatch, capsys):
+    def fail(*args):
+        raise ValueError("secret-fixture-value")
+
+    monkeypatch.setattr(cli, "_fixture", fail)
+    out = tmp_path / "report"
+    assert cli.main(["--output-dir", str(out)]) == 1
+    assert "secret-fixture-value" not in capsys.readouterr().err
+    assert not out.exists()
+
+
+def test_invalid_panel_reason_does_not_echo_untrusted_content(tmp_path, monkeypatch, capsys):
+    def fail(*args):
+        raise cli.PanelError("DUPLICATE_JSON_KEY", "secret-fixture-value")
+
+    monkeypatch.setattr(cli, "load_panel", fail)
+    assert cli.main(["--panel-root", str(tmp_path / "panel"), "--output-dir", str(tmp_path / "out")]) == 2
+    stderr = capsys.readouterr().err
+    assert "DUPLICATE_JSON_KEY" in stderr
+    assert "secret-fixture-value" not in stderr
+
+
+def test_preflight_cost_matches_explicit_fixture_payment(tmp_path):
+    out = tmp_path / "report"
+    assert cli.main(["--output-dir", str(out), "--capital", "3000", "--scenario", "straddle"]) == 0
+    data = read_report(out)
+    assert data["model_preflight"]["cash_reserve"][0][1] == "0.84"
