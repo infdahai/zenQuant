@@ -372,3 +372,68 @@ def test_reused_order_across_intents_cannot_prove_fee_basis():
     assert wallet_cash(state, wallet()) == D("958")
     assert active_risk_native(state, wallet()) == D("40")
     assert state.unapplied == (fee,)
+
+
+def test_known_fee_wallet_is_debited_even_when_attribution_wallet_is_unknown():
+    opening = fill_event(1, spec=linear_spec(), quantity="1", price="20")
+    state = apply_event(funded(), opening)
+    fee = replace(
+        opening,
+        key=key(2),
+        kind="FEE",
+        wallet=replace(wallet(), account="unregistered"),
+        quantity_native=None,
+        price=None,
+        fee=D("2"),
+        parent_id=opening.key.event_id,
+    )
+    state = apply_event(state, fee)
+    assert wallet_cash(state, wallet()) == D("978")
+    assert active_risk_native(state, wallet()) == D("20")
+    assert state.unapplied == (fee,)
+    assert state.receipts[-1] == fee
+    assert "UNRESOLVED_FEE_BASIS_ATTRIBUTION" in state.frozen_reasons
+
+
+@pytest.mark.parametrize("reserve_amount", ["22", "8.4"])
+@pytest.mark.parametrize("reference", ["order", "parent_only"])
+def test_inline_and_proven_standalone_fee_have_equivalent_cash_basis_and_reserve(reserve_amount, reference):
+    spec = linear_spec()
+    reserved = apply_event(funded(), reserve(amount=reserve_amount, quantity="1"))
+    inline = apply_event(reserved, fill_event(2, spec=spec, quantity=".4", price="20", fee=".8"))
+    opening = fill_event(2, spec=spec, quantity=".4", price="20")
+    standalone = apply_event(reserved, opening)
+    fee = replace(
+        opening,
+        key=key(3),
+        kind="FEE",
+        quantity_native=None,
+        price=None,
+        fee=D(".8"),
+        parent_id=opening.key.event_id if reference == "parent_only" else None,
+        order_id=None if reference == "parent_only" else opening.order_id,
+    )
+    standalone = apply_event(standalone, fee)
+    assert standalone.balances == inline.balances
+    assert standalone.positions == inline.positions
+    assert standalone.reservations == inline.reservations
+    assert standalone.frozen_reasons == inline.frozen_reasons
+    assert standalone.reservations[0].remaining_quantity_native == D(".6")
+    assert standalone.reservations[0].remaining_cash == max(D("0"), D(reserve_amount) - D("8.8"))
+    assert active_risk_native(standalone, wallet()) == D("8.8")
+    assert not standalone.unapplied
+
+
+def test_proven_fee_in_different_wallet_does_not_release_premium_wallet_reserve():
+    spec, fw = linear_spec(), wallet("BTC")
+    reserved = apply_event(funded(extra=(WalletBalance(wallet=fw, cash="1"),)), reserve())
+    opening = fill_event(2, spec=spec, quantity=".4", price="20", fee_wallet=fw)
+    state = apply_event(reserved, opening)
+    fee = replace(
+        opening, key=key(3), kind="FEE", quantity_native=None, price=None, fee=D(".01"), parent_id=opening.key.event_id
+    )
+    state = apply_event(state, fee)
+    assert wallet_cash(state, fw) == D(".99")
+    assert state.reservations[0].remaining_cash == D("14")
+    assert state.reservations[0].remaining_quantity_native == D(".6")
+    assert active_risk_native(state, fw) == D(".01")
