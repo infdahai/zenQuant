@@ -24,36 +24,36 @@ Schemas: REQUEST_SCHEMA=`options-workbench-request.rust.v1`, REPORT_SCHEMA=`opti
 
 Request fields must be named exactly as below; optional fields decode missing as None, serialize as null. Collections are arrays; `(String,Dec)`, `(WalletKey,Dec)`, FX pairs and source identities are JSON arrays of two elements. Dec always JSON string. Fixture_name optional explicit marker; no financial defaults. Candidate unknown template is retained in String, never downgraded by contracts.
 
-- `RecordMeta`: `object_id: String`; `revision: u32`; `parent_hash: Option<String>`; `schema_version: String`; `method_version: String`; `received_ns: u64`; `available_ns: u64`; `cutoff_ns: u64`; `source_ref: String`; `source_sha256: Option<String>`.
-- `View`: `meta: RecordMeta`; `underlying: String`; `mechanism: String`; `direction: Direction`; `horizon_ns: u64`; `report_currency: String`; `initial_capital: Dec`; `max_loss_budget: Dec`; `competing_explanations: Vec<String>`; `invalidation: Vec<String>`; `no_trade_conditions: Vec<String>`.
-- `ScenarioPoint`: `at_ns: u64`; `delivery_by_spec_hash: Vec<(String, Dec)>`; `iv_shift: Option<Dec>`.
-- `Scenario`: `scenario_id: String`; `points: Vec<ScenarioPoint>`.
-- `ScenarioSet`: `meta: RecordMeta`; `view_hash: String`; `purpose: ScenarioPurpose`; `probability_source: Option<ProbabilitySource>`.
-- `InstrumentSpec`: `venue: String`; `instrument_id: String`; `product: Product`; `underlying: String`; `quote_currency: String`; `strike_currency: String`; `settlement_currency: String`; `margin_currency: String`; `expiry_ns: u64`; `strike: Dec`; `option_type: OptionType`; `exercise_style: ExerciseStyle`; `quantity_unit: QuantityUnit`; `multiplier: Dec`; `price_unit: PriceUnit`; `min_quantity_native: Dec`; `quantity_step_native: Dec`; `max_quantity_native: Option<Dec>`; `tick_bands: Vec<(Dec, Dec)>`; `settlement_index: String`; `settlement_window_ns: u64`; `settlement_rule: SettlementRule`; `rule_version: String`; `metadata_hash: String`; `valid_from_ns: u64`; `valid_until_ns: Option<u64>`.
-- `InstrumentDescriptor`: `venue: String`; `product: Product`; `instrument_id: String`; `underlying: String`; `rule_version: String`; `spec_schema: String`.
-- `CandidateLeg`: `instrument: InstrumentDescriptor`; `side: Side`.
-- `CandidateRequest`: `request_id: String`; `template_id: String`; `template_version: String`; `legs: Vec<CandidateLeg>`; `exit_policy: String`; `terminal_fee_native: Option<Dec>`.
-- `Observation`: `value: Dec`; `source_ns: u64`; `received_ns: u64`; `available_ns: u64`; `source_id: String`.
-- `BookLevel`: `price: Dec`.
-- `Book`: `spec: InstrumentSpec`; `bids: Vec<BookLevel>`; `asks: Vec<BookLevel>`; `source_ns: u64`; `received_ns: u64`; `available_ns: u64`.
-- `FeePolicy`: `rate: Dec`; `premium_cap: Dec`; `fee_currency: String`.
-- `TimingPolicy`: `max_age_ns: u64`.
-- `QuoteInput`: `quote_id: String`; `book: Book`; `index_in_quote: Option<Observation>`; `index_currency: Option<String>`; `quote_to_report: Option<Observation>`; `fx_pair: Option<(String, String)>`; `fee_policy: Option<FeePolicy>`; `fee_known_ns: Option<u64>`; `metadata_known_ns: Option<u64>`; `timing: TimingPolicy`; `source_identities: Vec<(String, String)>`.
-- `WalletKey`: `venue: String`; `account: String`; `account_mode: String`.
-- `WalletBalance`: `wallet: WalletKey`.
-- `RiskPolicy`: `per_intent_report: Dec`; `active_and_pending_report: Dec`; `rolling_tail_paid_report: Dec`; `rolling_window_ns: u64`; `report_currency: String`.
-- `Request`: `schema_version: String`; `cutoff_ns: u64`; `view_id: String`; `views: Vec<View>`; `scenarios: ScenarioSet`; `candidates: Vec<CandidateRequest>`; `quotes: Vec<QuoteInput>`; `hypothetical_balances: Vec<WalletBalance>`; `risk_policy: RiskPolicy`; `source_identities: Vec<(String, String)>`.
-- `AnalysisInput`: `schema_version: String`; `adapter_version: String`; `cutoff_ns: u64`; `view: View`; `view_history: Vec<View>`; `scenarios: ScenarioSet`; `requests: Vec<CandidateRequest>`; `quotes: Vec<QuoteInput>`; `hypothetical_balances: Vec<WalletBalance>`; `risk_policy: RiskPolicy`; `source_identities: Vec<(String, String)>`.
-- `StatusResult`: `status: Status`.
-- `SupportColumns`: `input_validity: StatusResult`; `model_support: StatusResult`; `modeled_feasibility: StatusResult`; `account_eligibility: StatusResult`.
-- `CostEvidence`: `status: StatusResult`; `instrument_hash: String`; `book_hash: String`; `side: Side`; `quote_currency: String`; `report_currency: String`; `asof_ns: u64`; `quantity_native: Dec`; `premium_native: Option<Dec>`; `fee_native: Option<Dec>`; `total_report_currency: Option<Dec>`; `assumptions: Vec<String>`.
-- `ScenarioOutcome`: `scenario_id: String`; `currency: String`; `gross_payoff: Option<Dec>`; `conditional_model_pnl: Option<Dec>`.
-- `ModeledCandidate`: `request: CandidateRequest`; `view_hash: String`; `scenario_hash: String`.
-- `ModeledFunding`: `status: StatusResult`; `required_cash_by_wallet: Vec<(WalletKey, Dec)>`; `policy_hash: String`.
-- `ExpressionAnalysis`: `request_id: String`; `request_hash: String`; `input_hash: String`; `model_version: String`; `support: SupportColumns`; `modeled_candidate: Option<ModeledCandidate>`; `costs: Vec<CostEvidence>`; `model_funding: Option<ModeledFunding>`; `outcomes: Vec<ScenarioOutcome>`; `conditional_ev: Option<Dec>`; `break_even_levels: Option<Vec<Dec>>`; `conditional_model_loss_bound: Option<Dec>`.
-- `ConstraintCertificate`: `request_id: String`; `input_hash: String`; `method_version: String`; `status: StatusResult`; `spec_hashes: Vec<String>`; `currency: Option<String>`; `knots: Vec<Dec>`; `values_at_knots: Vec<Dec>`; `segment_slopes: Vec<Dec>`; `gross_payoff_lower: Option<Dec>`; `gross_payoff_upper: Option<Dec>`; `opening_net_spend: Option<Dec>`; `conditional_model_lower: Option<Dec>`; `conditional_model_upper: Option<Dec>`.
-- `PinnedSource`: `path: String`; `size_bytes: u64`.
-- `PanelEnvelope`: `schema_version: String`; `exporter_version: String`; `raw_source_integrity: RawSourceIntegrity`; `projection_trust: ProjectionTrust`; `pinned_sources: Vec<PinnedSource>`; `projection_sha256: String`; `quotes: Vec<QuoteInput>`.
+- `RecordMeta`: `object_id: String`; `revision: u32`; `parent_hash: Option<String>`; `schema_version: String`; `method_version: String`; `received_ns: u64`; `available_ns: u64`; `cutoff_ns: u64`; `source_ref: String`; `source_sha256: Option<String>`; `provenance: Provenance`.
+- `View`: `meta: RecordMeta`; `underlying: String`; `mechanism: String`; `direction: Direction`; `horizon_ns: u64`; `report_currency: String`; `initial_capital: Dec`; `max_loss_budget: Dec`; `competing_explanations: Vec<String>`; `invalidation: Vec<String>`; `no_trade_conditions: Vec<String>`; `clock_policy: String`.
+- `ScenarioPoint`: `at_ns: u64`; `delivery_by_spec_hash: Vec<(String, Dec)>`; `iv_shift: Option<Dec>`; `liquidity_haircut: Option<Dec>`.
+- `Scenario`: `scenario_id: String`; `points: Vec<ScenarioPoint>`; `probability: Option<Dec>`.
+- `ScenarioSet`: `meta: RecordMeta`; `view_hash: String`; `purpose: ScenarioPurpose`; `probability_source: Option<ProbabilitySource>`; `scenarios: Vec<Scenario>`.
+- `InstrumentSpec`: `venue: String`; `instrument_id: String`; `product: Product`; `underlying: String`; `quote_currency: String`; `strike_currency: String`; `settlement_currency: String`; `margin_currency: String`; `expiry_ns: u64`; `strike: Dec`; `option_type: OptionType`; `exercise_style: ExerciseStyle`; `quantity_unit: QuantityUnit`; `multiplier: Dec`; `price_unit: PriceUnit`; `min_quantity_native: Dec`; `quantity_step_native: Dec`; `max_quantity_native: Option<Dec>`; `tick_bands: Vec<(Dec, Dec)>`; `settlement_index: String`; `settlement_window_ns: u64`; `settlement_rule: SettlementRule`; `rule_version: String`; `metadata_hash: String`; `valid_from_ns: u64`; `valid_until_ns: Option<u64>`; `provenance: Provenance`.
+- `InstrumentDescriptor`: `venue: String`; `product: Product`; `instrument_id: String`; `underlying: String`; `rule_version: String`; `spec_schema: String`; `spec_hash: String`.
+- `CandidateLeg`: `instrument: InstrumentDescriptor`; `side: Side`; `quantity_native: Dec`.
+- `CandidateRequest`: `request_id: String`; `template_id: String`; `template_version: String`; `legs: Vec<CandidateLeg>`; `exit_policy: String`; `terminal_fee_native: Option<Dec>`; `sleeve: Sleeve`.
+- `Observation`: `value: Dec`; `source_ns: u64`; `received_ns: u64`; `available_ns: u64`; `source_id: String`; `provenance: Provenance`.
+- `BookLevel`: `price: Dec`; `quantity_native: Dec`.
+- `Book`: `spec: InstrumentSpec`; `bids: Vec<BookLevel>`; `asks: Vec<BookLevel>`; `source_ns: u64`; `received_ns: u64`; `available_ns: u64`; `raw_hash: String`.
+- `FeePolicy`: `rate: Dec`; `premium_cap: Dec`; `fee_currency: String`; `provenance: Provenance`.
+- `TimingPolicy`: `max_age_ns: u64`; `minimum_source_age_ns: i64`.
+- `QuoteInput`: `quote_id: String`; `book: Book`; `index_in_quote: Option<Observation>`; `index_currency: Option<String>`; `quote_to_report: Option<Observation>`; `fx_pair: Option<(String, String)>`; `fee_policy: Option<FeePolicy>`; `fee_known_ns: Option<u64>`; `metadata_known_ns: Option<u64>`; `timing: TimingPolicy`; `source_identities: Vec<(String, String)>`; `assumptions: Vec<String>`.
+- `WalletKey`: `venue: String`; `account: String`; `account_mode: String`; `currency: String`.
+- `WalletBalance`: `wallet: WalletKey`; `cash: Dec`.
+- `RiskPolicy`: `per_intent_report: Dec`; `active_and_pending_report: Dec`; `rolling_tail_paid_report: Dec`; `rolling_window_ns: u64`; `report_currency: String`; `fx_timing: Option<TimingPolicy>`.
+- `Request`: `schema_version: String`; `cutoff_ns: u64`; `view_id: String`; `views: Vec<View>`; `scenarios: ScenarioSet`; `candidates: Vec<CandidateRequest>`; `quotes: Vec<QuoteInput>`; `hypothetical_balances: Vec<WalletBalance>`; `risk_policy: RiskPolicy`; `source_identities: Vec<(String, String)>`; `fixture_name: Option<String>`.
+- `AnalysisInput`: `schema_version: String`; `adapter_version: String`; `cutoff_ns: u64`; `view: View`; `view_history: Vec<View>`; `scenarios: ScenarioSet`; `requests: Vec<CandidateRequest>`; `quotes: Vec<QuoteInput>`; `hypothetical_balances: Vec<WalletBalance>`; `risk_policy: RiskPolicy`; `source_identities: Vec<(String, String)>`; `gaps: Vec<StatusResult>`.
+- `StatusResult`: `status: Status`; `reason: String`.
+- `SupportColumns`: `input_validity: StatusResult`; `model_support: StatusResult`; `modeled_feasibility: StatusResult`; `account_eligibility: StatusResult`; `execution_evidence: StatusResult`.
+- `CostEvidence`: `status: StatusResult`; `instrument_hash: String`; `book_hash: String`; `side: Side`; `quote_currency: String`; `report_currency: String`; `asof_ns: u64`; `quantity_native: Dec`; `premium_native: Option<Dec>`; `fee_native: Option<Dec>`; `total_report_currency: Option<Dec>`; `assumptions: Vec<String>`; `input_hash: String`.
+- `ScenarioOutcome`: `scenario_id: String`; `currency: String`; `gross_payoff: Option<Dec>`; `conditional_model_pnl: Option<Dec>`; `reason: String`.
+- `ModeledCandidate`: `request: CandidateRequest`; `view_hash: String`; `scenario_hash: String`; `report_currency: String`.
+- `ModeledFunding`: `status: StatusResult`; `required_cash_by_wallet: Vec<(WalletKey, Dec)>`; `policy_hash: String`; `reasons: Vec<String>`.
+- `ExpressionAnalysis`: `request_id: String`; `request_hash: String`; `input_hash: String`; `model_version: String`; `support: SupportColumns`; `modeled_candidate: Option<ModeledCandidate>`; `costs: Vec<CostEvidence>`; `model_funding: Option<ModeledFunding>`; `outcomes: Vec<ScenarioOutcome>`; `conditional_ev: Option<Dec>`; `break_even_levels: Option<Vec<Dec>>`; `conditional_model_loss_bound: Option<Dec>`; `reasons: Vec<String>`.
+- `ConstraintCertificate`: `request_id: String`; `input_hash: String`; `method_version: String`; `status: StatusResult`; `spec_hashes: Vec<String>`; `currency: Option<String>`; `knots: Vec<Dec>`; `values_at_knots: Vec<Dec>`; `segment_slopes: Vec<Dec>`; `gross_payoff_lower: Option<Dec>`; `gross_payoff_upper: Option<Dec>`; `opening_net_spend: Option<Dec>`; `conditional_model_lower: Option<Dec>`; `conditional_model_upper: Option<Dec>`; `reasons: Vec<String>`.
+- `PinnedSource`: `path: String`; `size_bytes: u64`; `sha256: String`.
+- `PanelEnvelope`: `schema_version: String`; `exporter_version: String`; `raw_source_integrity: RawSourceIntegrity`; `projection_trust: ProjectionTrust`; `pinned_sources: Vec<PinnedSource>`; `projection_sha256: String`; `quotes: Vec<QuoteInput>`; `gaps: Vec<StatusResult>`.
 
 Support Status values: VALID/REJECTED/NOT_EVALUABLE/UNSUPPORTED/INVALID/UNVERIFIED. Account/execution downstream must always UNVERIFIED; contracts confer no authority. ExpressionAnalysis uses modeled_candidate/ModeledFunding, no P1 intent/approval/ledger. Reporting Task4 must emit fixed diagnostic_only=true/rankable=false/live_eligible=false/execution_authority=NONE and null actual/paper PnL/Sharpe/capacity/lifecycle edge; none are accepted Request fields.
 
@@ -74,3 +74,9 @@ Dependency references reviewed: official num-rational BigRational documentation 
 Task2 must add strict recursive pre-map duplicate rejection, byte/depth/all string limits before admission, schema allowlist and validation of every nested economic field, complete revision chain/PIT/scenarios/spec/quote conflict checks. Plain serde alone is not the admission codec. Task3 owns costs/payoffs/budget constraints and must preserve arithmetic failures as NOT_EVALUABLE, never zero. Task4 owns report authority/null fields and publication. Task5 owns finite-domain Python oracle integration and full gates. No economics or account/execution acceptance claimed here.
 
 Commits: c3f66fa workspace; 60f8f71 arithmetic; 9b7b484 contracts/canonical identity; 4161cc1 mathematical fixtures; 6c4b432 tests. All preexisting tracked files unchanged relative task base b6258bf; only new rust paths and this new report added.
+
+## Review fix round 1
+
+Generic canonical Serialize inputs now use a single-pass exact custom serializer into JSON Value; f32/f64 are rejected recursively before serde_json can turn NaN/Inf into null. No serde_json::to_value is called by canonical_bytes. Subsequent sorted/value validation remains unchanged; string-key maps only, duplicate serialized map/struct keys reject. Error remains fixed INVALID_INPUT. This is canonical serialization, not the later input decoder. Existing typed consumers and canonical request bytes remain compatible.
+
+Focused RED: generic_serialization_rejects_nested_nonfinite_before_json_conversion failed its nested NaN assertion (serde_json had transformed it into null). GREEN: regression now rejects nested f64 NaN/+Inf/-Inf/0.25 and nested f32 NaN; all12 tests pass with locked Cargo. fmt and clippy warnings-as-errors pass. Frozen-field list corrected from actual contracts.rs to include every last field; no contract fields removed or changed.
