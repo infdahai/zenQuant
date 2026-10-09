@@ -8,6 +8,7 @@ import pytest
 ROOT = Path(__file__).resolve().parents[2]
 CORE = "zenquant.options"
 RESEARCH = "zenquant.research.options_platform"
+RESEARCH_STDLIB = {"datetime", "itertools", "pathlib"}
 CORE_STDLIB = {"__future__", "dataclasses", "decimal", "enum", "hashlib", "json", "typing", "collections"}
 
 
@@ -42,7 +43,13 @@ def _violations(source, *, module, package=False):
             if target.split(".")[0] not in CORE_STDLIB and not _within(target, CORE):
                 result.append(target)
         elif _within(module, RESEARCH):
-            if target.startswith("zenquant") and not (_within(target, CORE) or _within(target, RESEARCH)):
+            allowed = (
+                target.split(".")[0] in CORE_STDLIB | RESEARCH_STDLIB
+                or _within(target, "urllib.parse")
+                or _within(target, CORE)
+                or _within(target, RESEARCH)
+            )
+            if not allowed:
                 result.append(target)
         elif _within(target, CORE) or _within(target, RESEARCH):
             result.append(target)
@@ -72,6 +79,8 @@ def test_all_core_research_and_existing_paths_obey_import_boundaries():
         ("from zenquant.research import options_platform", "zenquant.app.check", False),
         ("from ...strategy import engine", "zenquant.research.options_platform.panel", False),
         ("from .. import options", "zenquant.app", True),
+        ("import requests", "zenquant.research.options_platform.panel", False),
+        ("import urllib.request", "zenquant.research.options_platform.panel", False),
     ],
 )
 def test_forbidden_imports_cannot_hide_in_relative_or_init(source, module, package):
