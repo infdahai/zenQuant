@@ -322,3 +322,55 @@ fn original_parent_traversal_paths_are_rejected_before_io_or_output_creation() {
     assert!(options_workbench::io::validate_output(&p.join("link/../unexpected"), &[]).is_err());
     fs::remove_dir_all(p).unwrap();
 }
+
+#[test]
+fn cash_request_reaches_actual_cli_report() {
+    let p = temp();
+    let mut r = options_core::inputs::decode_request(&fs::read(fixture()).unwrap()).unwrap();
+    r.fixture_name = None;
+    r.candidates[0].template_id = "cash".into();
+    r.candidates[0].legs.clear();
+    let path = p.join("cash.json");
+    fs::write(&path, serde_json::to_vec(&r).unwrap()).unwrap();
+    let out = p.join("out");
+    assert_eq!(run(&path, &out).status.code(), Some(0));
+    let report: serde_json::Value =
+        serde_json::from_slice(&fs::read(out.join("report.json")).unwrap()).unwrap();
+    assert_eq!(
+        report["expressions"][0]["support"]["model_support"]["status"],
+        "VALID"
+    );
+    assert_eq!(
+        report["expressions"][0]["outcomes"][0]["conditional_model_pnl"],
+        "0"
+    );
+    assert_eq!(report["execution_authority"], "NONE");
+    fs::remove_dir_all(p).unwrap();
+}
+#[test]
+fn report_public_boundary_rejects_invalid_analysis_before_render() {
+    use options_core::{
+        canonical::canonical_hash,
+        inputs::{decode_request, load_analysis},
+    };
+    let bytes = fs::read(fixture()).unwrap();
+    let base = load_analysis(decode_request(&bytes).unwrap()).unwrap();
+    for variant in 0..5 {
+        let mut a = base.clone();
+        match variant {
+            0 => a.scenarios.view_hash = "0".repeat(64),
+            1 => {
+                a.scenarios.meta.received_ns = a.cutoff_ns + 1;
+                a.scenarios.meta.available_ns = a.cutoff_ns + 1;
+                a.scenarios.meta.cutoff_ns = a.cutoff_ns + 1;
+            }
+            2 => {
+                a.view.mechanism = "different history".into();
+                a.scenarios.view_hash = canonical_hash(&a.view).unwrap();
+            }
+            3 => a.scenarios.scenarios.clear(),
+            _ => a.view_history.clear(),
+        }
+        assert!(options_workbench::report::render(&a, &bytes, None).is_err());
+    }
+}

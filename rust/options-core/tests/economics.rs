@@ -168,9 +168,8 @@ fn long_payoffs_ev_roots_and_missing_terminal_fee() {
         assert_eq!(r.break_even_levels, Some(roots));
         assert_eq!(r.support.account_eligibility.status, Status::Unverified);
         assert_eq!(r.support.execution_evidence.status, Status::Unverified);
-        let mut req = a.requests[0].clone();
-        req.terminal_fee_native = None;
-        let r = analyze_expression(&a, &req);
+        a.requests[0].terminal_fee_native = None;
+        let r = analyze_expression(&a, &a.requests[0]);
         assert_eq!(r.outcomes[2].gross_payoff, Some(d(".1")));
         assert!(r.outcomes.iter().all(|x| x.conditional_model_pnl.is_none()));
         assert!(r.conditional_ev.is_none());
@@ -233,6 +232,7 @@ fn model_refuses_conflicting_fixing_unsupported_and_interim() {
                     InstrumentDescriptor::from_spec(&a.quotes[0].book.spec).unwrap();
             }
         }
+        let a = readmit_view(a);
         let r = analyze_expression(&a, &a.requests[0]);
         assert_ne!(r.support.model_support.status, Status::Valid);
         assert!(r.conditional_ev.is_none());
@@ -244,6 +244,7 @@ fn reserve_budget_wallet_and_ambiguity() {
     let base = case("terminal-eth-call");
     let mut a = base.clone();
     a.view.max_loss_budget = d(".0203");
+    let mut a = readmit_view(a);
     assert_eq!(
         analyze_expression(&a, &a.requests[0])
             .support
@@ -252,6 +253,7 @@ fn reserve_budget_wallet_and_ambiguity() {
         Status::Valid
     );
     a.view.max_loss_budget = d(".020299");
+    let a = readmit_view(a);
     assert_eq!(
         analyze_expression(&a, &a.requests[0])
             .support
@@ -271,13 +273,17 @@ fn reserve_budget_wallet_and_ambiguity() {
             }
             3 => a.hypothetical_balances[0].cash = d(".0203"),
             4 => a.risk_policy.per_intent_report = d(".0203"),
-            5 => a.view.initial_capital = d(".0203"),
+            5 => {
+                a.view.initial_capital = d(".0203");
+                a.view.max_loss_budget = d(".0203");
+            }
             _ => {
                 let mut w = a.hypothetical_balances[0].clone();
                 w.wallet.account = "second".into();
                 a.hypothetical_balances.push(w);
             }
         }
+        let a = readmit_view(a);
         assert_ne!(
             analyze_expression(&a, &a.requests[0])
                 .support
@@ -300,9 +306,9 @@ fn vertical_analytic_tails_and_cost_oracles() {
     assert_eq!(c.opening_net_spend, Some(d("-.0094")));
     assert_eq!(c.conditional_model_lower, Some(d(".0094")));
     assert_eq!(c.conditional_model_upper, Some(d(".1094")));
-    let mut req = a.requests[0].clone();
-    req.terminal_fee_native = None;
-    let c = certify_vertical(&a, &req);
+    let mut a = a;
+    a.requests[0].terminal_fee_native = None;
+    let c = certify_vertical(&a, &a.requests[0]);
     assert_eq!(c.gross_payoff_upper, Some(d(".1")));
     assert!(c.conditional_model_upper.is_none());
 }
@@ -328,6 +334,7 @@ fn vertical_rejects_fixing_mismatch_unequal_size_and_preserves_math_without_cost
     }
     let mut a = base.clone();
     a.quotes[0].fee_policy = None;
+    a.quotes[0].fee_known_ns = None;
     let c = certify_vertical(&a, &a.requests[0]);
     assert_eq!(c.gross_payoff_upper, Some(d(".1")));
     assert!(c.opening_net_spend.is_none());
@@ -459,6 +466,25 @@ fn canonical_put_vertical_and_contract_price_units() {
     assert_eq!(c.premium_native, Some(d(".04")));
     assert_eq!(c.fee_native, Some(d(".003")));
     assert_eq!(c.total_report_currency, Some(d(".043")));
+}
+// A changed view is a new admitted mathematical fixture, with matching history/hash.
+fn readmit_view(mut a: AnalysisInput) -> AnalysisInput {
+    a.view_history = vec![a.view.clone()];
+    a.scenarios.view_hash = canonical_hash(&a.view).unwrap();
+    load_analysis(Request {
+        schema_version: a.schema_version,
+        cutoff_ns: a.cutoff_ns,
+        view_id: a.view.meta.object_id.clone(),
+        views: a.view_history,
+        scenarios: a.scenarios,
+        candidates: a.requests,
+        quotes: a.quotes,
+        hypothetical_balances: a.hypothetical_balances,
+        risk_policy: a.risk_policy,
+        source_identities: a.source_identities,
+        fixture_name: None,
+    })
+    .unwrap()
 }
 fn rebind_and_readmit(mut a: AnalysisInput) -> AnalysisInput {
     for (q, l) in a.quotes.iter().zip(&mut a.requests[0].legs) {
