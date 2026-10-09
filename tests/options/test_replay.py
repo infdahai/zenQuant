@@ -465,3 +465,17 @@ def test_different_native_fee_id_for_same_settlement_is_unresolved_evidence():
     assert changed.balances == final.balances
     assert changed.unapplied == (fee,)
     assert "SETTLEMENT_LINK_CONFLICT" in changed.frozen_reasons
+
+
+def test_zero_delivery_put_has_signed_system_claim_and_positive_cash():
+    spec = linear_spec(option_type="P", settlement_rule="linear_via_future")
+    state = apply_event(initial(spec), fill_event(1, spec=spec, quantity=".6", price="16"))
+    exercise, delivery = terminal(spec, delivery="0", fee="0")
+    claim = apply_event(state, exercise)
+    assert claim.positions == () and claim.unapplied == ()
+    assert claim.claims[0].future_quantity_base == D("-.6")
+    assert claim.claims[0].settlement_amount == D("60")
+    assert active_risk_native(claim, wallet()) == D("9.6")
+    final = apply_event(claim, delivery)
+    assert wallet_cash(final, wallet()) == D("1050.4")
+    assert final.positions == final.claims == final.unapplied == ()
