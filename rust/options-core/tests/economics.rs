@@ -437,18 +437,20 @@ fn probabilities_incomplete_or_non_subjective_never_claim_ev() {
     assert_eq!(r.costs[0].total_report_currency, Some(d(".0203")));
 }
 #[test]
-fn put_vertical_reverse_direction_and_contract_price_units() {
+fn canonical_put_vertical_and_contract_price_units() {
     let mut a = case("terminal-vertical");
     for (q, l) in a.quotes.iter_mut().zip(&mut a.requests[0].legs) {
         q.book.spec.option_type = OptionType::P;
         l.instrument = InstrumentDescriptor::from_spec(&q.book.spec).unwrap();
     }
     a.requests[0].template_id = "put_vertical".into();
+    a.requests[0].legs[0].side = Side::Sell;
+    a.requests[0].legs[1].side = Side::Buy;
     let c = certify_vertical(&a, &a.requests[0]);
-    assert_eq!(c.gross_payoff_lower, Some(d("-.1")));
-    assert_eq!(c.gross_payoff_upper, Some(d("0")));
-    assert_eq!(c.values_at_knots, vec![d("-.1"), d("-.1"), d("0")]);
-    assert_eq!(c.segment_slopes, vec![d("0"), d(".01"), d("0")]);
+    assert_eq!(c.gross_payoff_lower, Some(d("0")));
+    assert_eq!(c.gross_payoff_upper, Some(d(".1")));
+    assert_eq!(c.values_at_knots, vec![d(".1"), d(".1"), d("0")]);
+    assert_eq!(c.segment_slopes, vec![d("0"), d("-.01"), d("0")]);
     let mut q = a.quotes[0].clone();
     q.book.spec.quantity_unit = QuantityUnit::Contracts;
     q.book.spec.multiplier = d("10");
@@ -457,4 +459,131 @@ fn put_vertical_reverse_direction_and_contract_price_units() {
     assert_eq!(c.premium_native, Some(d(".04")));
     assert_eq!(c.fee_native, Some(d(".003")));
     assert_eq!(c.total_report_currency, Some(d(".043")));
+}
+fn rebind_and_readmit(mut a: AnalysisInput) -> AnalysisInput {
+    for (q, l) in a.quotes.iter().zip(&mut a.requests[0].legs) {
+        l.instrument = InstrumentDescriptor::from_spec(&q.book.spec).unwrap();
+    }
+    for scenario in &mut a.scenarios.scenarios {
+        for point in &mut scenario.points {
+            let price = point.delivery_by_spec_hash[0].1.clone();
+            point.delivery_by_spec_hash = a
+                .quotes
+                .iter()
+                .map(|q| (canonical_hash(&q.book.spec).unwrap(), price.clone()))
+                .collect();
+        }
+    }
+    load_analysis(Request {
+        schema_version: REQUEST_SCHEMA.into(),
+        cutoff_ns: a.cutoff_ns,
+        view_id: a.view.meta.object_id.clone(),
+        views: a.view_history,
+        scenarios: a.scenarios,
+        candidates: a.requests,
+        quotes: a.quotes,
+        hypothetical_balances: a.hypothetical_balances,
+        risk_policy: a.risk_policy,
+        source_identities: a.source_identities,
+        fixture_name: None,
+    })
+    .unwrap()
+}
+#[test]
+fn registered_vertical_orientation_rejects_reverse_call_and_put() {
+    for kind in [OptionType::C, OptionType::P] {
+        let mut a = case("terminal-vertical");
+        for q in &mut a.quotes {
+            q.book.spec.option_type = kind;
+        }
+        a.requests[0].template_id = if kind == OptionType::C {
+            "call_vertical"
+        } else {
+            "put_vertical"
+        }
+        .into();
+        if kind == OptionType::C {
+            a.requests[0].legs[0].side = Side::Sell;
+            a.requests[0].legs[1].side = Side::Buy;
+        }
+        let a = rebind_and_readmit(a);
+        let c = certify_vertical(&a, &a.requests[0]);
+        assert_eq!(c.status.status, Status::Unsupported);
+        assert!(c.gross_payoff_upper.is_none());
+        assert!(c.conditional_model_upper.is_none());
+        assert!(c.opening_net_spend.is_some());
+        assert_eq!(c.request_id, a.requests[0].request_id);
+        for (q, l) in a.quotes.iter().zip(&a.requests[0].legs) {
+            assert_eq!(
+                quote_cost(q, l, a.cutoff_ns, "USDC").status.status,
+                Status::Valid
+            );
+        }
+    }
+}
+#[test]
+fn linear_via_future_has_conditional_terminal_cash_equivalence_only() {
+    for name in ["terminal-eth-call", "terminal-vertical"] {
+        let mut a = case(name);
+        for q in &mut a.quotes {
+            q.book.spec.settlement_rule = SettlementRule::LinearViaFuture;
+        }
+        let a = rebind_and_readmit(a);
+        if name == "terminal-eth-call" {
+            let r = analyze_expression(&a, &a.requests[0]);
+            assert_eq!(r.support.model_support.status, Status::Valid);
+            assert_eq!(r.outcomes[2].conditional_model_pnl, Some(d(".0797")));
+            assert_eq!(r.support.account_eligibility.status, Status::Unverified);
+            assert!(
+                r.reasons
+                    .iter()
+                    .any(|x| x.contains("CASH_EQUIVALENT_TERMINAL_ONLY"))
+            );
+        } else {
+            let c = certify_vertical(&a, &a.requests[0]);
+            assert_eq!(c.status.status, Status::Valid);
+            assert_eq!(c.conditional_model_upper, Some(d(".1094")));
+            assert!(
+                c.reasons
+                    .iter()
+                    .any(|x| x.contains("CASH_EQUIVALENT_TERMINAL_ONLY"))
+            );
+            assert!(
+                c.reasons
+                    .iter()
+                    .any(|x| x.contains("SHORT_EXECUTION_UNSUPPORTED"))
+            );
+        }
+    }
+}
+#[test]
+fn sentinel_fixing_never_upgrades_to_supported_model() {
+    for sentinel in ["UNKNOWN", " unknown ", "UnVeRiFiEd"] {
+        for name in ["terminal-eth-call", "terminal-vertical"] {
+            let mut a = case(name);
+            for q in &mut a.quotes {
+                q.book.spec.settlement_index = sentinel.into();
+            }
+            let a = rebind_and_readmit(a);
+            if name == "terminal-eth-call" {
+                let r = analyze_expression(&a, &a.requests[0]);
+                assert_ne!(r.support.model_support.status, Status::Valid);
+                assert!(r.conditional_model_loss_bound.is_none());
+                assert!(r.conditional_ev.is_none());
+                assert_eq!(r.costs[0].status.status, Status::Valid);
+            } else {
+                let c = certify_vertical(&a, &a.requests[0]);
+                assert_ne!(c.status.status, Status::Valid);
+                assert!(c.gross_payoff_upper.is_none());
+                assert!(c.conditional_model_upper.is_none());
+                assert_eq!(c.opening_net_spend, Some(d("-.0094")));
+                assert_eq!(
+                    quote_cost(&a.quotes[0], &a.requests[0].legs[0], a.cutoff_ns, "USDC")
+                        .status
+                        .status,
+                    Status::Valid
+                );
+            }
+        }
+    }
 }
