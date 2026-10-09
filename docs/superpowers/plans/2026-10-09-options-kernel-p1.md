@@ -10,7 +10,7 @@
 
 **Spec:** [已审阅架构规格](../specs/2026-10-09-options-platform-design.md)，基线 commit `6e37ddabd7d35b9addcfbb288f05d4fe1bb653c2`。用户在展示该书面规格后回复“开始处理”，随后再次回复“可以去处理”，本计划承接规格第 8 节 P1。
 
-**Status:** Task 1–8 产品实现与局部验收已交付；Task 1–7 的逐项独立审查和修复已完成。Task 8 完整 gate 已执行一次，结果见本页交付记录；全分支独立审查由 controller 安排，仍待完成。局部通过不表示全仓、实盘或 promotion 通过。执行沿用用户授权的顺序 subagent 方法；未声称使用不可用的 Terra。
+**Status:** Task 1–8 本地 P1 实现与验收完成；逐项审查、全分支独立初审和唯一一次限定范围修复复审均已完成，I1/I2/M1 全部 ADDRESSED，无新增问题。Local P1 complete；full integration BLOCKED。唯一完整 gate 是失败且非冻结的历史诊断，结果见本页；没有当前 HEAD 全仓验收、merge、push、部署或 promotion。执行沿用用户授权的顺序 subagent 方法；未声称使用不可用的 Terra。
 
 ## Global Constraints
 
@@ -438,7 +438,7 @@ uv run ruff format --check zenquant/options/ zenquant/research/options_platform/
 - [x] **Step 5: 全仓验收一次。** 先记录未改P1前的必要baseline，执行后运行 `uv run zenquant-check`。实际runner包含0/A/B/C/D/E/F：Gate0因子健康、GateF现有walk-forward均需检查；不得只跑quick冒充全部通过。本轮已读取当前 `scripts/walk_forward_eval.py`：执行既有配置的train/dev回放评价，不调用optimizer或新训练；运行它不授予旧冻结候选重新寻优权限。
 
 基础依赖/数据/数据库错误作为既有环境缺口记录；不为让全仓通过修改生产、其它未提交工作或重写golden。P1局部通过与全仓阻断分别报告，未全通过不merge/promotion。成功后，不因“加强验证”反复运行全仓。
-- [ ] **Step 6: 全分支独立审查与交付（已完成初审，I1/I2/M1 已修复，待一次 scoped 复审）。** 新reviewer核对实际diff、手算现金轨迹、failures、imports、封存源未改和完整gate结果。报告写明实际运行命令、配置、结果、限制与后续P2数据缺口；不部署、不下单、不继续 optimizer。
+- [x] **Step 6: 全分支独立审查与本地交付（初审及一次 scoped 复审完成，I1/I2/M1 全部 ADDRESSED）。** 新reviewer核对实际diff、手算现金轨迹、failures、imports、封存源未改和完整gate结果。报告写明实际运行命令、配置、结果、限制与后续P2数据缺口；不部署、不下单、不继续 optimizer。
 
 ## 自审覆盖与执行顺序
 
@@ -574,7 +574,7 @@ uv run python scripts/analyze_options_portfolio.py --output-dir results/options_
 | E | FAIL | 255.3s | 2489 passed、5 failed、4 skipped、38 subtests passed；非冻结collect快照 |
 | F | PASS | 55.1s | 既有4-window train/dev回放判据无OVERFIT；Avg Test Sharpe -.41，不能当作有效收益或新训练准入 |
 
-Gate E 失败为 `tests/test_backtest_invariants.py` 的 final_equity_exceeds_starting/net_pnl_is_positive/sharpe_is_positive，以及 `tests/test_execution_sensitivity.py` 的 dca_toggle_stable/dd_never_catastrophic；未调查性修改既有策略、用户工作或基线。完整 stdout+stderr、退出码和时间在 `.superpowers/sdd/2026-10-09-options-kernel-p1/task-8-full-gates.log`。全分支独立初审已发现 I1/I2/M1，汇总修复已完成；Task8 Step6仍未勾选，等待一次限定范围复审，集成仍 BLOCKED。
+Gate E 失败为 `tests/test_backtest_invariants.py` 的 final_equity_exceeds_starting/net_pnl_is_positive/sharpe_is_positive，以及 `tests/test_execution_sensitivity.py` 的 dca_toggle_stable/dd_never_catastrophic；未调查性修改既有策略、用户工作或基线。完整 stdout+stderr、退出码和时间在 `results/options_platform/p1_delivery_evidence_20261009/task-8-full-gates.log`。全分支独立初审发现的 I1/I2/M1 已通过汇总修复和唯一一次限定范围复审，全部 ADDRESSED，未发现新增问题；Task8 Step6 已勾选，本地 P1 完成，集成仍 BLOCKED。
 
 最终CLI source SHA-256 为 `a317ff4d541e220a467e9c76cee5dc3f422ae70ade5173f1a83e5b77bc9398ac`；两个r2的 source data/fixture/policy保持对应身份，code hash更新如下：
 
@@ -601,9 +601,9 @@ I2：`tests/options/test_panel.py` 中的确定性原始 fixture 代码已跟踪
 uv run pytest tests/options/test_panel.py::test_sealed_input_integration --require-local-options-panel -q
 ```
 
-M1：本计划仅保留与 canonical handoff 一致的 1–22 项裁决，各只编号一次。早期 Task 8 报告的“all15”不再表示最终裁决数。额外 argv/发布说明不占裁决编号。最终 reviewer 的 14 项 declined-to-judge 已按裁决 22 逐项接受批准 P1 的边界，明细随 `final-scope-adjudications.md` 归档；I1 预算一致性始终属于 P1，未借 full order lifecycle 范围外将其豁免。
+M1：本计划仅保留与 canonical handoff 一致的 1–22 项裁决，各只编号一次。早期 Task 8 报告的“all15”不再表示最终裁决数。额外 argv/发布说明不占裁决编号。最终 reviewer 的 14 项 declined-to-judge 已按裁决 22 逐项接受批准 P1 的边界，明细见 `results/options_platform/p1_delivery_evidence_20261009/final-scope-adjudications.md`；I1 预算一致性始终属于 P1，未借 full order lifecycle 范围外将其豁免。
 
-交付证据归档位置为 `results/options_platform/p1_delivery_evidence_20261009/`（包括 final-review、final-fix-report、canonical rulings、scope adjudications 和局部验证日志）；源 panel/scout corpus 保留原处且不修改。当前仅汇总修复完成、等待一次 scoped 复审；全仓集成仍 BLOCKED，旧全仓记录仍为失败且非冻结的历史诊断，不得解释为当前 HEAD 验收。未再次运行全 harness、重写 golden、merge、push、部署、下单或晋级。
+交付证据归档位置为 `results/options_platform/p1_delivery_evidence_20261009/`；controller 在本次文档收尾后统一复制完整证据，包括 `final-review.md`、`final-fix-report.md`、`final-fix-review.md`、`rulings-for-handoff.md`、`final-scope-adjudications.md`、progress、hash 核验和局部验证日志。源 panel/scout corpus 保留原处且不修改。`results/options_platform/p1_delivery_evidence_20261009/final-fix-review.md` 确认 I1/I2/M1 全部 ADDRESSED，无新增 Critical/Important 问题；唯一一次 scoped 复审已完成，本地 P1 交付完成。全仓集成仍 BLOCKED，旧全仓记录仍为失败且非冻结的历史诊断，不得解释为当前 HEAD 验收。未再次运行全 harness、重写 golden、merge、push、部署、下单或晋级。
 
 
 本次修复代码与测试提交后，仅运行一次覆盖新 P1 的 `uv run pytest tests/options/ -q`：**428 passed in 2.49s**；局部范围覆盖 ledger/risk/replay 的传播影响。真实源严格命令另为 **1 passed in 1.69s**；scoped `ruff check` 通过、`ruff format --check` 显示 **23 files already formatted**。I1 的修复前 focused RED 为 7 failed / 154 passed，修复后同命令为 161 passed；I2 portable 原始 fixture/可用性回归为 45 passed / 1 deselected（仅未在该命令重复真实源集成）。这些是当前修复的实际运行数，不覆盖旧 full harness 失败。
