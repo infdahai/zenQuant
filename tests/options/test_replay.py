@@ -571,3 +571,26 @@ def test_failed_reduction_retransmission_cannot_invent_lot_reduction_provenance(
     assert final.positions[0].quantity_native == D("1")
     assert final.unapplied == (oversell,)
     assert "EXIT_EXCEEDS_LONG" in final.frozen_reasons
+
+
+@pytest.mark.parametrize("amount, reasons", [("14", ()), ("13", ("RESERVATION_OVERRUN",))])
+def test_checkpoint_retains_completed_order_budget_and_canonical_spend(amount, reasons):
+    from .test_ledger import reserve
+
+    spec = linear_spec()
+    seed = initial(spec)
+    opening = fill_event(2, spec=spec, quantity="1", price="10", fee="1")
+    reserve_event = reserve(amount=amount)
+    retry = replace(opening, key=replace(opening.key, received_ns=3, available_ns=3, journal_sequence=3))
+    fee = fee_event(n=4, instrument_id=spec.instrument_id, intent_id="i1", parent_id=opening.key.event_id)
+    fee_retry = replace(fee, key=replace(fee.key, received_ns=5, available_ns=5, journal_sequence=5))
+    final_fee = replace(fee, key=key(6), fee=D("1"))
+    events = (reserve_event, opening, retry, fee, fee_retry, final_fee)
+    states = replay(initial=seed, events=events)
+    restored = restore_checkpoint(checkpoint_payload(initial=seed, events=events[:4], expected_state=states[3]))
+    resumed = replay(initial=restored, events=events[4:])[-1]
+    assert fingerprint(resumed) == fingerprint(states[-1])
+    assert wallet_cash(resumed, wallet()) == D("986")
+    assert resumed.positions[0].opening_fees_basis == ((wallet(), D("4")),)
+    assert resumed.reservations == ()
+    assert resumed.frozen_reasons == reasons

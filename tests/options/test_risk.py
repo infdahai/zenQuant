@@ -559,7 +559,7 @@ def test_pending_unsupported_account_is_not_admitted_from_representable_state():
 
 def test_late_actual_opening_fee_counts_tail_outlay():
     first = intent_for(sleeve="tail")
-    state = apply_event(funded(), reserve(1, intent=first, amount="10"))
+    state = apply_event(funded(), reserve(1, intent=first, amount="12"))
     state = apply_event(state, fill_event(2, spec=linear_spec(), quantity="1", price="10"))
     fee = LedgerEvent(
         key=key(3),
@@ -598,3 +598,20 @@ def test_unavailable_fee_policy_in_cost_is_not_zero():
         total_report_currency=None,
     )
     assert_blocked(approve(intent=i, costs=(cost,)), "COST_NOT_VALID", "NOT_EVALUABLE")
+
+
+@pytest.mark.parametrize("amount, reason", [("12", "MODELED_FUNDED_LONG_FEASIBLE"), ("10", "STATE_FROZEN")])
+@pytest.mark.parametrize("standalone", [False, True])
+def test_full_fill_opening_fee_transport_has_same_next_approval(amount, reason, standalone):
+    first = intent_for()
+    state = apply_event(funded(), reserve(1, intent=first, amount=amount))
+    opening = fill_event(2, spec=linear_spec(), quantity="1", price="10", fee="0" if standalone else "2", sleeve=first.sleeve)
+    state = apply_event(state, opening)
+    if standalone:
+        fee = replace(opening, key=key(3), kind="FEE", quantity_native=None, price=None,
+                      fee=D("2"), parent_id=opening.key.event_id)
+        state = apply_event(state, fee)
+    second = intent_for(identity="i2")
+    result = approve(intent=second, state=state)
+    assert result.status.reason == reason
+    assert result.status.status == ("VALID" if amount == "12" else "REJECTED")
