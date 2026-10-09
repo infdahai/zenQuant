@@ -438,7 +438,7 @@ uv run ruff format --check zenquant/options/ zenquant/research/options_platform/
 - [x] **Step 5: 全仓验收一次。** 先记录未改P1前的必要baseline，执行后运行 `uv run zenquant-check`。实际runner包含0/A/B/C/D/E/F：Gate0因子健康、GateF现有walk-forward均需检查；不得只跑quick冒充全部通过。本轮已读取当前 `scripts/walk_forward_eval.py`：执行既有配置的train/dev回放评价，不调用optimizer或新训练；运行它不授予旧冻结候选重新寻优权限。
 
 基础依赖/数据/数据库错误作为既有环境缺口记录；不为让全仓通过修改生产、其它未提交工作或重写golden。P1局部通过与全仓阻断分别报告，未全通过不merge/promotion。成功后，不因“加强验证”反复运行全仓。
-- [ ] **Step 6: 全分支独立审查与交付（controller 待安排）。** 新reviewer核对实际diff、手算现金轨迹、failures、imports、封存源未改和完整gate结果。报告写明实际运行命令、配置、结果、限制与后续P2数据缺口；不部署、不下单、不继续 optimizer。
+- [ ] **Step 6: 全分支独立审查与交付（已完成初审，I1/I2/M1 已修复，待一次 scoped 复审）。** 新reviewer核对实际diff、手算现金轨迹、failures、imports、封存源未改和完整gate结果。报告写明实际运行命令、配置、结果、限制与后续P2数据缺口；不部署、不下单、不继续 optimizer。
 
 ## 自审覆盖与执行顺序
 
@@ -507,11 +507,13 @@ uv run ruff format --check zenquant/options/ zenquant/research/options_platform/
 
 18. Ruling refinement: Allow one explained noqa:RUF007 on the adjacent zip loop, not a global lint exemption or broader core import whitelist. Evidence: Ruff recommends forbidden itertools.pairwise for the equivalent whitelist-safe replacement. Cost if wrong: that single line no longer receives this style recommendation; cost behavior regressions and AST boundary enforcement remain active.
 
-16. Task 8 新 AST 测试发现 costs.py 的 itertools 导入违反冻结核心白名单；controller 批准唯一范围扩展，等价改为 zip(levels, levels[1:])。该行带理由的 noqa:RUF007 防止 lint 要求恢复禁用依赖；成本：仅该相邻迭代行不再接受 pairwise 建议检查，未放宽全局 lint 或导入白名单。
+19. Ruling: Retain the single full harness run as non-frozen checkout diagnostics, not final-HEAD integration acceptance, after implementation changes occurred during Gate E; validate final changes with focused tests and fresh identity-bound demos and leave integration blocked. Evidence: run started at475e63d, then eb5dad9/0587247 landed during execution; baseline Gate C already failed. Cost if wrong: final whole-repo acceptance remains unavailable and requires a future frozen-snapshot run before any merge/promotion; local P1 results cannot substitute for that gate.
 
-17. CLI 原子发布采用 Darwin renamex_np(RENAME_EXCL) / Linux renameat2(RENAME_NOREPLACE)，使用标准库 ctypes，仅限 CLI。目标已存在或并发出现（含空目录）均拒绝替换。成本：支持取决于 OS/libc，缺少原语的平台 fail closed 返回1并保留 `.OUTPUT.incomplete-*`；不会降级为有竞争窗口的普通 rename。父目录重定位/恶意文件系统并发和机器断电持久性不在 P1 安全承诺内。
+20. Ruling: CLI output guards read the existing private pinned-root registry as the single source of all sealed input roots, including the transitive venue-scout source and no-panel runs; resolved ancestry is protected without duplicating a fixed path list or adding a new adapter API. Evidence: protecting only panel-root allows writes into the sibling pinned metadata source. Cost if wrong: a documented CLI-to-adapter private-registry dependency must be kept synchronized; it grants no mutation or source-authentication authority.
 
-18. CLI 数学 fixture 先完成所有输入校验/序列化再写临时兄弟目录，`report.json / REPORT.md` 全量 bytes+SHA 进入 `identity.json`；最终目录只在完整写入后原子可见。数学 `policy_enforced=false`，模型 preflight 单列且 execution NONE。成本：单一 assigned CLI 文件约405行包含显式 fixture 构造；P2 若增加场景需先重审接口分工，不能借便利把研究假设混成实盘批准。
+21. Ruling: Portable tests require tracked deterministic raw fixtures; real sealed panel/scout integration has an explicit local-availability boundary and pytest-only --require-local-options-panel strict mode. Entirely absent local sources may be explicitly skipped only in normal runs; present incomplete/tampered sources and any strict missing source fail. Evidence: default tests depended on ignored workstation-only results. Cost if wrong: portable CI cannot certify the real corpus and must show the named skip; strict local source acceptance remains a separate required check, with no copying/download/reseal.
+
+22. Ruling: Accept all14 final-review Declined-to-judge boundaries as outside the approved offline P1 scope, with the per-row reasons recorded in final-scope-adjudications.md; original actual order-budget overrun remains in scope and I1 must fix. Evidence: P1 withholds account/execution/authentication/performance/production authority and preserves unresolved receipts. Cost if wrong: these results provide no live-capital, service, security-authenticity or strategy-performance certification; the corresponding P2 evidence and integration acceptance remain outstanding.
 
 ## P1 本地交付与使用
 
@@ -546,13 +548,11 @@ P2 缺口：真实账户模式/地区/产品资格、实际费率层级、可达
 
 `p1_1000` panel canonical input hash 为 `ec0d4f1ed8c962459d679f8e6c081ef2d8004b7ab36190ddee62eb19afdeb4ca`；PINNED_BYTES_VERIFIED 仅指 loader 的本地内容binding，不能当作交易所签名、真实账户或可达成交证据。
 
-19. CLI 输出保护只读依赖 `panel_module._SEAL_PINS` 的 root keys，统一保护 panel/scout 及其父/子目录，未传 panel-root 时也执行；用户提供 root 另行加入，所有路径先 resolve。成本：一个明确 private coupling，registry 内部名称/形状改变需要同步此守卫与测试；不复制固定路径名单、不扩展 Task7 API、不写 registry、不导入 collector。
-
-20. argparse 默认会把无效 argv 值带进错误日志，CLI 仅保留安全错误类别（unrecognized arguments / invalid arguments），具体原始值不回显。成本：输入诊断精度略低；安全类别和退出2仍保留，未支持账户或凭证参数。
+补充实现说明（不另编号）：CLI 数学 fixture 完成输入校验和序列化后写临时兄弟目录，两个报告文件的 bytes/SHA 纳入 identity，再以不覆盖原语原子发布。数学 `policy_enforced=false`，模型 preflight 单列且 execution NONE。argparse 不回显无效 argv 原值，仅保留安全错误类别，代价是输入诊断精度略低；未增加账户或凭证参数。
 
 ## 最终 Task 8 覆盖与全仓阻断
 
-原始 p1_1000/p1_3000 演示在 CLI 输入分类/源目录保护自审修复前产生，保留不覆写。最终可复核产物来自以下 fresh 目录，两条命令均退出0（并未重新取行情）：
+原始 p1_1000/p1_3000 演示在 CLI 输入分类/源目录保护自审修复前产生，保留不覆写。Task 8 当时可复核产物来自以下 fresh 目录（r2 保留历史身份；本次费用修复后的当前产物另见 r3），两条命令均退出0（并未重新取行情）：
 
 ```sh
 uv run python scripts/analyze_options_portfolio.py --panel-root results/crypto_opportunity/20261009_options_liquidity_panel_v1 --output-dir results/options_platform/p1_1000_r2 --capital 1000 --scenario long-call
@@ -574,7 +574,7 @@ uv run python scripts/analyze_options_portfolio.py --output-dir results/options_
 | E | FAIL | 255.3s | 2489 passed、5 failed、4 skipped、38 subtests passed；非冻结collect快照 |
 | F | PASS | 55.1s | 既有4-window train/dev回放判据无OVERFIT；Avg Test Sharpe -.41，不能当作有效收益或新训练准入 |
 
-Gate E 失败为 `tests/test_backtest_invariants.py` 的 final_equity_exceeds_starting/net_pnl_is_positive/sharpe_is_positive，以及 `tests/test_execution_sensitivity.py` 的 dca_toggle_stable/dd_never_catastrophic；未调查性修改既有策略、用户工作或基线。完整 stdout+stderr、退出码和时间在 `.superpowers/sdd/2026-10-09-options-kernel-p1/task-8-full-gates.log`。全分支独立审查由 controller 另行安排，Task8 Step6仍未勾选。
+Gate E 失败为 `tests/test_backtest_invariants.py` 的 final_equity_exceeds_starting/net_pnl_is_positive/sharpe_is_positive，以及 `tests/test_execution_sensitivity.py` 的 dca_toggle_stable/dd_never_catastrophic；未调查性修改既有策略、用户工作或基线。完整 stdout+stderr、退出码和时间在 `.superpowers/sdd/2026-10-09-options-kernel-p1/task-8-full-gates.log`。全分支独立初审已发现 I1/I2/M1，汇总修复已完成；Task8 Step6仍未勾选，等待一次限定范围复审，集成仍 BLOCKED。
 
 最终CLI source SHA-256 为 `a317ff4d541e220a467e9c76cee5dc3f422ae70ade5173f1a83e5b77bc9398ac`；两个r2的 source data/fixture/policy保持对应身份，code hash更新如下：
 
@@ -582,3 +582,25 @@ Gate E 失败为 `tests/test_backtest_invariants.py` 的 final_equity_exceeds_st
 | --- | ---: | --- | --- |
 | `results/options_platform/p1_1000_r2` | 8933612 | `36abb6c2b466479241bba924d5e24186e6154de082f5f08b69c5895d708be1b3` | `68badade9cfd49e1d6544f3620c48bded680e4b4c99f5d24d13b27f469a75964` |
 | `results/options_platform/p1_3000_r2` | 16588 | `caa3a090fae0f2cd4b5b81c62b7b7ee3bfa56266f1c5869de2c699d8a0bd9c05` | `4ae50aeb74f5d86afa26a7927ceb553a0590e07e95d0cd40f54a69d213755cd3` |
+
+
+## 最终审查修复与可移植验收边界
+
+I1：完整成交释放 active reservation 后，证明归属的后到开仓费先扣实际现金、累计原币费用 basis，再从成功应用的首次 native 回执重建原始预算与累计花费。超原预算冻结 `RESERVATION_OVERRUN`，下一 intent 与 inline 费用同样拒绝。原生回执重传不重复记账；已付现金不重新预留；未解决回执不重试；不同费用钱包不暗中汇率转换；复用订单号造成预算归属不唯一时保留费用并冻结。
+
+I2：`tests/options/test_panel.py` 中的确定性原始 fixture 代码已跟踪，临时 raw/seal 字节独立构造，不依赖工作站资料；这部分为必跑的 portable 覆盖。唯一真实封存集成 `test_sealed_input_integration` 使用两个固定本地根目录（相对于本仓库），不支持自动下载、搬移、复制或重新封存：
+
+| 固定根目录 | seal.json SHA-256 |
+| --- | --- |
+| `results/crypto_opportunity/20261009_options_liquidity_panel_v1` | `b61d04c898cd53545e2bc95ffdede6da6861b18d602d49cb83d57eb52816423b` |
+| `results/crypto_opportunity/20261009_options_venue_scout_v1` | `c35edb8ad23c8d958fe8f2383786f963160842c55ea8c3489e36efb96d25b983` |
+
+普通 `uv run pytest tests/options/ -q` 仅允许对整个根目录不存在的情况显式 `LOCAL_OPTIONS_PANEL_ABSENT` skip，skip 明确表示未完成 source verification。每个存在的根目录先执行 pin、manifest 全部原始 bytes/SHA 校验；缺 seal、缺文件、损坏字节、断链等仍失败，即使另一个根目录完全不存在也不降为 skip。以下 pytest-only 严格命令要求两个根目录均存在并校验通过，任何缺失或损坏均失败；未添加产品 CLI 参数：
+
+```sh
+uv run pytest tests/options/test_panel.py::test_sealed_input_integration --require-local-options-panel -q
+```
+
+M1：本计划仅保留与 canonical handoff 一致的 1–22 项裁决，各只编号一次。早期 Task 8 报告的“all15”不再表示最终裁决数。额外 argv/发布说明不占裁决编号。最终 reviewer 的 14 项 declined-to-judge 已按裁决 22 逐项接受批准 P1 的边界，明细随 `final-scope-adjudications.md` 归档；I1 预算一致性始终属于 P1，未借 full order lifecycle 范围外将其豁免。
+
+交付证据归档位置为 `results/options_platform/p1_delivery_evidence_20261009/`（包括 final-review、final-fix-report、canonical rulings、scope adjudications 和局部验证日志）；源 panel/scout corpus 保留原处且不修改。当前仅汇总修复完成、等待一次 scoped 复审；全仓集成仍 BLOCKED，旧全仓记录仍为失败且非冻结的历史诊断，不得解释为当前 HEAD 验收。未再次运行全 harness、重写 golden、merge、push、部署、下单或晋级。
