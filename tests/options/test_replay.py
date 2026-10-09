@@ -479,3 +479,95 @@ def test_zero_delivery_put_has_signed_system_claim_and_positive_cash():
     final = apply_event(claim, delivery)
     assert wallet_cash(final, wallet()) == D("1050.4")
     assert final.positions == final.claims == final.unapplied == ()
+
+
+def test_failed_delivery_retransmission_cannot_block_valid_exercise_and_new_delivery():
+    spec = linear_spec(settlement_rule="linear_via_future")
+    state = replay(
+        initial=initial(spec),
+        events=(
+            fill_event(1, spec=spec, quantity="1", price="20", fee="2"),
+            fill_event(2, spec=spec, quantity="-.4", price="30", fee=".4"),
+        ),
+    )[-1]
+    exercise, delivery = terminal(spec, fee="0")
+    failed = apply_event(state, delivery)
+    retry = replace(
+        delivery,
+        key=replace(delivery.key, journal_sequence=1002, received_ns=1002, available_ns=1002),
+        raw_hash="failed-retry",
+    )
+    duplicate = apply_event(failed, retry)
+    assert duplicate.balances == failed.balances and duplicate.unapplied == (delivery,)
+    exercise = replace(exercise, key=replace(exercise.key, journal_sequence=1003, received_ns=1003, available_ns=1003))
+    claim = apply_event(duplicate, exercise)
+    assert claim.positions == () and len(claim.claims) == 1
+    assert active_risk_native(claim, wallet()) == D("13.2")
+    assert wallet_cash(claim, wallet()) == D("989.6")
+    confirmed = replace(
+        delivery,
+        key=replace(
+            delivery.key, event_id="confirmed-delivery", journal_sequence=1004, received_ns=1004, available_ns=1004
+        ),
+    )
+    final = apply_event(claim, confirmed)
+    assert final.positions == final.claims == ()
+    assert wallet_cash(final, wallet()) == D("1019.6")
+    assert final.unapplied == (delivery,)
+    assert "UNKNOWN_SYSTEM_CLAIM" in final.frozen_reasons
+    assert (
+        restore_checkpoint(
+            checkpoint_payload(initial=state, events=(delivery, retry, exercise, confirmed), expected_state=final)
+        )
+        == final
+    )
+
+
+def test_fee_after_failed_settlement_retransmission_remains_unresolved_and_debits_once():
+    spec = linear_spec(settlement_rule="linear_via_future")
+    state = replay(
+        initial=initial(spec),
+        events=(
+            fill_event(1, spec=spec, quantity="1", price="20", fee="2"),
+            fill_event(2, spec=spec, quantity="-.4", price="30", fee=".4"),
+        ),
+    )[-1]
+    _, delivery, fee = terminal(spec)
+    failed = apply_event(state, delivery)
+    retry = replace(
+        delivery,
+        key=replace(delivery.key, journal_sequence=1002, received_ns=1002, available_ns=1002),
+        raw_hash="failed-retry",
+    )
+    duplicate = apply_event(failed, retry)
+    fee = replace(fee, key=replace(fee.key, journal_sequence=1003, received_ns=1003, available_ns=1003))
+    charged = apply_event(duplicate, fee)
+    assert wallet_cash(charged, wallet()) == D("989.3")
+    assert charged.unapplied == (delivery, fee)
+    assert "UNRESOLVED_FEE_BASIS_ATTRIBUTION" in charged.frozen_reasons
+    assert active_risk_native(charged, wallet()) == D("13.2")
+    fee_retry = replace(
+        fee, key=replace(fee.key, journal_sequence=1004, received_ns=1004, available_ns=1004), raw_hash="fee-retry"
+    )
+    retransmitted = apply_event(charged, fee_retry)
+    assert wallet_cash(retransmitted, wallet()) == D("989.3")
+    assert retransmitted.unapplied == (delivery, fee)
+    assert retransmitted.positions == charged.positions
+
+
+def test_failed_reduction_retransmission_cannot_invent_lot_reduction_provenance():
+    spec = linear_spec()
+    fill = fill_event(1, spec=spec, quantity="1", price="20")
+    oversell = fill_event(2, spec=spec, quantity="-2", price="30")
+    retry = replace(
+        oversell,
+        key=replace(oversell.key, journal_sequence=3, received_ns=3, available_ns=3),
+        raw_hash="oversell-retry",
+    )
+    fee = fee_event(n=4, instrument_id=spec.instrument_id, intent_id="i1", parent_id=fill.key.event_id)
+    final = replay(initial=initial(spec), events=(fill, oversell, retry, fee))[-1]
+    assert wallet_cash(final, wallet()) == D("978")
+    assert active_risk_native(final, wallet()) == D("22")
+    assert final.positions[0].quantity_native == D("1")
+    assert final.unapplied == (oversell,)
+    assert "EXIT_EXCEEDS_LONG" in final.frozen_reasons
