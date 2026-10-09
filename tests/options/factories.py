@@ -4,7 +4,7 @@ from dataclasses import replace
 from decimal import Decimal
 from typing import Any
 
-from zenquant.options.contracts import EventKey, InstrumentSpec, WalletKey
+from zenquant.options.contracts import Book, BookLevel, EventKey, InstrumentSpec, Observation, WalletKey
 
 
 def linear_spec(
@@ -60,4 +60,33 @@ def key(n: int, *, event_ns: int | None = None, event_id: str | None = None) -> 
         received_ns=n,
         available_ns=n,
         journal_sequence=n,
+    )
+
+
+def book_for(
+    spec: InstrumentSpec,
+    *,
+    asks: tuple[tuple[str, str], ...],
+    bids: tuple[tuple[str, str], ...],
+    time_ns: int = 10,
+) -> Book:
+    return Book(
+        spec=spec,
+        asks=tuple(BookLevel(price=Decimal(price), quantity_native=Decimal(qty)) for price, qty in asks),
+        bids=tuple(BookLevel(price=Decimal(price), quantity_native=Decimal(qty)) for price, qty in bids),
+        source_ns=time_ns,
+        received_ns=time_ns,
+        available_ns=time_ns,
+        raw_hash="fixture-book",
+    )
+
+
+def observation(value: Decimal | str, *, time_ns: int = 10, provenance: str = "fixture") -> Observation:
+    return Observation(
+        value=value,
+        source_ns=time_ns,
+        received_ns=time_ns,
+        available_ns=time_ns,
+        source_id="fixture-observation",
+        provenance=provenance,
     )
