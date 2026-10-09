@@ -440,7 +440,7 @@ def _fill(state: LedgerState, event: LedgerEvent) -> LedgerState:
     return _release_reservation(state, event, spent)
 
 
-def _opening_fee_position(state: LedgerState, event: LedgerEvent) -> OptionPosition | None:
+def _opening_fee_attribution(state: LedgerState, event: LedgerEvent) -> tuple[OptionPosition, str] | None:
     """Require retained positive fill provenance, not merely inventory identity.
 
     A late fee after a reduction needs lot allocation beyond P1's aggregate
@@ -469,6 +469,9 @@ def _opening_fee_position(state: LedgerState, event: LedgerEvent) -> OptionPosit
         for _, r in candidates
     ):
         return None
+    orders = {r.order_id for _, r in candidates}
+    if len(orders) != 1 or (event.order_id is not None and event.order_id not in orders):
+        return None
     first_index = candidates[0][0]
     if any(
         r.kind == "FILL"
@@ -486,7 +489,34 @@ def _opening_fee_position(state: LedgerState, event: LedgerEvent) -> OptionPosit
         for p in state.positions
         if (p.wallet == event.wallet and p.instrument_id == event.instrument_id and p.intent_id == event.intent_id)
     )
-    return matches[0] if len(matches) == 1 else None
+    return (matches[0], candidates[0][1].order_id) if len(matches) == 1 else None
+
+
+def _fee(state: LedgerState, event: LedgerEvent) -> LedgerState:
+    # Debit the actual fee wallet even if the separate inventory-attribution
+    # wallet is unknown. An unresolved receipt may therefore be partly applied.
+    if event.fee_wallet not in {balance.wallet for balance in state.balances}:
+        return _unapplied(state, event, "UNKNOWN_WALLET")
+    state = _cash_change(state, event.fee_wallet, -event.fee)
+    attribution = _opening_fee_attribution(state, event)
+    if attribution is None:
+        return _unapplied(state, event, "UNRESOLVED_FEE_BASIS_ATTRIBUTION")
+    position, order_id = attribution
+    updated = replace(position, opening_fees_basis=_add_fee(position.opening_fees_basis, event.fee_wallet, event.fee))
+    state = replace(state, positions=tuple(updated if p == position else p for p in state.positions))
+    if event.fee_wallet != event.wallet:
+        return state
+    matching = tuple(r for r in state.reservations if r.wallet == event.wallet and r.order_id == order_id)
+    # A completed or cancelled order has no remaining reservation to release.
+    if not matching:
+        return state
+    if len(matching) != 1 or matching[0].intent_id != event.intent_id:
+        return _freeze(state, "ORDER_ATTRIBUTION_MISMATCH")
+    reservation = matching[0]
+    if event.fee > reservation.remaining_cash:
+        state = _freeze(state, "RESERVATION_OVERRUN")
+    remaining = replace(reservation, remaining_cash=max(ZERO, reservation.remaining_cash - event.fee))
+    return replace(state, reservations=tuple(remaining if r == reservation else r for r in state.reservations))
 
 
 def apply_event(state: LedgerState, event: LedgerEvent) -> LedgerState:
@@ -505,6 +535,8 @@ def apply_event(state: LedgerState, event: LedgerEvent) -> LedgerState:
         error = _payload_error(event)
         if error:
             return _unapplied(state, event, error)
+        if event.kind == "FEE":
+            return _fee(state, event)
         known_wallets = {balance.wallet for balance in state.balances}
         if event.wallet not in known_wallets or (event.fee > 0 and event.fee_wallet not in known_wallets):
             return _unapplied(state, event, "UNKNOWN_WALLET")
@@ -536,15 +568,6 @@ def apply_event(state: LedgerState, event: LedgerEvent) -> LedgerState:
             if any(r.intent_id != event.intent_id for r in matching):
                 return _unapplied(state, event, "ORDER_ATTRIBUTION_MISMATCH")
             return replace(state, reservations=tuple(r for r in state.reservations if r not in matching))
-        if event.kind == "FEE":
-            state = _cash_change(state, event.fee_wallet, -event.fee)
-            position = _opening_fee_position(state, event)
-            if position is None:
-                return _unapplied(state, event, "UNRESOLVED_FEE_BASIS_ATTRIBUTION")
-            updated = replace(
-                position, opening_fees_basis=_add_fee(position.opening_fees_basis, event.fee_wallet, event.fee)
-            )
-            return replace(state, positions=tuple(updated if p == position else p for p in state.positions))
         if event.kind == "MARK":
             _, error = _spec(state, event)
             return _unapplied(state, event, error) if error else state
