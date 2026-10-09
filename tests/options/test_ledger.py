@@ -157,7 +157,7 @@ def test_unresolved_actual_receipt_is_retained_without_inventing_inventory(chang
     ],
 )
 def test_unsupported_actual_instrument_is_not_treated_as_zero_liability(changes):
-    spec = linear_spec(**changes)
+    spec = replace(linear_spec(), **changes)
     event = fill_event(1, spec=spec, quantity="1", price="20")
     state = apply_event(funded(spec=spec), event)
     assert state.unapplied == (event,)
@@ -240,3 +240,123 @@ def test_schema_registers_all_lifecycle_events_without_claiming_their_cash():
     state = apply_event(funded(), event)
     assert state.unapplied == (event,)
     assert "CORRECTION_REQUIRES_RECONCILIATION" in state.frozen_reasons
+
+
+def test_below_order_min_actual_fill_records_cash_and_basis_with_anomaly():
+    spec = linear_spec(min_quantity_native=D("1"))
+    state = apply_event(funded(spec=spec), fill_event(1, spec=spec, quantity=".4", price="20", fee=".8"))
+    assert wallet_cash(state, wallet()) == D("991.2")
+    assert state.positions[0].quantity_native == D(".4")
+    assert state.positions[0].premium_basis == D("8")
+    assert active_risk_native(state, wallet()) == D("8.8")
+    assert "INVALID_FILL_QUANTITY" in state.frozen_reasons
+    assert not state.unapplied
+
+
+@pytest.mark.parametrize("sleeve", [None, "unknown"])
+def test_missing_sleeve_records_actual_cash_and_freezes_budget_attribution(sleeve):
+    event = replace(fill_event(1, spec=linear_spec(), quantity="1", price="20"), sleeve=sleeve)
+    state = apply_event(funded(), event)
+    assert wallet_cash(state, wallet()) == D("980")
+    assert state.positions[0].premium_basis == D("20")
+    assert "UNRESOLVED_SLEEVE_ATTRIBUTION" in state.frozen_reasons
+
+
+def test_explicit_fee_debits_original_wallet_and_allocates_only_proven_opening_basis():
+    spec = linear_spec()
+    opening = fill_event(1, spec=spec, quantity="1", price="20")
+    state = apply_event(funded(), opening)
+    fee = replace(
+        opening, key=key(2), kind="FEE", quantity_native=None, price=None, fee=D("2"), parent_id=opening.key.event_id
+    )
+    state = apply_event(state, fee)
+    assert wallet_cash(state, wallet()) == D("978")
+    assert active_risk_native(state, wallet()) == D("22")
+    assert not state.unapplied
+
+
+def test_unallocated_fee_records_cash_without_inventing_opening_basis():
+    opening = fill_event(1, spec=linear_spec(), quantity="1", price="20")
+    state = apply_event(funded(), opening)
+    fee = replace(
+        opening,
+        key=key(2),
+        kind="FEE",
+        instrument_id=None,
+        intent_id=None,
+        order_id=None,
+        sleeve=None,
+        quantity_native=None,
+        price=None,
+        fee=D("2"),
+    )
+    state = apply_event(state, fee)
+    assert wallet_cash(state, wallet()) == D("978")
+    assert active_risk_native(state, wallet()) == D("20")
+    assert state.unapplied == (fee,)
+    assert "UNRESOLVED_FEE_BASIS_ATTRIBUTION" in state.frozen_reasons
+
+
+def test_mark_retains_receipt_and_does_not_make_model_value_spendable():
+    mark = replace(
+        fill_event(1, spec=linear_spec(), quantity="1", price="25"),
+        kind="MARK",
+        quantity_native=None,
+        intent_id=None,
+        order_id=None,
+        sleeve=None,
+        fee_wallet=None,
+    )
+    state = apply_event(funded(), mark)
+    assert wallet_cash(state, wallet()) == D("1000")
+    assert state.receipts == (mark,)
+    assert not state.frozen_reasons
+
+
+def test_unimplemented_lifecycle_is_preserved_frozen_without_cash():
+    event = replace(
+        fill_event(1, spec=linear_spec(), quantity="1", price="20"),
+        kind="CASH_SETTLEMENT",
+        order_id=None,
+        sleeve=None,
+        price=None,
+        amount=D("30"),
+        parent_id="expiry-link",
+    )
+    state = apply_event(funded(), event)
+    assert state.unapplied == (event,)
+    assert wallet_cash(state, wallet()) == D("1000")
+    assert "LIFECYCLE_NOT_IMPLEMENTED" in state.frozen_reasons
+
+
+def test_fee_inventory_identity_alone_is_not_proof_of_opening_fee():
+    opening = fill_event(1, spec=linear_spec(), quantity="1", price="20")
+    state = apply_event(funded(), opening)
+    fee = replace(opening, key=key(2), kind="FEE", order_id=None, quantity_native=None, price=None, fee=D("2"))
+    state = apply_event(state, fee)
+    assert wallet_cash(state, wallet()) == D("978")
+    assert active_risk_native(state, wallet()) == D("20")
+    assert state.unapplied == (fee,)
+
+
+def test_late_opening_fee_after_partial_close_does_not_invent_remaining_basis():
+    spec = linear_spec()
+    opening = fill_event(1, spec=spec, quantity="1", price="20")
+    state = apply_event(funded(), opening)
+    state = apply_event(state, fill_event(2, spec=spec, quantity="-.5", price="30", order_id="close"))
+    fee = replace(
+        opening, key=key(3), kind="FEE", quantity_native=None, price=None, fee=D("2"), parent_id=opening.key.event_id
+    )
+    state = apply_event(state, fee)
+    assert wallet_cash(state, wallet()) == D("993")
+    assert active_risk_native(state, wallet()) == D("10")
+    assert state.unapplied == (fee,)
+
+
+def test_sleeve_conflict_records_actual_fill_but_freezes_attribution():
+    spec = linear_spec()
+    state = apply_event(funded(), fill_event(1, spec=spec, quantity="1", price="20"))
+    state = apply_event(state, fill_event(2, spec=spec, quantity="1", price="20", sleeve="directional"))
+    assert wallet_cash(state, wallet()) == D("960")
+    assert state.positions[0].quantity_native == D("2")
+    assert "SLEEVE_ATTRIBUTION_CONFLICT" in state.frozen_reasons
