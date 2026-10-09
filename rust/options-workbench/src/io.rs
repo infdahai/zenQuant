@@ -46,9 +46,9 @@ pub fn repository_root() -> Result<PathBuf, Failure> {
             .strip_prefix("gitdir: ")
             .ok_or(Failure::Invalid)?
             .trim();
-        let gitdir = absolute(&repo.join(path))?;
+        let gitdir = trusted_absolute(&repo.join(path))?;
         let common = fs::read_to_string(gitdir.join("commondir")).map_err(|_| Failure::Invalid)?;
-        let common = absolute(&gitdir.join(common.trim()))?;
+        let common = trusted_absolute(&gitdir.join(common.trim()))?;
         return common
             .parent()
             .map(Path::to_path_buf)
@@ -64,6 +64,13 @@ pub fn trusted_roots() -> Result<Vec<PathBuf>, Failure> {
         .collect())
 }
 pub fn absolute(path: &Path) -> Result<PathBuf, Failure> {
+    if path.components().any(|c| matches!(c, Component::ParentDir)) {
+        return Err(Failure::Invalid);
+    }
+    trusted_absolute(path)
+}
+// Only repository-owned gitdir/commondir discovery may resolve parent components.
+fn trusted_absolute(path: &Path) -> Result<PathBuf, Failure> {
     let path = if path.is_absolute() {
         path.to_path_buf()
     } else {

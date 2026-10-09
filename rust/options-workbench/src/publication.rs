@@ -114,6 +114,7 @@ pub struct PublicationTarget {
 }
 impl PublicationTarget {
     pub(crate) fn prepare(path: std::path::PathBuf) -> Result<Self, Failure> {
+        let path = crate::io::absolute(&path)?;
         let mut ancestor = path.parent().ok_or(Failure::Invalid)?.to_path_buf();
         while !ancestor.exists() {
             if !ancestor.pop() {
