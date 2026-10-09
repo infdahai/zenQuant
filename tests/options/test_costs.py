@@ -91,11 +91,12 @@ def test_missing_required_dependency_is_unknown_not_zero(dependency):
 @pytest.mark.parametrize("dependency", ["book", "index_in_quote", "quote_to_report"])
 def test_stale_dependency_blocks_cost(dependency):
     inputs = cost_inputs(asof_ns=21)
+    for name in ("book", "index_in_quote", "quote_to_report"):
+        inputs[name] = replace(inputs[name], source_ns=21, received_ns=21, available_ns=21)
+    inputs[dependency] = replace(inputs[dependency], source_ns=10)
     result = quote_cost(**inputs)
     assert result.status.status == "NOT_EVALUABLE"
-    inputs[dependency] = replace(inputs[dependency], source_ns=11)
-    # Making just one source fresh cannot rescue the other stale dependencies.
-    assert quote_cost(**inputs).total_report_currency is None
+    assert result.total_report_currency is None
 
 
 @pytest.mark.parametrize("dependency", ["book", "index_in_quote", "quote_to_report"])
@@ -209,7 +210,8 @@ def test_explicit_zero_fee_is_known():
 
 
 def test_native_inverse_and_currency_variants_are_only_price_diagnostics():
-    spec = linear_spec(
+    spec = replace(
+        linear_spec(),
         product="inverse_option",
         quote_currency="BTC",
         settlement_currency="BTC",
