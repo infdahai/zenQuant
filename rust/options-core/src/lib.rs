@@ -3,6 +3,7 @@
 pub mod canonical;
 pub mod codec;
 pub mod contracts;
+pub mod costs;
 pub mod decimal;
 pub mod error;
 pub mod fixtures;
