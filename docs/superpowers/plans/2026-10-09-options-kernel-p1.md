@@ -604,3 +604,20 @@ uv run pytest tests/options/test_panel.py::test_sealed_input_integration --requi
 M1：本计划仅保留与 canonical handoff 一致的 1–22 项裁决，各只编号一次。早期 Task 8 报告的“all15”不再表示最终裁决数。额外 argv/发布说明不占裁决编号。最终 reviewer 的 14 项 declined-to-judge 已按裁决 22 逐项接受批准 P1 的边界，明细随 `final-scope-adjudications.md` 归档；I1 预算一致性始终属于 P1，未借 full order lifecycle 范围外将其豁免。
 
 交付证据归档位置为 `results/options_platform/p1_delivery_evidence_20261009/`（包括 final-review、final-fix-report、canonical rulings、scope adjudications 和局部验证日志）；源 panel/scout corpus 保留原处且不修改。当前仅汇总修复完成、等待一次 scoped 复审；全仓集成仍 BLOCKED，旧全仓记录仍为失败且非冻结的历史诊断，不得解释为当前 HEAD 验收。未再次运行全 harness、重写 golden、merge、push、部署、下单或晋级。
+
+
+本次修复代码与测试提交后，仅运行一次覆盖新 P1 的 `uv run pytest tests/options/ -q`：**428 passed in 2.49s**；局部范围覆盖 ledger/risk/replay 的传播影响。真实源严格命令另为 **1 passed in 1.69s**；scoped `ruff check` 通过、`ruff format --check` 显示 **23 files already formatted**。I1 的修复前 focused RED 为 7 failed / 154 passed，修复后同命令为 161 passed；I2 portable 原始 fixture/可用性回归为 45 passed / 1 deselected（仅未在该命令重复真实源集成）。这些是当前修复的实际运行数，不覆盖旧 full harness 失败。
+
+当前身份产物（原 r2 全部三文件保持逐字节不变）：
+
+```sh
+uv run python scripts/analyze_options_portfolio.py --panel-root results/crypto_opportunity/20261009_options_liquidity_panel_v1 --output-dir results/options_platform/p1_1000_r3 --capital 1000 --scenario long-call
+uv run python scripts/analyze_options_portfolio.py --output-dir results/options_platform/p1_3000_r3 --capital 3000 --scenario straddle
+```
+
+两条命令均退出 0。本轮逐文件核验 `report.json / REPORT.md` bytes/SHA 及 identity 中 9 个代码 hash；相对于 r2，仅 ledger 源身份更新，fixture、policy、panel data/source references 不变。当前 ledger SHA-256 为 `0213aaab6afd44b72a744217560758f453f8e5b32076144cb5de7f3ee6f82493`。panel/scout 的原 510+31 条 bytes/SHA 及固定 pins 一致，105 个受保护既有文件哈希全部一致。
+
+| 当前产物目录 | report.json bytes | report.json SHA-256 | identity.json SHA-256 |
+| --- | ---: | --- | --- |
+| `results/options_platform/p1_1000_r3` | 8933612 | `48f7b485596da954d53c43a05757d5c3229d8a7538a01bae6c42887e97f9843a` | `c8ffcf6b19507cd651f5353001ff201d0a4313117a6954ccc6602a135242bfa3` |
+| `results/options_platform/p1_3000_r3` | 16588 | `536d98e8f5b62bccae30e807daef0267091cab1a3bf99d2e58d7c469f7de36f3` | `0dd127a42e4be8e5d1b1a63524f6eafa5febd4d363908dec04c87d10d8969cee` |
