@@ -192,3 +192,30 @@ def test_panel_read_or_schema_error_is_invalid_input(tmp_path, monkeypatch, caps
     assert "PANEL_INPUT_INVALID" in stderr
     assert "secret-fixture-value" not in stderr
     assert not out.exists()
+
+
+@pytest.mark.parametrize("panel_selected", [False, True])
+@pytest.mark.parametrize("relation", ["equal", "descendant", "ancestor", "symlink"])
+def test_all_pinned_sources_are_protected_without_or_with_panel(tmp_path, monkeypatch, capsys, panel_selected, relation):
+    source = tmp_path / "scout"
+    source.mkdir()
+    registry = {**cli.panel_module._SEAL_PINS, source: "fixture-pin"}
+    monkeypatch.setattr(cli.panel_module, "_SEAL_PINS", registry)
+    out = {"equal": source, "descendant": source / "new", "ancestor": tmp_path}.get(relation)
+    if relation == "symlink":
+        alias = tmp_path / "alias"
+        alias.symlink_to(source, target_is_directory=True)
+        out = alias / "new"
+    args = ["--output-dir", str(out)]
+    if panel_selected:
+        args += ["--panel-root", str(tmp_path / "independent-panel")]
+    assert cli.main(args) == 2
+    assert "SOURCE_OUTPUT_OVERLAP" in capsys.readouterr().err
+    assert list(source.iterdir()) == []
+
+
+def test_invalid_arguments_do_not_echo_potential_credentials(tmp_path, capsys):
+    assert cli.main(["--output-dir", str(tmp_path / "out"), "--account", "secret-fixture-value"]) == 2
+    stderr = capsys.readouterr().err
+    assert "unrecognized arguments" in stderr
+    assert "secret-fixture-value" not in stderr
