@@ -25,3 +25,5 @@
 Rust 使用新 schema 和 `exact_decimal.rust.v1`；有限域对照不承诺 Python 50 位舍入或哈希的全面等价。不终止/越界计算显式拒绝；未给予任何下单权限。
 
 归档 Rust 文本日志仅去除了末尾额外空行；原始验证日志保留在 results 目录，内容与退出状态不变。归档文件自身由 archive-manifest 单独绑定。
+
+[主目录保护核对](preservation.json) 记录原 HEAD/分支、110 文件直接 SHA 与脏路径集合。旧 status 文本 checksum 未记录命令/编码，不用于完整状态字节一致的声明。

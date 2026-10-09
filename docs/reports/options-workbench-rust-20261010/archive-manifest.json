@@ -1,7 +1,7 @@
 {
   "README.md": {
-    "bytes": 3326,
-    "sha256": "6575b0abc93dfad461a31db929065f59cb35b2faee00f32b1afb210ffa513b3e"
+    "bytes": 3534,
+    "sha256": "4d08d7a79d586c284954a844101c01442f705bf6604fe1a7eee6b4dc2771c3b2"
   },
   "acceptance.json": {
     "bytes": 915,
@@ -54,6 +54,10 @@
   "final_verification/status.json": {
     "bytes": 177,
     "sha256": "78c8aeadb0eb5a4121bbd9983f0e0de161d6d30473085211cbf179b8cced58f3"
+  },
+  "preservation.json": {
+    "bytes": 749,
+    "sha256": "842bd5be942ef96659f8686d33eb5ae1e3a340a2ec082b617c19d2c64ac86b36"
   },
   "progress.md": {
     "bytes": 11461,
