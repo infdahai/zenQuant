@@ -328,8 +328,16 @@ def _publish(source: Path, destination: Path) -> None:
         raise OSError(error, os.strerror(error), str(destination))
 
 
+class _ArgumentParser(argparse.ArgumentParser):
+    def error(self, message: str) -> None:
+        # argparse includes untrusted argv values by default; retain only category.
+        reason = "unrecognized arguments" if message.startswith("unrecognized arguments") else "invalid arguments"
+        self.print_usage(sys.stderr)
+        self.exit(2, f"INVALID_INPUT: {reason}\n")
+
+
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Offline options portfolio diagnostics", allow_abbrev=False)
+    parser = _ArgumentParser(description="Offline options portfolio diagnostics", allow_abbrev=False)
     parser.add_argument("--panel-root", type=Path)
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--capital", choices=("1000", "3000"), default="1000")
