@@ -90,3 +90,36 @@ def observation(value: Decimal | str, *, time_ns: int = 10, provenance: str = "f
         source_id="fixture-observation",
         provenance=provenance,
     )
+
+
+def fill_event(
+    n: int,
+    *,
+    spec: InstrumentSpec,
+    quantity: Decimal | str,
+    price: Decimal | str,
+    fee: Decimal | str = "0",
+    intent_id: str = "i1",
+    order_id: str = "o1",
+    sleeve: str = "tail",
+    event_ns: int | None = None,
+    fee_wallet: WalletKey | None = None,
+):
+    from zenquant.options.ledger import LedgerEvent
+
+    return LedgerEvent(
+        key=key(n, event_ns=event_ns),
+        kind="FILL",
+        wallet=wallet(spec.quote_currency, spec.venue),
+        instrument_id=spec.instrument_id,
+        intent_id=intent_id,
+        order_id=order_id,
+        sleeve=sleeve,
+        quantity_native=quantity,
+        price=price,
+        amount=None,
+        fee=fee,
+        fee_wallet=fee_wallet if fee_wallet is not None else wallet(spec.quote_currency, spec.venue),
+        parent_id=None,
+        raw_hash=f"fixture-fill-{n}",
+    )
