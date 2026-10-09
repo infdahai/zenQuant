@@ -64,6 +64,27 @@ pub fn certify_vertical(a: &AnalysisInput, r: &CandidateRequest) -> ConstraintCe
                 "ONE_BUY_ONE_SELL_REQUIRED",
             )?;
             let quotes = selected(a, r)?;
+            let mut spend = Dec::zero();
+            let mut complete = true;
+            for (q, l) in quotes.iter().zip(&r.legs) {
+                let c = quote_cost(q, l, a.cutoff_ns, &a.view.report_currency);
+                if let Some(cost) = c
+                    .total_report_currency
+                    .filter(|_| c.status.status == Status::Valid)
+                {
+                    spend = if l.side == Side::Buy {
+                        math(spend.checked_add(&cost))?
+                    } else {
+                        math(spend.checked_sub(&cost))?
+                    };
+                } else {
+                    complete = false;
+                    out.reasons.push(c.status.reason);
+                }
+            }
+            if complete {
+                out.opening_net_spend = Some(spend.clone());
+            }
             let mut base = vec![];
             for (q, l) in quotes.iter().zip(&r.legs) {
                 let s = &q.book.spec;
@@ -95,6 +116,34 @@ pub fn certify_vertical(a: &AnalysisInput, r: &CandidateRequest) -> ConstraintCe
                 Status::Unsupported,
                 "DISTINCT_VERTICAL_STRIKES_REQUIRED",
             )?;
+            let buy = quotes
+                .iter()
+                .zip(&r.legs)
+                .find(|(_, l)| l.side == Side::Buy)
+                .map(|(q, _)| &q.book.spec.strike)
+                .ok_or_else(|| StatusResult::new(Status::Unsupported, "ONE_BUY_REQUIRED"))?;
+            let sell = quotes
+                .iter()
+                .zip(&r.legs)
+                .find(|(_, l)| l.side == Side::Sell)
+                .map(|(q, _)| &q.book.spec.strike)
+                .ok_or_else(|| StatusResult::new(Status::Unsupported, "ONE_SELL_REQUIRED"))?;
+            need(
+                match kind {
+                    OptionType::C => buy < sell,
+                    OptionType::P => buy > sell,
+                },
+                Status::Unsupported,
+                "UNREGISTERED_V1_VERTICAL_ORIENTATION",
+            )?;
+            if quotes
+                .iter()
+                .any(|q| q.book.spec.settlement_rule == SettlementRule::LinearViaFuture)
+            {
+                out.reasons.push(
+                    "CASH_EQUIVALENT_TERMINAL_ONLY_NO_FUTURE_EVENTS_OR_ACCOUNT_PERMISSION".into(),
+                );
+            }
             let specs: Vec<_> = quotes.iter().map(|q| &q.book.spec).collect();
             let (knots, values, slopes) = piecewise(&specs, &r.legs, &base)?;
             need(
@@ -117,24 +166,6 @@ pub fn certify_vertical(a: &AnalysisInput, r: &CandidateRequest) -> ConstraintCe
             out.gross_payoff_lower = Some(lower.clone());
             out.gross_payoff_upper = Some(upper.clone());
             out.status = StatusResult::new(Status::Valid, "FULL_DOMAIN_STATIC_PAYOFF_PROOF_ONLY");
-            let mut spend = Dec::zero();
-            let mut complete = true;
-            for (q, l) in quotes.iter().zip(&r.legs) {
-                let c = quote_cost(q, l, a.cutoff_ns, &a.view.report_currency);
-                if let Some(cost) = c
-                    .total_report_currency
-                    .filter(|_| c.status.status == Status::Valid)
-                {
-                    spend = if l.side == Side::Buy {
-                        math(spend.checked_add(&cost))?
-                    } else {
-                        math(spend.checked_sub(&cost))?
-                    };
-                } else {
-                    complete = false;
-                    out.reasons.push(c.status.reason);
-                }
-            }
             if complete {
                 out.opening_net_spend = Some(spend.clone());
                 if let Some(fee) = &r.terminal_fee_native {
