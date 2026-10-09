@@ -18,11 +18,8 @@ fn positive(x: &Dec) -> bool {
 fn text(x: &str) -> bool {
     !x.trim().is_empty() && x.len() <= MAX_STRING_BYTES
 }
-fn clocks(source: u64, received: u64, available: u64) -> Result<()> {
-    require(
-        source <= received && received <= available,
-        ErrorCode::InvalidTimestamp,
-    )
+fn clocks(_source: u64, received: u64, available: u64) -> Result<()> {
+    require(received <= available, ErrorCode::InvalidTimestamp)
 }
 fn identities(xs: &[(String, String)]) -> Result<()> {
     let mut ids = BTreeSet::new();
@@ -151,7 +148,9 @@ fn validate_quote(q: &QuoteInput, report: &str) -> Result<()> {
     validate_spec(&b.spec)?;
     clocks(b.source_ns, b.received_ns, b.available_ns)?;
     require(
-        text(&q.quote_id) && valid_sha256(&b.raw_hash) && q.timing.minimum_source_age_ns >= 0,
+        text(&q.quote_id)
+            && valid_sha256(&b.raw_hash)
+            && i128::from(q.timing.minimum_source_age_ns) <= i128::from(q.timing.max_age_ns),
         ErrorCode::InvalidMetadata,
     )?;
     for (levels, bids) in [(&b.bids, true), (&b.asks, false)] {
@@ -229,7 +228,7 @@ pub fn load_analysis(r: Request) -> Result<AnalysisInput> {
             && r.risk_policy
                 .fx_timing
                 .as_ref()
-                .is_none_or(|t| t.minimum_source_age_ns >= 0),
+                .is_none_or(|t| i128::from(t.minimum_source_age_ns) <= i128::from(t.max_age_ns)),
         ErrorCode::InvalidInput,
     )?;
     identities(&r.source_identities)?;
@@ -400,7 +399,6 @@ pub fn select_quote<'a>(
     let mut selected: Option<&QuoteInput> = None;
     for q in quotes {
         if canonical_hash(&q.book.spec)? != spec_hash
-            || q.book.source_ns > cutoff
             || q.book.received_ns > cutoff
             || q.book.available_ns > cutoff
         {
