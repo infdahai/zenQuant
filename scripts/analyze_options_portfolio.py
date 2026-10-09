@@ -124,7 +124,7 @@ def _fixture(capital: str, scenario: str) -> dict:
             quantity_native=quantity,
             index_in_quote=_observation("100", 10),
             quote_to_report=_observation("1", 10),
-            fee_policy=FeePolicy(rate=D(".02"), premium_cap=D("1"), fee_currency="USDT", provenance="fixture"),
+            fee_policy=FeePolicy(rate=D(".02") / (D("100") * quantity), premium_cap=D("1"), fee_currency="USDT", provenance="fixture"),
             timing=TimingPolicy(max_age_ns=100, minimum_source_age_ns=0),
             asof_ns=10,
             report_currency="USDT",
@@ -341,6 +341,11 @@ def main(argv: list[str] | None = None) -> int:
             raise ValueError("SOURCE_OUTPUT_OVERLAP")
         if output.exists() or args.output_dir.is_symlink():
             raise ValueError("OUTPUT_EXISTS")
+    except (ValueError, OSError, RuntimeError) as error:
+        reason = str(error) if isinstance(error, ValueError) else type(error).__name__
+        print(f"INVALID_INPUT: {reason}", file=sys.stderr)
+        return 2
+    try:
         report = _report(args.capital, args.scenario, panel_root)
         artifacts = {
             "report.json": (json.dumps(report, ensure_ascii=False, sort_keys=True, indent=2) + "\n").encode(),
@@ -356,8 +361,8 @@ def main(argv: list[str] | None = None) -> int:
         artifacts["identity.json"] = (
             json.dumps(identity, ensure_ascii=False, sort_keys=True, indent=2) + "\n"
         ).encode()
-    except (ValueError, TypeError, PanelError, OSError) as error:
-        print(f"INVALID_INPUT: {error}", file=sys.stderr)
+    except PanelError as error:
+        print(f"INVALID_INPUT: {error.reason}", file=sys.stderr)
         return 2
     except Exception as error:
         print(f"INTERNAL_FAILURE: {type(error).__name__}", file=sys.stderr)
