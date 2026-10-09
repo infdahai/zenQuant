@@ -6,14 +6,14 @@ saved derived prices are not imported or used to calculate product diagnostics.
 """
 
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, fields, replace
 from datetime import UTC, datetime
 from decimal import ROUND_HALF_EVEN, Context, Decimal, InvalidOperation, localcontext
 from hashlib import sha256
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
-from zenquant.options.contracts import Book, BookLevel, InstrumentSpec, Observation, canonical_payload
+from zenquant.options.contracts import Book, BookLevel, InstrumentSpec, Observation, canonical_payload, fingerprint
 
 _REPOSITORY = Path(__file__).resolve().parents[3]
 _PANEL = _REPOSITORY / "results/crypto_opportunity/20261009_options_liquidity_panel_v1"
@@ -50,6 +50,28 @@ class PanelRecord:
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
+class PanelVerificationBinding:
+    """Local loader integrity record, not authentication against Python callers.
+
+    This digest detects changed canonical data carrying old seal references. It
+    is neither an exchange-signed attestation nor an unforgeable capability.
+    """
+
+    canonical_input_hash: str
+    source_identities: tuple[tuple[str, str], ...]
+
+    def __post_init__(self):
+        digest = self.canonical_input_hash
+        if type(digest) is not str or len(digest) != 64 or any(c not in "0123456789abcdef" for c in digest):
+            raise ValueError("canonical_input_hash requires SHA-256 hex")
+        if type(self.source_identities) is not tuple or any(
+            type(pair) is not tuple or len(pair) != 2 or any(type(value) is not str for value in pair)
+            for pair in self.source_identities
+        ):
+            raise TypeError("source_identities requires immutable string pairs")
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
 class PanelInput:
     specs: tuple[InstrumentSpec, ...]
     books: tuple[Book, ...]
@@ -62,8 +84,11 @@ class PanelInput:
     selection_json: str = "{}"
     requests: int = 0
     sealed_entries: int = 0
+    verification: PanelVerificationBinding | None = None
 
     def __post_init__(self):
+        if self.verification is not None and not isinstance(self.verification, PanelVerificationBinding):
+            raise TypeError("verification requires PanelVerificationBinding or None")
         for name, kind in (
             ("specs", InstrumentSpec),
             ("books", Book),
@@ -84,6 +109,23 @@ class PanelInput:
             type(getattr(self, name)) is not int or getattr(self, name) < 0 for name in ("requests", "sealed_entries")
         ):
             raise TypeError("counts require nonnegative strict integers")
+
+
+def canonical_input_hash(panel: PanelInput) -> str:
+    """Bind all canonical report inputs; exclude the binding to avoid recursion."""
+    return fingerprint(
+        {field.name: getattr(panel, field.name) for field in fields(panel) if field.name != "verification"}
+    )
+
+
+def input_integrity(panel: PanelInput) -> str:
+    """Validate the explicit local loader record at every reporting boundary."""
+    if panel.verification is None:
+        return "UNVERIFIED_INPUT"
+    binding = panel.verification
+    if binding.canonical_input_hash != canonical_input_hash(panel) or binding.source_identities != panel.identities:
+        return "VERIFICATION_BINDING_MISMATCH"
+    return "PINNED_BYTES_VERIFIED"
 
 
 class PanelError(ValueError):
@@ -576,4 +618,8 @@ def _load_panel(root: Path) -> PanelInput:
 def load_panel(root: Path) -> PanelInput:
     """Use the fixed Decimal context even when the caller changes its context."""
     with localcontext(Context(prec=50, rounding=ROUND_HALF_EVEN)):
-        return _load_panel(root)
+        panel = _load_panel(root)
+        binding = PanelVerificationBinding(
+            canonical_input_hash=canonical_input_hash(panel), source_identities=panel.identities
+        )
+        return replace(panel, verification=binding)
