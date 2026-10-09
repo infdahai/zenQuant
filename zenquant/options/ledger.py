@@ -513,6 +513,59 @@ def _opening_fee_attribution(state: LedgerState, event: LedgerEvent) -> tuple[Op
     return (matches[0], candidates[0][1].order_id) if len(matches) == 1 else None
 
 
+def _opening_order_budget_error(state: LedgerState, event: LedgerEvent, order_id: str) -> str | None:
+    """Recover native budget/spend from successful first receipts, never retry.
+
+    Active reservations are releasable cash, not durable budget provenance.
+    Multiple successful reservations for a reused order cannot identify which
+    lifecycle owns a late fee; retain its actual debit/basis but freeze.
+    """
+    applied = _applied_receipts(state)
+    reserves = tuple(
+        (index, r)
+        for index, r in applied
+        if r.kind == "RESERVE" and r.wallet == event.wallet and r.order_id == order_id
+    )
+    if not reserves:
+        return "UNKNOWN_ORDER"
+    if len(reserves) != 1 or reserves[0][1].intent_id != event.intent_id:
+        return "ORDER_ATTRIBUTION_MISMATCH"
+    reserve_index, original = reserves[0]
+    fills = tuple(
+        (index, r)
+        for index, r in applied
+        if r.kind == "FILL" and r.wallet == event.wallet and r.order_id == order_id
+    )
+    if any(index < reserve_index or r.intent_id != event.intent_id or r.quantity_native <= 0 for index, r in fills):
+        return "ORDER_ATTRIBUTION_MISMATCH"
+    spent = ZERO
+    for _, receipt in fills:
+        spec, error = _spec(state, receipt)
+        if error:
+            return "ORDER_ATTRIBUTION_MISMATCH"
+        units = receipt.quantity_native * (spec.multiplier if spec.price_unit == "quote_per_base" else ONE)
+        spent += receipt.price * units
+        if receipt.fee_wallet == event.wallet:
+            spent += receipt.fee
+    fill_links = {(r.key.source, r.key.event_id) for _, r in fills}
+    for _, receipt in applied:
+        if (
+            receipt.kind == "FEE"
+            and receipt.wallet == event.wallet
+            and receipt.intent_id == event.intent_id
+            and receipt.fee_wallet == event.wallet
+            and (
+                (receipt.parent_id is None and receipt.order_id == order_id)
+                or (receipt.key.source, receipt.parent_id) in fill_links
+            )
+        ):
+            spent += receipt.fee
+    # Currency conversion is not implied by a different actual fee wallet.
+    if event.fee_wallet == event.wallet:
+        spent += event.fee
+    return "RESERVATION_OVERRUN" if spent > original.amount else None
+
+
 def _fee(state: LedgerState, event: LedgerEvent) -> LedgerState:
     # Debit the actual fee wallet even if the separate inventory-attribution
     # wallet is unknown. An unresolved receipt may therefore be partly applied.
@@ -554,6 +607,11 @@ def _fee(state: LedgerState, event: LedgerEvent) -> LedgerState:
     position, order_id = attribution
     updated = replace(position, opening_fees_basis=_add_fee(position.opening_fees_basis, event.fee_wallet, event.fee))
     state = replace(state, positions=tuple(updated if p == position else p for p in state.positions))
+    budget_error = _opening_order_budget_error(state, event, order_id)
+    if budget_error:
+        state = _freeze(state, budget_error)
+        if budget_error != "RESERVATION_OVERRUN":
+            return state
     if event.fee_wallet != event.wallet:
         return state
     matching = tuple(r for r in state.reservations if r.wallet == event.wallet and r.order_id == order_id)
