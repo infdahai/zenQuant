@@ -313,7 +313,7 @@ def test_mark_retains_receipt_and_does_not_make_model_value_spendable():
     assert not state.frozen_reasons
 
 
-def test_unimplemented_lifecycle_is_preserved_frozen_without_cash():
+def test_premature_settlement_is_preserved_frozen_without_cash():
     event = replace(
         fill_event(1, spec=linear_spec(), quantity="1", price="20"),
         kind="CASH_SETTLEMENT",
@@ -326,7 +326,7 @@ def test_unimplemented_lifecycle_is_preserved_frozen_without_cash():
     state = apply_event(funded(), event)
     assert state.unapplied == (event,)
     assert wallet_cash(state, wallet()) == D("1000")
-    assert "LIFECYCLE_NOT_IMPLEMENTED" in state.frozen_reasons
+    assert "SETTLEMENT_BEFORE_EXPIRY" in state.frozen_reasons
 
 
 def test_fee_inventory_identity_alone_is_not_proof_of_opening_fee():
