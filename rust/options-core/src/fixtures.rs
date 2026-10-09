@@ -206,7 +206,7 @@ pub fn mathematical_request(
         candidates: vec![CandidateRequest {
             request_id: "mathematical-candidate".into(),
             template_id: template.into(),
-            template_version: "1".into(),
+            template_version: "v1".into(),
             legs,
             exit_policy: "expiry_only".into(),
             terminal_fee_native: Some(d("0")),
