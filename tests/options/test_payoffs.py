@@ -265,7 +265,7 @@ def test_invalid_delivery_values_never_generate_cash(price):
             observation(price, time_ns=1000)
 
 
-@pytest.mark.parametrize("quantity", [D("0"), D("-1"), D(".001"), D(".015"), D("NaN"), True, 1.0])
+@pytest.mark.parametrize("quantity", [D("0"), D("-1"), D("NaN"), True, 1.0])
 def test_settlement_requires_positive_valid_native_quantity(quantity):
     plan = settlement_plan(
         spec=linear_spec(),
@@ -359,3 +359,15 @@ def test_settlement_outputs_are_frozen_validated_records():
             currency="USDT",
             link_id="fixture",
         )
+
+
+@pytest.mark.parametrize("quantity", [D(".001"), D(".015"), D("2")])
+def test_actual_settlement_residual_is_not_a_new_order(quantity):
+    spec = linear_spec(min_quantity_native=D(".02"), max_quantity_native=D("1"))
+    plan = settlement_plan(
+        spec=spec, quantity_native=quantity, delivery=observation("150", time_ns=1000), expiry_id="residual"
+    )
+    assert plan.status.status == "VALID"
+    assert plan.actions[0].amount == quantity * D("50")
+    with pytest.raises(ValueError):
+        LegIntent(spec=spec, wallet=wallet(), quantity_native=quantity)
