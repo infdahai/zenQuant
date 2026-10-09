@@ -1,0 +1,10 @@
+{
+  "fmt": 0,
+  "rust": 0,
+  "clippy": 0,
+  "python": 0,
+  "rust_passed": 70,
+  "python_summary": "459 passed, 1 skipped in 8.83s",
+  "protected": 23,
+  "main_protected": 110
+}

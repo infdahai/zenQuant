@@ -1,0 +1,14 @@
+{
+  "protected": {
+    "checked": 23,
+    "unchanged": true
+  },
+  "main_protected": {
+    "checked": 110,
+    "unchanged": true
+  },
+  "old_cli_artifacts": {
+    "checked": 6,
+    "byte_identical": true
+  }
+}
