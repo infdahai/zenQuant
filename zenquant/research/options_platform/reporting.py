@@ -434,6 +434,8 @@ def engineering_bias_report(*, panel: PanelInput) -> dict:
             {
                 **_authority(),
                 "baseline_counts": baseline_counts,
+                "quantity_filter": _DEFAULT_QUANTITIES,
+                "timing_filter": _timing(panel),
                 "input_integrity": input_integrity(panel),
                 "data_hash": canonical_input_hash(panel),
                 "variants": variants,
