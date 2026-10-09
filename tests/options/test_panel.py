@@ -284,8 +284,8 @@ def test_manual_cash_delta_only_in_math_scenarios():
     assert "cash_delta" not in report
 
 
-def test_sealed_input_integration():
-    root = Path(__file__).resolve().parents[2] / "results/crypto_opportunity/20261009_options_liquidity_panel_v1"
+def test_sealed_input_integration(local_options_panel_root):
+    root = local_options_panel_root
     panel = load_panel(root)
     report = diagnostic_panel_report(panel=panel, quantities_base=(D(".01"), D(".03"), D(".1")))
     summary = json.loads((root / "summary.json").read_text())
@@ -464,3 +464,44 @@ def test_bias_reports_expose_their_own_quantity_and_timing_scope(tmp_path, monke
     standalone = engineering_bias_report(panel=loaded)
     assert nested["quantity_filter"] == standalone["quantity_filter"] == ["0.01", "0.03", "0.1"]
     assert nested["timing_filter"] == standalone["timing_filter"] == report["timing_filter"]
+
+
+@pytest.mark.parametrize("strict", [False, True])
+@pytest.mark.parametrize("missing", ["panel", "scout", "both"])
+def test_local_panel_absence_is_skip_only_in_portable_mode(tmp_path, monkeypatch, strict, missing):
+    from .conftest import require_local_options_panel
+
+    # Independently pinned deterministic fixture bytes, never a real source copy.
+    for name, attr in (("panel", "_PANEL"), ("scout", "_SCOUT")):
+        root = tmp_path / name
+        monkeypatch.setattr(adapter, attr, root)
+        if missing not in (name, "both"):
+            root.mkdir()
+            data = b'{"files":{}}'
+            (root / "seal.json").write_bytes(data)
+            monkeypatch.setitem(adapter._SEAL_PINS, root, sha256(data).hexdigest())
+    outcome = pytest.fail.Exception if strict else pytest.skip.Exception
+    with pytest.raises(outcome, match="LOCAL_OPTIONS_PANEL_ABSENT.*verification NOT performed"):
+        require_local_options_panel(strict=strict)
+
+
+@pytest.mark.parametrize("strict", [False, True])
+@pytest.mark.parametrize("invalid", ["panel", "scout"])
+@pytest.mark.parametrize("fault", ["missing_seal", "tampered_seal", "missing_entry", "tampered_entry"])
+def test_present_invalid_local_source_never_becomes_availability_skip(tmp_path, monkeypatch, strict, invalid, fault):
+    from .conftest import require_local_options_panel
+
+    # The other root is absent: that must not hide present corrupt evidence.
+    for name, attr in (("panel", "_PANEL"), ("scout", "_SCOUT")):
+        monkeypatch.setattr(adapter, attr, tmp_path / name)
+    root = tmp_path / invalid
+    root.mkdir()
+    payload = b'{"source":"fixture"}'
+    seal = json.dumps({"files": {"source.raw": {"bytes": len(payload), "sha256": sha256(payload).hexdigest()}}}).encode()
+    monkeypatch.setitem(adapter._SEAL_PINS, root, sha256(seal).hexdigest())
+    if fault != "missing_seal":
+        (root / "seal.json").write_bytes(b'{}' if fault == "tampered_seal" else seal)
+    if fault != "missing_entry":
+        (root / "source.raw").write_bytes(b'changed' if fault == "tampered_entry" else payload)
+    with pytest.raises((FileNotFoundError, adapter.PanelError)):
+        require_local_options_panel(strict=strict)
