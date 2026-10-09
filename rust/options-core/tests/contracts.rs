@@ -101,3 +101,19 @@ fn canonical_rejects_unbounded_and_floating_payloads() {
     }
     assert!(canonical_bytes(&nested).is_err());
 }
+#[test]
+fn generic_serialization_rejects_nested_nonfinite_before_json_conversion() {
+    #[derive(serde::Serialize)]
+    struct Nested {
+        values: Vec<Option<f64>>,
+    }
+    for value in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY, 0.25] {
+        assert!(
+            canonical_hash(&Nested {
+                values: vec![Some(value)]
+            })
+            .is_err()
+        );
+    }
+    assert!(canonical_bytes(&vec![Some(f32::NAN)]).is_err());
+}
