@@ -676,7 +676,7 @@ def _lifecycle(state: LedgerState, event: LedgerEvent) -> LedgerState:
             return _unapplied(state, event, "SETTLEMENT_RULE_MISMATCH")
         state = _cash_change(state, event.wallet, event.amount)
     else:
-        if spec.settlement_rule != "linear_via_future" or event.price <= 0:
+        if spec.settlement_rule != "linear_via_future" or event.price < 0:
             return _unapplied(state, event, "SETTLEMENT_RULE_MISMATCH")
         intrinsic = max(ZERO, event.price - spec.strike if spec.option_type == "C" else spec.strike - event.price)
         q_base = position.quantity_native * spec.multiplier
