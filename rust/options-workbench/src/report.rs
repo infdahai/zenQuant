@@ -103,7 +103,7 @@ pub fn render(
     for expression in &report.expressions {
         summaries.push_str(&format!(
             "<h2>Candidate: {}</h2>\n\n",
-            escape_markup(&expression.request_id)
+            escape_markup(&expression.request_id).replace('\n', "&#10;")
         ));
         let details = serde_json::to_string_pretty(expression).map_err(|_| {
             options_core::error::Error::new(options_core::error::ErrorCode::Internal)
