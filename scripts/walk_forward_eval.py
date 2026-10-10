@@ -38,7 +38,7 @@ def _shift_months(ts_ns: int, months: int) -> int:
     return int(datetime(year, month, 1, tzinfo=UTC).timestamp() * 1e9)
 
 
-def run_walk_forward(train_years: int = 2, test_months: int = 6) -> None:
+def run_walk_forward(train_years: int = 2, test_months: int = 6) -> int:
     print("Walk-Forward Evaluation — Train/Dev Selection Layer")
     print(f"Train: {train_years} years, Test: {test_months} months, Slide: {test_months} months")
     print("split_scope=train_dev_only")
@@ -62,6 +62,9 @@ def run_walk_forward(train_years: int = 2, test_months: int = 6) -> None:
 
     print(f"Windows: {len(windows)}")
     print()
+    if not windows:
+        print("BLOCKED: no walk-forward windows were evaluated")
+        return 1
 
     results: list[dict] = []
 
@@ -146,6 +149,12 @@ def run_walk_forward(train_years: int = 2, test_months: int = 6) -> None:
         else:
             print(f"\nSevere train→dev overfitting detected (ratio={avg_ratio:.2f})")
 
+        if overfit_count:
+            print(f"\nBLOCKED: {overfit_count} walk-forward window(s) are OVERFIT")
+            return 1
+
+    return 0
+
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Walk-forward out-of-sample evaluation")
@@ -153,4 +162,4 @@ if __name__ == "__main__":
     parser.add_argument("--test-months", type=int, default=6)
     args = parser.parse_args()
 
-    run_walk_forward(train_years=args.train_years, test_months=args.test_months)
+    sys.exit(run_walk_forward(train_years=args.train_years, test_months=args.test_months))
