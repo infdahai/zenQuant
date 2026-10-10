@@ -1,0 +1,107 @@
+{
+  "status": "PASS_LOCAL_INTEGRATION_GATES",
+  "base": "a2b2086a088921e27fb4dd295b56f8e55fb3bc98",
+  "functional_head": "87517877a519dd2116f4998ea63f38deb94c7a8f",
+  "gates": {
+    "0": "PASS",
+    "A": "PASS",
+    "B": "PASS",
+    "C": "PASS",
+    "D": "PASS",
+    "E": "PASS",
+    "F": "PASS"
+  },
+  "zenquant_check_exit_code": 0,
+  "zenquant_check_runs": 1,
+  "duration_seconds": 353.1,
+  "gate_e": {
+    "passed": 1851,
+    "skipped": 5,
+    "subtests_passed": 34
+  },
+  "rust": {
+    "passed": 70,
+    "fmt": "PASS",
+    "clippy_all_targets_warnings_denied": "PASS"
+  },
+  "targeted_gate_e": {
+    "passed": 49,
+    "skipped": 1
+  },
+  "targeted_gate_f_and_split": {
+    "passed": 9
+  },
+  "independent_review": {
+    "critical": 0,
+    "important": 0,
+    "targeted_passed": 53,
+    "targeted_skipped": 1
+  },
+  "historical_snapshot": {
+    "files": 2945,
+    "bytes": 164576023,
+    "source_read_only": true,
+    "independent_read_only_copies": true,
+    "absent_patterns": [
+      "raw/binance/aggtrades/BTCUSDT/5m/*.parquet",
+      "raw/binance/liquidations/aggregated/**/*.parquet"
+    ]
+  },
+  "gate_f_existing_btc_replay": {
+    "scope": "rolling_train_dev_only",
+    "windows": [
+      {
+        "label": "wf_1",
+        "train_sharpe_rounded": 2.19,
+        "dev_sharpe_rounded": 2.05,
+        "verdict": "OK"
+      },
+      {
+        "label": "wf_2",
+        "train_sharpe_rounded": 1.81,
+        "dev_sharpe_rounded": 2.79,
+        "verdict": "ROBUST"
+      },
+      {
+        "label": "wf_3",
+        "train_sharpe_rounded": 2.13,
+        "dev_sharpe_rounded": 1.45,
+        "verdict": "OK"
+      },
+      {
+        "label": "wf_4",
+        "train_sharpe_rounded": 1.76,
+        "dev_sharpe_rounded": 2.82,
+        "verdict": "ROBUST"
+      }
+    ],
+    "overfit_windows": 0,
+    "avg_dev_sharpe_rounded": 2.28,
+    "values_are_log_rounded": true,
+    "option_strategy_profitability_evidence": false,
+    "promotion_authority": "NONE"
+  },
+  "preservation": {
+    "main_head": "99d3292aa5873c79d94bfb4d77f857b12a90cb4e",
+    "main_branch": "codex/research-swarm-baseline-gap-fixes",
+    "main_status_byte_identical_this_turn": true,
+    "dirty_paths": 106,
+    "main_protected_files_unchanged": 110,
+    "p1_protected_files_unchanged": 23,
+    "historical_sources_and_copies_unchanged": 2945
+  },
+  "merge": false,
+  "push": false,
+  "deployment": false,
+  "trading_authority": "NONE",
+  "quant_v2_promotion_status": "BLOCKED_PAUSE_PROMOTION_AND_TRAINING",
+  "known_limits": [
+    "2022 OI unavailable before 2023",
+    "default Binance liquidation aggregated and 5m aggtrades absent",
+    "Deribit only 2026, no 2025 OOS overlap; one file without snapshot column skipped by unchanged loader",
+    "existing F thresholds, non-finite metric handling and fixed six-month windows unchanged",
+    "original dirty replay/risk edits excluded from this branch",
+    "actual options PnL/Sharpe/capacity remain unknown",
+    "Linux native runtime not accepted"
+  ]
+}

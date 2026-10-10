@@ -1,0 +1,171 @@
+============================= test session starts ==============================
+platform darwin -- Python 3.12.12, pytest-9.0.2, pluggy-1.6.0 -- /Users/disaster/workspace/code/zenQuant/.venv/bin/python
+cachedir: .pytest_cache
+rootdir: /Users/disaster/workspace/code/zenQuant/.worktrees/options-workbench-rust
+configfile: pyproject.toml
+plugins: anyio-4.12.1
+collecting ... collected 7 items
+
+tests/test_factor_health.py::TestFactorHealth::test_active_signals_have_minimal_count PASSED [ 14%]
+tests/test_factor_health.py::TestFactorHealth::test_indicator_pack_contains_expected_keys PASSED [ 28%]
+tests/test_factor_health.py::TestFactorHealth::test_no_disabled_signal_has_high_weight PASSED [ 42%]
+tests/test_factor_health.py::TestFactorHealth::test_no_nan_or_inf_in_indicators PASSED [ 57%]
+tests/test_factor_health.py::TestFactorHealth::test_signal_sign_parameter_is_explicit PASSED [ 71%]
+tests/test_factor_health.py::TestFactorHealth::test_sprint_contract_ic_stability PASSED [ 85%]
+tests/test_factor_health.py::TestFactorHealth::test_walk_forward_stability PASSED [100%]
+
+============================== 7 passed in 43.07s ==============================
+All checks passed!
+422 files already formatted
+============================= test session starts ==============================
+platform darwin -- Python 3.12.12, pytest-9.0.2, pluggy-1.6.0 -- /Users/disaster/workspace/code/zenQuant/.venv/bin/python
+cachedir: .pytest_cache
+rootdir: /Users/disaster/workspace/code/zenQuant/.worktrees/options-workbench-rust
+configfile: pyproject.toml
+plugins: anyio-4.12.1
+collecting ... collected 4 items
+
+tests/test_import_boundaries.py::TestImportBoundaries::test_indicator_does_not_import_strategy PASSED [ 25%]
+tests/test_import_boundaries.py::TestImportBoundaries::test_plugin_implementations_only_import_protocols PASSED [ 50%]
+tests/test_import_boundaries.py::TestImportBoundaries::test_state_does_not_import_strategy PASSED [ 75%]
+tests/test_import_boundaries.py::TestImportBoundaries::test_strategy_does_not_import_app_or_execution PASSED [100%]
+
+============================== 4 passed in 0.06s ===============================
+============================= test session starts ==============================
+platform darwin -- Python 3.12.12, pytest-9.0.2, pluggy-1.6.0 -- /Users/disaster/workspace/code/zenQuant/.venv/bin/python
+cachedir: .pytest_cache
+rootdir: /Users/disaster/workspace/code/zenQuant/.worktrees/options-workbench-rust
+configfile: pyproject.toml
+plugins: anyio-4.12.1
+collecting ... collected 1 item
+
+tests/test_golden_output.py::TestGoldenOutput::test_backtest_matches_golden_output PASSED [100%]
+
+============================== 1 passed in 0.52s ===============================
+============================= test session starts ==============================
+platform darwin -- Python 3.12.12, pytest-9.0.2, pluggy-1.6.0 -- /Users/disaster/workspace/code/zenQuant/.venv/bin/python
+cachedir: .pytest_cache
+rootdir: /Users/disaster/workspace/code/zenQuant/.worktrees/options-workbench-rust
+configfile: pyproject.toml
+plugins: anyio-4.12.1
+collecting ... collected 6 items
+
+tests/test_parity.py::TestPluginLegacyParity::test_leverage_within_tolerance PASSED [ 16%]
+tests/test_parity.py::TestPluginLegacyParity::test_stress_regime_both_flat PASSED [ 33%]
+tests/test_parity.py::TestPluginLegacyParity::test_trend_uptrend_direction_agrees PASSED [ 50%]
+tests/test_parity.py::TestPluginRuntimeContracts::test_adaptive_signal_weights_default_off_for_restart_parity PASSED [ 66%]
+tests/test_parity.py::TestPluginRuntimeContracts::test_execution_modifier_affects_sizing_on_same_bar PASSED [ 83%]
+tests/test_parity.py::TestTargetTrackingRuntimeParity::test_historical_and_live_runtime_compositions_have_byte_identical_v2_trace PASSED [100%]
+
+============================== 6 passed in 0.45s ===============================
+........................................................................ [  3%]
+........................................................................ [  7%]
+........................................................................ [ 11%]
+.............s.......................................................... [ 15%]
+........................................................................ [ 19%]
+........................................................................ [ 23%]
+........................................................................ [ 27%]
+........................................................................ [ 31%]
+........................................................................ [ 34%]
+........................................................................ [ 38%]
+....................................................................sss. [ 42%]
+............................s........................................... [ 46%]
+................................................................... [ 50%]
+........................................................................ [ 54%]
+........................................................................ [ 57%]
+........................................................................ [ 61%]
+........................................................................ [ 65%]
+........................................................................ [ 69%]
+........................................................................ [ 73%]
+................................................ [ 76%]
+................................................................... [ 79%]
+........................................................................ [ 83%]
+........................................................................ [ 87%]
+........................................................................ [ 91%]
+........................................................................ [ 95%]
+........................................................................ [ 99%]
+..................                                                       [100%]
+1851 passed, 5 skipped, 34 subtests passed in 248.67s (0:04:08)
+Walk-Forward Evaluation — Train/Dev Selection Layer
+Train: 2 years, Test: 6 months, Slide: 6 months
+split_scope=train_dev_only
+======================================================================
+Windows: 4
+
+[1/4] wf_1
+  Train Sharpe=2.19, Test Sharpe=2.05, Ratio=0.94 → OK
+[2/4] wf_2
+  Train Sharpe=1.81, Test Sharpe=2.79, Ratio=1.54 → ROBUST
+[3/4] wf_3
+  Train Sharpe=2.13, Test Sharpe=1.45, Ratio=0.68 → OK
+[4/4] wf_4
+  Train Sharpe=1.76, Test Sharpe=2.82, Ratio=1.60 → ROBUST
+
+======================================================================
+Window                                           Train     Test    Ratio    Verdict
+----------------------------------------------------------------------
+wf_1                                              2.19     2.05     0.94         OK
+wf_2                                              1.81     2.79     1.54     ROBUST
+wf_3                                              2.13     1.45     0.68         OK
+wf_4                                              1.76     2.82     1.60     ROBUST
+
+Aggregates:
+  Avg Train Sharpe: 1.97
+  Avg Test Sharpe:  2.28
+  Avg OOS Ratio:    1.19
+  Overfit windows:  0/4
+
+Strategy shows good train→dev stability (ratio=1.19)
+
+============================================================
+  Gate 0: factor health check
+============================================================
+  [PASS] 0: factor health check (43.9s)
+
+============================================================
+  Gate A: ruff lint
+============================================================
+  [PASS] A: ruff lint (0.0s)
+
+============================================================
+  Gate A: ruff format
+============================================================
+  [PASS] A: ruff format (0.0s)
+
+============================================================
+  Gate B: import boundaries
+============================================================
+  [PASS] B: import boundaries (0.2s)
+
+============================================================
+  Gate C: golden output
+============================================================
+  [PASS] C: golden output (0.7s)
+
+============================================================
+  Gate D: plugin/legacy parity
+============================================================
+  [PASS] D: plugin/legacy parity (0.7s)
+
+============================================================
+  Gate E: full test suite
+============================================================
+  [PASS] E: full test suite (250.9s)
+
+============================================================
+  Gate F: walk-forward overfit detection
+============================================================
+  [PASS] F: walk-forward overfit detection (56.7s)
+
+============================================================
+  HARNESS SUMMARY (353.1s)
+============================================================
+  Gate 0: PASS
+  Gate A: PASS
+  Gate B: PASS
+  Gate C: PASS
+  Gate D: PASS
+  Gate E: PASS
+  Gate F: PASS
+
+  ALL GATES PASSED

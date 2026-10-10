@@ -2,6 +2,8 @@
 
 这是 D2 的离线经济诊断工具：比较同一观点下的现金和四种买入期权表达，检查同平台 vertical 的静态终值约束。它不连接账户、不发订单。条件情景 EV 不是市场盈利证据。
 
+2026-10-10 的后续集成修复已通过本地全仓 0/A/B/C/D/E/F 门禁；复跑命令、历史输入指纹和仍未验收的边界见 [集成修复报告](reports/options-workbench-gate-repair-20261010/README.md)。
+
 ```mermaid
 flowchart LR
     S[两份固定 seal 与全部原始文件] --> P[原 Python P1 load_panel / input_integrity]
@@ -38,7 +40,7 @@ PYTHONPATH=/Users/disaster/workspace/code/zenQuant \
   --output-file /Users/disaster/workspace/code/zenQuant/.worktrees/options-workbench-rust/results/options_platform/new-panel.json
 ```
 
-导出脚本依原 loader 的源码位置确定允许根目录；不把主目录数据复制到 worktree，也不修改 loader pin。允许的 panel/scout seal 分别是 `b61d04c898cd53545e2bc95ffdede6da6861b18d602d49cb83d57eb52816423b` 和 `c35edb8ad23c8d958fe8f2383786f963160842c55ea8c3489e36efb96d25b983`。完整传输为 480 条报价、48 份规格、541 个文件和两份 seal，共 543 pins。Rust 用 linked-worktree 的 Git 上下文找到原始数据根目录，重新读全部文件；传输中的绝对路径不是读文件授权。
+导出脚本依原 loader 的源码位置确定允许根目录；上述导出不复制固定 P1 panel/scout 数据到 worktree，也不修改 loader pin。允许的 panel/scout seal 分别是 `b61d04c898cd53545e2bc95ffdede6da6861b18d602d49cb83d57eb52816423b` 和 `c35edb8ad23c8d958fe8f2383786f963160842c55ea8c3489e36efb96d25b983`。完整传输为 480 条报价、48 份规格、541 个文件和两份 seal，共 543 pins。Rust 用 linked-worktree 的 Git 上下文找到原始数据根目录，重新读全部文件；传输中的绝对路径不是读文件授权。
 
 `--panel-file` 只能配合 `fixture_name=null`、`quotes=[]` 的显式请求。候选 descriptor 和 scenario 的 `spec_hash` 必须绑定导出中已归一化的 spec，观点哈希必须绑定实际观点。实际验收请求在 `results/options_platform/rust_d2_execution_20261010/task5/sealed-request.json`；对应面板为 `sealed-panel.json`。在证据目录保留这些文件时可直接执行：
 
@@ -114,7 +116,7 @@ PYTHONPATH=. /Users/disaster/workspace/code/zenQuant/.venv/bin/python -m pytest 
   scripts/export_options_workbench_panel.py tests/options/test_rust_workbench_compatibility.py
 ```
 
-本次原生 62 tests、fmt/clippy 通过；Python 定向 459 通过/1 skip，新增兼容 22 通过。P1 已有 23 保护文件和主目录 110 文件 SHA 未变；旧 call/straddle 各三份 CLI 产物逐字节一致。worktree 的原 P1 本地面板测试因无本地原始目录跳过，实际导出从原仓库载入，完整 native panel 则独立实跑通过。
+D2 初次验证原生 62 tests、fmt/clippy 通过；后续准入修复及本轮集成回归均为 70 tests，见验收报告。Python 定向 459 通过/1 skip，新增兼容 22 通过。P1 已有 23 保护文件和主目录 110 文件 SHA 未变；旧 call/straddle 各三份 CLI 产物逐字节一致。worktree 的原 P1 本地面板测试因无本地原始目录跳过，实际导出从原仓库载入，完整 native panel 则独立实跑通过。
 
 | 实际 CLI fixture | 独立手算 |
 |---|---|
@@ -133,7 +135,7 @@ PYTHONPATH=. /Users/disaster/workspace/code/zenQuant/.venv/bin/python -m pytest 
 | terminal reserve/global/tail/wallet 不足 | 假设资金检查拒绝 |
 | 超精度输入或非终止除法 | 输入拒绝或显式数值限制；不舍入为可交易数值 |
 
-全 `zenquant-check` 本次只跑一次：0/B/C/D PASS；A 因三个旧文件 format FAIL；E 为 `1837 passed/10 skipped/1 error`，错误是全仓收集未加载旧 `--require-local-options-panel` 选项；排除新增测试的默认 root discovery 控制运行（只选该旧测试）仍重现同一错误，见 `task5/full-discovery-control.log`；F 缺 BTCUSDT 历史 Parquet FAIL。日志在 `results/options_platform/rust_d2_execution_20261010/task5/zenquant-check.log`。这些失败未修复、未豁免，全仓尚未通过，分支不具备合并验收。
+全 `zenquant-check` 本次只跑一次：0/B/C/D PASS；A 因三个旧文件 format FAIL；E 为 `1837 passed/10 skipped/1 error`，错误是全仓收集未加载旧 `--require-local-options-panel` 选项；排除新增测试的默认 root discovery 控制运行（只选该旧测试）仍重现同一错误，见 `task5/full-discovery-control.log`；F 缺 BTCUSDT 历史 Parquet FAIL。日志在 `results/options_platform/rust_d2_execution_20261010/task5/zenquant-check.log`。上述为 D2 初次运行的历史状态；随后独立 A/E/F 修复及真实历史快照复跑已通过全部本地门禁，详见开头链接的集成修复报告。原始日志保持不变。
 
 ## 扩展与迁移
 

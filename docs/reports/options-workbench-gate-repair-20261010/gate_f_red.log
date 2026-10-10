@@ -1,0 +1,164 @@
+F..F                                                                     [100%]
+=================================== FAILURES ===================================
+_ test_gate_f_propagates_walk_forward_cli_exit[one-overfit-window-blocks-even-with-positive-average] _
+
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x1102a4c80>
+sharpes = [2.0, -1.0, 2.0, 5.0], expected_code = 1
+
+    @pytest.mark.parametrize(
+        ("sharpes", "expected_code"),
+        [
+            pytest.param([2.0, -1.0, 2.0, 5.0], 1, id="one-overfit-window-blocks-even-with-positive-average"),
+            pytest.param([2.0, 1.5, 2.0, 3.0], 0, id="healthy-windows-pass"),
+            pytest.param([2.0, 0.1], 0, id="degraded-without-overfit-preserves-existing-threshold"),
+            pytest.param([], 1, id="empty-windows-fail-closed"),
+        ],
+    )
+    def test_gate_f_propagates_walk_forward_cli_exit(
+        monkeypatch: pytest.MonkeyPatch, sharpes: list[float], expected_code: int
+    ) -> None:
+        windows = [
+            WindowSpec(label=f"window_{i}", start_ns=1_704_067_200_000_000_000, end_ns=1_719_792_000_000_000_000)
+            for i in range(len(sharpes) // 2)
+        ]
+        monkeypatch.setattr(comparison, "default_walk_forward_windows", Mock(return_value=windows))
+        # Construction loads datasets, so replace the entire backtest boundary.
+        # The evaluator's window verdicts, CLI, and harness wrapper remain real.
+        backtests = [
+            SimpleNamespace(run=lambda sharpe=sharpe: SimpleNamespace(metrics=SimpleNamespace(sharpe=sharpe, net_pnl=0.0)))
+            for sharpe in sharpes
+        ]
+        monkeypatch.setattr(historical, "HistoricalBacktest", Mock(side_effect=backtests))
+        exit_codes: list[int] = []
+
+        def run_cli(cmd: list[str], *, cwd: str) -> subprocess.CompletedProcess:
+            with monkeypatch.context() as cli_patch:
+                cli_patch.setattr(sys, "argv", cmd[1:])
+                cli_patch.setattr(sys, "path", sys.path.copy())
+                try:
+                    runpy.run_path(str(Path(cwd) / cmd[1]), run_name="__main__")
+                except SystemExit as exc:
+                    code = exc.code
+                else:
+                    code = 0
+            exit_codes.append(code)
+            return subprocess.CompletedProcess(cmd, code)
+
+        # Run the actual script entrypoint in-process so the test stays offline.
+        monkeypatch.setattr(check.subprocess, "run", run_cli)
+
+        passed = check.gate_f()
+
+>       assert exit_codes == [expected_code]
+E       assert [0] == [1]
+E
+E         At index 0 diff: 0 != 1
+E         Use -v to get more diff
+
+tests/test_walk_forward_gate.py:64: AssertionError
+----------------------------- Captured stdout call -----------------------------
+
+============================================================
+  Gate F: walk-forward overfit detection
+============================================================
+Walk-Forward Evaluation — Train/Dev Selection Layer
+Train: 2 years, Test: 6 months, Slide: 6 months
+split_scope=train_dev_only
+======================================================================
+Windows: 2
+
+[1/2] window_0
+  Train Sharpe=2.00, Test Sharpe=-1.00, Ratio=-0.50 → OVERFIT
+[2/2] window_1
+  Train Sharpe=2.00, Test Sharpe=5.00, Ratio=2.50 → ROBUST
+
+======================================================================
+Window                                           Train     Test    Ratio    Verdict
+----------------------------------------------------------------------
+window_0                                          2.00    -1.00    -0.50    OVERFIT
+window_1                                          2.00     5.00     2.50     ROBUST
+
+Aggregates:
+  Avg Train Sharpe: 2.00
+  Avg Test Sharpe:  2.00
+  Avg OOS Ratio:    1.00
+  Overfit windows:  1/2
+
+Strategy shows good train→dev stability (ratio=1.00)
+  [PASS] F: walk-forward overfit detection (0.0s)
+___ test_gate_f_propagates_walk_forward_cli_exit[empty-windows-fail-closed] ____
+
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x1102a5490>
+sharpes = [], expected_code = 1
+
+    @pytest.mark.parametrize(
+        ("sharpes", "expected_code"),
+        [
+            pytest.param([2.0, -1.0, 2.0, 5.0], 1, id="one-overfit-window-blocks-even-with-positive-average"),
+            pytest.param([2.0, 1.5, 2.0, 3.0], 0, id="healthy-windows-pass"),
+            pytest.param([2.0, 0.1], 0, id="degraded-without-overfit-preserves-existing-threshold"),
+            pytest.param([], 1, id="empty-windows-fail-closed"),
+        ],
+    )
+    def test_gate_f_propagates_walk_forward_cli_exit(
+        monkeypatch: pytest.MonkeyPatch, sharpes: list[float], expected_code: int
+    ) -> None:
+        windows = [
+            WindowSpec(label=f"window_{i}", start_ns=1_704_067_200_000_000_000, end_ns=1_719_792_000_000_000_000)
+            for i in range(len(sharpes) // 2)
+        ]
+        monkeypatch.setattr(comparison, "default_walk_forward_windows", Mock(return_value=windows))
+        # Construction loads datasets, so replace the entire backtest boundary.
+        # The evaluator's window verdicts, CLI, and harness wrapper remain real.
+        backtests = [
+            SimpleNamespace(run=lambda sharpe=sharpe: SimpleNamespace(metrics=SimpleNamespace(sharpe=sharpe, net_pnl=0.0)))
+            for sharpe in sharpes
+        ]
+        monkeypatch.setattr(historical, "HistoricalBacktest", Mock(side_effect=backtests))
+        exit_codes: list[int] = []
+
+        def run_cli(cmd: list[str], *, cwd: str) -> subprocess.CompletedProcess:
+            with monkeypatch.context() as cli_patch:
+                cli_patch.setattr(sys, "argv", cmd[1:])
+                cli_patch.setattr(sys, "path", sys.path.copy())
+                try:
+                    runpy.run_path(str(Path(cwd) / cmd[1]), run_name="__main__")
+                except SystemExit as exc:
+                    code = exc.code
+                else:
+                    code = 0
+            exit_codes.append(code)
+            return subprocess.CompletedProcess(cmd, code)
+
+        # Run the actual script entrypoint in-process so the test stays offline.
+        monkeypatch.setattr(check.subprocess, "run", run_cli)
+
+        passed = check.gate_f()
+
+>       assert exit_codes == [expected_code]
+E       assert [0] == [1]
+E
+E         At index 0 diff: 0 != 1
+E         Use -v to get more diff
+
+tests/test_walk_forward_gate.py:64: AssertionError
+----------------------------- Captured stdout call -----------------------------
+
+============================================================
+  Gate F: walk-forward overfit detection
+============================================================
+Walk-Forward Evaluation — Train/Dev Selection Layer
+Train: 2 years, Test: 6 months, Slide: 6 months
+split_scope=train_dev_only
+======================================================================
+Windows: 0
+
+
+======================================================================
+Window                                           Train     Test    Ratio    Verdict
+----------------------------------------------------------------------
+  [PASS] F: walk-forward overfit detection (0.0s)
+=========================== short test summary info ============================
+FAILED tests/test_walk_forward_gate.py::test_gate_f_propagates_walk_forward_cli_exit[one-overfit-window-blocks-even-with-positive-average]
+FAILED tests/test_walk_forward_gate.py::test_gate_f_propagates_walk_forward_cli_exit[empty-windows-fail-closed]
+2 failed, 2 passed in 0.34s
