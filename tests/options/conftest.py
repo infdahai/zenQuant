@@ -5,14 +5,6 @@ import pytest
 from zenquant.research.options_platform import panel as adapter
 
 
-def pytest_addoption(parser):
-    parser.addoption(
-        "--require-local-options-panel",
-        action="store_true",
-        help="Require the fixed pinned local options panel and scout; never skip missing sources.",
-    )
-
-
 def require_local_options_panel(*, strict):
     roots = (adapter._PANEL, adapter._SCOUT)
     absent = []
