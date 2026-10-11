@@ -220,6 +220,17 @@ pub fn evaluate(
     let total = premium
         .checked_add(&opening_fee)
         .map_err(|_| E::NumericalLimitation)?;
+    // This v1 state uses the same exact decimal decoder as its inputs. Refuse an
+    // exact arithmetic result that would not survive replay; never round it.
+    for amount in [&premium, &opening_fee, &total] {
+        let restored = amount
+            .canonical_string()
+            .and_then(|s| Dec::parse(&s))
+            .map_err(|_| E::NumericalLimitation)?;
+        if restored != *amount {
+            return Err(E::NumericalLimitation);
+        }
+    }
     Ok(Bounds {
         currency: f.owner.currency.clone(),
         premium,
