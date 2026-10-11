@@ -3,6 +3,11 @@ name = "options-workbench"
 version = "0.1.0"
 edition = "2024"
 default-run = "options-workbench"
+[features]
+reservation-bench = []
+[[example]]
+name = "reservation_baseline"
+required-features = ["reservation-bench"]
 [dependencies]
 options-core = { path = "../options-core" }
 serde = { version = "1", features = ["derive"] }

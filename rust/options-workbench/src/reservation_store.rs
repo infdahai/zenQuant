@@ -413,3 +413,7 @@ pub fn replay() -> Result<Receipt> {
 #[cfg(all(test, target_os = "linux"))]
 #[path = "reservation_store_tests.rs"]
 mod tests;
+
+#[cfg(feature = "reservation-bench")]
+#[path = "reservation_benchmark.rs"]
+pub mod benchmark;
