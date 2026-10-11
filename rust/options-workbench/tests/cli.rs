@@ -374,3 +374,38 @@ fn report_public_boundary_rejects_invalid_analysis_before_render() {
         assert!(options_workbench::report::render(&a, &bytes, None).is_err());
     }
 }
+
+#[test]
+fn legacy_v1_report_semantics_match_cloud_baseline() {
+    use options_core::canonical::{bytes_sha256, canonical_bytes};
+    let p = temp();
+    // Captured on Linux/Rust 1.90.0 at 6a6f821 before implementation. Only the
+    // intentionally changed code identity is normalized; all other report fields bind.
+    for (name, expected) in [
+        (
+            "terminal-eth-call",
+            "9295583d00da5642cc304eed2059723edf95d75b624497317bd609521a13c828",
+        ),
+        (
+            "terminal-eth-straddle",
+            "88d25f2c475531d01aba5423adcdb00dcd02cdb813938a44a283429298c2bab2",
+        ),
+        (
+            "terminal-vertical",
+            "79e6423263bffa91617ab2ff21254efe7bbf31abe0abe3e2bc339c27d9fdacc2",
+        ),
+    ] {
+        let request = fixture().with_file_name(format!("{name}.json"));
+        let out = p.join(name);
+        assert!(run(&request, &out).status.success());
+        let mut report: serde_json::Value =
+            serde_json::from_slice(&fs::read(out.join("report.json")).unwrap()).unwrap();
+        report["identity"]["code_sha256"] = "0".repeat(64).into();
+        assert_eq!(
+            bytes_sha256(&canonical_bytes(&report).unwrap()),
+            expected,
+            "{name}"
+        );
+    }
+    fs::remove_dir_all(p).unwrap();
+}
