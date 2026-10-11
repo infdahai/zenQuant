@@ -12,4 +12,5 @@ pub mod fixtures;
 pub mod inputs;
 pub mod intents;
 pub mod quote_diagnostics;
+pub mod reservations;
 pub mod terminal_diagnostics;
