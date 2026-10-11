@@ -3,9 +3,9 @@ name: Rust options diagnostics
 on:
   push:
     branches: [main, "codex/**"]
-    paths: ["rust/**", ".github/workflows/rust.yml", "docs/*RUST_GUIDE.md", "docs/reports/options-*-diagnostics-*/**", "docs/reports/simulated-intents-*/**"]
+    paths: ["rust/**", ".github/workflows/rust.yml", "docs/*RUST_GUIDE.md", "docs/reports/options-*-diagnostics-*/**", "docs/reports/simulated-intents-*/**", "docs/reports/simulated-reservations-*/**"]
   pull_request:
-    paths: ["rust/**", ".github/workflows/rust.yml", "docs/*RUST_GUIDE.md", "docs/reports/options-*-diagnostics-*/**", "docs/reports/simulated-intents-*/**"]
+    paths: ["rust/**", ".github/workflows/rust.yml", "docs/*RUST_GUIDE.md", "docs/reports/options-*-diagnostics-*/**", "docs/reports/simulated-intents-*/**", "docs/reports/simulated-reservations-*/**"]
   workflow_dispatch:
 
 permissions:
@@ -21,7 +21,7 @@ jobs:
       - uses: actions/checkout@v4
       - name: Verify archived validation evidence
         run: |
-          for manifest in ../docs/reports/options-*-diagnostics-*/SHA256SUMS ../docs/reports/simulated-intents-*/SHA256SUMS; do
+          for manifest in ../docs/reports/options-*-diagnostics-*/SHA256SUMS ../docs/reports/simulated-intents-*/SHA256SUMS ../docs/reports/simulated-reservations-*/SHA256SUMS; do
             (cd "$(dirname "$manifest")" && sha256sum --check SHA256SUMS) || exit 1
           done
       - name: Install pinned Rust toolchain
@@ -29,9 +29,9 @@ jobs:
       - name: Check formatting
         run: cargo fmt --all -- --check
       - name: Check all targets
-        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+        run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
       - name: Test core, CLI and publication failures
-        run: cargo test --workspace --locked
+        run: cargo test --workspace --all-features --locked
       - name: Build without Python
         run: cargo build --workspace --locked
       - name: Run independent quote diagnostics without external executables
@@ -44,3 +44,12 @@ jobs:
           env PATH=/nonexistent ./target/debug/simulated-intents record --store-dir "$RUNNER_TEMP/simulated-intents" --request-file options-workbench/fixtures/simulated-intent.json
           env PATH=/nonexistent ./target/debug/simulated-intents record --store-dir "$RUNNER_TEMP/simulated-intents" --request-file options-workbench/fixtures/simulated-intent.json
           env PATH=/nonexistent ./target/debug/simulated-intents replay --store-dir "$RUNNER_TEMP/simulated-intents"
+      - name: Fund, reserve, retry and replay without external executables
+        run: |
+          cargo run --locked -p options-workbench --example reservation_fixture -- "$RUNNER_TEMP/reservation-inputs"
+          env PATH=/nonexistent ./target/debug/simulated-reservations init
+          env PATH=/nonexistent ./target/debug/simulated-reservations fund --request-file "$RUNNER_TEMP/reservation-inputs/funding.json"
+          env PATH=/nonexistent ./target/debug/simulated-reservations reserve --request-file "$RUNNER_TEMP/reservation-inputs/request.json"
+          env PATH=/nonexistent ./target/debug/simulated-reservations reserve --request-file "$RUNNER_TEMP/reservation-inputs/request.json"
+          cd "$RUNNER_TEMP"
+          env PATH=/nonexistent "$GITHUB_WORKSPACE/rust/target/debug/simulated-reservations" replay
