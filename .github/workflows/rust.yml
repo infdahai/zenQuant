@@ -3,9 +3,9 @@ name: Rust options diagnostics
 on:
   push:
     branches: [main, "codex/**"]
-    paths: ["rust/**", ".github/workflows/rust.yml"]
+    paths: ["rust/**", ".github/workflows/rust.yml", "docs/OPTIONS_WORKBENCH_RUST_GUIDE.md", "docs/reports/options-*-diagnostics-*/**"]
   pull_request:
-    paths: ["rust/**", ".github/workflows/rust.yml"]
+    paths: ["rust/**", ".github/workflows/rust.yml", "docs/OPTIONS_WORKBENCH_RUST_GUIDE.md", "docs/reports/options-*-diagnostics-*/**"]
   workflow_dispatch:
 
 permissions:
@@ -19,6 +19,11 @@ jobs:
         working-directory: rust
     steps:
       - uses: actions/checkout@v4
+      - name: Verify archived validation evidence
+        run: |
+          for manifest in ../docs/reports/options-*-diagnostics-*/SHA256SUMS; do
+            (cd "$(dirname "$manifest")" && sha256sum --check SHA256SUMS) || exit 1
+          done
       - name: Install pinned Rust toolchain
         run: rustup show active-toolchain
       - name: Check formatting
