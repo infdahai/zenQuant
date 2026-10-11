@@ -1,4 +1,4 @@
-//! Native descriptor-relative, exclusive publication. Unsafe/libc is confined here.
+//! Native descriptor-relative, exclusive report publication.
 use std::{
     ffi::CString,
     fs::File,
@@ -28,7 +28,7 @@ impl Failure {
 fn c(s: &std::ffi::OsStr) -> Result<CString, Failure> {
     CString::new(s.as_bytes()).map_err(|_| Failure::Invalid)
 }
-fn directory(parent: &File, name: &std::ffi::OsStr) -> Result<File, Failure> {
+pub(crate) fn directory(parent: &File, name: &std::ffi::OsStr) -> Result<File, Failure> {
     let name = c(name)?;
     let fd = unsafe {
         libc::openat(
@@ -46,7 +46,7 @@ fn directory(parent: &File, name: &std::ffi::OsStr) -> Result<File, Failure> {
 fn root() -> Result<File, Failure> {
     File::open("/").map_err(|_| Failure::Invalid)
 }
-fn open_dir(path: &Path, create: bool) -> Result<File, Failure> {
+pub(crate) fn open_dir(path: &Path, create: bool) -> Result<File, Failure> {
     let mut fd = root()?;
     for part in path.components() {
         match part {
@@ -98,7 +98,7 @@ pub fn read_bounded(path: &Path, limit: usize) -> Result<Vec<u8>, Failure> {
     }
     Ok(bytes)
 }
-fn same_parent(path: &Path, held: &File) -> Result<(), Failure> {
+pub(crate) fn same_parent(path: &Path, held: &File) -> Result<(), Failure> {
     let now = open_dir(path, false)?;
     let a = now.metadata().map_err(|_| Failure::Incomplete)?;
     let b = held.metadata().map_err(|_| Failure::Incomplete)?;
