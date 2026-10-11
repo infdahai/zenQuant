@@ -9,6 +9,86 @@ use crate::{
 fn d(s: &str) -> Dec {
     Dec::parse(s).expect("fixed finite mathematical constant")
 }
+
+/// Synthetic reservation policy, not a venue fee attestation or real balance snapshot.
+pub fn mathematical_reservation_case(
+    now: u64,
+    initial: Dec,
+) -> Result<(crate::reservations::Funding, crate::reservations::Request)> {
+    use crate::{
+        canonical::bytes_sha256,
+        intents::*,
+        reservations::{self as r, *},
+    };
+    let end = now
+        .checked_add(3_600_000_000_000)
+        .ok_or(Error::new(ErrorCode::InvalidTimestamp))?;
+    let mut spec = mathematical_spec(OptionType::C, d("100"));
+    spec.expiry_ns = end;
+    spec.valid_from_ns = now;
+    spec.valid_until_ns = Some(end);
+    let owner = Owner {
+        venue: spec.venue.clone(),
+        simulated_account_id: "mathematical-cash-account".into(),
+        subaccount: Subaccount::Main,
+        collateral_domain: CollateralDomain::FullyPaidSingleCurrencyCash,
+        currency: "USDC".into(),
+    };
+    let funding = Funding {
+        schema_version: FUNDING_SCHEMA.into(),
+        mode: Mode::Simulated,
+        snapshot_id: "explicit-mathematical-funding".into(),
+        owner: owner.clone(),
+        initial_balance: initial,
+        available_ns: now,
+        source_ref: "EXPLICIT_SYNTHETIC_BALANCE_NOT_REAL_ACCOUNT".into(),
+        source_sha256: bytes_sha256(b"explicit synthetic balance assumption"),
+        fee_cap: FeeCap {
+            schema_version: FEE_SCHEMA.into(),
+            premium_fraction: d(".125"),
+            known_ns: now,
+            valid_from_ns: now,
+            valid_until_ns: end,
+            source_ref: "SYNTHETIC_ALL_OPENING_FEES_LE_0.125_TIMES_PREMIUM_NOT_VENUE_VERIFIED"
+                .into(),
+            source_sha256: bytes_sha256(b"synthetic all opening fees <= premium * 0.125"),
+        },
+        max_spec_age_ns: 3_600_000_000_000,
+    };
+    let intent = Intent {
+        schema_version: crate::intents::REQUEST_SCHEMA.into(),
+        mode: Mode::Simulated,
+        request_id: "mathematical-reservation-1".into(),
+        simulated_account_id: owner.simulated_account_id.clone(),
+        source: DecisionSource {
+            kind: DecisionKind::Manual,
+            source_id: "synthetic-reservation-example".into(),
+            source_version: "v1".into(),
+            evidence_sha256: bytes_sha256(b"explicit synthetic limit BUY request"),
+            evidence_available_ns: now,
+        },
+        evidence_cutoff_ns: now,
+        created_ns: now,
+        expires_ns: end,
+        metadata_known_ns: now,
+        leg: CandidateLeg {
+            instrument: InstrumentDescriptor::from_spec(&spec)?,
+            side: Side::Buy,
+            quantity_native: d(".01"),
+        },
+        spec,
+        limit_price_native: d("2"),
+    };
+    let request = r::Request {
+        schema_version: r::REQUEST_SCHEMA.into(),
+        mode: Mode::Simulated,
+        owner,
+        funding_sha256: canonical_hash(&funding)?,
+        intent_sha256: canonical_hash(&intent)?,
+        intent,
+    };
+    Ok((funding, request))
+}
 pub fn mathematical_spec(option_type: OptionType, strike: Dec) -> InstrumentSpec {
     InstrumentSpec {
         venue: "MATHEMATICAL_FIXTURE".into(),
