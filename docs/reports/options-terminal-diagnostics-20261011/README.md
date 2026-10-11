@@ -7,7 +7,7 @@
 - 原目标分支 `codex/options-workbench-rust` 的核实基线：`6a6f8211fa8352a66343b015507c8e1bd9d9c941`；原 `work` 分支保留在 `c2aa54af0b39c8a8eb89256b5bee7fd23e0d249e`。
 - 第一模块七个提交最终为 `2866f8647f04715f9bd9c1a7cd8ad27bdcff9d3d`，本轮从这个干净基线继续；开始前重跑 Rust 85 tests 全部通过。
 - 第一模块已按后续授权正常推送到 `infdahai/zenQuant` 的 `codex/options-rust-iteration-1`。GitHub [run 38135176664](https://github.com/infdahai/zenQuant/actions/runs/38135176664) 对此完整 SHA 返回 `completed/success`，记录见 `first-module-ci.json`。
-- 第二模块实现 `86953a9`（core）、`bfad8e8`（CLI/report）、`25cff9e`（测试/fixture）、`4e8b55a`（CI smoke），然后独立提交本文和指南。受测代码/测试/CI 树为 `4e8b55a845a93daf8bc37033c567b4025a46cdfb`；后续文档归档不改变这棵 Rust 树。最终交付提交 SHA 与对应 CI run 在交付消息和该分支的 GitHub Actions 中逐一核对，不以祖先提交通过代替最终 SHA 的结果。
+- 第二模块实现 `86953a9`（core）、`bfad8e8`（CLI/report）、`25cff9e`（测试/fixture）、`4e8b55a`（CI smoke），然后独立提交本文和指南。受测 Rust 代码/测试树为 `4e8b55a845a93daf8bc37033c567b4025a46cdfb`；后续文档归档和 CI 证据检查不改变这棵 Rust 树。最终交付提交 SHA 与对应 CI run 在交付消息和该分支的 GitHub Actions 中逐一核对，不以祖先提交通过代替最终 SHA 的结果。
 - 仅云工作区 `/workspace/zenQuant`；Linux x86_64，Rust/Cargo 1.90.0，锁定原 `Cargo.lock`。没有调用用户本机 CLI。没有新增 crate 或第三方依赖。
 
 ## 模块与依赖边界
@@ -80,8 +80,11 @@ Rust 原生回归还消融开仓费率、FX 和迟到开仓费用；场景 hash 
 | `env PATH=/nonexistent /workspace/zenquant-terminal-validation/clean-target/debug/options-workbench --terminal-request-file /workspace/zenQuant/rust/options-workbench/fixtures/terminal-call-scenarios.json --output-dir /workspace/zenquant-terminal-validation/clean-smoke` | exit 0，三份报告完整 |
 | `env PATH=/nonexistent /workspace/zenquant-terminal-validation/clean-target/debug/options-workbench --terminal-request-file /workspace/zenquant-terminal-validation/complete.json --output-dir /workspace/zenquant-terminal-validation/clean-same-input` | exit 0，针对相同字节输入，与原目标目录构建的三份产物逐字节 `cmp` 一致 |
 | `git diff --check` | 通过 |
+| 在两份云端验收目录分别执行 `sha256sum --check SHA256SUMS` | 全部通过；隔离副本中删除日志或改动 report 字节都正确失败 |
 
 中间测试未出现失败。日志里的 `INCOMPLETE_PUBLICATION` 是竞态/故障测试的预期子进程输出。曾比较 pretty fixture 与规范化实验 JSON 的产物，只有 `request_bytes_sha256` 不同；使用相同字节输入后所有产物一致，确认原始字节身份与语义身份的区别。实验 JSON 准备和归档整理使用 Node 辅助，没有将其引入构建、测试或运行依赖；所有行为均有 Cargo 原生回归。
+
+交付检查发现全局 `*.log` 忽略规则漏掉八份新测试日志，已用独立文档提交 `52f017e` 明确纳入版本控制。CI 增加小型 SHA256 清单检查，并覆盖相关 Rust 指南/验收文档路径，使缺失或篡改的归档失败，且文档交付提交也运行完整 Rust 检查。没有修改全局忽略规则，也不将日志收集扩展到其他数据目录。
 
 旧兼容：原 v1 View 必填、场景绑定及严格未知字段拒绝不变；已有三份旧报告 golden 继续通过。新增第一模块完整 quote 报告 golden（仅规范化必然变化的代码身份）也通过。互斥参数双向顺序、跨 schema 误传、重复参数、结构篡改、浮点、hash 不匹配、来源晚到、非法输出路径、已有报告不覆盖、markup 转义和证据身份均经过实际 CLI 测试。
 
@@ -99,7 +102,7 @@ rust/options-workbench/src/report.rs                  # 原子发布前的报告
 rust/options-workbench/fixtures/terminal-call-scenarios.json
 rust/options-workbench/tests/terminal_cli.rs          # 5 个集成 tests
 rust/options-workbench/tests/quote_cli.rs             # 第一模块兼容 golden
-.github/workflows/rust.yml                           # 增加无外部可执行文件的 terminal smoke
+.github/workflows/rust.yml                           # terminal smoke、文档触发及归档完整性检查
 docs/OPTIONS_WORKBENCH_RUST_GUIDE.md
 docs/reports/options-terminal-diagnostics-20261011/*   # 本文和验收证据
 ```
