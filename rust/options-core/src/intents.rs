@@ -2,10 +2,9 @@
 use crate::{
     canonical::canonical_bytes,
     contracts::*,
-    costs::{legal_quantity, tick},
     decimal::Dec,
     error::{Error, ErrorCode, Result},
-    inputs::{require, text, validate_spec},
+    measurement::{legal_quantity, require, text, tick, validate_spec},
 };
 use serde::{Deserialize, Serialize};
 

@@ -9,15 +9,10 @@ use std::collections::{BTreeMap, BTreeSet};
 pub const PANEL_SCHEMA: &str = "options-workbench-panel.rust.v1";
 pub const PANEL_EXPORTER: &str = "options-workbench-exporter.rust.v1";
 pub const MAX_PANEL_BYTES: usize = 16 * 1024 * 1024;
-pub(crate) fn require(ok: bool, code: ErrorCode) -> Result<()> {
-    if ok { Ok(()) } else { Err(Error::new(code)) }
-}
 fn positive(x: &Dec) -> bool {
     !x.is_negative() && !x.is_zero()
 }
-pub(crate) fn text(x: &str) -> bool {
-    !x.trim().is_empty() && x.len() <= MAX_STRING_BYTES
-}
+pub(crate) use crate::measurement::{require, text, validate_spec};
 fn clocks(_source: u64, received: u64, available: u64) -> Result<()> {
     require(received <= available, ErrorCode::InvalidTimestamp)
 }
@@ -87,54 +82,6 @@ pub fn select_view(views: &[View], id: &str, cutoff: u64) -> Result<View> {
         })
         .map(|v| (*v).clone())
         .ok_or(Error::new(ErrorCode::MissingEvidence))
-}
-pub(crate) fn validate_spec(s: &InstrumentSpec) -> Result<()> {
-    require(
-        [
-            &s.venue,
-            &s.instrument_id,
-            &s.underlying,
-            &s.quote_currency,
-            &s.strike_currency,
-            &s.settlement_currency,
-            &s.margin_currency,
-            &s.settlement_index,
-            &s.rule_version,
-        ]
-        .iter()
-        .all(|x| text(x))
-            && valid_sha256(&s.metadata_hash),
-        ErrorCode::InvalidMetadata,
-    )?;
-    require(
-        positive(&s.strike)
-            && positive(&s.multiplier)
-            && positive(&s.min_quantity_native)
-            && positive(&s.quantity_step_native)
-            && s.min_quantity_native
-                .is_multiple_of(&s.quantity_step_native)
-            && s.max_quantity_native.as_ref().is_none_or(|x| {
-                x >= &s.min_quantity_native && x.is_multiple_of(&s.quantity_step_native)
-            }),
-        ErrorCode::InvalidInput,
-    )?;
-    require(
-        s.expiry_ns > s.valid_from_ns
-            && s.valid_until_ns.is_none_or(|t| t > s.valid_from_ns)
-            && s.settlement_window_ns > 0,
-        ErrorCode::InvalidTimestamp,
-    )?;
-    require(
-        !s.tick_bands.is_empty() && s.tick_bands.len() <= MAX_LEVELS && s.tick_bands[0].0.is_zero(),
-        ErrorCode::InvalidInput,
-    )?;
-    for (i, (bound, tick)) in s.tick_bands.iter().enumerate() {
-        require(
-            !bound.is_negative() && positive(tick) && (i == 0 || bound > &s.tick_bands[i - 1].0),
-            ErrorCode::InvalidInput,
-        )?;
-    }
-    Ok(())
 }
 fn observation(o: &Observation) -> Result<()> {
     clocks(o.source_ns, o.received_ns, o.available_ns)?;

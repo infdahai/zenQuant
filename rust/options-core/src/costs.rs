@@ -1,52 +1,6 @@
 //! Displayed depth and fee diagnostics, never execution or fill evidence.
-use crate::{canonical::canonical_hash, contracts::*, decimal::Dec, error::Result};
-pub(crate) type Diagnostic<T> = std::result::Result<T, StatusResult>;
-pub(crate) fn math<T>(v: Result<T>) -> Diagnostic<T> {
-    v.map_err(|e| {
-        StatusResult::new(
-            Status::NotEvaluable,
-            format!("NUMERICAL_LIMITATION:{:?}", e.code),
-        )
-    })
-}
-pub(crate) fn need(ok: bool, status: Status, reason: &str) -> Diagnostic<()> {
-    if ok {
-        Ok(())
-    } else {
-        Err(StatusResult::new(status, reason))
-    }
-}
-pub(crate) fn legal_quantity(s: &InstrumentSpec, q: &Dec) -> Diagnostic<Dec> {
-    need(
-        s.multiplier > Dec::zero(),
-        Status::Invalid,
-        "INVALID_MULTIPLIER",
-    )?;
-    need(
-        s.min_quantity_native > Dec::zero() && s.quantity_step_native > Dec::zero(),
-        Status::Invalid,
-        "INVALID_LOT_RULE",
-    )?;
-    need(
-        q > &Dec::zero()
-            && q >= &s.min_quantity_native
-            && q.is_multiple_of(&s.quantity_step_native)
-            && s.max_quantity_native.as_ref().is_none_or(|m| q <= m),
-        Status::Rejected,
-        "ILLEGAL_NATIVE_QUANTITY",
-    )?;
-    match s.quantity_unit {
-        QuantityUnit::Base => {
-            need(
-                s.multiplier == Dec::one(),
-                Status::Unsupported,
-                "BASE_MULTIPLIER_UNSUPPORTED",
-            )?;
-            Ok(q.clone())
-        }
-        QuantityUnit::Contracts => math(q.checked_mul(&s.multiplier)),
-    }
-}
+pub(crate) use crate::measurement::{Diagnostic, legal_quantity, math, need, tick};
+use crate::{canonical::canonical_hash, contracts::*, decimal::Dec};
 fn timestamp(
     source: u64,
     received: u64,
@@ -87,33 +41,6 @@ fn knowledge(at: Option<u64>, cutoff: u64, label: &str) -> Diagnostic<()> {
         at.is_some_and(|n| n <= cutoff),
         Status::NotEvaluable,
         &format!("{label}_KNOWLEDGE_UNAVAILABLE"),
-    )
-}
-pub(crate) fn tick(s: &InstrumentSpec, p: &Dec) -> Diagnostic<()> {
-    need(!p.is_negative(), Status::Invalid, "NEGATIVE_BOOK_PRICE")?;
-    need(
-        !s.tick_bands.is_empty() && s.tick_bands[0].0.is_zero(),
-        Status::Invalid,
-        "INVALID_TICK_BANDS",
-    )?;
-    need(
-        s.tick_bands
-            .iter()
-            .all(|(b, t)| !b.is_negative() && t > &Dec::zero())
-            && s.tick_bands.windows(2).all(|w| w[0].0 < w[1].0),
-        Status::Invalid,
-        "INVALID_TICK_BANDS",
-    )?;
-    let (_, t) = s
-        .tick_bands
-        .iter()
-        .rev()
-        .find(|(b, _)| p >= b)
-        .ok_or_else(|| StatusResult::new(Status::Invalid, "MISSING_TICK_BAND"))?;
-    need(
-        p.is_multiple_of(t),
-        Status::Rejected,
-        "ILLEGAL_NATIVE_PRICE_TICK",
     )
 }
 fn book_valid(b: &Book) -> Diagnostic<()> {
