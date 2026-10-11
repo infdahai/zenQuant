@@ -17,6 +17,7 @@ logs/
 results/
 
 *.log
+/.simulated-reservations/
 
 # Secrets — never commit
 .env
