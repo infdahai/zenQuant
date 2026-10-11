@@ -470,6 +470,20 @@ fn process_lock_excludes_readers_and_writers_and_death_releases_it() {
 }
 
 #[test]
+fn completed_operation_releases_lock_even_if_a_fork_retains_the_descriptor() {
+    let t = Temp::new();
+    t.setup();
+    let held = lock(&t.store()).unwrap();
+    let inherited = held.try_clone().unwrap();
+    assert!(matches!(lock(&t.store()), Err(StoreError::Busy)));
+    drop(held);
+    let next = lock(&t.store()).expect("operation must explicitly unlock despite inherited fd");
+    drop(next);
+    drop(inherited);
+    assert_eq!(replay(&t.store()).unwrap().record_count, 1);
+}
+
+#[test]
 fn actual_partial_write_failure_preserves_committed_snapshot() {
     let t = Temp::new();
     t.setup();
