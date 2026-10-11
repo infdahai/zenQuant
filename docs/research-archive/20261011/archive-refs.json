@@ -1,0 +1,74 @@
+{
+  "schema_version": "zenquant-legacy-archive-refs.v1",
+  "observed_date_utc": "2026-10-11",
+  "repository": "infdahai/zenQuant",
+  "review_base_main": "b32e0b8e448cd6ce4ae6efb0649f02a041c16f7f",
+  "tags": [
+    {
+      "name": "archive/2026-10-11/trend-registration-execution",
+      "tag_object": "37d809de4d6777b1f1bf0b1e66ff912ee6ef7718",
+      "commit": "7d93cc1e53c8908ef26c753e83935877f5861853"
+    },
+    {
+      "name": "archive/2026-10-11/full-cycle-training",
+      "tag_object": "0c891c6ac3b56d7a7def4e811dc2f1c5353e28ed",
+      "commit": "08fbfd413108d61a693eacaf6476ce59ddc7f09c"
+    }
+  ],
+  "branches": [
+    {
+      "name": "feature/trend-registration-time-space-execution",
+      "commit": "7d93cc1e53c8908ef26c753e83935877f5861853",
+      "archive_tag": "archive/2026-10-11/trend-registration-execution"
+    },
+    {
+      "name": "feature/trend-registration-time-space-hypothesis",
+      "commit": "e7d0f3d8afaea0f457b47e75c2328acc9695a7b0",
+      "archive_tag": "archive/2026-10-11/trend-registration-execution"
+    },
+    {
+      "name": "feature/trend-registration-trend-participation-execution",
+      "commit": "7d93cc1e53c8908ef26c753e83935877f5861853",
+      "archive_tag": "archive/2026-10-11/trend-registration-execution"
+    },
+    {
+      "name": "feature/trend-registration-trend-participation-hypothesis",
+      "commit": "e7d0f3d8afaea0f457b47e75c2328acc9695a7b0",
+      "archive_tag": "archive/2026-10-11/trend-registration-execution"
+    },
+    {
+      "name": "optimization/full-cycle-training",
+      "commit": "08fbfd413108d61a693eacaf6476ce59ddc7f09c",
+      "archive_tag": "archive/2026-10-11/full-cycle-training"
+    }
+  ],
+  "verification": {
+    "remote_tags_pushed_and_read_back": true,
+    "hypothesis_is_execution_ancestor": true,
+    "old_branch_tips_match_review": true,
+    "deletion_precondition": "Merge this evidence PR with passing applicable CI, then compare each advertised remote branch SHA again and atomically delete only these five exact tips.",
+    "scope": "Git-tracked history only; no ignored results/data, account state, or independently verified Actions ZIP bytes."
+  },
+  "pinned_source_files": [
+    {
+      "path": "docs/QUANT_V2_ACCEPTANCE_HANDOFF.md",
+      "commit": "7d93cc1e53c8908ef26c753e83935877f5861853",
+      "sha256": "5b38dd1c4d9db99a5b4cc8f602271e99f1243c0d55d2d647430dce048958d235"
+    },
+    {
+      "path": "tests/test_risk_guard.py",
+      "commit": "7d93cc1e53c8908ef26c753e83935877f5861853",
+      "sha256": "8da994454531b29395d7b7e45f529d57803addbbba5d8270732b7841715206d1"
+    },
+    {
+      "path": "tests/test_execution_router.py",
+      "commit": "7d93cc1e53c8908ef26c753e83935877f5861853",
+      "sha256": "0795bc06743c67e7376c48ea343237ad9cca019b0ca1de1df569df9cb8e1d67b"
+    },
+    {
+      "path": "tests/test_parity.py",
+      "commit": "7d93cc1e53c8908ef26c753e83935877f5861853",
+      "sha256": "7e041008eaf9063e776fba96c2f8614dd5d5f9604b52b07de2a1d325766a6ec0"
+    }
+  ]
+}
