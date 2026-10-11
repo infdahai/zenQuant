@@ -400,6 +400,13 @@ fn legacy_v1_report_semantics_match_cloud_baseline() {
         assert!(run(&request, &out).status.success());
         let mut report: serde_json::Value =
             serde_json::from_slice(&fs::read(out.join("report.json")).unwrap()).unwrap();
+        // Validate current build identity before normalizing to the archived baseline.
+        assert_eq!(
+            report["identity"]["cargo_lock_sha256"],
+            bytes_sha256(include_bytes!("../../Cargo.lock"))
+        );
+        report["identity"]["cargo_lock_sha256"] =
+            "d8887ca3b9d3012dcf7737ffb7993ea2eb7bc4f54e2b2aca22b06ccb87e82504".into();
         report["identity"]["code_sha256"] = "0".repeat(64).into();
         assert_eq!(
             bytes_sha256(&canonical_bytes(&report).unwrap()),

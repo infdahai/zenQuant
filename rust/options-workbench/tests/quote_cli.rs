@@ -272,7 +272,13 @@ fn quote_report_semantics_match_first_module_baseline() {
     let temp = Temp::new();
     assert!(run(&fixture(), &temp.join("out")).status.success());
     let mut report = json_file(&temp.join("out/report.json"));
-    // First-module baseline 2866f86; source-code identity is the only normalization.
+    // Validate current build identity before normalizing to the archived baseline.
+    assert_eq!(
+        report["identity"]["cargo_lock_sha256"],
+        bytes_sha256(include_bytes!("../../Cargo.lock"))
+    );
+    report["identity"]["cargo_lock_sha256"] =
+        "d8887ca3b9d3012dcf7737ffb7993ea2eb7bc4f54e2b2aca22b06ccb87e82504".into();
     report["identity"]["code_sha256"] = "0".repeat(64).into();
     assert_eq!(
         bytes_sha256(&canonical_bytes(&report).unwrap()),
