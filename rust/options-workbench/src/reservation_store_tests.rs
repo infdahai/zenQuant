@@ -113,6 +113,21 @@ fn pure_transition_and_durable_replay_preserve_identical_business_results() {
 }
 
 #[test]
+fn pre_extraction_snapshot_and_receipt_remain_byte_compatible() {
+    let t = Temp::new("1");
+    let bytes = include_bytes!("../fixtures/reservation-pre-extraction-snapshot.json");
+    let expected = include_bytes!("../fixtures/reservation-pre-extraction-replay.json");
+    let value: serde_json::Value = serde_json::from_slice(expected).unwrap();
+    let observed = value["observed_at_ns"].as_u64().unwrap();
+    fs::write(t.path().join("snapshot.json"), bytes).unwrap();
+    let actual = replay_at(&t.path(), || Ok(observed)).unwrap();
+    let mut encoded = canonical_bytes(&actual).unwrap();
+    encoded.push(b'\n');
+    assert_eq!(encoded, expected);
+    assert_eq!(t.bytes(), bytes);
+}
+
+#[test]
 fn same_owner_cannot_split_or_reinject_its_initial_cash() {
     let t = Temp::new(".045");
     t.fund();
