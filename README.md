@@ -28,8 +28,9 @@ The offline options workbench provides a native Rust CLI and a pure
 costs, terminal option scenarios and same-venue vertical certificates.
 
 - Architecture, request/report interfaces and CLI usage: [Rust workbench guide](docs/OPTIONS_WORKBENCH_RUST_GUIDE.md)
+- Independent quote costs without a View or indicator: [versioned quote diagnostic input](docs/OPTIONS_WORKBENCH_RUST_GUIDE.md#独立报价成本诊断)
 - Local integration results and historical input requirements: [gate repair report](docs/reports/options-workbench-gate-repair-20261010/README.md)
-- Build: `cargo build --manifest-path rust/Cargo.toml --locked -p options-workbench`
+- Build with the pinned toolchain: `cd rust && cargo build --workspace --locked`
 
 The local Python harness and native Rust checks pass on the recorded inputs.
 The workbench remains an offline diagnostic tool; these checks do not establish

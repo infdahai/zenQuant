@@ -4,6 +4,8 @@
 
 2026-10-10 的后续集成修复已通过本地全仓 0/A/B/C/D/E/F 门禁；复跑命令、历史输入指纹和仍未验收的边界见 [集成修复报告](reports/options-workbench-gate-repair-20261010/README.md)。
 
+2026-10-11 云端 Rust 迭代新增不需要 View 的独立报价成本入口，保留原 v1 观点/场景契约。Linux 实测和本轮边界见 [云端验收报告](reports/options-quote-diagnostics-20261011/README.md)。
+
 ```mermaid
 flowchart LR
     S[两份固定 seal 与全部原始文件] --> P[原 Python P1 load_panel / input_integrity]
@@ -21,8 +23,8 @@ flowchart LR
 在本分支的仓库根目录执行；输出目录必须不存在。所有路径须先取真实路径：macOS `/tmp`、`/var` 是符号链接，应使用 `/private/tmp` 或 `Path.resolve()` 后的路径。原始参数含 `..` 或任何符号链接组件都会拒绝。
 
 ```sh
-cargo build --manifest-path rust/Cargo.toml --locked -p options-workbench
-cargo run --manifest-path rust/Cargo.toml --locked -p options-workbench -- \
+cargo +1.90.0 build --manifest-path rust/Cargo.toml --locked -p options-workbench
+cargo +1.90.0 run --manifest-path rust/Cargo.toml --locked -p options-workbench -- \
   --request-file rust/options-workbench/fixtures/terminal-eth-call.json \
   --output-dir results/options_platform/new-call
 ```
@@ -51,7 +53,41 @@ rust/target/debug/options-workbench \
   --output-dir results/options_platform/new-sealed-diagnostic
 ```
 
-二进制仅接受 `--request-file PATH --output-dir PATH [--panel-file PATH]`。退出码 2 表示输入/预检拒绝，1 表示发布未完成或发布后持久性未确认，0 表示诊断报告已完整发布；0 不代表交易成立。已有目标不会覆盖；Rust 使用原生 no-replace 目录发布，失败保留可辨认的 incomplete 目录。Python 导出使用同目录临时文件和独占 hard-link 发布，不覆盖目标；两边都限制读取量、拒绝原始 `..` 和符号链接、保护 source/output 重叠。
+原 v1 入口接受 `--request-file PATH --output-dir PATH [--panel-file PATH]`；新增独立入口见下节，两者不混用。退出码 2 表示输入/预检拒绝，1 表示发布未完成或发布后持久性未确认，0 表示诊断报告已完整发布；0 不代表交易成立。已有目标不会覆盖；Rust 使用原生 no-replace 目录发布，失败保留可辨认的 incomplete 目录。Python 导出使用同目录临时文件和独占 hard-link 发布，不覆盖目标；两边都限制读取量、拒绝原始 `..` 和符号链接、保护 source/output 重叠。
+
+## 独立报价成本诊断
+
+当问题只是“在给定时点与原生数量下，盘口显示的权利金、费用和换算总额是多少”，使用独立输入，不需要指标、观点、情景概率或假设账户预算。人工和算法均可生成相同契约，来源不授予执行权限。
+
+在仓库根目录执行以下命令。`rust/rust-toolchain.toml` 固定已验证的 Rust 1.90.0；首次需要 rustup、C 链接器及下载工具链/锁定依赖所需的网络。构建、原生测试和这个诊断运行均不需要 Python。
+
+```sh
+cd rust
+cargo build --workspace --locked
+cargo run --locked -p options-workbench -- \
+  --quote-request-file options-workbench/fixtures/quote-costs.json \
+  --output-dir ../results/options_platform/new-quote-costs
+```
+
+完整示例为 [quote-costs.json](../rust/options-workbench/fixtures/quote-costs.json)，类型和验证入口为 [quote_diagnostics.rs](../rust/options-core/src/quote_diagnostics.rs)。示例是数学输入，零值 raw/metadata hash 不是已验证的真实市场证据。
+
+| 必填字段 | 契约 |
+|---|---|
+| `schema_version` | `options-quote-diagnostic-request.rust.v1` |
+| `cutoff_ns`, `report_currency` | 显式纳秒截止和结果币种 |
+| `requests` | 1–64 个独立诊断，每项唯一 `request_id` 和一条 `leg`：完整 instrument descriptor、BUY/SELL、精确十进制字符串 `quantity_native` |
+| `quotes` | 0–512 条原有 `QuoteInput`；缺报价可报告，但不能以任意同名合约替代精确 spec hash |
+| `source_identities` | 来源标签；允许空数组，不是原始字节认证 |
+
+使用同一严格 JSON 解码器：拒绝未知字段、重复键、float、布尔代整数、尾随内容；1 MiB、深度/字符串/盘口层数及金额精度限制继续适用。`decode_request` 与 `analyze` 均执行结构准入，公开 typed 输入不会绕过重验。结构冲突（包括相同 spec/time 的冲突报价）拒绝整份请求。将 View 或 authority 等字段加到该 schema 也拒绝；原 `options-workbench-request.rust.v1` 仍要求 View 和绑定它的场景，没有放宽未知字段规则。
+
+输出 schema 为 `options-quote-diagnostic-report.rust.v1`，仍原子发布 `report.json`、`REPORT.md` 和 `identity.json`。每项 `quote_diagnostics` 包含请求 hash、全输入 hash、所选完整报价 hash、状态和可选 `cost`。选择 received/available 已到截止时点的最新精确规格报价；更新但不可用的记录保留在输入及哈希中。选中记录缺费用时不会向旧报价借费率。知识时点、来源年龄、显式 FX/index、合法 lot/tick 和深度仍由现有成本计算器判断。
+
+`cost.premium_native` 与 `fee_native` 均以 spec 的 quote currency 计价；`total_report_currency` 对 BUY 表示含费显示支出，对 SELL 表示扣费显示净收入。费用沿用现有显式模型 `min(rate × index × base_quantity, premium_cap × premium)`，不是交易所费率认证。示例数量 `0.01`、ask `2`、bid `1.9`、费用 `0.0003`，分别得到 `0.0203` 和 `0.0187`。每项独立，不做组合资金或成交净额推断。
+
+缺少可见报价时 `cost=null`，状态为 `NOT_EVALUABLE`；缺费率/知识时间、过期或未来证据、深度不足时总额为 null，已能确定的权利金可保留。非法手数产生 `REJECTED`。报告成功退出也可能包含这些状态。UNKNOWN 行权/结算和 proxy 标签保持原值；显示成本可计算不代表终值模型支持该产品。所有账户/执行状态仍为 `UNVERIFIED`，无真实或模拟 PnL、收益率、容量或生命周期套利结论。
+
+本入口只接收内联数据，拒绝与 `--request-file` 或 `--panel-file` 混用。它不读取输入中声称的源路径、不提供封存数据适配器，也不改变原 seal/pin 检查或受保护输出根目录。报告固定 `NOT_INDEPENDENTLY_VERIFIED` / `MANUAL_UNATTESTED`；即使传入 `sealed_proxy` 标签也不会变成原始来源验证。
 
 ## 输入、精度和身份
 
@@ -81,7 +117,7 @@ Panel schema 是 `options-workbench-panel.rust.v1`，exporter 是 `options-workb
 
 请求最多 1 MiB，panel/单个来源最多 16 MiB，全部来源最多 64 MiB/1024 pins；最多 128 观点修订、64 候选、64 情景、512 报价、16 legs/候选、128 levels/单侧、JSON 深度 64、单字符串 4096 bytes。
 
-报告身份区分请求原始字节、canonical input、原始来源、code source、数学版本和 Cargo.lock。code source hash 是源码身份，不能证明二进制或可复现编译。此分支在 macOS 运行验证；Linux syscall 路径未在 Linux 编译/实跑。
+报告身份区分请求原始字节、canonical input、原始来源、code source、数学版本和 Cargo.lock。code source hash 是源码身份，不能证明二进制或可复现编译。D2 初次在 macOS 验证；2026-10-11 本轮在 Linux 编译并运行原生测试及发布故障测试，不等于真实封存数据或其他平台已重新验收。
 
 ## 模型与证据界限
 
@@ -105,6 +141,19 @@ Panel schema 是 `options-workbench-panel.rust.v1`，exporter 是 `options-workb
 每份报告固定 `diagnostic_only=true`、`rankable=false`、`live_eligible=false`、`execution_authority=NONE`；`actual_pnl/paper_pnl/sharpe/capacity/lifecycle_arbitrage_edge` 均为 null。EV 仅在 forecast + subjective + 完整非负权重精确合计 1 时计算；风险中性、经验或 stress 权重不生成主观 EV。
 
 ## 检查与手算结果
+
+当前 Rust 独立门禁从 `rust/` 目录运行，以自动采用固定工具链；[Rust CI](../.github/workflows/rust.yml) 使用相同命令，不安装或调用 Python：
+
+```sh
+cargo fmt --all -- --check
+cargo clippy --workspace --all-targets --locked -- -D warnings
+cargo test --workspace --locked
+cargo build --workspace --locked
+```
+
+测试包含真实 CLI 集成、旧 v1 报告语义基线、严格契约/时点/精确费用和原子发布故障路径。日志内竞态测试的预期 `INCOMPLETE_PUBLICATION` 不代表测试失败，应查看最终退出码。CI 配置本轮只写入本地，未在 GitHub 触发。
+
+以下为原 D2 的历史跨语言验收命令和结果，本轮未重新运行 Python 门禁；新入口的验证依据是 Rust 原生测试。
 
 ```sh
 cargo fmt --manifest-path rust/Cargo.toml --all --check
