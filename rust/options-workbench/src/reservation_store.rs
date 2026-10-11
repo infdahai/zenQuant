@@ -410,3 +410,6 @@ pub fn replay() -> Result<Receipt> {
     replay_at(&authority_path()?, wall_clock_ns)
 }
 
+#[cfg(all(test, target_os = "linux"))]
+#[path = "reservation_store_tests.rs"]
+mod tests;

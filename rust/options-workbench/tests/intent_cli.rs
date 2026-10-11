@@ -321,3 +321,30 @@ fn failed_receipt_delivery_is_uncertain_and_retry_does_not_duplicate_commit() {
     assert_eq!(retry["result"], "ALREADY_RECORDED");
     assert_eq!(retry["record_count"], 1);
 }
+
+#[test]
+fn third_module_snapshot_and_receipts_match_published_baseline_byte_for_byte() {
+    let t = Temp::new();
+    let baseline = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../docs/reports/simulated-intents-20261011");
+    let init = command("init", &t.store())
+        .args(["--store-id", "cloud-simulated"])
+        .output()
+        .unwrap();
+    let first = record(&t.store(), &fixture("simulated-intent"));
+    let retry = record(&t.store(), &fixture("simulated-intent"));
+    let replay = command("replay", &t.store()).output().unwrap();
+    for (name, out) in [
+        ("init.json", init),
+        ("record.json", first),
+        ("retry.json", retry),
+        ("replay.json", replay),
+    ] {
+        assert!(out.status.success());
+        assert_eq!(out.stdout, fs::read(baseline.join(name)).unwrap());
+    }
+    assert_eq!(
+        snapshot(&t),
+        fs::read(baseline.join("snapshot.json")).unwrap()
+    );
+}
