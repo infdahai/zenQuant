@@ -180,7 +180,8 @@ fn record_with(path: &Path, bytes: &[u8], h: Hooks) -> Result<Receipt> {
         .iter()
         .find(|r| r.intent.request_id == intent.request_id)
     {
-        if existing.intent != intent {
+        if intents::compare_identity(&existing.intent, &intent) != intents::IdentityMatch::SameInput
+        {
             return Err(StoreError::Conflict);
         }
         confirm(&path, &dir)?;

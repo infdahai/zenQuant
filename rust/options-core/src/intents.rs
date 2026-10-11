@@ -59,6 +59,23 @@ pub fn valid_id(id: &str) -> bool {
             .all(|b| b.is_ascii_alphanumeric() || b"._:-".contains(&b))
 }
 
+/// Semantic identity only. Archive sequence, raw byte identity and capacity are IO concerns.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IdentityMatch {
+    DifferentId,
+    SameInput,
+    Conflict,
+}
+pub fn compare_identity(existing: &Intent, incoming: &Intent) -> IdentityMatch {
+    if existing.request_id != incoming.request_id {
+        IdentityMatch::DifferentId
+    } else if existing == incoming {
+        IdentityMatch::SameInput
+    } else {
+        IdentityMatch::Conflict
+    }
+}
+
 pub fn decode_request(bytes: &[u8]) -> Result<Intent> {
     let intent = crate::codec::decode(bytes, MAX_INTENT_BYTES)?;
     validate(&intent)?;
