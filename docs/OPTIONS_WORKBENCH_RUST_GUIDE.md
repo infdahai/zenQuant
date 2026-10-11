@@ -6,6 +6,8 @@
 
 2026-10-11 云端 Rust 迭代新增不需要 View 的独立报价成本入口，保留原 v1 观点/场景契约。Linux 实测和本轮边界见 [云端验收报告](reports/options-quote-diagnostics-20261011/README.md)。
 
+同日继续增加独立单腿到期情景入口：只用规格和场景证据计算条件毛收益，报价及显式终值费用仅用于条件净损益。第一模块提交 `2866f86` 已推送，远端 [Rust CI](https://github.com/infdahai/zenQuant/actions/runs/38135176664) 通过。第二模块、消融和测试证据见 [单腿到期诊断验收](reports/options-terminal-diagnostics-20261011/README.md)。
+
 ```mermaid
 flowchart LR
     S[两份固定 seal 与全部原始文件] --> P[原 Python P1 load_panel / input_integrity]
@@ -53,7 +55,7 @@ rust/target/debug/options-workbench \
   --output-dir results/options_platform/new-sealed-diagnostic
 ```
 
-原 v1 入口接受 `--request-file PATH --output-dir PATH [--panel-file PATH]`；新增独立入口见下节，两者不混用。退出码 2 表示输入/预检拒绝，1 表示发布未完成或发布后持久性未确认，0 表示诊断报告已完整发布；0 不代表交易成立。已有目标不会覆盖；Rust 使用原生 no-replace 目录发布，失败保留可辨认的 incomplete 目录。Python 导出使用同目录临时文件和独占 hard-link 发布，不覆盖目标；两边都限制读取量、拒绝原始 `..` 和符号链接、保护 source/output 重叠。
+原 v1 入口接受 `--request-file PATH --output-dir PATH [--panel-file PATH]`；新增独立入口见下节，三种请求模式互斥。退出码 2 表示输入/预检拒绝，1 表示发布未完成或发布后持久性未确认，0 表示诊断报告已完整发布；0 不代表交易成立。已有目标不会覆盖；Rust 使用原生 no-replace 目录发布，失败保留可辨认的 incomplete 目录。Python 导出使用同目录临时文件和独占 hard-link 发布，不覆盖目标；两边都限制读取量、拒绝原始 `..` 和符号链接、保护 source/output 重叠。
 
 ## 独立报价成本诊断
 
@@ -90,6 +92,42 @@ cargo run --locked -p options-workbench -- \
 缺少可见报价时 `cost=null`，状态为 `NOT_EVALUABLE`；缺费率/知识时间、过期或未来证据、深度不足时总额为 null，已能确定的权利金可保留。非法手数产生 `REJECTED`。报告成功退出也可能包含这些状态。UNKNOWN 行权/结算和 proxy 标签保持原值；显示成本可计算不代表终值模型支持该产品。所有账户/执行状态仍为 `UNVERIFIED`，无真实或模拟 PnL、收益率、容量或生命周期套利结论。
 
 本入口只接收内联数据，拒绝与 `--request-file` 或 `--panel-file` 混用。它不读取输入中声称的源路径、不提供封存数据适配器，也不改变原 seal/pin 检查或受保护输出根目录。报告固定 `NOT_INDEPENDENTLY_VERIFIED` / `MANUAL_UNATTESTED`；即使传入 `sealed_proxy` 标签也不会变成原始来源验证。
+
+## 独立单腿到期诊断
+
+问题是“这条买入期权在这些到期交割价下会产生多少条件收益”。它不需要 View、指标、主观概率、假设钱包或风险预算；不自行选择买入标的、数量或交割价。独立版本只增加准入边界，复用已有精确数量、终值和显示成本计算。
+
+从仓库根目录进入 `rust` 后运行；输出目录必须不存在：
+
+```sh
+cargo build --workspace --locked
+cargo run --locked -p options-workbench -- \
+  --terminal-request-file options-workbench/fixtures/terminal-call-scenarios.json \
+  --output-dir results/options_platform/new-terminal-scenarios
+```
+
+完整数学示例见 [terminal-call-scenarios.json](../rust/options-workbench/fixtures/terminal-call-scenarios.json)，契约和纯函数见 [terminal_diagnostics.rs](../rust/options-core/src/terminal_diagnostics.rs)。构建、测试、运行均为 Rust；不读取外部源文件或 panel，不需要 Python。三个请求参数 `--request-file` / `--quote-request-file` / `--terminal-request-file` 严格互斥，只有旧 v1 可以配 `--panel-file`。
+
+| 字段 | 新契约 |
+|---|---|
+| `schema_version` | `options-terminal-diagnostic-request.rust.v1` |
+| `request_id`, `cutoff_ns`, `report_currency` | 显式请求身份、证据截止和币种 |
+| `leg`, `spec` | 一条原生数量的腿、完整且完全匹配 descriptor/spec hash 的规格 |
+| `metadata_known_ns` | 规格知识时点；可为 null，缺失或晚于截止时不可计算毛收益 |
+| `scenarios` | `options-terminal-scenarios.rust.v1` 的 `RecordMeta`、精确 `spec_hash`、1–64 个唯一 ID / `at_ns` / `delivery_price`；只接收 revision=1 的独立快照，不接受未验证修订链 |
+| `quotes` | 0–512 个原有 `QuoteInput`，均须属于这一个精确规格；空数组仍可计算毛收益 |
+| `terminal_fee` | null 或 `{amount_report, known_ns, source_ref}`；金额是整条腿在报告币种下的显式终值总费用假设，并非费率或每单位费用 |
+| `source_identities` | 可为空的来源标签，不等于原始字节验证 |
+
+仅支持 `BUY`、线性 European、`LinearCash` 或 `LinearViaFuture` 的原有现金等价终值域。quote/strike/settlement/margin/report 币种须一致；规格在截止时点已知、在到期仍有效、fixing 明确、数量符合原生 lot/step。所有场景必须恰好在同一规格的到期时点，且分析截止早于到期；交割价非负。`LinearViaFuture` 只表示到期现金等价数学，不建模未来合约事件或账户权限。
+
+设转换后的 base quantity 为 Q，strike 为 K，场景交割价为 S：call 毛收益 `max(S-K,0)×Q`，put 毛收益 `max(K-S,0)×Q`。合同数量按规格 multiplier 转换；所有金额、数量和计算均为有界精确十进制，不用 float、不四舍五入。只有显示开仓总成本和截至分析时点已知的终值总费用假设都完整，才计算 `conditional_model_pnl = gross_payoff - opening_cost - terminal_fee`。不对场景设置概率，不计算 EV 或持有期估值。
+
+输入结构、hash、重复身份、知识时序、未知字段、float、超精度、超限或冲突报价错误拒绝整份请求，且不创建输出目录。可解码但不支持的产品、SELL 或任意非到期场景产生 `UNSUPPORTED` 且整组 payoff=null；缺规格知识/有效期/fixing 产生 `NOT_EVALUABLE`；不合法 lot 产生 `REJECTED`。报价或费用证据缺失/迟到/不完整只使 `net_status` 不可评估、净值为 null，已可确定的毛收益保留。独立显示成本可在终值不支持时保留，它不证明支持终值或执行。
+
+输出 `options-terminal-diagnostic-report.rust.v1`，模型 `single_paid_long_terminal.rust.v1`。`terminal_diagnostic` 包含全输入/规格/场景/所选报价 hash、状态列、独立成本、净值状态和各场景结果。重放同一输入逐字节一致；原始输入 hash 与规范化输入 hash 分列。原子发布、输出目录保护、证据身份和来源未独立验证的标签沿用原工作台。
+
+`modeled_feasibility` 始终 `NOT_EVALUABLE/FUNDING_NOT_ASSESSED`，账户和执行始终 `UNVERIFIED`。所有报告仍无执行权限、不可排行、不可实盘；实际/模拟 PnL、Sharpe、容量和生命周期套利均为空。条件净损益不代表成交、资金占用、行权实现或真实账户结果。未传入钱包不意味着钱包可用；静态公式也不意味着可交易套利。
 
 ## 输入、精度和身份
 
@@ -153,7 +191,7 @@ cargo test --workspace --locked
 cargo build --workspace --locked
 ```
 
-测试包含真实 CLI 集成、旧 v1 报告语义基线、严格契约/时点/精确费用和原子发布故障路径。日志内竞态测试的预期 `INCOMPLETE_PUBLICATION` 不代表测试失败，应查看最终退出码。CI 配置本轮只写入本地，未在 GitHub 触发。
+测试包含真实 CLI 集成、旧 v1 报告语义基线、严格契约/时点/精确费用和原子发布故障路径。日志内竞态测试的预期 `INCOMPLETE_PUBLICATION` 不代表测试失败，应查看最终退出码。第一模块已推送，GitHub CI 在提交 `2866f86` 上通过；第二模块对应 SHA 与验证证据见单腿到期诊断验收报告。
 
 以下为原 D2 的历史跨语言验收命令和结果，本轮未重新运行 Python 门禁；新入口的验证依据是 Rust 原生测试。
 
@@ -192,4 +230,4 @@ D2 初次验证原生 62 tests、fmt/clippy 通过；后续准入修复及本轮
 
 新增交易所先提供完整 spec 身份、原生数量/乘数/tick/lot、index/FX 币种及各自知识时间；不能跨记录借费用或 index。新增表达在 `options-core` 保持纯函数、增加模板版本与可核对的终值/失效测试，再扩展显式请求 fixture。新增 report 字段同时升级 typed schema、codec 和 identity，避免 UI 中隐藏经济逻辑。
 
-换入真实经济数据前，先补独立规则、费用生效时间、同币种 fixing 与 terminal reserve 证据，再做因果/replay、精度反例、完整原始来源验证和独立审查。真实账户、执行、缺失数据冲击、费用滑点、容量及实盘增量验证是后续各自的验收门；本工具未完成这些门。分支保持隔离，未合并、推送或部署。
+换入真实经济数据前，先补独立规则、费用生效时间、同币种 fixing 与 terminal reserve 证据，再做因果/replay、精度反例、完整原始来源验证和独立审查。真实账户、执行、缺失数据冲击、费用滑点、容量及实盘增量验证是后续各自的验收门；本工具未完成这些门。开发分支按授权推送并验证 CI，保持隔离；未合并或部署。
