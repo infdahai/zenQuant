@@ -1,0 +1,33 @@
+name: Rust options diagnostics
+
+on:
+  push:
+    branches: [main, "codex/**"]
+    paths: ["rust/**", ".github/workflows/rust.yml"]
+  pull_request:
+    paths: ["rust/**", ".github/workflows/rust.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  rust:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: rust
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install pinned Rust toolchain
+        run: rustup show active-toolchain
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+      - name: Check all targets
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      - name: Test core, CLI and publication failures
+        run: cargo test --workspace --locked
+      - name: Build without Python
+        run: cargo build --workspace --locked
+      - name: Run independent quote diagnostics without external executables
+        run: env PATH=/nonexistent ./target/debug/options-workbench --quote-request-file options-workbench/fixtures/quote-costs.json --output-dir "$RUNNER_TEMP/options-quote-diagnostics"
