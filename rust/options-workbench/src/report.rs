@@ -4,6 +4,7 @@ use options_core::{
     contracts::*,
     inputs::ValidatedAnalysis,
     quote_diagnostics::{self, QuoteDiagnostic, QuoteDiagnosticRequest},
+    terminal_diagnostics::{self, TerminalDiagnostic, TerminalDiagnosticRequest},
 };
 use serde::Serialize;
 include!(concat!(env!("OUT_DIR"), "/identities.rs"));
@@ -181,6 +182,56 @@ pub fn render_quote_diagnostics(
         ("identity.json", canonical_bytes(&report.identity)?),
     ])
 }
+#[derive(Serialize)]
+struct TerminalReport<'a> {
+    schema_version: &'static str,
+    diagnostic_only: bool,
+    rankable: bool,
+    live_eligible: bool,
+    execution_authority: &'static str,
+    actual_pnl: Option<String>,
+    paper_pnl: Option<String>,
+    sharpe: Option<String>,
+    capacity: Option<String>,
+    lifecycle_arbitrage_edge: Option<String>,
+    identity: Identity,
+    input: &'a TerminalDiagnosticRequest,
+    terminal_diagnostic: TerminalDiagnostic,
+}
+
+pub fn render_terminal_diagnostics(
+    input: &TerminalDiagnosticRequest,
+    request_bytes: &[u8],
+) -> options_core::error::Result<Vec<(&'static str, Vec<u8>)>> {
+    let diagnostic = terminal_diagnostics::analyze(input)?;
+    let report = TerminalReport {
+        schema_version: terminal_diagnostics::REPORT_SCHEMA,
+        diagnostic_only: true,
+        rankable: false,
+        live_eligible: false,
+        execution_authority: "NONE",
+        actual_pnl: None,
+        paper_pnl: None,
+        sharpe: None,
+        capacity: None,
+        lifecycle_arbitrage_edge: None,
+        identity: identity(input, request_bytes, &input.source_identities, None)?,
+        input,
+        terminal_diagnostic: diagnostic,
+    };
+    let pretty = serde_json::to_string_pretty(&report)
+        .map_err(|_| options_core::error::Error::new(options_core::error::ErrorCode::Internal))?;
+    let md = format!(
+        "# Offline single-leg terminal scenarios\n\nDiagnostic only. Execution authority: NONE. Rankable: false. Live eligible: false.\n\nGross payoff is conditional expiry mathematics. Conditional net PnL subtracts displayed opening cost and the explicit total terminal fee assumption; neither is an actual fill or realized PnL. Funding feasibility, account eligibility, exercise lifecycle and execution are not established. No probabilities, EV, early-exit valuation or arbitrage conclusion.\n\nRaw sources are not independently verified. Complete input and diagnostic:\n\n<pre>{}</pre>\n",
+        escape_markup(&pretty)
+    );
+    Ok(vec![
+        ("report.json", canonical_bytes(&report)?),
+        ("REPORT.md", md.into_bytes()),
+        ("identity.json", canonical_bytes(&report.identity)?),
+    ])
+}
+
 pub fn escape_markup(value: &str) -> String {
     let mut out = String::new();
     for c in value.chars() {
