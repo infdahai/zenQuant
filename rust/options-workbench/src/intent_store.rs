@@ -400,4 +400,3 @@ pub fn record_file(path: &Path, request: &Path) -> Result<Receipt> {
 #[cfg(all(test, target_os = "linux"))]
 #[path = "intent_store_tests.rs"]
 mod tests;
-
