@@ -8,6 +8,8 @@
 
 同日继续增加独立单腿到期情景入口：只用规格和场景证据计算条件毛收益，报价及显式终值费用仅用于条件净损益。第一模块提交 `2866f86` 已推送，远端 [Rust CI](https://github.com/infdahai/zenQuant/actions/runs/38135176664) 通过。第二模块、消融和测试证据见 [单腿到期诊断验收](reports/options-terminal-diagnostics-20261011/README.md)。
 
+后续独立模拟步骤：[意图记录](SIMULATED_INTENTS_RUST_GUIDE.md) 与 [资金及现金预留](SIMULATED_RESERVATIONS_RUST_GUIDE.md)。诊断输出不构成交易授权，仍需显式输入并重新验证；这些步骤不发订单，也不使用真实账户。
+
 ```mermaid
 flowchart LR
     S[两份固定 seal 与全部原始文件] --> P[原 Python P1 load_panel / input_integrity]
