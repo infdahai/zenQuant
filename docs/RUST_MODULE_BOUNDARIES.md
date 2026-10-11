@@ -5,13 +5,15 @@
 | 边界 | 现有文件（相对于 rust） | 允许依赖与职责 |
 |---|---|---|
 | 合约与计量 | options-core/src/{contracts,decimal,measurement,error,codec,canonical}.rs | 共同基础：产品/币种/单位/时间字段、精确数、规格/数量/tick 规则、严格解码与规范 hash；不依赖分析或交易状态 |
-| 期权分析 | options-core/src/{inputs,costs,expressions,constraints,quote_diagnostics,terminal_diagnostics}.rs | 依赖基础及本组；纯报价/条件终值诊断，不读账户、不预留、不执行 |
+| 期权分析 | options-core/src/{inputs,costs,expressions,constraints,quote_diagnostics,terminal_diagnostics,payoff_curve}.rs | 依赖基础及本组；纯报价/条件终值诊断，不读账户、不预留、不执行 |
 | 交易内核 | options-core/src/{intents,reservations}.rs | 依赖基础及本组；意图语义、资金注册、幂等业务结果、余额准入、ACTIVE 状态与守恒；不依赖诊断、不做 I/O |
-| 外部适配 | options-workbench/src/{main,report,io,publication,intent_store,reservation_store,snapshot_file}.rs 与 src/bin | 调用 core；负责文件边界、实际时钟、锁、提交与输出。core 不反向引用 workbench |
+| 外部适配 | options-workbench/src/{main,report,io,publication,intent_store,reservation_store,snapshot_file,curve_api,curve_http}.rs 与 src/bin | 调用 core；负责文件边界、实际时钟、锁、提交与输出。core 不反向引用 workbench |
 
 `contracts.rs` 保留旧 v1 View、假设钱包及报告类型，避免大范围搬迁；这些类型不代表真实资金权威。`StatusResult` 也是已有共享结果词汇，计量规则保留其既有失败语义，交易准入映射为自身拒绝结果。`costs`、`inputs` 的少量内部再导出只兼容现有分析调用者，规则实现只存在于 measurement。禁止再从交易内核导入这两个分析模块。
 
 `fixtures.rs` 是明确的数学样例构造器，构造分析和交易输入，是唯一显式跨组样例例外；旧 v1 内置 fixture 入口仍使用它。它不承载账户决策或状态转移。不要通过 fixture 增加生产业务依赖。报价和终值各保留严格独立请求，只共享实际计算；不增加统一的多模式分析大函数。
+
+`payoff_curve` 属于分析组：解决单次请求生成密集价格曲线，组合现有终值诊断，不拥有资金或执行状态。它的限长网格、可选人工信号与完整身份属于独立 v1 边界。外部 `curve_api/curve_http` 只负责浏览器输入和同机 HTTP；不跨进交易权威。保留标准、边界与实测见 [Svelte/Rust MVP 指南](OPTIONS_PAYOFF_RUST_GUIDE.md)。
 
 ## 两种存储的权威边界
 

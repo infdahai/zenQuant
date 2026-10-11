@@ -1,0 +1,12 @@
+   Compiling options-workbench v0.1.0 (/workspace/zenQuant/rust/options-workbench)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.63s
+     Running tests/curve_http.rs (target/debug/deps/curve_http-73693cb3209d1909)
+
+running 4 tests
+test api_errors_are_typed_and_no_arbitrary_file_route_exists ... ok
+test server_rejects_cross_origin_rebinding_ambiguous_length_and_oversize ... ok
+test batch_api_preserves_exact_times_and_missing_evidence_semantics ... ok
+test synthetic_controls_supply_visible_two_sided_quote_without_bypassing_cost_validation ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.04s
+
