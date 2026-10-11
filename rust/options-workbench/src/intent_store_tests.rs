@@ -5,6 +5,7 @@ use std::{
     sync::atomic::{AtomicUsize, Ordering},
     time::Duration,
 };
+use std::{os::unix::fs::MetadataExt, path::PathBuf};
 
 struct Temp(PathBuf);
 impl Temp {

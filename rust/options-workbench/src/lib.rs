@@ -4,3 +4,4 @@ pub mod intent_store;
 pub mod io;
 pub mod publication;
 pub mod report;
+mod snapshot_file;
