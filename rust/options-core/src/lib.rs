@@ -10,5 +10,6 @@ pub mod error;
 pub mod expressions;
 pub mod fixtures;
 pub mod inputs;
+pub mod intents;
 pub mod quote_diagnostics;
 pub mod terminal_diagnostics;

@@ -89,7 +89,7 @@ fn knowledge(at: Option<u64>, cutoff: u64, label: &str) -> Diagnostic<()> {
         &format!("{label}_KNOWLEDGE_UNAVAILABLE"),
     )
 }
-fn tick(s: &InstrumentSpec, p: &Dec) -> Diagnostic<()> {
+pub(crate) fn tick(s: &InstrumentSpec, p: &Dec) -> Diagnostic<()> {
     need(!p.is_negative(), Status::Invalid, "NEGATIVE_BOOK_PRICE")?;
     need(
         !s.tick_bands.is_empty() && s.tick_bands[0].0.is_zero(),
