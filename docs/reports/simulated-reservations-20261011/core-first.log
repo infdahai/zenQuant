@@ -1,0 +1,13 @@
+   Compiling options-core v0.1.0 (/workspace/zenQuant/rust/options-core)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 3.33s
+     Running tests/reservations.rs (target/debug/deps/reservations-57468fadea40cbc4)
+
+running 6 tests
+test conservation_is_exact_without_epsilon_and_rejects_overbooking ... ok
+test hand_oracles_cover_native_contract_units_and_conservative_fee_cap ... ok
+test only_matching_fully_paid_same_currency_cash_domain_is_admitted ... ok
+test strict_new_contracts_do_not_accept_recorded_state_or_authority_claims ... ok
+test actual_evaluation_time_checks_expiry_freshness_and_fee_coverage ... ok
+test missing_zero_unidentified_fee_evidence_and_forged_bindings_reject ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s

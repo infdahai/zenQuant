@@ -1,0 +1,143 @@
+   Compiling options-core v0.1.0 (/workspace/zenQuant/rust/options-core)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 2.08s
+     Running unittests src/lib.rs (rust/target/debug/deps/options_core-0d2dc7604fbe52a9)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/contracts.rs (rust/target/debug/deps/contracts-387f22aa988e4ed3)
+
+running 7 tests
+test generic_serialization_rejects_nested_nonfinite_before_json_conversion ... ok
+test canonical_keys_and_equivalent_decimals ... ok
+test timestamp_and_budget_are_validated ... ok
+test canonical_rejects_unbounded_and_floating_payloads ... ok
+test venue_and_rules_bind_identity ... ok
+test collection_limits_and_binding ... ok
+test request_roundtrip_unknown_and_scalar_rejection ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/decimal.rs (rust/target/debug/deps/decimal-15575850b541ea8e)
+
+running 5 tests
+test canonical_decimal ... ok
+test bounded_strict_input ... ok
+test finite_exact_division ... ok
+test fraction_limit_and_zero_division ... ok
+test exact_high_magnitude_and_closed_overflow ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running tests/economics.rs (rust/target/debug/deps/economics-cd76ecb24d7bb0bd)
+
+running 16 tests
+test capital_profile_does_not_add_different_currencies ... ok
+test cost_hand_oracles_depth_sell_cap_multiplier ... ok
+test canonical_put_vertical_and_contract_price_units ... ok
+test fixing_conflict_in_other_same_domain_spec_invalidates_single_call ... ok
+test costs_refuse_missing_late_stale_units_quantity_and_books ... ok
+test missing_other_leg_keeps_independent_call_cost ... ok
+test linear_via_future_has_conditional_terminal_cash_equivalence_only ... ok
+test fully_allocated_standard_wallet_and_terminal_numerical_limitation ... ok
+test probabilities_incomplete_or_non_subjective_never_claim_ev ... ok
+test long_payoffs_ev_roots_and_missing_terminal_fee ... ok
+test registered_vertical_orientation_rejects_reverse_call_and_put ... ok
+test vertical_analytic_tails_and_cost_oracles ... ok
+test reserve_budget_wallet_and_ambiguity ... ok
+test model_refuses_conflicting_fixing_unsupported_and_interim ... ok
+test sentinel_fixing_never_upgrades_to_supported_model ... ok
+test vertical_rejects_fixing_mismatch_unequal_size_and_preserves_math_without_cost ... ok
+
+test result: ok. 16 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.09s
+
+     Running tests/inputs.rs (rust/target/debug/deps/inputs-a865fcfe1fbcaad0)
+
+running 13 tests
+test economic_admission ... ok
+test late_evidence_kept ... ok
+test conflicting_quotes_and_venue_identity ... ok
+test normalized_panel_keeps_identity_and_unverified_projection ... ok
+test recursive_codec ... ok
+test nested_money_probabilities_wallets ... ok
+test revisions_and_future_retention ... ok
+test panel_descriptor_matches_exact_version_in_either_order ... ok
+test schemas_numeric_and_limits ... ok
+test unknown_candidate_is_preserved ... ok
+test panel_tamper_conflict_and_transport ... ok
+test valid_fixture_history ... ok
+test source_clock_lead_is_retained_for_cost_tolerance ... ok
+
+test result: ok. 13 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+
+     Running tests/intents.rs (rust/target/debug/deps/intents-013973e84ba5b8ff)
+
+running 4 tests
+test manual_algorithm_and_decimal_equivalence_remain_simulation_requests ... ok
+test live_mode_authority_unknown_fields_diagnostic_requests_and_bad_json_reject ... ok
+test first_contract_limits_product_side_quantity_and_price_without_risk_claims ... ok
+test invalid_evidence_identity_and_chronology_reject_in_typed_and_json_boundaries ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running tests/public_boundary.rs (rust/target/debug/deps/public_boundary-03b30bbb7502294d)
+
+running 6 tests
+test public_candidate_must_match_an_admitted_request ... ok
+test public_expression_rejects_unbound_late_empty_or_history_mismatched_input ... ok
+test deserialized_inputs_and_adapter_gaps_use_the_same_public_boundary ... ok
+test cash_zero_legs_survives_decode_admission_and_keeps_unknown_version_unsupported ... ok
+test public_boundary_keeps_late_fee_and_spec_evidence_unfunded ... ok
+test public_vertical_rejects_invalid_causal_input ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+
+     Running tests/quote_diagnostics.rs (rust/target/debug/deps/quote_diagnostics-07c6402c0013bbfe)
+
+running 9 tests
+test missing_quote_does_not_erase_another_independent_cost ... ok
+test independent_buy_sell_costs_match_hand_oracles_without_view_or_budget ... ok
+test quantity_and_depth_rules_remain_diagnostic_not_silent_rounding ... ok
+test latest_visible_quote_never_borrows_fees_or_uses_future_evidence ... ok
+test strict_versioned_contracts_do_not_silently_cross_admit ... ok
+test unknown_proxy_metadata_is_retained_and_never_becomes_execution_proof ... ok
+test structural_conflicts_are_rejected_at_json_and_public_typed_boundaries ... ok
+test missing_late_stale_and_insufficient_evidence_never_produce_a_total ... ok
+test typed_limits_and_transport_limits_are_both_enforced ... ok
+
+test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.05s
+
+     Running tests/reservations.rs (rust/target/debug/deps/reservations-57468fadea40cbc4)
+
+running 6 tests
+test conservation_is_exact_without_epsilon_and_rejects_overbooking ... ok
+test only_matching_fully_paid_same_currency_cash_domain_is_admitted ... ok
+test hand_oracles_cover_native_contract_units_and_conservative_fee_cap ... ok
+test missing_zero_unidentified_fee_evidence_and_forged_bindings_reject ... ok
+test strict_new_contracts_do_not_accept_recorded_state_or_authority_claims ... ok
+test actual_evaluation_time_checks_expiry_freshness_and_fee_coverage ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running tests/terminal_diagnostics.rs (rust/target/debug/deps/terminal_diagnostics-0e67d0738227cc4f)
+
+running 10 tests
+test contracts_reject_extra_models_numbers_versions_and_oversize_input ... ok
+test existing_v1_single_call_economics_are_preserved_without_its_view ... ok
+test call_put_hand_oracles_have_no_funding_or_execution_authority ... ok
+test future_opening_quote_is_not_selected_and_visible_later_quote_cannot_borrow_fees ... ok
+test dependency_ablation_removes_quotes_without_changing_gross_math ... ok
+test quantity_units_and_via_future_keep_exact_conditional_semantics ... ok
+test tiny_payoff_is_exact_and_excess_input_precision_is_rejected ... ok
+test missing_spec_knowledge_and_unknown_fixing_never_produce_terminal_values ... ok
+test future_scenario_evidence_and_structural_conflicts_fail_both_public_boundaries ... ok
+test unsupported_product_side_currency_and_any_nonterminal_point_return_no_payoffs ... ok
+
+test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.05s
+
+   Doc-tests options_core
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s

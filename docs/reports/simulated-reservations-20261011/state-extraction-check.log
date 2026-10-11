@@ -1,0 +1,34 @@
+    Checking options-core v0.1.0 (/workspace/zenQuant/rust/options-core)
+   Compiling options-workbench v0.1.0 (/workspace/zenQuant/rust/options-workbench)
+error[E0609]: no field `reservations` on type `Authority`
+   --> options-workbench/src/reservation_store_tests.rs:384:28
+    |
+384 |                 e.snapshot.reservations[0].bounds.total = d("0");
+    |                            ^^^^^^^^^^^^ unknown field
+
+error[E0609]: no field `fundings` on type `Authority`
+   --> options-workbench/src/reservation_store_tests.rs:389:28
+    |
+389 |                 e.snapshot.fundings[0].funding.initial_balance = d("1000");
+    |                            ^^^^^^^^ unknown field
+
+error[E0609]: no field `last_admission_ns` on type `Authority`
+   --> options-workbench/src/reservation_store_tests.rs:394:28
+    |
+394 |                 e.snapshot.last_admission_ns = 0;
+    |                            ^^^^^^^^^^^^^^^^^ unknown field
+
+error[E0609]: no field `reservations` on type `Authority`
+   --> options-workbench/src/reservation_store_tests.rs:400:22
+    |
+400 |                     .reservations
+    |                      ^^^^^^^^^^^^ unknown field
+
+error[E0609]: no field `reservations` on type `Authority`
+   --> options-workbench/src/reservation_store_tests.rs:401:38
+    |
+401 |                     .push(e.snapshot.reservations[0].clone());
+    |                                      ^^^^^^^^^^^^ unknown field
+
+For more information about this error, try `rustc --explain E0609`.
+error: could not compile `options-workbench` (lib test) due to 5 previous errors

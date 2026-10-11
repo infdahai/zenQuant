@@ -1,0 +1,24 @@
+   Compiling options-workbench v0.1.0 (/workspace/zenQuant/rust/options-workbench)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.62s
+     Running unittests src/lib.rs (target/debug/deps/options_workbench-97ca9f8e24b744d2)
+
+running 11 tests
+test reservation_store::tests::actual_partial_write_leaves_old_balance_and_reservation_set_unchanged ... ok
+process contention same_id=false: 2 reserved, 6 insufficient, 0 duplicate; conserved
+test reservation_store::tests::clock_is_sampled_after_lock_wait_and_current_expiry_is_rechecked ... ok
+process contention same_id=true: 1 reserved, 0 insufficient, 7 duplicate; conserved
+test reservation_store::tests::actual_processes_share_one_budget_and_one_idempotency_authority ... ok
+test reservation_store::tests::corrupt_or_truncated_authority_rejects_even_with_a_complete_pending_copy ... ok
+test reservation_store::tests::process_worker ... ok
+test reservation_store::tests::repeated_input_is_idempotent_but_changed_input_conflicts_without_partial_update ... ok
+test reservation_store::tests::expiry_never_releases_an_active_reservation_and_clock_rollback_never_admits ... ok
+test reservation_store::tests::same_owner_cannot_split_or_reinject_its_initial_cash ... ok
+SIGKILL temp_created: restored 1, retry RESERVED, available 0 + active 0.045 = initial 0.045
+SIGKILL file_synced: restored 1, retry RESERVED, available 0 + active 0.045 = initial 0.045
+test reservation_store::tests::atomic_failure_boundaries_preserve_both_funding_and_cash_conservation ... ok
+SIGKILL renamed: restored 2, retry ALREADY_RESERVED, available 0 + active 0.045 = initial 0.045
+SIGKILL directory_synced: restored 2, retry ALREADY_RESERVED, available 0 + active 0.045 = initial 0.045
+test reservation_store::tests::sigkill_recovery_never_separates_cash_from_active_reservations ... ok
+test reservation_store::tests::capacity_limit_does_not_prune_active_cash_holds ... ok
+
+test result: ok. 11 passed; 0 failed; 0 ignored; 0 measured; 21 filtered out; finished in 7.77s
