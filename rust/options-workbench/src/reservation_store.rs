@@ -7,23 +7,18 @@ use crate::{
 use options_core::{
     canonical::{bytes_sha256, canonical_bytes, canonical_hash},
     codec,
-    contracts::valid_sha256,
-    decimal::Dec,
     intents::Mode,
-    reservations::{self as core, Bounds, EvaluationFailure, Funding, Owner, Request},
+    reservations::{self as core, Authority, CashFailure, EvaluationFailure, Transition},
 };
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::BTreeSet,
     io::Read,
     path::{Path, PathBuf},
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
-pub const STORE_SCHEMA: &str = "simulated-reservation-authority.rust.v1";
+pub use core::{Balance, MAX_DOMAINS, MAX_RESERVATIONS, Reservation, STORE_SCHEMA, State};
 pub const RECEIPT_SCHEMA: &str = "simulated-reservation-receipt.rust.v1";
-pub const MAX_DOMAINS: usize = 16;
-pub const MAX_RESERVATIONS: usize = 1024;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Failure {
@@ -42,6 +37,21 @@ pub enum Failure {
 impl From<StoreError> for Failure {
     fn from(value: StoreError) -> Self {
         Self::Storage(value)
+    }
+}
+impl From<CashFailure> for Failure {
+    fn from(value: CashFailure) -> Self {
+        match value {
+            CashFailure::InvalidInput => Self::InvalidInput,
+            CashFailure::Corrupt => Self::Corrupt,
+            CashFailure::FundingConflict => Self::FundingConflict,
+            CashFailure::RequestConflict => Self::RequestConflict,
+            CashFailure::MissingFunding => Self::MissingFunding,
+            CashFailure::InsufficientFunds => Self::InsufficientFunds,
+            CashFailure::ClockRegression => Self::ClockRegression,
+            CashFailure::NotEvaluable(e) => Self::NotEvaluable(e),
+            CashFailure::Limit => Self::Limit,
+        }
     }
 }
 impl Failure {
@@ -68,52 +78,11 @@ impl Failure {
     }
 }
 type Result<T> = std::result::Result<T, Failure>;
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct FundedDomain {
-    funding: Funding,
-    funding_sha256: String,
-    admitted_at_ns: u64,
-}
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
-pub enum State {
-    Active,
-}
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct Reservation {
-    pub sequence: u64,
-    pub state: State,
-    pub request: Request,
-    pub request_sha256: String,
-    pub first_request_bytes_sha256: String,
-    pub admitted_at_ns: u64,
-    pub bounds: Bounds,
-}
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct Snapshot {
-    schema_version: String,
-    mode: Mode,
-    created_at_ns: u64,
-    last_admission_ns: u64,
-    fundings: Vec<FundedDomain>,
-    reservations: Vec<Reservation>,
-}
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Envelope {
-    snapshot: Snapshot,
+    snapshot: Authority,
     sha256: String,
-}
-#[derive(Debug, Clone, Serialize)]
-pub struct Balance {
-    pub owner: Owner,
-    pub funding_sha256: String,
-    pub initial: Dec,
-    pub available: Dec,
-    pub active_reserved: Dec,
 }
 #[derive(Debug, Serialize)]
 pub struct Receipt {
@@ -143,74 +112,7 @@ pub fn wall_clock_ns() -> Result<u64> {
         .and_then(|d| u64::try_from(d.as_nanos()).ok())
         .ok_or(Failure::ClockUnavailable)
 }
-fn balance(s: &Snapshot, f: &FundedDomain) -> Result<Balance> {
-    let (available, active_reserved) = core::checked_remaining(
-        &f.funding.initial_balance,
-        s.reservations
-            .iter()
-            .filter(|r| r.request.owner == f.funding.owner)
-            .map(|r| r.bounds.total.clone()),
-    )
-    .map_err(|_| Failure::Corrupt)?;
-    Ok(Balance {
-        owner: f.funding.owner.clone(),
-        funding_sha256: f.funding_sha256.clone(),
-        initial: f.funding.initial_balance.clone(),
-        available,
-        active_reserved,
-    })
-}
-fn validate(s: &Snapshot) -> Result<()> {
-    if s.schema_version != STORE_SCHEMA
-        || s.fundings.len() > MAX_DOMAINS
-        || s.reservations.len() > MAX_RESERVATIONS
-    {
-        return Err(Failure::Corrupt);
-    }
-    let mut owners = BTreeSet::new();
-    let mut ids = BTreeSet::new();
-    let mut latest = s.created_at_ns;
-    for f in &s.fundings {
-        core::funding_current(&f.funding, f.admitted_at_ns).map_err(|_| Failure::Corrupt)?;
-        if f.admitted_at_ns < s.created_at_ns
-            || canonical_hash(&f.funding).map_err(|_| Failure::Corrupt)? != f.funding_sha256
-            || !owners.insert(canonical_hash(&f.funding.owner).map_err(|_| Failure::Corrupt)?)
-        {
-            return Err(Failure::Corrupt);
-        }
-        latest = latest.max(f.admitted_at_ns);
-    }
-    let mut previous = s.created_at_ns;
-    for (index, r) in s.reservations.iter().enumerate() {
-        let f = s
-            .fundings
-            .iter()
-            .find(|f| f.funding.owner == r.request.owner)
-            .ok_or(Failure::Corrupt)?;
-        let calculated = core::evaluate(&f.funding, &r.request, r.admitted_at_ns)
-            .map_err(|_| Failure::Corrupt)?;
-        if r.sequence != index as u64 + 1
-            || !ids.insert(&r.request.intent.request_id)
-            || r.admitted_at_ns < f.admitted_at_ns
-            || r.admitted_at_ns < previous
-            || !valid_sha256(&r.first_request_bytes_sha256)
-            || calculated != r.bounds
-            || canonical_hash(&r.request).map_err(|_| Failure::Corrupt)? != r.request_sha256
-        {
-            return Err(Failure::Corrupt);
-        }
-        previous = r.admitted_at_ns;
-        latest = latest.max(r.admitted_at_ns);
-    }
-    if latest != s.last_admission_ns {
-        return Err(Failure::Corrupt);
-    }
-    for f in &s.fundings {
-        balance(s, f)?;
-    }
-    Ok(())
-}
-fn load(dir: &DirectoryLock) -> Result<(Snapshot, bool)> {
+fn load(dir: &DirectoryLock) -> Result<(Authority, bool)> {
     let mut file = disk::open_file(dir, "snapshot.json")?.ok_or(Failure::Corrupt)?;
     let mut bytes = Vec::new();
     (&mut file)
@@ -219,7 +121,6 @@ fn load(dir: &DirectoryLock) -> Result<(Snapshot, bool)> {
         .map_err(|_| Failure::Corrupt)?;
     let envelope: Envelope =
         codec::decode(&bytes, disk::MAX_STORE_BYTES).map_err(|_| Failure::Corrupt)?;
-    validate(&envelope.snapshot)?;
     if canonical_hash(&envelope.snapshot).map_err(|_| Failure::Corrupt)? != envelope.sha256
         || canonical_bytes(&envelope).map_err(|_| Failure::Corrupt)? != bytes
     {
@@ -230,7 +131,7 @@ fn load(dir: &DirectoryLock) -> Result<(Snapshot, bool)> {
         .map_err(|_| StoreError::DurabilityUnconfirmed)?;
     Ok((envelope.snapshot, pending))
 }
-fn persist(path: &Path, dir: &DirectoryLock, s: Snapshot, h: Hooks) -> Result<Snapshot> {
+fn persist(path: &Path, dir: &DirectoryLock, s: Authority, h: Hooks) -> Result<Authority> {
     let envelope = Envelope {
         sha256: canonical_hash(&s).map_err(|_| Failure::Limit)?,
         snapshot: s,
@@ -240,7 +141,7 @@ fn persist(path: &Path, dir: &DirectoryLock, s: Snapshot, h: Hooks) -> Result<Sn
     Ok(envelope.snapshot)
 }
 fn receipt(
-    s: &Snapshot,
+    s: &Authority,
     result: &'static str,
     now: u64,
     records: Vec<Reservation>,
@@ -252,12 +153,8 @@ fn receipt(
         result,
         observed_at_ns: now,
         snapshot_sha256: canonical_hash(s).map_err(|_| Failure::Corrupt)?,
-        reservation_count: s.reservations.len(),
-        balances: s
-            .fundings
-            .iter()
-            .map(|f| balance(s, f))
-            .collect::<Result<_>>()?,
+        reservation_count: s.records().len(),
+        balances: s.balances()?,
         reservations: records,
         uncommitted_pending: pending,
         scope: "SIMULATED_OPENING_PREMIUM_AND_FEE_ONLY",
@@ -266,13 +163,6 @@ fn receipt(
         fee_evidence: "DECLARED_SIMULATION_BOUND_NOT_VENUE_VERIFIED",
     })
 }
-fn check_clock(s: &Snapshot, now: u64) -> Result<()> {
-    if now < s.last_admission_ns {
-        Err(Failure::ClockRegression)
-    } else {
-        Ok(())
-    }
-}
 pub fn initialize() -> Result<Receipt> {
     initialize_at(&authority_path()?, wall_clock_ns)
 }
@@ -280,16 +170,28 @@ fn initialize_at(path: &Path, clock: impl FnOnce() -> Result<u64>) -> Result<Rec
     let path = disk::safe_path(path)?;
     let dir = disk::create(&path)?;
     let now = clock()?;
-    let s = Snapshot {
-        schema_version: STORE_SCHEMA.into(),
-        mode: Mode::Simulated,
-        created_at_ns: now,
-        last_admission_ns: now,
-        fundings: vec![],
-        reservations: vec![],
-    };
+    let s = Authority::new(now);
     let s = persist(&path, &dir, s, Hooks::default())?;
     receipt(&s, "INITIALIZED", now, vec![], false)
+}
+fn commit_transition(
+    path: &Path,
+    dir: &DirectoryLock,
+    transition: Transition,
+    now: u64,
+    pending: bool,
+    h: Hooks,
+) -> Result<Receipt> {
+    let result = transition.outcome.label();
+    let records = transition.outcome.record().cloned().into_iter().collect();
+    let changed = transition.outcome.changed();
+    let s = if changed {
+        persist(path, dir, transition.next, h)?
+    } else {
+        disk::confirm(path, dir)?;
+        transition.next
+    };
+    receipt(&s, result, now, records, !changed && pending)
 }
 fn fund_at(
     path: &Path,
@@ -300,30 +202,11 @@ fn fund_at(
     let funding = core::decode_funding(bytes).map_err(|_| Failure::InvalidInput)?;
     let path = disk::safe_path(path)?;
     let dir = disk::lock(&path, true)?;
-    let (mut s, pending) = load(&dir)?;
+    let (s, pending) = load(&dir)?;
     let now = clock()?;
-    check_clock(&s, now)?;
-    if let Some(existing) = s.fundings.iter().find(|f| f.funding.owner == funding.owner) {
-        if existing.funding != funding {
-            return Err(Failure::FundingConflict);
-        }
-        disk::confirm(&path, &dir)?;
-        return receipt(&s, "ALREADY_FUNDED", now, vec![], pending);
-    }
-    if s.fundings.len() >= MAX_DOMAINS {
-        return Err(Failure::Limit);
-    }
-    core::funding_current(&funding, now).map_err(Failure::NotEvaluable)?;
-    s.fundings.push(FundedDomain {
-        funding_sha256: canonical_hash(&funding).map_err(|_| Failure::InvalidInput)?,
-        funding,
-        admitted_at_ns: now,
-    });
-    s.last_admission_ns = now;
-    let s = persist(&path, &dir, s, h)?;
-    receipt(&s, "FUNDED", now, vec![], false)
+    commit_transition(&path, &dir, s.fund(&funding, now)?, now, pending, h)
 }
-/// Clock is read after exclusive lock acquisition AND full snapshot validation.
+/// Clock is read after exclusive lock acquisition AND checked state deserialization.
 fn reserve_at(
     path: &Path,
     bytes: &[u8],
@@ -335,49 +218,11 @@ fn reserve_at(
     let waiting = Instant::now();
     let dir = disk::lock(&path, true)?;
     let lock_wait = waiting.elapsed();
-    let (mut s, pending) = load(&dir)?;
+    let (s, pending) = load(&dir)?;
     let now = clock()?;
-    check_clock(&s, now)?;
-    if let Some(existing) = s
-        .reservations
-        .iter()
-        .find(|r| r.request.intent.request_id == request.intent.request_id)
-    {
-        if existing.request != request {
-            return Err(Failure::RequestConflict);
-        }
-        disk::confirm(&path, &dir)?;
-        return Ok((
-            receipt(&s, "ALREADY_RESERVED", now, vec![existing.clone()], pending)?,
-            lock_wait,
-        ));
-    }
-    if s.reservations.len() >= MAX_RESERVATIONS {
-        return Err(Failure::Limit);
-    }
-    let funded = s
-        .fundings
-        .iter()
-        .find(|f| f.funding.owner == request.owner)
-        .ok_or(Failure::MissingFunding)?;
-    let bounds = core::evaluate(&funded.funding, &request, now).map_err(Failure::NotEvaluable)?;
-    if balance(&s, funded)?.available < bounds.total {
-        return Err(Failure::InsufficientFunds);
-    }
-    let record = Reservation {
-        sequence: s.reservations.len() as u64 + 1,
-        state: State::Active,
-        request_sha256: canonical_hash(&request).map_err(|_| Failure::InvalidInput)?,
-        request,
-        first_request_bytes_sha256: bytes_sha256(bytes),
-        admitted_at_ns: now,
-        bounds,
-    };
-    s.reservations.push(record.clone());
-    s.last_admission_ns = now;
-    let s = persist(&path, &dir, s, h)?;
+    let transition = s.reserve(&request, &bytes_sha256(bytes), now)?;
     Ok((
-        receipt(&s, "RESERVED", now, vec![record], false)?,
+        commit_transition(&path, &dir, transition, now, pending, h)?,
         lock_wait,
     ))
 }
@@ -387,7 +232,7 @@ fn replay_at(path: &Path, clock: impl FnOnce() -> Result<u64>) -> Result<Receipt
     let (s, pending) = load(&dir)?;
     let now = clock()?;
     disk::confirm(&path, &dir)?;
-    receipt(&s, "REPLAYED", now, s.reservations.clone(), pending)
+    receipt(&s, "REPLAYED", now, s.records().to_vec(), pending)
 }
 fn request_bytes(request: &Path, authority: &Path) -> Result<Vec<u8>> {
     let request = io::absolute(request).map_err(|_| Failure::InvalidInput)?;

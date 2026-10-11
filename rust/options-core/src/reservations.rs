@@ -2,11 +2,10 @@
 use crate::{
     canonical::{canonical_bytes, canonical_hash},
     contracts::*,
-    costs::legal_quantity,
     decimal::Dec,
     error::{ErrorCode, Result},
-    inputs::{require, text},
     intents::{self, Intent, Mode},
+    measurement::{legal_quantity, require, text},
 };
 use serde::{Deserialize, Serialize};
 
@@ -247,4 +246,296 @@ pub fn checked_remaining(
         ErrorCode::Internal,
     )?;
     Ok((available, held))
+}
+
+// Funding and reservations form one logical state. IO adapters cannot mutate it.
+use crate::contracts::valid_sha256;
+use std::collections::BTreeSet;
+pub const STORE_SCHEMA: &str = "simulated-reservation-authority.rust.v1";
+pub const MAX_DOMAINS: usize = 16;
+pub const MAX_RESERVATIONS: usize = 1024;
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CashFailure {
+    InvalidInput,
+    Corrupt,
+    FundingConflict,
+    RequestConflict,
+    MissingFunding,
+    InsufficientFunds,
+    ClockRegression,
+    NotEvaluable(EvaluationFailure),
+    Limit,
+}
+type CashResult<T> = std::result::Result<T, CashFailure>;
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct FundedDomain {
+    funding: Funding,
+    funding_sha256: String,
+    admitted_at_ns: u64,
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum State {
+    Active,
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Reservation {
+    pub sequence: u64,
+    pub state: State,
+    pub request: Request,
+    pub request_sha256: String,
+    pub first_request_bytes_sha256: String,
+    pub admitted_at_ns: u64,
+    pub bounds: Bounds,
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct StateData {
+    schema_version: String,
+    mode: Mode,
+    created_at_ns: u64,
+    last_admission_ns: u64,
+    fundings: Vec<FundedDomain>,
+    reservations: Vec<Reservation>,
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct Balance {
+    pub owner: Owner,
+    pub funding_sha256: String,
+    pub initial: Dec,
+    pub available: Dec,
+    pub active_reserved: Dec,
+}
+fn balance(s: &StateData, f: &FundedDomain) -> CashResult<Balance> {
+    let (available, active_reserved) = checked_remaining(
+        &f.funding.initial_balance,
+        s.reservations
+            .iter()
+            .filter(|r| r.request.owner == f.funding.owner)
+            .map(|r| r.bounds.total.clone()),
+    )
+    .map_err(|_| CashFailure::Corrupt)?;
+    Ok(Balance {
+        owner: f.funding.owner.clone(),
+        funding_sha256: f.funding_sha256.clone(),
+        initial: f.funding.initial_balance.clone(),
+        available,
+        active_reserved,
+    })
+}
+fn validate(s: &StateData) -> CashResult<()> {
+    if s.schema_version != STORE_SCHEMA
+        || s.fundings.len() > MAX_DOMAINS
+        || s.reservations.len() > MAX_RESERVATIONS
+    {
+        return Err(CashFailure::Corrupt);
+    }
+    let mut owners = BTreeSet::new();
+    let mut ids = BTreeSet::new();
+    let mut latest = s.created_at_ns;
+    for f in &s.fundings {
+        funding_current(&f.funding, f.admitted_at_ns).map_err(|_| CashFailure::Corrupt)?;
+        if f.admitted_at_ns < s.created_at_ns
+            || canonical_hash(&f.funding).map_err(|_| CashFailure::Corrupt)? != f.funding_sha256
+            || !owners.insert(canonical_hash(&f.funding.owner).map_err(|_| CashFailure::Corrupt)?)
+        {
+            return Err(CashFailure::Corrupt);
+        }
+        latest = latest.max(f.admitted_at_ns);
+    }
+    let mut previous = s.created_at_ns;
+    for (index, r) in s.reservations.iter().enumerate() {
+        let f = s
+            .fundings
+            .iter()
+            .find(|f| f.funding.owner == r.request.owner)
+            .ok_or(CashFailure::Corrupt)?;
+        let calculated =
+            evaluate(&f.funding, &r.request, r.admitted_at_ns).map_err(|_| CashFailure::Corrupt)?;
+        if r.sequence != index as u64 + 1
+            || !ids.insert(&r.request.intent.request_id)
+            || r.admitted_at_ns < f.admitted_at_ns
+            || r.admitted_at_ns < previous
+            || !valid_sha256(&r.first_request_bytes_sha256)
+            || calculated != r.bounds
+            || canonical_hash(&r.request).map_err(|_| CashFailure::Corrupt)? != r.request_sha256
+        {
+            return Err(CashFailure::Corrupt);
+        }
+        previous = r.admitted_at_ns;
+        latest = latest.max(r.admitted_at_ns);
+    }
+    if latest != s.last_admission_ns {
+        return Err(CashFailure::Corrupt);
+    }
+    for f in &s.fundings {
+        balance(s, f)?;
+    }
+    Ok(())
+}
+
+/// Validated owned state. Private data and checked deserialization preserve the
+/// invariant between pure transitions; no filesystem, clock or authority-path APIs.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(transparent)]
+pub struct Authority(StateData);
+impl<'de> Deserialize<'de> for Authority {
+    fn deserialize<D: serde::Deserializer<'de>>(
+        deserializer: D,
+    ) -> std::result::Result<Self, D::Error> {
+        let state = StateData::deserialize(deserializer)?;
+        validate(&state).map_err(|_| serde::de::Error::custom("INVALID_CASH_AUTHORITY"))?;
+        Ok(Self(state))
+    }
+}
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Outcome {
+    Funded,
+    AlreadyFunded,
+    Reserved(Reservation),
+    AlreadyReserved(Reservation),
+}
+impl Outcome {
+    pub fn changed(&self) -> bool {
+        matches!(self, Self::Funded | Self::Reserved(_))
+    }
+    pub fn label(&self) -> &'static str {
+        match self {
+            Self::Funded => "FUNDED",
+            Self::AlreadyFunded => "ALREADY_FUNDED",
+            Self::Reserved(_) => "RESERVED",
+            Self::AlreadyReserved(_) => "ALREADY_RESERVED",
+        }
+    }
+    pub fn record(&self) -> Option<&Reservation> {
+        match self {
+            Self::Reserved(r) | Self::AlreadyReserved(r) => Some(r),
+            _ => None,
+        }
+    }
+}
+/// A proposed state, never a durability acknowledgement or execution authorization.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Transition {
+    pub next: Authority,
+    pub outcome: Outcome,
+}
+impl Authority {
+    pub fn new(now: u64) -> Self {
+        Self(StateData {
+            schema_version: STORE_SCHEMA.into(),
+            mode: Mode::Simulated,
+            created_at_ns: now,
+            last_admission_ns: now,
+            fundings: vec![],
+            reservations: vec![],
+        })
+    }
+    pub fn records(&self) -> &[Reservation] {
+        &self.0.reservations
+    }
+    pub fn balances(&self) -> CashResult<Vec<Balance>> {
+        self.0
+            .fundings
+            .iter()
+            .map(|f| balance(&self.0, f))
+            .collect()
+    }
+    fn check_clock(&self, now: u64) -> CashResult<()> {
+        if now < self.0.last_admission_ns {
+            Err(CashFailure::ClockRegression)
+        } else {
+            Ok(())
+        }
+    }
+    pub fn fund(&self, funding: &Funding, now: u64) -> CashResult<Transition> {
+        validate_funding(funding).map_err(|_| CashFailure::InvalidInput)?;
+        self.check_clock(now)?;
+        if let Some(existing) = self
+            .0
+            .fundings
+            .iter()
+            .find(|f| f.funding.owner == funding.owner)
+        {
+            if existing.funding != *funding {
+                return Err(CashFailure::FundingConflict);
+            }
+            return Ok(Transition {
+                next: self.clone(),
+                outcome: Outcome::AlreadyFunded,
+            });
+        }
+        if self.0.fundings.len() >= MAX_DOMAINS {
+            return Err(CashFailure::Limit);
+        }
+        funding_current(funding, now).map_err(CashFailure::NotEvaluable)?;
+        let mut next = self.clone();
+        next.0.fundings.push(FundedDomain {
+            funding_sha256: canonical_hash(funding).map_err(|_| CashFailure::InvalidInput)?,
+            funding: funding.clone(),
+            admitted_at_ns: now,
+        });
+        next.0.last_admission_ns = now;
+        Ok(Transition {
+            next,
+            outcome: Outcome::Funded,
+        })
+    }
+    pub fn reserve(
+        &self,
+        request: &Request,
+        first_bytes_sha256: &str,
+        now: u64,
+    ) -> CashResult<Transition> {
+        validate_request(request).map_err(|_| CashFailure::InvalidInput)?;
+        if !valid_sha256(first_bytes_sha256) {
+            return Err(CashFailure::InvalidInput);
+        }
+        self.check_clock(now)?;
+        if let Some(existing) = self
+            .0
+            .reservations
+            .iter()
+            .find(|r| r.request.intent.request_id == request.intent.request_id)
+        {
+            if existing.request != *request {
+                return Err(CashFailure::RequestConflict);
+            }
+            return Ok(Transition {
+                next: self.clone(),
+                outcome: Outcome::AlreadyReserved(existing.clone()),
+            });
+        }
+        if self.0.reservations.len() >= MAX_RESERVATIONS {
+            return Err(CashFailure::Limit);
+        }
+        let funded = self
+            .0
+            .fundings
+            .iter()
+            .find(|f| f.funding.owner == request.owner)
+            .ok_or(CashFailure::MissingFunding)?;
+        let bounds = evaluate(&funded.funding, request, now).map_err(CashFailure::NotEvaluable)?;
+        if balance(&self.0, funded)?.available < bounds.total {
+            return Err(CashFailure::InsufficientFunds);
+        }
+        let record = Reservation {
+            sequence: self.0.reservations.len() as u64 + 1,
+            state: State::Active,
+            request_sha256: canonical_hash(request).map_err(|_| CashFailure::InvalidInput)?,
+            first_request_bytes_sha256: first_bytes_sha256.into(),
+            request: request.clone(),
+            admitted_at_ns: now,
+            bounds,
+        };
+        let mut next = self.clone();
+        next.0.reservations.push(record.clone());
+        next.0.last_admission_ns = now;
+        Ok(Transition {
+            next,
+            outcome: Outcome::Reserved(record),
+        })
+    }
 }

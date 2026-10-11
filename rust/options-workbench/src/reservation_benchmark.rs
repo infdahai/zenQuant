@@ -1,7 +1,7 @@
 //! Opt-in measurement harness. Isolated synthetic authorities are private to this
 //! harness; production CLI has no authority-directory or evaluation-clock override.
 use super::*;
-use options_core::fixtures::mathematical_reservation_case;
+use options_core::{decimal::Dec, fixtures::mathematical_reservation_case, reservations::Request};
 use serde_json::{Value, json};
 use std::{
     fs,
@@ -55,19 +55,8 @@ fn one_case(root: &Path, count: usize, concurrency: usize) -> Result<Value> {
     for n in 0..count - WARMUP {
         let bytes = bytes_for(&template, &format!("seed-{n}"))?;
         let request = core::decode_request(&bytes).map_err(|_| Failure::InvalidInput)?;
-        let bounds = core::evaluate(&funding, &request, admitted).map_err(Failure::NotEvaluable)?;
-        s.reservations.push(Reservation {
-            sequence: n as u64 + 1,
-            state: State::Active,
-            request_sha256: canonical_hash(&request).unwrap(),
-            first_request_bytes_sha256: bytes_sha256(&bytes),
-            request,
-            admitted_at_ns: admitted,
-            bounds,
-        });
+        s = s.reserve(&request, &bytes_sha256(&bytes), admitted)?.next;
     }
-    s.last_admission_ns = admitted;
-    validate(&s)?;
     persist(&authority, &held, s, Hooks::default())?;
     drop(held);
     for n in 0..WARMUP {

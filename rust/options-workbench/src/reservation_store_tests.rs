@@ -1,4 +1,8 @@
 use super::*;
+use options_core::{
+    decimal::Dec,
+    reservations::{Funding, Request},
+};
 use options_core::{fixtures::mathematical_reservation_case, intents::DecisionKind};
 use std::{
     fs,
@@ -373,29 +377,31 @@ fn corrupt_or_truncated_authority_rejects_even_with_a_complete_pending_copy() {
     t.reserve("one");
     let old = t.bytes();
     for variant in 0..5 {
-        let mut e: Envelope = serde_json::from_slice(&old).unwrap();
+        let mut e: serde_json::Value = serde_json::from_slice(&old).unwrap();
         let bad = match variant {
             0 => old[..old.len() / 2].to_vec(),
             1 => {
-                e.snapshot.reservations[0].bounds.total = d("0");
-                e.sha256 = canonical_hash(&e.snapshot).unwrap();
+                e["snapshot"]["reservations"][0]["bounds"]["total"] = "0".into();
+                e["sha256"] = canonical_hash(&e["snapshot"]).unwrap().into();
                 canonical_bytes(&e).unwrap()
             }
             2 => {
-                e.snapshot.fundings[0].funding.initial_balance = d("1000");
-                e.sha256 = canonical_hash(&e.snapshot).unwrap();
+                e["snapshot"]["fundings"][0]["funding"]["initial_balance"] = "1000".into();
+                e["sha256"] = canonical_hash(&e["snapshot"]).unwrap().into();
                 canonical_bytes(&e).unwrap()
             }
             3 => {
-                e.snapshot.last_admission_ns = 0;
-                e.sha256 = canonical_hash(&e.snapshot).unwrap();
+                e["snapshot"]["last_admission_ns"] = 0.into();
+                e["sha256"] = canonical_hash(&e["snapshot"]).unwrap().into();
                 canonical_bytes(&e).unwrap()
             }
             _ => {
-                e.snapshot
-                    .reservations
-                    .push(e.snapshot.reservations[0].clone());
-                e.sha256 = canonical_hash(&e.snapshot).unwrap();
+                let repeated = e["snapshot"]["reservations"][0].clone();
+                e["snapshot"]["reservations"]
+                    .as_array_mut()
+                    .unwrap()
+                    .push(repeated);
+                e["sha256"] = canonical_hash(&e["snapshot"]).unwrap().into();
                 canonical_bytes(&e).unwrap()
             }
         };
@@ -591,18 +597,8 @@ fn capacity_limit_does_not_prune_active_cash_holds() {
     for n in 0..MAX_RESERVATIONS {
         let bytes = t.input(&format!("seed-{n}"));
         let r = core::decode_request(&bytes).unwrap();
-        let bounds = core::evaluate(&t.funding, &r, NOW).unwrap();
-        s.reservations.push(Reservation {
-            sequence: n as u64 + 1,
-            state: State::Active,
-            request_sha256: canonical_hash(&r).unwrap(),
-            first_request_bytes_sha256: bytes_sha256(&bytes),
-            request: r,
-            admitted_at_ns: NOW,
-            bounds,
-        });
+        s = s.reserve(&r, &bytes_sha256(&bytes), NOW).unwrap().next;
     }
-    validate(&s).unwrap();
     persist(&t.path(), &dir, s, Hooks::default()).unwrap();
     drop(dir);
     let old = t.bytes();
