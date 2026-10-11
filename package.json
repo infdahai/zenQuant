@@ -9,7 +9,10 @@
     "dev:web": "cd web-src && npm run dev",
     "test:store": "node --test tests_js/storeCore.test.mjs",
     "test:e2e": "playwright test",
-    "test:frontend": "npm run test:store && npm run test:e2e"
+    "test:frontend": "npm run test:store && npm run test:e2e",
+    "build:options": "npm --prefix options-ui run check && npm --prefix options-ui run build && cd rust && cargo build --release --locked -p options-workbench --bin options-ui",
+    "start:options": "./rust/target/release/options-ui",
+    "test:options": "npm --prefix options-ui test && playwright test --config playwright.options.config.js"
   },
   "devDependencies": {
     "@playwright/test": "^1.58.2"
