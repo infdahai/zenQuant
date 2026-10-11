@@ -145,11 +145,27 @@ fn safe_path(path: &Path) -> Result<PathBuf> {
     }
     Ok(path)
 }
-fn lock(path: &Path) -> Result<File> {
+struct DirectoryLock(File);
+impl std::ops::Deref for DirectoryLock {
+    type Target = File;
+    fn deref(&self) -> &File {
+        &self.0
+    }
+}
+impl Drop for DirectoryLock {
+    fn drop(&mut self) {
+        // A concurrent fork can retain the open file description until exec even
+        // with CLOEXEC. End this operation's lock explicitly before closing it.
+        unsafe {
+            libc::flock(self.0.as_raw_fd(), libc::LOCK_UN);
+        }
+    }
+}
+fn lock(path: &Path) -> Result<DirectoryLock> {
     let dir = publication::open_dir(path, false).map_err(|_| StoreError::InvalidStore)?;
     lock_directory(path, dir)
 }
-fn lock_directory(path: &Path, dir: File) -> Result<File> {
+fn lock_directory(path: &Path, dir: File) -> Result<DirectoryLock> {
     if unsafe { libc::flock(dir.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
         return Err(
             if std::io::Error::last_os_error().kind() == std::io::ErrorKind::WouldBlock {
@@ -160,7 +176,7 @@ fn lock_directory(path: &Path, dir: File) -> Result<File> {
         );
     }
     publication::same_parent(path, &dir).map_err(|_| StoreError::InvalidStore)?;
-    Ok(dir) // Closing releases the flock, including on process death; no stale PID lock.
+    Ok(DirectoryLock(dir))
 }
 fn name(value: &str) -> CString {
     CString::new(value).expect("fixed internal filename")
