@@ -12,6 +12,7 @@ pub mod fixtures;
 pub mod inputs;
 pub mod intents;
 mod measurement;
+pub mod payoff_curve;
 pub mod quote_diagnostics;
 pub mod reservations;
 pub mod terminal_diagnostics;

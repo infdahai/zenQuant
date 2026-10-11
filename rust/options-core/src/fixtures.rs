@@ -10,6 +10,43 @@ fn d(s: &str) -> Dec {
     Dec::parse(s).expect("fixed finite mathematical constant")
 }
 
+/// Explicit synthetic analysis clock 10 ns, expiry 1000 ns; never a current market feed.
+pub fn mathematical_curve() -> Result<crate::payoff_curve::Request> {
+    use crate::{payoff_curve::*, terminal_diagnostics as t};
+    let spec = mathematical_spec(OptionType::C, d("100"));
+    Ok(Request {
+        schema_version: REQUEST_SCHEMA.into(),
+        request_id: "synthetic-curve".into(),
+        cutoff_ns: 10,
+        report_currency: "USDC".into(),
+        grid: Some(Grid {
+            meta: mathematical_meta(t::SCENARIOS_SCHEMA),
+            spec_hash: canonical_hash(&spec)?,
+            at_ns: spec.expiry_ns,
+            first: d("50"),
+            step: d(".1"),
+            count: 1001,
+        }),
+        candidate: Some(Candidate {
+            leg: CandidateLeg {
+                instrument: InstrumentDescriptor::from_spec(&spec)?,
+                side: Side::Buy,
+                quantity_native: d(".01"),
+            },
+            quotes: vec![mathematical_quote(spec.clone(), d("2"), d("1.9"))],
+            spec,
+            metadata_known_ns: Some(0),
+            terminal_fee: Some(t::TerminalFee {
+                amount_report: d(".001"),
+                known_ns: 0,
+                source_ref: "explicit_synthetic_terminal_fee".into(),
+            }),
+            source_identities: vec![],
+        }),
+        signal: None,
+    })
+}
+
 /// Synthetic reservation policy, not a venue fee attestation or real balance snapshot.
 pub fn mathematical_reservation_case(
     now: u64,

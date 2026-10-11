@@ -15,6 +15,7 @@ const ANALYSIS: &[&str] = &[
     "costs",
     "expressions",
     "inputs",
+    "payoff_curve",
     "quote_diagnostics",
     "terminal_diagnostics",
 ];
