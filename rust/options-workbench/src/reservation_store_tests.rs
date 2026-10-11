@@ -87,6 +87,32 @@ fn conserved(receipt: &Receipt) {
 }
 
 #[test]
+fn pure_transition_and_durable_replay_preserve_identical_business_results() {
+    let t = Temp::new(".045");
+    let funded = Authority::new(NOW).fund(&t.funding, NOW).unwrap();
+    t.fund();
+    let bytes = t.input("one");
+    let request = core::decode_request(&bytes).unwrap();
+    let proposal = funded
+        .next
+        .reserve(&request, &bytes_sha256(&bytes), NOW)
+        .unwrap();
+    let receipt = t.reserve("one");
+    assert_eq!(receipt.result, proposal.outcome.label());
+    assert_eq!(receipt.reservations.first(), proposal.outcome.record());
+    let held = disk::lock(&t.path(), true).unwrap();
+    let (restored, _) = load(&held).unwrap();
+    assert_eq!(restored, proposal.next);
+    drop(held);
+    let replayed = t.replay();
+    assert_eq!(replayed.reservations, restored.records());
+    assert_eq!(replayed.balances, restored.balances().unwrap());
+    let retry = t.reserve("one");
+    assert_eq!(retry.reservations, receipt.reservations);
+    assert_eq!(retry.balances, receipt.balances);
+}
+
+#[test]
 fn same_owner_cannot_split_or_reinject_its_initial_cash() {
     let t = Temp::new(".045");
     t.fund();
