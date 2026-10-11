@@ -66,8 +66,10 @@ cd rust
 cargo build --workspace --locked
 cargo run --locked -p options-workbench -- \
   --quote-request-file options-workbench/fixtures/quote-costs.json \
-  --output-dir ../results/options_platform/new-quote-costs
+  --output-dir results/options_platform/new-quote-costs
 ```
+
+该示例在 `rust/results/options_platform/new-quote-costs` 创建报告，目录必须不存在；不要在参数中使用 `..`，即使它最终指向允许位置也会被路径保护拒绝。
 
 完整示例为 [quote-costs.json](../rust/options-workbench/fixtures/quote-costs.json)，类型和验证入口为 [quote_diagnostics.rs](../rust/options-core/src/quote_diagnostics.rs)。示例是数学输入，零值 raw/metadata hash 不是已验证的真实市场证据。
 
