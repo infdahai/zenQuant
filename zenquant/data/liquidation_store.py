@@ -61,6 +61,7 @@ class LiquidationDataStore:
         self._short_liq: list[float] = []
         self._imbalance: list[float] = []
         self._max_single: list[float] = []
+        self._lookup_cache: dict[tuple[int, bool], LiquidationSnapshot] = {}
 
     @property
     def loaded(self) -> bool:
@@ -68,6 +69,7 @@ class LiquidationDataStore:
 
     def load(self) -> None:
         """Load all aggregated liquidation Parquet files."""
+        self._lookup_cache.clear()
         liq_dir = self._config.liquidation_dir
         if not liq_dir.exists():
             return
@@ -131,7 +133,12 @@ class LiquidationDataStore:
         quality_flags: list[str] = []
 
         age_ns = cutoff_time_ns - snapshot_ts
-        if age_ns > self._config.staleness_threshold_ns:
+        is_stale = age_ns > self._config.staleness_threshold_ns
+        cache_key = (idx, is_stale)
+        cached = self._lookup_cache.get(cache_key)
+        if cached is not None:
+            return cached
+        if is_stale:
             quality_flags.append("LIQ_STALE")
 
         # Z-scores over rolling window
@@ -147,7 +154,7 @@ class LiquidationDataStore:
         liq_intensity_z = _robust_z(total_window, total_val, self._config.robust_z_min_samples)
         liq_imbalance_z = _robust_z(imb_window, imb_val, self._config.robust_z_min_samples)
 
-        return LiquidationSnapshot(
+        snapshot = LiquidationSnapshot(
             total_liq_usd=total_val,
             long_liq_usd=self._long_liq[idx],
             short_liq_usd=self._short_liq[idx],
@@ -157,3 +164,5 @@ class LiquidationDataStore:
             liq_imbalance_z=liq_imbalance_z,
             quality_flags=quality_flags,
         )
+        self._lookup_cache[cache_key] = snapshot
+        return snapshot

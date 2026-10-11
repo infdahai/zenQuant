@@ -1,0 +1,16 @@
+E                                                                        [100%]
+==================================== ERRORS ====================================
+_______________ ERROR at setup of test_sealed_input_integration ________________
+../../.venv/lib/python3.12/site-packages/_pytest/config/__init__.py:1886: in getoption
+    val = getattr(self.option, name)
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^
+E   AttributeError: 'Namespace' object has no attribute 'require_local_options_panel'
+
+The above exception was the direct cause of the following exception:
+tests/options/conftest.py:35: in local_options_panel_root
+    return require_local_options_panel(strict=request.config.getoption("--require-local-options-panel"))
+                                              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E   ValueError: no option named 'require_local_options_panel'
+=========================== short test summary info ============================
+ERROR tests/options/test_panel.py::test_sealed_input_integration - ValueError...
+1836 deselected, 1 error in 1.30s

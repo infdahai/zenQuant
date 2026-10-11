@@ -8,6 +8,34 @@ ZenQuant delivers:
 
 This is **not** an HFT engine, black-box AI bot, copy-trading platform, or "support every idea" framework. It's a trading product that is trustworthy before flashy, and modular before overcomplicated.
 
+## Quant V2 Research Status
+
+The V2 architecture experiment is implemented behind explicit, default-off
+research modes. Its frozen 30-run acceptance result is **blocked**: engineering
+purity gates pass, but late-dev remains negative under the additional 15bp cost
+stress on all five seeds. Do not promote it or start another tuning round.
+
+- Architecture review: [docs/QUANT_V2_ARCHITECTURE_EXPERT_REVIEW.md](docs/QUANT_V2_ARCHITECTURE_EXPERT_REVIEW.md)
+- Reproducible result/runbook: [docs/QUANT_V2_ACCEPTANCE_HANDOFF.md](docs/QUANT_V2_ACCEPTANCE_HANDOFF.md)
+- Tester/operator authority: [docs/LIVE_VALIDATION_HANDOFF_SPEC.md](docs/LIVE_VALIDATION_HANDOFF_SPEC.md)
+
+Current implementation, Gate v2 evidence, and the proposed Quant System v2 boundaries are documented in [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
+
+## Rust Options Workbench
+
+The offline options workbench provides a native Rust CLI and a pure
+`options-core` library for deterministic input admission, displayed execution
+costs, terminal option scenarios and same-venue vertical certificates.
+
+- Architecture, request/report interfaces and CLI usage: [Rust workbench guide](docs/OPTIONS_WORKBENCH_RUST_GUIDE.md)
+- Independent quote costs without a View or indicator: [versioned quote diagnostic input](docs/OPTIONS_WORKBENCH_RUST_GUIDE.md#独立报价成本诊断)
+- Local integration results and historical input requirements: [gate repair report](docs/reports/options-workbench-gate-repair-20261010/README.md)
+- Build with the pinned toolchain: `cd rust && cargo build --workspace --locked`
+
+The local Python harness and native Rust checks pass on the recorded inputs.
+The workbench remains an offline diagnostic tool; these checks do not establish
+option strategy profitability or authorize live trading.
+
 ---
 
 ## Quick Start
@@ -51,8 +79,10 @@ This repo is large enough that careless Claude CLI usage can waste a lot of toke
 
 `RL` is supported as a research-only parameter tuner. It may tune weights, risk thresholds, indicator windows, and execution speeds, but it must not rewrite strategy architecture, regime logic, or risk precedence.
 
-For a repository-grounded explanation of how `RL` and `Optuna` are actually used
-in ZenQuant, see [`docs/RL_OPTUNA_EXPLAINER.md`](/Users/disaster/workspace/code/zenQuant/docs/RL_OPTUNA_EXPLAINER.md).
+The current research decision is to freeze the leading candidate and perform
+architecture attribution before starting another Optuna or RL campaign. See
+[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for the implemented research
+boundary and the A0-A5 target experiment.
 
 ## Dataset Split Discipline
 
@@ -85,11 +115,16 @@ Execution defaults follow the PaulWei pattern:
 
 ## Historical Validation Snapshot
 
-The current BTC strategy has passed the repo's handoff validation path for historical replay, variant comparison, and the 2023-08 bearish-grind repair.
+The current BTC strategy remains research-only. The latest bounded Gate v2
+rescore evaluated seven frozen candidates across five deterministic perturbation
+seeds without opening the frozen test split. No candidate passed the complete
+Gate policy; the terminal recommendation is to redesign the risk and execution
+boundaries before more training.
 
-- Handoff spec: [`docs/LIVE_VALIDATION_HANDOFF_SPEC.md`](/Users/disaster/workspace/code/zenQuant/docs/LIVE_VALIDATION_HANDOFF_SPEC.md)
-- Latest execution record: [`docs/HISTORICAL_VALIDATION_2026_04_07.md`](/Users/disaster/workspace/code/zenQuant/docs/HISTORICAL_VALIDATION_2026_04_07.md)
-- Current historical conclusion under the old mixed validation stack remains useful evidence, but final promotion now requires the stricter `train/dev/test` contract above and a positive `framework_optimization.json.final_verdict`.
+- Architecture and interpretation: [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)
+- Operator contract: [`docs/LIVE_VALIDATION_HANDOFF_SPEC.md`](docs/LIVE_VALIDATION_HANDOFF_SPEC.md)
+- Gate v2 summary: [`results/remediation_20260821/gate_v2_rescore/gate_v2_rescore.md`](results/remediation_20260821/gate_v2_rescore/gate_v2_rescore.md)
+- Final promotion still requires the strict `train/dev/test` contract and a valid positive promotion verdict.
 
 Minimal re-check commands:
 
@@ -935,6 +970,6 @@ This software is provided for educational and research purposes only. It is not 
 
 ---
 
-**Last Updated**: 2026-04-01
-**Test Status**: 223 passing, 5 skipped
-**Documentation**: `docs/OPERATIONS.md` (deployment & monitoring), `docs/VALIDATION.md` (results & baselines)
+**Last Updated**: 2026-08-22
+
+**Documentation**: [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) (current and target architecture), [`docs/OPERATIONS.md`](docs/OPERATIONS.md) (deployment and monitoring), [`docs/LIVE_VALIDATION_HANDOFF_SPEC.md`](docs/LIVE_VALIDATION_HANDOFF_SPEC.md) (tester/operator contract)

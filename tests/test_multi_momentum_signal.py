@@ -32,6 +32,232 @@ class MultiMomentumSignalTests(unittest.TestCase):
         )
         self.assertEqual(result.value, 0.0)
 
+    def test_range_profit_run_is_opt_in(self) -> None:
+        """Research profiles may opt into long profit-run intent inside RANGE."""
+        result = self._compute(
+            {"multi_momentum_z": 1.0, "structure_state": "UPTREND"},
+            state={"regime": "RANGE"},
+            config={
+                "momentum_threshold": 0.3,
+                "signal_sign": 1.0,
+                "use_single_fallback": True,
+                "range_profit_run_enabled": True,
+                "range_profit_run_threshold": 0.2,
+                "range_profit_run_value": 0.85,
+                "range_profit_run_confidence": 0.65,
+            },
+        )
+
+        self.assertEqual(result.value, 0.85)
+        self.assertGreaterEqual(result.confidence, 0.65)
+        self.assertIn("MULTI_MOM_RANGE_BULL_PROFIT_RUN", result.reason_codes)
+
+    def test_range_profit_run_guard_blocks_unsafe_context(self) -> None:
+        """Research profit-run intent must not fire in noisy bull-like windows."""
+        result = self._compute(
+            {"multi_momentum_z": 1.0, "structure_state": "UPTREND", "cycle_position": 0.86},
+            state={
+                "regime": "RANGE",
+                "transition_risk": 0.62,
+                "volatility_state": "DISTORTED",
+                "quality_state": "TRADABLE",
+            },
+            config={
+                "momentum_threshold": 0.3,
+                "signal_sign": 1.0,
+                "use_single_fallback": True,
+                "range_profit_run_enabled": True,
+                "range_profit_run_threshold": 0.2,
+                "range_profit_run_value": 0.85,
+                "range_profit_run_confidence": 0.65,
+                "range_profit_run_max_transition_risk": 0.45,
+                "range_profit_run_min_cycle_position": 0.95,
+                "range_profit_run_block_distorted_volatility": True,
+                "range_profit_run_block_unsafe_quality": True,
+            },
+        )
+
+        self.assertEqual(result.value, 0.0)
+        self.assertEqual(result.confidence, 0.0)
+        self.assertIn("MULTI_MOM_RANGE_BULL_PROFIT_RUN_GUARDED_TRANSITION_RISK", result.reason_codes)
+        self.assertIn("MULTI_MOM_RANGE_BULL_PROFIT_RUN_GUARDED_CYCLE_POSITION", result.reason_codes)
+        self.assertIn("MULTI_MOM_RANGE_BULL_PROFIT_RUN_GUARDED_VOLATILITY_STATE", result.reason_codes)
+
+    def test_range_profit_run_cycle_fallback_is_opt_in(self) -> None:
+        """Cycle context can provide profit-run intent when structure lags."""
+        result = self._compute(
+            {"multi_momentum_z": 0.25, "structure_state": "NEUTRAL", "cycle_position": 1.08},
+            state={
+                "regime": "RANGE",
+                "transition_risk": 0.30,
+                "directional_state": "TRANSITION",
+                "directional_confidence": 0.50,
+            },
+            config={
+                "momentum_threshold": 0.3,
+                "signal_sign": 1.0,
+                "use_single_fallback": True,
+                "range_profit_run_enabled": True,
+                "range_profit_run_threshold": 0.3,
+                "range_profit_run_value": 0.75,
+                "range_profit_run_confidence": 0.55,
+                "range_profit_run_max_transition_risk": 0.45,
+                "range_profit_run_cycle_fallback_enabled": True,
+                "range_profit_run_cycle_threshold": 1.0,
+                "range_profit_run_cycle_momentum_threshold": 0.10,
+                "range_profit_run_block_confirmed_downtrend": True,
+            },
+        )
+
+        self.assertEqual(result.value, 0.75)
+        self.assertIn("CYCLE_PROFIT_RUN", result.reason_codes)
+
+    def test_range_profit_run_cycle_fallback_blocks_confirmed_downtrend(self) -> None:
+        """Cycle fallback must respect confirmed state downtrends."""
+        result = self._compute(
+            {"multi_momentum_z": 0.25, "structure_state": "NEUTRAL", "cycle_position": 1.08},
+            state={
+                "regime": "RANGE",
+                "transition_risk": 0.30,
+                "directional_state": "DOWNTREND",
+                "directional_confidence": 0.65,
+            },
+            config={
+                "momentum_threshold": 0.3,
+                "signal_sign": 1.0,
+                "use_single_fallback": True,
+                "range_profit_run_enabled": True,
+                "range_profit_run_threshold": 0.3,
+                "range_profit_run_value": 0.75,
+                "range_profit_run_confidence": 0.55,
+                "range_profit_run_max_transition_risk": 0.45,
+                "range_profit_run_cycle_fallback_enabled": True,
+                "range_profit_run_cycle_threshold": 1.0,
+                "range_profit_run_cycle_momentum_threshold": 0.10,
+                "range_profit_run_block_confirmed_downtrend": True,
+            },
+        )
+
+        self.assertEqual(result.value, 0.0)
+        self.assertIn("MULTI_MOM_RANGE_BULL_PROFIT_RUN_GUARDED_CONFIRMED_DOWNTREND", result.reason_codes)
+
+    def test_range_profit_run_cycle_fallback_blocks_bearish_state_signal(self) -> None:
+        """Cycle fallback must not fight a negative state direction signal."""
+        result = self._compute(
+            {"multi_momentum_z": 0.25, "structure_state": "NEUTRAL", "cycle_position": 1.08},
+            state={
+                "regime": "RANGE",
+                "transition_risk": 0.30,
+                "directional_state": "TRANSITION",
+                "directional_confidence": 0.50,
+                "direction_signal": -0.55,
+            },
+            config={
+                "momentum_threshold": 0.3,
+                "signal_sign": 1.0,
+                "use_single_fallback": True,
+                "range_profit_run_enabled": True,
+                "range_profit_run_threshold": 0.3,
+                "range_profit_run_value": 0.75,
+                "range_profit_run_confidence": 0.55,
+                "range_profit_run_max_transition_risk": 0.45,
+                "range_profit_run_cycle_fallback_enabled": True,
+                "range_profit_run_cycle_threshold": 1.0,
+                "range_profit_run_cycle_momentum_threshold": 0.10,
+                "range_profit_run_min_state_direction_signal": -0.25,
+            },
+        )
+
+        self.assertEqual(result.value, 0.0)
+        self.assertIn("MULTI_MOM_RANGE_BULL_PROFIT_RUN_GUARDED_STATE_DIRECTION_SIGNAL", result.reason_codes)
+
+    def test_range_bear_profit_run_is_opt_in(self) -> None:
+        """Research profiles may opt into slow short intent inside RANGE bear states."""
+        result = self._compute(
+            {"multi_momentum_z": -0.8, "structure_state": "DOWNTREND", "cycle_position": 0.93},
+            state={
+                "regime": "RANGE",
+                "transition_risk": 0.35,
+                "directional_state": "DOWNTREND",
+                "directional_confidence": 0.62,
+                "direction_signal": -0.35,
+            },
+            config={
+                "momentum_threshold": 0.3,
+                "signal_sign": 1.0,
+                "use_single_fallback": True,
+                "range_bear_profit_run_enabled": True,
+                "range_bear_profit_run_threshold": 0.2,
+                "range_bear_profit_run_value": 0.70,
+                "range_bear_profit_run_confidence": 0.65,
+                "range_bear_profit_run_max_transition_risk": 0.55,
+                "range_bear_profit_run_cycle_fallback_enabled": True,
+                "range_bear_profit_run_cycle_threshold": 0.95,
+                "range_bear_profit_run_cycle_momentum_threshold": 0.10,
+            },
+        )
+
+        self.assertEqual(result.value, -0.70)
+        self.assertGreaterEqual(result.confidence, 0.65)
+        self.assertIn("MULTI_MOM_RANGE_BEAR_PROFIT_RUN", result.reason_codes)
+        self.assertIn("STRUCTURE_DOWNTREND", result.reason_codes)
+
+    def test_range_bear_profit_run_guard_blocks_bullish_state_signal(self) -> None:
+        """Bear profit-run intent must not fight a positive state direction signal."""
+        result = self._compute(
+            {"multi_momentum_z": -0.8, "structure_state": "DOWNTREND", "cycle_position": 0.93},
+            state={
+                "regime": "RANGE",
+                "transition_risk": 0.35,
+                "directional_state": "TRANSITION",
+                "directional_confidence": 0.50,
+                "direction_signal": 0.45,
+            },
+            config={
+                "momentum_threshold": 0.3,
+                "signal_sign": 1.0,
+                "use_single_fallback": True,
+                "range_bear_profit_run_enabled": True,
+                "range_bear_profit_run_threshold": 0.2,
+                "range_bear_profit_run_value": 0.70,
+                "range_bear_profit_run_confidence": 0.65,
+                "range_bear_profit_run_max_state_direction_signal": 0.20,
+            },
+        )
+
+        self.assertEqual(result.value, 0.0)
+        self.assertIn("MULTI_MOM_RANGE_BEAR_PROFIT_RUN_GUARDED_STATE_DIRECTION_SIGNAL", result.reason_codes)
+
+    def test_range_bear_profit_run_guard_blocks_high_vol_panic_exhaustion(self) -> None:
+        """Extreme negative momentum in high-volatility range can be rebound risk, not short edge."""
+        result = self._compute(
+            {"multi_momentum_z": -0.95, "structure_state": "DOWNTREND", "cycle_position": 0.93},
+            state={
+                "regime": "RANGE",
+                "transition_risk": 0.40,
+                "volatility_state": "HIGH",
+                "directional_state": "DOWNTREND",
+                "directional_confidence": 0.62,
+                "direction_signal": -0.35,
+            },
+            config={
+                "momentum_threshold": 0.3,
+                "signal_sign": 1.0,
+                "use_single_fallback": True,
+                "range_bear_profit_run_enabled": True,
+                "range_bear_profit_run_threshold": 0.2,
+                "range_bear_profit_run_value": 0.70,
+                "range_bear_profit_run_confidence": 0.65,
+                "range_bear_profit_run_max_transition_risk": 0.55,
+                "range_bear_profit_run_panic_exhaustion_veto_enabled": True,
+                "range_bear_profit_run_panic_exhaustion_momentum_threshold": -0.85,
+                "range_bear_profit_run_panic_exhaustion_transition_ceiling": 0.48,
+            },
+        )
+
+        self.assertEqual(result.value, 0.0)
+        self.assertIn("MULTI_MOM_RANGE_BEAR_PROFIT_RUN_GUARDED_PANIC_EXHAUSTION", result.reason_codes)
+
     # ── None / missing key handling ──
 
     def test_none_momentum_with_fallback(self) -> None:

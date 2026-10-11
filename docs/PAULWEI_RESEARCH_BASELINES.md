@@ -25,8 +25,8 @@ period and uses the later behavior profile:
 - `loss_median_hold_hours`: `34.3481`
 - `max_drawdown_pct`: `0.1911`
 
-This baseline is the preferred learning target for cadence, time leverage,
-staged inventory, and fee-efficiency research.
+This baseline is the preferred learning target for cadence, low switch count,
+staged unwind, and fee-efficiency research.
 
 ## Tranche Behavior
 
@@ -42,6 +42,45 @@ Use the tranche profile to separate:
 
 The mature BTC profile is the better learning target for intent design: low
 direction switching, many small adds, and many small reduces.
+
+## Early Convexity Audit
+
+The early public-ledger period should not be summarized as a single headline USD
+multiple. The research target is `paulwei_early_convexity_train_only`: a
+research-only audit that separates BTC-unit wealth, actual wallet USD, and
+cash-flow adjusted USD.
+
+This distinction matters for this repo because the strategy is USDT-margined.
+BTC-collateral convexity is not a direct promotion target. The transferable
+parts are phase-aware time-in-market, staged add/reduce behavior, and explicit
+cash-flow adjusted evaluation with actual-wallet drawdown reporting.
+
+## Dual-Phase Learning
+
+PaulWei has two different behaviors worth learning, and they should not be
+collapsed into one headline Sharpe target.
+
+1. `early_convexity_usdt_projection`: learn the early expansion mechanism as a
+   USDT-safe projection. The transferable pieces are time leverage in confirmed
+   expansion regimes, staged adds when the position is working, and delayed
+   flips. The forbidden piece is copying BTC-collateral convexity or the early
+   public-ledger drawdown tolerance into a USDT-margin strategy.
+2. `mature_low_switch_control`: learn the later control mechanism. The
+   transferable pieces are low direction-switch cadence, many small fills inside
+   each position episode, staged reduces, and fee-efficient flip/reduce behavior.
+
+The train-only search mode for this combined target is
+`paulwei_dual_phase_train_only`. It enables a Stage1 objective adjustment only in
+that mode; existing PaulWei balanced-tranche and legacy search modes keep their
+previous scoring.
+
+The narrowed repair mode is `paulwei_dual_phase_fee_repair_train_only`. It keeps
+the same two learning templates, but adds a third training context label,
+`dual_phase_fee_repair`, and narrows the grid around the v102 near-miss shape:
+lower 5m target volatility for the 5m smoke path, modestly stricter entry
+confirmation, and the same time-leverage hold contract. This mode is for
+repairing the v102 train fee miss without moving the fix into execution-layer
+order filtering.
 
 ## Commands
 
@@ -73,4 +112,22 @@ Build the order/fill/episode tranche profile:
 
 ```bash
 uv run python scripts/analyze_paulwei_tranche_behavior.py --data-root data/raw/paulwei_public --output-dir results/paulwei_tranche_behavior
+```
+
+Build the early BTC-unit convexity audit:
+
+```bash
+uv run python scripts/analyze_paulwei_early_convexity.py --data-root data/raw/paulwei_public --spot-root data/raw/binance_spot --output-dir results/paulwei_early_convexity
+```
+
+Run a smoke search for the dual-phase learning objective:
+
+```bash
+uv run python scripts/run_framework_campaign.py --root data/raw/binance --symbol BTCUSDT --budget smoke --optuna-trials 12 --rl-episodes 0 --search-space-mode paulwei_dual_phase_train_only --development-dev-gate --output-dir results/regime_objective_candidate_search_v102_paulwei_dual_phase_smoke
+```
+
+Run a smoke search for the dual-phase fee-repair objective:
+
+```bash
+uv run python scripts/run_framework_campaign.py --root data/raw/binance --symbol BTCUSDT --budget smoke --optuna-trials 12 --rl-episodes 0 --search-space-mode paulwei_dual_phase_fee_repair_train_only --development-dev-gate --output-dir results/regime_objective_candidate_search_v103_paulwei_dual_phase_fee_repair_smoke
 ```

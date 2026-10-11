@@ -117,7 +117,13 @@ def aggregate_to_4h(symbol: str, base_dir: Path) -> int:
     return aggregate_to_timeframe(symbol, base_dir, "4h")
 
 
-def aggregate_to_timeframe(symbol: str, base_dir: Path, timeframe: str = "4h") -> int:
+def aggregate_to_timeframe(
+    symbol: str,
+    base_dir: Path,
+    timeframe: str = "4h",
+    *,
+    start_date: datetime | None = None,
+) -> int:
     """Aggregate raw aggTrades parquet files into CVD buckets at given timeframe."""
     bucket_ns = TIMEFRAME_NS.get(timeframe, FOUR_HOURS_NS)
     raw_dir = base_dir / "raw"
@@ -125,6 +131,9 @@ def aggregate_to_timeframe(symbol: str, base_dir: Path, timeframe: str = "4h") -
     out_dir.mkdir(parents=True, exist_ok=True)
 
     parquet_files = sorted(raw_dir.glob("*.parquet"))
+    if start_date is not None:
+        start_name = start_date.strftime("%Y-%m-%d")
+        parquet_files = [path for path in parquet_files if path.stem >= start_name]
     if not parquet_files:
         print("No raw parquet files to aggregate")
         return 0
@@ -212,6 +221,11 @@ def aggregate_to_timeframe(symbol: str, base_dir: Path, timeframe: str = "4h") -
         )
 
     out_path = out_dir / "data.parquet"
+    if start_date is not None and out_path.exists():
+        existing_records = pq.read_table(out_path).to_pylist()
+        records_by_timestamp = {int(record["ts_ns"]): record for record in existing_records}
+        records_by_timestamp.update({int(record["ts_ns"]): record for record in records})
+        records = [records_by_timestamp[ts] for ts in sorted(records_by_timestamp)]
     table = pa.Table.from_pylist(records)
     pq.write_table(table, out_path, compression="zstd")
 
@@ -265,7 +279,7 @@ def main() -> None:
         print()
 
     # Aggregate
-    n_buckets = aggregate_to_timeframe(args.symbol, base_dir, args.timeframe)
+    n_buckets = aggregate_to_timeframe(args.symbol, base_dir, args.timeframe, start_date=start_date)
     if n_buckets > 0:
         print(f"\nDone. {n_buckets} {args.timeframe} buckets ready for backtest integration.")
     else:

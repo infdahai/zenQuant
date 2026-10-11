@@ -1,0 +1,130 @@
+{
+  "README.md": {
+    "bytes": 3534,
+    "sha256": "4d08d7a79d586c284954a844101c01442f705bf6604fe1a7eee6b4dc2771c3b2"
+  },
+  "acceptance.json": {
+    "bytes": 915,
+    "sha256": "080f105dd0ea329337302f8e7ea7b3fc31c7cbcb144ef7113e48a8a62377604f"
+  },
+  "baseline.json": {
+    "bytes": 15040,
+    "sha256": "0cc382b0963bd46d6552f7e38176871b3ab2cd046cddd4a7a7b76a4c6e8c6300"
+  },
+  "final-fix/evidence-manifest.json": {
+    "bytes": 4380,
+    "sha256": "097af08c5f489293538deecd42a0f021538d6fada86770c805fabff4f8b034c2"
+  },
+  "final-fix/validation-status.json": {
+    "bytes": 335,
+    "sha256": "475558527fc9e549875d54da5b387826ace0e18b1af7a5c7636c7aba9395ab3d"
+  },
+  "final-fix/verification.json": {
+    "bytes": 437,
+    "sha256": "433b0e7c33b10cfb1f380d93f6daf3148f60fd67f15958236d833b547e5cc38d"
+  },
+  "final-fix-report.md": {
+    "bytes": 7520,
+    "sha256": "1f58458db867c40af553bee83899f38eb7f288c7925b9e38d0bf2c99a17f372a"
+  },
+  "final-re-review.md": {
+    "bytes": 2929,
+    "sha256": "1fdedc49908e9502b82072139950372e7f0ac8b2df408c271fde7dea7f9cd862"
+  },
+  "final-review.md": {
+    "bytes": 934,
+    "sha256": "b2a6a2d522ab795e2762c65fd6b3f10e1b7069d692229b29bab7ff05108564c2"
+  },
+  "final_verification/clippy.log": {
+    "bytes": 72,
+    "sha256": "59639588a6f1826f129cbcd121edc07279dab94786f5fa5bde6b3439b2e845cc"
+  },
+  "final_verification/fmt.log": {
+    "bytes": 0,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "final_verification/python.log": {
+    "bytes": 591,
+    "sha256": "a3b1f5d82c2d3b4ab45b2cd31b318c79e99f76861f1b68029c6e8226e8ca45d0"
+  },
+  "final_verification/rust.log": {
+    "bytes": 6567,
+    "sha256": "fe518e813e9ce05a5ce105283354a92a0938e02195b22fd5eb0b9652cc8f7430"
+  },
+  "final_verification/status.json": {
+    "bytes": 177,
+    "sha256": "78c8aeadb0eb5a4121bbd9983f0e0de161d6d30473085211cbf179b8cced58f3"
+  },
+  "preservation.json": {
+    "bytes": 749,
+    "sha256": "842bd5be942ef96659f8686d33eb5ae1e3a340a2ec082b617c19d2c64ac86b36"
+  },
+  "progress.md": {
+    "bytes": 11461,
+    "sha256": "512e956669dc38c5ad6ab7abc4cca74d44eeb12c2ebce66a51d4a973a27a9543"
+  },
+  "root_demos/verification.json": {
+    "bytes": 1852,
+    "sha256": "e9a12571cf66e033055c16621a741f0c9779921ca600dc4b516a29fc62a5c21f"
+  },
+  "root_verification/compatibility.json": {
+    "bytes": 210,
+    "sha256": "38c9f6aa1ccf8e078c84793f3171717cf41a2ce844fd1962d441c79095fdf5f5"
+  },
+  "root_verification/new-ruff-format.log": {
+    "bytes": 26,
+    "sha256": "3bc53bf3e981a98a34a852e175bf9b77af841edea74fca595d9aedcbaf9a4938"
+  },
+  "root_verification/new-ruff.log": {
+    "bytes": 19,
+    "sha256": "82b3e6a6c090a57601d22943bd23fca9218d1031dbe5a7b754092f9a156b4f18"
+  },
+  "rulings.md": {
+    "bytes": 6795,
+    "sha256": "fd14965c018825e846ba307d2d8d84ab19d28ff4e020a05e2a24175cd5dec2ed"
+  },
+  "task-1-report.md": {
+    "bytes": 15473,
+    "sha256": "d8868eb638287b21e3bbdfe54221e394e6ea7b2cfbb0bcd1e738e220539a3cc0"
+  },
+  "task-2-report.md": {
+    "bytes": 5946,
+    "sha256": "f290fdae608f55ebd9ca2fde2ae57ac28645c182135029ae7ad304cd007c1851"
+  },
+  "task-3-report.md": {
+    "bytes": 9178,
+    "sha256": "3036c8e962caacc07aa03d2a4bb19b40131f15384cc54c74f2ff0f673e2ffd56"
+  },
+  "task-4-report.md": {
+    "bytes": 12084,
+    "sha256": "d098434a7bdc6a2083fb6794de5ec45354d52fe1d0a7e652852135c744a0d514"
+  },
+  "task-4-review.md": {
+    "bytes": 470,
+    "sha256": "5e3adb0e8449691b36aa2d8405e92b44f5f290c5e3bc4af0b455548e4a581079"
+  },
+  "task-5-report.md": {
+    "bytes": 10273,
+    "sha256": "fe43b0b5a684c968e8e1340f4c804e6f23ba715ba71179c8a50849d2c6789b4f"
+  },
+  "task5/compatibility-evidence.json": {
+    "bytes": 455,
+    "sha256": "94e90b4f95321a7166dd2ef478c0f37f933aae03ab408a1ab3225601712fd1b6"
+  },
+  "task5/evidence-manifest.json": {
+    "bytes": 2808,
+    "sha256": "0421950434f2bf8ad4ca20a30367816a9333be46158cc634ef26f4ed8836f209"
+  },
+  "task5/full-discovery-control.log": {
+    "bytes": 1084,
+    "sha256": "2f45ee70efa458264da1e09b8bd55ba3b058c914e4adfa3f97775bb05b3ee9f4"
+  },
+  "task5/validation-status.json": {
+    "bytes": 102,
+    "sha256": "28e5a89694c14b3897dbe8ebffac043582b92c182fb6cfdd9a9db2819bf0bc83"
+  },
+  "task5/zenquant-check.log": {
+    "bytes": 10334,
+    "sha256": "1f30c872dd327b95a2580fc9b020036cc9b5b5165ff8216652517e2c51133711"
+  }
+}

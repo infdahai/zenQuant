@@ -13,6 +13,7 @@ from zenquant.domain import (
     RiskSnapshot,
     TargetPosition,
     Timeframe,
+    target_position_hash,
 )
 from zenquant.infra import EventBus
 
@@ -170,7 +171,7 @@ class RiskOverlay:
     def _on_execution_report(self, _: str, payload: object) -> None:
         if not isinstance(payload, ExecutionReport):
             return
-        if payload.status != "FILLED" or payload.filled_qty <= 0:
+        if payload.filled_qty <= 0:
             return
 
         current = self._actual_positions.get(payload.symbol, 0.0)
@@ -471,6 +472,11 @@ class RiskOverlay:
             lev_cap=round(lev_cap, 4),
             reduce_only=reduce_only,
             flags=sorted(set(flags)) or ["OK"],
+            portfolio=target.portfolio,
+            timeframe=target.timeframe,
+            original_intent_id=target.intent_id,
+            original_target_hash=target_position_hash(target),
+            revised_target_hash=target_position_hash(revised),
         )
 
         snapshot = RiskSnapshot(

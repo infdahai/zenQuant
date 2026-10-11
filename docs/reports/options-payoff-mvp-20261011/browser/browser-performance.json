@@ -1,0 +1,21 @@
+{
+  "points": 4096,
+  "body_bytes": 345171,
+  "rust_calculation_us": 37676,
+  "request_body_ms": 46.20000000111759,
+  "json_parse_ms": 1.299999998882413,
+  "canvas": "绘图 2.6 ms",
+  "long_tasks": [
+    {
+      "start": 30,
+      "duration": 61
+    }
+  ],
+  "user_agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/154.0.0.0 Safari/537.36",
+  "hardware_concurrency": 5,
+  "input_to_second_animation_frame_ms": [
+    30.199999999254942,
+    19.699999999254942,
+    29.199999999254942
+  ]
+}

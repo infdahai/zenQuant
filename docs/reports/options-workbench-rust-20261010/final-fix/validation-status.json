@@ -1,0 +1,13 @@
+{
+  "head": "bc73f82725347c2f4fc5b3dedbf4679b78c288ef",
+  "rust_tests": 70,
+  "python_passed": 459,
+  "python_skipped": 1,
+  "cargo_fmt": "PASS",
+  "cargo_clippy_all_targets_D_warnings": "PASS",
+  "red_core_failed": 4,
+  "red_cash_cli_failed": 1,
+  "red_report_failed": 1,
+  "python_changed": false,
+  "full_harness_repeated": false
+}

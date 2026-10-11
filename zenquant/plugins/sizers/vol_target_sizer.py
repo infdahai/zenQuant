@@ -14,6 +14,8 @@ from zenquant.plugins.protocols import PluginMeta, SizerResult
 
 @dataclass(frozen=True, slots=True)
 class Config:
+    target_vol_5m: float = 0.60
+    target_vol_1h: float = 0.60
     target_vol_4h: float = 0.60
     target_vol_1d: float = 0.50
     min_realized_vol_ratio: float = 0.25
@@ -37,6 +39,10 @@ def compute(
     timeframe = state.get("timeframe", "4h")
     if timeframe == "1d":
         target_vol = config.get("target_vol_1d", 0.50)
+    elif timeframe == "1h":
+        target_vol = config.get("target_vol_1h", config.get("target_vol_4h", 0.60))
+    elif timeframe == "5m":
+        target_vol = config.get("target_vol_5m", config.get("target_vol_4h", 0.60))
     else:
         target_vol = config.get("target_vol_4h", 0.60)
 

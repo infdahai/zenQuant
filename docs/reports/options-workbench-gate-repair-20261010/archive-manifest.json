@@ -1,0 +1,106 @@
+{
+  "base": "a2b2086a088921e27fb4dd295b56f8e55fb3bc98",
+  "functional_head": "8751787",
+  "normalization_note": "Archived logs omit trailing horizontal whitespace and surplus empty lines at EOF only; operational originals remain in results/options_platform/gate_repair_20261010. JSON copies are exact.",
+  "files": [
+    {
+      "path": "README.md",
+      "bytes": 6607,
+      "sha256": "648a9d50c6e2d83af9126520296684a349faa08b55c8797bb0df036744404d63"
+    },
+    {
+      "path": "acceptance.json",
+      "bytes": 2976,
+      "sha256": "2f41ddc1786c5871cabcee0446fcefaf9daaf87580315f0ba5e45aff4716003d",
+      "operational_source_sha256": "2f41ddc1786c5871cabcee0446fcefaf9daaf87580315f0ba5e45aff4716003d"
+    },
+    {
+      "path": "bar_coverage.json",
+      "bytes": 5511,
+      "sha256": "76e4d6f9d041f539b3abb7df74f3823795af861cf2c643c4f1e98e1592de8c6a",
+      "operational_source_sha256": "76e4d6f9d041f539b3abb7df74f3823795af861cf2c643c4f1e98e1592de8c6a"
+    },
+    {
+      "path": "baseline.json",
+      "bytes": 19469,
+      "sha256": "545c5fe0167d8bf965e11ac6c1a54f6dc0da9900044758ed892ea8c72fd3a837",
+      "operational_source_sha256": "545c5fe0167d8bf965e11ac6c1a54f6dc0da9900044758ed892ea8c72fd3a837"
+    },
+    {
+      "path": "data_snapshot_manifest.json",
+      "bytes": 621020,
+      "sha256": "dbdf77983c0ff1fd0215d193cc1eecaa404590d8349047de3dfdfb903c1d155c",
+      "operational_source_sha256": "dbdf77983c0ff1fd0215d193cc1eecaa404590d8349047de3dfdfb903c1d155c"
+    },
+    {
+      "path": "gate_a_green.log",
+      "bytes": 578,
+      "sha256": "5b3424d7696607b9b60ebf804d75c1b28a2d8bc1e96bce2d24629c5f7e465667",
+      "operational_source_sha256": "5b3424d7696607b9b60ebf804d75c1b28a2d8bc1e96bce2d24629c5f7e465667"
+    },
+    {
+      "path": "gate_a_red.log",
+      "bytes": 191,
+      "sha256": "6d31596c503c8697c9dd8f12ea6cb69b8f12e587719939ad187d8468bbf47af4",
+      "operational_source_sha256": "6d31596c503c8697c9dd8f12ea6cb69b8f12e587719939ad187d8468bbf47af4"
+    },
+    {
+      "path": "gate_e/registration_policy_green.log",
+      "bytes": 110,
+      "sha256": "dcb2971be2fdbcd5a0de10056ce5298f0cad2105a67f88724dc401f717d63a2c",
+      "operational_source_sha256": "dcb2971be2fdbcd5a0de10056ce5298f0cad2105a67f88724dc401f717d63a2c"
+    },
+    {
+      "path": "gate_e/registration_red.log",
+      "bytes": 7958,
+      "sha256": "2e5fab75d77061cc38f2e872db0b9e551734ff5ec1b953975356ad9c6e2e3a15",
+      "operational_source_sha256": "18ee51a5956c88aea8ee1bf7e0930c18e3a7f212632f2453e49d7a8e42fa33ff"
+    },
+    {
+      "path": "gate_f_green.log",
+      "bytes": 98,
+      "sha256": "264b6e1ab67eaad01d79116c4685e0aad6f39f690e1cc20fc0ea759499fd712b",
+      "operational_source_sha256": "264b6e1ab67eaad01d79116c4685e0aad6f39f690e1cc20fc0ea759499fd712b"
+    },
+    {
+      "path": "gate_f_red.log",
+      "bytes": 7529,
+      "sha256": "c2131ab406e486f838b550b48187f394ce4f2c3ec4971937c098be49a50f0ae9",
+      "operational_source_sha256": "583402aea7b8036a4dcf98ca091ccc69893eb776942dd109a36900b011222bd7"
+    },
+    {
+      "path": "preservation.json",
+      "bytes": 322,
+      "sha256": "34daadadafe1f485f54b0b9a22685897fdb9acf54e6ccf205f0c4061061f7e51",
+      "operational_source_sha256": "34daadadafe1f485f54b0b9a22685897fdb9acf54e6ccf205f0c4061061f7e51"
+    },
+    {
+      "path": "progress.md",
+      "bytes": 2814,
+      "sha256": "0d9d71e87771146e2a17e917d0054676baa07450ad7b5e3e63f2f4c690798670"
+    },
+    {
+      "path": "review.md",
+      "bytes": 1927,
+      "sha256": "18a327616817f8c1a6230c1c32969b8a140a1eb9cacfd76fea9563ef05749446"
+    },
+    {
+      "path": "rust-clippy.log",
+      "bytes": 72,
+      "sha256": "c92508a29848820f033cd2ea015c85dde0953c88b07cc967ce34b7c08f610549",
+      "operational_source_sha256": "c92508a29848820f033cd2ea015c85dde0953c88b07cc967ce34b7c08f610549"
+    },
+    {
+      "path": "rust-tests.log",
+      "bytes": 6567,
+      "sha256": "bc4aaa842111bec816ef4e1d1f88abcb625816f9c27b2885267a90c745c4b1ff",
+      "operational_source_sha256": "daaa63436d121b7d6a0796c411f5dfa06bc432de738058eb5a75915a06741aa1"
+    },
+    {
+      "path": "zenquant-check.log",
+      "bytes": 9026,
+      "sha256": "d6fab9e8053e04f036a306ac811cfe2aff8b6a88304b56de847579af9e0ffb35",
+      "operational_source_sha256": "d6fab9e8053e04f036a306ac811cfe2aff8b6a88304b56de847579af9e0ffb35"
+    }
+  ]
+}

@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import unittest
+from dataclasses import replace
 from pathlib import Path
+
+import pytest
 
 from zenquant.domain import (
     ExitDecision,
@@ -12,15 +15,67 @@ from zenquant.domain import (
     MarketState,
     OpenPositionState,
     PlaybookSelection,
+    RiskOverlayDecision,
     TargetPosition,
     Timeframe,
+    target_position_hash,
 )
 from zenquant.infra.event_bus import InMemoryJetStream
 from zenquant.plugins.profile import build_from_profile
+from zenquant.plugins.signals import multi_momentum_signal
+from zenquant.risk import RiskOverlay, RiskOverlayConfig
 from zenquant.strategy.engine import ARCStrategyConfig, ARCStrategyEngine
 
 PLUGIN_ROOT = Path(__file__).parent.parent / "zenquant" / "plugins"
 PROFILE_PATH = Path(__file__).parent.parent / "config" / "profiles" / "default.toml"
+
+
+@pytest.mark.parametrize(
+    ("field_name", "new_value"),
+    [
+        ("target_leverage", 2.0),
+        ("reason_codes", ["SPOOFED_FINAL"]),
+        ("regime", "RANGE"),
+        ("regime_confidence", 0.1),
+        ("realized_vol", 0.7),
+        ("atr", 999.0),
+    ],
+)
+def test_v2_snapshot_rejects_mutated_risk_final_target(field_name: str, new_value: object) -> None:
+    if not PROFILE_PATH.exists():
+        pytest.skip("default.toml not found")
+    _, registry = build_from_profile(PROFILE_PATH, plugin_root=PLUGIN_ROOT)
+    bus = InMemoryJetStream()
+    engine = ARCStrategyEngine(
+        bus=bus,
+        config=ARCStrategyConfig(emit_decision_snapshots_v2=True),
+        plugin_registry=registry,
+    )
+    snapshots = []
+    target = _target(qty=1.0)
+    bus.subscribe("strategy.decision_snapshot.>", lambda _subject, payload: snapshots.append(payload))
+    engine._publish_decision_snapshot_if_enabled(_pack(), _state(), _playbook(), target)
+    bus.publish(
+        "risk.overlay.decision",
+        RiskOverlayDecision(
+            symbol=target.symbol,
+            cutoff_time_ns=target.cutoff_time_ns,
+            original_target_qty=target.target_qty,
+            revised_target_qty=target.target_qty,
+            lev_cap=2.5,
+            reduce_only=target.reduce_only,
+            flags=["OK"],
+            portfolio=target.portfolio,
+            timeframe=target.timeframe,
+            original_intent_id=target.intent_id,
+            original_target_hash=target_position_hash(target),
+            revised_target_hash=target_position_hash(target),
+        ),
+    )
+
+    bus.publish("intent.target_position.final.BTCUSDT_PERP", replace(target, **{field_name: new_value}))
+
+    assert snapshots == []
 
 
 def _pack(
@@ -33,10 +88,14 @@ def _pack(
     ob_liq_z: float = 0.3,
     funding_oi_z: float = 0.1,
     momentum_roc_z: float = 0.8,
+    multi_momentum_z: float | None = None,
     structure_state: str = "UPTREND",
+    cycle_position: float = 1.0,
     last_price: float = 60000.0,
     zen_pulse: float = 65.0,
 ) -> IndicatorPack:
+    if multi_momentum_z is None:
+        multi_momentum_z = momentum_roc_z
     return IndicatorPack(
         ts_ns=1,
         symbol=symbol,
@@ -53,7 +112,9 @@ def _pack(
             "ob_liq_z": ob_liq_z,
             "funding_oi_z": funding_oi_z,
             "momentum_roc_z": momentum_roc_z,
+            "multi_momentum_z": multi_momentum_z,
             "structure_state": structure_state,
+            "cycle_position": cycle_position,
             "last_price": last_price,
             "zen_pulse": zen_pulse,
             "overall_ob_liq_z": 0.0,
@@ -78,6 +139,7 @@ def _state(
     positioning_state: str = "HEALTHY",
     quality_state: str = "TRADABLE",
     transition_risk: float = 0.2,
+    direction_signal: float = 1.0,
 ) -> MarketState:
     return MarketState(
         symbol="BTCUSDT_PERP",
@@ -93,7 +155,7 @@ def _state(
         quality_confidence=0.9,
         regime=regime,
         regime_confidence=0.8,
-        direction_signal=1.0,
+        direction_signal=direction_signal,
         transition_risk=transition_risk,
         quality_flags=["OK"],
     )
@@ -212,6 +274,52 @@ class TestRegistryLoadsRealPlugins(unittest.TestCase):
             self.assertGreaterEqual(result.value, -1.0)
             self.assertLessEqual(result.value, 1.0)
 
+    def test_multi_momentum_range_profit_run_can_require_uptrend_state(self):
+        indicators = dict(
+            _pack(
+                timeframe=Timeframe.TF_4H,
+                multi_momentum_z=0.30,
+                momentum_roc_z=0.30,
+                structure_state="UPTREND",
+                cycle_position=1.05,
+            ).values
+        )
+        config = {
+            "range_profit_run_enabled": True,
+            "range_profit_run_threshold": 0.15,
+            "range_profit_run_value": 0.85,
+            "range_profit_run_cycle_fallback_enabled": True,
+            "range_profit_run_cycle_threshold": 1.00,
+            "range_profit_run_cycle_momentum_threshold": 0.10,
+            "range_profit_run_require_uptrend_state": True,
+        }
+
+        blocked = multi_momentum_signal.compute(
+            indicators,
+            {
+                "regime": "RANGE",
+                "directional_state": "TRANSITION",
+                "directional_confidence": 0.80,
+                "transition_risk": 0.20,
+            },
+            config,
+        )
+        allowed = multi_momentum_signal.compute(
+            indicators,
+            {
+                "regime": "RANGE",
+                "directional_state": "UPTREND",
+                "directional_confidence": 0.80,
+                "transition_risk": 0.20,
+            },
+            config,
+        )
+
+        self.assertEqual(blocked.value, 0.0)
+        self.assertIn("MULTI_MOM_RANGE_BULL_PROFIT_RUN_GUARDED_UPTREND_STATE", blocked.reason_codes)
+        self.assertGreater(allowed.value, 0.0)
+        self.assertIn("MULTI_MOM_RANGE_BULL_PROFIT_RUN", allowed.reason_codes)
+
     def test_all_sizer_plugins_compute(self):
         if not PROFILE_PATH.exists():
             self.skipTest("default.toml not found")
@@ -250,6 +358,329 @@ class TestPluginPathProducesValidOutput(unittest.TestCase):
         )
         engine = ARCStrategyEngine(bus=bus, config=config or ARCStrategyConfig(), plugin_registry=registry)
         return engine, bus
+
+    def test_v2_snapshot_publishes_only_for_explicit_4h_path(self):
+        """Catches a missing V2 audit event or accidental default-path publication."""
+        engine, bus = self._build_engine_with_plugins(ARCStrategyConfig(emit_decision_snapshots_v2=True))
+        snapshots = []
+        requested_targets = []
+        bus.subscribe("strategy.decision_snapshot.4h.BTCUSDT_PERP", lambda _subject, payload: snapshots.append(payload))
+        bus.subscribe(
+            "intent.target_position.arc.BTCUSDT_PERP", lambda _subject, payload: requested_targets.append(payload)
+        )
+
+        engine.prime_indicator(_pack())
+        engine.prime_state(_state())
+        self.assertEqual(snapshots, [])
+        self.assertEqual(len(requested_targets), 1)
+        bus.publish(
+            "risk.overlay.decision",
+            RiskOverlayDecision(
+                symbol=requested_targets[0].symbol,
+                cutoff_time_ns=requested_targets[0].cutoff_time_ns,
+                original_target_qty=requested_targets[0].target_qty,
+                revised_target_qty=requested_targets[0].target_qty,
+                lev_cap=2.5,
+                reduce_only=requested_targets[0].reduce_only,
+                flags=["OK"],
+                portfolio=requested_targets[0].portfolio,
+                timeframe=requested_targets[0].timeframe,
+                original_intent_id=requested_targets[0].intent_id,
+                original_target_hash=target_position_hash(requested_targets[0]),
+                revised_target_hash=target_position_hash(requested_targets[0]),
+            ),
+        )
+        bus.publish("intent.target_position.final.BTCUSDT_PERP", requested_targets[0])
+
+        self.assertEqual(len(snapshots), 1)
+        self.assertEqual(snapshots[0].timeframe, Timeframe.TF_4H)
+        self.assertEqual(snapshots[0].symbol, "BTCUSDT_PERP")
+        self.assertEqual(snapshots[0].realized_vol, 0.6)
+        self.assertEqual(snapshots[0].atr, 500.0)
+        self.assertEqual(snapshots[0].indicator_version, "pack.v1")
+        self.assertEqual(snapshots[0].quality_flags, ("OK",))
+        self.assertEqual(snapshots[0].volatility_target, 1.1)
+        self.assertGreater(snapshots[0].exposure_cap, 0.0)
+
+    def test_legacy_default_does_not_publish_v2_snapshot(self):
+        """Catches default strategy operation leaking into the opt-in V2 event path."""
+        engine, bus = self._build_engine_with_plugins()
+        snapshots = []
+        bus.subscribe("strategy.decision_snapshot.>", lambda _subject, payload: snapshots.append(payload))
+
+        engine.prime_indicator(_pack())
+        engine.prime_state(_state())
+
+        self.assertEqual(snapshots, [])
+        bus.publish(
+            "risk.overlay.decision",
+            RiskOverlayDecision(
+                symbol="BTCUSDT_PERP",
+                cutoff_time_ns=1,
+                original_target_qty=1.0,
+                revised_target_qty=0.5,
+                lev_cap=0.5,
+                reduce_only=False,
+                flags=["OK"],
+            ),
+        )
+        self.assertEqual(engine._risk_final_decisions, {})
+
+    def test_v2_snapshot_never_publishes_for_non_4h_state_path(self):
+        """Catches a 1h or 5m strategy route bypassing the fixed V2 4h boundary."""
+        engine, bus = self._build_engine_with_plugins(ARCStrategyConfig(emit_decision_snapshots_v2=True))
+        snapshots = []
+        bus.subscribe("strategy.decision_snapshot.>", lambda _subject, payload: snapshots.append(payload))
+        state = _state()
+        state.timeframe = Timeframe.TF_1H
+
+        engine.prime_indicator(_pack(timeframe=Timeframe.TF_1H))
+        engine.prime_state(state)
+
+        self.assertEqual(snapshots, [])
+
+    def test_v2_snapshot_never_publishes_for_non_btc_symbol(self):
+        """Catches enabled V2 publication crossing the BTC-only experiment boundary."""
+        engine, bus = self._build_engine_with_plugins(ARCStrategyConfig(emit_decision_snapshots_v2=True))
+        snapshots = []
+        bus.subscribe("strategy.decision_snapshot.>", lambda _subject, payload: snapshots.append(payload))
+        pack = _pack(symbol="ETHUSDT_PERP")
+        state = _state()
+        state.symbol = "ETHUSDT_PERP"
+
+        engine.prime_indicator(pack)
+        engine.prime_state(state)
+
+        self.assertEqual(snapshots, [])
+
+    def test_v2_snapshot_does_not_reuse_stale_plugin_alpha_context(self):
+        """Catches an exit-only bar inheriting raw alpha from an earlier cutoff."""
+        engine, bus = self._build_engine_with_plugins(ARCStrategyConfig(emit_decision_snapshots_v2=True))
+        snapshots = []
+        bus.subscribe("strategy.decision_snapshot.>", lambda _subject, payload: snapshots.append(payload))
+        pack = _pack()
+        state = _state(direction_signal=1.0)
+        engine._plugin_signal_context[(pack.symbol, pack.timeframe)] = {
+            "cutoff_time_ns": 0,
+            "effective_direction": -0.7,
+            "signal_confidence": 0.9,
+        }
+
+        target = _target(qty=1.0)
+        engine._publish_decision_snapshot_if_enabled(pack, state, _playbook(), target)
+        bus.publish(
+            "risk.overlay.decision",
+            RiskOverlayDecision(
+                symbol=target.symbol,
+                cutoff_time_ns=target.cutoff_time_ns,
+                original_target_qty=target.target_qty,
+                revised_target_qty=target.target_qty,
+                lev_cap=2.5,
+                reduce_only=target.reduce_only,
+                flags=["OK"],
+                portfolio=target.portfolio,
+                timeframe=target.timeframe,
+                original_intent_id=target.intent_id,
+                original_target_hash=target_position_hash(target),
+                revised_target_hash=target_position_hash(target),
+            ),
+        )
+        bus.publish("intent.target_position.final.BTCUSDT_PERP", target)
+
+        self.assertEqual(len(snapshots), 1)
+        self.assertEqual(snapshots[0].alpha_direction, 1.0)
+        self.assertEqual(snapshots[0].alpha_raw_score, 1.0)
+        self.assertEqual(snapshots[0].alpha_confidence, 0.8)
+
+    def test_v2_snapshot_is_published_only_after_risk_and_binds_final_target(self):
+        """Catches the snapshot identity approving a pre-risk strategy quantity."""
+        if not PROFILE_PATH.exists():
+            self.skipTest("default.toml not found")
+        _, registry = build_from_profile(PROFILE_PATH, plugin_root=PLUGIN_ROOT)
+        bus = _strategy_bus()
+        risk = RiskOverlay(
+            bus,
+            RiskOverlayConfig(starting_equity=100_000.0, max_leverage=0.1),
+        )
+        engine = ARCStrategyEngine(
+            bus=bus,
+            config=ARCStrategyConfig(emit_decision_snapshots_v2=True),
+            plugin_registry=registry,
+        )
+        pack = _pack(last_price=60_000.0)
+        state = _state()
+        requested = _target(qty=2.0)
+        final_targets = []
+        risk_decisions = []
+        snapshots = []
+        bus.subscribe("intent.target_position.final.>", lambda _subject, payload: final_targets.append(payload))
+        bus.subscribe("risk.overlay.decision", lambda _subject, payload: risk_decisions.append(payload))
+        bus.subscribe("strategy.decision_snapshot.4h.>", lambda _subject, payload: snapshots.append(payload))
+        risk.prime_indicator(pack)
+
+        engine._publish_decision_snapshot_if_enabled(pack, state, _playbook(), requested)
+        self.assertEqual(snapshots, [])
+        bus.publish("intent.target_position.arc.BTCUSDT_PERP", requested)
+
+        self.assertEqual(len(final_targets), 1)
+        self.assertEqual(len(snapshots), 1)
+        self.assertNotEqual(final_targets[0].target_qty, requested.target_qty)
+        self.assertEqual(snapshots[0].target_qty, final_targets[0].target_qty)
+        self.assertEqual(snapshots[0].target_leverage, final_targets[0].target_leverage)
+        self.assertEqual(snapshots[0].reduce_only, final_targets[0].reduce_only)
+        self.assertEqual(snapshots[0].exposure_cap, risk_decisions[0].lev_cap)
+
+    def test_v2_snapshot_rejects_final_subject_without_risk_decision(self):
+        """Catches a caller bypassing the risk overlay by spoofing a final target."""
+        engine, bus = self._build_engine_with_plugins(ARCStrategyConfig(emit_decision_snapshots_v2=True))
+        snapshots = []
+        target = _target(qty=1.0)
+        bus.subscribe("strategy.decision_snapshot.>", lambda _subject, payload: snapshots.append(payload))
+
+        engine._publish_decision_snapshot_if_enabled(_pack(), _state(), _playbook(), target)
+        bus.publish("intent.target_position.final.BTCUSDT_PERP", target)
+
+        self.assertEqual(snapshots, [])
+
+    def test_v2_snapshot_rejects_final_target_mismatching_risk_decision(self):
+        """Catches a final event reusing a real risk decision for another quantity."""
+        engine, bus = self._build_engine_with_plugins(ARCStrategyConfig(emit_decision_snapshots_v2=True))
+        snapshots = []
+        target = _target(qty=1.0)
+        bus.subscribe("strategy.decision_snapshot.>", lambda _subject, payload: snapshots.append(payload))
+        engine._publish_decision_snapshot_if_enabled(_pack(), _state(), _playbook(), target)
+        bus.publish(
+            "risk.overlay.decision",
+            RiskOverlayDecision(
+                symbol=target.symbol,
+                cutoff_time_ns=target.cutoff_time_ns,
+                original_target_qty=target.target_qty,
+                revised_target_qty=0.5,
+                lev_cap=0.5,
+                reduce_only=True,
+                flags=["KILL_SWITCH"],
+                portfolio=target.portfolio,
+                timeframe=target.timeframe,
+                original_intent_id=target.intent_id,
+            ),
+        )
+
+        bus.publish("intent.target_position.final.BTCUSDT_PERP", target)
+
+        self.assertEqual(snapshots, [])
+
+    def test_v2_snapshot_rejects_risk_decision_for_wrong_original_target(self):
+        """Catches risk authorization detached from the staged strategy intent."""
+        engine, bus = self._build_engine_with_plugins(ARCStrategyConfig(emit_decision_snapshots_v2=True))
+        snapshots = []
+        target = _target(qty=1.0)
+        bus.subscribe("strategy.decision_snapshot.>", lambda _subject, payload: snapshots.append(payload))
+        engine._publish_decision_snapshot_if_enabled(_pack(), _state(), _playbook(), target)
+        bus.publish(
+            "risk.overlay.decision",
+            RiskOverlayDecision(
+                symbol=target.symbol,
+                cutoff_time_ns=target.cutoff_time_ns,
+                original_target_qty=999.0,
+                revised_target_qty=target.target_qty,
+                lev_cap=target.target_leverage,
+                reduce_only=target.reduce_only,
+                flags=["OK"],
+                portfolio=target.portfolio,
+                timeframe=target.timeframe,
+                original_intent_id=target.intent_id,
+            ),
+        )
+
+        bus.publish("intent.target_position.final.BTCUSDT_PERP", target)
+
+        self.assertEqual(snapshots, [])
+
+    def test_v2_snapshot_rejects_wrong_portfolio_risk_authority(self):
+        engine, bus = self._build_engine_with_plugins(ARCStrategyConfig(emit_decision_snapshots_v2=True))
+        target = _target(qty=1.0)
+        engine._publish_decision_snapshot_if_enabled(_pack(), _state(), _playbook(), target)
+
+        bus.publish(
+            "risk.overlay.decision",
+            RiskOverlayDecision(
+                symbol=target.symbol,
+                cutoff_time_ns=target.cutoff_time_ns,
+                original_target_qty=target.target_qty,
+                revised_target_qty=target.target_qty,
+                lev_cap=target.target_leverage,
+                reduce_only=target.reduce_only,
+                flags=["OK"],
+                portfolio="research",
+                timeframe=target.timeframe,
+                original_intent_id=target.intent_id,
+            ),
+        )
+
+        self.assertEqual(engine._risk_final_decisions, {})
+
+    def test_v2_snapshot_consumes_duplicate_final_authority_once(self):
+        engine, bus = self._build_engine_with_plugins(ARCStrategyConfig(emit_decision_snapshots_v2=True))
+        snapshots = []
+        target = _target(qty=1.0)
+        bus.subscribe("strategy.decision_snapshot.>", lambda _subject, payload: snapshots.append(payload))
+        engine._publish_decision_snapshot_if_enabled(_pack(), _state(), _playbook(), target)
+        decision = RiskOverlayDecision(
+            symbol=target.symbol,
+            cutoff_time_ns=target.cutoff_time_ns,
+            original_target_qty=target.target_qty,
+            revised_target_qty=target.target_qty,
+            lev_cap=target.target_leverage,
+            reduce_only=target.reduce_only,
+            flags=["OK"],
+            portfolio=target.portfolio,
+            timeframe=target.timeframe,
+            original_intent_id=target.intent_id,
+            original_target_hash=target_position_hash(target),
+            revised_target_hash=target_position_hash(target),
+        )
+        bus.publish("risk.overlay.decision", decision)
+
+        bus.publish("intent.target_position.final.BTCUSDT_PERP", target)
+        bus.publish("risk.overlay.decision", decision)
+        bus.publish("intent.target_position.final.BTCUSDT_PERP", target)
+
+        self.assertEqual(len(snapshots), 1)
+        self.assertEqual(engine._pending_decision_snapshots, {})
+        self.assertEqual(engine._risk_final_decisions, {})
+
+    def test_v2_snapshot_rejects_out_of_order_risk_decision(self):
+        engine, bus = self._build_engine_with_plugins(ARCStrategyConfig(emit_decision_snapshots_v2=True))
+        old_target = _target(qty=1.0, cutoff_time_ns=1)
+        new_target = _target(qty=0.5, cutoff_time_ns=2)
+        engine._publish_decision_snapshot_if_enabled(_pack(), _state(), _playbook(), old_target)
+        new_pack = _pack()
+        new_pack.cutoff_time_ns = 2
+        new_state = _state()
+        new_state.cutoff_time_ns = 2
+        new_playbook = _playbook()
+        new_playbook.cutoff_time_ns = 2
+        engine._publish_decision_snapshot_if_enabled(new_pack, new_state, new_playbook, new_target)
+
+        bus.publish(
+            "risk.overlay.decision",
+            RiskOverlayDecision(
+                symbol=old_target.symbol,
+                cutoff_time_ns=old_target.cutoff_time_ns,
+                original_target_qty=old_target.target_qty,
+                revised_target_qty=old_target.target_qty,
+                lev_cap=old_target.target_leverage,
+                reduce_only=old_target.reduce_only,
+                flags=["OK"],
+                portfolio=old_target.portfolio,
+                timeframe=old_target.timeframe,
+                original_intent_id=old_target.intent_id,
+            ),
+        )
+
+        bus.publish("intent.target_position.final.BTCUSDT_PERP", old_target)
+
+        self.assertEqual(engine._risk_final_decisions, {})
 
     def test_plugin_direction_uptrend(self):
         engine, bus = self._build_engine_with_plugins()
@@ -411,6 +842,519 @@ class TestStrategyIntentConfirmation(unittest.TestCase):
         assert confirmed is not None
         self.assertIn("INTENT_CONFIRMED_4_BARS", confirmed.reason_codes)
 
+    def test_range_bear_profit_override_diagnostics_explain_no_direction(self):
+        engine = ARCStrategyEngine(
+            bus=_strategy_bus(),
+            config=ARCStrategyConfig(
+                intent_range_bear_profit_run_override_enabled=True,
+                intent_range_bear_profit_run_momentum_threshold=-0.30,
+                intent_range_bear_profit_run_max_transition_risk=0.45,
+            ),
+        )
+
+        blockers = engine._range_bear_profit_run_override_diagnostics(
+            pack=_pack(
+                timeframe=Timeframe.TF_4H,
+                momentum_roc_z=-0.20,
+                multi_momentum_z=-0.20,
+                structure_state="NEUTRAL",
+                cycle_position=1.0,
+            ),
+            state=_state(
+                regime="RANGE",
+                directional_state="TRANSITION",
+                direction_signal=0.10,
+                transition_risk=0.70,
+            ),
+            playbook=_playbook(playbook_id="RANGE_LIGHT"),
+        )
+
+        self.assertIn("RANGE_BEAR_PROFIT_TRANSITION_RISK", blockers)
+        self.assertIn("RANGE_BEAR_PROFIT_MOMENTUM_TOO_WEAK", blockers)
+        self.assertIn("RANGE_BEAR_PROFIT_STRUCTURE_NOT_BEARISH", blockers)
+        self.assertIn("RANGE_BEAR_PROFIT_STATE_NOT_BEARISH", blockers)
+
+    def test_range_bear_profit_override_ready_for_clean_cycle_bear_candidate(self):
+        engine = ARCStrategyEngine(
+            bus=_strategy_bus(),
+            config=ARCStrategyConfig(
+                intent_range_bear_profit_run_override_enabled=True,
+                intent_range_bear_profit_run_momentum_threshold=-0.20,
+                intent_range_bear_profit_run_max_transition_risk=0.65,
+            ),
+        )
+
+        blockers = engine._range_bear_profit_run_override_diagnostics(
+            pack=_pack(
+                timeframe=Timeframe.TF_4H,
+                momentum_roc_z=-0.15,
+                multi_momentum_z=-0.25,
+                structure_state="NEUTRAL",
+                cycle_position=0.92,
+            ),
+            state=_state(
+                regime="RANGE",
+                directional_state="TRANSITION",
+                direction_signal=-0.05,
+                transition_risk=0.50,
+            ),
+            playbook=_playbook(playbook_id="RANGE_LIGHT"),
+        )
+
+        self.assertEqual(blockers, [])
+
+    def test_range_bear_profit_override_blocks_high_vol_panic_exhaustion(self):
+        engine = ARCStrategyEngine(
+            bus=_strategy_bus(),
+            config=ARCStrategyConfig(
+                intent_range_bear_profit_run_override_enabled=True,
+                intent_range_bear_profit_run_momentum_threshold=-0.20,
+                intent_range_bear_profit_run_max_transition_risk=0.65,
+                intent_range_bear_profit_panic_exhaustion_veto_enabled=True,
+                intent_range_bear_profit_panic_exhaustion_momentum_threshold=-0.85,
+                intent_range_bear_profit_panic_exhaustion_transition_ceiling=0.48,
+            ),
+        )
+
+        blockers = engine._range_bear_profit_run_override_diagnostics(
+            pack=_pack(
+                timeframe=Timeframe.TF_4H,
+                momentum_roc_z=-0.95,
+                multi_momentum_z=-0.95,
+                structure_state="DOWNTREND",
+                cycle_position=0.92,
+            ),
+            state=_state(
+                regime="RANGE",
+                directional_state="DOWNTREND",
+                direction_signal=-0.35,
+                transition_risk=0.40,
+                volatility_state="HIGH",
+            ),
+            playbook=_playbook(playbook_id="RANGE_LIGHT"),
+        )
+
+        self.assertEqual(blockers, ["RANGE_BEAR_PROFIT_PANIC_EXHAUSTION"])
+
+    def test_range_bull_profit_override_diagnostics_explain_no_direction(self):
+        engine = ARCStrategyEngine(
+            bus=_strategy_bus(),
+            config=ARCStrategyConfig(
+                intent_range_bull_profit_run_override_enabled=True,
+                intent_range_bull_profit_run_momentum_threshold=0.30,
+                intent_range_bull_profit_run_max_transition_risk=0.45,
+            ),
+        )
+
+        blockers = engine._range_bull_profit_run_override_diagnostics(
+            pack=_pack(
+                timeframe=Timeframe.TF_4H,
+                momentum_roc_z=0.20,
+                multi_momentum_z=0.20,
+                structure_state="NEUTRAL",
+                cycle_position=0.95,
+            ),
+            state=_state(
+                regime="RANGE",
+                directional_state="TRANSITION",
+                direction_signal=-0.10,
+                transition_risk=0.70,
+            ),
+            playbook=_playbook(playbook_id="RANGE_LIGHT"),
+        )
+
+        self.assertIn("RANGE_BULL_PROFIT_TRANSITION_RISK", blockers)
+        self.assertIn("RANGE_BULL_PROFIT_MOMENTUM_TOO_WEAK", blockers)
+        self.assertIn("RANGE_BULL_PROFIT_STRUCTURE_NOT_BULLISH", blockers)
+        self.assertIn("RANGE_BULL_PROFIT_STATE_NOT_BULLISH", blockers)
+
+    def test_range_bull_profit_override_ready_for_clean_cycle_bull_candidate(self):
+        engine = ARCStrategyEngine(
+            bus=_strategy_bus(),
+            config=ARCStrategyConfig(
+                intent_range_bull_profit_run_override_enabled=True,
+                intent_range_bull_profit_run_direction_signal=0.20,
+                intent_range_bull_profit_run_momentum_threshold=0.15,
+                intent_range_bull_profit_run_confidence_floor=0.50,
+                intent_range_bull_profit_run_max_transition_risk=0.55,
+            ),
+        )
+
+        self.assertTrue(
+            engine._range_bull_profit_run_override_ready(
+                pack=_pack(
+                    momentum_roc_z=0.10,
+                    multi_momentum_z=0.25,
+                    structure_state="UPTREND",
+                    cycle_position=1.05,
+                ),
+                state=_state(
+                    regime="RANGE",
+                    directional_state="UPTREND",
+                    transition_risk=0.35,
+                    direction_signal=0.25,
+                ),
+                playbook=_playbook(playbook_id="RANGE_LIGHT"),
+            )
+        )
+        self.assertFalse(
+            engine._range_bull_profit_run_override_ready(
+                pack=_pack(
+                    momentum_roc_z=0.10,
+                    multi_momentum_z=0.25,
+                    structure_state="UPTREND",
+                    cycle_position=1.05,
+                ),
+                state=_state(
+                    regime="RANGE",
+                    directional_state="TRANSITION",
+                    transition_risk=0.35,
+                    direction_signal=0.25,
+                ),
+                playbook=_playbook(playbook_id="RANGE_LIGHT"),
+            )
+        )
+        self.assertFalse(
+            engine._range_bull_profit_run_override_ready(
+                pack=_pack(
+                    momentum_roc_z=0.35,
+                    multi_momentum_z=0.40,
+                    structure_state="UPTREND",
+                    cycle_position=1.05,
+                ),
+                state=_state(
+                    regime="RANGE",
+                    directional_state="DOWNTREND",
+                    transition_risk=0.35,
+                    direction_signal=0.10,
+                ),
+                playbook=_playbook(playbook_id="RANGE_LIGHT"),
+            )
+        )
+        self.assertFalse(
+            engine._range_bull_profit_run_override_ready(
+                pack=_pack(
+                    momentum_roc_z=0.10,
+                    multi_momentum_z=0.25,
+                    structure_state="NEUTRAL",
+                    cycle_position=1.05,
+                ),
+                state=_state(
+                    regime="RANGE",
+                    directional_state="TRANSITION",
+                    transition_risk=0.35,
+                    direction_signal=0.0,
+                ),
+                playbook=_playbook(playbook_id="RANGE_LIGHT"),
+            )
+        )
+
+    def test_transition_rebound_sleeve_caps_non_uptrend_profit_run(self):
+        engine = ARCStrategyEngine(
+            bus=_strategy_bus(),
+            config=ARCStrategyConfig(
+                intent_transition_rebound_sleeve_enabled=True,
+                intent_transition_rebound_sleeve_max_leverage=0.35,
+                intent_transition_rebound_sleeve_uptrend_confidence_floor=0.55,
+            ),
+        )
+        reason_codes = ["REGIME_RANGE", "multi_momentum_signal:MULTI_MOM_RANGE_BULL_PROFIT_RUN"]
+
+        leverage = engine._apply_transition_rebound_sleeve(
+            direction=1.0,
+            target_leverage=1.20,
+            state=_state(regime="RANGE", directional_state="TRANSITION", direction_signal=0.10),
+            reason_codes=reason_codes,
+        )
+
+        self.assertEqual(leverage, 0.35)
+        self.assertIn("TRANSITION_REBOUND_SLEEVE", reason_codes)
+        self.assertIn("TRANSITION_REBOUND_LEVERAGE_CAP", reason_codes)
+
+    def test_transition_rebound_sleeve_does_not_cap_confirmed_uptrend(self):
+        engine = ARCStrategyEngine(
+            bus=_strategy_bus(),
+            config=ARCStrategyConfig(
+                intent_transition_rebound_sleeve_enabled=True,
+                intent_transition_rebound_sleeve_max_leverage=0.35,
+                intent_transition_rebound_sleeve_uptrend_confidence_floor=0.55,
+            ),
+        )
+        reason_codes = ["REGIME_RANGE", "MULTI_MOM_RANGE_BULL_PROFIT_RUN"]
+
+        leverage = engine._apply_transition_rebound_sleeve(
+            direction=1.0,
+            target_leverage=1.20,
+            state=_state(regime="RANGE", directional_state="UPTREND", direction_signal=0.60),
+            reason_codes=reason_codes,
+        )
+
+        self.assertEqual(leverage, 1.20)
+        self.assertNotIn("TRANSITION_REBOUND_SLEEVE", reason_codes)
+
+    def test_transition_rebound_sleeve_bypasses_time_leverage_flip_hold(self):
+        engine = ARCStrategyEngine(
+            bus=_strategy_bus(),
+            config=ARCStrategyConfig(
+                intent_time_leverage_hold_enabled=True,
+                intent_time_leverage_min_hold_bars=100,
+            ),
+        )
+        engine._positions[("BTCUSDT_PERP", Timeframe.TF_4H)] = _position(direction=1.0)
+        reason_codes = ["TRANSITION_REBOUND_SLEEVE"]
+
+        qty, leverage = engine._apply_time_leverage_hold_guard(
+            symbol="BTCUSDT_PERP",
+            timeframe=Timeframe.TF_4H,
+            target_qty=-0.5,
+            target_leverage=0.30,
+            price=60000.0,
+            state=_state(directional_state="TRANSITION", transition_risk=0.20),
+            reason_codes=reason_codes,
+        )
+
+        self.assertEqual(qty, -0.5)
+        self.assertEqual(leverage, 0.30)
+        self.assertEqual(reason_codes, ["TRANSITION_REBOUND_SLEEVE"])
+
+    def test_transition_rebound_sleeve_caps_later_hold_until_uptrend_confirms(self):
+        engine = ARCStrategyEngine(
+            bus=_strategy_bus(),
+            config=ARCStrategyConfig(
+                intent_transition_rebound_sleeve_enabled=True,
+                intent_transition_rebound_sleeve_max_leverage=0.35,
+                intent_transition_rebound_sleeve_uptrend_confidence_floor=0.55,
+            ),
+        )
+        reason_codes = ["REGIME_RANGE", "TRANSITION_REBOUND_SLEEVE"]
+
+        qty, leverage = engine._apply_transition_rebound_lifecycle_cap(
+            symbol="BTCUSDT_PERP",
+            timeframe=Timeframe.TF_4H,
+            target_qty=1.0,
+            target_leverage=0.60,
+            price=60000.0,
+            state=_state(regime="RANGE", directional_state="TRANSITION"),
+            reason_codes=reason_codes,
+        )
+
+        self.assertAlmostEqual(qty, 0.5833333333333334)
+        self.assertEqual(leverage, 0.35)
+        self.assertIn("TRANSITION_REBOUND_SLEEVE_ACTIVE", reason_codes)
+        self.assertIn("TRANSITION_REBOUND_LIFECYCLE_CAP", reason_codes)
+
+        hold_reason_codes = ["REGIME_RANGE", "HOLD_EXECUTION_POSITION"]
+        hold_qty, hold_leverage = engine._apply_transition_rebound_lifecycle_cap(
+            symbol="BTCUSDT_PERP",
+            timeframe=Timeframe.TF_4H,
+            target_qty=1.0,
+            target_leverage=0.60,
+            price=60000.0,
+            state=_state(regime="RANGE", directional_state="TRANSITION"),
+            reason_codes=hold_reason_codes,
+        )
+
+        self.assertAlmostEqual(hold_qty, 0.5833333333333334)
+        self.assertEqual(hold_leverage, 0.35)
+        self.assertIn("TRANSITION_REBOUND_SLEEVE_ACTIVE", hold_reason_codes)
+
+        uptrend_reason_codes = ["REGIME_TREND", "HOLD_EXECUTION_POSITION"]
+        uptrend_qty, uptrend_leverage = engine._apply_transition_rebound_lifecycle_cap(
+            symbol="BTCUSDT_PERP",
+            timeframe=Timeframe.TF_4H,
+            target_qty=1.0,
+            target_leverage=0.60,
+            price=60000.0,
+            state=_state(regime="TREND", directional_state="UPTREND"),
+            reason_codes=uptrend_reason_codes,
+        )
+
+        self.assertEqual(uptrend_qty, 1.0)
+        self.assertEqual(uptrend_leverage, 0.60)
+        self.assertNotIn("TRANSITION_REBOUND_SLEEVE_ACTIVE", uptrend_reason_codes)
+
+    def test_transition_rebound_sleeve_caps_execution_hold_target(self):
+        engine = ARCStrategyEngine(
+            bus=_strategy_bus(),
+            config=ARCStrategyConfig(
+                intent_transition_rebound_sleeve_enabled=True,
+                intent_transition_rebound_sleeve_max_leverage=0.35,
+            ),
+        )
+        key = ("BTCUSDT_PERP", Timeframe.TF_4H)
+        engine._transition_rebound_sleeve_positions.add(key)
+
+        target = engine._build_execution_hold_or_exit(
+            pack=_pack(last_price=60000.0),
+            state=_state(regime="RANGE", directional_state="TRANSITION"),
+            playbook=_playbook(playbook_id="RANGE_LIGHT"),
+            position=_position(direction=1.0),
+        )
+
+        self.assertIsNotNone(target)
+        assert target is not None
+        self.assertAlmostEqual(target.target_qty, 0.583333)
+        self.assertEqual(target.target_leverage, 0.35)
+        self.assertIn("HOLD_EXECUTION_POSITION", target.reason_codes)
+        self.assertIn("TRANSITION_REBOUND_SLEEVE_ACTIVE", target.reason_codes)
+        self.assertIn("TRANSITION_REBOUND_LIFECYCLE_CAP", target.reason_codes)
+
+    def test_confirmed_downtrend_long_cap_flattens_long_target(self):
+        bus = _strategy_bus()
+        audit_events = []
+        bus.subscribe("strategy.confirmed_downtrend_long_cap.>", lambda _subject, payload: audit_events.append(payload))
+        engine = ARCStrategyEngine(
+            bus=bus,
+            config=ARCStrategyConfig(
+                intent_confirmed_downtrend_long_cap_enabled=True,
+                intent_confirmed_downtrend_long_cap_max_leverage=0.0,
+                intent_confirmed_downtrend_long_cap_confidence_floor=0.65,
+                intent_confirmed_downtrend_long_cap_direction_signal_ceiling=-0.20,
+            ),
+        )
+        reason_codes: list[str] = []
+
+        qty, leverage = engine._apply_confirmed_downtrend_long_cap(
+            symbol="BTCUSDT_PERP",
+            timeframe=Timeframe.TF_4H,
+            target_qty=1.0,
+            target_leverage=0.60,
+            price=60000.0,
+            state=_state(directional_state="DOWNTREND", direction_signal=-0.50),
+            reason_codes=reason_codes,
+        )
+
+        self.assertEqual(qty, 0.0)
+        self.assertEqual(leverage, 0.0)
+        self.assertIn("CONFIRMED_DOWNTREND_LONG_CAP_ACTIVE", reason_codes)
+        self.assertIn("CONFIRMED_DOWNTREND_LONG_CAP", reason_codes)
+        self.assertIn("CONFIRMED_DOWNTREND_LONG_FLATTEN", reason_codes)
+        self.assertEqual(audit_events[-1]["max_leverage"], 0.0)
+
+    def test_confirmed_downtrend_long_cap_caps_execution_hold_target(self):
+        engine = ARCStrategyEngine(
+            bus=_strategy_bus(),
+            config=ARCStrategyConfig(
+                intent_confirmed_downtrend_long_cap_enabled=True,
+                intent_confirmed_downtrend_long_cap_max_leverage=0.10,
+                intent_confirmed_downtrend_long_cap_confidence_floor=0.65,
+                intent_confirmed_downtrend_long_cap_direction_signal_ceiling=-0.20,
+            ),
+        )
+
+        target = engine._build_execution_hold_or_exit(
+            pack=_pack(last_price=60000.0),
+            state=_state(regime="TREND", directional_state="DOWNTREND", direction_signal=-0.50),
+            playbook=_playbook(playbook_id="BEAR_DEFENSE"),
+            position=_position(direction=1.0),
+        )
+
+        self.assertIsNotNone(target)
+        assert target is not None
+        self.assertAlmostEqual(target.target_qty, 0.166667)
+        self.assertEqual(target.target_leverage, 0.1)
+        self.assertIn("HOLD_EXECUTION_POSITION", target.reason_codes)
+        self.assertIn("CONFIRMED_DOWNTREND_LONG_CAP_ACTIVE", target.reason_codes)
+        self.assertIn("CONFIRMED_DOWNTREND_LONG_CAP", target.reason_codes)
+
+    def test_confirmed_downtrend_long_cap_ignores_short_and_unconfirmed_downtrend(self):
+        engine = ARCStrategyEngine(
+            bus=_strategy_bus(),
+            config=ARCStrategyConfig(
+                intent_confirmed_downtrend_long_cap_enabled=True,
+                intent_confirmed_downtrend_long_cap_max_leverage=0.0,
+                intent_confirmed_downtrend_long_cap_confidence_floor=0.85,
+                intent_confirmed_downtrend_long_cap_direction_signal_ceiling=-0.20,
+            ),
+        )
+        short_reasons: list[str] = []
+
+        short_qty, short_leverage = engine._apply_confirmed_downtrend_long_cap(
+            symbol="BTCUSDT_PERP",
+            timeframe=Timeframe.TF_4H,
+            target_qty=-1.0,
+            target_leverage=0.60,
+            price=60000.0,
+            state=_state(directional_state="DOWNTREND", direction_signal=-0.50),
+            reason_codes=short_reasons,
+        )
+
+        self.assertEqual(short_qty, -1.0)
+        self.assertEqual(short_leverage, 0.60)
+        self.assertEqual(short_reasons, [])
+
+        long_reasons: list[str] = []
+        long_qty, long_leverage = engine._apply_confirmed_downtrend_long_cap(
+            symbol="BTCUSDT_PERP",
+            timeframe=Timeframe.TF_4H,
+            target_qty=1.0,
+            target_leverage=0.60,
+            price=60000.0,
+            state=_state(directional_state="DOWNTREND", direction_signal=-0.50),
+            reason_codes=long_reasons,
+        )
+
+        self.assertEqual(long_qty, 1.0)
+        self.assertEqual(long_leverage, 0.60)
+        self.assertEqual(long_reasons, [])
+
+    def test_confirmed_downtrend_long_cap_ignores_positive_direction_signal(self):
+        engine = ARCStrategyEngine(
+            bus=_strategy_bus(),
+            config=ARCStrategyConfig(
+                intent_confirmed_downtrend_long_cap_enabled=True,
+                intent_confirmed_downtrend_long_cap_max_leverage=0.0,
+                intent_confirmed_downtrend_long_cap_confidence_floor=0.65,
+                intent_confirmed_downtrend_long_cap_direction_signal_ceiling=-0.20,
+            ),
+        )
+        reason_codes: list[str] = []
+
+        qty, leverage = engine._apply_confirmed_downtrend_long_cap(
+            symbol="BTCUSDT_PERP",
+            timeframe=Timeframe.TF_4H,
+            target_qty=1.0,
+            target_leverage=0.60,
+            price=60000.0,
+            state=_state(directional_state="DOWNTREND", direction_signal=0.10),
+            reason_codes=reason_codes,
+        )
+
+        self.assertEqual(qty, 1.0)
+        self.assertEqual(leverage, 0.60)
+        self.assertEqual(reason_codes, [])
+
+    def test_range_bear_profit_confirmed_bear_transition_override_allows_high_transition(self):
+        engine = ARCStrategyEngine(
+            bus=_strategy_bus(),
+            config=ARCStrategyConfig(
+                intent_range_bear_profit_run_override_enabled=True,
+                intent_range_bear_profit_run_momentum_threshold=-0.30,
+                intent_range_bear_profit_run_max_transition_risk=0.45,
+                intent_range_bear_profit_confirmed_bear_transition_override_enabled=True,
+                intent_range_bear_profit_confirmed_bear_max_transition_risk=0.75,
+            ),
+        )
+
+        blockers = engine._range_bear_profit_run_override_diagnostics(
+            pack=_pack(
+                timeframe=Timeframe.TF_4H,
+                momentum_roc_z=-0.35,
+                multi_momentum_z=-0.40,
+                structure_state="DOWNTREND",
+                cycle_position=0.90,
+            ),
+            state=_state(
+                regime="RANGE",
+                directional_state="DOWNTREND",
+                direction_signal=-0.10,
+                transition_risk=0.70,
+            ),
+            playbook=_playbook(playbook_id="RANGE_LIGHT"),
+        )
+
+        self.assertEqual(blockers, [])
+
     def test_bearish_override_chop_guard_blocks_noisy_transition_pending_entry(self):
         bus = _strategy_bus()
         audit_events = []
@@ -533,6 +1477,304 @@ class TestStrategyIntentConfirmation(unittest.TestCase):
         self.assertEqual(audit_events[-1]["reason"], "INTENT_RANGE_ENTRY_CONFIRMATION_PENDING")
         self.assertEqual(audit_events[-1]["bars"], 5)
         self.assertEqual(audit_events[-1]["required_bars"], 6)
+
+    def test_range_bear_profit_entry_confirmation_can_override_generic_range_delay(self):
+        bus = _strategy_bus()
+        audit_events = []
+        bus.subscribe(
+            "strategy.intent_range_entry_confirmation.>",
+            lambda _subject, payload: audit_events.append(payload),
+        )
+        engine = ARCStrategyEngine(
+            bus=bus,
+            config=ARCStrategyConfig(
+                execution_timeframe=Timeframe.TF_1H,
+                intent_range_entry_confirmation_bars=6,
+                intent_range_bear_profit_entry_confirmation_bars=0,
+            ),
+        )
+        pending = _target(qty=-1.0, cutoff_time_ns=0)
+        pending.reason_codes[:] = ["REGIME_RANGE", "STATE_RANGE_BEAR_PROFIT_RUN_OVERRIDE", "TREND_SHORT"]
+
+        ready = engine._range_entry_confirmation_ready(
+            pending=pending,
+            symbol="BTCUSDT_PERP",
+            timeframe=Timeframe.TF_1H,
+            bars_waited=0,
+            cutoff_time_ns=1,
+        )
+
+        self.assertTrue(ready)
+        self.assertEqual(audit_events, [])
+
+    def test_5m_context_promotion_audit_records_weak_1h_score(self):
+        bus = _strategy_bus()
+        audit_events = []
+        bus.subscribe("strategy.intent_promotion.>", lambda _subject, payload: audit_events.append(payload))
+        engine = ARCStrategyEngine(
+            bus=bus,
+            config=ARCStrategyConfig(execution_timeframe=Timeframe.TF_5M),
+        )
+        pending = _target(qty=-1.0, cutoff_time_ns=0)
+        pending.reason_codes[:] = ["REGIME_RANGE", "STATE_RANGE_BEAR_PROFIT_RUN_OVERRIDE", "TREND_SHORT"]
+        engine._pending_4h_target["BTCUSDT_PERP"] = pending
+        engine._pending_4h_bars["BTCUSDT_PERP"] = 0
+        engine.prime_indicator(_pack(timeframe=Timeframe.TF_1H, momentum_roc_z=0.02))
+        state = _state(regime="RANGE", directional_state="DOWNTREND")
+        state.timeframe = Timeframe.TF_1H
+
+        engine._stage_5m_entry(state)
+
+        self.assertEqual(audit_events[-1]["reason"], "1H_CONTEXT_SCORE_TOO_WEAK")
+        self.assertEqual(audit_events[-1]["stage"], "1h_context")
+        self.assertEqual(audit_events[-1]["pending_direction"], -1.0)
+        self.assertIn("STATE_RANGE_BEAR_PROFIT_RUN_OVERRIDE", audit_events[-1]["pending_reason_codes"])
+
+    def test_1h_entry_rejects_no_direction_pending_without_short_scoring(self):
+        bus = _strategy_bus()
+        audit_events = []
+        bus.subscribe("strategy.intent_promotion.>", lambda _subject, payload: audit_events.append(payload))
+        engine = ARCStrategyEngine(
+            bus=bus,
+            config=ARCStrategyConfig(execution_timeframe=Timeframe.TF_1H),
+        )
+        pending = _target(qty=0.0, cutoff_time_ns=0)
+        pending.reason_codes[:] = ["REGIME_RANGE", "PLAYBOOK_RANGE_LIGHT", "NO_DIRECTION"]
+        engine._pending_4h_target["BTCUSDT_PERP"] = pending
+        engine._pending_4h_bars["BTCUSDT_PERP"] = 0
+        state = _state(regime="RANGE", directional_state="DOWNTREND")
+        state.timeframe = Timeframe.TF_1H
+
+        self.assertIsNone(engine._try_1h_entry(state))
+
+        self.assertEqual(audit_events[-1]["reason"], "1H_PENDING_NO_DIRECTION")
+        self.assertEqual(audit_events[-1]["pending_direction"], 0.0)
+        self.assertNotIn("BTCUSDT_PERP", engine._pending_4h_target)
+
+    def test_5m_context_rejects_no_direction_pending_without_short_scoring(self):
+        bus = _strategy_bus()
+        audit_events = []
+        bus.subscribe("strategy.intent_promotion.>", lambda _subject, payload: audit_events.append(payload))
+        engine = ARCStrategyEngine(
+            bus=bus,
+            config=ARCStrategyConfig(execution_timeframe=Timeframe.TF_5M),
+        )
+        pending = _target(qty=0.0, cutoff_time_ns=0)
+        pending.reason_codes[:] = ["REGIME_RANGE", "PLAYBOOK_RANGE_LIGHT", "NO_DIRECTION"]
+        engine._pending_4h_target["BTCUSDT_PERP"] = pending
+        engine._pending_4h_bars["BTCUSDT_PERP"] = 0
+        state = _state(regime="RANGE", directional_state="DOWNTREND")
+        state.timeframe = Timeframe.TF_1H
+
+        engine._stage_5m_entry(state)
+
+        self.assertEqual(audit_events[-1]["reason"], "1H_PENDING_NO_DIRECTION")
+        self.assertEqual(audit_events[-1]["pending_direction"], 0.0)
+        self.assertNotIn("BTCUSDT_PERP", engine._pending_4h_target)
+        self.assertNotIn("BTCUSDT_PERP", engine._pending_1h_target)
+
+    def test_5m_timing_rejects_no_direction_pending_without_short_scoring(self):
+        bus = _strategy_bus()
+        audit_events = []
+        bus.subscribe("strategy.intent_promotion.>", lambda _subject, payload: audit_events.append(payload))
+        engine = ARCStrategyEngine(
+            bus=bus,
+            config=ARCStrategyConfig(execution_timeframe=Timeframe.TF_5M),
+        )
+        pending = _target(qty=0.0, cutoff_time_ns=0)
+        pending.reason_codes[:] = ["REGIME_RANGE", "PLAYBOOK_RANGE_LIGHT", "NO_DIRECTION", "1H_CONTEXT_CONFIRMED"]
+        engine._pending_1h_target["BTCUSDT_PERP"] = pending
+        engine._pending_1h_bars["BTCUSDT_PERP"] = 0
+        state = _state(regime="RANGE", directional_state="DOWNTREND")
+        state.timeframe = Timeframe.TF_5M
+
+        self.assertIsNone(engine._try_5m_entry_exit(state))
+
+        self.assertEqual(audit_events[-1]["reason"], "5M_PENDING_NO_DIRECTION")
+        self.assertEqual(audit_events[-1]["pending_direction"], 0.0)
+        self.assertNotIn("BTCUSDT_PERP", engine._pending_1h_target)
+
+    def test_5m_context_uses_relaxed_range_bear_profit_score_threshold(self):
+        bus = _strategy_bus()
+        audit_events = []
+        bus.subscribe("strategy.intent_promotion.>", lambda _subject, payload: audit_events.append(payload))
+        engine = ARCStrategyEngine(
+            bus=bus,
+            config=ARCStrategyConfig(
+                execution_timeframe=Timeframe.TF_5M,
+                intent_range_bear_profit_context_score_threshold=0.35,
+            ),
+        )
+        pending = _target(qty=-1.0, cutoff_time_ns=0)
+        pending.reason_codes[:] = ["REGIME_RANGE", "PLAYBOOK_RANGE_LIGHT", "PLAYBOOK_ALLOW_BOTH", "TREND_SHORT"]
+        engine._pending_4h_target["BTCUSDT_PERP"] = pending
+        engine._pending_4h_bars["BTCUSDT_PERP"] = 0
+        context_pack = _pack(timeframe=Timeframe.TF_1H, cvd_slope=0.0)
+        context_pack.values["momentum_roc"] = 0.0
+        context_pack.values["structure_break"] = -1.0
+        engine.prime_indicator(context_pack)
+        state = _state(regime="RANGE", directional_state="DOWNTREND")
+        state.timeframe = Timeframe.TF_1H
+
+        engine._stage_5m_entry(state)
+
+        self.assertEqual(audit_events[-1]["reason"], "1H_CONTEXT_CONFIRMED")
+        self.assertEqual(audit_events[-1]["entry_score"], 0.4)
+        self.assertEqual(audit_events[-1]["entry_score_threshold"], 0.35)
+        self.assertIn("BTCUSDT_PERP", engine._pending_1h_target)
+
+    def test_5m_timing_uses_relaxed_range_bear_profit_score_threshold(self):
+        bus = _strategy_bus()
+        audit_events = []
+        target_events = []
+        bus.subscribe("strategy.intent_promotion.>", lambda _subject, payload: audit_events.append(payload))
+        bus.subscribe(
+            "intent.target_position.arc.BTCUSDT_PERP", lambda _subject, payload: target_events.append(payload)
+        )
+        engine = ARCStrategyEngine(
+            bus=bus,
+            config=ARCStrategyConfig(
+                execution_timeframe=Timeframe.TF_5M,
+                intent_range_bear_profit_timing_score_threshold=0.30,
+            ),
+        )
+        pending = _target(qty=-1.0, cutoff_time_ns=0)
+        pending.reason_codes[:] = [
+            "REGIME_RANGE",
+            "PLAYBOOK_RANGE_LIGHT",
+            "PLAYBOOK_ALLOW_BOTH",
+            "TREND_SHORT",
+            "1H_CONTEXT_CONFIRMED",
+        ]
+        engine._pending_1h_target["BTCUSDT_PERP"] = pending
+        engine._pending_1h_bars["BTCUSDT_PERP"] = 0
+        timing_pack = _pack(timeframe=Timeframe.TF_5M, cvd_slope=0.0)
+        timing_pack.values["momentum_roc"] = 0.01
+        timing_pack.values["structure_break"] = 0.0
+        engine.prime_indicator(timing_pack)
+        state = _state(regime="RANGE", directional_state="DOWNTREND")
+        state.timeframe = Timeframe.TF_5M
+
+        executed = engine._try_5m_entry_exit(state)
+
+        self.assertIsNotNone(executed)
+        self.assertEqual(audit_events[-1]["reason"], "5M_TIMING_CONFIRMED")
+        self.assertEqual(audit_events[-1]["entry_score"], 0.4)
+        self.assertEqual(audit_events[-1]["entry_score_threshold"], 0.3)
+        self.assertEqual(executed.timeframe, Timeframe.TF_5M)
+        self.assertEqual(target_events, [])
+
+    def test_5m_promotion_caps_transition_rebound_source_target(self):
+        engine = ARCStrategyEngine(
+            bus=_strategy_bus(),
+            config=ARCStrategyConfig(
+                execution_timeframe=Timeframe.TF_5M,
+                intent_transition_rebound_sleeve_enabled=True,
+                intent_transition_rebound_sleeve_max_leverage=0.35,
+            ),
+        )
+        pending = _target(qty=1.0, cutoff_time_ns=0)
+        pending.target_leverage = 0.60
+        pending.reason_codes[:] = [
+            "REGIME_RANGE",
+            "PLAYBOOK_RANGE_LIGHT",
+            "multi_momentum_signal:MULTI_MOM_RANGE_BULL_PROFIT_RUN",
+            "1H_CONTEXT_CONFIRMED",
+        ]
+        engine._pending_1h_target["BTCUSDT_PERP"] = pending
+        engine._pending_1h_bars["BTCUSDT_PERP"] = 0
+        timing_pack = _pack(timeframe=Timeframe.TF_5M, cvd_slope=0.10)
+        timing_pack.values["momentum_roc"] = -0.01
+        timing_pack.values["structure_break"] = 1.0
+        engine.prime_indicator(timing_pack)
+        state = _state(regime="RANGE", directional_state="TRANSITION")
+        state.timeframe = Timeframe.TF_5M
+
+        executed = engine._try_5m_entry_exit(state)
+
+        self.assertIsNotNone(executed)
+        assert executed is not None
+        self.assertEqual(executed.timeframe, Timeframe.TF_5M)
+        self.assertAlmostEqual(executed.target_qty, 0.583333)
+        self.assertEqual(executed.target_leverage, 0.35)
+        self.assertIn("TRANSITION_REBOUND_SLEEVE", executed.reason_codes)
+        self.assertIn("TRANSITION_REBOUND_SLEEVE_ACTIVE", executed.reason_codes)
+        self.assertIn("TRANSITION_REBOUND_LIFECYCLE_CAP", executed.reason_codes)
+        self.assertIn(("BTCUSDT_PERP", Timeframe.TF_5M), engine._transition_rebound_sleeve_positions)
+
+    def test_5m_timing_uses_relaxed_range_bull_profit_score_threshold(self):
+        engine = ARCStrategyEngine(
+            bus=_strategy_bus(),
+            config=ARCStrategyConfig(
+                execution_timeframe=Timeframe.TF_5M,
+                intent_range_bull_profit_timing_score_threshold=0.05,
+            ),
+        )
+        pending = _target(qty=1.0, cutoff_time_ns=0)
+        pending.reason_codes[:] = [
+            "REGIME_RANGE",
+            "PLAYBOOK_RANGE_LIGHT",
+            "multi_momentum_signal:MULTI_MOM_RANGE_BULL_PROFIT_RUN",
+            "1H_CONTEXT_CONFIRMED",
+        ]
+        engine._pending_1h_target["BTCUSDT_PERP"] = pending
+        engine._pending_1h_bars["BTCUSDT_PERP"] = 0
+        timing_pack = _pack(timeframe=Timeframe.TF_5M, cvd_slope=0.0)
+        timing_pack.values["momentum_roc"] = -0.01
+        timing_pack.values["structure_break"] = 0.0
+        engine.prime_indicator(timing_pack)
+        state = _state(regime="RANGE", directional_state="TRANSITION")
+        state.timeframe = Timeframe.TF_5M
+
+        executed = engine._try_5m_entry_exit(state)
+
+        self.assertIsNotNone(executed)
+        assert executed is not None
+        self.assertEqual(executed.timeframe, Timeframe.TF_5M)
+        self.assertIn("5M_TIMING_CONFIRMED", executed.reason_codes)
+
+    def test_5m_promotion_audit_records_full_success_path(self):
+        bus = _strategy_bus()
+        audit_events = []
+        target_events = []
+        bus.subscribe("strategy.intent_promotion.>", lambda _subject, payload: audit_events.append(payload))
+        bus.subscribe(
+            "intent.target_position.arc.BTCUSDT_PERP", lambda _subject, payload: target_events.append(payload)
+        )
+        engine = ARCStrategyEngine(
+            bus=bus,
+            config=ARCStrategyConfig(execution_timeframe=Timeframe.TF_5M),
+        )
+        engine.prime_indicator(_pack(timeframe=Timeframe.TF_4H))
+
+        context_pack = _pack(timeframe=Timeframe.TF_1H)
+        context_pack.values["momentum_roc"] = -0.05
+        context_pack.values["cvd_slope"] = 0.10
+        engine.prime_indicator(context_pack)
+
+        timing_pack = _pack(timeframe=Timeframe.TF_5M)
+        timing_pack.values["momentum_roc"] = -0.05
+        timing_pack.values["cvd_slope"] = 0.10
+        engine.prime_indicator(timing_pack)
+
+        state_4h = _state()
+        state_4h.timeframe = Timeframe.TF_4H
+        state_1h = _state()
+        state_1h.timeframe = Timeframe.TF_1H
+        state_5m = _state()
+        state_5m.timeframe = Timeframe.TF_5M
+
+        engine.prime_state(state_4h)
+        engine.prime_state(state_1h)
+        engine.prime_state(state_5m)
+
+        self.assertEqual(
+            [event["reason"] for event in audit_events],
+            ["4H_PENDING_STORED", "1H_CONTEXT_CONFIRMED", "5M_TIMING_CONFIRMED"],
+        )
+        self.assertTrue(target_events)
+        self.assertIn("1H_CONTEXT_CONFIRMED", target_events[-1].reason_codes)
+        self.assertIn("5M_TIMING_CONFIRMED", target_events[-1].reason_codes)
 
     def test_range_light_pending_entry_executes_after_lower_timeframe_confirmation(self):
         bus = _strategy_bus()
@@ -894,6 +2136,45 @@ class TestStrategyIntentConfirmation(unittest.TestCase):
 
         self.assertIsNone(target)
 
+    def test_time_leverage_trailing_exit_hold_allows_confirmed_downtrend_without_signal(self):
+        engine = ARCStrategyEngine(
+            bus=_strategy_bus(),
+            config=ARCStrategyConfig(
+                execution_timeframe=Timeframe.TF_5M,
+                intent_time_leverage_hold_enabled=True,
+                intent_time_leverage_min_hold_bars=100,
+                intent_time_leverage_flip_signal_threshold=0.9,
+                intent_time_leverage_confidence_floor=0.65,
+                intent_time_leverage_trailing_exit_hold_enabled=True,
+            ),
+        )
+        position = _position(direction=1.0)
+        position.timeframe = Timeframe.TF_5M
+        position.bars_held = 1
+        exit_decision = ExitDecision(
+            symbol="BTCUSDT_PERP",
+            timeframe=Timeframe.TF_5M,
+            cutoff_time_ns=1,
+            exit_type="TRAILING",
+            exit_urgency="IMMEDIATE",
+            target_reduction_pct=1.0,
+            stop_price=59000.0,
+            reason_code="TRAILING",
+            reason_detail="test",
+            reason_codes=["EXIT_TRAILING_STOP"],
+        )
+
+        target = engine._time_leverage_trailing_exit_hold_target(
+            pack=_pack(timeframe=Timeframe.TF_5M, last_price=59000.0),
+            state=_state(directional_state="DOWNTREND", direction_signal=-0.1),
+            position=position,
+            exit_decision=exit_decision,
+            price=59000.0,
+            atr=500.0,
+        )
+
+        self.assertIsNone(target)
+
     def test_time_leverage_trailing_stop_widens_for_long_bias(self):
         bus = _strategy_bus()
         audit_events = []
@@ -1213,6 +2494,260 @@ class TestStrategyIntentConfirmation(unittest.TestCase):
         self.assertEqual(qty, 0.0)
         self.assertEqual(leverage, 0.0)
         self.assertIn("TIME_LEVERAGE_SHORT_BLOCKED", reason_codes)
+
+    def test_time_leverage_bear_carry_opens_capped_base_in_confirmed_downtrend(self):
+        bus = _strategy_bus()
+        audit_events = []
+        bus.subscribe("strategy.time_leverage_long_bias.>", lambda _subject, payload: audit_events.append(payload))
+        engine = ARCStrategyEngine(
+            bus=bus,
+            config=ARCStrategyConfig(
+                intent_time_leverage_long_bias_enabled=True,
+                intent_time_leverage_bear_carry_enabled=True,
+                intent_time_leverage_bear_carry_max_leverage=0.25,
+                intent_time_leverage_bear_carry_confidence_floor=0.65,
+                intent_time_leverage_bear_carry_transition_ceiling=0.60,
+            ),
+        )
+        reason_codes: list[str] = []
+
+        qty, leverage = engine._apply_time_leverage_long_bias_guard(
+            symbol="BTCUSDT_PERP",
+            timeframe=Timeframe.TF_4H,
+            target_qty=-1.5,
+            target_leverage=0.9,
+            price=50000.0,
+            atr=500.0,
+            state=_state(directional_state="DOWNTREND", transition_risk=0.55, direction_signal=-0.8),
+            reduce_only=False,
+            reason_codes=reason_codes,
+        )
+
+        self.assertAlmostEqual(qty, 0.5)
+        self.assertEqual(leverage, 0.25)
+        self.assertIn("TIME_LEVERAGE_LONG_BIAS_ACTIVE", reason_codes)
+        self.assertIn("TIME_LEVERAGE_BEAR_CARRY_BASE", reason_codes)
+        self.assertEqual(audit_events[-1]["long_bias_source"], "confirmed_bear_carry")
+        self.assertEqual(audit_events[-1]["action"], "bear_carry_base")
+
+    def test_time_leverage_bear_carry_allows_range_bear_profit_short_when_enabled(self):
+        bus = _strategy_bus()
+        audit_events = []
+        bus.subscribe("strategy.time_leverage_long_bias.>", lambda _subject, payload: audit_events.append(payload))
+        engine = ARCStrategyEngine(
+            bus=bus,
+            config=ARCStrategyConfig(
+                intent_time_leverage_long_bias_enabled=True,
+                intent_time_leverage_bear_carry_enabled=True,
+                intent_time_leverage_bear_carry_max_leverage=0.25,
+                intent_time_leverage_bear_carry_confidence_floor=0.65,
+                intent_time_leverage_bear_carry_transition_ceiling=0.60,
+                intent_time_leverage_bear_carry_allow_range_bear_profit_short=True,
+            ),
+        )
+        reason_codes = ["STATE_RANGE_BEAR_PROFIT_RUN_OVERRIDE", "TREND_SHORT"]
+
+        qty, leverage = engine._apply_time_leverage_long_bias_guard(
+            symbol="BTCUSDT_PERP",
+            timeframe=Timeframe.TF_4H,
+            target_qty=-1.5,
+            target_leverage=0.9,
+            price=50000.0,
+            atr=500.0,
+            state=_state(directional_state="DOWNTREND", transition_risk=0.55, direction_signal=-0.8),
+            reduce_only=False,
+            reason_codes=reason_codes,
+        )
+
+        self.assertEqual(qty, -1.5)
+        self.assertEqual(leverage, 0.9)
+        self.assertIn("TIME_LEVERAGE_BEAR_CARRY_RANGE_BEAR_PROFIT_SHORT_BYPASS", reason_codes)
+        self.assertNotIn("TIME_LEVERAGE_BEAR_CARRY_BASE", reason_codes)
+        self.assertEqual(audit_events[-1]["long_bias_source"], "confirmed_bear_carry")
+        self.assertEqual(audit_events[-1]["action"], "range_bear_profit_short_bypass")
+
+    def test_time_leverage_bear_carry_caps_positive_long_target(self):
+        bus = _strategy_bus()
+        audit_events = []
+        bus.subscribe("strategy.time_leverage_long_bias.>", lambda _subject, payload: audit_events.append(payload))
+        engine = ARCStrategyEngine(
+            bus=bus,
+            config=ARCStrategyConfig(
+                intent_time_leverage_long_bias_enabled=True,
+                intent_time_leverage_bear_carry_enabled=True,
+                intent_time_leverage_bear_carry_max_leverage=0.25,
+                intent_time_leverage_bear_carry_confidence_floor=0.65,
+                intent_time_leverage_bear_carry_transition_ceiling=0.60,
+            ),
+        )
+        reason_codes: list[str] = []
+
+        qty, leverage = engine._apply_time_leverage_long_bias_guard(
+            symbol="BTCUSDT_PERP",
+            timeframe=Timeframe.TF_4H,
+            target_qty=1.5,
+            target_leverage=0.9,
+            price=50000.0,
+            atr=500.0,
+            state=_state(directional_state="DOWNTREND", transition_risk=0.55, direction_signal=-0.8),
+            reduce_only=False,
+            reason_codes=reason_codes,
+        )
+
+        self.assertAlmostEqual(qty, 0.5)
+        self.assertEqual(leverage, 0.25)
+        self.assertIn("TIME_LEVERAGE_LONG_BIAS_ACTIVE", reason_codes)
+        self.assertIn("TIME_LEVERAGE_BEAR_CARRY_CAP", reason_codes)
+        self.assertEqual(audit_events[-1]["long_bias_source"], "confirmed_bear_carry")
+        self.assertEqual(audit_events[-1]["action"], "bear_carry_capped")
+
+    def test_time_leverage_bear_carry_caps_existing_long_and_dip_adds_within_cap(self):
+        bus = _strategy_bus()
+        audit_events = []
+        bus.subscribe("strategy.time_leverage_long_bias.>", lambda _subject, payload: audit_events.append(payload))
+        engine = ARCStrategyEngine(
+            bus=bus,
+            config=ARCStrategyConfig(
+                intent_time_leverage_long_bias_enabled=True,
+                intent_time_leverage_bear_carry_enabled=True,
+                intent_time_leverage_bear_carry_max_leverage=0.50,
+                intent_time_leverage_bear_carry_confidence_floor=0.65,
+                intent_time_leverage_bear_carry_transition_ceiling=0.60,
+                intent_time_leverage_dip_accumulation_enabled=True,
+                intent_time_leverage_dip_min_adverse_atr=1.0,
+                intent_time_leverage_dip_max_adverse_atr=3.0,
+                intent_time_leverage_dip_add_pct=0.20,
+                intent_time_leverage_dip_max_leverage=3.0,
+            ),
+        )
+        engine._positions[("BTCUSDT_PERP", Timeframe.TF_4H)] = _position(direction=1.0)
+        reason_codes: list[str] = []
+
+        qty, leverage = engine._apply_time_leverage_long_bias_guard(
+            symbol="BTCUSDT_PERP",
+            timeframe=Timeframe.TF_4H,
+            target_qty=-1.5,
+            target_leverage=0.9,
+            price=59000.0,
+            atr=500.0,
+            state=_state(directional_state="DOWNTREND", transition_risk=0.55, direction_signal=-0.8),
+            reduce_only=False,
+            reason_codes=reason_codes,
+        )
+
+        self.assertAlmostEqual(qty, 0.847457627118644)
+        self.assertEqual(leverage, 0.50)
+        self.assertIn("TIME_LEVERAGE_BEAR_CARRY_CAP", reason_codes)
+        self.assertNotIn("TIME_LEVERAGE_DIP_ACCUMULATION", reason_codes)
+        self.assertEqual(audit_events[-1]["action"], "bear_carry_capped")
+
+    def test_time_leverage_bear_carry_does_not_activate_in_high_transition(self):
+        engine = ARCStrategyEngine(
+            bus=_strategy_bus(),
+            config=ARCStrategyConfig(
+                intent_time_leverage_long_bias_enabled=True,
+                intent_time_leverage_bear_carry_enabled=True,
+                intent_time_leverage_bear_carry_transition_ceiling=0.55,
+            ),
+        )
+        reason_codes: list[str] = []
+
+        qty, leverage = engine._apply_time_leverage_long_bias_guard(
+            symbol="BTCUSDT_PERP",
+            timeframe=Timeframe.TF_4H,
+            target_qty=-1.5,
+            target_leverage=0.9,
+            price=50000.0,
+            atr=500.0,
+            state=_state(directional_state="DOWNTREND", transition_risk=0.75, direction_signal=-0.8),
+            reduce_only=False,
+            reason_codes=reason_codes,
+        )
+
+        self.assertEqual(qty, -1.5)
+        self.assertEqual(leverage, 0.9)
+        self.assertEqual(reason_codes, [])
+
+    def test_range_bear_profit_run_override_requires_bear_context(self):
+        engine = ARCStrategyEngine(
+            bus=_strategy_bus(),
+            config=ARCStrategyConfig(
+                intent_range_bear_profit_run_override_enabled=True,
+                intent_range_bear_profit_run_direction_signal=-0.25,
+                intent_range_bear_profit_run_momentum_threshold=-0.20,
+                intent_range_bear_profit_run_confidence_floor=0.50,
+                intent_range_bear_profit_run_max_transition_risk=0.55,
+            ),
+        )
+
+        self.assertTrue(
+            engine._range_bear_profit_run_override_ready(
+                pack=_pack(
+                    momentum_roc_z=-0.35,
+                    multi_momentum_z=-0.40,
+                    structure_state="DOWNTREND",
+                    cycle_position=0.92,
+                ),
+                state=_state(
+                    regime="RANGE",
+                    directional_state="DOWNTREND",
+                    transition_risk=0.35,
+                    direction_signal=-0.30,
+                ),
+                playbook=_playbook(playbook_id="RANGE_LIGHT"),
+            )
+        )
+        self.assertTrue(
+            engine._range_bear_profit_run_override_ready(
+                pack=_pack(
+                    momentum_roc_z=-0.35,
+                    multi_momentum_z=-0.40,
+                    structure_state="DOWNTREND",
+                    cycle_position=0.92,
+                ),
+                state=_state(
+                    regime="RANGE",
+                    directional_state="DOWNTREND",
+                    transition_risk=0.35,
+                    direction_signal=-0.30,
+                ),
+                playbook=_playbook(playbook_id="BEAR_DEFENSE"),
+            )
+        )
+        self.assertFalse(
+            engine._range_bear_profit_run_override_ready(
+                pack=_pack(
+                    momentum_roc_z=-0.35,
+                    multi_momentum_z=-0.40,
+                    structure_state="DOWNTREND",
+                    cycle_position=0.92,
+                ),
+                state=_state(
+                    regime="RANGE",
+                    directional_state="TRANSITION",
+                    transition_risk=0.35,
+                    direction_signal=0.35,
+                ),
+                playbook=_playbook(playbook_id="RANGE_LIGHT"),
+            )
+        )
+        self.assertTrue(
+            engine._range_bear_profit_run_override_ready(
+                pack=_pack(
+                    momentum_roc_z=-0.35,
+                    multi_momentum_z=-0.40,
+                    structure_state="NEUTRAL",
+                    cycle_position=0.90,
+                ),
+                state=_state(
+                    regime="RANGE",
+                    directional_state="TRANSITION",
+                    transition_risk=0.35,
+                    direction_signal=0.0,
+                ),
+                playbook=_playbook(playbook_id="RANGE_LIGHT"),
+            )
+        )
 
 
 class TestLegacyPathUnchanged(unittest.TestCase):

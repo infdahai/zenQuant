@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 import uuid
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from math import ceil
 from typing import Any
 
 from zenquant.domain import (
+    ArchitectureAlphaSnapshot,
     DirectionalBias,
     ExecutionReport,
     ExitDecision,
@@ -16,15 +19,19 @@ from zenquant.domain import (
     MarketState,
     OpenPositionState,
     PlaybookSelection,
+    RiskOverlayDecision,
     RiskSnapshot,
     SizingDecision,
     TargetPosition,
     Timeframe,
+    target_position_hash,
 )
+from zenquant.domain.serde import to_jsonable
 from zenquant.infra import EventBus
 from zenquant.plugins.orchestrator import compose_exits, compose_filters, compose_signals, compose_sizers
 from zenquant.plugins.registry import PluginRegistry
 
+from .decision_snapshot import build_decision_snapshot
 from .exit_engine import ExitEngine, ExitEngineConfig
 from .playbook_engine import PlaybookEngine, PlaybookEngineConfig
 from .sizing_engine import SizingEngine, SizingEngineConfig
@@ -56,6 +63,34 @@ class _IntentReduceConfirmationState:
     direction: float
     target_qty: float
     bars: int
+
+
+@dataclass(slots=True, frozen=True)
+class _DecisionSnapshotEnvelope:
+    """Immutable pre-risk context waiting for the risk-final target."""
+
+    formula_hash: str
+    config_hash: str
+    indicator_version: str
+    data_identity: str
+    alpha_direction: float
+    alpha_raw_score: float
+    alpha_confidence: float
+    directional_state: str
+    volatility_state: str
+    positioning_state: str
+    quality_state: str
+    regime_risk_multiplier: float
+    annualized_volatility: float
+    volatility_target: float
+    exposure_cap: float
+    quality_flags: tuple[str, ...]
+    options_state_id: str | None
+    portfolio: str
+    timeframe: Timeframe
+    original_target_qty: float
+    original_intent_id: str
+    original_target_hash: str
 
 
 # Minimum absolute signal strength to take a directional position.
@@ -96,6 +131,7 @@ class ARCStrategyConfig:
     intent_flat_reduce_step_pct: float = 0.0
     intent_flat_step_cadence_bars: int = 0
     intent_range_entry_confirmation_bars: int = 0
+    intent_range_bear_profit_entry_confirmation_bars: int = -1
     intent_range_reentry_cooldown_bars: int = 0
     intent_bearish_override_confirmation_bars: int = 0
     intent_bearish_override_chop_guard_enabled: bool = False
@@ -121,11 +157,44 @@ class ARCStrategyConfig:
     intent_time_leverage_long_bias_transition_ceiling: float = 0.45
     intent_time_leverage_long_bias_block_short: bool = True
     intent_time_leverage_long_bias_hold_reductions: bool = True
+    intent_time_leverage_bear_carry_enabled: bool = False
+    intent_time_leverage_bear_carry_max_leverage: float = 0.35
+    intent_time_leverage_bear_carry_confidence_floor: float = 0.65
+    intent_time_leverage_bear_carry_transition_ceiling: float = 0.55
+    intent_time_leverage_bear_carry_allow_range_bear_profit_short: bool = False
+    intent_confirmed_downtrend_long_cap_enabled: bool = False
+    intent_confirmed_downtrend_long_cap_max_leverage: float = 0.0
+    intent_confirmed_downtrend_long_cap_confidence_floor: float = 0.65
+    intent_confirmed_downtrend_long_cap_direction_signal_ceiling: float = 0.0
     intent_time_leverage_dip_accumulation_enabled: bool = False
     intent_time_leverage_dip_min_adverse_atr: float = 0.75
     intent_time_leverage_dip_max_adverse_atr: float = 2.5
     intent_time_leverage_dip_add_pct: float = 0.15
     intent_time_leverage_dip_max_leverage: float = 3.0
+    intent_range_bear_profit_run_override_enabled: bool = False
+    intent_range_bear_profit_run_direction_signal: float = -0.25
+    intent_range_bear_profit_run_momentum_threshold: float = -0.20
+    intent_range_bear_profit_run_confidence_floor: float = 0.50
+    intent_range_bear_profit_run_max_transition_risk: float = 0.65
+    intent_range_bear_profit_panic_exhaustion_veto_enabled: bool = False
+    intent_range_bear_profit_panic_exhaustion_momentum_threshold: float = -0.85
+    intent_range_bear_profit_panic_exhaustion_transition_ceiling: float = 0.48
+    intent_range_bull_profit_run_override_enabled: bool = False
+    intent_range_bull_profit_run_direction_signal: float = 0.25
+    intent_range_bull_profit_run_momentum_threshold: float = 0.20
+    intent_range_bull_profit_run_confidence_floor: float = 0.50
+    intent_range_bull_profit_run_max_transition_risk: float = 0.65
+    intent_transition_rebound_sleeve_enabled: bool = False
+    intent_transition_rebound_sleeve_max_leverage: float = 0.50
+    intent_transition_rebound_sleeve_uptrend_confidence_floor: float = 0.55
+    intent_range_bear_profit_confirmed_bear_transition_override_enabled: bool = False
+    intent_range_bear_profit_confirmed_bear_max_transition_risk: float = 0.75
+    intent_range_bear_profit_context_score_threshold: float = 0.50
+    intent_range_bear_profit_timing_score_threshold: float = 0.45
+    intent_range_bull_profit_context_score_threshold: float = 0.50
+    intent_range_bull_profit_timing_score_threshold: float = 0.45
+    emit_decision_snapshots_v2: bool = False
+    emit_architecture_alpha_snapshots_v2: bool = False
 
 
 class ARCStrategyEngine:
@@ -187,6 +256,10 @@ class ARCStrategyEngine:
         self._intent_add_confirmation: dict[tuple[str, Timeframe], _IntentConfirmationState] = {}
         self._intent_reduce_confirmation: dict[tuple[str, Timeframe], _IntentReduceConfirmationState] = {}
         self._intent_flat_step_cooldowns: dict[tuple[str, Timeframe], int] = {}
+        self._pending_decision_snapshots: dict[tuple[str, str, int], _DecisionSnapshotEnvelope] = {}
+        self._risk_final_decisions: dict[tuple[str, str, int], RiskOverlayDecision] = {}
+        self._latest_staged_decision_cutoff: dict[tuple[str, str], int] = {}
+        self._transition_rebound_sleeve_positions: set[tuple[str, Timeframe]] = set()
 
         # Phase 2: position tracking for trailing stops
         self._positions: dict[tuple[str, Timeframe], OpenPositionState] = {}
@@ -194,17 +267,37 @@ class ARCStrategyEngine:
         self._bus.subscribe("indicator.>", self._on_indicator)
         self._bus.subscribe("state.market.>", self._on_market_state)
         self._bus.subscribe("risk.snapshot", self._on_risk_snapshot)
+        self._bus.subscribe("risk.overlay.decision", self._on_risk_overlay_decision)
         self._bus.subscribe("exec.order.report", self._on_execution_report)
+        self._bus.subscribe("intent.target_position.final.>", self._on_final_target)
 
     def _on_risk_snapshot(self, _: str, payload: object) -> None:
         if isinstance(payload, RiskSnapshot):
             self._equity = max(0.0, payload.equity)
 
+    def _on_risk_overlay_decision(self, _: str, payload: object) -> None:
+        if (
+            self._config.emit_decision_snapshots_v2
+            and isinstance(payload, RiskOverlayDecision)
+            and payload.portfolio
+            and payload.timeframe == Timeframe.TF_4H
+            and payload.original_intent_id
+        ):
+            authority_key = (payload.portfolio, payload.symbol)
+            decision_key = (payload.portfolio, payload.symbol, payload.cutoff_time_ns)
+            if (
+                self._latest_staged_decision_cutoff.get(authority_key) == payload.cutoff_time_ns
+                and decision_key in self._pending_decision_snapshots
+                and payload.original_target_hash == self._pending_decision_snapshots[decision_key].original_target_hash
+                and payload.revised_target_hash
+            ):
+                self._risk_final_decisions[decision_key] = payload
+
     def _on_execution_report(self, _: str, payload: object) -> None:
         """Track filled positions for trailing stop logic."""
         if not isinstance(payload, ExecutionReport):
             return
-        if payload.status != "FILLED":
+        if payload.filled_qty <= 0:
             return
 
         pos_key = (payload.symbol, self._config.execution_timeframe)
@@ -253,6 +346,55 @@ class ARCStrategyEngine:
         current_pos.current_qty = abs(new_signed_qty)
         self._publish_position_state(payload.symbol, self._config.execution_timeframe)
 
+    def _on_final_target(self, _: str, payload: object) -> None:
+        """Publish a V2 decision only after risk has approved the final target."""
+        if not isinstance(payload, TargetPosition) or not self._config.emit_decision_snapshots_v2:
+            return
+        authority_key = (payload.portfolio, payload.symbol)
+        if self._latest_staged_decision_cutoff.get(authority_key) != payload.cutoff_time_ns:
+            return
+        key = (payload.portfolio, payload.symbol, payload.cutoff_time_ns)
+        envelope = self._pending_decision_snapshots.pop(key, None)
+        risk_decision = self._risk_final_decisions.pop(key, None)
+        if envelope is None or risk_decision is None:
+            return
+        if (
+            abs(risk_decision.revised_target_qty - payload.target_qty) > 1e-9
+            or abs(risk_decision.original_target_qty - envelope.original_target_qty) > 1e-9
+            or risk_decision.portfolio != envelope.portfolio
+            or payload.portfolio != envelope.portfolio
+            or risk_decision.timeframe != envelope.timeframe
+            or payload.timeframe != envelope.timeframe
+            or risk_decision.original_intent_id != envelope.original_intent_id
+            or payload.intent_id != envelope.original_intent_id
+            or risk_decision.original_target_hash != envelope.original_target_hash
+            or risk_decision.revised_target_hash != target_position_hash(payload)
+            or risk_decision.reduce_only != payload.reduce_only
+            or payload.target_leverage > risk_decision.lev_cap + 1e-9
+        ):
+            return
+        snapshot = build_decision_snapshot(
+            target=payload,
+            formula_hash=envelope.formula_hash,
+            config_hash=envelope.config_hash,
+            indicator_version=envelope.indicator_version,
+            data_identity=envelope.data_identity,
+            alpha_direction=envelope.alpha_direction,
+            alpha_raw_score=envelope.alpha_raw_score,
+            alpha_confidence=envelope.alpha_confidence,
+            directional_state=envelope.directional_state,
+            volatility_state=envelope.volatility_state,
+            positioning_state=envelope.positioning_state,
+            quality_state=envelope.quality_state,
+            regime_risk_multiplier=envelope.regime_risk_multiplier,
+            annualized_volatility=envelope.annualized_volatility,
+            volatility_target=envelope.volatility_target,
+            exposure_cap=min(envelope.exposure_cap, risk_decision.lev_cap),
+            quality_flags=envelope.quality_flags,
+            options_state_id=envelope.options_state_id,
+        )
+        self._bus.publish(f"strategy.decision_snapshot.4h.{payload.symbol}", snapshot)
+
     def _on_indicator(self, _: str, payload: object) -> None:
         """Cache the latest pack so state events can build targets deterministically."""
         if not isinstance(payload, IndicatorPack):
@@ -277,6 +419,9 @@ class ARCStrategyEngine:
             f"strategy.playbook.{state.timeframe.value}.{state.symbol}",
             playbook,
         )
+        pack = self._latest_packs.get((state.symbol, state.timeframe))
+        if pack is not None:
+            self._publish_architecture_alpha_if_enabled(pack, state)
         if state.timeframe == Timeframe.TF_1D:
             self._update_directional_bias(state)
             return
@@ -287,21 +432,69 @@ class ARCStrategyEngine:
         }:
             self._update_context_bias(state)
             pack = self._latest_packs.get((state.symbol, state.timeframe))
-            if pack is not None:
-                target = self._build_target(pack, state, playbook)
-                target = self._confirm_directional_intent(
-                    target, price=float(pack.values.get("last_price", 0.0) or 0.0)
+            if pack is None:
+                self._publish_intent_promotion_audit(
+                    symbol=state.symbol,
+                    timeframe=state.timeframe,
+                    cutoff_time_ns=state.cutoff_time_ns,
+                    stage="4h_pending",
+                    reason="4H_PACK_MISSING",
+                    state=state,
+                    playbook=playbook,
                 )
-                if target is not None:
-                    self._pending_4h_target[state.symbol] = target
-                    self._pending_4h_bars[state.symbol] = 0
-                    self._pending_1h_target.pop(state.symbol, None)
-                    self._pending_1h_bars.pop(state.symbol, None)
-                else:
-                    self._pending_4h_target.pop(state.symbol, None)
-                    self._pending_4h_bars.pop(state.symbol, None)
-                    self._pending_1h_target.pop(state.symbol, None)
-                    self._pending_1h_bars.pop(state.symbol, None)
+                return
+            target = self._build_target(pack, state, playbook)
+            target = self._confirm_directional_intent(target, price=float(pack.values.get("last_price", 0.0) or 0.0))
+            if target is not None and self._target_direction(target.target_qty) == 0.0:
+                self._publish_intent_promotion_audit(
+                    symbol=state.symbol,
+                    timeframe=state.timeframe,
+                    cutoff_time_ns=state.cutoff_time_ns,
+                    stage="4h_pending",
+                    reason="4H_PENDING_NO_DIRECTION",
+                    pending=target,
+                    state=state,
+                    playbook=playbook,
+                    diagnostic_reason_codes=self._range_profit_run_no_direction_diagnostics(
+                        pack=pack,
+                        state=state,
+                        playbook=playbook,
+                    ),
+                )
+                self._pending_4h_target.pop(state.symbol, None)
+                self._pending_4h_bars.pop(state.symbol, None)
+                self._pending_1h_target.pop(state.symbol, None)
+                self._pending_1h_bars.pop(state.symbol, None)
+            elif target is not None:
+                self._publish_intent_promotion_audit(
+                    symbol=state.symbol,
+                    timeframe=state.timeframe,
+                    cutoff_time_ns=state.cutoff_time_ns,
+                    stage="4h_pending",
+                    reason="4H_PENDING_STORED",
+                    pending=target,
+                    state=state,
+                    playbook=playbook,
+                )
+                self._pending_4h_target[state.symbol] = target
+                self._pending_4h_bars[state.symbol] = 0
+                self._pending_1h_target.pop(state.symbol, None)
+                self._pending_1h_bars.pop(state.symbol, None)
+                self._publish_decision_snapshot_if_enabled(pack, state, playbook, target)
+            else:
+                self._publish_intent_promotion_audit(
+                    symbol=state.symbol,
+                    timeframe=state.timeframe,
+                    cutoff_time_ns=state.cutoff_time_ns,
+                    stage="4h_pending",
+                    reason="4H_PENDING_NOT_STORED",
+                    state=state,
+                    playbook=playbook,
+                )
+                self._pending_4h_target.pop(state.symbol, None)
+                self._pending_4h_bars.pop(state.symbol, None)
+                self._pending_1h_target.pop(state.symbol, None)
+                self._pending_1h_bars.pop(state.symbol, None)
             return
 
         # 1H entry optimization for direct 1H execution.
@@ -351,6 +544,7 @@ class ARCStrategyEngine:
         target = self._confirm_directional_intent(target, price=float(pack.values.get("last_price", 0.0) or 0.0))
         if target is None:
             return
+        self._publish_decision_snapshot_if_enabled(pack, state, playbook, target)
         reason = self._build_reason(target)
         self._bus.publish(
             f"strategy.regime.{self._config.portfolio}",
@@ -358,6 +552,80 @@ class ARCStrategyEngine:
         )
         self._bus.publish(f"intent.target_position.{self._config.portfolio}.{target.symbol}", target)
         self._bus.publish(f"intent.reason.{self._config.portfolio}", reason)
+
+    def _publish_architecture_alpha_if_enabled(self, pack: IndicatorPack, state: MarketState) -> None:
+        """Publish a pure market alpha before position, exit, or execution logic."""
+        if (
+            not self._config.emit_architecture_alpha_snapshots_v2
+            or state.timeframe != Timeframe.TF_4H
+            or self._plugins is None
+        ):
+            return
+
+        direction_plugins = sorted(
+            (plugin for plugin in self._plugins.signals if plugin.role == "direction"),
+            key=lambda plugin: plugin.meta.name,
+        )
+        if not direction_plugins:
+            return
+        direction_plugin_names = tuple(plugin.meta.name for plugin in direction_plugins)
+        weights = {plugin.meta.name: self._plugins.signal_weights[plugin.meta.name] for plugin in direction_plugins}
+        pure_market_state = {
+            "regime": state.regime,
+            "directional_state": state.directional_state,
+            "volatility_state": state.volatility_state,
+            "positioning_state": state.positioning_state,
+            "quality_state": state.quality_state,
+            "direction_signal": state.direction_signal,
+            "overall_confidence": state.overall_confidence(),
+            "directional_confidence": state.directional_confidence,
+            "volatility_confidence": state.volatility_confidence,
+            "positioning_confidence": state.positioning_confidence,
+            "quality_confidence": state.quality_confidence,
+            "transition_risk": state.transition_risk,
+            "timeframe": state.timeframe.value,
+        }
+        composed = compose_signals(direction_plugins, weights, dict(pack.values), pure_market_state)
+        alpha_contract = {
+            "plugins": [
+                {
+                    "name": plugin.meta.name,
+                    "version": plugin.meta.version,
+                    "config": to_jsonable(plugin.config),
+                    "weight": weights[plugin.meta.name],
+                }
+                for plugin in direction_plugins
+            ],
+            "timeframe": Timeframe.TF_4H.value,
+        }
+        alpha_config_hash = f"sha256:{hashlib.sha256(json.dumps(alpha_contract, sort_keys=True, separators=(',', ':')).encode()).hexdigest()}"
+        raw_score = float(composed.direction)
+        alpha_identity = {
+            "symbol": pack.symbol,
+            "cutoff_time_ns": pack.cutoff_time_ns,
+            "formula_hash": pack.formula_hash,
+            "alpha_config_hash": alpha_config_hash,
+            "raw_score": raw_score,
+            "confidence": float(composed.confidence),
+            "regime": state.regime,
+        }
+        alpha_id = f"sha256:{hashlib.sha256(json.dumps(alpha_identity, sort_keys=True, separators=(',', ':')).encode()).hexdigest()}"
+        snapshot = ArchitectureAlphaSnapshot(
+            alpha_id=alpha_id,
+            symbol=pack.symbol,
+            timeframe=pack.timeframe,
+            cutoff_time_ns=pack.cutoff_time_ns,
+            available_at_ns=pack.cutoff_time_ns,
+            formula_hash=pack.formula_hash,
+            indicator_version=pack.indicator_version,
+            alpha_config_hash=alpha_config_hash,
+            raw_score=raw_score,
+            confidence=float(composed.confidence),
+            direction=1.0 if raw_score > 0 else (-1.0 if raw_score < 0 else 0.0),
+            regime=state.regime,
+            direction_plugin_names=direction_plugin_names,
+        )
+        self._bus.publish(f"strategy.architecture_alpha.4h.{pack.symbol}", snapshot)
 
     def _update_directional_bias(self, state: MarketState) -> None:
         """Compute and store 1d directional bias for multi-timeframe coordination."""
@@ -398,6 +666,20 @@ class ARCStrategyEngine:
         pending = self._pending_4h_target.get(symbol)
         if pending is None:
             return None
+        pending_direction = self._target_direction(pending.target_qty)
+        if pending_direction == 0.0:
+            self._publish_intent_promotion_audit(
+                symbol=symbol,
+                timeframe=Timeframe.TF_1H,
+                cutoff_time_ns=state.cutoff_time_ns,
+                stage="1h_entry",
+                reason="1H_PENDING_NO_DIRECTION",
+                pending=pending,
+                state=state,
+            )
+            self._pending_4h_target.pop(symbol, None)
+            self._pending_4h_bars.pop(symbol, None)
+            return None
 
         bars_waited = self._pending_4h_bars.get(symbol, 0)
         self._pending_4h_bars[symbol] = bars_waited + 1
@@ -433,8 +715,7 @@ class ARCStrategyEngine:
             return None
 
         # Multi-factor entry scoring (richer than simple momentum check)
-        pending_direction = 1.0 if pending.target_qty > 0 else -1.0
-        is_long = pending.target_qty > 0
+        is_long = pending_direction > 0.0
         timeout = bars_waited >= 3
 
         entry_score = 0.0
@@ -477,6 +758,11 @@ class ARCStrategyEngine:
             cutoff_time_ns=state.cutoff_time_ns,
             reason_code="1H_ENTRY_OPTIMIZED",
         )
+        executed = self._apply_transition_rebound_promotion_cap(
+            target=executed,
+            state=state,
+            price=price,
+        )
 
         # Clear pending
         self._pending_4h_target.pop(symbol, None)
@@ -489,11 +775,37 @@ class ARCStrategyEngine:
         pending = self._pending_4h_target.get(symbol)
         if pending is None:
             return
+        pending_direction = self._target_direction(pending.target_qty)
+        if pending_direction == 0.0:
+            self._publish_intent_promotion_audit(
+                symbol=symbol,
+                timeframe=Timeframe.TF_5M,
+                cutoff_time_ns=state.cutoff_time_ns,
+                stage="1h_context",
+                reason="1H_PENDING_NO_DIRECTION",
+                pending=pending,
+                state=state,
+            )
+            self._pending_4h_target.pop(symbol, None)
+            self._pending_4h_bars.pop(symbol, None)
+            self._pending_1h_target.pop(symbol, None)
+            self._pending_1h_bars.pop(symbol, None)
+            return
 
         bars_waited = self._pending_4h_bars.get(symbol, 0)
         self._pending_4h_bars[symbol] = bars_waited + 1
         pack = self._latest_packs.get((symbol, Timeframe.TF_1H))
         if pack is None:
+            self._publish_intent_promotion_audit(
+                symbol=symbol,
+                timeframe=Timeframe.TF_5M,
+                cutoff_time_ns=state.cutoff_time_ns,
+                stage="1h_context",
+                reason="1H_PACK_MISSING",
+                pending=pending,
+                state=state,
+                bars_waited=bars_waited + 1,
+            )
             return
         if not self._range_reentry_cooldown_ready(
             pending=pending,
@@ -501,6 +813,16 @@ class ARCStrategyEngine:
             timeframe=Timeframe.TF_5M,
             cutoff_time_ns=state.cutoff_time_ns,
         ):
+            self._publish_intent_promotion_audit(
+                symbol=symbol,
+                timeframe=Timeframe.TF_5M,
+                cutoff_time_ns=state.cutoff_time_ns,
+                stage="1h_context",
+                reason="1H_RANGE_REENTRY_COOLDOWN_PENDING",
+                pending=pending,
+                state=state,
+                bars_waited=bars_waited + 1,
+            )
             return
         if not self._bearish_override_chop_guard_ready(
             pending=pending,
@@ -508,6 +830,16 @@ class ARCStrategyEngine:
             timeframe=Timeframe.TF_5M,
             bars_waited=bars_waited,
         ):
+            self._publish_intent_promotion_audit(
+                symbol=symbol,
+                timeframe=Timeframe.TF_5M,
+                cutoff_time_ns=state.cutoff_time_ns,
+                stage="1h_context",
+                reason="1H_BEARISH_OVERRIDE_CHOP_GUARD_PENDING",
+                pending=pending,
+                state=state,
+                bars_waited=bars_waited + 1,
+            )
             return
         if not self._range_entry_confirmation_ready(
             pending=pending,
@@ -516,16 +848,39 @@ class ARCStrategyEngine:
             bars_waited=bars_waited,
             cutoff_time_ns=state.cutoff_time_ns,
         ):
+            self._publish_intent_promotion_audit(
+                symbol=symbol,
+                timeframe=Timeframe.TF_5M,
+                cutoff_time_ns=state.cutoff_time_ns,
+                stage="1h_context",
+                reason="1H_RANGE_ENTRY_CONFIRMATION_PENDING",
+                pending=pending,
+                state=state,
+                bars_waited=bars_waited + 1,
+            )
             return
 
-        pending_direction = 1.0 if pending.target_qty > 0 else -1.0
         timeout = bars_waited >= 3
         entry_score = self._score_lower_timeframe_entry(
             pack=pack,
             pending_direction=pending_direction,
             crash_bonus_threshold=-0.02,
         )
-        if entry_score < 0.5 and not timeout:
+        entry_score_threshold = self._range_profit_context_score_threshold(pending)
+        if entry_score < entry_score_threshold and not timeout:
+            self._publish_intent_promotion_audit(
+                symbol=symbol,
+                timeframe=Timeframe.TF_5M,
+                cutoff_time_ns=state.cutoff_time_ns,
+                stage="1h_context",
+                reason="1H_CONTEXT_SCORE_TOO_WEAK",
+                pending=pending,
+                state=state,
+                bars_waited=bars_waited + 1,
+                entry_score=entry_score,
+                entry_score_threshold=entry_score_threshold,
+                timeout=timeout,
+            )
             return
 
         staged = self._promote_pending_target(
@@ -533,6 +888,24 @@ class ARCStrategyEngine:
             timeframe=Timeframe.TF_5M,
             cutoff_time_ns=state.cutoff_time_ns,
             reason_code="1H_CONTEXT_CONFIRMED",
+        )
+        staged = self._apply_transition_rebound_promotion_cap(
+            target=staged,
+            state=state,
+            price=float(pack.values.get("last_price", 0.0) or 0.0),
+        )
+        self._publish_intent_promotion_audit(
+            symbol=symbol,
+            timeframe=Timeframe.TF_5M,
+            cutoff_time_ns=state.cutoff_time_ns,
+            stage="1h_context",
+            reason="1H_CONTEXT_CONFIRMED",
+            pending=staged,
+            state=state,
+            bars_waited=bars_waited + 1,
+            entry_score=entry_score,
+            entry_score_threshold=entry_score_threshold,
+            timeout=timeout,
         )
         self._pending_1h_target[symbol] = staged
         self._pending_1h_bars[symbol] = 0
@@ -544,14 +917,37 @@ class ARCStrategyEngine:
         pending = self._pending_1h_target.get(symbol)
         if pending is None:
             return None
+        pending_direction = self._target_direction(pending.target_qty)
+        if pending_direction == 0.0:
+            self._publish_intent_promotion_audit(
+                symbol=symbol,
+                timeframe=Timeframe.TF_5M,
+                cutoff_time_ns=state.cutoff_time_ns,
+                stage="5m_timing",
+                reason="5M_PENDING_NO_DIRECTION",
+                pending=pending,
+                state=state,
+            )
+            self._pending_1h_target.pop(symbol, None)
+            self._pending_1h_bars.pop(symbol, None)
+            return None
 
         bars_waited = self._pending_1h_bars.get(symbol, 0)
         self._pending_1h_bars[symbol] = bars_waited + 1
         pack = self._latest_packs.get((symbol, Timeframe.TF_5M))
         if pack is None:
+            self._publish_intent_promotion_audit(
+                symbol=symbol,
+                timeframe=Timeframe.TF_5M,
+                cutoff_time_ns=state.cutoff_time_ns,
+                stage="5m_timing",
+                reason="5M_PACK_MISSING",
+                pending=pending,
+                state=state,
+                bars_waited=bars_waited + 1,
+            )
             return None
 
-        pending_direction = 1.0 if pending.target_qty > 0 else -1.0
         timeout = bars_waited >= 12
         entry_score = self._score_lower_timeframe_entry(
             pack=pack,
@@ -567,12 +963,27 @@ class ARCStrategyEngine:
         if large_trade_count > 0 and pending_direction * float(pack.values.get("cvd_slope", 0.0) or 0.0) > 0:
             entry_score += 0.15
 
+        entry_score_threshold = self._range_profit_timing_score_threshold(pending)
+
         if not self._range_reentry_cooldown_ready(
             pending=pending,
             symbol=symbol,
             timeframe=Timeframe.TF_5M,
             cutoff_time_ns=state.cutoff_time_ns,
         ):
+            self._publish_intent_promotion_audit(
+                symbol=symbol,
+                timeframe=Timeframe.TF_5M,
+                cutoff_time_ns=state.cutoff_time_ns,
+                stage="5m_timing",
+                reason="5M_RANGE_REENTRY_COOLDOWN_PENDING",
+                pending=pending,
+                state=state,
+                bars_waited=bars_waited + 1,
+                entry_score=entry_score,
+                entry_score_threshold=entry_score_threshold,
+                timeout=timeout,
+            )
             return None
 
         if not self._bearish_override_chop_guard_ready(
@@ -581,6 +992,19 @@ class ARCStrategyEngine:
             timeframe=Timeframe.TF_5M,
             bars_waited=bars_waited,
         ):
+            self._publish_intent_promotion_audit(
+                symbol=symbol,
+                timeframe=Timeframe.TF_5M,
+                cutoff_time_ns=state.cutoff_time_ns,
+                stage="5m_timing",
+                reason="5M_BEARISH_OVERRIDE_CHOP_GUARD_PENDING",
+                pending=pending,
+                state=state,
+                bars_waited=bars_waited + 1,
+                entry_score=entry_score,
+                entry_score_threshold=entry_score_threshold,
+                timeout=timeout,
+            )
             return None
 
         if not self._range_entry_confirmation_ready(
@@ -590,9 +1014,35 @@ class ARCStrategyEngine:
             bars_waited=bars_waited,
             cutoff_time_ns=state.cutoff_time_ns,
         ):
+            self._publish_intent_promotion_audit(
+                symbol=symbol,
+                timeframe=Timeframe.TF_5M,
+                cutoff_time_ns=state.cutoff_time_ns,
+                stage="5m_timing",
+                reason="5M_RANGE_ENTRY_CONFIRMATION_PENDING",
+                pending=pending,
+                state=state,
+                bars_waited=bars_waited + 1,
+                entry_score=entry_score,
+                entry_score_threshold=entry_score_threshold,
+                timeout=timeout,
+            )
             return None
 
-        if entry_score < 0.45 and not timeout:
+        if entry_score < entry_score_threshold and not timeout:
+            self._publish_intent_promotion_audit(
+                symbol=symbol,
+                timeframe=Timeframe.TF_5M,
+                cutoff_time_ns=state.cutoff_time_ns,
+                stage="5m_timing",
+                reason="5M_TIMING_SCORE_TOO_WEAK",
+                pending=pending,
+                state=state,
+                bars_waited=bars_waited + 1,
+                entry_score=entry_score,
+                entry_score_threshold=entry_score_threshold,
+                timeout=timeout,
+            )
             return None
 
         executed = self._promote_pending_target(
@@ -601,9 +1051,72 @@ class ARCStrategyEngine:
             cutoff_time_ns=state.cutoff_time_ns,
             reason_code="5M_TIMING_CONFIRMED",
         )
+        executed = self._apply_transition_rebound_promotion_cap(
+            target=executed,
+            state=state,
+            price=float(pack.values.get("last_price", 0.0) or 0.0),
+        )
+        self._publish_intent_promotion_audit(
+            symbol=symbol,
+            timeframe=Timeframe.TF_5M,
+            cutoff_time_ns=state.cutoff_time_ns,
+            stage="5m_timing",
+            reason="5M_TIMING_CONFIRMED",
+            pending=executed,
+            state=state,
+            bars_waited=bars_waited + 1,
+            entry_score=entry_score,
+            entry_score_threshold=entry_score_threshold,
+            timeout=timeout,
+        )
         self._pending_1h_target.pop(symbol, None)
         self._pending_1h_bars.pop(symbol, None)
         return executed
+
+    @staticmethod
+    def _is_range_bear_profit_pending(pending: TargetPosition) -> bool:
+        if pending.target_qty >= 0:
+            return False
+        reason_codes = set(pending.reason_codes)
+        if any("RANGE_BEAR_PROFIT" in code for code in reason_codes):
+            return True
+        return "REGIME_RANGE" in reason_codes and (
+            "PLAYBOOK_RANGE_LIGHT" in reason_codes or "PLAYBOOK_ALLOW_BOTH" in reason_codes
+        )
+
+    @staticmethod
+    def _is_range_bull_profit_pending(pending: TargetPosition) -> bool:
+        if pending.target_qty <= 0:
+            return False
+        reason_codes = set(pending.reason_codes)
+        return any(
+            "RANGE_BULL_PROFIT" in code
+            or code.endswith("MULTI_MOM_RANGE_BULL_PROFIT_RUN")
+            or code == "STATE_RANGE_BULL_PROFIT_RUN_OVERRIDE"
+            for code in reason_codes
+        )
+
+    def _range_profit_context_score_threshold(self, pending: TargetPosition) -> float:
+        base_threshold = 0.50
+        if not self._is_range_bear_profit_pending(pending):
+            if not self._is_range_bull_profit_pending(pending):
+                return base_threshold
+            return min(
+                base_threshold,
+                max(0.0, float(self._config.intent_range_bull_profit_context_score_threshold)),
+            )
+        return min(base_threshold, max(0.0, float(self._config.intent_range_bear_profit_context_score_threshold)))
+
+    def _range_profit_timing_score_threshold(self, pending: TargetPosition) -> float:
+        base_threshold = 0.45
+        if not self._is_range_bear_profit_pending(pending):
+            if not self._is_range_bull_profit_pending(pending):
+                return base_threshold
+            return min(
+                base_threshold,
+                max(0.0, float(self._config.intent_range_bull_profit_timing_score_threshold)),
+            )
+        return min(base_threshold, max(0.0, float(self._config.intent_range_bear_profit_timing_score_threshold)))
 
     def _score_lower_timeframe_entry(
         self,
@@ -660,6 +1173,38 @@ class ARCStrategyEngine:
             realized_vol=pending.realized_vol,
             atr=pending.atr,
         )
+
+    def _apply_transition_rebound_promotion_cap(
+        self,
+        *,
+        target: TargetPosition,
+        state: MarketState,
+        price: float,
+    ) -> TargetPosition:
+        if not self._config.intent_transition_rebound_sleeve_enabled:
+            return target
+        if self._target_direction(target.target_qty) <= 0.0:
+            self._transition_rebound_sleeve_positions.discard((target.symbol, target.timeframe))
+            return target
+        if "TRANSITION_REBOUND_SLEEVE" not in target.reason_codes:
+            if not self._transition_rebound_sleeve_source_active(target.reason_codes):
+                return target
+            if self._transition_rebound_confirmed_uptrend(state):
+                self._transition_rebound_sleeve_positions.discard((target.symbol, target.timeframe))
+                return target
+            target.reason_codes.append("TRANSITION_REBOUND_SLEEVE")
+        target.target_qty, target.target_leverage = self._apply_transition_rebound_lifecycle_cap(
+            symbol=target.symbol,
+            timeframe=target.timeframe,
+            target_qty=target.target_qty,
+            target_leverage=target.target_leverage,
+            price=price,
+            state=state,
+            reason_codes=target.reason_codes,
+        )
+        target.target_qty = round(target.target_qty, 6)
+        target.target_leverage = round(target.target_leverage, 4)
+        return target
 
     def _confirm_directional_intent(
         self, target: TargetPosition, *, price: float | None = None
@@ -1032,6 +1577,10 @@ class ARCStrategyEngine:
         cutoff_time_ns: int,
     ) -> bool:
         required_bars = max(0, int(self._config.intent_range_entry_confirmation_bars))
+        if self._is_range_bear_profit_pending(pending):
+            bear_profit_bars = int(self._config.intent_range_bear_profit_entry_confirmation_bars)
+            if bear_profit_bars >= 0:
+                required_bars = max(0, bear_profit_bars)
         if required_bars <= 0:
             return True
         if not self._is_range_directional_target(pending):
@@ -1206,6 +1755,9 @@ class ARCStrategyEngine:
     ) -> tuple[float, float]:
         confirmation_key = (symbol, timeframe)
         required_bars = max(1, int(self._config.intent_same_direction_reduce_confirmation_bars))
+        if "TRANSITION_REBOUND_SLEEVE" in reason_codes:
+            self._intent_reduce_confirmation.pop(confirmation_key, None)
+            return target_qty, target_leverage
         if required_bars <= 1 or reduce_only:
             self._intent_reduce_confirmation.pop(confirmation_key, None)
             return target_qty, target_leverage
@@ -1329,6 +1881,8 @@ class ARCStrategyEngine:
     ) -> tuple[float, float]:
         if not self._config.intent_time_leverage_hold_enabled:
             return target_qty, target_leverage
+        if "TRANSITION_REBOUND_SLEEVE" in reason_codes:
+            return target_qty, target_leverage
 
         position = self._current_execution_position(symbol, timeframe)
         if position is None or price <= 0.0 or self._equity <= 0.0:
@@ -1413,6 +1967,8 @@ class ARCStrategyEngine:
         signal_strength = abs(float(context.get("effective_direction", state.direction_signal) or 0.0))
         flip_threshold = max(0.0, float(self._config.intent_time_leverage_flip_signal_threshold))
         confidence_floor = max(0.0, float(self._config.intent_time_leverage_confidence_floor))
+        if state.directional_state == "DOWNTREND" and state.directional_confidence >= confidence_floor:
+            return None
         transition_floor = max(0.0, float(self._config.intent_time_leverage_transition_risk_floor))
         min_hold_bars = max(0, int(self._config.intent_time_leverage_min_hold_bars))
         opposing_trend_confirmed = (
@@ -1566,6 +2122,8 @@ class ARCStrategyEngine:
         confidence_floor = max(0.0, float(self._config.intent_time_leverage_long_bias_confidence_floor))
         transition_ceiling = max(0.0, float(self._config.intent_time_leverage_long_bias_transition_ceiling))
         if state.directional_state == "DOWNTREND" and state.directional_confidence >= confidence_floor:
+            if self._time_leverage_bear_carry_active(state):
+                return True, "confirmed_bear_carry"
             return False, "confirmed_downtrend"
 
         bias, _ = self._active_directional_bias(symbol, cutoff_time_ns)
@@ -1582,6 +2140,24 @@ class ARCStrategyEngine:
         ):
             return True, "4h_uptrend"
         return False, "no_long_bias"
+
+    def _time_leverage_bear_carry_active(self, state: MarketState) -> bool:
+        if not self._config.intent_time_leverage_bear_carry_enabled:
+            return False
+        if state.directional_state != "DOWNTREND":
+            return False
+        if state.quality_state == "UNSAFE" or state.volatility_state == "DISTORTED":
+            return False
+        if state.positioning_state == "CROWDED_LONG":
+            return False
+        confidence_floor = max(0.0, float(self._config.intent_time_leverage_bear_carry_confidence_floor))
+        transition_ceiling = max(0.0, float(self._config.intent_time_leverage_bear_carry_transition_ceiling))
+        return state.directional_confidence >= confidence_floor and state.transition_risk <= transition_ceiling
+
+    def _range_bear_profit_short_bypasses_bear_carry(self, reason_codes: list[str]) -> bool:
+        return self._config.intent_time_leverage_bear_carry_allow_range_bear_profit_short and any(
+            "RANGE_BEAR_PROFIT" in code for code in reason_codes
+        )
 
     def _time_leverage_trailing_stop_atr_mult(
         self,
@@ -1651,7 +2227,60 @@ class ARCStrategyEngine:
 
         position = self._current_execution_position(symbol, timeframe)
         target_direction = self._target_direction(target_qty)
+        is_bear_carry = long_bias_source == "confirmed_bear_carry"
+        bear_profit_short_bypass = (
+            is_bear_carry and target_direction < 0.0 and self._range_bear_profit_short_bypasses_bear_carry(reason_codes)
+        )
+        bear_carry_max_leverage = max(0.0, float(self._config.intent_time_leverage_bear_carry_max_leverage))
+        bear_carry_max_qty = (
+            (self._equity * bear_carry_max_leverage) / price if price > 0.0 and self._equity > 0.0 else 0.0
+        )
+        if (
+            is_bear_carry
+            and target_direction > 0.0
+            and (bear_carry_max_qty < self._config.min_trade_qty or target_qty > bear_carry_max_qty)
+        ):
+            capped_qty = bear_carry_max_qty if bear_carry_max_qty >= self._config.min_trade_qty else 0.0
+            capped_leverage = bear_carry_max_leverage if capped_qty > 0.0 else 0.0
+            reason_codes.extend(["TIME_LEVERAGE_LONG_BIAS_ACTIVE", "TIME_LEVERAGE_BEAR_CARRY_CAP"])
+            self._publish_time_leverage_long_bias_event(
+                symbol=symbol,
+                timeframe=timeframe,
+                state=state,
+                long_bias_source=long_bias_source,
+                action="bear_carry_capped",
+                current_qty=position.direction * position.current_qty if position is not None else 0.0,
+                blocked_target_qty=target_qty,
+                adverse_atr=0.0,
+            )
+            return capped_qty, capped_leverage
+        if bear_profit_short_bypass:
+            reason_codes.append("TIME_LEVERAGE_BEAR_CARRY_RANGE_BEAR_PROFIT_SHORT_BYPASS")
+            self._publish_time_leverage_long_bias_event(
+                symbol=symbol,
+                timeframe=timeframe,
+                state=state,
+                long_bias_source=long_bias_source,
+                action="range_bear_profit_short_bypass",
+                current_qty=position.direction * position.current_qty if position is not None else 0.0,
+                blocked_target_qty=target_qty,
+                adverse_atr=0.0,
+            )
+            return target_qty, target_leverage
         if position is None:
+            if is_bear_carry and target_direction <= 0.0 and bear_carry_max_qty >= self._config.min_trade_qty:
+                reason_codes.extend(["TIME_LEVERAGE_LONG_BIAS_ACTIVE", "TIME_LEVERAGE_BEAR_CARRY_BASE"])
+                self._publish_time_leverage_long_bias_event(
+                    symbol=symbol,
+                    timeframe=timeframe,
+                    state=state,
+                    long_bias_source=long_bias_source,
+                    action="bear_carry_base",
+                    current_qty=0.0,
+                    blocked_target_qty=target_qty,
+                    adverse_atr=0.0,
+                )
+                return bear_carry_max_qty, bear_carry_max_leverage
             if target_direction < 0.0 and self._config.intent_time_leverage_long_bias_block_short:
                 reason_codes.extend(["TIME_LEVERAGE_LONG_BIAS_ACTIVE", "TIME_LEVERAGE_SHORT_BLOCKED"])
                 self._publish_time_leverage_long_bias_event(
@@ -1669,6 +2298,19 @@ class ARCStrategyEngine:
 
         current_signed_qty = position.direction * position.current_qty
         if position.direction < 0.0:
+            if is_bear_carry and target_direction <= 0.0 and bear_carry_max_qty >= self._config.min_trade_qty:
+                reason_codes.extend(["TIME_LEVERAGE_LONG_BIAS_ACTIVE", "TIME_LEVERAGE_BEAR_CARRY_BASE"])
+                self._publish_time_leverage_long_bias_event(
+                    symbol=symbol,
+                    timeframe=timeframe,
+                    state=state,
+                    long_bias_source=long_bias_source,
+                    action="bear_carry_base",
+                    current_qty=current_signed_qty,
+                    blocked_target_qty=target_qty,
+                    adverse_atr=0.0,
+                )
+                return bear_carry_max_qty, bear_carry_max_leverage
             if target_direction < 0.0 and self._config.intent_time_leverage_long_bias_block_short:
                 reason_codes.extend(["TIME_LEVERAGE_LONG_BIAS_ACTIVE", "TIME_LEVERAGE_SHORT_BLOCKED"])
                 self._publish_time_leverage_long_bias_event(
@@ -1698,10 +2340,16 @@ class ARCStrategyEngine:
         if atr > 0.0 and price > 0.0 and position.entry_price > price:
             adverse_atr = (position.entry_price - price) / atr
         action = "reduction_held"
+        if is_bear_carry and bear_carry_max_qty > 0.0 and held_qty > bear_carry_max_qty + self._config.min_trade_qty:
+            held_qty = bear_carry_max_qty
+            held_leverage = bear_carry_max_leverage
+            reason_codes.append("TIME_LEVERAGE_BEAR_CARRY_CAP")
+            action = "bear_carry_capped"
 
         if target_direction < 0.0:
             reason_codes.append("TIME_LEVERAGE_SHORT_BLOCKED")
-            action = "short_blocked"
+            if action == "reduction_held":
+                action = "short_blocked"
         else:
             reason_codes.append("TIME_LEVERAGE_REDUCTION_HELD")
         reason_codes.append("TIME_LEVERAGE_LONG_BIAS_ACTIVE")
@@ -1717,6 +2365,8 @@ class ARCStrategyEngine:
             and self._equity > 0.0
         ):
             max_leverage = min(self._config.max_leverage, max(0.0, self._config.intent_time_leverage_dip_max_leverage))
+            if is_bear_carry:
+                max_leverage = min(max_leverage, bear_carry_max_leverage)
             max_qty = (self._equity * max_leverage) / price
             desired_qty = position.current_qty * (1.0 + dip_add_pct)
             accumulated_qty = min(max_qty, desired_qty)
@@ -1768,6 +2418,346 @@ class ARCStrategyEngine:
                 "volatility_state": state.volatility_state,
             },
         )
+
+    def _range_bear_profit_run_override_ready(
+        self,
+        *,
+        pack: IndicatorPack,
+        state: MarketState,
+        playbook: PlaybookSelection,
+    ) -> bool:
+        return not self._range_bear_profit_run_override_diagnostics(pack=pack, state=state, playbook=playbook)
+
+    def _range_bear_profit_run_override_diagnostics(
+        self,
+        *,
+        pack: IndicatorPack,
+        state: MarketState,
+        playbook: PlaybookSelection,
+    ) -> list[str]:
+        blockers: list[str] = []
+        if not self._config.intent_range_bear_profit_run_override_enabled:
+            blockers.append("RANGE_BEAR_PROFIT_OVERRIDE_DISABLED")
+        if playbook.playbook_id not in {"RANGE_LIGHT", "BEAR_DEFENSE"}:
+            blockers.append("RANGE_BEAR_PROFIT_PLAYBOOK_BLOCK")
+        if state.quality_state == "UNSAFE":
+            blockers.append("RANGE_BEAR_PROFIT_QUALITY_UNSAFE")
+        if state.volatility_state == "DISTORTED":
+            blockers.append("RANGE_BEAR_PROFIT_VOLATILITY_DISTORTED")
+        if state.positioning_state == "CROWDED_SHORT":
+            blockers.append("RANGE_BEAR_PROFIT_CROWDED_SHORT")
+
+        momentum_threshold = float(self._config.intent_range_bear_profit_run_momentum_threshold)
+        momentum_roc_z = float(pack.values.get("momentum_roc_z", 0.0) or 0.0)
+        multi_momentum_z = float(pack.values.get("multi_momentum_z", momentum_roc_z) or momentum_roc_z)
+        structure_state = str(pack.values.get("structure_state") or "NEUTRAL")
+        cycle_position = float(pack.values.get("cycle_position", 1.0) or 1.0)
+        negative_momentum = momentum_roc_z <= momentum_threshold or multi_momentum_z <= momentum_threshold
+        bearish_structure = structure_state == "DOWNTREND" or cycle_position <= 0.95
+        if not negative_momentum:
+            blockers.append("RANGE_BEAR_PROFIT_MOMENTUM_TOO_WEAK")
+        if not bearish_structure:
+            blockers.append("RANGE_BEAR_PROFIT_STRUCTURE_NOT_BEARISH")
+        max_transition_risk = self._range_bear_profit_run_transition_ceiling(
+            pack=pack,
+            state=state,
+            playbook=playbook,
+            negative_momentum=negative_momentum,
+            bearish_structure=bearish_structure,
+        )
+        if state.transition_risk > max_transition_risk:
+            blockers.append("RANGE_BEAR_PROFIT_TRANSITION_RISK")
+        direction_signal_ceiling = float(self._config.intent_range_bear_profit_run_direction_signal)
+        confidence_floor = max(0.0, float(self._config.intent_range_bear_profit_run_confidence_floor))
+        bearish_state = (
+            state.directional_state == "DOWNTREND"
+            or state.direction_signal <= direction_signal_ceiling
+            or (
+                cycle_position <= 0.95
+                and state.directional_state != "UPTREND"
+                and state.direction_signal <= max(0.0, direction_signal_ceiling)
+                and state.directional_confidence >= confidence_floor * 0.5
+            )
+        )
+        if not bearish_state:
+            blockers.append("RANGE_BEAR_PROFIT_STATE_NOT_BEARISH")
+        if self._range_bear_profit_panic_exhaustion_veto_active(
+            state=state,
+            momentum_roc_z=momentum_roc_z,
+            multi_momentum_z=multi_momentum_z,
+        ):
+            blockers.append("RANGE_BEAR_PROFIT_PANIC_EXHAUSTION")
+        return blockers
+
+    def _range_bear_profit_panic_exhaustion_veto_active(
+        self,
+        *,
+        state: MarketState,
+        momentum_roc_z: float,
+        multi_momentum_z: float,
+    ) -> bool:
+        if not self._config.intent_range_bear_profit_panic_exhaustion_veto_enabled:
+            return False
+        if state.volatility_state != "HIGH":
+            return False
+        momentum_threshold = float(self._config.intent_range_bear_profit_panic_exhaustion_momentum_threshold)
+        if min(momentum_roc_z, multi_momentum_z) > momentum_threshold:
+            return False
+        transition_ceiling = max(0.0, float(self._config.intent_range_bear_profit_panic_exhaustion_transition_ceiling))
+        return state.transition_risk <= transition_ceiling
+
+    def _range_bull_profit_run_override_ready(
+        self,
+        *,
+        pack: IndicatorPack,
+        state: MarketState,
+        playbook: PlaybookSelection,
+    ) -> bool:
+        return not self._range_bull_profit_run_override_diagnostics(pack=pack, state=state, playbook=playbook)
+
+    def _range_bull_profit_run_override_diagnostics(
+        self,
+        *,
+        pack: IndicatorPack,
+        state: MarketState,
+        playbook: PlaybookSelection,
+    ) -> list[str]:
+        blockers: list[str] = []
+        if not self._config.intent_range_bull_profit_run_override_enabled:
+            blockers.append("RANGE_BULL_PROFIT_OVERRIDE_DISABLED")
+        if playbook.playbook_id not in {"RANGE_LIGHT", "BULL_CONTINUATION"}:
+            blockers.append("RANGE_BULL_PROFIT_PLAYBOOK_BLOCK")
+        if state.quality_state == "UNSAFE":
+            blockers.append("RANGE_BULL_PROFIT_QUALITY_UNSAFE")
+        if state.volatility_state == "DISTORTED":
+            blockers.append("RANGE_BULL_PROFIT_VOLATILITY_DISTORTED")
+        if state.positioning_state == "CROWDED_LONG":
+            blockers.append("RANGE_BULL_PROFIT_CROWDED_LONG")
+
+        momentum_threshold = float(self._config.intent_range_bull_profit_run_momentum_threshold)
+        momentum_roc_z = float(pack.values.get("momentum_roc_z", 0.0) or 0.0)
+        multi_momentum_z = float(pack.values.get("multi_momentum_z", momentum_roc_z) or momentum_roc_z)
+        structure_state = str(pack.values.get("structure_state") or "NEUTRAL")
+        cycle_position = float(pack.values.get("cycle_position", 1.0) or 1.0)
+        positive_momentum = momentum_roc_z >= momentum_threshold or multi_momentum_z >= momentum_threshold
+        bullish_structure = structure_state == "UPTREND" and cycle_position >= 1.0
+        if not positive_momentum:
+            blockers.append("RANGE_BULL_PROFIT_MOMENTUM_TOO_WEAK")
+        if not bullish_structure:
+            blockers.append("RANGE_BULL_PROFIT_STRUCTURE_NOT_BULLISH")
+        max_transition_risk = max(0.0, float(self._config.intent_range_bull_profit_run_max_transition_risk))
+        if state.transition_risk > max_transition_risk:
+            blockers.append("RANGE_BULL_PROFIT_TRANSITION_RISK")
+        direction_signal_floor = float(self._config.intent_range_bull_profit_run_direction_signal)
+        confidence_floor = max(0.0, float(self._config.intent_range_bull_profit_run_confidence_floor))
+        bullish_state = (
+            state.directional_state == "UPTREND"
+            and state.directional_confidence >= confidence_floor
+            and state.direction_signal >= direction_signal_floor
+        )
+        if not bullish_state:
+            blockers.append("RANGE_BULL_PROFIT_STATE_NOT_BULLISH")
+        if state.directional_state == "DOWNTREND" and state.directional_confidence >= confidence_floor:
+            blockers.append("RANGE_BULL_PROFIT_CONFIRMED_DOWNTREND")
+        return blockers
+
+    def _apply_transition_rebound_sleeve(
+        self,
+        *,
+        direction: float,
+        target_leverage: float,
+        state: MarketState,
+        reason_codes: list[str],
+    ) -> float:
+        if not self._config.intent_transition_rebound_sleeve_enabled or direction <= 0.0:
+            return target_leverage
+        if not self._transition_rebound_sleeve_source_active(reason_codes):
+            return target_leverage
+
+        if self._transition_rebound_confirmed_uptrend(state):
+            return target_leverage
+
+        max_leverage = max(0.0, float(self._config.intent_transition_rebound_sleeve_max_leverage))
+        capped_leverage = min(target_leverage, max_leverage)
+        reason_codes.append("TRANSITION_REBOUND_SLEEVE")
+        if capped_leverage < target_leverage:
+            reason_codes.append("TRANSITION_REBOUND_LEVERAGE_CAP")
+        return capped_leverage
+
+    @staticmethod
+    def _transition_rebound_sleeve_source_active(reason_codes: list[str]) -> bool:
+        return any(
+            code.endswith("MULTI_MOM_RANGE_BULL_PROFIT_RUN") or code == "STATE_RANGE_BULL_PROFIT_RUN_OVERRIDE"
+            for code in reason_codes
+        )
+
+    def _transition_rebound_confirmed_uptrend(self, state: MarketState) -> bool:
+        uptrend_floor = max(0.0, float(self._config.intent_transition_rebound_sleeve_uptrend_confidence_floor))
+        return state.directional_state == "UPTREND" and state.directional_confidence >= uptrend_floor
+
+    def _apply_transition_rebound_lifecycle_cap(
+        self,
+        *,
+        symbol: str,
+        timeframe: Timeframe,
+        target_qty: float,
+        target_leverage: float,
+        price: float,
+        state: MarketState,
+        reason_codes: list[str],
+    ) -> tuple[float, float]:
+        key = (symbol, timeframe)
+        if not self._config.intent_transition_rebound_sleeve_enabled:
+            self._transition_rebound_sleeve_positions.discard(key)
+            return target_qty, target_leverage
+        if self._target_direction(target_qty) <= 0.0:
+            self._transition_rebound_sleeve_positions.discard(key)
+            return target_qty, target_leverage
+        if self._transition_rebound_confirmed_uptrend(state):
+            self._transition_rebound_sleeve_positions.discard(key)
+            return target_qty, target_leverage
+
+        if "TRANSITION_REBOUND_SLEEVE" in reason_codes:
+            self._transition_rebound_sleeve_positions.add(key)
+        if key not in self._transition_rebound_sleeve_positions:
+            return target_qty, target_leverage
+        if price <= 0.0 or self._equity <= 0.0:
+            return target_qty, target_leverage
+
+        max_leverage = max(0.0, float(self._config.intent_transition_rebound_sleeve_max_leverage))
+        max_qty = self._equity * max_leverage / price
+        capped_qty = min(target_qty, max_qty)
+        capped_leverage = abs(capped_qty * price) / self._equity
+        if "TRANSITION_REBOUND_SLEEVE_ACTIVE" not in reason_codes:
+            reason_codes.append("TRANSITION_REBOUND_SLEEVE_ACTIVE")
+        if capped_qty < target_qty and "TRANSITION_REBOUND_LIFECYCLE_CAP" not in reason_codes:
+            reason_codes.append("TRANSITION_REBOUND_LIFECYCLE_CAP")
+        return capped_qty, capped_leverage
+
+    def _apply_confirmed_downtrend_long_cap(
+        self,
+        *,
+        symbol: str,
+        timeframe: Timeframe,
+        target_qty: float,
+        target_leverage: float,
+        price: float,
+        state: MarketState,
+        reason_codes: list[str],
+    ) -> tuple[float, float]:
+        if not self._config.intent_confirmed_downtrend_long_cap_enabled:
+            return target_qty, target_leverage
+        if self._target_direction(target_qty) <= 0.0:
+            return target_qty, target_leverage
+        confidence_floor = max(0.0, float(self._config.intent_confirmed_downtrend_long_cap_confidence_floor))
+        if state.directional_state != "DOWNTREND" or state.directional_confidence < confidence_floor:
+            return target_qty, target_leverage
+        signal_ceiling = float(self._config.intent_confirmed_downtrend_long_cap_direction_signal_ceiling)
+        if state.direction_signal > signal_ceiling:
+            return target_qty, target_leverage
+
+        max_leverage = max(0.0, float(self._config.intent_confirmed_downtrend_long_cap_max_leverage))
+        max_qty = self._equity * max_leverage / price if price > 0.0 and self._equity > 0.0 else 0.0
+        capped_qty = min(target_qty, max_qty)
+        if capped_qty < self._config.min_trade_qty:
+            capped_qty = 0.0
+        capped_leverage = abs(capped_qty * price) / self._equity if capped_qty > 0.0 and self._equity > 0.0 else 0.0
+        if "CONFIRMED_DOWNTREND_LONG_CAP_ACTIVE" not in reason_codes:
+            reason_codes.append("CONFIRMED_DOWNTREND_LONG_CAP_ACTIVE")
+        if capped_qty < target_qty and "CONFIRMED_DOWNTREND_LONG_CAP" not in reason_codes:
+            reason_codes.append("CONFIRMED_DOWNTREND_LONG_CAP")
+        if capped_qty == 0.0 and "CONFIRMED_DOWNTREND_LONG_FLATTEN" not in reason_codes:
+            reason_codes.append("CONFIRMED_DOWNTREND_LONG_FLATTEN")
+        self._bus.publish(
+            f"strategy.confirmed_downtrend_long_cap.{timeframe.value}.{symbol}",
+            {
+                "symbol": symbol,
+                "timeframe": timeframe.value,
+                "cutoff_time_ns": state.cutoff_time_ns,
+                "directional_confidence": state.directional_confidence,
+                "confidence_floor": confidence_floor,
+                "direction_signal": state.direction_signal,
+                "direction_signal_ceiling": signal_ceiling,
+                "input_qty": target_qty,
+                "output_qty": capped_qty,
+                "max_leverage": max_leverage,
+            },
+        )
+        return capped_qty, capped_leverage
+
+    def _range_profit_run_no_direction_diagnostics(
+        self,
+        *,
+        pack: IndicatorPack,
+        state: MarketState,
+        playbook: PlaybookSelection,
+    ) -> list[str]:
+        momentum_roc_z = float(pack.values.get("momentum_roc_z", 0.0) or 0.0)
+        multi_momentum_z = float(pack.values.get("multi_momentum_z", momentum_roc_z) or momentum_roc_z)
+        cycle_position = float(pack.values.get("cycle_position", 1.0) or 1.0)
+        if (
+            state.regime == "RANGE"
+            and cycle_position >= 1.0
+            and state.directional_state != "DOWNTREND"
+            and (momentum_roc_z > 0.0 or multi_momentum_z > 0.0)
+        ):
+            return self._range_bull_profit_run_override_diagnostics(pack=pack, state=state, playbook=playbook)
+        return self._range_bear_profit_run_override_diagnostics(pack=pack, state=state, playbook=playbook)
+
+    def _range_bear_profit_run_transition_ceiling(
+        self,
+        *,
+        pack: IndicatorPack,
+        state: MarketState,
+        playbook: PlaybookSelection,
+        negative_momentum: bool,
+        bearish_structure: bool,
+    ) -> float:
+        base_ceiling = max(0.0, float(self._config.intent_range_bear_profit_run_max_transition_risk))
+        if not self._config.intent_range_bear_profit_confirmed_bear_transition_override_enabled:
+            return base_ceiling
+        if not self._range_bear_profit_confirmed_bear_transition_override_active(
+            pack=pack,
+            state=state,
+            playbook=playbook,
+            negative_momentum=negative_momentum,
+            bearish_structure=bearish_structure,
+        ):
+            return base_ceiling
+        confirmed_ceiling = max(
+            base_ceiling,
+            float(self._config.intent_range_bear_profit_confirmed_bear_max_transition_risk),
+        )
+        return max(0.0, confirmed_ceiling)
+
+    def _range_bear_profit_confirmed_bear_transition_override_active(
+        self,
+        *,
+        pack: IndicatorPack,
+        state: MarketState,
+        playbook: PlaybookSelection,
+        negative_momentum: bool | None = None,
+        bearish_structure: bool | None = None,
+    ) -> bool:
+        if not self._config.intent_range_bear_profit_confirmed_bear_transition_override_enabled:
+            return False
+        if playbook.playbook_id not in {"RANGE_LIGHT", "BEAR_DEFENSE"}:
+            return False
+        if state.directional_state != "DOWNTREND":
+            return False
+        confidence_floor = max(0.0, float(self._config.intent_range_bear_profit_run_confidence_floor))
+        if state.directional_confidence < confidence_floor:
+            return False
+        if negative_momentum is None:
+            momentum_threshold = float(self._config.intent_range_bear_profit_run_momentum_threshold)
+            momentum_roc_z = float(pack.values.get("momentum_roc_z", 0.0) or 0.0)
+            multi_momentum_z = float(pack.values.get("multi_momentum_z", momentum_roc_z) or momentum_roc_z)
+            negative_momentum = momentum_roc_z <= momentum_threshold or multi_momentum_z <= momentum_threshold
+        if bearish_structure is None:
+            structure_state = str(pack.values.get("structure_state") or "NEUTRAL")
+            cycle_position = float(pack.values.get("cycle_position", 1.0) or 1.0)
+            bearish_structure = structure_state == "DOWNTREND" or cycle_position <= 0.95
+        return negative_momentum and bearish_structure
 
     def _build_target(
         self,
@@ -1849,6 +2839,26 @@ class ARCStrategyEngine:
             ):
                 direction = -1.0
                 reason_codes.append("STATE_BEARISH_DIRECTION_OVERRIDE")
+            elif direction == 0.0 and self._range_bear_profit_run_override_ready(
+                pack=pack,
+                state=state,
+                playbook=playbook,
+            ):
+                direction = -1.0
+                reason_codes.append("STATE_RANGE_BEAR_PROFIT_RUN_OVERRIDE")
+                if self._range_bear_profit_confirmed_bear_transition_override_active(
+                    pack=pack,
+                    state=state,
+                    playbook=playbook,
+                ):
+                    reason_codes.append("STATE_RANGE_BEAR_PROFIT_CONFIRMED_BEAR_TRANSITION")
+            elif direction == 0.0 and self._range_bull_profit_run_override_ready(
+                pack=pack,
+                state=state,
+                playbook=playbook,
+            ):
+                direction = 1.0
+                reason_codes.append("STATE_RANGE_BULL_PROFIT_RUN_OVERRIDE")
 
             if self._plugins.sizers:
                 _state_dict = self._state_dict(state, playbook)
@@ -1927,6 +2937,12 @@ class ARCStrategyEngine:
                 target_leverage = min(target_leverage, playbook.max_leverage)
                 reduce_only = True
 
+        target_leverage = self._apply_transition_rebound_sleeve(
+            direction=direction,
+            target_leverage=target_leverage,
+            state=state,
+            reason_codes=reason_codes,
+        )
         target_notional = self._equity * target_leverage * direction
         target_qty = target_notional / vals.price
         if abs(target_qty) < self._config.min_trade_qty:
@@ -1977,6 +2993,24 @@ class ARCStrategyEngine:
             target_qty=target_qty,
             target_leverage=target_leverage,
             price=vals.price,
+            reason_codes=reason_codes,
+        )
+        target_qty, target_leverage = self._apply_transition_rebound_lifecycle_cap(
+            symbol=pack.symbol,
+            timeframe=pack.timeframe,
+            target_qty=target_qty,
+            target_leverage=target_leverage,
+            price=vals.price,
+            state=state,
+            reason_codes=reason_codes,
+        )
+        target_qty, target_leverage = self._apply_confirmed_downtrend_long_cap(
+            symbol=pack.symbol,
+            timeframe=pack.timeframe,
+            target_qty=target_qty,
+            target_leverage=target_leverage,
+            price=vals.price,
+            state=state,
             reason_codes=reason_codes,
         )
 
@@ -2068,6 +3102,25 @@ class ARCStrategyEngine:
         target_leverage = 0.0
         if vals.price > 0 and self._equity > 0:
             target_leverage = abs(signed_qty * vals.price) / self._equity
+        reason_codes = [f"REGIME_{state.regime}", "HOLD_EXECUTION_POSITION"]
+        signed_qty, target_leverage = self._apply_transition_rebound_lifecycle_cap(
+            symbol=pack.symbol,
+            timeframe=pack.timeframe,
+            target_qty=signed_qty,
+            target_leverage=target_leverage,
+            price=vals.price,
+            state=state,
+            reason_codes=reason_codes,
+        )
+        signed_qty, target_leverage = self._apply_confirmed_downtrend_long_cap(
+            symbol=pack.symbol,
+            timeframe=pack.timeframe,
+            target_qty=signed_qty,
+            target_leverage=target_leverage,
+            price=vals.price,
+            state=state,
+            reason_codes=reason_codes,
+        )
         return TargetPosition(
             intent_id=self._intent_id(pack),
             portfolio=self._config.portfolio,
@@ -2079,7 +3132,7 @@ class ARCStrategyEngine:
             reduce_only=False,
             regime=state.regime,
             regime_confidence=round(state.regime_confidence, 4),
-            reason_codes=[f"REGIME_{state.regime}", "HOLD_EXECUTION_POSITION"],
+            reason_codes=reason_codes,
             realized_vol=float(pack.values.get("realized_vol", 0) or 0),
             atr=float(pack.values.get("atr", 0) or 0),
         )
@@ -2106,6 +3159,74 @@ class ARCStrategyEngine:
             self._positions.get((symbol, timeframe)),
         )
 
+    def _publish_intent_promotion_audit(
+        self,
+        *,
+        symbol: str,
+        timeframe: Timeframe,
+        cutoff_time_ns: int,
+        stage: str,
+        reason: str,
+        pending: TargetPosition | None = None,
+        state: MarketState | None = None,
+        playbook: PlaybookSelection | None = None,
+        bars_waited: int | None = None,
+        entry_score: float | None = None,
+        entry_score_threshold: float | None = None,
+        diagnostic_reason_codes: list[str] | None = None,
+        timeout: bool | None = None,
+    ) -> None:
+        """Publish deterministic diagnostics for 4H intent promotion into 1H/5M execution."""
+
+        payload: dict[str, Any] = {
+            "symbol": symbol,
+            "timeframe": timeframe.value,
+            "cutoff_time_ns": cutoff_time_ns,
+            "stage": stage,
+            "reason": reason,
+        }
+        if pending is not None:
+            payload.update(
+                {
+                    "pending_intent_id": pending.intent_id,
+                    "pending_timeframe": pending.timeframe.value,
+                    "pending_cutoff_time_ns": pending.cutoff_time_ns,
+                    "pending_target_qty": pending.target_qty,
+                    "pending_target_leverage": pending.target_leverage,
+                    "pending_direction": self._target_direction(pending.target_qty),
+                    "pending_reason_codes": "|".join(pending.reason_codes),
+                    "pending_regime": pending.regime,
+                }
+            )
+        if state is not None:
+            payload.update(
+                {
+                    "state_timeframe": state.timeframe.value,
+                    "state_regime": state.regime,
+                    "directional_state": state.directional_state,
+                    "directional_confidence": round(float(state.directional_confidence), 6),
+                    "direction_signal": round(float(state.direction_signal), 6),
+                    "transition_risk": round(float(state.transition_risk), 6),
+                    "quality_state": state.quality_state,
+                    "volatility_state": state.volatility_state,
+                    "positioning_state": state.positioning_state,
+                }
+            )
+        if playbook is not None:
+            payload["playbook_id"] = playbook.playbook_id
+            payload["playbook_reason_codes"] = "|".join(playbook.reason_codes)
+        if bars_waited is not None:
+            payload["bars_waited"] = bars_waited
+        if entry_score is not None:
+            payload["entry_score"] = round(float(entry_score), 6)
+        if entry_score_threshold is not None:
+            payload["entry_score_threshold"] = round(float(entry_score_threshold), 6)
+        if diagnostic_reason_codes is not None:
+            payload["diagnostic_reason_codes"] = "|".join(diagnostic_reason_codes)
+        if timeout is not None:
+            payload["timeout"] = bool(timeout)
+        self._bus.publish(f"strategy.intent_promotion.{timeframe.value}.{symbol}", payload)
+
     def _publish_sizing(self, sizing: SizingDecision) -> None:
         """Expose the latest sizing breakdown for audit and dashboard display."""
         self._bus.publish(
@@ -2119,6 +3240,107 @@ class ARCStrategyEngine:
             f"strategy.exit.{exit_decision.timeframe.value}.{exit_decision.symbol}",
             exit_decision,
         )
+
+    def _publish_decision_snapshot_if_enabled(
+        self,
+        pack: IndicatorPack,
+        state: MarketState,
+        playbook: PlaybookSelection,
+        target: TargetPosition,
+    ) -> None:
+        """Stage immutable V2 context until risk publishes its final target."""
+        if not self._config.emit_decision_snapshots_v2:
+            return
+        if pack.timeframe != Timeframe.TF_4H or target.timeframe != Timeframe.TF_4H:
+            return
+        if not target.symbol.upper().startswith("BTC"):
+            return
+        plugin_context = self._plugin_signal_context.get((pack.symbol, pack.timeframe), {})
+        if plugin_context.get("cutoff_time_ns") != pack.cutoff_time_ns:
+            plugin_context = {}
+        alpha_raw_score = float(plugin_context.get("effective_direction", state.direction_signal) or 0.0)
+        alpha_direction = 1.0 if alpha_raw_score > 0.0 else -1.0 if alpha_raw_score < 0.0 else 0.0
+        authority_key = (target.portfolio, target.symbol)
+        latest_cutoff = self._latest_staged_decision_cutoff.get(authority_key)
+        if latest_cutoff is not None and target.cutoff_time_ns < latest_cutoff:
+            return
+        key = (target.portfolio, target.symbol, target.cutoff_time_ns)
+        existing = self._pending_decision_snapshots.get(key)
+        if existing is not None and (
+            existing.original_intent_id != target.intent_id
+            or abs(existing.original_target_qty - target.target_qty) > 1e-9
+        ):
+            return
+        if latest_cutoff is None or target.cutoff_time_ns > latest_cutoff:
+            self._latest_staged_decision_cutoff[authority_key] = target.cutoff_time_ns
+            stale_keys = [
+                pending_key
+                for pending_key in self._pending_decision_snapshots
+                if pending_key[:2] == authority_key and pending_key[2] < target.cutoff_time_ns
+            ]
+            for stale_key in stale_keys:
+                self._pending_decision_snapshots.pop(stale_key, None)
+                self._risk_final_decisions.pop(stale_key, None)
+        self._pending_decision_snapshots[key] = _DecisionSnapshotEnvelope(
+            formula_hash=pack.formula_hash,
+            config_hash=self._decision_snapshot_config_hash(),
+            indicator_version=pack.indicator_version,
+            data_identity=self._decision_snapshot_data_identity(pack),
+            alpha_direction=alpha_direction,
+            alpha_raw_score=alpha_raw_score,
+            alpha_confidence=float(plugin_context.get("signal_confidence", state.directional_confidence) or 0.0),
+            directional_state=state.directional_state,
+            volatility_state=state.volatility_state,
+            positioning_state=state.positioning_state,
+            quality_state=state.quality_state,
+            regime_risk_multiplier=1.0,
+            annualized_volatility=target.realized_vol,
+            volatility_target=self._config.target_vol_4h,
+            exposure_cap=min(self._config.max_leverage, playbook.max_leverage),
+            quality_flags=tuple(pack.quality_flags),
+            options_state_id=None,
+            portfolio=target.portfolio,
+            timeframe=target.timeframe,
+            original_target_qty=target.target_qty,
+            original_intent_id=target.intent_id,
+            original_target_hash=target_position_hash(target),
+        )
+
+    def _decision_snapshot_config_hash(self) -> str:
+        """Fingerprint the active strategy configuration in a canonical form."""
+        payload = json.dumps(
+            asdict(self._config),
+            default=str,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        return f"sha256:{hashlib.sha256(payload.encode('utf-8')).hexdigest()}"
+
+    @staticmethod
+    def _decision_snapshot_data_identity(pack: IndicatorPack) -> str:
+        """Fingerprint the point-in-time 4h input data without wall-clock metadata."""
+        payload = {
+            "components": pack.components,
+            "coverage": {
+                "oi_coverage": pack.coverage.oi_coverage,
+                "staleness_ms": pack.coverage.staleness_ms,
+                "venue_count": pack.coverage.venue_count,
+            },
+            "cutoff_time_ns": pack.cutoff_time_ns,
+            "formula_hash": pack.formula_hash,
+            "indicator_version": pack.indicator_version,
+            "quality_flags": pack.quality_flags,
+            "symbol": pack.symbol,
+            "timeframe": pack.timeframe.value,
+            "values": pack.values,
+        }
+        canonical = json.dumps(
+            to_jsonable(payload),
+            default=str,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        return f"sha256:{hashlib.sha256(canonical.encode('utf-8')).hexdigest()}"
 
     def _build_exit_target(
         self,
@@ -2319,6 +3541,7 @@ class ARCStrategyEngine:
         )
         effective_direction = composed.direction * composed.state_confidence_haircut
         self._plugin_signal_context[(pack.symbol, pack.timeframe)] = {
+            "cutoff_time_ns": pack.cutoff_time_ns,
             "state_confidence_haircut": composed.state_confidence_haircut,
             "execution_bias": composed.execution_bias,
             "effective_direction": effective_direction,

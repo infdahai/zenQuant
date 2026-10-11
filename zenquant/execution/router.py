@@ -3,10 +3,21 @@
 from __future__ import annotations
 
 import itertools
+import math
 from dataclasses import dataclass
 from typing import Protocol
 
-from zenquant.domain import ExecutionOrder, MarkPriceUpdate, OrderBookSnapshot, RiskSnapshot, TargetPosition, TradeTick
+from zenquant.domain import (
+    DecisionSnapshot,
+    ExecutionOrder,
+    ExecutionOrderAudit,
+    MarkPriceUpdate,
+    OrderBookSnapshot,
+    RiskSnapshot,
+    TargetPosition,
+    TradeTick,
+    target_position_hash,
+)
 from zenquant.execution.gateway import ExecutionGateway
 from zenquant.infra import EventBus
 
@@ -104,8 +115,18 @@ class ExecutionKernelConfig:
     # Legacy gradual execution (kept for compatibility)
     entry_fraction: float = 1.0
     exit_fraction: float = 1.0
+    # Opt-in V2 authority fields stay last to preserve legacy positional ABI.
+    execution_authority_mode: str = "legacy"
+    quantity_precision: int = 6
+    quantity_epsilon: float = 1e-6
 
     def __post_init__(self) -> None:
+        if self.execution_authority_mode not in {"legacy", "target_tracking_v2"}:
+            raise ValueError("execution_authority_mode must be 'legacy' or 'target_tracking_v2'")
+        if self.quantity_precision < 0:
+            raise ValueError("quantity_precision must be >= 0")
+        if self.quantity_epsilon < 0.0:
+            raise ValueError("quantity_epsilon must be >= 0.0")
         if self.pyramid_initial_pct < 0.30:
             raise ValueError("pyramid_initial_pct below 0.30")
         if self.pyramid_initial_pct > 0.30:
@@ -216,12 +237,36 @@ class ExecutionKernel:
         self._profit_protect_cooldowns: dict[str, int] = {}
         self._position_bars_held: dict[str, int] = {}
         self._latest_drawdown_by_portfolio: dict[str, float] = {}
+        self._active_snapshots: dict[tuple[str, str], DecisionSnapshot] = {}
+        self._latest_decision_cutoffs: dict[tuple[str, str], int] = {}
+        self._remaining_target_delta: dict[tuple[str, str], float] = {}
+        self._completed_decisions: set[tuple[str, str, str]] = set()
+        self._purity_counters = {
+            "executor_created_exposure": 0,
+            "unexpected_reversal": 0,
+            "target_overshoot": 0,
+        }
 
         self._bus.subscribe("md.trade.>", self._on_trade)
         self._bus.subscribe("md.mark.>", self._on_mark_price)
         self._bus.subscribe("md.book.>", self._on_book)
         self._bus.subscribe("risk.snapshot", self._on_risk_snapshot)
+        self._bus.subscribe("strategy.decision_snapshot.4h.>", self._on_decision_snapshot)
         self._bus.subscribe("intent.target_position.final.>", self._on_target)
+
+    def _on_decision_snapshot(self, _: str, payload: object) -> None:
+        if not isinstance(payload, DecisionSnapshot):
+            return
+        key = (payload.portfolio, payload.symbol)
+        latest_cutoff = self._latest_decision_cutoffs.get(key)
+        active = self._active_snapshots.get(key)
+        if latest_cutoff is not None and payload.cutoff_time_ns < latest_cutoff:
+            return
+        if latest_cutoff == payload.cutoff_time_ns and active is not None and active.decision_id != payload.decision_id:
+            return
+        self._latest_decision_cutoffs[key] = payload.cutoff_time_ns
+        self._active_snapshots[key] = payload
+        self._remaining_target_delta[key] = payload.target_qty - self._positions.get(payload.symbol, 0.0)
 
     def _on_trade(self, _: str, payload: object) -> None:
         if not isinstance(payload, TradeTick):
@@ -258,6 +303,9 @@ class ExecutionKernel:
             return
 
         current_position = self._positions.get(symbol, 0.0)
+        if self._config.execution_authority_mode == "target_tracking_v2":
+            self._on_target_tracking_v2(payload, current_position=current_position, mark_price=mark_price)
+            return
         self._advance_position_age(symbol, current_position)
         delta_qty = payload.target_qty - current_position
         if abs(delta_qty) < self._config.min_trade_qty:
@@ -520,6 +568,143 @@ class ExecutionKernel:
                 self._last_fill_prices[symbol] = report.avg_price
                 self._inventory_tranches[symbol] = self._inventory_tranches.get(symbol, 1) + 1
             self._risk_overlay.apply_fee(report.fee)
+
+    def _on_target_tracking_v2(
+        self,
+        payload: TargetPosition,
+        *,
+        current_position: float,
+        mark_price: float,
+    ) -> None:
+        """Track exactly one risk-final approved target without market judgment."""
+        decision_key = (payload.portfolio, payload.symbol)
+        snapshot = self._active_snapshots.get(decision_key)
+        latest_cutoff = self._latest_decision_cutoffs.get(decision_key)
+        completion_key = (*decision_key, snapshot.decision_id) if snapshot is not None else None
+        if (
+            snapshot is None
+            or latest_cutoff != payload.cutoff_time_ns
+            or completion_key in self._completed_decisions
+            or not self._snapshot_approves_target(snapshot, payload)
+        ):
+            return
+
+        delta_qty = payload.target_qty - current_position
+        if abs(delta_qty) < self._config.min_trade_qty:
+            self._remaining_target_delta[decision_key] = delta_qty
+            self._completed_decisions.add((*decision_key, snapshot.decision_id))
+            return
+
+        safety_reason: str | None = None
+        if payload.reduce_only:
+            safety_reason = "|".join(sorted(set(payload.reason_codes))) or None
+            if safety_reason is None or not self._is_valid_hard_safety_target(payload.target_qty, current_position):
+                return
+
+        side = 1 if delta_qty > 0.0 else -1
+        requested_qty = min(abs(delta_qty), self._config.max_trade_qty_per_bar)
+        scale = 10**self._config.quantity_precision
+        trade_qty = math.floor((requested_qty + 1e-15) * scale) / scale
+        if trade_qty < self._config.min_trade_qty:
+            return
+
+        order = ExecutionOrder(
+            client_order_id=f"{payload.symbol}-{payload.cutoff_time_ns}-{next(self._order_seq)}-v2",
+            symbol=payload.symbol,
+            side=side,
+            quantity=trade_qty,
+            reduce_only=payload.reduce_only,
+            max_slippage_bps=self._config.max_slippage_bps,
+        )
+        self._bus.publish("exec.order.submit", order)
+        report = self._gateway.submit_order(
+            order,
+            mark_price=mark_price,
+            best_bid=self._best_bid.get(payload.symbol),
+            best_ask=self._best_ask.get(payload.symbol),
+            now_ns=payload.cutoff_time_ns,
+        )
+        self._bus.publish("exec.order.report", report)
+
+        filled_qty = max(0.0, report.filled_qty)
+        signed_filled_qty = side * filled_qty
+        position_after = current_position
+        if filled_qty > 0.0:
+            position_after = current_position + signed_filled_qty
+            if abs(position_after) <= self._config.quantity_epsilon:
+                position_after = 0.0
+            self._positions[payload.symbol] = position_after
+            self._risk_overlay.apply_fee(report.fee)
+        remaining_delta = payload.target_qty - position_after
+        if abs(remaining_delta) <= self._config.quantity_epsilon:
+            remaining_delta = 0.0
+        self._remaining_target_delta[decision_key] = remaining_delta
+        if abs(remaining_delta) < self._config.min_trade_qty:
+            self._completed_decisions.add((*decision_key, snapshot.decision_id))
+
+        self._record_purity_observation(
+            approved_target=payload.target_qty,
+            position_before=current_position,
+            position_after=position_after,
+            order_delta=signed_filled_qty,
+        )
+        self._bus.publish(
+            "exec.order.audit",
+            ExecutionOrderAudit(
+                decision_id=snapshot.decision_id,
+                client_order_id=order.client_order_id,
+                symbol=payload.symbol,
+                cutoff_time_ns=payload.cutoff_time_ns,
+                approved_target_qty=payload.target_qty,
+                position_before_order=current_position,
+                position_after_fill=position_after,
+                order_delta_qty=signed_filled_qty,
+                hard_safety_reason=safety_reason,
+                status=report.status,
+                remaining_target_delta_qty=remaining_delta,
+            ),
+        )
+
+    def _snapshot_approves_target(self, snapshot: DecisionSnapshot, target: TargetPosition) -> bool:
+        epsilon = self._config.quantity_epsilon
+        return (
+            snapshot.symbol == target.symbol
+            and snapshot.portfolio == target.portfolio
+            and snapshot.timeframe == target.timeframe
+            and snapshot.cutoff_time_ns == target.cutoff_time_ns
+            and abs(snapshot.target_qty - target.target_qty) <= epsilon
+            and abs(snapshot.target_leverage - target.target_leverage) <= epsilon
+            and snapshot.reduce_only == target.reduce_only
+            and bool(snapshot.approved_target_hash)
+            and snapshot.approved_target_hash == target_position_hash(target)
+        )
+
+    def _is_valid_hard_safety_target(self, approved_target: float, current_position: float) -> bool:
+        epsilon = self._config.quantity_epsilon
+        if abs(current_position) <= epsilon:
+            return False
+        if abs(approved_target) >= abs(current_position) - epsilon:
+            return False
+        return abs(approved_target) <= epsilon or approved_target * current_position > 0.0
+
+    def _record_purity_observation(
+        self,
+        *,
+        approved_target: float,
+        position_before: float,
+        position_after: float,
+        order_delta: float,
+    ) -> None:
+        epsilon = self._config.quantity_epsilon
+        approved_delta = approved_target - position_before
+        if abs(order_delta) > epsilon and (
+            approved_delta == 0.0 or math.copysign(1.0, order_delta) != math.copysign(1.0, approved_delta)
+        ):
+            self._purity_counters["executor_created_exposure"] += 1
+        if position_before * position_after < -(epsilon**2) and approved_target * position_after <= epsilon**2:
+            self._purity_counters["unexpected_reversal"] += 1
+        if abs(order_delta) > abs(approved_delta) + epsilon:
+            self._purity_counters["target_overshoot"] += 1
 
     def _execute_flip(
         self,
@@ -1106,3 +1291,18 @@ class ExecutionKernel:
     def positions(self) -> dict[str, float]:
         """Return a copy of filled positions tracked by the kernel."""
         return dict(self._positions)
+
+    @property
+    def quantity_epsilon(self) -> float:
+        """Configured tolerance used by target-tracking invariants."""
+        return self._config.quantity_epsilon
+
+    @property
+    def purity_counters(self) -> dict[str, int]:
+        """Return immutable-by-copy execution-authority violation counts."""
+        return dict(self._purity_counters)
+
+    @property
+    def latest_decision_cutoffs(self) -> dict[tuple[str, str], int]:
+        """Return the monotonic current decision cutoff per portfolio and symbol."""
+        return dict(self._latest_decision_cutoffs)

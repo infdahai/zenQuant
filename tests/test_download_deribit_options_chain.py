@@ -73,6 +73,7 @@ class DownloadDeribitOptionsChainTests(unittest.TestCase):
         self.assertEqual(len(rows), 2)
         self.assertEqual(rows[0].currency, "BTC")
         self.assertEqual(rows[0].option_type, "call")
+        self.assertEqual(rows[0].mark_iv_unit, "percent")
         self.assertAlmostEqual(rows[0].mid_price or 0.0, 0.13, places=6)
 
     def test_save_option_chain_writes_json_and_parquet(self) -> None:

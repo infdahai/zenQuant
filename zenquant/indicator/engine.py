@@ -96,6 +96,9 @@ class IndicatorEngineConfig:
     roc_z_window: int = 40
     # Multi-horizon momentum: horizons in bars (4H bars → 1d,2d,4d,8d)
     roc_horizons: tuple[int, ...] = (6, 12, 24, 48)
+    # Research fast path: transfer entropy is expensive and only needed by
+    # cross-asset experimental signals, not by the canonical risk path.
+    defer_transfer_entropy: bool = False
 
 
 @dataclass(slots=True)
@@ -500,7 +503,7 @@ class IndicatorEngine:
                     "atm_iv_z": options_snap.atm_iv_z,
                     "term_structure_slope": options_snap.term_structure_slope,
                     "term_slope_z": options_snap.term_slope_z,
-                    "put_call_skew_25d": options_snap.put_call_skew_25d,
+                    "put_call_moneyness_skew_proxy": options_snap.put_call_moneyness_skew_proxy,
                     "skew_z": options_snap.skew_z,
                     "skew_velocity": options_snap.skew_velocity,
                     "gex_net": options_snap.net_gex,
@@ -558,7 +561,11 @@ class IndicatorEngine:
             macro_values["basis_pct"] = basis.basis_pct
             macro_values["basis_z"] = basis.basis_z
 
-        if self._eth_store is not None and hasattr(self._eth_store, "get_returns_before"):
+        if (
+            not self._config.defer_transfer_entropy
+            and self._eth_store is not None
+            and hasattr(self._eth_store, "get_returns_before")
+        ):
             btc_ret = 0.0
             if len(candles) >= 2:
                 prev = candles[-2]
@@ -662,6 +669,7 @@ class IndicatorEngine:
             },
             "indicator_fast_path_enabled": self._indicator_fast_path_enabled,
             "slow_enrichment_deferred": False,
+            "transfer_entropy_deferred": self._config.defer_transfer_entropy,
             "microstructure_sidecar_enabled": self._microstructure_store is not None,
         }
 
@@ -753,6 +761,7 @@ def _formula_hash(
         f"options={'atm_iv,skew,term' if has_options else 'none'};"
         f"liquidation={'total,imbalance,max_single' if has_liquidation else 'none'};"
         f"microstructure={'risk_overlay_sidecar' if has_microstructure else 'none'};"
+        f"defer_transfer_entropy={config.defer_transfer_entropy};"
         f"cycle=200ma;ou_kappa=vol_window"
     )
     return f"sha256:{hashlib.sha256(formula.encode('utf-8')).hexdigest()}"

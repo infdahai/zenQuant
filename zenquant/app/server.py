@@ -31,12 +31,18 @@ except ModuleNotFoundError as exc:
     _FASTAPI_IMPORT_ERROR = exc
 
 from zenquant.app.live_state import DashboardStateStore
+from zenquant.app.options_shadow_refresh import OptionsShadowStoreRefresher, OptionsStoreFactory
 from zenquant.app.paper_live_scorecard import (
     SCORECARD_ROOT,
     build_runtime_scorecard,
     load_scorecard_history_payloads,
 )
-from zenquant.data import MicrostructureFeatureStore, MicrostructureFeatureStoreConfig
+from zenquant.data import (
+    MicrostructureFeatureStore,
+    MicrostructureFeatureStoreConfig,
+    OptionsDataStore,
+    OptionsDataStoreConfig,
+)
 from zenquant.domain import (
     Candle,
     DeribitRiskPack,
@@ -56,7 +62,7 @@ from zenquant.domain import (
     Timeframe,
 )
 from zenquant.domain.serde import ns_to_iso, to_jsonable
-from zenquant.execution import ExecutionGateway, ExecutionKernel, SimulatedGateway
+from zenquant.execution import ExecutionGateway, ExecutionKernel, ExecutionKernelConfig, SimulatedGateway
 from zenquant.indicator import IndicatorEngine, IndicatorEngineConfig, IndicatorStore
 from zenquant.infra import InMemoryJetStream, OnlineStateStore, OnlineStateStoreConfig, StreamConfig
 from zenquant.ingestor import (
@@ -68,9 +74,14 @@ from zenquant.ingestor import (
     SyntheticIngestorConfig,
 )
 from zenquant.market import BarClockService, SnapshotBuilder, SnapshotBuilderConfig
+from zenquant.research.options_shadow import (
+    OptionsShadowConfig,
+    OptionsShadowObserver,
+    OptionsStateResolver,
+)
 from zenquant.risk import RiskOverlay
 from zenquant.state import StateEngine
-from zenquant.strategy import ARCStrategyEngine
+from zenquant.strategy import ARCStrategyConfig, ARCStrategyEngine
 
 
 @dataclass(slots=True)
@@ -87,6 +98,15 @@ class _StateConnection:
     tf: str
 
 
+@dataclass(frozen=True, slots=True)
+class OptionsStateShadowRuntimeConfig:
+    """Default-off local store configuration for live options observation."""
+
+    enabled: bool = False
+    options_dir: Path = Path("data/raw/deribit_options")
+    refresh_interval_s: float = 30.0
+
+
 class ZenQuantWebRuntime:
     """Own the web runtime, event bus, and dashboard-facing subscriptions.
 
@@ -100,10 +120,22 @@ class ZenQuantWebRuntime:
         runtime_mode: str = "demo",
         tick_interval_s: float = 0.04,
         warmup_steps: int = 300,
+        execution_config: ExecutionKernelConfig | None = None,
+        options_state_shadow_enabled: bool = False,
+        options_state_resolver: OptionsStateResolver | None = None,
+        options_state_shadow_config: OptionsStateShadowRuntimeConfig | None = None,
+        options_state_store_factory: OptionsStoreFactory = OptionsDataStore,
     ) -> None:
         self._runtime_mode = runtime_mode
         self._tick_interval_s = tick_interval_s
         self._warmup_steps = max(0, warmup_steps)
+        self._execution_config = execution_config
+        self._strategy_config: ARCStrategyConfig | None = None
+        if execution_config is not None and execution_config.execution_authority_mode == "target_tracking_v2":
+            self._strategy_config = ARCStrategyConfig(
+                execution_timeframe=Timeframe.TF_4H,
+                emit_decision_snapshots_v2=True,
+            )
         self._state_connections: list[_StateConnection] = []
         self._indicator_connections: list[_IndicatorConnection] = []
         self._tick_task: asyncio.Task[None] | None = None
@@ -119,6 +151,25 @@ class ZenQuantWebRuntime:
         self.bus.add_stream(StreamConfig(name="STREAM_INDICATORS", subjects=["indicator.>"]))
         self.bus.add_stream(StreamConfig(name="STREAM_INTENTS", subjects=["intent.>"]))
         self.bus.add_stream(StreamConfig(name="STREAM_EXEC", subjects=["exec.>"]))
+        shadow_config = options_state_shadow_config or OptionsStateShadowRuntimeConfig(
+            enabled=options_state_shadow_enabled
+        )
+        self._options_shadow_store: OptionsDataStore | None = None
+        self._options_shadow_refresher: OptionsShadowStoreRefresher | None = None
+        resolved_options_state_resolver = options_state_resolver
+        if shadow_config.enabled and resolved_options_state_resolver is None:
+            self._options_shadow_refresher = OptionsShadowStoreRefresher(
+                config=OptionsDataStoreConfig(options_dir=shadow_config.options_dir, currency="BTC"),
+                refresh_interval_s=shadow_config.refresh_interval_s,
+                store_factory=options_state_store_factory,
+            )
+            self._options_shadow_store = self._options_shadow_refresher.preload()
+            resolved_options_state_resolver = self._resolve_live_options_state
+        self.options_shadow_observer = OptionsShadowObserver(
+            bus=self.bus,
+            config=OptionsShadowConfig(enabled=shadow_config.enabled),
+            state_resolver=resolved_options_state_resolver,
+        )
 
         self.state = DashboardStateStore()
         self.state.on_runtime_status({"mode": self._runtime_mode})
@@ -179,6 +230,33 @@ class ZenQuantWebRuntime:
 
         self._subscribe_all()
 
+    @property
+    def options_shadow_store(self) -> OptionsDataStore | None:
+        refresher = self._options_shadow_refresher
+        if refresher is not None:
+            return refresher.current_store
+        return self._options_shadow_store
+
+    @property
+    def options_shadow_refresh_running(self) -> bool:
+        refresher = self._options_shadow_refresher
+        return refresher is not None and refresher.is_running
+
+    def _resolve_live_options_state(self, snapshot):
+        store = self.options_shadow_store
+        if store is None:
+            raise ValueError("options shadow store is not configured")
+        try:
+            return store.lookup_options_state(
+                snapshot.cutoff_time_ns,
+                realized_vol_30d=(snapshot.annualized_volatility if snapshot.annualized_volatility > 0.0 else None),
+                realized_vol_source_timestamp_ns=snapshot.cutoff_time_ns,
+            )
+        finally:
+            refresher = self._options_shadow_refresher
+            if refresher is not None:
+                refresher.request_refresh()
+
     def _build_microstructure_store(self) -> MicrostructureFeatureStore | None:
         if os.getenv("ZENQUANT_MICROSTRUCTURE_SIDECAR_ENABLED", "").lower() not in {"1", "true", "yes"}:
             return None
@@ -225,9 +303,11 @@ class ZenQuantWebRuntime:
             self._start_online_state()
             await self._start_deribit()
             await self._start_telegram()
+            self._start_options_shadow_refresh()
             self._live_start_task = asyncio.create_task(self._start_live_runtime())
             return
         self._start_online_state()
+        self._start_options_shadow_refresh()
         self._tick_task = asyncio.create_task(self._run_tick_loop())
 
     async def stop(self) -> None:
@@ -257,7 +337,18 @@ class ZenQuantWebRuntime:
             self._tick_task = None
         if self.online_state is not None:
             self.online_state.stop()
+        await self._stop_options_shadow_refresh()
         self.state.on_runtime_status({"database": self._online_state_snapshot()})
+
+    def _start_options_shadow_refresh(self) -> None:
+        refresher = self._options_shadow_refresher
+        if refresher is not None:
+            refresher.start()
+
+    async def _stop_options_shadow_refresh(self) -> None:
+        refresher = self._options_shadow_refresher
+        if refresher is not None:
+            await asyncio.to_thread(refresher.stop)
 
     def prime_history(self) -> None:
         """Warm the demo-mode pipeline before the UI starts polling it."""
@@ -365,12 +456,13 @@ class ZenQuantWebRuntime:
         if self.risk_overlay is not None:
             return
         self.risk_overlay = RiskOverlay(bus=self.bus)
-        self.strategy_engine = ARCStrategyEngine(bus=self.bus)
+        self.strategy_engine = ARCStrategyEngine(bus=self.bus, config=self._strategy_config)
         self.state_engine = StateEngine(bus=self.bus)
         self.execution_kernel = ExecutionKernel(
             bus=self.bus,
             gateway=self.execution_gateway,
             risk_overlay=self.risk_overlay,
+            config=self._execution_config,
         )
         self.online_state = OnlineStateStore(
             bus=self.bus,
@@ -640,7 +732,12 @@ class ZenQuantWebRuntime:
             self._schedule_state_broadcast()
 
 
-def create_app(runtime_mode: str = "demo", bus: Any = None) -> FastAPI:
+def create_app(
+    runtime_mode: str = "demo",
+    bus: Any = None,
+    options_state_shadow_config: OptionsStateShadowRuntimeConfig | None = None,
+    options_state_store_factory: OptionsStoreFactory = OptionsDataStore,
+) -> FastAPI:
     """Create the FastAPI application used by ``zenquant-web``.
 
     Example:
@@ -652,7 +749,11 @@ def create_app(runtime_mode: str = "demo", bus: Any = None) -> FastAPI:
             "`python3 -m pip install -e .` and retry."
         ) from _FASTAPI_IMPORT_ERROR
 
-    runtime = ZenQuantWebRuntime(runtime_mode=runtime_mode)
+    runtime = ZenQuantWebRuntime(
+        runtime_mode=runtime_mode,
+        options_state_shadow_config=options_state_shadow_config,
+        options_state_store_factory=options_state_store_factory,
+    )
     # Allow external bus injection (e.g., from paper trading)
     if bus is not None:
         runtime.bus = bus
@@ -669,6 +770,7 @@ def create_app(runtime_mode: str = "demo", bus: Any = None) -> FastAPI:
 
     title = "ZenQuant 4.0 Live Sim" if runtime_mode == "live" else "ZenQuant 4.0 Demo"
     app = FastAPI(title=title, version="0.3.0", lifespan=lifespan)
+    app.state.zenquant_runtime = runtime
     web_root = Path(__file__).resolve().parents[1] / "web"
 
     app.mount("/static", StaticFiles(directory=str(web_root)), name="static")
@@ -836,7 +938,25 @@ def main() -> None:
         default=int(os.getenv("ZENQUANT_WEB_PORT", "8090")),
         help="TCP port to bind.",
     )
+    parser.add_argument(
+        "--options-state-shadow",
+        action=argparse.BooleanOptionalAction,
+        default=os.getenv("ZENQUANT_OPTIONS_STATE_SHADOW_ENABLED", "").lower() in {"1", "true", "yes"},
+        help="Enable the observation-only local OptionsState sidecar.",
+    )
+    parser.add_argument(
+        "--options-dir",
+        type=Path,
+        default=Path(os.getenv("ZENQUANT_OPTIONS_DIR", "data/raw/deribit_options")),
+        help="Local Deribit chain snapshot directory for OptionsState shadow.",
+    )
     args = parser.parse_args()
 
-    app = create_app(runtime_mode=args.mode)
+    app = create_app(
+        runtime_mode=args.mode,
+        options_state_shadow_config=OptionsStateShadowRuntimeConfig(
+            enabled=args.options_state_shadow,
+            options_dir=args.options_dir,
+        ),
+    )
     uvicorn.run(app, host=args.host, port=args.port, reload=False)

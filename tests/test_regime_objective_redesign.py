@@ -237,13 +237,13 @@ class RegimeObjectiveRedesignTests(unittest.TestCase):
         stable = score_regime_objective_candidate_generation(
             {
                 **base_metrics,
-                "max_drawdown": 0.05,
+                "max_drawdown": 0.11,
             }
         )
         wide = score_regime_objective_candidate_generation(
             {
                 **base_metrics,
-                "max_drawdown": 0.09,
+                "max_drawdown": 0.14,
             }
         )
 
@@ -311,7 +311,53 @@ class RegimeObjectiveRedesignTests(unittest.TestCase):
         self.assertLess(score["profit_factor_after_fee"], 1.05)
         self.assertGreater(score["trade_count_per_day"], 1.5)
 
-    def test_candidate_generation_scorer_penalizes_weak_time_leverage_cadence(self) -> None:
+    def test_candidate_generation_scorer_relaxed_fee_probe_allows_research_upside_review(self) -> None:
+        metrics = {
+            "sharpe": 3.1,
+            "profit_factor": 1.7,
+            "net_pnl": 18000.0,
+            "max_drawdown": 0.09,
+            "trade_count": 220,
+            "fee_drag_pct": 0.060,
+            "position_switches_per_30d": 1.2,
+            "flip_reduce_fee_drag_pct": 0.024,
+            "net_pnl_per_trade": 81.81,
+            "net_pnl_per_position_switch": 420.0,
+            "profit_factor_after_fee": 1.60,
+            "action_trade_counts": {"flip": 30, "reduce": 70},
+            "action_fee_drag_pct": {"exit": 0.024, "flip": 0.040, "reduce": 0.014},
+            "action_profit_factor": {"reduce": 1.20},
+        }
+        baseline = {
+            "profit_factor": 1.2,
+            "net_pnl": 4000.0,
+            "trade_count": 220,
+            "fee_drag_pct": 0.015,
+            "position_switches_per_30d": 1.6,
+            "flip_reduce_fee_drag_pct": 0.010,
+            "net_pnl_per_trade": 20.0,
+            "net_pnl_per_position_switch": 160.0,
+        }
+
+        strict = score_regime_objective_candidate_generation(metrics, baseline_metrics=baseline)
+        relaxed = score_regime_objective_candidate_generation(
+            metrics,
+            baseline_metrics=baseline,
+            relaxed_fee_probe=True,
+        )
+
+        self.assertIn("train_fee_drag_cap_exceeded", strict["bucket_blockers"])
+        self.assertIn("train_flip_reduce_fee_drag_worse", strict["bucket_blockers"])
+        self.assertIn("train_exit_fee_drag_worse", strict["bucket_blockers"])
+        self.assertIn("train_flip_action_fee_drag_worse", strict["bucket_blockers"])
+        self.assertFalse(strict["allow_dev_diagnostic_review"])
+        self.assertTrue(relaxed["research_relaxed_fee_probe_enabled"])
+        self.assertEqual(relaxed["fee_efficiency_thresholds"]["max_fee_drag_pct_absolute"], 0.15)
+        self.assertEqual(relaxed["fee_efficiency_thresholds"]["min_profit_factor_after_fee"], 0.95)
+        self.assertEqual(relaxed["bucket_blockers"], [])
+        self.assertTrue(relaxed["allow_dev_diagnostic_review"])
+
+    def test_candidate_generation_scorer_penalizes_weak_time_leverage_without_normal_switch_block(self) -> None:
         score = score_regime_objective_candidate_generation(
             {
                 "sharpe": 2.3,
@@ -338,11 +384,13 @@ class RegimeObjectiveRedesignTests(unittest.TestCase):
         )
 
         self.assertFalse(score["allow_dev_diagnostic_review"])
-        self.assertIn("train_position_switch_cadence_worse", score["bucket_blockers"])
+        self.assertNotIn("train_position_switch_cadence_worse", score["bucket_blockers"])
+        self.assertNotIn("train_position_switch_rate_excessive", score["bucket_blockers"])
         self.assertIn("train_flip_reduce_fee_drag_worse", score["bucket_blockers"])
         self.assertIn("train_time_leverage_efficiency_weak", score["bucket_blockers"])
-        self.assertGreater(score["position_switch_penalty"], 0.0)
-        self.assertGreater(score["mature_position_switch_penalty"], 0.0)
+        self.assertAlmostEqual(score["position_switches_per_day"], 8.0 / 30.0, places=6)
+        self.assertEqual(score["position_switch_penalty"], 0.0)
+        self.assertEqual(score["mature_position_switch_penalty"], 0.0)
         self.assertGreater(score["flip_reduce_fee_drag_penalty"], 0.0)
         self.assertLess(score["net_pnl_per_position_switch"], 90.0)
 
@@ -374,10 +422,46 @@ class RegimeObjectiveRedesignTests(unittest.TestCase):
 
         self.assertTrue(score["allow_dev_diagnostic_review"])
         self.assertEqual(score["target_position_switches_per_30d"], 1.6807)
+        self.assertAlmostEqual(score["position_switches_per_day"], 1.8 / 30.0, places=6)
         self.assertEqual(score["position_switch_penalty"], 0.0)
-        self.assertGreater(score["mature_position_switch_penalty"], 0.0)
+        self.assertEqual(score["mature_position_switch_penalty"], 0.0)
         self.assertEqual(score["flip_reduce_fee_drag_penalty"], 0.0)
         self.assertGreater(score["time_leverage_bonus"], 0.0)
+
+    def test_candidate_generation_scorer_allows_absolute_fee_efficient_candidate(self) -> None:
+        score = score_regime_objective_candidate_generation(
+            {
+                "sharpe": 2.3,
+                "profit_factor": 1.46,
+                "net_pnl": 86159.21,
+                "max_drawdown": 0.061,
+                "trade_count": 198,
+                "fee_drag_pct": 0.023339,
+                "position_switches_per_30d": 0.616,
+                "flip_reduce_fee_drag_pct": 0.008792,
+                "net_pnl_per_trade": 435.15,
+                "net_pnl_per_position_switch": 2871.97,
+                "profit_factor_after_fee": 1.429,
+                "action_trade_counts": {"add": 19, "entry": 21, "exit": 20, "flip": 30, "reduce": 108},
+                "action_fee_drag_pct": {"exit": 0.0052, "flip": 0.0055, "reduce": 0.0033},
+                "action_profit_factor": {"exit": 0.61, "flip": 3.12, "reduce": 1.76},
+            },
+            baseline_metrics={
+                "profit_factor": 1.1,
+                "net_pnl": 5000.0,
+                "trade_count": 190,
+                "fee_drag_pct": 0.010,
+                "position_switches_per_30d": 1.8,
+                "flip_reduce_fee_drag_pct": 0.010,
+                "net_pnl_per_trade": 30.0,
+                "net_pnl_per_position_switch": 180.0,
+            },
+        )
+
+        self.assertGreater(score["fee_drag_penalty"], 0.15)
+        self.assertTrue(score["fee_drag_quality_override"])
+        self.assertNotIn("train_fee_drag_structurally_worse", score["bucket_blockers"])
+        self.assertTrue(score["allow_dev_diagnostic_review"])
 
     def test_candidate_generation_scorer_blocks_flip_dominant_exit_structure(self) -> None:
         score = score_regime_objective_candidate_generation(

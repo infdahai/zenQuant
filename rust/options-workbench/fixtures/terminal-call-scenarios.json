@@ -1,0 +1,197 @@
+{
+  "schema_version": "options-terminal-diagnostic-request.rust.v1",
+  "request_id": "single-long-call",
+  "cutoff_ns": 10,
+  "report_currency": "USDC",
+  "leg": {
+    "instrument": {
+      "venue": "MATHEMATICAL_FIXTURE",
+      "product": "linear_option",
+      "instrument_id": "ETH-1000-100-C",
+      "underlying": "ETH",
+      "rule_version": "mathematical.v1",
+      "spec_schema": "options-instrument.rust.v1",
+      "spec_hash": "6bb544f3bccf4e56f85881a251420f89c289c90c3d3c7348ba4b3a2972614c3b"
+    },
+    "side": "BUY",
+    "quantity_native": "0.01"
+  },
+  "spec": {
+    "venue": "MATHEMATICAL_FIXTURE",
+    "instrument_id": "ETH-1000-100-C",
+    "product": "linear_option",
+    "underlying": "ETH",
+    "quote_currency": "USDC",
+    "strike_currency": "USDC",
+    "settlement_currency": "USDC",
+    "margin_currency": "USDC",
+    "expiry_ns": 1000,
+    "strike": "100",
+    "option_type": "C",
+    "exercise_style": "EUROPEAN",
+    "quantity_unit": "base",
+    "multiplier": "1",
+    "price_unit": "quote_per_base",
+    "min_quantity_native": "0.01",
+    "quantity_step_native": "0.01",
+    "max_quantity_native": null,
+    "tick_bands": [
+      [
+        "0",
+        "0.01"
+      ]
+    ],
+    "settlement_index": "MATHEMATICAL_ETH",
+    "settlement_window_ns": 1,
+    "settlement_rule": "linear_cash",
+    "rule_version": "mathematical.v1",
+    "metadata_hash": "0000000000000000000000000000000000000000000000000000000000000000",
+    "valid_from_ns": 0,
+    "valid_until_ns": null,
+    "provenance": "fixture"
+  },
+  "metadata_known_ns": 0,
+  "scenarios": {
+    "meta": {
+      "object_id": "independent-terminal-scenarios",
+      "revision": 1,
+      "parent_hash": null,
+      "schema_version": "options-terminal-scenarios.rust.v1",
+      "method_version": "exact_decimal.rust.v1",
+      "received_ns": 10,
+      "available_ns": 10,
+      "cutoff_ns": 10,
+      "source_ref": "mathematical_fixture_not_market_data",
+      "source_sha256": null,
+      "provenance": "fixture"
+    },
+    "spec_hash": "6bb544f3bccf4e56f85881a251420f89c289c90c3d3c7348ba4b3a2972614c3b",
+    "scenarios": [
+      {
+        "scenario_id": "price-0",
+        "at_ns": 1000,
+        "delivery_price": "0"
+      },
+      {
+        "scenario_id": "price-90",
+        "at_ns": 1000,
+        "delivery_price": "90"
+      },
+      {
+        "scenario_id": "price-100",
+        "at_ns": 1000,
+        "delivery_price": "100"
+      },
+      {
+        "scenario_id": "price-110",
+        "at_ns": 1000,
+        "delivery_price": "110"
+      }
+    ]
+  },
+  "quotes": [
+    {
+      "quote_id": "ETH-1000-100-C",
+      "book": {
+        "spec": {
+          "venue": "MATHEMATICAL_FIXTURE",
+          "instrument_id": "ETH-1000-100-C",
+          "product": "linear_option",
+          "underlying": "ETH",
+          "quote_currency": "USDC",
+          "strike_currency": "USDC",
+          "settlement_currency": "USDC",
+          "margin_currency": "USDC",
+          "expiry_ns": 1000,
+          "strike": "100",
+          "option_type": "C",
+          "exercise_style": "EUROPEAN",
+          "quantity_unit": "base",
+          "multiplier": "1",
+          "price_unit": "quote_per_base",
+          "min_quantity_native": "0.01",
+          "quantity_step_native": "0.01",
+          "max_quantity_native": null,
+          "tick_bands": [
+            [
+              "0",
+              "0.01"
+            ]
+          ],
+          "settlement_index": "MATHEMATICAL_ETH",
+          "settlement_window_ns": 1,
+          "settlement_rule": "linear_cash",
+          "rule_version": "mathematical.v1",
+          "metadata_hash": "0000000000000000000000000000000000000000000000000000000000000000",
+          "valid_from_ns": 0,
+          "valid_until_ns": null,
+          "provenance": "fixture"
+        },
+        "bids": [
+          {
+            "price": "1.9",
+            "quantity_native": "1"
+          }
+        ],
+        "asks": [
+          {
+            "price": "2",
+            "quantity_native": "1"
+          }
+        ],
+        "source_ns": 10,
+        "received_ns": 10,
+        "available_ns": 10,
+        "raw_hash": "0000000000000000000000000000000000000000000000000000000000000000"
+      },
+      "index_in_quote": {
+        "value": "100",
+        "source_ns": 10,
+        "received_ns": 10,
+        "available_ns": 10,
+        "source_id": "mathematical_fixture_not_market_data",
+        "provenance": "fixture"
+      },
+      "index_currency": "USDC",
+      "quote_to_report": {
+        "value": "1",
+        "source_ns": 10,
+        "received_ns": 10,
+        "available_ns": 10,
+        "source_id": "mathematical_fixture_not_market_data",
+        "provenance": "fixture"
+      },
+      "fx_pair": [
+        "USDC",
+        "USDC"
+      ],
+      "fee_policy": {
+        "rate": "0.0003",
+        "premium_cap": "0.125",
+        "fee_currency": "USDC",
+        "provenance": "fixture"
+      },
+      "fee_known_ns": 0,
+      "metadata_known_ns": 0,
+      "timing": {
+        "max_age_ns": 100,
+        "minimum_source_age_ns": 0
+      },
+      "source_identities": [],
+      "assumptions": [
+        "MATHEMATICAL_FIXTURE_NOT_MARKET_DATA"
+      ]
+    }
+  ],
+  "terminal_fee": {
+    "amount_report": "0.001",
+    "known_ns": 0,
+    "source_ref": "mathematical_total_terminal_fee_assumption"
+  },
+  "source_identities": [
+    [
+      "fixture",
+      "mathematical_fixture_not_market_data"
+    ]
+  ]
+}

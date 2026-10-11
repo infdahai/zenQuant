@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import json
 import math
+import os
 import tempfile
 import unittest
 from datetime import UTC, datetime
@@ -48,28 +49,34 @@ class TestGoldenOutput(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
+            original_cwd = Path.cwd()
             layout = HistoricalDatasetLayout(root_dir=root)
-            write_parquet_rows(layout.kline_path("BTCUSDT", "1d", "2024-01"), _daily_rows())
-            write_parquet_rows(layout.kline_path("BTCUSDT", "4h", "2024-01"), _four_hour_rows())
-            write_parquet_rows(layout.funding_path("BTCUSDT", "2024-01"), _funding_rows())
-            write_parquet_rows(
-                layout.open_interest_path("BTCUSDT", "4h", "2024-01"),
-                _open_interest_rows(),
-            )
-
-            # Keep Gate C hermetic: synthetic fixtures must not be affected by
-            # optional repo-local datasets that may exist on one machine but not another.
-            result = HistoricalBacktest(
-                HistoricalBacktestConfig(
-                    root_dir=root,
-                    symbol="BTCUSDT",
-                    macro_dir=root / "macro",
-                    options_dir=root / "deribit_options",
-                    cot_path=root / "cftc" / "cot_btc.parquet",
-                    liquidation_dir=root / "liquidations" / "aggregated",
-                    profile_path=None,
+            try:
+                # Several optional research sidecars use repo-relative paths.
+                # Run the fixture from its empty temporary root so Gate C never
+                # incorporates a developer's local datasets.
+                os.chdir(root)
+                write_parquet_rows(layout.kline_path("BTCUSDT", "1d", "2024-01"), _daily_rows())
+                write_parquet_rows(layout.kline_path("BTCUSDT", "4h", "2024-01"), _four_hour_rows())
+                write_parquet_rows(layout.funding_path("BTCUSDT", "2024-01"), _funding_rows())
+                write_parquet_rows(
+                    layout.open_interest_path("BTCUSDT", "4h", "2024-01"),
+                    _open_interest_rows(),
                 )
-            ).run()
+
+                result = HistoricalBacktest(
+                    HistoricalBacktestConfig(
+                        root_dir=root,
+                        symbol="BTCUSDT",
+                        macro_dir=root / "macro",
+                        options_dir=root / "deribit_options",
+                        cot_path=root / "cftc" / "cot_btc.parquet",
+                        liquidation_dir=root / "liquidations" / "aggregated",
+                        profile_path=None,
+                    )
+                ).run()
+            finally:
+                os.chdir(original_cwd)
 
         gm = golden["metrics"]
         self.assertAlmostEqual(

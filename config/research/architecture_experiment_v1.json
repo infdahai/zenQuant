@@ -1,0 +1,97 @@
+{
+  "version": "architecture_experiment_v1",
+  "candidate": {
+    "id": "august_rank1_20260821",
+    "source_path": "results/remediation_20260821/train_dev_smoke_daily_switch_policy/framework_optimization.json",
+    "source_json_path": "train_candidate_diagnostics.top_train_trial_diagnostics[0].params",
+    "source_sha256": "37946e91c0fa601f688ebedfa5729192a8ac9c74de08585e23c64cc05b21bd4c",
+    "params_sha256": "d86c92e8837c2febc04d0c2935299abc30b0636fb5d9a7c9e244d670d3499381",
+    "params": {
+      "dd_step_1_long": 0.15,
+      "dd_step_1_short": 0.08,
+      "vpin_threshold": 0.1,
+      "vol_shock_threshold": 0.95,
+      "target_vol_4h": 1.1,
+      "max_leverage": 4.5,
+      "pyramid_initial_pct": 0.3,
+      "pyramid_add_pct": 0.3,
+      "pyramid_short_initial_pct": 0.2,
+      "pyramid_short_add_pct": 0.1,
+      "pyramid_spacing_atr": 0.5,
+      "exit_unwind_pct": 0.4,
+      "dca_max_adverse_atr": 2.5,
+      "dca_spacing_atr": 0.75,
+      "dca_size_decay": 0.75,
+      "flip_min_confidence": 0.7
+    }
+  },
+  "profile": {
+    "path": "config/profiles/default.toml",
+    "sha256": "ce4fc640b3a0ae2dfb8b6d4bd96652f431a20b5581ce5d2fa67e0722f4841d05"
+  },
+  "symbol": "BTCUSDT",
+  "portfolio_symbol": "BTCUSDT_PERP",
+  "alpha": {
+    "timeframe": "4h",
+    "horizon_bars": 1,
+    "label": "next_retained_confirmed_4h_close",
+    "signal_roles": [
+      "direction"
+    ]
+  },
+  "a0_execution_contract": {
+    "execution_timeframe": "5m",
+    "context_timeframe": "1h",
+    "direction_timeframe": "4h",
+    "bias_timeframe": "1d"
+  },
+  "windows": [
+    {
+      "label": "train_full",
+      "start_ns": 1577836800000000000,
+      "end_ns": 1704067200000000000
+    },
+    {
+      "label": "2020",
+      "start_ns": 1577836800000000000,
+      "end_ns": 1609459200000000000
+    },
+    {
+      "label": "2021",
+      "start_ns": 1609459200000000000,
+      "end_ns": 1640995200000000000
+    },
+    {
+      "label": "2022",
+      "start_ns": 1640995200000000000,
+      "end_ns": 1672531200000000000
+    },
+    {
+      "label": "2023",
+      "start_ns": 1672531200000000000,
+      "end_ns": 1704067200000000000
+    },
+    {
+      "label": "late_dev_2025",
+      "start_ns": 1735689600000000000,
+      "end_ns": 1767225600000000000
+    }
+  ],
+  "seeds": [
+    42,
+    123,
+    456,
+    789,
+    1024
+  ],
+  "perturbation": {
+    "price_noise_pct": 0.001,
+    "volume_noise_pct": 0.05,
+    "bar_dropout_pct": 0.02
+  },
+  "cost_stress_bps": [
+    0.0,
+    5.0,
+    15.0
+  ]
+}

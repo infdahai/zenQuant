@@ -86,9 +86,9 @@ def download_binance_metrics_history(
     oi_paths: list[str] = []
     oi_rows_total = 0
     for month, rows in sorted(raw_rows_by_month.items()):
-        raw_frame = pd.DataFrame(rows).sort_values("create_time")
         raw_path = root / "metrics" / symbol / f"{month}.parquet"
         raw_path.parent.mkdir(parents=True, exist_ok=True)
+        raw_frame = _merge_metrics_month(raw_path, pd.DataFrame(rows))
         raw_frame.to_parquet(raw_path, index=False)
         raw_paths.append(str(raw_path))
 
@@ -99,7 +99,7 @@ def download_binance_metrics_history(
             oi_paths.append(str(oi_path))
             oi_rows_total += len(oi_rows)
 
-    coverage = _coverage_from_oi_paths(oi_paths)
+    coverage = _coverage_from_oi_paths(_open_interest_paths_for_coverage(root, symbol))
     return {
         "schema_version": "binance_metrics_history_download.v1",
         "generated_at": datetime.now(UTC).isoformat(),
@@ -151,6 +151,19 @@ def _download_metrics_day(symbol: str, day: date) -> list[BinanceMetricsRow]:
             except (KeyError, TypeError, ValueError):
                 continue
     return rows
+
+
+def _merge_metrics_month(path: Path, incoming: pd.DataFrame) -> pd.DataFrame:
+    frames = [incoming]
+    if path.exists():
+        frames.insert(0, pd.read_parquet(path))
+    merged = pd.concat(frames, ignore_index=True)
+    merged["create_time"] = merged["create_time"].astype(str)
+    return merged.drop_duplicates(subset=["create_time"], keep="last").sort_values("create_time").reset_index(drop=True)
+
+
+def _open_interest_paths_for_coverage(root: Path, symbol: str) -> list[str]:
+    return [str(path) for path in sorted((root / "open_interest" / symbol / "4h").glob("*.parquet"))]
 
 
 def _aggregate_open_interest_4h(frame: pd.DataFrame, *, symbol: str) -> list[HistoricalOpenInterestRow]:

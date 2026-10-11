@@ -16,7 +16,7 @@ def _normalize_exchange_timestamp(value: int | float) -> int:
 
 def csv_to_parquet(csv_dir: Path, output_dir: Path, data_type: str):
     """Convert all CSV files in directory to Parquet."""
-    csv_files = list(csv_dir.glob("*.csv"))
+    csv_files = sorted(csv_dir.glob("*.csv"))
 
     if not csv_files:
         print(f"No CSV files found in {csv_dir}")
@@ -70,10 +70,21 @@ def csv_to_parquet(csv_dir: Path, output_dir: Path, data_type: str):
         combined["close_time"] = combined["close_time"].map(_normalize_exchange_timestamp)
         combined["open_time_ns"] = combined["open_time"] * 1_000_000
         combined["close_time_ns"] = combined["close_time"] * 1_000_000
+        combined = (
+            combined.sort_values("open_time_ns")
+            .drop_duplicates(subset=["open_time_ns"], keep="last")
+            .reset_index(drop=True)
+        )
     elif data_type == "funding":
         combined["funding_time_ns"] = combined["funding_time"] * 1_000_000
+        combined = (
+            combined.sort_values("funding_time_ns")
+            .drop_duplicates(subset=["funding_time_ns"], keep="last")
+            .reset_index(drop=True)
+        )
     elif data_type == "open_interest":
         combined["ts_ns"] = combined["timestamp"] * 1_000_000
+        combined = combined.sort_values("ts_ns").drop_duplicates(subset=["ts_ns"], keep="last").reset_index(drop=True)
 
     # Save as Parquet
     output_dir.mkdir(parents=True, exist_ok=True)

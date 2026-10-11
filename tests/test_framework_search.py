@@ -7,15 +7,18 @@ import unittest
 from concurrent.futures import TimeoutError as FutureTimeoutError
 from dataclasses import dataclass
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from zenquant.domain import Timeframe
 from zenquant.historical import HistoricalBacktestConfig
 from zenquant.historical.storage import HistoricalKlineRow, write_parquet_rows
 from zenquant.research.auto_research import _build_strategy_config, _hostile_proxy_diagnostics
+from zenquant.research.comparison import VariantSpec
 from zenquant.research.framework_params import (
     BASE_TIMEFRAME_SMOKE_MODES,
     DEFAULT_DEV_FEE_STABILITY_LIMITS,
+    RELAXED_DEV_FEE_STABILITY_LIMITS,
     SEARCH_SPACE_MODES,
     STRICT_TRAIN_FEE_STOP_PROFILE_FLAGS,
     STRICT_TRAIN_TRUTH_PROFILE_FLAGS,
@@ -29,6 +32,7 @@ from zenquant.research.framework_params import (
     build_execution_config,
     build_plugin_config_overrides,
     build_replay_toggles,
+    build_risk_config,
     build_signal_weight_overrides,
     build_strategy_config,
     core_param_grid,
@@ -42,6 +46,14 @@ from zenquant.research.framework_params import (
     is_hostile_aware_param_combo,
     paulwei_balanced_tranche_param_grid,
     paulwei_balanced_tranche_seed_trials,
+    paulwei_dual_phase_fee_repair_param_grid,
+    paulwei_dual_phase_fee_repair_seed_trials,
+    paulwei_dual_phase_param_grid,
+    paulwei_dual_phase_seed_trials,
+    paulwei_dual_phase_spot_context_param_grid,
+    paulwei_dual_phase_spot_context_relaxed_fee_param_grid,
+    paulwei_dual_phase_spot_context_relaxed_fee_seed_trials,
+    paulwei_dual_phase_spot_context_seed_trials,
     ralph_execution_fee_cooldown_param_grid,
     ralph_execution_fee_cooldown_seed_trials,
     ralph_intent_reduce_cadence_param_grid,
@@ -66,9 +78,14 @@ from zenquant.research.framework_search import (
     _classify_post_smoke_scenario,
     _dev_fee_stability_summary,
     _hostile_regression_summary,
+    _late_dev_regime_window,
+    _ns_from_utc,
     _run_validation_bundle,
     _run_variant_backtest_with_timeout,
+    _spot_context_score,
     _stage1_fail_fast_reason,
+    _temporal_robustness_audit,
+    _train_temporal_robustness_windows,
     build_markdown_report,
     run_optuna_search,
     write_search_report,
@@ -121,6 +138,10 @@ class FrameworkParamTests(unittest.TestCase):
         self.assertIn("intent_churn_ablation_train_only", SEARCH_SPACE_MODES)
         self.assertIn("ralph_intent_reduce_cadence_train_only", SEARCH_SPACE_MODES)
         self.assertIn("paulwei_balanced_tranche_train_only", SEARCH_SPACE_MODES)
+        self.assertIn("paulwei_dual_phase_train_only", SEARCH_SPACE_MODES)
+        self.assertIn("paulwei_dual_phase_fee_repair_train_only", SEARCH_SPACE_MODES)
+        self.assertIn("paulwei_dual_phase_spot_context_train_only", SEARCH_SPACE_MODES)
+        self.assertIn("paulwei_dual_phase_spot_context_relaxed_fee_train_only", SEARCH_SPACE_MODES)
         self.assertIn("intent_churn_ablation_train_only", BASE_TIMEFRAME_SMOKE_MODES)
         self.assertTrue(
             smoke_uses_base_timeframe(budget="smoke", search_space_mode="ralph_intent_reduce_cadence_train_only")
@@ -128,12 +149,35 @@ class FrameworkParamTests(unittest.TestCase):
         self.assertTrue(
             smoke_uses_base_timeframe(budget="smoke", search_space_mode="paulwei_balanced_tranche_train_only")
         )
+        self.assertTrue(smoke_uses_base_timeframe(budget="smoke", search_space_mode="paulwei_dual_phase_train_only"))
+        self.assertTrue(
+            smoke_uses_base_timeframe(budget="smoke", search_space_mode="paulwei_dual_phase_fee_repair_train_only")
+        )
+        self.assertTrue(
+            smoke_uses_base_timeframe(
+                budget="smoke",
+                search_space_mode="paulwei_dual_phase_spot_context_train_only",
+            )
+        )
+        self.assertTrue(
+            smoke_uses_base_timeframe(
+                budget="smoke",
+                search_space_mode="paulwei_dual_phase_spot_context_relaxed_fee_train_only",
+            )
+        )
         self.assertFalse(smoke_uses_base_timeframe(budget="smoke", search_space_mode="baseline_anchored_train_only"))
         self.assertIn("intent_churn_ablation_search", STRICT_TRAIN_FEE_STOP_PROFILE_FLAGS)
         self.assertIn("ralph_intent_reduce_cadence_search", STRICT_TRAIN_TRUTH_PROFILE_FLAGS)
         self.assertIn("paulwei_balanced_tranche_search", STRICT_TRAIN_FEE_STOP_PROFILE_FLAGS)
         self.assertIn("paulwei_balanced_tranche_search", STRICT_TRAIN_TRUTH_PROFILE_FLAGS)
+        self.assertIn("paulwei_dual_phase_search", STRICT_TRAIN_FEE_STOP_PROFILE_FLAGS)
+        self.assertIn("paulwei_dual_phase_search", STRICT_TRAIN_TRUTH_PROFILE_FLAGS)
+        self.assertIn("paulwei_dual_phase_fee_repair_search", STRICT_TRAIN_FEE_STOP_PROFILE_FLAGS)
+        self.assertIn("paulwei_dual_phase_fee_repair_search", STRICT_TRAIN_TRUTH_PROFILE_FLAGS)
+        self.assertIn("paulwei_dual_phase_spot_context_search", STRICT_TRAIN_FEE_STOP_PROFILE_FLAGS)
+        self.assertIn("paulwei_dual_phase_spot_context_search", STRICT_TRAIN_TRUTH_PROFILE_FLAGS)
         self.assertEqual(DEFAULT_DEV_FEE_STABILITY_LIMITS.dev_fee_drag_fail_fast_cap, 0.075)
+        self.assertEqual(RELAXED_DEV_FEE_STABILITY_LIMITS.dev_fee_drag_fail_fast_cap, 0.25)
 
     def test_hostile_constraint_violations_reject_aggressive_combo(self) -> None:
         params = {
@@ -453,6 +497,11 @@ class FrameworkParamTests(unittest.TestCase):
         self.assertEqual(grid["intent_flat_reduce_step_pct"], [0.15, 0.25, 0.35])
         self.assertEqual(grid["intent_flat_step_cadence_bars"], [8, 12, 24])
         self.assertEqual(grid["intent_same_direction_reduce_confirmation_bars"], [4, 8, 12])
+        self.assertEqual(grid["range_time_decay_bars"], [48, 96, 168])
+        self.assertEqual(grid["preserve_capital_time_decay_bars"], [12, 24, 48])
+        self.assertEqual(grid["time_decay_exit_enabled"], [1.0])
+        self.assertEqual(grid["time_decay_long_loss_threshold"], [-0.08, -0.12])
+        self.assertEqual(grid["time_decay_short_loss_threshold"], [-0.04, -0.06, -0.08])
         self.assertEqual(grid["intent_unconfirmed_flip_reduce_only"], [0.0])
         self.assertEqual(grid["flip_flatten_only_enabled"], [0.0])
         self.assertEqual(grid["target_delta_deadband_pct"], [0.0])
@@ -467,6 +516,342 @@ class FrameworkParamTests(unittest.TestCase):
         self.assertFalse(profile["intent_churn_ablation_search"])
         self.assertFalse(profile["ralph_intent_reduce_cadence_search"])
         self.assertTrue(profile["paulwei_balanced_tranche_search"])
+
+    def test_paulwei_dual_phase_grid_targets_expansion_and_control_templates(self) -> None:
+        grid = paulwei_dual_phase_param_grid()
+        seeds = paulwei_dual_phase_seed_trials()
+
+        self.assertEqual(grid["paulwei_dual_phase_objective_enabled"], [1.0])
+        self.assertEqual(grid["max_leverage"], [2.5, 3.0])
+        self.assertEqual(grid["intent_time_leverage_min_hold_bars"], [336, 480, 672])
+        self.assertEqual(grid["intent_time_leverage_dip_accumulation_enabled"], [1.0])
+        self.assertEqual(grid["intent_time_leverage_reduce_deadband_pct"], [0.80, 1.00, 1.25])
+        self.assertEqual(grid["intent_flip_confirmation_bars"], [16, 24, 36])
+        self.assertEqual(grid["target_delta_deadband_pct"], [0.0])
+        self.assertEqual(grid["profit_protect_reduce_enabled"], [0.0])
+        self.assertGreaterEqual(len(seeds), 4)
+        self.assertTrue(all(seed["paulwei_dual_phase_objective_enabled"] == 1.0 for seed in seeds))
+        self.assertTrue(all(seed["max_leverage"] <= 3.0 for seed in seeds))
+
+    def test_search_space_profile_marks_paulwei_dual_phase_mode(self) -> None:
+        profile = search_space_profile(mode="paulwei_dual_phase_train_only")
+
+        self.assertEqual(profile["profile"], "paulwei_dual_phase_train_only")
+        self.assertEqual(profile["search_space_mode"], "paulwei_dual_phase_train_only")
+        self.assertFalse(profile["paulwei_balanced_tranche_search"])
+        self.assertTrue(profile["paulwei_dual_phase_search"])
+        self.assertTrue(profile["paulwei_phase_learning_contract"]["enabled"])
+        self.assertEqual(
+            profile["paulwei_phase_learning_contract"]["templates"],
+            ["early_convexity_usdt_projection", "mature_low_switch_control"],
+        )
+
+    def test_paulwei_dual_phase_fee_repair_grid_targets_entry_exit_fee_drag(self) -> None:
+        grid = paulwei_dual_phase_fee_repair_param_grid()
+        seeds = paulwei_dual_phase_fee_repair_seed_trials()
+
+        self.assertEqual(grid["paulwei_dual_phase_objective_enabled"], [1.0])
+        self.assertEqual(grid["target_vol_4h"], [0.45, 0.50])
+        self.assertEqual(grid["target_vol_5m"], [0.60, 0.65, 0.70])
+        self.assertEqual(grid["max_leverage"], [3.0])
+        self.assertEqual(grid["direction_signal_threshold"], [0.40, 0.45])
+        self.assertEqual(grid["intent_add_signal_threshold"], [0.35, 0.40])
+        self.assertEqual(grid["intent_entry_confirmation_bars"], [4, 6])
+        self.assertEqual(grid["intent_flat_confirmation_bars"], [16, 24])
+        self.assertEqual(grid["intent_time_leverage_min_hold_bars"], [480])
+        self.assertEqual(grid["intent_time_leverage_reduce_deadband_pct"], [1.00])
+        self.assertEqual(grid["intent_flat_step_cadence_bars"], [24])
+        self.assertEqual(grid["range_time_decay_bars"], [168])
+        self.assertEqual(grid["target_delta_deadband_pct"], [0.0])
+        self.assertEqual(grid["profit_protect_reduce_enabled"], [0.0])
+        self.assertGreaterEqual(len(seeds), 4)
+        self.assertTrue(all(seed["paulwei_dual_phase_objective_enabled"] == 1.0 for seed in seeds))
+        self.assertTrue(all(seed["target_vol_4h"] in {0.45, 0.50} for seed in seeds))
+        self.assertTrue(all(seed["target_vol_5m"] in {0.60, 0.65, 0.70} for seed in seeds))
+        self.assertTrue(all(seed["max_leverage"] == 3.0 for seed in seeds))
+        self.assertTrue(all(seed["intent_add_signal_threshold"] <= 0.40 for seed in seeds))
+        self.assertTrue(all(seed["intent_flat_step_cadence_bars"] == 24 for seed in seeds))
+
+    def test_search_space_profile_marks_paulwei_dual_phase_fee_repair_mode(self) -> None:
+        profile = search_space_profile(mode="paulwei_dual_phase_fee_repair_train_only")
+
+        self.assertEqual(profile["profile"], "paulwei_dual_phase_fee_repair_train_only")
+        self.assertEqual(profile["search_space_mode"], "paulwei_dual_phase_fee_repair_train_only")
+        self.assertFalse(profile["paulwei_balanced_tranche_search"])
+        self.assertTrue(profile["paulwei_dual_phase_search"])
+        self.assertTrue(profile["paulwei_dual_phase_fee_repair_search"])
+        self.assertTrue(profile["paulwei_phase_learning_contract"]["enabled"])
+        self.assertEqual(
+            profile["paulwei_phase_learning_contract"]["templates"],
+            ["early_convexity_usdt_projection", "mature_low_switch_control", "dual_phase_fee_repair"],
+        )
+
+    def test_paulwei_dual_phase_spot_context_grid_targets_profit_running(self) -> None:
+        grid = paulwei_dual_phase_spot_context_param_grid()
+        seeds = paulwei_dual_phase_spot_context_seed_trials()
+
+        self.assertEqual(grid["paulwei_dual_phase_objective_enabled"], [1.0])
+        self.assertEqual(grid["target_vol_4h"], [0.50, 0.65, 0.80, 0.95])
+        self.assertEqual(grid["target_vol_5m"], [0.65, 0.70, 0.75, 0.80])
+        self.assertEqual(grid["max_leverage"], [3.0])
+        self.assertEqual(grid["direction_signal_threshold"], [0.25, 0.30, 0.35, 0.40])
+        self.assertEqual(grid["intent_add_signal_threshold"], [0.25, 0.30, 0.35, 0.40])
+        self.assertEqual(grid["intent_flip_confirmation_bars"], [36, 48, 72, 96, 120])
+        self.assertEqual(grid["intent_time_leverage_min_hold_bars"], [672, 960, 1344])
+        self.assertEqual(grid["intent_time_leverage_reduce_deadband_pct"], [1.00, 1.25, 1.50, 1.75])
+        self.assertEqual(grid["time_decay_long_loss_threshold"], [-0.12, -0.16])
+        self.assertGreaterEqual(len(seeds), 24)
+        self.assertTrue(all(seed["paulwei_dual_phase_objective_enabled"] == 1.0 for seed in seeds))
+        self.assertTrue(all(seed["max_leverage"] == 3.0 for seed in seeds))
+        self.assertGreater(max(seed["intent_time_leverage_min_hold_bars"] for seed in seeds), 480)
+        self.assertTrue(all(seed.get("intent_time_leverage_long_bias_enabled") == 1.0 for seed in seeds[:12]))
+        self.assertTrue(any(seed["target_vol_4h"] == 0.50 for seed in seeds[:12]))
+        self.assertTrue(any(seed["target_vol_4h"] == 0.95 for seed in seeds[:12]))
+        self.assertTrue(any(seed["intent_bearish_override_confirmation_bars"] == 8 for seed in seeds[:6]))
+
+    def test_search_space_profile_marks_paulwei_dual_phase_spot_context_mode(self) -> None:
+        profile = search_space_profile(mode="paulwei_dual_phase_spot_context_train_only")
+
+        self.assertEqual(profile["profile"], "paulwei_dual_phase_spot_context_train_only")
+        self.assertEqual(profile["search_space_mode"], "paulwei_dual_phase_spot_context_train_only")
+        self.assertTrue(profile["paulwei_dual_phase_search"])
+        self.assertFalse(profile["paulwei_dual_phase_fee_repair_search"])
+        self.assertTrue(profile["paulwei_dual_phase_spot_context_search"])
+        self.assertEqual(
+            profile["paulwei_phase_learning_contract"]["templates"],
+            [
+                "early_convexity_usdt_projection",
+                "mature_low_switch_control",
+                "dual_phase_fee_repair",
+                "spot_era_context_profit_run",
+            ],
+        )
+
+    def test_search_space_profile_marks_paulwei_dual_phase_relaxed_fee_probe_mode(self) -> None:
+        profile = search_space_profile(mode="paulwei_dual_phase_spot_context_relaxed_fee_train_only")
+        grid = paulwei_dual_phase_spot_context_relaxed_fee_param_grid()
+        seeds = paulwei_dual_phase_spot_context_relaxed_fee_seed_trials()
+
+        self.assertEqual(profile["profile"], "paulwei_dual_phase_spot_context_relaxed_fee_train_only")
+        self.assertTrue(profile["paulwei_dual_phase_search"])
+        self.assertTrue(profile["paulwei_dual_phase_spot_context_search"])
+        self.assertTrue(profile["paulwei_dual_phase_spot_context_relaxed_fee_search"])
+        self.assertTrue(profile["research_relaxed_fee_probe"])
+        self.assertIn("research_relaxed_fee_probe", profile["paulwei_phase_learning_contract"]["templates"])
+        self.assertEqual(grid["research_relaxed_fee_probe_enabled"], [1.0])
+        self.assertNotIn(1.25, grid["target_vol_4h"])
+        self.assertTrue(all(value <= 1.10 for value in grid["target_vol_4h"]))
+        self.assertEqual(grid["max_leverage"], [3.0, 3.5])
+        self.assertIn(36, grid["intent_flip_confirmation_bars"])
+        self.assertEqual(grid["intent_range_entry_confirmation_bars"], [4, 6])
+        self.assertEqual(grid["intent_range_bear_profit_entry_confirmation_bars"], [0, 2, 4])
+        self.assertIn(672, grid["intent_time_leverage_min_hold_bars"])
+        self.assertIn(4, grid["intent_bearish_override_confirmation_bars"])
+        self.assertIn(0.50, grid["intent_time_leverage_long_bias_confidence_floor"])
+        self.assertIn(0.65, grid["intent_time_leverage_long_bias_transition_ceiling"])
+        self.assertEqual(grid["intent_time_leverage_bear_carry_enabled"], [1.0])
+        self.assertEqual(grid["intent_time_leverage_bear_carry_max_leverage"], [0.20, 0.35])
+        self.assertEqual(grid["intent_time_leverage_bear_carry_confidence_floor"], [0.60, 0.65, 0.70])
+        self.assertEqual(grid["intent_time_leverage_bear_carry_transition_ceiling"], [0.45, 0.55, 0.65])
+        self.assertEqual(grid["intent_time_leverage_bear_carry_allow_range_bear_profit_short"], [0.0, 1.0])
+        self.assertEqual(grid["intent_confirmed_downtrend_long_cap_enabled"], [0.0, 1.0])
+        self.assertEqual(grid["intent_confirmed_downtrend_long_cap_max_leverage"], [0.0, 0.10, 0.20])
+        self.assertEqual(grid["intent_confirmed_downtrend_long_cap_confidence_floor"], [0.60, 0.65, 0.70])
+        self.assertEqual(grid["intent_confirmed_downtrend_long_cap_direction_signal_ceiling"], [0.0, -0.20, -0.40])
+        self.assertIn(0.25, grid["intent_time_leverage_dip_add_pct"])
+        self.assertEqual(grid["multi_momentum_range_profit_run_enabled"], [1.0])
+        self.assertIn(0.15, grid["multi_momentum_range_profit_run_threshold"])
+        self.assertEqual(grid["multi_momentum_range_profit_run_value"], [0.25, 0.35, 0.50])
+        self.assertEqual(grid["multi_momentum_range_profit_run_confidence"], [0.45, 0.55, 0.65])
+        self.assertIn(0.45, grid["multi_momentum_range_profit_run_max_transition_risk"])
+        self.assertIn(1.00, grid["multi_momentum_range_profit_run_min_cycle_position"])
+        self.assertIn(1.0, grid["multi_momentum_range_profit_run_cycle_fallback_enabled"])
+        self.assertIn(0.10, grid["multi_momentum_range_profit_run_cycle_momentum_threshold"])
+        self.assertEqual(grid["multi_momentum_range_profit_run_min_state_direction_signal"], [-0.55, -0.35, -0.25])
+        self.assertEqual(grid["multi_momentum_range_profit_run_require_uptrend_state"], [0.0])
+        self.assertEqual(grid["intent_range_bull_profit_run_override_enabled"], [1.0])
+        self.assertEqual(grid["intent_range_bull_profit_run_direction_signal"], [0.20, 0.25])
+        self.assertEqual(grid["intent_range_bull_profit_run_momentum_threshold"], [0.15, 0.20])
+        self.assertEqual(grid["intent_range_bull_profit_run_confidence_floor"], [0.50, 0.55])
+        self.assertEqual(grid["intent_range_bull_profit_run_max_transition_risk"], [0.45, 0.55])
+        self.assertEqual(grid["intent_transition_rebound_sleeve_enabled"], [1.0])
+        self.assertEqual(grid["intent_transition_rebound_sleeve_max_leverage"], [0.25, 0.35, 0.50])
+        self.assertIn(1.0, grid["multi_momentum_range_bear_profit_run_enabled"])
+        self.assertIn(0.20, grid["multi_momentum_range_bear_profit_run_threshold"])
+        self.assertIn(0.70, grid["multi_momentum_range_bear_profit_run_value"])
+        self.assertIn(0.55, grid["multi_momentum_range_bear_profit_run_max_transition_risk"])
+        self.assertIn(1.0, grid["multi_momentum_range_bear_profit_run_cycle_fallback_enabled"])
+        self.assertIn(0.95, grid["multi_momentum_range_bear_profit_run_cycle_threshold"])
+        self.assertIn(0.20, grid["multi_momentum_range_bear_profit_run_max_state_direction_signal"])
+        self.assertIn(0.14, grid["dd_step_1_short"])
+        self.assertIn(0.22, grid["dd_step_2_short"])
+        self.assertIn(0.28, grid["dd_step_3_short"])
+        self.assertIn(6.0, grid["bear_trailing_stop_atr_mult"])
+        self.assertEqual(grid["intent_time_leverage_trailing_exit_hold_enabled"], [0.0, 1.0])
+        self.assertEqual(grid["intent_time_leverage_trailing_exit_max_adverse_atr"], [1.5, 2.0, 2.5])
+        self.assertIn(1.0, grid["intent_range_bear_profit_run_override_enabled"])
+        self.assertIn(-0.25, grid["intent_range_bear_profit_run_direction_signal"])
+        self.assertIn(-0.20, grid["intent_range_bear_profit_run_momentum_threshold"])
+        self.assertIn(0.55, grid["intent_range_bear_profit_run_max_transition_risk"])
+        self.assertIn(1.0, grid["intent_range_bear_profit_confirmed_bear_transition_override_enabled"])
+        self.assertIn(0.75, grid["intent_range_bear_profit_confirmed_bear_max_transition_risk"])
+        self.assertEqual(grid["intent_range_bull_profit_context_score_threshold"], [0.05, 0.10, 0.20, 0.30])
+        self.assertEqual(grid["intent_range_bull_profit_timing_score_threshold"], [0.05, 0.10, 0.20, 0.30])
+        self.assertEqual(grid["intent_range_bear_profit_context_score_threshold"], [0.35, 0.40, 0.45, 0.50])
+        self.assertEqual(grid["intent_range_bear_profit_timing_score_threshold"], [0.30, 0.35, 0.40, 0.45])
+        self.assertIn(-0.24, grid["time_decay_short_loss_threshold"])
+        self.assertEqual(grid["intent_time_leverage_long_bias_block_short"], [1.0])
+        self.assertTrue(all(seed["research_relaxed_fee_probe_enabled"] == 1.0 for seed in seeds[:12]))
+        self.assertTrue(all(seed["target_vol_4h"] <= 1.10 for seed in seeds[:12]))
+        self.assertTrue(all(seed["max_leverage"] <= 3.5 for seed in seeds[:12]))
+        self.assertTrue(any(seed["intent_flip_confirmation_bars"] == 36 for seed in seeds[:12]))
+        self.assertEqual(seeds[0]["intent_range_entry_confirmation_bars"], 4)
+        self.assertEqual(seeds[1]["intent_range_entry_confirmation_bars"], 6)
+        self.assertEqual(seeds[2]["intent_range_entry_confirmation_bars"], 6)
+        self.assertTrue(all(seed["intent_range_entry_confirmation_bars"] <= 6 for seed in seeds[:12]))
+        self.assertEqual(seeds[0]["intent_range_bear_profit_entry_confirmation_bars"], 0)
+        self.assertEqual(seeds[1]["intent_range_bear_profit_entry_confirmation_bars"], 2)
+        self.assertEqual(seeds[2]["intent_range_bear_profit_entry_confirmation_bars"], 4)
+        self.assertEqual(seeds[0]["intent_range_bear_profit_context_score_threshold"], 0.35)
+        self.assertEqual(seeds[0]["intent_range_bear_profit_timing_score_threshold"], 0.30)
+        self.assertEqual(seeds[0]["intent_range_bull_profit_context_score_threshold"], 0.05)
+        self.assertEqual(seeds[0]["intent_range_bull_profit_timing_score_threshold"], 0.05)
+        self.assertEqual(seeds[1]["intent_range_bear_profit_context_score_threshold"], 0.40)
+        self.assertEqual(seeds[1]["intent_range_bear_profit_timing_score_threshold"], 0.35)
+        self.assertEqual(seeds[1]["intent_range_bull_profit_context_score_threshold"], 0.10)
+        self.assertEqual(seeds[1]["intent_range_bull_profit_timing_score_threshold"], 0.10)
+        self.assertEqual(seeds[2]["intent_range_bear_profit_context_score_threshold"], 0.45)
+        self.assertEqual(seeds[2]["intent_range_bear_profit_timing_score_threshold"], 0.35)
+        self.assertEqual(seeds[2]["intent_range_bull_profit_context_score_threshold"], 0.20)
+        self.assertEqual(seeds[2]["intent_range_bull_profit_timing_score_threshold"], 0.20)
+        self.assertTrue(any(seed["intent_time_leverage_min_hold_bars"] == 672 for seed in seeds[:12]))
+        self.assertTrue(any(seed["intent_time_leverage_long_bias_confidence_floor"] == 0.50 for seed in seeds[:12]))
+        self.assertEqual(seeds[0]["intent_time_leverage_bear_carry_enabled"], 1.0)
+        self.assertEqual(seeds[0]["intent_time_leverage_bear_carry_max_leverage"], 0.35)
+        self.assertEqual(seeds[0]["intent_time_leverage_bear_carry_transition_ceiling"], 0.65)
+        self.assertEqual(seeds[0]["intent_confirmed_downtrend_long_cap_enabled"], 1.0)
+        self.assertEqual(seeds[0]["intent_confirmed_downtrend_long_cap_max_leverage"], 0.0)
+        self.assertEqual(seeds[0]["intent_confirmed_downtrend_long_cap_confidence_floor"], 0.60)
+        self.assertEqual(seeds[0]["intent_confirmed_downtrend_long_cap_direction_signal_ceiling"], 0.0)
+        self.assertEqual(seeds[1]["intent_confirmed_downtrend_long_cap_enabled"], 0.0)
+        self.assertEqual(seeds[2]["intent_confirmed_downtrend_long_cap_max_leverage"], 0.20)
+        self.assertEqual(seeds[2]["intent_confirmed_downtrend_long_cap_direction_signal_ceiling"], -0.40)
+        self.assertEqual(seeds[0]["intent_time_leverage_trailing_exit_hold_enabled"], 1.0)
+        self.assertEqual(seeds[0]["intent_time_leverage_trailing_exit_max_adverse_atr"], 1.5)
+        self.assertTrue(all(seed["intent_time_leverage_bear_carry_enabled"] == 1.0 for seed in seeds[:12]))
+        self.assertTrue(
+            any(seed["intent_time_leverage_bear_carry_allow_range_bear_profit_short"] == 1.0 for seed in seeds[:12])
+        )
+        self.assertTrue(all(seed["intent_time_leverage_long_bias_block_short"] == 1.0 for seed in seeds[:12]))
+        self.assertTrue(all(seed["intent_time_leverage_bear_carry_max_leverage"] <= 0.35 for seed in seeds[:12]))
+        self.assertTrue(any(seed["intent_time_leverage_bear_carry_max_leverage"] == 0.20 for seed in seeds[:12]))
+        self.assertEqual(seeds[0]["intent_time_leverage_dip_add_pct"], 0.10)
+        self.assertTrue(any(seed["multi_momentum_range_profit_run_enabled"] == 1.0 for seed in seeds[:12]))
+        self.assertTrue(any(seed["multi_momentum_range_profit_run_threshold"] == 0.15 for seed in seeds[:12]))
+        self.assertTrue(all(seed["multi_momentum_range_profit_run_value"] <= 0.50 for seed in seeds[:12]))
+        self.assertTrue(all(seed["multi_momentum_range_profit_run_confidence"] <= 0.65 for seed in seeds[:12]))
+        self.assertTrue(any(seed["multi_momentum_range_profit_run_max_transition_risk"] == 0.45 for seed in seeds[:12]))
+        self.assertTrue(any(seed["multi_momentum_range_profit_run_min_cycle_position"] == 1.00 for seed in seeds[:12]))
+        self.assertTrue(
+            any(seed["multi_momentum_range_profit_run_cycle_fallback_enabled"] == 1.0 for seed in seeds[:12])
+        )
+        self.assertTrue(
+            any(seed["multi_momentum_range_profit_run_cycle_momentum_threshold"] == 0.10 for seed in seeds[:12])
+        )
+        self.assertTrue(
+            all(seed["multi_momentum_range_profit_run_min_state_direction_signal"] >= -0.55 for seed in seeds[:12])
+        )
+        self.assertTrue(
+            all(seed["multi_momentum_range_profit_run_require_uptrend_state"] == 0.0 for seed in seeds[:12])
+        )
+        self.assertTrue(all(seed["intent_range_bull_profit_run_override_enabled"] == 1.0 for seed in seeds[:12]))
+        self.assertTrue(all(seed["intent_transition_rebound_sleeve_enabled"] == 1.0 for seed in seeds[:12]))
+        self.assertTrue(all(seed["intent_transition_rebound_sleeve_max_leverage"] <= 0.50 for seed in seeds[:12]))
+        self.assertTrue(all(seed["intent_range_bull_profit_run_direction_signal"] >= 0.20 for seed in seeds[:12]))
+        self.assertTrue(all(seed["intent_range_bull_profit_run_momentum_threshold"] >= 0.15 for seed in seeds[:12]))
+        self.assertTrue(all(seed["intent_range_bull_profit_run_max_transition_risk"] <= 0.55 for seed in seeds[:12]))
+        self.assertTrue(any(seed["multi_momentum_range_bear_profit_run_enabled"] == 1.0 for seed in seeds[:12]))
+        self.assertTrue(any(seed["multi_momentum_range_bear_profit_run_value"] == 0.85 for seed in seeds[:12]))
+        self.assertTrue(any(seed["dd_step_3_short"] == 0.28 for seed in seeds[:12]))
+        self.assertTrue(any(seed["bear_trailing_stop_atr_mult"] == 6.0 for seed in seeds[:12]))
+        self.assertTrue(any(seed["intent_range_bear_profit_run_override_enabled"] == 1.0 for seed in seeds[:12]))
+        self.assertTrue(any(seed["intent_range_bear_profit_run_max_transition_risk"] == 0.65 for seed in seeds[:12]))
+        self.assertTrue(
+            any(
+                seed["intent_range_bear_profit_confirmed_bear_transition_override_enabled"] == 1.0
+                for seed in seeds[:12]
+            )
+        )
+        self.assertTrue(
+            any(seed["intent_range_bear_profit_confirmed_bear_max_transition_risk"] == 0.85 for seed in seeds[:12])
+        )
+        self.assertEqual(grid["multi_momentum_range_bear_profit_run_panic_exhaustion_veto_enabled"], [0.0, 1.0])
+        self.assertEqual(
+            grid["multi_momentum_range_bear_profit_run_panic_exhaustion_momentum_threshold"],
+            [-1.00, -0.85, -0.70],
+        )
+        self.assertEqual(
+            grid["multi_momentum_range_bear_profit_run_panic_exhaustion_transition_ceiling"],
+            [0.40, 0.48, 0.55],
+        )
+        self.assertEqual(grid["intent_range_bear_profit_panic_exhaustion_veto_enabled"], [0.0, 1.0])
+        self.assertEqual(grid["intent_range_bear_profit_panic_exhaustion_momentum_threshold"], [-1.00, -0.85, -0.70])
+        self.assertEqual(grid["intent_range_bear_profit_panic_exhaustion_transition_ceiling"], [0.40, 0.48, 0.55])
+        self.assertEqual(grid["profit_protect_reduce_enabled"], [0.0, 1.0])
+        self.assertEqual(grid["profit_protect_min_move_atr"], [1.25, 1.75, 2.25])
+        self.assertEqual(grid["profit_protect_unwind_pct"], [0.25, 0.35, 0.50])
+        self.assertEqual(grid["profit_protect_confidence_ceiling"], [0.65, 0.75])
+        self.assertEqual(grid["profit_protect_cooldown_bars"], [6, 12, 24])
+        self.assertTrue(
+            any(seed["intent_range_bear_profit_panic_exhaustion_veto_enabled"] == 1.0 for seed in seeds[:12])
+        )
+        self.assertTrue(
+            any(
+                seed["multi_momentum_range_bear_profit_run_panic_exhaustion_veto_enabled"] == 1.0 for seed in seeds[:12]
+            )
+        )
+        self.assertTrue(all(seed["profit_protect_reduce_enabled"] == 1.0 for seed in seeds[:12]))
+        self.assertTrue(all(seed["profit_protect_min_move_atr"] >= 1.25 for seed in seeds[:12]))
+        self.assertTrue(all(seed["profit_protect_cooldown_bars"] >= 6 for seed in seeds[:12]))
+        self.assertTrue(any(seed["time_decay_short_loss_threshold"] == -0.24 for seed in seeds[:12]))
+        self.assertTrue(all(seed["intent_time_leverage_long_bias_block_short"] == 1.0 for seed in seeds[:12]))
+
+    def test_spot_context_score_penalizes_bull_undercapture(self) -> None:
+        weak_bull = {
+            "spot_context_full_2017_2019": {
+                "equity_multiple": 1.21,
+                "max_drawdown": 0.05,
+                "sharpe": 2.4,
+            },
+            "spot_context_bull_expansion_2017": {
+                "equity_multiple": 1.01,
+                "fee_drag_pct": 0.028,
+            },
+            "spot_context_bear_crash_2018": {
+                "max_drawdown": 0.03,
+                "sharpe": 0.4,
+                "fee_drag_pct": 0.078,
+            },
+            "spot_context_recovery_2019": {
+                "equity_multiple": 1.19,
+            },
+        }
+        captured_bull = {
+            **weak_bull,
+            "spot_context_bull_expansion_2017": {
+                "equity_multiple": 1.12,
+                "fee_drag_pct": 0.012,
+            },
+            "spot_context_bear_crash_2018": {
+                "max_drawdown": 0.03,
+                "sharpe": 0.4,
+                "fee_drag_pct": 0.030,
+            },
+        }
+
+        self.assertLess(_spot_context_score(weak_bull), 0.0)
+        self.assertGreater(_spot_context_score(captured_bull), _spot_context_score(weak_bull))
+        self.assertGreater(_spot_context_score(captured_bull), 0.0)
 
     def test_build_signal_weight_overrides_maps_audited_state_factor_weights(self) -> None:
         weights = build_signal_weight_overrides(
@@ -486,21 +871,116 @@ class FrameworkParamTests(unittest.TestCase):
     def test_build_plugin_config_overrides_enables_binance_factor_research_plugins(self) -> None:
         overrides = build_plugin_config_overrides(
             {
+                "target_vol_5m": 0.65,
+                "target_vol_4h": 0.45,
                 "w_binance_metrics_state": 0.18,
                 "binance_metrics_state_enabled": 1.0,
                 "binance_metrics_risk_sizer_enabled": 1.0,
                 "binance_metrics_risk_edge_threshold": 0.15,
                 "binance_metrics_risk_discount_floor": 0.60,
                 "exit_transition_risk": 0.90,
+                "time_decay_exit_enabled": 1.0,
+                "time_decay_long_loss_threshold": -0.08,
+                "time_decay_short_loss_threshold": -0.06,
+                "multi_momentum_range_profit_run_enabled": 1.0,
+                "multi_momentum_range_profit_run_threshold": 0.20,
+                "multi_momentum_range_profit_run_value": 0.85,
+                "multi_momentum_range_profit_run_confidence": 0.65,
+                "multi_momentum_range_profit_run_max_transition_risk": 0.45,
+                "multi_momentum_range_profit_run_min_cycle_position": 1.00,
+                "multi_momentum_range_profit_run_block_distorted_volatility": 1.0,
+                "multi_momentum_range_profit_run_block_unsafe_quality": 1.0,
+                "multi_momentum_range_profit_run_cycle_fallback_enabled": 1.0,
+                "multi_momentum_range_profit_run_cycle_threshold": 1.00,
+                "multi_momentum_range_profit_run_cycle_momentum_threshold": 0.10,
+                "multi_momentum_range_profit_run_block_confirmed_downtrend": 1.0,
+                "multi_momentum_range_profit_run_min_state_direction_signal": -0.25,
+                "multi_momentum_range_profit_run_require_uptrend_state": 1.0,
+                "multi_momentum_range_bear_profit_run_enabled": 1.0,
+                "multi_momentum_range_bear_profit_run_threshold": 0.20,
+                "multi_momentum_range_bear_profit_run_value": 0.70,
+                "multi_momentum_range_bear_profit_run_confidence": 0.65,
+                "multi_momentum_range_bear_profit_run_max_transition_risk": 0.55,
+                "multi_momentum_range_bear_profit_run_cycle_fallback_enabled": 1.0,
+                "multi_momentum_range_bear_profit_run_cycle_threshold": 0.95,
+                "multi_momentum_range_bear_profit_run_cycle_momentum_threshold": 0.10,
+                "multi_momentum_range_bear_profit_run_block_confirmed_uptrend": 1.0,
+                "multi_momentum_range_bear_profit_run_max_state_direction_signal": 0.20,
+                "multi_momentum_range_bear_profit_run_panic_exhaustion_veto_enabled": 1.0,
+                "multi_momentum_range_bear_profit_run_panic_exhaustion_momentum_threshold": -0.85,
+                "multi_momentum_range_bear_profit_run_panic_exhaustion_transition_ceiling": 0.48,
             }
         )
 
         self.assertTrue(overrides["signals"]["binance_metrics_state_signal"]["enabled"])
         self.assertEqual(overrides["signals"]["binance_metrics_state_signal"]["weight"], 0.18)
         self.assertEqual(overrides["exits"]["regime_change_exit"]["transition_risk_threshold"], 0.90)
+        self.assertTrue(overrides["exits"]["time_decay_exit"]["enabled"])
+        self.assertEqual(overrides["exits"]["time_decay_exit"]["long_loss_threshold"], -0.08)
+        self.assertEqual(overrides["exits"]["time_decay_exit"]["short_loss_threshold"], -0.06)
+        self.assertEqual(overrides["sizers"]["vol_target_sizer"]["target_vol_5m"], 0.65)
+        self.assertEqual(overrides["sizers"]["vol_target_sizer"]["target_vol_4h"], 0.45)
         self.assertTrue(overrides["sizers"]["binance_metrics_risk_sizer"]["enabled"])
         self.assertEqual(overrides["sizers"]["binance_metrics_risk_sizer"]["edge_threshold"], 0.15)
         self.assertEqual(overrides["sizers"]["binance_metrics_risk_sizer"]["discount_floor"], 0.60)
+        self.assertTrue(overrides["signals"]["multi_momentum_signal"]["range_profit_run_enabled"])
+        self.assertEqual(overrides["signals"]["multi_momentum_signal"]["range_profit_run_threshold"], 0.20)
+        self.assertEqual(overrides["signals"]["multi_momentum_signal"]["range_profit_run_value"], 0.85)
+        self.assertEqual(overrides["signals"]["multi_momentum_signal"]["range_profit_run_confidence"], 0.65)
+        self.assertEqual(overrides["signals"]["multi_momentum_signal"]["range_profit_run_max_transition_risk"], 0.45)
+        self.assertEqual(overrides["signals"]["multi_momentum_signal"]["range_profit_run_min_cycle_position"], 1.00)
+        self.assertTrue(overrides["signals"]["multi_momentum_signal"]["range_profit_run_block_distorted_volatility"])
+        self.assertTrue(overrides["signals"]["multi_momentum_signal"]["range_profit_run_block_unsafe_quality"])
+        self.assertTrue(overrides["signals"]["multi_momentum_signal"]["range_profit_run_cycle_fallback_enabled"])
+        self.assertEqual(overrides["signals"]["multi_momentum_signal"]["range_profit_run_cycle_threshold"], 1.00)
+        self.assertEqual(
+            overrides["signals"]["multi_momentum_signal"]["range_profit_run_cycle_momentum_threshold"], 0.10
+        )
+        self.assertTrue(overrides["signals"]["multi_momentum_signal"]["range_profit_run_block_confirmed_downtrend"])
+        self.assertEqual(
+            overrides["signals"]["multi_momentum_signal"]["range_profit_run_min_state_direction_signal"], -0.25
+        )
+        self.assertTrue(overrides["signals"]["multi_momentum_signal"]["range_profit_run_require_uptrend_state"])
+        self.assertTrue(overrides["signals"]["multi_momentum_signal"]["range_bear_profit_run_enabled"])
+        self.assertEqual(overrides["signals"]["multi_momentum_signal"]["range_bear_profit_run_threshold"], 0.20)
+        self.assertEqual(overrides["signals"]["multi_momentum_signal"]["range_bear_profit_run_value"], 0.70)
+        self.assertEqual(overrides["signals"]["multi_momentum_signal"]["range_bear_profit_run_confidence"], 0.65)
+        self.assertEqual(
+            overrides["signals"]["multi_momentum_signal"]["range_bear_profit_run_max_transition_risk"], 0.55
+        )
+        self.assertTrue(overrides["signals"]["multi_momentum_signal"]["range_bear_profit_run_cycle_fallback_enabled"])
+        self.assertEqual(overrides["signals"]["multi_momentum_signal"]["range_bear_profit_run_cycle_threshold"], 0.95)
+        self.assertEqual(
+            overrides["signals"]["multi_momentum_signal"]["range_bear_profit_run_cycle_momentum_threshold"], 0.10
+        )
+        self.assertTrue(overrides["signals"]["multi_momentum_signal"]["range_bear_profit_run_block_confirmed_uptrend"])
+        self.assertEqual(
+            overrides["signals"]["multi_momentum_signal"]["range_bear_profit_run_max_state_direction_signal"], 0.20
+        )
+        self.assertTrue(
+            overrides["signals"]["multi_momentum_signal"]["range_bear_profit_run_panic_exhaustion_veto_enabled"]
+        )
+        self.assertEqual(
+            overrides["signals"]["multi_momentum_signal"]["range_bear_profit_run_panic_exhaustion_momentum_threshold"],
+            -0.85,
+        )
+        self.assertEqual(
+            overrides["signals"]["multi_momentum_signal"]["range_bear_profit_run_panic_exhaustion_transition_ceiling"],
+            0.48,
+        )
+
+    def test_build_risk_config_maps_full_short_dd_ladder(self) -> None:
+        config = build_risk_config(
+            {
+                "dd_step_1_short": 0.12,
+                "dd_step_2_short": 0.20,
+                "dd_step_3_short": 0.26,
+            }
+        )
+
+        self.assertEqual(config.dd_step_1_short, 0.12)
+        self.assertEqual(config.dd_step_2_short, 0.20)
+        self.assertEqual(config.dd_step_3_short, 0.26)
 
     def test_build_strategy_config_maps_intent_churn_controls(self) -> None:
         config = build_strategy_config(
@@ -518,6 +998,7 @@ class FrameworkParamTests(unittest.TestCase):
                 "intent_flat_reduce_step_pct": 0.50,
                 "intent_flat_step_cadence_bars": 8,
                 "intent_range_entry_confirmation_bars": 36,
+                "intent_range_bear_profit_entry_confirmation_bars": 2,
                 "intent_range_reentry_cooldown_bars": 72,
                 "intent_bearish_override_confirmation_bars": 48,
                 "intent_time_leverage_hold_enabled": 1.0,
@@ -535,11 +1016,38 @@ class FrameworkParamTests(unittest.TestCase):
                 "intent_time_leverage_long_bias_enabled": 1.0,
                 "intent_time_leverage_long_bias_confidence_floor": 0.70,
                 "intent_time_leverage_long_bias_transition_ceiling": 0.35,
+                "intent_time_leverage_bear_carry_enabled": 1.0,
+                "intent_time_leverage_bear_carry_max_leverage": 0.25,
+                "intent_time_leverage_bear_carry_confidence_floor": 0.60,
+                "intent_time_leverage_bear_carry_transition_ceiling": 0.55,
+                "intent_time_leverage_bear_carry_allow_range_bear_profit_short": 1.0,
+                "intent_confirmed_downtrend_long_cap_enabled": 1.0,
+                "intent_confirmed_downtrend_long_cap_max_leverage": 0.10,
+                "intent_confirmed_downtrend_long_cap_confidence_floor": 0.65,
+                "intent_confirmed_downtrend_long_cap_direction_signal_ceiling": -0.20,
                 "intent_time_leverage_dip_accumulation_enabled": 1.0,
                 "intent_time_leverage_dip_min_adverse_atr": 1.25,
                 "intent_time_leverage_dip_max_adverse_atr": 3.0,
                 "intent_time_leverage_dip_add_pct": 0.15,
                 "intent_time_leverage_dip_max_leverage": 3.0,
+                "intent_range_bear_profit_run_override_enabled": 1.0,
+                "intent_range_bear_profit_run_direction_signal": -0.25,
+                "intent_range_bear_profit_run_momentum_threshold": -0.20,
+                "intent_range_bear_profit_run_confidence_floor": 0.50,
+                "intent_range_bear_profit_run_max_transition_risk": 0.55,
+                "intent_range_bear_profit_panic_exhaustion_veto_enabled": 1.0,
+                "intent_range_bear_profit_panic_exhaustion_momentum_threshold": -0.85,
+                "intent_range_bear_profit_panic_exhaustion_transition_ceiling": 0.48,
+                "intent_range_bull_profit_run_override_enabled": 1.0,
+                "intent_range_bull_profit_run_direction_signal": 0.20,
+                "intent_range_bull_profit_run_momentum_threshold": 0.15,
+                "intent_range_bull_profit_run_confidence_floor": 0.50,
+                "intent_range_bull_profit_run_max_transition_risk": 0.55,
+                "intent_transition_rebound_sleeve_enabled": 1.0,
+                "intent_transition_rebound_sleeve_max_leverage": 0.35,
+                "intent_transition_rebound_sleeve_uptrend_confidence_floor": 0.60,
+                "intent_range_bear_profit_confirmed_bear_transition_override_enabled": 1.0,
+                "intent_range_bear_profit_confirmed_bear_max_transition_risk": 0.75,
             }
         )
 
@@ -560,6 +1068,7 @@ class FrameworkParamTests(unittest.TestCase):
         self.assertEqual(config.intent_flat_reduce_step_pct, 0.50)
         self.assertEqual(config.intent_flat_step_cadence_bars, 8)
         self.assertEqual(config.intent_range_entry_confirmation_bars, 36)
+        self.assertEqual(config.intent_range_bear_profit_entry_confirmation_bars, 2)
         self.assertEqual(config.intent_range_reentry_cooldown_bars, 72)
         self.assertEqual(config.intent_bearish_override_confirmation_bars, 48)
         self.assertTrue(config.intent_time_leverage_hold_enabled)
@@ -577,11 +1086,38 @@ class FrameworkParamTests(unittest.TestCase):
         self.assertTrue(config.intent_time_leverage_long_bias_enabled)
         self.assertEqual(config.intent_time_leverage_long_bias_confidence_floor, 0.70)
         self.assertEqual(config.intent_time_leverage_long_bias_transition_ceiling, 0.35)
+        self.assertTrue(config.intent_time_leverage_bear_carry_enabled)
+        self.assertEqual(config.intent_time_leverage_bear_carry_max_leverage, 0.25)
+        self.assertEqual(config.intent_time_leverage_bear_carry_confidence_floor, 0.60)
+        self.assertEqual(config.intent_time_leverage_bear_carry_transition_ceiling, 0.55)
+        self.assertTrue(config.intent_time_leverage_bear_carry_allow_range_bear_profit_short)
+        self.assertTrue(config.intent_confirmed_downtrend_long_cap_enabled)
+        self.assertEqual(config.intent_confirmed_downtrend_long_cap_max_leverage, 0.10)
+        self.assertEqual(config.intent_confirmed_downtrend_long_cap_confidence_floor, 0.65)
+        self.assertEqual(config.intent_confirmed_downtrend_long_cap_direction_signal_ceiling, -0.20)
         self.assertTrue(config.intent_time_leverage_dip_accumulation_enabled)
         self.assertEqual(config.intent_time_leverage_dip_min_adverse_atr, 1.25)
         self.assertEqual(config.intent_time_leverage_dip_max_adverse_atr, 3.0)
         self.assertEqual(config.intent_time_leverage_dip_add_pct, 0.15)
         self.assertEqual(config.intent_time_leverage_dip_max_leverage, 3.0)
+        self.assertTrue(config.intent_range_bear_profit_run_override_enabled)
+        self.assertEqual(config.intent_range_bear_profit_run_direction_signal, -0.25)
+        self.assertEqual(config.intent_range_bear_profit_run_momentum_threshold, -0.20)
+        self.assertEqual(config.intent_range_bear_profit_run_confidence_floor, 0.50)
+        self.assertEqual(config.intent_range_bear_profit_run_max_transition_risk, 0.55)
+        self.assertTrue(config.intent_range_bear_profit_panic_exhaustion_veto_enabled)
+        self.assertEqual(config.intent_range_bear_profit_panic_exhaustion_momentum_threshold, -0.85)
+        self.assertEqual(config.intent_range_bear_profit_panic_exhaustion_transition_ceiling, 0.48)
+        self.assertTrue(config.intent_range_bull_profit_run_override_enabled)
+        self.assertEqual(config.intent_range_bull_profit_run_direction_signal, 0.20)
+        self.assertEqual(config.intent_range_bull_profit_run_momentum_threshold, 0.15)
+        self.assertEqual(config.intent_range_bull_profit_run_confidence_floor, 0.50)
+        self.assertEqual(config.intent_range_bull_profit_run_max_transition_risk, 0.55)
+        self.assertTrue(config.intent_transition_rebound_sleeve_enabled)
+        self.assertEqual(config.intent_transition_rebound_sleeve_max_leverage, 0.35)
+        self.assertEqual(config.intent_transition_rebound_sleeve_uptrend_confidence_floor, 0.60)
+        self.assertTrue(config.intent_range_bear_profit_confirmed_bear_transition_override_enabled)
+        self.assertEqual(config.intent_range_bear_profit_confirmed_bear_max_transition_risk, 0.75)
 
     def test_autoresearch_strategy_config_accepts_shared_intent_churn_config(self) -> None:
         config = _build_strategy_config(
@@ -608,6 +1144,8 @@ class FrameworkParamTests(unittest.TestCase):
                 "intent_time_leverage_size_hysteresis_enabled": 1.0,
                 "intent_time_leverage_reduce_deadband_pct": 0.20,
                 "intent_time_leverage_long_bias_enabled": 1.0,
+                "intent_time_leverage_bear_carry_enabled": 1.0,
+                "intent_time_leverage_bear_carry_max_leverage": 0.35,
                 "intent_time_leverage_dip_accumulation_enabled": 1.0,
             },
             execution_timeframe=Timeframe.TF_4H,
@@ -631,6 +1169,8 @@ class FrameworkParamTests(unittest.TestCase):
         self.assertTrue(config.intent_time_leverage_size_hysteresis_enabled)
         self.assertEqual(config.intent_time_leverage_reduce_deadband_pct, 0.20)
         self.assertTrue(config.intent_time_leverage_long_bias_enabled)
+        self.assertTrue(config.intent_time_leverage_bear_carry_enabled)
+        self.assertEqual(config.intent_time_leverage_bear_carry_max_leverage, 0.35)
         self.assertTrue(config.intent_time_leverage_dip_accumulation_enabled)
         self.assertIsNotNone(config.playbook_config)
         self.assertIsNotNone(config.exit_config)
@@ -1047,6 +1587,7 @@ class FrameworkParamTests(unittest.TestCase):
             strategy_config = build_strategy_config(seed)
             self.assertEqual(seed["intent_unconfirmed_flip_reduce_only"], 0.0)
             self.assertEqual(seed["intent_time_leverage_dip_accumulation_enabled"], 1.0)
+            self.assertEqual(seed["time_decay_exit_enabled"], 1.0)
             self.assertEqual(seed["flip_flatten_only_enabled"], 0.0)
             self.assertEqual(seed["target_delta_deadband_pct"], 0.0)
             self.assertEqual(seed["target_reduce_deadband_pct"], 0.0)
@@ -1059,12 +1600,97 @@ class FrameworkParamTests(unittest.TestCase):
             self.assertTrue(strategy_config.intent_time_leverage_dip_accumulation_enabled)
             self.assertLessEqual(strategy_config.intent_add_signal_threshold, 0.45)
             self.assertLessEqual(strategy_config.intent_time_leverage_add_deadband_pct, 0.25)
+            self.assertGreaterEqual(seed["range_time_decay_bars"], 48)
+            self.assertGreaterEqual(seed["preserve_capital_time_decay_bars"], 12)
+            self.assertLessEqual(seed["time_decay_long_loss_threshold"], -0.08)
+            self.assertLessEqual(seed["time_decay_short_loss_threshold"], -0.04)
             self.assertGreaterEqual(strategy_config.intent_flat_reduce_step_pct, 0.15)
             self.assertGreaterEqual(strategy_config.intent_flat_step_cadence_bars, 8)
             self.assertGreaterEqual(strategy_config.intent_same_direction_reduce_confirmation_bars, 4)
 
 
 class FrameworkEvaluatorTests(unittest.TestCase):
+    def test_temporal_robustness_windows_are_train_dev_only(self) -> None:
+        split = default_btc_split_spec()
+
+        train_windows = _train_temporal_robustness_windows(split)
+        late_dev_window = _late_dev_regime_window(split)
+
+        self.assertEqual(
+            [window.label for window in train_windows], [f"train_temporal_{year}" for year in range(2020, 2024)]
+        )
+        self.assertTrue(all(window.start_ns >= split.train.start_ns for window in train_windows))
+        self.assertTrue(
+            all(window.end_ns is not None and window.end_ns <= split.train.end_ns for window in train_windows)
+        )
+        self.assertIsNotNone(late_dev_window)
+        assert late_dev_window is not None
+        self.assertGreaterEqual(late_dev_window.start_ns or 0, split.dev.start_ns)
+        self.assertEqual(late_dev_window.end_ns, split.dev.end_ns)
+        self.assertLessEqual(late_dev_window.end_ns or 0, split.test.start_ns)
+
+    def test_temporal_robustness_audit_blocks_unstable_train_and_late_dev(self) -> None:
+        split = default_btc_split_spec()
+        base_config = HistoricalBacktestConfig(profile_path=None)
+        evaluator = SimpleNamespace(
+            search_space_profile={"paulwei_dual_phase_spot_context_relaxed_fee_search": True},
+            _split_spec=split,
+            _base_config=base_config,
+            candidate_variant=lambda _params, name, label: VariantSpec(name=name, label=label),
+        )
+
+        def fake_snapshot(_base_config, _variant, *, start_ns, end_ns):
+            del end_ns
+            if start_ns == split.train.start_ns:
+                return BacktestSnapshot(
+                    sharpe=-0.75,
+                    net_pnl=-1_000.0,
+                    max_drawdown=0.08,
+                    win_rate=0.4,
+                    profit_factor=0.8,
+                )
+            if start_ns == _ns_from_utc(2022, 1, 1):
+                return BacktestSnapshot(
+                    sharpe=-0.60,
+                    net_pnl=-1_500.0,
+                    max_drawdown=0.18,
+                    win_rate=0.42,
+                    profit_factor=0.85,
+                )
+            if start_ns and start_ns >= (split.dev.end_ns or 0) - 200 * 86_400 * 1_000_000_000:
+                return BacktestSnapshot(
+                    sharpe=-0.40,
+                    net_pnl=-500.0,
+                    max_drawdown=0.05,
+                    win_rate=0.45,
+                    profit_factor=0.9,
+                )
+            return BacktestSnapshot(
+                sharpe=1.20,
+                net_pnl=2_000.0,
+                max_drawdown=0.04,
+                win_rate=0.55,
+                profit_factor=1.4,
+            )
+
+        with patch("zenquant.research.framework_search._run_variant_backtest_snapshot", side_effect=fake_snapshot):
+            audit = _temporal_robustness_audit(evaluator, {"target_vol_4h": 0.65})
+
+        self.assertIsNotNone(audit)
+        assert audit is not None
+        self.assertFalse(audit["test_evaluated"])
+        self.assertEqual(audit["scope"], "train_dev_only_temporal_robustness")
+        self.assertIn("paulwei_2020_profit_run_fail_fast", audit["blocked_by"])
+        self.assertIn("paulwei_2022_bear_survival_fail_fast", audit["blocked_by"])
+        self.assertIn("temporal_train_min_sharpe_fail_fast", audit["blocked_by"])
+        self.assertIn("late_dev_regime_fail_fast", audit["blocked_by"])
+        self.assertEqual(audit["primary_blocker"], "paulwei_2020_profit_run_fail_fast")
+        self.assertEqual(
+            audit["paulwei_temporal_target_audit"]["scope"],
+            "paulwei_2020_2022_temporal_behavior_target",
+        )
+        self.assertLess(audit["score_adjustment"], 0.0)
+
     def test_training_input_contract_treats_missing_train_1h_as_derived_from_5m(self) -> None:
         @dataclass
         class Readiness:
@@ -2591,6 +3217,73 @@ class SearchReportSerializationTests(unittest.TestCase):
         self.assertIn("train_candidate_diagnostics", diagnostics)
         run_stage.assert_called_once()
 
+    def test_run_optuna_search_attaches_bull_window_attribution_to_temporal_rejections(self) -> None:
+        @dataclass
+        class FakeSweep:
+            total_combinations: int
+            results: list[dict]
+            top_n: list[dict]
+            runtime_s: float
+            train_candidate_diagnostics: dict
+
+        temporal_audit = {
+            "primary_blocker": "paulwei_2020_profit_run_fail_fast",
+            "blocked_by": ["paulwei_2020_profit_run_fail_fast"],
+            "score_adjustment": -1.0,
+        }
+        bull_attribution = {
+            "scope": "train_dev_only_bull_window_direction_exposure_attribution",
+            "promotion_allowed": False,
+            "test_evaluated": False,
+            "windows": {
+                "train_temporal_2020": {"diagnosis": {"primary_failure_mode": "uptrend_not_converted_to_long_intent"}}
+            },
+        }
+
+        with (
+            patch(
+                "zenquant.research.framework_search.run_search_stage",
+                return_value=FakeSweep(
+                    total_combinations=1,
+                    results=[],
+                    top_n=[
+                        {
+                            "params": {"w_momentum": 0.3},
+                            "metrics": {"sharpe": 2.0, "score": 2.0, "net_pnl": 50_000.0, "max_drawdown": 0.08},
+                            "baseline_train_metrics": {},
+                        },
+                    ],
+                    runtime_s=0.1,
+                    train_candidate_diagnostics={"raw_trial_count": 1},
+                ),
+            ),
+            patch(
+                "zenquant.research.framework_search.score_regime_objective_candidate_generation",
+                return_value={"regime_objective_score": 2.0, "allow_dev_diagnostic_review": True},
+            ),
+            patch("zenquant.research.framework_search._spot_context_replay_audit", return_value=None),
+            patch("zenquant.research.framework_search._temporal_robustness_audit", return_value=temporal_audit),
+            patch(
+                "zenquant.research.framework_search._bull_window_direction_exposure_attribution",
+                return_value=bull_attribution,
+            ) as attribution,
+        ):
+            evaluator = FrameworkEvaluator(HistoricalBacktestConfig(), split_spec=default_btc_split_spec())
+            best, ranked, diagnostics = run_optuna_search(evaluator, n_trials=1)
+
+        self.assertIsNone(best)
+        self.assertEqual(ranked, [])
+        rejected = diagnostics["train_candidate_diagnostics"]["rejected_candidate_diagnostics"]
+        self.assertEqual(rejected[0]["bull_window_direction_exposure_attribution"], bull_attribution)
+        self.assertTrue(
+            diagnostics["train_candidate_diagnostics"]["bull_window_direction_exposure_attribution_enabled"]
+        )
+        self.assertEqual(
+            diagnostics["train_candidate_diagnostics"]["best_bull_window_direction_exposure_attribution"],
+            bull_attribution,
+        )
+        attribution.assert_called_once()
+
     def test_run_optuna_search_rejects_regime_bucket_failure_before_dev_screen(self) -> None:
         @dataclass
         class FakeSweep:
@@ -2654,6 +3347,83 @@ class SearchReportSerializationTests(unittest.TestCase):
         self.assertEqual(rejected[0]["params"], {"w_momentum": 0.3})
         self.assertEqual(rejected[0]["stage1_fail_fast_reason"], "regime_objective_train_bucket_fail_fast")
         self.assertFalse(rejected[0]["regime_objective"]["allow_dev_diagnostic_review"])
+
+    def test_run_optuna_search_attaches_direction_attribution_when_regime_failure_masks_temporal(
+        self,
+    ) -> None:
+        @dataclass
+        class FakeSweep:
+            total_combinations: int
+            results: list[dict]
+            top_n: list[dict]
+            runtime_s: float
+
+        temporal_audit = {
+            "primary_blocker": "paulwei_2022_bear_survival_fail_fast",
+            "blocked_by": ["paulwei_2022_bear_survival_fail_fast"],
+            "score_adjustment": -1.0,
+        }
+        direction_attribution = {
+            "scope": "train_dev_only_direction_exposure_attribution",
+            "promotion_allowed": False,
+            "test_evaluated": False,
+            "windows": {
+                "train_temporal_2022": {
+                    "scope": "train_dev_only_bear_window_direction_exposure_attribution",
+                    "diagnosis": {"primary_failure_mode": "cycle_profit_run_overlong_in_bear_window"},
+                }
+            },
+            "bear_primary_failure_modes": ["cycle_profit_run_overlong_in_bear_window"],
+        }
+
+        with (
+            patch(
+                "zenquant.research.framework_search.run_search_stage",
+                return_value=FakeSweep(
+                    total_combinations=1,
+                    results=[],
+                    top_n=[
+                        {
+                            "params": {"w_momentum": 0.3},
+                            "metrics": {"sharpe": 2.0, "score": 2.0, "net_pnl": 50_000.0, "max_drawdown": 0.08},
+                            "baseline_train_metrics": {},
+                        },
+                    ],
+                    runtime_s=0.1,
+                ),
+            ),
+            patch(
+                "zenquant.research.framework_search.score_regime_objective_candidate_generation",
+                return_value={"regime_objective_score": 0.0, "allow_dev_diagnostic_review": False},
+            ),
+            patch("zenquant.research.framework_search._spot_context_replay_audit", return_value=None),
+            patch("zenquant.research.framework_search._temporal_robustness_audit", return_value=temporal_audit),
+            patch(
+                "zenquant.research.framework_search._bull_window_direction_exposure_attribution",
+                return_value=direction_attribution,
+            ) as attribution,
+        ):
+            evaluator = FrameworkEvaluator(HistoricalBacktestConfig(), split_spec=default_btc_split_spec())
+            best, ranked, diagnostics = run_optuna_search(evaluator, n_trials=1)
+
+        self.assertIsNone(best)
+        self.assertEqual(ranked, [])
+        rejected = diagnostics["train_candidate_diagnostics"]["rejected_candidate_diagnostics"]
+        self.assertEqual(rejected[0]["stage1_fail_fast_reason"], "regime_objective_train_bucket_fail_fast")
+        self.assertEqual(rejected[0]["masked_temporal_primary_blocker"], "paulwei_2022_bear_survival_fail_fast")
+        self.assertEqual(rejected[0]["direction_window_exposure_attribution"], direction_attribution)
+        self.assertEqual(
+            rejected[0]["direction_attribution_trigger_reasons"],
+            ["paulwei_2022_bear_survival_fail_fast"],
+        )
+        self.assertTrue(
+            diagnostics["train_candidate_diagnostics"]["bear_window_direction_exposure_attribution_enabled"]
+        )
+        self.assertEqual(
+            diagnostics["train_candidate_diagnostics"]["masked_temporal_blocker_attribution_count"],
+            1,
+        )
+        attribution.assert_called_once()
 
     def test_run_optuna_search_passes_stage1_target_inflight(self) -> None:
         @dataclass
@@ -2772,7 +3542,31 @@ class SearchReportSerializationTests(unittest.TestCase):
                     "spot_train_leg_blocked_by": ["spot_context_only_not_formal_train_truth"],
                     "candidate_window_start": "2017-08-17T00:00:00+00:00",
                     "candidate_window_end": "2026-04-17T00:00:00+00:00",
+                    "allowed_uses": [
+                        "pre_2020_regime_context",
+                        "train_side_regime_context_objective",
+                    ],
                     "source_boundary": "spot context only",
+                },
+            ),
+            patch(
+                "zenquant.research.framework_search._spot_context_replay_audit",
+                return_value={
+                    "scope": "formal_auxiliary_train_regime_direction_profit_run",
+                    "formal_train_truth": False,
+                    "formal_auxiliary_train_leg": True,
+                    "execution_truth": False,
+                    "promotion_allowed": False,
+                    "test_evaluated": False,
+                    "windows": {
+                        "spot_context_full_2017_2019": {
+                            "sharpe": 1.5,
+                            "net_pnl": 50_000.0,
+                            "equity_multiple": 1.5,
+                            "max_drawdown": 0.2,
+                        }
+                    },
+                    "context_score_adjustment": 0.4,
                 },
             ),
         ):
@@ -2782,6 +3576,14 @@ class SearchReportSerializationTests(unittest.TestCase):
         self.assertEqual(best, {"w_momentum": 0.3})
         self.assertEqual(ranked[0]["params"], {"w_momentum": 0.3})
         self.assertIsNone(ranked[0]["spot_train_leg_metrics"])
+        self.assertIsNotNone(ranked[0]["spot_context_metrics"])
+        self.assertEqual(ranked[0]["spot_context_metrics"]["formal_train_truth"], False)
+        self.assertEqual(ranked[0]["spot_context_metrics"]["formal_auxiliary_train_leg"], True)
+        self.assertEqual(ranked[0]["train_metrics"]["spot_context_score_adjustment"], 0.4)
+        self.assertEqual(ranked[0]["train_metrics"]["spot_context_formal_auxiliary_train_leg"], True)
+        self.assertTrue(diagnostics["spot_era_context_replay_audit"]["enabled"])
+        self.assertTrue(diagnostics["spot_era_context_replay_audit"]["formal_auxiliary_train_leg"])
+        self.assertFalse(diagnostics["spot_era_context_replay_audit"]["execution_truth"])
         self.assertEqual(diagnostics["historical_extension_mode"], "spot_context_only")
 
     def test_final_report_passes_smoke_minimal_comparison_mode_and_heartbeat(self) -> None:

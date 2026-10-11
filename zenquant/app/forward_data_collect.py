@@ -19,6 +19,7 @@ from zenquant.data.deribit_block_flow import (
 from zenquant.data.deribit_options_chain import fetch_option_chain, save_option_chain
 from zenquant.data.deribit_status import collect_deribit_status, write_deribit_status
 from zenquant.data.hyperliquid_public import fetch_recent_trades, recent_trades_to_buckets, write_hyperliquid_raw
+from zenquant.data.hyperliquid_whales import collect_and_write_hyperliquid_whales, load_whale_watchlist
 from zenquant.data.liquidation_pipeline import (
     LiquidationBucket,
     merge_liquidation_buckets,
@@ -37,10 +38,13 @@ class ForwardCollectionConfig:
     deribit_root: Path = Path("data/raw/deribit_options")
     deribit_block_flow_root: Path = Path("data/raw/deribit_block_flow")
     hyperliquid_root: Path = Path("data/raw/hyperliquid/liquidations")
+    hyperliquid_whale_root: Path = Path("data/raw/hyperliquid/whale_positions")
+    hyperliquid_whale_watchlist: Path | None = Path("config/hyperliquid_whales.toml")
     merged_root: Path = Path("data/raw/merged_liquidations")
     binance_root: Path = Path("data/raw/binance")
     output_dir: Path = DEFAULT_OUTPUT_DIR
     min_trade_notional_usd: float = 50_000.0
+    whale_min_abs_position_value_usd: float = 100_000.0
     merge_inputs: tuple[Path, ...] = (Path("data/raw/hyperliquid/liquidations"),)
 
 
@@ -51,6 +55,7 @@ class ForwardHealthConfig:
     deribit_root: Path = Path("data/raw/deribit_options")
     deribit_block_flow_root: Path = Path("data/raw/deribit_block_flow")
     hyperliquid_root: Path = Path("data/raw/hyperliquid/liquidations")
+    hyperliquid_whale_root: Path = Path("data/raw/hyperliquid/whale_positions")
     merged_root: Path = Path("data/raw/merged_liquidations")
     output_dir: Path = DEFAULT_OUTPUT_DIR
     max_staleness_hours: float = 2.0
@@ -112,6 +117,27 @@ def _collect_hyperliquid(config: ForwardCollectionConfig) -> dict[str, Any]:
         "proxy_buckets": len(buckets),
         "raw_files": [str(path) for path in raw_paths],
         "agg_files": [str(path) for path in agg_paths],
+    }
+
+
+def _collect_hyperliquid_whales(config: ForwardCollectionConfig) -> dict[str, Any]:
+    if config.hyperliquid_whale_watchlist is None or not config.hyperliquid_whale_watchlist.exists():
+        return {
+            "ok": True,
+            "skipped": True,
+            "reason": "hyperliquid_whale_watchlist_missing",
+            "watchlist_path": str(config.hyperliquid_whale_watchlist) if config.hyperliquid_whale_watchlist else None,
+        }
+    accounts = load_whale_watchlist(config.hyperliquid_whale_watchlist)
+    status = collect_and_write_hyperliquid_whales(
+        accounts=accounts,
+        root=config.hyperliquid_whale_root,
+        min_abs_position_value_usd=config.whale_min_abs_position_value_usd,
+    )
+    return {
+        "ok": status.get("blocked_by") is None,
+        "status_path": str(config.hyperliquid_whale_root / "_collector_status.json"),
+        **status,
     }
 
 
@@ -204,6 +230,9 @@ def run_collection(config: ForwardCollectionConfig) -> dict[str, Any]:
 
         hyperliquid_step = _collect_hyperliquid(config)
         steps.append({"step": "hyperliquid_collect", **hyperliquid_step})
+
+        hyperliquid_whales_step = _collect_hyperliquid_whales(config)
+        steps.append({"step": "hyperliquid_whales_collect", **hyperliquid_whales_step})
 
         merge_step = _merge_liquidations(config)
         steps.append({"step": "merge_liquidation", **merge_step})
@@ -330,10 +359,13 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--deribit-root", type=Path, default=Path("data/raw/deribit_options"))
     parser.add_argument("--deribit-block-flow-root", type=Path, default=Path("data/raw/deribit_block_flow"))
     parser.add_argument("--hyperliquid-root", type=Path, default=Path("data/raw/hyperliquid/liquidations"))
+    parser.add_argument("--hyperliquid-whale-root", type=Path, default=Path("data/raw/hyperliquid/whale_positions"))
+    parser.add_argument("--hyperliquid-whale-watchlist", type=Path, default=Path("config/hyperliquid_whales.toml"))
     parser.add_argument("--merged-root", type=Path, default=Path("data/raw/merged_liquidations"))
     parser.add_argument("--binance-root", type=Path, default=Path("data/raw/binance"))
     parser.add_argument("--output-dir", type=Path, default=DEFAULT_OUTPUT_DIR)
     parser.add_argument("--min-trade-notional-usd", type=float, default=50_000.0)
+    parser.add_argument("--whale-min-abs-position-value-usd", type=float, default=100_000.0)
     parser.add_argument("--merge-input", type=Path, action="append", default=None)
     parser.add_argument("--max-staleness-hours", type=float, default=2.0)
     return parser
@@ -351,6 +383,7 @@ def main(argv: list[str] | None = None) -> int:
                 deribit_root=args.deribit_root,
                 deribit_block_flow_root=args.deribit_block_flow_root,
                 hyperliquid_root=args.hyperliquid_root,
+                hyperliquid_whale_root=args.hyperliquid_whale_root,
                 merged_root=args.merged_root,
                 output_dir=args.output_dir,
                 max_staleness_hours=args.max_staleness_hours,
@@ -366,10 +399,13 @@ def main(argv: list[str] | None = None) -> int:
             deribit_root=args.deribit_root,
             deribit_block_flow_root=args.deribit_block_flow_root,
             hyperliquid_root=args.hyperliquid_root,
+            hyperliquid_whale_root=args.hyperliquid_whale_root,
+            hyperliquid_whale_watchlist=args.hyperliquid_whale_watchlist,
             merged_root=args.merged_root,
             binance_root=args.binance_root,
             output_dir=args.output_dir,
             min_trade_notional_usd=args.min_trade_notional_usd,
+            whale_min_abs_position_value_usd=args.whale_min_abs_position_value_usd,
             merge_inputs=merge_inputs,
         )
     )

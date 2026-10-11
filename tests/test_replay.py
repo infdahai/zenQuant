@@ -1,4 +1,6 @@
+import json
 import unittest
+from dataclasses import asdict
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from types import SimpleNamespace
@@ -7,7 +9,7 @@ from unittest.mock import patch
 import pandas as pd
 
 from zenquant.domain import IndicatorPack, MarketState, Timeframe
-from zenquant.execution import ExecutionGateway, ExecutionKernel
+from zenquant.execution import ExecutionGateway, ExecutionKernel, ExecutionKernelConfig
 from zenquant.historical import HistoricalBacktest, HistoricalBacktestConfig
 from zenquant.historical.replay import _build_replay_context
 from zenquant.historical.storage import HistoricalKlineRow, write_parquet_rows
@@ -22,6 +24,158 @@ from zenquant.strategy import ARCStrategyEngine
 
 
 class ReplayTests(unittest.TestCase):
+    def test_v2_replay_enables_risk_final_snapshots_and_exposes_zero_purity_counters(self) -> None:
+        empty_store = SimpleNamespace(loaded=False)
+        replay_context = SimpleNamespace(
+            funding_rows=[],
+            open_interest_rows=[],
+            aggtrades={},
+            events=[],
+            macro_store=empty_store,
+            options_store=empty_store,
+            hf_store=empty_store,
+            cot_store=empty_store,
+            liquidation_store=empty_store,
+            eth_store=empty_store,
+            basis_store=empty_store,
+            cross_asset_context_store=empty_store,
+            onchain_factor_store=empty_store,
+            binance_metrics_factor_store=empty_store,
+            cache_stats={},
+        )
+
+        with patch("zenquant.historical.replay._build_replay_context", return_value=replay_context):
+            replay = HistoricalBacktest(
+                HistoricalBacktestConfig(
+                    profile_path=None,
+                    execution_config=ExecutionKernelConfig(
+                        execution_authority_mode="target_tracking_v2",
+                    ),
+                )
+            )
+
+        self.assertTrue(replay.strategy_engine._config.emit_decision_snapshots_v2)
+        self.assertEqual(
+            replay.execution_kernel.purity_counters,
+            {
+                "executor_created_exposure": 0,
+                "unexpected_reversal": 0,
+                "target_overshoot": 0,
+            },
+        )
+
+    def test_replay_metrics_copy_execution_purity_counters(self) -> None:
+        replay = HistoricalBacktest.__new__(HistoricalBacktest)
+        replay._config = HistoricalBacktestConfig(profile_path=None)
+        replay._risk_snapshots = []
+        replay._funding_accumulator = SimpleNamespace(total_funding_cost=0.0)
+        replay.risk_overlay = SimpleNamespace(equity=100_000.0)
+        replay._trade_ledger = SimpleNamespace(
+            total_fees=0.0,
+            realized_pnls=[],
+            action_realized_pnls={},
+            turnover_notional=0.0,
+            action_trade_counts={},
+            action_fees={},
+        )
+        replay._episode_ledger = SimpleNamespace(
+            closed_episodes=(),
+            open_episodes=(),
+            position_switch_count=0,
+        )
+        replay._reports = []
+        replay.execution_kernel = SimpleNamespace(
+            purity_counters={
+                "executor_created_exposure": 2,
+                "unexpected_reversal": 3,
+                "target_overshoot": 4,
+            }
+        )
+        events = [
+            {
+                "open_time_ns": 1,
+                "close_time_ns": Timeframe.TF_4H.seconds * 1_000_000_000,
+                "event_timeframe": "4h",
+            }
+        ]
+
+        metrics = replay._build_metrics(events)
+
+        self.assertEqual(metrics.executor_created_exposure, 2)
+        self.assertEqual(metrics.unexpected_reversal, 3)
+        self.assertEqual(metrics.target_overshoot, 4)
+
+    def test_analysis_rows_include_intent_promotion_audit(self) -> None:
+        replay = HistoricalBacktest.__new__(HistoricalBacktest)
+        replay._config = HistoricalBacktestConfig(execution_timeframe=Timeframe.TF_5M)
+        replay._execution_rows = [
+            {
+                "close_time_ns": 1,
+                "open": 100.0,
+                "high": 101.0,
+                "low": 99.0,
+                "close": 100.0,
+                "volume": 10.0,
+                "trade_count": 3,
+            },
+            {
+                "close_time_ns": 2,
+                "open": 100.0,
+                "high": 102.0,
+                "low": 99.0,
+                "close": 101.0,
+                "volume": 12.0,
+                "trade_count": 4,
+            },
+        ]
+        replay._indicators = []
+        replay._market_states = []
+        replay._playbooks = []
+        replay._sizings = []
+        replay._exits = []
+        replay._targets = []
+        replay._risk_decisions = []
+        replay._risk_snapshots = []
+        replay._biases = []
+        replay._intent_promotion_audits = [
+            {
+                "cutoff_time_ns": 1,
+                "stage": "1h_context",
+                "reason": "1H_CONTEXT_SCORE_TOO_WEAK",
+                "pending_intent_id": "intent-1",
+                "pending_reason_codes": "STATE_RANGE_BEAR_PROFIT_RUN_OVERRIDE|TREND_SHORT",
+                "pending_direction": -1.0,
+                "pending_target_qty": -0.5,
+                "bars_waited": 2,
+                "entry_score": 0.1,
+                "entry_score_threshold": 0.5,
+                "diagnostic_reason_codes": "RANGE_BEAR_PROFIT_MOMENTUM_TOO_WEAK",
+            }
+        ]
+
+        rows = replay.build_analysis_rows()
+
+        self.assertEqual(rows[0]["intent_promotion_reasons"], "1H_CONTEXT_SCORE_TOO_WEAK")
+        self.assertEqual(rows[0]["intent_promotion_stages"], "1h_context")
+        self.assertEqual(
+            rows[0]["intent_promotion_pending_reason_codes"],
+            "STATE_RANGE_BEAR_PROFIT_RUN_OVERRIDE|TREND_SHORT",
+        )
+        self.assertEqual(rows[0]["intent_promotion_pending_intent_id"], "intent-1")
+        self.assertEqual(rows[0]["intent_promotion_pending_direction"], -1.0)
+        self.assertEqual(
+            rows[0]["intent_promotion_diagnostic_reason_codes"],
+            "RANGE_BEAR_PROFIT_MOMENTUM_TOO_WEAK",
+        )
+        self.assertEqual(rows[1]["intent_promotion_latest_reason"], "1H_CONTEXT_SCORE_TOO_WEAK")
+        self.assertEqual(rows[1]["intent_promotion_latest_stage"], "1h_context")
+        self.assertEqual(rows[1]["intent_promotion_latest_pending_intent_id"], "intent-1")
+        self.assertEqual(rows[1]["intent_promotion_latest_age_ns"], 1)
+        self.assertEqual(
+            rows[1]["intent_promotion_latest_diagnostic_reason_codes"],
+            "RANGE_BEAR_PROFIT_MOMENTUM_TOO_WEAK",
+        )
+
     def test_lightweight_early_stop_rejects_extreme_trade_count_per_day(self) -> None:
         replay = HistoricalBacktest.__new__(HistoricalBacktest)
         replay._config = HistoricalBacktestConfig(
@@ -115,6 +269,38 @@ class ReplayTests(unittest.TestCase):
 
         self.assertFalse(should_stop)
         self.assertIsNone(reason)
+
+    def test_lightweight_replay_defers_transfer_entropy(self) -> None:
+        empty_store = SimpleNamespace(loaded=False)
+        replay_context = SimpleNamespace(
+            funding_rows=[],
+            open_interest_rows=[],
+            aggtrades={},
+            events=[],
+            macro_store=empty_store,
+            options_store=empty_store,
+            hf_store=empty_store,
+            cot_store=empty_store,
+            liquidation_store=empty_store,
+            eth_store=empty_store,
+            basis_store=empty_store,
+            cross_asset_context_store=empty_store,
+            onchain_factor_store=empty_store,
+            binance_metrics_factor_store=empty_store,
+            cache_stats={},
+        )
+
+        with patch("zenquant.historical.replay._build_replay_context", return_value=replay_context):
+            replay = HistoricalBacktest(
+                HistoricalBacktestConfig(
+                    research_compute_mode="lightweight_train_search",
+                    profile_path=None,
+                )
+            )
+
+        profiling = replay.indicator_engine.profiling_snapshot()
+        self.assertTrue(profiling["transfer_entropy_deferred"])
+        self.assertFalse(profiling["slow_enrichment_deferred"])
 
     def test_historical_replay_injects_microstructure_sidecar_when_enabled(self) -> None:
         with TemporaryDirectory() as tmp:
@@ -471,6 +657,9 @@ class ReplayTests(unittest.TestCase):
             )
             second = second_bt.run()
 
+            self.assertEqual(first.position_episodes, second.position_episodes)
+            json.dumps([asdict(episode) for episode in first.position_episodes], sort_keys=True)
+
             first_pack = [p for p in first_bt._indicators if p.timeframe == Timeframe.TF_4H][-1]
             second_pack = [p for p in second_bt._indicators if p.timeframe == Timeframe.TF_4H][-1]
 
@@ -489,6 +678,7 @@ class ReplayTests(unittest.TestCase):
         self.assertIn("indicator_layer_timing", first.profiling)
         self.assertIn("indicator_fast_path_enabled", first.profiling)
         self.assertIn("slow_enrichment_deferred", first.profiling)
+        self.assertFalse(first.profiling["transfer_entropy_deferred"])
         self.assertIn("core_execution_indicators_s", first.profiling["indicator_layer_timing"])
 
     def test_replay_preserves_message_order(self) -> None:

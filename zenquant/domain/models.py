@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from enum import StrEnum
 from typing import Any
 
@@ -147,6 +147,138 @@ class TargetPosition:
     atr: float = 0.0  # DCA distance gating
 
 
+@dataclass(slots=True, frozen=True)
+class DecisionSnapshot:
+    """Immutable V2 audit record of an approved four-hour target position."""
+
+    decision_id: str
+    portfolio: str
+    symbol: str
+    timeframe: Timeframe
+    cutoff_time_ns: int
+    formula_hash: str
+    config_hash: str
+    target_qty: float
+    target_leverage: float
+    reduce_only: bool
+    regime: str
+    regime_confidence: float
+    reason_codes: tuple[str, ...]
+    realized_vol: float
+    atr: float
+    indicator_version: str
+    data_identity: str
+    alpha_direction: float
+    alpha_raw_score: float
+    alpha_confidence: float
+    directional_state: str
+    volatility_state: str
+    positioning_state: str
+    quality_state: str
+    regime_risk_multiplier: float
+    annualized_volatility: float
+    volatility_target: float
+    exposure_cap: float
+    quality_flags: tuple[str, ...]
+    options_state_id: str | None
+    approved_target_hash: str = ""
+
+
+@dataclass(slots=True, frozen=True)
+class OptionsState:
+    """Immutable observation-only BTC options state at a confirmed 4h cutoff.
+
+    Implied and realized volatility fields use annualized decimal units. GEX
+    distances use signed spot-relative returns: ``(level - spot) / spot``.
+    ``shadow_risk_multiplier`` is research metadata and is not execution
+    authority.
+    """
+
+    options_state_id: str
+    symbol: str
+    cutoff_time_ns: int
+    source_timestamp_ns: int
+    history_24h_source_timestamp_ns: int
+    data_identity: str
+    history_24h_data_identity: str
+    calculation_method: str
+    calculation_version: str
+    underlying_price: float
+    atm_iv_7d: float | None
+    atm_iv_30d: float | None
+    atm_iv_90d: float | None
+    selected_expiry_ts_ms_7d: int | None
+    selected_expiry_ts_ms_30d: int | None
+    selected_expiry_ts_ms_90d: int | None
+    put_iv_25d_30d: float | None
+    call_iv_25d_30d: float | None
+    put_25d_selection_method: str
+    call_25d_selection_method: str
+    put_25d_lower_delta: float | None
+    put_25d_upper_delta: float | None
+    call_25d_lower_delta: float | None
+    call_25d_upper_delta: float | None
+    put_call_skew_25d_30d: float | None
+    risk_reversal_25d_30d: float | None
+    moneyness_skew_proxy_30d: float | None
+    realized_vol_30d: float | None
+    realized_vol_source_timestamp_ns: int
+    iv_minus_rv_30d: float | None
+    term_slope_7d_30d: float | None
+    term_slope_30d_90d: float | None
+    spot_return_24h: float | None
+    skew_change_24h: float | None
+    spot_skew_joint_label: str
+    strike_oi_concentration: float
+    expiry_oi_concentration: float
+    normalized_net_gex: float
+    gex_normalization: str
+    gamma_wall_strike: float | None
+    gamma_wall_distance: float | None
+    gamma_flip_strike: float | None
+    gamma_flip_distance: float | None
+    source_age_seconds: float
+    is_stale: bool
+    chain_row_count: int
+    valid_row_count: int
+    coverage: float
+    trend_quality: str
+    shadow_risk_multiplier: float
+    quality_flags: tuple[str, ...]
+
+    def to_dict(self) -> dict[str, Any]:
+        """Return a deterministic JSON-compatible serialization payload."""
+        payload = asdict(self)
+        payload["quality_flags"] = list(self.quality_flags)
+        return payload
+
+    @classmethod
+    def from_dict(cls, payload: dict[str, Any]) -> OptionsState:
+        """Reconstruct a state from :meth:`to_dict` output."""
+        values = dict(payload)
+        values["quality_flags"] = tuple(values.get("quality_flags", ()))
+        return cls(**values)
+
+
+@dataclass(slots=True, frozen=True)
+class ArchitectureAlphaSnapshot:
+    """Immutable pre-position four-hour alpha used by causal attribution."""
+
+    alpha_id: str
+    symbol: str
+    timeframe: Timeframe
+    cutoff_time_ns: int
+    available_at_ns: int
+    formula_hash: str
+    indicator_version: str
+    alpha_config_hash: str
+    raw_score: float
+    confidence: float
+    direction: float
+    regime: str
+    direction_plugin_names: tuple[str, ...]
+
+
 @dataclass(slots=True)
 class IntentReason:
     portfolio: str
@@ -165,6 +297,11 @@ class RiskOverlayDecision:
     lev_cap: float
     reduce_only: bool
     flags: list[str]
+    portfolio: str = ""
+    timeframe: Timeframe | None = None
+    original_intent_id: str = ""
+    original_target_hash: str = ""
+    revised_target_hash: str = ""
 
 
 @dataclass(slots=True)
@@ -191,6 +328,23 @@ class ExecutionOrder:
     limit_price: float | None = None  # Required for LIMIT orders
 
 
+@dataclass(slots=True, frozen=True)
+class ExecutionOrderAudit:
+    """Immutable audit record for one target-tracking V2 order attempt."""
+
+    decision_id: str
+    client_order_id: str
+    symbol: str
+    cutoff_time_ns: int
+    approved_target_qty: float
+    position_before_order: float
+    position_after_fill: float
+    order_delta_qty: float
+    hard_safety_reason: str | None
+    status: str
+    remaining_target_delta_qty: float = 0.0
+
+
 @dataclass(slots=True)
 class ExecutionReport:
     client_order_id: str
@@ -202,6 +356,33 @@ class ExecutionReport:
     fee: float
     transaction_time_ns: int
     reject_reason: str = ""
+
+
+@dataclass(slots=True, frozen=True)
+class PositionEpisode:
+    """Deterministic flat-to-flat (or flip-to-zero) position record."""
+
+    episode_id: str
+    symbol: str
+    side: int
+    opened_at_ns: int
+    closed_at_ns: int | None
+    entry_price: float
+    exit_price: float | None
+    max_abs_qty: float
+    remaining_qty: float
+    gross_realized_pnl: float
+    fees: float
+    funding_pnl: float
+    net_pnl: float
+    mfe_pnl: float
+    mae_pnl: float
+    unrealized_pnl: float
+    fill_count: int
+    closed: bool
+    add_count: int = 0
+    reduce_count: int = 0
+    holding_duration_ns: int = 0
 
 
 # ---------------------------------------------------------------------------
@@ -439,10 +620,15 @@ class DeribitRiskPack:
     ts_ns: int
     atm_iv_30d: float
     term_structure_slope: float
-    put_call_skew_25d: float
+    put_call_moneyness_skew_proxy: float
     oi_concentration: float
     block_flow_imbalance: float
     quality_flags: list[str] = field(default_factory=list)
+
+    @property
+    def put_call_skew_25d(self) -> float:
+        """Deprecated legacy alias for the 90%/110% moneyness proxy."""
+        return self.put_call_moneyness_skew_proxy
 
 
 @dataclass(slots=True)
@@ -474,6 +660,15 @@ class BacktestMetrics:
     action_realized_counts: dict[str, int] = field(default_factory=dict)
     action_realized_pnl: dict[str, float] = field(default_factory=dict)
     action_profit_factor: dict[str, float] = field(default_factory=dict)
+    episode_profit_factor: float | None = None
+    episode_profit_factor_status: str = "INSUFFICIENT_SAMPLE"
+    closed_episode_count: int = 0
+    open_episode_count: int = 0
+    position_switch_count: int = 0
+    position_switches_per_day: float = 0.0
+    executor_created_exposure: int = 0
+    unexpected_reversal: int = 0
+    target_overshoot: int = 0
 
 
 @dataclass(slots=True)

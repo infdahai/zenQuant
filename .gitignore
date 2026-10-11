@@ -10,12 +10,14 @@ build/
 node_modules/
 test-results/
 playwright-report/
+.worktrees/
 
 /data/
 logs/
 results/
 
 *.log
+/.simulated-reservations/
 
 # Secrets — never commit
 .env

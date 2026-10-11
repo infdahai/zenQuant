@@ -9,25 +9,39 @@
 - 先读 `AGENTS.md`、本文件，以及当前任务直接相关的 1-3 个文件。
 - 优先使用已有权威状态文件，不要凭聊天记忆判断项目状态。
 - 长任务、后台任务、持续采集与 campaign 状态，以仓库中的状态文件为准，不以终端输出为准。
+- 当前实现、Gate v2 证据与 Quant System v2 目标边界统一见 `docs/ARCHITECTURE.md`。
 - tester / operator 的唯一交付入口始终是 `docs/LIVE_VALIDATION_HANDOFF_SPEC.md`。
 
 ## Current Product Defaults
 
 - 资产：`BTC`
-- 执行周期：`4h`
+- 当前 production/handoff 基线：`4h` bar-close 决策与执行语义
+- 最新 research replay：`4h` 方向、`1h` context、`5m` execution replay
+- Quant System v2 目标：`4h` 方向、risk budget、`5m` 纯执行；尚未实施或 promote
 - 大周期偏置：`1d`
 - 数据切分：
   - `train = 2020-01-01 ~ 2023-12-31`
   - `dev = 2024-01-01 ~ 2025-12-31`
   - `test = 2026-01-01 ~ latest`
 - 当前最可信 live 候选：`current / paulwei_baseline`
-- RL 角色：辅助搜索器，不改策略骨架
-- Optuna 角色：主搜索器，负责框架级参数搜索
+- RL / Optuna：研究工具；Gate v2 后暂停新搜索，先执行架构归因
 
 ## Current Research Truth
 
+- 统一架构入口：
+  - `docs/ARCHITECTURE.md`
+- 最新 Gate v2：
+  - `results/remediation_20260821/gate_v2_rescore/gate_v2_rescore.json`
+  - `results/remediation_20260821/gate_v2_rescore/gate_v2_rescore.md`
 - 权威交付规格：
   - `docs/LIVE_VALIDATION_HANDOFF_SPEC.md`
+- Quant V2：
+  - 架构审查：`docs/QUANT_V2_ARCHITECTURE_EXPERT_REVIEW.md`
+  - 冻结实验与复跑：`docs/QUANT_V2_ACCEPTANCE_HANDOFF.md`
+  - compact verdict 唯一生成入口：`scripts/build_quant_v2_acceptance_summary.py`
+  - 当前 verdict：`BLOCKED_PAUSE_PROMOTION_AND_TRAINING`
+  - 原因：late-dev 额外 15bp 下 5/5 为负，strict robustness `0/5`
+  - 禁止：继续调参/训练、promotion、激活 OptionsState multiplier
 - 数据完成度：
   - `results/data_readiness/data_readiness.json`
   - `results/data_readiness/data_readiness.md`
@@ -47,17 +61,13 @@
 - Deribit：
   - 独立 collector 已恢复
   - 是否达到 `observation_ready / research_ready`，以 `_collector_status.json` 与 `data_readiness.json` 为准
+  - `2026-08-22T02:00:04.953009Z` 的只读核验为两者均 `true`，但 2026 options 历史与 frozen 2025 OOS 不重叠，不能据此激活 sidecar
 - 调优：
   - 高预算 campaign 已可运行并可恢复
   - 是否存在可 promote tuned winner，以最终 `framework_optimization.json.final_verdict` 为准
   - `scripts/run_framework_campaign.py` 是唯一权威 clean tuning 入口
   - `scripts/run_auto_research.py` 仅用于 internal/dev research，不单独产出 promote truth
   - 若状态文件标记 `invalidated`，则所有旧 tuned params 一律作废，必须从 `train/dev` 重新开始
-  - `v27 round_003` 当前不是活跃训练，而是 `stale running state`
-    - `results/framework_optimization_loop_v27/loop_status.json` 仍写 `campaign_running`
-    - `results/framework_optimization_loop_v27/runs/round_003/campaign_status.json` 停在 `stage2_prepare_variants progress=12/16`
-    - 但对应 `run_framework_*` / campaign 进程已不存在
-    - 该状态应解释为 `terminal_state_not_written`，不得解释为“仍在后台继续训练”
   - rerun benchmark 已完成，正式结论以 `results/perf_stage2_benchmark_fast_rerun/perf_stage2_benchmark_review.json` 为准
     - `stage2 reuse visible`
     - `indicator hot path not yet improved`

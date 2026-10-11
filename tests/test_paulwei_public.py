@@ -12,6 +12,7 @@ from zenquant.research.paulwei_public import (
     build_ahr999_alignment,
     build_ahr999_execution_guidance_review,
     build_behavior_profile,
+    build_early_convexity_audit,
     build_execution_research_review,
     build_paulwei_dataset_contract,
     build_promotion_eligibility_review,
@@ -269,6 +270,69 @@ class PaulWeiPublicResearchTests(unittest.TestCase):
             self.assertEqual(btc_profile["median_fill_rows_per_episode"], 2.5)
             self.assertEqual(btc_profile["median_entry_add_fill_rows_per_episode"], 1.5)
             self.assertEqual(btc_profile["median_reduce_exit_fill_rows_per_episode"], 1.0)
+
+    def test_early_convexity_audit_splits_btc_and_usd_ledgers(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            data_root = Path(tmp) / "paulwei"
+            spot_root = Path(tmp) / "spot"
+            _build_public_source(data_root)
+            _write_spot_daily(spot_root / "klines" / "BTCUSDT" / "1d" / "data.parquet")
+            _write_csv(
+                data_root / "derived-equity-curve.csv",
+                [
+                    {
+                        "timestamp": "2022-02-01T00:00:00Z",
+                        "walletBalanceXBTEquivalent": 1.0,
+                        "adjustedWealthXBT": 1.0,
+                        "cumulativeCompletedDepositsAfterBaselineXBT": 0.0,
+                        "cumulativeCompletedWithdrawalsAfterBaselineXBT": 0.0,
+                    },
+                    {
+                        "timestamp": "2022-02-02T00:00:00Z",
+                        "walletBalanceXBTEquivalent": 2.0,
+                        "adjustedWealthXBT": 3.0,
+                        "cumulativeCompletedDepositsAfterBaselineXBT": 0.0,
+                        "cumulativeCompletedWithdrawalsAfterBaselineXBT": 1.0,
+                    },
+                    {
+                        "timestamp": "2022-02-03T00:00:00Z",
+                        "walletBalanceXBTEquivalent": 2.5,
+                        "adjustedWealthXBT": 5.0,
+                        "cumulativeCompletedDepositsAfterBaselineXBT": 0.0,
+                        "cumulativeCompletedWithdrawalsAfterBaselineXBT": 2.5,
+                    },
+                ],
+            )
+
+            audit = build_early_convexity_audit(
+                data_root=data_root,
+                spot_root=spot_root,
+                mature_start_at="2022-02-03T00:00:00+00:00",
+            )
+
+            self.assertTrue(audit["ready"])
+            self.assertEqual(audit["audit_id"], "paulwei_early_convexity_train_only")
+            self.assertEqual(audit["strategy_base_currency"], "USDT")
+            self.assertIn("actual_wallet_usd", audit["three_ledger_contract"])
+            early = next(item for item in audit["window_summaries"] if item["label"] == "early_convexity_window")
+            self.assertEqual(early["multiples"]["cash_flow_adjusted_btc"], 3.0)
+            self.assertGreater(early["multiples"]["cash_flow_adjusted_usd"], 3.0)
+            self.assertEqual(early["growth_attribution"]["dominant_driver"], "btc_unit_expansion")
+            contract = audit["phase_learning_contract"]
+            self.assertEqual(contract["version"], "paulwei_dual_phase_learning_v1")
+            self.assertEqual(
+                [item["template_id"] for item in contract["templates"]],
+                ["early_convexity_usdt_projection", "mature_low_switch_control"],
+            )
+            self.assertIn(
+                "longer time-in-market during confirmed expansion regimes",
+                contract["templates"][0]["transferable_behaviors"],
+            )
+            self.assertIn("low position-switch cadence", contract["templates"][1]["transferable_behaviors"])
+            self.assertIn(
+                "BTC-collateral convexity as a direct return target for a USDT-margin strategy",
+                audit["u_margin_translation"]["blocked_from_transfer"],
+            )
 
     def test_ahr999_alignment_and_public_archive_variant_specs(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

@@ -8,10 +8,13 @@ Z-scores use the same robust median/MAD algorithm as the indicator engine.
 from __future__ import annotations
 
 import bisect
+import math
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from zenquant.data._timestamp import lossless_timestamp
 from zenquant.data._z_utils import robust_z as _robust_z
+from zenquant.domain import OptionsState
 
 
 @dataclass(slots=True)
@@ -28,13 +31,18 @@ class OptionsDataStoreConfig:
 
 @dataclass(slots=True, frozen=True)
 class OptionsSnapshot:
-    """Point-in-time options IV metrics with z-scores."""
+    """Legacy point-in-time options metrics with z-scores.
+
+    ``put_call_moneyness_skew_proxy`` is the 90%-put minus 110%-call IV
+    proxy. The compatibility property must not be interpreted as true 25-delta
+    skew; true Black-76 25-delta fields live on :class:`OptionsState`.
+    """
 
     atm_iv_30d: float | None  # ATM implied vol at 30-day tenor
     atm_iv_z: float
     term_structure_slope: float | None  # (90d_IV - 7d_IV) / 90d_IV
     term_slope_z: float
-    put_call_skew_25d: float | None  # (90% put IV) - (110% call IV)
+    put_call_moneyness_skew_proxy: float | None
     skew_z: float
     underlying_price: float
     # Skew velocity (dSkew/dt per hour) — informed traders buy puts before selling
@@ -45,6 +53,11 @@ class OptionsSnapshot:
     flip_strike: float | None = None  # Below this = volatile
     gex_regime: str = ""  # PINNING | AMPLIFYING | NEUTRAL
     quality_flags: list[str] = field(default_factory=list)
+
+    @property
+    def put_call_skew_25d(self) -> float | None:
+        """Deprecated legacy alias for the 90%/110% moneyness proxy."""
+        return self.put_call_moneyness_skew_proxy
 
 
 _REQUIRED_CHAIN_COLUMNS = frozenset(
@@ -58,6 +71,23 @@ _REQUIRED_CHAIN_COLUMNS = frozenset(
         "mark_iv",
     }
 )
+_DAY_NS = 86_400 * 1_000_000_000
+
+
+def _lossless_dte_days(df):
+    """Calculate DTE after losslessly parsing source-ns and expiry-ms."""
+    import pandas as pd
+
+    sources = [lossless_timestamp(value) for value in df["snapshot_ts_ns"]]
+    expiries = [lossless_timestamp(value) for value in df["expiry_ts_ms"]]
+    if any(value is None for value in sources) or any(value is None for value in expiries):
+        raise ValueError("options timestamp columns must contain exact integers")
+    source_values = {value for value in sources if value is not None}
+    if len(source_values) != 1:
+        raise ValueError("options chain must contain one source timestamp")
+    source_ns = source_values.pop()
+    dtes = [(expiry_ms * 1_000_000 - source_ns) / _DAY_NS for expiry_ms in expiries if expiry_ms is not None]
+    return pd.Series(dtes, index=df.index, dtype=float)
 
 
 class OptionsDataStore:
@@ -85,6 +115,9 @@ class OptionsDataStore:
         self._gamma_wall: list[float | None] = []
         self._flip_strike: list[float | None] = []
         self._gex_regime: list[str] = []
+        self._lookup_cache: dict[tuple[int, bool], OptionsSnapshot] = {}
+        self._chain_rows: list[tuple[dict[str, object], ...]] = []
+        self._state_lookup_cache: dict[tuple[int, float | None, int], OptionsState] = {}
 
     @property
     def loaded(self) -> bool:
@@ -102,6 +135,19 @@ class OptionsDataStore:
 
     def load(self) -> None:
         """Load all options chain snapshots and compute IV metrics."""
+        self._lookup_cache.clear()
+        self._state_lookup_cache.clear()
+        self._timestamps.clear()
+        self._atm_iv.clear()
+        self._skew.clear()
+        self._term_slope.clear()
+        self._spot.clear()
+        self._skew_velocity.clear()
+        self._net_gex.clear()
+        self._gamma_wall.clear()
+        self._flip_strike.clear()
+        self._gex_regime.clear()
+        self._chain_rows.clear()
         currency_dir = self._config.options_dir / self._config.currency
         if not currency_dir.exists():
             return
@@ -123,14 +169,29 @@ class OptionsDataStore:
                 if not _REQUIRED_CHAIN_COLUMNS.issubset(df.columns):
                     continue
 
-                # Extract snapshot timestamp (same for all rows)
-                snapshot_ts = int(df["snapshot_ts_ns"].iloc[0])
-                spot = float(df["underlying_price"].iloc[0])
+                ordered_rows = tuple(df.to_dict("records"))
+                timestamp_values = sorted(
+                    value
+                    for row in ordered_rows
+                    if (value := lossless_timestamp(row.get("snapshot_ts_ns"))) is not None
+                )
+                if not timestamp_values:
+                    continue
+                # Mixed-source chains remain visible at the earliest source so
+                # the public OptionsState lookup can quarantine them without
+                # leaking any later row into calculations.
+                snapshot_ts = timestamp_values[0]
+                spot_values = sorted(
+                    value
+                    for row in ordered_rows
+                    if (value := _finite_number(row.get("underlying_price"))) is not None and value > 0
+                )
+                spot = spot_values[len(spot_values) // 2] if spot_values else 0.0
 
                 # Compute metrics from this snapshot
-                atm_iv = self._compute_atm_iv(df)
-                skew = self._compute_skew(df)
-                term_slope = self._compute_term_structure(df)
+                atm_iv = _safe_metric(lambda frame=df: self._compute_atm_iv(frame), None)
+                skew = _safe_metric(lambda frame=df: self._compute_moneyness_skew_proxy(frame), None)
+                term_slope = _safe_metric(lambda frame=df: self._compute_term_structure(frame), None)
 
                 # Compute GEX from full options chain
                 net_gex, gamma_wall, flip_strike, gex_regime = self._compute_gex(df, spot)
@@ -145,6 +206,7 @@ class OptionsDataStore:
                 self._gamma_wall.append(gamma_wall)
                 self._flip_strike.append(flip_strike)
                 self._gex_regime.append(gex_regime)
+                self._chain_rows.append(ordered_rows)
 
             except Exception as e:
                 print(f"  Warning: Failed to load {path}: {e}")
@@ -162,6 +224,7 @@ class OptionsDataStore:
             self._gamma_wall = [self._gamma_wall[i] for i in indices]
             self._flip_strike = [self._flip_strike[i] for i in indices]
             self._gex_regime = [self._gex_regime[i] for i in indices]
+            self._chain_rows = [self._chain_rows[i] for i in indices]
 
             # Compute skew velocity (dSkew/dt) after sorting
             self._skew_velocity = [0.0]  # First snapshot has no previous
@@ -176,20 +239,23 @@ class OptionsDataStore:
 
     def lookup(self, cutoff_time_ns: int) -> OptionsSnapshot:
         """Return latest options snapshot before cutoff (point-in-time correct)."""
+        cutoff_ns = lossless_timestamp(cutoff_time_ns)
+        if cutoff_ns is None:
+            raise ValueError("OptionsDataStore requires an exact integer cutoff timestamp")
         if not self._timestamps:
             return OptionsSnapshot(
                 atm_iv_30d=None,
                 atm_iv_z=0.0,
                 term_structure_slope=None,
                 term_slope_z=0.0,
-                put_call_skew_25d=None,
+                put_call_moneyness_skew_proxy=None,
                 skew_z=0.0,
                 underlying_price=0.0,
                 quality_flags=[],
             )
 
         # Bisect to find latest snapshot before cutoff
-        idx = bisect.bisect_right(self._timestamps, cutoff_time_ns) - 1
+        idx = bisect.bisect_right(self._timestamps, cutoff_ns) - 1
         if idx < 0:
             # Before any data
             return OptionsSnapshot(
@@ -197,7 +263,7 @@ class OptionsDataStore:
                 atm_iv_z=0.0,
                 term_structure_slope=None,
                 term_slope_z=0.0,
-                put_call_skew_25d=None,
+                put_call_moneyness_skew_proxy=None,
                 skew_z=0.0,
                 underlying_price=0.0,
                 quality_flags=[],
@@ -213,8 +279,13 @@ class OptionsDataStore:
         quality_flags: list[str] = []
 
         # Staleness check
-        age_ns = cutoff_time_ns - snapshot_ts
-        if age_ns > self._config.staleness_threshold_ns:
+        age_ns = cutoff_ns - snapshot_ts
+        is_stale = age_ns > self._config.staleness_threshold_ns
+        cache_key = (idx, is_stale)
+        cached = self._lookup_cache.get(cache_key)
+        if cached is not None:
+            return cached
+        if is_stale:
             quality_flags.append("OPTIONS_STALE")
 
         # Compute z-scores using rolling window
@@ -250,12 +321,12 @@ class OptionsDataStore:
         if term_slope is None:
             quality_flags.append("OPTIONS_PARTIAL_TERM")
 
-        return OptionsSnapshot(
+        snapshot = OptionsSnapshot(
             atm_iv_30d=atm_iv,
             atm_iv_z=atm_iv_z,
             term_structure_slope=term_slope,
             term_slope_z=term_slope_z,
-            put_call_skew_25d=skew,
+            put_call_moneyness_skew_proxy=skew,
             skew_z=skew_z,
             underlying_price=spot,
             skew_velocity=self._skew_velocity[idx] if idx < len(self._skew_velocity) else 0.0,
@@ -265,6 +336,58 @@ class OptionsDataStore:
             gex_regime=self._gex_regime[idx] if idx < len(self._gex_regime) else "",
             quality_flags=quality_flags,
         )
+        self._lookup_cache[cache_key] = snapshot
+        return snapshot
+
+    def lookup_options_state(
+        self,
+        cutoff_time_ns: int,
+        *,
+        realized_vol_30d: float | None,
+        realized_vol_source_timestamp_ns: int,
+    ) -> OptionsState:
+        """Return the immutable OptionsState visible at a confirmed 4h cutoff.
+
+        The 24-hour comparison is an ASOF lookup: the latest snapshot whose
+        source timestamp is no later than ``current_source - 24h``. Future
+        chain files are never read into the selected state.
+        """
+        from zenquant.data.options_state import (
+            DAY_NS,
+            build_options_state,
+            canonical_confirmed_4h_cutoff_ns,
+        )
+
+        cutoff_ns = canonical_confirmed_4h_cutoff_ns(cutoff_time_ns)
+        realized_vol_source_ns = lossless_timestamp(realized_vol_source_timestamp_ns)
+        cache_key = (cutoff_ns, realized_vol_30d, realized_vol_source_ns or 0)
+        cached = self._state_lookup_cache.get(cache_key)
+        if cached is not None:
+            return cached
+        idx = bisect.bisect_right(self._timestamps, cutoff_ns) - 1
+        if idx < 0:
+            state = build_options_state(
+                (),
+                cutoff_time_ns=cutoff_ns,
+                realized_vol_30d=realized_vol_30d,
+                realized_vol_source_timestamp_ns=realized_vol_source_timestamp_ns,
+                stale_after_ns=self._config.staleness_threshold_ns,
+            )
+            self._state_lookup_cache[cache_key] = state
+            return state
+        source_ns = self._timestamps[idx]
+        history_idx = bisect.bisect_right(self._timestamps, source_ns - DAY_NS) - 1
+        history_rows = self._chain_rows[history_idx] if history_idx >= 0 else ()
+        state = build_options_state(
+            self._chain_rows[idx],
+            cutoff_time_ns=cutoff_ns,
+            realized_vol_30d=realized_vol_30d,
+            realized_vol_source_timestamp_ns=realized_vol_source_timestamp_ns,
+            history_24h_rows=history_rows,
+            stale_after_ns=self._config.staleness_threshold_ns,
+        )
+        self._state_lookup_cache[cache_key] = state
+        return state
 
     def _compute_gex(self, df, spot: float) -> tuple[float, float | None, float | None, str]:
         """Compute GEX metrics from full options chain."""
@@ -296,9 +419,8 @@ class OptionsDataStore:
         target_dte = 30
 
         # Compute DTE (days to expiry)
-        now_ts = df["snapshot_ts_ns"].iloc[0] / 1e9
         df = df.copy()
-        df["dte"] = (df["expiry_ts_ms"] / 1000 - now_ts) / 86400
+        df["dte"] = _lossless_dte_days(df)
 
         # Find closest available expiry to 30 days (within 7-90 day range)
         eligible = df[(df["dte"] >= 7) & (df["dte"] <= 90)]
@@ -328,20 +450,20 @@ class OptionsDataStore:
 
         return (total_iv_weighted / total_oi) if total_oi > 0 else None
 
-    def _compute_skew(self, df) -> float | None:
-        """Compute 25-delta put/call skew: (OTM put IV) - (OTM call IV).
+    def _compute_moneyness_skew_proxy(self, df) -> float | None:
+        """Compute the legacy 90%-put minus 110%-call moneyness proxy.
 
         Use 90% strike (0.9*spot) for put, 110% strike (1.1*spot) for call.
-        Positive skew = puts more expensive = bearish skew.
+        This is explicitly not a Black-76 25-delta risk reversal. Positive
+        values mean the selected OTM put IV exceeds the selected OTM call IV.
         """
         import pandas as pd
 
         target_dte = 30
 
         # Filter by DTE
-        now_ts = df["snapshot_ts_ns"].iloc[0] / 1e9
         df = df.copy()
-        df["dte"] = (df["expiry_ts_ms"] / 1000 - now_ts) / 86400
+        df["dte"] = _lossless_dte_days(df)
 
         # Find closest expiry to 30 days
         eligible = df[(df["dte"] >= 7) & (df["dte"] <= 90)]
@@ -392,9 +514,8 @@ class OptionsDataStore:
         import pandas as pd
 
         # Compute DTE
-        now_ts = df["snapshot_ts_ns"].iloc[0] / 1e9
         df = df.copy()
-        df["dte"] = (df["expiry_ts_ms"] / 1000 - now_ts) / 86400
+        df["dte"] = _lossless_dte_days(df)
 
         # Find near-term (closest to 7d, must be 3-30d)
         near_eligible = df[(df["dte"] >= 3) & (df["dte"] <= 30)]
@@ -437,3 +558,18 @@ class OptionsDataStore:
             return None
 
         return float((far_iv - near_iv) / far_iv)
+
+
+def _finite_number(value: object) -> float | None:
+    try:
+        parsed = float(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return None
+    return parsed if math.isfinite(parsed) else None
+
+
+def _safe_metric(compute, fallback):
+    try:
+        return compute()
+    except (ArithmeticError, KeyError, TypeError, ValueError):
+        return fallback

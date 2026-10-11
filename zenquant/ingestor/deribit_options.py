@@ -200,6 +200,7 @@ class DeribitOptionsIngestor:
         if put_call_skew is None:
             put_call_skew = 0.0
             quality_flags.append("SKEW_PARTIAL")
+        quality_flags.append("SKEW_PROXY_MONEYNESS_90_110")
 
         oi_concentration = _oi_concentration(surface, top_n=self._config.top_oi_count)
         block_flow_imbalance = _volume_imbalance_proxy(surface)
@@ -212,7 +213,7 @@ class DeribitOptionsIngestor:
             ts_ns=time.time_ns(),
             atm_iv_30d=round(atm_iv_30d, 4),
             term_structure_slope=round(term_structure_slope, 6),
-            put_call_skew_25d=round(put_call_skew, 4),
+            put_call_moneyness_skew_proxy=round(put_call_skew, 4),
             oi_concentration=round(oi_concentration, 6),
             block_flow_imbalance=round(block_flow_imbalance, 6),
             quality_flags=quality_flags,

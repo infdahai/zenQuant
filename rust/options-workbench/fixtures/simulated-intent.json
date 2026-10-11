@@ -1,0 +1,65 @@
+{
+  "schema_version": "simulated-trade-intent.rust.v1",
+  "mode": "SIMULATED",
+  "request_id": "demo-call-001",
+  "simulated_account_id": "demo-simulated-account",
+  "source": {
+    "kind": "MANUAL",
+    "source_id": "mathematical-terminal-diagnostic",
+    "source_version": "options-terminal-diagnostic-report.rust.v1",
+    "evidence_sha256": "b625d302be12943d9c6f48b0ffe3d5ed1d8e5a737e0b7cfc550237a0f18dc6c6",
+    "evidence_available_ns": 10
+  },
+  "evidence_cutoff_ns": 10,
+  "created_ns": 10,
+  "expires_ns": 999,
+  "metadata_known_ns": 0,
+  "spec": {
+    "venue": "MATHEMATICAL_FIXTURE",
+    "instrument_id": "ETH-1000-100-C",
+    "product": "linear_option",
+    "underlying": "ETH",
+    "quote_currency": "USDC",
+    "strike_currency": "USDC",
+    "settlement_currency": "USDC",
+    "margin_currency": "USDC",
+    "expiry_ns": 1000,
+    "strike": "100",
+    "option_type": "C",
+    "exercise_style": "EUROPEAN",
+    "quantity_unit": "base",
+    "multiplier": "1",
+    "price_unit": "quote_per_base",
+    "min_quantity_native": "0.01",
+    "quantity_step_native": "0.01",
+    "max_quantity_native": null,
+    "tick_bands": [
+      [
+        "0",
+        "0.01"
+      ]
+    ],
+    "settlement_index": "MATHEMATICAL_ETH",
+    "settlement_window_ns": 1,
+    "settlement_rule": "linear_cash",
+    "rule_version": "mathematical.v1",
+    "metadata_hash": "0000000000000000000000000000000000000000000000000000000000000000",
+    "valid_from_ns": 0,
+    "valid_until_ns": null,
+    "provenance": "fixture"
+  },
+  "leg": {
+    "instrument": {
+      "venue": "MATHEMATICAL_FIXTURE",
+      "product": "linear_option",
+      "instrument_id": "ETH-1000-100-C",
+      "underlying": "ETH",
+      "rule_version": "mathematical.v1",
+      "spec_schema": "options-instrument.rust.v1",
+      "spec_hash": "6bb544f3bccf4e56f85881a251420f89c289c90c3d3c7348ba4b3a2972614c3b"
+    },
+    "side": "BUY",
+    "quantity_native": "0.01"
+  },
+  "limit_price_native": "2"
+}

@@ -69,3 +69,6 @@ class HistoricalExtensionContractTests(unittest.TestCase):
         self.assertEqual(len(contract.train_truth_legs), 1)
         self.assertEqual(contract.train_truth_legs[0]["name"], "post_2020_futures_train")
         self.assertIn("pre_2020_regime_context", contract.allowed_uses)
+        self.assertIn("train_side_regime_context_objective", contract.allowed_uses)
+        self.assertIn("spot_era_context_replay_audit", contract.allowed_uses)
+        self.assertEqual(contract.next_action, "use_as_train_side_regime_context_objective_only")

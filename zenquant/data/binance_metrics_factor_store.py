@@ -40,12 +40,14 @@ class BinanceMetricsFactorStore:
         self._oi_expansion_price_continuation: list[float] = []
         self._taker_oi_exhaustion: list[float] = []
         self._crowded_unwind_vol_adjusted: list[float] = []
+        self._lookup_cache: dict[int, BinanceMetricsFactorSnapshot] = {}
 
     @property
     def loaded(self) -> bool:
         return bool(self._timestamps)
 
     def load(self) -> None:
+        self._lookup_cache.clear()
         if not self._config.data_path.exists():
             return
         import pyarrow.parquet as pq
@@ -84,7 +86,10 @@ class BinanceMetricsFactorStore:
         idx = bisect.bisect_right(self._timestamps, cutoff_time_ns) - 1
         if idx < 0:
             return empty
-        return BinanceMetricsFactorSnapshot(
+        cached = self._lookup_cache.get(idx)
+        if cached is not None:
+            return cached
+        snapshot = BinanceMetricsFactorSnapshot(
             oi_value_growth_24h_z=round(self._oi_value_growth_24h_z[idx], 6),
             top_trader_account_lsr_z=round(self._top_trader_account_lsr_z[idx], 6),
             crowding_unwind_pressure=round(self._crowding_unwind_pressure[idx], 6),
@@ -94,6 +99,8 @@ class BinanceMetricsFactorStore:
             crowded_unwind_vol_adjusted=round(self._crowded_unwind_vol_adjusted[idx], 6),
             quality_flags=[],
         )
+        self._lookup_cache[idx] = snapshot
+        return snapshot
 
 
 def _safe_float(value: object) -> float:

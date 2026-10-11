@@ -9,8 +9,9 @@ from __future__ import annotations
 
 import math
 import time
+from bisect import bisect_left, bisect_right
 from collections import Counter, defaultdict
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -37,11 +38,13 @@ from zenquant.data import (
 )
 from zenquant.data.eth_store import EthDataStore, EthStoreConfig
 from zenquant.domain import (
+    ArchitectureAlphaSnapshot,
     BacktestCycleContext,
     BacktestDiagnostics,
     BacktestMetrics,
     BarCloseEvent,
     Candle,
+    DecisionSnapshot,
     DirectionalBias,
     EventMeta,
     ExecutionReport,
@@ -52,6 +55,7 @@ from zenquant.domain import (
     MarkPriceUpdate,
     OpenPositionState,
     PlaybookSelection,
+    PositionEpisode,
     RiskOverlayDecision,
     RiskSnapshot,
     SizingDecision,
@@ -110,6 +114,8 @@ class HistoricalBacktestConfig:
     microstructure_sidecar_dir: Path = Path("data/raw/microstructure_sidecar/bybit/BTCUSDT/1000ms")
     # Options data directory (Deribit IV, skew, term structure)
     options_dir: Path = Path("data/raw/deribit_options")
+    # Observation-only OptionsState attachment. It cannot alter the replay.
+    options_state_shadow_enabled: bool = False
     # CFTC COT data path
     cot_path: Path = Path("data/raw/cftc/cot_btc.parquet")
     # Aggregated liquidation data path
@@ -162,6 +168,10 @@ class HistoricalBacktestResult:
     terminated_early: bool = False
     termination_reason: str | None = None
     processed_event_ratio: float = 1.0
+    position_episodes: tuple[PositionEpisode, ...] = ()
+    decision_snapshots: tuple[DecisionSnapshot, ...] = ()
+    options_state_sidecar: tuple[Any, ...] = ()
+    options_state_links: tuple[Any, ...] = ()
 
 
 @dataclass(slots=True)
@@ -229,13 +239,17 @@ class HistoricalBacktest:
                 )
             )
             microstructure_store.load()
+        indicator_config = self._config.indicator_config or IndicatorEngineConfig(
+            expected_symbols=(self._config.portfolio_symbol,)
+        )
+        if self._lightweight_train_search:
+            indicator_config = replace(indicator_config, defer_transfer_entropy=True)
         self.indicator_engine = self._subscribe_with_profile(
             "indicator_step_total_s",
             lambda: IndicatorEngine(
                 bus=self.bus,
                 store=self.indicator_store,
-                config=self._config.indicator_config
-                or IndicatorEngineConfig(expected_symbols=(self._config.portfolio_symbol,)),
+                config=indicator_config,
                 macro_store=self._macro_store if self._macro_store.loaded else None,
                 options_store=self._options_store if self._options_store.loaded else None,
                 hf_store=self._hf_store if self._hf_store.loaded else None,
@@ -286,11 +300,20 @@ class HistoricalBacktest:
             # Apply RL tuner weight overrides (dynamic, bypass default.toml)
             if self._config.signal_weight_overrides and plugin_registry is not None:
                 plugin_registry.weight_overrides = dict(self._config.signal_weight_overrides)
+        strategy_config = self._config.strategy_config
+        execution_config = self._config.execution_config
+        if execution_config is not None and execution_config.execution_authority_mode == "target_tracking_v2":
+            if self._config.execution_timeframe != Timeframe.TF_4H:
+                raise ValueError("target_tracking_v2 requires a 4h execution timeframe")
+            strategy_config = replace(
+                strategy_config or ARCStrategyConfig(execution_timeframe=Timeframe.TF_4H),
+                emit_decision_snapshots_v2=True,
+            )
         self.strategy_engine = self._subscribe_with_profile(
             "strategy_step_total_s",
             lambda: ARCStrategyEngine(
                 bus=self.bus,
-                config=self._config.strategy_config,
+                config=strategy_config,
                 plugin_registry=plugin_registry,
             ),
         )
@@ -319,16 +342,33 @@ class HistoricalBacktest:
         self._exits: list[ExitDecision] = []
         self._position_states: list[OpenPositionState] = []
         self._targets: list[TargetPosition] = []
+        self._decision_snapshots: list[DecisionSnapshot] = []
+        self._architecture_alphas: list[ArchitectureAlphaSnapshot] = []
+        self._intent_promotion_audits: list[dict[str, Any]] = []
         self._reports: list[ExecutionReport] = []
         self._risk_decisions: list[RiskOverlayDecision] = []
         self._risk_snapshots: list[RiskSnapshot] = []
         self._execution_rows: list[dict[str, Any]] = []
+        self._confirmed_four_hour_rows: list[dict[str, Any]] = []
+        self._current_event_cutoff_ns = 0
         self._trade_ledger = _TradeLedger()
+        from zenquant.research.episode_ledger import PositionEpisodeLedger
+
+        self._episode_ledger = PositionEpisodeLedger()
+        self._episode_funding_time_ns = 0
         self._funding_accumulator = _FundingAccumulator()
         self._funding_rows: list[dict[str, Any]] = []
         self._open_interest_rows: list[dict[str, Any]] = []
         self._funding_index = -1
         self._open_interest_index = -1
+
+        from zenquant.research.options_shadow import OptionsShadowConfig, OptionsShadowObserver
+
+        self.options_shadow_observer = OptionsShadowObserver(
+            bus=self.bus,
+            config=OptionsShadowConfig(enabled=self._config.options_state_shadow_enabled),
+            state_resolver=self._resolve_options_state_shadow,
+        )
 
         if self._collect_decision_ledgers:
             self.bus.subscribe("indicator.>", self._collect_indicator)
@@ -338,10 +378,23 @@ class HistoricalBacktest:
             self.bus.subscribe("strategy.sizing.>", self._collect_sizing)
             self.bus.subscribe("strategy.exit.>", self._collect_exit)
             self.bus.subscribe("strategy.position_state.>", self._collect_position_state)
+            snapshot_subject = (
+                "research.options_shadow.snapshot.4h.>"
+                if self._config.options_state_shadow_enabled
+                else "strategy.decision_snapshot.4h.>"
+            )
+            self.bus.subscribe(snapshot_subject, self._collect_decision_snapshot)
+            self.bus.subscribe("strategy.architecture_alpha.4h.>", self._collect_architecture_alpha)
+            self.bus.subscribe("strategy.intent_promotion.>", self._collect_intent_promotion_audit)
             self.bus.subscribe("risk.overlay.decision", self._collect_risk_decision)
             self.bus.subscribe("intent.target_position.final.>", self._collect_target)
         self.bus.subscribe("exec.order.report", self._collect_report)
         self.bus.subscribe("risk.snapshot", self._collect_risk_snapshot)
+
+    @property
+    def options_store(self) -> OptionsDataStore:
+        """Expose the loaded PIT store to observation-only research adapters."""
+        return self._options_store
 
     def run(self) -> HistoricalBacktestResult:
         """Run the historical replay and return summary metrics.
@@ -450,6 +503,17 @@ class HistoricalBacktest:
             terminated_early=terminated_early,
             termination_reason=termination_reason,
             processed_event_ratio=(round(processed_events / max(1, len(events)), 6) if events else 1.0),
+            position_episodes=self._episode_ledger.episodes,
+            decision_snapshots=tuple(self._decision_snapshots),
+            options_state_sidecar=self.options_shadow_observer.ledger.states,
+            options_state_links=self.options_shadow_observer.ledger.links,
+        )
+
+    def _resolve_options_state_shadow(self, snapshot: DecisionSnapshot):
+        return self._options_store.lookup_options_state(
+            snapshot.cutoff_time_ns,
+            realized_vol_30d=(snapshot.annualized_volatility if snapshot.annualized_volatility > 0.0 else None),
+            realized_vol_source_timestamp_ns=snapshot.cutoff_time_ns,
         )
 
     def _should_early_stop(
@@ -565,6 +629,7 @@ class HistoricalBacktest:
         """Publish the same core event families the live runtime consumes."""
         timeframe = _parse_timeframe(str(row["event_timeframe"]))
         cutoff_ns = int(row["close_time_ns"])
+        self._current_event_cutoff_ns = cutoff_ns
         funding_row = self._latest_funding(cutoff_ns)
         oi_row = self._latest_open_interest(cutoff_ns)
         meta = EventMeta(
@@ -575,6 +640,10 @@ class HistoricalBacktest:
             stream_seq=cutoff_ns,
         )
         last_price = float(row["close"])
+        if timeframe == self._config.execution_timeframe:
+            self._update_episode_market_accounting(row, funding_row)
+        if timeframe == Timeframe.TF_4H:
+            self._confirmed_four_hour_rows.append(dict(row))
 
         self.bus.publish(
             f"md.mark.BINANCE_HISTORICAL.{self._config.portfolio_symbol}",
@@ -662,6 +731,44 @@ class HistoricalBacktest:
             return None
         return self._funding_rows[self._funding_index]
 
+    def _update_episode_market_accounting(
+        self,
+        row: dict[str, Any],
+        funding_row: dict[str, Any] | None,
+    ) -> None:
+        """Accrue funding and excursions before any close-triggered fill."""
+        from zenquant.research.episode_ledger import FundingAllocation, PriceObservation
+
+        symbol = self._config.portfolio_symbol
+        close_price = float(row["close"])
+        if funding_row is not None:
+            funding_time_ns = int(funding_row.get("funding_time_ns", row["close_time_ns"]))
+            if funding_time_ns > self._episode_funding_time_ns:
+                position_qty = self._episode_ledger.position_qty(symbol)
+                funding_cost = position_qty * close_price * float(funding_row.get("funding_rate", 0.0))
+                self._episode_ledger.allocate_funding(
+                    FundingAllocation(
+                        symbol=symbol,
+                        # Auxiliary rows can become visible after their economic
+                        # source timestamp. Order ledger events by the confirmed
+                        # cutoff at which replay can first consume the row; using
+                        # the stale source timestamp would move the ledger clock
+                        # backwards after prior bar observations/fills.
+                        timestamp_ns=int(row["close_time_ns"]),
+                        pnl=-funding_cost,
+                    )
+                )
+                self._episode_funding_time_ns = funding_time_ns
+        self._episode_ledger.observe_price(
+            PriceObservation(
+                symbol=symbol,
+                timestamp_ns=int(row["close_time_ns"]),
+                high=float(row["high"]),
+                low=float(row["low"]),
+                close=close_price,
+            )
+        )
+
     def _latest_open_interest(self, cutoff_ns: int) -> dict[str, Any] | None:
         while (
             self._open_interest_index + 1 < len(self._open_interest_rows)
@@ -679,6 +786,32 @@ class HistoricalBacktest:
     def _collect_target(self, _: str, payload: object) -> None:
         if isinstance(payload, TargetPosition):
             self._targets.append(payload)
+
+    def _collect_decision_snapshot(self, _: str, payload: object) -> None:
+        if isinstance(payload, DecisionSnapshot):
+            self._decision_snapshots.append(payload)
+
+    def _collect_architecture_alpha(self, _: str, payload: object) -> None:
+        if isinstance(payload, ArchitectureAlphaSnapshot):
+            visible_at_ns = int(self._current_event_cutoff_ns)
+            indicator_config = getattr(getattr(self, "_config", None), "indicator_config", None)
+            causal_donor_mode = indicator_config is None or indicator_config.expected_symbols == (
+                getattr(getattr(self, "_config", None), "portfolio_symbol", payload.symbol),
+            )
+            if causal_donor_mode and (
+                payload.available_at_ns != payload.cutoff_time_ns or visible_at_ns != payload.available_at_ns
+            ):
+                raise ValueError(
+                    "backdated architecture alpha rejected: "
+                    f"cutoff_time_ns={payload.cutoff_time_ns} "
+                    f"available_at_ns={payload.available_at_ns} "
+                    f"visible_at_ns={visible_at_ns}"
+                )
+            self._architecture_alphas.append(payload)
+
+    def _collect_intent_promotion_audit(self, _: str, payload: object) -> None:
+        if isinstance(payload, dict):
+            self._intent_promotion_audits.append(dict(payload))
 
     def _collect_market_state(self, _: str, payload: object) -> None:
         if isinstance(payload, MarketState):
@@ -706,8 +839,15 @@ class HistoricalBacktest:
 
     def _collect_report(self, _: str, payload: object) -> None:
         if isinstance(payload, ExecutionReport):
-            self._reports.append(payload)
-            self._trade_ledger.on_execution_report(payload)
+            visible_cutoff_ns = getattr(self, "_current_event_cutoff_ns", payload.transaction_time_ns)
+            observed_report = (
+                replace(payload, transaction_time_ns=visible_cutoff_ns)
+                if payload.transaction_time_ns < visible_cutoff_ns
+                else payload
+            )
+            self._reports.append(observed_report)
+            self._trade_ledger.on_execution_report(observed_report)
+            self._episode_ledger.on_fill(observed_report)
 
     def _collect_risk_snapshot(self, _: str, payload: object) -> None:
         if isinstance(payload, RiskSnapshot):
@@ -742,6 +882,23 @@ class HistoricalBacktest:
         wins = [value for value in realized if value > 0]
         losses = [value for value in realized if value < 0]
         action_realized = {key: list(values) for key, values in sorted(self._trade_ledger.action_realized_pnls.items())}
+        from zenquant.research.gate_v3 import calculate_episode_profit_factor
+
+        closed_episodes = self._episode_ledger.closed_episodes
+        open_episodes = self._episode_ledger.open_episodes
+        episode_pf = calculate_episode_profit_factor(closed_episodes)
+        position_switch_count = self._episode_ledger.position_switch_count
+        position_switches_per_day = position_switch_count / elapsed_days
+        execution_kernel = getattr(self, "execution_kernel", None)
+        purity_counters = (
+            execution_kernel.purity_counters
+            if execution_kernel is not None
+            else {
+                "executor_created_exposure": 0,
+                "unexpected_reversal": 0,
+                "target_overshoot": 0,
+            }
+        )
         total_bars = sum(1 for item in events if item["event_timeframe"] == self._config.execution_timeframe.value)
         return BacktestMetrics(
             symbol=self._config.portfolio_symbol,
@@ -785,6 +942,15 @@ class HistoricalBacktest:
                 )
                 for key, values in action_realized.items()
             },
+            episode_profit_factor=round(episode_pf.value, 6) if episode_pf.value is not None else None,
+            episode_profit_factor_status=episode_pf.status.value,
+            closed_episode_count=len(closed_episodes),
+            open_episode_count=len(open_episodes),
+            position_switch_count=position_switch_count,
+            position_switches_per_day=round(position_switches_per_day, 6),
+            executor_created_exposure=purity_counters["executor_created_exposure"],
+            unexpected_reversal=purity_counters["unexpected_reversal"],
+            target_overshoot=purity_counters["target_overshoot"],
         )
 
     def _build_diagnostics(self) -> BacktestDiagnostics:
@@ -880,6 +1046,15 @@ class HistoricalBacktest:
             for payload in self._targets
             if payload.timeframe == self._config.execution_timeframe
         }
+        intent_promotion_map: dict[int, list[dict[str, Any]]] = defaultdict(list)
+        for payload in self._intent_promotion_audits:
+            intent_promotion_map[int(payload.get("cutoff_time_ns", 0) or 0)].append(payload)
+        intent_promotion_points = sorted(
+            self._intent_promotion_audits,
+            key=lambda payload: int(payload.get("cutoff_time_ns", 0) or 0),
+        )
+        intent_promotion_index = 0
+        latest_intent_promotion: dict[str, Any] | None = None
         risk_decision_map = {payload.cutoff_time_ns: payload for payload in self._risk_decisions}
         risk_map = {payload.ts_ns: payload for payload in self._risk_snapshots}
         bias_points = sorted(self._biases, key=lambda payload: payload.cutoff_time_ns)
@@ -890,6 +1065,12 @@ class HistoricalBacktest:
         total = len(execution_rows)
         for index, event_row in enumerate(execution_rows):
             cutoff_ns = int(event_row["close_time_ns"])
+            while (
+                intent_promotion_index < len(intent_promotion_points)
+                and int(intent_promotion_points[intent_promotion_index].get("cutoff_time_ns", 0) or 0) <= cutoff_ns
+            ):
+                latest_intent_promotion = intent_promotion_points[intent_promotion_index]
+                intent_promotion_index += 1
             while bias_index < len(bias_points) and bias_points[bias_index].cutoff_time_ns <= cutoff_ns:
                 latest_bias = bias_points[bias_index]
                 bias_index += 1
@@ -932,6 +1113,8 @@ class HistoricalBacktest:
                         "zen_pulse": float(indicator.values.get("zen_pulse", 0.0) or 0.0),
                         "atr": float(indicator.values.get("atr", 0.0) or 0.0),
                         "momentum_roc_z": float(indicator.values.get("momentum_roc_z", 0.0) or 0.0),
+                        "multi_momentum_z": float(indicator.values.get("multi_momentum_z", 0.0) or 0.0),
+                        "cycle_position": float(indicator.values.get("cycle_position", 1.0) or 1.0),
                         "structure_state": str(
                             indicator.values.get("structure_state")
                             or indicator.values.get("swing_structure")
@@ -1023,6 +1206,72 @@ class HistoricalBacktest:
                     }
                 )
 
+            intent_promotion_events = intent_promotion_map.get(cutoff_ns, [])
+            if intent_promotion_events:
+                latest_promotion = intent_promotion_events[-1]
+                row.update(
+                    {
+                        "intent_promotion_event_count": len(intent_promotion_events),
+                        "intent_promotion_stages": "|".join(
+                            str(event.get("stage") or "") for event in intent_promotion_events
+                        ),
+                        "intent_promotion_reasons": "|".join(
+                            str(event.get("reason") or "") for event in intent_promotion_events
+                        ),
+                        "intent_promotion_pending_reason_codes": str(
+                            latest_promotion.get("pending_reason_codes") or ""
+                        ),
+                        "intent_promotion_pending_intent_id": str(latest_promotion.get("pending_intent_id") or ""),
+                        "intent_promotion_pending_direction": float(
+                            latest_promotion.get("pending_direction", 0.0) or 0.0
+                        ),
+                        "intent_promotion_pending_target_qty": float(
+                            latest_promotion.get("pending_target_qty", 0.0) or 0.0
+                        ),
+                        "intent_promotion_bars_waited": int(latest_promotion.get("bars_waited", 0) or 0),
+                        "intent_promotion_entry_score": float(latest_promotion.get("entry_score", 0.0) or 0.0),
+                        "intent_promotion_entry_score_threshold": float(
+                            latest_promotion.get("entry_score_threshold", 0.0) or 0.0
+                        ),
+                        "intent_promotion_diagnostic_reason_codes": str(
+                            latest_promotion.get("diagnostic_reason_codes") or ""
+                        ),
+                    }
+                )
+
+            if latest_intent_promotion is not None:
+                latest_cutoff_ns = int(latest_intent_promotion.get("cutoff_time_ns", 0) or 0)
+                row.update(
+                    {
+                        "intent_promotion_latest_cutoff_time_ns": latest_cutoff_ns,
+                        "intent_promotion_latest_stage": str(latest_intent_promotion.get("stage") or ""),
+                        "intent_promotion_latest_reason": str(latest_intent_promotion.get("reason") or ""),
+                        "intent_promotion_latest_age_ns": max(0, cutoff_ns - latest_cutoff_ns),
+                        "intent_promotion_latest_pending_reason_codes": str(
+                            latest_intent_promotion.get("pending_reason_codes") or ""
+                        ),
+                        "intent_promotion_latest_pending_intent_id": str(
+                            latest_intent_promotion.get("pending_intent_id") or ""
+                        ),
+                        "intent_promotion_latest_pending_direction": float(
+                            latest_intent_promotion.get("pending_direction", 0.0) or 0.0
+                        ),
+                        "intent_promotion_latest_pending_target_qty": float(
+                            latest_intent_promotion.get("pending_target_qty", 0.0) or 0.0
+                        ),
+                        "intent_promotion_latest_bars_waited": int(latest_intent_promotion.get("bars_waited", 0) or 0),
+                        "intent_promotion_latest_entry_score": float(
+                            latest_intent_promotion.get("entry_score", 0.0) or 0.0
+                        ),
+                        "intent_promotion_latest_entry_score_threshold": float(
+                            latest_intent_promotion.get("entry_score_threshold", 0.0) or 0.0
+                        ),
+                        "intent_promotion_latest_diagnostic_reason_codes": str(
+                            latest_intent_promotion.get("diagnostic_reason_codes") or ""
+                        ),
+                    }
+                )
+
             if risk_decision is not None:
                 row.update(
                     {
@@ -1048,6 +1297,208 @@ class HistoricalBacktest:
             rows.append(row)
         return rows
 
+    def build_architecture_attribution_rows(
+        self,
+        *,
+        horizon: int = 1,
+    ) -> dict[str, Any]:
+        """Build evaluable A1 rows from retained confirmed 4h closes only."""
+        if horizon <= 0:
+            raise ValueError("horizon must be positive")
+
+        confirmed_rows = sorted(self._confirmed_four_hour_rows, key=lambda row: int(row["close_time_ns"]))
+        confirmed_counts = Counter(int(row["close_time_ns"]) for row in confirmed_rows)
+        duplicate_confirmed = sorted(cutoff for cutoff, count in confirmed_counts.items() if count != 1)
+        if duplicate_confirmed:
+            raise ValueError(f"duplicate confirmed 4h rows at cutoffs={duplicate_confirmed!r}")
+
+        alpha_snapshots = [alpha for alpha in self._architecture_alphas if alpha.timeframe == Timeframe.TF_4H]
+        alpha_counts = Counter(alpha.cutoff_time_ns for alpha in alpha_snapshots)
+        duplicate_alpha = sorted(cutoff for cutoff, count in alpha_counts.items() if count != 1)
+        if duplicate_alpha:
+            missing_count = len(set(confirmed_counts) - set(alpha_counts))
+            raise ValueError(
+                "architecture alpha cutoff reconciliation failed before terminal exclusion: "
+                f"confirmed={len(confirmed_rows)} alpha={len(alpha_snapshots)} "
+                f"missing={missing_count} terminal_excluded=0 duplicate_cutoffs={duplicate_alpha!r}"
+            )
+        confirmed_cutoffs = set(confirmed_counts)
+        alpha_cutoffs = set(alpha_counts)
+        missing_cutoffs = sorted(confirmed_cutoffs - alpha_cutoffs)
+        extra_cutoffs = sorted(alpha_cutoffs - confirmed_cutoffs)
+        if missing_cutoffs or extra_cutoffs:
+            raise ValueError(
+                "architecture alpha cutoff reconciliation requires one bar-close alpha per confirmed 4h row: "
+                f"confirmed={len(confirmed_rows)} alpha={len(alpha_snapshots)} "
+                f"missing={len(missing_cutoffs)} "
+                f"missing_cutoffs={missing_cutoffs!r} extra_cutoffs={extra_cutoffs!r}"
+            )
+        alphas = {alpha.cutoff_time_ns: alpha for alpha in alpha_snapshots}
+        rows: list[dict[str, Any]] = []
+        terminal_excluded_count = 0
+        for index, event_row in enumerate(confirmed_rows):
+            cutoff_time_ns = int(event_row["close_time_ns"])
+            alpha = alphas.get(cutoff_time_ns)
+            if alpha is None:
+                terminal_excluded_count += 1
+                continue
+            forward_return = _forward_return(confirmed_rows, index, horizon)
+            if forward_return is None:
+                terminal_excluded_count += 1
+                continue
+            rows.append(
+                {
+                    "alpha_id": alpha.alpha_id,
+                    "cutoff_time_ns": cutoff_time_ns,
+                    "available_at_ns": alpha.available_at_ns,
+                    "regime": alpha.regime,
+                    "raw_score": alpha.raw_score,
+                    "frozen_confidence": alpha.confidence,
+                    "forward_return": forward_return,
+                    "forward_return_available_at_ns": int(confirmed_rows[index + horizon]["close_time_ns"]),
+                    "formula_hash": alpha.formula_hash,
+                    "alpha_config_hash": alpha.alpha_config_hash,
+                }
+            )
+        return {
+            "observations": rows,
+            "excluded_non_evaluable_count": terminal_excluded_count,
+            "confirmed_4h_row_count": len(confirmed_rows),
+            "alpha_snapshot_count": len(alpha_snapshots),
+            "missing_alpha_count": 0,
+            "terminal_excluded_count": terminal_excluded_count,
+        }
+
+    def build_architecture_stage_rows(
+        self,
+        *,
+        exchange_min_quantity: float,
+        estimated_fee_bps: float,
+        estimated_slippage_bps: float,
+    ) -> dict[str, Any]:
+        """Join complete point-in-time A2-A5 inputs to eligible A1 cutoffs."""
+        batch = self.build_architecture_attribution_rows(horizon=1)
+        confirmed_rows = sorted(self._confirmed_four_hour_rows, key=lambda row: int(row["close_time_ns"]))
+        confirmed_index = {int(row["close_time_ns"]): index for index, row in enumerate(confirmed_rows)}
+        indicator_points = [item for item in self._indicators if item.timeframe == Timeframe.TF_4H]
+        state_points = [item for item in self._market_states if item.timeframe == Timeframe.TF_4H]
+        _reject_duplicate_stage_points(indicator_points, label="indicator")
+        _reject_duplicate_stage_points(state_points, label="market_state")
+        indicators = {item.cutoff_time_ns: item for item in indicator_points}
+        states = {item.cutoff_time_ns: item for item in state_points}
+        risk_snapshots = _architecture_risk_donors(
+            self._risk_snapshots,
+            decision_cutoffs=tuple(int(item["cutoff_time_ns"]) for item in batch["observations"]),
+        )
+
+        rows: list[dict[str, Any]] = []
+        missing: list[int] = []
+        for alpha_row in batch["observations"]:
+            cutoff = int(alpha_row["cutoff_time_ns"])
+            indicator = indicators.get(cutoff)
+            state = states.get(cutoff)
+            index = confirmed_index.get(cutoff)
+            if indicator is None or state is None or index is None:
+                missing.append(cutoff)
+                continue
+            risk_snapshot, risk_snapshot_status = risk_snapshots[cutoff]
+            risk_regime = _architecture_risk_regime(state)
+            multiplier = {
+                "TRADABLE": 1.0,
+                "NOISY": 0.5,
+                "STRESS": 0.1,
+                "UNSAFE": 0.0,
+            }[risk_regime]
+            safety_reasons: set[str] = set()
+            if risk_regime == "UNSAFE":
+                safety_reasons.add("UNSAFE")
+            if risk_snapshot is not None and any("KILL" in flag.upper() for flag in risk_snapshot.flags):
+                safety_reasons.add("KILL")
+            row = {
+                **alpha_row,
+                "annualized_volatility": float(indicator.values.get("realized_vol", 0.0) or 0.0),
+                "risk_regime": risk_regime,
+                "frozen_regime_multiplier": multiplier,
+                "exchange_min_quantity": exchange_min_quantity,
+                "reduce_only": bool(risk_snapshot.reduce_only_mode) if risk_snapshot is not None else False,
+                "safety_reasons": tuple(sorted(safety_reasons)),
+                "risk_snapshot_status": risk_snapshot_status,
+                "risk_snapshot_ts_ns": risk_snapshot.ts_ns if risk_snapshot is not None else None,
+                "estimated_fee_bps": estimated_fee_bps,
+                "estimated_slippage_bps": estimated_slippage_bps,
+                "reference_price": float(confirmed_rows[index]["close"]),
+                "actual_fill_price": None,
+                "forward_return_3": _forward_return(confirmed_rows, index, 3),
+                "forward_return_6": _forward_return(confirmed_rows, index, 6),
+                "directional_state": state.directional_state,
+                "volatility_state": state.volatility_state,
+                "positioning_state": state.positioning_state,
+                "quality_state": state.quality_state,
+                "quality_flags": tuple(indicator.quality_flags),
+            }
+            rows.append(row)
+        if missing:
+            raise ValueError(f"missing point-in-time A2-A5 stage inputs at cutoffs={missing!r}")
+        funding_settlements = self._build_architecture_funding_settlements(
+            tuple(int(row["cutoff_time_ns"]) for row in rows)
+        )
+        return {
+            **batch,
+            "observations": rows,
+            "missing_stage_input_count": 0,
+            "funding_settlements_by_cutoff": funding_settlements,
+        }
+
+    def _build_architecture_funding_settlements(
+        self,
+        decision_cutoffs: tuple[int, ...],
+    ) -> dict[int, tuple[Any, ...]]:
+        """Assign each PIT funding row to its first actionable 4h cutoff."""
+        from zenquant.research.architecture_stage_replay import ArchitectureFundingSettlement
+
+        if not decision_cutoffs:
+            return {}
+        ordered_cutoffs = tuple(sorted(decision_cutoffs))
+        funding_rows = sorted(
+            getattr(self, "_funding_rows", ()),
+            key=lambda row: int(row["funding_time_ns"]),
+        )
+        source_counts = Counter(int(row["funding_time_ns"]) for row in funding_rows)
+        duplicates = sorted(source for source, count in source_counts.items() if count != 1)
+        if duplicates:
+            raise ValueError(f"duplicate funding settlements at source times={duplicates!r}")
+        price_rows = sorted(
+            getattr(self, "_execution_rows", ()),
+            key=lambda row: int(row["close_time_ns"]),
+        )
+        price_cutoffs = [int(row["close_time_ns"]) for row in price_rows]
+        grouped: defaultdict[int, list[ArchitectureFundingSettlement]] = defaultdict(list)
+        for funding_row in funding_rows:
+            source_time_ns = int(funding_row["funding_time_ns"])
+            decision_index = bisect_left(ordered_cutoffs, source_time_ns)
+            if decision_index >= len(ordered_cutoffs):
+                continue
+            price_index = bisect_right(price_cutoffs, source_time_ns) - 1
+            if price_index < 0:
+                if source_time_ns <= ordered_cutoffs[0]:
+                    # No stage exposure exists before the first architecture
+                    # decision, so this window-opening settlement has zero
+                    # allocation. Never invent a pre-window mark price.
+                    continue
+                raise ValueError(
+                    f"funding settlement has no point-in-time execution price: source_time_ns={source_time_ns}"
+                )
+            available_at_ns = ordered_cutoffs[decision_index]
+            grouped[available_at_ns].append(
+                ArchitectureFundingSettlement(
+                    source_time_ns=source_time_ns,
+                    available_at_ns=available_at_ns,
+                    funding_rate=float(funding_row.get("funding_rate", 0.0)),
+                    mark_price=float(price_rows[price_index]["close"]),
+                )
+            )
+        return {cutoff: tuple(settlements) for cutoff, settlements in sorted(grouped.items())}
+
 
 class _TradeLedger:
     """Track realized PnL from fills without introducing a second execution model."""
@@ -1064,7 +1515,7 @@ class _TradeLedger:
 
     def on_execution_report(self, report: ExecutionReport) -> None:
         """Update realized PnL state from a single filled report."""
-        if report.status != "FILLED" or report.filled_qty <= 0 or report.avg_price <= 0:
+        if report.filled_qty <= 0 or report.avg_price <= 0:
             return
         signed_qty = report.side * report.filled_qty
         next_position = self.position_qty + signed_qty
@@ -1370,6 +1821,51 @@ def _forward_return(rows: list[dict[str, Any]], index: int, horizon: int) -> flo
     if current_close <= 0:
         return None
     return (future_close - current_close) / current_close
+
+
+def _reject_duplicate_stage_points(points: list[Any], *, label: str) -> None:
+    counts = Counter(int(item.cutoff_time_ns) for item in points)
+    duplicates = sorted(cutoff for cutoff, count in counts.items() if count != 1)
+    if duplicates:
+        raise ValueError(f"duplicate point-in-time {label} inputs at cutoffs={duplicates!r}")
+
+
+def _architecture_risk_donors(
+    snapshots: list[RiskSnapshot],
+    *,
+    decision_cutoffs: tuple[int, ...],
+) -> dict[int, tuple[RiskSnapshot | None, str]]:
+    """Freeze the latest authoritative risk snapshot visible at each cutoff."""
+    by_source_time: dict[int, RiskSnapshot] = {}
+    for snapshot in snapshots:
+        source_time = int(snapshot.ts_ns)
+        prior = by_source_time.get(source_time)
+        if prior is not None and prior != snapshot:
+            raise ValueError(f"conflicting risk snapshots at source_time_ns={source_time}")
+        by_source_time[source_time] = snapshot
+    source_times = sorted(by_source_time)
+    donors: dict[int, tuple[RiskSnapshot | None, str]] = {}
+    for cutoff in decision_cutoffs:
+        source_index = bisect_right(source_times, cutoff) - 1
+        if source_index < 0:
+            donors[cutoff] = (None, "NO_PRIOR_SNAPSHOT_NEUTRAL")
+            continue
+        donors[cutoff] = (by_source_time[source_times[source_index]], "ASOF")
+    return donors
+
+
+def _architecture_risk_regime(state: MarketState) -> str:
+    quality = state.quality_state.upper()
+    volatility = state.volatility_state.upper()
+    directional = state.directional_state.upper()
+    regime = state.regime.upper()
+    if quality in {"UNSAFE", "DEGRADED"} or volatility == "DISTORTED":
+        return "UNSAFE"
+    if regime == "STRESS":
+        return "STRESS"
+    if quality == "NOISY" or directional == "TRANSITION":
+        return "NOISY"
+    return "TRADABLE"
 
 
 def _max_adverse_excursion(rows: list[dict[str, Any]], index: int, horizon: int) -> float | None:

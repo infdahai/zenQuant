@@ -1,0 +1,180 @@
+============================= test session starts ==============================
+platform darwin -- Python 3.12.12, pytest-9.0.2, pluggy-1.6.0 -- /Users/disaster/workspace/code/zenQuant/.venv/bin/python
+cachedir: .pytest_cache
+rootdir: /Users/disaster/workspace/code/zenQuant/.worktrees/options-workbench-rust
+configfile: pyproject.toml
+plugins: anyio-4.12.1
+collecting ... collected 7 items
+
+tests/test_factor_health.py::TestFactorHealth::test_active_signals_have_minimal_count PASSED [ 14%]
+tests/test_factor_health.py::TestFactorHealth::test_indicator_pack_contains_expected_keys PASSED [ 28%]
+tests/test_factor_health.py::TestFactorHealth::test_no_disabled_signal_has_high_weight PASSED [ 42%]
+tests/test_factor_health.py::TestFactorHealth::test_no_nan_or_inf_in_indicators PASSED [ 57%]
+tests/test_factor_health.py::TestFactorHealth::test_signal_sign_parameter_is_explicit PASSED [ 71%]
+tests/test_factor_health.py::TestFactorHealth::test_sprint_contract_ic_stability PASSED [ 85%]
+tests/test_factor_health.py::TestFactorHealth::test_walk_forward_stability PASSED [100%]
+
+============================== 7 passed in 1.04s ===============================
+All checks passed!
+Would reformat: scripts/analyze_intent_churn_attribution.py
+Would reformat: zenquant/data/event_calendar.py
+Would reformat: zenquant/data/liquidation_pipeline.py
+3 files would be reformatted, 417 files already formatted
+============================= test session starts ==============================
+platform darwin -- Python 3.12.12, pytest-9.0.2, pluggy-1.6.0 -- /Users/disaster/workspace/code/zenQuant/.venv/bin/python
+cachedir: .pytest_cache
+rootdir: /Users/disaster/workspace/code/zenQuant/.worktrees/options-workbench-rust
+configfile: pyproject.toml
+plugins: anyio-4.12.1
+collecting ... collected 4 items
+
+tests/test_import_boundaries.py::TestImportBoundaries::test_indicator_does_not_import_strategy PASSED [ 25%]
+tests/test_import_boundaries.py::TestImportBoundaries::test_plugin_implementations_only_import_protocols PASSED [ 50%]
+tests/test_import_boundaries.py::TestImportBoundaries::test_state_does_not_import_strategy PASSED [ 75%]
+tests/test_import_boundaries.py::TestImportBoundaries::test_strategy_does_not_import_app_or_execution PASSED [100%]
+
+============================== 4 passed in 0.05s ===============================
+============================= test session starts ==============================
+platform darwin -- Python 3.12.12, pytest-9.0.2, pluggy-1.6.0 -- /Users/disaster/workspace/code/zenQuant/.venv/bin/python
+cachedir: .pytest_cache
+rootdir: /Users/disaster/workspace/code/zenQuant/.worktrees/options-workbench-rust
+configfile: pyproject.toml
+plugins: anyio-4.12.1
+collecting ... collected 1 item
+
+tests/test_golden_output.py::TestGoldenOutput::test_backtest_matches_golden_output PASSED [100%]
+
+============================== 1 passed in 0.51s ===============================
+============================= test session starts ==============================
+platform darwin -- Python 3.12.12, pytest-9.0.2, pluggy-1.6.0 -- /Users/disaster/workspace/code/zenQuant/.venv/bin/python
+cachedir: .pytest_cache
+rootdir: /Users/disaster/workspace/code/zenQuant/.worktrees/options-workbench-rust
+configfile: pyproject.toml
+plugins: anyio-4.12.1
+collecting ... collected 6 items
+
+tests/test_parity.py::TestPluginLegacyParity::test_leverage_within_tolerance PASSED [ 16%]
+tests/test_parity.py::TestPluginLegacyParity::test_stress_regime_both_flat PASSED [ 33%]
+tests/test_parity.py::TestPluginLegacyParity::test_trend_uptrend_direction_agrees PASSED [ 50%]
+tests/test_parity.py::TestPluginRuntimeContracts::test_adaptive_signal_weights_default_off_for_restart_parity PASSED [ 66%]
+tests/test_parity.py::TestPluginRuntimeContracts::test_execution_modifier_affects_sizing_on_same_bar PASSED [ 83%]
+tests/test_parity.py::TestTargetTrackingRuntimeParity::test_historical_and_live_runtime_compositions_have_byte_identical_v2_trace PASSED [100%]
+
+============================== 6 passed in 0.45s ===============================
+........................................................................ [  3%]
+........................................................................ [  7%]
+........................................................................ [ 11%]
+.............E.......................................................... [ 15%]
+........................................................................ [ 19%]
+........................................................................ [ 23%]
+........................................................................ [ 27%]
+........................................................................ [ 31%]
+........................................................................ [ 35%]
+........................................................................ [ 38%]
+....................................................................sss. [ 42%]
+............................s........................................... [ 46%]
+..................................................................s [ 50%]
+sssss................................................................... [ 54%]
+........................................................................ [ 58%]
+........................................................................ [ 62%]
+........................................................................ [ 65%]
+........................................................................ [ 69%]
+........................................................................ [ 73%]
+................................................................................................................... [ 79%]
+........................................................................ [ 83%]
+........................................................................ [ 87%]
+........................................................................ [ 91%]
+........................................................................ [ 95%]
+........................................................................ [ 99%]
+..........                                                               [100%]
+==================================== ERRORS ====================================
+_______________ ERROR at setup of test_sealed_input_integration ________________
+../../.venv/lib/python3.12/site-packages/_pytest/config/__init__.py:1886: in getoption
+    val = getattr(self.option, name)
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^
+E   AttributeError: 'Namespace' object has no attribute 'require_local_options_panel'
+
+The above exception was the direct cause of the following exception:
+tests/options/conftest.py:35: in local_options_panel_root
+    return require_local_options_panel(strict=request.config.getoption("--require-local-options-panel"))
+                                              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E   ValueError: no option named 'require_local_options_panel'
+=========================== short test summary info ============================
+ERROR tests/options/test_panel.py::test_sealed_input_integration - ValueError...
+1837 passed, 10 skipped, 1 error, 34 subtests passed in 38.39s
+Walk-Forward Evaluation — Train/Dev Selection Layer
+Train: 2 years, Test: 6 months, Slide: 6 months
+split_scope=train_dev_only
+======================================================================
+Windows: 4
+
+[1/4] wf_1
+Traceback (most recent call last):
+  File "/Users/disaster/workspace/code/zenQuant/.worktrees/options-workbench-rust/scripts/walk_forward_eval.py", line 75, in run_walk_forward
+    ).run()
+      ^^^^^
+  File "/Users/disaster/workspace/code/zenQuant/.worktrees/options-workbench-rust/zenquant/historical/replay.py", line 409, in run
+    raise RuntimeError(
+RuntimeError: no historical events available for replay; expected Parquet data under data/raw/binance for symbol BTCUSDT
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "/Users/disaster/workspace/code/zenQuant/.worktrees/options-workbench-rust/scripts/walk_forward_eval.py", line 156, in <module>
+    run_walk_forward(train_years=args.train_years, test_months=args.test_months)
+  File "/Users/disaster/workspace/code/zenQuant/.worktrees/options-workbench-rust/scripts/walk_forward_eval.py", line 79, in run_walk_forward
+    raise RuntimeError(f"Train ERROR in {w['label']}: {e}") from e
+RuntimeError: Train ERROR in wf_1: no historical events available for replay; expected Parquet data under data/raw/binance for symbol BTCUSDT
+
+============================================================
+  Gate 0: factor health check
+============================================================
+  [PASS] 0: factor health check (1.2s)
+
+============================================================
+  Gate A: ruff lint
+============================================================
+  [PASS] A: ruff lint (0.1s)
+
+============================================================
+  Gate A: ruff format
+============================================================
+  [FAIL] A: ruff format (0.0s)
+
+============================================================
+  Gate B: import boundaries
+============================================================
+  [PASS] B: import boundaries (0.2s)
+
+============================================================
+  Gate C: golden output
+============================================================
+  [PASS] C: golden output (0.7s)
+
+============================================================
+  Gate D: plugin/legacy parity
+============================================================
+  [PASS] D: plugin/legacy parity (0.7s)
+
+============================================================
+  Gate E: full test suite
+============================================================
+  [FAIL] E: full test suite (39.5s)
+
+============================================================
+  Gate F: walk-forward overfit detection
+============================================================
+  [FAIL] F: walk-forward overfit detection (0.4s)
+
+============================================================
+  HARNESS SUMMARY (42.7s)
+============================================================
+  Gate 0: PASS
+  Gate A: FAIL
+  Gate B: PASS
+  Gate C: PASS
+  Gate D: PASS
+  Gate E: FAIL
+  Gate F: FAIL
+
+  BLOCKED: 3 gate(s) failed

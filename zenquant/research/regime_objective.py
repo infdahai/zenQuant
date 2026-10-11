@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from typing import Any
@@ -18,20 +19,29 @@ TRAIN_TRUTH_DAY_FALLBACK = 1461.0
 MAX_FEE_DRAG_PCT_ABSOLUTE = 0.025
 MAX_TRADE_COUNT_PER_DAY = 1.50
 MIN_PROFIT_FACTOR_AFTER_FEE = 1.05
+RESEARCH_RELAXED_MIN_PROFIT_FACTOR_AFTER_FEE = 0.95
 MIN_NET_PNL_PER_TRADE_RELATIVE = 0.80
 PAULWEI_MATURE_POSITION_SWITCHES_PER_30D = 1.6807
-MAX_POSITION_SWITCHES_PER_30D = 3.0
-MAX_POSITION_SWITCH_RELATIVE_INCREASE = 1.15
+POSITION_SWITCH_SOFT_LIMIT_PER_DAY = 1.0
+POSITION_SWITCH_HARD_LIMIT_PER_DAY = 5.0
 MAX_FLIP_REDUCE_FEE_DRAG_PCT_ABSOLUTE = 0.016
 MAX_FLIP_REDUCE_FEE_DRAG_RELATIVE_INCREASE = 1.15
 MAX_EXIT_FEE_DRAG_PCT_ABSOLUTE = 0.018
 MAX_FLIP_ACTION_FEE_DRAG_PCT_ABSOLUTE = 0.018
+RESEARCH_RELAXED_MAX_FEE_DRAG_PCT_ABSOLUTE = 0.15
+RESEARCH_RELAXED_MAX_FLIP_REDUCE_FEE_DRAG_PCT_ABSOLUTE = 0.12
+RESEARCH_RELAXED_MAX_EXIT_FEE_DRAG_PCT_ABSOLUTE = 0.12
+RESEARCH_RELAXED_MAX_FLIP_ACTION_FEE_DRAG_PCT_ABSOLUTE = 0.12
+RESEARCH_RELAXED_MAX_TRADE_COUNT_PER_DAY = 3.0
 MIN_REDUCE_ACTION_PROFIT_FACTOR = 1.0
 MIN_STAGED_BUILD_UNWIND_BALANCE_RATIO = 0.25
 MIN_TRANCHE_ACTIONS_PER_POSITION_SWITCH = 3.0
 MIN_NET_PNL_PER_POSITION_SWITCH_RELATIVE = 0.75
 MIN_PROTECTIVE_REDUCE_SHARE = 0.75
-TRAIN_DRAWDOWN_PREFERRED_BAND = 0.06
+RESEARCH_RELAXED_MIN_PROTECTIVE_REDUCE_SHARE = 0.45
+TRAIN_DRAWDOWN_PREFERRED_BAND = 0.12
+RESEARCH_RELAXED_TRAIN_DRAWDOWN_PREFERRED_BAND = 0.20
+RETURN_RUN_BONUS_CAP = 0.90
 _FORBIDDEN_SELECTION_PREFIXES = ("dev", "test")
 
 
@@ -74,6 +84,16 @@ def _profit_factor_after_fee(metrics: dict[str, Any], profit_factor: float, fee_
     return profit_factor * max(0.0, 1.0 - fee_drag_pct)
 
 
+def _equity_multiple(metrics: dict[str, Any], net_pnl: float) -> float:
+    explicit = metrics.get("equity_multiple")
+    if explicit is not None:
+        return _safe_float(explicit)
+    starting_equity = _safe_float(metrics.get("starting_equity"))
+    if starting_equity <= 0:
+        starting_equity = 100_000.0
+    return max(0.0, (starting_equity + net_pnl) / starting_equity)
+
+
 def _action_value(metrics: dict[str, Any], key: str, action: str) -> float:
     values = metrics.get(key) or {}
     if not isinstance(values, dict):
@@ -88,6 +108,46 @@ def _action_profit_factor(metrics: dict[str, Any], action: str) -> float:
 def _action_counts_present(metrics: dict[str, Any], actions: set[str]) -> bool:
     values = metrics.get("action_trade_counts")
     return isinstance(values, dict) and bool(actions & set(values))
+
+
+def _fee_efficiency_thresholds(*, relaxed_fee_probe: bool) -> dict[str, float]:
+    if relaxed_fee_probe:
+        return {
+            "max_fee_drag_pct_absolute": RESEARCH_RELAXED_MAX_FEE_DRAG_PCT_ABSOLUTE,
+            "max_trade_count_per_day": RESEARCH_RELAXED_MAX_TRADE_COUNT_PER_DAY,
+            "min_profit_factor_after_fee": RESEARCH_RELAXED_MIN_PROFIT_FACTOR_AFTER_FEE,
+            "min_net_pnl_per_trade_relative": MIN_NET_PNL_PER_TRADE_RELATIVE,
+            "target_position_switches_per_30d": PAULWEI_MATURE_POSITION_SWITCHES_PER_30D,
+            "position_switch_soft_limit_per_day": POSITION_SWITCH_SOFT_LIMIT_PER_DAY,
+            "position_switch_hard_limit_per_day": POSITION_SWITCH_HARD_LIMIT_PER_DAY,
+            "max_flip_reduce_fee_drag_pct_absolute": RESEARCH_RELAXED_MAX_FLIP_REDUCE_FEE_DRAG_PCT_ABSOLUTE,
+            "max_exit_fee_drag_pct_absolute": RESEARCH_RELAXED_MAX_EXIT_FEE_DRAG_PCT_ABSOLUTE,
+            "max_flip_action_fee_drag_pct_absolute": RESEARCH_RELAXED_MAX_FLIP_ACTION_FEE_DRAG_PCT_ABSOLUTE,
+            "min_reduce_action_profit_factor": MIN_REDUCE_ACTION_PROFIT_FACTOR,
+            "min_staged_build_unwind_balance_ratio": MIN_STAGED_BUILD_UNWIND_BALANCE_RATIO,
+            "min_tranche_actions_per_position_switch": MIN_TRANCHE_ACTIONS_PER_POSITION_SWITCH,
+            "min_net_pnl_per_position_switch_relative": MIN_NET_PNL_PER_POSITION_SWITCH_RELATIVE,
+            "min_protective_reduce_share": RESEARCH_RELAXED_MIN_PROTECTIVE_REDUCE_SHARE,
+            "drawdown_preferred_band": RESEARCH_RELAXED_TRAIN_DRAWDOWN_PREFERRED_BAND,
+        }
+    return {
+        "max_fee_drag_pct_absolute": MAX_FEE_DRAG_PCT_ABSOLUTE,
+        "max_trade_count_per_day": MAX_TRADE_COUNT_PER_DAY,
+        "min_profit_factor_after_fee": MIN_PROFIT_FACTOR_AFTER_FEE,
+        "min_net_pnl_per_trade_relative": MIN_NET_PNL_PER_TRADE_RELATIVE,
+        "target_position_switches_per_30d": PAULWEI_MATURE_POSITION_SWITCHES_PER_30D,
+        "position_switch_soft_limit_per_day": POSITION_SWITCH_SOFT_LIMIT_PER_DAY,
+        "position_switch_hard_limit_per_day": POSITION_SWITCH_HARD_LIMIT_PER_DAY,
+        "max_flip_reduce_fee_drag_pct_absolute": MAX_FLIP_REDUCE_FEE_DRAG_PCT_ABSOLUTE,
+        "max_exit_fee_drag_pct_absolute": MAX_EXIT_FEE_DRAG_PCT_ABSOLUTE,
+        "max_flip_action_fee_drag_pct_absolute": MAX_FLIP_ACTION_FEE_DRAG_PCT_ABSOLUTE,
+        "min_reduce_action_profit_factor": MIN_REDUCE_ACTION_PROFIT_FACTOR,
+        "min_staged_build_unwind_balance_ratio": MIN_STAGED_BUILD_UNWIND_BALANCE_RATIO,
+        "min_tranche_actions_per_position_switch": MIN_TRANCHE_ACTIONS_PER_POSITION_SWITCH,
+        "min_net_pnl_per_position_switch_relative": MIN_NET_PNL_PER_POSITION_SWITCH_RELATIVE,
+        "min_protective_reduce_share": MIN_PROTECTIVE_REDUCE_SHARE,
+        "drawdown_preferred_band": TRAIN_DRAWDOWN_PREFERRED_BAND,
+    }
 
 
 def _effective_elapsed_days(metrics: dict[str, Any]) -> float:
@@ -460,6 +520,7 @@ def score_regime_objective_candidate_generation(
     metrics: dict[str, Any],
     *,
     baseline_metrics: dict[str, Any] | None = None,
+    relaxed_fee_probe: bool = False,
 ) -> dict[str, Any]:
     """Score a train-only candidate before dev diagnostics.
 
@@ -472,11 +533,21 @@ def score_regime_objective_candidate_generation(
     _assert_train_only_metric_keys(train_metrics)
     baseline = dict(baseline_metrics or {})
     _assert_train_only_metric_keys(baseline)
+    fee_thresholds = _fee_efficiency_thresholds(relaxed_fee_probe=relaxed_fee_probe)
+    fee_drag_cap = fee_thresholds["max_fee_drag_pct_absolute"]
+    flip_reduce_fee_drag_cap = fee_thresholds["max_flip_reduce_fee_drag_pct_absolute"]
+    exit_fee_drag_cap = fee_thresholds["max_exit_fee_drag_pct_absolute"]
+    flip_action_fee_drag_cap = fee_thresholds["max_flip_action_fee_drag_pct_absolute"]
+    min_protective_reduce_share = fee_thresholds["min_protective_reduce_share"]
+    max_trade_count_per_day = fee_thresholds["max_trade_count_per_day"]
+    drawdown_preferred_band = fee_thresholds["drawdown_preferred_band"]
+    min_profit_factor_after_fee = fee_thresholds["min_profit_factor_after_fee"]
 
     sharpe = _safe_float(train_metrics.get("sharpe"))
     profit_factor = _safe_float(train_metrics.get("profit_factor"))
     drawdown = _safe_float(train_metrics.get("max_drawdown"))
     net_pnl = _safe_float(train_metrics.get("net_pnl", train_metrics.get("pnl")))
+    equity_multiple = _equity_multiple(train_metrics, net_pnl)
     turnover = _safe_float(train_metrics.get("turnover_per_day"))
     trade_count = _safe_float(train_metrics.get("trade_count"))
     fee_drag = _safe_float(train_metrics.get("fee_drag_pct"))
@@ -513,6 +584,17 @@ def score_regime_objective_candidate_generation(
     tranche_actions_per_position_switch = staged_tranche_count / max(1.0, flip_count)
     time_leverage_efficiency = max(0.0, net_pnl_per_position_switch) / max(1.0, abs(net_pnl_per_trade))
     time_leverage_bonus = min(0.35, 0.05 * time_leverage_efficiency)
+    return_run_bonus_scale = 0.55 if relaxed_fee_probe else 0.35
+    return_run_bonus_cap = 1.25 if relaxed_fee_probe else RETURN_RUN_BONUS_CAP
+    return_run_bonus = min(
+        return_run_bonus_cap, max(0.0, math.log(max(1.0, equity_multiple), 2.0)) * return_run_bonus_scale
+    )
+    return_quality_bonus = (
+        min(0.35, max(0.0, math.log(max(1.0, net_pnl_per_trade) / 250.0, 2.0)) * 0.16) if relaxed_fee_probe else 0.0
+    )
+    spot_context_score_adjustment = _safe_float(train_metrics.get("spot_context_score_adjustment"))
+    spot_context_bonus = min(1.0, max(0.0, spot_context_score_adjustment))
+    spot_context_penalty = min(1.0, max(0.0, -spot_context_score_adjustment))
     tranche_alignment_bonus = 0.0
     baseline_turnover = _safe_float(baseline.get("turnover_per_day"))
     baseline_trade_count = _safe_float(baseline.get("trade_count"))
@@ -527,7 +609,6 @@ def score_regime_objective_candidate_generation(
         baseline_fee_drag,
     )
     baseline_flip_count = _action_value(baseline, "action_trade_counts", "flip")
-    baseline_position_switches_per_30d = _position_switches_per_30d(baseline, baseline_flip_count)
     baseline_flip_reduce_fee_drag_pct = _flip_reduce_fee_drag_pct(baseline)
     baseline_net_pnl_per_position_switch = _net_pnl_per_position_switch(
         baseline,
@@ -547,19 +628,19 @@ def score_regime_objective_candidate_generation(
     staged_inventory_balance_penalty = 0.0
     position_switch_efficiency_penalty = 0.0
     protective_reduce_bias_penalty = (
-        max(0.0, (MIN_PROTECTIVE_REDUCE_SHARE - protective_reduce_share) / MIN_PROTECTIVE_REDUCE_SHARE)
+        max(0.0, (min_protective_reduce_share - protective_reduce_share) / min_protective_reduce_share)
         if protective_reduce_action_count > 0
         else 0.0
     )
     drawdown_preferred_band_penalty = max(
         0.0,
-        (drawdown - TRAIN_DRAWDOWN_PREFERRED_BAND) / max(0.01, TRAIN_DRAWDOWN_PREFERRED_BAND),
+        (drawdown - drawdown_preferred_band) / max(0.01, drawdown_preferred_band),
     )
-    trade_count_per_day_penalty = max(0.0, (trade_count_per_day - MAX_TRADE_COUNT_PER_DAY) / MAX_TRADE_COUNT_PER_DAY)
+    trade_count_per_day_penalty = max(0.0, (trade_count_per_day - max_trade_count_per_day) / max_trade_count_per_day)
     profit_factor_after_fee_floor = (
-        max(MIN_PROFIT_FACTOR_AFTER_FEE, baseline_profit_factor_after_fee * 0.95)
+        max(min_profit_factor_after_fee, baseline_profit_factor_after_fee * 0.90)
         if baseline_profit_factor_after_fee > 0
-        else MIN_PROFIT_FACTOR_AFTER_FEE
+        else min_profit_factor_after_fee
     )
     profit_factor_after_fee_penalty = (
         max(
@@ -581,25 +662,24 @@ def score_regime_objective_candidate_generation(
             (trade_count_per_day - baseline_trade_count_per_day * 1.10) / max(0.01, baseline_trade_count_per_day),
         )
     if baseline_fee_drag > 0:
-        fee_drag_penalty = max(0.0, (fee_drag - baseline_fee_drag) / max(0.001, baseline_fee_drag))
+        relative_fee_drag_penalty = max(0.0, (fee_drag - baseline_fee_drag) / max(0.001, baseline_fee_drag))
+        if relaxed_fee_probe:
+            relaxed_abs_fee_penalty = max(
+                0.0,
+                (fee_drag - MAX_FEE_DRAG_PCT_ABSOLUTE) / max(0.001, fee_drag_cap - MAX_FEE_DRAG_PCT_ABSOLUTE),
+            )
+            fee_drag_penalty = min(relative_fee_drag_penalty, relaxed_abs_fee_penalty)
+        else:
+            fee_drag_penalty = relative_fee_drag_penalty
     else:
-        fee_drag_penalty = max(0.0, (fee_drag - 0.02) / 0.01)
-    position_switch_limit = MAX_POSITION_SWITCHES_PER_30D
-    if baseline_position_switches_per_30d > 0:
-        position_switch_limit = max(
-            position_switch_limit,
-            baseline_position_switches_per_30d * MAX_POSITION_SWITCH_RELATIVE_INCREASE,
-        )
+        fee_drag_penalty = max(0.0, (fee_drag - 0.02) / (0.03 if relaxed_fee_probe else 0.01))
+    position_switches_per_day = position_switches_per_30d / 30.0
     position_switch_penalty = max(
         0.0,
-        (position_switches_per_30d - position_switch_limit) / max(0.10, position_switch_limit),
+        (position_switches_per_day - POSITION_SWITCH_SOFT_LIMIT_PER_DAY) / POSITION_SWITCH_SOFT_LIMIT_PER_DAY,
     )
-    mature_position_switch_penalty = max(
-        0.0,
-        (position_switches_per_30d - PAULWEI_MATURE_POSITION_SWITCHES_PER_30D)
-        / PAULWEI_MATURE_POSITION_SWITCHES_PER_30D,
-    )
-    flip_reduce_fee_drag_limit = MAX_FLIP_REDUCE_FEE_DRAG_PCT_ABSOLUTE
+    mature_position_switch_penalty = 0.0
+    flip_reduce_fee_drag_limit = flip_reduce_fee_drag_cap
     if baseline_flip_reduce_fee_drag_pct > 0:
         flip_reduce_fee_drag_limit = max(
             flip_reduce_fee_drag_limit,
@@ -612,11 +692,11 @@ def score_regime_objective_candidate_generation(
     )
     exit_fee_drag_penalty = max(
         0.0,
-        (exit_fee_drag_pct - MAX_EXIT_FEE_DRAG_PCT_ABSOLUTE) / MAX_EXIT_FEE_DRAG_PCT_ABSOLUTE,
+        (exit_fee_drag_pct - exit_fee_drag_cap) / exit_fee_drag_cap,
     )
     flip_action_fee_drag_penalty = max(
         0.0,
-        (flip_action_fee_drag_pct - MAX_FLIP_ACTION_FEE_DRAG_PCT_ABSOLUTE) / MAX_FLIP_ACTION_FEE_DRAG_PCT_ABSOLUTE,
+        (flip_action_fee_drag_pct - flip_action_fee_drag_cap) / flip_action_fee_drag_cap,
     )
     reduce_profit_factor_penalty = (
         max(
@@ -641,7 +721,6 @@ def score_regime_objective_candidate_generation(
         min(0.20, 0.04 * min(5.0, tranche_actions_per_position_switch))
         if tranche_actions_per_position_switch >= MIN_TRANCHE_ACTIONS_PER_POSITION_SWITCH
         and staged_inventory_balance_ratio >= MIN_STAGED_BUILD_UNWIND_BALANCE_RATIO
-        and position_switches_per_30d <= PAULWEI_MATURE_POSITION_SWITCHES_PER_30D
         and reduce_profit_factor_penalty == 0.0
         and flip_reduce_fee_drag_penalty == 0.0
         else 0.0
@@ -663,6 +742,16 @@ def score_regime_objective_candidate_generation(
             )
             / max(1.0, abs(baseline_net_pnl_per_position_switch)),
         )
+    fee_drag_quality_override = (
+        fee_drag <= fee_drag_cap
+        and profit_factor_after_fee_penalty == 0.0
+        and net_pnl_per_trade_penalty == 0.0
+        and flip_reduce_fee_drag_penalty == 0.0
+        and exit_fee_drag_penalty == 0.0
+        and flip_action_fee_drag_penalty == 0.0
+        and reduce_profit_factor_penalty == 0.0
+        and staged_inventory_balance_penalty == 0.0
+    )
 
     bucket_blockers: list[str] = []
     bucket_metrics = dict(train_metrics.get("train_bucket_metrics") or {})
@@ -692,16 +781,16 @@ def score_regime_objective_candidate_generation(
         bucket_blockers.append("train_trade_count_churn_worse")
     if trade_count_per_day_penalty > 0.0:
         bucket_blockers.append("train_trade_count_per_day_cap_exceeded")
-    if fee_drag_penalty > 0.15 or fee_drag > MAX_FEE_DRAG_PCT_ABSOLUTE:
+    if (not relaxed_fee_probe and fee_drag_penalty > 0.15 and not fee_drag_quality_override) or fee_drag > fee_drag_cap:
         bucket_blockers.append("train_fee_drag_structurally_worse")
-    if fee_drag > MAX_FEE_DRAG_PCT_ABSOLUTE:
+    if fee_drag > fee_drag_cap:
         bucket_blockers.append("train_fee_drag_cap_exceeded")
     if net_pnl_per_trade_penalty > 0.0:
         bucket_blockers.append("train_net_pnl_per_trade_inefficient")
     if profit_factor_after_fee_penalty > 0.0:
         bucket_blockers.append("train_profit_factor_after_fee_weak")
-    if position_switch_penalty > 0.15:
-        bucket_blockers.append("train_position_switch_cadence_worse")
+    if position_switches_per_day > POSITION_SWITCH_HARD_LIMIT_PER_DAY:
+        bucket_blockers.append("train_position_switch_rate_excessive")
     if flip_reduce_fee_drag_penalty > 0.15:
         bucket_blockers.append("train_flip_reduce_fee_drag_worse")
     if exit_fee_drag_penalty > 0.15:
@@ -717,21 +806,30 @@ def score_regime_objective_candidate_generation(
     if position_switch_efficiency_penalty > 0.20:
         bucket_blockers.append("train_time_leverage_efficiency_weak")
 
+    sharpe_weight = 0.35 if relaxed_fee_probe else 0.55
+    profit_factor_after_fee_weight = 0.05 if relaxed_fee_probe else 0.10
+    return_run_weight = 2.40 if relaxed_fee_probe else 1.0
+    time_leverage_weight = 1.65 if relaxed_fee_probe else 1.25
+    fee_drag_penalty_weight = 0.35 if relaxed_fee_probe else 0.80
+    profit_factor_after_fee_penalty_weight = 0.35 if relaxed_fee_probe else 0.75
     regime_objective_score = (
-        0.55 * sharpe
+        sharpe_weight * sharpe
         + 0.20 * profit_factor
-        + 0.10 * profit_factor_after_fee
+        + profit_factor_after_fee_weight * profit_factor_after_fee
         + 0.25 * bucket_score
-        + time_leverage_bonus
+        + return_run_weight * return_run_bonus
+        + return_quality_bonus
+        + time_leverage_weight * time_leverage_bonus
+        + 0.70 * spot_context_bonus
         + tranche_alignment_bonus
         - 1.50 * drawdown
         - 0.60 * drawdown_preferred_band_penalty
         - 0.80 * turnover_penalty
         - 0.80 * trade_count_penalty
-        - 0.80 * fee_drag_penalty
+        - fee_drag_penalty_weight * fee_drag_penalty
         - 0.70 * net_pnl_per_trade_penalty
         - 0.75 * trade_count_per_day_penalty
-        - 0.75 * profit_factor_after_fee_penalty
+        - profit_factor_after_fee_penalty_weight * profit_factor_after_fee_penalty
         - 0.65 * position_switch_penalty
         - 0.35 * mature_position_switch_penalty
         - 0.85 * flip_reduce_fee_drag_penalty
@@ -741,6 +839,7 @@ def score_regime_objective_candidate_generation(
         - 0.40 * staged_inventory_balance_penalty
         - 0.70 * protective_reduce_bias_penalty
         - 0.45 * position_switch_efficiency_penalty
+        - 0.85 * spot_context_penalty
     )
     return {
         "regime_objective_score": round(regime_objective_score, 6),
@@ -748,16 +847,26 @@ def score_regime_objective_candidate_generation(
         "turnover_penalty": round(turnover_penalty, 6),
         "trade_count_penalty": round(trade_count_penalty, 6),
         "fee_drag_penalty": round(fee_drag_penalty, 6),
+        "fee_drag_quality_override": fee_drag_quality_override,
         "net_pnl_per_trade": round(net_pnl_per_trade, 6),
+        "equity_multiple": round(equity_multiple, 6),
+        "return_run_bonus": round(return_run_bonus, 6),
+        "return_quality_bonus": round(return_quality_bonus, 6),
+        "spot_context_score_adjustment": round(spot_context_score_adjustment, 6),
+        "spot_context_bonus": round(spot_context_bonus, 6),
+        "spot_context_penalty": round(spot_context_penalty, 6),
         "net_pnl_per_trade_penalty": round(net_pnl_per_trade_penalty, 6),
         "trade_count_per_day": round(trade_count_per_day, 6),
         "trade_count_per_day_penalty": round(trade_count_per_day_penalty, 6),
-        "drawdown_preferred_band": TRAIN_DRAWDOWN_PREFERRED_BAND,
+        "drawdown_preferred_band": drawdown_preferred_band,
         "drawdown_preferred_band_penalty": round(drawdown_preferred_band_penalty, 6),
         "profit_factor_after_fee": round(profit_factor_after_fee, 6),
         "profit_factor_after_fee_penalty": round(profit_factor_after_fee_penalty, 6),
         "position_switches_per_30d": round(position_switches_per_30d, 6),
+        "position_switches_per_day": round(position_switches_per_day, 6),
         "target_position_switches_per_30d": PAULWEI_MATURE_POSITION_SWITCHES_PER_30D,
+        "position_switch_soft_limit_per_day": POSITION_SWITCH_SOFT_LIMIT_PER_DAY,
+        "position_switch_hard_limit_per_day": POSITION_SWITCH_HARD_LIMIT_PER_DAY,
         "position_switch_penalty": round(position_switch_penalty, 6),
         "mature_position_switch_penalty": round(mature_position_switch_penalty, 6),
         "flip_reduce_fee_drag_pct": round(flip_reduce_fee_drag_pct, 6),
@@ -782,22 +891,8 @@ def score_regime_objective_candidate_generation(
         "position_switch_efficiency_penalty": round(position_switch_efficiency_penalty, 6),
         "time_leverage_efficiency": round(time_leverage_efficiency, 6),
         "time_leverage_bonus": round(time_leverage_bonus, 6),
-        "fee_efficiency_thresholds": {
-            "max_fee_drag_pct_absolute": MAX_FEE_DRAG_PCT_ABSOLUTE,
-            "max_trade_count_per_day": MAX_TRADE_COUNT_PER_DAY,
-            "min_profit_factor_after_fee": MIN_PROFIT_FACTOR_AFTER_FEE,
-            "min_net_pnl_per_trade_relative": MIN_NET_PNL_PER_TRADE_RELATIVE,
-            "target_position_switches_per_30d": PAULWEI_MATURE_POSITION_SWITCHES_PER_30D,
-            "max_position_switches_per_30d": MAX_POSITION_SWITCHES_PER_30D,
-            "max_flip_reduce_fee_drag_pct_absolute": MAX_FLIP_REDUCE_FEE_DRAG_PCT_ABSOLUTE,
-            "max_exit_fee_drag_pct_absolute": MAX_EXIT_FEE_DRAG_PCT_ABSOLUTE,
-            "max_flip_action_fee_drag_pct_absolute": MAX_FLIP_ACTION_FEE_DRAG_PCT_ABSOLUTE,
-            "min_reduce_action_profit_factor": MIN_REDUCE_ACTION_PROFIT_FACTOR,
-            "min_staged_build_unwind_balance_ratio": MIN_STAGED_BUILD_UNWIND_BALANCE_RATIO,
-            "min_tranche_actions_per_position_switch": MIN_TRANCHE_ACTIONS_PER_POSITION_SWITCH,
-            "min_net_pnl_per_position_switch_relative": MIN_NET_PNL_PER_POSITION_SWITCH_RELATIVE,
-            "min_protective_reduce_share": MIN_PROTECTIVE_REDUCE_SHARE,
-        },
+        "research_relaxed_fee_probe_enabled": relaxed_fee_probe,
+        "fee_efficiency_thresholds": {key: round(value, 6) for key, value in fee_thresholds.items()},
         "allow_dev_diagnostic_review": not bucket_blockers,
         "bucket_metrics_available": bool(bucket_metrics),
         "selection_scope": "train_only",

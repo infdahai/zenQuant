@@ -94,16 +94,35 @@ TRAIN_TRUTH_DAY_FALLBACK = 1461.0
 MAX_FEE_DRAG_PCT_ABSOLUTE = 0.025
 MAX_TRADE_COUNT_PER_DAY = 1.50
 MIN_PROFIT_FACTOR_AFTER_FEE = 1.05
+RESEARCH_RELAXED_MIN_PROFIT_FACTOR_AFTER_FEE = 0.95
 PAULWEI_MATURE_POSITION_SWITCHES_PER_30D = 1.6807
-MAX_POSITION_SWITCHES_PER_30D = 3.0
+POSITION_SWITCH_SOFT_LIMIT_PER_DAY = 1.0
 MAX_FLIP_REDUCE_FEE_DRAG_PCT_ABSOLUTE = 0.016
 MAX_EXIT_FEE_DRAG_PCT_ABSOLUTE = 0.018
 MAX_FLIP_ACTION_FEE_DRAG_PCT_ABSOLUTE = 0.018
+RESEARCH_RELAXED_MAX_FEE_DRAG_PCT_ABSOLUTE = 0.15
+RESEARCH_RELAXED_MAX_FLIP_REDUCE_FEE_DRAG_PCT_ABSOLUTE = 0.12
+RESEARCH_RELAXED_MAX_EXIT_FEE_DRAG_PCT_ABSOLUTE = 0.12
+RESEARCH_RELAXED_MAX_FLIP_ACTION_FEE_DRAG_PCT_ABSOLUTE = 0.12
+RESEARCH_RELAXED_MAX_TRADE_COUNT_PER_DAY = 3.0
 MIN_REDUCE_ACTION_PROFIT_FACTOR = 1.0
 MIN_STAGED_BUILD_UNWIND_BALANCE_RATIO = 0.25
 MIN_TRANCHE_ACTIONS_PER_POSITION_SWITCH = 3.0
-TRAIN_DRAWDOWN_PREFERRED_BAND = 0.06
+TRAIN_DRAWDOWN_PREFERRED_BAND = 0.12
+TRAIN_DRAWDOWN_FRAGILITY_BAND = 0.12
+DUAL_PHASE_USDT_DRAWDOWN_SOFT_BAND = 0.12
+DUAL_PHASE_USDT_DRAWDOWN_RISK_SPAN = 0.08
 MIN_PROTECTIVE_REDUCE_SHARE = 0.75
+RESEARCH_RELAXED_TRAIN_DRAWDOWN_PREFERRED_BAND = 0.20
+RESEARCH_RELAXED_TRAIN_DRAWDOWN_FRAGILITY_BAND = 0.20
+RESEARCH_RELAXED_DUAL_PHASE_USDT_DRAWDOWN_SOFT_BAND = 0.20
+RESEARCH_RELAXED_DUAL_PHASE_USDT_DRAWDOWN_RISK_SPAN = 0.10
+RESEARCH_RELAXED_DUAL_PHASE_LEVERAGE_SOFT_CAP = 4.0
+DUAL_PHASE_LEVERAGE_SOFT_CAP = 3.0
+RESEARCH_RELAXED_MIN_PROTECTIVE_REDUCE_SHARE = 0.45
+PAULWEI_DUAL_PHASE_OBJECTIVE_PARAM = "paulwei_dual_phase_objective_enabled"
+RESEARCH_RELAXED_FEE_PROBE_PARAM = "research_relaxed_fee_probe_enabled"
+RETURN_RUN_BONUS_CAP = 0.90
 
 
 def _safe_float(value: Any) -> float:
@@ -140,8 +159,55 @@ def _shutdown_pool_quickly(pool: ProcessPoolExecutor | None, futures: list[Any] 
         pass
 
 
+def _fee_efficiency_thresholds(*, relaxed_fee_probe: bool) -> dict[str, float]:
+    if relaxed_fee_probe:
+        return {
+            "max_fee_drag_pct_absolute": RESEARCH_RELAXED_MAX_FEE_DRAG_PCT_ABSOLUTE,
+            "max_flip_reduce_fee_drag_pct_absolute": RESEARCH_RELAXED_MAX_FLIP_REDUCE_FEE_DRAG_PCT_ABSOLUTE,
+            "max_exit_fee_drag_pct_absolute": RESEARCH_RELAXED_MAX_EXIT_FEE_DRAG_PCT_ABSOLUTE,
+            "max_flip_action_fee_drag_pct_absolute": RESEARCH_RELAXED_MAX_FLIP_ACTION_FEE_DRAG_PCT_ABSOLUTE,
+            "min_protective_reduce_share": RESEARCH_RELAXED_MIN_PROTECTIVE_REDUCE_SHARE,
+            "min_profit_factor_after_fee": RESEARCH_RELAXED_MIN_PROFIT_FACTOR_AFTER_FEE,
+            "max_trade_count_per_day": RESEARCH_RELAXED_MAX_TRADE_COUNT_PER_DAY,
+            "train_drawdown_preferred_band": RESEARCH_RELAXED_TRAIN_DRAWDOWN_PREFERRED_BAND,
+            "train_drawdown_fragility_band": RESEARCH_RELAXED_TRAIN_DRAWDOWN_FRAGILITY_BAND,
+            "dual_phase_usdt_drawdown_soft_band": RESEARCH_RELAXED_DUAL_PHASE_USDT_DRAWDOWN_SOFT_BAND,
+            "dual_phase_usdt_drawdown_risk_span": RESEARCH_RELAXED_DUAL_PHASE_USDT_DRAWDOWN_RISK_SPAN,
+            "fee_drag_proxy_span": 0.10,
+        }
+    return {
+        "max_fee_drag_pct_absolute": MAX_FEE_DRAG_PCT_ABSOLUTE,
+        "max_flip_reduce_fee_drag_pct_absolute": MAX_FLIP_REDUCE_FEE_DRAG_PCT_ABSOLUTE,
+        "max_exit_fee_drag_pct_absolute": MAX_EXIT_FEE_DRAG_PCT_ABSOLUTE,
+        "max_flip_action_fee_drag_pct_absolute": MAX_FLIP_ACTION_FEE_DRAG_PCT_ABSOLUTE,
+        "min_protective_reduce_share": MIN_PROTECTIVE_REDUCE_SHARE,
+        "min_profit_factor_after_fee": MIN_PROFIT_FACTOR_AFTER_FEE,
+        "max_trade_count_per_day": MAX_TRADE_COUNT_PER_DAY,
+        "train_drawdown_preferred_band": TRAIN_DRAWDOWN_PREFERRED_BAND,
+        "train_drawdown_fragility_band": TRAIN_DRAWDOWN_FRAGILITY_BAND,
+        "dual_phase_usdt_drawdown_soft_band": DUAL_PHASE_USDT_DRAWDOWN_SOFT_BAND,
+        "dual_phase_usdt_drawdown_risk_span": DUAL_PHASE_USDT_DRAWDOWN_RISK_SPAN,
+        "fee_drag_proxy_span": 0.01,
+    }
+
+
 def _hostile_proxy_diagnostics(params: dict[str, Any], metrics: dict[str, float]) -> dict[str, float]:
     """Train-only hostile stability proxy for stage1 ranking."""
+
+    relaxed_fee_probe = bool(round(float(params.get(RESEARCH_RELAXED_FEE_PROBE_PARAM, 0.0) or 0.0)))
+    fee_thresholds = _fee_efficiency_thresholds(relaxed_fee_probe=relaxed_fee_probe)
+    fee_drag_cap = fee_thresholds["max_fee_drag_pct_absolute"]
+    flip_reduce_fee_drag_cap = fee_thresholds["max_flip_reduce_fee_drag_pct_absolute"]
+    exit_fee_drag_cap = fee_thresholds["max_exit_fee_drag_pct_absolute"]
+    flip_action_fee_drag_cap = fee_thresholds["max_flip_action_fee_drag_pct_absolute"]
+    min_protective_reduce_share = fee_thresholds["min_protective_reduce_share"]
+    min_profit_factor_after_fee = fee_thresholds["min_profit_factor_after_fee"]
+    max_trade_count_per_day = fee_thresholds["max_trade_count_per_day"]
+    train_drawdown_preferred_band = fee_thresholds["train_drawdown_preferred_band"]
+    train_drawdown_fragility_band = fee_thresholds["train_drawdown_fragility_band"]
+    dual_phase_usdt_drawdown_soft_band = fee_thresholds["dual_phase_usdt_drawdown_soft_band"]
+    dual_phase_usdt_drawdown_risk_span = fee_thresholds["dual_phase_usdt_drawdown_risk_span"]
+    fee_drag_proxy_span = fee_thresholds["fee_drag_proxy_span"]
 
     sharpe = float(metrics.get("sharpe", 0.0) or 0.0)
     net_pnl = float(metrics.get("net_pnl", metrics.get("pnl", 0.0)) or 0.0)
@@ -149,6 +215,7 @@ def _hostile_proxy_diagnostics(params: dict[str, Any], metrics: dict[str, float]
     profit_factor = float(metrics.get("profit_factor", 0.0) or 0.0)
     fee_drag_pct = float(metrics.get("fee_drag_pct", 0.0) or 0.0)
     trade_count = float(metrics.get("trade_count", 0.0) or 0.0)
+    equity_multiple = float(metrics.get("equity_multiple", 1.0 + net_pnl / 100_000.0) or 0.0)
     net_pnl_per_trade = float(
         metrics.get("net_pnl_per_trade", (net_pnl / trade_count) if trade_count > 0 else 0.0) or 0.0
     )
@@ -160,6 +227,7 @@ def _hostile_proxy_diagnostics(params: dict[str, Any], metrics: dict[str, float]
     )
     terminated_early = float(metrics.get("terminated_early", 0.0) or 0.0)
     position_switches_per_30d = float(metrics.get("position_switches_per_30d", 0.0) or 0.0)
+    position_switches_per_day = position_switches_per_30d / 30.0
     flip_reduce_fee_drag_pct = float(metrics.get("flip_reduce_fee_drag_pct", 0.0) or 0.0)
     exit_fee_drag_pct = _metric_action_value(metrics, "action_fee_drag_pct", "exit")
     flip_action_fee_drag_pct = _metric_action_value(metrics, "action_fee_drag_pct", "flip")
@@ -201,6 +269,14 @@ def _hostile_proxy_diagnostics(params: dict[str, Any], metrics: dict[str, float]
     dca_spacing_atr = float(params.get("dca_spacing_atr", 0.0) or 0.0)
     dca_size_decay = float(params.get("dca_size_decay", 0.0) or 0.0)
     flip_min_confidence = float(params.get("flip_min_confidence", 0.0) or 0.0)
+    dual_phase_objective_enabled = bool(round(float(params.get(PAULWEI_DUAL_PHASE_OBJECTIVE_PARAM, 0.0) or 0.0)))
+    time_leverage_min_hold_bars = float(params.get("intent_time_leverage_min_hold_bars", 0.0) or 0.0)
+    time_leverage_hold_enabled = bool(round(float(params.get("intent_time_leverage_hold_enabled", 0.0) or 0.0)))
+    dip_accumulation_enabled = bool(
+        round(float(params.get("intent_time_leverage_dip_accumulation_enabled", 0.0) or 0.0))
+    )
+    add_deadband_pct = float(params.get("intent_time_leverage_add_deadband_pct", 0.0) or 0.0)
+    reduce_deadband_pct = float(params.get("intent_time_leverage_reduce_deadband_pct", 0.0) or 0.0)
 
     execution_fragility_score = round(
         max(0.0, target_vol_4h - 0.95) * 4.0
@@ -218,37 +294,33 @@ def _hostile_proxy_diagnostics(params: dict[str, Any], metrics: dict[str, float]
         6,
     )
     train_trade_count_penalty = max(0.0, (trade_count - 4200.0) / 500.0)
-    train_fee_drag_proxy_penalty = max(0.0, (fee_drag_pct - 0.02) / 0.01)
-    train_fee_drag_cap_penalty = max(0.0, (fee_drag_pct - MAX_FEE_DRAG_PCT_ABSOLUTE) / MAX_FEE_DRAG_PCT_ABSOLUTE)
+    train_fee_drag_proxy_penalty = max(0.0, (fee_drag_pct - 0.02) / fee_drag_proxy_span)
+    train_fee_drag_cap_penalty = max(0.0, (fee_drag_pct - fee_drag_cap) / fee_drag_cap)
     train_trade_count_day_penalty = max(
         0.0,
-        (trade_count_per_day - MAX_TRADE_COUNT_PER_DAY) / MAX_TRADE_COUNT_PER_DAY,
+        (trade_count_per_day - max_trade_count_per_day) / max_trade_count_per_day,
     )
     profit_factor_after_fee_penalty = max(
         0.0,
-        (MIN_PROFIT_FACTOR_AFTER_FEE - profit_factor_after_fee) / MIN_PROFIT_FACTOR_AFTER_FEE,
+        (min_profit_factor_after_fee - profit_factor_after_fee) / min_profit_factor_after_fee,
     )
     net_pnl_per_trade_penalty = 1.0 if trade_count > 0 and net_pnl_per_trade <= 0.0 else 0.0
     position_switch_penalty = max(
         0.0,
-        (position_switches_per_30d - MAX_POSITION_SWITCHES_PER_30D) / MAX_POSITION_SWITCHES_PER_30D,
+        (position_switches_per_day - POSITION_SWITCH_SOFT_LIMIT_PER_DAY) / POSITION_SWITCH_SOFT_LIMIT_PER_DAY,
     )
-    mature_position_switch_penalty = max(
-        0.0,
-        (position_switches_per_30d - PAULWEI_MATURE_POSITION_SWITCHES_PER_30D)
-        / PAULWEI_MATURE_POSITION_SWITCHES_PER_30D,
-    )
+    mature_position_switch_penalty = 0.0
     flip_reduce_fee_drag_penalty = max(
         0.0,
-        (flip_reduce_fee_drag_pct - MAX_FLIP_REDUCE_FEE_DRAG_PCT_ABSOLUTE) / MAX_FLIP_REDUCE_FEE_DRAG_PCT_ABSOLUTE,
+        (flip_reduce_fee_drag_pct - flip_reduce_fee_drag_cap) / flip_reduce_fee_drag_cap,
     )
     exit_fee_drag_penalty = max(
         0.0,
-        (exit_fee_drag_pct - MAX_EXIT_FEE_DRAG_PCT_ABSOLUTE) / MAX_EXIT_FEE_DRAG_PCT_ABSOLUTE,
+        (exit_fee_drag_pct - exit_fee_drag_cap) / exit_fee_drag_cap,
     )
     flip_action_fee_drag_penalty = max(
         0.0,
-        (flip_action_fee_drag_pct - MAX_FLIP_ACTION_FEE_DRAG_PCT_ABSOLUTE) / MAX_FLIP_ACTION_FEE_DRAG_PCT_ABSOLUTE,
+        (flip_action_fee_drag_pct - flip_action_fee_drag_cap) / flip_action_fee_drag_cap,
     )
     reduce_profit_factor_penalty = (
         max(
@@ -271,22 +343,95 @@ def _hostile_proxy_diagnostics(params: dict[str, Any], metrics: dict[str, float]
     )
     train_drawdown_preferred_band_penalty = max(
         0.0,
-        (max_drawdown - TRAIN_DRAWDOWN_PREFERRED_BAND) / max(0.01, TRAIN_DRAWDOWN_PREFERRED_BAND),
+        (max_drawdown - train_drawdown_preferred_band) / max(0.01, train_drawdown_preferred_band),
     )
     protective_reduce_bias_penalty = (
-        max(0.0, (MIN_PROTECTIVE_REDUCE_SHARE - protective_reduce_share) / MIN_PROTECTIVE_REDUCE_SHARE)
+        max(0.0, (min_protective_reduce_share - protective_reduce_share) / min_protective_reduce_share)
         if protective_action_count > 0
         else 0.0
     )
-    time_leverage_bonus = min(0.35, 0.05 * time_leverage_efficiency)
+    time_leverage_bonus = min(0.60, 0.075 * time_leverage_efficiency)
+    return_run_bonus_scale = 0.55 if relaxed_fee_probe else 0.35
+    return_run_bonus_cap = 1.25 if relaxed_fee_probe else RETURN_RUN_BONUS_CAP
+    return_run_bonus = min(
+        return_run_bonus_cap, max(0.0, math.log(max(1.0, equity_multiple), 2.0)) * return_run_bonus_scale
+    )
+    return_quality_bonus = (
+        min(0.35, max(0.0, math.log(max(1.0, net_pnl_per_trade) / 250.0, 2.0)) * 0.16) if relaxed_fee_probe else 0.0
+    )
     tranche_alignment_bonus = (
         min(0.20, 0.04 * min(5.0, tranche_actions_per_position_switch))
         if tranche_actions_per_position_switch >= MIN_TRANCHE_ACTIONS_PER_POSITION_SWITCH
         and staged_inventory_balance_ratio >= MIN_STAGED_BUILD_UNWIND_BALANCE_RATIO
-        and position_switches_per_30d <= PAULWEI_MATURE_POSITION_SWITCHES_PER_30D
         and reduce_profit_factor_penalty == 0.0
         and flip_reduce_fee_drag_penalty == 0.0
         else 0.0
+    )
+    early_expansion_hold_bonus = (
+        0.10
+        if time_leverage_hold_enabled and time_leverage_min_hold_bars >= 336.0 and net_pnl_per_position_switch > 0.0
+        else 0.0
+    )
+    early_expansion_dip_bonus = (
+        0.08
+        if dip_accumulation_enabled
+        and staged_build_tranche_count >= 10.0
+        and net_pnl_per_trade > 0.0
+        and target_vol_4h <= 0.80
+        else 0.0
+    )
+    early_expansion_add_quality_bonus = (
+        min(0.12, 0.02 * min(6.0, staged_build_tranche_count / max(1.0, flip_count)))
+        if staged_build_tranche_count >= staged_unwind_tranche_count * 0.45
+        and net_pnl_per_position_switch > 0.0
+        and max_leverage <= 3.0
+        else 0.0
+    )
+    paulwei_early_convexity_proxy_bonus = (
+        round(early_expansion_hold_bonus + early_expansion_dip_bonus + early_expansion_add_quality_bonus, 6)
+        if dual_phase_objective_enabled
+        else 0.0
+    )
+    mature_cadence_bonus = (
+        0.10
+        if position_switches_per_day <= POSITION_SWITCH_SOFT_LIMIT_PER_DAY and position_switches_per_day > 0.0
+        else 0.0
+    )
+    mature_tranche_control_bonus = (
+        0.10
+        if tranche_alignment_bonus > 0.0
+        and reduce_action_profit_factor >= MIN_REDUCE_ACTION_PROFIT_FACTOR
+        and reduce_deadband_pct >= 0.60
+        else 0.0
+    )
+    mature_fee_control_bonus = 0.08 if fee_drag_pct <= fee_drag_cap and flip_reduce_fee_drag_penalty == 0.0 else 0.0
+    paulwei_mature_control_proxy_bonus = (
+        round(mature_cadence_bonus + mature_tranche_control_bonus + mature_fee_control_bonus, 6)
+        if dual_phase_objective_enabled
+        else 0.0
+    )
+    dual_phase_leverage_soft_cap = (
+        RESEARCH_RELAXED_DUAL_PHASE_LEVERAGE_SOFT_CAP if relaxed_fee_probe else DUAL_PHASE_LEVERAGE_SOFT_CAP
+    )
+    dual_phase_usdt_safety_penalty = (
+        round(
+            0.65
+            * max(
+                0.0,
+                (max_drawdown - dual_phase_usdt_drawdown_soft_band) / dual_phase_usdt_drawdown_risk_span,
+            )
+            + 0.45 * max(0.0, (fee_drag_pct - fee_drag_cap) / fee_drag_cap)
+            + 0.35 * max(0.0, max_leverage - dual_phase_leverage_soft_cap)
+            + 0.20 * max(0.0, 0.10 - add_deadband_pct)
+            + 0.25 * terminated_early,
+            6,
+        )
+        if dual_phase_objective_enabled
+        else 0.0
+    )
+    paulwei_dual_phase_adjustment = round(
+        paulwei_early_convexity_proxy_bonus + paulwei_mature_control_proxy_bonus - dual_phase_usdt_safety_penalty,
+        6,
     )
     train_churn_stress_penalty = round(
         0.75 * train_trade_count_penalty
@@ -309,7 +454,7 @@ def _hostile_proxy_diagnostics(params: dict[str, Any], metrics: dict[str, float]
     raw_fragility_penalty = (
         0.60 * execution_fragility_score
         + 0.55 * inventory_path_dependence_score
-        + 3.0 * max(0.0, max_drawdown - 0.10)
+        + 3.0 * max(0.0, max_drawdown - train_drawdown_fragility_band)
         + 1.2 * max(0.0, 1.0 - profit_factor)
         + 0.9 * max(0.0, fee_drag_pct - 0.30)
         + train_churn_stress_penalty
@@ -323,10 +468,13 @@ def _hostile_proxy_diagnostics(params: dict[str, Any], metrics: dict[str, float]
         hostile_proxy_penalty_applied = 1.625 + (raw_fragility_penalty - 2.5) * 1.25
     hostile_proxy_penalty_applied = round(hostile_proxy_penalty_applied, 6)
     hostile_proxy_score = round(
-        sharpe
+        (0.65 if relaxed_fee_probe else 1.0) * sharpe
         + 0.15 * profit_factor
-        + time_leverage_bonus
+        + (2.40 if relaxed_fee_probe else 1.0) * return_run_bonus
+        + return_quality_bonus
+        + (1.15 if relaxed_fee_probe else 1.0) * time_leverage_bonus
         + tranche_alignment_bonus
+        + paulwei_dual_phase_adjustment
         - hostile_proxy_penalty_applied
         - 0.60 * train_drawdown_preferred_band_penalty,
         6,
@@ -351,10 +499,15 @@ def _hostile_proxy_diagnostics(params: dict[str, Any], metrics: dict[str, float]
         "train_drawdown_preferred_band_penalty": round(train_drawdown_preferred_band_penalty, 6),
         "train_churn_stress_penalty": train_churn_stress_penalty,
         "net_pnl_per_trade": round(net_pnl_per_trade, 6),
+        "equity_multiple": round(equity_multiple, 6),
+        "return_run_bonus": round(return_run_bonus, 6),
+        "return_quality_bonus": round(return_quality_bonus, 6),
         "trade_count_per_day": round(trade_count_per_day, 6),
         "profit_factor_after_fee": round(profit_factor_after_fee, 6),
         "position_switches_per_30d": round(position_switches_per_30d, 6),
+        "position_switches_per_day": round(position_switches_per_day, 6),
         "target_position_switches_per_30d": PAULWEI_MATURE_POSITION_SWITCHES_PER_30D,
+        "position_switch_soft_limit_per_day": POSITION_SWITCH_SOFT_LIMIT_PER_DAY,
         "flip_reduce_fee_drag_pct": round(flip_reduce_fee_drag_pct, 6),
         "exit_fee_drag_pct": round(exit_fee_drag_pct, 6),
         "flip_action_fee_drag_pct": round(flip_action_fee_drag_pct, 6),
@@ -364,6 +517,11 @@ def _hostile_proxy_diagnostics(params: dict[str, Any], metrics: dict[str, float]
         "staged_inventory_balance_ratio": round(staged_inventory_balance_ratio, 6),
         "tranche_actions_per_position_switch": round(tranche_actions_per_position_switch, 6),
         "tranche_alignment_bonus": round(tranche_alignment_bonus, 6),
+        "paulwei_dual_phase_objective_enabled": 1.0 if dual_phase_objective_enabled else 0.0,
+        "paulwei_early_convexity_proxy_bonus": paulwei_early_convexity_proxy_bonus,
+        "paulwei_mature_control_proxy_bonus": paulwei_mature_control_proxy_bonus,
+        "paulwei_dual_phase_usdt_safety_penalty": dual_phase_usdt_safety_penalty,
+        "paulwei_dual_phase_adjustment": paulwei_dual_phase_adjustment,
         "protective_reduce_share": round(protective_reduce_share, 6),
         "protective_reduce_action_count": round(protective_action_count, 6),
         "net_pnl_per_position_switch": round(net_pnl_per_position_switch, 6),
@@ -372,6 +530,10 @@ def _hostile_proxy_diagnostics(params: dict[str, Any], metrics: dict[str, float]
         "hostile_proxy_penalty_applied": hostile_proxy_penalty_applied,
         "hostile_proxy_score": hostile_proxy_score,
         "stage1_score": hostile_proxy_score,
+        "research_relaxed_fee_probe_enabled": 1.0 if relaxed_fee_probe else 0.0,
+        "fee_efficiency_thresholds": {
+            key: round(value, 6) for key, value in fee_thresholds.items() if key != "fee_drag_proxy_span"
+        },
     }
 
 
@@ -395,6 +557,7 @@ def _compact_train_trial_diagnostics(
         "profit_factor",
         "trade_count",
         "fee_drag_pct",
+        "equity_multiple",
         "net_pnl_per_trade",
         "trade_count_per_day",
         "profit_factor_after_fee",
@@ -406,6 +569,7 @@ def _compact_train_trial_diagnostics(
         "net_pnl_per_position_switch",
         "time_leverage_efficiency",
         "time_leverage_bonus",
+        "return_run_bonus",
         "target_position_switches_per_30d",
         "staged_build_tranche_count",
         "staged_unwind_tranche_count",
@@ -413,11 +577,19 @@ def _compact_train_trial_diagnostics(
         "staged_inventory_balance_penalty",
         "tranche_actions_per_position_switch",
         "tranche_alignment_bonus",
+        "paulwei_dual_phase_objective_enabled",
+        "paulwei_early_convexity_proxy_bonus",
+        "paulwei_mature_control_proxy_bonus",
+        "paulwei_dual_phase_usdt_safety_penalty",
+        "paulwei_dual_phase_adjustment",
         "mature_position_switch_penalty",
         "position_switch_penalty",
         "flip_reduce_fee_drag_penalty",
+        "exit_fee_drag_pct",
         "exit_fee_drag_penalty",
+        "flip_action_fee_drag_pct",
         "flip_action_fee_drag_penalty",
+        "reduce_action_profit_factor",
         "reduce_profit_factor_penalty",
         "protective_reduce_bias_penalty",
         "hostile_proxy_score",
@@ -426,6 +598,7 @@ def _compact_train_trial_diagnostics(
         "terminated_early",
         "termination_reason",
         "processed_event_ratio",
+        "constraint_violations",
         "action_trade_counts",
         "action_fee_drag_pct",
         "action_profit_factor",
@@ -713,6 +886,7 @@ def _run_backtest_worker(args: tuple[Any, ...]) -> tuple[dict[str, Any], dict[st
         "profit_factor": m.profit_factor,
         "trade_count": m.trade_count,
         "fee_drag_pct": m.fee_drag_pct,
+        "equity_multiple": round((equity + m.net_pnl) / equity if equity > 0 else 0.0, 6),
         "elapsed_days": round(elapsed_days, 6),
         "effective_elapsed_days": round(effective_elapsed_days, 6),
         "position_switches_per_30d": round(position_switches_per_30d, 6),
@@ -875,16 +1049,26 @@ class Campaign:
         eligible_results: list[dict[str, Any]],
     ) -> tuple[dict[str, Any], str | None]:
         raw_trial_count = len(results)
-        raw_nonzero_trade_trials = sum(1 for item in results if int(item["metrics"].get("trade_count", 0) or 0) > 0)
+        executed_results = [item for item in results if not item["metrics"].get("constraint_violations")]
+        constraint_filtered_trial_count = raw_trial_count - len(executed_results)
+        raw_nonzero_trade_trials = sum(
+            1 for item in executed_results if int(item["metrics"].get("trade_count", 0) or 0) > 0
+        )
         eligible_trade_count_trials = len(eligible_results)
-        max_train_trade_count = max((int(item["metrics"].get("trade_count", 0) or 0) for item in results), default=0)
-        max_train_sharpe = max((float(item["metrics"].get("sharpe", 0.0) or 0.0) for item in results), default=0.0)
+        max_train_trade_count = max(
+            (int(item["metrics"].get("trade_count", 0) or 0) for item in executed_results),
+            default=0,
+        )
+        max_train_sharpe = max(
+            (float(item["metrics"].get("sharpe", 0.0) or 0.0) for item in executed_results),
+            default=0.0,
+        )
         max_hostile_proxy_score = max(
-            (float(item["metrics"].get("hostile_proxy_score", 0.0) or 0.0) for item in results),
+            (float(item["metrics"].get("hostile_proxy_score", 0.0) or 0.0) for item in executed_results),
             default=0.0,
         )
         max_hostile_proxy_penalty_applied = max(
-            (float(item["metrics"].get("hostile_proxy_penalty_applied", 0.0) or 0.0) for item in results),
+            (float(item["metrics"].get("hostile_proxy_penalty_applied", 0.0) or 0.0) for item in executed_results),
             default=0.0,
         )
         min_execution_fragility_score = min(
@@ -897,7 +1081,9 @@ class Campaign:
         )
         empty_shortlist_reason = None
         if not eligible_results:
-            if raw_nonzero_trade_trials == 0:
+            if raw_trial_count > 0 and not executed_results:
+                empty_shortlist_reason = "all_constraint_filtered"
+            elif raw_nonzero_trade_trials == 0:
                 empty_shortlist_reason = "all_zero_trade"
             elif max_train_trade_count < self._config.minimum_train_trade_count:
                 empty_shortlist_reason = "below_min_trade_threshold"
@@ -906,6 +1092,8 @@ class Campaign:
         return (
             {
                 "raw_trial_count": raw_trial_count,
+                "executed_trial_count": len(executed_results),
+                "constraint_filtered_trial_count": constraint_filtered_trial_count,
                 "raw_nonzero_trade_trials": raw_nonzero_trade_trials,
                 "eligible_trade_count_trials": eligible_trade_count_trials,
                 "max_train_trade_count": max_train_trade_count,

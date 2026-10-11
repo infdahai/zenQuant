@@ -100,7 +100,7 @@ def test_deribit_options_factor_audit_builds_pit_train_metrics() -> None:
         factor_names = {factor["name"] for factor in payload["factors"]}
         assert "iv_level_30d" in factor_names
         assert "iv_term_structure_slope" in factor_names
-        assert "put_call_skew_25d" in factor_names
+        assert "put_call_moneyness_skew_proxy" in factor_names
         assert "oi_concentration" in factor_names
 
 

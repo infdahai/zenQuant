@@ -1,0 +1,32 @@
+{
+  "source_head": "bc73f82",
+  "scope": "OFFLINE_DIAGNOSTIC_D2_ONLY",
+  "d2_review": "APPROVED",
+  "rust_tests_passed": 70,
+  "python_targeted_passed": 459,
+  "python_targeted_skipped": 1,
+  "full_harness": {
+    "0": "PASS",
+    "A": "FAIL_3_UNCHANGED_FORMAT_FILES",
+    "B": "PASS",
+    "C": "PASS",
+    "D": "PASS",
+    "E": "FAIL_OLD_OPTION_LOADING",
+    "F": "FAIL_MISSING_HISTORICAL_PARQUET"
+  },
+  "merge_ready": false,
+  "execution_authority": "NONE",
+  "actual_pnl": null,
+  "paper_pnl": null,
+  "sharpe": null,
+  "capacity": null,
+  "lifecycle_arbitrage_edge": null,
+  "raw_quote_count": 480,
+  "raw_source_pin_count": 543,
+  "projection_trust": "EXPORTED_PROJECTION_UNATTESTED",
+  "protected_P1_file_count": 23,
+  "preserved_main_file_count": 110,
+  "old_CLI_artifact_count": 6,
+  "linux_runtime": "UNVERIFIED",
+  "deferred_minor": "Mac-corpus-dependent exporter safety tests skip when corpus absent"
+}

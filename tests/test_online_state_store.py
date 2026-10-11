@@ -1,6 +1,7 @@
 import unittest
 from unittest.mock import patch
 
+from zenquant.domain import DeribitRiskPack
 from zenquant.infra import InMemoryJetStream, OnlineStateStore, OnlineStateStoreConfig
 
 
@@ -33,6 +34,28 @@ class _FakeConnection:
 
 
 class OnlineStateStoreTests(unittest.TestCase):
+    def test_deribit_persistence_uses_explicit_moneyness_proxy_column(self) -> None:
+        store = OnlineStateStore(
+            bus=InMemoryJetStream(),
+            config=OnlineStateStoreConfig(dsn="postgresql://example", apply_migrations=False),
+        )
+        store._on_deribit(
+            "risk.deribit.BTC",
+            DeribitRiskPack(
+                symbol="BTC",
+                ts_ns=1,
+                atm_iv_30d=0.6,
+                term_structure_slope=0.1,
+                put_call_moneyness_skew_proxy=0.05,
+                oi_concentration=0.2,
+                block_flow_imbalance=0.0,
+            ),
+        )
+        sql, params = store._queue.get_nowait()
+        self.assertIn("put_call_moneyness_skew_proxy", sql)
+        self.assertNotIn("put_call_skew_25d", sql)
+        self.assertEqual(params[4], 0.05)
+
     def test_run_retries_after_connection_failure(self) -> None:
         bus = InMemoryJetStream()
         store = OnlineStateStore(
