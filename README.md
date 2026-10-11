@@ -21,6 +21,20 @@ stress on all five seeds. Do not promote it or start another tuning round.
 
 Current implementation, Gate v2 evidence, and the proposed Quant System v2 boundaries are documented in [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
 
+## Rust Options Workbench
+
+The offline options workbench provides a native Rust CLI and a pure
+`options-core` library for deterministic input admission, displayed execution
+costs, terminal option scenarios and same-venue vertical certificates.
+
+- Architecture, request/report interfaces and CLI usage: [Rust workbench guide](docs/OPTIONS_WORKBENCH_RUST_GUIDE.md)
+- Local integration results and historical input requirements: [gate repair report](docs/reports/options-workbench-gate-repair-20261010/README.md)
+- Build: `cargo build --manifest-path rust/Cargo.toml --locked -p options-workbench`
+
+The local Python harness and native Rust checks pass on the recorded inputs.
+The workbench remains an offline diagnostic tool; these checks do not establish
+option strategy profitability or authorize live trading.
+
 ---
 
 ## Quick Start
