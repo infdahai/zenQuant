@@ -11,3 +11,4 @@ pub mod expressions;
 pub mod fixtures;
 pub mod inputs;
 pub mod quote_diagnostics;
+pub mod terminal_diagnostics;

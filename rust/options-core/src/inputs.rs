@@ -88,7 +88,7 @@ pub fn select_view(views: &[View], id: &str, cutoff: u64) -> Result<View> {
         .map(|v| (*v).clone())
         .ok_or(Error::new(ErrorCode::MissingEvidence))
 }
-fn validate_spec(s: &InstrumentSpec) -> Result<()> {
+pub(crate) fn validate_spec(s: &InstrumentSpec) -> Result<()> {
     require(
         [
             &s.venue,
