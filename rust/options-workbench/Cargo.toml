@@ -2,6 +2,7 @@
 name = "options-workbench"
 version = "0.1.0"
 edition = "2024"
+default-run = "options-workbench"
 [dependencies]
 options-core = { path = "../options-core" }
 serde = { version = "1", features = ["derive"] }
