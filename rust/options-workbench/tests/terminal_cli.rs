@@ -264,3 +264,21 @@ fn terminal_report_retains_evidence_identity_markup_and_existing_outputs() {
         assert!(!output.exists());
     }
 }
+
+#[test]
+fn terminal_report_semantics_match_second_module_baseline() {
+    use options_core::canonical::{bytes_sha256, canonical_bytes};
+    let p = Temp::new();
+    assert!(
+        run(&fixture("terminal-call-scenarios"), &p.join("out"))
+            .status
+            .success()
+    );
+    let mut report = read(&p.join("out/report.json"));
+    // f58e98f baseline: only source-code identity changes when adding the recorder.
+    report["identity"]["code_sha256"] = "0".repeat(64).into();
+    assert_eq!(
+        bytes_sha256(&canonical_bytes(&report).unwrap()),
+        "176f8998c0a6c08920244043cf505c38384289b6683eff53fd48c2f0b4b06960"
+    );
+}
