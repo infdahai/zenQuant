@@ -31,3 +31,5 @@ jobs:
         run: cargo build --workspace --locked
       - name: Run independent quote diagnostics without external executables
         run: env PATH=/nonexistent ./target/debug/options-workbench --quote-request-file options-workbench/fixtures/quote-costs.json --output-dir "$RUNNER_TEMP/options-quote-diagnostics"
+      - name: Run independent terminal diagnostics without external executables
+        run: env PATH=/nonexistent ./target/debug/options-workbench --terminal-request-file options-workbench/fixtures/terminal-call-scenarios.json --output-dir "$RUNNER_TEMP/options-terminal-diagnostics"
