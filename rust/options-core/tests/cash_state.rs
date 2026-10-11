@@ -158,3 +158,23 @@ fn restored_state_revalidates_business_invariants_independent_of_envelope_hash()
     }
     assert_eq!(roundtrip(&state), state);
 }
+
+#[test]
+fn results_outside_v1_persisted_decimal_precision_refuse_before_state_changes() {
+    use options_core::{contracts::InstrumentDescriptor, reservations::EvaluationFailure};
+    let (f, mut r) = case();
+    let tiny = d("0.0000000000000000000000000001");
+    r.intent.spec.min_quantity_native = tiny.clone();
+    r.intent.spec.quantity_step_native = tiny.clone();
+    r.intent.leg.quantity_native = tiny;
+    r.intent.limit_price_native = d(".1");
+    r.intent.leg.instrument = InstrumentDescriptor::from_spec(&r.intent.spec).unwrap();
+    r.intent_sha256 = canonical_hash(&r.intent).unwrap();
+    let state = Authority::new(100).fund(&f, 100).unwrap().next;
+    let original = state.clone();
+    assert_eq!(
+        state.reserve(&r, &raw(&r), 101).unwrap_err(),
+        CashFailure::NotEvaluable(EvaluationFailure::NumericalLimitation)
+    );
+    assert_eq!(state, original);
+}
