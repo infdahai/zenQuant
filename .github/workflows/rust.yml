@@ -3,9 +3,9 @@ name: Rust options diagnostics
 on:
   push:
     branches: [main, "codex/**"]
-    paths: ["rust/**", ".github/workflows/rust.yml", "docs/*RUST_GUIDE.md", "docs/RUST_MODULE_BOUNDARIES.md", "docs/reports/options-*-diagnostics-*/**", "docs/reports/simulated-intents-*/**", "docs/reports/simulated-reservations-*/**"]
+    paths: ["options-ui/**", "playwright.options.config.js", "package.json", "package-lock.json", "docs/reports/options-payoff-mvp-*/**", "rust/**", ".github/workflows/rust.yml", "docs/*RUST_GUIDE.md", "docs/RUST_MODULE_BOUNDARIES.md", "docs/reports/options-*-diagnostics-*/**", "docs/reports/simulated-intents-*/**", "docs/reports/simulated-reservations-*/**"]
   pull_request:
-    paths: ["rust/**", ".github/workflows/rust.yml", "docs/*RUST_GUIDE.md", "docs/RUST_MODULE_BOUNDARIES.md", "docs/reports/options-*-diagnostics-*/**", "docs/reports/simulated-intents-*/**", "docs/reports/simulated-reservations-*/**"]
+    paths: ["options-ui/**", "playwright.options.config.js", "package.json", "package-lock.json", "docs/reports/options-payoff-mvp-*/**", "rust/**", ".github/workflows/rust.yml", "docs/*RUST_GUIDE.md", "docs/RUST_MODULE_BOUNDARIES.md", "docs/reports/options-*-diagnostics-*/**", "docs/reports/simulated-intents-*/**", "docs/reports/simulated-reservations-*/**"]
   workflow_dispatch:
 
 permissions:
@@ -21,7 +21,7 @@ jobs:
       - uses: actions/checkout@v4
       - name: Verify archived validation evidence
         run: |
-          for manifest in ../docs/reports/options-*-diagnostics-*/SHA256SUMS ../docs/reports/simulated-intents-*/SHA256SUMS ../docs/reports/simulated-reservations-*/SHA256SUMS; do
+          for manifest in ../docs/reports/options-payoff-mvp-*/SHA256SUMS ../docs/reports/options-*-diagnostics-*/SHA256SUMS ../docs/reports/simulated-intents-*/SHA256SUMS ../docs/reports/simulated-reservations-*/SHA256SUMS; do
             (cd "$(dirname "$manifest")" && sha256sum --check SHA256SUMS) || exit 1
           done
       - name: Install pinned Rust toolchain
@@ -53,3 +53,31 @@ jobs:
           env PATH=/nonexistent ./target/debug/simulated-reservations reserve --request-file "$RUNNER_TEMP/reservation-inputs/request.json"
           cd "$RUNNER_TEMP"
           env PATH=/nonexistent "$GITHUB_WORKSPACE/rust/target/debug/simulated-reservations" replay
+  options-ui:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Install browser test and Svelte build dependencies
+        run: |
+          npm ci --ignore-scripts
+          npm ci --ignore-scripts --prefix options-ui
+      - name: Check and build Svelte
+        run: |
+          npm run check --prefix options-ui
+          npm test --prefix options-ui
+          npm run build --prefix options-ui
+      - name: Build Rust page and batch service
+        working-directory: rust
+        run: cargo build --release --locked -p options-workbench --bin options-ui
+      - name: Install Chromium
+        run: npx playwright install --with-deps chromium
+      - name: Verify running UI without Python
+        run: npx playwright test --config playwright.options.config.js
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: options-ui-browser-evidence
+          path: .artifacts/payoff-ui
