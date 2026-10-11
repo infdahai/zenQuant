@@ -265,3 +265,17 @@ fn quote_mode_preserves_publication_and_sealed_root_protections() {
     assert_eq!(result.stderr, b"INCOMPLETE_PUBLICATION\n");
     assert!(!parent.join("report").exists());
 }
+
+#[test]
+fn quote_report_semantics_match_first_module_baseline() {
+    use options_core::canonical::{bytes_sha256, canonical_bytes};
+    let temp = Temp::new();
+    assert!(run(&fixture(), &temp.join("out")).status.success());
+    let mut report = json_file(&temp.join("out/report.json"));
+    // First-module baseline 2866f86; source-code identity is the only normalization.
+    report["identity"]["code_sha256"] = "0".repeat(64).into();
+    assert_eq!(
+        bytes_sha256(&canonical_bytes(&report).unwrap()),
+        "fb6cd6eb722b8f59f40b74b142abc2b7f6fb46eb8973f32ff16111bde3f6636b"
+    );
+}
