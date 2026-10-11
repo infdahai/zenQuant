@@ -9,19 +9,19 @@ use std::collections::{BTreeMap, BTreeSet};
 pub const PANEL_SCHEMA: &str = "options-workbench-panel.rust.v1";
 pub const PANEL_EXPORTER: &str = "options-workbench-exporter.rust.v1";
 pub const MAX_PANEL_BYTES: usize = 16 * 1024 * 1024;
-fn require(ok: bool, code: ErrorCode) -> Result<()> {
+pub(crate) fn require(ok: bool, code: ErrorCode) -> Result<()> {
     if ok { Ok(()) } else { Err(Error::new(code)) }
 }
 fn positive(x: &Dec) -> bool {
     !x.is_negative() && !x.is_zero()
 }
-fn text(x: &str) -> bool {
+pub(crate) fn text(x: &str) -> bool {
     !x.trim().is_empty() && x.len() <= MAX_STRING_BYTES
 }
 fn clocks(_source: u64, received: u64, available: u64) -> Result<()> {
     require(received <= available, ErrorCode::InvalidTimestamp)
 }
-fn identities(xs: &[(String, String)]) -> Result<()> {
+pub(crate) fn identities(xs: &[(String, String)]) -> Result<()> {
     let mut ids = BTreeSet::new();
     for (k, v) in xs {
         require(
@@ -203,6 +203,52 @@ fn validate_quote(q: &QuoteInput, report: &str) -> Result<()> {
     }
     identities(&q.source_identities)
 }
+/// Shared structural evidence admission; visibility and freshness are evaluated later.
+pub(crate) fn validate_quotes(
+    quotes: &[QuoteInput],
+    report_currency: &str,
+) -> Result<BTreeMap<String, InstrumentSpec>> {
+    let mut quote_ids = BTreeSet::new();
+    let mut evidence = BTreeMap::new();
+    let mut specs = BTreeMap::new();
+    for q in quotes {
+        validate_quote(q, report_currency)?;
+        require(
+            quote_ids.insert((&q.book.spec.venue, &q.quote_id)),
+            ErrorCode::InvalidIdentity,
+        )?;
+        let hash = canonical_hash(&q.book.spec)?;
+        let key = (
+            hash.clone(),
+            q.book.source_ns,
+            q.book.received_ns,
+            q.book.available_ns,
+        );
+        if let Some(prior) = evidence.insert(key, q) {
+            require(prior == q, ErrorCode::ConflictingEvidence)?;
+        }
+        specs.insert(hash, q.book.spec.clone());
+    }
+    Ok(specs)
+}
+pub(crate) fn validate_leg(
+    l: &CandidateLeg,
+    specs: &BTreeMap<String, InstrumentSpec>,
+) -> Result<()> {
+    require(
+        positive(&l.quantity_native)
+            && l.instrument.spec_schema == SPEC_SCHEMA
+            && valid_sha256(&l.instrument.spec_hash),
+        ErrorCode::InvalidIdentity,
+    )?;
+    if let Some(s) = specs.get(&l.instrument.spec_hash) {
+        require(
+            l.instrument == InstrumentDescriptor::from_spec(s)?,
+            ErrorCode::InvalidIdentity,
+        )?;
+    }
+    Ok(())
+}
 pub fn load_analysis(r: Request) -> Result<AnalysisInput> {
     crate::canonical::canonical_bytes(&r)?;
     require(r.schema_version == REQUEST_SCHEMA, ErrorCode::InvalidSchema)?;
@@ -232,27 +278,7 @@ pub fn load_analysis(r: Request) -> Result<AnalysisInput> {
         ErrorCode::InvalidInput,
     )?;
     identities(&r.source_identities)?;
-    let mut quote_ids = BTreeSet::new();
-    let mut evidence = BTreeMap::new();
-    let mut specs = BTreeMap::new();
-    for q in &r.quotes {
-        validate_quote(q, &view.report_currency)?;
-        require(
-            quote_ids.insert((&q.book.spec.venue, &q.quote_id)),
-            ErrorCode::InvalidIdentity,
-        )?;
-        let hash = canonical_hash(&q.book.spec)?;
-        let key = (
-            hash.clone(),
-            q.book.source_ns,
-            q.book.received_ns,
-            q.book.available_ns,
-        );
-        if let Some(prior) = evidence.insert(key, q) {
-            require(prior == q, ErrorCode::ConflictingEvidence)?;
-        }
-        specs.insert(hash, q.book.spec.clone());
-    }
+    let specs = validate_quotes(&r.quotes, &view.report_currency)?;
     let mut ids = BTreeSet::new();
     for c in &r.candidates {
         require(
@@ -269,19 +295,11 @@ pub fn load_analysis(r: Request) -> Result<AnalysisInput> {
         )?;
         let mut legs = BTreeSet::new();
         for l in &c.legs {
+            validate_leg(l, &specs)?;
             require(
-                positive(&l.quantity_native)
-                    && l.instrument.spec_schema == SPEC_SCHEMA
-                    && valid_sha256(&l.instrument.spec_hash)
-                    && legs.insert((&l.instrument.venue, &l.instrument.instrument_id)),
+                legs.insert((&l.instrument.venue, &l.instrument.instrument_id)),
                 ErrorCode::InvalidIdentity,
             )?;
-            if let Some(s) = specs.get(&l.instrument.spec_hash) {
-                require(
-                    l.instrument == InstrumentDescriptor::from_spec(s)?,
-                    ErrorCode::InvalidIdentity,
-                )?;
-            }
         }
     }
     let mut scenario_ids = BTreeSet::new();
