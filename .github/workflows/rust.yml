@@ -3,9 +3,9 @@ name: Rust options diagnostics
 on:
   push:
     branches: [main, "codex/**"]
-    paths: ["rust/**", ".github/workflows/rust.yml", "docs/*RUST_GUIDE.md", "docs/reports/options-*-diagnostics-*/**", "docs/reports/simulated-intents-*/**", "docs/reports/simulated-reservations-*/**"]
+    paths: ["rust/**", ".github/workflows/rust.yml", "docs/*RUST_GUIDE.md", "docs/RUST_MODULE_BOUNDARIES.md", "docs/reports/options-*-diagnostics-*/**", "docs/reports/simulated-intents-*/**", "docs/reports/simulated-reservations-*/**"]
   pull_request:
-    paths: ["rust/**", ".github/workflows/rust.yml", "docs/*RUST_GUIDE.md", "docs/reports/options-*-diagnostics-*/**", "docs/reports/simulated-intents-*/**", "docs/reports/simulated-reservations-*/**"]
+    paths: ["rust/**", ".github/workflows/rust.yml", "docs/*RUST_GUIDE.md", "docs/RUST_MODULE_BOUNDARIES.md", "docs/reports/options-*-diagnostics-*/**", "docs/reports/simulated-intents-*/**", "docs/reports/simulated-reservations-*/**"]
   workflow_dispatch:
 
 permissions:
