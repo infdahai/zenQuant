@@ -19,7 +19,7 @@ const ANALYSIS: &[&str] = &[
     "quote_diagnostics",
     "terminal_diagnostics",
 ];
-const TRADING: &[&str] = &["intents", "reservations"];
+const TRADING: &[&str] = &["intents", "reservations", "paper"];
 const PURE_STD: &[&str] = &["collections", "fmt", "str", "error", "result"];
 
 // Tokenize identifiers and punctuation, ignoring nested comments and literal contents.
