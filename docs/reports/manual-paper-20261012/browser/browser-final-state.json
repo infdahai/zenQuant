@@ -1,0 +1,121 @@
+{
+  "blockers": [
+    "NO_EXECUTION_AUTHORITY"
+  ],
+  "preview": null,
+  "replayed": false,
+  "schema_version": "manual-paper-response.rust.v1",
+  "storage_scope": "ENGINEERING_TEST_ONLY",
+  "uncommitted_pending": false,
+  "view": {
+    "execution_authority": "NONE",
+    "intents": [
+      {
+        "intent": {
+          "evidence": {
+            "fees": {
+              "available_ms": 1791779600909,
+              "kind": "SYNTHETIC_ENGINEERING_ONLY",
+              "observed_ms": 1791779600909,
+              "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "source": "browser-engineering-fixture-only",
+              "valid_until_ms": 1791780200909
+            },
+            "funding": null,
+            "margin": null,
+            "mark": null,
+            "quote": null,
+            "specification": null
+          },
+          "instrument": {
+            "details": {
+              "leverage": "2",
+              "limit_usdt_per_btc": "61000",
+              "margin_mode": "ISOLATED",
+              "quantity_btc": "0.001",
+              "reduce_only": false,
+              "schema_version": "manual-binance-usdm-perpetual.rust.v1",
+              "side": "BUY",
+              "symbol": "BTCUSDT"
+            },
+            "product": "BINANCE_USDM_BTCUSDT_PERPETUAL"
+          },
+          "intent_id": "manual-btc-001",
+          "requested_budget_usd": "100",
+          "source": "MANUAL"
+        },
+        "intent_sha256": "87be186d7ed355c8c89e3d50a965716262f5479334039b8a889dbad6088ab06c",
+        "record_request_id": "f6afdac5-4f9d-4be8-a966-82f735842117",
+        "recorded_ms": 1791779602426,
+        "settings_sha256": "67c0592f89a98d73f6d3608f51b88d98e200099391125b693247bd05551ff20a",
+        "status": "WITHDRAWN_RECORD_ONLY",
+        "withdrawn_ms": 1791779602874
+      },
+      {
+        "intent": {
+          "evidence": {
+            "fees": null,
+            "funding": null,
+            "margin": null,
+            "mark": null,
+            "quote": null,
+            "specification": null
+          },
+          "instrument": {
+            "details": {
+              "expiry_ms": 1801209600000,
+              "limit_usdc_per_base": "1500",
+              "option_type": "C",
+              "quantity_contracts": "1",
+              "schema_version": "manual-deribit-option.rust.v1",
+              "strike_usdc": "60000",
+              "symbol": "BTC_USDC-29JAN27-60000-C",
+              "underlying": "BTC"
+            },
+            "product": "DERIBIT_LINEAR_USDC_OPTION_BUY"
+          },
+          "intent_id": "manual-option-001",
+          "requested_budget_usd": "100",
+          "source": "MANUAL"
+        },
+        "intent_sha256": "057586b9c6d23f06c3af330f057bbbb8541735d62ccb334a48c4bbc62750ec9a",
+        "record_request_id": "4f9774f6-7750-4aec-a567-ffca474bb5f9",
+        "recorded_ms": 1791779604164,
+        "settings_sha256": "67c0592f89a98d73f6d3608f51b88d98e200099391125b693247bd05551ff20a",
+        "status": "RECORDED_UNASSESSED",
+        "withdrawn_ms": null
+      }
+    ],
+    "revision": 5,
+    "scope": "SIMULATED_CAPITAL_ALLOCATION_AND_MANUAL_RECORDS_ONLY",
+    "settings": {
+      "binance_usdt": {
+        "allocation": {
+          "allocation_usd": "30000",
+          "conversion": {
+            "assumption": "EXPERIMENTAL_USD_STABLECOIN_1_TO_1",
+            "confirmed": true,
+            "schema_version": "paper-fx-assumption.rust.v1"
+          },
+          "single_intent_cap_usd": "1000"
+        },
+        "margin_mode": "ISOLATED",
+        "max_leverage": "2"
+      },
+      "deribit_usdc": {
+        "allocation_usd": "60000",
+        "conversion": {
+          "assumption": "EXPERIMENTAL_USD_STABLECOIN_1_TO_1",
+          "confirmed": true,
+          "schema_version": "paper-fx-assumption.rust.v1"
+        },
+        "single_intent_cap_usd": "1000"
+      },
+      "schema_version": "manual-paper-settings.rust.v1",
+      "total_budget_usd": "100000"
+    },
+    "sha256": "ad386030bd4f1985ba763f8bca07b10e882e739e60122344282df65d0bf3fbe9",
+    "total_budget_usd": "100000",
+    "unallocated_usd": "10000"
+  }
+}
