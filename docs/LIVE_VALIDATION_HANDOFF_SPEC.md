@@ -7,6 +7,8 @@
 
 本文件是当前版本唯一的 tester / operator 交付规格。
 
+人工 Rust/Svelte paper 声明与意图记录的独立工程验收入口见 [MANUAL_PAPER_RUST_GUIDE.md](MANUAL_PAPER_RUST_GUIDE.md)。该入口不运行下述旧策略，不产生订单或成交，不构成旧研究策略的 promotion 或 paper-live 准入；保留所有封存限制。
+
 目标只有一个：
 
 - 开发负责人完成当前功能、验证与运行闭环

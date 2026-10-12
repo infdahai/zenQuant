@@ -28,6 +28,7 @@ The offline options workbench provides a native Rust CLI and a pure
 costs, terminal option scenarios and same-venue vertical certificates.
 
 - Architecture, request/report interfaces and CLI usage: [Rust workbench guide](docs/OPTIONS_WORKBENCH_RUST_GUIDE.md)
+- Manual Svelte paper setup and unassessed intent records (combined USD100000 declaration, no fills): [manual paper guide](docs/MANUAL_PAPER_RUST_GUIDE.md)
 - Independent quote costs without a View or indicator: [versioned quote diagnostic input](docs/OPTIONS_WORKBENCH_RUST_GUIDE.md#独立报价成本诊断)
 - Local integration results and historical input requirements: [gate repair report](docs/reports/options-workbench-gate-repair-20261010/README.md)
 - Build with the pinned toolchain: `cd rust && cargo build --workspace --locked`
