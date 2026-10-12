@@ -12,7 +12,8 @@
     "test:frontend": "npm run test:store && npm run test:e2e",
     "build:options": "npm --prefix options-ui run check && npm --prefix options-ui run build && cd rust && cargo build --release --locked -p options-workbench --bin options-ui",
     "start:options": "./rust/target/release/options-ui",
-    "test:options": "npm --prefix options-ui test && playwright test --config playwright.options.config.js"
+    "test:options": "npm --prefix options-ui test && playwright test --config playwright.options.config.js",
+    "test:paper": "playwright test --config playwright.paper.config.js"
   },
   "devDependencies": {
     "@playwright/test": "^1.58.2"
