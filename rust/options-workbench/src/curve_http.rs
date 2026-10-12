@@ -1,4 +1,4 @@
-//! Loopback-only, bounded HTTP adapter; no trading state, arbitrary file API or job scheduler.
+//! Loopback-only bounded HTTP adapter. Paper writes use a separate fixed-location journal.
 use std::{
     collections::BTreeMap,
     fs,
@@ -59,6 +59,7 @@ pub fn load_assets(root: &Path) -> io::Result<Assets> {
     visit(root, root, &mut out, &mut 0)?;
     let index = out.get("/index.html").ok_or_else(invalid)?.clone();
     out.insert("/".into(), index);
+    out.insert("/paper".into(), out["/index.html"].clone());
     Ok(out)
 }
 
@@ -180,12 +181,20 @@ fn read_request(s: &mut TcpStream, host: &str) -> io::Result<Request> {
 }
 
 pub fn handle(mut s: TcpStream, host: &str, assets: &Assets) -> io::Result<()> {
+    handle_with_paper(&mut s, host, assets, None)
+}
+pub fn handle_with_paper(
+    s: &mut TcpStream,
+    host: &str,
+    assets: &Assets,
+    paper: Option<&crate::paper_store::Store>,
+) -> io::Result<()> {
     s.set_write_timeout(Some(DEADLINE))?;
-    let req = match read_request(&mut s, host) {
+    let req = match read_request(s, host) {
         Ok(r) => r,
         Err(_) => {
             return response(
-                &mut s,
+                s,
                 "400 Bad Request",
                 "application/json",
                 b"{\"error\":\"INVALID_HTTP_REQUEST\"}",
@@ -194,27 +203,42 @@ pub fn handle(mut s: TcpStream, host: &str, assets: &Assets) -> io::Result<()> {
     };
     if req.method == "GET" {
         return match assets.get(&req.path) {
-            Some((mime, b)) => response(&mut s, "200 OK", mime, b),
+            Some((mime, b)) => response(s, "200 OK", mime, b),
             None => response(
-                &mut s,
+                s,
                 "404 Not Found",
                 "application/json",
                 b"{\"error\":\"NOT_FOUND\"}",
             ),
         };
     }
+    if matches!(
+        req.path.as_str(),
+        "/api/paper/state" | "/api/paper/preview" | "/api/paper/confirm"
+    ) && let Some(store) = paper
+    {
+        return match store.api(&req.path, &req.body) {
+            Ok(body) => response(s, "200 OK", "application/json", &body),
+            Err(e) => response(
+                s,
+                "422 Unprocessable Content",
+                "application/json",
+                &serde_json::to_vec(&serde_json::json!({"error":e})).map_err(|_| invalid())?,
+            ),
+        };
+    }
     if !matches!(req.path.as_str(), "/api/curve" | "/api/synthetic") {
         return response(
-            &mut s,
+            s,
             "404 Not Found",
             "application/json",
             b"{\"error\":\"NOT_FOUND\"}",
         );
     }
     match crate::curve_api::evaluate(&req.path, &req.body) {
-        Ok(body) => response(&mut s, "200 OK", "application/json", &body),
+        Ok(body) => response(s, "200 OK", "application/json", &body),
         Err(e) => response(
-            &mut s,
+            s,
             "422 Unprocessable Content",
             "application/json",
             &serde_json::to_vec(&serde_json::json!({"error":e.code})).map_err(|_| invalid())?,
@@ -223,12 +247,24 @@ pub fn handle(mut s: TcpStream, host: &str, assets: &Assets) -> io::Result<()> {
 }
 
 pub fn serve(listener: TcpListener, assets: Assets) -> io::Result<()> {
+    serve_with_paper(
+        listener,
+        assets,
+        crate::paper_store::Store::repository().map_err(io::Error::other)?,
+    )
+}
+pub fn serve_with_paper(
+    listener: TcpListener,
+    assets: Assets,
+    paper: crate::paper_store::Store,
+) -> io::Result<()> {
     let addr = listener.local_addr()?;
     if !addr.ip().is_loopback() {
         return Err(invalid());
     }
     let host = addr.to_string();
     let assets = Arc::new(assets);
+    let paper = Arc::new(paper);
     println!(
         "ZenQuant synthetic/conditional options UI: http://{host}/ (development loopback only)"
     );
@@ -239,9 +275,10 @@ pub fn serve(listener: TcpListener, assets: Assets) -> io::Result<()> {
             let listener = listener.try_clone()?;
             let assets = Arc::clone(&assets);
             let host = host.clone();
+            let paper = Arc::clone(&paper);
             Ok(thread::spawn(move || -> io::Result<()> {
                 for s in listener.incoming() {
-                    let _ = handle(s?, &host, &assets);
+                    let _ = handle_with_paper(&mut s?, &host, &assets, Some(&paper));
                 }
                 Ok(())
             }))
