@@ -191,3 +191,6 @@ impl Store {
         .map_err(err)
     }
 }
+#[cfg(test)]
+#[path = "paper_store_tests.rs"]
+mod tests;
