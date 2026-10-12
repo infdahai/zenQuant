@@ -3,9 +3,9 @@ name: Rust options diagnostics
 on:
   push:
     branches: [main, "codex/**"]
-    paths: ["options-ui/**", "playwright.options.config.js", "package.json", "package-lock.json", "docs/reports/options-payoff-mvp-*/**", "rust/**", ".github/workflows/rust.yml", "docs/*RUST_GUIDE.md", "docs/RUST_MODULE_BOUNDARIES.md", "docs/reports/options-*-diagnostics-*/**", "docs/reports/simulated-intents-*/**", "docs/reports/simulated-reservations-*/**"]
+    paths: ["options-ui/**", "playwright.options.config.js", "playwright.paper.config.js", "package.json", "package-lock.json", "docs/reports/options-payoff-mvp-*/**", "rust/**", ".github/workflows/rust.yml", "docs/*RUST_GUIDE.md", "docs/RUST_MODULE_BOUNDARIES.md", "docs/reports/options-*-diagnostics-*/**", "docs/reports/simulated-intents-*/**", "docs/reports/simulated-reservations-*/**"]
   pull_request:
-    paths: ["options-ui/**", "playwright.options.config.js", "package.json", "package-lock.json", "docs/reports/options-payoff-mvp-*/**", "rust/**", ".github/workflows/rust.yml", "docs/*RUST_GUIDE.md", "docs/RUST_MODULE_BOUNDARIES.md", "docs/reports/options-*-diagnostics-*/**", "docs/reports/simulated-intents-*/**", "docs/reports/simulated-reservations-*/**"]
+    paths: ["options-ui/**", "playwright.options.config.js", "playwright.paper.config.js", "package.json", "package-lock.json", "docs/reports/options-payoff-mvp-*/**", "rust/**", ".github/workflows/rust.yml", "docs/*RUST_GUIDE.md", "docs/RUST_MODULE_BOUNDARIES.md", "docs/reports/options-*-diagnostics-*/**", "docs/reports/simulated-intents-*/**", "docs/reports/simulated-reservations-*/**"]
   workflow_dispatch:
 
 permissions:
@@ -71,13 +71,17 @@ jobs:
           npm run build --prefix options-ui
       - name: Build Rust page and batch service
         working-directory: rust
-        run: cargo build --release --locked -p options-workbench --bin options-ui
+        run: cargo build --release --locked -p options-workbench --bin options-ui --example paper_browser_fixture
       - name: Install Chromium
         run: npx playwright install --with-deps chromium
       - name: Verify running UI without Python
         run: npx playwright test --config playwright.options.config.js
+      - name: Verify isolated manual paper workflow without Python
+        run: npx playwright test --config playwright.paper.config.js
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: options-ui-browser-evidence
-          path: .artifacts/payoff-ui
+          path: |
+            .artifacts/payoff-ui
+            .artifacts/paper-ui
