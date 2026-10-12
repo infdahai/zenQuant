@@ -40,7 +40,7 @@
 <main>
   <div class="intro"><div><p class="eyebrow">CONDITIONAL PAYOFF / V1</p><h1>价格变化，收益如何变化？</h1><p class="muted">线性欧式期权 · BUY 单腿 · 到期结算情景</p></div><span class="badge">研究演示 · 无交易权限</span></div>
   <div class="notice"><strong>到期情景分析</strong>　这不是历史回测、当前盯市或盈利概率。毛收益是到期支付；净损益仅扣除输入报价成本与明确费用，不预测滑点或成交。</div>
-  <nav aria-label="页面定位"><a href="#inputs">调整输入 ↓</a><a href="#curve">查看曲线 ↓</a></nav>
+  <nav aria-label="页面定位"><a href="/paper">人工 Paper 工作台 ↗</a><a href="#inputs">调整输入 ↓</a><a href="#curve">查看曲线 ↓</a></nav>
   <div class="workspace">
     <section class="controls card" id="inputs">
       <h2>01 / 输入与假设</h2>

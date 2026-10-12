@@ -6,8 +6,8 @@
 |---|---|---|
 | 合约与计量 | options-core/src/{contracts,decimal,measurement,error,codec,canonical}.rs | 共同基础：产品/币种/单位/时间字段、精确数、规格/数量/tick 规则、严格解码与规范 hash；不依赖分析或交易状态 |
 | 期权分析 | options-core/src/{inputs,costs,expressions,constraints,quote_diagnostics,terminal_diagnostics,payoff_curve}.rs | 依赖基础及本组；纯报价/条件终值诊断，不读账户、不预留、不执行 |
-| 交易内核 | options-core/src/{intents,reservations}.rs | 依赖基础及本组；意图语义、资金注册、幂等业务结果、余额准入、ACTIVE 状态与守恒；不依赖诊断、不做 I/O |
-| 外部适配 | options-workbench/src/{main,report,io,publication,intent_store,reservation_store,snapshot_file,curve_api,curve_http}.rs 与 src/bin | 调用 core；负责文件边界、实际时钟、锁、提交与输出。core 不反向引用 workbench |
+| 交易内核 | options-core/src/{intents,reservations,paper}.rs | 依赖基础及本组；意图语义、资金注册、幂等业务结果、余额准入、ACTIVE 状态与守恒；paper 仅持有模拟预算分配声明和人工记录，不调用资金预留；不依赖诊断、不做 I/O |
+| 外部适配 | options-workbench/src/{main,report,io,publication,intent_store,reservation_store,paper_store,snapshot_file,curve_api,curve_http}.rs 与 src/bin | 调用 core；负责文件边界、实际时钟、锁、提交与输出。core 不反向引用 workbench |
 
 `contracts.rs` 保留旧 v1 View、假设钱包及报告类型，避免大范围搬迁；这些类型不代表真实资金权威。`StatusResult` 也是已有共享结果词汇，计量规则保留其既有失败语义，交易准入映射为自身拒绝结果。`costs`、`inputs` 的少量内部再导出只兼容现有分析调用者，规则实现只存在于 measurement。禁止再从交易内核导入这两个分析模块。
 
@@ -16,6 +16,8 @@
 `payoff_curve` 属于分析组：解决单次请求生成密集价格曲线，组合现有终值诊断，不拥有资金或执行状态。它的限长网格、可选人工信号与完整身份属于独立 v1 边界。外部 `curve_api/curve_http` 只负责浏览器输入和同机 HTTP；不跨进交易权威。保留标准、边界与实测见 [Svelte/Rust MVP 指南](OPTIONS_PAYOFF_RUST_GUIDE.md)。
 
 ## 两种存储的权威边界
+
+新增人工流程见 [manual paper 指南](MANUAL_PAPER_RUST_GUIDE.md)：`paper::Journal` 只对100000USD顶层预算声明的分配及未评估记录负责，不是第三套账户资金权威。它不调用旧 fund/reserve，不将配置当已注资，不迁移或重复旧余额。HTTP 的 paper 路由只进入该声明日志；曲线请求仍独立。未来执行阶段必须明确切换/迁移责任，不得并存两个交易资金账本。
 
 意图归档只保存输入：`RECORDED_UNASSESSED` 永远不代表批准。core 的 `compare_identity` 决定同 ID 同语义/冲突；归档提交序号、首次原始字节 hash、文件容量及原回执留在 `intent_store`。它不得演化出资金、订单或成交状态。
 

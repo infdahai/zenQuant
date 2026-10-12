@@ -1,3 +1,4 @@
 import { mount } from 'svelte';
 import App from './App.svelte';
-mount(App, { target: document.getElementById('app') });
+import Paper from './Paper.svelte';
+mount(location.pathname === '/paper' ? Paper : App, { target: document.getElementById('app') });

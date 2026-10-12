@@ -18,6 +18,7 @@ results/
 
 *.log
 /.simulated-reservations/
+/.manual-paper/
 
 # Secrets — never commit
 .env

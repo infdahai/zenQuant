@@ -1,0 +1,40 @@
+
+> test:options
+> npm --prefix options-ui test && playwright test --config playwright.options.config.js
+
+
+> zenquant-options-ui@0.1.0 test
+> node --test tests/*.test.js
+
+✔ newer response wins even when old fetch ignores cancellation (7.125628ms)
+✔ explicit cancel prevents completion; failed request can recover (0.443681ms)
+ℹ tests 2
+ℹ suites 0
+ℹ pass 2
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 168.233021
+npm notice
+npm notice New major version of npm available! 11.9.0 -> 12.2.0
+npm notice Changelog: https://github.com/npm/cli/releases/tag/v12.2.0
+npm notice To update run: npm install -g npm@12.2.0
+npm notice
+
+Running 3 tests using 1 worker
+
+(node:10108) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:10108) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+(Use `node --trace-warnings ...` to show where the warning was created)
+  ✓  1 options-ui/e2e/payoff.spec.js:6:1 › running UI: default curve, changed inputs, missing costs and mobile layout (2.3s)
+  ✓  2 options-ui/e2e/payoff.spec.js:30:1 › raw evidence preserves missing inputs; bad request can recover (719ms)
+  ✓  3 options-ui/e2e/payoff.spec.js:45:1 › 4096 point browser work is measured separately and rapid edits keep final result (1.6s)
+
+  3 passed (7.0s)
+npm notice
+npm notice New major version of npm available! 11.9.0 -> 12.2.0
+npm notice Changelog: https://github.com/npm/cli/releases/tag/v12.2.0
+npm notice To update run: npm install -g npm@12.2.0
+npm notice
