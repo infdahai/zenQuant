@@ -18,6 +18,7 @@ fn main() {
     let mut paths = vec![
         base.join("build.rs"),
         base.join("Cargo.toml"),
+        base.join("fixtures/vix/demo.json"),
         root.join("Cargo.toml"),
         root.join("options-core/Cargo.toml"),
     ];

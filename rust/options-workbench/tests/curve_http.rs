@@ -115,3 +115,103 @@ fn synthetic_controls_supply_visible_two_sided_quote_without_bypassing_cost_vali
         options_core::error::ErrorCode::ConflictingEvidence
     );
 }
+
+#[test]
+fn vix_http_uses_real_core_and_preserves_full_audit_identity() {
+    let body = "{\"scenario\":\"BACKWARDATION\"}";
+    let out = exchange(|h| post(h, body).replace("/api/curve", "/api/vix/demo"));
+    assert!(out.starts_with("HTTP/1.1 200 OK"));
+    let response: serde_json::Value =
+        serde_json::from_str(out.split("\r\n\r\n").nth(1).unwrap()).unwrap();
+    assert_eq!(
+        response["report"]["futures"]["metrics"]["spread_points"],
+        "4"
+    );
+    assert_eq!(
+        response["report"]["spot"]["metrics"]["classification"],
+        "SHORT_HORIZON_HIGHER"
+    );
+    assert_eq!(response["report"]["mode"], "DEMONSTRATION");
+    let request = response["request_json"].as_str().unwrap();
+    let parsed = options_core::vix_observation::decode_request(request.as_bytes()).unwrap();
+    assert_eq!(
+        response["report"]["input_sha256"],
+        options_core::canonical::canonical_hash(&parsed).unwrap()
+    );
+    assert_eq!(
+        response["transport_sha256"],
+        options_core::canonical::bytes_sha256(body.as_bytes())
+    );
+    assert_eq!(
+        response["cargo_lock_sha256"],
+        options_core::canonical::bytes_sha256(include_bytes!("../../Cargo.lock"))
+    );
+    assert_eq!(response["code_sha256"].as_str().unwrap().len(), 64);
+    let evaluated: serde_json::Value = serde_json::from_slice(
+        &options_workbench::vix_api::evaluate("/api/vix/evaluate", request.as_bytes()).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(response["report"], evaluated["report"]);
+}
+
+#[test]
+fn vix_demo_failure_scenarios_preserve_unavailable_and_roll_semantics() {
+    for (scenario, status, classification) in [
+        ("BACKWARDATION", "READY", Some("BACKWARDATION")),
+        ("CONTANGO", "READY", Some("CONTANGO")),
+        ("FLAT", "READY", Some("FLAT")),
+        ("MISSING", "MISSING", None),
+        ("STALE", "STALE", None),
+        ("ASYNCHRONOUS", "INVALID", None),
+        ("ROLL", "READY", Some("CONTANGO")),
+    ] {
+        let body = serde_json::to_vec(&serde_json::json!({"scenario":scenario})).unwrap();
+        let response: serde_json::Value = serde_json::from_slice(
+            &options_workbench::vix_api::evaluate("/api/vix/demo", &body).unwrap(),
+        )
+        .unwrap();
+        let f = &response["report"]["futures"];
+        assert_eq!(f["status"], status);
+        assert_eq!(f["metrics"]["classification"].as_str(), classification);
+        if classification.is_none() {
+            assert!(f["metrics"].is_null());
+        }
+        if scenario == "ROLL" {
+            assert_eq!(f["roll"], "CHANGED_FROM_SUPPLIED_PAIR");
+            assert_eq!(f["selected_contracts"][0]["symbol"], "VX/X6");
+        }
+    }
+}
+
+#[test]
+fn vix_endpoint_rejects_unknown_fields_paths_cross_origin_and_missing_header() {
+    for body in [
+        "{}",
+        "{\"scenario\":\"LIVE\"}",
+        "{\"scenario\":\"FLAT\",\"path\":\"/tmp/anything\"}",
+        "{\"scenario\":\"FLAT\",\"scenario\":\"MISSING\"}",
+    ] {
+        assert!(
+            exchange(|h| post(h, body).replace("/api/curve", "/api/vix/demo"))
+                .starts_with("HTTP/1.1 422")
+        );
+    }
+    for case in 0..2 {
+        let out = exchange(|h| {
+            let request = post(h, "{}").replace("/api/curve", "/api/vix/evaluate");
+            if case == 0 {
+                request.replace(
+                    &format!("Origin: http://{h}"),
+                    "Origin: https://evil.example",
+                )
+            } else {
+                request.replace("X-ZenQuant-Request: 1\r\n", "")
+            }
+        });
+        assert!(out.starts_with("HTTP/1.1 400"));
+    }
+    assert!(
+        exchange(|h| post(h, "{}").replace("/api/curve", "/api/vix/live"))
+            .starts_with("HTTP/1.1 404")
+    );
+}

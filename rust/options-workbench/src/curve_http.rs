@@ -60,6 +60,7 @@ pub fn load_assets(root: &Path) -> io::Result<Assets> {
     let index = out.get("/index.html").ok_or_else(invalid)?.clone();
     out.insert("/".into(), index);
     out.insert("/paper".into(), out["/index.html"].clone());
+    out.insert("/risk".into(), out["/index.html"].clone());
     Ok(out)
 }
 
@@ -227,7 +228,10 @@ pub fn handle_with_paper(
             ),
         };
     }
-    if !matches!(req.path.as_str(), "/api/curve" | "/api/synthetic") {
+    if !matches!(
+        req.path.as_str(),
+        "/api/curve" | "/api/synthetic" | "/api/vix/demo" | "/api/vix/evaluate"
+    ) {
         return response(
             s,
             "404 Not Found",
@@ -235,7 +239,12 @@ pub fn handle_with_paper(
             b"{\"error\":\"NOT_FOUND\"}",
         );
     }
-    match crate::curve_api::evaluate(&req.path, &req.body) {
+    let result = if req.path.starts_with("/api/vix/") {
+        crate::vix_api::evaluate(&req.path, &req.body)
+    } else {
+        crate::curve_api::evaluate(&req.path, &req.body)
+    };
+    match result {
         Ok(body) => response(s, "200 OK", "application/json", &body),
         Err(e) => response(
             s,
