@@ -51,7 +51,7 @@
 </script>
 
 <svelte:head><title>ZenQuant · 人工 Paper 工作台</title></svelte:head>
-<header><a class="brand" href="/paper">ZENQUANT <small>MANUAL PAPER</small></a><a href="/">期权情景实验台 ↗</a></header>
+<header><a class="brand" href="/paper">ZENQUANT <small>MANUAL PAPER</small></a><a href="/">期权情景实验台 ↗</a><a href="/risk">风险观察 ↗</a></header>
 <main>
   <div class="intro"><p class="eyebrow">DERIBIT OPTIONS / BINANCE BTCUSDT PERPETUAL</p><h1>先记录决策，再验证交易。</h1><p>人工模拟工作台 · 总资本声明 USD100000 · 无实盘连接</p></div>
   <div class="banner">当前仅保存模拟配置和人工意图。<strong>没有订单、成交、盈利、可用保证金或强平价。</strong> 实时行情、费用与账户保证金模型未接入，交易执行保持阻断。</div>
