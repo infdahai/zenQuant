@@ -1,0 +1,13 @@
+
+> zenquant-options-ui@0.1.0 check
+> svelte-check --fail-on-warnings
+
+Loading svelte-check in workspace: /workspace/zenQuant/options-ui
+Getting Svelte diagnostics...
+
+svelte-check found 0 errors and 0 warnings
+npm notice
+npm notice New major version of npm available! 11.9.0 -> 12.2.0
+npm notice Changelog: https://github.com/npm/cli/releases/tag/v12.2.0
+npm notice To update run: npm install -g npm@12.2.0
+npm notice

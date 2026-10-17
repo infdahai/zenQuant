@@ -5,9 +5,9 @@
 | 边界 | 现有文件（相对于 rust） | 允许依赖与职责 |
 |---|---|---|
 | 合约与计量 | options-core/src/{contracts,decimal,measurement,error,codec,canonical}.rs | 共同基础：产品/币种/单位/时间字段、精确数、规格/数量/tick 规则、严格解码与规范 hash；不依赖分析或交易状态 |
-| 期权分析 | options-core/src/{inputs,costs,expressions,constraints,quote_diagnostics,terminal_diagnostics,payoff_curve}.rs | 依赖基础及本组；纯报价/条件终值诊断，不读账户、不预留、不执行 |
+| 分析与风险观察 | options-core/src/{inputs,costs,expressions,constraints,quote_diagnostics,terminal_diagnostics,payoff_curve,vix_observation}.rs | 依赖基础及本组；纯报价/条件终值诊断，不读账户、不预留、不执行 |
 | 交易内核 | options-core/src/{intents,reservations,paper}.rs | 依赖基础及本组；意图语义、资金注册、幂等业务结果、余额准入、ACTIVE 状态与守恒；paper 仅持有模拟预算分配声明和人工记录，不调用资金预留；不依赖诊断、不做 I/O |
-| 外部适配 | options-workbench/src/{main,report,io,publication,intent_store,reservation_store,paper_store,snapshot_file,curve_api,curve_http}.rs 与 src/bin | 调用 core；负责文件边界、实际时钟、锁、提交与输出。core 不反向引用 workbench |
+| 外部适配 | options-workbench/src/{main,report,io,publication,intent_store,reservation_store,paper_store,snapshot_file,curve_api,curve_http,vix_api}.rs 与 src/bin | 调用 core；负责文件边界、实际时钟、锁、提交与输出。core 不反向引用 workbench |
 
 `contracts.rs` 保留旧 v1 View、假设钱包及报告类型，避免大范围搬迁；这些类型不代表真实资金权威。`StatusResult` 也是已有共享结果词汇，计量规则保留其既有失败语义，交易准入映射为自身拒绝结果。`costs`、`inputs` 的少量内部再导出只兼容现有分析调用者，规则实现只存在于 measurement。禁止再从交易内核导入这两个分析模块。
 
@@ -62,3 +62,5 @@ UNKNOWN/UNVERIFIED、证据身份、时点有效性、原子报告发布及封�
 - 禁止按人工/指标来源复制风控执行，按产品另建资金权威，适配层加入第二份决策规则，跨文件双写金融状态，以及通用 DSL、微服务或无调用者接口。
 
 运行、模拟证据边界和故障语义见 [预留指南](SIMULATED_RESERVATIONS_RUST_GUIDE.md)，实测记录见 [第四模块验收](reports/simulated-reservations-20261011/README.md)。
+
+`vix_observation` 是同一分析组内的独立只读风险观察：月度 VX 与 VIX9D/VIX 分开输入、纯计算，不依赖交易组。`vix_api` 仅严格解码和显式演示夹具，复用已有 HTTP；无行情、状态存储或交易副作用。版本、时点、日历、精确比值和保留标准见 [VIX 指南](VIX_OBSERVATION_RUST_GUIDE.md)。
