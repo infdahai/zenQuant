@@ -18,6 +18,7 @@ const ANALYSIS: &[&str] = &[
     "payoff_curve",
     "quote_diagnostics",
     "terminal_diagnostics",
+    "vix_observation",
 ];
 const TRADING: &[&str] = &["intents", "reservations", "paper"];
 const PURE_STD: &[&str] = &["collections", "fmt", "str", "error", "result"];

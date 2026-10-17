@@ -17,3 +17,4 @@ pub mod payoff_curve;
 pub mod quote_diagnostics;
 pub mod reservations;
 pub mod terminal_diagnostics;
+pub mod vix_observation;
