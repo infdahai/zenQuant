@@ -10,3 +10,4 @@ pub mod report;
 pub mod reservation_store;
 mod snapshot_file;
 pub mod vix_api;
+pub mod vix_snapshot;
