@@ -61,6 +61,9 @@ jobs:
       - name: Check exit engine Python reference fixture
         run: uv run python scripts/generate_exit_engine_golden.py --check
 
+      - name: Check playbook Python reference fixture
+        run: uv run python scripts/generate_playbook_golden.py --check
+
       - name: "Gate B: import boundaries"
         run: uv run pytest tests/test_import_boundaries.py -v --tb=short
 

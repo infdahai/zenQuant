@@ -1,0 +1,1686 @@
+[
+  {
+    "name": "bull",
+    "state": {
+      "symbol": "SYNTHETIC",
+      "timeframe": "4h",
+      "cutoff_time_ns": 123,
+      "directional_state": "UPTREND",
+      "directional_confidence": 0.8,
+      "volatility_state": "NORMAL",
+      "volatility_confidence": 0.8,
+      "positioning_state": "HEALTHY",
+      "positioning_confidence": 0.8,
+      "quality_state": "TRADABLE",
+      "quality_confidence": 0.8,
+      "direction_signal": 0.0,
+      "transition_risk": 0.1
+    },
+    "config": {
+      "preserve_capital_transition_risk": 0.6,
+      "preserve_capital_min_overall_confidence": 0.35,
+      "trade_directional_confidence_floor": 0.5,
+      "bearish_override_confidence_floor": 0.5,
+      "bearish_override_direction_signal": -0.5,
+      "bull_max_leverage": 2.5,
+      "bear_max_leverage": 2.25,
+      "range_max_leverage": 1.5,
+      "preserve_capital_max_leverage": 0.35,
+      "bull_trailing_stop_atr_mult": 2.5,
+      "bear_trailing_stop_atr_mult": 2.5,
+      "range_trailing_stop_atr_mult": 2.5,
+      "preserve_capital_trailing_stop_atr_mult": 1.5,
+      "range_time_decay_bars": 3,
+      "preserve_capital_time_decay_bars": 1
+    },
+    "expected": {
+      "symbol": "SYNTHETIC",
+      "timeframe": "4h",
+      "cutoff_time_ns": 123,
+      "playbook_id": "BULL_CONTINUATION",
+      "playbook_confidence": 0.8,
+      "allowed_directions": [
+        1.0,
+        0.0
+      ],
+      "max_leverage": 2.5,
+      "trailing_stop_atr_mult": 2.5,
+      "allow_pyramid": true,
+      "max_pyramid_count": 2,
+      "time_decay_bars": null,
+      "selection_reason": "Uptrend state with acceptable volatility and crowding",
+      "reason_codes": [
+        "PLAYBOOK_BULL_CONTINUATION",
+        "PLAYBOOK_ALLOW_LONG"
+      ]
+    }
+  },
+  {
+    "name": "bear",
+    "state": {
+      "symbol": "SYNTHETIC",
+      "timeframe": "4h",
+      "cutoff_time_ns": 123,
+      "directional_state": "DOWNTREND",
+      "directional_confidence": 0.8,
+      "volatility_state": "NORMAL",
+      "volatility_confidence": 0.8,
+      "positioning_state": "HEALTHY",
+      "positioning_confidence": 0.8,
+      "quality_state": "TRADABLE",
+      "quality_confidence": 0.8,
+      "direction_signal": 0.0,
+      "transition_risk": 0.1
+    },
+    "config": {
+      "preserve_capital_transition_risk": 0.6,
+      "preserve_capital_min_overall_confidence": 0.35,
+      "trade_directional_confidence_floor": 0.5,
+      "bearish_override_confidence_floor": 0.5,
+      "bearish_override_direction_signal": -0.5,
+      "bull_max_leverage": 2.5,
+      "bear_max_leverage": 2.25,
+      "range_max_leverage": 1.5,
+      "preserve_capital_max_leverage": 0.35,
+      "bull_trailing_stop_atr_mult": 2.5,
+      "bear_trailing_stop_atr_mult": 2.5,
+      "range_trailing_stop_atr_mult": 2.5,
+      "preserve_capital_trailing_stop_atr_mult": 1.5,
+      "range_time_decay_bars": 3,
+      "preserve_capital_time_decay_bars": 1
+    },
+    "expected": {
+      "symbol": "SYNTHETIC",
+      "timeframe": "4h",
+      "cutoff_time_ns": 123,
+      "playbook_id": "BEAR_DEFENSE",
+      "playbook_confidence": 0.8,
+      "allowed_directions": [
+        -1.0,
+        0.0
+      ],
+      "max_leverage": 2.25,
+      "trailing_stop_atr_mult": 2.5,
+      "allow_pyramid": false,
+      "max_pyramid_count": 0,
+      "time_decay_bars": null,
+      "selection_reason": "Downtrend state with tactical short bias",
+      "reason_codes": [
+        "PLAYBOOK_BEAR_DEFENSE",
+        "PLAYBOOK_ALLOW_SHORT"
+      ]
+    }
+  },
+  {
+    "name": "range",
+    "state": {
+      "symbol": "SYNTHETIC",
+      "timeframe": "4h",
+      "cutoff_time_ns": 123,
+      "directional_state": "NEUTRAL",
+      "directional_confidence": 0.8,
+      "volatility_state": "NORMAL",
+      "volatility_confidence": 0.8,
+      "positioning_state": "HEALTHY",
+      "positioning_confidence": 0.8,
+      "quality_state": "TRADABLE",
+      "quality_confidence": 0.8,
+      "direction_signal": 0.0,
+      "transition_risk": 0.1
+    },
+    "config": {
+      "preserve_capital_transition_risk": 0.6,
+      "preserve_capital_min_overall_confidence": 0.35,
+      "trade_directional_confidence_floor": 0.5,
+      "bearish_override_confidence_floor": 0.5,
+      "bearish_override_direction_signal": -0.5,
+      "bull_max_leverage": 2.5,
+      "bear_max_leverage": 2.25,
+      "range_max_leverage": 1.5,
+      "preserve_capital_max_leverage": 0.35,
+      "bull_trailing_stop_atr_mult": 2.5,
+      "bear_trailing_stop_atr_mult": 2.5,
+      "range_trailing_stop_atr_mult": 2.5,
+      "preserve_capital_trailing_stop_atr_mult": 1.5,
+      "range_time_decay_bars": 3,
+      "preserve_capital_time_decay_bars": 1
+    },
+    "expected": {
+      "symbol": "SYNTHETIC",
+      "timeframe": "4h",
+      "cutoff_time_ns": 123,
+      "playbook_id": "RANGE_LIGHT",
+      "playbook_confidence": 0.5,
+      "allowed_directions": [
+        1.0,
+        -1.0,
+        0.0
+      ],
+      "max_leverage": 1.5,
+      "trailing_stop_atr_mult": 2.5,
+      "allow_pyramid": false,
+      "max_pyramid_count": 0,
+      "time_decay_bars": 3,
+      "selection_reason": "Neutral or transition state with lighter mean-reversion posture",
+      "reason_codes": [
+        "PLAYBOOK_RANGE_LIGHT",
+        "PLAYBOOK_ALLOW_BOTH"
+      ]
+    }
+  },
+  {
+    "name": "transition_override",
+    "state": {
+      "symbol": "SYNTHETIC",
+      "timeframe": "4h",
+      "cutoff_time_ns": 123,
+      "directional_state": "TRANSITION",
+      "directional_confidence": 0.8,
+      "volatility_state": "NORMAL",
+      "volatility_confidence": 0.8,
+      "positioning_state": "HEALTHY",
+      "positioning_confidence": 0.8,
+      "quality_state": "TRADABLE",
+      "quality_confidence": 0.8,
+      "direction_signal": -0.5,
+      "transition_risk": 0.1
+    },
+    "config": {
+      "preserve_capital_transition_risk": 0.6,
+      "preserve_capital_min_overall_confidence": 0.35,
+      "trade_directional_confidence_floor": 0.5,
+      "bearish_override_confidence_floor": 0.5,
+      "bearish_override_direction_signal": -0.5,
+      "bull_max_leverage": 2.5,
+      "bear_max_leverage": 2.25,
+      "range_max_leverage": 1.5,
+      "preserve_capital_max_leverage": 0.35,
+      "bull_trailing_stop_atr_mult": 2.5,
+      "bear_trailing_stop_atr_mult": 2.5,
+      "range_trailing_stop_atr_mult": 2.5,
+      "preserve_capital_trailing_stop_atr_mult": 1.5,
+      "range_time_decay_bars": 3,
+      "preserve_capital_time_decay_bars": 1
+    },
+    "expected": {
+      "symbol": "SYNTHETIC",
+      "timeframe": "4h",
+      "cutoff_time_ns": 123,
+      "playbook_id": "BEAR_DEFENSE",
+      "playbook_confidence": 0.8,
+      "allowed_directions": [
+        -1.0,
+        0.0
+      ],
+      "max_leverage": 2.25,
+      "trailing_stop_atr_mult": 2.5,
+      "allow_pyramid": false,
+      "max_pyramid_count": 0,
+      "time_decay_bars": null,
+      "selection_reason": "Downtrend state with tactical short bias",
+      "reason_codes": [
+        "PLAYBOOK_BEAR_DEFENSE",
+        "PLAYBOOK_ALLOW_SHORT"
+      ]
+    }
+  },
+  {
+    "name": "transition_above_signal",
+    "state": {
+      "symbol": "SYNTHETIC",
+      "timeframe": "4h",
+      "cutoff_time_ns": 123,
+      "directional_state": "TRANSITION",
+      "directional_confidence": 0.8,
+      "volatility_state": "NORMAL",
+      "volatility_confidence": 0.8,
+      "positioning_state": "HEALTHY",
+      "positioning_confidence": 0.8,
+      "quality_state": "TRADABLE",
+      "quality_confidence": 0.8,
+      "direction_signal": -0.499999,
+      "transition_risk": 0.1
+    },
+    "config": {
+      "preserve_capital_transition_risk": 0.6,
+      "preserve_capital_min_overall_confidence": 0.35,
+      "trade_directional_confidence_floor": 0.5,
+      "bearish_override_confidence_floor": 0.5,
+      "bearish_override_direction_signal": -0.5,
+      "bull_max_leverage": 2.5,
+      "bear_max_leverage": 2.25,
+      "range_max_leverage": 1.5,
+      "preserve_capital_max_leverage": 0.35,
+      "bull_trailing_stop_atr_mult": 2.5,
+      "bear_trailing_stop_atr_mult": 2.5,
+      "range_trailing_stop_atr_mult": 2.5,
+      "preserve_capital_trailing_stop_atr_mult": 1.5,
+      "range_time_decay_bars": 3,
+      "preserve_capital_time_decay_bars": 1
+    },
+    "expected": {
+      "symbol": "SYNTHETIC",
+      "timeframe": "4h",
+      "cutoff_time_ns": 123,
+      "playbook_id": "RANGE_LIGHT",
+      "playbook_confidence": 0.5,
+      "allowed_directions": [
+        1.0,
+        -1.0,
+        0.0
+      ],
+      "max_leverage": 1.5,
+      "trailing_stop_atr_mult": 2.5,
+      "allow_pyramid": false,
+      "max_pyramid_count": 0,
+      "time_decay_bars": 3,
+      "selection_reason": "Neutral or transition state with lighter mean-reversion posture",
+      "reason_codes": [
+        "PLAYBOOK_RANGE_LIGHT",
+        "PLAYBOOK_ALLOW_BOTH"
+      ]
+    }
+  },
+  {
+    "name": "transition_below_floor",
+    "state": {
+      "symbol": "SYNTHETIC",
+      "timeframe": "4h",
+      "cutoff_time_ns": 123,
+      "directional_state": "TRANSITION",
+      "directional_confidence": 0.499999,
+      "volatility_state": "NORMAL",
+      "volatility_confidence": 0.8,
+      "positioning_state": "HEALTHY",
+      "positioning_confidence": 0.8,
+      "quality_state": "TRADABLE",
+      "quality_confidence": 0.8,
+      "direction_signal": -0.5,
+      "transition_risk": 0.1
+    },
+    "config": {
+      "preserve_capital_transition_risk": 0.6,
+      "preserve_capital_min_overall_confidence": 0.35,
+      "trade_directional_confidence_floor": 0.5,
+      "bearish_override_confidence_floor": 0.5,
+      "bearish_override_direction_signal": -0.5,
+      "bull_max_leverage": 2.5,
+      "bear_max_leverage": 2.25,
+      "range_max_leverage": 1.5,
+      "preserve_capital_max_leverage": 0.35,
+      "bull_trailing_stop_atr_mult": 2.5,
+      "bear_trailing_stop_atr_mult": 2.5,
+      "range_trailing_stop_atr_mult": 2.5,
+      "preserve_capital_trailing_stop_atr_mult": 1.5,
+      "range_time_decay_bars": 3,
+      "preserve_capital_time_decay_bars": 1
+    },
+    "expected": {
+      "symbol": "SYNTHETIC",
+      "timeframe": "4h",
+      "cutoff_time_ns": 123,
+      "playbook_id": "RANGE_LIGHT",
+      "playbook_confidence": 0.65,
+      "allowed_directions": [
+        1.0,
+        -1.0,
+        0.0
+      ],
+      "max_leverage": 1.5,
+      "trailing_stop_atr_mult": 2.5,
+      "allow_pyramid": false,
+      "max_pyramid_count": 0,
+      "time_decay_bars": 3,
+      "selection_reason": "Neutral or transition state with lighter mean-reversion posture",
+      "reason_codes": [
+        "PLAYBOOK_RANGE_LIGHT",
+        "PLAYBOOK_ALLOW_BOTH"
+      ]
+    }
+  },
+  {
+    "name": "transition_at_floor",
+    "state": {
+      "symbol": "SYNTHETIC",
+      "timeframe": "4h",
+      "cutoff_time_ns": 123,
+      "directional_state": "TRANSITION",
+      "directional_confidence": 0.5,
+      "volatility_state": "NORMAL",
+      "volatility_confidence": 0.8,
+      "positioning_state": "HEALTHY",
+      "positioning_confidence": 0.8,
+      "quality_state": "TRADABLE",
+      "quality_confidence": 0.8,
+      "direction_signal": -0.5,
+      "transition_risk": 0.1
+    },
+    "config": {
+      "preserve_capital_transition_risk": 0.6,
+      "preserve_capital_min_overall_confidence": 0.35,
+      "trade_directional_confidence_floor": 0.5,
+      "bearish_override_confidence_floor": 0.5,
+      "bearish_override_direction_signal": -0.5,
+      "bull_max_leverage": 2.5,
+      "bear_max_leverage": 2.25,
+      "range_max_leverage": 1.5,
+      "preserve_capital_max_leverage": 0.35,
+      "bull_trailing_stop_atr_mult": 2.5,
+      "bear_trailing_stop_atr_mult": 2.5,
+      "range_trailing_stop_atr_mult": 2.5,
+      "preserve_capital_trailing_stop_atr_mult": 1.5,
+      "range_time_decay_bars": 3,
+      "preserve_capital_time_decay_bars": 1
+    },
+    "expected": {
+      "symbol": "SYNTHETIC",
+      "timeframe": "4h",
+      "cutoff_time_ns": 123,
+      "playbook_id": "BEAR_DEFENSE",
+      "playbook_confidence": 0.62,
+      "allowed_directions": [
+        -1.0,
+        0.0
+      ],
+      "max_leverage": 2.25,
+      "trailing_stop_atr_mult": 2.5,
+      "allow_pyramid": false,
+      "max_pyramid_count": 0,
+      "time_decay_bars": null,
+      "selection_reason": "Downtrend state with tactical short bias",
+      "reason_codes": [
+        "PLAYBOOK_BEAR_DEFENSE",
+        "PLAYBOOK_ALLOW_SHORT"
+      ]
+    }
+  },
+  {
+    "name": "bull_below_floor",
+    "state": {
+      "symbol": "SYNTHETIC",
+      "timeframe": "4h",
+      "cutoff_time_ns": 123,
+      "directional_state": "UPTREND",
+      "directional_confidence": 0.499999,
+      "volatility_state": "NORMAL",
+      "volatility_confidence": 0.8,
+      "positioning_state": "HEALTHY",
+      "positioning_confidence": 0.8,
+      "quality_state": "TRADABLE",
+      "quality_confidence": 0.8,
+      "direction_signal": 0.0,
+      "transition_risk": 0.1
+    },
+    "config": {
+      "preserve_capital_transition_risk": 0.6,
+      "preserve_capital_min_overall_confidence": 0.35,
+      "trade_directional_confidence_floor": 0.5,
+      "bearish_override_confidence_floor": 0.5,
+      "bearish_override_direction_signal": -0.5,
+      "bull_max_leverage": 2.5,
+      "bear_max_leverage": 2.25,
+      "range_max_leverage": 1.5,
+      "preserve_capital_max_leverage": 0.35,
+      "bull_trailing_stop_atr_mult": 2.5,
+      "bear_trailing_stop_atr_mult": 2.5,
+      "range_trailing_stop_atr_mult": 2.5,
+      "preserve_capital_trailing_stop_atr_mult": 1.5,
+      "range_time_decay_bars": 3,
+      "preserve_capital_time_decay_bars": 1
+    },
+    "expected": {
+      "symbol": "SYNTHETIC",
+      "timeframe": "4h",
+      "cutoff_time_ns": 123,
+      "playbook_id": "RANGE_LIGHT",
+      "playbook_confidence": 0.65,
+      "allowed_directions": [
+        1.0,
+        -1.0,
+        0.0
+      ],
+      "max_leverage": 1.5,
+      "trailing_stop_atr_mult": 2.5,
+      "allow_pyramid": false,
+      "max_pyramid_count": 0,
+      "time_decay_bars": 3,
+      "selection_reason": "Neutral or transition state with lighter mean-reversion posture",
+      "reason_codes": [
+        "PLAYBOOK_RANGE_LIGHT",
+        "PLAYBOOK_ALLOW_BOTH"
+      ]
+    }
+  },
+  {
+    "name": "bull_at_floor",
+    "state": {
+      "symbol": "SYNTHETIC",
+      "timeframe": "4h",
+      "cutoff_time_ns": 123,
+      "directional_state": "UPTREND",
+      "directional_confidence": 0.5,
+      "volatility_state": "NORMAL",
+      "volatility_confidence": 0.8,
+      "positioning_state": "HEALTHY",
+      "positioning_confidence": 0.8,
+      "quality_state": "TRADABLE",
+      "quality_confidence": 0.8,
+      "direction_signal": 0.0,
+      "transition_risk": 0.1
+    },
+    "config": {
+      "preserve_capital_transition_risk": 0.6,
+      "preserve_capital_min_overall_confidence": 0.35,
+      "trade_directional_confidence_floor": 0.5,
+      "bearish_override_confidence_floor": 0.5,
+      "bearish_override_direction_signal": -0.5,
+      "bull_max_leverage": 2.5,
+      "bear_max_leverage": 2.25,
+      "range_max_leverage": 1.5,
+      "preserve_capital_max_leverage": 0.35,
+      "bull_trailing_stop_atr_mult": 2.5,
+      "bear_trailing_stop_atr_mult": 2.5,
+      "range_trailing_stop_atr_mult": 2.5,
+      "preserve_capital_trailing_stop_atr_mult": 1.5,
+      "range_time_decay_bars": 3,
+      "preserve_capital_time_decay_bars": 1
+    },
+    "expected": {
+      "symbol": "SYNTHETIC",
+      "timeframe": "4h",
+      "cutoff_time_ns": 123,
+      "playbook_id": "BULL_CONTINUATION",
+      "playbook_confidence": 0.62,
+      "allowed_directions": [
+        1.0,
+        0.0
+      ],
+      "max_leverage": 2.5,
+      "trailing_stop_atr_mult": 2.5,
+      "allow_pyramid": true,
+      "max_pyramid_count": 2,
+      "time_decay_bars": null,
+      "selection_reason": "Uptrend state with acceptable volatility and crowding",
+      "reason_codes": [
+        "PLAYBOOK_BULL_CONTINUATION",
+        "PLAYBOOK_ALLOW_LONG"
+      ]
+    }
+  },
+  {
+    "name": "bear_below_floor",
+    "state": {
+      "symbol": "SYNTHETIC",
+      "timeframe": "4h",
+      "cutoff_time_ns": 123,
+      "directional_state": "DOWNTREND",
+      "directional_confidence": 0.499999,
+      "volatility_state": "NORMAL",
+      "volatility_confidence": 0.8,
+      "positioning_state": "HEALTHY",
+      "positioning_confidence": 0.8,
+      "quality_state": "TRADABLE",
+      "quality_confidence": 0.8,
+      "direction_signal": 0.0,
+      "transition_risk": 0.1
+    },
+    "config": {
+      "preserve_capital_transition_risk": 0.6,
+      "preserve_capital_min_overall_confidence": 0.35,
+      "trade_directional_confidence_floor": 0.5,
+      "bearish_override_confidence_floor": 0.5,
+      "bearish_override_direction_signal": -0.5,
+      "bull_max_leverage": 2.5,
+      "bear_max_leverage": 2.25,
+      "range_max_leverage": 1.5,
+      "preserve_capital_max_leverage": 0.35,
+      "bull_trailing_stop_atr_mult": 2.5,
+      "bear_trailing_stop_atr_mult": 2.5,
+      "range_trailing_stop_atr_mult": 2.5,
+      "preserve_capital_trailing_stop_atr_mult": 1.5,
+      "range_time_decay_bars": 3,
+      "preserve_capital_time_decay_bars": 1
+    },
+    "expected": {
+      "symbol": "SYNTHETIC",
+      "timeframe": "4h",
+      "cutoff_time_ns": 123,
+      "playbook_id": "RANGE_LIGHT",
+      "playbook_confidence": 0.65,
+      "allowed_directions": [
+        1.0,
+        -1.0,
+        0.0
+      ],
+      "max_leverage": 1.5,
+      "trailing_stop_atr_mult": 2.5,
+      "allow_pyramid": false,
+      "max_pyramid_count": 0,
+      "time_decay_bars": 3,
+      "selection_reason": "Neutral or transition state with lighter mean-reversion posture",
+      "reason_codes": [
+        "PLAYBOOK_RANGE_LIGHT",
+        "PLAYBOOK_ALLOW_BOTH"
+      ]
+    }
+  },
+  {
+    "name": "bear_at_floor",
+    "state": {
+      "symbol": "SYNTHETIC",
+      "timeframe": "4h",
+      "cutoff_time_ns": 123,
+      "directional_state": "DOWNTREND",
+      "directional_confidence": 0.5,
+      "volatility_state": "NORMAL",
+      "volatility_confidence": 0.8,
+      "positioning_state": "HEALTHY",
+      "positioning_confidence": 0.8,
+      "quality_state": "TRADABLE",
+      "quality_confidence": 0.8,
+      "direction_signal": 0.0,
+      "transition_risk": 0.1
+    },
+    "config": {
+      "preserve_capital_transition_risk": 0.6,
+      "preserve_capital_min_overall_confidence": 0.35,
+      "trade_directional_confidence_floor": 0.5,
+      "bearish_override_confidence_floor": 0.5,
+      "bearish_override_direction_signal": -0.5,
+      "bull_max_leverage": 2.5,
+      "bear_max_leverage": 2.25,
+      "range_max_leverage": 1.5,
+      "preserve_capital_max_leverage": 0.35,
+      "bull_trailing_stop_atr_mult": 2.5,
+      "bear_trailing_stop_atr_mult": 2.5,
+      "range_trailing_stop_atr_mult": 2.5,
+      "preserve_capital_trailing_stop_atr_mult": 1.5,
+      "range_time_decay_bars": 3,
+      "preserve_capital_time_decay_bars": 1
+    },
+    "expected": {
+      "symbol": "SYNTHETIC",
+      "timeframe": "4h",
+      "cutoff_time_ns": 123,
+      "playbook_id": "BEAR_DEFENSE",
+      "playbook_confidence": 0.62,
+      "allowed_directions": [
+        -1.0,
+        0.0
+      ],
+      "max_leverage": 2.25,
+      "trailing_stop_atr_mult": 2.5,
+      "allow_pyramid": false,
+      "max_pyramid_count": 0,
+      "time_decay_bars": null,
+      "selection_reason": "Downtrend state with tactical short bias",
+      "reason_codes": [
+        "PLAYBOOK_BEAR_DEFENSE",
+        "PLAYBOOK_ALLOW_SHORT"
+      ]
+    }
+  },
+  {
+    "name": "crowded_long",
+    "state": {
+      "symbol": "SYNTHETIC",
+      "timeframe": "4h",
+      "cutoff_time_ns": 123,
+      "directional_state": "UPTREND",
+      "directional_confidence": 0.8,
+      "volatility_state": "NORMAL",
+      "volatility_confidence": 0.8,
+      "positioning_state": "CROWDED_LONG",
+      "positioning_confidence": 0.8,
+      "quality_state": "TRADABLE",
+      "quality_confidence": 0.8,
+      "direction_signal": 0.0,
+      "transition_risk": 0.1
+    },
+    "config": {
+      "preserve_capital_transition_risk": 0.6,
+      "preserve_capital_min_overall_confidence": 0.35,
+      "trade_directional_confidence_floor": 0.5,
+      "bearish_override_confidence_floor": 0.5,
+      "bearish_override_direction_signal": -0.5,
+      "bull_max_leverage": 2.5,
+      "bear_max_leverage": 2.25,
+      "range_max_leverage": 1.5,
+      "preserve_capital_max_leverage": 0.35,
+      "bull_trailing_stop_atr_mult": 2.5,
+      "bear_trailing_stop_atr_mult": 2.5,
+      "range_trailing_stop_atr_mult": 2.5,
+      "preserve_capital_trailing_stop_atr_mult": 1.5,
+      "range_time_decay_bars": 3,
+      "preserve_capital_time_decay_bars": 1
+    },
+    "expected": {
+      "symbol": "SYNTHETIC",
+      "timeframe": "4h",
+      "cutoff_time_ns": 123,
+      "playbook_id": "RANGE_LIGHT",
+      "playbook_confidence": 0.5,
+      "allowed_directions": [
+        1.0,
+        -1.0,
+        0.0
+      ],
+      "max_leverage": 1.5,
+      "trailing_stop_atr_mult": 2.5,
+      "allow_pyramid": false,
+      "max_pyramid_count": 0,
+      "time_decay_bars": 3,
+      "selection_reason": "Neutral or transition state with lighter mean-reversion posture",
+      "reason_codes": [
+        "PLAYBOOK_RANGE_LIGHT",
+        "PLAYBOOK_ALLOW_BOTH"
+      ]
+    }
+  },
+  {
+    "name": "crowded_short",
+    "state": {
+      "symbol": "SYNTHETIC",
+      "timeframe": "4h",
+      "cutoff_time_ns": 123,
+      "directional_state": "DOWNTREND",
+      "directional_confidence": 0.8,
+      "volatility_state": "NORMAL",
+      "volatility_confidence": 0.8,
+      "positioning_state": "CROWDED_SHORT",
+      "positioning_confidence": 0.8,
+      "quality_state": "TRADABLE",
+      "quality_confidence": 0.8,
+      "direction_signal": 0.0,
+      "transition_risk": 0.1
+    },
+    "config": {
+      "preserve_capital_transition_risk": 0.6,
+      "preserve_capital_min_overall_confidence": 0.35,
+      "trade_directional_confidence_floor": 0.5,
+      "bearish_override_confidence_floor": 0.5,
+      "bearish_override_direction_signal": -0.5,
+      "bull_max_leverage": 2.5,
+      "bear_max_leverage": 2.25,
+      "range_max_leverage": 1.5,
+      "preserve_capital_max_leverage": 0.35,
+      "bull_trailing_stop_atr_mult": 2.5,
+      "bear_trailing_stop_atr_mult": 2.5,
+      "range_trailing_stop_atr_mult": 2.5,
+      "preserve_capital_trailing_stop_atr_mult": 1.5,
+      "range_time_decay_bars": 3,
+      "preserve_capital_time_decay_bars": 1
+    },
+    "expected": {
+      "symbol": "SYNTHETIC",
+      "timeframe": "4h",
+      "cutoff_time_ns": 123,
+      "playbook_id": "RANGE_LIGHT",
+      "playbook_confidence": 0.5,
+      "allowed_directions": [
+        1.0,
+        -1.0,
+        0.0
+      ],
+      "max_leverage": 1.5,
+      "trailing_stop_atr_mult": 2.5,
+      "allow_pyramid": false,
+      "max_pyramid_count": 0,
+      "time_decay_bars": 3,
+      "selection_reason": "Neutral or transition state with lighter mean-reversion posture",
+      "reason_codes": [
+        "PLAYBOOK_RANGE_LIGHT",
+        "PLAYBOOK_ALLOW_BOTH"
+      ]
+    }
+  },
+  {
+    "name": "crowded_override",
+    "state": {
+      "symbol": "SYNTHETIC",
+      "timeframe": "4h",
+      "cutoff_time_ns": 123,
+      "directional_state": "TRANSITION",
+      "directional_confidence": 0.8,
+      "volatility_state": "NORMAL",
+      "volatility_confidence": 0.8,
+      "positioning_state": "CROWDED_SHORT",
+      "positioning_confidence": 0.8,
+      "quality_state": "TRADABLE",
+      "quality_confidence": 0.8,
+      "direction_signal": -1.0,
+      "transition_risk": 0.1
+    },
+    "config": {
+      "preserve_capital_transition_risk": 0.6,
+      "preserve_capital_min_overall_confidence": 0.35,
+      "trade_directional_confidence_floor": 0.5,
+      "bearish_override_confidence_floor": 0.5,
+      "bearish_override_direction_signal": -0.5,
+      "bull_max_leverage": 2.5,
+      "bear_max_leverage": 2.25,
+      "range_max_leverage": 1.5,
+      "preserve_capital_max_leverage": 0.35,
+      "bull_trailing_stop_atr_mult": 2.5,
+      "bear_trailing_stop_atr_mult": 2.5,
+      "range_trailing_stop_atr_mult": 2.5,
+      "preserve_capital_trailing_stop_atr_mult": 1.5,
+      "range_time_decay_bars": 3,
+      "preserve_capital_time_decay_bars": 1
+    },
+    "expected": {
+      "symbol": "SYNTHETIC",
+      "timeframe": "4h",
+      "cutoff_time_ns": 123,
+      "playbook_id": "RANGE_LIGHT",
+      "playbook_confidence": 0.5,
+      "allowed_directions": [
+        1.0,
+        -1.0,
+        0.0
+      ],
+      "max_leverage": 1.5,
+      "trailing_stop_atr_mult": 2.5,
+      "allow_pyramid": false,
+      "max_pyramid_count": 0,
+      "time_decay_bars": 3,
+      "selection_reason": "Neutral or transition state with lighter mean-reversion posture",
+      "reason_codes": [
+        "PLAYBOOK_RANGE_LIGHT",
+        "PLAYBOOK_ALLOW_BOTH"
+      ]
+    }
+  },
+  {
+    "name": "noisy",
+    "state": {
+      "symbol": "SYNTHETIC",
+      "timeframe": "4h",
+      "cutoff_time_ns": 123,
+      "directional_state": "UPTREND",
+      "directional_confidence": 0.8,
+      "volatility_state": "NORMAL",
+      "volatility_confidence": 0.8,
+      "positioning_state": "HEALTHY",
+      "positioning_confidence": 0.8,
+      "quality_state": "NOISY",
+      "quality_confidence": 0.8,
+      "direction_signal": 0.0,
+      "transition_risk": 0.1
+    },
+    "config": {
+      "preserve_capital_transition_risk": 0.6,
+      "preserve_capital_min_overall_confidence": 0.35,
+      "trade_directional_confidence_floor": 0.5,
+      "bearish_override_confidence_floor": 0.5,
+      "bearish_override_direction_signal": -0.5,
+      "bull_max_leverage": 2.5,
+      "bear_max_leverage": 2.25,
+      "range_max_leverage": 1.5,
+      "preserve_capital_max_leverage": 0.35,
+      "bull_trailing_stop_atr_mult": 2.5,
+      "bear_trailing_stop_atr_mult": 2.5,
+      "range_trailing_stop_atr_mult": 2.5,
+      "preserve_capital_trailing_stop_atr_mult": 1.5,
+      "range_time_decay_bars": 3,
+      "preserve_capital_time_decay_bars": 1
+    },
+    "expected": {
+      "symbol": "SYNTHETIC",
+      "timeframe": "4h",
+      "cutoff_time_ns": 123,
+      "playbook_id": "BULL_CONTINUATION",
+      "playbook_confidence": 0.8,
+      "allowed_directions": [
+        1.0,
+        0.0
+      ],
+      "max_leverage": 2.5,
+      "trailing_stop_atr_mult": 2.5,
+      "allow_pyramid": true,
+      "max_pyramid_count": 2,
+      "time_decay_bars": null,
+      "selection_reason": "Uptrend state with acceptable volatility and crowding",
+      "reason_codes": [
+        "PLAYBOOK_BULL_CONTINUATION",
+        "PLAYBOOK_ALLOW_LONG"
+      ]
+    }
+  },
+  {
+    "name": "unknown_quality",
+    "state": {
+      "symbol": "SYNTHETIC",
+      "timeframe": "4h",
+      "cutoff_time_ns": 123,
+      "directional_state": "UPTREND",
+      "directional_confidence": 0.8,
+      "volatility_state": "NORMAL",
+      "volatility_confidence": 0.8,
+      "positioning_state": "HEALTHY",
+      "positioning_confidence": 0.8,
+      "quality_state": "OTHER",
+      "quality_confidence": 0.8,
+      "direction_signal": 0.0,
+      "transition_risk": 0.1
+    },
+    "config": {
+      "preserve_capital_transition_risk": 0.6,
+      "preserve_capital_min_overall_confidence": 0.35,
+      "trade_directional_confidence_floor": 0.5,
+      "bearish_override_confidence_floor": 0.5,
+      "bearish_override_direction_signal": -0.5,
+      "bull_max_leverage": 2.5,
+      "bear_max_leverage": 2.25,
+      "range_max_leverage": 1.5,
+      "preserve_capital_max_leverage": 0.35,
+      "bull_trailing_stop_atr_mult": 2.5,
+      "bear_trailing_stop_atr_mult": 2.5,
+      "range_trailing_stop_atr_mult": 2.5,
+      "preserve_capital_trailing_stop_atr_mult": 1.5,
+      "range_time_decay_bars": 3,
+      "preserve_capital_time_decay_bars": 1
+    },
+    "expected": {
+      "symbol": "SYNTHETIC",
+      "timeframe": "4h",
+      "cutoff_time_ns": 123,
+      "playbook_id": "RANGE_LIGHT",
+      "playbook_confidence": 0.5,
+      "allowed_directions": [
+        1.0,
+        -1.0,
+        0.0
+      ],
+      "max_leverage": 1.5,
+      "trailing_stop_atr_mult": 2.5,
+      "allow_pyramid": false,
+      "max_pyramid_count": 0,
+      "time_decay_bars": 3,
+      "selection_reason": "Neutral or transition state with lighter mean-reversion posture",
+      "reason_codes": [
+        "PLAYBOOK_RANGE_LIGHT",
+        "PLAYBOOK_ALLOW_BOTH"
+      ]
+    }
+  },
+  {
+    "name": "distorted_priority",
+    "state": {
+      "symbol": "SYNTHETIC",
+      "timeframe": "4h",
+      "cutoff_time_ns": 123,
+      "directional_state": "UPTREND",
+      "directional_confidence": 0.8,
+      "volatility_state": "DISTORTED",
+      "volatility_confidence": 0.8,
+      "positioning_state": "HEALTHY",
+      "positioning_confidence": 0.8,
+      "quality_state": "TRADABLE",
+      "quality_confidence": 0.8,
+      "direction_signal": 0.0,
+      "transition_risk": 0.1
+    },
+    "config": {
+      "preserve_capital_transition_risk": 0.6,
+      "preserve_capital_min_overall_confidence": 0.35,
+      "trade_directional_confidence_floor": 0.5,
+      "bearish_override_confidence_floor": 0.5,
+      "bearish_override_direction_signal": -0.5,
+      "bull_max_leverage": 2.5,
+      "bear_max_leverage": 2.25,
+      "range_max_leverage": 1.5,
+      "preserve_capital_max_leverage": 0.35,
+      "bull_trailing_stop_atr_mult": 2.5,
+      "bear_trailing_stop_atr_mult": 2.5,
+      "range_trailing_stop_atr_mult": 2.5,
+      "preserve_capital_trailing_stop_atr_mult": 1.5,
+      "range_time_decay_bars": 3,
+      "preserve_capital_time_decay_bars": 1
+    },
+    "expected": {
+      "symbol": "SYNTHETIC",
+      "timeframe": "4h",
+      "cutoff_time_ns": 123,
+      "playbook_id": "CAPITAL_PRESERVATION",
+      "playbook_confidence": 0.9,
+      "allowed_directions": [
+        0.0
+      ],
+      "max_leverage": 0.35,
+      "trailing_stop_atr_mult": 1.5,
+      "allow_pyramid": false,
+      "max_pyramid_count": 0,
+      "time_decay_bars": 1,
+      "selection_reason": "Capital preservation because quality=TRADABLE, volatility=DISTORTED, transition_risk=0.10",
+      "reason_codes": [
+        "PLAYBOOK_CAPITAL_PRESERVATION",
+        "PLAYBOOK_REDUCE_ONLY"
+      ]
+    }
+  },
+  {
+    "name": "degraded_priority",
+    "state": {
+      "symbol": "SYNTHETIC",
+      "timeframe": "4h",
+      "cutoff_time_ns": 123,
+      "directional_state": "UPTREND",
+      "directional_confidence": 0.8,
+      "volatility_state": "NORMAL",
+      "volatility_confidence": 0.8,
+      "positioning_state": "HEALTHY",
+      "positioning_confidence": 0.8,
+      "quality_state": "DEGRADED",
+      "quality_confidence": 0.8,
+      "direction_signal": 0.0,
+      "transition_risk": 0.1
+    },
+    "config": {
+      "preserve_capital_transition_risk": 0.6,
+      "preserve_capital_min_overall_confidence": 0.35,
+      "trade_directional_confidence_floor": 0.5,
+      "bearish_override_confidence_floor": 0.5,
+      "bearish_override_direction_signal": -0.5,
+      "bull_max_leverage": 2.5,
+      "bear_max_leverage": 2.25,
+      "range_max_leverage": 1.5,
+      "preserve_capital_max_leverage": 0.35,
+      "bull_trailing_stop_atr_mult": 2.5,
+      "bear_trailing_stop_atr_mult": 2.5,
+      "range_trailing_stop_atr_mult": 2.5,
+      "preserve_capital_trailing_stop_atr_mult": 1.5,
+      "range_time_decay_bars": 3,
+      "preserve_capital_time_decay_bars": 1
+    },
+    "expected": {
+      "symbol": "SYNTHETIC",
+      "timeframe": "4h",
+      "cutoff_time_ns": 123,
+      "playbook_id": "CAPITAL_PRESERVATION",
+      "playbook_confidence": 0.9,
+      "allowed_directions": [
+        0.0
+      ],
+      "max_leverage": 0.35,
+      "trailing_stop_atr_mult": 1.5,
+      "allow_pyramid": false,
+      "max_pyramid_count": 0,
+      "time_decay_bars": 1,
+      "selection_reason": "Capital preservation because quality=DEGRADED, volatility=NORMAL, transition_risk=0.10",
+      "reason_codes": [
+        "PLAYBOOK_CAPITAL_PRESERVATION",
+        "PLAYBOOK_REDUCE_ONLY"
+      ]
+    }
+  },
+  {
+    "name": "unsafe_priority",
+    "state": {
+      "symbol": "SYNTHETIC",
+      "timeframe": "4h",
+      "cutoff_time_ns": 123,
+      "directional_state": "UPTREND",
+      "directional_confidence": 0.8,
+      "volatility_state": "NORMAL",
+      "volatility_confidence": 0.8,
+      "positioning_state": "HEALTHY",
+      "positioning_confidence": 0.8,
+      "quality_state": "UNSAFE",
+      "quality_confidence": 0.8,
+      "direction_signal": 0.0,
+      "transition_risk": 0.1
+    },
+    "config": {
+      "preserve_capital_transition_risk": 0.6,
+      "preserve_capital_min_overall_confidence": 0.35,
+      "trade_directional_confidence_floor": 0.5,
+      "bearish_override_confidence_floor": 0.5,
+      "bearish_override_direction_signal": -0.5,
+      "bull_max_leverage": 2.5,
+      "bear_max_leverage": 2.25,
+      "range_max_leverage": 1.5,
+      "preserve_capital_max_leverage": 0.35,
+      "bull_trailing_stop_atr_mult": 2.5,
+      "bear_trailing_stop_atr_mult": 2.5,
+      "range_trailing_stop_atr_mult": 2.5,
+      "preserve_capital_trailing_stop_atr_mult": 1.5,
+      "range_time_decay_bars": 3,
+      "preserve_capital_time_decay_bars": 1
+    },
+    "expected": {
+      "symbol": "SYNTHETIC",
+      "timeframe": "4h",
+      "cutoff_time_ns": 123,
+      "playbook_id": "CAPITAL_PRESERVATION",
+      "playbook_confidence": 0.9,
+      "allowed_directions": [
+        0.0
+      ],
+      "max_leverage": 0.35,
+      "trailing_stop_atr_mult": 1.5,
+      "allow_pyramid": false,
+      "max_pyramid_count": 0,
+      "time_decay_bars": 1,
+      "selection_reason": "Capital preservation because quality=UNSAFE, volatility=NORMAL, transition_risk=0.10",
+      "reason_codes": [
+        "PLAYBOOK_CAPITAL_PRESERVATION",
+        "PLAYBOOK_REDUCE_ONLY"
+      ]
+    }
+  },
+  {
+    "name": "transition_below",
+    "state": {
+      "symbol": "SYNTHETIC",
+      "timeframe": "4h",
+      "cutoff_time_ns": 123,
+      "directional_state": "UPTREND",
+      "directional_confidence": 0.8,
+      "volatility_state": "NORMAL",
+      "volatility_confidence": 0.8,
+      "positioning_state": "HEALTHY",
+      "positioning_confidence": 0.8,
+      "quality_state": "TRADABLE",
+      "quality_confidence": 0.8,
+      "direction_signal": 0.0,
+      "transition_risk": 0.599999
+    },
+    "config": {
+      "preserve_capital_transition_risk": 0.6,
+      "preserve_capital_min_overall_confidence": 0.35,
+      "trade_directional_confidence_floor": 0.5,
+      "bearish_override_confidence_floor": 0.5,
+      "bearish_override_direction_signal": -0.5,
+      "bull_max_leverage": 2.5,
+      "bear_max_leverage": 2.25,
+      "range_max_leverage": 1.5,
+      "preserve_capital_max_leverage": 0.35,
+      "bull_trailing_stop_atr_mult": 2.5,
+      "bear_trailing_stop_atr_mult": 2.5,
+      "range_trailing_stop_atr_mult": 2.5,
+      "preserve_capital_trailing_stop_atr_mult": 1.5,
+      "range_time_decay_bars": 3,
+      "preserve_capital_time_decay_bars": 1
+    },
+    "expected": {
+      "symbol": "SYNTHETIC",
+      "timeframe": "4h",
+      "cutoff_time_ns": 123,
+      "playbook_id": "BULL_CONTINUATION",
+      "playbook_confidence": 0.8,
+      "allowed_directions": [
+        1.0,
+        0.0
+      ],
+      "max_leverage": 2.5,
+      "trailing_stop_atr_mult": 2.5,
+      "allow_pyramid": true,
+      "max_pyramid_count": 2,
+      "time_decay_bars": null,
+      "selection_reason": "Uptrend state with acceptable volatility and crowding",
+      "reason_codes": [
+        "PLAYBOOK_BULL_CONTINUATION",
+        "PLAYBOOK_ALLOW_LONG"
+      ]
+    }
+  },
+  {
+    "name": "transition_at",
+    "state": {
+      "symbol": "SYNTHETIC",
+      "timeframe": "4h",
+      "cutoff_time_ns": 123,
+      "directional_state": "UPTREND",
+      "directional_confidence": 0.8,
+      "volatility_state": "NORMAL",
+      "volatility_confidence": 0.8,
+      "positioning_state": "HEALTHY",
+      "positioning_confidence": 0.8,
+      "quality_state": "TRADABLE",
+      "quality_confidence": 0.8,
+      "direction_signal": 0.0,
+      "transition_risk": 0.6
+    },
+    "config": {
+      "preserve_capital_transition_risk": 0.6,
+      "preserve_capital_min_overall_confidence": 0.35,
+      "trade_directional_confidence_floor": 0.5,
+      "bearish_override_confidence_floor": 0.5,
+      "bearish_override_direction_signal": -0.5,
+      "bull_max_leverage": 2.5,
+      "bear_max_leverage": 2.25,
+      "range_max_leverage": 1.5,
+      "preserve_capital_max_leverage": 0.35,
+      "bull_trailing_stop_atr_mult": 2.5,
+      "bear_trailing_stop_atr_mult": 2.5,
+      "range_trailing_stop_atr_mult": 2.5,
+      "preserve_capital_trailing_stop_atr_mult": 1.5,
+      "range_time_decay_bars": 3,
+      "preserve_capital_time_decay_bars": 1
+    },
+    "expected": {
+      "symbol": "SYNTHETIC",
+      "timeframe": "4h",
+      "cutoff_time_ns": 123,
+      "playbook_id": "CAPITAL_PRESERVATION",
+      "playbook_confidence": 0.9,
+      "allowed_directions": [
+        0.0
+      ],
+      "max_leverage": 0.35,
+      "trailing_stop_atr_mult": 1.5,
+      "allow_pyramid": false,
+      "max_pyramid_count": 0,
+      "time_decay_bars": 1,
+      "selection_reason": "Capital preservation because quality=TRADABLE, volatility=NORMAL, transition_risk=0.60",
+      "reason_codes": [
+        "PLAYBOOK_CAPITAL_PRESERVATION",
+        "PLAYBOOK_REDUCE_ONLY"
+      ]
+    }
+  },
+  {
+    "name": "confidence_below",
+    "state": {
+      "symbol": "SYNTHETIC",
+      "timeframe": "4h",
+      "cutoff_time_ns": 123,
+      "directional_state": "UPTREND",
+      "directional_confidence": 0.349999,
+      "volatility_state": "NORMAL",
+      "volatility_confidence": 0.349999,
+      "positioning_state": "HEALTHY",
+      "positioning_confidence": 0.349999,
+      "quality_state": "TRADABLE",
+      "quality_confidence": 0.349999,
+      "direction_signal": 0.0,
+      "transition_risk": 0.1
+    },
+    "config": {
+      "preserve_capital_transition_risk": 0.6,
+      "preserve_capital_min_overall_confidence": 0.35,
+      "trade_directional_confidence_floor": 0.5,
+      "bearish_override_confidence_floor": 0.5,
+      "bearish_override_direction_signal": -0.5,
+      "bull_max_leverage": 2.5,
+      "bear_max_leverage": 2.25,
+      "range_max_leverage": 1.5,
+      "preserve_capital_max_leverage": 0.35,
+      "bull_trailing_stop_atr_mult": 2.5,
+      "bear_trailing_stop_atr_mult": 2.5,
+      "range_trailing_stop_atr_mult": 2.5,
+      "preserve_capital_trailing_stop_atr_mult": 1.5,
+      "range_time_decay_bars": 3,
+      "preserve_capital_time_decay_bars": 1
+    },
+    "expected": {
+      "symbol": "SYNTHETIC",
+      "timeframe": "4h",
+      "cutoff_time_ns": 123,
+      "playbook_id": "CAPITAL_PRESERVATION",
+      "playbook_confidence": 0.9,
+      "allowed_directions": [
+        0.0
+      ],
+      "max_leverage": 0.35,
+      "trailing_stop_atr_mult": 1.5,
+      "allow_pyramid": false,
+      "max_pyramid_count": 0,
+      "time_decay_bars": 1,
+      "selection_reason": "Capital preservation because quality=TRADABLE, volatility=NORMAL, transition_risk=0.10",
+      "reason_codes": [
+        "PLAYBOOK_CAPITAL_PRESERVATION",
+        "PLAYBOOK_REDUCE_ONLY"
+      ]
+    }
+  },
+  {
+    "name": "confidence_at",
+    "state": {
+      "symbol": "SYNTHETIC",
+      "timeframe": "4h",
+      "cutoff_time_ns": 123,
+      "directional_state": "UPTREND",
+      "directional_confidence": 0.35,
+      "volatility_state": "NORMAL",
+      "volatility_confidence": 0.35,
+      "positioning_state": "HEALTHY",
+      "positioning_confidence": 0.35,
+      "quality_state": "TRADABLE",
+      "quality_confidence": 0.35,
+      "direction_signal": 0.0,
+      "transition_risk": 0.1
+    },
+    "config": {
+      "preserve_capital_transition_risk": 0.6,
+      "preserve_capital_min_overall_confidence": 0.35,
+      "trade_directional_confidence_floor": 0.5,
+      "bearish_override_confidence_floor": 0.5,
+      "bearish_override_direction_signal": -0.5,
+      "bull_max_leverage": 2.5,
+      "bear_max_leverage": 2.25,
+      "range_max_leverage": 1.5,
+      "preserve_capital_max_leverage": 0.35,
+      "bull_trailing_stop_atr_mult": 2.5,
+      "bear_trailing_stop_atr_mult": 2.5,
+      "range_trailing_stop_atr_mult": 2.5,
+      "preserve_capital_trailing_stop_atr_mult": 1.5,
+      "range_time_decay_bars": 3,
+      "preserve_capital_time_decay_bars": 1
+    },
+    "expected": {
+      "symbol": "SYNTHETIC",
+      "timeframe": "4h",
+      "cutoff_time_ns": 123,
+      "playbook_id": "RANGE_LIGHT",
+      "playbook_confidence": 0.5,
+      "allowed_directions": [
+        1.0,
+        -1.0,
+        0.0
+      ],
+      "max_leverage": 1.5,
+      "trailing_stop_atr_mult": 2.5,
+      "allow_pyramid": false,
+      "max_pyramid_count": 0,
+      "time_decay_bars": 3,
+      "selection_reason": "Neutral or transition state with lighter mean-reversion posture",
+      "reason_codes": [
+        "PLAYBOOK_RANGE_LIGHT",
+        "PLAYBOOK_ALLOW_BOTH"
+      ]
+    }
+  },
+  {
+    "name": "custom_bull",
+    "state": {
+      "symbol": "SYNTHETIC",
+      "timeframe": "4h",
+      "cutoff_time_ns": 123,
+      "directional_state": "UPTREND",
+      "directional_confidence": 0.8,
+      "volatility_state": "NORMAL",
+      "volatility_confidence": 0.8,
+      "positioning_state": "HEALTHY",
+      "positioning_confidence": 0.8,
+      "quality_state": "TRADABLE",
+      "quality_confidence": 0.8,
+      "direction_signal": 0.0,
+      "transition_risk": 0.7
+    },
+    "config": {
+      "preserve_capital_transition_risk": 0.8,
+      "preserve_capital_min_overall_confidence": 0.35,
+      "trade_directional_confidence_floor": 0.5,
+      "bearish_override_confidence_floor": 0.5,
+      "bearish_override_direction_signal": -0.5,
+      "bull_max_leverage": 1.1,
+      "bear_max_leverage": 2.25,
+      "range_max_leverage": 1.5,
+      "preserve_capital_max_leverage": 0.35,
+      "bull_trailing_stop_atr_mult": 1.2,
+      "bear_trailing_stop_atr_mult": 2.5,
+      "range_trailing_stop_atr_mult": 2.5,
+      "preserve_capital_trailing_stop_atr_mult": 1.5,
+      "range_time_decay_bars": 3,
+      "preserve_capital_time_decay_bars": 1
+    },
+    "expected": {
+      "symbol": "SYNTHETIC",
+      "timeframe": "4h",
+      "cutoff_time_ns": 123,
+      "playbook_id": "BULL_CONTINUATION",
+      "playbook_confidence": 0.8,
+      "allowed_directions": [
+        1.0,
+        0.0
+      ],
+      "max_leverage": 1.1,
+      "trailing_stop_atr_mult": 1.2,
+      "allow_pyramid": true,
+      "max_pyramid_count": 2,
+      "time_decay_bars": null,
+      "selection_reason": "Uptrend state with acceptable volatility and crowding",
+      "reason_codes": [
+        "PLAYBOOK_BULL_CONTINUATION",
+        "PLAYBOOK_ALLOW_LONG"
+      ]
+    }
+  },
+  {
+    "name": "custom_bear",
+    "state": {
+      "symbol": "SYNTHETIC",
+      "timeframe": "4h",
+      "cutoff_time_ns": 123,
+      "directional_state": "TRANSITION",
+      "directional_confidence": 0.4,
+      "volatility_state": "NORMAL",
+      "volatility_confidence": 0.8,
+      "positioning_state": "HEALTHY",
+      "positioning_confidence": 0.8,
+      "quality_state": "TRADABLE",
+      "quality_confidence": 0.8,
+      "direction_signal": -0.2,
+      "transition_risk": 0.1
+    },
+    "config": {
+      "preserve_capital_transition_risk": 0.6,
+      "preserve_capital_min_overall_confidence": 0.35,
+      "trade_directional_confidence_floor": 0.5,
+      "bearish_override_confidence_floor": 0.4,
+      "bearish_override_direction_signal": -0.2,
+      "bull_max_leverage": 2.5,
+      "bear_max_leverage": 0.7,
+      "range_max_leverage": 1.5,
+      "preserve_capital_max_leverage": 0.35,
+      "bull_trailing_stop_atr_mult": 2.5,
+      "bear_trailing_stop_atr_mult": 1.1,
+      "range_trailing_stop_atr_mult": 2.5,
+      "preserve_capital_trailing_stop_atr_mult": 1.5,
+      "range_time_decay_bars": 3,
+      "preserve_capital_time_decay_bars": 1
+    },
+    "expected": {
+      "symbol": "SYNTHETIC",
+      "timeframe": "4h",
+      "cutoff_time_ns": 123,
+      "playbook_id": "BEAR_DEFENSE",
+      "playbook_confidence": 0.56,
+      "allowed_directions": [
+        -1.0,
+        0.0
+      ],
+      "max_leverage": 0.7,
+      "trailing_stop_atr_mult": 1.1,
+      "allow_pyramid": false,
+      "max_pyramid_count": 0,
+      "time_decay_bars": null,
+      "selection_reason": "Downtrend state with tactical short bias",
+      "reason_codes": [
+        "PLAYBOOK_BEAR_DEFENSE",
+        "PLAYBOOK_ALLOW_SHORT"
+      ]
+    }
+  },
+  {
+    "name": "custom_range",
+    "state": {
+      "symbol": "SYNTHETIC",
+      "timeframe": "4h",
+      "cutoff_time_ns": 123,
+      "directional_state": "UPTREND",
+      "directional_confidence": 0.8,
+      "volatility_state": "NORMAL",
+      "volatility_confidence": 0.8,
+      "positioning_state": "HEALTHY",
+      "positioning_confidence": 0.8,
+      "quality_state": "TRADABLE",
+      "quality_confidence": 0.8,
+      "direction_signal": 0.0,
+      "transition_risk": 0.1
+    },
+    "config": {
+      "preserve_capital_transition_risk": 0.6,
+      "preserve_capital_min_overall_confidence": 0.35,
+      "trade_directional_confidence_floor": 0.9,
+      "bearish_override_confidence_floor": 0.5,
+      "bearish_override_direction_signal": -0.5,
+      "bull_max_leverage": 2.5,
+      "bear_max_leverage": 2.25,
+      "range_max_leverage": 0.6,
+      "preserve_capital_max_leverage": 0.35,
+      "bull_trailing_stop_atr_mult": 2.5,
+      "bear_trailing_stop_atr_mult": 2.5,
+      "range_trailing_stop_atr_mult": 1.4,
+      "preserve_capital_trailing_stop_atr_mult": 1.5,
+      "range_time_decay_bars": 7,
+      "preserve_capital_time_decay_bars": 1
+    },
+    "expected": {
+      "symbol": "SYNTHETIC",
+      "timeframe": "4h",
+      "cutoff_time_ns": 123,
+      "playbook_id": "RANGE_LIGHT",
+      "playbook_confidence": 0.5,
+      "allowed_directions": [
+        1.0,
+        -1.0,
+        0.0
+      ],
+      "max_leverage": 0.6,
+      "trailing_stop_atr_mult": 1.4,
+      "allow_pyramid": false,
+      "max_pyramid_count": 0,
+      "time_decay_bars": 7,
+      "selection_reason": "Neutral or transition state with lighter mean-reversion posture",
+      "reason_codes": [
+        "PLAYBOOK_RANGE_LIGHT",
+        "PLAYBOOK_ALLOW_BOTH"
+      ]
+    }
+  },
+  {
+    "name": "custom_preserve",
+    "state": {
+      "symbol": "SYNTHETIC",
+      "timeframe": "4h",
+      "cutoff_time_ns": 123,
+      "directional_state": "UPTREND",
+      "directional_confidence": 0.8,
+      "volatility_state": "NORMAL",
+      "volatility_confidence": 0.8,
+      "positioning_state": "HEALTHY",
+      "positioning_confidence": 0.8,
+      "quality_state": "TRADABLE",
+      "quality_confidence": 0.8,
+      "direction_signal": 0.0,
+      "transition_risk": 0.1
+    },
+    "config": {
+      "preserve_capital_transition_risk": 0.6,
+      "preserve_capital_min_overall_confidence": 0.9,
+      "trade_directional_confidence_floor": 0.5,
+      "bearish_override_confidence_floor": 0.5,
+      "bearish_override_direction_signal": -0.5,
+      "bull_max_leverage": 2.5,
+      "bear_max_leverage": 2.25,
+      "range_max_leverage": 1.5,
+      "preserve_capital_max_leverage": 0.2,
+      "bull_trailing_stop_atr_mult": 2.5,
+      "bear_trailing_stop_atr_mult": 2.5,
+      "range_trailing_stop_atr_mult": 2.5,
+      "preserve_capital_trailing_stop_atr_mult": 1.1,
+      "range_time_decay_bars": 3,
+      "preserve_capital_time_decay_bars": 9
+    },
+    "expected": {
+      "symbol": "SYNTHETIC",
+      "timeframe": "4h",
+      "cutoff_time_ns": 123,
+      "playbook_id": "CAPITAL_PRESERVATION",
+      "playbook_confidence": 0.9,
+      "allowed_directions": [
+        0.0
+      ],
+      "max_leverage": 0.2,
+      "trailing_stop_atr_mult": 1.1,
+      "allow_pyramid": false,
+      "max_pyramid_count": 0,
+      "time_decay_bars": 9,
+      "selection_reason": "Capital preservation because quality=TRADABLE, volatility=NORMAL, transition_risk=0.10",
+      "reason_codes": [
+        "PLAYBOOK_CAPITAL_PRESERVATION",
+        "PLAYBOOK_REDUCE_ONLY"
+      ]
+    }
+  },
+  {
+    "name": "confidence_cap",
+    "state": {
+      "symbol": "SYNTHETIC",
+      "timeframe": "4h",
+      "cutoff_time_ns": 123,
+      "directional_state": "UPTREND",
+      "directional_confidence": 2.0,
+      "volatility_state": "NORMAL",
+      "volatility_confidence": 0.8,
+      "positioning_state": "HEALTHY",
+      "positioning_confidence": 0.8,
+      "quality_state": "TRADABLE",
+      "quality_confidence": 0.8,
+      "direction_signal": 0.0,
+      "transition_risk": 0.1
+    },
+    "config": {
+      "preserve_capital_transition_risk": 0.6,
+      "preserve_capital_min_overall_confidence": 0.35,
+      "trade_directional_confidence_floor": 0.5,
+      "bearish_override_confidence_floor": 0.5,
+      "bearish_override_direction_signal": -0.5,
+      "bull_max_leverage": 2.5,
+      "bear_max_leverage": 2.25,
+      "range_max_leverage": 1.5,
+      "preserve_capital_max_leverage": 0.35,
+      "bull_trailing_stop_atr_mult": 2.5,
+      "bear_trailing_stop_atr_mult": 2.5,
+      "range_trailing_stop_atr_mult": 2.5,
+      "preserve_capital_trailing_stop_atr_mult": 1.5,
+      "range_time_decay_bars": 3,
+      "preserve_capital_time_decay_bars": 1
+    },
+    "expected": {
+      "symbol": "SYNTHETIC",
+      "timeframe": "4h",
+      "cutoff_time_ns": 123,
+      "playbook_id": "BULL_CONTINUATION",
+      "playbook_confidence": 1.0,
+      "allowed_directions": [
+        1.0,
+        0.0
+      ],
+      "max_leverage": 2.5,
+      "trailing_stop_atr_mult": 2.5,
+      "allow_pyramid": true,
+      "max_pyramid_count": 2,
+      "time_decay_bars": null,
+      "selection_reason": "Uptrend state with acceptable volatility and crowding",
+      "reason_codes": [
+        "PLAYBOOK_BULL_CONTINUATION",
+        "PLAYBOOK_ALLOW_LONG"
+      ]
+    }
+  },
+  {
+    "name": "rounding",
+    "state": {
+      "symbol": "SYNTHETIC",
+      "timeframe": "4h",
+      "cutoff_time_ns": 123,
+      "directional_state": "UPTREND",
+      "directional_confidence": 0.81275,
+      "volatility_state": "NORMAL",
+      "volatility_confidence": 0.8,
+      "positioning_state": "HEALTHY",
+      "positioning_confidence": 0.8,
+      "quality_state": "TRADABLE",
+      "quality_confidence": 0.8,
+      "direction_signal": 0.0,
+      "transition_risk": 0.1
+    },
+    "config": {
+      "preserve_capital_transition_risk": 0.6,
+      "preserve_capital_min_overall_confidence": 0.35,
+      "trade_directional_confidence_floor": 0.5,
+      "bearish_override_confidence_floor": 0.5,
+      "bearish_override_direction_signal": -0.5,
+      "bull_max_leverage": 2.5,
+      "bear_max_leverage": 2.25,
+      "range_max_leverage": 1.5,
+      "preserve_capital_max_leverage": 0.35,
+      "bull_trailing_stop_atr_mult": 2.5,
+      "bear_trailing_stop_atr_mult": 2.5,
+      "range_trailing_stop_atr_mult": 2.5,
+      "preserve_capital_trailing_stop_atr_mult": 1.5,
+      "range_time_decay_bars": 3,
+      "preserve_capital_time_decay_bars": 1
+    },
+    "expected": {
+      "symbol": "SYNTHETIC",
+      "timeframe": "4h",
+      "cutoff_time_ns": 123,
+      "playbook_id": "BULL_CONTINUATION",
+      "playbook_confidence": 0.8077,
+      "allowed_directions": [
+        1.0,
+        0.0
+      ],
+      "max_leverage": 2.5,
+      "trailing_stop_atr_mult": 2.5,
+      "allow_pyramid": true,
+      "max_pyramid_count": 2,
+      "time_decay_bars": null,
+      "selection_reason": "Uptrend state with acceptable volatility and crowding",
+      "reason_codes": [
+        "PLAYBOOK_BULL_CONTINUATION",
+        "PLAYBOOK_ALLOW_LONG"
+      ]
+    }
+  },
+  {
+    "name": "reason_rounding",
+    "state": {
+      "symbol": "SYNTHETIC",
+      "timeframe": "4h",
+      "cutoff_time_ns": 123,
+      "directional_state": "UPTREND",
+      "directional_confidence": 0.8,
+      "volatility_state": "NORMAL",
+      "volatility_confidence": 0.8,
+      "positioning_state": "HEALTHY",
+      "positioning_confidence": 0.8,
+      "quality_state": "TRADABLE",
+      "quality_confidence": 0.8,
+      "direction_signal": 0.0,
+      "transition_risk": 0.625
+    },
+    "config": {
+      "preserve_capital_transition_risk": 0.6,
+      "preserve_capital_min_overall_confidence": 0.35,
+      "trade_directional_confidence_floor": 0.5,
+      "bearish_override_confidence_floor": 0.5,
+      "bearish_override_direction_signal": -0.5,
+      "bull_max_leverage": 2.5,
+      "bear_max_leverage": 2.25,
+      "range_max_leverage": 1.5,
+      "preserve_capital_max_leverage": 0.35,
+      "bull_trailing_stop_atr_mult": 2.5,
+      "bear_trailing_stop_atr_mult": 2.5,
+      "range_trailing_stop_atr_mult": 2.5,
+      "preserve_capital_trailing_stop_atr_mult": 1.5,
+      "range_time_decay_bars": 3,
+      "preserve_capital_time_decay_bars": 1
+    },
+    "expected": {
+      "symbol": "SYNTHETIC",
+      "timeframe": "4h",
+      "cutoff_time_ns": 123,
+      "playbook_id": "CAPITAL_PRESERVATION",
+      "playbook_confidence": 0.9,
+      "allowed_directions": [
+        0.0
+      ],
+      "max_leverage": 0.35,
+      "trailing_stop_atr_mult": 1.5,
+      "allow_pyramid": false,
+      "max_pyramid_count": 0,
+      "time_decay_bars": 1,
+      "selection_reason": "Capital preservation because quality=TRADABLE, volatility=NORMAL, transition_risk=0.62",
+      "reason_codes": [
+        "PLAYBOOK_CAPITAL_PRESERVATION",
+        "PLAYBOOK_REDUCE_ONLY"
+      ]
+    }
+  }
+]
