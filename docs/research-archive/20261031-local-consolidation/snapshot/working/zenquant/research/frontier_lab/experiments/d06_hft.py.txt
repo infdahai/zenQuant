@@ -1,0 +1,340 @@
+"""Event-time HFT mechanism probe; aggregated bars never stand in for L2 data."""
+
+from __future__ import annotations
+
+import itertools
+import math
+from pathlib import Path
+from typing import Any
+
+import numpy as np
+import pandas as pd
+import pyarrow as pa
+
+from zenquant.research.frontier_lab.common import SEEDS
+
+SIDECAR = "data/raw/microstructure_sidecar/bybit/BTCUSDT/1000ms/features.parquet"
+SOURCES = [
+    "https://bybit-exchange.github.io/docs/v5/websocket/public/orderbook",
+    "https://bybit-exchange.github.io/docs/v5/websocket/public/trade",
+]
+LATENCIES = [1, 10, 50, 200, 500]
+HALF_LIVES = [20, 100, 1000]
+QUEUE_PROBABILITIES = [0.1, 0.5, 0.9]
+CANCEL_DELAYS = [1, 50, 200]
+ADVERSE_BPS = [0, 2, 8]
+HALF_SPREAD_BPS = 1.0
+TAKER_FEE_BPS = 1.0
+MAKER_FEE_BPS = 0.2
+REFERENCE_PRICE = 60_000.0
+ORDER_QTY = 0.01
+INITIAL_CASH = 100_000.0
+
+
+def simulate_episode(
+    mode: str,
+    seed: int,
+    *,
+    latency_ms: float = 1,
+    half_life_ms: float = 100,
+    queue_probability: float = 0.5,
+    cancel_delay_ms: float = 50,
+    adverse_bps: float = 0,
+    edge_bps: float = 6,
+    trace: bool = False,
+) -> dict[str, Any]:
+    """One linear unit ledger: fixed signal, stale quote, cancel and forced exit.
+
+    A buy/sell signal reveals only the direction and nominal total drift at t=0.
+    Remaining drift decays with the stated half-life. The opposing shock at
+    1.25 half-lives is a simulator event, never an input to the controller.
+    Maker execution requires the synthetic opposing trade price to cross the
+    fixed limit, plus a Bernoulli queue proxy; it is NOT order-level matching.
+    Partial opposing trade sizes are 25/50/75% of the original order.
+    Taker capacity is assumed sufficient for this tiny order on both legs.
+    """
+    if (
+        mode not in {"maker", "taker"}
+        or latency_ms < 0
+        or half_life_ms <= 0
+        or cancel_delay_ms < 0
+        or not 0 <= queue_probability <= 1
+        or min(adverse_bps, edge_bps) < 0
+        or not all(
+            math.isfinite(x)
+            for x in [latency_ms, half_life_ms, queue_probability, cancel_delay_ms, adverse_bps, edge_bps]
+        )
+    ):
+        raise ValueError("invalid synthetic scenario")
+    rng = np.random.default_rng(seed)
+    direction = int(rng.choice([-1, 1]))
+    terminal_noise_bps = float(rng.normal(0, 0.2))
+    # Draw all potential tape events before branching: common random numbers.
+    tape = [
+        (multiple * half_life_ms, float(rng.exponential(5)), float(rng.random()), float(rng.choice([0.25, 0.5, 0.75])))
+        for multiple in [0.25, 0.5, 0.75, 1, 1.25, 1.5, 2, 3]
+    ]
+    shock_ms = 1.25 * half_life_ms
+    cancel_request_ms = half_life_ms
+    cancel_ack_ms = cancel_request_ms + cancel_delay_ms
+    exit_ms = max(5 * half_life_ms, latency_ms) + latency_ms
+
+    def mid(time_ms: float) -> float:
+        drift = edge_bps * (1 - 2 ** (-time_ms / half_life_ms))
+        shock = adverse_bps if time_ms >= shock_ms else 0
+        noise = terminal_noise_bps * min(time_ms / exit_ms, 1)
+        return REFERENCE_PRICE * (1 + direction * (drift - shock + noise) / 10_000)
+
+    limit = REFERENCE_PRICE * (1 - direction * HALF_SPREAD_BPS / 10_000)
+    events = [(latency_ms, 1, "arrival", None), (shock_ms, 2, "shock", None), (exit_ms, 4, "exit", None)]
+    if mode == "maker":
+        events += [(cancel_request_ms, -1, "cancel_request", None), (cancel_ack_ms, 0, "cancel_ack", None)]
+        events += [
+            (time_ms, 3, "trade", (penetration, queue_draw, size)) for time_ms, penetration, queue_draw, size in tape
+        ]
+    cash, inventory, fees = INITIAL_CASH, 0.0, 0.0
+    independent_cashflows: list[float] = []
+    entry_fills: list[dict[str, float]] = []
+    filled_qty, late_qty, entry_cost = 0.0, 0.0, 0.0
+    active, canceled, rejected, arrived, cancel_unknown = False, False, False, False, False
+    ledger_error = 0.0
+    peak_inventory = 0.0
+
+    def fill(signed_qty: float, price: float, fee_bps: float) -> None:
+        nonlocal cash, inventory, fees, ledger_error, peak_inventory
+        fee = abs(signed_qty) * price * fee_bps / 10_000
+        cash -= signed_qty * price + fee
+        inventory += signed_qty
+        fees += fee
+        independent_cashflows.append(-signed_qty * price - fee)
+        peak_inventory = max(peak_inventory, abs(inventory))
+        ledger_error = max(ledger_error, abs(cash - INITIAL_CASH - math.fsum(independent_cashflows)))
+
+    for time_ms, _, kind, payload in sorted(events):
+        current_mid = mid(time_ms)
+        if kind == "cancel_ack":
+            if arrived:
+                canceled, active = True, False
+            else:
+                # An earlier cancel cannot promise to tombstone an order that
+                # the venue has not seen. Model unknown-order acknowledgement.
+                cancel_unknown = True
+        elif kind == "arrival":
+            arrived = True
+            if mode == "maker":
+                # Post-only quote crossing the opposite touch is rejected.
+                opposite = current_mid * (1 + direction * HALF_SPREAD_BPS / 10_000)
+                rejected = direction * (limit - opposite) >= 0
+                active = not canceled and not rejected
+            else:
+                price = current_mid * (1 + direction * HALF_SPREAD_BPS / 10_000)
+                fill(direction * ORDER_QTY, price, TAKER_FEE_BPS)
+                filled_qty, entry_cost = ORDER_QTY, ORDER_QTY * price
+                entry_fills.append({"time_ms": time_ms, "qty": ORDER_QTY, "price": price})
+        elif kind == "trade" and active:
+            penetration, queue_draw, size = payload
+            trade_price = current_mid * (1 - direction * (HALF_SPREAD_BPS + penetration) / 10_000)
+            if direction * (trade_price - limit) <= 0 and queue_draw < queue_probability:
+                qty = min(ORDER_QTY - filled_qty, ORDER_QTY * size)
+                fill(direction * qty, limit, MAKER_FEE_BPS)
+                filled_qty += qty
+                entry_cost += qty * limit
+                late_qty += qty if time_ms >= cancel_request_ms else 0
+                entry_fills.append({"time_ms": time_ms, "qty": qty, "price": limit})
+                active = filled_qty < ORDER_QTY - 1e-12
+        elif kind == "exit" and inventory:
+            exit_price = current_mid * (1 - direction * HALF_SPREAD_BPS / 10_000)
+            fill(-inventory, exit_price, TAKER_FEE_BPS)
+            independent_pnl = direction * (filled_qty * exit_price - entry_cost) - fees
+            ledger_error = max(ledger_error, abs(cash - INITIAL_CASH - independent_pnl))
+    pnl = cash - INITIAL_CASH
+    out: dict[str, Any] = {
+        "net_bps": pnl / (ORDER_QTY * REFERENCE_PRICE) * 10_000,
+        "net_usd": pnl,
+        "ending_cash": cash,
+        "ending_inventory": inventory,
+        "fees_usd": fees,
+        "fill_fraction": filled_qty / ORDER_QTY,
+        "late_fill_fraction": late_qty / ORDER_QTY,
+        "partial": 1e-12 < filled_qty < ORDER_QTY - 1e-12,
+        "missed": filled_qty == 0,
+        "post_only_rejected": rejected,
+        "cancel_unknown_before_arrival": cancel_unknown,
+        "ledger_error_usd": ledger_error,
+        "peak_inventory": peak_inventory,
+        "cancel_ack_ms": cancel_ack_ms,
+    }
+    if trace:
+        out["entry_fills"] = entry_fills
+    return out
+
+
+def break_even_taker_edge(latency_ms: float, half_life_ms: float, adverse_bps: float) -> float:
+    """Noise-free matched long/short average, exact spread/fee bookkeeping.
+
+    The terminal time is max(5 half-lives, entry latency) + exit latency.
+    Use algebraic paired long/short cashflows; no fitted historical parameter.
+    """
+    exit_ms = max(5 * half_life_ms, latency_ms) + latency_ms
+    remaining = 2 ** (-latency_ms / half_life_ms) - 2 ** (-exit_ms / half_life_ms)
+    shock_cost = adverse_bps if latency_ms < 1.25 * half_life_ms <= exit_ms else 0
+    # Direction averaging cancels odd signed-price terms. The remaining
+    # fee/spread product adjusts the drift coefficient even in the paired mean.
+    coefficient = 1 + TAKER_FEE_BPS * HALF_SPREAD_BPS / 100_000_000
+    return ((2 * HALF_SPREAD_BPS + 2 * TAKER_FEE_BPS) / coefficient + shock_cost) / remaining
+
+
+def audit_sidecar(path: Path) -> dict[str, Any]:
+    pa.set_cpu_count(1)
+    pa.set_io_thread_count(1)
+    frame = pd.read_parquet(path)
+    requirements = {
+        "raw_trade_price_size_side_id": {"trade_price", "trade_size", "trade_side", "trade_id"},
+        "raw_l2_snapshot_delta_price_size": {"message_type", "bid_prices", "bid_sizes", "ask_prices", "ask_sizes"},
+        "exchange_update_and_cross_sequence": {"update_id", "sequence"},
+        "exchange_and_local_receive_timestamps": {"exchange_time_ns", "recv_time_ns"},
+        "order_ack_cancel_ack_fill_lifecycle": {
+            "client_order_id",
+            "order_ack_time_ns",
+            "cancel_ack_time_ns",
+            "fill_qty",
+        },
+        "queue_position_or_explicit_queue_proxy_inputs": {"queue_ahead_qty", "opposing_trade_qty", "queue_cancel_qty"},
+    }
+    timestamp = frame["cutoff_time_ns"]
+    return {
+        "path": SIDECAR,
+        "rows": len(frame),
+        "columns": list(frame.columns),
+        "first_cutoff_utc": pd.Timestamp(int(timestamp.min()), unit="ns", tz="UTC").isoformat(),
+        "last_cutoff_utc": pd.Timestamp(int(timestamp.max()), unit="ns", tz="UTC").isoformat(),
+        "span_ms": (int(timestamp.max()) - int(timestamp.min())) / 1e6,
+        "median_step_ms": float(timestamp.diff().dropna().median() / 1e6),
+        "pre2026_rows": int((timestamp < pd.Timestamp("2026-01-01", tz="UTC").value).sum()),
+        "duplicate_cutoffs": int(timestamp.duplicated().sum()),
+        "missing_fields_by_contract": {
+            name: sorted(fields - set(frame.columns)) for name, fields in requirements.items()
+        },
+        "usable_for_hft_execution_replay": False,
+        "audit_only_no_2026_signal_or_performance_inference": True,
+        "queue_identifiability": "Aggregated L2 does not identify exact order queue priority; an explicit proxy or order-level evidence is required even after collecting raw public data.",
+    }
+
+
+def scenario_summary(mode: str, parameters: dict[str, Any]) -> dict[str, Any]:
+    seed_metrics = []
+    for seed in SEEDS:
+        episodes = [simulate_episode(mode, seed * 1000 + index, **parameters) for index in range(32)]
+        seed_metrics.append(
+            {
+                "seed": seed,
+                "net_bps_per_intended_order": float(np.mean([e["net_bps"] for e in episodes])),
+                "fill_fraction": float(np.mean([e["fill_fraction"] for e in episodes])),
+                "miss_rate": float(np.mean([e["missed"] for e in episodes])),
+                "partial_rate": float(np.mean([e["partial"] for e in episodes])),
+                "late_fill_fraction": float(np.mean([e["late_fill_fraction"] for e in episodes])),
+                "cancel_unknown_rate": float(np.mean([e["cancel_unknown_before_arrival"] for e in episodes])),
+                "max_ledger_error_usd": max(e["ledger_error_usd"] for e in episodes),
+                "max_abs_ending_inventory": max(abs(e["ending_inventory"]) for e in episodes),
+            }
+        )
+    mean = float(np.mean([row["net_bps_per_intended_order"] for row in seed_metrics]))
+    return {"mode": mode, **parameters, "mean_net_bps": mean, "seed_metrics": seed_metrics}
+
+
+def run(context: dict[str, Any]) -> dict[str, Any]:
+    audit = audit_sidecar(Path(context["repo_root"]) / SIDECAR)
+    scenarios = []
+    for latency, half_life, adverse in itertools.product(LATENCIES, HALF_LIVES, ADVERSE_BPS):
+        parameters = {"latency_ms": latency, "half_life_ms": half_life, "adverse_bps": adverse}
+        scenarios.append(scenario_summary("taker", parameters))
+        for probability, cancel in itertools.product(QUEUE_PROBABILITIES, CANCEL_DELAYS):
+            scenarios.append(
+                scenario_summary("maker", {**parameters, "queue_probability": probability, "cancel_delay_ms": cancel})
+            )
+    counterexample = [
+        {"latency_ms": latency, "seed_metrics": [simulate_episode("taker", seed, latency_ms=latency) for seed in SEEDS]}
+        for latency in [0, 1, 10, 50, 200, 500]
+    ]
+    thresholds = [
+        {
+            "latency_ms": latency,
+            "half_life_ms": half_life,
+            "adverse_bps": adverse,
+            "break_even_signal_edge_bps": break_even_taker_edge(latency, half_life, adverse),
+        }
+        for latency, half_life, adverse in itertools.product(LATENCIES, HALF_LIVES, ADVERSE_BPS)
+    ]
+    tolerable = [
+        {
+            "half_life_ms": half_life,
+            "adverse_bps": adverse,
+            "largest_tested_latency_ms_passing_all_5_seeds": max(
+                [
+                    row["latency_ms"]
+                    for row in scenarios
+                    if row["mode"] == "taker"
+                    and row["half_life_ms"] == half_life
+                    and row["adverse_bps"] == adverse
+                    and all(seed["net_bps_per_intended_order"] > 0 for seed in row["seed_metrics"])
+                ],
+                default=None,
+            ),
+        }
+        for half_life, adverse in itertools.product(HALF_LIVES, ADVERSE_BPS)
+    ]
+    return {
+        "direction_id": "d06",
+        "hypothesis": "A finite signal edge must survive latency decay, spread/fees, queue uncertainty and cancellation races; zero-latency profitability alone is insufficient.",
+        "evidence_type": "mixed",
+        "input_paths": [SIDECAR],
+        "internet_sources": SOURCES,
+        "method": {
+            "historical_prices_used": False,
+            "event_order": "signal/submit at 0; arrival at latency; eight opposing tape opportunities; cancel request at half-life; cancel ack after delay; adverse shock at 1.25 half-lives; forced taker liquidation at horizon plus exit latency. Cancel ack wins simultaneous ties; ack before order arrival is modeled as unknown-order and does not cancel the future arrival.",
+            "queue_model": "Fixed stale limit, tape crossing required, independent Bernoulli queue probability conditional on crossing; partial tape sizes 0.25/0.5/0.75; post-only crossing rejected. Queue probability is a proxy, not L2 reconstruction.",
+            "economics": "Linear signed inventory, actual filled quantity cashflows, entry maker/taker fee and exit taker fee, independent realized PnL and cashflow reconciliation; unfilled intent has zero position and fees.",
+            "assumptions_not_venue_calibration": {
+                "edge_bps": 6,
+                "half_spread_bps": HALF_SPREAD_BPS,
+                "maker_fee_bps": MAKER_FEE_BPS,
+                "taker_fee_bps": TAKER_FEE_BPS,
+                "latencies_ms": LATENCIES,
+                "half_lives_ms": HALF_LIVES,
+                "queue_probabilities": QUEUE_PROBABILITIES,
+                "cancel_delays_ms": CANCEL_DELAYS,
+                "adverse_selection_bps": ADVERSE_BPS,
+                "opposing_penetration_exponential_mean_bps": 5,
+                "terminal_noise_std_bps": 0.2,
+            },
+            "seeds": SEEDS,
+            "episodes_per_seed_per_scenario": 32,
+            "cpu_threads": 1,
+        },
+        "metrics": {
+            "sidecar_audit": audit,
+            "scenario_count": len(scenarios),
+            "episodes": len(scenarios) * len(SEEDS) * 32,
+            "scenario_grid": scenarios,
+            "taker_break_even_edges": thresholds,
+            "taker_latency_boundary": tolerable,
+            "zero_latency_counterexample": counterexample,
+            "max_ledger_error_usd": max(
+                seed["max_ledger_error_usd"] for row in scenarios for seed in row["seed_metrics"]
+            ),
+        },
+        "verdict": "Mechanism supported, personal-Mac HFT feasibility unproven: existing one-second sidecar is insufficient; latency can flip the identical synthetic signal from profit to loss. Prioritize measured feed/order/cancel latency and data capture before strategy development.",
+        "limitations": [
+            "Synthetic positive drift is assumed signal edge, not discovered market alpha; no historical predictive or trade profitability claim.",
+            "Only 16 aggregate sidecar rows, all post-2025, audited for coverage only. Four-hour BTC data is not consumed as microstructure.",
+            "No Mac-to-venue latency, jitter, clock synchronization, ack/cancel distributions or fee tier measured; 1ms scenarios are controls, not attainable-latency claims.",
+            "Maker Bernoulli queue proxy and synthetic trade penetration omit hidden priority, competition and exact L2 depletion; public L2 alone cannot establish exact queue placement.",
+            "Adverse-selection shock and deterministic cancellation policy are imposed; no venue calibration, market impact, outages, funding, margin or capital lockup model. Exit liquidity for the tiny unit is assumed.",
+            "Five seeds and bounded short synthetic episodes are mechanism diagnostics, not robustness, statistical selection or live admission evidence.",
+        ],
+        "falsification": "Reject feasibility if measured conservative feed+decision+order latency exceeds the edge survival threshold or raw-event replay with conservative queue and cancel races yields nonpositive cost-adjusted PnL; any inventory/cash reconciliation error invalidates a scenario.",
+        "next_experiment": "Collect raw timestamped snapshot/delta/trades with exchange u/seq/cts/T and local monotonic receive times, record sequence resets/gaps and clock bounds; add an authorized order lifecycle experiment for latency/queue calibration. Freeze calibration, fee tier and benchmark before an independent forward replay. No account access or live order performed here.",
+        "rankable": False,
+        "live_eligible": False,
+        "promotion_eligible": False,
+    }

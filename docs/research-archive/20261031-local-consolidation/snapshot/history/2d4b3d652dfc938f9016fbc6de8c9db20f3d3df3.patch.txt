@@ -1,0 +1,112 @@
+commit 2d4b3d652dfc938f9016fbc6de8c9db20f3d3df3
+Author:     Disaster <clusternlh@gmail.com>
+AuthorDate: Tue Aug 25 00:38:02 2026 +0800
+Commit:     Disaster <clusternlh@gmail.com>
+CommitDate: Tue Aug 25 00:38:02 2026 +0800
+
+    test(research): reject malformed forward market data
+
+diff --git a/tests/test_time_space_export.py b/tests/test_time_space_export.py
+index ef60b1e..44249c3 100644
+--- a/tests/test_time_space_export.py
++++ b/tests/test_time_space_export.py
+@@ -28,6 +28,7 @@ from zenquant.research.time_space_replay import (
+     _aggregate_candles,
+     _append_forward_rows,
+     _build_replay_view,
++    _normalize_forward_five_min,
+     _normalize_forward_funding,
+     _normalize_frozen_five_min,
+     _registered_source_files,
+@@ -140,6 +141,64 @@ def test_forward_five_min_grid_rejects_gap_or_duplicate(timestamps: list[int]) -
+         )
+ 
+ 
++def _candle_frame(*, interval_ns: int, shifted_open_ns: int = 0, **changes):
++    import pandas as pd
++
++    row = {
++        "open_time_ns": AS_OF_NS + shifted_open_ns,
++        "close_time_ns": AS_OF_NS + interval_ns - 1_000_000,
++        "open": 100.0,
++        "high": 102.0,
++        "low": 99.0,
++        "close": 101.0,
++        "volume": 10.0,
++    }
++    row.update(changes)
++    return pd.DataFrame([row])
++
++
++def test_forward_five_min_rejects_shifted_open_with_valid_close_grid() -> None:
++    with pytest.raises(ValueError, match=r"5m.*open|open.*5m"):
++        _normalize_forward_five_min(_candle_frame(interval_ns=5 * 60 * 1_000_000_000, shifted_open_ns=1_000_000))
++
++
++@pytest.mark.parametrize("column", ["open", "high", "low", "close", "volume"])
++def test_forward_five_min_rejects_nonfinite_ohlcv(column: str) -> None:
++    with pytest.raises(ValueError, match="finite"):
++        _normalize_forward_five_min(_candle_frame(interval_ns=5 * 60 * 1_000_000_000, **{column: float("nan")}))
++
++
++@pytest.mark.parametrize(
++    "changes",
++    [
++        {"high": 100.5},
++        {"low": 101.5},
++        {"volume": -1.0},
++    ],
++)
++def test_forward_five_min_rejects_invalid_ohlcv_relationships(changes: dict[str, float]) -> None:
++    with pytest.raises(ValueError, match="OHLCV"):
++        _normalize_forward_five_min(_candle_frame(interval_ns=5 * 60 * 1_000_000_000, **changes))
++
++
++def test_forward_daily_rejects_shifted_or_nonfinite_candle() -> None:
++    from zenquant.research import time_space_replay as replay
++
++    day = 24 * 60 * 60 * 1_000_000_000
++    with pytest.raises(ValueError, match=r"1d.*open|open.*1d"):
++        replay._normalize_forward_daily(
++            _candle_frame(interval_ns=day, shifted_open_ns=1_000_000),
++            reused_end_ns=AS_OF_NS,
++            as_of_ns=AS_OF_NS + day,
++        )
++    with pytest.raises(ValueError, match="finite"):
++        replay._normalize_forward_daily(
++            _candle_frame(interval_ns=day, close=float("inf")),
++            reused_end_ns=AS_OF_NS,
++            as_of_ns=AS_OF_NS + day,
++        )
++
++
+ def test_forward_funding_rejects_missing_anchor_and_out_of_rule_jitter() -> None:
+     import pandas as pd
+ 
+@@ -164,6 +223,26 @@ def test_forward_funding_rejects_missing_anchor_and_out_of_rule_jitter() -> None
+         )
+ 
+ 
++@pytest.mark.parametrize(
++    "changes",
++    [
++        {"funding_rate": float("nan"), "mark_price": 100.0},
++        {"funding_rate": 0.001, "mark_price": float("inf")},
++        {"funding_rate": 2.0, "mark_price": 100.0},
++        {"funding_rate": 0.001, "mark_price": -1.0},
++    ],
++)
++def test_forward_funding_rejects_nonfinite_or_out_of_contract_values(changes: dict[str, float]) -> None:
++    import pandas as pd
++
++    with pytest.raises(ValueError, match="funding"):
++        _normalize_forward_funding(
++            pd.DataFrame([{"funding_time_ns": AS_OF_NS, "symbol": "BTCUSDT", **changes}]),
++            reused_end_ns=AS_OF_NS,
++            as_of_ns=AS_OF_NS + 4 * 60 * 60 * 1_000_000_000,
++        )
++
++
+ def test_forward_daily_rejects_incomplete_or_stale_completed_close() -> None:
+     import pandas as pd
+ 

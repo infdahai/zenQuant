@@ -1,0 +1,74 @@
+"""Sector event causality, issuer deduplication and outage invalidation."""
+
+import pytest
+
+from zenquant.research import tradfi_monitor as module
+
+
+def monitor():
+    assert hasattr(module, "SectorMonitor")
+    return module.SectorMonitor(
+        {
+            "storage": {
+                "members": {"MU": "micron", "SNDK": "sandisk", "WDC": "wdc", "SK1": "hynix", "SK2": "hynix"},
+                "min_issuers": 3,
+                "window_ms": 120000,
+                "episode_ms": 300000,
+            }
+        }
+    )
+
+
+def shock(symbol, time):
+    return {
+        "kind": "SHOCK",
+        "symbol": symbol,
+        "observed_ms": time,
+        "event_id": f"{symbol}-{time}",
+        "metrics": {"return_60s_pct": -2},
+    }
+
+
+def test_three_companies_trigger_and_later_followers_are_updates():
+    m = monitor()
+    assert m.ingest(shock("MU", 0)) == []
+    assert m.ingest(shock("SNDK", 60000)) == []
+    out = m.ingest(shock("SK1", 120000))[0]
+    assert out["kind"] == "SECTOR_SHOCK"
+    assert out["affected_issuer_count"] == 3
+    assert out["configured_issuer_count"] == 4
+    assert not out["promotion_eligible"]
+    later = m.ingest(shock("WDC", 180000))[0]
+    assert later["kind"] == "SECTOR_SPREAD"
+    assert later["sector_event_id"] == out["sector_event_id"]
+    assert later["affected_issuer_count"] == 4
+
+
+def test_aliases_and_repeated_messages_cannot_inflate_breadth():
+    m = monitor()
+    for s in ("SK1", "SK2", "MU", "MU"):
+        assert m.ingest(shock(s, 60000)) == []
+    assert m.ingest(shock("SNDK", 60001))[0]["affected_issuer_count"] == 3
+
+
+def test_old_events_do_not_form_false_synchronized_crash():
+    m = monitor()
+    for s, t in (("MU", 0), ("WDC", 120001), ("SNDK", 180000)):
+        assert m.ingest(shock(s, t)) == []
+
+
+def test_data_gap_resets_sector_evidence():
+    m = monitor()
+    m.ingest(shock("MU", 0))
+    m.ingest(shock("WDC", 1))
+    out = m.ingest({"kind": "DATA_GAP", "symbol": "MU", "observed_ms": 2})
+    assert out[0]["kind"] == "SECTOR_DATA_GAP"
+    assert m.ingest(shock("SNDK", 3)) == []
+
+
+def test_replay_order_is_explicit_and_deterministic():
+    events = [shock("MU", 0), shock("WDC", 1), shock("SNDK", 2)]
+    first, second = monitor(), monitor()
+    assert [first.ingest(x) for x in events] == [second.ingest(x) for x in events]
+    with pytest.raises(ValueError):
+        first.ingest(shock("SK1", 1))

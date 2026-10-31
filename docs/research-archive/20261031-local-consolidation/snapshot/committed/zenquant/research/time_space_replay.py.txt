@@ -1,0 +1,604 @@
+"""Authoritative replay producer for the TimeSpace architecture export."""
+
+from __future__ import annotations
+
+import hashlib
+import math
+import tempfile
+from dataclasses import asdict, dataclass, replace
+from numbers import Integral, Real
+from pathlib import Path
+from typing import Any
+
+import pandas as pd
+
+from zenquant.domain import Timeframe
+from zenquant.domain.serde import to_jsonable
+from zenquant.historical import HistoricalBacktest, HistoricalBacktestConfig, PerturbationConfig
+from zenquant.research.architecture_experiment import (
+    ArchitectureStage,
+    load_architecture_experiment_manifest,
+    observations_from_rows,
+)
+from zenquant.research.architecture_stage_replay import run_architecture_stage_replay
+from zenquant.research.framework_params import (
+    build_execution_config,
+    build_indicator_config,
+    build_plugin_config_overrides,
+    build_risk_config,
+    build_signal_weight_overrides,
+    build_strategy_config,
+)
+from zenquant.research.registration import load_execution_manifest, load_hypothesis_manifest
+
+FROZEN_SEEDS = (42, 123, 456, 789, 1024)
+FROZEN_TAKER_FEE_BPS = 4.0
+FROZEN_FALLBACK_SLIPPAGE_BPS = 1.5
+FROZEN_FORWARD_START_NS = 1_787_644_800_000_000_000
+_PROJECT_ROOT = Path(__file__).parents[2]
+_EXECUTION_MANIFEST = _PROJECT_ROOT / "config/research/registrations/time_space_shadow_execution_v1.json"
+_HYPOTHESIS_MANIFEST = _PROJECT_ROOT / "config/research/time_space_shadow_hypothesis_v1.json"
+_FORWARD_5M = _PROJECT_ROOT / "data/raw/binance/klines/BTCUSDT/5m/data.parquet"
+_FORWARD_FUNDING = _PROJECT_ROOT / "data/raw/binance/funding/BTCUSDT/data.parquet"
+_FORWARD_1D = _PROJECT_ROOT / "data/raw/binance_spot/klines/BTCUSDT/1d/data.parquet"
+_EXPECTED_SOURCE_PATHS = {
+    "BINANCE_PERPETUAL_BTCUSDT_5M": "data/derived/trend_research/20260824/BTCUSDT/5m/data.parquet",
+    "BINANCE_PERPETUAL_BTCUSDT_FUNDING": "data/derived/trend_research/20260824/BTCUSDT/funding/data.parquet",
+    "BINANCE_SPOT_BTCUSDT_1D": "data/derived/trend_research/20260824/BTCUSDT/1d/data.parquet",
+}
+
+
+@dataclass(frozen=True, slots=True)
+class ReplayRequest:
+    execution_manifest: Path
+    hypothesis_manifest: Path
+    as_of_ns: int
+
+
+def produce_frozen_architecture_replay(request: ReplayRequest) -> dict[str, Any]:
+    """Run the real replay and target-tracking kernel over registered files."""
+
+    if type(request) is not ReplayRequest:
+        raise TypeError("request must be ReplayRequest")
+    if Path(request.execution_manifest).resolve() != _EXECUTION_MANIFEST.resolve():
+        raise ValueError("replay request execution manifest is not the registered allowlisted path")
+    if Path(request.hypothesis_manifest).resolve() != _HYPOTHESIS_MANIFEST.resolve():
+        raise ValueError("replay request hypothesis manifest is not the registered allowlisted path")
+    execution = load_execution_manifest(Path(request.execution_manifest))
+    hypothesis = load_hypothesis_manifest(Path(request.hypothesis_manifest))
+    if execution.layer != "time_space_shadow" or hypothesis.layer != "time_space_shadow":
+        raise ValueError("replay request must use TimeSpace manifests")
+    if execution.hypothesis_sha256 != hypothesis.sha256:
+        raise ValueError("execution and hypothesis manifests are not bound")
+    if request.as_of_ns != hypothesis.reused_end_ns and request.as_of_ns < FROZEN_FORWARD_START_NS:
+        raise ValueError("export as_of must be the reused cutoff or an eligible forward cutoff")
+    if request.as_of_ns % (4 * 60 * 60 * 1_000_000_000):
+        raise ValueError("export as_of must be a confirmed 4h cutoff")
+    source_files = _registered_source_files(execution.payload["sources"])
+
+    with tempfile.TemporaryDirectory(prefix="zenquant-time-space-replay-") as directory:
+        root = Path(directory)
+        source_files.extend(
+            _build_replay_view(
+                root,
+                source_files,
+                as_of_ns=request.as_of_ns,
+                reused_end_ns=hypothesis.reused_end_ns,
+            )
+        )
+        canonical_path, materials = _run_path(
+            root,
+            start_ns=hypothesis.reused_start_ns,
+            end_ns=request.as_of_ns,
+            perturbation=PerturbationConfig(seed=42),
+        )
+        perturbations = {}
+        manifest = load_architecture_experiment_manifest()
+        for seed in FROZEN_SEEDS:
+            perturbations[str(seed)], _unused = _run_path(
+                root,
+                start_ns=hypothesis.reused_start_ns,
+                end_ns=request.as_of_ns,
+                perturbation=PerturbationConfig(seed=seed, **dict(manifest.perturbation)),
+            )
+    return {
+        "schema_version": "architecture-time-space-replay.v2",
+        "as_of_ns": request.as_of_ns,
+        "windows": {
+            "reused": [hypothesis.reused_start_ns, hypothesis.reused_end_ns],
+            "embargo": [hypothesis.reused_end_ns, FROZEN_FORWARD_START_NS],
+            "forward": [FROZEN_FORWARD_START_NS, None],
+        },
+        "seeds": list(FROZEN_SEEDS),
+        "canonical": canonical_path,
+        "perturbations": perturbations,
+        "execution_materials": materials,
+        "source_files": source_files,
+    }
+
+
+def _run_path(
+    root: Path,
+    *,
+    start_ns: int,
+    end_ns: int,
+    perturbation: PerturbationConfig,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    manifest = load_architecture_experiment_manifest()
+    params = dict(manifest.candidate_params)
+    strategy_config = replace(
+        build_strategy_config(params),
+        execution_timeframe=Timeframe(manifest.a0_execution_timeframe),
+        emit_architecture_alpha_snapshots_v2=True,
+    )
+    config = HistoricalBacktestConfig(
+        root_dir=root,
+        symbol=manifest.symbol,
+        portfolio_symbol=manifest.portfolio_symbol,
+        start_ns=start_ns,
+        end_ns=end_ns,
+        starting_equity=100_000.0,
+        execution_timeframe=Timeframe(manifest.a0_execution_timeframe),
+        context_timeframe=Timeframe(manifest.a0_context_timeframe),
+        direction_timeframe=Timeframe(manifest.a0_direction_timeframe),
+        bias_timeframe=Timeframe(manifest.a0_bias_timeframe),
+        strategy_config=strategy_config,
+        risk_config=build_risk_config(params),
+        execution_config=build_execution_config(params),
+        indicator_config=replace(build_indicator_config(params), expected_symbols=(manifest.portfolio_symbol,)),
+        signal_weight_overrides=build_signal_weight_overrides(params),
+        plugin_config_overrides=build_plugin_config_overrides(params),
+        perturbation=perturbation,
+        liquidation_data_enabled=False,
+        state_liquidation_overlay_enabled=False,
+        profile_path=manifest.profile_path,
+        macro_dir=root / "unused-macro",
+        options_dir=root / "unused-options",
+        cot_path=root / "unused-cot.parquet",
+        liquidation_dir=root / "unused-liquidations",
+    )
+    runner = HistoricalBacktest(config)
+    runner.run()
+    execution_config = config.execution_config
+    assert execution_config is not None
+    batch = runner.build_architecture_stage_rows(
+        exchange_min_quantity=execution_config.min_trade_qty,
+        estimated_fee_bps=FROZEN_TAKER_FEE_BPS,
+        estimated_slippage_bps=FROZEN_FALLBACK_SLIPPAGE_BPS,
+    )
+    observations = tuple(observations_from_rows(batch["observations"]))
+    a5 = run_architecture_stage_replay(
+        observations,
+        stage=ArchitectureStage.A5_SHADOW,
+        fixed_notional=100_000.0,
+        symbol=manifest.portfolio_symbol,
+        portfolio="architecture-v2",
+        min_trade_qty=execution_config.min_trade_qty,
+        max_trade_qty_per_bar=execution_config.max_trade_qty_per_bar,
+        quantity_precision=execution_config.quantity_precision,
+        taker_fee_bps=FROZEN_TAKER_FEE_BPS,
+        fallback_slippage_bps=FROZEN_FALLBACK_SLIPPAGE_BPS,
+        funding_settlements_by_cutoff=batch["funding_settlements_by_cutoff"],
+    )
+    path = _extract_path(runner, observations, a5.rows)
+    materials = {
+        "snapshots": to_jsonable(a5.snapshots),
+        "targets": to_jsonable(a5.targets),
+        "orders": to_jsonable(a5.audits),
+        "fills": to_jsonable(a5.reports),
+        "equity": to_jsonable(a5.equity),
+        "episodes": to_jsonable(a5.position_episodes),
+    }
+    return path, materials
+
+
+def _extract_path(runner, observations, a5_rows) -> dict[str, Any]:
+    indicators = {item.cutoff_time_ns: item for item in runner._indicators if item.timeframe is Timeframe.TF_4H}
+    states = {item.cutoff_time_ns: item for item in runner._market_states if item.timeframe is Timeframe.TF_4H}
+    stage_by_cutoff = {item.cutoff_time_ns: item for item in a5_rows}
+    market_rows = []
+    a1_rows = []
+    a5_stage_rows = []
+    filled_rows = []
+    prior_indicator = None
+    for observation in observations:
+        cutoff = observation.cutoff_time_ns
+        indicator = indicators[cutoff]
+        state = states[cutoff]
+        stage = stage_by_cutoff[cutoff]
+        current_high = _optional_positive(indicator.values.get("last_swing_high"))
+        current_low = _optional_positive(indicator.values.get("last_swing_low"))
+        prior_high = _optional_positive(
+            None if prior_indicator is None else prior_indicator.values.get("last_swing_high")
+        )
+        prior_low = _optional_positive(
+            None if prior_indicator is None else prior_indicator.values.get("last_swing_low")
+        )
+        market_rows.append(
+            {
+                "alpha_id": observation.alpha_id,
+                "cutoff_time_ns": cutoff,
+                "interval_start_ns": cutoff - 4 * 60 * 60 * 1_000_000_000,
+                "close": float(observation.reference_price),
+                "structure_side": 1 if state.direction_signal > 0 else -1 if state.direction_signal < 0 else 0,
+                "prior_long_boundary": prior_high,
+                "prior_short_boundary": prior_low,
+                "current_long_pivot": current_high if current_high != prior_high else None,
+                "current_short_pivot": current_low if current_low != prior_low else None,
+                "prior_long_invalidation": prior_low,
+                "prior_short_invalidation": prior_high,
+            }
+        )
+        a1_rows.append(
+            {
+                "cutoff_time_ns": cutoff,
+                "decision_id": observation.alpha_id,
+                "value": 1 if observation.raw_score > 0 else -1 if observation.raw_score < 0 else 0,
+            }
+        )
+        a5_stage_rows.append(
+            {"cutoff_time_ns": cutoff, "decision_id": stage.decision_id, "value": stage.approved_target_qty}
+        )
+        filled_rows.append(
+            {
+                "cutoff_time_ns": cutoff,
+                "decision_id": _payload_sha256({"stage": "FILLED_POSITION", **asdict(stage)}),
+                "value": stage.filled_position_after,
+            }
+        )
+        prior_indicator = indicator
+    return {
+        "market_rows": market_rows,
+        "stage_rows": {
+            "A1_SIGN": a1_rows,
+            "A5_SHADOW": a5_stage_rows,
+            "FILLED_POSITION": filled_rows,
+        },
+    }
+
+
+def _registered_source_files(sources: dict[str, Any]) -> list[dict[str, str]]:
+    observed: list[dict[str, str]] = []
+    seen_paths: dict[str, str] = {}
+    if set(sources) != set(_EXPECTED_SOURCE_PATHS):
+        raise ValueError("execution manifest source set is not the exact TimeSpace allowlist")
+    for source_id, expected_path in _EXPECTED_SOURCE_PATHS.items():
+        descriptor = sources[source_id]
+        path_value = descriptor.get("normalized_path", descriptor.get("path"))
+        expected_sha = descriptor.get("normalized_sha256", descriptor.get("sha256"))
+        if path_value != expected_path:
+            raise ValueError(f"registered source path changed: {source_id}")
+        _append_verified_file(observed, seen_paths, source_id, path_value, expected_sha)
+        for index, raw in enumerate(descriptor.get("raw_sha256", ())):
+            _append_verified_file(
+                observed,
+                seen_paths,
+                f"{source_id}:raw:{index}",
+                raw.get("path"),
+                raw.get("sha256"),
+            )
+        provenance = descriptor.get("market_tail_provenance")
+        if provenance is not None:
+            _append_verified_file(
+                observed,
+                seen_paths,
+                f"{source_id}:market_tail_provenance",
+                provenance.get("path"),
+                provenance.get("sha256"),
+            )
+    return observed
+
+
+def _append_verified_file(
+    observed: list[dict[str, str]],
+    seen_paths: dict[str, str],
+    source_id: str,
+    path_value: Any,
+    expected_sha: Any,
+) -> None:
+    if not isinstance(path_value, str) or not isinstance(expected_sha, str):
+        raise ValueError(f"registered source identity is invalid: {source_id}")
+    prior = seen_paths.setdefault(path_value, expected_sha)
+    if prior != expected_sha:
+        raise ValueError(f"registered source assigns conflicting digests: {path_value}")
+    if any(item["path"] == path_value for item in observed):
+        return
+    observed_sha = _sha256_file(Path(path_value))
+    if observed_sha != expected_sha:
+        raise ValueError(f"registered source digest changed: {source_id}")
+    observed.append({"source_id": source_id, "path": path_value, "sha256": observed_sha})
+
+
+def _build_replay_view(
+    root: Path,
+    sources: list[dict[str, str]],
+    *,
+    as_of_ns: int,
+    reused_end_ns: int,
+) -> list[dict[str, str]]:
+    by_id = {item["source_id"]: Path(item["path"]).resolve() for item in sources}
+    five_min = _normalize_frozen_five_min(pd.read_parquet(by_id["BINANCE_PERPETUAL_BTCUSDT_5M"]))
+    funding = pd.read_parquet(by_id["BINANCE_PERPETUAL_BTCUSDT_FUNDING"])
+    one_day = pd.read_parquet(by_id["BINANCE_SPOT_BTCUSDT_1D"])
+    extension_identities: list[dict[str, str]] = []
+    if as_of_ns > reused_end_ns:
+        funding = funding.loc[funding["funding_time_ns"].astype("int64") < reused_end_ns].copy()
+        forward_five_min = _normalize_forward_five_min(pd.read_parquet(_FORWARD_5M), as_of_ns=as_of_ns)
+        _validate_forward_grid(
+            forward_five_min,
+            time_column="close_time_ns",
+            first_ns=reused_end_ns + 5 * 60 * 1_000_000_000 - 1_000_000,
+            last_ns=as_of_ns - 1_000_000,
+            step_ns=5 * 60 * 1_000_000_000,
+            label="5m",
+        )
+        five_min, identity = _append_forward_rows(
+            five_min,
+            forward_five_min,
+            time_column="close_time_ns",
+            reused_end_ns=reused_end_ns,
+            as_of_ns=as_of_ns,
+            source_id="BINANCE_PERPETUAL_BTCUSDT_5M:forward_slice",
+            source_path=_FORWARD_5M,
+        )
+        extension_identities.append(identity)
+        forward_funding = _normalize_forward_funding(
+            pd.read_parquet(_FORWARD_FUNDING), reused_end_ns=reused_end_ns, as_of_ns=as_of_ns
+        )
+        funding, identity = _append_forward_rows(
+            funding,
+            forward_funding,
+            time_column="funding_time_ns",
+            reused_end_ns=reused_end_ns,
+            as_of_ns=as_of_ns,
+            source_id="BINANCE_PERPETUAL_BTCUSDT_FUNDING:forward_slice",
+            source_path=_FORWARD_FUNDING,
+        )
+        extension_identities.append(identity)
+        forward_one_day = _normalize_forward_daily(
+            pd.read_parquet(_FORWARD_1D),
+            reused_end_ns=reused_end_ns,
+            as_of_ns=as_of_ns,
+        )
+        one_day, identity = _append_forward_rows(
+            one_day,
+            forward_one_day,
+            time_column="close_time_ns",
+            reused_end_ns=reused_end_ns,
+            as_of_ns=as_of_ns,
+            source_id="BINANCE_SPOT_BTCUSDT_1D:forward_slice",
+            source_path=_FORWARD_1D,
+        )
+        extension_identities.append(identity)
+        expected_last_close = as_of_ns - 1_000_000
+        if int(five_min["close_time_ns"].max()) != expected_last_close:
+            raise ValueError("forward 5m source is incomplete at the requested point-in-time cutoff")
+    five_min_dir = root / "klines/BTCUSDT/5m"
+    five_min_dir.mkdir(parents=True)
+    five_min.to_parquet(five_min_dir / "data.parquet", index=False)
+    for label, rule in (("1h", "1h"), ("4h", "4h")):
+        frame = _aggregate_candles(five_min, rule)
+        directory = root / "klines/BTCUSDT" / label
+        directory.mkdir(parents=True)
+        frame.to_parquet(directory / "data.parquet", index=False)
+    one_day_dir = root / "klines/BTCUSDT/1d"
+    one_day_dir.mkdir(parents=True)
+    one_day.to_parquet(one_day_dir / "data.parquet", index=False)
+    funding_dir = root / "funding/BTCUSDT"
+    funding_dir.mkdir(parents=True)
+    funding.to_parquet(funding_dir / "data.parquet", index=False)
+    return extension_identities
+
+
+def _aggregate_candles(frame: pd.DataFrame, rule: str) -> pd.DataFrame:
+    values = frame.copy()
+    values["timestamp"] = pd.to_datetime(values["open_time_ns"], unit="ns", utc=True)
+    values = values.set_index("timestamp")
+    result = values.resample(rule, label="left", closed="left").agg(
+        {
+            "symbol": "first",
+            "open": "first",
+            "high": "max",
+            "low": "min",
+            "close": "last",
+            "volume": "sum",
+            "trade_count": "sum",
+            "open_time_ns": "min",
+            "close_time_ns": "max",
+        }
+    )
+    result = result.dropna(subset=["open", "close"]).reset_index(drop=True)
+    result["close_time_ns"] = result["open_time_ns"].astype("int64") + int(pd.Timedelta(rule).value)
+    return result
+
+
+def _normalize_frozen_five_min(frame: pd.DataFrame) -> pd.DataFrame:
+    required = {"open_time_ns", "close_time_ns", "open", "high", "low", "close", "volume"}
+    if not required.issubset(frame.columns):
+        raise ValueError("registered 5m source is missing frozen OHLCV columns")
+    values = frame.loc[:, sorted(required)].copy()
+    values["symbol"] = "BTCUSDT"
+    values["timeframe"] = Timeframe.TF_5M.value
+    values["open_time"] = values["open_time_ns"].astype("int64") // 1_000_000
+    # The registered frozen schema intentionally omits trade counts. Zero is an
+    # explicit unavailable sentinel for the replay Candle contract, not an
+    # observed count; the companion flag prevents downstream research from
+    # treating it as market evidence.
+    values["trade_count"] = 0
+    values["trade_count_available"] = False
+    return values
+
+
+def _normalize_forward_five_min(frame: pd.DataFrame, *, as_of_ns: int | None = None) -> pd.DataFrame:
+    visible = frame
+    if as_of_ns is not None:
+        if "close_time_ns" not in frame.columns:
+            raise ValueError("forward 5m candle source lacks close_time_ns")
+        visible = frame.loc[frame["close_time_ns"] < as_of_ns].copy()
+    _validate_candles(visible, interval_ns=5 * 60 * 1_000_000_000, label="5m")
+    values = _normalize_frozen_five_min(visible)
+    if "trade_count" in frame.columns:
+        values["trade_count"] = visible["trade_count"].astype("int64")
+        values["trade_count_available"] = True
+    return values
+
+
+def _normalize_forward_funding(frame: pd.DataFrame, *, reused_end_ns: int, as_of_ns: int) -> pd.DataFrame:
+    required = {"funding_time_ns", "funding_rate", "mark_price", "symbol"}
+    if not required.issubset(frame.columns):
+        raise ValueError("forward funding source lacks required value columns")
+    interval = 8 * 60 * 60 * 1_000_000_000
+    values = frame.loc[frame["funding_time_ns"].astype("int64") <= as_of_ns].copy()
+    if values.empty:
+        raise ValueError("forward funding coverage is unavailable")
+    if any(isinstance(value, bool) or not isinstance(value, Integral) for value in values["funding_time_ns"].tolist()):
+        raise ValueError("forward funding timestamp must be an exact integer")
+    rates = values["funding_rate"].tolist()
+    marks = values["mark_price"].tolist()
+    if any(not _finite_real(value) or abs(float(value)) > 1.0 for value in rates):
+        raise ValueError("forward funding rate is outside the finite unit-rate contract")
+    if any(not _finite_real(value) or float(value) < 0.0 for value in marks):
+        raise ValueError("forward funding mark price is outside the finite non-negative contract")
+    if any(value != "BTCUSDT" for value in values["symbol"].tolist()):
+        raise ValueError("forward funding symbol is not BTCUSDT")
+    raw = values["funding_time_ns"].astype("int64")
+    anchors = ((raw + interval // 2) // interval) * interval
+    if ((raw - anchors).abs() > 60 * 1_000_000_000).any():
+        raise ValueError("forward funding timestamp exceeds the known 60s exchange jitter rule")
+    values["raw_funding_time_ns"] = raw
+    values["funding_time_ns"] = anchors
+    _validate_forward_grid(
+        values,
+        time_column="funding_time_ns",
+        first_ns=reused_end_ns,
+        last_ns=as_of_ns - (as_of_ns % interval),
+        step_ns=interval,
+        label="8h funding",
+    )
+    return values
+
+
+def _normalize_forward_daily(frame: pd.DataFrame, *, reused_end_ns: int, as_of_ns: int) -> pd.DataFrame:
+    day = 24 * 60 * 60 * 1_000_000_000
+    if "close_time_ns" not in frame.columns:
+        raise ValueError("forward 1d candle source lacks close_time_ns")
+    values = frame.loc[frame["close_time_ns"] < as_of_ns].copy()
+    _validate_candles(values, interval_ns=day, label="1d")
+    last_completed_close = as_of_ns - (as_of_ns % day) - 1_000_000
+    _validate_forward_grid(
+        values,
+        time_column="close_time_ns",
+        first_ns=reused_end_ns + day - 1_000_000,
+        last_ns=last_completed_close,
+        step_ns=day,
+        label="1d completed",
+    )
+    return values
+
+
+def _validate_candles(frame: pd.DataFrame, *, interval_ns: int, label: str) -> None:
+    required = {"open_time_ns", "close_time_ns", "open", "high", "low", "close", "volume"}
+    if not required.issubset(frame.columns) or frame.empty:
+        raise ValueError(f"forward {label} candle source lacks required OHLCV rows")
+    opens = frame["open_time_ns"].tolist()
+    closes = frame["close_time_ns"].tolist()
+    if any(isinstance(value, bool) or not isinstance(value, Integral) for value in (*opens, *closes)):
+        raise ValueError(f"forward {label} open and close timestamps must be exact integers")
+    if any(
+        int(open_ns) % interval_ns != 0 or int(close_ns) != int(open_ns) + interval_ns - 1_000_000
+        for open_ns, close_ns in zip(opens, closes, strict=True)
+    ):
+        raise ValueError(f"forward {label} open time, duration, or alignment is invalid")
+    numeric_rows = frame.loc[:, ["open", "high", "low", "close", "volume"]].itertuples(index=False, name=None)
+    for open_price, high, low, close, volume in numeric_rows:
+        if any(not _finite_real(value) for value in (open_price, high, low, close, volume)):
+            raise ValueError(f"forward {label} OHLCV values must be finite")
+        if (
+            min(float(open_price), float(high), float(low), float(close)) <= 0.0
+            or float(volume) < 0.0
+            or float(high) < max(float(open_price), float(close), float(low))
+            or float(low) > min(float(open_price), float(close), float(high))
+        ):
+            raise ValueError(f"forward {label} OHLCV relationships are invalid")
+
+
+def _finite_real(value: Any) -> bool:
+    return not isinstance(value, bool) and isinstance(value, Real) and math.isfinite(float(value))
+
+
+def _validate_forward_grid(
+    frame: pd.DataFrame,
+    *,
+    time_column: str,
+    first_ns: int,
+    last_ns: int,
+    step_ns: int,
+    label: str,
+) -> None:
+    if time_column not in frame.columns or first_ns > last_ns:
+        raise ValueError(f"forward {label} coverage is unavailable")
+    observed = sorted(
+        int(value)
+        for value in frame.loc[(frame[time_column] >= first_ns) & (frame[time_column] <= last_ns), time_column]
+    )
+    expected = list(range(first_ns, last_ns + 1, step_ns))
+    if observed != expected:
+        raise ValueError(f"forward {label} coverage is not exact, continuous, and duplicate-free")
+
+
+def _append_forward_rows(
+    baseline: pd.DataFrame,
+    forward: pd.DataFrame,
+    *,
+    time_column: str,
+    reused_end_ns: int,
+    as_of_ns: int,
+    source_id: str,
+    source_path: Path,
+) -> tuple[pd.DataFrame, dict[str, str]]:
+    if time_column not in forward.columns:
+        raise ValueError(f"forward source lacks point-in-time column: {source_id}")
+    extension = forward.loc[
+        (forward[time_column].astype("int64") >= reused_end_ns) & (forward[time_column].astype("int64") <= as_of_ns)
+    ].copy()
+    extension = extension.sort_values(time_column).drop_duplicates(time_column, keep=False)
+    if extension.empty:
+        raise ValueError(f"forward source contains no eligible rows: {source_id}")
+    shared = [column for column in baseline.columns if column in extension.columns]
+    combined = pd.concat([baseline, extension.loc[:, shared]], ignore_index=True)
+    combined = combined.sort_values(time_column)
+    if combined[time_column].duplicated().any():
+        raise ValueError(f"forward source overlaps frozen baseline: {source_id}")
+    digest = hashlib.sha256(
+        extension.loc[:, sorted(extension.columns)]
+        .to_json(orient="records", date_unit="ns", double_precision=15)
+        .encode()
+    ).hexdigest()
+    return combined, {
+        "source_id": source_id,
+        "path": f"{source_path.relative_to(_PROJECT_ROOT).as_posix()}#through={as_of_ns}",
+        "sha256": digest,
+    }
+
+
+def _optional_positive(value: Any) -> float | None:
+    number = float(value or 0.0)
+    return number if number > 0.0 else None
+
+
+def _payload_sha256(payload: dict[str, Any]) -> str:
+    import json
+
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str).encode()
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+__all__ = ["ReplayRequest", "produce_frozen_architecture_replay"]

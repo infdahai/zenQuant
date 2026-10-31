@@ -1,0 +1,409 @@
+"""Pure, versioned research observations; never an operational admission service.
+
+``curve`` contains ordered valuation observations, not inferred intrabar paths.
+Daily ratios use exact UTC midnight observations, with no interpolation or
+carry-forward across gaps. Missing cashflow lists differ from explicit empty
+lists. Engineering gates are supplied attestations, not proofs reconstructed by
+this module; absent attestations remain unavailable.
+"""
+
+from __future__ import annotations
+
+import json
+import math
+import statistics
+from collections.abc import Mapping, Sequence
+from typing import Any
+
+SCHEMA_VERSION = "research-evaluation.v1"
+DAY_NS = 86_400_000_000_000
+STATUSES = frozenset({"PASS", "FAIL", "NOT_EVALUABLE", "NOT_RUN", "INVALID", "STALE", "NOT_APPLICABLE"})
+ENGINEERING_GATES = tuple(f"E{i}" for i in range(5))
+RESEARCH_GATES = tuple(f"R{i}" for i in range(8))
+ALL_GATES = (*ENGINEERING_GATES, *RESEARCH_GATES, "O0", "O1")
+
+
+def _finite(value: Any, name: str) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError(f"{name} must be a finite number")
+    try:
+        number = float(value)
+    except OverflowError as exc:
+        raise ValueError(f"{name} must be finite") from exc
+    if not math.isfinite(number):
+        raise ValueError(f"{name} must be finite")
+    return number
+
+
+def _time(value: Any, name: str) -> int:
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise ValueError(f"{name} must be integer nanoseconds")
+    return value
+
+
+def _rows(value: Any, name: str) -> list[Mapping[str, Any]]:
+    if not isinstance(value, Sequence) or isinstance(value, (str, bytes)):
+        raise ValueError(f"{name} must be a sequence of objects")
+    if not all(isinstance(item, Mapping) for item in value):
+        raise ValueError(f"{name} must contain objects")
+    return list(value)
+
+
+def _json_copy(value: Any, name: str) -> Any:
+    try:
+        return json.loads(json.dumps(value, allow_nan=False))
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise ValueError(f"{name} must be finite JSON-safe evidence") from exc
+
+
+def _metric(
+    value: float | None,
+    unit: str,
+    sample_size: int,
+    *,
+    sampling: str = "window",
+    reason: str = "",
+    status: str | None = None,
+) -> dict[str, Any]:
+    if value is not None and not math.isfinite(value):
+        value, reason, status = None, "NUMERICAL_OVERFLOW", "NOT_EVALUABLE"
+    return {
+        "definition_version": SCHEMA_VERSION,
+        "value": value,
+        "unit": unit,
+        "sampling": sampling,
+        "sample_size": sample_size,
+        "status": status or ("NOT_EVALUABLE" if reason or value is None else "PASS"),
+        "reason": reason or ("MISSING_EVIDENCE" if value is None else "OBSERVED"),
+        "confidence_interval": None,
+    }
+
+
+def _gate(status: str = "NOT_EVALUABLE", reason: str = "MISSING_EVIDENCE") -> dict[str, Any]:
+    return {"status": status, "reason": reason}
+
+
+def _drawdown(curve: list[tuple[int, float]]) -> tuple[dict[str, Any], dict[str, Any]]:
+    names = ("max_drawdown", "longest_underwater_days", "peak_to_trough_days", "recovery_days")
+    if not curve:
+        return {name: _metric(None, "fraction" if name == "max_drawdown" else "days", 0) for name in names}, {
+            "max_drawdown_censored": None,
+            "currently_underwater": None,
+        }
+    peak_time, peak = curve[0]
+    deepest = 0.0
+    longest_ns = 0
+    max_peak_time = max_trough_time = peak_time
+    max_recovery_time: int | None = None
+    underwater = False
+    for timestamp, equity in curve:
+        if equity >= peak:
+            if underwater:
+                longest_ns = max(longest_ns, timestamp - peak_time)
+                if max_peak_time == peak_time and max_recovery_time is None:
+                    max_recovery_time = timestamp
+            peak_time, peak = timestamp, equity
+            underwater = False
+        else:
+            underwater = True
+            longest_ns = max(longest_ns, timestamp - peak_time)
+            depth = 1.0 - equity / peak
+            if depth > deepest:
+                deepest = depth
+                max_peak_time, max_trough_time, max_recovery_time = peak_time, timestamp, None
+    has_drawdown = deepest > 0.0
+    censored = has_drawdown and max_recovery_time is None
+    recovery = (max_recovery_time - max_trough_time) / DAY_NS if max_recovery_time is not None else None
+    metrics = {
+        "max_drawdown": _metric(deepest, "fraction", len(curve), sampling="provided_valuation_points"),
+        "longest_underwater_days": _metric(longest_ns / DAY_NS, "days", len(curve)),
+        "peak_to_trough_days": _metric((max_trough_time - max_peak_time) / DAY_NS, "days", len(curve)),
+        "recovery_days": _metric(
+            recovery if has_drawdown else None,
+            "days",
+            len(curve),
+            reason="CENSORED" if censored else "NO_DRAWDOWN" if not has_drawdown else "",
+        ),
+    }
+    return metrics, {
+        "max_drawdown_censored": censored,
+        "currently_underwater": underwater,
+        "peak_time_ns": max_peak_time if has_drawdown else None,
+        "trough_time_ns": max_trough_time if has_drawdown else None,
+        "recovery_time_ns": max_recovery_time,
+    }
+
+
+def _daily_metrics(
+    curve: list[tuple[int, float]], *, ruin_time: int | None, min_samples: int
+) -> tuple[dict[str, Any], list[dict[str, Any]], dict[str, Any]]:
+    midnight = {timestamp: equity for timestamp, equity in curve if timestamp % DAY_NS == 0}
+    expected = range(((curve[0][0] + DAY_NS - 1) // DAY_NS) * DAY_NS, curve[-1][0] + 1, DAY_NS) if curve else ()
+    missing = [timestamp for timestamp in expected if timestamp not in midnight]
+    returns = []
+    for timestamp, equity in midnight.items():
+        prior = midnight.get(timestamp - DAY_NS)
+        # Keep ruin in the complete NAV/drawdown trace, never divide by a
+        # nonpositive previous NAV or resume ratios after recovered insolvency.
+        if prior is not None and prior > 0.0 and (ruin_time is None or timestamp <= ruin_time):
+            returns.append({"time_ns": timestamp, "value": equity / prior - 1.0})
+    values = [row["value"] for row in returns]
+    count = len(values)
+    common_reason = "RUIN" if ruin_time is not None else "MISSING_DAILY_VALUATIONS" if missing else ""
+    stats: dict[str, Any] = {}
+    for name in ("daily_sharpe", "daily_sortino"):
+        reason = common_reason
+        ratio = None
+        if not reason and count >= 2:
+            mean = statistics.mean(values)
+            denominator = (
+                statistics.stdev(values)
+                if name == "daily_sharpe"
+                else math.hypot(*(min(item, 0.0) for item in values)) / math.sqrt(count)
+            )
+            if denominator == 0.0:
+                reason = "ZERO_VOLATILITY" if name == "daily_sharpe" else "NO_DOWNSIDE_RETURNS"
+            else:
+                ratio = mean / denominator * math.sqrt(365.0)
+                if count < min_samples:
+                    reason = "INSUFFICIENT_DAILY_SAMPLES"
+        elif not reason:
+            reason = "INSUFFICIENT_DAILY_SAMPLES"
+        stats[name] = _metric(ratio, "annualized_ratio", count, sampling="UTC_daily", reason=reason)
+    return stats, returns, {"basis": "exact_UTC_midnight", "missing_midnights": missing, "valid_return_count": count}
+
+
+def _cashflow_metrics(
+    evidence: Mapping[str, Any],
+    *,
+    initial: float,
+    elapsed_days: float,
+    net_pnl: float | None,
+    window: tuple[int, int] | None,
+) -> dict[str, Any]:
+    fills = _rows(evidence["fills"], "fills") if evidence.get("fills") is not None else None
+    funding = _rows(evidence["funding"], "funding") if evidence.get("funding") is not None else None
+    fees = notional = funding_pnl = None
+    if fills is not None:
+        fees = notional = 0.0
+        for row in fills:
+            timestamp = _time(row.get("time_ns"), "fill.time_ns")
+            if window is None or not window[0] <= timestamp <= window[1]:
+                raise ValueError("fill time_ns is outside the evaluated valuation window")
+            quantity = _finite(row.get("signed_qty"), "fill.signed_qty")
+            price = _finite(row.get("price"), "fill.price")
+            fee = _finite(row.get("fee"), "fill.fee")
+            if price <= 0.0 or quantity == 0.0:
+                raise ValueError("fills require positive price and nonzero signed_qty")
+            fees += fee
+            notional += abs(quantity * price)
+    if funding is not None:
+        funding_pnl = 0.0
+        for row in funding:
+            timestamp = _time(row.get("time_ns"), "funding.time_ns")
+            if window is None or not window[0] <= timestamp <= window[1]:
+                raise ValueError("funding time_ns is outside the evaluated valuation window")
+            funding_pnl += _finite(row.get("pnl"), "funding.pnl")
+    fill_count, funding_count = len(fills or []), len(funding or [])
+    gross_pnl = net_pnl + fees - funding_pnl if all(x is not None for x in (net_pnl, fees, funding_pnl)) else None
+    drag_reason = "NONPOSITIVE_GROSS_PRICE_PNL" if gross_pnl is not None and gross_pnl <= 0.0 else ""
+    return {
+        "fees_total": _metric(fees, "USDT", fill_count),
+        "funding_pnl_total": _metric(funding_pnl, "USDT", funding_count),
+        "turnover_notional_total": _metric(notional, "USDT", fill_count),
+        "fees_initial_equity": _metric(fees / initial if fees is not None else None, "fraction", fill_count),
+        "funding_cost_initial_equity": _metric(
+            -funding_pnl / initial if funding_pnl is not None else None, "fraction", funding_count
+        ),
+        "turnover_initial_equity": _metric(
+            notional / initial if notional is not None else None, "initial_equity_multiple", fill_count
+        ),
+        "turnover_usdt_per_day": _metric(
+            notional / elapsed_days if notional is not None and elapsed_days > 0.0 else None, "USDT/day", fill_count
+        ),
+        "fees_gross_price_pnl": _metric(
+            fees / gross_pnl if gross_pnl is not None and gross_pnl > 0.0 else None,
+            "fraction",
+            fill_count,
+            reason=drag_reason,
+        ),
+    }
+
+
+def _episode_metrics(evidence: Mapping[str, Any], *, min_samples: int) -> dict[str, Any]:
+    rows = _rows(evidence["episodes"], "episodes") if evidence.get("episodes") is not None else None
+    pnls = []
+    for row in rows or []:
+        if not isinstance(row.get("closed"), bool):
+            raise ValueError("episode.closed must be boolean")
+        pnl = _finite(row.get("net_pnl"), "episode.net_pnl")
+        if row["closed"]:
+            pnls.append(pnl)
+    count = len(pnls)
+    losses = -sum(item for item in pnls if item < 0.0)
+    gains = sum(item for item in pnls if item > 0.0)
+    reason = "INSUFFICIENT_CLOSED_EPISODES" if count < min_samples else ""
+    return {
+        "episode_profit_factor": _metric(
+            gains / losses if losses > 0.0 else None,
+            "ratio",
+            count,
+            sampling="closed_episodes",
+            reason=("NO_LOSS_EPISODES" if count and losses == 0.0 else reason),
+        ),
+        "win_rate": _metric(
+            sum(item > 0.0 for item in pnls) / count if count else None,
+            "fraction",
+            count,
+            sampling="closed_episodes",
+            reason=reason,
+        ),
+    }
+
+
+def evaluate_evidence(evidence: Mapping[str, Any]) -> dict[str, Any]:
+    """Evaluate an evidence bundle without executing, searching, or approving it.
+
+    Optional ``policy`` may freeze ``min_daily_returns``, ``min_closed_episodes``,
+    ``min_net_return`` and ``max_drawdown``. Statistical defaults (180 daily
+    returns and 30 closed episodes) are design-v1 diagnostics, not production
+    approval. Economic gates require explicit thresholds. Unknown R/O evidence
+    remains unavailable; callers cannot remove mandatory gates to gain rankability.
+
+    Malformed or non-finite numerical input raises ValueError. Valid but missing
+    evidence returns NOT_EVALUABLE, with diagnostic values retained where possible.
+    """
+    if not isinstance(evidence, Mapping):
+        raise ValueError("evidence must be an object")
+    initial = _finite(evidence.get("initial_equity"), "initial_equity")
+    if initial <= 0.0:
+        raise ValueError("initial_equity must be positive")
+    for name in ("source_completed", "diagnostic_only"):
+        if name in evidence and not isinstance(evidence[name], bool):
+            raise ValueError(f"{name} must be boolean")
+    source_incomplete = evidence.get("source_completed") is False
+    diagnostic_input = evidence.get("diagnostic_only") is True
+    identity = _json_copy(evidence.get("identity", {}), "identity")
+    if not isinstance(identity, dict):
+        raise ValueError("identity must be an object")
+    raw_policy = evidence.get("policy", {})
+    if not isinstance(raw_policy, Mapping):
+        raise ValueError("policy must be an object")
+    policy = _json_copy(dict(raw_policy), "policy")
+    min_daily = policy.get("min_daily_returns", 180)
+    min_episodes = policy.get("min_closed_episodes", 30)
+    for name, threshold in (("min_daily_returns", min_daily), ("min_closed_episodes", min_episodes)):
+        if isinstance(threshold, bool) or not isinstance(threshold, int) or threshold < 2:
+            raise ValueError(f"policy.{name} must be an integer >= 2")
+    curve = []
+    for row in _rows(evidence.get("curve", []), "curve"):
+        timestamp = _time(row.get("time_ns"), "curve.time_ns")
+        if "source_time_ns" in row and _time(row["source_time_ns"], "curve.source_time_ns") > timestamp:
+            raise ValueError("curve source_time_ns cannot be later than its valuation time_ns")
+        equity = _finite(row.get("equity"), "curve.equity")
+        if curve and timestamp <= curve[-1][0]:
+            raise ValueError("curve time_ns must be strictly increasing")
+        curve.append((timestamp, equity))
+    if curve and curve[0][1] != initial:
+        raise ValueError("curve must begin with initial_equity before any evaluated cashflows")
+    elapsed = (curve[-1][0] - curve[0][0]) / DAY_NS if len(curve) >= 2 else 0.0
+    ruin_time = next((timestamp for timestamp, equity in curve if equity <= 0.0), None)
+    net_pnl = curve[-1][1] - initial if curve else None
+    metrics, drawdown = _drawdown(curve)
+    metrics["net_return"] = _metric(net_pnl / initial if net_pnl is not None else None, "fraction", len(curve))
+    metrics["net_pnl"] = _metric(net_pnl, "USDT", len(curve))
+    cagr = None
+    if curve and elapsed > 0.0 and ruin_time is None:
+        try:
+            cagr = math.expm1(math.log(curve[-1][1] / initial) * 365.0 / elapsed)
+        except (OverflowError, ValueError):
+            pass
+    metrics["cagr"] = _metric(cagr, "annualized_fraction", len(curve), reason="RUIN" if ruin_time is not None else "")
+    daily, daily_returns, sampling = _daily_metrics(curve, ruin_time=ruin_time, min_samples=min_daily)
+    metrics.update(daily)
+    metrics.update(
+        _cashflow_metrics(
+            evidence,
+            initial=initial,
+            elapsed_days=elapsed,
+            net_pnl=net_pnl,
+            window=(curve[0][0], curve[-1][0]) if curve else None,
+        )
+    )
+    metrics.update(_episode_metrics(evidence, min_samples=min_episodes))
+
+    gates = {name: _gate() for name in ALL_GATES}
+    engineering = evidence.get("engineering", {})
+    if not isinstance(engineering, Mapping):
+        raise ValueError("engineering must be an object")
+    for name in ENGINEERING_GATES:
+        if name in engineering:
+            attestation = engineering[name]
+            if not isinstance(attestation, Mapping) or attestation.get("status") not in STATUSES:
+                raise ValueError(f"engineering.{name} must contain a valid status")
+            gates[name] = _json_copy(dict(attestation), f"engineering.{name}")
+            gates[name].setdefault("reason", "SUPPLIED_ATTESTATION")
+    if not identity and gates["E0"]["status"] == "PASS":
+        gates["E0"] = _gate(reason="MISSING_IDENTITY")
+    if source_incomplete and gates["E0"]["status"] == "PASS":
+        gates["E0"] = _gate(reason="INCOMPLETE_SOURCE_RUN")
+    if sampling["missing_midnights"] and gates["E1"]["status"] == "PASS":
+        gates["E1"] = _gate(reason="MISSING_DAILY_VALUATIONS")
+    screens = {"net_return": _gate(reason="MISSING_THRESHOLD"), "max_drawdown": _gate(reason="MISSING_THRESHOLD")}
+    if "min_net_return" in policy:
+        threshold = _finite(policy["min_net_return"], "policy.min_net_return")
+        required = ("net_return", "daily_sharpe", "daily_sortino", "episode_profit_factor")
+        if metrics["net_return"]["value"] is not None and metrics["net_return"]["value"] <= threshold:
+            screens["net_return"] = _gate("FAIL", "FROZEN_NET_RETURN_SCREEN")
+            gates["R0"] = _gate("FAIL", "FROZEN_NET_RETURN_SCREEN")
+        elif all(metrics[name]["status"] == "PASS" for name in required):
+            screens["net_return"] = _gate("PASS", "FROZEN_NET_RETURN_SCREEN")
+            gates["R0"] = _gate(reason="MISSING_RETURN_ATTRIBUTION_AND_CONCENTRATION")
+        else:
+            screens["net_return"] = _gate(reason="INCOMPLETE_RETURN_STATISTICS")
+            gates["R0"] = _gate(reason="INCOMPLETE_RETURN_STATISTICS")
+    if "max_drawdown" in policy:
+        threshold = _finite(policy["max_drawdown"], "policy.max_drawdown")
+        if not 0.0 < threshold < 1.0:
+            raise ValueError("policy.max_drawdown must be between zero and one")
+        if metrics["max_drawdown"]["status"] == "PASS":
+            passed = metrics["max_drawdown"]["value"] <= threshold
+            screens["max_drawdown"] = _gate("PASS" if passed else "FAIL", "FROZEN_SAMPLED_DRAWDOWN_SCREEN")
+            gates["R2"] = (
+                _gate(reason="MISSING_TAIL_MARGIN_AND_LIQUIDATION_EVIDENCE")
+                if passed
+                else _gate("FAIL", "FROZEN_SAMPLED_DRAWDOWN_SCREEN")
+            )
+    if ruin_time is not None:
+        gates["R2"] = _gate("FAIL", "RUIN")
+        screens["max_drawdown"] = _gate("FAIL", "RUIN")
+    required_gates = (*ENGINEERING_GATES, *RESEARCH_GATES)
+    blockers = [{"gate": name, **gates[name]} for name in required_gates if gates[name]["status"] != "PASS"]
+    if diagnostic_input:
+        blockers.append({"gate": "INPUT", "status": "NOT_EVALUABLE", "reason": "DIAGNOSTIC_SOURCE_SCOPE"})
+    development_passed = (
+        not source_incomplete
+        and not diagnostic_input
+        and all(gates[name]["status"] == "PASS" for name in ENGINEERING_GATES)
+        and all(item["status"] == "PASS" for item in screens.values())
+    )
+    report = {
+        "schema_version": SCHEMA_VERSION,
+        "identity": identity,
+        "evidence_role": evidence.get("evidence_role", "unspecified"),
+        "source_completed": evidence.get("source_completed"),
+        "policy": {**policy, "basis": "design_v1", "min_daily_returns": min_daily, "min_closed_episodes": min_episodes},
+        "metrics": metrics,
+        "daily_returns": daily_returns,
+        "daily_sampling": sampling,
+        "drawdown": drawdown,
+        "ruin": {"occurred": ruin_time is not None, "first_time_ns": ruin_time},
+        "gates": gates,
+        "blockers": blockers,
+        "rankable": not blockers,
+        "development_screens": screens,
+        "development_screen_passed": development_passed,
+        "diagnostic_only": bool(blockers),
+        "live_eligible": False,
+    }
+    return _json_copy(report, "report")

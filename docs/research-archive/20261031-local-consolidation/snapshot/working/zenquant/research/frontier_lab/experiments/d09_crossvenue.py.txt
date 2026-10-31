@@ -1,0 +1,324 @@
+"""Cross-venue coarse-data audit and explicitly synthetic clock/cost controls."""
+
+from __future__ import annotations
+
+from pathlib import Path
+from typing import Any
+
+import numpy as np
+import pandas as pd
+
+from zenquant.research.frontier_lab.common import DEV_END, SEEDS, load_bars
+
+HOUR_NS = 3600 * 10**9
+FOUR_HOURS_NS = 4 * HOUR_NS
+SOURCES = (
+    "data/raw/deribit/klines/BTC-PERPETUAL/klines_1h.parquet",
+    "data/raw/deribit/funding/BTC-PERPETUAL/funding_history.parquet",
+    "data/raw/binance/funding/BTCUSDT/data.parquet",
+)
+DOCS = (
+    "https://docs.deribit.com/api-reference/market-data/public-get_tradingview_chart_data",
+    "https://docs.deribit.com/api-reference/market-data/public-get_funding_rate_history",
+)
+
+
+def audited_hourly(hourly: pd.DataFrame) -> tuple[pd.DataFrame, dict[str, int]]:
+    """Remove only exact duplicates; exclude every version of conflicting hours."""
+    unique = hourly.drop_duplicates()
+    conflicts = unique.timestamp_ns.duplicated(keep=False)
+    return unique.loc[~conflicts].sort_values("timestamp_ns").reset_index(drop=True), {
+        "source_pre2026_rows": len(hourly),
+        "source_out_of_order_transitions": int((hourly.timestamp_ns.diff() < 0).sum()),
+        "exact_duplicate_rows_removed": int(len(hourly) - len(unique)),
+        "conflicting_timestamp_rows_excluded": int(conflicts.sum()),
+        "conflicting_timestamps_excluded": int(unique.loc[conflicts].timestamp_ns.nunique()),
+    }
+
+
+def aggregate_complete_4h(hourly: pd.DataFrame) -> pd.DataFrame:
+    """Interpret Deribit chart timestamp as bar open; never forward-fill missing hours.
+
+    Chart docs establish ms units and candle structure but do not explicitly
+    certify the local export's open-time convention. This interpretation is
+    reported as conditional, alongside a deliberately misaligned control.
+    """
+    if not (hourly["timestamp"].to_numpy() * 10**6 == hourly["timestamp_ns"].to_numpy()).all():
+        raise ValueError("millisecond/nanosecond timestamp disagreement")
+    if hourly["timestamp_ns"].duplicated().any():
+        raise ValueError("duplicate hourly timestamps")
+    if not hourly["timestamp_ns"].is_monotonic_increasing:
+        raise ValueError("unordered hourly timestamps")
+    if (hourly["timestamp_ns"] % HOUR_NS != 0).any():
+        raise ValueError("hourly timestamps are off the UTC hour grid")
+    values = hourly["close"].to_numpy(dtype=float)
+    if not np.isfinite(values).all() or (values <= 0).any():
+        raise ValueError("invalid hourly close")
+    frame = hourly.assign(open_time_ns=hourly["timestamp_ns"] // FOUR_HOURS_NS * FOUR_HOURS_NS)
+    grouped = frame.groupby("open_time_ns", sort=True)
+    out = grouped.agg(
+        count=("timestamp_ns", "size"),
+        first_ns=("timestamp_ns", "min"),
+        last_ns=("timestamp_ns", "max"),
+        deribit_close=("close", "last"),
+        naive_first_hour_close=("close", "first"),
+    ).reset_index()
+    # Unique, grid-aligned four rows with exact endpoints imply all four hours.
+    complete = (out["count"] == 4) & (out["first_ns"] == out["open_time_ns"])
+    complete &= out["last_ns"] == out["open_time_ns"] + 3 * HOUR_NS
+    out = out.loc[complete].copy()
+    out["close_time_ns"] = out["open_time_ns"] + FOUR_HOURS_NS - 10**6
+    return out[["open_time_ns", "close_time_ns", "deribit_close", "naive_first_hour_close"]]
+
+
+def lag_correlations(a: np.ndarray, b: np.ndarray, max_lag: int = 4) -> list[dict[str, Any]]:
+    """Positive lag means Corr(A[t], B[t+lag]); descriptive, not causal evidence."""
+    a, b = np.asarray(a, float), np.asarray(b, float)
+    if a.ndim != 1 or a.shape != b.shape or len(a) <= 2 * max_lag + 2:
+        raise ValueError("invalid lag sample")
+    rows = []
+    for lag in range(-max_lag, max_lag + 1):
+        x, y = (a[:-lag], b[lag:]) if lag > 0 else (a[-lag:], b[:lag]) if lag < 0 else (a, b)
+        valid = np.isfinite(x) & np.isfinite(y)
+        corr = float(np.corrcoef(x[valid], y[valid])[0, 1]) if valid.sum() > 2 else None
+        rows.append({"lag_steps": lag, "n": int(valid.sum()), "correlation": corr})
+    return rows
+
+
+def clock_experiment(seed: int, n: int = 2400) -> dict[str, Any]:
+    """Both venues observe the SAME latent innovation at the SAME true time.
+
+    A synthetic B event clock is 30ms fast and B receiver clock 20ms fast.
+    True transport delays A=1ms and B=2ms; the 10ms grid cannot resolve that
+    difference. Known receiver-offset correction removes fabricated lead/lag.
+    """
+    rng = np.random.default_rng(seed)
+    latent = rng.normal(0, 0.0001, n)
+    a, b = latent + rng.normal(0, 0.000002, n), latent + rng.normal(0, 0.000002, n)
+    ticks = np.arange(n) * 10
+    result: dict[str, Any] = {"seed": seed, "n": n, "true_price_propagation_delay_ms": 0}
+    for name, at, bt in [
+        ("event_clock", ticks, ticks + 30),
+        ("uncorrected_receive", ticks + 1, ticks + 2 + 20),
+        ("corrected_receive", ticks + 1, ticks + 2),
+    ]:
+        # Paired common-grid bins; unobserved edges remain missing, never zero-filled.
+        joined = pd.concat(
+            [
+                pd.Series(a, index=np.rint(at / 10).astype(int), name="a"),
+                pd.Series(b, index=np.rint(bt / 10).astype(int), name="b"),
+            ],
+            axis=1,
+        ).sort_index()
+        correlations = lag_correlations(joined.a.to_numpy(), joined.b.to_numpy())
+        peak = max(correlations, key=lambda row: row["correlation"])
+        result[f"{name}_peak_lag_steps"] = peak["lag_steps"]
+        result[f"{name}_peak_correlation"] = peak["correlation"]
+        result[f"{name}_correlations"] = correlations
+    result["grid_ms"] = 10
+    result["clock_offsets_known_only_in_simulation"] = True
+    return result
+
+
+def two_leg_cost(
+    gross_bps: float,
+    fee_per_fill_bps: float,
+    slippage_per_fill_bps: float,
+    hedge_loss_bps: float,
+    collateral_carry_bps: float,
+    *,
+    leg_notional_usd: float = 1000,
+    margin_fraction: float = 0.1,
+    collateral_by_venue_usd: tuple[float, float] = (100, 100),
+) -> dict[str, Any]:
+    """Synthetic USD-value ledger; not inverse-contract BTC settlement accounting.
+
+    Gross compression is per one-leg paired notional. Entry+exit of both legs
+    incurs FOUR fill fees and four slippages. Margin is separately prefunded
+    at each venue, cannot be offset by collateral parked on the other venue.
+    """
+    required = leg_notional_usd * margin_fraction
+    shortfall = [max(0.0, required - balance) for balance in collateral_by_venue_usd]
+    feasible = not any(shortfall)
+    fee, slippage = 4 * fee_per_fill_bps, 4 * slippage_per_fill_bps
+    net = gross_bps - fee - slippage - hedge_loss_bps - collateral_carry_bps
+    return {
+        "gross_bps_per_paired_notional": gross_bps,
+        "fee_bps": fee,
+        "slippage_bps": slippage,
+        "hedge_delay_loss_bps": hedge_loss_bps,
+        "collateral_carry_bps": collateral_carry_bps,
+        "execution_feasible": feasible,
+        "required_collateral_usd": [required, required],
+        "collateral_shortfall_usd": shortfall,
+        "net_bps_per_paired_notional": net if feasible else None,
+        "net_usd": net / 10000 * leg_notional_usd if feasible else None,
+        "net_bps_per_locked_collateral": net / (2 * margin_fraction) if feasible else None,
+    }
+
+
+def distribution(values: np.ndarray) -> dict[str, Any]:
+    values = np.asarray(values, float)
+    values = values[np.isfinite(values)]
+    if not len(values):
+        return {"n": 0}
+    return {
+        "n": len(values),
+        "mean": float(values.mean()),
+        "median": float(np.median(values)),
+        "std": float(values.std()),
+        "p05": float(np.quantile(values, 0.05)),
+        "p95": float(np.quantile(values, 0.95)),
+        "max_abs": float(np.abs(values).max()),
+    }
+
+
+def historical_audit(bars: pd.DataFrame, hourly: pd.DataFrame) -> dict[str, Any]:
+    aggregate = aggregate_complete_4h(hourly)
+    aligned = bars[["open_time_ns", "close_time_ns", "close"]].merge(
+        aggregate, on=["open_time_ns", "close_time_ns"], how="inner"
+    )
+    if len(aligned) < 50:
+        return {"overlap_rows": len(aligned), "bounded_diagnostic_possible": False}
+    spread = 10000 * (aligned.deribit_close.to_numpy() / aligned.close.to_numpy() - 1)
+    naive = 10000 * (aligned.naive_first_hour_close.to_numpy() / aligned.close.to_numpy() - 1)
+    contiguous = aligned.open_time_ns.diff() == FOUR_HOURS_NS
+    a = np.log(aligned.close).diff().where(contiguous).to_numpy()
+    b = np.log(aligned.deribit_close).diff().where(contiguous).to_numpy()
+    shifts = hourly.timestamp_ns.diff().dropna()
+    repeats = hourly.close.diff() == 0
+    repeat_runs = repeats.groupby((~repeats).cumsum()).sum()
+    by_year = {}
+    years = pd.to_datetime(aligned.open_time_ns, unit="ns", utc=True).dt.year.to_numpy()
+    for year in [2024, 2025]:
+        selected = years == year
+        by_year[str(year)] = {
+            "close_mark_difference_bps": distribution(spread[selected]),
+            "zero_lag_return_correlation": lag_correlations(a[selected], b[selected], 0)[0]["correlation"],
+        }
+    return {
+        "bounded_diagnostic_possible": True,
+        "deribit_pre2026_hourly_rows": len(hourly),
+        "deribit_first_open_utc": pd.Timestamp(int(hourly.timestamp_ns.min()), unit="ns", tz="UTC").isoformat(),
+        "deribit_last_close_proxy_utc": pd.Timestamp(
+            int(hourly.timestamp_ns.max()) + HOUR_NS - 10**6, unit="ns", tz="UTC"
+        ).isoformat(),
+        "deribit_complete_4h_windows": len(aggregate),
+        "deribit_incomplete_4h_windows_dropped": int(
+            hourly.timestamp_ns.floordiv(FOUR_HOURS_NS).nunique() - len(aggregate)
+        ),
+        "deribit_gap_count": int((shifts > HOUR_NS).sum()),
+        "deribit_max_timestamp_gap_hours": float(shifts.max() / HOUR_NS),
+        "deribit_zero_volume_hours": int((hourly.volume == 0).sum()),
+        "deribit_repeated_close_hours": int(repeats.sum()),
+        "deribit_longest_unchanged_close_run_hours": int(repeat_runs.max()),
+        "deribit_ms_ns_agree": bool((hourly.timestamp * 10**6 == hourly.timestamp_ns).all()),
+        "overlap_rows": len(aligned),
+        "overlap_first_open_utc": pd.Timestamp(int(aligned.open_time_ns.min()), unit="ns", tz="UTC").isoformat(),
+        "overlap_last_close_utc": pd.Timestamp(int(aligned.close_time_ns.max()), unit="ns", tz="UTC").isoformat(),
+        "train_before2024_overlap_rows": int(
+            (aligned.close_time_ns < pd.Timestamp("2024-01-01", tz="UTC").value).sum()
+        ),
+        "aligned_close_mark_difference_bps": distribution(spread),
+        "incorrect_three_hours_old_mark_difference_bps": distribution(naive),
+        "incorrect_mark_minus_aligned_mark_bps": distribution(naive - spread),
+        "coarse_return_lag_correlations": lag_correlations(a, b, 2),
+        "by_year": by_year,
+        "bid_ask_or_depth_present": False,
+        "received_at_or_historical_available_at_present": False,
+        "stale_feed_identifiable": False,
+        "bar_open_convention_locally_certified": False,
+    }
+
+
+def funding_audit(deribit: pd.DataFrame, binance: pd.DataFrame) -> dict[str, Any]:
+    """Descriptive rate difference, conditional on Deribit hour-END interpretation.
+
+    Sum hour rates over (t-8h,t]; do not sum overlapping interest_8h records.
+    Binance settlement stamps may carry small millisecond offsets; require
+    offsets <=10ms before normalizing to the 8h grid. No currency cash PnL.
+    """
+    if deribit.timestamp_ns.duplicated().any() or binance.funding_time_ns.duplicated().any():
+        raise ValueError("duplicate funding timestamps")
+    hours = deribit.set_index("timestamp_ns").sort_index().interest_1h
+    usable = binance.assign(offset_ns=binance.funding_time_ns % (8 * HOUR_NS))
+    usable = usable.loc[usable.offset_ns <= 10 * 10**6].copy()
+    usable["grid_ns"] = usable.funding_time_ns - usable.offset_ns
+    differences, direct = [], []
+    for row in usable.itertuples():
+        stamps = row.grid_ns - np.arange(7, -1, -1, dtype=np.int64) * HOUR_NS
+        rates = hours.reindex(stamps).to_numpy()
+        if np.isfinite(rates).all():
+            differences.append(10000 * (row.funding_rate - rates.sum()))
+            direct.append(float(row.funding_rate))
+    return {
+        "deribit_pre2026_rows": len(deribit),
+        "binance_pre2026_rows": len(binance),
+        "binance_off_8h_grid_more_than_10ms_rows": int(len(binance) - len(usable)),
+        "binance_max_grid_offset_ms": float((binance.funding_time_ns % (8 * HOUR_NS)).max() / 10**6),
+        "matched_complete_eight_hour_windows": len(differences),
+        "binance_minus_deribit_sum_hourly_rate_bps": distribution(np.asarray(differences)),
+        "matched_binance_settlement_rate_bps": distribution(10000 * np.asarray(direct)),
+        "deribit_hour_end_convention_certified": False,
+        "historical_funding_forecast_available_at_verified": False,
+        "inverse_settlement_or_fx_pnl_computed": False,
+    }
+
+
+def run(context: dict[str, Any]) -> dict[str, Any]:
+    bars = load_bars(context)
+    root = Path(context["repo_root"])
+    # Predicate pushdown prevents post2025 rows from entering this experiment.
+    hourly = pd.read_parquet(root / SOURCES[0], filters=[("timestamp_ns", "<", DEV_END.value)])
+    hourly = hourly.loc[hourly.timestamp_ns + HOUR_NS - 10**6 < DEV_END.value].copy()
+    hourly, duplicate_audit = audited_hourly(hourly)
+    deribit_funding = pd.read_parquet(root / SOURCES[1], filters=[("timestamp_ns", "<", DEV_END.value)])
+    binance_funding = pd.read_parquet(root / SOURCES[2], filters=[("funding_time_ns", "<", DEV_END.value)])
+    return {
+        "direction_id": "d09",
+        "hypothesis": "Apparent venue leadership and cross-venue gains can disappear after clock correction, synchronous marking, two-leg costs and separately prefunded collateral.",
+        "evidence_type": "mixed",
+        "method": {
+            "historical": "Frozen Binance 4h BTC versus four complete Deribit hourly candles, conditional open-time interpretation; close marks and return correlations only.",
+            "misalignment_control": "Use first-hour close at the shared window open as though it were the four-hour close: a three-hour-old mark.",
+            "funding": "Observed Binance settlement rate minus sum of eight Deribit interest_1h over (t-8h,t], conditional hour-end convention; no cash PnL.",
+            "synthetic_clock": "Common contemporaneous latent innovations; B exchange clock +30ms, B receive clock +20ms; known receiver offset correction on 10ms grid.",
+            "synthetic_cost": "20bp hypothetical compression; four fills, explicit hedge-delay loss, collateral carry and separate venue margin balances; assumed costs, not fee schedules.",
+            "parameter_search": False,
+            "real_executable_payoff_computed": False,
+            "split": "Only pre2026 data; venue overlap begins in previously observed development2024, no cross-venue pre2024 training sample.",
+        },
+        "metrics": {
+            "deribit_duplicate_audit": duplicate_audit,
+            "historical_data_audit": historical_audit(bars, hourly),
+            "funding_data_audit": funding_audit(deribit_funding, binance_funding),
+            "synthetic_clock": [clock_experiment(seed) for seed in SEEDS],
+            "synthetic_cost_scenarios": {
+                "frictionless_prefunded": two_leg_cost(20, 0, 0, 0, 0),
+                "low_cost_prefunded": two_leg_cost(20, 2, 0.5, 1, 0),
+                "higher_fee_delay_collateral_cost": two_leg_cost(20, 5, 0.5, 8, 4),
+                "same_total_collateral_fragmented": two_leg_cost(20, 2, 0.5, 1, 0, collateral_by_venue_usd=(150, 50)),
+            },
+            "acceptance_2026_rows_used": 0,
+            "real_cross_venue_alpha_identified": False,
+        },
+        "verdict": "coarse_synchronous_marks_observable_but_executable_leadlag_and_arbitrage_not_identified",
+        "limitations": [
+            "Deribit chart docs certify milliseconds and OHLC semantics, but local export lacks certified bar-open versus bar-close convention; alignment is conditional.",
+            "1h/4h historical closes are descriptive marks, not contemporaneous executable bid/ask prices; coarse correlations cannot identify millisecond propagation.",
+            "No received-at, available-at, sequence, depth, quote age, revisions or clock calibration: stale-feed and historical knowledge timing cannot be verified.",
+            "BTCUSDT versus BTC-PERPETUAL mixes quote currency, contract and venue basis; raw mark difference is not a locked tradable spread.",
+            "Overlap exists only in already-observed2024-2025; there is no cross-venue pre2024 training sample or untouched validation.",
+            "Funding rates are realized descriptions, not forecasts available before position entry; hourly interval semantics, inverse settlement, FX, cashflows and actual hedged positions remain uncertified.",
+            "Synthetic offsets are known by construction and constant; live offsets drift, delays vary and receive timestamps alone cannot reconstruct event chronology.",
+            "Synthetic USD-value scenarios assume gross compression, fees and hedge loss; they do not implement Deribit inverse-contract settlement, actual execution, liquidation or live collateral transfers.",
+            "Five seeds are mechanism controls, not market robustness or multiple-selection-adjusted alpha evidence; no promotion or live eligibility.",
+        ],
+        "falsification": "Reject leadership if synchronized receive clocks remove the lead, quote-age conditioning removes the effect, or both executable legs plus hedge delay, funding and separately locked collateral eliminate gains.",
+        "next_experiment": "Certify export timestamp conventions, then collect both venues' sequence-numbered bid/ask/depth with calibrated monotonic receive clocks; freeze a paper two-leg ledger with inverse-contract cash accounting and venue collateral before forward testing.",
+        "input_paths": list(SOURCES),
+        "internet_sources": list(DOCS),
+        "rankable": False,
+        "live_eligible": False,
+        "promotion_eligible": False,
+    }

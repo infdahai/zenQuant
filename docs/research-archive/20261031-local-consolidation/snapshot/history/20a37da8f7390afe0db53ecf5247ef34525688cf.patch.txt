@@ -1,0 +1,554 @@
+commit 20a37da8f7390afe0db53ecf5247ef34525688cf
+Author:     Disaster <clusternlh@gmail.com>
+AuthorDate: Mon Aug 24 11:31:25 2026 +0800
+Commit:     Disaster <clusternlh@gmail.com>
+CommitDate: Mon Aug 24 11:31:25 2026 +0800
+
+    feat(data): add strict BTC spot daily normalization
+
+diff --git a/scripts/convert_csv_to_parquet.py b/scripts/convert_csv_to_parquet.py
+index 5a2e738..06e8f72 100755
+--- a/scripts/convert_csv_to_parquet.py
++++ b/scripts/convert_csv_to_parquet.py
+@@ -5,6 +5,8 @@ from pathlib import Path
+ 
+ import pandas as pd
+ 
++from zenquant.data.spot_daily import normalize_spot_daily_csvs
++
+ 
+ def _normalize_exchange_timestamp(value: int | float) -> int:
+     """Normalize exchange timestamps to milliseconds before ns conversion."""
+@@ -14,7 +16,14 @@ def _normalize_exchange_timestamp(value: int | float) -> int:
+     return parsed
+ 
+ 
+-def csv_to_parquet(csv_dir: Path, output_dir: Path, data_type: str):
++def csv_to_parquet(
++    csv_dir: Path,
++    output_dir: Path,
++    data_type: str,
++    *,
++    source: str | None = None,
++    timeframe: str | None = None,
++):
+     """Convert all CSV files in directory to Parquet."""
+     csv_files = sorted(csv_dir.glob("*.csv"))
+ 
+@@ -22,6 +31,11 @@ def csv_to_parquet(csv_dir: Path, output_dir: Path, data_type: str):
+         print(f"No CSV files found in {csv_dir}")
+         return 0
+ 
++    if data_type == "klines" and source == "binance_spot" and timeframe == "1d":
++        result = normalize_spot_daily_csvs(csv_files, output_dir / "data.parquet")
++        print(f"  Saved {result.row_count} rows to {result.output_path}")
++        return result.row_count
++
+     print(f"Converting {len(csv_files)} {data_type} files...")
+ 
+     # Define column names based on data type
+@@ -148,7 +162,7 @@ def main():
+     for tf in ["5m", "1h", "4h", "1d"]:
+         csv_dir = base_dir / "klines" / symbol / tf
+         if csv_dir.exists() and list(csv_dir.glob("*.csv")):
+-            rows = csv_to_parquet(csv_dir, csv_dir, "klines")
++            rows = csv_to_parquet(csv_dir, csv_dir, "klines", source=args.source, timeframe=tf)
+             total_rows += rows
+ 
+     # Convert funding (futures only)
+diff --git a/tests/test_convert_csv_to_parquet.py b/tests/test_convert_csv_to_parquet.py
+index 9e7e78c..fa608a3 100644
+--- a/tests/test_convert_csv_to_parquet.py
++++ b/tests/test_convert_csv_to_parquet.py
+@@ -4,6 +4,7 @@ import importlib.util
+ from pathlib import Path
+ 
+ import pandas as pd
++import pytest
+ 
+ 
+ def _load_converter():
+@@ -91,3 +92,67 @@ def test_csv_to_parquet_deduplicates_overlapping_open_interest_rows(tmp_path: Pa
+     result = pd.read_parquet(output_dir / "data.parquet")
+     assert rows == 1
+     assert result["ts_ns"].tolist() == [1_777_507_200_000_000_000]
++
++
++def test_spot_daily_converter_uses_strict_conflict_detection(tmp_path: Path) -> None:
++    source_dir = tmp_path / "source"
++    output_dir = tmp_path / "output"
++    source_dir.mkdir()
++    _write_kline_csv(
++        source_dir / "BTCUSDT-1d-2026-04.csv",
++        open_time_ms=1_777_507_200_000,
++        close_time_ms=1_777_593_599_999,
++    )
++    conflicting = source_dir / "BTCUSDT-1d-2026-04-30.csv"
++    _write_kline_csv(
++        conflicting,
++        open_time_ms=1_777_507_200_000,
++        close_time_ms=1_777_593_599_999,
++    )
++    conflicting.write_text(conflicting.read_text(encoding="utf-8").replace(",105,10,", ",106,10,"), encoding="utf-8")
++
++    with pytest.raises(ValueError, match="conflicting duplicate"):
++        csv_to_parquet(
++            source_dir,
++            output_dir,
++            "klines",
++            source="binance_spot",
++            timeframe="1d",
++        )
++
++
++@pytest.mark.parametrize(
++    ("source", "timeframe"),
++    [("binance", "1d"), ("binance_spot", "4h")],
++)
++def test_non_spot_daily_converter_preserves_legacy_last_row_wins(
++    tmp_path: Path,
++    source: str,
++    timeframe: str,
++) -> None:
++    source_dir = tmp_path / "source"
++    output_dir = tmp_path / "output"
++    source_dir.mkdir()
++    _write_kline_csv(
++        source_dir / "first.csv",
++        open_time_ms=1_777_507_200_000,
++        close_time_ms=1_777_521_599_999,
++    )
++    second = source_dir / "second.csv"
++    _write_kline_csv(
++        second,
++        open_time_ms=1_777_507_200_000,
++        close_time_ms=1_777_521_599_999,
++    )
++    second.write_text(second.read_text(encoding="utf-8").replace(",105,10,", ",106,10,"), encoding="utf-8")
++
++    rows = csv_to_parquet(
++        source_dir,
++        output_dir,
++        "klines",
++        source=source,
++        timeframe=timeframe,
++    )
++
++    assert rows == 1
++    assert pd.read_parquet(output_dir / "data.parquet")["close"].tolist() == [106]
+diff --git a/tests/test_spot_daily.py b/tests/test_spot_daily.py
+new file mode 100644
+index 0000000..ba3521a
+--- /dev/null
++++ b/tests/test_spot_daily.py
+@@ -0,0 +1,177 @@
++from __future__ import annotations
++
++import hashlib
++from dataclasses import FrozenInstanceError
++from pathlib import Path
++
++import pandas as pd
++import pytest
++
++from zenquant.data.spot_daily import (
++    DAY_NS,
++    SpotDailyError,
++    audit_spot_daily,
++    normalize_spot_daily_csvs,
++)
++
++START_NS = 1_767_225_600_000_000_000
++
++
++def _write_daily_csv(
++    path: Path,
++    *,
++    open_time: int,
++    close_time: int,
++    close: float = 105.0,
++    high: float = 110.0,
++    low: float = 90.0,
++) -> None:
++    path.write_text(
++        "open_time,open,high,low,close,volume,close_time,quote_volume,trade_count,"
++        "taker_buy_base,taker_buy_quote,ignore\n"
++        f"{open_time},100,{high},{low},{close},10,{close_time},1000,5,6,600,0\n",
++        encoding="utf-8",
++    )
++
++
++def _write_parquet(path: Path, open_times: tuple[int, ...]) -> None:
++    pd.DataFrame(
++        {
++            "open_time_ns": open_times,
++            "close_time_ns": tuple(value + DAY_NS - 1_000_000 for value in open_times),
++        }
++    ).to_parquet(path, index=False)
++
++
++def test_exact_archive_overlap_deduplicates_and_records_ordered_source_digests(tmp_path: Path) -> None:
++    first = tmp_path / "b.csv"
++    second = tmp_path / "a.csv"
++    _write_daily_csv(
++        first,
++        open_time=START_NS // 1_000_000,
++        close_time=(START_NS + DAY_NS) // 1_000_000 - 1,
++    )
++    _write_daily_csv(
++        second,
++        open_time=START_NS // 1_000,
++        close_time=(START_NS + DAY_NS) // 1_000 - 1,
++    )
++
++    result = normalize_spot_daily_csvs((first, second), tmp_path / "data.parquet")
++
++    assert result.row_count == 1
++    assert result.first_open_ns == START_NS
++    assert result.last_close_ns == START_NS + DAY_NS - 1
++    assert result.raw_source_sha256 == (
++        ("a.csv", hashlib.sha256(second.read_bytes()).hexdigest()),
++        ("b.csv", hashlib.sha256(first.read_bytes()).hexdigest()),
++    )
++    assert result.normalized_sha256 == hashlib.sha256((tmp_path / "data.parquet").read_bytes()).hexdigest()
++    normalized_audit = audit_spot_daily(tmp_path / "data.parquet", START_NS, START_NS + DAY_NS)
++    assert normalized_audit.last_close_ns == START_NS + DAY_NS - 1
++    with pytest.raises(FrozenInstanceError):
++        result.row_count = 2  # type: ignore[misc]
++    assert result.__slots__
++
++
++def test_conflicting_archive_overlap_fails_without_publishing_output(tmp_path: Path) -> None:
++    first = tmp_path / "a.csv"
++    second = tmp_path / "b.csv"
++    for path, close in ((first, 105.0), (second, 106.0)):
++        _write_daily_csv(
++            path,
++            open_time=START_NS // 1_000_000,
++            close_time=(START_NS + DAY_NS) // 1_000_000 - 1,
++            close=close,
++        )
++
++    output = tmp_path / "data.parquet"
++    with pytest.raises(SpotDailyError, match="conflicting duplicate"):
++        normalize_spot_daily_csvs((first, second), output)
++
++    assert not output.exists()
++
++
++@pytest.mark.parametrize(
++    ("high", "low", "close", "message"),
++    [
++        (99.0, 90.0, 105.0, "candle bounds"),
++        (110.0, 101.0, 105.0, "candle bounds"),
++        (110.0, 90.0, float("nan"), "positive finite OHLC"),
++        (110.0, 0.0, 105.0, "positive finite OHLC"),
++    ],
++)
++def test_normalization_rejects_invalid_ohlc(
++    tmp_path: Path,
++    high: float,
++    low: float,
++    close: float,
++    message: str,
++) -> None:
++    source = tmp_path / "bad.csv"
++    _write_daily_csv(
++        source,
++        open_time=START_NS // 1_000_000,
++        close_time=(START_NS + DAY_NS) // 1_000_000 - 1,
++        high=high,
++        low=low,
++        close=close,
++    )
++
++    with pytest.raises(SpotDailyError, match=message):
++        normalize_spot_daily_csvs((source,), tmp_path / "data.parquet")
++
++
++def test_normalization_rejects_non_utc_daily_open_and_out_of_candle_close(tmp_path: Path) -> None:
++    shifted = tmp_path / "shifted.csv"
++    _write_daily_csv(
++        shifted,
++        open_time=START_NS // 1_000_000 + 1,
++        close_time=(START_NS + DAY_NS) // 1_000_000 - 1,
++    )
++    with pytest.raises(SpotDailyError, match="UTC day"):
++        normalize_spot_daily_csvs((shifted,), tmp_path / "shifted.parquet")
++
++    overlong = tmp_path / "overlong.csv"
++    _write_daily_csv(
++        overlong,
++        open_time=START_NS // 1_000_000,
++        close_time=(START_NS + DAY_NS) // 1_000_000,
++    )
++    with pytest.raises(SpotDailyError, match="close_time"):
++        normalize_spot_daily_csvs((overlong,), tmp_path / "overlong.parquet")
++
++
++def test_audit_reports_missing_utc_days_and_duplicate_opens(tmp_path: Path) -> None:
++    gapped = tmp_path / "gapped.parquet"
++    _write_parquet(gapped, (START_NS, START_NS + 2 * DAY_NS))
++
++    gap_audit = audit_spot_daily(gapped, START_NS, START_NS + 3 * DAY_NS)
++
++    assert gap_audit.status == "INSUFFICIENT_DATA_SPOT_DAILY_GAPS"
++    assert gap_audit.missing_open_ns == (START_NS + DAY_NS,)
++    assert gap_audit.duplicate_open_ns == ()
++    assert gap_audit.sha256 == hashlib.sha256(gapped.read_bytes()).hexdigest()
++
++    duplicate = tmp_path / "duplicate.parquet"
++    _write_parquet(duplicate, (START_NS, START_NS))
++    duplicate_audit = audit_spot_daily(duplicate, START_NS, START_NS + DAY_NS)
++    assert duplicate_audit.status == "INSUFFICIENT_DATA_SPOT_DAILY_GAPS"
++    assert duplicate_audit.duplicate_open_ns == (START_NS,)
++
++
++def test_audit_is_ready_only_for_exact_half_open_daily_window(tmp_path: Path) -> None:
++    path = tmp_path / "ready.parquet"
++    _write_parquet(path, (START_NS, START_NS + DAY_NS))
++
++    audit = audit_spot_daily(path, START_NS, START_NS + 2 * DAY_NS)
++
++    assert audit.status == "READY"
++    assert audit.row_count == 2
++    assert audit.first_open_ns == START_NS
++    assert audit.last_close_ns == START_NS + 2 * DAY_NS - 1_000_000
++    assert audit.missing_open_ns == ()
++    assert audit.duplicate_open_ns == ()
++    with pytest.raises(FrozenInstanceError):
++        audit.status = "changed"  # type: ignore[misc]
++    assert audit.__slots__
+diff --git a/zenquant/data/spot_daily.py b/zenquant/data/spot_daily.py
+new file mode 100644
+index 0000000..06a785e
+--- /dev/null
++++ b/zenquant/data/spot_daily.py
+@@ -0,0 +1,227 @@
++"""Strict, deterministic normalization for Binance BTC spot daily archives."""
++
++from __future__ import annotations
++
++import hashlib
++import math
++import os
++import tempfile
++from collections.abc import Sequence
++from dataclasses import dataclass
++from pathlib import Path
++from typing import Final
++
++import pandas as pd
++
++DAY_NS: Final = 86_400_000_000_000
++
++_KLINE_COLUMNS: Final = (
++    "open_time",
++    "open",
++    "high",
++    "low",
++    "close",
++    "volume",
++    "close_time",
++    "quote_volume",
++    "trade_count",
++    "taker_buy_base",
++    "taker_buy_quote",
++    "ignore",
++)
++_PRICE_COLUMNS: Final = ("open", "high", "low", "close")
++_VALUE_COLUMNS: Final = (
++    "open_time_ns",
++    "open",
++    "high",
++    "low",
++    "close",
++    "volume",
++    "close_time_ns",
++    "quote_volume",
++    "trade_count",
++    "taker_buy_base",
++    "taker_buy_quote",
++    "ignore",
++)
++
++
++class SpotDailyError(ValueError):
++    """Raised when spot-daily source data violates the frozen contract."""
++
++
++@dataclass(frozen=True, slots=True)
++class SpotDailyNormalizationResult:
++    """Identity and bounds of one atomically published normalized corpus."""
++
++    output_path: Path
++    row_count: int
++    first_open_ns: int | None
++    last_close_ns: int | None
++    raw_source_sha256: tuple[tuple[str, str], ...]
++    normalized_sha256: str
++
++
++@dataclass(frozen=True, slots=True)
++class SpotDailyAudit:
++    """Daily-grid coverage audit for a normalized spot corpus."""
++
++    status: str
++    row_count: int
++    first_open_ns: int | None
++    last_close_ns: int | None
++    missing_open_ns: tuple[int, ...]
++    duplicate_open_ns: tuple[int, ...]
++    sha256: str
++
++
++def normalize_spot_daily_csvs(
++    paths: Sequence[Path],
++    output_path: Path,
++) -> SpotDailyNormalizationResult:
++    """Normalize Binance millisecond/microsecond daily archives fail-closed."""
++    ordered_paths = tuple(sorted((Path(path) for path in paths), key=lambda path: str(path)))
++    if not ordered_paths:
++        raise SpotDailyError("at least one spot daily CSV is required")
++
++    source_digests = tuple((path.name, _sha256_file(path)) for path in ordered_paths)
++    frames = tuple(_read_daily_csv(path) for path in ordered_paths)
++    combined = pd.concat(frames, ignore_index=True)
++    _reject_conflicting_duplicates(combined)
++    normalized = (
++        combined.sort_values(["open_time_ns"], kind="mergesort")
++        .drop_duplicates(subset=["open_time_ns"], keep="first")
++        .loc[:, _VALUE_COLUMNS]
++        .reset_index(drop=True)
++    )
++
++    output_path = Path(output_path)
++    output_path.parent.mkdir(parents=True, exist_ok=True)
++    temporary_path = _temporary_sibling(output_path)
++    try:
++        normalized.to_parquet(temporary_path, index=False)
++        os.replace(temporary_path, output_path)
++    finally:
++        temporary_path.unlink(missing_ok=True)
++
++    return SpotDailyNormalizationResult(
++        output_path=output_path,
++        row_count=len(normalized),
++        first_open_ns=int(normalized["open_time_ns"].iloc[0]) if not normalized.empty else None,
++        last_close_ns=int(normalized["close_time_ns"].iloc[-1]) if not normalized.empty else None,
++        raw_source_sha256=source_digests,
++        normalized_sha256=_sha256_file(output_path),
++    )
++
++
++def audit_spot_daily(path: Path, start_ns: int, end_ns: int) -> SpotDailyAudit:
++    """Audit half-open UTC daily coverage without filling or hiding gaps."""
++    if start_ns >= end_ns or start_ns % DAY_NS or end_ns % DAY_NS:
++        raise SpotDailyError("audit window must be a non-empty UTC daily half-open interval")
++    path = Path(path)
++    digest = _sha256_file(path)
++    frame = pd.read_parquet(path)
++    required = {"open_time_ns", "close_time_ns"}
++    missing_columns = sorted(required - set(frame.columns))
++    if missing_columns:
++        raise SpotDailyError(f"normalized parquet missing columns: {missing_columns}")
++
++    open_times = tuple(int(value) for value in frame["open_time_ns"])
++    counts = pd.Series(open_times, dtype="int64").value_counts()
++    duplicate_open_ns = tuple(sorted(int(value) for value in counts[counts > 1].index))
++    expected = set(range(start_ns, end_ns, DAY_NS))
++    observed = set(open_times)
++    missing_open_ns = tuple(sorted(expected - observed))
++    invalid_grid = any(value % DAY_NS for value in open_times)
++    status = (
++        "READY"
++        if not missing_open_ns and not duplicate_open_ns and not invalid_grid
++        else "INSUFFICIENT_DATA_SPOT_DAILY_GAPS"
++    )
++    ordered = frame.sort_values("open_time_ns", kind="mergesort")
++    return SpotDailyAudit(
++        status=status,
++        row_count=len(frame),
++        first_open_ns=int(ordered["open_time_ns"].iloc[0]) if not ordered.empty else None,
++        last_close_ns=int(ordered["close_time_ns"].iloc[-1]) if not ordered.empty else None,
++        missing_open_ns=missing_open_ns,
++        duplicate_open_ns=duplicate_open_ns,
++        sha256=digest,
++    )
++
++
++def _read_daily_csv(path: Path) -> pd.DataFrame:
++    try:
++        frame = pd.read_csv(path)
++    except Exception as exc:
++        raise SpotDailyError(f"unable to read spot daily CSV {path.name}: {exc}") from exc
++    frame.columns = [str(column).strip().lower() for column in frame.columns]
++    if not set(_KLINE_COLUMNS).issubset(frame.columns):
++        try:
++            frame = pd.read_csv(path, names=_KLINE_COLUMNS, header=None)
++        except Exception as exc:
++            raise SpotDailyError(f"unable to read spot daily CSV {path.name}: {exc}") from exc
++    missing = sorted(set(_KLINE_COLUMNS) - set(frame.columns))
++    if missing:
++        raise SpotDailyError(f"spot daily CSV {path.name} missing columns: {missing}")
++    if frame.empty:
++        raise SpotDailyError(f"spot daily CSV {path.name} is empty")
++
++    for column in _KLINE_COLUMNS:
++        frame[column] = pd.to_numeric(frame[column], errors="coerce")
++    if frame[list(_PRICE_COLUMNS)].isna().any().any():
++        raise SpotDailyError(f"spot daily CSV {path.name} requires positive finite OHLC")
++    non_price_columns = [column for column in _KLINE_COLUMNS if column not in _PRICE_COLUMNS]
++    if frame[non_price_columns].isna().any().any():
++        raise SpotDailyError(f"spot daily CSV {path.name} contains non-numeric values")
++
++    frame["open_time_ns"] = frame["open_time"].map(_exchange_timestamp_to_ns)
++    raw_close_ns = frame["close_time"].map(_exchange_timestamp_to_ns)
++    if any(value % DAY_NS for value in frame["open_time_ns"]):
++        raise SpotDailyError(f"spot daily CSV {path.name} open_time is not a UTC day")
++    expected_end = frame["open_time_ns"] + DAY_NS
++    if not ((raw_close_ns >= frame["open_time_ns"]) & (raw_close_ns < expected_end)).all():
++        raise SpotDailyError(f"spot daily CSV {path.name} close_time is outside its UTC daily candle")
++    frame["close_time_ns"] = expected_end - 1
++
++    for row_index, row in frame.iterrows():
++        prices = tuple(float(row[column]) for column in _PRICE_COLUMNS)
++        if not all(math.isfinite(value) and value > 0 for value in prices):
++            raise SpotDailyError(f"spot daily CSV {path.name} row {row_index} requires positive finite OHLC")
++        open_price, high, low, close = prices
++        if high < max(open_price, close) or low > min(open_price, close) or high < low:
++            raise SpotDailyError(f"spot daily CSV {path.name} row {row_index} violates candle bounds")
++    return frame.loc[:, _VALUE_COLUMNS]
++
++
++def _reject_conflicting_duplicates(frame: pd.DataFrame) -> None:
++    for open_time_ns, group in frame.groupby("open_time_ns", sort=True):
++        if len(group) < 2:
++            continue
++        first = group.iloc[0]
++        if not all(_rows_equal(first, group.iloc[index]) for index in range(1, len(group))):
++            raise SpotDailyError(f"conflicting duplicate open_time_ns={int(open_time_ns)}")
++
++
++def _rows_equal(left: pd.Series, right: pd.Series) -> bool:
++    return all(left[column] == right[column] for column in _VALUE_COLUMNS)
++
++
++def _exchange_timestamp_to_ns(value: object) -> int:
++    numeric = float(value)
++    if not math.isfinite(numeric) or not numeric.is_integer():
++        raise SpotDailyError("exchange timestamp must be a finite integer")
++    parsed = int(numeric)
++    if parsed < 1_000_000_000_000:
++        raise SpotDailyError("exchange timestamp must use milliseconds or microseconds")
++    return parsed * (1_000 if parsed >= 1_000_000_000_000_000 else 1_000_000)
++
++
++def _temporary_sibling(output_path: Path) -> Path:
++    descriptor, name = tempfile.mkstemp(prefix=f".{output_path.name}.", suffix=".tmp", dir=output_path.parent)
++    os.close(descriptor)
++    return Path(name)
++
++
++def _sha256_file(path: Path) -> str:
++    return hashlib.sha256(path.read_bytes()).hexdigest()

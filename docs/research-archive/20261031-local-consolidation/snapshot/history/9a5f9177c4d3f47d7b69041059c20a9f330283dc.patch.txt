@@ -1,0 +1,88 @@
+commit 9a5f9177c4d3f47d7b69041059c20a9f330283dc
+Author:     Disaster <clusternlh@gmail.com>
+AuthorDate: Mon Aug 24 13:27:35 2026 +0800
+Commit:     Disaster <clusternlh@gmail.com>
+CommitDate: Mon Aug 24 13:27:35 2026 +0800
+
+    docs(research): document replayable market tail freeze
+
+diff --git a/docs/FORWARD_COLLECTION_AUTOMATION.md b/docs/FORWARD_COLLECTION_AUTOMATION.md
+index abbb0e7..9d1ef5f 100644
+--- a/docs/FORWARD_COLLECTION_AUTOMATION.md
++++ b/docs/FORWARD_COLLECTION_AUTOMATION.md
+@@ -134,10 +134,14 @@ existing `5m`, `1h`, or `4h` Parquet files used by other research paths.
+ 
+ The market-tail preparer likewise never rewrites either shared canonical Parquet. It crops them into the exact frozen
+ window, fills only missing fixed-window 5m bars or funding anchors from Binance REST, and publishes isolated `5m` and
+-`funding` outputs together with `market_tail_provenance.json`. Every REST request and response page is digested.
++`funding` outputs together with `market_tail_provenance.json`. Every exact REST request, raw response page, inserted
++event list, and digest is retained so the freezer can rebuild the derived frames without network access. Retryable
++timeouts, HTTP 429, and HTTP 5xx responses use a bounded deterministic retry schedule; malformed payloads fail closed.
+ Funding provider timestamps are retained as `raw_funding_time_ns` and canonicalized to an 8h
+ `funding_time_ns` anchor only when they fall in `[anchor, anchor + 60 seconds]`; gaps, duplicates, non-finite values,
+ bad candles, and later timestamps fail closed. Existing isolated `1d` bytes are preserved if already present.
++The provenance file is the publication commit marker. If a process stops before that marker appears, the next run
++removes only files described by the validated transaction marker; it refuses unknown or modified orphan contents.
+ 
+ The execution freeze binds both normalized bytes and every raw Binance CSV as provenance. The following zsh-safe
+ array uses C-locale filename order, expands each regular raw archive into the repeatable `--spot-raw` argument required
+@@ -157,7 +161,9 @@ uv run python scripts/freeze_trend_research_inputs.py \
+   --spot-1d data/derived/trend_research/20260824/BTCUSDT/1d/data.parquet \
+   "${trend_spot_raw_args[@]}" \
+   --perp-5m data/derived/trend_research/20260824/BTCUSDT/5m/data.parquet \
++  --perp-source data/raw/binance/klines/BTCUSDT/5m/data.parquet \
+   --funding data/derived/trend_research/20260824/BTCUSDT/funding/data.parquet \
++  --funding-source data/raw/binance/funding/BTCUSDT/data.parquet \
+   --market-tail-provenance data/derived/trend_research/20260824/BTCUSDT/market_tail_provenance.json \
+   --time-space-hypothesis config/research/time_space_shadow_hypothesis_v1.json \
+   --trend-hypothesis config/research/trend_participation_hypothesis_v1.json \
+diff --git a/docs/superpowers/plans/2026-08-24-trend-research-foundation.md b/docs/superpowers/plans/2026-08-24-trend-research-foundation.md
+index e835787..c5bee44 100644
+--- a/docs/superpowers/plans/2026-08-24-trend-research-foundation.md
++++ b/docs/superpowers/plans/2026-08-24-trend-research-foundation.md
+@@ -467,7 +467,10 @@ uv run python scripts/prepare_trend_market_tail.py \
+ 
+ Funding source timestamps in `[anchor, anchor + 60 seconds]` map to the exact 8h anchor, with the provider timestamp
+ retained separately. Anything later, any duplicate/gap, an incomplete 5m grid, or a provenance mismatch is a hard
+-blocker.
++blocker. Provenance retains each exact REST query, raw response page, inserted-event list, and digest; execution freeze
++replays that lineage offline and compares exact schemas, dtypes, counts, source identities, output bytes, and repository
++HEAD. `market_tail_provenance.json` is the sole observable commit boundary, with a validated transaction marker used
++only to recover interrupted pre-commit publication.
+ 
+ ```zsh
+ export LC_ALL=C
+@@ -483,7 +486,9 @@ uv run python scripts/freeze_trend_research_inputs.py \
+   --spot-1d data/derived/trend_research/20260824/BTCUSDT/1d/data.parquet \
+   "${trend_spot_raw_args[@]}" \
+   --perp-5m data/derived/trend_research/20260824/BTCUSDT/5m/data.parquet \
++  --perp-source data/raw/binance/klines/BTCUSDT/5m/data.parquet \
+   --funding data/derived/trend_research/20260824/BTCUSDT/funding/data.parquet \
++  --funding-source data/raw/binance/funding/BTCUSDT/data.parquet \
+   --market-tail-provenance data/derived/trend_research/20260824/BTCUSDT/market_tail_provenance.json \
+   --time-space-hypothesis config/research/time_space_shadow_hypothesis_v1.json \
+   --trend-hypothesis config/research/trend_participation_hypothesis_v1.json \
+diff --git a/tests/test_data_readiness_status.py b/tests/test_data_readiness_status.py
+index 30e1305..31e5838 100644
+--- a/tests/test_data_readiness_status.py
++++ b/tests/test_data_readiness_status.py
+@@ -267,7 +267,9 @@ class DataReadinessStatusTests(unittest.TestCase):
+         self.assertIn("--start 2026-01-01T00:00:00Z", runbook)
+         self.assertIn("--end 2026-08-24T00:00:00Z", runbook)
+         self.assertIn("--perp-5m data/derived/trend_research/20260824/BTCUSDT/5m/data.parquet", runbook)
++        self.assertIn("--perp-source data/raw/binance/klines/BTCUSDT/5m/data.parquet", runbook)
+         self.assertIn("--funding data/derived/trend_research/20260824/BTCUSDT/funding/data.parquet", runbook)
++        self.assertIn("--funding-source data/raw/binance/funding/BTCUSDT/data.parquet", runbook)
+         self.assertIn(
+             "--market-tail-provenance data/derived/trend_research/20260824/BTCUSDT/market_tail_provenance.json",
+             runbook,
+@@ -288,7 +290,9 @@ class DataReadinessStatusTests(unittest.TestCase):
+         self.assertIn("--output-dir config/research/registrations", plan)
+         self.assertIn("scripts/prepare_trend_market_tail.py", plan)
+         self.assertIn("--perp-5m data/derived/trend_research/20260824/BTCUSDT/5m/data.parquet", plan)
++        self.assertIn("--perp-source data/raw/binance/klines/BTCUSDT/5m/data.parquet", plan)
+         self.assertIn("--funding data/derived/trend_research/20260824/BTCUSDT/funding/data.parquet", plan)
++        self.assertIn("--funding-source data/raw/binance/funding/BTCUSDT/data.parquet", plan)
+         self.assertIn("--market-tail-provenance", plan)
+ 
+     def test_build_payload_marks_partial_and_blocked_states(self) -> None:

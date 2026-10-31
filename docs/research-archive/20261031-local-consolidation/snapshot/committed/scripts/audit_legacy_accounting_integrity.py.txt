@@ -1,0 +1,111 @@
+#!/usr/bin/env python3
+"""Write an immutable sidecar describing legacy accounting evidence validity."""
+
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+import os
+import sys
+import tempfile
+from pathlib import Path
+from typing import Any
+
+sys.path.insert(0, str(Path(__file__).parent.parent))
+
+from zenquant.research.legacy_accounting_validity import (
+    DEFAULT_ACCOUNTING_VALIDITY_REGISTRY,
+    AccountingValidityRegistryError,
+    load_accounting_validity_registry,
+)
+
+ACCOUNTING_AUDIT_SCHEMA_VERSION = "legacy-accounting-audit.v1"
+_HASH_CHUNK_BYTES = 1024 * 1024
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--source", required=True, type=Path)
+    parser.add_argument("--registry", type=Path, default=DEFAULT_ACCOUNTING_VALIDITY_REGISTRY)
+    parser.add_argument("--output", required=True, type=Path)
+    return parser
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = build_parser().parse_args(argv)
+    try:
+        if args.source.resolve() == args.output.resolve():
+            raise AccountingValidityRegistryError("output must not replace the source artifact")
+        registry = load_accounting_validity_registry(args.registry)
+        source_sha256, source_size_bytes = _source_identity(args.source)
+        path_records = registry.records_for_artifact(str(args.source))
+        if path_records and source_sha256 not in {record.source_sha256 for record in path_records}:
+            raise AccountingValidityRegistryError(
+                f"source_sha256_mismatch:{args.source}:"
+                f"expected={sorted({record.source_sha256 for record in path_records})}:actual={source_sha256}"
+            )
+        records = tuple(dict.fromkeys((*path_records, *registry.records_for_sha256(source_sha256))))
+        if not records:
+            raise AccountingValidityRegistryError(f"source has no accounting validity classification:{args.source}")
+        sidecar = {
+            "schema_version": ACCOUNTING_AUDIT_SCHEMA_VERSION,
+            "source": {
+                "artifact_path": str(args.source),
+                "sha256": source_sha256,
+                "size_bytes": source_size_bytes,
+            },
+            "registry": {
+                "path": str(args.registry),
+                "schema_version": registry.schema_version,
+            },
+            "records": [record.to_dict() for record in records],
+        }
+        encoded = _canonical_json_bytes(sidecar)
+        _write_atomically(args.output, encoded, protected_source=args.source)
+    except (AccountingValidityRegistryError, OSError) as exc:
+        print(f"invalid input: {exc}", file=sys.stderr)
+        return 2
+    print(json.dumps({"output": str(args.output), "source_sha256": source_sha256}, sort_keys=True))
+    return 0
+
+
+def _source_identity(path: Path) -> tuple[str, int]:
+    digest = hashlib.sha256()
+    size_bytes = 0
+    with path.open("rb") as source:
+        for chunk in iter(lambda: source.read(_HASH_CHUNK_BYTES), b""):
+            digest.update(chunk)
+            size_bytes += len(chunk)
+    return digest.hexdigest(), size_bytes
+
+
+def _canonical_json_bytes(payload: Any) -> bytes:
+    return json.dumps(payload, allow_nan=False, indent=2, sort_keys=True).encode("utf-8")
+
+
+def _write_atomically(path: Path, content: bytes, *, protected_source: Path) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="wb",
+            dir=path.parent,
+            prefix=f".{path.name}.",
+            suffix=".tmp",
+            delete=False,
+        ) as output:
+            temporary = Path(output.name)
+            if temporary.resolve() == protected_source.resolve():
+                raise AccountingValidityRegistryError("temporary output must not alias the source artifact")
+            output.write(content)
+            output.flush()
+            os.fsync(output.fileno())
+        os.replace(temporary, path)
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

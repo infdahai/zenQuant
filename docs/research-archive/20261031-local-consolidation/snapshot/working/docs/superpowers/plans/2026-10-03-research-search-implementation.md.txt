@@ -1,0 +1,125 @@
+# BTC Research Search Implementation Plan
+
+> **For agentic workers:** Use superpowers:subagent-driven-development for independent modules, with task review and whole-change validation. Track completed work below; never infer completion from intent.
+
+**Goal:** Build the engineering/evaluation loop and search multiple economically distinct BTC strategies, retaining all failures and separating historical candidates from prospective evidence.
+
+**Goal extension (explicit user instruction, 2026-10-03):** Use ablation experiments to remove unnecessary content and complexity. Every proposed signal, filter, adaptive rule or model must show incremental value against its removal/simpler alternative under the same frozen data, cost, risk and execution conditions. Keep components only when their benefit survives the evaluation; inconclusive evidence is not proof of value. Accounting, point-in-time integrity and mandatory risk controls are invariants, not removable experimental components.
+
+**User stop condition:** Pause this goal and stop child work when the `codex` weekly remaining limit returns to 100%. Read-only local Codex `account/rateLimits/read` is available through `/private/tmp/zenquant-read-codex-limits.py`; on 2026-10-02 17:32:49 UTC it reported 48% for the 10,080-minute `codex` window. Check at work milestones. A separate `base_model_inference` bucket is not this condition. Unknown/unavailable status is not evidence of a reset.
+
+**Architecture:** Reuse the trading/risk/accounting kernel and existing data. Add immutable run identity and append-only trial evidence, then an independent multi-dimensional evaluator. Search adapters propose candidates; evaluation and promotion remain outside their authority.
+
+**Tech Stack:** Existing Python environment, dataclasses, JSON/JSONL, NumPy and installed Optuna; CPU first. No dependency upgrades or production configuration changes are required.
+
+**Spec:** `docs/superpowers/specs/2026-10-02-research-engineering-framework-design.md` and `docs/RESEARCH_EVALUATION_SPEC.md`.
+
+## Global Constraints
+
+- Production remains BTC first. The owner explicitly expanded offline research to multiple major assets and mechanisms; decisions remain on confirmed 4h bars, with executable price after decision cutoff.
+- Existing legacy production issues remain record-only; new research adapters must disclose inherited failures.
+- New user authorization permits independent bounded research implementation/search; it does not change old Quant V2 verdicts or authorize deployment.
+- All code/data/config/cost/policy identities and failed attempts must survive restart.
+- 2026 historical data is already observed; no fresh-OOS claim.
+- Candidate FAIL, NOT_EVALUABLE and INVALID never become PASS through averaging.
+- Implement in the current non-main branch; preserve the dirty accounting and frontend work. No blanket git add, reset, stash, push or commit.
+
+## Review Focus
+
+1. Same parameters with different data, seeds or accounting code must not collide; task 1 tests identity mutation.
+2. Truncated journals and interrupted jobs must not appear complete; task 1 tests corruption and resume.
+3. NAV ruin, missing dates and no-loss episodes must not yield attractive fabricated ratios; task 2 tests each boundary.
+4. Future data mutation must not alter earlier decisions or train-only candidate sequences; task 4 tests causal prefix invariance.
+5. Real costs, partial fills and unavailable execution evidence must not be bypassed by research ranking; tasks 3–5 test exact accounting and gate propagation.
+
+## Task 1 — Run identity and complete trial journal
+
+Files: create `zenquant/research/run_evidence.py`, `tests/test_run_evidence.py`.
+
+Interfaces: `identity_hash(payload: Mapping[str, Any]) -> str`; `TrialJournal(root: Path, identity: Mapping[str, Any])` with `append(record: Mapping[str, Any]) -> dict`, `records() -> list[dict]`. Every appended record requires unique `attempt_id`; identity file is exact-match checked on resume. Single-writer append-only operation; existing files are never silently repaired or overwritten.
+
+- [x] Write tests for canonical hash, mutation-sensitive identity, non-finite values, two same-parameter attempts, conflicting duplicate IDs, resume mismatch and truncated journal.
+- [x] Run `.venv/bin/pytest tests/test_run_evidence.py -q` and observe missing behavior.
+- [x] Implement deterministic JSON, identity binding and durable append-only records. Validate existing journal before accepting new records.
+- [x] Run the focused tests and ruff; report exact outcomes. Root reviews file diff and adversarial inputs.
+
+## Task 2 — Independent evaluation from evidence
+
+Files: create `zenquant/research/evaluation.py`, `tests/test_research_evaluation.py`.
+
+Interface: `evaluate_evidence(evidence: Mapping[str, Any]) -> dict[str, Any]`. Input includes `initial_equity`, ordered `curve` rows (`time_ns`, `equity`), optional fills (`time_ns`, `signed_qty`, `price`, `fee`), funding (`time_ns`, `pnl`), episodes (`closed`, `net_pnl`), `engineering` gate objects, and `identity`. The returned JSON-safe report includes versioned metrics, units/status/sample sizes, explicit gates/blockers, and no live eligibility.
+
+- [x] Write independent hand-calculation tests for daily returns, full-sample downside Sortino, drawdown/recovery, cost/turnover units, missing data, non-finite values, no-loss PF, negative/zero NAV, and engineering blockers that high return cannot offset.
+- [x] Run `.venv/bin/pytest tests/test_research_evaluation.py -q` and observe expected failure.
+- [x] Implement pure metrics and status propagation. Missing engineering evidence remains NOT_EVALUABLE; unavailable dimensions remain explicit, not invented.
+- [x] Run focused tests and ruff. Root reviews semantics against the evaluation spec, including rankability.
+
+## Task 3 — Evidence adapter and executable report
+
+Files: create `zenquant/research/evidence_adapter.py`, `scripts/evaluate_research_evidence.py`, `tests/test_research_evidence_adapter.py`.
+
+Interfaces: adapter reads the already recorded fixed-run CSV/JSON artifacts, validates paths and metadata, constructs task 2 evidence, and writes deterministic JSON/Markdown. CLI takes explicit input/output paths and labels old observed historical evidence. It cannot claim full E0–E4 from just a compact metrics file.
+
+- [x] Inspect one actual repaired run and define an adapter for its exact schema; write fixture tests with independently known account paths.
+- [x] Verify a missing/wrong schema is rejected, observed history is labelled, and partial accounting proof does not imply full parity.
+- [x] Implement adapter and CLI; evaluate existing fixed legacy/plugin/baseline evidence and inspect the output.
+- [x] Run focused integration checks and record measured evidence in the plan ledger.
+
+## Task 4 — Fair bounded multi-mechanism search
+
+Files: existing plugin/research interfaces plus a dedicated research candidate catalog and command; exact adapter selected after inspecting execution timing. No separate optimistic PnL engine.
+
+- [x] Freeze economically distinct hypotheses (trend persistence, breakout continuation, range reversion), inputs, entry/size/exit/failure cases and train-only parameter bounds in a versioned research catalog.
+- [x] Add research-only post-decision execution timing and common baseline mapping with tests for causal prefix invariance, actual fills and cost feedback. Any unresolved runtime restriction makes the experiment diagnostic-only.
+- [x] Connect Random/TPE to journal and evaluator. Preserve all candidate attempts, data access, fixed windows and sampler state; validate interrupted resume and deterministic replay.
+- [x] Execute bounded train search and fixed dev defaults. Record wall-clock and evaluation budgets. Selecting train candidates for dev requires a separate frozen shortlist; no budget extension to obtain a winner.
+
+## Task 5 — Robustness, prospective boundaries and learning handoff
+
+- [ ] Freeze a component inventory and one-at-a-time ablation matrix before reading its dev results. Include simple baselines and explicit no-op cases. Record keep/remove/inconclusive decisions using paired return uncertainty, drawdown, cost/turnover, robustness and complexity; do not retain a feature just because one backtest is higher.
+- [ ] For each qualifying independent mechanism, run identical required windows × costs × five seeds, parameter neighbours and risk-matched baseline comparisons.
+- [ ] Report independent trade episodes, net/realized/unrealized PnL, risk, regime dependence, turnover, costs, sample limitations and invalid/missing engineering evidence.
+- [x] Implement scoped candidate status projection; old/global engineering blockers remain applicable. No static historical-pass or automatic live promotion.
+- [ ] Add small sequential RL only after its environment and common evaluator are verified; compare actual total compute, not episode counts alone.
+- [ ] Write a trading-architect walkthrough from hypothesis to data, intent, risk, execution, account, evaluation and iteration, using actual successful and failed experiments.
+- [ ] Run appropriate tests, full `zenquant-check`, independent review, and audit every spec requirement. Keep the goal active while profitability or prospective evidence is unproven.
+
+## Execution ledger
+
+- 2026-10-03: Plan created after explicit user instruction to start. Architecture and evaluation specs accepted as the implementation direction. Prior turn produced design artifacts; this turn starts code. No prior interrupted implementation process has yet been established as live.
+- Interface check: tasks 1/2 own independent files; task 3 consumes the exact `evaluate_evidence` schema; task 4 consumes both modules. Task 5 depends on measured results, not promised returns.
+- Ruling: preserve the current dirty branch to retain the repaired accounting baseline; new modules/tests are isolated by ownership. Legacy production fixes and deployment remain outside this authorization.
+
+- 2026-10-03: P0/P1 implementations and importer are running. 28 repaired historical cases were imported without invalid inputs; all 28 remain non-rankable. The dev plugin again shows −13.78% net return and 30.55% sampled DD. Artifact: `results/research_framework/20261003/recorded_evaluation_v1/`. This is a re-evaluation, not 28 newly executed backtests.
+- Independent reviews reproduced and fixed: future source-time valuation, incomplete/diagnostic development-screen admission, live-job misclassification by concurrent resume, missing funding coverage, numerical overflow in range filtering, 1x reference mislabeled as risk-matched, mutable run identity references, and instantaneous insolvency hidden by same-time quote recovery. Each fix has a behavioral regression.
+- An engineering wiring probe of the new vol-target dev path ran once before the final code manifest: 4,386 evaluated bars, 180 feature-warmup bars, 731 daily observations; 0.747s replay/evaluation before the additional risk/regime integration. It was not a parameter-search trial or a promotable result. The forthcoming CLI batch supersedes this probe with full raw artifacts and timing.
+- CLI fixed/search entrypoint and shared-component next-open replay are implemented. CLI intentionally rejects existing output directories; low-level seeded search resume is tested separately. Data separation is logical by returned rows; source files contain and are hashed across already-observed future periods. No physically sealed fresh OOS claim.
+- User extended the active objective to require ablation-based simplification. R7 remains incomplete until the candidate component inventory, required ablations and evidence-backed keep/remove/inconclusive decisions are available.
+
+- 2026-10-03 06:02 UTC: observed Codex weekly reset (reset timestamp advanced; remaining 96%) and paused goal under user stop condition. Child threads and prior harness were already stopped. User subsequently explicitly requested restart; resumed this turn manually. The goal-status API does not expose a resume operation, so its stored status remains paused until the client resumes it. Apply the quota stop again at the next reset, using this reset as the new baseline.
+- Resume review: prior full harness completed with Gate 0/A/B/D/F PASS and C/E FAIL. Gate E: 5 failed, 1854 passed, 4 skipped, 34 subtests passed; the same 5 failures and Gate C golden assertion match the repaired accounting baseline exactly. The +386 passing tests do not clear existing blockers.
+- Resumed work ownership: framework agent owns the four ablation false-decision boundaries; runtime agent owns search callback failure accounting; manager binds actual warmup identity and freezes shared code across seven batch jobs; tail-risk agent independently reviews safeguards. No legacy production repair or deployment authorized.
+- Before new batch execution: runner now binds warmup requests, actual available strategy/regime history and regime-input hash in immutable run/comparison identities; 15 runner tests pass. CLI reconciliation now retains all search failures even before case append, and incomplete frozen budgets cannot claim completion; 15 CLI tests pass. The duplicate full pytest started by a replacement worker was explicitly stopped; it is not a new full-suite result.
+- Frozen research extension: run three dev cost variants for default trend confirmation removal (12/72/2 →12/72/1), reusing the three matching full fixed reports. These 3 additional replays are a separate ablation experiment, not extra train search or a budget extension to obtain a winner; no engineering attestations will be upgraded to force a keep/remove decision.
+- Unified focused validation before source freeze: 416 research tests passed; 10 import-boundary/parity tests passed; repository ruff check and format (428 files) passed. Safety aggregation additionally prevents a missing E0 from masking an E2/reduced-source FAIL.
+- Actual v1 execution: fixed dev completed18 replays in20.77s wall; all54 train evaluations remained unstarted because six jobs failed data coverage before baseline/optimizer. Complete frozen codehash and failures are preserved in batch_freeze_v1.json/execution_completion_v1.json; fixed_dev_audit_v1.json independently verifies18 NAV/fee/DD paths and artifact identities. This is not72 completed experiments.
+- Data root cause:23 missing first-of-month train bars are present as matching first records in local daily/monthly raw CSV; convert_csv_to_parquet.py skipped headerless first rows. V2 repair authorizes converter header recognition and an isolated reconstructed snapshot with explicit source/output/converter hashes. Original default parquet and v1 evidence remain unchanged; no interpolation, training-window change or additional search proposals.
+- V2 execution scopes remain separate:54 train evaluations on repaired source (48 proposals+6 baselines),18 successful prior dev defaults, and3 predeclared confirmation removals. Ablation V2 only changes the prerequisite from entire72 batch to independently audited fixed18 because the train jobs never started; the pre-dev-frozen strategy/protocol/cost matrix stays identical to its parent.
+
+- Actual completed scopes:18 fixed dev +54 train (48 proposals/6 baselines) +3 confirmation removals=75. V2 source snapshot contains 14550 bars; actual pre-train warmup is 5, verified independently (earlier3-row expectation was wrong and never enforced by changing data). Train 17 E2 failures preserved with null feedback; remaining candidates remain diagnostic. Train TPE startup uses COMPLETE/PRUNED, so trend never left random startup.
+- Final evidence audit V5 reads code/policy content and actual source/output bytes, checks exact trial/case/journal mapping and raw artifact SHA, and independently recomputes NAV/DD/fees. Artifact PASS remains distinct from research BLOCKED. V3/V4 original receipts are retained; post-execution audit tightening did not rerun strategies or change frozen gates.
+- Record-only shared execution defect: router floors fill quantity then clears kernel dust without an actual fill; actual risk/episode ledger retain 1–3e-6 BTC. Reproduction and source identities saved; no production/kernel/tolerance changes. Framework guide and BTC research conclusion now link RESULTS_v1.md. Full five-seed/neighbor/cost/window suite, candidate dev shortlist, full component ablation and future paper evidence remain unfinished.
+
+- 2026-10-04 explicit continue: manager resumes useful independent research; owner permits expansion beyond pure BTC. Current workstream is BTC/ETH fixed single-account CTA diagnostics plus separate relative-value/carry prerequisites. More symbols are not evidence of independent edges or a tested portfolio. Three agent tasks own data reconstruction, explicit research inventory/runner contracts, and independent review/experiment planning; no production/router/risk edits or deployment.
+- The goal status API currently reports `blocked` and exposes no resume/update-objective operation. The owner's continue instruction authorizes resumed work; this stored status is not a new finding that research is blocked. The ablation requirement and expanded research scope are maintained here as the repository work ledger.
+- Quota milestone 2026-10-04 07:25 UTC: codex weekly remaining 94%, reset timestamp 1791580530 unchanged; base_model_inference 100% is not the stop condition. Continue checking at milestones and pause child work at the next Codex weekly reset.
+- 2026-10-04 actual execution: data v2 frozen from BTC/ETH raw sources, unique BTC conflict precisely resolved using 12-field current official API evidence; original/default/v1 retained. Final source code hash b169f14d7266655df759ff3b8dd13de429a4c1a26a8258d4570adb325f0368b3; 95 affected/import/parity tests passed, scoped Ruff checks passed. No full-harness rerun or golden change.
+- Fixed36 completed: 18 independent BTC accounts plus 18 ETH accounts, 6 fixed candidates × costs0/5/15, no attempted failures and no extra search. Independent artifact/identity/curve/fee audit PASS with all E3 FAIL, E2 NOT_EVALUABLE and qualification flags false. Output locations differed from the review freeze's proposed nesting; explicit immutable addendum plus independent receipt binds actual paths without changing the experiment.
+- Separate paired engineering budget2 completed on original Oct3 trend random trial-00000/old repaired source: shared exactly reproduces inventory/NAV residual; actual inventory retains real dust and removes the case's observed mismatch. It does not modify old75, production or gates. Total new replays38, not38 strategy search proposals. Full evidence and next research prerequisites: results/research_framework/20261004/RESULTS_v1.md.
+- Quota milestone 2026-10-04 07:32 UTC: codex remaining93%, no return to100%; resetsAt changed by one second, consistent with timestamp jitter rather than a week reset. base_model100% ignored. Stop instruction remains active for the next actual weekly reset.
+- Explicit user `/goal resume` followed by authorized continuing work: API still reports blocked and exposes no resume operation. No lifecycle status was fabricated; manager continued independent research and saved manager_progress_v2.json. Context quick-pass found no relevant zenQuant memory entries.
+- New V1 scope: optional lower research intent budget (5%/10%, shared risk unchanged), deterministic causal price noise and missing-bar derivation. Missing-bar replay remains rejected/N/E; not run. Initial executor review caught empty/missing source-file set acceptance and STARTED interruption misclassification; behavioral red/green regressions repaired both before freeze. Final131 scoped tests and6-file Ruff check/format passed; no full harness or production edits.
+- Frozen144 plan/codeb840d904a91224ef6fc9f066d2eb7cf889ef01c55545ac1320f2e67155e4f9f7: 2assets×2rules×2ex-ante budgets×3costs×(identity+5 price-noise seeds), fulldev2024–2025. Four36 jobs completed with0 run exceptions; CPU216.30s total, individual wall52.14–55.07s in parallel. No search/calibration/RL. Original nominal10% results exactly match prior fixed36.
+- Independent stdlib audit reconstructed actual parent/derived hashes from canonical source sidecars, checked144 raw reports/journals/identities and fill-sum accounting; maxcash5.38e-10/NAV5.53e-10, inventory0. 191frozen source ZIP members also verified. These receipts do not promote E2/E3 or exchange execution realism.
+- Narrow economic observation8groups5/5 jointbase/+5 conditions includes simplebaseline5/5; no incremental edge. Actual strict evaluate_robustness8groupsFAIL; paired CI blocked by realE3FAIL. Missingbar, neighbor, extra windows and entry/exit single-component ablations unfinished. Multi-leg minimal contract andspot24missingbars/4historicalconflicts audit added; no dualleg implementation orprofitclaim. Final results stress144_v1/RESULTS_v1.md; formal addendum controls finalR6 state.
+- Milestone2026-10-04 08:02UTC Codexremaining93%/reset1791580530, noreset; base_model100% ignored. Stop condition remains next actual Codex reset.

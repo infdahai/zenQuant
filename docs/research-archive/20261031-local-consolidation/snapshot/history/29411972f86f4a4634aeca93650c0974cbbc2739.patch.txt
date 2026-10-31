@@ -1,0 +1,158 @@
+commit 29411972f86f4a4634aeca93650c0974cbbc2739
+Author:     Disaster <clusternlh@gmail.com>
+AuthorDate: Sun Aug 23 05:46:24 2026 +0800
+Commit:     Disaster <clusternlh@gmail.com>
+CommitDate: Sun Aug 23 05:46:24 2026 +0800
+
+    docs(accounting): preserve unverified stage blockers
+
+diff --git a/docs/ARCHITECTURE.md b/docs/ARCHITECTURE.md
+index f0131c4..84a3ec0 100644
+--- a/docs/ARCHITECTURE.md
++++ b/docs/ARCHITECTURE.md
+@@ -114,6 +114,17 @@ current payload and donor proof needed for a field-identical comparison.
+ Funding and financing remain `OUT_OF_SCOPE_NOT_EQUITY_INTEGRATED`; diagnostic
+ accumulators are not portfolio-equity parity. No promotion or parameter search is authorized by the repair or rerun.
+ 
++### 2.2 Current product-gate blockers
++
++The full data-present `zenquant-check` is **NOT green**. Gate E preserves two
++independent product thresholds: DCA-off Sharpe sensitivity is approximately
++`45%`, above the `40%` limit, and corrected max drawdown is `26.8%`, above the
++`25%` limit. Gate F's code gate passes its four windows with zero `OVERFIT`
++classifications, but its average OOS ratio is `-4.12` and emits a severe
++train-to-dev overfitting warning. These are preserved product blockers, not
++implementation defects. Do not weaken these thresholds. No promotion or
++parameter search is authorized while they remain unresolved.
++
+ ## 3. Current Implemented Architecture
+ 
+ ### 3.1 Runtime topology
+@@ -371,8 +382,9 @@ The historical Gate v2 terminal recommendation was:
+ design_regime_router_before_more_training
+ ```
+ 
+-That recommendation led to the V2 architecture experiment. The experiment is
+-now complete. Its current terminal recommendation is:
++That recommendation led to the frozen V2 architecture runs. Those runs were
++executed, but their comparative/causal stage validity remains unverified. The
++current terminal recommendation is:
+ 
+ ```text
+ stop_donor_training
+@@ -532,9 +544,12 @@ after this shadow evidence exists and its expected-edge definition is explicit.
+ 
+ ## 7. A0–A5 Architecture Experiment
+ 
+-The completed experiment froze candidate parameters and changed one architecture property at a time.
++The frozen A0-A5 runs completed; comparative/causal stage validity is
++**UNVERIFIED**. Candidate parameters were frozen and each stage was designed to
++change one architecture property at a time, but the legacy and repaired stage
++schemas do not prove that those interventions are comparable.
+ 
+-| Stage | Single change | Question answered |
++| Stage | Intended single change | Intended question |
+ |---|---|---|
+ | A0 | Historical August rank1 replay, accounting-affected | What did the old candidate path report? |
+ | A1-sign | `sign(signal)` with fixed capital, fixed notional, no compounding, maximum 1x | Does direction alone contain alpha? |
+@@ -548,9 +563,10 @@ Every stage uses fixed capital, the same five seeds, and the same windows. A1-si
+ and A1-score both use maximum 1x exposure and no compounding. No stage may
+ introduce parameter search.
+ 
+-These stages are causal attribution experiments, not a leaderboard. A later
+-stage does not need to produce more raw profit than every prior stage. It must
+-answer its assigned question without degrading the relevant safety contract.
++These stages are intervention designs, not completed causal attribution and
++not a leaderboard. A later stage does not need to produce more raw profit than
++every prior stage. Any future validated rerun must answer its assigned question
++without degrading the relevant safety contract.
+ 
+ Required reporting:
+ 
+@@ -618,7 +634,7 @@ violation is an immediate architecture Gate failure, independent of return.
+ 
+ ## 8. Deferred Work
+ 
+-The following items remain outside the completed V2 experiment:
++The following items remain outside the frozen A0-A5 run scope:
+ 
+ - new Optuna or RL campaigns;
+ - end-to-end ML position or order control;
+@@ -646,8 +662,8 @@ The validation stack remains:
+ 4. paper-live incremental validation;
+ 5. separately approved capital deployment.
+ 
+-Neither Gate v2 nor the completed Quant V2 acceptance authorizes paper-live. The
+-current operator contract remains
++Neither Gate v2 nor the frozen Quant V2 run authorizes paper-live. The current
++operator contract remains
+ [`LIVE_VALIDATION_HANDOFF_SPEC.md`](LIVE_VALIDATION_HANDOFF_SPEC.md).
+ 
+ ## 10. Questions for Expert Review
+diff --git a/docs/QUANT_V2_ACCEPTANCE_HANDOFF.md b/docs/QUANT_V2_ACCEPTANCE_HANDOFF.md
+index 2975d8b..408a806 100644
+--- a/docs/QUANT_V2_ACCEPTANCE_HANDOFF.md
++++ b/docs/QUANT_V2_ACCEPTANCE_HANDOFF.md
+@@ -132,6 +132,21 @@ Passing safety and purity diagnostics answer narrow questions. They do not
+ rescue negative cost-stressed economics, satisfy robustness or authorize a
+ promotion.
+ 
++## Current repository gate blockers
++
++The full data-present `zenquant-check` is **NOT green**. Its Gate E historical
++checks preserve two product thresholds: DCA-off Sharpe sensitivity is
++approximately `45%`, above the `40%` limit, and corrected max drawdown is
++`26.8%`, above the `25%` limit. Gate F passes its code-level four-window check
++with zero `OVERFIT` classifications, but the average OOS ratio is `-4.12` and
++the runner emits a severe train-to-dev overfitting warning. These are preserved
++product blockers, not implementation defects. Do not weaken these thresholds.
++No promotion or parameter search is authorized while they remain unresolved.
++
++The two Gate E failures do not invalidate the accounting implementation or the
++30/30 identity checks. They block product promotion on their own terms. No
++product-owner acceptance is claimed by this handoff.
++
+ ## Accounting boundary and limitations
+ 
+ - Cash is signed; each finite non-negative fee is subtracted exactly once.
+diff --git a/tests/test_agent_docs_contract.py b/tests/test_agent_docs_contract.py
+index bb53403..32cec9b 100644
+--- a/tests/test_agent_docs_contract.py
++++ b/tests/test_agent_docs_contract.py
+@@ -34,10 +34,36 @@ def test_handoff_spec_mentions_hyperliquid_as_supplemental() -> None:
+ 
+ def test_architecture_records_repaired_accounting_boundary() -> None:
+     content = Path("docs/ARCHITECTURE.md").read_text(encoding="utf-8")
++    normalized = " ".join(content.split())
+     assert "August huge-profit claim is invalid" in content
+     assert "sha256:82af23a08c68a94641e1d7769ecdf9619059dddbeb531dd3703cc4d2ff809f4a" in content
+     assert "OUT_OF_SCOPE_NOT_EQUITY_INTEGRATED" in content
+     assert "No promotion or parameter search is authorized" in content
++    assert "runs completed; comparative/causal stage validity is **UNVERIFIED**" in normalized
++    for contradictory_claim in (
++        "The experiment is now complete",
++        "The completed experiment",
++        "These stages are causal attribution experiments",
++        "the completed Quant V2 acceptance",
++    ):
++        assert contradictory_claim not in normalized
++
++
++def test_authoritative_docs_preserve_product_gate_blockers() -> None:
++    architecture = Path("docs/ARCHITECTURE.md").read_text(encoding="utf-8")
++    handoff = Path("docs/QUANT_V2_ACCEPTANCE_HANDOFF.md").read_text(encoding="utf-8")
++    for content in (architecture, handoff):
++        normalized = " ".join(content.split())
++        assert "DCA-off Sharpe sensitivity" in normalized
++        assert "45%" in normalized
++        assert "40%" in normalized
++        assert "26.8%" in normalized
++        assert "25%" in normalized
++        assert "-4.12" in normalized
++        assert "full data-present `zenquant-check` is **NOT green**" in normalized
++        assert "preserved product blockers, not implementation defects" in normalized
++        assert "Do not weaken these thresholds" in normalized
++        assert "No promotion or parameter search" in normalized
+ 
+ 
+ def test_quant_v2_handoff_records_current_blocked_evidence() -> None:

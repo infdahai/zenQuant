@@ -1,0 +1,229 @@
+commit 6d673f5945a366280f0a5f031b92c8f5cae87ffa
+Author:     Disaster <clusternlh@gmail.com>
+AuthorDate: Tue Aug 25 01:14:27 2026 +0800
+Commit:     Disaster <clusternlh@gmail.com>
+CommitDate: Tue Aug 25 01:14:27 2026 +0800
+
+    fix(research): pin TimeSpace repository authority
+
+diff --git a/.github/workflows/time-space-export-persist.yml b/.github/workflows/time-space-export-persist.yml
+index 43ce727..a456ea7 100644
+--- a/.github/workflows/time-space-export-persist.yml
++++ b/.github/workflows/time-space-export-persist.yml
+@@ -44,11 +44,11 @@ jobs:
+           trust=$REGISTRATION_TRUST
+           export_file=$REGISTRATION_EXPORT
+           provenance=$REGISTRATION_PROVENANCE
+-          remote=$(python -c 'import json,sys; print(json.load(open(sys.argv[1]))["remote_identity"])' "$trust")
++          repository="infdahai/zenQuant"
+           checkpoint_run=$(python -c 'import json,sys; print(json.load(open(sys.argv[1]))["provider_run_id"])' "$trust")
+           generator_run=$(python -c 'import json,sys; print(json.load(open(sys.argv[1]))["generator_provider_run_id"])' "$trust")
+-          gh api "repos/$remote/actions/runs/$checkpoint_run" > checkpoint-provider-run.json
+-          gh api "repos/$remote/actions/runs/$generator_run" > generator-provider-run.json
++          gh api "repos/$repository/actions/runs/$checkpoint_run" > checkpoint-provider-run.json
++          gh api "repos/$repository/actions/runs/$generator_run" > generator-provider-run.json
+           base_validator="$RUNNER_TEMP/time-space-persisted-registration-validator.py"
+           git show "$PUSH_BEFORE:scripts/validate_time_space_persisted_registration.py" > "$base_validator"
+           python "$base_validator" \
+diff --git a/.github/workflows/time-space-export-receipt.yml b/.github/workflows/time-space-export-receipt.yml
+index 1ea5515..a1709e3 100644
+--- a/.github/workflows/time-space-export-receipt.yml
++++ b/.github/workflows/time-space-export-receipt.yml
+@@ -26,8 +26,10 @@ jobs:
+           RUN_ID: ${{ github.event.workflow_run.id }}
+         run: |
+           set -euo pipefail
+-          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$RUN_ID" > provider-run.json
+-          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$RUN_ID/artifacts" > artifacts.json
++          test "$GITHUB_REPOSITORY" = "infdahai/zenQuant"
++          repository="infdahai/zenQuant"
++          gh api "repos/$repository/actions/runs/$RUN_ID" > provider-run.json
++          gh api "repos/$repository/actions/runs/$RUN_ID/artifacts" > artifacts.json
+           python - <<'PY'
+           import json, os, pathlib
+           payload = json.loads(pathlib.Path("artifacts.json").read_text())
+@@ -48,7 +50,7 @@ jobs:
+           )
+           PY
+           artifact_id=$(<artifact-id)
+-          gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$artifact_id/zip" > checkpoint.zip
++          gh api "repos/$repository/actions/artifacts/$artifact_id/zip" > checkpoint.zip
+           unzip -q checkpoint.zip -d checkpoint-artifact
+           manifest=$(find checkpoint-artifact -type f -name time_space_shadow_export_checkpoint_v1.json)
+           test "$(printf '%s\n' "$manifest" | wc -l | tr -d ' ')" = 1
+@@ -56,7 +58,7 @@ jobs:
+           printf 'CHECKPOINT_LOGICAL_PATH=%s\n' "$(<checkpoint-path)" >> "$GITHUB_ENV"
+           generator_run=$(python -c 'import json,sys; print(json.load(open(sys.argv[1]))["generator_provider_run_id"])' "$manifest")
+           cutoff=$(basename "$(dirname "$(<checkpoint-path)")")
+-          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$generator_run/artifacts" > generator-artifacts.json
++          gh api "repos/$repository/actions/runs/$generator_run/artifacts" > generator-artifacts.json
+           python - "$generator_run" "$cutoff" <<'PY'
+           import json, pathlib, sys
+           run_id, cutoff = sys.argv[1:]
+@@ -69,7 +71,7 @@ jobs:
+           pathlib.Path("generator-artifact.json").write_text(json.dumps(matches[0]))
+           PY
+           generator_artifact_id=$(<generator-artifact-id)
+-          gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$generator_artifact_id/zip" > generator.zip
++          gh api "repos/$repository/actions/artifacts/$generator_artifact_id/zip" > generator.zip
+           unzip -q generator.zip -d generator-artifact
+           export_file=$(find generator-artifact -type f -name time_space_shadow_export.json)
+           provenance_file=$(find generator-artifact -type f -name time_space_shadow_export_provenance.json)
+diff --git a/scripts/export_time_space_architecture.py b/scripts/export_time_space_architecture.py
+index c33b60a..2b3be4d 100644
+--- a/scripts/export_time_space_architecture.py
++++ b/scripts/export_time_space_architecture.py
+@@ -18,6 +18,7 @@ from pathlib import Path
+ from zenquant.research.time_space_export import recompute_time_space_export
+ from zenquant.research.time_space_replay import ReplayRequest, produce_frozen_architecture_replay
+ 
++_CANONICAL_REPOSITORY = "infdahai/zenQuant"
+ _ROOT = Path(__file__).parents[1]
+ _NAMES = (
+     "time_space_shadow_export.json",
+@@ -148,8 +149,8 @@ def _resolve_repository() -> tuple[str, str]:
+         raise ValueError("export registration trust root has no repository identity")
+     remote = _git("remote", "get-url", "origin")
+     repository = _normalize_remote(remote)
+-    if repository != trust["remote_identity"]:
+-        raise ValueError("origin repository identity does not match the checked-in trust root")
++    if repository != _CANONICAL_REPOSITORY or trust["remote_identity"] != _CANONICAL_REPOSITORY:
++        raise ValueError("origin and trust root must match the canonical repository")
+     return repository, commit
+ 
+ 
+diff --git a/scripts/validate_time_space_persisted_registration.py b/scripts/validate_time_space_persisted_registration.py
+index ebc4220..672017b 100644
+--- a/scripts/validate_time_space_persisted_registration.py
++++ b/scripts/validate_time_space_persisted_registration.py
+@@ -15,6 +15,7 @@ CHECKPOINT_WORKFLOW_PATH = ".github/workflows/time-space-export-checkpoint.yml"
+ CHECKPOINT_BRANCH = "feature/trend-registration-time-space-export"
+ GENERATOR_WORKFLOW_PATH = ".github/workflows/time-space-export-generate.yml"
+ GENERATOR_EVENT = "workflow_dispatch"
++CANONICAL_REPOSITORY = "infdahai/zenQuant"
+ TRUST_KEYS = {
+     "schema_version",
+     "layer",
+@@ -101,6 +102,12 @@ def validate_persisted_registration(
+         or provenance.get("layer") != "time_space_shadow"
+     ):
+         raise ValueError("persisted registration identity is invalid")
++    if (
++        trust.get("remote_identity") != CANONICAL_REPOSITORY
++        or receipt.get("remote_identity") != CANONICAL_REPOSITORY
++        or provenance.get("repository_identity") != CANONICAL_REPOSITORY
++    ):
++        raise ValueError("persisted registration is not pinned to the canonical repository")
+     as_of_ns = _positive_int(checkpoint.get("as_of_ns"), "checkpoint as_of")
+     if export.get("as_of_ns") != as_of_ns or provenance.get("as_of_ns") != as_of_ns:
+         raise ValueError("persisted export cutoff does not match checkpoint")
+@@ -154,7 +161,7 @@ def _validate_checkpoint_authority(
+         or provider.get("workflow_id") != workflow_id
+         or _provider_created_at_ns(provider.get("created_at")) != provider_created
+         or not isinstance(provider.get("repository"), dict)
+-        or provider["repository"].get("full_name") != trust.get("remote_identity")
++        or provider["repository"].get("full_name") != CANONICAL_REPOSITORY
+     ):
+         raise ValueError("persisted trust checkpoint provider fields are not fully bound")
+ 
+@@ -200,7 +207,7 @@ def _validate_generator_authority(
+         or provider.get("workflow_id") != workflow_id
+         or _provider_created_at_ns(provider.get("created_at")) != trust.get("generator_created_at_ns")
+         or not isinstance(provider.get("repository"), dict)
+-        or provider["repository"].get("full_name") != trust.get("remote_identity")
++        or provider["repository"].get("full_name") != CANONICAL_REPOSITORY
+     ):
+         raise ValueError("persisted trust generator provider fields are not fully bound")
+ 
+diff --git a/scripts/validate_time_space_registration_push.py b/scripts/validate_time_space_registration_push.py
+index e963406..b765b37 100644
+--- a/scripts/validate_time_space_registration_push.py
++++ b/scripts/validate_time_space_registration_push.py
+@@ -23,6 +23,7 @@ _PROTECTED_ENFORCEMENT_PATHS = (
+     ".github/workflows/time-space-export-generate.yml",
+     ".github/workflows/time-space-export-persist.yml",
+     ".github/workflows/time-space-export-receipt.yml",
++    "config/research/time_space_export_registration_trust_v1.json",
+     "scripts/build_time_space_export_receipt.py",
+     "scripts/validate_time_space_persisted_registration.py",
+     "scripts/validate_time_space_registration_push.py",
+diff --git a/zenquant/research/time_space_export.py b/zenquant/research/time_space_export.py
+index bd5ce35..2964d75 100644
+--- a/zenquant/research/time_space_export.py
++++ b/zenquant/research/time_space_export.py
+@@ -29,6 +29,7 @@ FROZEN_SEEDS = (42, 123, 456, 789, 1024)
+ DECISION_STAGES = ("A1_SIGN", "A5_SHADOW", "FILLED_POSITION")
+ MATERIAL_NAMES = ("snapshots", "targets", "orders", "fills", "equity", "episodes")
+ FOUR_HOURS_NS = 4 * 60 * 60 * 1_000_000_000
++_CANONICAL_REPOSITORY = "infdahai/zenQuant"
+ _PROJECT_ROOT = Path(__file__).parents[2]
+ _REGISTRATION_ROOT = _PROJECT_ROOT / "config/research/registrations/time_space_exports"
+ _PERSISTED_RECEIPT_NAME = "time_space_export_registration_receipt_v1.json"
+@@ -40,6 +41,7 @@ _STATIC_DEPENDENCY_PATHS = (
+     ".github/workflows/time-space-export-generate.yml",
+     ".github/workflows/time-space-export-persist.yml",
+     ".github/workflows/time-space-export-receipt.yml",
++    "config/research/time_space_export_registration_trust_v1.json",
+     "scripts/export_time_space_architecture.py",
+     "scripts/build_time_space_export_receipt.py",
+     "scripts/validate_time_space_registration_push.py",
+@@ -390,6 +392,7 @@ def _load_persisted_registration(
+     )
+     if (
+         trust.get("registration_status") != VERIFIED
++        or trust.get("remote_identity") != _CANONICAL_REPOSITORY
+         or supplied_receipt is None
+         or supplied_export is None
+         or supplied_provenance is None
+@@ -440,8 +443,10 @@ def _validate_registered_time_space_export_payloads(
+ 
+ 
+ def _fetch_provider(remote_identity: str, provider_run_id: int) -> dict[str, Any]:
++    if remote_identity != _CANONICAL_REPOSITORY:
++        raise ValueError("provider lookup is restricted to the canonical repository")
+     request = urllib.request.Request(
+-        f"https://api.github.com/repos/{remote_identity}/actions/runs/{provider_run_id}",
++        f"https://api.github.com/repos/{_CANONICAL_REPOSITORY}/actions/runs/{provider_run_id}",
+         headers={"Accept": "application/vnd.github+json", "User-Agent": "zenquant-time-space-export/1"},
+     )
+     with urllib.request.urlopen(request, timeout=30) as response:
+@@ -467,6 +472,8 @@ def _validate_registered(
+         raise ValueError("export envelope schema is invalid")
+     if set(trust) != _TRUST_KEYS or trust.get("registration_status") != VERIFIED:
+         raise ValueError("checkpoint trust root is not verified")
++    if trust.get("remote_identity") != _CANONICAL_REPOSITORY:
++        raise ValueError("checkpoint trust root is not pinned to the canonical repository")
+     if (
+         checkpoint.get("registration_status") != "PENDING"
+         or checkpoint.get("receipt") is not None
+@@ -562,7 +569,7 @@ def _validate_registered(
+         or receipt.get("generator_artifact", {}).get("name") != trust["generator_artifact_name"]
+         or receipt.get("provider_run_id") != trust["provider_run_id"]
+         or receipt.get("commit_sha") != trust["commit_sha"]
+-        or receipt.get("remote_identity") != trust["remote_identity"]
++        or receipt.get("remote_identity") != _CANONICAL_REPOSITORY
+         or receipt.get("provider_created_at_ns") != trust["provider_created_at_ns"]
+         or receipt.get("workflow") != {"id": trust["checkpoint_workflow_id"], "path": trust["checkpoint_workflow_path"]}
+         or receipt.get("event") != "push"
+@@ -582,10 +589,10 @@ def _validate_registered(
+         or provider.get("workflow_id") != trust["checkpoint_workflow_id"]
+         or _provider_created_at_ns(provider.get("created_at")) != receipt["provider_created_at_ns"]
+         or not isinstance(provider.get("repository"), dict)
+-        or provider["repository"].get("full_name") != receipt["remote_identity"]
++        or provider["repository"].get("full_name") != _CANONICAL_REPOSITORY
+     ):
+         raise ValueError("provider receipt does not match checkpoint")
+-    if provenance.get("repository_identity") != receipt["remote_identity"]:
++    if provenance.get("repository_identity") != _CANONICAL_REPOSITORY:
+         raise ValueError("repository identity mismatch")
+     if provenance.get("commit_sha") != trust.get("generator_commit_sha") or provenance.get(
+         "provider_run_id"
+@@ -601,7 +608,7 @@ def _validate_registered(
+         or generator_provider.get("head_branch") != trust["generator_branch"]
+         or _provider_created_at_ns(generator_provider.get("created_at")) != trust["generator_created_at_ns"]
+         or not isinstance(generator_provider.get("repository"), dict)
+-        or generator_provider["repository"].get("full_name") != provenance["repository_identity"]
++        or generator_provider["repository"].get("full_name") != _CANONICAL_REPOSITORY
+     ):
+         raise ValueError("generator provider does not attest the pinned checkout")
+ 

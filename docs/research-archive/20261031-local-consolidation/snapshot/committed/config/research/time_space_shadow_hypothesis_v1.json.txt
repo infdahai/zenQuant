@@ -1,0 +1,67 @@
+{
+  "schema_version": "trend-research-hypothesis.v1",
+  "layer": "time_space_shadow",
+  "asset": "BTC",
+  "active_signal_source": "BINANCE_SPOT_BTCUSDT_1D",
+  "reused_window": [
+    1767225600000000000,
+    1787529600000000000
+  ],
+  "source_requirements": [
+    {
+      "id": "BINANCE_SPOT_BTCUSDT_1D",
+      "requirement": "REQUIRED",
+      "fallback": "NONE"
+    },
+    {
+      "id": "BINANCE_PERPETUAL_BTCUSDT_5M",
+      "requirement": "REQUIRED",
+      "fallback": "NONE"
+    },
+    {
+      "id": "BINANCE_PERPETUAL_BTCUSDT_FUNDING",
+      "requirement": "REQUIRED",
+      "fallback": "NONE"
+    }
+  ],
+  "fallback": "NONE",
+  "seeds": [
+    42,
+    123,
+    456,
+    789,
+    1024
+  ],
+  "training": false,
+  "parameter_search": false,
+  "formula": {
+    "primary_label": "hold_minus_flip_6",
+    "primary_horizon_bars": 6,
+    "descriptive_horizon_bars": [
+      1,
+      2,
+      3
+    ],
+    "returns": "fixed_1x_direction_returns",
+    "primary_statistic": "arithmetic_mean"
+  },
+  "robustness": {
+    "bootstrap": "month_block",
+    "block": "UTC_CALENDAR_MONTH",
+    "confidence": 0.95,
+    "tail": "ONE_SIDED_LOWER",
+    "perturbation_paths": 5,
+    "minimum_positive_paths": 4
+  },
+  "gates": {
+    "minimum_effect_bps": 15,
+    "minimum_elapsed_days": 180,
+    "minimum_primary_flips": 30,
+    "minimum_market_state_transitions": 1
+  },
+  "authority": "NONE",
+  "policy": {
+    "research_only": true,
+    "age_bucket_selection": "FORBIDDEN"
+  }
+}

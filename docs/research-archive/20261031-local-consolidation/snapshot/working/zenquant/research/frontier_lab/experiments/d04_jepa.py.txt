@@ -1,0 +1,297 @@
+"""A tiny CPU JEPA-style forecast diagnostic, isolated from trading logic."""
+
+from __future__ import annotations
+
+from copy import deepcopy
+from typing import Any
+
+import numpy as np
+import pandas as pd
+import torch
+from torch import nn
+
+from zenquant.research.frontier_lab.common import (
+    DEV_END,
+    SEEDS,
+    TRAIN_END,
+    causal_features,
+    load_bars,
+    prediction_metrics,
+    ridge_predict,
+)
+
+WINDOW = 12
+FEATURE_LOOKBACK = 42
+HORIZON = 6
+LATENT = 24
+EPOCHS = 5
+BATCH = 256
+LEARNING_RATE = 0.002
+EMA = 0.99
+VARIANCE_WEIGHT = 0.1
+TARGETS = ("next_open_abs_return", "next_open_24h_realized_volatility", "next_open_24h_max_abs_return")
+
+
+def build_samples(frame: pd.DataFrame) -> dict[str, np.ndarray]:
+    """Future context and all next-open labels end before the training boundary."""
+    features = causal_features(frame)[["return_1", "momentum_6", "vol_42", "range", "volume_z"]]
+    values = features.to_numpy(dtype=np.float32)
+    opens = frame.open.to_numpy(dtype=float)
+    close_ns = frame.close_time_ns.to_numpy(dtype=np.int64)
+    open_ns = frame.open_time_ns.to_numpy(dtype=np.int64)
+    indices = np.arange(WINDOW - 1, len(frame) - HORIZON - 1)
+    x = np.stack([values[index - WINDOW + 1 : index + 1].reshape(-1) for index in indices])
+    future = np.stack([values[index + HORIZON - WINDOW + 1 : index + HORIZON + 1].reshape(-1) for index in indices])
+    forward_returns = np.stack(
+        [opens[indices + offset + 2] / opens[indices + offset + 1] - 1 for offset in range(HORIZON)],
+        axis=1,
+    )
+    y = np.column_stack(
+        [
+            np.abs(forward_returns[:, 0]),
+            np.sqrt(np.mean(forward_returns**2, axis=1)),
+            np.max(np.abs(forward_returns), axis=1),
+        ]
+    )
+    finite = np.isfinite(x).all(axis=1) & np.isfinite(future).all(axis=1) & np.isfinite(y).all(axis=1)
+    indices, x, future, y = indices[finite], x[finite], future[finite], y[finite]
+    training_end_ns = np.maximum(close_ns[indices + HORIZON], open_ns[indices + HORIZON + 1])
+    # Rolling vol42 includes the return at its first point, itself needing one preceding close.
+    window_start_ns = open_ns[indices - WINDOW + 1 - FEATURE_LOOKBACK]
+    train = (close_ns[indices] < TRAIN_END.value) & (training_end_ns < TRAIN_END.value)
+    # Include derived features' source observations in the dev overlap purge.
+    dev = (window_start_ns >= TRAIN_END.value) & (training_end_ns < DEV_END.value)
+    return {
+        "x": x,
+        "future": future,
+        "y": y,
+        "train": train,
+        "dev": dev,
+        "training_end_ns": training_end_ns,
+        "window_start_ns": window_start_ns,
+        "decision_ns": close_ns[indices],
+    }
+
+
+def make_encoder(input_dim: int, latent_dim: int) -> nn.Sequential:
+    return nn.Sequential(nn.Linear(input_dim, 48), nn.SiLU(), nn.Linear(48, latent_dim))
+
+
+class JEPA(nn.Module):
+    """Context/predictor learns a stop-gradient EMA future-context target."""
+
+    def __init__(self, input_dim: int, latent_dim: int = LATENT):
+        super().__init__()
+        self.encoder = make_encoder(input_dim, latent_dim)
+        self.predictor = nn.Sequential(nn.Linear(latent_dim, 48), nn.SiLU(), nn.Linear(48, latent_dim))
+        self.target = deepcopy(self.encoder)
+        self.target.requires_grad_(False)
+
+    def update_target(self) -> None:
+        with torch.no_grad():
+            for target, online in zip(self.target.parameters(), self.encoder.parameters(), strict=True):
+                target.mul_(EMA).add_(online, alpha=1 - EMA)
+
+
+def variance_penalty(embedding: torch.Tensor) -> torch.Tensor:
+    std = torch.sqrt(embedding.var(dim=0, unbiased=False) + 1e-4)
+    return torch.relu(1 - std).mean()
+
+
+def jepa_loss(model: JEPA, context: torch.Tensor, future: torch.Tensor) -> torch.Tensor:
+    embedding = model.encoder(context)
+    predicted = model.predictor(embedding)
+    with torch.no_grad():
+        target = model.target(future)
+    return nn.functional.mse_loss(predicted, target) + VARIANCE_WEIGHT * (
+        variance_penalty(embedding) + variance_penalty(predicted)
+    )
+
+
+def freeze_encode(encoder: nn.Module, features: np.ndarray) -> np.ndarray:
+    encoder.eval().requires_grad_(False)
+    with torch.no_grad():
+        return encoder(torch.as_tensor(features, dtype=torch.float32)).numpy()
+
+
+def collapse_diagnostics(embedding: np.ndarray) -> dict[str, Any]:
+    centered = np.asarray(embedding, dtype=float) - np.mean(embedding, axis=0)
+    std = centered.std(axis=0)
+    eigenvalues = np.maximum(np.linalg.eigvalsh(centered.T @ centered / len(centered)), 0)
+    weights = eigenvalues / eigenvalues.sum() if eigenvalues.sum() > 1e-12 else np.zeros_like(eigenvalues)
+    positive = weights[weights > 0]
+    effective_rank = float(np.exp(-np.sum(positive * np.log(positive)))) if len(positive) else 0.0
+    return {
+        "mean_dimension_std": float(std.mean()),
+        "minimum_dimension_std": float(std.min()),
+        "fraction_dimensions_std_below_005": float(np.mean(std < 0.05)),
+        "effective_rank": effective_rank,
+        "collapsed": bool(std.mean() < 0.05 or effective_rank < 2),
+    }
+
+
+def _fit_jepa(x: np.ndarray, future: np.ndarray, seed: int) -> tuple[JEPA, list[float]]:
+    torch.manual_seed(seed)
+    model = JEPA(x.shape[1])
+    optimizer = torch.optim.Adam(
+        list(model.encoder.parameters()) + list(model.predictor.parameters()), lr=LEARNING_RATE
+    )
+    inputs, targets = torch.from_numpy(x), torch.from_numpy(future)
+    losses = []
+    generator = torch.Generator().manual_seed(seed)
+    for _ in range(EPOCHS):
+        order = torch.randperm(len(x), generator=generator)
+        total = 0.0
+        for batch in order.split(BATCH):
+            optimizer.zero_grad(set_to_none=True)
+            loss = jepa_loss(model, inputs[batch], targets[batch])
+            loss.backward()
+            optimizer.step()
+            model.update_target()
+            total += float(loss.detach()) * len(batch)
+        losses.append(total / len(x))
+    return model, losses
+
+
+def _fit_supervised(x: np.ndarray, y: np.ndarray, dev_x: np.ndarray, seed: int) -> np.ndarray:
+    """Same input, encoder, epochs, batches, optimizer and feature scaler as JEPA."""
+    torch.manual_seed(seed)
+    model = nn.Sequential(make_encoder(x.shape[1], LATENT), nn.Linear(LATENT, len(TARGETS)))
+    optimizer = torch.optim.Adam(model.parameters(), lr=LEARNING_RATE)
+    y_mean, y_scale = y.mean(axis=0), np.maximum(y.std(axis=0), 1e-8)
+    inputs = torch.from_numpy(x)
+    labels = torch.as_tensor((y - y_mean) / y_scale, dtype=torch.float32)
+    generator = torch.Generator().manual_seed(seed)
+    for _ in range(EPOCHS):
+        order = torch.randperm(len(x), generator=generator)
+        for batch in order.split(BATCH):
+            optimizer.zero_grad(set_to_none=True)
+            loss = nn.functional.mse_loss(model(inputs[batch]), labels[batch])
+            loss.backward()
+            optimizer.step()
+    with torch.no_grad():
+        return model(torch.from_numpy(dev_x)).numpy() * y_scale + y_mean
+
+
+def _metrics(actual: np.ndarray, predicted: np.ndarray) -> dict[str, Any]:
+    return {target: prediction_metrics(actual[:, index], predicted[:, index]) for index, target in enumerate(TARGETS)}
+
+
+def run(context: dict[str, Any]) -> dict[str, Any]:
+    torch.set_num_threads(1)
+    torch.use_deterministic_algorithms(True)
+    samples = build_samples(load_bars(context))
+    train, dev = samples["train"], samples["dev"]
+    train_x, dev_x, future_x = samples["x"][train], samples["x"][dev], samples["future"][train]
+    train_y, dev_y = samples["y"][train], samples["y"][dev]
+    # Fit the scaler using past contexts only; target contexts use the same frozen scaler.
+    mean, scale = train_x.mean(axis=0), np.maximum(train_x.std(axis=0), 1e-6)
+    train_x, dev_x, future_x = ((value - mean) / scale for value in (train_x, dev_x, future_x))
+    raw_pred = ridge_predict(train_x, train_y, dev_x)
+    mean_pred = np.tile(train_y.mean(axis=0), (len(dev_y), 1))
+    raw_metrics = _metrics(dev_y, raw_pred)
+    seeds = []
+    for seed in SEEDS:
+        torch.manual_seed(seed)
+        random_encoder = make_encoder(train_x.shape[1], LATENT)
+        random_train = freeze_encode(random_encoder, train_x)
+        random_dev = freeze_encode(random_encoder, dev_x)
+        random_pred = ridge_predict(random_train, train_y, random_dev)
+        model, losses = _fit_jepa(train_x, future_x, seed)
+        embedded_train = freeze_encode(model.encoder, train_x)
+        embedded_dev = freeze_encode(model.encoder, dev_x)
+        jepa_pred = ridge_predict(embedded_train, train_y, embedded_dev)
+        supervised_pred = _fit_supervised(train_x, train_y, dev_x, seed)
+        jepa_metrics, supervised_metrics = _metrics(dev_y, jepa_pred), _metrics(dev_y, supervised_pred)
+        seeds.append(
+            {
+                "seed": seed,
+                "jepa_ridge": jepa_metrics,
+                "direct_supervised_mlp": supervised_metrics,
+                "untrained_random_encoder_ridge": _metrics(dev_y, random_pred),
+                "training_jepa_loss_by_epoch": losses,
+                "train_collapse": collapse_diagnostics(embedded_train),
+                "dev_collapse": collapse_diagnostics(embedded_dev),
+                "encoder_frozen": all(not parameter.requires_grad for parameter in model.encoder.parameters()),
+                "rmse_improvement_over_raw_ridge_fraction": {
+                    target: 1 - jepa_metrics[target]["rmse"] / raw_metrics[target]["rmse"] for target in TARGETS
+                },
+            }
+        )
+    summary = {
+        target: {
+            "jepa_beats_raw_ridge_seeds": sum(
+                row["jepa_ridge"][target]["rmse"] < raw_metrics[target]["rmse"] for row in seeds
+            ),
+            "jepa_beats_direct_supervised_seeds": sum(
+                row["jepa_ridge"][target]["rmse"] < row["direct_supervised_mlp"][target]["rmse"] for row in seeds
+            ),
+            "median_jepa_rmse": float(np.median([row["jepa_ridge"][target]["rmse"] for row in seeds])),
+        }
+        for target in TARGETS
+    }
+    collapsed_seeds = sum(row["train_collapse"]["collapsed"] or row["dev_collapse"]["collapsed"] for row in seeds)
+    all_target_win = (
+        all(summary[target]["jepa_beats_raw_ridge_seeds"] >= 4 for target in TARGETS) and not collapsed_seeds
+    )
+    return {
+        "direction_id": "d04",
+        "hypothesis": "A future-context latent objective improves fixed volatility and tail probes versus identical raw causal windows.",
+        "evidence_type": "historical_diagnostic",
+        "method": {
+            "prototype": "tiny JEPA-style context encoder/predictor with stop-gradient EMA future encoder; explicit variance regularization",
+            "features": ["return_1", "momentum_6", "vol_42", "range", "volume_z"],
+            "window_bars": WINDOW,
+            "derived_feature_source_lookback_bars": FEATURE_LOOKBACK,
+            "future_context_shift_bars": HORIZON,
+            "future_context_overlap_bars": WINDOW - HORIZON,
+            "latent_dim": LATENT,
+            "epochs_per_model": EPOCHS,
+            "batch_size": BATCH,
+            "learning_rate": LEARNING_RATE,
+            "ema": EMA,
+            "variance_weight": VARIANCE_WEIGHT,
+            "ridge_alpha": 1.0,
+            "collapse_rule": "mean dimension std <0.05 OR effective rank <2",
+            "fair_budget": "identical raw input, hidden encoder dimensions, train scaler, 5 epochs, batch ordering and Adam rate; JEPA has extra predictor/EMA; probes add ridge fits",
+            "label_execution": "decision at close i, absreturn open i+1 to i+2; six open-to-open returns end open i+7",
+            "purge": "future target and labels end before2024; dev earliest raw feature source (12+42 bar lookback) open >=2024; dev labels end before2026",
+            "device": "cpu",
+            "threads": 1,
+        },
+        "metrics": {
+            "train_samples": int(train.sum()),
+            "dev_samples": int(dev.sum()),
+            "max_train_information_ns": int(samples["training_end_ns"][train].max()),
+            "min_dev_window_start_ns": int(samples["window_start_ns"][dev].min()),
+            "raw_window_ridge": raw_metrics,
+            "train_mean_predictor": _metrics(dev_y, mean_pred),
+            "seeds": seeds,
+            "summary": summary,
+            "collapsed_seeds": collapsed_seeds,
+        },
+        "verdict": (
+            "tiny_jepa_prototype_insufficient_rank_collapse"
+            if collapsed_seeds
+            else "mixed_forecast_diagnostic_no_alpha_claim"
+            if all_target_win
+            else "tiny_jepa_prototype_does_not_improve_raw_forecast_baseline"
+        ),
+        "limitations": [
+            "2024-2025 dev is previously observed; no independent held-out acceptance or significance claim.",
+            "Tiny fixed-budget prototype, not a canonical or scaled JEPA implementation; no hyperparameter search.",
+            "Future contexts overlap past windows by six bars; target predictability may largely reflect persistence.",
+            "Adjacent samples and 24h labels overlap; five seeds are initialization checks, not market robustness tests.",
+            "Forecast RMSE/correlation are not tradable alpha; no portfolio, fees, execution or tail-risk trading validation.",
+            "Matched epochs and encoder width do not imply identical parameter counts or compute; JEPA adds predictor and ridge fitting.",
+            "Explicit variance penalty and collapse threshold are frozen heuristics, not proof of useful information content.",
+            "Variance regularization alone does not decorrelate latent dimensions; effective-rank collapse makes this prototype insufficient to assess the JEPA family.",
+            "After initial dev observation, purge was corrected to include 42-bar derived-feature source lookbacks; no model hyperparameters were amended or selected.",
+        ],
+        "falsification": "Reject added representation value if JEPA fails to beat raw-window ridge RMSE in at least4/5 seeds for all three targets, collapses, or merely matches untrained encoder probes.",
+        "next_experiment": "Freeze a nonoverlapping future target and blocked historical folds; require raw, random-encoder and supervised controls before collecting untouched forward forecast data.",
+        "input_paths": [],
+        "rankable": False,
+        "live_eligible": False,
+        "promotion_eligible": False,
+    }

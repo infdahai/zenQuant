@@ -1,0 +1,311 @@
+commit 0d147375aedfd81cc9a926bacb4a1ef959aeb06d
+Author:     Disaster <clusternlh@gmail.com>
+AuthorDate: Mon Aug 24 10:54:45 2026 +0800
+Commit:     Disaster <clusternlh@gmail.com>
+CommitDate: Mon Aug 24 10:54:45 2026 +0800
+
+    ci(research): add trusted trend registration receipt
+
+diff --git a/.github/workflows/trend-research-registration.yml b/.github/workflows/trend-research-registration.yml
+new file mode 100644
+index 0000000..5f4c22d
+--- /dev/null
++++ b/.github/workflows/trend-research-registration.yml
+@@ -0,0 +1,77 @@
++name: Register trend research manifest
++
++on:
++  workflow_dispatch:
++    inputs:
++      manifest_kind:
++        description: Immutable record type to register
++        required: true
++        type: choice
++        options:
++          - hypothesis
++          - execution
++      manifest_path:
++        description: Checked-in JSON manifest path
++        required: true
++        type: string
++
++permissions:
++  actions: read
++  contents: read
++
++jobs:
++  register:
++    name: Register one immutable manifest
++    runs-on: ubuntu-latest
++    steps:
++      - name: Check out dispatched commit
++        uses: actions/checkout@v4
++        with:
++          ref: ${{ github.sha }}
++          fetch-depth: 1
++          persist-credentials: false
++
++      - name: Validate manifest identity
++        shell: bash
++        env:
++          MANIFEST_KIND: ${{ inputs.manifest_kind }}
++          MANIFEST_PATH: ${{ inputs.manifest_path }}
++        run: |
++          set -euo pipefail
++          case "$MANIFEST_KIND" in
++            hypothesis)
++              case "$MANIFEST_PATH" in config/research/*_hypothesis_v1.json) ;; *) exit 1 ;; esac
++              ;;
++            execution)
++              case "$MANIFEST_PATH" in config/research/registrations/*_execution_v1.json) ;; *) exit 1 ;; esac
++              ;;
++            *) exit 1 ;;
++          esac
++          test -f "$MANIFEST_PATH"
++          git ls-files --error-unmatch -- "$MANIFEST_PATH"
++          git cat-file -e "$GITHUB_SHA:$MANIFEST_PATH"
++          git diff --quiet "$GITHUB_SHA" -- "$MANIFEST_PATH"
++          git show "$GITHUB_SHA:$MANIFEST_PATH" | cmp -s - "$MANIFEST_PATH"
++          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
++
++      - name: Build trusted registration receipt
++        shell: bash
++        env:
++          GH_TOKEN: ${{ github.token }}
++          MANIFEST_PATH: ${{ inputs.manifest_path }}
++        run: |
++          set -euo pipefail
++          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" > provider-run.json
++          python scripts/build_trend_registration_receipt.py \
++            --manifest-path "$MANIFEST_PATH" \
++            --commit-sha "$GITHUB_SHA" \
++            --provider-run-json provider-run.json \
++            --output registration_receipt.json
++
++      - name: Upload registration receipt
++        uses: actions/upload-artifact@v4
++        with:
++          name: trend-registration-receipt-${{ github.run_id }}
++          path: registration_receipt.json
++          if-no-files-found: error
++          retention-days: 90
+diff --git a/scripts/build_trend_registration_receipt.py b/scripts/build_trend_registration_receipt.py
+new file mode 100644
+index 0000000..ed0d1df
+--- /dev/null
++++ b/scripts/build_trend_registration_receipt.py
+@@ -0,0 +1,47 @@
++"""Build one verifiable GitHub Actions registration envelope."""
++
++from __future__ import annotations
++
++import argparse
++import json
++import sys
++from collections.abc import Sequence
++from pathlib import Path
++from typing import Any
++
++sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
++
++from zenquant.research.registration import (
++    RegistrationError,
++    build_registration_envelope,
++    verify_github_receipt,
++)
++
++
++def _load_provider_run(path: Path) -> dict[str, Any]:
++    try:
++        payload = json.loads(path.read_text(encoding="utf-8"))
++    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
++        raise RegistrationError(f"cannot load provider run payload: {path}") from exc
++    if not isinstance(payload, dict):
++        raise RegistrationError("provider run payload must be a JSON object")
++    return payload
++
++
++def main(argv: Sequence[str] | None = None) -> int:
++    parser = argparse.ArgumentParser(description=__doc__)
++    parser.add_argument("--manifest-path", type=Path, required=True)
++    parser.add_argument("--commit-sha", required=True)
++    parser.add_argument("--provider-run-json", type=Path, required=True)
++    parser.add_argument("--output", type=Path, required=True)
++    args = parser.parse_args(argv)
++
++    provider_run = _load_provider_run(args.provider_run_json)
++    envelope = build_registration_envelope(args.manifest_path, args.commit_sha, provider_run)
++    verify_github_receipt(envelope, provider_run)
++    args.output.write_text(json.dumps(envelope, sort_keys=True) + "\n", encoding="utf-8")
++    return 0
++
++
++if __name__ == "__main__":
++    raise SystemExit(main())
+diff --git a/tests/test_trend_research_registration.py b/tests/test_trend_research_registration.py
+index 8d54c83..88997d7 100644
+--- a/tests/test_trend_research_registration.py
++++ b/tests/test_trend_research_registration.py
+@@ -13,11 +13,13 @@ from zenquant.research.registration import (
+     EvidenceRole,
+     RegistrationError,
+     RegistrationReceipt,
++    build_registration_envelope,
+     canonical_sha256,
+     classify_evidence_role,
+     derive_forward_start_ns,
+     load_hypothesis_manifest,
+     validate_registration_receipts,
++    verify_github_receipt,
+ )
+ 
+ 
+@@ -57,6 +59,42 @@ def _manifest_payload() -> dict[str, object]:
+     }
+ 
+ 
++def _github_run(
++    *,
++    run_id: int = 17,
++    head_sha: str = "abc123",
++    remote_identity: str = "example/repo",
++    created_at: str = "2026-08-24T08:00:00Z",
++) -> dict[str, object]:
++    return {
++        "id": run_id,
++        "head_sha": head_sha,
++        "repository": {"full_name": remote_identity},
++        "created_at": created_at,
++    }
++
++
++def _envelope(*, commit: str = "abc123") -> dict[str, object]:
++    return {
++        "provider_run_id": 17,
++        "commit_sha": commit,
++        "remote_identity": "example/repo",
++        "manifest_sha256": "a" * 64,
++        "received_at_ns": 1787558400000000000,
++    }
++
++
++def test_receipt_uses_provider_created_at_not_local_git_time(tmp_path: Path) -> None:
++    manifest_path = _write_manifest(tmp_path)
++    envelope = build_registration_envelope(manifest_path, "abc123", _github_run())
++    assert envelope["received_at_ns"] == 1787558400000000000
++
++
++def test_verifier_rejects_changed_commit_or_manifest() -> None:
++    with pytest.raises(RegistrationError, match="provider identity mismatch"):
++        verify_github_receipt(_envelope(commit="a"), _github_run(head_sha="b"))
++
++
+ def _write_manifest(tmp_path: Path, payload: dict[str, object] | None = None) -> Path:
+     path = tmp_path / "hypothesis.json"
+     path.write_text(json.dumps(payload or _manifest_payload()), encoding="utf-8")
+diff --git a/zenquant/research/registration.py b/zenquant/research/registration.py
+index 056f4ca..d55b4e9 100644
+--- a/zenquant/research/registration.py
++++ b/zenquant/research/registration.py
+@@ -12,6 +12,7 @@ import json
+ import re
+ from collections.abc import Mapping, Sequence
+ from dataclasses import dataclass
++from datetime import UTC, datetime
+ from enum import StrEnum
+ from pathlib import Path
+ from types import MappingProxyType
+@@ -129,6 +130,93 @@ def canonical_sha256(payload: Mapping[str, Any]) -> str:
+     return hashlib.sha256(encoded).hexdigest()
+ 
+ 
++def iso8601_to_ns(value: str) -> int:
++    """Convert an offset-aware ISO-8601 provider timestamp to epoch nanoseconds."""
++
++    if not isinstance(value, str):
++        raise RegistrationError("provider timestamp must be an ISO-8601 string")
++    try:
++        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
++    except ValueError as exc:
++        raise RegistrationError("provider timestamp must be ISO-8601") from exc
++    if parsed.tzinfo is None:
++        raise RegistrationError("provider timestamp must include a timezone")
++    epoch = datetime(1970, 1, 1, tzinfo=UTC)
++    delta = parsed.astimezone(UTC) - epoch
++    return (delta.days * 86_400 + delta.seconds) * 1_000_000_000 + delta.microseconds * 1_000
++
++
++def _provider_identity(provider: Mapping[str, Any]) -> tuple[Any, str, str]:
++    try:
++        provider_run_id = provider["id"]
++        commit_sha = provider["head_sha"]
++        repository = provider["repository"]
++    except KeyError as exc:
++        raise RegistrationError("provider payload is missing required identity") from exc
++    if isinstance(provider_run_id, bool) or not isinstance(provider_run_id, (int, str)):
++        raise RegistrationError("provider run id is invalid")
++    if not isinstance(commit_sha, str) or not commit_sha:
++        raise RegistrationError("provider head SHA is required")
++    if not isinstance(repository, Mapping):
++        raise RegistrationError("provider repository identity is required")
++    remote_identity = repository.get("full_name")
++    if not isinstance(remote_identity, str) or not remote_identity:
++        raise RegistrationError("provider repository identity is required")
++    return provider_run_id, commit_sha, remote_identity
++
++
++def build_registration_envelope(
++    manifest_path: Path | str,
++    commit_sha: str,
++    provider_run: Mapping[str, Any],
++) -> dict[str, Any]:
++    """Bind one checked-in manifest to its authoritative provider run identity."""
++
++    if not isinstance(commit_sha, str) or not commit_sha:
++        raise RegistrationError("commit SHA is required")
++    path = Path(manifest_path)
++    try:
++        manifest_payload = json.loads(path.read_text(encoding="utf-8"))
++    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
++        raise RegistrationError(f"cannot load registration manifest: {path}") from exc
++    if not isinstance(manifest_payload, Mapping):
++        raise RegistrationError("registration manifest must be a JSON object")
++
++    provider_run_id, provider_commit_sha, remote_identity = _provider_identity(provider_run)
++    if provider_commit_sha != commit_sha:
++        raise RegistrationError("provider identity mismatch")
++    received_at_ns = iso8601_to_ns(str(provider_run.get("created_at")))
++    manifest_sha256 = canonical_sha256(manifest_payload)
++    RegistrationReceipt(manifest_sha256, provider_commit_sha, remote_identity, received_at_ns)
++    return {
++        "provider_run_id": provider_run_id,
++        "commit_sha": provider_commit_sha,
++        "remote_identity": remote_identity,
++        "manifest_sha256": manifest_sha256,
++        "received_at_ns": received_at_ns,
++    }
++
++
++def verify_github_receipt(envelope: Mapping[str, Any], provider_payload: Mapping[str, Any]) -> RegistrationReceipt:
++    """Rebuild a trusted receipt from a GitHub run API payload, never local time."""
++
++    provider_run_id, provider_commit_sha, remote_identity = _provider_identity(provider_payload)
++    try:
++        expected = (
++            envelope["provider_run_id"],
++            envelope["commit_sha"],
++            envelope["remote_identity"],
++        )
++        manifest_sha256 = str(envelope["manifest_sha256"])
++    except KeyError as exc:
++        raise RegistrationError("registration envelope is missing required identity") from exc
++    observed = (provider_run_id, provider_commit_sha, remote_identity)
++    if expected != observed:
++        raise RegistrationError("provider identity mismatch")
++    received_at_ns = iso8601_to_ns(str(provider_payload.get("created_at")))
++    return RegistrationReceipt(manifest_sha256, provider_commit_sha, remote_identity, received_at_ns)
++
++
+ def _freeze(value: Any) -> Any:
+     if isinstance(value, Mapping):
+         return MappingProxyType({key: _freeze(item) for key, item in value.items()})

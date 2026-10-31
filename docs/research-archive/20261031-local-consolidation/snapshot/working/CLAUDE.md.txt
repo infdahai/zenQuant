@@ -1,0 +1,134 @@
+# ZenQuant Agent Context
+
+本文件是 `AGENTS.md` 的补充执行上下文，供 Codex / Claude 在进入仓库时快速对齐当前状态。
+
+如果与 `AGENTS.md` 冲突，以 `AGENTS.md` 为准。
+
+## Quick Workflow
+
+- 先读 `AGENTS.md`、本文件，以及当前任务直接相关的 1-3 个文件。
+- 优先使用已有权威状态文件，不要凭聊天记忆判断项目状态。
+- 长任务、后台任务、持续采集与 campaign 状态，以仓库中的状态文件为准，不以终端输出为准。
+- 当前实现、历史 Gate v2 证据与 Quant System v2 research-path 边界统一见 `docs/ARCHITECTURE.md`。
+- tester / operator 的唯一交付入口始终是 `docs/LIVE_VALIDATION_HANDOFF_SPEC.md`。
+
+## Current Product Defaults
+
+- 资产：`BTC`
+- 当前 production/handoff 基线：`4h` bar-close 决策与执行语义
+- 旧多周期 research replay：`4h` 方向、`1h` context、`5m` execution replay，低周期仍含策略评分
+- Quant System v2：默认关闭的 target tracking 研究内核已实现，目前要求 `4h` execution；独立 `5m` 纯调度器仍是目标设计。冻结验收未通过，未 promote
+- `runtime_mode=live` 当前为实时行情 + `SimulatedGateway`，默认 legacy；历史入口默认插件 profile，不等于真实下单或默认路径 parity
+- 大周期偏置：`1d`
+- 数据切分：
+  - `train = 2020-01-01 ~ 2023-12-31`
+  - `dev = 2024-01-01 ~ 2025-12-31`
+  - `test = 2026-01-01 ~ latest`
+- `current / paulwei_baseline` 是历史比较标签，不代表 live 准入。2026-10-02 共用会计已在本地修复，固定复跑仍未通过风险收益筛选；旧历史收益结论不能直接沿用。
+- RL / Optuna：研究工具；旧 Gate v2 campaign 仍暂停。2026-10-03 用户另行授权独立的有限预算研究线，入口 `scripts/run_btc_research.py`；所有结果先作为 diagnostic，不恢复旧 campaign 或运行资格。
+
+## Current Research Truth
+
+- 2026-10-02 BTC 单品种研究：`docs/BTC_SINGLE_ASSET_RESEARCH.md`
+  - 后续授权已在本地修复负现金清零、资金费风险入账、旧价覆盖及资金费高水位中间态；未部署。
+  - 最终 28 次固定复跑：`results/btc_single_asset_research/20261002/accounting_repair/review_revision/summary.json`；全部独立现金/NAV 对账，当前策略未通过开发期风险收益筛选。
+  - 修复、全量 gate 失败和复跑说明：`results/btc_single_asset_research/20261002/accounting_repair/REPORT.md`。完整 harness 尚未通过，不重生成 golden 掩盖失败。
+  - BTC/ETH/SOL 固定比较只覆盖部分 dev，未证明扩币改善风险收益；路线结论：`results/btc_single_asset_research/20261002/route_comparison/REPORT.md`。
+  - 旧 `fixed_backtest/` 是失效会计的诊断证据，不能引用其收益。父级 `accounting_repair/summary.json` 为中间修复，最终以 `review_revision/` 为准。
+  - 数据截至 2026-08-21；2026 已观察，不是全新 OOS。未调参、训练、晋级或部署；原快照 cutoff、重复收盘、legacy 部分成交三项仍仅记录。
+- 统一架构入口：
+  - `docs/ARCHITECTURE.md`
+  - 工程/自动研究框架设计：`docs/superpowers/specs/2026-10-02-research-engineering-framework-design.md`
+  - 综合评价规范：`docs/RESEARCH_EVALUATION_SPEC.md`；规范覆盖面大于当前已实现能力，缺项明确列出。
+  - 实施与运行入口：`docs/RESEARCH_FRAMEWORK_GUIDE.md`；已有新研究模块与 CLI，不代表新候选通过验收。
+  - 2026-10-03新研究实测：`results/research_framework/20261003/RESULTS_v1.md`。75次评价含48次训练提案、6公共基准、18默认dev、3确认消融；17训练提案E2失败拒收优化反馈，未晋级。
+  - 新数据凭据：`results/research_framework/20261003/repaired_data_v2/reconstruction_manifest.json`。转换器丢失的23条CSV首记录已在隔离快照恢复；默认parquet未覆盖。
+  - 新完整性审计：`results/research_framework/20261003/train_audit_v5.json`；产物PASS与研究BLOCKED分别表达。共享kernel无成交清零dust的缺陷只记录，重现见`reproduce_dust_clear_v1.evidence.json`，未修生产router。
+  - 2026-10-04扩展研究：`results/research_framework/20261004/RESULTS_v1.md`；BTC/ETH各18固定dev，另2次真实失败输入的工程配对重放。研究实际库存政策消除该案例的库存不一致，但E3明确FAIL；不改生产router，不反馈优化器、不晋级。隔离数据与完整36审计均链接在报告中。
+  - 跨机制方向：`results/research_framework/20261004/strategy_frontier_v1.md`；CTA、相对价值、carry分别论证。当前仍是独立单资产账户，双腿/组合、真实basis与保证金证据未完成，不以多币回测相加证明组合收益。
+  - 后续144固定诊断：`results/research_framework/20261004/stress144_v1/RESULTS_v1.md`；5%/10%事前预算与五种子价格扰动，8组联合经济观察均5/5，但严格稳健性8组均FAIL（E3失败及其余工程缺证保留）。源码191文件已封存，独立派生数据/成交账本审计通过，不是完整robustness或alpha证明。
+  - 双腿前置：`results/research_framework/20261004/multi_leg_minimum_contract_v1.md`；现货24根月初缺口与instrument/wallet/margin问题已核实，最小双腿手算/执行契约未实现。缺bar扰动只有派生模块，当前回放仍拒绝gap，不算已执行压力实验。
+- 最新 Gate v2：
+  - `results/remediation_20260821/gate_v2_rescore/gate_v2_rescore.json`
+  - `results/remediation_20260821/gate_v2_rescore/gate_v2_rescore.md`
+- 权威交付规格：
+  - `docs/LIVE_VALIDATION_HANDOFF_SPEC.md`
+- Quant V2：
+  - 架构审查：`docs/QUANT_V2_ARCHITECTURE_EXPERT_REVIEW.md`
+  - 冻结实验与复跑：`docs/QUANT_V2_ACCEPTANCE_HANDOFF.md`
+  - compact verdict 唯一生成入口：`scripts/build_quant_v2_acceptance_summary.py`
+  - Operator evidence status：`identity_complete_30_run_rerun_completed`
+  - 旧 repaired 30/30 是 **pre-contract diagnostic only**；它缺少 **accounting-kernel and full replay-input identity**，不得恢复权威经济结论
+  - 新权威产物：`results/accounting_integrity_20260823_v2/acceptance_summary.json`；full-system SHA-256 为 `3259f41a54a4ca688fd17cc59ad5c784564c49032f1c2a34721ea0ad237916d9`
+  - 冻结 replay 输入合同是 `legacy-accounting-rerun-contract.v3`：2026-08-23 13:48 CST 的只读 snapshot 全量 `5,114` 个 Parquet / `21,375,864,438` bytes / `sha256:17fe13a2b55cfd8a34fb0e9b2c0c616e7af4c38a25e9eed705eb4b9cc0d6be04`；合同文件 SHA-256 为 `c76f7c027698ac8146b549d551d38b0f6963e0d6932b1e77cabebf4fab397a19`
+  - 冻结源持久保存在 `data/frozen_snapshots/accounting_integrity_20260823_v2`；工作树 `data` symlink 指向该 snapshot，不得改回 live corpus 后复用同一合同
+  - 新复跑 late-dev A5：现有成本均值 `+379.21`（4/5 为正），额外 5bp 均值 `-353.44`（1/5 为正），额外 15bp 均值 `-1,818.72`（0/5 为正）；隐含额外成本盈亏平衡仅约 `2.59bp`
+  - 正式 verdict：`BLOCKED_PAUSE_PROMOTION_AND_TRAINING`；strict robustness `0/5`，不授权 **promotion or training**
+  - 下一候选假设：时空关系仅允许预注册 shadow attribution，尚未获证据支持或交易权限
+  - 禁止：继续调参/训练、promotion、激活 OptionsState multiplier
+- 数据完成度：
+  - `results/data_readiness/data_readiness.json`
+  - `results/data_readiness/data_readiness.md`
+  - `results/data_readiness/forward_collection_latest.json`
+  - `results/data_readiness/forward_collection_health.json`
+- 调优 campaign：
+  - `results/framework_optimization/campaign_status.json`
+- 调优最终报告：
+  - `results/framework_optimization/framework_optimization.json`
+  - `results/framework_optimization/framework_optimization.md`
+
+## Current Status Summary
+
+- liquidation：
+  - 2026-08-23 只读复查仍存在 Binance 历史缺口与 Hyperliquid 部分覆盖
+  - merged 数据仅达到最低研究口径，当前不可 promote
+  - 实时状态仍以 `results/data_readiness/data_readiness.json` 为准
+- Deribit：
+  - 独立 collector 已恢复
+  - 是否达到 `observation_ready / research_ready`，以 `_collector_status.json` 与 `data_readiness.json` 为准
+  - `2026-08-22T02:00:04.953009Z` 的只读核验为两者均 `true`，但 2026 options 历史与 frozen 2025 OOS 不重叠，不能据此激活 sidecar
+- 调优：
+  - 高预算 campaign 已可运行并可恢复
+  - 是否存在可 promote tuned winner，以最终 `framework_optimization.json.final_verdict` 为准
+  - `scripts/run_framework_campaign.py` 是唯一权威 clean tuning 入口
+  - `scripts/run_auto_research.py` 仅用于 internal/dev research，不单独产出 promote truth
+  - 若状态文件标记 `invalidated`，则所有旧 tuned params 一律作废，必须从 `train/dev` 重新开始
+  - rerun benchmark 已完成，正式结论以 `results/perf_stage2_benchmark_fast_rerun/perf_stage2_benchmark_review.json` 为准
+    - `stage2 reuse visible`
+    - `indicator hot path not yet improved`
+  - 第二阶段 CPU 热路径改动已拆成原子 commit，并已形成 benchmark 归因 artifact
+- PaulWei / AHR999：
+  - 历史比较报告曾判断 `paulwei_public_archive_baseline` 强于旧 `paulwei_baseline`，当时仍是 `research-only`
+  - 该报告 blocker 为 `drawdown_outside_current_band`；其旧收益另受共用会计缺陷污染，尚未按修复后代码重跑，不能继续把历史优劣当成有效策略结论
+  - 历史学习记录见 `results/paulwei_research/strict_execution_learning_review.json`；本轮复核见 `docs/BTC_SINGLE_ASSET_RESEARCH.md`
+  - 当前值得吸收的增量：
+    - 多 tranche 建仓但短侧扩张更克制
+    - staged protective exits
+    - drawdown 后更慢的 cooldown / ramp
+    - moderate flip confirmation floor
+    - 高波动期更强的风险压缩
+  - 不可迁移维度固定为：
+    - discretionary macro inputs
+    - news / narrative interpretation
+    - cross-exchange context
+    - 不可观测 conviction scaling
+  - `AHR999` 当前只允许用于：
+    - `regime_prior`
+    - `risk_budget_modifier`
+    - `dca_guidance_signal`
+    - `explainability_context`
+  - `AHR999` 当前禁止进入：
+    - `intraday_trigger`
+    - `execution_signal`
+    - `direction_vote`
+
+## Practical Rules
+
+- 不在 `AGENTS.md` 或本文件里写临时会话级结论；用结果文件承载事实。
+- 参数搜索只能看 `train`；候选排序只能看 `dev`；`test` 只能做最终历史封板。
+- `walk_forward_eval.py` 与 `2023-08` 现在都只算 `dev` 层证据，不再替代 `test`。
+- 不把 Hyperliquid public 数据表述成 venue-native liquidation truth；它是 liquidation-compatible proxy。
+- liquidation 未 `promotion_ready` 时，不把它纳入正式 promote 级搜索空间。
+- 在出现新的 promote candidate 之前，不把 tuned winner 当默认 live 候选。
+- `campaign_status=completed` 不等于已经通过最终历史准入；只有 `framework_optimization.json.final_verdict` 可决定是否 `eligible_for_paper_live`。
+- `research loop` 不负责未来数据积累；前瞻数据靠 `zenquant-forward-collect` 的定时运行来刷新 Deribit / Hyperliquid / merged readiness。

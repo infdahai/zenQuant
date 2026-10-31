@@ -1,0 +1,235 @@
+#!/usr/bin/env python3
+"""Export one frozen architecture replay for TimeSpace shadow registration."""
+
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+import os
+import shutil
+import subprocess
+import tempfile
+from collections.abc import Callable
+from dataclasses import dataclass
+from datetime import UTC, datetime
+from pathlib import Path
+
+from zenquant.research.time_space_export import recompute_time_space_export
+from zenquant.research.time_space_replay import ReplayRequest, produce_frozen_architecture_replay
+
+_CANONICAL_REPOSITORY = "infdahai/zenQuant"
+_ROOT = Path(__file__).parents[1]
+_NAMES = (
+    "time_space_shadow_export.json",
+    "time_space_shadow_export_provenance.json",
+    "time_space_shadow_export_checkpoint.json",
+)
+_MARKER = "TIME_SPACE_EXPORT_COMPLETE.json"
+
+
+@dataclass(frozen=True, slots=True)
+class ExportArgs:
+    execution_manifest: Path
+    hypothesis_manifest: Path
+    output_dir: Path
+    provider_run_id: str
+    as_of: str
+
+
+def export_architecture(args: ExportArgs) -> tuple[Path, ...]:
+    """Build and atomically publish the three registration inputs."""
+
+    return _export_architecture_with_producer(
+        args,
+        replay_producer=produce_frozen_architecture_replay,
+        repository_resolver=_resolve_repository,
+    )
+
+
+def _export_architecture_with_producer(
+    args: ExportArgs,
+    *,
+    replay_producer,
+    repository_resolver: Callable[[], tuple[str, str]],
+) -> tuple[Path, ...]:
+    """Library seam for deterministic tests; the production CLI has no injector."""
+
+    if type(args) is not ExportArgs:
+        raise TypeError("args must be ExportArgs")
+    output_dir = Path(args.output_dir)
+    if output_dir.exists() or output_dir.is_symlink():
+        raise FileExistsError("output directory already exists")
+    repository_identity, commit_sha = repository_resolver()
+    bundle = recompute_time_space_export(
+        ReplayRequest(
+            execution_manifest=Path(args.execution_manifest),
+            hypothesis_manifest=Path(args.hypothesis_manifest),
+            as_of_ns=_parse_as_of(args.as_of),
+        ),
+        repository_identity=repository_identity,
+        commit_sha=commit_sha,
+        provider_run_id=args.provider_run_id,
+        replay_producer=replay_producer,
+    )
+    payloads = (bundle.export, bundle.provenance, bundle.checkpoint)
+    output_dir.parent.mkdir(parents=True, exist_ok=True)
+    lock_path = output_dir.parent / f".{output_dir.name}.publish.lock"
+    lock_descriptor = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+    staging: Path | None = None
+    try:
+        staging = Path(tempfile.mkdtemp(prefix=f".{output_dir.name}.staging-", dir=output_dir.parent))
+        staging_paths = tuple(staging / name for name in _NAMES)
+        hashes = {}
+        for path, payload in zip(staging_paths, payloads, strict=True):
+            with path.open("xb") as handle:
+                content = _canonical_bytes(payload)
+                handle.write(content)
+                handle.flush()
+                os.fsync(handle.fileno())
+                hashes[path.name] = hashlib.sha256(content).hexdigest()
+        marker = {
+            "schema_version": "time-space-export-complete.v1",
+            "layer": "time_space_shadow",
+            "artifacts": hashes,
+        }
+        marker_path = staging / _MARKER
+        with marker_path.open("xb") as handle:
+            handle.write(_canonical_bytes(marker))
+            handle.flush()
+            os.fsync(handle.fileno())
+        _fsync(staging)
+        if output_dir.exists() or output_dir.is_symlink():
+            raise FileExistsError("output directory already exists")
+        staging.rename(output_dir)
+        _fsync(output_dir.parent)
+    except Exception:
+        if staging is not None:
+            shutil.rmtree(staging, ignore_errors=True)
+        raise
+    finally:
+        os.close(lock_descriptor)
+        lock_path.unlink(missing_ok=True)
+        _fsync(output_dir.parent)
+    result = tuple(output_dir / name for name in _NAMES)
+    _validate_complete_export(output_dir)
+    return result
+
+
+def _validate_complete_export(output_dir: Path) -> None:
+    if output_dir.is_symlink() or not output_dir.is_dir():
+        raise ValueError("export directory is not a completed regular directory")
+    expected_names = {*_NAMES, _MARKER}
+    if {path.name for path in output_dir.iterdir()} != expected_names:
+        raise ValueError("export directory is incomplete or contains uncommitted files")
+    marker = json.loads((output_dir / _MARKER).read_text(encoding="utf-8"))
+    if set(marker) != {"schema_version", "layer", "artifacts"}:
+        raise ValueError("export completion marker schema changed")
+    if marker["schema_version"] != "time-space-export-complete.v1" or marker["layer"] != "time_space_shadow":
+        raise ValueError("export completion marker identity changed")
+    if set(marker["artifacts"]) != set(_NAMES):
+        raise ValueError("export completion marker artifact set changed")
+    for name in _NAMES:
+        path = output_dir / name
+        if path.is_symlink() or not path.is_file() or _sha256_file(path) != marker["artifacts"][name]:
+            raise ValueError(f"export artifact failed completion validation: {name}")
+
+
+def _resolve_repository() -> tuple[str, str]:
+    commit = _git("rev-parse", "HEAD")
+    status = _git("status", "--porcelain", "--untracked-files=no")
+    if status:
+        raise ValueError("repository tracked workspace must be clean before export")
+    trust_path = _ROOT / "config/research/time_space_export_registration_trust_v1.json"
+    try:
+        trust = json.loads(trust_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise ValueError("export registration trust root is unavailable") from exc
+    if not isinstance(trust, dict) or not isinstance(trust.get("remote_identity"), str):
+        raise ValueError("export registration trust root has no repository identity")
+    remote = _git("remote", "get-url", "origin")
+    repository = _normalize_remote(remote)
+    if repository != _CANONICAL_REPOSITORY or trust["remote_identity"] != _CANONICAL_REPOSITORY:
+        raise ValueError("origin and trust root must match the canonical repository")
+    return repository, commit
+
+
+def _git(*args: str) -> str:
+    completed = subprocess.run(
+        ["git", *args],
+        cwd=_ROOT,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    return completed.stdout.strip()
+
+
+def _normalize_remote(remote: str) -> str:
+    value = remote.removesuffix(".git")
+    if value.startswith("git@github.com:"):
+        value = value.removeprefix("git@github.com:")
+    elif value.startswith("https://github.com/"):
+        value = value.removeprefix("https://github.com/")
+    else:
+        raise ValueError("registration export requires a canonical GitHub remote")
+    if value.count("/") != 1 or not all(value.split("/")):
+        raise ValueError("registration export repository identity is invalid")
+    return value
+
+
+def _canonical_bytes(payload: object) -> bytes:
+    return (json.dumps(payload, sort_keys=True, separators=(",", ":"), allow_nan=False) + "\n").encode("utf-8")
+
+
+def _fsync(path: Path) -> None:
+    try:
+        descriptor = os.open(path, os.O_RDONLY)
+    except OSError:
+        return
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _parse_args() -> ExportArgs:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--execution-manifest", required=True, type=Path)
+    parser.add_argument(
+        "--hypothesis-manifest",
+        type=Path,
+        default=Path("config/research/time_space_shadow_hypothesis_v1.json"),
+    )
+    parser.add_argument("--output-dir", required=True, type=Path)
+    parser.add_argument("--provider-run-id", required=True)
+    parser.add_argument("--as-of", required=True)
+    return ExportArgs(**vars(parser.parse_args()))
+
+
+def _parse_as_of(value: str) -> int:
+    if not isinstance(value, str) or len(value) != 20 or not value.endswith("Z"):
+        raise ValueError("as_of must be a literal canonical UTC 4h cutoff")
+    parsed = datetime.strptime(value, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=UTC)
+    ns = int(parsed.timestamp()) * 1_000_000_000
+    if ns % (4 * 60 * 60 * 1_000_000_000):
+        raise ValueError("as_of must be a literal canonical UTC 4h cutoff")
+    return ns
+
+
+def main() -> int:
+    for path in export_architecture(_parse_args()):
+        print(path)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

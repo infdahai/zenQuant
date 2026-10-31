@@ -1,0 +1,117 @@
+commit f6670b602b34713bfff43cef038986ebeb4984de
+Author:     Disaster <clusternlh@gmail.com>
+AuthorDate: Sun Aug 23 11:03:56 2026 +0800
+Commit:     Disaster <clusternlh@gmail.com>
+CommitDate: Sun Aug 23 11:03:56 2026 +0800
+
+    style: format accounting governance modules
+
+diff --git a/scripts/rerun_legacy_accounting_baseline.py b/scripts/rerun_legacy_accounting_baseline.py
+index 15105af..cc82577 100644
+--- a/scripts/rerun_legacy_accounting_baseline.py
++++ b/scripts/rerun_legacy_accounting_baseline.py
+@@ -340,14 +340,9 @@ def _stream_stage_validity(
+     if remaining:
+         raise ValueError(f"repaired report contains unexpected run keys {sorted(remaining)!r}")
+     expected_stage_keys = {
+-        (window, seed, stage.value)
+-        for window, seed in manifest.expected_run_keys
+-        for stage in ArchitectureStage
+-    }
+-    observed_stage_keys = {
+-        (str(record["window"]), int(record["seed"]), str(record["stage"]))
+-        for record in records
++        (window, seed, stage.value) for window, seed in manifest.expected_run_keys for stage in ArchitectureStage
+     }
++    observed_stage_keys = {(str(record["window"]), int(record["seed"]), str(record["stage"])) for record in records}
+     if len(records) != len(expected_stage_keys) or observed_stage_keys != expected_stage_keys:
+         raise ValueError("stage validity does not contain the exact frozen 30x7 provenance matrix")
+     records.sort(key=_stage_record_sort_key)
+@@ -741,8 +736,7 @@ def _load_frozen_rerun_contract() -> dict[str, Any]:
+     actual_sha256 = hashlib.sha256(raw).hexdigest()
+     if actual_sha256 != FROZEN_RERUN_CONTRACT_SHA256:
+         raise ValueError(
+-            "frozen rerun contract SHA-256 mismatch: "
+-            f"expected {FROZEN_RERUN_CONTRACT_SHA256}, got {actual_sha256}"
++            f"frozen rerun contract SHA-256 mismatch: expected {FROZEN_RERUN_CONTRACT_SHA256}, got {actual_sha256}"
+         )
+     try:
+         payload = json.loads(raw)
+diff --git a/tests/test_legacy_accounting_rerun.py b/tests/test_legacy_accounting_rerun.py
+index fade7e9..bb54b13 100644
+--- a/tests/test_legacy_accounting_rerun.py
++++ b/tests/test_legacy_accounting_rerun.py
+@@ -574,11 +574,7 @@ def test_streamed_validity_materializes_missing_frozen_run_on_both_sides(tmp_pat
+     )
+ 
+     assert len(result["records"]) == 30 * len(ArchitectureStage)
+-    missing_records = [
+-        record
+-        for record in result["records"]
+-        if (record["window"], record["seed"]) == missing_key
+-    ]
++    missing_records = [record for record in result["records"] if (record["window"], record["seed"]) == missing_key]
+     assert len(missing_records) == len(ArchitectureStage)
+     assert {record["state"] for record in missing_records} == {ValidityState.UNVERIFIED_LEGACY.value}
+ 
+diff --git a/zenquant/research/accounting_kernel_identity.py b/zenquant/research/accounting_kernel_identity.py
+index b3eef98..2ba65d8 100644
+--- a/zenquant/research/accounting_kernel_identity.py
++++ b/zenquant/research/accounting_kernel_identity.py
+@@ -44,9 +44,7 @@ def build_accounting_kernel_identity(
+     execution_tree = _parse_module(root / _EXECUTION_ROUTER_PATH)
+     execution_class = _required_class(execution_tree, "ExecutionKernel", path=_EXECUTION_ROUTER_PATH)
+     execution_methods = {
+-        node.name: node
+-        for node in execution_class.body
+-        if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef)
++        node.name: node for node in execution_class.body if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef)
+     }
+     hook = execution_methods.get(_EXECUTION_ACCOUNTING_HOOK)
+     if hook is None:
+@@ -56,11 +54,7 @@ def build_accounting_kernel_identity(
+         )
+     selected_execution_methods = {
+         _EXECUTION_ACCOUNTING_HOOK,
+-        *(
+-            name
+-            for name, node in execution_methods.items()
+-            if _calls_method(node, _EXECUTION_ACCOUNTING_HOOK)
+-        ),
++        *(name for name, node in execution_methods.items() if _calls_method(node, _EXECUTION_ACCOUNTING_HOOK)),
+     }
+     for method_name in sorted(selected_execution_methods):
+         components.append(
+@@ -116,9 +110,7 @@ def _required_method(class_node: ast.ClassDef, name: str, *, path: Path) -> ast.
+ 
+ def _calls_method(node: ast.AST, method_name: str) -> bool:
+     return any(
+-        isinstance(item, ast.Call)
+-        and isinstance(item.func, ast.Attribute)
+-        and item.func.attr == method_name
++        isinstance(item, ast.Call) and isinstance(item.func, ast.Attribute) and item.func.attr == method_name
+         for item in ast.walk(node)
+     )
+ 
+diff --git a/zenquant/research/legacy_accounting_provenance.py b/zenquant/research/legacy_accounting_provenance.py
+index ddbe4fb..5d869b3 100644
+--- a/zenquant/research/legacy_accounting_provenance.py
++++ b/zenquant/research/legacy_accounting_provenance.py
+@@ -162,15 +162,8 @@ def audit_stage_provenance(
+     run_keys = legacy_run_keys | repaired_run_keys
+     if not run_keys:
+         raise ValueError("expected provenance universe cannot be empty")
+-    expected_keys = {
+-        (window, seed, stage.value)
+-        for window, seed in run_keys
+-        for stage in ArchitectureStage
+-    }
+-    records = [
+-        _audit_stage(key, legacy_stages.get(key), repaired_stages.get(key))
+-        for key in sorted(expected_keys)
+-    ]
++    expected_keys = {(window, seed, stage.value) for window, seed in run_keys for stage in ArchitectureStage}
++    records = [_audit_stage(key, legacy_stages.get(key), repaired_stages.get(key)) for key in sorted(expected_keys)]
+     counts = {state.value: 0 for state in ValidityState}
+     for record in records:
+         counts[record["state"]] += 1

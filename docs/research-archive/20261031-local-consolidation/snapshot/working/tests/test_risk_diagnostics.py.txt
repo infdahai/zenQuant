@@ -1,0 +1,381 @@
+"""Independent hand-calculated examples for research risk diagnostics."""
+
+from __future__ import annotations
+
+import copy
+import json
+from datetime import UTC, datetime
+
+import pytest
+
+from zenquant.research.evaluation import DAY_NS, evaluate_evidence
+
+
+def bundle(returns=(), *, start_ns=0):
+    curve = [{"time_ns": start_ns, "equity": 100.0}]
+    for index, daily_return in enumerate(returns, 1):
+        curve.append({"time_ns": start_ns + index * DAY_NS, "equity": curve[-1]["equity"] * (1 + daily_return)})
+    return {"initial_equity": 100.0, "curve": curve, "fills": [], "funding": [], "episodes": []}
+
+
+def run(data):
+    from zenquant.research.risk_diagnostics import evaluate_risk_diagnostics
+
+    return evaluate_risk_diagnostics(data, evaluate_evidence(data))
+
+
+def metric(result, name):
+    return result["metrics"][name]
+
+
+def value(result, name):
+    return metric(result, name)["value"]
+
+
+def timestamp(text):
+    return int(datetime.fromisoformat(text).replace(tzinfo=UTC).timestamp()) * 1_000_000_000
+
+
+def test_weekly_loss_compounds_seven_consecutive_days_instead_of_summing():
+    result = run(bundle([-0.1, -0.1, 0.0, 0.0, 0.0, 0.0, 0.0]))
+    assert value(result, "worst_day_loss") == pytest.approx(0.1)
+    assert value(result, "worst_7d_loss") == pytest.approx(0.19)
+    assert metric(result, "worst_7d_loss")["sample_size"] == 1
+
+
+def test_weekly_loss_does_not_bridge_missing_daily_valuations():
+    data = bundle([-0.1] * 8)
+    del data["curve"][4]
+    result = run(data)
+    assert value(result, "worst_7d_loss") is None
+    assert metric(result, "worst_7d_loss")["status"] == "NOT_EVALUABLE"
+    assert metric(result, "worst_day_loss")["reason"] == "MISSING_DAILY_VALUATIONS"
+
+
+def test_tail_losses_preserve_small_sample_diagnostic_values():
+    result = run(bundle([0.0] * 38 + [-0.01, -0.03]))
+    assert value(result, "daily_loss_var95") == 0.0
+    assert value(result, "daily_loss_es95") == pytest.approx(0.02)
+    assert metric(result, "daily_loss_es95")["status"] == "NOT_EVALUABLE"
+    assert metric(result, "daily_loss_es95")["reason"] == "INSUFFICIENT_TAIL_OBSERVATIONS"
+    assert result["tail_sampling"]["full_tail_observations"] == 2
+
+
+def test_es_uses_fixed_tail_mass_instead_of_all_observations_tied_at_var():
+    result = run(bundle([0.0] * 380 + [-0.01] * 10 + [-0.03] * 10))
+    assert value(result, "daily_loss_var95") == 0.0
+    assert value(result, "daily_loss_es95") == pytest.approx(0.02)
+    assert metric(result, "daily_loss_es95")["status"] == "PASS"
+    assert result["tail_sampling"]["full_tail_observations"] == 20
+
+
+def test_fractional_tail_boundary_uses_partial_probability_weight():
+    result = run(bundle([0.0] * 20 + [-0.1]))
+    assert value(result, "daily_loss_es95") == pytest.approx(0.09523809523809523)
+    assert result["tail_sampling"]["effective_tail_mass"] == 1.05
+    assert result["tail_sampling"]["full_tail_observations"] == 1
+
+
+def test_loss_distribution_preserves_negative_loss_for_all_positive_returns():
+    result = run(bundle([0.01] * 400))
+    assert value(result, "worst_day_loss") == pytest.approx(-0.01)
+    assert value(result, "daily_loss_es95") == pytest.approx(-0.01)
+
+
+def test_episode_concentration_uses_gross_positive_pnl_and_reports_removal_amount():
+    data = bundle([0.1])
+    data["episodes"] = [{"closed": True, "net_pnl": pnl} for pnl in (60.0, 20.0, -30.0, -40.0)]
+    result = run(data)
+    assert value(result, "largest_closed_episode_profit") == 60.0
+    assert value(result, "largest_episode_share_of_gross_profit") == 0.75
+    assert value(result, "closed_pnl_without_best_episode") == -50.0
+    assert value(result, "mean_winning_episode_pnl") == 40.0
+    assert value(result, "mean_losing_episode_loss") == 35.0
+    assert value(result, "average_win_loss_ratio") == pytest.approx(8 / 7)
+    assert value(result, "longest_consecutive_losing_episodes") == 2
+
+
+def test_near_zero_net_profit_does_not_create_exploding_concentration_ratio():
+    data = bundle([0.0001])
+    data["episodes"] = [{"closed": True, "net_pnl": pnl} for pnl in (60.0, 20.0, -30.0, -49.99)]
+    result = run(data)
+    assert value(result, "largest_episode_share_of_gross_profit") == 0.75
+    assert value(result, "closed_pnl_without_best_episode") == pytest.approx(-59.99)
+
+
+def test_open_episode_realized_and_unrealized_are_separate_and_not_counted_as_closed():
+    data = bundle([1.0])
+    data["episodes"] = [
+        {"closed": True, "net_pnl": 10.0},
+        {"closed": False, "net_pnl": -2.0, "unrealized_pnl": 92.0},
+    ]
+    result = run(data)
+    assert value(result, "closed_episode_net_pnl") == 10.0
+    assert value(result, "open_episode_realized_net_pnl") == -2.0
+    assert value(result, "open_episode_unrealized_pnl") == 92.0
+    assert value(result, "episode_attribution_residual") == 0.0
+    assert value(result, "longest_consecutive_losing_episodes") == 0
+
+
+def test_flat_episode_breaks_loss_streak_and_missing_loss_has_no_infinite_ratio():
+    data = bundle([0.0])
+    data["episodes"] = [{"closed": True, "net_pnl": pnl} for pnl in (-1.0, -2.0, 0.0, -3.0)]
+    assert value(run(data), "longest_consecutive_losing_episodes") == 2
+    data["episodes"] = [{"closed": True, "net_pnl": 2.0}]
+    result = run(data)
+    assert value(result, "average_win_loss_ratio") is None
+    assert metric(result, "average_win_loss_ratio")["reason"] == "NO_LOSS_EPISODES"
+
+
+def monthly_bundle():
+    start = timestamp("2024-01-15")
+    end = timestamp("2024-03-15")
+    data = bundle()
+    data["curve"] = []
+    for point in range(start, end + 1, DAY_NS):
+        equity = 100.0 if point < timestamp("2024-02-01") else 110.0 if point < timestamp("2024-03-01") else 99.0
+        data["curve"].append({"time_ns": point, "equity": equity})
+    data["curve"][-1]["equity"] = 108.9
+    return data
+
+
+def test_monthly_returns_use_utc_boundaries_and_label_partial_first_and_last_months():
+    result = run(monthly_bundle())
+    months = result["monthly_returns"]
+    assert [row["month"] for row in months] == ["2024-01", "2024-02", "2024-03"]
+    assert [row["net_return"]["value"] for row in months] == pytest.approx([0.1, -0.1, 0.1])
+    assert [(row["partial_start"], row["partial_end"]) for row in months] == [
+        (True, False),
+        (False, False),
+        (False, True),
+    ]
+
+
+def test_missing_date_invalidates_monthly_statistics_without_erasing_endpoint_diagnostic():
+    data = monthly_bundle()
+    data["curve"] = [row for row in data["curve"] if row["time_ns"] != timestamp("2024-02-15")]
+    months = run(data)["monthly_returns"]
+    assert months[0]["net_return"]["status"] == "PASS"
+    assert months[1]["net_return"]["value"] == pytest.approx(-0.1)
+    assert months[1]["net_return"]["status"] == "NOT_EVALUABLE"
+    assert months[1]["missing_midnights"] == [timestamp("2024-02-15")]
+
+
+def test_missing_month_boundary_never_uses_later_valuation():
+    data = monthly_bundle()
+    data["curve"] = [row for row in data["curve"] if row["time_ns"] != timestamp("2024-02-01")]
+    months = run(data)["monthly_returns"]
+    assert months[0]["net_return"]["value"] is None
+    assert months[1]["net_return"]["value"] is None
+
+
+def test_exposure_is_time_weighted_from_actual_positions_not_targets():
+    data = bundle([0.0] * 4)
+    data["targets"] = [100.0] * 4
+    data["accounting"] = {
+        "rows": [
+            {"time_ns": 0, "equity": 100.0, "position_qty": 0.0, "mark_price": 100.0},
+            {"time_ns": DAY_NS, "equity": 100.0, "position_qty": 1.0, "mark_price": 100.0},
+            {"time_ns": 3 * DAY_NS, "equity": 100.0, "position_qty": -0.5, "mark_price": 100.0},
+            {"time_ns": 4 * DAY_NS, "equity": 100.0, "position_qty": 0.0, "mark_price": 100.0},
+        ]
+    }
+    result = run(data)
+    assert value(result, "time_weighted_abs_exposure") == 0.625
+    assert value(result, "time_in_position_fraction") == 0.75
+    assert value(result, "max_observed_abs_exposure") == 1.0
+    assert result["exposure_sampling"]["basis"] == "accounting_rows_piecewise_constant_asof"
+
+
+def test_same_time_accounting_events_use_last_state_for_subsequent_interval():
+    data = bundle([0.0, 0.0])
+    data["accounting"] = {
+        "rows": [
+            {"time_ns": 0, "equity": 100.0, "position_qty": 0.0, "mark_price": 100.0},
+            {"time_ns": DAY_NS, "equity": 100.0, "position_qty": 1.0, "mark_price": 100.0},
+            {"time_ns": DAY_NS, "equity": 100.0, "position_qty": 0.5, "mark_price": 100.0},
+            {"time_ns": 2 * DAY_NS, "equity": 100.0, "position_qty": 0.5, "mark_price": 100.0},
+        ]
+    }
+    result = run(data)
+    assert value(result, "time_weighted_abs_exposure") == 0.25
+    assert value(result, "max_observed_abs_exposure") == 1.0
+
+
+def test_targets_alone_cannot_create_actual_exposure_evidence():
+    data = bundle([0.1, -0.1])
+    data["targets"] = [1.0, 1.0]
+    result = run(data)
+    assert value(result, "time_weighted_abs_exposure") is None
+    assert metric(result, "time_weighted_abs_exposure")["reason"] == "MISSING_ACCOUNTING_ROWS"
+
+
+def test_zero_exposure_is_observed_but_return_per_exposure_is_undefined():
+    data = bundle([0.0])
+    data["accounting"] = {
+        "rows": [{"time_ns": point, "equity": 100.0, "position_qty": 0.0, "mark_price": 100.0} for point in (0, DAY_NS)]
+    }
+    result = run(data)
+    assert value(result, "time_weighted_abs_exposure") == 0.0
+    assert value(result, "net_return_per_abs_exposure") is None
+    assert metric(result, "net_return_per_abs_exposure")["reason"] == "ZERO_EXPOSURE"
+
+
+def test_ruin_preserves_first_loss_and_never_restores_normal_risk_ratios():
+    data = bundle([0.2])
+    data["curve"].insert(1, {"time_ns": DAY_NS // 2, "equity": -10.0})
+    data["accounting"] = {"rows": [{**row, "position_qty": 1.0, "mark_price": 100.0} for row in data["curve"]]}
+    result = run(data)
+    assert value(result, "ruin_transition_return") == pytest.approx(-1.1)
+    assert metric(result, "daily_loss_es95")["reason"] == "RUIN"
+    assert metric(result, "time_weighted_abs_exposure")["reason"] == "RUIN"
+    assert result["capital_risk_gate"]["status"] == "FAIL"
+    assert result["capital_risk_gate"]["reason"] == "RUIN"
+
+
+def test_diagnostics_cannot_grant_capital_gate_or_mutate_supplied_engineering_failure():
+    data = bundle([0.0] * 400)
+    data["engineering"] = {"E2": {"status": "FAIL", "reason": "fixture_accounting_failure"}}
+    report = evaluate_evidence(data)
+    before = copy.deepcopy((data, report))
+    from zenquant.research.risk_diagnostics import evaluate_risk_diagnostics
+
+    result = evaluate_risk_diagnostics(data, report)
+    assert (data, report) == before
+    assert result["capital_risk_gate"]["status"] == "NOT_EVALUABLE"
+    assert result["margin_and_liquidation"]["status"] == "NOT_EVALUABLE"
+    assert report["gates"]["E2"]["status"] == "FAIL"
+    assert json.loads(json.dumps(result, allow_nan=False)) == result
+
+
+@pytest.mark.parametrize("bad", [float("nan"), float("inf"), True])
+def test_nonfinite_or_boolean_account_values_are_rejected(bad):
+    data = bundle([0.0])
+    data["accounting"] = {
+        "rows": [
+            {"time_ns": 0, "equity": 100.0, "position_qty": bad, "mark_price": 100.0},
+            {"time_ns": DAY_NS, "equity": 100.0, "position_qty": 0.0, "mark_price": 100.0},
+        ]
+    }
+    with pytest.raises(ValueError, match="finite"):
+        run(data)
+
+
+def test_accounting_ruin_cannot_be_hidden_by_last_curve_state_at_same_time():
+    data = bundle([0.1])
+    data["accounting"] = {
+        "rows": [
+            {"time_ns": 0, "equity": 100.0, "position_qty": 1.0, "mark_price": 100.0},
+            {"time_ns": DAY_NS, "equity": -10.0, "position_qty": 1.0, "mark_price": 100.0},
+            {"time_ns": DAY_NS, "equity": 110.0, "position_qty": 1.0, "mark_price": 100.0},
+        ]
+    }
+    result = run(data)
+    assert result["capital_risk_gate"]["status"] == "FAIL"
+    assert value(result, "ruin_transition_return") == pytest.approx(-1.1)
+    assert metric(result, "daily_loss_es95")["reason"] == "RUIN"
+    assert result["monthly_returns"][0]["net_return"]["reason"] == "RUIN"
+
+
+def test_partial_accounting_coverage_does_not_assume_missing_exposure_is_zero():
+    data = bundle([0.0, 0.0])
+    data["accounting"] = {
+        "rows": [
+            {"time_ns": DAY_NS, "equity": 100.0, "position_qty": 1.0, "mark_price": 100.0},
+            {"time_ns": 2 * DAY_NS, "equity": 100.0, "position_qty": 1.0, "mark_price": 100.0},
+        ]
+    }
+    result = run(data)
+    assert value(result, "time_weighted_abs_exposure") is None
+    assert metric(result, "time_weighted_abs_exposure")["reason"] == "INCOMPLETE_ACCOUNTING_WINDOW"
+
+
+def test_daily_report_must_match_actual_equity_instead_of_injecting_favorable_returns():
+    data = bundle([-0.1, -0.1])
+    report = evaluate_evidence(data)
+    report["daily_returns"][0]["value"] = 0.5
+    from zenquant.research.risk_diagnostics import evaluate_risk_diagnostics
+
+    with pytest.raises(ValueError, match=r"match.*curve"):
+        evaluate_risk_diagnostics(data, report)
+
+
+def test_unordered_accounting_events_are_rejected():
+    data = bundle([0.0])
+    data["accounting"] = {
+        "rows": [
+            {"time_ns": DAY_NS, "equity": 100.0, "position_qty": 1.0, "mark_price": 100.0},
+            {"time_ns": 0, "equity": 100.0, "position_qty": 1.0, "mark_price": 100.0},
+        ]
+    }
+    with pytest.raises(ValueError, match="chronological"):
+        run(data)
+
+
+def test_missing_open_unrealized_pnl_is_not_silently_treated_as_zero():
+    data = bundle([0.1])
+    data["episodes"] = [{"closed": False, "net_pnl": 10.0}]
+    result = run(data)
+    assert value(result, "episode_attribution_residual") is None
+    assert metric(result, "episode_attribution_residual")["reason"] == "MISSING_OPEN_UNREALIZED_PNL"
+
+
+def test_real_target_replay_adapter_provides_actual_exposure_and_open_pnl_attribution():
+    from zenquant.research.target_replay import run_target_replay
+
+    four_hours = DAY_NS // 6
+    bars = [
+        {
+            "open_time_ns": index * four_hours,
+            "close_time_ns": (index + 1) * four_hours - 1,
+            "open": opening,
+            "high": max(opening, closing),
+            "low": min(opening, closing),
+            "close": closing,
+        }
+        for index, (opening, closing) in enumerate(((100.0, 100.0), (200.0, 220.0)))
+    ]
+    evidence = run_target_replay(bars, [0.5, 0.0], initial_equity=100, taker_fee_bps=0, slippage_bps=0)
+    result = run(evidence)
+    assert value(result, "time_weighted_abs_exposure") == pytest.approx(0.5)
+    assert value(result, "time_in_position_fraction") == pytest.approx(0.5)
+    assert value(result, "open_episode_unrealized_pnl") == pytest.approx(10.0)
+    assert value(result, "episode_attribution_residual") == pytest.approx(0.0)
+    assert result["capital_risk_gate"]["status"] == "NOT_EVALUABLE"
+
+
+def test_funding_at_replay_start_allows_flat_account_before_first_market_mark():
+    from zenquant.research.target_replay import run_target_replay
+
+    four_hours = DAY_NS // 6
+    bars = [
+        {
+            "open_time_ns": index * four_hours,
+            "close_time_ns": (index + 1) * four_hours - 1_000_000,
+            "open": 100.0,
+            "high": 100.0,
+            "low": 100.0,
+            "close": 100.0,
+        }
+        for index in range(2)
+    ]
+    evidence = run_target_replay(
+        bars,
+        [0.0, 0.0],
+        [{"funding_time_ns": 0, "funding_rate": 0.0001, "mark_price": None}],
+    )
+    result = run(evidence)
+    assert value(result, "time_weighted_abs_exposure") == 0.0
+    assert value(result, "time_in_position_fraction") == 0.0
+
+
+@pytest.mark.parametrize("mark", [None, 0.0])
+def test_unavailable_mark_is_safe_only_for_actual_flat_position(mark):
+    data = bundle([0.0])
+    data["accounting"] = {
+        "rows": [{"time_ns": point, "equity": 100.0, "position_qty": 0.0, "mark_price": mark} for point in (0, DAY_NS)]
+    }
+    assert value(run(data), "time_weighted_abs_exposure") == 0.0
+    data["accounting"]["rows"][0]["position_qty"] = 1.0
+    with pytest.raises(ValueError):
+        run(data)

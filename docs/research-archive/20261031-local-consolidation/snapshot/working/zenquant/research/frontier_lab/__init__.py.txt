@@ -1,0 +1,1 @@
+"""Bounded, research-only experiments for long-horizon market selection."""

@@ -1,0 +1,696 @@
+commit eafaa9618abae8aa8b51602042ff055033fc0140
+Author:     Disaster <clusternlh@gmail.com>
+AuthorDate: Mon Aug 24 12:04:53 2026 +0800
+Commit:     Disaster <clusternlh@gmail.com>
+CommitDate: Mon Aug 24 12:04:53 2026 +0800
+
+    fix(research): harden trend input freeze evidence
+
+diff --git a/scripts/freeze_trend_research_inputs.py b/scripts/freeze_trend_research_inputs.py
+index 647bb43..a8a04b3 100644
+--- a/scripts/freeze_trend_research_inputs.py
++++ b/scripts/freeze_trend_research_inputs.py
+@@ -6,6 +6,7 @@ from __future__ import annotations
+ import argparse
+ import hashlib
+ import json
++import math
+ import os
+ import shutil
+ import subprocess
+@@ -17,7 +18,7 @@ from typing import Any, Final
+ 
+ import pandas as pd
+ 
+-from zenquant.data.spot_daily import audit_spot_daily
++from zenquant.data.spot_daily import audit_spot_daily, normalize_spot_daily_csvs
+ from zenquant.research.accounting_kernel_identity import build_accounting_kernel_identity
+ from zenquant.research.registration import (
+     REQUIRED_SOURCE_IDS,
+@@ -38,11 +39,24 @@ _HYPOTHESIS_FILES: Final = frozenset(
+         "trend_participation_hypothesis_v1.json",
+     }
+ )
++_HYPOTHESIS_LAYERS: Final = {
++    "time_space_shadow_hypothesis_v1.json": "time_space_shadow",
++    "trend_participation_hypothesis_v1.json": "trend_participation",
++}
+ _OUTPUT_FILES: Final = {
+     "time_space_shadow": "time_space_shadow_execution_v1.json",
+     "trend_participation": "trend_participation_execution_v1.json",
+ }
+ _FORBIDDEN_EXECUTION_KEYS: Final = frozenset({"direction", "pnl", "signal"})
++_CONSTRUCTION_PATHS: Final = (
++    "scripts/freeze_trend_research_inputs.py",
++    "zenquant/data/spot_daily.py",
++    "zenquant/domain/accounting.py",
++    "zenquant/execution/router.py",
++    "zenquant/research/accounting_kernel_identity.py",
++    "zenquant/research/registration.py",
++    "zenquant/risk/guard.py",
++)
+ 
+ 
+ class InputFreezeError(ValueError):
+@@ -82,15 +96,7 @@ class FreezeInputs:
+         ]
+         if self.funding_path is not None:
+             paths.append(self.funding_path)
+-        paths.extend(
+-            self.repository_root / relative
+-            for relative in (
+-                "zenquant/data/spot_daily.py",
+-                "zenquant/domain/accounting.py",
+-                "zenquant/risk/guard.py",
+-                "zenquant/execution/router.py",
+-            )
+-        )
++        paths.extend(self.repository_root / relative for relative in _CONSTRUCTION_PATHS)
+         return tuple(paths)
+ 
+ 
+@@ -112,6 +118,8 @@ def build_execution_manifest(inputs: FreezeInputs) -> dict[str, Any]:
+             start_ns=inputs.reused_start_ns,
+             end_ns=inputs.reused_end_ns,
+             cutoff_column="close_time_ns",
++            value_columns=("open", "high", "low", "close", "volume"),
++            value_contract="PERPETUAL_OHLCV",
+         ),
+         "BINANCE_PERPETUAL_BTCUSDT_FUNDING": _audit_regular_parquet(
+             inputs.funding_path,
+@@ -121,6 +129,8 @@ def build_execution_manifest(inputs: FreezeInputs) -> dict[str, Any]:
+             start_ns=inputs.reused_start_ns,
+             end_ns=inputs.reused_end_ns,
+             cutoff_column="funding_time_ns",
++            value_columns=("funding_rate",),
++            value_contract="FUNDING_RATE",
+         ),
+     }
+     blockers = sorted(source_id for source_id, audit in audits.items() if audit["status"] != "READY")
+@@ -128,6 +138,11 @@ def build_execution_manifest(inputs: FreezeInputs) -> dict[str, Any]:
+         raise InputFreezeError(f"REQUIRED sources not ready: {blockers}")
+ 
+     sources = {key: audits[key] for key in sorted(audits)}
++    construction_identity = _construction_identity(inputs.repository_root)
++    try:
++        accounting_kernel = build_accounting_kernel_identity(repository_root=inputs.repository_root)
++    except ValueError as exc:
++        raise InputFreezeError(f"accounting kernel identity is unavailable: {exc}") from exc
+     payload: dict[str, Any] = {
+         "schema_version": "trend-research-execution-manifest.v1",
+         "layer": manifest.layer,
+@@ -138,7 +153,8 @@ def build_execution_manifest(inputs: FreezeInputs) -> dict[str, Any]:
+         "fixed_end_cutoff_ns": inputs.reused_end_ns,
+         "sources": sources,
+         "source_set_sha256": _prefixed_digest(sources),
+-        "accounting_kernel": build_accounting_kernel_identity(repository_root=inputs.repository_root),
++        "accounting_kernel": accounting_kernel,
++        "construction_identity": construction_identity,
+         "forward_checkpoint_rule": "later_trusted_receipt_plus_24h_ceil_confirmed_4h",
+         "workspace_state": workspace_before,
+     }
+@@ -180,6 +196,8 @@ def _load_checked_in_hypothesis(inputs: FreezeInputs) -> HypothesisManifest:
+     expected = tuple((source_id, "REQUIRED", "NONE") for source_id in REQUIRED_SOURCE_IDS)
+     if requirements != expected:
+         raise InputFreezeError("hypothesis source contract is not the exact REQUIRED/NONE set")
++    if manifest.layer != _HYPOTHESIS_LAYERS[path.name]:
++        raise InputFreezeError("hypothesis filename does not match its frozen layer")
+     return manifest
+ 
+ 
+@@ -194,31 +212,80 @@ def _audit_spot(inputs: FreezeInputs) -> dict[str, Any]:
+         ]
+         if any(path.stat().st_size <= 0 for path in inputs.spot_raw_paths):
+             return _not_ready(source_id, "empty raw spot archive")
+-        audit = audit_spot_daily(inputs.spot_1d_path, inputs.reused_start_ns, inputs.reused_end_ns)
+-        spot_times = pd.read_parquet(inputs.spot_1d_path, columns=["open_time_ns"])["open_time_ns"]
++        warmup_start_ns = inputs.reused_start_ns - 85 * 86_400_000_000_000
++        complete_audit = audit_spot_daily(inputs.spot_1d_path, warmup_start_ns, inputs.reused_end_ns)
++        warmup_audit = audit_spot_daily(inputs.spot_1d_path, warmup_start_ns, inputs.reused_start_ns)
++        diagnostic_audit = audit_spot_daily(
++            inputs.spot_1d_path,
++            inputs.reused_start_ns,
++            inputs.reused_end_ns,
++        )
++        spot_frame = pd.read_parquet(
++            inputs.spot_1d_path,
++            columns=["open_time_ns", "close_time_ns", "close"],
++        )
++        if not pd.api.types.is_integer_dtype(spot_frame["open_time_ns"].dtype):
++            return _not_ready(source_id, "spot open_time_ns must use an integer nanosecond dtype")
++        spot_times = spot_frame["open_time_ns"]
+         post_end_count = int((spot_times >= inputs.reused_end_ns).sum())
++        required = spot_frame[(spot_times >= warmup_start_ns) & (spot_times < inputs.reused_end_ns)]
++        closes = pd.to_numeric(required["close"], errors="coerce")
++        valid_closes = bool(closes.notna().all()) and all(
++            math.isfinite(float(value)) and float(value) > 0 for value in closes
++        )
++        warmup_count = int(((spot_times >= warmup_start_ns) & (spot_times < inputs.reused_start_ns)).sum())
++        diagnostic_count = int(((spot_times >= inputs.reused_start_ns) & (spot_times < inputs.reused_end_ns)).sum())
++        diagnostic_rows = spot_frame[(spot_times >= inputs.reused_start_ns) & (spot_times < inputs.reused_end_ns)]
++        with tempfile.TemporaryDirectory(prefix="trend-spot-lineage-") as temporary_directory:
++            reconstructed_path = Path(temporary_directory) / "data.parquet"
++            reconstructed = normalize_spot_daily_csvs(inputs.spot_raw_paths, reconstructed_path)
++            reconstructed_frame = pd.read_parquet(reconstructed_path)
++            supplied_frame = pd.read_parquet(inputs.spot_1d_path)
++            content_matches = reconstructed_frame.equals(supplied_frame)
++            identity_matches = reconstructed.normalized_sha256 == _sha256_file(inputs.spot_1d_path)
+         normalizer_path = inputs.repository_root / "zenquant/data/spot_daily.py"
+-        ready = audit.status == "READY" and audit.last_close_ns == inputs.reused_end_ns - 1 and post_end_count == 0
++        ready = (
++            complete_audit.status == "READY"
++            and warmup_audit.status == "READY"
++            and diagnostic_audit.status == "READY"
++            and complete_audit.last_close_ns == inputs.reused_end_ns - 1
++            and warmup_count == 85
++            and valid_closes
++            and post_end_count == 0
++            and content_matches
++            and identity_matches
++        )
+         return {
+             "requirement": "REQUIRED",
+             "fallback": "NONE",
+-            "status": (
+-                "READY" if ready else audit.status if audit.status != "READY" else "INSUFFICIENT_DATA_END_DRIFT"
+-            ),
++            "status": "READY" if ready else "INSUFFICIENT_DATA_SPOT_CONTRACT",
+             "raw_sha256": raw_sha256,
+             "normalizer_identity": {
+                 "callable": "zenquant.data.spot_daily.normalize_spot_daily_csvs",
+                 "sha256": _sha256_file(normalizer_path),
+             },
+             "normalized_path": str(inputs.spot_1d_path),
+-            "normalized_sha256": audit.sha256,
+-            "last_cutoff_ns": audit.last_close_ns,
++            "normalized_sha256": complete_audit.sha256,
++            "last_cutoff_ns": complete_audit.last_close_ns,
++            "lineage": {
++                "status": "VERIFIED" if content_matches and identity_matches else "MISMATCH",
++                "reconstructed_sha256": reconstructed.normalized_sha256,
++            },
++            "warmup": {
++                "start_ns": warmup_start_ns,
++                "end_ns": inputs.reused_start_ns,
++                "required_closes": 85,
++                "observed_closes": warmup_count,
++                "status": ("READY" if warmup_audit.status == "READY" and warmup_count == 85 else "INSUFFICIENT_DATA"),
++            },
+             "coverage": {
+-                "first_open_ns": audit.first_open_ns,
+-                "last_close_ns": audit.last_close_ns,
+-                "row_count": audit.row_count,
+-                "missing_count": len(audit.missing_open_ns),
+-                "duplicate_count": len(audit.duplicate_open_ns),
++                "start_ns": inputs.reused_start_ns,
++                "end_ns": inputs.reused_end_ns,
++                "first_open_ns": int(diagnostic_rows["open_time_ns"].min()),
++                "last_close_ns": int(diagnostic_rows["close_time_ns"].max()),
++                "row_count": diagnostic_count,
++                "missing_count": len(diagnostic_audit.missing_open_ns),
++                "duplicate_count": len(diagnostic_audit.duplicate_open_ns),
+                 "post_end_count": post_end_count,
+             },
+         }
+@@ -235,12 +302,17 @@ def _audit_regular_parquet(
+     start_ns: int,
+     end_ns: int,
+     cutoff_column: str,
++    value_columns: tuple[str, ...],
++    value_contract: str,
+ ) -> dict[str, Any]:
+     if path is None:
+         return _not_ready(source_id, "missing path")
+     try:
+         digest = _sha256_file(path)
+-        frame = pd.read_parquet(path, columns=sorted({timestamp_column, cutoff_column}))
++        frame = pd.read_parquet(
++            path,
++            columns=sorted({timestamp_column, cutoff_column, *value_columns}),
++        )
+         if frame.empty:
+             return _not_ready(source_id, "empty parquet")
+         if not pd.api.types.is_integer_dtype(frame[timestamp_column].dtype) or not pd.api.types.is_integer_dtype(
+@@ -266,12 +338,14 @@ def _audit_regular_parquet(
+                 int(cutoff) - int(timestamp) not in valid_deltas
+                 for timestamp, cutoff in zip(timestamps, cutoffs, strict=True)
+             )
++        values_ready, invalid_value_count = _validate_source_values(frame, value_contract)
+         ready = (
+             missing_count == 0
+             and duplicate_count == 0
+             and off_grid_count == 0
+             and post_end_count == 0
+             and invalid_cutoff_count == 0
++            and values_ready
+         )
+         return {
+             "requirement": "REQUIRED",
+@@ -290,12 +364,36 @@ def _audit_regular_parquet(
+                 "off_grid_count": off_grid_count,
+                 "post_end_count": post_end_count,
+                 "invalid_cutoff_count": invalid_cutoff_count,
++                "invalid_value_count": invalid_value_count,
+             },
+         }
+     except (OSError, ValueError, KeyError) as exc:
+         return _not_ready(source_id, str(exc))
+ 
+ 
++def _validate_source_values(frame: pd.DataFrame, contract: str) -> tuple[bool, int]:
++    if contract == "FUNDING_RATE":
++        rates = pd.to_numeric(frame["funding_rate"], errors="coerce")
++        invalid = sum(not math.isfinite(float(value)) for value in rates)
++        return invalid == 0, invalid
++    if contract != "PERPETUAL_OHLCV":
++        raise InputFreezeError(f"unknown source value contract: {contract}")
++    numeric = frame[["open", "high", "low", "close", "volume"]].apply(pd.to_numeric, errors="coerce")
++    invalid = 0
++    for row in numeric.itertuples(index=False):
++        open_price, high, low, close, volume = (float(value) for value in row)
++        if (
++            not all(math.isfinite(value) for value in (open_price, high, low, close, volume))
++            or min(open_price, high, low, close) <= 0
++            or volume < 0
++            or high < max(open_price, close)
++            or low > min(open_price, close)
++            or high < low
++        ):
++            invalid += 1
++    return invalid == 0, invalid
++
++
+ def _not_ready(source_id: str, reason: str) -> dict[str, Any]:
+     return {
+         "requirement": "REQUIRED",
+@@ -323,6 +421,18 @@ def _prefixed_digest(payload: Mapping[str, Any]) -> str:
+     return f"sha256:{canonical_sha256(payload)}"
+ 
+ 
++def _construction_identity(repository_root: Path) -> dict[str, Any]:
++    files = [
++        {
++            "path": relative,
++            "sha256": _sha256_file(repository_root / relative),
++        }
++        for relative in _CONSTRUCTION_PATHS
++    ]
++    identity = {"files": files}
++    return {**identity, "sha256": _prefixed_digest(identity)}
++
++
+ def _snapshot_inputs(paths: Sequence[Path]) -> dict[Path, str | None]:
+     identities: dict[Path, str | None] = {}
+     for path in paths:
+@@ -336,20 +446,61 @@ def _snapshot_inputs(paths: Sequence[Path]) -> dict[Path, str | None]:
+ 
+ def _workspace_state(repository_root: Path) -> dict[str, Any]:
+     try:
+-        completed = subprocess.run(
+-            ["git", "status", "--porcelain=v1", "--untracked-files=all"],
++        head = subprocess.run(
++            ["git", "rev-parse", "HEAD"],
+             cwd=repository_root,
+             check=True,
+             capture_output=True,
+             text=True,
+-        )
++        ).stdout.strip()
++        status = subprocess.run(
++            ["git", "status", "--porcelain=v1", "-z", "--untracked-files=all"],
++            cwd=repository_root,
++            check=True,
++            capture_output=True,
++        ).stdout
+     except (OSError, subprocess.CalledProcessError) as exc:
+         raise InputFreezeError("unable to bind dirty/untracked workspace state") from exc
+-    entries = sorted(line for line in completed.stdout.splitlines() if line)
+-    identity = {"entries": entries}
++    entries = _parse_workspace_entries(repository_root, status)
++    identity = {"head": head, "entries": entries}
+     return {**identity, "sha256": _prefixed_digest(identity)}
+ 
+ 
++def _parse_workspace_entries(repository_root: Path, payload: bytes) -> list[dict[str, str | None]]:
++    tokens = payload.split(b"\0")
++    entries: list[dict[str, str | None]] = []
++    index = 0
++    while index < len(tokens) and tokens[index]:
++        record = tokens[index]
++        index += 1
++        if len(record) < 4 or record[2:3] != b" ":
++            raise InputFreezeError("unable to parse dirty/untracked workspace state")
++        status = record[:2].decode("ascii")
++        path = record[3:].decode("utf-8", errors="surrogateescape")
++        entry: dict[str, str | None] = {
++            "status": status,
++            "path": path,
++            "content_sha256": _workspace_content_sha256(repository_root / path),
++        }
++        if "R" in status or "C" in status:
++            if index >= len(tokens) or not tokens[index]:
++                raise InputFreezeError("unable to parse renamed workspace entry")
++            entry["original_path"] = tokens[index].decode("utf-8", errors="surrogateescape")
++            index += 1
++        entries.append(entry)
++    return sorted(entries, key=lambda item: (str(item["path"]), str(item["status"])))
++
++
++def _workspace_content_sha256(path: Path) -> str | None:
++    if path.is_symlink():
++        return hashlib.sha256(os.readlink(path).encode("utf-8", errors="surrogateescape")).hexdigest()
++    if path.is_file():
++        return _sha256_file(path)
++    if not path.exists():
++        return None
++    raise InputFreezeError(f"workspace entry is not a file: {path}")
++
++
+ def _sha256_file(path: Path) -> str:
+     digest = hashlib.sha256()
+     with Path(path).open("rb") as stream:
+@@ -433,25 +584,23 @@ def main(argv: Sequence[str] | None = None) -> int:
+         "repository_root": repository_root,
+     }
+     try:
+-        before = _snapshot_inputs(
+-            (
+-                args.time_space_hypothesis,
+-                args.trend_hypothesis,
+-                args.spot_1d,
+-                *args.spot_raw,
+-                args.perp_5m,
+-                args.funding,
+-            )
+-        )
+-        manifests = tuple(
+-            build_execution_manifest(FreezeInputs(hypothesis_path=path, **common))
+-            for path in (args.time_space_hypothesis, args.trend_hypothesis)
++        freeze_inputs = tuple(
++            FreezeInputs(hypothesis_path=path, **common) for path in (args.time_space_hypothesis, args.trend_hypothesis)
+         )
+-        after = _snapshot_inputs(before)
++        all_input_paths = tuple(dict.fromkeys(path for inputs in freeze_inputs for path in inputs.all_input_paths()))
++        before = _snapshot_inputs(all_input_paths)
++        workspace_before = _workspace_state(repository_root)
++        manifests = tuple(build_execution_manifest(inputs) for inputs in freeze_inputs)
++        after = _snapshot_inputs(all_input_paths)
+         if before != after:
+             raise InputFreezeError("input mutated during multi-manifest freeze")
++        if workspace_before != _workspace_state(repository_root):
++            raise InputFreezeError("workspace mutated during multi-manifest freeze")
+         if manifests[0]["source_set_sha256"] != manifests[1]["source_set_sha256"]:
+             raise InputFreezeError("layers observed different source identities")
++        for identity_key in ("accounting_kernel", "construction_identity", "workspace_state"):
++            if manifests[0][identity_key] != manifests[1][identity_key]:
++                raise InputFreezeError(f"layers observed different {identity_key}")
+         payloads = {_OUTPUT_FILES[str(payload["layer"])]: payload for payload in manifests}
+         if set(payloads) != set(_OUTPUT_FILES.values()):
+             raise InputFreezeError("the two exact research layers are required")
+diff --git a/tests/test_trend_research_input_freeze.py b/tests/test_trend_research_input_freeze.py
+index 84f1ad6..f870b49 100644
+--- a/tests/test_trend_research_input_freeze.py
++++ b/tests/test_trend_research_input_freeze.py
+@@ -12,7 +12,7 @@ from pathlib import Path
+ import pandas as pd
+ import pytest
+ 
+-from zenquant.data.spot_daily import DAY_NS
++from zenquant.data.spot_daily import DAY_NS, normalize_spot_daily_csvs
+ from zenquant.research.registration import REUSED_END_NS, REUSED_START_NS
+ 
+ FIVE_MINUTES_NS = 300_000_000_000
+@@ -34,25 +34,38 @@ module = _load_freezer()
+ 
+ def _write_complete_sources(tmp_path: Path) -> tuple[Path, tuple[Path, ...], Path, Path]:
+     tmp_path.mkdir(parents=True, exist_ok=True)
+-    spot = tmp_path / "spot.parquet"
+-    spot_open = tuple(range(REUSED_START_NS, REUSED_END_NS, DAY_NS))
++    raw = tmp_path / "BTCUSDT-1d.csv"
++    spot_open = tuple(range(REUSED_START_NS - 85 * DAY_NS, REUSED_END_NS, DAY_NS))
+     pd.DataFrame(
+         {
+-            "open_time_ns": spot_open,
+-            "close_time_ns": tuple(value + DAY_NS - 1 for value in spot_open),
++            "open_time": tuple(value // 1_000_000 for value in spot_open),
++            "open": tuple(100.0 + index for index in range(len(spot_open))),
++            "high": tuple(110.0 + index for index in range(len(spot_open))),
++            "low": tuple(90.0 + index for index in range(len(spot_open))),
+             "close": tuple(100.0 + index for index in range(len(spot_open))),
++            "volume": tuple(10.0 for _ in spot_open),
++            "close_time": tuple((value + DAY_NS) // 1_000_000 - 1 for value in spot_open),
++            "quote_volume": tuple(1000.0 for _ in spot_open),
++            "trade_count": tuple(5 for _ in spot_open),
++            "taker_buy_base": tuple(6.0 for _ in spot_open),
++            "taker_buy_quote": tuple(600.0 for _ in spot_open),
++            "ignore": tuple(0 for _ in spot_open),
+         }
+-    ).to_parquet(spot, index=False)
+-    raw = tmp_path / "spot-raw.csv"
+-    raw.write_bytes(b"immutable raw spot archive\n")
++    ).to_csv(raw, index=False)
++    spot = tmp_path / "spot.parquet"
++    normalize_spot_daily_csvs((raw,), spot)
+ 
+     perp = tmp_path / "perp.parquet"
+     perp_open = tuple(range(REUSED_START_NS, REUSED_END_NS, FIVE_MINUTES_NS))
+     pd.DataFrame(
+         {
+             "open_time_ns": perp_open,
++            "open": tuple(100.0 for _ in perp_open),
++            "high": tuple(110.0 for _ in perp_open),
++            "low": tuple(90.0 for _ in perp_open),
++            "close": tuple(105.0 for _ in perp_open),
++            "volume": tuple(10.0 for _ in perp_open),
+             "close_time_ns": tuple(value + FIVE_MINUTES_NS - 1 for value in perp_open),
+-            "close": tuple(100.0 for _ in perp_open),
+         }
+     ).to_parquet(perp, index=False)
+ 
+@@ -127,6 +140,16 @@ def test_envelope_binds_hypothesis_sources_and_accounting_kernel(tmp_path: Path)
+         }
+     ]
+     assert spot["normalized_path"] == str(inputs.spot_1d_path)
++    assert spot["lineage"]["status"] == "VERIFIED"
++    assert spot["warmup"] == {
++        "start_ns": REUSED_START_NS - 85 * DAY_NS,
++        "end_ns": REUSED_START_NS,
++        "required_closes": 85,
++        "observed_closes": 85,
++        "status": "READY",
++    }
++    assert spot["coverage"]["first_open_ns"] == REUSED_START_NS
++    assert spot["coverage"]["last_close_ns"] == REUSED_END_NS - 1
+     assert payload["sources"]["BINANCE_PERPETUAL_BTCUSDT_5M"]["path"] == str(inputs.perp_5m_path)
+     assert payload["sources"]["BINANCE_PERPETUAL_BTCUSDT_FUNDING"]["path"] == str(inputs.funding_path)
+     assert payload["sources"]["BINANCE_PERPETUAL_BTCUSDT_5M"]["coverage"]["missing_count"] == 0
+@@ -135,6 +158,22 @@ def test_envelope_binds_hypothesis_sources_and_accounting_kernel(tmp_path: Path)
+     assert payload["formula_sha256"].startswith("sha256:")
+     assert payload["config_sha256"].startswith("sha256:")
+     assert payload["source_set_sha256"].startswith("sha256:")
++    assert payload["construction_identity"]["sha256"].startswith("sha256:")
++    construction_paths = {item["path"] for item in payload["construction_identity"]["files"]}
++    assert construction_paths == {
++        "scripts/freeze_trend_research_inputs.py",
++        "zenquant/data/spot_daily.py",
++        "zenquant/domain/accounting.py",
++        "zenquant/execution/router.py",
++        "zenquant/research/accounting_kernel_identity.py",
++        "zenquant/research/registration.py",
++        "zenquant/risk/guard.py",
++    }
++    assert (
++        payload["workspace_state"]["head"]
++        == subprocess.run(["git", "rev-parse", "HEAD"], check=True, capture_output=True, text=True).stdout.strip()
++    )
++    assert all(set(entry) >= {"status", "path", "content_sha256"} for entry in payload["workspace_state"]["entries"])
+     forbidden = {"direction", "pnl", "signal"}
+     assert forbidden.isdisjoint(_all_keys(payload))
+ 
+@@ -183,6 +222,90 @@ def test_freeze_rejects_rows_after_the_exact_frozen_end(tmp_path: Path) -> None:
+         module.build_execution_manifest(inputs)
+ 
+ 
++def test_freeze_proves_raw_to_normalized_lineage_and_rejects_arbitrary_raw(tmp_path: Path) -> None:
++    arbitrary = _inputs(tmp_path / "arbitrary")
++    arbitrary.spot_raw_paths[0].write_text("not a Binance daily archive\n", encoding="utf-8")
++    with pytest.raises(module.InputFreezeError, match=r"REQUIRED.*BINANCE_SPOT_BTCUSDT_1D"):
++        module.build_execution_manifest(arbitrary)
++
++    changed = _inputs(tmp_path / "changed")
++    normalized = pd.read_parquet(changed.spot_1d_path)
++    normalized.loc[100, "close"] += 1.0
++    normalized.to_parquet(changed.spot_1d_path, index=False)
++    with pytest.raises(module.InputFreezeError, match=r"REQUIRED.*BINANCE_SPOT_BTCUSDT_1D"):
++        module.build_execution_manifest(changed)
++
++
++@pytest.mark.parametrize("mutation", ["missing", "gap", "zero", "nan"])
++def test_freeze_requires_exact_85_close_spot_warmup(tmp_path: Path, mutation: str) -> None:
++    inputs = _inputs(tmp_path)
++    normalized = pd.read_parquet(inputs.spot_1d_path)
++    warmup_start = REUSED_START_NS - 85 * DAY_NS
++    if mutation == "missing":
++        normalized = normalized[normalized["open_time_ns"] != warmup_start]
++    elif mutation == "gap":
++        normalized = normalized[normalized["open_time_ns"] != warmup_start + 40 * DAY_NS]
++    elif mutation == "zero":
++        normalized.loc[normalized["open_time_ns"] == warmup_start, "close"] = 0.0
++    else:
++        normalized.loc[normalized["open_time_ns"] == warmup_start, "close"] = float("nan")
++    normalized.to_parquet(inputs.spot_1d_path, index=False)
++
++    with pytest.raises(module.InputFreezeError, match=r"REQUIRED.*BINANCE_SPOT_BTCUSDT_1D"):
++        module.build_execution_manifest(inputs)
++
++
++@pytest.mark.parametrize("mutation", ["timestamp_only", "bad_ohlc", "negative_volume"])
++def test_freeze_requires_complete_valid_perpetual_schema(tmp_path: Path, mutation: str) -> None:
++    inputs = _inputs(tmp_path)
++    frame = pd.read_parquet(inputs.perp_5m_path)
++    if mutation == "timestamp_only":
++        frame = frame[["open_time_ns", "close_time_ns"]]
++    elif mutation == "bad_ohlc":
++        frame.loc[5, "high"] = 99.0
++    else:
++        frame.loc[5, "volume"] = -1.0
++    frame.to_parquet(inputs.perp_5m_path, index=False)
++
++    with pytest.raises(module.InputFreezeError, match=r"REQUIRED.*BINANCE_PERPETUAL_BTCUSDT_5M"):
++        module.build_execution_manifest(inputs)
++
++
++@pytest.mark.parametrize("mutation", ["timestamp_only", "nan_rate"])
++def test_freeze_requires_finite_funding_rate(tmp_path: Path, mutation: str) -> None:
++    inputs = _inputs(tmp_path)
++    frame = pd.read_parquet(inputs.funding_path)
++    if mutation == "timestamp_only":
++        frame = frame[["funding_time_ns"]]
++    else:
++        frame.loc[5, "funding_rate"] = float("nan")
++    frame.to_parquet(inputs.funding_path, index=False)
++
++    with pytest.raises(module.InputFreezeError, match=r"REQUIRED.*BINANCE_PERPETUAL_BTCUSDT_FUNDING"):
++        module.build_execution_manifest(inputs)
++
++
++def test_freeze_enforces_exact_hypothesis_filename_to_layer_mapping(tmp_path: Path) -> None:
++    repository_root = tmp_path / "repository"
++    config_dir = repository_root / "config/research"
++    config_dir.mkdir(parents=True)
++    wrong = config_dir / "time_space_shadow_hypothesis_v1.json"
++    wrong.write_bytes(Path("config/research/trend_participation_hypothesis_v1.json").read_bytes())
++    inputs = module.FreezeInputs(
++        hypothesis_path=wrong,
++        spot_1d_path=tmp_path / "unused-spot",
++        spot_raw_paths=(tmp_path / "unused-raw",),
++        perp_5m_path=tmp_path / "unused-perp",
++        funding_path=tmp_path / "unused-funding",
++        reused_start_ns=REUSED_START_NS,
++        reused_end_ns=REUSED_END_NS,
++        repository_root=repository_root,
++    )
++
++    with pytest.raises(module.InputFreezeError, match=r"filename.*layer"):
++        module._load_checked_in_hypothesis(inputs)
++
++
+ def test_freeze_rehashes_every_input_and_rejects_mutation(tmp_path: Path, monkeypatch) -> None:
+     inputs = _inputs(tmp_path)
+     original = module._sha256_file
+@@ -204,6 +327,54 @@ def test_freeze_rehashes_every_input_and_rejects_mutation(tmp_path: Path, monkey
+     assert all(calls[path.resolve()] >= 2 for path in inputs.all_input_paths())
+ 
+ 
++def test_freeze_rejects_construction_code_mutation(tmp_path: Path, monkeypatch) -> None:
++    inputs = _inputs(tmp_path)
++    freezer_path = (inputs.repository_root / "scripts/freeze_trend_research_inputs.py").resolve()
++    original = module._sha256_file
++    calls = 0
++
++    def changing_digest(path: Path) -> str:
++        nonlocal calls
++        digest = original(Path(path))
++        if Path(path).resolve() == freezer_path:
++            calls += 1
++            if calls > 2:
++                return "f" * 64
++        return digest
++
++    monkeypatch.setattr(module, "_sha256_file", changing_digest)
++
++    with pytest.raises(module.InputFreezeError, match="input mutated during freeze"):
++        module.build_execution_manifest(inputs)
++
++
++def test_workspace_identity_binds_head_and_dirty_untracked_content(tmp_path: Path) -> None:
++    repository = tmp_path / "repository"
++    repository.mkdir()
++    subprocess.run(["git", "init", "-q"], cwd=repository, check=True)
++    subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=repository, check=True)
++    subprocess.run(["git", "config", "user.name", "Test"], cwd=repository, check=True)
++    tracked = repository / "tracked.txt"
++    tracked.write_text("before\n", encoding="utf-8")
++    subprocess.run(["git", "add", "tracked.txt"], cwd=repository, check=True)
++    subprocess.run(["git", "commit", "-q", "-m", "initial"], cwd=repository, check=True)
++    tracked.write_text("after\n", encoding="utf-8")
++    untracked = repository / "untracked.txt"
++    untracked.write_text("new\n", encoding="utf-8")
++
++    identity = module._workspace_state(repository)
++    entries = {entry["path"]: entry for entry in identity["entries"]}
++
++    assert (
++        identity["head"]
++        == subprocess.run(
++            ["git", "rev-parse", "HEAD"], cwd=repository, check=True, capture_output=True, text=True
++        ).stdout.strip()
++    )
++    assert entries["tracked.txt"]["content_sha256"] == hashlib.sha256(tracked.read_bytes()).hexdigest()
++    assert entries["untracked.txt"]["content_sha256"] == hashlib.sha256(untracked.read_bytes()).hexdigest()
++
++
+ def test_cli_rejects_dynamic_end_and_never_emits_partial_output(tmp_path: Path) -> None:
+     inputs = _inputs(tmp_path)
+     output_dir = tmp_path / "registrations"
+@@ -237,6 +408,40 @@ def test_cli_rejects_dynamic_end_and_never_emits_partial_output(tmp_path: Path)
+     assert not output_dir.exists()
+ 
+ 
++def test_cli_lineage_failure_never_emits_partial_output(tmp_path: Path) -> None:
++    inputs = _inputs(tmp_path)
++    inputs.spot_raw_paths[0].write_text("not a valid daily archive\n", encoding="utf-8")
++    output_dir = tmp_path / "registrations"
++    command = [
++        sys.executable,
++        "scripts/freeze_trend_research_inputs.py",
++        "--spot-1d",
++        str(inputs.spot_1d_path),
++        "--spot-raw",
++        str(inputs.spot_raw_paths[0]),
++        "--perp-5m",
++        str(inputs.perp_5m_path),
++        "--funding",
++        str(inputs.funding_path),
++        "--time-space-hypothesis",
++        "config/research/time_space_shadow_hypothesis_v1.json",
++        "--trend-hypothesis",
++        "config/research/trend_participation_hypothesis_v1.json",
++        "--reused-start",
++        "2026-01-01T00:00:00Z",
++        "--reused-end",
++        "2026-08-24T00:00:00Z",
++        "--output-dir",
++        str(output_dir),
++    ]
++
++    completed = subprocess.run(command, check=False, capture_output=True, text=True)
++
++    assert completed.returncode != 0
++    assert "BINANCE_SPOT_BTCUSDT_1D" in completed.stderr
++    assert not output_dir.exists()
++
++
+ def test_cli_writes_two_canonical_manifests_as_one_atomic_directory(tmp_path: Path) -> None:
+     inputs = _inputs(tmp_path)
+     output_dir = tmp_path / "registrations"

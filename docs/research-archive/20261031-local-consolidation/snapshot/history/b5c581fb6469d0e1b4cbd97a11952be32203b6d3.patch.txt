@@ -1,0 +1,188 @@
+commit b5c581fb6469d0e1b4cbd97a11952be32203b6d3
+Author:     Disaster <clusternlh@gmail.com>
+AuthorDate: Tue Aug 25 01:12:54 2026 +0800
+Commit:     Disaster <clusternlh@gmail.com>
+CommitDate: Tue Aug 25 01:12:54 2026 +0800
+
+    test(research): expose correlated repository substitution
+
+diff --git a/tests/test_time_space_export.py b/tests/test_time_space_export.py
+index 6c5f5e6..50219b5 100644
+--- a/tests/test_time_space_export.py
++++ b/tests/test_time_space_export.py
+@@ -17,6 +17,7 @@ from zenquant.research.time_space_export import (
+     EXPORT_REGISTRATION_REQUIRED,
+     VERIFIED,
+     _checkpoint_manifest_path,
++    _fetch_provider,
+     _generator_dependency_identity,
+     _load_persisted_registration,
+     _validate_registered_time_space_export_payloads,
+@@ -45,6 +46,8 @@ SCRIPT = ROOT / "scripts/export_time_space_architecture.py"
+ FOUR_HOURS_NS = 4 * 60 * 60 * 1_000_000_000
+ AS_OF_NS = 1787529600000000000
+ SEEDS = (42, 123, 456, 789, 1024)
++CANONICAL_REPOSITORY = "infdahai/zenQuant"
++ATTACKER_REPOSITORY = "attacker/forged-zenquant"
+ 
+ 
+ def _canonical_bytes(value: object) -> bytes:
+@@ -98,6 +101,7 @@ def test_generator_identity_changes_when_previously_omitted_behavior_module_chan
+         ".github/workflows/time-space-export-generate.yml",
+         ".github/workflows/time-space-export-persist.yml",
+         ".github/workflows/time-space-export-receipt.yml",
++        "config/research/time_space_export_registration_trust_v1.json",
+         "scripts/validate_time_space_persisted_registration.py",
+         "scripts/validate_time_space_registration_push.py",
+     ],
+@@ -495,6 +499,52 @@ def test_exact_pinned_checkpoint_is_the_only_verified_path(tmp_path: Path) -> No
+     )
+ 
+ 
++def test_correlated_repository_substitution_cannot_verify(tmp_path: Path) -> None:
++    bundle = recompute_time_space_export(
++        ReplayRequest(execution_manifest=EXECUTION, hypothesis_manifest=HYPOTHESIS, as_of_ns=AS_OF_NS),
++        repository_identity=ATTACKER_REPOSITORY,
++        commit_sha="a" * 40,
++        provider_run_id="12345",
++        replay_producer=lambda _request: _source(),
++    )
++    export, provenance, checkpoint, receipt, trust, provider, generator_provider = _registered(bundle)
++    receipt["remote_identity"] = ATTACKER_REPOSITORY
++    trust["remote_identity"] = ATTACKER_REPOSITORY
++    provider["repository"] = {"full_name": ATTACKER_REPOSITORY}
++    generator_provider["repository"] = {"full_name": ATTACKER_REPOSITORY}
++    trust["receipt_artifact_sha256"] = hashlib.sha256(_canonical_bytes(receipt)).hexdigest()
++
++    assert (
++        _validate_registered_time_space_export_payloads(
++            export,
++            provenance,
++            checkpoint,
++            receipt,
++            trust_payload=trust,
++            provider_payload=provider,
++            generator_provider_payload=generator_provider,
++            generator_path=ROOT / "zenquant/research/time_space_export.py",
++            recomputed_bundle=bundle,
++        )
++        == EXPORT_REGISTRATION_REQUIRED
++    )
++
++
++def test_provider_fetcher_rejects_attacker_repository_before_network(monkeypatch: pytest.MonkeyPatch) -> None:
++    called = False
++
++    def unexpected_network(*_args, **_kwargs):
++        nonlocal called
++        called = True
++        raise AssertionError("network must not be reached")
++
++    monkeypatch.setattr("urllib.request.urlopen", unexpected_network)
++
++    with pytest.raises(ValueError, match="canonical repository"):
++        _fetch_provider(ATTACKER_REPOSITORY, 12345)
++    assert called is False
++
++
+ def test_registered_baseline_checkpoint_cannot_authorize_incremental_forward_cutoff(
+     tmp_path: Path,
+ ) -> None:
+@@ -848,6 +898,30 @@ def test_export_repository_identity_uses_origin_and_checked_in_pin_only(
+     )
+ 
+ 
++def test_export_repository_identity_rejects_correlated_attacker_origin_and_trust(
++    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
++) -> None:
++    module = _load_script_module()
++    trust = tmp_path / "config/research/time_space_export_registration_trust_v1.json"
++    trust.parent.mkdir(parents=True)
++    trust.write_text(json.dumps({"remote_identity": ATTACKER_REPOSITORY}))
++    monkeypatch.setattr(module, "_ROOT", tmp_path)
++
++    def fake_git(*args: str) -> str:
++        if args == ("rev-parse", "HEAD"):
++            return "a" * 40
++        if args == ("status", "--porcelain", "--untracked-files=no"):
++            return ""
++        if args == ("remote", "get-url", "origin"):
++            return f"https://github.com/{ATTACKER_REPOSITORY}.git"
++        raise AssertionError(args)
++
++    monkeypatch.setattr(module, "_git", fake_git)
++
++    with pytest.raises(ValueError, match="canonical repository"):
++        module._resolve_repository()
++
++
+ def test_export_script_rejects_symlink_or_orphan_target(tmp_path: Path) -> None:
+     module = _load_script_module()
+     args = module.ExportArgs(EXECUTION, HYPOTHESIS, tmp_path / "out", "12345", "2026-08-24T00:00:00Z")
+diff --git a/tests/test_time_space_export_registration.py b/tests/test_time_space_export_registration.py
+index 6886be5..decedb8 100644
+--- a/tests/test_time_space_export_registration.py
++++ b/tests/test_time_space_export_registration.py
+@@ -284,6 +284,9 @@ def test_checkpoint_workflows_use_exact_bootstrap_and_completed_receipt_trigger(
+     assert checkpoint.count('git show "$PUSH_BEFORE:scripts/validate_time_space_registration_push.py"') == 1
+     assert persist.count('git show "$PUSH_BEFORE:scripts/validate_time_space_registration_push.py"') == 1
+     assert persist.count('git show "$PUSH_BEFORE:scripts/validate_time_space_persisted_registration.py"') == 1
++    assert 'test "$GITHUB_REPOSITORY" = "infdahai/zenQuant"' in receipt
++    assert 'repository="infdahai/zenQuant"' in receipt
++    assert 'repository="infdahai/zenQuant"' in persist
+     assert "time-space-registration-bundle/time_space_shadow_export.json" in receipt
+     assert "time-space-registration-bundle/time_space_shadow_export_provenance.json" in receipt
+ 
+@@ -418,6 +421,7 @@ def test_checkpoint_push_accepts_one_new_cutoff_and_exports_exact_path(tmp_path:
+     "protected_path",
+     [
+         ".github/workflows/time-space-export-checkpoint.yml",
++        "config/research/time_space_export_registration_trust_v1.json",
+         "scripts/validate_time_space_persisted_registration.py",
+         "scripts/validate_time_space_registration_push.py",
+     ],
+@@ -622,6 +626,44 @@ def test_persisted_registration_validator_rejects_malformed_irreversible_trust(t
+     assert "trust" in malformed.stderr
+ 
+ 
++def test_persisted_registration_rejects_correlated_attacker_repository(tmp_path: Path) -> None:
++    paths = _durable_registration(tmp_path)
++    attacker = "attacker/forged-zenquant"
++    receipt = json.loads(paths[1].read_text())
++    trust = json.loads(paths[2].read_text())
++    checkpoint = json.loads(paths[0].read_text())
++    provenance = json.loads(paths[4].read_text())
++    receipt["remote_identity"] = attacker
++    provenance["repository_identity"] = attacker
++    trust["remote_identity"] = attacker
++    paths[4].write_text(json.dumps(provenance, sort_keys=True, separators=(",", ":")) + "\n")
++    provenance_sha = _canonical_sha256(provenance)
++    checkpoint["provenance_sha256"] = provenance_sha
++    paths[0].write_text(json.dumps(checkpoint, sort_keys=True, separators=(",", ":")) + "\n")
++    manifest_sha = hashlib.sha256(paths[0].read_bytes()).hexdigest()
++    receipt["manifest_sha256"] = manifest_sha
++    receipt["provenance_sha256"] = provenance_sha
++    receipt["generator_artifact"]["provenance_sha256"] = provenance_sha
++    paths[1].write_text(json.dumps(receipt, sort_keys=True, separators=(",", ":")) + "\n")
++    trust["checkpoint_manifest_sha256"] = manifest_sha
++    trust["receipt_artifact_sha256"] = hashlib.sha256(paths[1].read_bytes()).hexdigest()
++    paths[2].write_text(json.dumps(trust, sort_keys=True, separators=(",", ":")) + "\n")
++    for provider_path in (paths[5], paths[6]):
++        provider = json.loads(provider_path.read_text())
++        provider["repository"] = {"full_name": attacker}
++        provider_path.write_text(json.dumps(provider))
++
++    result = subprocess.run(
++        _persisted_validator_command(paths),
++        check=False,
++        capture_output=True,
++        text=True,
++    )
++
++    assert result.returncode != 0
++    assert "canonical repository" in result.stderr
++
++
+ @pytest.mark.parametrize(
+     "field",
+     [

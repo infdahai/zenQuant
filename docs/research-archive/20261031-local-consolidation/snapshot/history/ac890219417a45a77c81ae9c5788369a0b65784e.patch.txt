@@ -1,0 +1,58 @@
+commit ac890219417a45a77c81ae9c5788369a0b65784e
+Author:     Disaster <clusternlh@gmail.com>
+AuthorDate: Sat Aug 22 23:08:06 2026 +0800
+Commit:     Disaster <clusternlh@gmail.com>
+CommitDate: Sat Aug 22 23:08:06 2026 +0800
+
+    fix(research): accept canonical stage key ordering
+
+diff --git a/tests/test_late_dev_cost_attribution.py b/tests/test_late_dev_cost_attribution.py
+index e38cd91..f0ebc32 100644
+--- a/tests/test_late_dev_cost_attribution.py
++++ b/tests/test_late_dev_cost_attribution.py
+@@ -285,6 +285,27 @@ def test_build_report_rejects_duplicate_or_missing_frozen_matrix():
+         _build(report)
+ 
+ 
++def test_build_report_accepts_sorted_json_roundtrip_with_all_frozen_stages():
++    report = json.loads(json.dumps(_complete_raw_report(), sort_keys=True))
++
++    result = _build(report)
++
++    assert result["validated_run_count"] == 30
++
++
++@pytest.mark.parametrize("mutation", ["missing", "extra"])
++def test_build_report_rejects_missing_or_extra_run_stage_keys(mutation: str):
++    report = _complete_raw_report()
++    first_run_stages = report["runs"][0]["stages"]  # type: ignore[index]
++    if mutation == "missing":
++        first_run_stages.pop(ArchitectureStage.A3.value)
++    else:
++        first_run_stages["A6"] = {"stage": "A6"}
++
++    with pytest.raises(LateDevAttributionValidationError, match="stage"):
++        _build(report)
++
++
+ def test_canonical_bytes_are_deterministic():
+     first = _build(_complete_raw_report())
+     second = _build(deepcopy(_complete_raw_report()))
+diff --git a/zenquant/research/late_dev_cost_attribution.py b/zenquant/research/late_dev_cost_attribution.py
+index 342eb3c..3c3b695 100644
+--- a/zenquant/research/late_dev_cost_attribution.py
++++ b/zenquant/research/late_dev_cost_attribution.py
+@@ -269,9 +269,10 @@ def _validate_report_envelope(report: Mapping[str, Any], *, manifest: Any) -> li
+         raise LateDevAttributionValidationError("raw report matrix mismatch")
+     for run in runs:
+         stages = _mapping(run.get("stages"), "run stages")
+-        if list(stages) != expected_stages:
+-            raise LateDevAttributionValidationError("run stage order does not match the frozen architecture")
+-        for expected_stage, stage_payload in stages.items():
++        if len(stages) != len(expected_stages) or set(stages) != set(expected_stages):
++            raise LateDevAttributionValidationError("run stage keys do not match the frozen architecture")
++        for expected_stage in expected_stages:
++            stage_payload = stages[expected_stage]
+             if not isinstance(stage_payload, Mapping):
+                 raise LateDevAttributionValidationError("run stage payloads must be JSON objects")
+             if stage_payload.get("stage") != expected_stage:

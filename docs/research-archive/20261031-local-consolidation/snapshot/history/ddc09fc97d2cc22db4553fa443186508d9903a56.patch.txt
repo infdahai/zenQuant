@@ -1,0 +1,188 @@
+commit ddc09fc97d2cc22db4553fa443186508d9903a56
+Author:     Disaster <clusternlh@gmail.com>
+AuthorDate: Sun Aug 23 11:01:32 2026 +0800
+Commit:     Disaster <clusternlh@gmail.com>
+CommitDate: Sun Aug 23 11:01:32 2026 +0800
+
+    docs(accounting): require identity-complete baseline rerun
+
+diff --git a/docs/ARCHITECTURE.md b/docs/ARCHITECTURE.md
+index 0fc4f82..0b06bfe 100644
+--- a/docs/ARCHITECTURE.md
++++ b/docs/ARCHITECTURE.md
+@@ -22,10 +22,12 @@ ZenQuant remains a deterministic, regime-aware BTC trading system. The August
+ rank1 performance history was produced by defective legacy fee accounting and
+ is not valid evidence of return, equity, Sharpe, Sortino, drawdown or promotion
+ readiness. A frozen repaired matrix completed 30/30 runs with one verified
+-formula identity. Its A5 extra-15bp late-dev net PnL is negative on all five
+-seeds and robustness is `0/5`; the terminal recommendation remains
+-`stop_donor_training`. The architecture remains useful, but this donor must not
+-receive another optimizer or parameter-training round.
++indicator-formula identity, but that historical rerun predates accounting-kernel
++and raw-corpus identity instrumentation. Its A5 extra-15bp late-dev net PnL is
++negative on all five seeds and robustness is `0/5`; those economic values are
++diagnostic only. The terminal recommendation remains `stop_donor_training`.
++The architecture remains useful, but this donor must not receive another
++optimizer or parameter-training round.
+ 
+ The implemented research-only V2 chain is:
+ 
+@@ -97,15 +99,31 @@ families as `CONFIRMED_AFFECTED`. Historical artifacts stay available for
+ audit, but their performance metrics cannot be used for comparison or
+ promotion.
+ 
+-The repaired formula identity is:
++The historical report's indicator formula identity is:
+ 
+ ```text
+ sha256:82af23a08c68a94641e1d7769ecdf9619059dddbeb531dd3703cc4d2ff809f4a
+ ```
+ 
+-The frozen rerun verified this exact identity, manifest hash, candidate hash
+-and profile hash for all 30/30 entries. That establishes the repaired run's
+-identity, not legacy comparability. The old artifact has no replayable
++That hash fingerprints the indicator formula; it does not fingerprint fee,
++fill, cash or mark-to-market accounting. Current code separately computes the
++accounting-kernel semantic identity:
++
++```text
++sha256:44fbafe8d88db40a618f2742f7a5cdd602310bf5869e1bac33c587d281c1b160
++```
++
++The frozen raw Parquet corpus contract is 2,523 files / 21,185,269,620 bytes:
++
++```text
++sha256:182398d05f7289e25b467cb8957603bdbde5360f39fdf62d8e366a9a5c415fed
++```
++
++The existing 30/30 artifact contains neither identity. Its status is
++`requires_reinstrumented_30_run_rerun`; it must not be edited or backfilled,
++and its economic values are diagnostic only until a new immutable-output rerun
++records the accounting kernel, frozen legacy envelope and raw corpus before
++and after compute. The old artifact also has no replayable
+ fixed-event ledger, so the exact first affected fee and downstream divergence
+ remain `INSUFFICIENT_EVIDENCE`. All 210/210 legacy-to-repaired stage records are
+ `UNVERIFIED_LEGACY`: the historical schema and repaired stage schemas lack the
+diff --git a/docs/QUANT_V2_ACCEPTANCE_HANDOFF.md b/docs/QUANT_V2_ACCEPTANCE_HANDOFF.md
+index 6072077..9ca7f78 100644
+--- a/docs/QUANT_V2_ACCEPTANCE_HANDOFF.md
++++ b/docs/QUANT_V2_ACCEPTANCE_HANDOFF.md
+@@ -37,7 +37,10 @@ The corrected frozen matrix completed 30/30 runs with no search. Late-dev A5
+ extra-15bp net PnL is negative on all five seeds, from `-3,068.23` to
+ `-624.15`. Robustness is `0/5`, below the required `4/5`. Passing MDD,
+ train-episode-PF, switch-cadence and execution-purity checks do not override
+-the blocked economic verdict.
++the blocked economic verdict. This pre-instrumentation artifact does not bind
++the accounting kernel or raw corpus, so its status is
++`requires_reinstrumented_30_run_rerun` and its economic values are diagnostic
++only. The existing bytes must not be edited or backfilled.
+ 
+ ## Frozen and repaired identity
+ 
+@@ -45,17 +48,23 @@ the blocked economic verdict.
+ - Manifest SHA-256: `c982d074b24ec21235dfefbd972d936dc4f5a4ab0360964013576c90729bfbe0`
+ - Candidate params SHA-256: `d86c92e8837c2febc04d0c2935299abc30b0636fb5d9a7c9e244d670d3499381`
+ - Profile SHA-256: `ce4fc640b3a0ae2dfb8b6d4bd96652f431a20b5581ce5d2fa67e0722f4841d05`
+-- Repaired formula hash: `sha256:82af23a08c68a94641e1d7769ecdf9619059dddbeb531dd3703cc4d2ff809f4a`
++- Indicator formula hash: `sha256:82af23a08c68a94641e1d7769ecdf9619059dddbeb531dd3703cc4d2ff809f4a`
++- Required accounting-kernel semantic SHA-256: `sha256:44fbafe8d88db40a618f2742f7a5cdd602310bf5869e1bac33c587d281c1b160`
++- Frozen legacy envelope SHA-256: `sha256:0c66255a9020985ec5b3c2c10c2da4a38e96ed070c6c7c0801beced9b26f689c`
++- Frozen raw Parquet corpus: `2,523` files / `21,185,269,620` bytes / `sha256:182398d05f7289e25b467cb8957603bdbde5360f39fdf62d8e366a9a5c415fed`
++- Rerun contract SHA-256: `610e3b51f18e6b527d1af2335cafa74f657513dacbc34469816a9ff20260276b`
+ - Seeds: `42, 123, 456, 789, 1024`
+ - Windows: `train_full, 2020, 2021, 2022, 2023, late_dev_2025`
+ - Perturbation: price noise `0.001`, volume noise `0.05`, bar dropout `0.02`
+ - Cost stress: `0 / 5 / 15bp`, with 15bp added to observed baseline cost
+ 
+-Every one of the 30/30 repaired entries matched the exact ordered manifest,
+-candidate-parameter hash, profile hash and repaired formula hash. The report
+-contains one formula identity set and one alpha-config identity set. These
+-checks establish repaired-run identity and determinism; they do not prove that
+-the old and repaired stage paths are comparable.
++Every one of the historical 30/30 repaired entries matched the ordered
++manifest, candidate-parameter hash, profile hash and indicator formula hash.
++Those checks do not establish the current accounting implementation or input
++corpus. A replacement 30/30 artifact is identity-complete only when every run
++also carries the current accounting-kernel hash and the wrapper verifies the
++frozen legacy source/envelope and Parquet corpus before compute and again
++before publication.
+ 
+ ## Artifact identity
+ 
+@@ -68,8 +77,10 @@ the old and repaired stage paths are comparable.
+ | `summary.json` | `68a50ad3407938556fa7a8eac257e842cfc50887e70f45acdaba2e356d629495` | `1,984` bytes |
+ | `acceptance_summary.json` | `eb91d38c86b650e75dacb9a954e71ef34fd61de6dcc7bdade266b4e7ce6a8589` | `5,830` bytes |
+ 
+-The legacy input hash remained unchanged across the rerun. Generated artifacts
+-remain ignored and are evidence, not commit payloads.
++The legacy input hash remained unchanged across the historical rerun. Generated
++artifacts remain ignored and are evidence, not commit payloads. The table above
++preserves their exact bytes for audit; it does not upgrade them to current
++identity-complete evidence.
+ 
+ ## Attribution validity
+ 
+@@ -119,7 +130,11 @@ stage records and Task 5 report prove that both sides are incomplete. Future
+ reruns use the corrected two-sided reason:
+ `legacy_and_repaired_stage_provenance_incomplete`.
+ 
+-## Corrected economic result
++## Historical diagnostic economic result
++
++The values below remain useful as adverse diagnostics and retain the blocked
++direction, but they are not an authoritative repaired baseline until the
++reinstrumented frozen rerun completes.
+ 
+ | Gate | Result | Repaired evidence |
+ | --- | --- | --- |
+@@ -160,7 +175,7 @@ product blockers, not implementation defects. Do not weaken these thresholds.
+ No promotion or parameter search is authorized while they remain unresolved.
+ 
+ The two Gate E failures do not invalidate the accounting implementation or the
+-30/30 identity checks. They block product promotion on their own terms. The
++pre-contract 30/30 diagnostics. They block product promotion on their own terms. The
+ product-owner acceptance recorded above applies only to the repaired Gate C
+ golden; it does not accept or waive these product failures.
+ 
+@@ -184,8 +199,8 @@ golden; it does not accept or waive these product failures.
+ 
+ ## Reproduction and verification
+ 
+-The reviewed real rerun used this exact command before immutable-output
+-hardening:
++The reviewed real rerun used this exact command before accounting-kernel and
++raw-corpus identity hardening:
+ 
+ ```bash
+ uv run python scripts/rerun_legacy_accounting_baseline.py \
+@@ -195,8 +210,9 @@ uv run python scripts/rerun_legacy_accounting_baseline.py \
+ ```
+ 
+ Current code rejects every existing output path. A future rerun must use a new,
+-versioned output directory and may not change seed, window, parameter, cost or
+-search-space inputs:
++versioned output directory, must match
++`config/research/legacy_accounting_rerun_v1.json`, and may not change seed,
++window, parameter, cost or search-space inputs:
+ 
+ ```bash
+ uv run python scripts/rerun_legacy_accounting_baseline.py \
+diff --git a/tests/test_agent_docs_contract.py b/tests/test_agent_docs_contract.py
+index 32cec9b..d265804 100644
+--- a/tests/test_agent_docs_contract.py
++++ b/tests/test_agent_docs_contract.py
+@@ -76,3 +76,14 @@ def test_quant_v2_handoff_records_current_blocked_evidence() -> None:
+     assert "-624.15" in content
+     assert "Robustness is `0/5`" in content
+     assert "BLOCKED_PAUSE_PROMOTION_AND_TRAINING" in content
++
++
++def test_authoritative_docs_mark_old_rerun_identity_insufficient() -> None:
++    architecture = Path("docs/ARCHITECTURE.md").read_text(encoding="utf-8")
++    handoff = Path("docs/QUANT_V2_ACCEPTANCE_HANDOFF.md").read_text(encoding="utf-8")
++    for content in (architecture, handoff):
++        normalized = " ".join(content.split())
++        assert "sha256:44fbafe8d88db40a618f2742f7a5cdd602310bf5869e1bac33c587d281c1b160" in content
++        assert "sha256:182398d05f7289e25b467cb8957603bdbde5360f39fdf62d8e366a9a5c415fed" in content
++        assert "requires_reinstrumented_30_run_rerun" in content
++        assert "economic values are diagnostic only" in normalized

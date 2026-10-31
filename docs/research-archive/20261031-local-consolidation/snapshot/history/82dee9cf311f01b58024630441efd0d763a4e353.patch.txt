@@ -1,0 +1,31 @@
+commit 82dee9cf311f01b58024630441efd0d763a4e353
+Author:     Disaster <clusternlh@gmail.com>
+AuthorDate: Tue Aug 25 00:41:15 2026 +0800
+Commit:     Disaster <clusternlh@gmail.com>
+CommitDate: Tue Aug 25 00:41:15 2026 +0800
+
+    fix(research): bind exporter to origin identity
+
+diff --git a/scripts/export_time_space_architecture.py b/scripts/export_time_space_architecture.py
+index 3e614bd..c33b60a 100644
+--- a/scripts/export_time_space_architecture.py
++++ b/scripts/export_time_space_architecture.py
+@@ -139,8 +139,17 @@ def _resolve_repository() -> tuple[str, str]:
+     status = _git("status", "--porcelain", "--untracked-files=no")
+     if status:
+         raise ValueError("repository tracked workspace must be clean before export")
+-    remote = _git("remote", "get-url", "personal")
++    trust_path = _ROOT / "config/research/time_space_export_registration_trust_v1.json"
++    try:
++        trust = json.loads(trust_path.read_text(encoding="utf-8"))
++    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
++        raise ValueError("export registration trust root is unavailable") from exc
++    if not isinstance(trust, dict) or not isinstance(trust.get("remote_identity"), str):
++        raise ValueError("export registration trust root has no repository identity")
++    remote = _git("remote", "get-url", "origin")
+     repository = _normalize_remote(remote)
++    if repository != trust["remote_identity"]:
++        raise ValueError("origin repository identity does not match the checked-in trust root")
+     return repository, commit
+ 
+ 

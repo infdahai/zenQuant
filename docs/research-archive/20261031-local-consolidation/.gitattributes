@@ -1,0 +1,3 @@
+# Preserve exact historical bytes, including patch context and legacy whitespace.
+# Current code and this archive's documentation retain normal whitespace checks.
+snapshot/**/*.txt -whitespace

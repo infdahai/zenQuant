@@ -1,0 +1,37 @@
+commit 35ced364b7fb3350a96a89b51777e5e4269d12e1
+Author:     Disaster <clusternlh@gmail.com>
+AuthorDate: Tue Aug 25 01:18:13 2026 +0800
+Commit:     Disaster <clusternlh@gmail.com>
+CommitDate: Tue Aug 25 01:18:13 2026 +0800
+
+    docs(research): require external registration authority
+
+diff --git a/docs/superpowers/plans/2026-08-24-time-space-shadow.md b/docs/superpowers/plans/2026-08-24-time-space-shadow.md
+index d40c1f4..e9d4c4c 100644
+--- a/docs/superpowers/plans/2026-08-24-time-space-shadow.md
++++ b/docs/superpowers/plans/2026-08-24-time-space-shadow.md
+@@ -397,6 +397,24 @@ git commit -m "test(research): enforce time-space shadow isolation"
+ **Interfaces:**
+ - Produces: independently reviewable Layer 1 implementation.
+ 
++- [ ] **Step 0: Verify independent GitHub workflow authority before registration**
++
++Do not push a checkpoint, persist a receipt, or change export trust to
++`VERIFIED` while
++`config/research/time_space_export_external_protection_v1.json` remains
++`PENDING`. Task 7 must first verify an independently trusted required workflow
++from the protected default branch, or an equivalent GitHub branch/ruleset
++policy, that rejects changes to the registration workflows, validators, trust
++roots, and append-only registration tree. Pin the exact external authority ID,
++required check, provider evidence digest, and observation time in that config.
++
++This is an external trust requirement, not a property a repository-local
++workflow can grant itself. The local before-revision validators reject changes
++within one registration push, but cannot rule out a same/prior push that first
++weakens every local validator and later makes a no-op registration commit.
++Without independently verified GitHub protection, registration must fail closed
++and TimeSpace export trust remains `PENDING`.
++
+ - [ ] **Step 1: Run all Layer 1 tests**
+ 
+ Run: `uv run pytest tests/test_time_space_shadow.py tests/test_time_space_shadow_cli.py tests/test_import_boundaries.py tests/test_architecture_experiment.py -q`

@@ -1,0 +1,109 @@
+"""Replay a frozen public TradFi event snapshot. No network, credentials or orders."""
+
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+import statistics
+import sys
+from datetime import datetime
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+
+from zenquant.research.tradfi_dislocation import StudyConfig, analyze, oi_change, validate_bars  # noqa: E402
+
+
+def millis(value: str) -> int:
+    parsed = datetime.fromisoformat(value)
+    if parsed.tzinfo is None:
+        raise ValueError("explicit timezone required")
+    return int(parsed.timestamp() * 1000)
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--raw-dir", type=Path, required=True)
+    parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--window-start", required=True)
+    parser.add_argument("--window-end", required=True, help="exclusive; must be historical/closed")
+    parser.add_argument("--event-start", required=True)
+    parser.add_argument("--event-end", required=True, help="exclusive; descriptive window only")
+    parser.add_argument("--drop-pct", type=float, default=-3.0)
+    args = parser.parse_args()
+    start, end = millis(args.window_start), millis(args.window_end)
+    event_start, event_end = millis(args.event_start), millis(args.event_end)
+    if not start < event_start < event_end < end or any(t % 60000 for t in (start, end, event_start, event_end)):
+        raise ValueError("invalid study windows")
+    config = StudyConfig(drop_pct=args.drop_pct)
+    result = {
+        "schema_version": 1,
+        "verdict": "INSUFFICIENT_EVIDENCE_FOR_SIGNAL",
+        "promotion_eligible": False,
+        "event_cluster_count": 1,
+        "window_start_ms": start,
+        "window_end_ms": end,
+        "event_start_ms": event_start,
+        "event_end_ms": event_end,
+        "source_hashes": {},
+        "symbols": {},
+    }
+
+    def read(name):
+        path = args.raw_dir / name
+        payload = path.read_bytes()
+        result["source_hashes"][name] = hashlib.sha256(payload).hexdigest()
+        return json.loads(payload)
+
+    def read_bars(symbol, kind):
+        raw = read(f"{symbol}_{kind}.json")
+        bars = validate_bars(raw, end)
+        if not bars or bars[0]["open_ms"] != start or bars[-1]["open_ms"] != end - 60000:
+            raise ValueError(f"incomplete requested window: {symbol}/{kind}")
+        return raw, bars
+
+    for symbol in ("MUUSDT", "SNDKUSDT", "WDCUSDT", "BTCUSDT"):
+        raw, bars = read_bars(symbol, "trades")
+        _, marks = read_bars(symbol, "mark")
+        _, indices = read_bars(symbol, "index")
+        study = analyze(raw, as_of_ms=end, config=config)
+        anchor = next(b for b in bars if b["open_ms"] == event_start - 60000)
+        during = [b for b in bars if event_start <= b["open_ms"] < event_end]
+        lowest = min(during, key=lambda b: b["low"])
+        peak_volume = max(during, key=lambda b: b["quote_volume"])
+        prior = [b["quote_volume"] for b in bars if event_start - 3600000 <= b["open_ms"] < event_start]
+        baseline = statistics.median(prior)
+        aligned = [(b, m, ix) for b, m, ix in zip(bars, marks, indices) if event_start <= b["open_ms"] < event_end]
+        study["event_description"] = {
+            "anchor_close": anchor["close"],
+            "low": lowest["low"],
+            "low_open_ms": lowest["open_ms"],
+            "anchor_to_low_pct": (lowest["low"] / anchor["close"] - 1) * 100,
+            "end_close": during[-1]["close"],
+            "low_to_end_close_pct": (during[-1]["close"] / lowest["low"] - 1) * 100,
+            "peak_quote_volume": peak_volume["quote_volume"],
+            "peak_volume_open_ms": peak_volume["open_ms"],
+            "peak_vs_prior_60m_median_volume": peak_volume["quote_volume"] / baseline if baseline > 0 else None,
+            "min_close_last_index_pct": min((b["close"] / ix["close"] - 1) * 100 for b, m, ix in aligned),
+            "min_close_mark_index_pct": min((m["close"] / ix["close"] - 1) * 100 for b, m, ix in aligned),
+            "index_start_close": aligned[0][2]["close"],
+            "index_end_close": aligned[-1][2]["close"],
+        }
+        if symbol != "BTCUSDT":
+            study["oi_first_10m"] = oi_change(read(f"{symbol}_oi.json"), event_start, event_start + 600000)
+        result["symbols"][symbol] = study
+    result["code_hashes"] = {
+        str(path.relative_to(ROOT)): hashlib.sha256(path.read_bytes()).hexdigest()
+        for path in (Path(__file__).resolve(), ROOT / "zenquant/research/tradfi_dislocation.py")
+    }
+    args.output.parent.mkdir(parents=True, exist_ok=True)
+    with args.output.open("x") as output:
+        json.dump(result, output, ensure_ascii=False, indent=2, allow_nan=False)
+        output.write("\n")
+    print(f"Saved diagnostic: {args.output}; promotion_eligible=false")
+
+
+if __name__ == "__main__":
+    main()

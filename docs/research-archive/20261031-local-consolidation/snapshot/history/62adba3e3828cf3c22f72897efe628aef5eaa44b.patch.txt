@@ -1,0 +1,539 @@
+commit 62adba3e3828cf3c22f72897efe628aef5eaa44b
+Author:     Disaster <clusternlh@gmail.com>
+AuthorDate: Mon Aug 24 12:16:21 2026 +0800
+Commit:     Disaster <clusternlh@gmail.com>
+CommitDate: Mon Aug 24 12:16:21 2026 +0800
+
+    feat(data): expose trend research readiness
+
+diff --git a/docs/FORWARD_COLLECTION_AUTOMATION.md b/docs/FORWARD_COLLECTION_AUTOMATION.md
+index b2bc66e..4644886 100644
+--- a/docs/FORWARD_COLLECTION_AUTOMATION.md
++++ b/docs/FORWARD_COLLECTION_AUTOMATION.md
+@@ -78,3 +78,63 @@ After scheduler installation, verify:
+ - `results/data_readiness/forward_collection_latest.json` is fresh
+ - `results/data_readiness/forward_collection_health.json` is fresh
+ - `data_readiness.json` shows separate `deribit_status` and `deribit_block_flow_status`
++
++## Frozen Trend-Research Spot Repair
++
++The TimeSpace Shadow and Trend Participation donor share one required BTC spot-daily source. This is a manual,
++network-dependent repair and freeze operation; it is not part of the hourly collector. The source contract is
++`BINANCE_SPOT_BTCUSDT_1D`, with fallback `NONE`.
++
++The required half-open market-event range is exactly:
++
++- warmup: `[2025-10-08T00:00:00Z, 2026-01-01T00:00:00Z)` (85 daily closes)
++- reused diagnostic window: `[2026-01-01T00:00:00Z, 2026-08-24T00:00:00Z)`
++- frozen exclusive end: `2026-08-24T00:00:00Z`
++
++Run these commands from the repository root. Binance archive downloads require network access. The downloader's
++`--end-date` is inclusive, so `2026-08-23` is intentional: specifying `2026-08-24` would download a bar at or after
++the frozen exclusive end and readiness would fail closed with `INSUFFICIENT_DATA_SPOT_DAILY_POST_END`.
++
++```bash
++uv run python scripts/download_spot_data.py \
++  --symbol BTCUSDT \
++  --start-date 2025-10-08 \
++  --end-date 2026-08-23 \
++  --timeframes 1d
++
++uv run python scripts/convert_csv_to_parquet.py \
++  --source binance_spot \
++  --symbol BTCUSDT
++
++uv run python scripts/data_readiness_status.py \
++  --trend-spot-path data/raw/binance_spot/klines/BTCUSDT/1d/data.parquet
++```
++
++Do not run either donor until `results/data_readiness/data_readiness.json` reports
++`trend_research_status.status == "READY"`. Missing, malformed, gapped, stale, duplicate, or post-end data has no
++neutral fallback and is a blocker when `--trend-spot-path` is supplied.
++
++The execution freeze binds both normalized bytes and every raw Binance CSV as provenance. The following zsh-safe
++array expands each raw archive into the repeatable `--spot-raw` argument required by the freezer; an empty glob fails
++before a misleading manifest can be written.
++
++```zsh
++trend_spot_raw_args=()
++for trend_spot_raw_path in data/raw/binance_spot/klines/BTCUSDT/1d/*.csv; do
++  trend_spot_raw_args+=(--spot-raw "$trend_spot_raw_path")
++done
++
++uv run python scripts/freeze_trend_research_inputs.py \
++  --spot-1d data/raw/binance_spot/klines/BTCUSDT/1d/data.parquet \
++  "${trend_spot_raw_args[@]}" \
++  --perp-5m data/raw/binance/klines/BTCUSDT/5m/data.parquet \
++  --funding data/raw/binance/funding/BTCUSDT/data.parquet \
++  --time-space-hypothesis config/research/time_space_shadow_hypothesis_v1.json \
++  --trend-hypothesis config/research/trend_participation_hypothesis_v1.json \
++  --reused-start 2026-01-01T00:00:00Z \
++  --reused-end 2026-08-24T00:00:00Z \
++  --output-dir results/trend_research_execution/20260824
++```
++
++The output directory is immutable. Choose a new explicit directory for a later freeze; never overwrite or silently
++reuse an earlier execution envelope.
+diff --git a/scripts/data_readiness_status.py b/scripts/data_readiness_status.py
+index beae33f..a620f18 100644
+--- a/scripts/data_readiness_status.py
++++ b/scripts/data_readiness_status.py
+@@ -24,6 +24,7 @@ def build_readiness_payload(
+     deribit_block_flow_root: Path,
+     hyperliquid_root: Path,
+     merged_root: Path,
++    trend_spot_path: Path | None = None,
+ ) -> dict[str, Any]:
+     return render_readiness_payload(
+         binance_root=binance_root,
+@@ -32,6 +33,7 @@ def build_readiness_payload(
+         deribit_block_flow_root=deribit_block_flow_root,
+         hyperliquid_root=hyperliquid_root,
+         merged_root=merged_root,
++        trend_spot_path=trend_spot_path,
+     )
+ 
+ 
+@@ -47,6 +49,12 @@ def main() -> None:
+     parser.add_argument("--deribit-block-flow-root", type=Path, default=Path("data/raw/deribit_block_flow"))
+     parser.add_argument("--hyperliquid-root", type=Path, default=Path("data/raw/hyperliquid/liquidations"))
+     parser.add_argument("--merged-root", type=Path, default=Path("data/raw/merged_liquidations"))
++    parser.add_argument(
++        "--trend-spot-path",
++        type=Path,
++        default=None,
++        help="Explicit normalized BTCUSDT spot 1d Parquet to audit for frozen trend research",
++    )
+     parser.add_argument("--output-dir", type=Path, default=Path("results/data_readiness"))
+     args = parser.parse_args()
+ 
+@@ -57,6 +65,7 @@ def main() -> None:
+         deribit_block_flow_root=args.deribit_block_flow_root,
+         hyperliquid_root=args.hyperliquid_root,
+         merged_root=args.merged_root,
++        trend_spot_path=args.trend_spot_path,
+     )
+     output_dir = args.output_dir
+     output_dir.mkdir(parents=True, exist_ok=True)
+diff --git a/tests/test_data_readiness_status.py b/tests/test_data_readiness_status.py
+index cbd8fb5..82fd9b0 100644
+--- a/tests/test_data_readiness_status.py
++++ b/tests/test_data_readiness_status.py
+@@ -6,6 +6,8 @@ import unittest
+ from datetime import UTC, datetime, timedelta
+ from pathlib import Path
+ 
++import pandas as pd
++
+ from zenquant.data.deribit_block_flow import DeribitBlockFlowRow, save_block_flow_rows, write_deribit_block_flow_status
+ from zenquant.data.deribit_status import write_deribit_status
+ from zenquant.data.liquidation_pipeline import (
+@@ -33,6 +35,38 @@ def _ts(year: int, month: int, day: int, hour: int) -> int:
+     return int(datetime(year, month, day, hour, tzinfo=UTC).timestamp() * 1_000_000_000)
+ 
+ 
++DAY_NS = 86_400_000_000_000
++TREND_WARMUP_START_NS = _ts(2025, 10, 8, 0)
++TREND_REUSED_START_NS = _ts(2026, 1, 1, 0)
++TREND_REUSED_END_NS = _ts(2026, 8, 24, 0)
++
++
++def _write_trend_spot(
++    path: Path,
++    *,
++    missing_open_ns: tuple[int, ...] = (),
++    duplicate_open_ns: int | None = None,
++    post_end_count: int = 0,
++    close: float = 100_000.0,
++) -> Path:
++    opens = [
++        value for value in range(TREND_WARMUP_START_NS, TREND_REUSED_END_NS, DAY_NS) if value not in missing_open_ns
++    ]
++    opens.extend(TREND_REUSED_END_NS + index * DAY_NS for index in range(post_end_count))
++    if duplicate_open_ns is not None:
++        opens.append(duplicate_open_ns)
++    frame = pd.DataFrame(
++        {
++            "open_time_ns": opens,
++            "close_time_ns": [value + DAY_NS - 1 for value in opens],
++            "close": [close] * len(opens),
++        }
++    )
++    path.parent.mkdir(parents=True, exist_ok=True)
++    frame.to_parquet(path, index=False)
++    return path
++
++
+ def _write_deribit_snapshot(path: Path, ts: datetime) -> None:
+     import pyarrow as pa
+     import pyarrow.parquet as pq
+@@ -56,6 +90,141 @@ def _write_deribit_snapshot(path: Path, ts: datetime) -> None:
+ 
+ 
+ class DataReadinessStatusTests(unittest.TestCase):
++    def _empty_roots(self, root: Path) -> dict[str, Path | str]:
++        return {
++            "binance_root": root / "binance",
++            "symbol": "BTCUSDT",
++            "deribit_root": root / "deribit",
++            "deribit_block_flow_root": root / "block_flow",
++            "hyperliquid_root": root / "hyperliquid",
++            "merged_root": root / "merged",
++        }
++
++    def test_trend_readiness_reports_separate_warmup_and_reused_gaps(self) -> None:
++        with tempfile.TemporaryDirectory() as tmp:
++            root = Path(tmp)
++            warmup_gap = TREND_WARMUP_START_NS + DAY_NS
++            reused_gap = TREND_REUSED_START_NS + 2 * DAY_NS
++            spot_path = _write_trend_spot(
++                root / "spot.parquet",
++                missing_open_ns=(warmup_gap, reused_gap),
++            )
++
++            payload = DATA_READINESS.build_readiness_payload(
++                **self._empty_roots(root),
++                trend_spot_path=spot_path,
++            )
++
++        status = payload["trend_research_status"]
++        self.assertEqual(status["status"], "INSUFFICIENT_DATA_SPOT_DAILY_GAPS")
++        self.assertEqual(status["fallback"], "NONE")
++        self.assertEqual(status["warmup_missing_open_ns"], [warmup_gap])
++        self.assertEqual(status["warmup_missing_count"], 1)
++        self.assertEqual(status["reused_missing_open_ns"], [reused_gap])
++        self.assertEqual(status["reused_missing_count"], 1)
++        self.assertEqual(status["missing_open_ns"], [warmup_gap, reused_gap])
++        self.assertEqual(status["missing_count"], 2)
++        self.assertIn("trend_research:INSUFFICIENT_DATA_SPOT_DAILY_GAPS", payload["overall_blockers"])
++
++    def test_trend_readiness_requires_exact_frozen_daily_corpus(self) -> None:
++        with tempfile.TemporaryDirectory() as tmp:
++            root = Path(tmp)
++            spot_path = _write_trend_spot(root / "spot.parquet")
++
++            payload = DATA_READINESS.build_readiness_payload(
++                **self._empty_roots(root),
++                trend_spot_path=spot_path,
++            )
++
++        status = payload["trend_research_status"]
++        self.assertEqual(status["status"], "READY")
++        self.assertTrue(status["ready"])
++        self.assertEqual(status["warmup_missing_count"], 0)
++        self.assertEqual(status["reused_missing_count"], 0)
++        self.assertEqual(status["duplicate_open_ns"], [])
++        self.assertEqual(status["post_end_count"], 0)
++        self.assertEqual(status["first_cutoff_ns"], TREND_WARMUP_START_NS + DAY_NS)
++        self.assertEqual(status["last_cutoff_ns"], TREND_REUSED_END_NS)
++        self.assertEqual(status["next_action"], "freeze_trend_research_inputs")
++        markdown = DATA_READINESS.build_markdown(payload)
++        self.assertIn("## Trend Research Spot Daily", markdown)
++        self.assertIn("- status: `READY`", markdown)
++
++    def test_trend_readiness_fails_closed_for_stale_post_end_and_malformed_data(self) -> None:
++        cases = (
++            (
++                "stale",
++                {"missing_open_ns": (TREND_REUSED_END_NS - DAY_NS,)},
++                "INSUFFICIENT_DATA_SPOT_DAILY_STALE",
++            ),
++            (
++                "post_end",
++                {"post_end_count": 1},
++                "INSUFFICIENT_DATA_SPOT_DAILY_POST_END",
++            ),
++        )
++        for name, kwargs, expected in cases:
++            with self.subTest(name=name), tempfile.TemporaryDirectory() as tmp:
++                root = Path(tmp)
++                spot_path = _write_trend_spot(root / "spot.parquet", **kwargs)
++                payload = DATA_READINESS.build_readiness_payload(
++                    **self._empty_roots(root),
++                    trend_spot_path=spot_path,
++                )
++                self.assertEqual(payload["trend_research_status"]["status"], expected)
++                self.assertFalse(payload["trend_research_status"]["ready"])
++
++        with tempfile.TemporaryDirectory() as tmp:
++            root = Path(tmp)
++            malformed = root / "malformed.parquet"
++            pd.DataFrame({"wrong": [1]}).to_parquet(malformed, index=False)
++            payload = DATA_READINESS.build_readiness_payload(
++                **self._empty_roots(root),
++                trend_spot_path=malformed,
++            )
++        self.assertEqual(
++            payload["trend_research_status"]["status"],
++            "INSUFFICIENT_DATA_SPOT_DAILY_MALFORMED",
++        )
++        self.assertEqual(payload["trend_research_status"]["fallback"], "NONE")
++
++        with tempfile.TemporaryDirectory() as tmp:
++            root = Path(tmp)
++            invalid_close = _write_trend_spot(root / "invalid-close.parquet", close=float("nan"))
++            payload = DATA_READINESS.build_readiness_payload(
++                **self._empty_roots(root),
++                trend_spot_path=invalid_close,
++            )
++        self.assertEqual(
++            payload["trend_research_status"]["status"],
++            "INSUFFICIENT_DATA_SPOT_DAILY_MALFORMED",
++        )
++
++    def test_omitted_trend_path_preserves_existing_overall_blockers(self) -> None:
++        with tempfile.TemporaryDirectory() as tmp:
++            root = Path(tmp)
++            payload = DATA_READINESS.build_readiness_payload(**self._empty_roots(root))
++
++        self.assertEqual(payload["trend_research_status"]["status"], "NOT_CONFIGURED")
++        self.assertNotIn("trend_research:NOT_CONFIGURED", payload["overall_blockers"])
++
++    def test_explicit_missing_trend_path_fails_closed(self) -> None:
++        with tempfile.TemporaryDirectory() as tmp:
++            root = Path(tmp)
++            payload = DATA_READINESS.build_readiness_payload(
++                **self._empty_roots(root),
++                trend_spot_path=root / "missing.parquet",
++            )
++
++        status = payload["trend_research_status"]
++        self.assertEqual(status["status"], "INSUFFICIENT_DATA_SPOT_DAILY_MISSING")
++        self.assertEqual(status["fallback"], "NONE")
++        self.assertFalse(status["ready"])
++        self.assertEqual(status["warmup_missing_count"], 85)
++        self.assertEqual(status["reused_missing_count"], 235)
++        self.assertEqual(status["missing_count"], 320)
++        self.assertIn("trend_research:INSUFFICIENT_DATA_SPOT_DAILY_MISSING", payload["overall_blockers"])
++
+     def test_build_payload_marks_partial_and_blocked_states(self) -> None:
+         with tempfile.TemporaryDirectory() as tmp:
+             root = Path(tmp)
+diff --git a/zenquant/data/readiness.py b/zenquant/data/readiness.py
+index 7ce38db..0140333 100644
+--- a/zenquant/data/readiness.py
++++ b/zenquant/data/readiness.py
+@@ -3,16 +3,24 @@
+ from __future__ import annotations
+ 
+ import json
++import math
+ from dataclasses import asdict
+ from datetime import UTC, datetime
+ from pathlib import Path
+-from typing import Any
++from typing import Any, Final
++
++import pandas as pd
+ 
+ from zenquant.data.deribit_block_flow import collect_deribit_block_flow_status
+ from zenquant.data.deribit_status import collect_deribit_status
+ from zenquant.data.liquidation_pipeline import liquidation_readiness
++from zenquant.data.spot_daily import DAY_NS, SpotDailyError, audit_spot_daily
+ from zenquant.historical import read_parquet_rows
+ 
++TREND_WARMUP_START_NS: Final = 1_759_881_600_000_000_000
++TREND_REUSED_START_NS: Final = 1_767_225_600_000_000_000
++TREND_REUSED_END_NS: Final = 1_787_529_600_000_000_000
++
+ 
+ def load_json(path: Path) -> dict[str, Any]:
+     if not path.exists():
+@@ -110,6 +118,126 @@ def build_merged_liquidation_status(binance_root: Path, merged_root: Path, symbo
+     }
+ 
+ 
++def build_trend_research_status(trend_spot_path: Path | None) -> dict[str, Any]:
++    """Audit the exact frozen spot-daily donor corpus without fallback."""
++
++    base: dict[str, Any] = {
++        "source_id": "BINANCE_SPOT_BTCUSDT_1D",
++        "requirement": "REQUIRED",
++        "fallback": "NONE",
++        "path": str(trend_spot_path) if trend_spot_path is not None else None,
++        "warmup_start_ns": TREND_WARMUP_START_NS,
++        "reused_start_ns": TREND_REUSED_START_NS,
++        "reused_end_ns_exclusive": TREND_REUSED_END_NS,
++        "first_open_ns": None,
++        "last_close_ns": None,
++        "first_cutoff_ns": None,
++        "last_cutoff_ns": None,
++        "warmup_missing_open_ns": [],
++        "warmup_missing_count": 0,
++        "reused_missing_open_ns": [],
++        "reused_missing_count": 0,
++        "missing_open_ns": [],
++        "missing_count": 0,
++        "duplicate_open_ns": [],
++        "duplicate_count": 0,
++        "post_end_count": 0,
++        "row_count": 0,
++        "ready": False,
++    }
++    if trend_spot_path is None:
++        return {**base, "status": "NOT_CONFIGURED", "next_action": "provide_trend_spot_path"}
++
++    path = Path(trend_spot_path)
++    if not path.is_file():
++        warmup_missing = list(range(TREND_WARMUP_START_NS, TREND_REUSED_START_NS, DAY_NS))
++        reused_missing = list(range(TREND_REUSED_START_NS, TREND_REUSED_END_NS, DAY_NS))
++        missing_open_ns = [*warmup_missing, *reused_missing]
++        return {
++            **base,
++            "status": "INSUFFICIENT_DATA_SPOT_DAILY_MISSING",
++            "warmup_missing_open_ns": warmup_missing,
++            "warmup_missing_count": len(warmup_missing),
++            "reused_missing_open_ns": reused_missing,
++            "reused_missing_count": len(reused_missing),
++            "missing_open_ns": missing_open_ns,
++            "missing_count": len(missing_open_ns),
++            "next_action": "download_and_normalize_trend_spot_daily",
++        }
++
++    try:
++        frame = pd.read_parquet(path, columns=["open_time_ns", "close_time_ns", "close"])
++        if not pd.api.types.is_integer_dtype(frame["open_time_ns"].dtype):
++            raise SpotDailyError("open_time_ns must be integer nanoseconds")
++        if not pd.api.types.is_integer_dtype(frame["close_time_ns"].dtype):
++            raise SpotDailyError("close_time_ns must be integer nanoseconds")
++        if frame.empty:
++            raise SpotDailyError("spot daily corpus is empty")
++        opens = frame["open_time_ns"].astype("int64")
++        closes = frame["close_time_ns"].astype("int64")
++        if not (closes == opens + DAY_NS - 1).all():
++            raise SpotDailyError("daily close cutoffs are malformed")
++        close_values = pd.to_numeric(frame["close"], errors="coerce")
++        if close_values.isna().any() or not all(
++            math.isfinite(float(value)) and float(value) > 0 for value in close_values
++        ):
++            raise SpotDailyError("spot daily closes must be positive and finite")
++        full_audit = audit_spot_daily(path, TREND_WARMUP_START_NS, TREND_REUSED_END_NS)
++        warmup_audit = audit_spot_daily(path, TREND_WARMUP_START_NS, TREND_REUSED_START_NS)
++        reused_audit = audit_spot_daily(path, TREND_REUSED_START_NS, TREND_REUSED_END_NS)
++    except (OSError, KeyError, TypeError, ValueError, SpotDailyError):
++        return {
++            **base,
++            "status": "INSUFFICIENT_DATA_SPOT_DAILY_MALFORMED",
++            "next_action": "normalize_trend_spot_daily_from_raw_archives",
++        }
++
++    post_end_count = int((opens >= TREND_REUSED_END_NS).sum())
++    first_open_ns = int(opens.min())
++    last_open_ns = int(opens.max())
++    last_close_ns = int(closes.max())
++    observed_required = opens[(opens >= TREND_WARMUP_START_NS) & (opens < TREND_REUSED_END_NS)]
++    last_required_open_ns = int(observed_required.max()) if not observed_required.empty else None
++    duplicate_open_ns = list(full_audit.duplicate_open_ns)
++    warmup_missing = list(warmup_audit.missing_open_ns)
++    reused_missing = list(reused_audit.missing_open_ns)
++    missing_open_ns = sorted((*warmup_missing, *reused_missing))
++
++    if post_end_count:
++        status = "INSUFFICIENT_DATA_SPOT_DAILY_POST_END"
++        next_action = "remove_post_end_rows_and_renormalize_trend_spot_daily"
++    elif last_required_open_ns != TREND_REUSED_END_NS - DAY_NS:
++        status = "INSUFFICIENT_DATA_SPOT_DAILY_STALE"
++        next_action = "download_missing_tail_and_renormalize_trend_spot_daily"
++    elif full_audit.status != "READY":
++        status = "INSUFFICIENT_DATA_SPOT_DAILY_GAPS"
++        next_action = "repair_gaps_and_renormalize_trend_spot_daily"
++    else:
++        status = "READY"
++        next_action = "freeze_trend_research_inputs"
++
++    return {
++        **base,
++        "status": status,
++        "ready": status == "READY",
++        "first_open_ns": first_open_ns,
++        "last_close_ns": last_close_ns,
++        "first_cutoff_ns": first_open_ns + DAY_NS,
++        "last_cutoff_ns": last_open_ns + DAY_NS,
++        "warmup_missing_open_ns": warmup_missing,
++        "warmup_missing_count": len(warmup_missing),
++        "reused_missing_open_ns": reused_missing,
++        "reused_missing_count": len(reused_missing),
++        "missing_open_ns": missing_open_ns,
++        "missing_count": len(missing_open_ns),
++        "duplicate_open_ns": duplicate_open_ns,
++        "duplicate_count": len(duplicate_open_ns),
++        "post_end_count": post_end_count,
++        "row_count": len(frame),
++        "next_action": next_action,
++    }
++
++
+ def build_readiness_payload(
+     *,
+     binance_root: Path,
+@@ -118,6 +246,7 @@ def build_readiness_payload(
+     deribit_block_flow_root: Path,
+     hyperliquid_root: Path,
+     merged_root: Path,
++    trend_spot_path: Path | None = None,
+ ) -> dict[str, Any]:
+     deribit = asdict(collect_deribit_status(deribit_root, "BTC"))
+     deribit["status"] = (
+@@ -135,6 +264,7 @@ def build_readiness_payload(
+     binance_liq = build_binance_liquidation_status(binance_root, symbol)
+     hyperliquid = build_hyperliquid_status(hyperliquid_root, symbol)
+     merged_liq = build_merged_liquidation_status(binance_root, merged_root, symbol)
++    trend_research = build_trend_research_status(trend_spot_path)
+ 
+     blockers: list[str] = []
+     if deribit["blocked_by"]:
+@@ -149,6 +279,8 @@ def build_readiness_payload(
+         blockers.append(str(merged_liq["blocked_by"]))
+     if not merged_liq["promotion_ready"] and merged_liq["data_ready"]:
+         blockers.append("merged_liquidation_not_promotion_ready")
++    if trend_spot_path is not None and not trend_research["ready"]:
++        blockers.append(f"trend_research:{trend_research['status']}")
+ 
+     return {
+         "deribit_status": deribit,
+@@ -156,6 +288,7 @@ def build_readiness_payload(
+         "binance_liquidation_status": binance_liq,
+         "hyperliquid_status": hyperliquid,
+         "merged_liquidation_status": merged_liq,
++        "trend_research_status": trend_research,
+         "overall_blockers": sorted(dict.fromkeys(blockers)),
+     }
+ 
+@@ -166,6 +299,7 @@ def build_readiness_markdown(payload: dict[str, Any]) -> str:
+     binance_liq = payload["binance_liquidation_status"]
+     hyperliquid = payload["hyperliquid_status"]
+     merged = payload["merged_liquidation_status"]
++    trend = payload["trend_research_status"]
+     blockers = payload["overall_blockers"]
+     lines = [
+         "# Data Readiness",
+@@ -222,6 +356,29 @@ def build_readiness_markdown(payload: dict[str, Any]) -> str:
+         f"- next_action: `{merged['next_action']}`",
+         f"- detail: `{merged['detail']}`",
+         "",
++        "## Trend Research Spot Daily",
++        "",
++        f"- status: `{trend['status']}`",
++        f"- ready: `{trend['ready']}`",
++        f"- source_id: `{trend['source_id']}`",
++        f"- fallback: `{trend['fallback']}`",
++        f"- path: `{trend['path']}`",
++        f"- warmup_start_ns: `{trend['warmup_start_ns']}`",
++        f"- reused_start_ns: `{trend['reused_start_ns']}`",
++        f"- reused_end_ns_exclusive: `{trend['reused_end_ns_exclusive']}`",
++        f"- first_cutoff_ns: `{trend['first_cutoff_ns']}`",
++        f"- last_cutoff_ns: `{trend['last_cutoff_ns']}`",
++        f"- warmup_missing_count: `{trend['warmup_missing_count']}`",
++        f"- warmup_missing_open_ns: `{trend['warmup_missing_open_ns']}`",
++        f"- reused_missing_count: `{trend['reused_missing_count']}`",
++        f"- reused_missing_open_ns: `{trend['reused_missing_open_ns']}`",
++        f"- missing_count: `{trend['missing_count']}`",
++        f"- missing_open_ns: `{trend['missing_open_ns']}`",
++        f"- duplicate_count: `{trend['duplicate_count']}`",
++        f"- duplicate_open_ns: `{trend['duplicate_open_ns']}`",
++        f"- post_end_count: `{trend['post_end_count']}`",
++        f"- next_action: `{trend['next_action']}`",
++        "",
+         "## Overall Blockers",
+         "",
+     ]

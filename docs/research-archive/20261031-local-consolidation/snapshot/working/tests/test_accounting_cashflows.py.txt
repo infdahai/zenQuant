@@ -1,0 +1,475 @@
+"""Cash conservation and chronological settlement regressions using real event paths."""
+
+from dataclasses import replace
+from pathlib import Path
+
+import pytest
+
+from zenquant.domain import (
+    EventMeta,
+    ExecutionReport,
+    IndicatorCoverage,
+    IndicatorPack,
+    MarkPriceUpdate,
+    TargetPosition,
+    Timeframe,
+)
+from zenquant.historical import replay
+from zenquant.historical.replay import HistoricalBacktest, HistoricalBacktestConfig
+from zenquant.infra import InMemoryJetStream
+from zenquant.risk import RiskOverlay, RiskOverlayConfig
+
+SYMBOL = "BTCUSDT_PERP"
+BASE_NS = 1_704_067_200_000_000_000
+HOUR_NS = 3_600_000_000_000
+
+
+def _fill(qty: float, hour: int, *, price: float = 100_000.0, fee: float = 0.0) -> ExecutionReport:
+    return ExecutionReport(
+        client_order_id=f"fill-{hour}-{qty}",
+        symbol=SYMBOL,
+        side=1 if qty > 0 else -1,
+        status="FILLED",
+        filled_qty=abs(qty),
+        avg_price=price,
+        fee=fee,
+        transaction_time_ns=BASE_NS + hour * HOUR_NS,
+    )
+
+
+def _pack(price: float) -> IndicatorPack:
+    return IndicatorPack(
+        ts_ns=BASE_NS,
+        symbol=SYMBOL,
+        timeframe=Timeframe.TF_4H,
+        cutoff_time_ns=BASE_NS,
+        indicator_version="v1",
+        formula_hash="cashflow-test",
+        quality_flags=["OK"],
+        coverage=IndicatorCoverage(venue_count=1, oi_coverage=1.0, staleness_ms=0),
+        values={"last_price": price},
+        components={},
+    )
+
+
+def _mark(price: float, hour: int) -> MarkPriceUpdate:
+    return MarkPriceUpdate(
+        meta=EventMeta(
+            event_time_ns=BASE_NS + hour * HOUR_NS,
+            ingest_time_ns=BASE_NS + (hour + 1) * HOUR_NS,
+            venue="ACCOUNTING_TEST",
+            symbol=SYMBOL,
+            stream_seq=hour,
+        ),
+        mark_price=price,
+    )
+
+
+def _target(qty: float, hour: int = 8) -> TargetPosition:
+    return TargetPosition(
+        intent_id=f"target-{hour}",
+        portfolio="arc",
+        symbol=SYMBOL,
+        timeframe=Timeframe.TF_4H,
+        cutoff_time_ns=BASE_NS + hour * HOUR_NS,
+        target_qty=qty,
+        target_leverage=2.0,
+        reduce_only=False,
+        regime="TREND",
+        regime_confidence=1.0,
+        reason_codes=["ACCOUNTING_TEST"],
+    )
+
+
+def _bar(hour: int, price: float = 100_000.0, timeframe: str = "4h") -> dict:
+    return {
+        "symbol": "BTCUSDT",
+        "event_timeframe": timeframe,
+        "open_time_ns": BASE_NS + (hour - 4) * HOUR_NS,
+        "close_time_ns": BASE_NS + hour * HOUR_NS,
+        "open": price,
+        "high": price,
+        "low": price,
+        "close": price,
+        "volume": 10.0,
+        "trade_count": 1,
+    }
+
+
+def _funding(hour: int, rate: float, mark: float | None = None) -> dict:
+    return {
+        "symbol": "BTCUSDT",
+        "funding_time_ns": BASE_NS + hour * HOUR_NS,
+        "funding_rate": rate,
+        "mark_price": mark,
+    }
+
+
+def _replay(tmp_path: Path, funding: list[dict]) -> HistoricalBacktest:
+    context = replay.ReplayContext(
+        funding_rows=funding,
+        open_interest_rows=[],
+        aggtrades={},
+        events=[],
+        macro_store=replay.MacroDataStore(),
+        options_store=replay.OptionsDataStore(),
+        hf_store=replay.HFFeatureStore(),
+        cot_store=replay.CotDataStore(),
+        liquidation_store=replay.LiquidationDataStore(),
+        eth_store=replay.EthDataStore(),
+        cross_asset_context_store=replay.CrossAssetContextStore(),
+        onchain_factor_store=replay.OnchainFactorStore(),
+        binance_metrics_factor_store=replay.BinanceMetricsFactorStore(),
+        basis_store=replay.BasisDataStore(),
+    )
+    runner = HistoricalBacktest(HistoricalBacktestConfig(root_dir=tmp_path, profile_path=None, replay_context=context))
+    runner._funding_rows = funding
+    runner._aggtrades = {}
+    return runner
+
+
+def _publish_fill(runner: HistoricalBacktest, report: ExecutionReport) -> None:
+    runner.bus.publish("exec.order.report", report)
+
+
+@pytest.mark.parametrize("qty, cash", [(2.0, -100_080.0), (-2.0, 299_920.0), (1.0, -80.0), (0.0, 99_920.0)])
+def test_fee_preserves_borrowed_cash_and_long_short_equity_symmetry(qty: float, cash: float) -> None:
+    bus = InMemoryJetStream()
+    risk = RiskOverlay(bus)
+    if qty:
+        bus.publish("exec.order.report", _fill(qty, 4))
+    risk.apply_fee(80.0)
+
+    assert risk._cash == pytest.approx(cash)
+    assert risk.equity == pytest.approx(99_920.0)
+    assert risk.high_water_mark == 100_000.0
+
+
+@pytest.mark.parametrize("qty, expected", [(2.0, 99_800.0), (-2.0, 100_200.0)])
+def test_fill_slippage_is_valued_at_confirmed_market_price(qty: float, expected: float) -> None:
+    bus = InMemoryJetStream()
+    risk = RiskOverlay(bus)
+    risk.prime_indicator(_pack(100_000.0))
+    bus.publish("exec.order.report", _fill(qty, 4, price=100_100.0))
+
+    assert risk.equity == pytest.approx(expected)
+
+
+@pytest.mark.parametrize("qty", [2.0, -2.0, 0.0])
+@pytest.mark.parametrize("fee", [100_000.0, 110_000.0])
+def test_nonpositive_equity_preserves_debt_and_forces_zero_risk(qty: float, fee: float) -> None:
+    bus = InMemoryJetStream()
+    risk = RiskOverlay(bus, RiskOverlayConfig(kill_switch_drawdown=2.0))
+    risk.prime_indicator(_pack(100_000.0))
+    if qty:
+        bus.publish("exec.order.report", _fill(qty, 4))
+    risk.apply_fee(fee)
+    revised, decision, snapshot = risk._apply_overlay(_target(3.0))
+
+    assert risk.equity == pytest.approx(100_000.0 - fee)
+    assert snapshot.equity == pytest.approx(100_000.0 - fee)
+    assert revised.target_qty == 0.0
+    assert revised.reduce_only
+    assert decision.lev_cap == 0.0
+
+
+@pytest.mark.parametrize(
+    "qty, rate, expected",
+    [(2.0, 0.001, 99_800.0), (-2.0, 0.001, 100_200.0), (2.0, -0.001, 100_200.0), (-2.0, -0.001, 99_800.0)],
+)
+def test_funding_updates_cash_equity_episode_and_metrics(
+    tmp_path: Path, qty: float, rate: float, expected: float
+) -> None:
+    runner = _replay(tmp_path, [_funding(8, rate, 100_000.0)])
+    runner._publish_event(_bar(4))
+    _publish_fill(runner, _fill(qty, 4))
+    runner._publish_event(_bar(8))
+
+    assert runner.risk_overlay.equity == pytest.approx(expected)
+    assert runner._episode_ledger.open_episodes[0].funding_pnl == pytest.approx(expected - 100_000.0)
+    metrics = runner._build_metrics([_bar(4), _bar(8)])
+    assert metrics.total_funding == pytest.approx(100_000.0 - expected)
+    assert metrics.net_pnl == pytest.approx(expected - 100_000.0)
+    assert metrics.gross_pnl == 0.0
+
+
+def test_settlement_before_same_timestamp_fill_uses_old_position(tmp_path: Path) -> None:
+    runner = _replay(tmp_path, [_funding(8, 0.001, 100_000.0)])
+    runner._publish_event(_bar(4))
+    _publish_fill(runner, _fill(2.0, 4))
+    runner.bus.subscribe("md.snapshot.4h.>", lambda *_: _publish_fill(runner, _fill(-2.0, 8)))
+    runner._publish_event(_bar(8))
+
+    assert runner.risk_overlay.equity == pytest.approx(99_800.0)
+    assert runner._funding_accumulator.total_funding_cost == pytest.approx(200.0)
+    assert runner._episode_ledger.closed_episodes[0].funding_pnl == pytest.approx(-200.0)
+
+
+def test_new_position_at_settlement_timestamp_does_not_pay_earlier_funding(tmp_path: Path) -> None:
+    runner = _replay(tmp_path, [_funding(8, 0.001, 100_000.0)])
+    runner._publish_event(_bar(4))
+    runner.bus.subscribe("md.snapshot.4h.>", lambda *_: _publish_fill(runner, _fill(2.0, 8)))
+    runner._publish_event(_bar(8))
+
+    assert runner._funding_accumulator.total_funding_cost == 0.0
+    assert runner.risk_overlay.equity == 100_000.0
+
+
+def test_all_source_settlements_are_charged_once_across_bar_gap(tmp_path: Path) -> None:
+    runner = _replay(
+        tmp_path, [_funding(8, 0.001, 100_000.0), _funding(16, -0.0005, 100_000.0), _funding(24, 0.002, 100_000.0)]
+    )
+    runner._publish_event(_bar(4))
+    _publish_fill(runner, _fill(2.0, 4))
+    runner._publish_event(_bar(28))
+    runner._publish_event(_bar(28, timeframe="1d"))
+    runner._publish_event(_bar(32))
+
+    assert runner.risk_overlay.equity == pytest.approx(99_500.0)
+    assert runner._funding_accumulator.total_funding_cost == pytest.approx(500.0)
+    assert runner._episode_ledger.open_episodes[0].funding_pnl == pytest.approx(-500.0)
+    assert [item["source_time_ns"] for item in runner._funding_settlements] == [
+        BASE_NS + hour * HOUR_NS for hour in (8, 16, 24)
+    ]
+
+
+@pytest.mark.parametrize(
+    "mark, expected_cost",
+    [(125_000.0, 250.0), (0.0, 200.0), (None, 200.0), (float("nan"), 200.0), (float("inf"), 200.0)],
+)
+def test_funding_prefers_source_mark_else_prior_confirmed_price(
+    tmp_path: Path, mark: float | None, expected_cost: float
+) -> None:
+    runner = _replay(tmp_path, [_funding(8, 0.001, mark)])
+    runner._publish_event(_bar(4, 100_000.0))
+    _publish_fill(runner, _fill(2.0, 4))
+    runner._publish_event(_bar(12, 900_000.0))
+
+    assert runner._funding_accumulator.total_funding_cost == pytest.approx(expected_cost)
+    assert runner._episode_ledger.open_episodes[0].funding_pnl == pytest.approx(-expected_cost)
+
+
+def test_flat_window_open_without_prior_price_has_zero_funding(tmp_path: Path) -> None:
+    runner = _replay(tmp_path, [_funding(0, 0.001)])
+    runner._publish_event(_bar(4))
+    assert runner._funding_accumulator.total_funding_cost == 0.0
+    assert runner.risk_overlay.equity == 100_000.0
+    assert runner._funding_settlements[0]["price_source"] == "flat_without_price"
+
+
+def test_duplicate_source_settlements_fail_instead_of_silently_double_charging(tmp_path: Path) -> None:
+    runner = _replay(tmp_path, [_funding(8, 0.001), _funding(8, 0.001)])
+    with pytest.raises(ValueError, match="duplicate funding"):
+        runner._publish_event(_bar(8))
+
+
+def test_funding_drawdown_changes_the_next_risk_decision(tmp_path: Path) -> None:
+    runner = _replay(tmp_path, [_funding(8, 0.20, 100_000.0)])
+    runner._publish_event(_bar(4))
+    _publish_fill(runner, _fill(2.0, 4))
+    before, _, _ = runner.risk_overlay._apply_overlay(_target(3.0, 4))
+    runner._publish_event(_bar(8))
+    after, decision, snapshot = runner.risk_overlay._apply_overlay(_target(3.0))
+
+    assert before.target_qty == 3.0
+    assert snapshot.equity == pytest.approx(60_000.0)
+    assert snapshot.drawdown == pytest.approx(0.4)
+    assert after.reduce_only
+    assert after.target_qty < 2.0
+    assert "KILL_SWITCH" in decision.flags
+
+
+def test_shared_cashflow_api_matches_replay_accounting(tmp_path: Path) -> None:
+    runner = _replay(tmp_path, [_funding(8, 0.001, 100_000.0)])
+    runner._publish_event(_bar(4))
+    report = _fill(2.0, 4, fee=80.0)
+    _publish_fill(runner, report)
+    runner._publish_event(_bar(8))
+
+    bus = InMemoryJetStream()
+    risk = RiskOverlay(bus)
+    bus.publish("exec.order.report", replace(report, client_order_id="adapter-fill"))
+    risk.apply_funding(200.0)
+
+    assert risk._cash == pytest.approx(-100_280.0)
+    assert risk.equity == pytest.approx(99_720.0)
+    assert runner.risk_overlay.equity == pytest.approx(risk.equity)
+
+
+def test_settlements_follow_actual_position_changes_between_source_times(tmp_path: Path) -> None:
+    runner = _replay(tmp_path, [_funding(8, 0.001, 100_000.0), _funding(16, 0.001, 100_000.0)])
+    runner._publish_event(_bar(4))
+    _publish_fill(runner, _fill(2.0, 4))
+    runner._publish_event(_bar(12))
+    _publish_fill(runner, _fill(-1.0, 12))
+    runner._publish_event(_bar(20))
+
+    assert runner.risk_overlay.equity == pytest.approx(99_700.0)
+    assert [item["position_qty"] for item in runner._funding_settlements] == [2.0, 1.0]
+    assert runner._episode_ledger.open_episodes[0].funding_pnl == pytest.approx(-300.0)
+
+
+def test_funding_is_settled_before_nonexecution_market_events_too(tmp_path: Path) -> None:
+    runner = _replay(tmp_path, [_funding(8, 0.001, 100_000.0)])
+    runner._publish_event(_bar(4))
+    _publish_fill(runner, _fill(2.0, 4))
+    runner._publish_event(_bar(8, timeframe="1d"))
+
+    assert runner.risk_overlay.equity == pytest.approx(99_800.0)
+    runner._publish_event(_bar(8))
+    assert runner.risk_overlay.equity == pytest.approx(99_800.0)
+    assert len(runner._funding_settlements) == 1
+
+
+def test_same_time_confirmed_close_is_an_eligible_funding_proxy(tmp_path: Path) -> None:
+    runner = _replay(tmp_path, [_funding(8, 0.001)])
+    runner._publish_event(_bar(4))
+    _publish_fill(runner, _fill(2.0, 4))
+    runner._publish_event(_bar(8, 125_000.0))
+
+    assert runner._funding_accumulator.total_funding_cost == pytest.approx(250.0)
+    assert runner._funding_settlements[0]["price_time_ns"] == BASE_NS + 8 * HOUR_NS
+
+
+def test_nonflat_settlement_without_any_pit_price_fails_closed(tmp_path: Path) -> None:
+    runner = _replay(tmp_path, [_funding(8, 0.001)])
+    _publish_fill(runner, _fill(2.0, 4))
+    with pytest.raises(ValueError, match="no point-in-time price"):
+        runner._publish_event(_bar(12, 900_000.0))
+    assert runner.risk_overlay.equity == 100_000.0
+
+
+@pytest.mark.parametrize("cost", [float("nan"), float("inf"), float("-inf")])
+def test_invalid_cashflow_cannot_poison_risk_equity(cost: float) -> None:
+    risk = RiskOverlay(InMemoryJetStream())
+    with pytest.raises(ValueError, match="finite"):
+        risk.apply_funding(cost)
+    assert risk.equity == 100_000.0
+
+
+def test_invalid_funding_rate_is_rejected_before_cash_changes(tmp_path: Path) -> None:
+    runner = _replay(tmp_path, [_funding(8, float("nan"), 100_000.0)])
+    runner._publish_event(_bar(4))
+    _publish_fill(runner, _fill(2.0, 4))
+    with pytest.raises(ValueError, match="funding rate must be finite"):
+        runner._publish_event(_bar(8))
+    assert runner.risk_overlay.equity == 100_000.0
+
+
+def test_future_settlement_is_not_charged_until_its_source_time(tmp_path: Path) -> None:
+    runner = _replay(tmp_path, [_funding(16, 0.001, 100_000.0)])
+    runner._publish_event(_bar(4))
+    _publish_fill(runner, _fill(2.0, 4))
+    runner._publish_event(_bar(8))
+    assert runner.risk_overlay.equity == 100_000.0
+    assert runner._funding_settlements == []
+    runner._publish_event(_bar(16))
+    assert runner.risk_overlay.equity == pytest.approx(99_800.0)
+
+
+@pytest.mark.parametrize("prime_indicator", [False, True])
+def test_delayed_fill_uses_latest_market_mark(prime_indicator: bool) -> None:
+    bus = InMemoryJetStream()
+    risk = RiskOverlay(bus)
+    if prime_indicator:
+        risk.prime_indicator(_pack(100_000.0))
+    bus.publish("md.mark.TEST.BTCUSDT_PERP", _mark(90_000.0, 2))
+    bus.publish("exec.order.report", _fill(1.0, 1, price=90_015.0))
+
+    assert risk.equity == 99_985.0
+    assert risk.high_water_mark == 100_000.0
+
+
+def test_price_order_uses_event_time_and_indicator_cutoff_with_mark_priority() -> None:
+    bus = InMemoryJetStream()
+    risk = RiskOverlay(bus)
+    risk.prime_indicator(_pack(100_000.0))
+    bus.publish("exec.order.report", _fill(1.0, 0))
+    bus.publish("md.mark.TEST.BTCUSDT_PERP", _mark(90_000.0, 2))
+    same_time_pack = replace(_pack(110_000.0), ts_ns=BASE_NS + 20 * HOUR_NS, cutoff_time_ns=BASE_NS + 2 * HOUR_NS)
+    risk.prime_indicator(same_time_pack)
+    bus.publish("md.mark.TEST.BTCUSDT_PERP", _mark(120_000.0, 1))
+    risk.prime_indicator(replace(_pack(130_000.0), cutoff_time_ns=BASE_NS + HOUR_NS))
+
+    assert risk.equity == 90_000.0
+    assert risk.high_water_mark == 100_000.0
+    # The mark's ingest time is t3, but its economic event time is t2.
+    risk.prime_indicator(replace(_pack(95_000.0), cutoff_time_ns=BASE_NS + 3 * HOUR_NS))
+    assert risk.equity == 95_000.0
+
+
+def test_same_time_explicit_mark_replaces_indicator_and_duplicate_is_idempotent() -> None:
+    bus = InMemoryJetStream()
+    risk = RiskOverlay(bus)
+    risk.prime_indicator(_pack(100_000.0))
+    bus.publish("exec.order.report", _fill(1.0, 0))
+    risk.prime_indicator(replace(_pack(90_000.0), cutoff_time_ns=BASE_NS + 2 * HOUR_NS))
+    mark = _mark(95_000.0, 2)
+    bus.publish("md.mark.TEST.BTCUSDT_PERP", mark)
+    bus.publish("md.mark.TEST.BTCUSDT_PERP", mark)
+
+    assert risk.equity == 95_000.0
+    assert risk.high_water_mark == 100_000.0
+    assert risk._cash == 0.0
+    assert risk._actual_positions[SYMBOL] == 1.0
+
+
+@pytest.mark.parametrize("price", [0.0, -1.0, float("nan"), float("inf"), float("-inf")])
+def test_invalid_market_prices_cannot_poison_or_advance_the_mark(price: float) -> None:
+    bus = InMemoryJetStream()
+    risk = RiskOverlay(bus)
+    risk.prime_indicator(_pack(100_000.0))
+    bus.publish("exec.order.report", _fill(1.0, 0))
+    bus.publish("md.mark.TEST.BTCUSDT_PERP", _mark(price, 4))
+    risk.prime_indicator(replace(_pack(price), cutoff_time_ns=BASE_NS + 4 * HOUR_NS))
+    assert risk.equity == 100_000.0
+    bus.publish("md.mark.TEST.BTCUSDT_PERP", _mark(90_000.0, 2))
+    assert risk.equity == 90_000.0
+    assert risk.high_water_mark == 100_000.0
+
+
+@pytest.mark.parametrize(
+    "qty, rate, price, cash, equity, high_water",
+    [
+        (2.0, -0.01, 50_000.0, -99_000.0, 1_000.0, 100_000.0),
+        (-2.0, 0.01, 150_000.0, 303_000.0, 3_000.0, 100_000.0),
+        (2.0, 0.01, 110_000.0, -102_200.0, 117_800.0, 117_800.0),
+    ],
+)
+def test_funding_and_settlement_mark_revalue_once_without_transient_high_water(
+    tmp_path: Path, qty: float, rate: float, price: float, cash: float, equity: float, high_water: float
+) -> None:
+    runner = _replay(tmp_path, [_funding(8, rate, price)])
+    runner._publish_event(_bar(4))
+    _publish_fill(runner, _fill(qty, 4))
+    runner._publish_event(_bar(8, price))
+
+    assert runner.risk_overlay._cash == pytest.approx(cash)
+    assert runner.risk_overlay.equity == pytest.approx(equity)
+    assert runner.risk_overlay.high_water_mark == pytest.approx(high_water)
+    runner._publish_event(_bar(8, price, timeframe="1d"))
+    assert runner.risk_overlay._cash == pytest.approx(cash)
+    assert runner.risk_overlay.high_water_mark == pytest.approx(high_water)
+    assert len(runner._funding_settlements) == 1
+
+
+@pytest.mark.parametrize(
+    "source_mark, expected_cost, expected_equity, expected_price_time",
+    [(50_000.0, -1_000.0, 21_000.0, 8), (None, -2_000.0, 22_000.0, 4)],
+)
+def test_delayed_funding_keeps_newer_market_mark_and_retains_real_price_time(
+    tmp_path: Path, source_mark: float | None, expected_cost: float, expected_equity: float, expected_price_time: int
+) -> None:
+    runner = _replay(tmp_path, [_funding(8, -0.01, source_mark)])
+    runner._publish_event(_bar(4))
+    _publish_fill(runner, _fill(2.0, 4))
+    runner.bus.publish("md.mark.TEST.BTCUSDT_PERP", _mark(60_000.0, 10))
+    runner._settle_funding(BASE_NS + 12 * HOUR_NS, 900_000.0)
+
+    assert runner.risk_overlay.equity == pytest.approx(expected_equity)
+    assert runner._funding_accumulator.total_funding_cost == expected_cost
+    assert runner._funding_settlements[0]["price_time_ns"] == BASE_NS + expected_price_time * HOUR_NS
+    # If the old settlement price were stamped as its later consume time t12,
+    # this legitimate t11 market update would incorrectly be rejected.
+    runner.bus.publish("md.mark.TEST.BTCUSDT_PERP", _mark(65_000.0, 11))
+    assert runner.risk_overlay.equity == pytest.approx(expected_equity + 10_000.0)

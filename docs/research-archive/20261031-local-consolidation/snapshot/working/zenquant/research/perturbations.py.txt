@@ -1,0 +1,108 @@
+"""Deterministic synthetic research stresses, never market truth or live data."""
+
+from __future__ import annotations
+
+import hashlib
+import math
+from copy import deepcopy
+from typing import Any
+
+from zenquant.research.run_evidence import identity_hash
+from zenquant.research.strategy_families import generate_targets
+
+SEEDS = (7, 19, 31, 43, 59)
+VERSION = "research-perturbation.v1"
+PRICE_LOG_SIGMA = 0.002
+DROPOUT_RATE = 0.01
+
+
+def _uniforms(seed: int, timestamp: int) -> tuple[float, float]:
+    digest = hashlib.sha256(f"{VERSION}:{seed}:{timestamp}".encode()).digest()
+    return tuple((int.from_bytes(digest[i : i + 8], "big") + 0.5) / 2**64 for i in (0, 8))
+
+
+def perturb_bundle(bundle: dict[str, Any], *, scenario: str = "identity", seed: int | None = None) -> dict[str, Any]:
+    """Copy a bounded bundle, retaining funding events and source timestamps.
+
+    Timestamp-keyed independent log price errors have fixed sigma .002. All
+    OHLC values share a positive factor, including overlapping regime history.
+    Dropout is a fixed 1% timestamp-keyed stress; gaps are never interpolated.
+    Strategies reset their contiguous warmup at gaps. The current replay rejects
+    gaps, so missing-bar output remains explicitly not evaluable until a distinct
+    gap-aware research adapter is qualified. Real-data strict loading is unchanged.
+    Funding real marks remain unchanged; replay chooses causal prior-close proxies
+    for missing marks. Synthetic factors have no historical availability claim.
+    """
+    if scenario not in ("identity", "price_noise", "missing_bar"):
+        raise ValueError("unsupported perturbation scenario")
+    if scenario == "identity":
+        return deepcopy(bundle)
+    if type(seed) is not int or seed not in SEEDS:
+        raise ValueError("seed must be one of the five frozen research seeds")
+    result = deepcopy(bundle)
+    original_regime = bundle.get("regime_bars", bundle["bars"])
+    by_time = {}
+    for rows in (original_regime, bundle["bars"]):
+        generate_targets(rows, "cash", {})
+        for row in rows:
+            timestamp = row["open_time_ns"]
+            comparable = {k: row[k] for k in ("open_time_ns", "close_time_ns", "open", "high", "low", "close")}
+            if timestamp in by_time and by_time[timestamp] != comparable:
+                raise ValueError("conflicting overlapping bars and regime history")
+            by_time[timestamp] = comparable
+
+    def transform(rows):
+        transformed = []
+        for original in rows:
+            u1, u2 = _uniforms(seed, original["open_time_ns"])
+            if scenario == "missing_bar" and u1 < DROPOUT_RATE:
+                continue
+            row = deepcopy(original)
+            if scenario == "price_noise":
+                factor = math.exp(PRICE_LOG_SIGMA * math.sqrt(-2 * math.log(u1)) * math.cos(2 * math.pi * u2))
+                for key in ("open", "high", "low", "close"):
+                    row[key] *= factor
+            transformed.append(row)
+        return transformed
+
+    result["bars"] = transform(bundle["bars"])
+    result["regime_bars"] = transform(original_regime)
+    manifest = result["manifest"]
+    start = manifest["start_ns"]
+    result["warmup_count"] = sum(row["open_time_ns"] < start for row in result["bars"])
+    if not any(row["open_time_ns"] >= start for row in result["bars"]):
+        raise ValueError("perturbation leaves no evaluation bars")
+    manifest.pop("file_sha256", None)
+    manifest["schema_version"] = "synthetic-bounded-window.v1"
+    manifest["availability_assumption"] = "synthetic_research_stress_not_observed_market_truth"
+    manifest["actual_warmup_bars"] = result["warmup_count"]
+    manifest["evaluation_bars"] = len(result["bars"]) - result["warmup_count"]
+    manifest["window_data_hash"] = identity_hash({"bars": result["bars"], "funding": result["funding"]})
+    manifest["regime_history"] = {
+        **manifest.get("regime_history", {}),
+        "hash": identity_hash({"bars": result["regime_bars"]}),
+        "actual_warmup_bars": sum(row["open_time_ns"] < start for row in result["regime_bars"]),
+    }
+    manifest["synthetic_stress"] = {
+        "version": VERSION,
+        "scenario": scenario,
+        "seed": seed,
+        "parent_manifest_hash": identity_hash(bundle["manifest"]),
+        "parent_content_hash": identity_hash(bundle),
+        "parent_manifest": deepcopy(bundle["manifest"]),
+        "parent_logical_hash": identity_hash({"bars": bundle["bars"], "funding": bundle["funding"]}),
+        "window": {"start_ns": start, "end_ns_exclusive": manifest["end_ns_exclusive"]},
+        "price_log_sigma": PRICE_LOG_SIGMA if scenario == "price_noise" else None,
+        "dropout_rate": DROPOUT_RATE if scenario == "missing_bar" else None,
+        "funding_policy": "retain_all_events_and_real_marks_prior_confirmed_close_proxy_only",
+        "real_funding_marks_perturbed": False,
+        "bar_coverage": "synthetic_gaps_preserved" if scenario == "missing_bar" else "original_timestamp_coverage",
+        "gap_policy": "no_fill_or_retime_strategy_contiguous_warmup_reset",
+        "replay_status": "NOT_EVALUABLE_GAP_ADAPTER_REQUIRED" if scenario == "missing_bar" else "SYNTHETIC_STRESS_ONLY",
+        "dropped_bar_times": [
+            row["open_time_ns"]
+            for row in bundle["bars"]
+            if scenario == "missing_bar" and _uniforms(seed, row["open_time_ns"])[0] < DROPOUT_RATE
+        ],
+    }
+    return result

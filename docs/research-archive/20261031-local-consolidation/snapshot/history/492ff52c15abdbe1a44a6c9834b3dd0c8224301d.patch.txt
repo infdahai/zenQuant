@@ -1,0 +1,812 @@
+commit 492ff52c15abdbe1a44a6c9834b3dd0c8224301d
+Author:     Disaster <clusternlh@gmail.com>
+AuthorDate: Mon Aug 24 16:00:37 2026 +0800
+Commit:     Disaster <clusternlh@gmail.com>
+CommitDate: Mon Aug 24 16:00:37 2026 +0800
+
+    feat(research): evaluate time-space shadow evidence
+
+diff --git a/tests/test_time_space_shadow.py b/tests/test_time_space_shadow.py
+index b915d55..432bdec 100644
+--- a/tests/test_time_space_shadow.py
++++ b/tests/test_time_space_shadow.py
+@@ -7,18 +7,25 @@ from datetime import UTC, datetime
+ 
+ import pytest
+ 
++from zenquant.research.registration import EvidenceRole
+ from zenquant.research.time_space_shadow import (
+     FILLED_POSITION_STAGE,
+     FOUR_HOURS_NS,
++    TIME_SPACE_HYPOTHESIS_SHA256,
++    AcceptanceStatus,
+     FlipKind,
+     FlipPopulationInputRow,
++    PerturbationPathEvidence,
+     StructureIntegrity,
++    TimeSpaceAcceptanceManifest,
+     TimeSpaceFlipObservation,
+     TimeSpaceInputRow,
+     TimeSpaceLabel,
+     TimeSpaceState,
+     build_flip_observations,
+     build_time_space_states,
++    evaluate_time_space_shadow,
++    map_perturbed_flips,
+ )
+ from zenquant.research.time_space_shadow import (
+     mature_flip_labels as _raw_mature_flip_labels,
+@@ -1068,3 +1075,326 @@ def test_flip_not_visible_as_of_fails_closed() -> None:
+ 
+     with pytest.raises(ValueError, match="visible as_of_ns"):
+         mature_flip_labels((flip,), states, as_of_ns=states[0].cutoff_time_ns)
++
++
++def _acceptance_flip(index: int, *, cutoff_time_ns: int, primary: bool = True) -> TimeSpaceFlipObservation:
++    flip = TimeSpaceFlipObservation(
++        base_flip_id="pending",
++        kind=FlipKind.ALPHA,
++        alpha_id=f"acceptance-alpha-{index}",
++        cutoff_time_ns=cutoff_time_ns,
++        old_side=1,
++        new_side=-1,
++        state_id=f"acceptance-state-{index}",
++        prior_source_identity=f"acceptance-prior-{index}",
++        source_identity=f"acceptance-source-{index}",
++        primary_population=primary,
++    )
++    return _rehash_flip(flip)
++
++
++def _acceptance_label(flip_id: str, value: float, *, available_at_ns: int) -> TimeSpaceLabel:
++    return TimeSpaceLabel(
++        base_flip_id=flip_id,
++        horizon_bars=6,
++        flip_unit_return=-value / 2,
++        hold_old_unit_return=value / 2,
++        hold_minus_flip=value,
++        label_available_at_ns=available_at_ns,
++        right_censored=False,
++    )
++
++
++def _acceptance_inputs(
++    *,
++    values: tuple[float, ...] = (0.02,) * 30,
++    elapsed_days: int = 180,
++    transition_count: int = 1,
++    positive_paths: int = 5,
++    manifest_id: str = "a" * 64,
++) -> tuple[tuple[TimeSpaceLabel, ...], TimeSpaceAcceptanceManifest]:
++    start_ns = _ns("2027-01-01T00:00:00")
++    flips = tuple(
++        _acceptance_flip(index, cutoff_time_ns=start_ns + index * 36 * FOUR_HOURS_NS) for index in range(len(values))
++    )
++    labels = tuple(
++        _acceptance_label(
++            flip.base_flip_id,
++            value,
++            available_at_ns=flip.cutoff_time_ns + 6 * FOUR_HOURS_NS,
++        )
++        for flip, value in zip(flips, values, strict=True)
++    )
++    paths: list[PerturbationPathEvidence] = []
++    for path_index, seed in enumerate((42, 123, 456, 789, 1024)):
++        perturbed = tuple(
++            _rehash_flip(
++                replace(
++                    flip,
++                    cutoff_time_ns=flip.cutoff_time_ns + (path_index % 2) * FOUR_HOURS_NS,
++                    state_id=f"perturbed-state-{seed}-{index}",
++                    prior_source_identity=f"perturbed-prior-{seed}-{index}",
++                    source_identity=f"perturbed-source-{seed}-{index}",
++                )
++            )
++            for index, flip in enumerate(flips)
++        )
++        sign = 1.0 if path_index < positive_paths else -1.0
++        path_labels = tuple(
++            _acceptance_label(
++                flip.base_flip_id,
++                sign * 0.01,
++                available_at_ns=flip.cutoff_time_ns + 6 * FOUR_HOURS_NS,
++            )
++            for flip in perturbed
++        )
++        paths.append(PerturbationPathEvidence(seed=seed, flips=perturbed, labels=path_labels))
++    manifest = TimeSpaceAcceptanceManifest(
++        manifest_id=manifest_id,
++        hypothesis_sha256=TIME_SPACE_HYPOTHESIS_SHA256,
++        observation_start_ns=start_ns,
++        observation_end_ns=start_ns + elapsed_days * 24 * 60 * 60 * 1_000_000_000,
++        market_state_transition_count=transition_count,
++        primary_flips=flips,
++        perturbation_paths=tuple(paths),
++    )
++    return labels, manifest
++
++
++def test_perturbed_event_requires_exact_signature_and_one_bar_tolerance() -> None:
++    base = _acceptance_flip(0, cutoff_time_ns=10 * FOUR_HOURS_NS)
++    within_one_bar = _rehash_flip(
++        replace(
++            base,
++            cutoff_time_ns=base.cutoff_time_ns + FOUR_HOURS_NS,
++            state_id="perturbed-state",
++            prior_source_identity="perturbed-prior",
++            source_identity="perturbed-source",
++        )
++    )
++    too_late = _rehash_flip(
++        replace(
++            within_one_bar,
++            cutoff_time_ns=base.cutoff_time_ns + 2 * FOUR_HOURS_NS,
++        )
++    )
++    wrong_alpha = _rehash_flip(replace(within_one_bar, alpha_id="different-alpha"))
++
++    matches = map_perturbed_flips((base,), (within_one_bar,))
++
++    assert len(matches) == 1
++    assert matches[0].base_flip_id == base.base_flip_id
++    assert matches[0].perturbed_flip_id == within_one_bar.base_flip_id
++    assert map_perturbed_flips((base,), (too_late,)) == ()
++    assert map_perturbed_flips((base,), (wrong_alpha,)) == ()
++
++
++def test_perturbation_mapping_is_one_to_one_and_input_order_independent() -> None:
++    base_one = _acceptance_flip(1, cutoff_time_ns=10 * FOUR_HOURS_NS)
++    base_two = _acceptance_flip(2, cutoff_time_ns=11 * FOUR_HOURS_NS)
++    perturbed_one = _rehash_flip(
++        replace(
++            base_one,
++            cutoff_time_ns=11 * FOUR_HOURS_NS,
++            state_id="p-state-1",
++            prior_source_identity="p-prior-1",
++            source_identity="p-source-1",
++        )
++    )
++    perturbed_two = _rehash_flip(
++        replace(
++            base_two,
++            cutoff_time_ns=12 * FOUR_HOURS_NS,
++            state_id="p-state-2",
++            prior_source_identity="p-prior-2",
++            source_identity="p-source-2",
++        )
++    )
++
++    canonical = map_perturbed_flips((base_one, base_two), (perturbed_one, perturbed_two))
++    permuted = map_perturbed_flips((base_two, base_one), (perturbed_two, perturbed_one))
++
++    assert permuted == canonical
++    assert len({item.base_flip_id for item in canonical}) == len(canonical)
++    assert len({item.perturbed_flip_id for item in canonical}) == len(canonical)
++
++
++def test_mapping_preserves_maximum_events_before_preferring_exact_time() -> None:
++    base_one = _acceptance_flip(1, cutoff_time_ns=10 * FOUR_HOURS_NS)
++    base_two = _rehash_flip(
++        replace(
++            base_one,
++            cutoff_time_ns=11 * FOUR_HOURS_NS,
++            state_id="base-state-2",
++            prior_source_identity="base-prior-2",
++            source_identity="base-source-2",
++        )
++    )
++    perturbed_one = _rehash_flip(
++        replace(
++            base_one,
++            cutoff_time_ns=11 * FOUR_HOURS_NS,
++            state_id="perturbed-state-1",
++            prior_source_identity="perturbed-prior-1",
++            source_identity="perturbed-source-1",
++        )
++    )
++    perturbed_two = _rehash_flip(
++        replace(
++            base_one,
++            cutoff_time_ns=12 * FOUR_HOURS_NS,
++            state_id="perturbed-state-2",
++            prior_source_identity="perturbed-prior-2",
++            source_identity="perturbed-source-2",
++        )
++    )
++
++    matches = map_perturbed_flips((base_one, base_two), (perturbed_one, perturbed_two))
++
++    assert len(matches) == 2
++
++
++def test_reused_role_can_never_return_eligible() -> None:
++    labels, manifest = _acceptance_inputs()
++
++    result = evaluate_time_space_shadow(labels, manifest, EvidenceRole.TEST_REUSED_DIAGNOSTIC)
++
++    assert result.status is AcceptanceStatus.CONTINUE_FORWARD
++    assert result.primary_flip_count == 30
++    assert result.canonical_mean_hold_minus_flip_6 == pytest.approx(0.02)
++    assert result.bootstrap_lower_bound_95 > 0.0
++    assert result.positive_perturbation_paths == 5
++    assert result.blocks_order is False
++
++
++def test_forward_evidence_meeting_every_frozen_gate_is_only_review_eligible() -> None:
++    labels, manifest = _acceptance_inputs()
++
++    first = evaluate_time_space_shadow(labels, manifest, EvidenceRole.FORWARD_CONFIRMATION)
++    repeated = evaluate_time_space_shadow(labels, manifest, EvidenceRole.FORWARD_CONFIRMATION)
++
++    assert first == repeated
++    assert first.status is AcceptanceStatus.ELIGIBLE_FOR_SEPARATE_ACTIVATION_REVIEW
++    assert first.bootstrap_seed == repeated.bootstrap_seed
++    assert not hasattr(first, "risk_multiplier")
++    assert not hasattr(first, "target")
++
++
++@pytest.mark.parametrize(
++    "manifest_change",
++    [
++        {"elapsed_days": 179},
++        {"values": (0.02,) * 29},
++        {"transition_count": 0},
++    ],
++)
++def test_exact_sample_elapsed_and_transition_gates_are_insufficient(
++    manifest_change: dict[str, object],
++) -> None:
++    labels, manifest = _acceptance_inputs(**manifest_change)  # type: ignore[arg-type]
++
++    result = evaluate_time_space_shadow(labels, manifest, EvidenceRole.FORWARD_CONFIRMATION)
++
++    assert result.status is AcceptanceStatus.INSUFFICIENT_DATA
++
++
++def test_primary_mean_below_fifteen_basis_points_rejects_after_sample_gates() -> None:
++    labels, manifest = _acceptance_inputs(values=(0.0014,) * 30)
++
++    result = evaluate_time_space_shadow(labels, manifest, EvidenceRole.FORWARD_CONFIRMATION)
++
++    assert result.canonical_mean_hold_minus_flip_6 == pytest.approx(0.0014)
++    assert result.status is AcceptanceStatus.REJECT
++
++
++def test_exact_fifteen_basis_point_effect_passes_the_effect_floor() -> None:
++    labels, manifest = _acceptance_inputs(values=(0.0015,) * 30)
++
++    result = evaluate_time_space_shadow(labels, manifest, EvidenceRole.FORWARD_CONFIRMATION)
++
++    assert result.canonical_mean_hold_minus_flip_6 == pytest.approx(0.0015)
++    assert result.status is AcceptanceStatus.ELIGIBLE_FOR_SEPARATE_ACTIVATION_REVIEW
++
++
++def test_nonpositive_month_block_lower_bound_rejects_positive_full_sample_mean() -> None:
++    values = (-0.01,) * 5 + (0.004,) * 25
++    labels, manifest = _acceptance_inputs(values=values)
++
++    result = evaluate_time_space_shadow(labels, manifest, EvidenceRole.FORWARD_CONFIRMATION)
++
++    assert result.canonical_mean_hold_minus_flip_6 > 0.0015
++    assert result.bootstrap_lower_bound_95 <= 0.0
++    assert result.status is AcceptanceStatus.REJECT
++
++
++def test_positive_effect_is_required_on_four_of_five_perturbation_paths() -> None:
++    labels, manifest = _acceptance_inputs(positive_paths=3)
++
++    result = evaluate_time_space_shadow(labels, manifest, EvidenceRole.FORWARD_CONFIRMATION)
++
++    assert result.positive_perturbation_paths == 3
++    assert result.status is AcceptanceStatus.REJECT
++
++
++def test_descriptive_horizons_and_non_primary_flips_cannot_promote() -> None:
++    labels, manifest = _acceptance_inputs(values=(0.02,) * 29)
++    non_primary = _acceptance_flip(
++        100,
++        cutoff_time_ns=manifest.observation_start_ns + 29 * 36 * FOUR_HOURS_NS,
++        primary=False,
++    )
++    descriptive = replace(
++        _acceptance_label(
++            non_primary.base_flip_id,
++            1.0,
++            available_at_ns=non_primary.cutoff_time_ns + FOUR_HOURS_NS,
++        ),
++        horizon_bars=1,
++    )
++    manifest = replace(manifest, primary_flips=(*manifest.primary_flips, non_primary))
++
++    result = evaluate_time_space_shadow(
++        (*labels, descriptive),
++        manifest,
++        EvidenceRole.FORWARD_CONFIRMATION,
++    )
++
++    assert result.primary_flip_count == 29
++    assert result.status is AcceptanceStatus.INSUFFICIENT_DATA
++
++
++def test_manifest_identity_determines_bootstrap_seed() -> None:
++    values = tuple(0.005 + (index % 6) * 0.001 for index in range(30))
++    labels, manifest = _acceptance_inputs(values=values)
++    _, other_manifest = _acceptance_inputs(values=values, manifest_id="b" * 64)
++
++    first = evaluate_time_space_shadow(labels, manifest, EvidenceRole.TEST_REUSED_DIAGNOSTIC)
++    second = evaluate_time_space_shadow(labels, other_manifest, EvidenceRole.TEST_REUSED_DIAGNOSTIC)
++
++    assert first.bootstrap_seed != second.bootstrap_seed
++
++
++def test_embargo_rows_are_never_treated_as_acceptance_evidence() -> None:
++    labels, manifest = _acceptance_inputs()
++
++    result = evaluate_time_space_shadow(labels, manifest, EvidenceRole.EXCLUDED_EMBARGO)
++
++    assert result.status is AcceptanceStatus.INSUFFICIENT_DATA
++
++
++def test_acceptance_manifest_rejects_non_path_evidence_with_a_strict_type_error() -> None:
++    _, manifest = _acceptance_inputs()
++
++    with pytest.raises(TypeError, match="PerturbationPathEvidence"):
++        replace(
++            manifest,
++            perturbation_paths=(object(), *manifest.perturbation_paths[1:]),  # type: ignore[arg-type]
++        )
++
++
++@pytest.mark.parametrize("role", ["FORWARD_CONFIRMATION", None, True])
++def test_evidence_role_must_be_the_strict_registration_enum(role: object) -> None:
++    labels, manifest = _acceptance_inputs()
++
++    with pytest.raises(TypeError, match="EvidenceRole"):
++        evaluate_time_space_shadow(labels, manifest, role)  # type: ignore[arg-type]
+diff --git a/zenquant/research/time_space_shadow.py b/zenquant/research/time_space_shadow.py
+index 2d7e58b..9e7d79e 100644
+--- a/zenquant/research/time_space_shadow.py
++++ b/zenquant/research/time_space_shadow.py
+@@ -10,9 +10,14 @@ from __future__ import annotations
+ import hashlib
+ import json
+ import math
++import random
+ from collections.abc import Sequence
+ from dataclasses import dataclass, field, fields
++from datetime import UTC, datetime
+ from enum import StrEnum
++from statistics import fmean
++
++from zenquant.research.registration import EvidenceRole
+ 
+ FOUR_HOURS_NS = 4 * 60 * 60 * 1_000_000_000
+ # Frozen ``decision_id_by_stage`` key for the canonical filled-position
+@@ -23,6 +28,14 @@ _WEEK_NS = 7 * _DAY_NS
+ # 1970-01-05T00:00:00Z, the first Monday after the Unix epoch.
+ _MONDAY_EPOCH_NS = 4 * _DAY_NS
+ _LABEL_HORIZONS = (1, 2, 3, 6)
++_FROZEN_PERTURBATION_SEEDS = (42, 123, 456, 789, 1024)
++_MINIMUM_EFFECT = 15 / 10_000
++_MINIMUM_ELAPSED_NS = 180 * _DAY_NS
++_MINIMUM_PRIMARY_FLIPS = 30
++_MINIMUM_MARKET_STATE_TRANSITIONS = 1
++_MINIMUM_POSITIVE_PATHS = 4
++_BOOTSTRAP_REPLICATIONS = 10_000
++TIME_SPACE_HYPOTHESIS_SHA256 = "a01f4a385adf36b9816ce07577bbeab32ec522dd6be19c53395dc94e25c19cb3"
+ 
+ 
+ class StructureIntegrity(StrEnum):
+@@ -41,6 +54,15 @@ class FlipKind(StrEnum):
+     FILLED = "filled_flip"
+ 
+ 
++class AcceptanceStatus(StrEnum):
++    """Research-only conclusion permitted by the frozen hypothesis."""
++
++    REJECT = "REJECT"
++    CONTINUE_FORWARD = "CONTINUE_FORWARD"
++    INSUFFICIENT_DATA = "INSUFFICIENT_DATA"
++    ELIGIBLE_FOR_SEPARATE_ACTIVATION_REVIEW = "ELIGIBLE_FOR_SEPARATE_ACTIVATION_REVIEW"
++
++
+ _FLIP_KIND_ORDER = {
+     FlipKind.ALPHA: 0,
+     FlipKind.APPROVED: 1,
+@@ -197,6 +219,91 @@ class TimeSpaceLabel:
+             raise ValueError("label_available_at_ns must use the canonical UTC 4h grid")
+ 
+ 
++@dataclass(frozen=True, slots=True)
++class PerturbedFlipMapping:
++    """One deterministic, one-to-one base-to-perturbed event mapping."""
++
++    base_flip_id: str
++    perturbed_flip_id: str
++
++    def __post_init__(self) -> None:
++        _require_sha256(self.base_flip_id, "base_flip_id")
++        _require_sha256(self.perturbed_flip_id, "perturbed_flip_id")
++
++
++@dataclass(frozen=True, slots=True)
++class PerturbationPathEvidence:
++    """Identity-bearing events and matured labels from one frozen seed path."""
++
++    seed: int
++    flips: tuple[TimeSpaceFlipObservation, ...]
++    labels: tuple[TimeSpaceLabel, ...]
++
++    def __post_init__(self) -> None:
++        _require_exact_int(self.seed, "seed")
++        if self.seed not in _FROZEN_PERTURBATION_SEEDS:
++            raise ValueError("seed must be one of the five frozen perturbation seeds")
++        if type(self.flips) is not tuple:
++            raise TypeError("perturbation flips must be an exact tuple")
++        if type(self.labels) is not tuple:
++            raise TypeError("perturbation labels must be an exact tuple")
++
++
++@dataclass(frozen=True, slots=True)
++class TimeSpaceAcceptanceManifest:
++    """Frozen identity plus observation evidence needed by the acceptance gate."""
++
++    manifest_id: str
++    hypothesis_sha256: str
++    observation_start_ns: int
++    observation_end_ns: int
++    market_state_transition_count: int
++    primary_flips: tuple[TimeSpaceFlipObservation, ...]
++    perturbation_paths: tuple[PerturbationPathEvidence, ...]
++
++    def __post_init__(self) -> None:
++        _require_sha256(self.manifest_id, "manifest_id")
++        _require_sha256(self.hypothesis_sha256, "hypothesis_sha256")
++        if self.hypothesis_sha256 != TIME_SPACE_HYPOTHESIS_SHA256:
++            raise ValueError("hypothesis_sha256 must match the frozen TimeSpace hypothesis")
++        _require_exact_int(self.observation_start_ns, "observation_start_ns")
++        _require_exact_int(self.observation_end_ns, "observation_end_ns")
++        if self.observation_start_ns < 0 or self.observation_start_ns % FOUR_HOURS_NS:
++            raise ValueError("observation_start_ns must use the non-negative UTC 4h grid")
++        if self.observation_end_ns < self.observation_start_ns or self.observation_end_ns % FOUR_HOURS_NS:
++            raise ValueError("observation_end_ns must be on or after start on the UTC 4h grid")
++        _require_exact_int(self.market_state_transition_count, "market_state_transition_count")
++        if self.market_state_transition_count < 0:
++            raise ValueError("market_state_transition_count must be non-negative")
++        if type(self.primary_flips) is not tuple:
++            raise TypeError("primary_flips must be an exact tuple")
++        if type(self.perturbation_paths) is not tuple:
++            raise TypeError("perturbation_paths must be an exact tuple")
++        if any(type(path) is not PerturbationPathEvidence for path in self.perturbation_paths):
++            raise TypeError("perturbation_paths must contain PerturbationPathEvidence rows")
++        seeds = tuple(path.seed for path in self.perturbation_paths)
++        if seeds != _FROZEN_PERTURBATION_SEEDS:
++            raise ValueError("perturbation_paths must use the five frozen seeds in canonical order")
++
++
++@dataclass(frozen=True, slots=True)
++class TimeSpaceAcceptance:
++    """Auditable statistics with no strategy, risk, or execution authority."""
++
++    status: AcceptanceStatus
++    evidence_role: EvidenceRole
++    manifest_id: str
++    primary_flip_count: int
++    elapsed_ns: int
++    market_state_transition_count: int
++    canonical_mean_hold_minus_flip_6: float | None
++    bootstrap_lower_bound_95: float | None
++    bootstrap_seed: int
++    positive_perturbation_paths: int
++    perturbation_path_means: tuple[tuple[int, float | None], ...]
++    blocks_order: bool = field(default=False, init=False)
++
++
+ @dataclass(frozen=True, slots=True)
+ class FlipPopulationInputRow:
+     """Identity-bearing value from one canonical flip population source."""
+@@ -553,6 +660,269 @@ def mature_flip_labels(
+     return tuple(labels)
+ 
+ 
++def map_perturbed_flips(
++    base: Sequence[TimeSpaceFlipObservation],
++    perturbed: Sequence[TimeSpaceFlipObservation],
++) -> tuple[PerturbedFlipMapping, ...]:
++    """Map identity-compatible events within one retained 4h bar.
++
++    Chronological ordered matching preserves maximum event cardinality. Caller
++    order cannot change the result, neither side can be reused, and unmatched
++    events are censored rather than relabelled.
++    """
++
++    base_rows = _validated_unique_flips(base, name="base")
++    perturbed_rows = _validated_unique_flips(perturbed, name="perturbed")
++    base_by_signature: dict[tuple[FlipKind, str, int, int], list[TimeSpaceFlipObservation]] = {}
++    perturbed_by_signature: dict[tuple[FlipKind, str, int, int], list[TimeSpaceFlipObservation]] = {}
++    for base_flip in base_rows:
++        base_by_signature.setdefault(_perturbation_signature(base_flip), []).append(base_flip)
++    for perturbed_flip in perturbed_rows:
++        perturbed_by_signature.setdefault(_perturbation_signature(perturbed_flip), []).append(perturbed_flip)
++
++    matches: list[PerturbedFlipMapping] = []
++    for signature in sorted(base_by_signature, key=_perturbation_signature_order):
++        base_group = base_by_signature[signature]
++        perturbed_group = perturbed_by_signature.get(signature, [])
++        base_index = 0
++        perturbed_index = 0
++        while base_index < len(base_group) and perturbed_index < len(perturbed_group):
++            base_flip = base_group[base_index]
++            perturbed_flip = perturbed_group[perturbed_index]
++            delta = perturbed_flip.cutoff_time_ns - base_flip.cutoff_time_ns
++            if delta < -FOUR_HOURS_NS:
++                perturbed_index += 1
++            elif delta > FOUR_HOURS_NS:
++                base_index += 1
++            else:
++                matches.append(
++                    PerturbedFlipMapping(
++                        base_flip_id=base_flip.base_flip_id,
++                        perturbed_flip_id=perturbed_flip.base_flip_id,
++                    )
++                )
++                base_index += 1
++                perturbed_index += 1
++    matches.sort(key=lambda item: (item.base_flip_id, item.perturbed_flip_id))
++    return tuple(matches)
++
++
++def evaluate_time_space_shadow(
++    labels: Sequence[TimeSpaceLabel],
++    manifest: TimeSpaceAcceptanceManifest,
++    role: EvidenceRole,
++) -> TimeSpaceAcceptance:
++    """Evaluate the exact frozen TimeSpace hypothesis without trading authority."""
++
++    if type(manifest) is not TimeSpaceAcceptanceManifest:
++        raise TypeError("manifest must be a TimeSpaceAcceptanceManifest")
++    if type(role) is not EvidenceRole:
++        raise TypeError("role must be an EvidenceRole")
++    _validate_acceptance_manifest(manifest)
++
++    primary_by_id = {
++        flip.base_flip_id: flip
++        for flip in manifest.primary_flips
++        if flip.kind is FlipKind.ALPHA
++        and flip.primary_population
++        and flip.cutoff_time_ns >= manifest.observation_start_ns
++    }
++    canonical_labels = _mature_primary_labels(
++        labels,
++        flip_by_id=primary_by_id,
++        start_ns=manifest.observation_start_ns,
++        end_ns=manifest.observation_end_ns,
++    )
++    values = tuple(label.hold_minus_flip for _, label in canonical_labels)
++    if any(value is None for value in values):
++        raise AssertionError("mature primary labels cannot contain null values")
++    numeric_values = tuple(float(value) for value in values)
++    canonical_mean = fmean(numeric_values) if numeric_values else None
++    bootstrap_seed = _manifest_bootstrap_seed(manifest.manifest_id)
++    lower_bound = _month_block_lower_bound(
++        canonical_labels,
++        flip_by_id=primary_by_id,
++        seed=bootstrap_seed,
++    )
++
++    path_means: list[tuple[int, float | None]] = []
++    canonical_primary = tuple(primary_by_id.values())
++    for path in manifest.perturbation_paths:
++        mappings = map_perturbed_flips(canonical_primary, path.flips)
++        perturbed_by_base_id = {mapping.perturbed_flip_id: primary_by_id[mapping.base_flip_id] for mapping in mappings}
++        path_labels = _mature_primary_labels(
++            path.labels,
++            flip_by_id=perturbed_by_base_id,
++            start_ns=manifest.observation_start_ns,
++            end_ns=manifest.observation_end_ns,
++        )
++        path_values = tuple(float(label.hold_minus_flip) for _, label in path_labels)
++        path_means.append((path.seed, fmean(path_values) if path_values else None))
++
++    positive_paths = sum(mean is not None and mean > 0.0 for _, mean in path_means)
++    elapsed_ns = manifest.observation_end_ns - manifest.observation_start_ns
++    sample_ready = (
++        len(canonical_labels) >= _MINIMUM_PRIMARY_FLIPS
++        and elapsed_ns >= _MINIMUM_ELAPSED_NS
++        and manifest.market_state_transition_count >= _MINIMUM_MARKET_STATE_TRANSITIONS
++    )
++    effect_passes = (
++        canonical_mean is not None
++        and canonical_mean >= _MINIMUM_EFFECT
++        and lower_bound is not None
++        and lower_bound > 0.0
++        and positive_paths >= _MINIMUM_POSITIVE_PATHS
++    )
++
++    if role is EvidenceRole.EXCLUDED_EMBARGO or not sample_ready:
++        status = AcceptanceStatus.INSUFFICIENT_DATA
++    elif not effect_passes:
++        status = AcceptanceStatus.REJECT
++    elif role is EvidenceRole.FORWARD_CONFIRMATION:
++        status = AcceptanceStatus.ELIGIBLE_FOR_SEPARATE_ACTIVATION_REVIEW
++    else:
++        status = AcceptanceStatus.CONTINUE_FORWARD
++
++    return TimeSpaceAcceptance(
++        status=status,
++        evidence_role=role,
++        manifest_id=manifest.manifest_id,
++        primary_flip_count=len(canonical_labels),
++        elapsed_ns=elapsed_ns,
++        market_state_transition_count=manifest.market_state_transition_count,
++        canonical_mean_hold_minus_flip_6=canonical_mean,
++        bootstrap_lower_bound_95=lower_bound,
++        bootstrap_seed=bootstrap_seed,
++        positive_perturbation_paths=positive_paths,
++        perturbation_path_means=tuple(path_means),
++    )
++
++
++def _validated_unique_flips(
++    flips: Sequence[TimeSpaceFlipObservation],
++    *,
++    name: str,
++) -> tuple[TimeSpaceFlipObservation, ...]:
++    validated: list[TimeSpaceFlipObservation] = []
++    seen_ids: set[str] = set()
++    for flip in flips:
++        _validate_label_flip(flip)
++        if flip.base_flip_id in seen_ids:
++            raise ValueError(f"{name} flips must have unique canonical IDs")
++        seen_ids.add(flip.base_flip_id)
++        validated.append(flip)
++    return tuple(
++        sorted(
++            validated,
++            key=lambda item: (
++                item.cutoff_time_ns,
++                _FLIP_KIND_ORDER[item.kind],
++                item.alpha_id,
++                item.base_flip_id,
++            ),
++        )
++    )
++
++
++def _perturbation_signature(flip: TimeSpaceFlipObservation) -> tuple[FlipKind, str, int, int]:
++    return (flip.kind, flip.alpha_id, flip.old_side, flip.new_side)
++
++
++def _perturbation_signature_order(signature: tuple[FlipKind, str, int, int]) -> tuple[int, str, int, int]:
++    kind, alpha_id, old_side, new_side = signature
++    return (_FLIP_KIND_ORDER[kind], alpha_id, old_side, new_side)
++
++
++def _validate_acceptance_manifest(manifest: TimeSpaceAcceptanceManifest) -> None:
++    _require_sha256(manifest.manifest_id, "manifest_id")
++    if manifest.hypothesis_sha256 != TIME_SPACE_HYPOTHESIS_SHA256:
++        raise ValueError("manifest is not bound to the frozen TimeSpace hypothesis")
++    flips = _validated_unique_flips(manifest.primary_flips, name="manifest")
++    if tuple(manifest.primary_flips) != flips:
++        raise ValueError("manifest primary_flips must use canonical order")
++    seeds = tuple(path.seed for path in manifest.perturbation_paths)
++    if seeds != _FROZEN_PERTURBATION_SEEDS:
++        raise ValueError("manifest must contain exactly the five frozen perturbation paths")
++    for path in manifest.perturbation_paths:
++        _validated_unique_flips(path.flips, name=f"seed {path.seed}")
++        _validate_label_collection(path.labels, name=f"seed {path.seed}")
++
++
++def _validate_label_collection(labels: Sequence[TimeSpaceLabel], *, name: str) -> None:
++    if type(labels) is not tuple:
++        raise TypeError(f"{name} labels must be an exact tuple")
++    seen: set[tuple[str, int]] = set()
++    for label in labels:
++        if type(label) is not TimeSpaceLabel:
++            raise TypeError(f"{name} labels must contain TimeSpaceLabel rows")
++        key = (label.base_flip_id, label.horizon_bars)
++        if key in seen:
++            raise ValueError(f"{name} labels must be unique by flip and horizon")
++        seen.add(key)
++        if not label.right_censored:
++            expected = label.hold_old_unit_return - label.flip_unit_return
++            if not math.isclose(label.hold_minus_flip, expected, rel_tol=0.0, abs_tol=1e-15):
++                raise ValueError(f"{name} label counterfactual arithmetic is inconsistent")
++
++
++def _mature_primary_labels(
++    labels: Sequence[TimeSpaceLabel],
++    *,
++    flip_by_id: dict[str, TimeSpaceFlipObservation],
++    start_ns: int,
++    end_ns: int,
++) -> tuple[tuple[TimeSpaceFlipObservation, TimeSpaceLabel], ...]:
++    label_tuple = tuple(labels)
++    _validate_label_collection(label_tuple, name="acceptance")
++    selected: list[tuple[TimeSpaceFlipObservation, TimeSpaceLabel]] = []
++    for label in label_tuple:
++        flip = flip_by_id.get(label.base_flip_id)
++        if (
++            flip is None
++            or label.horizon_bars != 6
++            or label.right_censored
++            or label.label_available_at_ns is None
++            or label.label_available_at_ns < start_ns
++            or label.label_available_at_ns > end_ns
++        ):
++            continue
++        selected.append((flip, label))
++    selected.sort(key=lambda item: (item[0].cutoff_time_ns, item[0].base_flip_id))
++    return tuple(selected)
++
++
++def _manifest_bootstrap_seed(manifest_id: str) -> int:
++    digest = hashlib.sha256(f"time-space-month-block:{manifest_id}".encode()).digest()
++    return int.from_bytes(digest[:8], byteorder="big", signed=False)
++
++
++def _month_block_lower_bound(
++    labels: tuple[tuple[TimeSpaceFlipObservation, TimeSpaceLabel], ...],
++    *,
++    flip_by_id: dict[str, TimeSpaceFlipObservation],
++    seed: int,
++) -> float | None:
++    if not labels:
++        return None
++    values_by_month: dict[str, list[float]] = {}
++    for flip, label in labels:
++        if flip_by_id.get(label.base_flip_id) != flip:
++            raise ValueError("bootstrap label is not bound to a primary flip")
++        month = datetime.fromtimestamp(flip.cutoff_time_ns // 1_000_000_000, tz=UTC).strftime("%Y-%m")
++        values_by_month.setdefault(month, []).append(float(label.hold_minus_flip))
++    blocks = tuple(tuple(values_by_month[month]) for month in sorted(values_by_month))
++    rng = random.Random(seed)
++    statistics: list[float] = []
++    for _ in range(_BOOTSTRAP_REPLICATIONS):
++        sample: list[float] = []
++        for _ in blocks:
++            sample.extend(blocks[rng.randrange(len(blocks))])
++        statistics.append(fmean(sample))
++    statistics.sort()
++    lower_index = max(0, math.ceil((1.0 - 0.95) * len(statistics)) - 1)
++    return float(statistics[lower_index])
++
++
+ def _flip_logical_key(flip: TimeSpaceFlipObservation) -> tuple[FlipKind, str, int, str]:
+     return (flip.kind, flip.alpha_id, flip.cutoff_time_ns, flip.state_id)
+ 
+@@ -828,6 +1198,11 @@ def _require_non_empty_str(value: object, name: str) -> None:
+         raise TypeError(f"{name} must be a non-empty str")
+ 
+ 
++def _require_sha256(value: object, name: str) -> None:
++    if type(value) is not str or len(value) != 64 or any(character not in "0123456789abcdef" for character in value):
++        raise ValueError(f"{name} must be a lowercase 64-character SHA-256")
++
++
+ def _canonical_price(value: object, name: str) -> float:
+     if type(value) not in (int, float):
+         raise TypeError(f"{name} must be a positive finite number")
+@@ -937,14 +1312,22 @@ def _canonical_id(values: dict[str, object]) -> str:
+ __all__ = [
+     "FILLED_POSITION_STAGE",
+     "FOUR_HOURS_NS",
++    "TIME_SPACE_HYPOTHESIS_SHA256",
++    "AcceptanceStatus",
+     "FlipKind",
+     "FlipPopulationInputRow",
++    "PerturbationPathEvidence",
++    "PerturbedFlipMapping",
+     "StructureIntegrity",
++    "TimeSpaceAcceptance",
++    "TimeSpaceAcceptanceManifest",
+     "TimeSpaceFlipObservation",
+     "TimeSpaceInputRow",
+     "TimeSpaceLabel",
+     "TimeSpaceState",
+     "build_flip_observations",
+     "build_time_space_states",
++    "evaluate_time_space_shadow",
++    "map_perturbed_flips",
+     "mature_flip_labels",
+ ]

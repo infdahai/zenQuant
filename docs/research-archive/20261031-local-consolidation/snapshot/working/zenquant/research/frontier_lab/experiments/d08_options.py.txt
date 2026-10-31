@@ -1,0 +1,362 @@
+"""Expiry/strike option state: metadata audit and synthetic mechanisms only.
+
+Public OI cannot identify the dealer side. USD-equivalent Black-Scholes gamma
+here is a hedge-sensitivity proxy, not coin-settled option accounting or alpha.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import json
+import math
+import re
+from collections import Counter
+from datetime import UTC, datetime
+from itertools import pairwise
+from pathlib import Path
+from typing import Any
+
+import numpy as np
+import pyarrow.parquet as pq
+
+from zenquant.data.options_state import black76_forward_delta
+from zenquant.research.frontier_lab.common import SEEDS, write_json
+from zenquant.research.gex import _black_scholes_gamma, compute_gex_profile
+
+SYNTHETIC_CUTOFF_NS = 1701388800000000000  # 2023-12-01 UTC, invented chains.
+PRE2026_END_NS = 1767225600000000000
+SPOT = 100000.0
+MAX_QUOTE_AGE_NS = 4 * 3600 * 10**9
+SOURCE_URLS = [
+    "https://support.deribit.com/hc/en-us/articles/31424939096093-Inverse-Options",
+    "https://docs.deribit.com/api-reference/market-data/public-get_book_summary_by_currency",
+]
+
+
+def _cdf(value: float) -> float:
+    return (1 + math.erf(value / math.sqrt(2))) / 2
+
+
+def _price(spot: float, strike: float, years: float, iv: float, side: str) -> float:
+    """Zero-rate USD equivalent, converted to BTC quote only for fixture bids."""
+    scale = iv * math.sqrt(years)
+    d1 = (math.log(spot / strike) + 0.5 * iv * iv * years) / scale
+    d2 = d1 - scale
+    if side == "call":
+        return max(0.0, spot * _cdf(d1) - strike * _cdf(d2)) / spot
+    return max(0.0, strike * _cdf(-d2) - spot * _cdf(-d1)) / spot
+
+
+def synthetic_chain(seed: int) -> list[dict[str, Any]]:
+    """Frozen smooth smile and noisy OI; no actual market values are used."""
+    rng = np.random.default_rng(seed)
+    base_iv = float(rng.uniform(0.5, 0.65))
+    skew = float(rng.uniform(-0.45, -0.3))
+    rows = []
+    for days, offset in ((1, 0.12), (7, 0.08), (30, 0.0), (90, -0.04)):
+        years = days / 365
+        for ratio in np.linspace(0.5, 1.7, 121):
+            log_money = math.log(float(ratio))
+            iv = base_iv + offset + skew * log_money + 0.25 * log_money**2
+            for side in ("call", "put"):
+                strike = float(ratio) * SPOT
+                mid = _price(SPOT, strike, years, iv, side)
+                rows.append(
+                    {
+                        "snapshot_ts_ns": SYNTHETIC_CUTOFF_NS,
+                        "quote_ts_ns": SYNTHETIC_CUTOFF_NS,
+                        "available_at_ns": SYNTHETIC_CUTOFF_NS,
+                        "expiry_ts_ms": (SYNTHETIC_CUTOFF_NS + days * 86400 * 10**9) // 10**6,
+                        "strike": strike,
+                        "option_type": side,
+                        "underlying_price": SPOT,
+                        # OI is already BTC amount; contract multiplier is 1 BTC.
+                        "open_interest": float(rng.lognormal(5, 0.6)),
+                        "mark_iv": 100 * iv,
+                        "mark_iv_unit": "percent",
+                        "bid_price": max(mid * 0.98, 1e-12),
+                        "ask_price": max(mid * 1.02, 2e-12),
+                    }
+                )
+    return rows
+
+
+def _strict_delta_iv(rows: list[dict[str, Any]], side: str, years: float) -> float | None:
+    """Require both delta brackets; extrapolation/nearest-leg is not RR25."""
+    points = []
+    for row in rows:
+        if row["option_type"] != side:
+            continue
+        iv = row["mark_iv"] / 100
+        delta = black76_forward_delta(SPOT, row["strike"], years, iv, side)
+        if delta is not None:
+            points.append((abs(delta), iv))
+    points.sort()
+    for (low, low_iv), (high, high_iv) in pairwise(points):
+        if low <= 0.25 <= high and high > low:
+            return low_iv + (0.25 - low) / (high - low) * (high_iv - low_iv)
+    return None
+
+
+def summarize_chain(rows: list[dict[str, Any]], cutoff_ns: int) -> dict[str, Any]:
+    """Reject invisible/stale/unquoted legs; missing exposure remains unknown."""
+    valid = []
+    rejected = Counter()
+    for row in rows:
+        if row["available_at_ns"] > cutoff_ns or row["snapshot_ts_ns"] > cutoff_ns:
+            rejected["future_availability"] += 1
+        elif not 0 <= cutoff_ns - row["quote_ts_ns"] <= MAX_QUOTE_AGE_NS:
+            rejected["stale_or_future_quote"] += 1
+        elif row["bid_price"] is None or row["ask_price"] is None or not 0 < row["bid_price"] <= row["ask_price"]:
+            rejected["missing_or_invalid_quote"] += 1
+        elif (
+            not all(math.isfinite(float(row[key])) for key in ("strike", "mark_iv", "open_interest"))
+            or row["strike"] <= 0
+            or row["mark_iv"] <= 0
+            or row["open_interest"] < 0
+            or row["expiry_ts_ms"] * 10**6 <= cutoff_ns
+        ):
+            rejected["invalid_contract"] += 1
+        else:
+            valid.append(row)
+    by_expiry: dict[int, list[dict[str, Any]]] = {}
+    exposure_by_expiry: dict[str, float] = {}
+    gross, near_atm = 0.0, 0.0
+    for row in valid:
+        years = (row["expiry_ts_ms"] * 10**6 - cutoff_ns) / (365 * 86400 * 10**9)
+        days = round(years * 365)
+        by_expiry.setdefault(days, []).append(row)
+        # gamma [BTC/USD] * OI [BTC] * S^2 [USD^2/BTC^2] * 0.01:
+        # USD-equivalent change in hedge delta notional for a 1% underlying move.
+        exposure = _black_scholes_gamma(SPOT, row["strike"], years, row["mark_iv"] / 100, 0) * (
+            row["open_interest"] * SPOT**2 * 0.01
+        )
+        gross += exposure
+        exposure_by_expiry[str(days)] = exposure_by_expiry.get(str(days), 0) + exposure
+        if abs(row["strike"] / SPOT - 1) <= 0.05:
+            near_atm += exposure
+    atm = {
+        days: float(min(legs, key=lambda row: abs(row["strike"] - SPOT))["mark_iv"]) / 100
+        for days, legs in by_expiry.items()
+    }
+    legs30 = by_expiry.get(30, [])
+    call = _strict_delta_iv(legs30, "call", 30 / 365)
+    put = _strict_delta_iv(legs30, "put", 30 / 365)
+    rr25 = call - put if call is not None and put is not None else None
+    fixed_ivs = []
+    for side, target in (("call", 1.05 * SPOT), ("put", 0.95 * SPOT)):
+        legs = [row for row in legs30 if row["option_type"] == side]
+        fixed_ivs.append(min(legs, key=lambda row: abs(row["strike"] - target))["mark_iv"] / 100 if legs else None)
+    fixed_rr = fixed_ivs[0] - fixed_ivs[1] if all(v is not None for v in fixed_ivs) else None
+    known = bool(valid)
+    return {
+        "status": "COMPLETE" if valid and len(valid) == len(rows) else "PARTIAL" if valid else "UNKNOWN",
+        "valid_quote_count": len(valid),
+        "rejected_quote_counts": dict(sorted(rejected.items())),
+        "gross_gamma_usd_per_1pct_move": gross if known else None,
+        "gross_gamma_is_lower_bound": len(valid) < len(rows),
+        "gamma_by_expiry_usd_per_1pct_move": exposure_by_expiry,
+        "within_5pct_strike_gamma_share": near_atm / gross if gross else None,
+        "atm_iv_decimal_by_days": {str(key): value for key, value in atm.items()},
+        "rr25_30d_call_minus_put_decimal": rr25,
+        "fixed_95_105_rr_decimal": fixed_rr,
+        "fixed_95_105_skew_error_vol_points": 100 * (fixed_rr - rr25)
+        if fixed_rr is not None and rr25 is not None
+        else None,
+        "term_30d_minus_7d_decimal": atm[30] - atm[7] if 30 in atm and 7 in atm else None,
+        "term_90d_minus_30d_decimal": atm[90] - atm[30] if 90 in atm and 30 in atm else None,
+        "dealer_scenarios": {
+            "all_long_gamma_usd_per_1pct_move": gross if known else None,
+            "all_short_gamma_usd_per_1pct_move": -gross if known else None,
+            "long_dealer_hedge_btc_for_1pct_up": -gross / SPOT if known else None,
+            "short_dealer_hedge_btc_for_1pct_up": gross / SPOT if known else None,
+            "signed_dealer_gamma_identified_by_public_oi": False,
+        },
+    }
+
+
+def gamma_sensitivity() -> dict[str, float]:
+    atm1 = _black_scholes_gamma(SPOT, SPOT, 1 / 365, 0.6, 0)
+    atm30 = _black_scholes_gamma(SPOT, SPOT, 30 / 365, 0.6, 0)
+    wing1 = _black_scholes_gamma(SPOT, 1.3 * SPOT, 1 / 365, 0.6, 0)
+    wing30 = _black_scholes_gamma(SPOT, 1.3 * SPOT, 30 / 365, 0.6, 0)
+    return {
+        "atm_1d_to_30d_gamma_ratio": atm1 / atm30,
+        "strike_130pct_1d_to_30d_gamma_ratio": wing1 / wing30,
+        "atm_to_130pct_gamma_ratio_1d": atm1 / wing1,
+    }
+
+
+def audit_local_coverage(repo_root: Path) -> tuple[dict[str, Any], list[str]]:
+    """Canonical collector corpus only; parquet footers, never quote pages.
+
+    Frozen corpus copies are intentionally not counted twice. Filename dates
+    are cross-checked with snapshot statistics when available. Availability
+    fields alone do not prove historical availability or complete chains.
+    """
+    paths = sorted((repo_root / "data/raw/deribit_options/BTC").glob("*/options_chain_*.parquet"))
+    inventory = []
+    total_rows = 0
+    pre = 0
+    conflicts = 0
+    unknown_dates = 0
+    availability_schema_count = 0
+    months: Counter[str] = Counter()
+    schemas: dict[str, list[str]] = {}
+    for path in paths:
+        metadata = pq.read_metadata(path)
+        names = metadata.schema.names
+        schema_id = hashlib.sha256(json.dumps(names).encode()).hexdigest()
+        schemas[schema_id] = names
+        availability_schema = "available_at_ns" in names
+        availability_schema_count += int(availability_schema)
+        total_rows += metadata.num_rows
+        months[path.parent.name] += 1
+        match = re.fullmatch(r"options_chain_(\d{8}T\d{6}Z)\.parquet", path.name)
+        filename_ns = None
+        if match:
+            filename_ns = int(datetime.strptime(match[1], "%Y%m%dT%H%M%SZ").replace(tzinfo=UTC).timestamp()) * 10**9
+        minima, maxima = [], []
+        if "snapshot_ts_ns" in names:
+            column = names.index("snapshot_ts_ns")
+            for group in range(metadata.num_row_groups):
+                stats = metadata.row_group(group).column(column).statistics
+                if stats is not None and stats.has_min_max:
+                    minima.append(int(stats.min))
+                    maxima.append(int(stats.max))
+        low, high = (min(minima), max(maxima)) if minima else (None, None)
+        if (
+            filename_ns is not None
+            and low is not None
+            and (low // 10**9 != filename_ns // 10**9 or high // 10**9 != filename_ns // 10**9)
+        ):
+            conflicts += 1
+        confirmed_pre = (
+            filename_ns is not None and filename_ns < PRE2026_END_NS and high is not None and high < PRE2026_END_NS
+        )
+        pre += int(confirmed_pre)
+        unknown_dates += int(filename_ns is None or high is None)
+        inventory.append(
+            {
+                "path": str(path.relative_to(repo_root)),
+                "file_size_bytes": path.stat().st_size,
+                "rows": metadata.num_rows,
+                "schema_id": schema_id,
+                "filename_snapshot_ns": filename_ns,
+                "footer_snapshot_min_ns": low,
+                "footer_snapshot_max_ns": high,
+                "availability_field_present": availability_schema,
+                "eligible_pre2026_metadata": confirmed_pre,
+            }
+        )
+    canonical = json.dumps(inventory, sort_keys=True, separators=(",", ":"), allow_nan=False).encode()
+    return {
+        "scope": "canonical data/raw/deribit_options/BTC/*/options_chain_*.parquet; excludes frozen duplicates and JSON twins",
+        "snapshot_count": len(paths),
+        "pre2026_snapshot_count": pre,
+        "excluded_post2025_snapshot_count": sum(
+            item["footer_snapshot_min_ns"] is not None and item["footer_snapshot_min_ns"] >= PRE2026_END_NS
+            for item in inventory
+        ),
+        "timestamp_filename_conflict_count": conflicts,
+        "unknown_timestamp_metadata_count": unknown_dates,
+        "total_option_rows_metadata_only": total_rows,
+        "snapshots_by_month": dict(sorted(months.items())),
+        "snapshots_with_available_at_schema": availability_schema_count,
+        "first_filename": paths[0].name if paths else None,
+        "last_filename": paths[-1].name if paths else None,
+        "pre2026_bar_overlap_count": 0 if not pre else None,
+        "historical_status": "data_blocked",
+        "option_value_pages_read": 0,
+        "inventory_metadata_sha256": hashlib.sha256(canonical).hexdigest(),
+        "inventory_identity_scope": "path/size/footer/schema metadata only; not complete corpus content identity",
+        "_inventory": inventory,
+        "_schemas": schemas,
+    }, [str(path.relative_to(repo_root)) for path in paths]
+
+
+def run(context: dict[str, Any]) -> dict[str, Any]:
+    root = Path(context["repo_root"])
+    audit, audited_paths = audit_local_coverage(root)
+    inventory = audit.pop("_inventory")
+    schemas = audit.pop("_schemas")
+    manifest_path = (
+        Path(context.get("campaign_root", root / "results/market_exploration/20261005"))
+        / "d08/option_metadata_inventory.json"
+    )
+    write_json(
+        manifest_path,
+        {"provenance": "audit_only_footer_metadata_no_2026_quote_values", "schemas": schemas, "files": inventory},
+    )
+    input_paths = [str(manifest_path.relative_to(root))]
+    representatives = sorted({audited_paths[0], audited_paths[-1]}) if audited_paths else []
+    input_paths.extend(representatives)
+    source_paths = [
+        "zenquant/research/gex.py",
+        "zenquant/data/options_state.py",
+        "zenquant/data/deribit_options_chain.py",
+        "zenquant/research/options_shadow.py",
+    ]
+    input_paths.extend(path for path in source_paths if (root / path).exists())
+    seed_results = []
+    for seed in SEEDS:
+        chain = synthetic_chain(seed)
+        clean = summarize_chain(chain, SYNTHETIC_CUTOFF_NS)
+        rng = np.random.default_rng(seed)
+        incomplete = [{**row, "bid_price": None} if rng.random() < 0.3 else row for row in chain]
+        partial = summarize_chain(incomplete, SYNTHETIC_CUTOFF_NS)
+        stale = summarize_chain(
+            [{**row, "quote_ts_ns": SYNTHETIC_CUTOFF_NS - 5 * 3600 * 10**9} for row in chain], SYNTHETIC_CUTOFF_NS
+        )
+        proxy = compute_gex_profile(chain, SPOT, SYNTHETIC_CUTOFF_NS, max_dte=90)
+        seed_results.append(
+            {
+                "seed": seed,
+                "clean": clean,
+                "missing_30pct": partial,
+                "missing_gamma_relative_bias": partial["gross_gamma_usd_per_1pct_move"]
+                / clean["gross_gamma_usd_per_1pct_move"]
+                - 1,
+                "stale_5h_status": stale["status"],
+                "legacy_call_minus_put_proxy_usd_per_1pct_move": 0.01 * proxy.net_gex,
+                "legacy_proxy_sign_is_an_assumption": True,
+            }
+        )
+    return {
+        "direction_id": "d08",
+        "hypothesis": "Expiry/strike gamma concentration, delta-correct RR25 and IV term structure may identify volatility stress for an observation-only risk context; public OI does not identify dealer hedging direction.",
+        "evidence_type": "mixed",
+        "method": {
+            "historical": "Footer-only canonical option-chain coverage audit; no historical return, fitting or quote-value experiment because confirmed pre2026 chains and availability evidence are absent.",
+            "synthetic": "Five fixed seeds; 968 synthetic call/put legs per seed at 121 strikes and 1/7/30/90-day expiries; smooth log-moneyness smile, lognormal OI, zero-rate USD-equivalent European Black-Scholes; no option trades or returns.",
+            "units": "Deribit inverse BTC OI is BTC amount; 1 BTC contract multiplier. IV percent normalized to annualized decimal. Gross gamma = sum(gamma*OI_BTC*S^2*0.01), USD-equivalent hedge delta notional change for 1pct underlying move. RR25=call_IV-put_IV in decimal; 1 vol point=0.01. This is not inverse option coin PnL.",
+            "decision_role": "Candidate bar-close observation-only stress/context and uncertainty fields; no target, multiplier, strategy, execution or live activation.",
+            "economic_source": "Option convexity forces rehedging only under an assumed delta-neutral dealer inventory; asymmetric IV measures relative insurance demand/price, term inversion measures near-term volatility pricing, neither alone proves expected spot direction.",
+            "dealer_counterexample": "All-dealer-long and all-dealer-short assignments leave every public OI/quote row unchanged; hedges for the same up move have opposite signs. Call-minus-put is an assumed sign proxy.",
+            "quote_policy": "available_at<=cutoff, quote age<=4h, positive ordered two-sided quote; missing/stale surface becomes PARTIAL/UNKNOWN, retained gamma is only a lower bound. Local collector snapshot time does not prove each quote freshness.",
+            "inventory_binding": "Full metadata manifest is hashed; first/last underlying files bind representatives only. Remaining historical corpus content is not fully hashed by this audit.",
+        },
+        "metrics": {
+            "coverage_audit": audit,
+            "gamma_sensitivity": gamma_sensitivity(),
+            "synthetic_seed_results": seed_results,
+            "historical_incremental_experiment_executed": False,
+            "historical_return_metrics": None,
+        },
+        "verdict": "data_blocked",
+        "limitations": [
+            "No confirmed pre2026 canonical option-chain snapshots; no overlap with frozen 2020-2025 BTC bar sample. Historical incremental value cannot be measured.",
+            "Coverage is narrowly scoped to canonical collector corpus; frozen copies/JSON twins are not independent history. Metadata inventory is not a full content identity or a chain-completeness certificate.",
+            "Synthetic seeds demonstrate mechanics and failure cases, not market alpha, robustness acceptance or out-of-sample validation.",
+            "Public OI contains both a long and short side, without dealer ownership, cross-venue offsets or hedge book; signed GEX/pinning cannot be identified.",
+            "Zero-rate spot=forward USD-equivalent gamma omits actual expiry forward, carry, smile dynamics and coin settlement/account margin exposure.",
+            "Mark IV and two-sided quotes do not guarantee executable depth/freshness; missing high-gamma strikes can bias aggregates even if most rows survive.",
+        ],
+        "falsification": "Reject spot-direction/pinning inference when dealer side is unobserved. Reject incremental-state hypothesis if frozen PIT option features fail to improve train-selected, development-diagnostic volatility/tail calibration over price/RV context, or if gains vanish under missing/stale quote and forward/unit perturbations.",
+        "next_experiment": "Obtain independently archived pre2026 full expiry-strike snapshots with ingestion/availability and per-quote timestamps plus expiry forwards; verify coverage and confirmed-4h joins; freeze a train-before2024 state model, then compare price/RV-only vs +gamma concentration/RR25/term structure on previously observed2024-2025 diagnostics. Do not reuse2026 for selection or infer dealer sign from OI.",
+        "input_paths": input_paths,
+        "internet_sources": SOURCE_URLS,
+        "rankable": False,
+        "live_eligible": False,
+        "promotion_eligible": False,
+    }

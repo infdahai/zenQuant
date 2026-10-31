@@ -1,0 +1,194 @@
+"""Train-frozen state composition versus within-state payoff diagnostic."""
+
+from __future__ import annotations
+
+from typing import Any
+
+import numpy as np
+import pandas as pd
+
+from zenquant.research.frontier_lab.common import causal_features, load_bars, next_open_labels, split_masks
+
+STATE_NAMES = [
+    f"{trend}_{vol}" for trend in ("low_trend", "middle_trend", "high_trend") for vol in ("low_vol", "high_vol")
+]
+COSTS = (0, 5, 15)
+
+
+def fit_boundaries(features: pd.DataFrame, train_mask: np.ndarray) -> dict[str, float]:
+    """Estimate only on eligible training decisions, with no labels as inputs."""
+    training = features.loc[train_mask, ["momentum_42", "vol_42"]]
+    if training.empty or not np.isfinite(training.to_numpy()).all() or (training["vol_42"] <= 0).any():
+        raise ValueError("finite positive volatility training features required")
+    trend = training["momentum_42"] / (training["vol_42"] * np.sqrt(42))
+    lower, upper = np.quantile(trend, [1 / 3, 2 / 3])
+    return {"trend_lower": float(lower), "trend_upper": float(upper), "vol_median": float(training["vol_42"].median())}
+
+
+def assign_states(features: pd.DataFrame, boundaries: dict[str, float]) -> np.ndarray:
+    trend = features["momentum_42"].to_numpy() / (features["vol_42"].to_numpy() * np.sqrt(42))
+    trend_bucket = np.searchsorted([boundaries["trend_lower"], boundaries["trend_upper"]], trend, side="right")
+    return 2 * trend_bucket + (features["vol_42"].to_numpy() > boundaries["vol_median"]).astype(int)
+
+
+def period_summary(states: np.ndarray, payoff: np.ndarray, state_count: int = 6) -> dict[str, Any]:
+    states, payoff = np.asarray(states, int), np.asarray(payoff, float)
+    if len(states) == 0 or states.shape != payoff.shape or not np.isfinite(payoff).all():
+        raise ValueError("finite nonempty paired states and payoff required")
+    if (states < 0).any() or (states >= state_count).any():
+        raise ValueError("invalid state")
+    rows = []
+    for state in range(state_count):
+        values = payoff[states == state]
+        rows.append(
+            {
+                "state_id": state,
+                "state": STATE_NAMES[state] if state_count == 6 else str(state),
+                "n": len(values),
+                "proportion": float(len(values) / len(states)),
+                "mean_bps": float(values.mean() * 1e4) if len(values) else None,
+                "std_bps": float(values.std() * 1e4) if len(values) else None,
+                "positive_fraction": float((values > 0).mean()) if len(values) else None,
+            }
+        )
+    mean_bps = float(payoff.mean() * 1e4)
+    return {
+        "n": len(payoff),
+        "mean_bps": mean_bps,
+        "cost_sensitivity_bps": {str(cost): mean_bps - cost for cost in COSTS},
+        "states": rows,
+    }
+
+
+def decompose(reference: dict[str, Any], comparison: dict[str, Any]) -> dict[str, Any]:
+    """Symmetric two-factor identity; half the interaction goes to each factor."""
+    a, b = reference["states"], comparison["states"]
+    if len(a) != len(b) or any(x["mean_bps"] is None or y["mean_bps"] is None for x, y in zip(a, b, strict=True)):
+        raise ValueError("full state support required; do not impute missing conditional payoff")
+    components = []
+    for x, y in zip(a, b, strict=True):
+        composition = (y["proportion"] - x["proportion"]) * (x["mean_bps"] + y["mean_bps"]) / 2
+        within = (x["proportion"] + y["proportion"]) * (y["mean_bps"] - x["mean_bps"]) / 2
+        components.append({"state_id": x["state_id"], "composition_bps": composition, "within_bps": within})
+    composition = float(sum(x["composition_bps"] for x in components))
+    within = float(sum(x["within_bps"] for x in components))
+    change = float(comparison["mean_bps"] - reference["mean_bps"])
+    return {
+        "change_bps": change,
+        "composition_bps": composition,
+        "within_bps": within,
+        "identity_residual_bps": float(change - composition - within),
+        "state_components": components,
+    }
+
+
+def synthetic_counterexamples() -> dict[str, Any]:
+    """Known-answer mechanisms, not simulated market alpha."""
+    a_state, b_state = np.repeat([0, 1], [80, 20]), np.repeat([0, 1], [20, 80])
+    reference = period_summary(a_state, np.where(a_state == 0, 0.01, -0.01), 2)
+    comparison = period_summary(b_state, np.where(b_state == 0, 0.01, -0.01), 2)
+    balanced = np.repeat([0, 1], [50, 50])
+    before = period_summary(balanced, np.where(balanced == 0, 0.01, -0.01), 2)
+    after = period_summary(balanced, np.where(balanced == 0, 0.0, -0.02), 2)
+    return {"composition_only": decompose(reference, comparison), "within_only": decompose(before, after)}
+
+
+def _streak_metrics(states: np.ndarray) -> dict[str, Any]:
+    changes = np.r_[0, np.flatnonzero(np.diff(states) != 0) + 1, len(states)]
+    durations = np.diff(changes)
+    return {
+        "state_runs": len(durations),
+        "median_run_bars": float(np.median(durations)),
+        "maximum_run_bars": int(durations.max()),
+        "warning": "State runs share market history; they are not independent macro cycles.",
+    }
+
+
+def run(context: dict[str, Any]) -> dict[str, Any]:
+    frame = load_bars(context)
+    features = causal_features(frame)
+    labels = next_open_labels(frame)
+    train, dev = split_masks(frame, labels["label_end_ns"])
+    valid = np.isfinite(features[["momentum_6", "momentum_42", "vol_42"]].to_numpy()).all(axis=1)
+    valid &= features["vol_42"].to_numpy() > 0
+    valid &= np.isfinite(labels["return"].to_numpy())
+    # Exclude warm-up and any label ending in the next partition.
+    train, dev = train & valid, dev & valid
+    boundaries = fit_boundaries(features, train)
+    states = assign_states(features.fillna(0).assign(vol_42=features["vol_42"].fillna(1)), boundaries)
+    sign = np.sign(features["momentum_6"].to_numpy())
+    # Frozen nonzero exposure semantics: zero momentum is flat and not a trial.
+    train, dev = train & (sign != 0), dev & (sign != 0)
+    years = pd.to_datetime(frame["close_time_ns"], utc=True).dt.year.to_numpy()
+    momentum_payoff = sign * labels["return"].to_numpy()
+    strategies = {}
+    for name, payoff in (("simple_momentum_6", momentum_payoff), ("simple_reversal_6", -momentum_payoff)):
+        train_summary = period_summary(states[train], payoff[train])
+        dev_summary = period_summary(states[dev], payoff[dev])
+        annual = {
+            str(year): period_summary(states[(train | dev) & (years == year)], payoff[(train | dev) & (years == year)])
+            for year in range(2020, 2026)
+        }
+        comparisons = {str(year): decompose(train_summary, annual[str(year)]) for year in (2024, 2025)}
+        strategies[name] = {
+            "train": train_summary,
+            "dev": dev_summary,
+            "annual": annual,
+            "train_to_dev": decompose(train_summary, dev_summary),
+            "train_to_dev_year": comparisons,
+        }
+    momentum = strategies["simple_momentum_6"]["train_to_dev"]
+    dominant = (
+        "within_state_change"
+        if abs(momentum["within_bps"]) > abs(momentum["composition_bps"])
+        else "composition_change"
+    )
+    nearly_cancel = abs(momentum["change_bps"]) < 0.1 * (abs(momentum["within_bps"]) + abs(momentum["composition_bps"]))
+    return {
+        "direction_id": "d01",
+        "hypothesis": "Changing state proportions and changing state-conditional simple-rule payoffs are distinguishable explanations for aggregate payoff change.",
+        "evidence_type": "mixed",
+        "method": {
+            "state_inputs": "Confirmed-close 42-bar log momentum divided by 42-bar return volatility times sqrt(42), crossed with 42-bar volatility.",
+            "boundaries": "Trend training terciles and volatility training median; frozen before inspecting dev payoffs.",
+            "boundaries_values": boundaries,
+            "signal": "sign of confirmed-close six-bar log momentum; reversal is its negative; no fitted signal or state selection.",
+            "label": "Open i+1 entry to open i+2 exit after close i decision; arithmetic unlevered signed payoff.",
+            "decomposition": "Delta mean = sum[delta p * average mu] + sum[average p * delta mu]; symmetric allocation of interaction.",
+            "cost": "Illustrative independent one-bar round trips: total fee plus slippage 0/5/15 bp deducted per nonzero trial; bar-payoff proxy is not executable PnL; no compounding, financing, funding or fill proof.",
+            "annual_role": "2020-2023 training annual diagnostics; 2024-2025 previously observed development years, not untouched OOS.",
+        },
+        "metrics": {
+            "input_rows": len(frame),
+            "training_trials": int(train.sum()),
+            "development_trials": int(dev.sum()),
+            "last_training_label_end_ns": int(labels.loc[train, "label_end_ns"].max()),
+            "strategies": strategies,
+            "synthetic_counterexamples": synthetic_counterexamples(),
+            "state_runs_train": _streak_metrics(states[train]),
+            "state_runs_dev": _streak_metrics(states[dev]),
+            "calendar_years": {"train": 4, "dev": 2},
+            "larger_absolute_component_momentum": dominant,
+            "pooled_components_nearly_cancel": bool(nearly_cancel),
+        },
+        "verdict": (
+            "Descriptive attribution: pooled components nearly cancel; no material dominance established. No alpha or stable cycle law."
+            if nearly_cancel
+            else f"Descriptive attribution: {dominant} has the larger absolute component; no causal dominance, alpha or stable cycle law established."
+        ),
+        "limitations": [
+            "Six years from one BTC path contain sparse independent macro cycles; 4 training and 2 dev annual cells cannot identify a stable cycle law.",
+            "Thousands of adjacent bar trials and state runs are dependent; sample counts are not independent-cycle evidence and no IID significance claim is made.",
+            "States are price-based proxies, not causal identification of halving, liquidity, adoption or macro drivers; within-state changes may be omitted-state composition.",
+            "Full 2020-2023 fit is valid for frozen dev attribution; annual train comparisons are descriptive, not train-year out-of-sample predictions.",
+            "Developer years were previously observed and 12 exploratory directions incur multiple selection; no promotion, strategy ranking or live eligibility.",
+            "Historical publication/availability timestamps are unverified; illustrative cost deduction is not a fill, position, funding or liquidation model.",
+        ],
+        "falsification": "Reject composition-only explanation if the within component materially dominates across independent pre-frozen periods; reject within-decay-only explanation if stable conditional means and changed state weights explain the difference. Current sample cannot establish either as a universal law.",
+        "next_experiment": "Freeze these boundaries, signal, costs and decomposition for future 4h collection; report month-block uncertainty and repeat across independent cycles without retuning, then test any selected rule through the execution/risk replay gates.",
+        "input_paths": [],
+        "internet_sources": [],
+        "rankable": False,
+        "live_eligible": False,
+        "promotion_eligible": False,
+    }

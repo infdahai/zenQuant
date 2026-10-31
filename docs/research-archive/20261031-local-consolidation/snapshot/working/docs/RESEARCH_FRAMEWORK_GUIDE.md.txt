@@ -1,0 +1,330 @@
+# 量化研究框架使用与审查指南
+
+更新日期：2026-10-04。本文说明本地已实现的研究组件和使用边界；未部署，未获得 paper/live 资格。
+产品约束以 [AGENTS.md](../AGENTS.md) 为准，运行交付以
+[LIVE_VALIDATION_HANDOFF_SPEC.md](LIVE_VALIDATION_HANDOFF_SPEC.md) 为准。
+设计依据见 [工程框架设计](superpowers/specs/2026-10-02-research-engineering-framework-design.md)
+和 [综合评价规格](RESEARCH_EVALUATION_SPEC.md)。设计文档中的目标能力不自动成为已验证事实。
+
+## 1. 当前交付范围
+
+产品主人已明确允许扩展资产与策略研究。新链路用于独立单资产的离线研究：冻结假设与预算，产生目标意图，经共享风险、执行和账户组件回放，
+保留完整证据，再独立计算指标及证据状态。当前 CLI 不选胜者、不晋级、不修改生产默认配置。
+趋势、突破、区间回归只是三个 long/flat 研究假设，不代表已经发现多套盈利策略。
+
+### 2026-10-04 扩展范围与研究优先级
+
+按经济机制分三条线；每条线都沿用 E0–E4 硬门槛和 R0–R7、O0–O1 的证据评价，不能用更多资产抵消工程失败。
+
+| 研究线 | 下一步可检验的问题 | 当前前置条件与限制 |
+| --- | --- | --- |
+| BTC/ETH CTA | 同一套固定趋势、突破、区间规则在另一主要资产是否仍有净收益、阶段稳定性和费用韧性？ | loader/CLI/replay 支持显式 symbol；每次独立账户，不是多资产组合。趋势与突破属于同一经济家族。 |
+| BTC/ETH 相对价值 | 对冲共同因子后的偏离是否存在可交易的回归收益？ | 尚缺双腿账户、异步成交、对冲误差及短侧保证金/强平验证；当前不计算其可执行收益。 |
+| 现货—衍生品 carry | 扣除融资、保证金占用、费用和对冲失配后，持仓服务溢价是否仍成立？ | 尚缺真实同步 basis、现货账本和双腿资金约束；历史资金费不能单独充当套利收益。 |
+
+详细九要素假设及论文证据见 [多机制研究前沿](../results/research_framework/20261004/strategy_frontier_v1.md)。
+实际执行账单见 [2026-10-04研究结果](../results/research_framework/20261004/RESULTS_v1.md)：
+36次固定开发期诊断及另2次工程配对回归。突破两资产三成本均盈利但未证明alpha；ETH趋势成本敏感，当前区间回归实现均亏损。
+后续 [144次固定预算/价格压力](../results/research_framework/20261004/stress144_v1/RESULTS_v1.md)
+完成两资产、两规则、两事前预算、三成本与原始/五seed输入。8组经济观察均5/5，简单基准同样达到；
+正式严格稳健性8组均FAIL。只执行一种价格测量误差，缺bar/邻域/额外窗口仍不齐备，不称完整稳健性通过。
+SOL/BNB 的默认资金费时间列有转换问题，原始数据的历史范围也不一致；先核对数据再决定是否纳入。
+原始文件与默认 parquet 均保留，隔离重建及来源冲突必须独立记录；完整覆盖不等于历史 available-at 已证明。
+
+回放有两种显式库存政策：`shared_production_proxy_v1` 保留当前共享执行语义；
+`actual_filled_inventory_v1` 是研究专用路径，保留实际成交的微小余仓，以诊断已知无成交清零问题。
+后者以源 SHA 和 AST 差异守卫限制改动，但守卫不是 parity 证明；其 E3 明确为 FAIL，不能反馈优化器或晋级。
+生产 router、风险规则、数量精度及会计容差不因此改变。不同资产仍使用研究数量代理，未证明交易所真实 lot/min-notional 规则。
+固定诊断允许使用这条研究路径；参数搜索会在创建输出目录之前拒绝它。
+
+AutoParam 先比较固定规则、Random 和 TPE 的同预算结果；RL 仅作为后续慢参数档位研究。
+任何新增过滤、适应规则或模型都须配对消融，缺证或收益不显著时不把复杂度列为必要能力。
+
+| 组件 | 已实现职责 | 证据边界 |
+| --- | --- | --- |
+| [候选目录](../config/research/btc_strategy_families_v1.json) | 趋势、突破、区间回归的九要素假设、默认参数、搜索范围、种子和分区 | 是待验证假设，不是有效策略清单 |
+| [strategy_families.py](../zenquant/research/strategy_families.py) | `generate_targets`，确认收盘后产生 long/flat 敞口目标；现金与波动目标基准 | 不下订单、不计算独立策略 PnL；当前不是做空或多资产系统 |
+| [campaign_data.py](../zenquant/research/campaign_data.py) | `load_window`，显式 BTC/ETH/SOL/BNB symbol、窗口、预热、文件/逻辑数据 hash、K 线和资金费覆盖 | 参数支持不等于四币数据都合格；原始文件历史可得时间未独立证明 |
+| [target_replay.py](../zenquant/research/target_replay.py) | `run_target_replay`，显式资产及库存策略，risk 改写后冻结 snapshot，下一根 open 执行 | 研究组装；actual 库存路径 E3 FAIL；OHLC 代理不是 live parity、流动性或强平证明 |
+| [research_runner.py](../zenquant/research/research_runner.py) | `evaluate_candidate` 连接候选、回放和指标，绑定候选/运行身份及比较条件 | 窗口重新空仓；不携带预热收益；额外成本在每笔成交时入账 |
+| [perturbations.py](../zenquant/research/perturbations.py) | 五固定seed、timestamp-keyed价格扰动和明确缺bar派生，绑定父/派生实际内容 | 真实funding事件与mark保留；缺bar目前不可执行；同时间跨资产因子相同，非分散化证明 |
+| [evaluation.py](../zenquant/research/evaluation.py) | `evaluate_evidence`，统一日收益、回撤、费用、episode 等定义及 E/R/O 状态 | 指标可计算不等于经济门槛通过；输入的工程声明不是由该函数重新证明 |
+| [risk_diagnostics.py](../zenquant/research/risk_diagnostics.py) | `evaluate_risk_diagnostics`，尾部、月度、episode 归因和敞口诊断；已由 runner 接入 | 诊断有结果不自动补齐资本风险的保证金/强平等证据 |
+| [regime_diagnostics.py](../zenquant/research/regime_diagnostics.py) | 当时可得的日初标签及阶段归因；已由 runner 接入 | 标签覆盖与盈利归因是诊断，不把牛熊标签当成交易信号或全市场稳健证明 |
+| [suite_evaluation.py](../zenquant/research/suite_evaluation.py) | 配对日超额、五 seed 成本/窗口矩阵、Pareto 和候选状态投影；runner 已接状态投影 | 比较/矩阵函数存在不等于本轮已完整执行；缺项阻断，不能用子集改变分母 |
+| [ablation_evaluation.py](../zenquant/research/ablation_evaluation.py) | 完整比较契约、受控移除语义、至少2000次重采样、安全问题聚合 | V1仅支持trend/breakout重复确认简化；未知移除语义不可评价，R7不自动通过 |
+| [run_evidence.py](../zenquant/research/run_evidence.py) | `identity_hash`、`TrialJournal`，严格 JSON、独立 attempt、身份一致恢复、损坏拒绝、持久追加 | 身份完整性由调用者提供；是本地单 writer 契约，不是分布式任务系统 |
+| [bounded_search.py](../zenquant/research/bounded_search.py) | Random/TPE 的有限训练预算，保留失败和中断，重建采样器恢复 | 目标是训练代理指标；该 helper 无法证明任意 callback 没有读取 dev |
+| [run_btc_research.py](../scripts/run_btc_research.py) | 固定候选成本复跑或单 family 训练搜索，完整产物、代码变化检查 | CLI 只接受新输出目录，不提供恢复；全部结果保持 diagnostic |
+| [run_research_stress.py](../scripts/run_research_stress.py) | 精确144矩阵的四分片诊断、code/data/sidecar双核对、中断留痕、独立产物 | 无搜索/晋级；价格压力不是所有fault class；失败不追加尝试，STALE无完成标记 |
+| [evidence_adapter.py](../zenquant/research/evidence_adapter.py)、[reporting.py](../zenquant/research/reporting.py) | 导入已有固定回跑文件，按新定义重新评价并保留原始来源 hash | 导入不是新回放，更不是新 OOS；旧 same-close 执行仍是 E4 FAIL |
+
+## 2. 数据与执行契约
+
+| 数据角色 | 时间范围（UTC，左闭右开） | 可用方式 |
+| --- | --- | --- |
+| train | 2020-01-01 至 2024-01-01 | Random/TPE 参数反馈；只有训练数据进入其 callback |
+| dev | 2024-01-01 至 2026-01-01 | 冻结默认候选的比较；后续已冻结 shortlist 的统一评价，不反馈回本轮 sampler |
+| observed_2026 | 已观察的 2026 历史 | 旧产物可作为历史诊断导入；新 CLI 不开放该窗口，不能改称全新 OOS |
+| 交易预热 | 评价窗口之前最多 180 根 4h bar | 只构造信号状态，账户重新空仓，预热不产生评价收益 |
+
+数据访问有两个层次：当前 loader 读取并哈希原始 parquet 全文件，再按时间筛选返回行。
+因此训练候选不接收 dev/2026 行，但这不是封存未来数据的物理访问隔离。严格封存需要独立数据快照或
+受限读取接口，不能把 `window="train"` 当成隔离证明。文件 hash 与逻辑窗口 hash 应同时保留。
+
+当前 loader 为 regime 诊断另取最多 720 根因果历史；交易预热仍为 180 根。
+诊断历史不能改变交易信号起点、持仓或 NAV，也不能读取窗口结束之后的数据。
+manifest 单独记录 `regime_history` 的 hash 与描述用途；缺少 regime 历史须保留缺证状态。
+runner 的 `warmup_contract` 另绑定请求/实际交易与诊断历史数量及 regime 输入 hash；
+同窗口比较仍须核对实际预热和输入，双方同时缺少条件不能视为相同。
+
+后续数据 manifest 宜补充以下元信息；下表是完善建议，不代表目前字段已经齐备：
+
+| 元信息 | 用途与约束 |
+| --- | --- |
+| 交易所、合约类型、计价/结算资产、数据源端点 | 确认 BTCUSDT K 线、资金费和 mark 属于同一产品；spot/proxy/perp 不混标 |
+| 下载时间、原始版本/订正版本、schema 与转换器版本 | hash 证明所读字节身份，不能独自证明来源与历史可得性 |
+| event time、公布/接收时间、available-at 的定义 | 资金费 timestamp 的 jitter 是事件时间还是公布延迟须注明；不得回移未知数据 |
+| 每段首末时间、行数、重复/缺口数、源时间精度 | 核对请求区间和实际读取区间；覆盖完整不等于数据准确 |
+| 交易预热与诊断预热的请求/实际数量及连续性 | 分别记录 180/720 的用途和短缺，不能让诊断扩展改变交易状态 |
+| 真实 mark、confirmed-close proxy、无持仓缺价的数量 | 显示资金费估值质量及替代价格范围，不把缺 mark 当作零成本 |
+| 数据访问角色、逻辑窗口 hash、全文件 hash | 兼顾精确复现和逻辑隔离审计；未来封存另设物理权限 |
+
+执行顺序固定为：bar i 确认 close → 用当时 NAV/close 形成目标数量 → RiskOverlay 改写 →
+冻结 DecisionSnapshot → 最早在 bar i+1 open 尝试执行。最后一根 bar 的目标不执行。
+保留源 close 时间及真实执行时间；Binance inclusive close 不静默改写成可同时成交的时刻。
+期末估值可用已经知道的最后 close 延续到紧接的时间边界，但不得加入边界之后的报价、资金费或订单。
+
+仓位按实际 fill 更新。资金费按结算时持仓计算，同时间先结旧仓再执行新订单；缺真实 mark 时使用
+此前已确认 close 并标 proxy。初始空仓且没有可用价格时，资金流为零，价格保持缺失，不伪造 mark。
+成交手续费和滑点进入现金/NAV，影响后续 sizing 与 risk，不能事后从总收益减一个估计值代替重跑。
+
+研究策略和 `vol_target` 共用 10% 年化波动目标、1.5 倍意图上限及下游风险规则。
+这是共同的事前预算，不代表采样后的实际波动、尾部、持仓时间、资金占用已完全匹配。
+`buy_hold_1x` 是同执行内核下的 1 倍意图市场参照，下游 risk 仍可改写，不能无条件叫完全持有现货基准。
+15% 最大回撤是评价筛选条件，不是把 RiskOverlay 的运行阈值改成 15%，也不保证实际未来损失上限。
+
+## 3. 如何运行
+
+在仓库根目录使用已安装项目依赖的 `.venv`。以下均使用新目录；同名目录存在时 CLI 拒绝覆盖。
+先完成代码修改再运行，末尾身份核验发现变化会标记 STALE；前后 hash 核验不是全程文件写监控。
+这里列出命令，不表示已执行验收。
+
+固定 dev 评价：3 个目录默认策略，加现金、波动目标、1 倍意图基准，共 6 个候选；每个完整重跑
+额外 0/5/15 bps，合计 18 次。额外 bps 在基础 4 bps taker fee 之上逐笔收取，另有 1.5 bps 滑点。
+
+```bash
+.venv/bin/python scripts/run_btc_research.py \
+  --mode fixed --window dev \
+  --data-root data/raw/binance \
+  --output results/research_framework/manual_fixed_dev_001
+```
+
+独立 ETH 固定诊断可指定资产与研究库存策略；数据目录必须已有通过核对的 ETH bar/funding 文件：
+
+```bash
+.venv/bin/python scripts/run_btc_research.py \
+  --mode fixed --window dev --symbol ETHUSDT \
+  --inventory-policy actual_filled_inventory_v1 \
+  --data-root results/research_framework/20261004/research_data_v2 \
+  --output results/research_framework/manual_eth_fixed_dev_001
+```
+
+此命令产生独立 100,000 USDT 账户诊断，不能与 BTC 收益相加称为组合。研究库存政策 E3 FAIL 会保留。
+CLI 的 train 窗口仍固定 2020–2024；loader 能核对的两币共同 2020-11–2024 窗口不自动替换它。
+ETH 在 2020 年初无覆盖时应报错，不缩短历史后冒称完成原训练任务。
+
+训练搜索每次只跑一个 family，先跑同内核 `vol_target` 基准，再消耗预声明的 trial 预算。
+默认 budget 为 8，种子来自冻结目录；失败和中断也消耗尝试，不因没有好结果增加预算。
+
+```bash
+.venv/bin/python scripts/run_btc_research.py \
+  --mode search --family trend --sampler random --budget 8 \
+  --data-root data/raw/binance \
+  --output results/research_framework/manual_trend_random_001
+
+.venv/bin/python scripts/run_btc_research.py \
+  --mode search --family trend --sampler tpe --budget 8 \
+  --data-root data/raw/binance \
+  --output results/research_framework/manual_trend_tpe_001
+```
+
+`--family` 还可选 `breakout`、`range_reversion`。比较 Random/TPE 时必须使用相同预算、数据、
+搜索范围和公共基准；单次运行的优化方向是净收益减基准净收益、采样最大回撤、费用/初始资金。
+这些代理值不授予 rankable。已知工程 FAIL/INVALID/STALE 或 ruin 不应作为正常优化反馈。
+训练候选的后续 dev 复核还需先冻结清单；当前 fixed 模式只评估目录默认值，不自动挑选搜索优胜者。
+
+已有历史产物可独立导入；`--input` 可重复，必须明确列出来源，输出同样不可覆盖：
+
+```bash
+.venv/bin/python scripts/evaluate_research_evidence.py \
+  --input results/btc_single_asset_research/20261002/accounting_repair/review_revision/current_legacy__dev__cost0__seedNone \
+  --output results/research_framework/manual_recorded_import_001
+```
+
+定点检查可运行：
+
+```bash
+.venv/bin/pytest -q tests/test_btc_research_cli.py tests/test_research_runner.py tests/test_target_replay.py
+.venv/bin/ruff check scripts/run_btc_research.py zenquant/research/research_runner.py zenquant/research/target_replay.py
+```
+
+这些检查不代替 merge 前完整 harness；本文不记录尚未统一验收的测试总数。
+
+固定价格压力的原注册命令如下，现有输出目录会拒绝再次执行；这不是额外试验授权。
+新一轮必须产生新冻结计划并披露谱系及预算，不能把复用旧plan的新目录当成原144次之外未计数的尝试。
+
+```bash
+.venv/bin/python scripts/run_research_stress.py \
+  --plan results/research_framework/20261004/stress144_v1/plan.json \
+  --symbol BTCUSDT --target-vol 0.1 \
+  --output results/research_framework/20261004/stress144_v1/BTCUSDT_vol10
+```
+
+`--target-vol`只接受预声明5%/10%分片；`evaluate_candidate(risk_budget=...)`的底层接口只允许
+降低研究意图预算，完整显式字段、finite非bool并绑定身份；共享RiskOverlay配置仍为原值。
+原始/扰动共同参数不重新优化，不用E3 FAIL模型的训练或dev实现风险做基准校准。
+源码ZIP、环境版本和canonical原始bundle用于身份复核；冻结hash不匹配拒绝启动，不能放宽guard恢复旧作业。
+
+## 4. 如何读取产物和状态
+
+`run_manifest.json` 冻结代码实际内容（包括 dirty/untracked 研究代码）、依赖版本、目录、policy、
+窗口、种子、成本与数据 manifest。git SHA 只作补充，不能代替代码内容 hash。
+成功产生回放证据的尝试保留 `*.evidence.json.gz`（固定 gzip mtime）、`*.report.json` 及各自 SHA-256。
+执行前或执行中异常可能没有完整回放 gzip；失败报告与 journal 仍保留，不冒充完整底账。
+`journal/` 记录固定尝试和基准；`search/journal/` 记录搜索的 STARTED/FINISHED。
+`summary.json` 与 `REPORT.md` 汇总所有尝试，不只保留 top candidates。
+attempt 及 summary 另记录 wall time、CPU time、窗口 bar 数和是否包含基准。
+当前 attempt 计时包含证据序列化/落盘；`evaluated_bars` 是提供给该尝试的窗口长度，失败时不能据此
+断言完整窗口已经处理。计算资源比较应同时看尝试数、实际耗时、失败原因和基准开销。
+
+| 状态层 | 应如何解释 |
+| --- | --- |
+| 作业状态 | COMPLETE 只表示计划尝试结束；COMPLETE_WITH_FAILURES 保留失败；中断或启动失败不代表策略收益为零 |
+| 完整性 | 末尾核验发现源身份变化为 STALE；没有正常 `completed.json`。读取完成标记还须核对 summary 与产物 hash |
+| 指标/门槛 | PASS 只在该指标或 gate 的 scope 内有效；FAIL 是已知失败，NOT_EVALUABLE 是缺证，不能相互替换 |
+| 研究资格 | 单次 report、suite 结果、候选状态应绑定同一个 candidate/run/policy；缺必需证据保持 diagnostic |
+| 运行资格 | rankable、候选冻结、paper 资格、实际启动/部署分别表达；当前 CLI 的 rankable/live_eligible 均为 false |
+
+低层 `run_bounded_search` 支持身份精确一致时重建采样器恢复；CLI 当前故意不开放恢复。
+扩展恢复时，除 journal 和 trial wrapper 外，还须核对其引用的完整 evidence/report 文件，不能只认路径。
+日志截断、损坏或身份不一致须拒绝，不能静默修复成成功；同参数不同 attempt 不合并。
+
+同一 scope 下有效工程阻断优先于后来出现的收益数字。共用内核、会计和数据问题会影响使用它的新研究线；
+更换策略名或 policy 不能解除共用阻断。旧候选的经济失败仍属其原 scope，不能无差别套在所有新假设上。
+
+## 5. 15 个评价维度
+
+采用硬门槛、可解释取舍、独立证据成熟度，不把 15 维加权为一个可抵消安全失败的总分。
+“指标有数值”与“证据充分且达到冻结条件”必须分开。
+
+| 分组 | 维度 | 要回答的问题 |
+| --- | --- | --- |
+| 工程可信 | E0 来源与身份 | 数据、代码、依赖、候选、policy 是否精确对应？结果完整、当前有效吗？ |
+| 工程可信 | E1 时间因果 | 当时是否已知？确认收盘、available-at、去重、缺失和预热是否真实？ |
+| 工程可信 | E2 账本与库存 | 每笔成交/资金费/估值能否核对现金、实际库存、费用和 NAV？ |
+| 工程可信 | E3 确定性与 parity | 同事件重放、重启及运行路径是否一致？局部测试不能替代端到端证据。 |
+| 工程可信 | E4 执行与风险权限 | 成交是否晚于决策？部分成交、gap、杠杆、紧急减仓与风险改写是否被尊重？ |
+| 收益风险 | R0 收益质量 | 净收益、日 Sharpe/Sortino、episode PF 与盈亏结构如何？收益是否集中？ |
+| 收益风险 | R1 增量价值 | 相同数据、成本和风险预算下，较简单基准多赚了什么，配对区间支持吗？ |
+| 收益风险 | R2 资本风险 | 最大回撤、水下时间、尾部、波动、杠杆和强平是否满足事前要求？ |
+| 收益风险 | R4 成本与容量 | 完整成本复跑后还剩多少？实际成交、参与率和规模证据是否存在？ |
+| 泛化稳健 | R3 跨阶段行为 | 牛、熊、震荡及状态切换各自怎样？标签在当时可得，样本覆盖足够吗？ |
+| 泛化稳健 | R5 泛化与选择偏差 | train/dev 反馈、全部试验和重试是否披露？已观察数据有没有被冒充新 OOS？ |
+| 泛化稳健 | R6 稳健性与敏感性 | 五 seed、参数邻域、时间边界和数据扰动下是否保留？任何工程失败不能被 4/5 投票豁免。 |
+| 泛化稳健 | R7 复杂度与可解释性 | 必需消融是否完成？相比简单规则，新自由度、故障面和计算成本带来多少可区分的增益？ |
+| 运行证据 | O0 可靠性 | 数据新鲜度、审计、重连、恢复、对账、版本漂移与 kill 演练是否通过？ |
+| 运行证据 | O1 前瞻证据 | 冻结后真实新数据是否支持，paper 与 replay 的成交和成本差异有多大？ |
+
+日指标只使用 UTC 日界已知 NAV，缺日界不回填未来报价；无亏损 episode 不能写无限 PF。
+NAV 非正须保留 ruin，不删除失败段重算漂亮收益。采样回撤不等于盘中最大风险；OHLC 极值不能伪造路径。
+`suite_evaluation` 可做配对 block bootstrap、完整五 seed/窗口/成本矩阵与多目标筛选；未实际提供完整
+输入矩阵时对应维度仍缺证。子函数的 PASS 也不等于整个候选可运行。
+
+## 6. 从假设到候选的架构审查
+
+每个提案先写清九项：市场状态假设、经济/行为机制、输入、入场、仓位、风险节流、退出/减仓、
+失败场景、评价指标。目录已有这九项；已有 [ResearchHypothesis](../zenquant/research/swarm/contracts.py)
+也可复用，不再创造另一套 agent 编排对象。指标只是表达假设的工具，不是独立经济解释。
+
+```mermaid
+flowchart LR
+    D[数据与来源身份] --> I[确认收盘后的 intent]
+    I --> R[RiskOverlay 改写]
+    R --> S[冻结 DecisionSnapshot]
+    S --> X[下一可用报价执行]
+    X --> A[实际 fill / funding / NAV]
+    A --> M[独立 metrics]
+    M --> U[suite 比较与稳健性]
+    U --> C[候选状态投影]
+    C --> O[另行积累运行与前瞻证据]
+```
+
+| 检查位置 | 架构师应追问 |
+| --- | --- |
+| data → intent | source/available-at/cutoff 各是什么？有无 spot/perp 或 mark proxy 混用？改变未来行能否改变既有目标？ |
+| intent → risk | 策略是否只给意图？风险是否能缩小、禁止新增或强制减仓？风险使用实际仓位还是理想目标？ |
+| risk → exec | snapshot 是否绑定风险最终目标及代码/config？执行能否越过目标？gap 后最新 NAV 是否仍支持新增风险？ |
+| exec → account | 部分成交、反转、拒单、fee/funding 的时序和符号如何？现金、内核仓位及 episode 能否独立复核？ |
+| account → metrics | 采样、单位、未平仓 PnL、日界、破产和不足样本是否明确？是否重复扣滑点或忽略资金费？ |
+| metrics → suite | 基准的成本/时间/风险条件是否一致？是否保留所有失败、相同 seed 的完整矩阵及不重叠统计口径？ |
+| suite → status | 本次证据属于哪个 candidate/run/policy？共用工程阻断是否继承？作业完成有没有被误写成准入？ |
+
+### 必需消融：先证明增量，再保留复杂度
+
+任何新增信号、过滤器、确认规则、自适应机制、论文方法或 AI/ML 组件，都必须与移除它的版本和简单基准
+比较。使用新论文或更复杂模型本身不是保留理由。先在查看该轮 dev 结果之前冻结组件清单、消融矩阵、
+窗口、种子、成本、预算、比较阈值与无操作情形；默认一次只去掉一项，只有出现交互证据才增加组合。
+删除组件时不能同时重新调参掩盖影响；重新调参须另建后代实验并计入累计搜索预算。
+
+消融仍走相同数据 → intent → risk → execution → account 链路，不另造零费用或理想成交版本。
+同时检查配对超额及不确定区间、回撤/尾部、换手与成本、跨窗口和 seed 稳健性、计算成本与故障面。
+单次回测收益较高不能独自决定取舍；少样本、条件不一致和证据缺失不能写成“没有影响”。
+
+| 取舍状态 | 含义与后续 |
+| --- | --- |
+| KEEP | 完整且可比较的证据支持该组件的必要增量；保留其版本、代价和失败场景 |
+| REMOVE_CANDIDATE | 证据支持去除或替换该复杂度；生成较简单候选并重新验证，不直接删除生产组件 |
+| INCONCLUSIVE | 样本、比较条件或统计/稳健证据不足；明确下一步，不能当作证明有价值 |
+
+风险权限、账户真实性、point-in-time 完整性、费用入账、执行审计属于不可移除的不变量，不作为改善收益的
+消融开关。消融不能绕开硬工程失败。组件清单、所需消融完成度、原始产物及上述取舍必须进入 R7；
+尚未完成时不得宣称架构已精简或复杂度合理。独立消融评价模块已实现；实际运行结果见末节登记。
+
+## 7. 与旧路径及后续工作的边界
+
+旧 `auto_research.py`、`framework_search.py`、`rl_tuner.py` 和 framework campaign 仍保留原入口与语义；
+新 CLI 不迁移其 checkpoint，不把旧 params-only tracker 当完整试验账本，也不修改 legacy 默认行为。
+旧 AutoResearch 低层训练搜索与外层 dev 筛选须区分；不能笼统宣称所有历史入口都 train-only 或都污染。
+
+原 snapshot cutoff、重复收盘、legacy 部分成交问题仍为 record-only，本指南不授权修生产路径。
+原完整 harness 的失败未由本指南对应工作解除，不能通过重建 golden 或放宽断言宣称通过。
+原 Quant V2 阻断保持原 scope；新研究的本地组件验证不替代其验收，也不解除运行资格限制。
+
+当前 next-open adapter 没有证明真实盘口容量、全面执行时风险审批、交易所保证金/强平或 live 重启 parity。
+它可以提供诚实的研究执行证据，不能把 E0–E4 一律升级为 PASS。已观测的账务残差或执行纯度违规应明确 FAIL，
+其余未证明项保留 NOT_EVALUABLE。
+
+RL 放在规则/Random/TPE 对照之后。后续小 RL 需要独立解释它修复的机制、为什么规则不足，且只能产生
+风险可覆盖的意图；冻结模型、归一化、训练数据及种子，记录更新次数、推理成本和 wall time。
+它必须与简单候选在相同数据、交易内核、成本和事前声明的预算下对照；旧单步参数调优环境不自动成为逐 bar trader。
+RL/AI 引入的每个可选组件也适用同样的消融和 KEEP/REMOVE_CANDIDATE/INCONCLUSIVE 取舍规则。
+
+## 8. 结果登记
+
+已存在 [28 次历史产物重新评价报告](../results/research_framework/20261003/recorded_evaluation_v1/REPORT.md)
+及 [完成清单](../results/research_framework/20261003/recorded_evaluation_v1/completed.json)。
+这是对已保存固定回放证据的导入，全部仍为 diagnostic、不可排名、无 live 资格；E/R 所需证据仍有失败或缺项。
+E4 保留旧 same-close 执行失败，不能因换评价器消失。报告不证明新增策略或新的训练结果。
+
+新研究已完成75次评价：18默认dev、48训练提案、6公共基准、3预先冻结的确认规则消融。
+完整结果、成本矩阵、计算账单和证据入口见
+[2026-10-03执行报告](../results/research_framework/20261003/RESULTS_v1.md)。
+
+V1六个train作业因23条CSV首行丢失在提案前失败，保留原产物；隔离数据重建后V2完成54次train评价。
+17次触发E2对账失败，被拒绝用于优化反馈。独立审计V5确认完整性与正NAV算术，研究仍BLOCKED。
+生产共享kernel的dust清零问题只记录和重现，未修router；完整harness的旧C/E阻断也保留。
+
+默认breakout在2024–2025基础成本下累计净收益12.23%、采样DD5.89%；vol_target为17.13%/10.36%。
+breakout实际敞口更低，不能据低DD宣称alpha。确认次数2→1增加收益，同时增加DD和费用；
+三档正式消融均INCONCLUSIVE，未接受移除，R7仍缺证。五seed完整矩阵、邻域与前瞻验证尚未完成。

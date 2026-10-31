@@ -1,0 +1,106 @@
+name: Attest TimeSpace export checkpoint
+
+on:
+  workflow_run:
+    workflows: [Register TimeSpace export checkpoint]
+    types: [completed]
+
+permissions:
+  actions: read
+  contents: read
+
+jobs:
+  receipt:
+    if: ${{ github.event.workflow_run.conclusion == 'success' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+          fetch-depth: 1
+          persist-credentials: false
+      - name: Download independently uploaded checkpoint
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ github.event.workflow_run.id }}
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REPOSITORY" = "infdahai/zenQuant"
+          repository="infdahai/zenQuant"
+          gh api "repos/$repository/actions/runs/$RUN_ID" > provider-run.json
+          gh api "repos/$repository/actions/runs/$RUN_ID/artifacts" > artifacts.json
+          python - <<'PY'
+          import json, os, pathlib
+          payload = json.loads(pathlib.Path("artifacts.json").read_text())
+          suffix = f"-{os.environ['RUN_ID']}"
+          matches = [
+              item for item in payload["artifacts"]
+              if item["name"].startswith("time-space-export-checkpoint-")
+              and item["name"].endswith(suffix) and not item["expired"]
+          ]
+          if len(matches) != 1:
+              raise SystemExit("exact checkpoint artifact not found")
+          pathlib.Path("artifact.json").write_text(json.dumps(matches[0]))
+          pathlib.Path("artifact-id").write_text(str(matches[0]["id"]))
+          cutoff = matches[0]["name"].removeprefix("time-space-export-checkpoint-").removesuffix(suffix)
+          pathlib.Path("checkpoint-path").write_text(
+              f"config/research/registrations/time_space_exports/{cutoff}/"
+              "time_space_shadow_export_checkpoint_v1.json"
+          )
+          PY
+          artifact_id=$(<artifact-id)
+          gh api "repos/$repository/actions/artifacts/$artifact_id/zip" > checkpoint.zip
+          unzip -q checkpoint.zip -d checkpoint-artifact
+          manifest=$(find checkpoint-artifact -type f -name time_space_shadow_export_checkpoint_v1.json)
+          test "$(printf '%s\n' "$manifest" | wc -l | tr -d ' ')" = 1
+          printf 'ARTIFACT_MANIFEST=%s\n' "$manifest" >> "$GITHUB_ENV"
+          printf 'CHECKPOINT_LOGICAL_PATH=%s\n' "$(<checkpoint-path)" >> "$GITHUB_ENV"
+          generator_run=$(python -c 'import json,sys; print(json.load(open(sys.argv[1]))["generator_provider_run_id"])' "$manifest")
+          cutoff=$(basename "$(dirname "$(<checkpoint-path)")")
+          gh api "repos/$repository/actions/runs/$generator_run/artifacts" > generator-artifacts.json
+          python - "$generator_run" "$cutoff" <<'PY'
+          import json, pathlib, sys
+          run_id, cutoff = sys.argv[1:]
+          payload = json.loads(pathlib.Path("generator-artifacts.json").read_text())
+          name = f"time-space-export-{cutoff}-{run_id}"
+          matches = [item for item in payload["artifacts"] if item["name"] == name and not item["expired"]]
+          if len(matches) != 1:
+              raise SystemExit("exact generator artifact not found")
+          pathlib.Path("generator-artifact-id").write_text(str(matches[0]["id"]))
+          pathlib.Path("generator-artifact.json").write_text(json.dumps(matches[0]))
+          PY
+          generator_artifact_id=$(<generator-artifact-id)
+          gh api "repos/$repository/actions/artifacts/$generator_artifact_id/zip" > generator.zip
+          unzip -q generator.zip -d generator-artifact
+          export_file=$(find generator-artifact -type f -name time_space_shadow_export.json)
+          provenance_file=$(find generator-artifact -type f -name time_space_shadow_export_provenance.json)
+          test "$(printf '%s\n' "$export_file" | wc -l | tr -d ' ')" = 1
+          test "$(printf '%s\n' "$provenance_file" | wc -l | tr -d ' ')" = 1
+          printf 'GENERATOR_EXPORT=%s\nGENERATOR_PROVENANCE=%s\n' \
+            "$export_file" "$provenance_file" >> "$GITHUB_ENV"
+      - name: Build receipt from provider and artifact evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          python scripts/build_time_space_export_receipt.py \
+            --manifest "$ARTIFACT_MANIFEST" \
+            --manifest-path "$CHECKPOINT_LOGICAL_PATH" \
+            --provider-run-json provider-run.json \
+            --artifact-json artifact.json \
+            --generator-export "$GENERATOR_EXPORT" \
+            --generator-provenance "$GENERATOR_PROVENANCE" \
+            --generator-artifact-json generator-artifact.json \
+            --output time_space_export_registration_receipt.json
+          mkdir time-space-registration-bundle
+          cp time_space_export_registration_receipt.json \
+            time-space-registration-bundle/time_space_export_registration_receipt_v1.json
+          cp "$GENERATOR_EXPORT" time-space-registration-bundle/time_space_shadow_export.json
+          cp "$GENERATOR_PROVENANCE" \
+            time-space-registration-bundle/time_space_shadow_export_provenance.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: time-space-export-receipt-${{ github.event.workflow_run.id }}
+          path: time-space-registration-bundle
+          if-no-files-found: error
+          retention-days: 90

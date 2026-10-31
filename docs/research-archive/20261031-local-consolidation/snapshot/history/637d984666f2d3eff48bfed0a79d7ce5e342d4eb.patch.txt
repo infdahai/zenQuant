@@ -1,0 +1,719 @@
+commit 637d984666f2d3eff48bfed0a79d7ce5e342d4eb
+Author:     Disaster <clusternlh@gmail.com>
+AuthorDate: Mon Aug 24 18:04:25 2026 +0800
+Commit:     Disaster <clusternlh@gmail.com>
+CommitDate: Mon Aug 24 18:04:25 2026 +0800
+
+    fix(research): repair time-space export trust chain
+
+diff --git a/config/research/time_space_export_registration_trust_v1.json b/config/research/time_space_export_registration_trust_v1.json
+index 7ab50fe..8e982ba 100644
+--- a/config/research/time_space_export_registration_trust_v1.json
++++ b/config/research/time_space_export_registration_trust_v1.json
+@@ -12,5 +12,7 @@
+   "provider_created_at_ns": null,
+   "checkpoint_artifact_id": null,
+   "checkpoint_artifact_name": null,
+-  "receipt_artifact_sha256": null
++  "receipt_artifact_sha256": null,
++  "generator_commit_sha": null,
++  "generator_provider_run_id": null
+ }
+diff --git a/tests/test_architecture_experiment.py b/tests/test_architecture_experiment.py
+index 570b0fe..0e99143 100644
+--- a/tests/test_architecture_experiment.py
++++ b/tests/test_architecture_experiment.py
+@@ -23,7 +23,6 @@ from zenquant.domain import (
+     TargetPosition,
+     Timeframe,
+ )
+-from zenquant.domain.serde import to_jsonable
+ from zenquant.historical.replay import HistoricalBacktest
+ from zenquant.infra import InMemoryJetStream, StreamConfig
+ from zenquant.plugins.profile import build_from_profile
+@@ -47,7 +46,6 @@ from zenquant.research.architecture_stage_replay import (
+     run_architecture_stage_replay,
+ )
+ from zenquant.research.gate_v3 import calculate_episode_profit_factor
+-from zenquant.research.time_space_export import hash_execution_materials
+ from zenquant.strategy.decision_snapshot import build_decision_snapshot
+ from zenquant.strategy.engine import ARCStrategyConfig, ARCStrategyEngine
+ 
+@@ -71,49 +69,6 @@ EXPECTED_AUGUST_RANK1_PARAMS = {
+ }
+ 
+ 
+-def test_time_space_sidecar_off_on_hashes_every_production_material_separately():
+-    """OFF/ON runs the real target-tracking kernel before the sidecar read."""
+-    observations = tuple(
+-        replace(
+-            _observation(alpha_id=f"alpha-{cutoff}", cutoff_time_ns=cutoff, raw_score=score),
+-            annualized_volatility=0.2,
+-            risk_regime="NORMAL",
+-            frozen_regime_multiplier=1.0,
+-            reference_price=price,
+-            forward_return_3=0.01,
+-            forward_return_6=0.02,
+-        )
+-        for cutoff, score, price in ((100, 0.4, 100.0), (200, -0.4, 102.0), (300, -0.3, 101.0))
+-    )
+-
+-    def actual_material(replay):
+-        return {
+-            "snapshots": to_jsonable(replay.snapshots),
+-            "targets": to_jsonable(replay.targets),
+-            "orders": to_jsonable(replay.audits),
+-            "fills": to_jsonable(replay.reports),
+-            "equity": to_jsonable(replay.equity),
+-            "episodes": to_jsonable(replay.position_episodes),
+-        }
+-
+-    off_replay = run_architecture_stage_replay(
+-        observations, stage=ArchitectureStage.A5_SHADOW, fixed_notional=1_000.0, symbol="BTC", portfolio="arc"
+-    )
+-    on_replay = run_architecture_stage_replay(
+-        observations, stage=ArchitectureStage.A5_SHADOW, fixed_notional=1_000.0, symbol="BTC", portfolio="arc"
+-    )
+-    off = hash_execution_materials(actual_material(off_replay))
+-    on_material = actual_material(on_replay)
+-    frozen_bytes = json.dumps(on_material, sort_keys=True, separators=(",", ":")).encode()
+-
+-    # Independent post-replay sidecar read; no production config or kernel branch.
+-    hash_execution_materials(on_material)
+-    on = hash_execution_materials(on_material)
+-
+-    assert json.dumps(on_material, sort_keys=True, separators=(",", ":")).encode() == frozen_bytes
+-    assert off == on
+-
+-
+ PLUGIN_ROOT = Path(__file__).parent.parent / "zenquant" / "plugins"
+ PROFILE_PATH = Path(__file__).parent.parent / "config" / "profiles" / "default.toml"
+ 
+diff --git a/tests/test_time_space_export.py b/tests/test_time_space_export.py
+index b933ccb..ed658b1 100644
+--- a/tests/test_time_space_export.py
++++ b/tests/test_time_space_export.py
+@@ -5,20 +5,31 @@ import hashlib
+ import importlib.util
+ import json
+ import sys
++import tempfile
+ from pathlib import Path
+ 
+ import pytest
+ 
+-from zenquant.research.registration import canonical_sha256
++from zenquant.historical import PerturbationConfig
++from zenquant.research.registration import canonical_sha256, load_execution_manifest
+ from zenquant.research.time_space_export import (
+     EXPORT_REGISTRATION_REQUIRED,
+     VERIFIED,
++    _generator_dependency_identity,
+     _validate_registered_time_space_export_payloads,
+     hash_execution_materials,
+     recompute_time_space_export,
+     validate_registered_time_space_export,
+ )
+-from zenquant.research.time_space_replay import ReplayRequest
++from zenquant.research.time_space_replay import (
++    ReplayRequest,
++    _aggregate_candles,
++    _append_forward_rows,
++    _build_replay_view,
++    _normalize_frozen_five_min,
++    _registered_source_files,
++    _run_path,
++)
+ 
+ ROOT = Path(__file__).parents[1]
+ EXECUTION = ROOT / "config/research/registrations/time_space_shadow_execution_v1.json"
+@@ -34,6 +45,82 @@ def _canonical_bytes(value: object) -> bytes:
+     return (json.dumps(value, sort_keys=True, separators=(",", ":"), allow_nan=False) + "\n").encode()
+ 
+ 
++def test_registered_frozen_five_min_schema_aggregates_without_fabricated_trade_counts() -> None:
++    import pandas as pd
++
++    frame = pd.DataFrame(
++        [
++            {
++                "open_time_ns": index * 300_000_000_000,
++                "close_time_ns": (index + 1) * 300_000_000_000 - 1_000_000,
++                "open": 100.0 + index,
++                "high": 101.0 + index,
++                "low": 99.0 + index,
++                "close": 100.5 + index,
++                "volume": 1.0,
++            }
++            for index in range(12)
++        ]
++    )
++    normalized = _normalize_frozen_five_min(frame)
++    aggregated = _aggregate_candles(normalized, "1h")
++
++    assert normalized["symbol"].unique().tolist() == ["BTCUSDT"]
++    assert normalized["trade_count"].eq(0).all()
++    assert normalized["trade_count_available"].eq(False).all()
++    assert aggregated["trade_count"].tolist() == [0]
++
++
++def test_generator_identity_changes_when_previously_omitted_behavior_module_changes() -> None:
++    files, before = _generator_dependency_identity()
++    assert any(item["path"] == "zenquant/strategy/engine.py" for item in files)
++
++    def tampered(path: Path) -> bytes:
++        content = path.read_bytes()
++        if path == ROOT / "zenquant/strategy/engine.py":
++            return content + b"\n# tampered behavior dependency\n"
++        return content
++
++    _files, after = _generator_dependency_identity(read_bytes=tampered)
++    assert after != before
++
++
++def test_forward_slice_is_append_only_and_excludes_rows_after_literal_cutoff() -> None:
++    import pandas as pd
++
++    baseline = pd.DataFrame([{"close_time_ns": AS_OF_NS - 1, "close": 100.0}])
++    forward = pd.DataFrame(
++        [
++            {"close_time_ns": AS_OF_NS + FOUR_HOURS_NS - 1, "close": 101.0},
++            {"close_time_ns": AS_OF_NS + 2 * FOUR_HOURS_NS - 1, "close": 999.0},
++        ]
++    )
++    combined, identity = _append_forward_rows(
++        baseline,
++        forward,
++        time_column="close_time_ns",
++        reused_end_ns=AS_OF_NS,
++        as_of_ns=AS_OF_NS + FOUR_HOURS_NS,
++        source_id="TEST:forward_slice",
++        source_path=ROOT / "data/raw/binance/klines/BTCUSDT/5m/data.parquet",
++    )
++    changed_future = forward.copy()
++    changed_future.loc[1, "close"] = 555.0
++    _combined, changed_identity = _append_forward_rows(
++        baseline,
++        changed_future,
++        time_column="close_time_ns",
++        reused_end_ns=AS_OF_NS,
++        as_of_ns=AS_OF_NS + FOUR_HOURS_NS,
++        source_id="TEST:forward_slice",
++        source_path=ROOT / "data/raw/binance/klines/BTCUSDT/5m/data.parquet",
++    )
++
++    assert combined["close"].tolist() == [100.0, 101.0]
++    assert changed_identity["sha256"] == identity["sha256"]
++    assert identity["path"].endswith(f"#through={AS_OF_NS + FOUR_HOURS_NS}")
++
++
+ def _market_row(index: int, *, side: int = 1) -> dict[str, object]:
+     cutoff = AS_OF_NS - (3 - index) * FOUR_HOURS_NS
+     return {
+@@ -73,11 +160,11 @@ def _path() -> dict[str, object]:
+     }
+ 
+ 
+-def _source() -> dict[str, object]:
++def _source(*, as_of_ns: int = AS_OF_NS) -> dict[str, object]:
+     canonical = _path()
+     return {
+         "schema_version": "architecture-time-space-replay.v2",
+-        "as_of_ns": AS_OF_NS,
++        "as_of_ns": as_of_ns,
+         "windows": {
+             "reused": [1767225600000000000, AS_OF_NS],
+             "embargo": [AS_OF_NS, 1787644800000000000],
+@@ -108,6 +195,16 @@ def _build(tmp_path: Path):
+     )
+ 
+ 
++def _build_forward(tmp_path: Path, as_of_ns: int):
++    return recompute_time_space_export(
++        ReplayRequest(execution_manifest=EXECUTION, hypothesis_manifest=HYPOTHESIS, as_of_ns=as_of_ns),
++        repository_identity="infdahai/zenQuant",
++        commit_sha="a" * 40,
++        provider_run_id="12345",
++        replay_producer=lambda _request: _source(as_of_ns=as_of_ns),
++    )
++
++
+ def _registered(bundle):
+     export = copy.deepcopy(bundle.export)
+     provenance = copy.deepcopy(bundle.provenance)
+@@ -143,6 +240,8 @@ def _registered(bundle):
+         "checkpoint_artifact_id": 777,
+         "checkpoint_artifact_name": "time-space-export-checkpoint-12345",
+         "receipt_artifact_sha256": hashlib.sha256(_canonical_bytes(receipt)).hexdigest(),
++        "generator_commit_sha": "a" * 40,
++        "generator_provider_run_id": "12345",
+     }
+     provider = {
+         "id": 12345,
+@@ -192,6 +291,7 @@ def test_exact_pinned_checkpoint_is_the_only_verified_path(tmp_path: Path) -> No
+             receipt,
+             trust_payload=trust,
+             provider_payload=provider,
++            generator_provider_payload=provider,
+             generator_path=ROOT / "zenquant/research/time_space_export.py",
+             recomputed_bundle=_build(tmp_path),
+         )
+@@ -199,6 +299,32 @@ def test_exact_pinned_checkpoint_is_the_only_verified_path(tmp_path: Path) -> No
+     )
+ 
+ 
++def test_registered_baseline_checkpoint_validates_incremental_forward_cutoff_without_reregistration(
++    tmp_path: Path,
++) -> None:
++    baseline = _build(tmp_path)
++    export, provenance, _unused, receipt, trust, provider = _registered(baseline)
++    forward_as_of = 1_787_659_200_000_000_000
++    forward = _build_forward(tmp_path, forward_as_of)
++
++    assert (
++        _validate_registered_time_space_export_payloads(
++            forward.export,
++            forward.provenance,
++            baseline.checkpoint,
++            receipt,
++            trust_payload=trust,
++            provider_payload=provider,
++            generator_provider_payload=provider,
++            generator_path=ROOT / "zenquant/research/time_space_export.py",
++            recomputed_bundle=forward,
++        )
++        == VERIFIED
++    )
++    assert export["as_of_ns"] == AS_OF_NS
++    assert forward.export["as_of_ns"] == forward_as_of
++
++
+ @pytest.mark.parametrize(
+     "mutation",
+     [
+@@ -210,6 +336,8 @@ def test_exact_pinned_checkpoint_is_the_only_verified_path(tmp_path: Path) -> No
+         lambda export, provenance, checkpoint, receipt: provenance.update(source_set_sha256="sha256:" + "0" * 64),
+         lambda export, provenance, checkpoint, receipt: provenance["material_sha256"].update(fills="0" * 64),
+         lambda export, provenance, checkpoint, receipt: provenance["source_files"][0].update(sha256="0" * 64),
++        lambda export, provenance, checkpoint, receipt: provenance.update(commit_sha="c" * 40),
++        lambda export, provenance, checkpoint, receipt: provenance.update(provider_run_id="67890"),
+         lambda export, provenance, checkpoint, receipt: provenance["windows"].update(reused=[0, 1]),
+         lambda export, provenance, checkpoint, receipt: checkpoint.update(export_sha256="0" * 64),
+         lambda export, provenance, checkpoint, receipt: receipt.update(provider_run_id="999"),
+@@ -228,6 +356,7 @@ def test_registration_fails_closed_for_export_provenance_and_receipt_tampering(t
+             receipt,
+             trust_payload=trust,
+             provider_payload=provider,
++            generator_provider_payload=provider,
+             generator_path=ROOT / "zenquant/research/time_space_export.py",
+             recomputed_bundle=bundle,
+         )
+@@ -275,6 +404,44 @@ def test_read_only_sidecar_preserves_all_execution_material_bytes(tmp_path: Path
+     assert all(len(bytes.fromhex(value)) == hashlib.sha256().digest_size for value in before.values())
+ 
+ 
++def test_actual_historical_producer_and_sidecar_preserve_same_causal_six_streams() -> None:
++    execution = load_execution_manifest(EXECUTION)
++    source_files = _registered_source_files(execution.payload["sources"])
++    with tempfile.TemporaryDirectory(prefix="time-space-parity-") as directory:
++        replay_root = Path(directory)
++        _build_replay_view(
++            replay_root,
++            source_files,
++            as_of_ns=AS_OF_NS,
++            reused_end_ns=AS_OF_NS,
++        )
++        canonical, materials = _run_path(
++            replay_root,
++            start_ns=1767225600000000000,
++            end_ns=AS_OF_NS,
++            perturbation=PerturbationConfig(seed=42),
++        )
++    source = _source()
++    source["canonical"] = canonical
++    source["perturbations"] = {str(seed): copy.deepcopy(canonical) for seed in SEEDS}
++    source["execution_materials"] = materials
++    source["source_files"] = source_files
++    frozen_bytes = _canonical_bytes(materials)
++    before = hash_execution_materials(materials)
++
++    bundle = recompute_time_space_export(
++        ReplayRequest(EXECUTION, HYPOTHESIS, AS_OF_NS),
++        repository_identity="infdahai/zenQuant",
++        commit_sha="a" * 40,
++        provider_run_id="12345",
++        replay_producer=lambda _request: source,
++    )
++
++    assert _canonical_bytes(materials) == frozen_bytes
++    assert bundle.provenance["material_sha256"] == before
++    assert set(before) == {"snapshots", "targets", "orders", "fills", "equity", "episodes"}
++
++
+ def test_export_script_writes_canonical_files_without_overwrite(tmp_path: Path) -> None:
+     spec = importlib.util.spec_from_file_location("export_time_space_architecture", SCRIPT)
+     assert spec is not None and spec.loader is not None
+diff --git a/zenquant/research/time_space_export.py b/zenquant/research/time_space_export.py
+index 92ffb03..d77ddef 100644
+--- a/zenquant/research/time_space_export.py
++++ b/zenquant/research/time_space_export.py
+@@ -32,7 +32,7 @@ FOUR_HOURS_NS = 4 * 60 * 60 * 1_000_000_000
+ _PROJECT_ROOT = Path(__file__).parents[2]
+ _TRUST_PATH = _PROJECT_ROOT / "config/research/time_space_export_registration_trust_v1.json"
+ _GENERATOR_PATH = Path(__file__)
+-_DEPENDENCY_PATHS = (
++_STATIC_DEPENDENCY_PATHS = (
+     "scripts/export_time_space_architecture.py",
+     "scripts/build_time_space_export_receipt.py",
+     "scripts/run_architecture_experiment.py",
+@@ -57,6 +57,8 @@ _DEPENDENCY_PATHS = (
+     "config/research/time_space_shadow_hypothesis_v1.json",
+     "config/research/registrations/time_space_shadow_execution_v1.json",
+     "config/profiles/default.toml",
++    "pyproject.toml",
++    "uv.lock",
+ )
+ 
+ _MARKET_KEYS = frozenset(
+@@ -158,6 +160,8 @@ _TRUST_KEYS = frozenset(
+         "checkpoint_artifact_id",
+         "checkpoint_artifact_name",
+         "receipt_artifact_sha256",
++        "generator_commit_sha",
++        "generator_provider_run_id",
+     }
+ )
+ _RECEIPT_KEYS = frozenset(
+@@ -304,6 +308,7 @@ def validate_registered_time_space_export(
+             return EXPORT_REGISTRATION_REQUIRED
+         fetcher = provider_fetcher or _fetch_provider
+         provider = fetcher(trust["remote_identity"], int(trust["provider_run_id"]))
++        generator_provider = fetcher(trust["remote_identity"], int(trust["generator_provider_run_id"]))
+         recomputed = recompute_time_space_export(
+             ReplayRequest(
+                 execution_manifest=_PROJECT_ROOT / "config/research/registrations/time_space_shadow_execution_v1.json",
+@@ -323,6 +328,7 @@ def validate_registered_time_space_export(
+         receipt,
+         trust_payload=trust,
+         provider_payload=provider,
++        generator_provider_payload=generator_provider,
+         generator_path=_GENERATOR_PATH,
+         recomputed_bundle=recomputed,
+     )
+@@ -336,6 +342,7 @@ def _validate_registered_time_space_export_payloads(
+     *,
+     trust_payload: Mapping[str, Any],
+     provider_payload: Mapping[str, Any] | None,
++    generator_provider_payload: Mapping[str, Any] | None,
+     generator_path: Path,
+     recomputed_bundle: TimeSpaceExportBundle,
+ ) -> str:
+@@ -349,6 +356,11 @@ def _validate_registered_time_space_export_payloads(
+             _plain_mapping(receipt, "receipt"),
+             trust=_plain_mapping(trust_payload, "trust root"),
+             provider=None if provider_payload is None else _plain_mapping(provider_payload, "provider receipt"),
++            generator_provider=(
++                None
++                if generator_provider_payload is None
++                else _plain_mapping(generator_provider_payload, "generator provider receipt")
++            ),
+             generator_path=Path(generator_path),
+             recomputed_bundle=recomputed_bundle,
+         )
+@@ -377,6 +389,7 @@ def _validate_registered(
+     *,
+     trust: dict[str, Any],
+     provider: dict[str, Any] | None,
++    generator_provider: dict[str, Any] | None,
+     generator_path: Path,
+     recomputed_bundle: TimeSpaceExportBundle,
+ ) -> None:
+@@ -384,7 +397,12 @@ def _validate_registered(
+         raise ValueError("export envelope schema is invalid")
+     if set(trust) != _TRUST_KEYS or trust.get("registration_status") != VERIFIED:
+         raise ValueError("checkpoint trust root is not verified")
+-    if checkpoint.get("registration_status") != "PENDING" or checkpoint.get("receipt") is not None or provider is None:
++    if (
++        checkpoint.get("registration_status") != "PENDING"
++        or checkpoint.get("receipt") is not None
++        or provider is None
++        or generator_provider is None
++    ):
+         raise ValueError("checkpoint is not independently registered")
+     if export.get("schema_version") != "time-space-shadow-export.v1" or export.get("layer") != "time_space_shadow":
+         raise ValueError("export identity is invalid")
+@@ -452,11 +470,8 @@ def _validate_registered(
+     if provenance.get("ordered_transition_ids") != [item["transition_id"] for item in transitions]:
+         raise ValueError("transition identities changed")
+     export_sha256 = canonical_sha256(export)
+-    if provenance.get("export_sha256") != export_sha256 or checkpoint.get("export_sha256") != export_sha256:
++    if provenance.get("export_sha256") != export_sha256:
+         raise ValueError("export digest mismatch")
+-    provenance_sha256 = canonical_sha256(provenance)
+-    if checkpoint.get("provenance_sha256") != provenance_sha256:
+-        raise ValueError("provenance digest mismatch")
+     if set(receipt) != _RECEIPT_KEYS:
+         raise ValueError("checkpoint receipt is invalid")
+     checkpoint_bytes = (json.dumps(checkpoint, sort_keys=True, separators=(",", ":")) + "\n").encode()
+@@ -465,8 +480,8 @@ def _validate_registered(
+         receipt.get("schema_version") != "time-space-export-registration-receipt.v1"
+         or receipt.get("manifest_path") != "config/research/registrations/time_space_shadow_export_checkpoint_v1.json"
+         or receipt.get("manifest_sha256") != manifest_sha256
+-        or receipt.get("export_sha256") != export_sha256
+-        or receipt.get("provenance_sha256") != provenance_sha256
++        or receipt.get("export_sha256") != checkpoint.get("export_sha256")
++        or receipt.get("provenance_sha256") != checkpoint.get("provenance_sha256")
+         or receipt.get("provider_run_id") != trust["provider_run_id"]
+         or receipt.get("commit_sha") != trust["commit_sha"]
+         or receipt.get("remote_identity") != trust["remote_identity"]
+@@ -494,6 +509,18 @@ def _validate_registered(
+         raise ValueError("provider receipt does not match checkpoint")
+     if provenance.get("repository_identity") != receipt["remote_identity"]:
+         raise ValueError("repository identity mismatch")
++    if provenance.get("commit_sha") != trust.get("generator_commit_sha") or provenance.get(
++        "provider_run_id"
++    ) != trust.get("generator_provider_run_id"):
++        raise ValueError("generator checkout or provider identity is not pinned")
++    if (
++        generator_provider.get("id") != int(provenance["provider_run_id"])
++        or generator_provider.get("head_sha") != provenance["commit_sha"]
++        or generator_provider.get("conclusion") != "success"
++        or not isinstance(generator_provider.get("repository"), dict)
++        or generator_provider["repository"].get("full_name") != provenance["repository_identity"]
++    ):
++        raise ValueError("generator provider does not attest the pinned checkout")
+ 
+ 
+ def _provider_created_at_ns(value: Any) -> int:
+@@ -717,11 +744,14 @@ def _sha256_file(path: Path) -> str:
+     return digest.hexdigest()
+ 
+ 
+-def _generator_dependency_identity() -> tuple[list[dict[str, str]], str]:
++def _generator_dependency_identity(*, read_bytes=None) -> tuple[list[dict[str, str]], str]:
++    loader = read_bytes or (lambda path: path.read_bytes())
++    python_paths = {path.relative_to(_PROJECT_ROOT).as_posix() for path in (_PROJECT_ROOT / "zenquant").rglob("*.py")}
++    dependency_paths = sorted(python_paths | set(_STATIC_DEPENDENCY_PATHS))
+     files = []
+-    for relative in _DEPENDENCY_PATHS:
++    for relative in dependency_paths:
+         path = _PROJECT_ROOT / relative
+-        files.append({"path": relative, "sha256": _sha256_file(path)})
++        files.append({"path": relative, "sha256": hashlib.sha256(loader(path)).hexdigest()})
+     return files, canonical_sha256({"files": files})
+ 
+ 
+diff --git a/zenquant/research/time_space_replay.py b/zenquant/research/time_space_replay.py
+index e26166f..aa5605d 100644
+--- a/zenquant/research/time_space_replay.py
++++ b/zenquant/research/time_space_replay.py
+@@ -36,6 +36,9 @@ FROZEN_FORWARD_START_NS = 1_787_644_800_000_000_000
+ _PROJECT_ROOT = Path(__file__).parents[2]
+ _EXECUTION_MANIFEST = _PROJECT_ROOT / "config/research/registrations/time_space_shadow_execution_v1.json"
+ _HYPOTHESIS_MANIFEST = _PROJECT_ROOT / "config/research/time_space_shadow_hypothesis_v1.json"
++_FORWARD_5M = _PROJECT_ROOT / "data/raw/binance/klines/BTCUSDT/5m/data.parquet"
++_FORWARD_FUNDING = _PROJECT_ROOT / "data/raw/binance/funding/BTCUSDT/data.parquet"
++_FORWARD_1D = _PROJECT_ROOT / "data/raw/binance_spot/klines/BTCUSDT/1d/data.parquet"
+ _EXPECTED_SOURCE_PATHS = {
+     "BINANCE_PERPETUAL_BTCUSDT_5M": "data/derived/trend_research/20260824/BTCUSDT/5m/data.parquet",
+     "BINANCE_PERPETUAL_BTCUSDT_FUNDING": "data/derived/trend_research/20260824/BTCUSDT/funding/data.parquet",
+@@ -65,13 +68,22 @@ def produce_frozen_architecture_replay(request: ReplayRequest) -> dict[str, Any]
+         raise ValueError("replay request must use TimeSpace manifests")
+     if execution.hypothesis_sha256 != hypothesis.sha256:
+         raise ValueError("execution and hypothesis manifests are not bound")
+-    if request.as_of_ns != hypothesis.reused_end_ns:
+-        raise ValueError("initial registered export as_of must equal the frozen reused cutoff")
++    if request.as_of_ns != hypothesis.reused_end_ns and request.as_of_ns < FROZEN_FORWARD_START_NS:
++        raise ValueError("export as_of must be the reused cutoff or an eligible forward cutoff")
++    if request.as_of_ns % (4 * 60 * 60 * 1_000_000_000):
++        raise ValueError("export as_of must be a confirmed 4h cutoff")
+     source_files = _registered_source_files(execution.payload["sources"])
+ 
+     with tempfile.TemporaryDirectory(prefix="zenquant-time-space-replay-") as directory:
+         root = Path(directory)
+-        _build_replay_view(root, source_files)
++        source_files.extend(
++            _build_replay_view(
++                root,
++                source_files,
++                as_of_ns=request.as_of_ns,
++                reused_end_ns=hypothesis.reused_end_ns,
++            )
++        )
+         canonical_path, materials = _run_path(
+             root,
+             start_ns=hypothesis.reused_start_ns,
+@@ -144,9 +156,7 @@ def _run_path(
+         liquidation_dir=root / "unused-liquidations",
+     )
+     runner = HistoricalBacktest(config)
+-    order_audits: list[Any] = []
+-    runner.bus.subscribe("exec.order.audit", lambda _subject, value: order_audits.append(value))
+-    result = runner.run()
++    runner.run()
+     execution_config = config.execution_config
+     assert execution_config is not None
+     batch = runner.build_architecture_stage_rows(
+@@ -170,12 +180,12 @@ def _run_path(
+     )
+     path = _extract_path(runner, observations, a5.rows)
+     materials = {
+-        "snapshots": to_jsonable(result.decision_snapshots),
+-        "targets": to_jsonable(tuple(runner._targets)),
+-        "orders": to_jsonable(tuple(order_audits)),
+-        "fills": to_jsonable(tuple(runner._reports)),
+-        "equity": to_jsonable(tuple(runner._risk_snapshots)),
+-        "episodes": to_jsonable(result.position_episodes),
++        "snapshots": to_jsonable(a5.snapshots),
++        "targets": to_jsonable(a5.targets),
++        "orders": to_jsonable(a5.audits),
++        "fills": to_jsonable(a5.reports),
++        "equity": to_jsonable(a5.equity),
++        "episodes": to_jsonable(a5.position_episodes),
+     }
+     return path, materials
+ 
+@@ -297,12 +307,55 @@ def _append_verified_file(
+     observed.append({"source_id": source_id, "path": path_value, "sha256": observed_sha})
+ 
+ 
+-def _build_replay_view(root: Path, sources: list[dict[str, str]]) -> None:
++def _build_replay_view(
++    root: Path,
++    sources: list[dict[str, str]],
++    *,
++    as_of_ns: int,
++    reused_end_ns: int,
++) -> list[dict[str, str]]:
+     by_id = {item["source_id"]: Path(item["path"]).resolve() for item in sources}
+-    five_min = pd.read_parquet(by_id["BINANCE_PERPETUAL_BTCUSDT_5M"])
++    five_min = _normalize_frozen_five_min(pd.read_parquet(by_id["BINANCE_PERPETUAL_BTCUSDT_5M"]))
++    funding = pd.read_parquet(by_id["BINANCE_PERPETUAL_BTCUSDT_FUNDING"])
++    one_day = pd.read_parquet(by_id["BINANCE_SPOT_BTCUSDT_1D"])
++    extension_identities: list[dict[str, str]] = []
++    if as_of_ns > reused_end_ns:
++        five_min, identity = _append_forward_rows(
++            five_min,
++            _normalize_forward_five_min(pd.read_parquet(_FORWARD_5M)),
++            time_column="close_time_ns",
++            reused_end_ns=reused_end_ns,
++            as_of_ns=as_of_ns,
++            source_id="BINANCE_PERPETUAL_BTCUSDT_5M:forward_slice",
++            source_path=_FORWARD_5M,
++        )
++        extension_identities.append(identity)
++        funding, identity = _append_forward_rows(
++            funding,
++            pd.read_parquet(_FORWARD_FUNDING),
++            time_column="funding_time_ns",
++            reused_end_ns=reused_end_ns,
++            as_of_ns=as_of_ns,
++            source_id="BINANCE_PERPETUAL_BTCUSDT_FUNDING:forward_slice",
++            source_path=_FORWARD_FUNDING,
++        )
++        extension_identities.append(identity)
++        one_day, identity = _append_forward_rows(
++            one_day,
++            pd.read_parquet(_FORWARD_1D),
++            time_column="close_time_ns",
++            reused_end_ns=reused_end_ns,
++            as_of_ns=as_of_ns,
++            source_id="BINANCE_SPOT_BTCUSDT_1D:forward_slice",
++            source_path=_FORWARD_1D,
++        )
++        extension_identities.append(identity)
++        expected_last_close = as_of_ns - 1_000_000
++        if int(five_min["close_time_ns"].max()) != expected_last_close:
++            raise ValueError("forward 5m source is incomplete at the requested point-in-time cutoff")
+     five_min_dir = root / "klines/BTCUSDT/5m"
+     five_min_dir.mkdir(parents=True)
+-    (five_min_dir / "data.parquet").symlink_to(by_id["BINANCE_PERPETUAL_BTCUSDT_5M"])
++    five_min.to_parquet(five_min_dir / "data.parquet", index=False)
+     for label, rule in (("1h", "1h"), ("4h", "4h")):
+         frame = _aggregate_candles(five_min, rule)
+         directory = root / "klines/BTCUSDT" / label
+@@ -310,10 +363,11 @@ def _build_replay_view(root: Path, sources: list[dict[str, str]]) -> None:
+         frame.to_parquet(directory / "data.parquet", index=False)
+     one_day_dir = root / "klines/BTCUSDT/1d"
+     one_day_dir.mkdir(parents=True)
+-    (one_day_dir / "data.parquet").symlink_to(by_id["BINANCE_SPOT_BTCUSDT_1D"])
++    one_day.to_parquet(one_day_dir / "data.parquet", index=False)
+     funding_dir = root / "funding/BTCUSDT"
+     funding_dir.mkdir(parents=True)
+-    (funding_dir / "data.parquet").symlink_to(by_id["BINANCE_PERPETUAL_BTCUSDT_FUNDING"])
++    funding.to_parquet(funding_dir / "data.parquet", index=False)
++    return extension_identities
+ 
+ 
+ def _aggregate_candles(frame: pd.DataFrame, rule: str) -> pd.DataFrame:
+@@ -333,7 +387,69 @@ def _aggregate_candles(frame: pd.DataFrame, rule: str) -> pd.DataFrame:
+             "close_time_ns": "max",
+         }
+     )
+-    return result.dropna(subset=["open", "close"]).reset_index(drop=True)
++    result = result.dropna(subset=["open", "close"]).reset_index(drop=True)
++    result["close_time_ns"] = result["open_time_ns"].astype("int64") + int(pd.Timedelta(rule).value)
++    return result
++
++
++def _normalize_frozen_five_min(frame: pd.DataFrame) -> pd.DataFrame:
++    required = {"open_time_ns", "close_time_ns", "open", "high", "low", "close", "volume"}
++    if not required.issubset(frame.columns):
++        raise ValueError("registered 5m source is missing frozen OHLCV columns")
++    values = frame.loc[:, sorted(required)].copy()
++    values["symbol"] = "BTCUSDT"
++    values["timeframe"] = Timeframe.TF_5M.value
++    values["open_time"] = values["open_time_ns"].astype("int64") // 1_000_000
++    # The registered frozen schema intentionally omits trade counts. Zero is an
++    # explicit unavailable sentinel for the replay Candle contract, not an
++    # observed count; the companion flag prevents downstream research from
++    # treating it as market evidence.
++    values["trade_count"] = 0
++    values["trade_count_available"] = False
++    return values
++
++
++def _normalize_forward_five_min(frame: pd.DataFrame) -> pd.DataFrame:
++    values = _normalize_frozen_five_min(frame)
++    if "trade_count" in frame.columns:
++        values["trade_count"] = frame["trade_count"].astype("int64")
++        values["trade_count_available"] = True
++    return values
++
++
++def _append_forward_rows(
++    baseline: pd.DataFrame,
++    forward: pd.DataFrame,
++    *,
++    time_column: str,
++    reused_end_ns: int,
++    as_of_ns: int,
++    source_id: str,
++    source_path: Path,
++) -> tuple[pd.DataFrame, dict[str, str]]:
++    if time_column not in forward.columns:
++        raise ValueError(f"forward source lacks point-in-time column: {source_id}")
++    extension = forward.loc[
++        (forward[time_column].astype("int64") >= reused_end_ns) & (forward[time_column].astype("int64") <= as_of_ns)
++    ].copy()
++    extension = extension.sort_values(time_column).drop_duplicates(time_column, keep=False)
++    if extension.empty:
++        raise ValueError(f"forward source contains no eligible rows: {source_id}")
++    shared = [column for column in baseline.columns if column in extension.columns]
++    combined = pd.concat([baseline, extension.loc[:, shared]], ignore_index=True)
++    combined = combined.sort_values(time_column)
++    if combined[time_column].duplicated().any():
++        raise ValueError(f"forward source overlaps frozen baseline: {source_id}")
++    digest = hashlib.sha256(
++        extension.loc[:, sorted(extension.columns)]
++        .to_json(orient="records", date_unit="ns", double_precision=15)
++        .encode()
++    ).hexdigest()
++    return combined, {
++        "source_id": source_id,
++        "path": f"{source_path.relative_to(_PROJECT_ROOT).as_posix()}#through={as_of_ns}",
++        "sha256": digest,
++    }
+ 
+ 
+ def _optional_positive(value: Any) -> float | None:

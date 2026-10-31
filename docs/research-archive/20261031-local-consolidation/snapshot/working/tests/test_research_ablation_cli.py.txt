@@ -1,0 +1,160 @@
+"""Frozen single-component experiment CLI rejects altered budgets and failures."""
+
+import copy
+import importlib.util
+import json
+from pathlib import Path
+
+import pytest
+
+spec = importlib.util.spec_from_file_location(
+    "research_ablation_cli", Path(__file__).parents[1] / "scripts/run_research_ablation.py"
+)
+cli = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(cli)
+common = cli.common
+
+
+def plan():
+    return dict(
+        schema_version="fixed-breakout-ablation.v1",
+        cases=cli.build_cases(),
+        inventory_policy="actual_filled_inventory_v1",
+        initial_equity=100000.0,
+        start_ns=common.START_NS,
+        end_ns_exclusive=common.END_NS,
+        search_trials=0,
+        data_files_sha256={p: "0" * 64 for p in common.DATA_FILES},
+        code_hash="frozen",
+    )
+
+
+@pytest.mark.parametrize("mutation", ["duplicate", "both_false", "reopt", "budget", "missing_source", "numeric_gate"])
+def test_invalid_frozen_matrix_rejected(mutation):
+    value = plan()
+    if mutation == "duplicate":
+        value["cases"][-1] = copy.deepcopy(value["cases"][0])
+    if mutation == "both_false":
+        value["cases"][0]["params"].update(entry_gate_enabled=False, exit_gate_enabled=False)
+    if mutation == "reopt":
+        value["cases"][0]["params"]["entry_bars"] = 72
+    if mutation == "budget":
+        value["cases"][0]["risk_budget"]["target_annual_vol"] = 0.05
+    if mutation == "numeric_gate":
+        value["cases"][0]["params"]["entry_gate_enabled"] = 1
+    if mutation == "missing_source":
+        value["data_files_sha256"].pop("funding/ETHUSDT/data.parquet")
+    with pytest.raises(ValueError):
+        cli.validate_plan(value)
+
+
+def test_exact_108_cases_and_import_bytes_bound():
+    value = plan()
+    cli.validate_plan(value)
+    assert len(value["cases"]) == len({x["case_id"] for x in value["cases"]}) == 108
+    assert all(x["risk_budget"] == {"target_annual_vol": 0.1, "max_leverage": 1.5} for x in value["cases"])
+    assert {x["variant"] for x in value["cases"]} == {"full", "without_entry", "without_exit"}
+    files = common.code_identity()["files"]
+    assert "scripts/run_research_ablation.py" in files
+    assert "scripts/run_research_stress.py" in files
+
+
+def setup_job(monkeypatch, tmp_path):
+    value = plan()
+    value["data_root"] = str(tmp_path)
+    p = tmp_path / "plan.json"
+    p.write_text(json.dumps(value))
+    monkeypatch.setattr(common, "verify_sources", lambda value: None)
+    monkeypatch.setattr(common, "load_window", lambda *a, **kw: {"symbol": kw["symbol"], "manifest": {}})
+    monkeypatch.setattr(common, "perturb_bundle", lambda bundle, **kw: bundle)
+    return p
+
+
+def good_result():
+    return {}, {
+        "gates": {"E3": {"status": "FAIL"}},
+        "metrics": {},
+        "rankable": False,
+        "live_eligible": False,
+        "optimizer_feedback_eligible": False,
+    }
+
+
+@pytest.mark.parametrize("failure", ["attempt", "lost_gate", "interrupt", "stale"])
+def test_failures_retained_no_qualification(monkeypatch, tmp_path, failure):
+    p = setup_job(monkeypatch, tmp_path)
+    calls = []
+    checks = []
+
+    def evaluate(*a, **kw):
+        calls.append(True)
+        if len(calls) == 1 and failure == "attempt":
+            raise ValueError("actual failure")
+        if failure == "interrupt":
+            raise KeyboardInterrupt()
+        e, r = good_result()
+        if failure == "lost_gate":
+            r["gates"]["E3"]["status"] = "PASS"
+        return e, r
+
+    def verify(value):
+        checks.append(True)
+        if len(checks) == 2 and failure == "stale":
+            raise ValueError("source drift")
+
+    monkeypatch.setattr(common, "evaluate_candidate", evaluate)
+    monkeypatch.setattr(common, "verify_sources", verify)
+    out = tmp_path / "run"
+    assert cli.main(["--plan", str(p), "--symbol", "ETHUSDT", "--output", str(out)]) == 1
+    summary = json.loads((out / "summary.json").read_text())
+    assert summary["expected_attempts"] == 54
+    assert summary["live_eligible"] is False
+    if failure == "interrupt":
+        assert summary["started_attempts"] == 1 and summary["unstarted_attempts"] == 53
+        assert not (out / "completed.json").exists()
+    elif failure == "stale":
+        assert summary["status"] == "STALE" and not (out / "completed.json").exists()
+    else:
+        assert len(summary["cases"]) == 54 and summary["failed_attempts"] > 0
+
+
+def test_sources_rejected_before_output_and_existing_output_never_reused(monkeypatch, tmp_path):
+    p = setup_job(monkeypatch, tmp_path)
+    out = tmp_path / "run"
+    monkeypatch.setattr(common, "verify_sources", lambda value: (_ for _ in ()).throw(ValueError("source mismatch")))
+    with pytest.raises(ValueError, match="source mismatch"):
+        cli.main(["--plan", str(p), "--symbol", "BTCUSDT", "--output", str(out)])
+    assert not out.exists()
+    monkeypatch.setattr(common, "verify_sources", lambda value: None)
+    out.mkdir()
+    with pytest.raises(FileExistsError):
+        cli.main(["--plan", str(p), "--symbol", "BTCUSDT", "--output", str(out)])
+
+
+def test_success_runs_exact_54_with_unchanged_risk_and_complete_journal(monkeypatch, tmp_path):
+    p = setup_job(monkeypatch, tmp_path)
+    calls = []
+
+    def evaluate(*a, **kw):
+        calls.append(kw)
+        return good_result()
+
+    monkeypatch.setattr(common, "evaluate_candidate", evaluate)
+    out = tmp_path / "run"
+    assert cli.main(["--plan", str(p), "--symbol", "BTCUSDT", "--output", str(out)]) == 0
+    summary = json.loads((out / "summary.json").read_text())
+    assert len(calls) == summary["expected_attempts"] == summary["started_attempts"] == 54
+    assert summary["unstarted_attempts"] == summary["unfinished_started_attempts"] == 0
+    assert all(c["risk_budget"] == {"target_annual_vol": 0.10, "max_leverage": 1.5} for c in calls)
+    assert len((out / "journal/trials.jsonl").read_text().splitlines()) == 108
+    assert (out / "completed.json").exists()
+
+
+def test_shared_executor_rejects_duplicate_partition_before_output(monkeypatch, tmp_path):
+    monkeypatch.setattr(common, "verify_sources", lambda plan: None)
+    value = plan()
+    selected = value["cases"][:54]
+    selected[-1] = selected[0]
+    with pytest.raises(ValueError, match="duplicate"):
+        common.execute_partition(value, symbol="BTCUSDT", target_vol=0.10, output=tmp_path / "run", selected=selected)
+    assert not (tmp_path / "run").exists()

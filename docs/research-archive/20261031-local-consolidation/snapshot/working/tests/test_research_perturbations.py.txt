@@ -1,0 +1,135 @@
+"""Synthetic stress preserves causal timestamps and honest provenance."""
+
+import copy
+import hashlib
+import math
+
+import pytest
+
+from zenquant.research.perturbations import perturb_bundle
+from zenquant.research.run_evidence import identity_hash
+from zenquant.research.strategy_families import BAR_NS, generate_targets
+
+
+def bundle(n=400):
+    bars = [
+        dict(
+            open_time_ns=i * BAR_NS,
+            close_time_ns=(i + 1) * BAR_NS - 1_000_000,
+            open=100 + i,
+            high=102 + i,
+            low=99 + i,
+            close=101 + i,
+        )
+        for i in range(n)
+    ]
+    return dict(
+        symbol="BTCUSDT",
+        bars=bars[20:],
+        regime_bars=copy.deepcopy(bars),
+        warmup_count=10,
+        funding=[dict(funding_time_ns=i * BAR_NS, funding_rate=0.0001, mark_price=100.0) for i in range(30, n, 2)],
+        manifest=dict(
+            start_ns=30 * BAR_NS,
+            end_ns_exclusive=n * BAR_NS,
+            symbol="BTCUSDT_PERP",
+            window_data_hash="original",
+            file_sha256={"original": "sha"},
+        ),
+    )
+
+
+def test_identity_is_equal_and_not_aliased():
+    original = bundle()
+    result = perturb_bundle(original)
+    assert result == original
+    result["bars"][0]["close"] = 0
+    assert original["bars"][0]["close"] != 0
+
+
+def test_price_noise_hand_calculation_and_overlap():
+    original = bundle()
+    result = perturb_bundle(original, scenario="price_noise", seed=7)
+    timestamp = result["bars"][0]["open_time_ns"]
+    digest = hashlib.sha256(f"research-perturbation.v1:7:{timestamp}".encode()).digest()
+    u1 = (int.from_bytes(digest[:8], "big") + 0.5) / 2**64
+    u2 = (int.from_bytes(digest[8:16], "big") + 0.5) / 2**64
+    expected = math.exp(0.002 * math.sqrt(-2 * math.log(u1)) * math.cos(2 * math.pi * u2))
+    assert result["bars"][0]["close"] == original["bars"][0]["close"] * expected
+    assert result["bars"][0] == result["regime_bars"][20]
+    assert result["funding"] == original["funding"]
+
+
+@pytest.mark.parametrize("scenario", ["price_noise", "missing_bar"])
+def test_determinism_future_prefix_and_no_source_mutation(scenario):
+    original = bundle()
+    before = copy.deepcopy(original)
+    a = perturb_bundle(original, scenario=scenario, seed=19)
+    assert a == perturb_bundle(original, scenario=scenario, seed=19)
+    assert original == before
+    prefix = bundle(250)
+    b = perturb_bundle(prefix, scenario=scenario, seed=19)
+    assert [row for row in a["bars"] if row["open_time_ns"] < 250 * BAR_NS] == b["bars"]
+    assert a["funding"] == original["funding"]
+
+
+def test_missing_bars_preserve_times_and_reset_strategy_warmup():
+    original = bundle(1000)
+    result = perturb_bundle(original, scenario="missing_bar", seed=31)
+    assert len(result["bars"]) < len(original["bars"])
+    assert set(x["open_time_ns"] for x in result["bars"]).issubset(x["open_time_ns"] for x in original["bars"])
+    targets = generate_targets(result["bars"], "trend", {})
+    for i in range(1, len(targets)):
+        if result["bars"][i]["open_time_ns"] - result["bars"][i - 1]["open_time_ns"] != BAR_NS:
+            assert targets[i : i + 180] == [0.0] * len(targets[i : i + 180])
+    assert result["manifest"]["synthetic_stress"]["replay_status"] == "NOT_EVALUABLE_GAP_ADAPTER_REQUIRED"
+
+
+def test_manifest_derived_identity_and_price_chronology():
+    original = bundle()
+    result = perturb_bundle(original, scenario="price_noise", seed=43)
+    manifest = result["manifest"]
+    assert manifest["window_data_hash"] != original["manifest"]["window_data_hash"]
+    assert "file_sha256" not in manifest
+    assert manifest["synthetic_stress"]["parent_manifest_hash"] == identity_hash(original["manifest"])
+    assert manifest["synthetic_stress"]["parent_content_hash"] == identity_hash(original)
+    assert manifest["regime_history"]["hash"] == identity_hash({"bars": result["regime_bars"]})
+    for before, after in zip(original["bars"], result["bars"], strict=True):
+        assert after["open_time_ns"] == before["open_time_ns"]
+        assert after["close_time_ns"] == before["close_time_ns"]
+        assert (
+            0
+            < after["low"]
+            <= min(after["open"], after["close"])
+            <= max(after["open"], after["close"])
+            <= after["high"]
+        )
+
+
+def test_conflicting_overlap_and_invalid_seed_fail_closed():
+    original = bundle()
+    original["regime_bars"][20]["close"] += 0.1
+    with pytest.raises(ValueError, match="overlap"):
+        perturb_bundle(original, scenario="price_noise", seed=7)
+    with pytest.raises(ValueError, match="seed"):
+        perturb_bundle(bundle(), scenario="price_noise", seed=1)
+
+
+@pytest.mark.parametrize("seed", [7, 19, 31, 43, 59])
+def test_all_frozen_seeds_keep_real_marks_and_all_funding(seed):
+    original = bundle()
+    original["funding"][0]["mark_price"] = None
+    result = perturb_bundle(original, scenario="price_noise", seed=seed)
+    assert result["funding"] == original["funding"]
+    assert result["funding"][0]["mark_price"] is None
+    assert result["manifest"]["window_data_hash"] == identity_hash(
+        {"bars": result["bars"], "funding": result["funding"]}
+    )
+
+
+def test_missing_bar_does_not_hide_strict_replay_gap_failure():
+    from zenquant.research.target_replay import run_target_replay
+
+    result = perturb_bundle(bundle(1000), scenario="missing_bar", seed=59)
+    with pytest.raises(ValueError, match="contiguous"):
+        run_target_replay(result["bars"], [0.0] * len(result["bars"]), funding=result["funding"])

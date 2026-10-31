@@ -1,0 +1,310 @@
+#!/usr/bin/env python3
+"""Run bounded direction probes; no optimizer, promotion or live execution."""
+
+from __future__ import annotations
+
+import argparse
+import importlib
+import json
+import os
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+for variable in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS", "VECLIB_MAXIMUM_THREADS"):
+    os.environ[variable] = "1"
+
+ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT))
+
+import pandas as pd  # noqa: E402
+
+from zenquant.research.frontier_lab.common import (  # noqa: E402
+    DEV_END,
+    SEEDS,
+    TRAIN_END,
+    file_hash,
+    validate_bars,
+    validate_result,
+    write_json,
+)
+from zenquant.research.run_evidence import TrialJournal, identity_hash  # noqa: E402
+
+REGISTRY = ROOT / "config/research/market_exploration_v1.json"
+PACKAGE = ROOT / "zenquant/research/frontier_lab"
+
+
+def load_registry() -> dict:
+    registry = json.loads(REGISTRY.read_text())
+    directions = registry["directions"]
+    ids = [direction["id"] for direction in directions]
+    modules = [direction["module"] for direction in directions]
+    if not 1 <= len(directions) <= 20 or len(set(ids)) != len(ids) or len(set(modules)) != len(modules):
+        raise ValueError("campaign requires 1..20 unique directions and modules")
+    if any(not value.replace("_", "").isalnum() for value in ids + modules):
+        raise ValueError("direction identifiers must be simple names")
+    if (
+        registry["seeds"] != SEEDS
+        or pd.Timestamp(registry["train_end"]) != TRAIN_END
+        or pd.Timestamp(registry["dev_end"]) != DEV_END
+        or registry["acceptance_data_allowed"] is not False
+        or registry["max_threads_per_experiment"] != 1
+        or not 1 <= registry["max_concurrent_experiments"] <= 3
+    ):
+        raise ValueError("registry conflicts with frozen temporal/resource contract")
+    return registry
+
+
+def prepare(output: Path) -> dict:
+    """Freeze only pre-2026 learner inputs; source bytes are separately bound."""
+    registry = load_registry()
+    context_file = output / "context.json"
+    if context_file.exists():
+        context = json.loads(context_file.read_text())
+        if context["registry_sha256"] != file_hash(REGISTRY) or context["bars_sha256"] != file_hash(
+            Path(context["bars_path"])
+        ):
+            raise ValueError("frozen campaign inputs changed")
+        return context
+    output.mkdir(parents=True, exist_ok=True)
+    source = ROOT / "results/research_framework/20261004/research_data_v2/klines/BTCUSDT/4h/data.parquet"
+    frame = pd.read_parquet(source)
+    frame = frame.loc[frame["close_time_ns"] < DEV_END.value].copy().reset_index(drop=True)
+    validate_bars(frame)
+    snapshot = output / "inputs/btc_4h_pre2026.parquet"
+    snapshot.parent.mkdir(parents=True, exist_ok=True)
+    if snapshot.exists():
+        raise ValueError("orphan snapshot exists; choose a fresh output directory")
+    frame.to_parquet(snapshot, index=False)
+    context = {
+        "repo_root": str(ROOT),
+        "campaign_root": str(output.resolve()),
+        "bars_path": str(snapshot.resolve()),
+        "bars_sha256": file_hash(snapshot),
+        "source_path": str(source),
+        "source_sha256": file_hash(source),
+        "registry_sha256": file_hash(REGISTRY),
+        "seeds": registry["seeds"],
+        "train_end": registry["train_end"],
+        "dev_end": registry["dev_end"],
+        "rows": len(frame),
+        "first_close_ns": int(frame["close_time_ns"].min()),
+        "last_close_ns": int(frame["close_time_ns"].max()),
+        "historical_available_at_verified": False,
+        "physical_source_contains_post2025_rows": True,
+        "learner_snapshot_contains_post2025_rows": False,
+        "data_role": "train_and_previously_observed_dev_diagnostic",
+        "production_changed": False,
+        "rankable": False,
+        "live_eligible": False,
+    }
+    write_json(context_file, context)
+    write_json(output / "frozen_registry.json", registry)
+    (output / "initial_git_status.txt").write_text(
+        subprocess.check_output(["git", "status", "--short", "--branch"], cwd=ROOT, text=True)
+    )
+    return context
+
+
+def run_direction(direction: dict, output: Path, attempt: str) -> int:
+    context = prepare(output)
+    module_file = PACKAGE / "experiments" / f"{direction['module']}.py"
+    if not module_file.exists():
+        raise ValueError(f"direction module missing: {module_file}")
+    target = output / direction["id"] / attempt
+    target.mkdir(parents=True, exist_ok=False)
+    bound_files = [
+        module_file,
+        PACKAGE / "common.py",
+        PACKAGE / "__init__.py",
+        PACKAGE / "experiments/__init__.py",
+        Path(__file__).resolve(),
+        REGISTRY,
+        ROOT / "zenquant/research/run_evidence.py",
+        Path(context["bars_path"]),
+    ]
+    identity = {
+        "direction": direction,
+        "context": context,
+        "bound_files": {
+            str(p.relative_to(ROOT)) if p.is_relative_to(ROOT) else str(p): file_hash(p) for p in bound_files
+        },
+        "attempt": attempt,
+    }
+    journal = TrialJournal(target / "journal", identity)
+    command = [
+        sys.executable,
+        str(Path(__file__).resolve()),
+        "--direction",
+        direction["id"],
+        "--output",
+        str(output),
+        "--attempt",
+        attempt,
+    ]
+    write_json(target / "command.json", {"argv": command, "cwd": str(ROOT)})
+    context = {**context, "output_dir": str(target.resolve())}
+    started = time.monotonic()
+    try:
+        module = importlib.import_module(f"zenquant.research.frontier_lab.experiments.{direction['module']}")
+        result = module.run(context)
+        validate_result(result, direction["id"])
+        if any(file_hash(ROOT / p) != digest for p, digest in identity["bound_files"].items()):
+            raise ValueError("code or data changed during experiment")
+        supplementary = {}
+        for value in result.get("input_paths", []):
+            path = Path(value)
+            if not path.is_absolute():
+                path = ROOT / path
+            if not path.is_file():
+                raise ValueError(f"declared input is missing: {path}")
+            supplementary[str(path.relative_to(ROOT))] = file_hash(path)
+        result = {
+            **result,
+            "title": direction["title"],
+            "status": "completed",
+            "identity_hash": identity_hash(identity),
+            "bound_files": identity["bound_files"],
+            "supplementary_input_hashes": supplementary,
+            "rankable": False,
+            "live_eligible": False,
+            "promotion_eligible": False,
+            "development_only": True,
+            "elapsed_seconds": round(time.monotonic() - started, 3),
+        }
+        write_json(target / "result.json", result)
+        journal.append(
+            {"attempt_id": attempt, "status": "completed", "result_sha256": file_hash(target / "result.json")}
+        )
+        print(
+            json.dumps(
+                {
+                    "direction": direction["id"],
+                    "status": "completed",
+                    "verdict": result["verdict"],
+                    "seconds": result["elapsed_seconds"],
+                },
+                ensure_ascii=False,
+            )
+        )
+        return 0
+    except Exception as exc:
+        failure = {
+            "direction_id": direction["id"],
+            "status": "failed",
+            "error": f"{type(exc).__name__}: {exc}",
+            "identity_hash": identity_hash(identity),
+            "rankable": False,
+            "live_eligible": False,
+        }
+        write_json(target / "failure.json", failure)
+        journal.append({"attempt_id": attempt, **failure})
+        print(json.dumps(failure, ensure_ascii=False), file=sys.stderr)
+        return 1
+
+
+def committed_result(target: Path, direction_id: str, attempt: str) -> dict:
+    """A JSON success flag alone is not committed experiment evidence."""
+    result_path = target / "result.json"
+    result = json.loads(result_path.read_text())
+    validate_result(result, direction_id)
+    journal_root = target / "journal"
+    for name in ("identity.json", "trials.jsonl", "journal_state.json"):
+        if not (journal_root / name).is_file():
+            raise ValueError("missing committed journal evidence")
+    manifest = json.loads((journal_root / "identity.json").read_text())
+    records = TrialJournal(journal_root, manifest["identity"]).records()
+    if result["identity_hash"] != manifest["identity_hash"]:
+        raise ValueError("result identity mismatch")
+    expected = {"attempt_id": attempt, "status": "completed", "result_sha256": file_hash(result_path)}
+    if records != [expected]:
+        raise ValueError("result is not bound to the committed successful attempt")
+    if result["bound_files"] != manifest["identity"].get("bound_files"):
+        raise ValueError("result source binding mismatch")
+    return result
+
+
+def summarize(output: Path, attempt: str) -> int:
+    prepare(output)
+    registry = load_registry()
+    rows = []
+    for direction in registry["directions"]:
+        target = output / direction["id"] / attempt
+        if (target / "result.json").exists():
+            try:
+                result = committed_result(target, direction["id"], attempt)
+                hashes = {**result["bound_files"], **result["supplementary_input_hashes"]}
+                stale = [p for p, digest in hashes.items() if not (ROOT / p).is_file() or file_hash(ROOT / p) != digest]
+                if stale:
+                    result = {**result, "status": "stale", "stale_paths": stale}
+            except (ValueError, KeyError, OSError) as exc:
+                result = {"direction_id": direction["id"], "status": "invalid", "error": str(exc)}
+        elif (target / "failure.json").exists():
+            result = json.loads((target / "failure.json").read_text())
+        else:
+            result = {"direction_id": direction["id"], "status": "missing", "verdict": "not_run"}
+        rows.append({**result, "title": direction["title"]})
+    summary = {
+        "registered_directions": len(rows),
+        "completed": sum(r["status"] == "completed" for r in rows),
+        "attempt": attempt,
+        "directions": rows,
+        "rankable": False,
+        "live_eligible": False,
+        "multiple_comparison_warning": "12 exploratory directions; no independent confirmatory holdout or adjusted alpha claim",
+    }
+    write_json(output / f"summary_{attempt}.json", summary)
+    lines = [
+        "# 长期市场探索执行结果",
+        "",
+        f"完整执行：{summary['completed']}/{len(rows)}。全部为研究诊断；不可晋级。",
+        "",
+        "| 方向 | 状态 | 证据 | 结论 |",
+        "| --- | --- | --- | --- |",
+    ]
+    for r in rows:
+        lines.append(
+            f"| {r['direction_id']} {r['title']} | {r['status']} | {r.get('evidence_type', 'none')} | {r.get('verdict', r.get('error', 'not_run'))} |"
+        )
+    lines += [
+        "",
+        "合成机制测试不能证明市场alpha。开发期曾被观察；五seed不是正式稳健性验收。",
+        "每方向的指标、否定条件、限制、下一步见独立result.json。失败和缺失方向保留在分母中。",
+        "",
+    ]
+    (output / f"SUMMARY_{attempt}.md").write_text("\n".join(lines))
+    print(json.dumps({"completed": summary["completed"], "total": len(rows)}))
+    return 0 if summary["completed"] == len(rows) else 1
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description=__doc__)
+    actions = parser.add_mutually_exclusive_group(required=True)
+    actions.add_argument("--prepare", action="store_true")
+    actions.add_argument("--direction")
+    actions.add_argument("--all", action="store_true")
+    actions.add_argument("--summarize", action="store_true")
+    parser.add_argument("--output", required=True, type=Path)
+    parser.add_argument("--attempt", default="initial")
+    args = parser.parse_args()
+    if not args.attempt.replace("_", "").replace("-", "").isalnum():
+        parser.error("attempt must be a simple directory name")
+    if args.prepare:
+        context = prepare(args.output)
+        print(json.dumps({"rows": context["rows"], "snapshot": context["bars_path"]}))
+        return
+    if args.summarize:
+        raise SystemExit(summarize(args.output, args.attempt))
+    registry = load_registry()
+    selected = [d for d in registry["directions"] if args.all or d["id"] == args.direction]
+    if not selected:
+        parser.error("unknown direction")
+    codes = [run_direction(d, args.output, args.attempt) for d in selected]
+    if args.all:
+        codes.append(summarize(args.output, args.attempt))
+    raise SystemExit(int(any(codes)))
+
+
+if __name__ == "__main__":
+    main()

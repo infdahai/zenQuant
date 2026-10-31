@@ -1,0 +1,125 @@
+"""Read bounded major-asset windows from exact parquet bytes with explicit warmup."""
+
+from __future__ import annotations
+
+import hashlib
+import math
+from pathlib import Path
+from typing import Any
+
+import pyarrow as pa
+import pyarrow.compute as pc
+import pyarrow.parquet as pq
+
+from zenquant.research.run_evidence import identity_hash
+from zenquant.research.strategy_families import BAR_NS, generate_targets
+
+
+def _slice(raw: bytes, time_key: str, start: int, end: int, columns: list[str]) -> list[dict]:
+    table = pq.read_table(pa.BufferReader(raw), columns=columns)
+    mask = pc.and_(pc.greater_equal(table[time_key], start), pc.less(table[time_key], end))
+    return table.filter(mask).to_pylist()
+
+
+def load_window(
+    root: Path, start_ns: int, end_ns: int, *, warmup_bars: int = 180, symbol: str = "BTCUSDT"
+) -> dict[str, Any]:
+    """Return only [start-warmup, end) bars and [start, end) funding.
+
+    Full file bytes are hashed; the separate logical window hash depends only
+    on returned data. This records what was physically read without allowing a
+    future-row mutation to alter training observations. Missing evaluation bars
+    fail closed. Short pre-window history is disclosed and strategy warmup still
+    applies. A zero funding mark means unavailable, never free funding.
+    """
+    if symbol not in ("BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT"):
+        raise ValueError("unsupported research symbol")
+    if any(type(value) is not int for value in (start_ns, end_ns, warmup_bars)):
+        raise ValueError("timestamps and warmup must be integers")
+    if start_ns < 0 or end_ns <= start_ns or start_ns % BAR_NS or end_ns % BAR_NS or warmup_bars < 0:
+        raise ValueError("invalid aligned 4h window or warmup")
+    relative = {"bars": f"klines/{symbol}/4h/data.parquet", "funding": f"funding/{symbol}/data.parquet"}
+    contents = {kind: (Path(root) / name).read_bytes() for kind, name in relative.items()}
+    bars = _slice(
+        contents["bars"],
+        "open_time_ns",
+        max(0, start_ns - warmup_bars * BAR_NS),
+        end_ns,
+        ["open_time_ns", "close_time_ns", "open", "high", "low", "close"],
+    )
+    generate_targets(bars, "cash", {})  # validate OHLC, order, uniqueness and timeframe
+    regime_bars = _slice(
+        contents["bars"],
+        "open_time_ns",
+        max(0, start_ns - 720 * BAR_NS),
+        end_ns,
+        ["open_time_ns", "close_time_ns", "open", "high", "low", "close"],
+    )
+    generate_targets(regime_bars, "cash", {})
+    warmup_count = sum(row["open_time_ns"] < start_ns for row in bars)
+    evaluated = bars[warmup_count:]
+    if [row["open_time_ns"] for row in evaluated] != list(range(start_ns, end_ns, BAR_NS)):
+        raise ValueError("incomplete or noncontiguous evaluation bar coverage")
+    if any(row["close_time_ns"] != row["open_time_ns"] + BAR_NS - 1_000_000 for row in bars):
+        raise ValueError("Binance adapter requires inclusive millisecond close timestamps")
+    funding = _slice(
+        contents["funding"], "funding_time_ns", start_ns, end_ns, ["funding_time_ns", "funding_rate", "mark_price"]
+    )
+    for index, row in enumerate(funding):
+        if type(row["funding_time_ns"]) is not int or (
+            index and row["funding_time_ns"] <= funding[index - 1]["funding_time_ns"]
+        ):
+            raise ValueError("funding must be strictly ordered without duplicate settlements")
+        rate, mark = row["funding_rate"], row["mark_price"]
+        if type(rate) not in (float, int) or not math.isfinite(rate):
+            raise ValueError("invalid funding rate")
+        if mark is not None and (type(mark) not in (float, int) or not math.isfinite(mark) or mark < 0):
+            raise ValueError("invalid funding mark")
+        row["mark_price"] = mark if mark else None
+    # This dataset contract deliberately supports recorded eight-hour
+    # settlements only. Keep source timestamps (including observed millisecond
+    # publication jitter); compare slots without moving events backward.
+    funding_step = 2 * BAR_NS
+    expected_slots = list(range(((start_ns + funding_step - 1) // funding_step) * funding_step, end_ns, funding_step))
+    actual_slots = []
+    for row in funding:
+        timestamp = row["funding_time_ns"]
+        slot = ((timestamp + funding_step // 2) // funding_step) * funding_step
+        if not 0 <= timestamp - slot <= 60_000_000_000:
+            raise ValueError("funding coverage violates frozen 8h settlement/jitter contract")
+        actual_slots.append(slot)
+    if actual_slots != expected_slots:
+        raise ValueError("incomplete or duplicate funding coverage for frozen 8h settlement contract")
+    manifest = {
+        "schema_version": "bounded-binance-window.v1",
+        "symbol": f"{symbol}_PERP",
+        "start_ns": start_ns,
+        "end_ns_exclusive": end_ns,
+        "requested_warmup_bars": warmup_bars,
+        "actual_warmup_bars": warmup_count,
+        "evaluation_bars": len(evaluated),
+        "funding_events": len(funding),
+        "funding_mark_policy": "zero_is_missing_not_a_free_settlement",
+        "funding_coverage": {
+            "status": "PASS",
+            "interval_hours": 8,
+            "allowed_positive_jitter_seconds": 60,
+            "meaning": "recorded_schedule_completeness_only_not_venue_truth",
+        },
+        "availability_assumption": "confirmed_bar_close_and_funding_settlement_timestamp_not_independently_verified",
+        "file_sha256": {relative[kind]: hashlib.sha256(raw).hexdigest() for kind, raw in contents.items()},
+        "window_data_hash": identity_hash({"bars": bars, "funding": funding}),
+        "regime_history": {
+            "requested_warmup_bars": 720,
+            "hash": identity_hash({"bars": regime_bars}),
+            "role": "descriptive_only_does_not_change_strategy_warmup",
+        },
+    }
+    return {
+        "symbol": symbol,
+        "bars": bars,
+        "warmup_count": warmup_count,
+        "funding": funding,
+        "manifest": manifest,
+        "regime_bars": regime_bars,
+    }

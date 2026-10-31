@@ -1,0 +1,418 @@
+# Legacy Accounting Integrity Implementation Plan
+
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+
+**Goal:** Repair the legacy fee accounting defect, classify historical evidence by metric and stage, prove fixed-event parity, and rerun the frozen August candidate without parameter search.
+
+**Architecture:** Keep the strategy and execution contracts unchanged while making the portfolio ledger a signed-cash, fail-closed accounting kernel. Publish immutable validity and provenance sidecars instead of rewriting historical artifacts, then run the already-frozen matrix to distinguish pure ledger deltas from downstream risk-path divergence.
+
+**Tech Stack:** Python 3.11+, frozen dataclasses, canonical JSON/SHA-256, pytest, existing `HistoricalBacktest`, `RiskOverlay`, and Quant V2 architecture runner.
+
+**Spec:** `docs/superpowers/specs/2026-08-23-legacy-accounting-integrity-design.md`
+
+## Global Constraints
+
+- Cash is signed; `cash_after_fee = cash_before_fee - fee` with no floor.
+- Fees must be finite, non-negative, validated before any fill event mutates state, and applied exactly once.
+- Fixed-event ledger replay and full-system replay are separate evidence classes.
+- Legacy funding and financing remain `OUT_OF_SCOPE_NOT_EQUITY_INTEGRATED`.
+- Historical artifacts are preserved; validity is recorded in sidecars at metric-family and stage granularity.
+- States are exactly `CONFIRMED_AFFECTED`, `UNVERIFIED_LEGACY`, `PROVEN_UNAFFECTED`, and `SUPERSEDED_REPAIRED`.
+- No Optuna, RL, manual search, parameter change, window change, seed change, or cost change is permitted.
+- Golden output is not updated until its behavioral diff is reviewed and explicitly accepted.
+
+---
+
+### Task 1: Atomic signed-cash fee accounting
+
+**Files:**
+- Create: `zenquant/domain/accounting.py`
+- Modify: `zenquant/domain/__init__.py`
+- Modify: `zenquant/risk/guard.py:115-190,494-499`
+- Modify: `zenquant/execution/router.py` at every execution-report publication boundary
+- Test: `tests/test_risk_guard.py`
+- Test: `tests/test_execution_router.py`
+
+**Interfaces:**
+- Produces: `validate_execution_fee(fee: float) -> None` in `zenquant/domain/accounting.py`, avoiding an execution-to-risk import-boundary violation.
+- Produces: `RiskOverlay.cash -> float` as a read-only audit property.
+- Preserves: `RiskOverlay.apply_fee(fee: float) -> None` and `FeeApplier` compatibility.
+
+- [ ] **Step 1: Write failing signed-cash and atomic-validation tests**
+
+Add literal, real-component tests covering:
+
+```python
+def test_leveraged_fill_fee_preserves_negative_cash_liability() -> None:
+    bus = InMemoryJetStream()
+    overlay = RiskOverlay(bus=bus, config=RiskOverlayConfig(starting_equity=100_000.0))
+    bus.publish("exec.order.report", _fill(2.0, price=100_000.0))
+    overlay.apply_fee(80.0)
+    assert overlay.cash == pytest.approx(-100_080.0)
+    assert overlay.equity == pytest.approx(99_920.0)
+
+@pytest.mark.parametrize("fee", [-1.0, float("nan"), float("inf"), float("-inf")])
+def test_invalid_fee_is_atomic(fee: float) -> None:
+    ...
+    before = (overlay.cash, overlay.equity, overlay.high_water_mark)
+    with pytest.raises(ValueError, match="fee must be finite and non-negative"):
+        overlay.apply_fee(fee)
+    assert (overlay.cash, overlay.equity, overlay.high_water_mark) == before
+```
+
+Add boundary cases for fee `0`, fee equal to positive cash, fee larger than positive cash, and fee while cash is already negative. Add a router test whose gateway returns a report with a non-finite fee and prove no report is published and no position/cash state changes.
+
+- [ ] **Step 2: Run the focused tests and record RED**
+
+Run:
+
+```bash
+uv run pytest -q tests/test_risk_guard.py tests/test_execution_router.py
+```
+
+Expected: the liability test observes cash clamped to zero; invalid-fee tests fail because invalid values are ignored or mutate state; router atomicity fails because the report is published before fee validation.
+
+- [ ] **Step 3: Implement the minimal validation and signed subtraction**
+
+Use this contract:
+
+```python
+def validate_execution_fee(fee: float) -> None:
+    if not math.isfinite(fee) or fee < 0.0:
+        raise ValueError("fee must be finite and non-negative")
+
+@property
+def cash(self) -> float:
+    return self._cash
+
+def apply_fee(self, fee: float) -> None:
+    validate_execution_fee(fee)
+    if fee == 0.0:
+        return
+    self._cash -= fee
+    self._revalue_equity()
+```
+
+Validate the complete execution report before publishing it or applying any of its fill state. Do not silently sanitize a bad fee and do not charge a valid fee twice. Both execution and risk import the validator from `zenquant.domain`; execution must not import `zenquant.risk`.
+
+- [ ] **Step 4: Run focused tests and adjacent risk/execution tests**
+
+Run:
+
+```bash
+uv run pytest -q tests/test_risk_guard.py tests/test_execution_router.py tests/test_phase1_risk_overlay.py tests/test_parity.py
+uv run ruff check zenquant/risk/guard.py zenquant/execution/router.py tests/test_risk_guard.py tests/test_execution_router.py
+```
+
+Expected: PASS.
+
+- [ ] **Step 5: Commit the inseparable regression test and repair atomically**
+
+```bash
+git add tests/test_risk_guard.py tests/test_execution_router.py zenquant/domain/accounting.py zenquant/domain/__init__.py zenquant/risk/guard.py zenquant/execution/router.py
+git commit -m "fix(accounting): preserve liabilities when applying fees"
+```
+
+### Task 2: Fixed-event mark-to-market parity
+
+**Files:**
+- Modify: `zenquant/risk/guard.py`
+- Test: `tests/test_risk_guard.py`
+- Test: `tests/test_parity.py`
+
+**Interfaces:**
+- Consumes: `validate_execution_fee()` and `RiskOverlay.cash` from Task 1.
+- Produces: `RiskOverlay.positions -> Mapping[str, float]` as an immutable audit view.
+- Consumes: domain `MarkPriceUpdate` on `md.mark.>`.
+
+- [ ] **Step 1: Write failing real-event parity tests**
+
+Publish the same literal sequence to two independently constructed overlays:
+
+```python
+fill BTCUSDT_PERP +2 @ 100_000
+fee 80
+mark BTCUSDT_PERP @ 101_000
+fill BTCUSDT_PERP -1 @ 100_500
+fee 40.2
+mark BTCUSDT_PERP @ 99_000
+```
+
+Assert both overlays have identical cash, immutable positions, equity, high-water mark and drawdown. Assert the first mark changes equity by exactly `2 * 1_000`, and the partial sell at a fixed mark changes equity by `-1 * (101_000 - 100_500) - 40.2`.
+
+- [ ] **Step 2: Run tests and record RED**
+
+```bash
+uv run pytest -q tests/test_risk_guard.py tests/test_parity.py
+```
+
+Expected: mark-only equity does not update because `RiskOverlay` does not yet consume `MarkPriceUpdate`.
+
+- [ ] **Step 3: Add the shared mark event boundary**
+
+Subscribe to `md.mark.>` and accept only finite positive marks:
+
+```python
+def _on_mark_price(self, _: str, payload: object) -> None:
+    if not isinstance(payload, MarkPriceUpdate):
+        return
+    if not math.isfinite(payload.mark_price) or payload.mark_price <= 0.0:
+        return
+    self._last_price[payload.symbol] = payload.mark_price
+    self._revalue_equity()
+```
+
+Expose positions with `MappingProxyType(dict(self._actual_positions))`; do not expose a mutable internal dictionary.
+
+- [ ] **Step 4: Run fixed-event and parity suites**
+
+```bash
+uv run pytest -q tests/test_risk_guard.py tests/test_parity.py tests/test_replay.py
+uv run ruff check zenquant/risk/guard.py tests/test_risk_guard.py tests/test_parity.py
+```
+
+Expected: PASS. Full-system target/fill equality is not asserted after the first corrected fee.
+
+- [ ] **Step 5: Commit the parity contract and implementation atomically**
+
+```bash
+git add tests/test_risk_guard.py tests/test_parity.py zenquant/risk/guard.py
+git commit -m "feat(accounting): consume canonical mark events"
+```
+
+### Task 3: Historical performance validity registry
+
+**Files:**
+- Create: `zenquant/research/legacy_accounting_validity.py`
+- Create: `config/research/legacy_accounting_validity_v1.json`
+- Create: `scripts/audit_legacy_accounting_integrity.py`
+- Modify: `scripts/run_gate_v2_rescore.py`
+- Test: `tests/test_legacy_accounting_validity.py`
+- Test: `tests/test_gate_v2_rescore.py`
+
+**Interfaces:**
+- Produces: `ValidityState(StrEnum)` with the four global states.
+- Produces: `load_accounting_validity_registry(path: Path = DEFAULT_...) -> AccountingValidityRegistry`.
+- Produces: `assert_metric_family_allowed(registry, *, artifact_path: str, source_sha256: str | None, metric_family: str, stage: str | None) -> None`.
+- Produces: canonical CLI sidecar JSON without mutating the source artifact.
+
+- [ ] **Step 1: Write failing registry and loader-gate tests**
+
+Use literal temporary registries. Test that malformed states, duplicate artifact/stage/family keys, missing reasons, and SHA mismatches fail closed. Test that `CONFIRMED_AFFECTED` and `UNVERIFIED_LEGACY` raise `InvalidPerformanceEvidenceError`; `PROVEN_UNAFFECTED` and `SUPERSEDED_REPAIRED` pass. Test the checked-in August source selector is rejected by `load_candidate_manifest()` before `_read_json()` loads its parameters.
+
+- [ ] **Step 2: Run tests and record RED**
+
+```bash
+uv run pytest -q tests/test_legacy_accounting_validity.py tests/test_gate_v2_rescore.py
+```
+
+Expected: imports or validity gate are missing.
+
+- [ ] **Step 3: Implement frozen types, canonical parsing and fail-closed lookup**
+
+The checked-in registry must include:
+
+```json
+{
+  "schema_version": "legacy-accounting-validity.v1",
+  "records": [
+    {
+      "artifact_path": "results/remediation_20260821/train_dev_smoke_daily_switch_policy/framework_optimization.json",
+      "source_sha256": "37946e91c0fa601f688ebedfa5729192a8ac9c74de08585e23c64cc05b21bd4c",
+      "selector": "train_candidate_diagnostics.top_train_trial_diagnostics[0].params",
+      "state": "CONFIRMED_AFFECTED",
+      "reason": "legacy_fee_cash_floor_can_create_equity",
+      "metric_families": ["equity", "return", "net_pnl", "sharpe", "sortino", "drawdown", "promotion_gate"],
+      "stages": ["A0"],
+      "superseding_artifact": null
+    }
+  ]
+}
+```
+
+The CLI computes source size/SHA and writes a new sidecar atomically. It never edits or deletes the source JSON. Integrate the gate in `load_candidate_manifest()` after resolving the source path but before `_read_json(source)`.
+
+- [ ] **Step 4: Run focused tests and the candidate-loader contract**
+
+```bash
+uv run pytest -q tests/test_legacy_accounting_validity.py tests/test_gate_v2_rescore.py tests/test_architecture_experiment.py
+uv run ruff check zenquant/research/legacy_accounting_validity.py scripts/audit_legacy_accounting_integrity.py scripts/run_gate_v2_rescore.py tests/test_legacy_accounting_validity.py tests/test_gate_v2_rescore.py
+```
+
+Expected: PASS; explicit frozen architecture reproduction remains allowed because it does not enter the candidate promotion loader.
+
+- [ ] **Step 5: Commit by responsibility**
+
+```bash
+git add tests/test_legacy_accounting_validity.py zenquant/research/legacy_accounting_validity.py config/research/legacy_accounting_validity_v1.json scripts/audit_legacy_accounting_integrity.py
+git commit -m "feat(research): classify legacy accounting evidence"
+git add tests/test_gate_v2_rescore.py scripts/run_gate_v2_rescore.py
+git commit -m "fix(research): reject invalid performance candidates"
+```
+
+### Task 4: Quant V2 risk-donor provenance and stage audit
+
+**Files:**
+- Create: `zenquant/research/legacy_accounting_provenance.py`
+- Modify: `zenquant/historical/replay.py`
+- Modify: `zenquant/research/architecture_experiment.py`
+- Modify: `scripts/run_architecture_experiment.py`
+- Test: `tests/test_architecture_experiment.py`
+- Test: `tests/test_legacy_accounting_provenance.py`
+
+**Interfaces:**
+- Produces per-cutoff `risk_donor` payload with `ts_ns`, `equity`, `high_water_mark`, `drawdown`, `lev_cap`, `reduce_only_mode`, and sorted `flags`.
+- Produces canonical `risk_donor_sha256` over that payload.
+- Produces `audit_stage_provenance(legacy_report: Mapping[str, Any], repaired_report: Mapping[str, Any]) -> dict[str, Any]`.
+
+- [ ] **Step 1: Write failing provenance mutation tests**
+
+Build small two-report fixtures with one run and all seven stages. Assert:
+
+```python
+same extracted stage payload -> PROVEN_UNAFFECTED
+changed risk donor flags -> dependent stage CONFIRMED_AFFECTED
+changed approved/filled exposure or PnL -> CONFIRMED_AFFECTED
+missing old donor hash -> UNVERIFIED_LEGACY
+artifact envelope change alone -> stage remains PROVEN_UNAFFECTED
+```
+
+Also mutate a real `RiskSnapshot` fixture's drawdown, reduce-only and flags and prove `build_architecture_stage_rows()` emits a different donor hash.
+
+- [ ] **Step 2: Run tests and record RED**
+
+```bash
+uv run pytest -q tests/test_legacy_accounting_provenance.py tests/test_architecture_experiment.py
+```
+
+Expected: provenance module and donor hashes are missing.
+
+- [ ] **Step 3: Implement canonical donor identity and stage classifier**
+
+Use canonical JSON bytes:
+
+```python
+encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+digest = f"sha256:{hashlib.sha256(encoded).hexdigest()}"
+```
+
+Compare exact `(window, seed, stage)` keys. Include input-row/donor hashes, safety flags, approved exposure, filled exposure and PnL in the extracted stage payload. Missing keys fail closed as `UNVERIFIED_LEGACY`; do not infer independence from fixed-notional accounting alone.
+
+- [ ] **Step 4: Run focused architecture and acceptance suites**
+
+```bash
+uv run pytest -q tests/test_legacy_accounting_provenance.py tests/test_architecture_experiment.py tests/test_quant_v2_acceptance.py
+uv run ruff check zenquant/research/legacy_accounting_provenance.py zenquant/historical/replay.py zenquant/research/architecture_experiment.py scripts/run_architecture_experiment.py tests/test_legacy_accounting_provenance.py tests/test_architecture_experiment.py
+```
+
+Expected: PASS.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add tests/test_architecture_experiment.py zenquant/historical/replay.py zenquant/research/architecture_experiment.py scripts/run_architecture_experiment.py
+git commit -m "feat(research): record Quant V2 risk donor provenance"
+git add tests/test_legacy_accounting_provenance.py zenquant/research/legacy_accounting_provenance.py
+git commit -m "feat(research): classify repaired V2 stage evidence"
+```
+
+### Task 5: Frozen August repaired rerun and attribution sidecars
+
+**Files:**
+- Create: `scripts/rerun_legacy_accounting_baseline.py`
+- Test: `tests/test_legacy_accounting_rerun.py`
+- Generate: `results/accounting_integrity_20260823/` artifacts, which remain untracked unless repository policy explicitly tracks compact summaries.
+
+**Interfaces:**
+- Consumes only `config/research/architecture_experiment_v1.json` and its frozen params/windows/seeds/costs.
+- Produces `fixed_event_attribution.json`, `full_system_attribution.json`, `stage_validity.json`, and compact `summary.json`.
+- Exposes no search-space, trial-count, parameter override, window override or seed override arguments.
+
+- [ ] **Step 1: Write failing CLI contract tests**
+
+Test that the parser accepts only `--root`, `--legacy-input`, and `--output-dir`; rejects unknown parameter/search arguments; validates the frozen manifest hash; never mutates `--legacy-input`; and emits `parameter_search=false` plus exact manifest and formula hashes.
+
+- [ ] **Step 2: Run tests and record RED**
+
+```bash
+uv run pytest -q tests/test_legacy_accounting_rerun.py
+```
+
+Expected: script missing.
+
+- [ ] **Step 3: Implement the orchestration wrapper**
+
+Call the existing frozen runner functions directly. Record the first stage/run whose corrected output diverges, separate fixed-event accounting changes from downstream risk-path changes, and call `audit_stage_provenance()` for the stage validity sidecar. Write into a temporary sibling directory and atomically rename completed files; an interrupted run must not replace last-good outputs.
+
+- [ ] **Step 4: Run CLI contract tests, then execute the real frozen rerun**
+
+```bash
+uv run pytest -q tests/test_legacy_accounting_rerun.py
+uv run python scripts/rerun_legacy_accounting_baseline.py \
+  --root data/raw/binance \
+  --legacy-input results/quant_v2_acceptance/architecture_attribution.json \
+  --output-dir results/accounting_integrity_20260823
+```
+
+Expected: 30 frozen matrix entries, no training/search, source hashes recorded, and no partial output publication.
+
+- [ ] **Step 5: Build the compact acceptance summary without changing the frozen artifact**
+
+```bash
+uv run python scripts/build_quant_v2_acceptance_summary.py \
+  --input results/accounting_integrity_20260823/full_system_attribution.json \
+  --output results/accounting_integrity_20260823/acceptance_summary.json
+```
+
+Exit `0` means accepted, `1` valid-but-blocked, and `2` invalid. Record the exit without treating a blocked result as a command failure.
+
+- [ ] **Step 6: Commit code only**
+
+```bash
+git add tests/test_legacy_accounting_rerun.py scripts/rerun_legacy_accounting_baseline.py
+git commit -m "feat(research): orchestrate frozen accounting rerun"
+```
+
+### Task 6: Gate chain and handoff update
+
+**Files:**
+- Modify only if evidence requires: `tests/golden/backtest.json`
+- Modify: `docs/ARCHITECTURE.md`
+- Modify: `docs/QUANT_V2_ACCEPTANCE_HANDOFF.md`
+- Test: `tests/test_agent_docs_contract.py`
+
+**Interfaces:**
+- Consumes compact Task 5 summaries and validity sidecars.
+- Produces one current architecture/accounting truth without copying 1GB raw results into docs.
+
+- [ ] **Step 1: Review generated evidence before any golden edit**
+
+Compare input decisions, first affected fee, equity/risk-state divergence, later target/order/fill divergence, and each stage validity. If golden behavior changes, record exactly why; do not run an auto-update command.
+
+- [ ] **Step 2: Run focused and full gates**
+
+```bash
+uv run pytest -q tests/test_risk_guard.py tests/test_execution_router.py tests/test_parity.py tests/test_legacy_accounting_validity.py tests/test_legacy_accounting_provenance.py tests/test_legacy_accounting_rerun.py tests/test_architecture_experiment.py tests/test_quant_v2_acceptance.py
+uv run zenquant-check
+```
+
+Expected: all gates pass except an intentionally stale golden, if present.
+
+- [ ] **Step 3: If and only if required, update and independently review the golden**
+
+Edit the literal expected metrics after confirming unchanged frozen inputs and explained full-system divergence. Run `uv run zenquant-check` again.
+
+- [ ] **Step 4: Update authoritative handoff docs**
+
+Document the repaired formula hash, invalidated metric families, rerun artifact hashes, V2 per-stage validity, new economic verdict, exact run commands, limitations, and that funding/financing remain outside legacy equity.
+
+- [ ] **Step 5: Commit separately**
+
+```bash
+git add tests/golden/backtest.json
+git commit -m "test(golden): accept repaired portfolio accounting"
+git add docs/ARCHITECTURE.md docs/QUANT_V2_ACCEPTANCE_HANDOFF.md tests/test_agent_docs_contract.py
+git commit -m "docs(accounting): publish repaired baseline verdict"
+```
+
+The golden commit is omitted when no golden change is required.

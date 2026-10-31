@@ -1,0 +1,112 @@
+"""Cash conservation through the real historical and live paper compositions."""
+
+from dataclasses import asdict
+from types import SimpleNamespace
+
+import pytest
+
+from zenquant.app.server import ZenQuantWebRuntime
+from zenquant.domain import EventMeta, IndicatorCoverage, IndicatorPack, MarkPriceUpdate, TargetPosition, Timeframe
+from zenquant.execution import ExecutionKernelConfig
+from zenquant.historical import HistoricalBacktest, HistoricalBacktestConfig
+
+
+def _empty_context():
+    store = SimpleNamespace(loaded=False)
+    return SimpleNamespace(
+        funding_rows=[],
+        open_interest_rows=[],
+        aggtrades={},
+        events=[],
+        macro_store=store,
+        options_store=store,
+        hf_store=store,
+        cot_store=store,
+        liquidation_store=store,
+        eth_store=store,
+        basis_store=store,
+        cross_asset_context_store=store,
+        onchain_factor_store=store,
+        binance_metrics_factor_store=store,
+        cache_stats={},
+    )
+
+
+def _run_leveraged_fill(runtime, *, side, market_price, market_time_ns):
+    """An actual 2x fill must spend fees and slippage, never create capital."""
+    bus = runtime.bus
+    risk = runtime.risk_overlay
+    assert risk is not None
+    reports = []
+    bus.subscribe("exec.order.report", lambda _subject, report: reports.append(report))
+    pack = IndicatorPack(
+        ts_ns=1_000_000_000,
+        symbol="BTCUSDT_PERP",
+        timeframe=Timeframe.TF_4H,
+        cutoff_time_ns=1_000_000_000,
+        indicator_version="pack.v1",
+        formula_hash="accounting-parity",
+        quality_flags=["OK"],
+        coverage=IndicatorCoverage(venue_count=1, oi_coverage=1.0, staleness_ms=0),
+        values={"last_price": 100_000.0, "realized_vol": 0.1},
+    )
+    risk.prime_indicator(pack)
+    bus.publish(
+        "md.mark.BINANCE.BTCUSDT_PERP",
+        MarkPriceUpdate(
+            meta=EventMeta(
+                event_time_ns=market_time_ns,
+                ingest_time_ns=market_time_ns,
+                venue="BINANCE",
+                symbol=pack.symbol,
+                stream_seq=1,
+            ),
+            mark_price=market_price,
+        ),
+    )
+    bus.publish(
+        "intent.target_position.arc.BTCUSDT_PERP",
+        TargetPosition(
+            intent_id="cash-conservation",
+            portfolio="arc",
+            symbol=pack.symbol,
+            timeframe=Timeframe.TF_4H,
+            cutoff_time_ns=pack.cutoff_time_ns,
+            target_qty=side * 2.0,
+            target_leverage=2.0,
+            reduce_only=False,
+            regime="TREND",
+            regime_confidence=0.8,
+            reason_codes=["ACCOUNTING_PARITY"],
+        ),
+    )
+    assert len(reports) == 1
+    assert reports[0].filled_qty == 2.0
+    # Independently charge 1.5 bp adverse slippage and the 4 bp taker fee.
+    fill_price = market_price * (1 + side * 0.00015)
+    expected = 100_000.0 - 2 * abs(fill_price - market_price) - 2 * fill_price * 0.0004
+    assert risk.equity == pytest.approx(expected, abs=1e-6)
+    assert runtime.execution_kernel.positions[pack.symbol] == side * 2.0
+    return [asdict(report) for report in reports], risk.equity
+
+
+@pytest.mark.parametrize("side", [1, -1])
+@pytest.mark.parametrize("market_price,market_time_ns", [(100_000.0, 1_000_000_000), (90_000.0, 2_000_000_000)])
+def test_live_and_replay_paper_chains_preserve_equity_on_leveraged_fills(
+    monkeypatch, side, market_price, market_time_ns
+):
+    monkeypatch.delenv("ZENQUANT_PG_DSN", raising=False)
+    monkeypatch.setenv("ZENQUANT_MICROSTRUCTURE_SIDECAR_ENABLED", "0")
+    execution = ExecutionKernelConfig(pyramid_enabled=False, max_trade_qty_per_bar=10.0)
+    historical = HistoricalBacktest(
+        HistoricalBacktestConfig(profile_path=None, execution_config=execution, replay_context=_empty_context())
+    )
+    live = ZenQuantWebRuntime(runtime_mode="live", execution_config=execution)
+    live._initialize_trading_chain()
+
+    historical_trace = _run_leveraged_fill(
+        historical, side=side, market_price=market_price, market_time_ns=market_time_ns
+    )
+    live_trace = _run_leveraged_fill(live, side=side, market_price=market_price, market_time_ns=market_time_ns)
+
+    assert historical_trace == live_trace

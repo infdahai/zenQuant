@@ -1,0 +1,389 @@
+commit 5dfb08485ac60434177a34e268a7dc366470fac5
+Author:     Disaster <clusternlh@gmail.com>
+AuthorDate: Sun Aug 23 02:51:47 2026 +0800
+Commit:     Disaster <clusternlh@gmail.com>
+CommitDate: Sun Aug 23 02:51:47 2026 +0800
+
+    feat(research): classify repaired V2 stage evidence
+
+diff --git a/tests/test_legacy_accounting_provenance.py b/tests/test_legacy_accounting_provenance.py
+new file mode 100644
+index 0000000..f301cf8
+--- /dev/null
++++ b/tests/test_legacy_accounting_provenance.py
+@@ -0,0 +1,150 @@
++"""Fail-closed stage provenance tests for repaired Quant V2 reports."""
++
++from __future__ import annotations
++
++from copy import deepcopy
++
++import pytest
++
++from zenquant.research.architecture_experiment import ArchitectureStage
++from zenquant.research.legacy_accounting_provenance import audit_stage_provenance
++from zenquant.research.legacy_accounting_validity import ValidityState
++
++
++def _risk_donor(*, flags: list[str] | None = None) -> dict[str, object]:
++    return {
++        "ts_ns": 100,
++        "equity": 100_000.0,
++        "high_water_mark": 101_000.0,
++        "drawdown": 0.009900990099009901,
++        "lev_cap": 1.0,
++        "reduce_only_mode": False,
++        "flags": sorted(flags or []),
++    }
++
++
++def _stage(stage: str) -> dict[str, object]:
++    return {
++        "stage": stage,
++        "gross_pnl": 12.0,
++        "cost_stress": {
++            "0": {"net_pnl": 11.0},
++            "15": {"net_pnl": 9.5},
++        },
++        "attribution_rows": [
++            {
++                "alpha_id": f"{stage}-alpha-100",
++                "cutoff_time_ns": 100,
++                "input_row_sha256": f"sha256:{stage.lower()}-input",
++                "risk_donor_sha256": "sha256:donor-100",
++                "risk_donor": _risk_donor(),
++                "safety_reasons": [],
++                "approved_exposure": 0.5,
++                "exposure": 0.4,
++                "gross_pnl": 4.0,
++                "funding_pnl": 0.25,
++                "baseline_execution_cost": 0.1,
++                "execution_net_pnl": 4.15,
++                "execution": {
++                    "approved_exposure": 0.5,
++                    "filled_exposure_before": 0.2,
++                    "filled_exposure_after": 0.4,
++                    "safety_reasons": [],
++                    "funding_pnl": 0.25,
++                },
++            }
++        ],
++    }
++
++
++def _report() -> dict[str, object]:
++    stages = {stage.value: _stage(stage.value) for stage in ArchitectureStage}
++    return {
++        "schema_version": "architecture_attribution.v4",
++        "manifest": {"sha256": "sha256:frozen-manifest"},
++        "validity": {"state": "legacy-envelope"},
++        "runs": [{"window": "late_dev_2025", "seed": 42, "stages": stages}],
++    }
++
++
++def _states(audit: dict[str, object]) -> dict[tuple[str, int, str], str]:
++    return {(record["window"], record["seed"], record["stage"]): record["state"] for record in audit["records"]}
++
++
++def test_identical_extracted_stage_payloads_are_proven_unaffected_despite_envelope_change():
++    legacy = _report()
++    repaired = deepcopy(legacy)
++    repaired["schema_version"] = "architecture_attribution.repaired"
++    repaired["manifest"] = {"sha256": "sha256:repaired-envelope"}
++    repaired["validity"] = {"state": "repaired-envelope"}
++
++    states = _states(audit_stage_provenance(legacy, repaired))
++
++    assert states == {
++        ("late_dev_2025", 42, stage.value): ValidityState.PROVEN_UNAFFECTED.value for stage in ArchitectureStage
++    }
++
++
++def test_changed_risk_donor_flags_confirm_the_dependent_stage_is_affected():
++    legacy = _report()
++    repaired = deepcopy(legacy)
++    repaired_row = repaired["runs"][0]["stages"]["A2"]["attribution_rows"][0]
++    repaired_row["risk_donor"] = _risk_donor(flags=["PORTFOLIO_KILL"])
++    repaired_row["risk_donor_sha256"] = "sha256:changed-donor"
++
++    states = _states(audit_stage_provenance(legacy, repaired))
++
++    assert states[("late_dev_2025", 42, "A2")] == ValidityState.CONFIRMED_AFFECTED.value
++    assert states[("late_dev_2025", 42, "A1_SCORE")] == ValidityState.PROVEN_UNAFFECTED.value
++
++
++@pytest.mark.parametrize(
++    ("field_path", "changed_value"),
++    [
++        (("approved_exposure",), 0.75),
++        (("execution", "filled_exposure_after"), 0.75),
++        (("gross_pnl",), -4.0),
++    ],
++)
++def test_changed_approved_filled_or_pnl_value_is_confirmed_affected(field_path, changed_value):
++    legacy = _report()
++    repaired = deepcopy(legacy)
++    repaired_row = repaired["runs"][0]["stages"]["A3"]["attribution_rows"][0]
++    target = repaired_row
++    for key in field_path[:-1]:
++        target = target[key]
++    target[field_path[-1]] = changed_value
++
++    states = _states(audit_stage_provenance(legacy, repaired))
++
++    assert states[("late_dev_2025", 42, "A3")] == ValidityState.CONFIRMED_AFFECTED.value
++
++
++def test_missing_legacy_donor_hash_is_unverified_even_when_other_values_match():
++    legacy = _report()
++    repaired = deepcopy(legacy)
++    del legacy["runs"][0]["stages"]["A4"]["attribution_rows"][0]["risk_donor_sha256"]
++
++    states = _states(audit_stage_provenance(legacy, repaired))
++
++    assert states[("late_dev_2025", 42, "A4")] == ValidityState.UNVERIFIED_LEGACY.value
++
++
++def test_missing_legacy_row_pnl_is_unverified_instead_of_inferred_unchanged():
++    legacy = _report()
++    repaired = deepcopy(legacy)
++    del legacy["runs"][0]["stages"]["A4"]["attribution_rows"][0]["gross_pnl"]
++
++    states = _states(audit_stage_provenance(legacy, repaired))
++
++    assert states[("late_dev_2025", 42, "A4")] == ValidityState.UNVERIFIED_LEGACY.value
++
++
++def test_missing_exact_stage_key_is_unverified_legacy():
++    legacy = _report()
++    repaired = deepcopy(legacy)
++    del legacy["runs"][0]["stages"]["A5_SHADOW"]
++
++    states = _states(audit_stage_provenance(legacy, repaired))
++
++    assert states[("late_dev_2025", 42, "A5_SHADOW")] == ValidityState.UNVERIFIED_LEGACY.value
+diff --git a/zenquant/research/legacy_accounting_provenance.py b/zenquant/research/legacy_accounting_provenance.py
+new file mode 100644
+index 0000000..038bd9b
+--- /dev/null
++++ b/zenquant/research/legacy_accounting_provenance.py
+@@ -0,0 +1,219 @@
++"""Fail-closed stage provenance comparison for repaired Quant V2 reports."""
++
++from __future__ import annotations
++
++import hashlib
++import json
++from collections.abc import Mapping
++from typing import Any
++
++from .legacy_accounting_validity import ValidityState
++
++STAGE_PROVENANCE_SCHEMA_VERSION = "legacy-accounting-stage-provenance.v1"
++_RISK_DONOR_FIELDS = (
++    "ts_ns",
++    "equity",
++    "high_water_mark",
++    "drawdown",
++    "lev_cap",
++    "reduce_only_mode",
++    "flags",
++)
++_ROW_PNL_FIELDS = (
++    "gross_pnl",
++    "approved_target_gross_pnl",
++    "funding_pnl",
++    "baseline_execution_cost",
++    "execution_net_pnl",
++)
++_EPISODE_PNL_FIELDS = (
++    "gross_realized_pnl",
++    "fees",
++    "funding_pnl",
++    "net_pnl",
++    "unrealized_pnl",
++)
++_StageKey = tuple[str, int, str]
++
++
++def audit_stage_provenance(
++    legacy_report: Mapping[str, Any],
++    repaired_report: Mapping[str, Any],
++) -> dict[str, Any]:
++    """Classify exact window/seed/stage evidence without assuming independence."""
++    legacy_stages = _index_stages(legacy_report, label="legacy")
++    repaired_stages = _index_stages(repaired_report, label="repaired")
++    records = [
++        _audit_stage(key, legacy_stages.get(key), repaired_stages.get(key))
++        for key in sorted(set(legacy_stages) | set(repaired_stages))
++    ]
++    counts = {state.value: 0 for state in ValidityState}
++    for record in records:
++        counts[record["state"]] += 1
++    return {
++        "schema_version": STAGE_PROVENANCE_SCHEMA_VERSION,
++        "records": records,
++        "counts": counts,
++    }
++
++
++def _audit_stage(
++    key: _StageKey,
++    legacy_stage: Mapping[str, Any] | None,
++    repaired_stage: Mapping[str, Any] | None,
++) -> dict[str, Any]:
++    legacy_payload, legacy_error = _try_extract_stage_payload(legacy_stage, stage=key[2])
++    repaired_payload, repaired_error = _try_extract_stage_payload(repaired_stage, stage=key[2])
++    legacy_sha256 = _canonical_payload_sha256(legacy_payload) if legacy_payload is not None else None
++    repaired_sha256 = _canonical_payload_sha256(repaired_payload) if repaired_payload is not None else None
++
++    if legacy_stage is None or repaired_stage is None:
++        state = ValidityState.UNVERIFIED_LEGACY
++        reason = "stage_key_missing"
++    elif legacy_error is not None or repaired_error is not None:
++        state = ValidityState.UNVERIFIED_LEGACY
++        reason = "stage_provenance_incomplete"
++    elif legacy_payload == repaired_payload:
++        state = ValidityState.PROVEN_UNAFFECTED
++        reason = "exact_extracted_stage_payload_match"
++    else:
++        state = ValidityState.CONFIRMED_AFFECTED
++        reason = "extracted_stage_payload_changed"
++
++    return {
++        "window": key[0],
++        "seed": key[1],
++        "stage": key[2],
++        "state": state.value,
++        "reason": reason,
++        "legacy_stage_payload_sha256": legacy_sha256,
++        "repaired_stage_payload_sha256": repaired_sha256,
++        "legacy_error": legacy_error,
++        "repaired_error": repaired_error,
++    }
++
++
++def _index_stages(report: Mapping[str, Any], *, label: str) -> dict[_StageKey, Mapping[str, Any]]:
++    runs = report.get("runs")
++    if not isinstance(runs, list):
++        raise ValueError(f"{label} report runs must be a list")
++    indexed: dict[_StageKey, Mapping[str, Any]] = {}
++    for run_index, run in enumerate(runs):
++        if not isinstance(run, Mapping):
++            raise ValueError(f"{label} report run {run_index} must be an object")
++        window = run.get("window")
++        seed = run.get("seed")
++        stages = run.get("stages")
++        if not isinstance(window, str) or not window:
++            raise ValueError(f"{label} report run {run_index} requires a window")
++        if isinstance(seed, bool) or not isinstance(seed, int):
++            raise ValueError(f"{label} report run {run_index} requires an integer seed")
++        if not isinstance(stages, Mapping):
++            raise ValueError(f"{label} report run {run_index} stages must be an object")
++        for stage, payload in stages.items():
++            if not isinstance(stage, str) or not stage or not isinstance(payload, Mapping):
++                raise ValueError(f"{label} report run {run_index} contains an invalid stage payload")
++            key = (window, seed, stage)
++            if key in indexed:
++                raise ValueError(f"{label} report contains duplicate stage key {key!r}")
++            indexed[key] = payload
++    return indexed
++
++
++def _try_extract_stage_payload(
++    stage_payload: Mapping[str, Any] | None,
++    *,
++    stage: str,
++) -> tuple[dict[str, Any] | None, str | None]:
++    if stage_payload is None:
++        return None, "missing_stage_key"
++    try:
++        return _extract_stage_payload(stage_payload, stage=stage), None
++    except (KeyError, TypeError, ValueError) as exc:
++        return None, str(exc)
++
++
++def _extract_stage_payload(stage_payload: Mapping[str, Any], *, stage: str) -> dict[str, Any]:
++    if stage_payload.get("stage") != stage:
++        raise ValueError("stage declaration does not match its key")
++    rows = stage_payload.get("attribution_rows")
++    if not isinstance(rows, list) or not rows:
++        raise ValueError("attribution_rows must be a non-empty list")
++    extracted_rows = [_extract_attribution_row(row, index=index) for index, row in enumerate(rows)]
++    stage_pnl: dict[str, Any] = {}
++    if "gross_pnl" in stage_payload:
++        stage_pnl["gross_pnl"] = stage_payload["gross_pnl"]
++    if "cost_stress" in stage_payload:
++        stage_pnl["cost_stress"] = stage_payload["cost_stress"]
++    if not stage_pnl:
++        raise ValueError("stage PnL evidence is missing")
++    episodes = stage_payload.get("position_episodes", [])
++    if not isinstance(episodes, list):
++        raise ValueError("position_episodes must be a list when present")
++    return {
++        "stage": stage,
++        "rows": extracted_rows,
++        "stage_pnl": stage_pnl,
++        "episode_pnl": [_extract_episode_pnl(episode, index=index) for index, episode in enumerate(episodes)],
++    }
++
++
++def _extract_attribution_row(row: object, *, index: int) -> dict[str, Any]:
++    if not isinstance(row, Mapping):
++        raise ValueError(f"attribution row {index} must be an object")
++    input_row_sha256 = _required_string(row, "input_row_sha256", index=index)
++    risk_donor_sha256 = _required_string(row, "risk_donor_sha256", index=index)
++    donor = row.get("risk_donor")
++    if not isinstance(donor, Mapping):
++        raise ValueError(f"attribution row {index} risk_donor must be an object")
++    donor_payload = {field: donor[field] for field in _RISK_DONOR_FIELDS}
++    donor_payload["flags"] = _sorted_strings(donor_payload["flags"], f"attribution row {index} donor flags")
++    execution = row.get("execution")
++    if execution is not None and not isinstance(execution, Mapping):
++        raise ValueError(f"attribution row {index} execution must be an object")
++    execution = execution or {}
++    if "gross_pnl" not in row:
++        raise ValueError(f"attribution row {index} requires gross_pnl")
++    return {
++        "input_row_sha256": input_row_sha256,
++        "risk_donor_sha256": risk_donor_sha256,
++        "risk_donor": donor_payload,
++        "safety_reasons": _sorted_strings(
++            row.get("safety_reasons", ()),
++            f"attribution row {index} safety_reasons",
++        ),
++        "execution_safety_reasons": _sorted_strings(
++            execution.get("safety_reasons", ()),
++            f"attribution row {index} execution safety_reasons",
++        ),
++        "approved_exposure": row["approved_exposure"],
++        "execution_approved_exposure": execution.get("approved_exposure"),
++        "filled_exposure": row["exposure"],
++        "filled_exposure_before": execution.get("filled_exposure_before"),
++        "filled_exposure_after": execution.get("filled_exposure_after"),
++        "pnl": {field: row[field] for field in _ROW_PNL_FIELDS if field in row},
++    }
++
++
++def _extract_episode_pnl(episode: object, *, index: int) -> dict[str, Any]:
++    if not isinstance(episode, Mapping):
++        raise ValueError(f"position episode {index} must be an object")
++    return {field: episode[field] for field in _EPISODE_PNL_FIELDS if field in episode}
++
++
++def _required_string(row: Mapping[str, Any], field: str, *, index: int) -> str:
++    value = row.get(field)
++    if not isinstance(value, str) or not value:
++        raise ValueError(f"attribution row {index} requires {field}")
++    return value
++
++
++def _sorted_strings(value: object, label: str) -> list[str]:
++    if not isinstance(value, list | tuple) or any(not isinstance(item, str) for item in value):
++        raise ValueError(f"{label} must be a string list")
++    return sorted(value)
++
++
++def _canonical_payload_sha256(payload: Mapping[str, Any]) -> str:
++    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
++    return f"sha256:{hashlib.sha256(encoded).hexdigest()}"

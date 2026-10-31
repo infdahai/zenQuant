@@ -1,0 +1,68 @@
+import numpy as np
+import pandas as pd
+import pytest
+
+from zenquant.research.frontier_lab.experiments.d05_rl import (
+    evaluate,
+    inventory_step,
+    market_states,
+    synthetic_failures,
+    train_q,
+)
+
+
+def test_inventory_step_charges_flip_and_holds_old_inventory_until_next_open():
+    factor, inventory, turnover = inventory_step(1, -1, 0.1, -0.1, 0.001)
+    assert factor == pytest.approx(1.1 * 1.098)
+    assert inventory == -1
+    assert turnover == 2
+    with pytest.raises(ValueError, match="inventory"):
+        inventory_step(0, 2, 0, 0, 0)
+
+
+def test_fee_and_fill_semantics_change_synthetic_profit_sign():
+    failures = synthetic_failures()
+    assert failures["free_churn_return"] > 0
+    assert failures["paid_churn_return"] < 0
+    assert failures["incorrect_same_close_return"] > 0
+    assert failures["next_open_return"] == pytest.approx(105 / 110 - 1)
+
+
+def test_frozen_inventory_policy_charges_entry_and_marks_terminal_hold():
+    table = np.zeros((6, 3, 3))
+    table[:, :, 2] = 1  # Always modeled long, with no fictitious liquidation.
+    result = evaluate(np.zeros(2, dtype=int), np.zeros(2), np.array([0.1, -0.1]), 0.001, "q", table)
+    assert result["total_return"] == pytest.approx(1.099 * 0.9 - 1)
+    assert result["turnover_units"] == 1
+    assert result["action_changes"] == 1
+    assert result["ending_inventory"] == 1
+    assert result["mean_abs_exposure"] == 1
+
+
+def test_state_is_causal_when_future_prices_are_changed():
+    n = 100
+    closes = np.exp(np.arange(n) * 0.001)
+    frame = pd.DataFrame({"close": closes})
+    changed = frame.copy()
+    changed.loc[70:, "close"] *= 10
+    assert np.array_equal(market_states(frame)[0][:70], market_states(changed)[0][:70])
+
+
+def test_state_validity_mask_supports_reward_availability_filter():
+    _, valid = market_states(pd.DataFrame({"close": np.exp(np.arange(100) * 0.001)}))
+    valid &= np.arange(100) < 99
+    assert not valid[-1]
+
+
+def test_q_training_is_seed_deterministic_and_rejects_post_cutoff_rewards():
+    states = np.tile(np.arange(6), 10)
+    gap = np.zeros(60)
+    intrabar = np.where(states > 2, 0.01, -0.01)
+    ends = np.full(60, pd.Timestamp("2023-01-01", tz="UTC").value)
+    q1 = train_q(states, gap, intrabar, ends, seed=17, epochs=2)
+    q2 = train_q(states, gap, intrabar, ends, seed=17, epochs=2)
+    assert np.array_equal(q1, q2)
+    assert np.isfinite(q1).all()
+    ends[-1] = pd.Timestamp("2024-01-01", tz="UTC").value
+    with pytest.raises(ValueError, match="training reward"):
+        train_q(states, gap, intrabar, ends, seed=17, epochs=2)

@@ -1,0 +1,242 @@
+commit 0c1c4f549f61ce545ae4de2b20b02523e706acaa
+Author:     Disaster <clusternlh@gmail.com>
+AuthorDate: Mon Aug 24 13:40:51 2026 +0800
+Commit:     Disaster <clusternlh@gmail.com>
+CommitDate: Mon Aug 24 13:40:51 2026 +0800
+
+    fix(research): validate canonical sources before freeze
+
+diff --git a/scripts/freeze_trend_research_inputs.py b/scripts/freeze_trend_research_inputs.py
+index f35ae6a..d230ce5 100644
+--- a/scripts/freeze_trend_research_inputs.py
++++ b/scripts/freeze_trend_research_inputs.py
+@@ -708,6 +708,29 @@ def _publish_atomic_directory(output_dir: Path, payloads: Mapping[str, Mapping[s
+             shutil.rmtree(staging)
+ 
+ 
++def _validate_cli_canonical_sources(
++    repository_root: Path,
++    perp_source: Path,
++    funding_source: Path,
++) -> None:
++    """Reject substituted canonical sources before the freezer reads any bytes."""
++
++    expected_sources = {
++        PERP_SOURCE_ID: repository_root / "data/raw/binance/klines/BTCUSDT/5m/data.parquet",
++        FUNDING_SOURCE_ID: repository_root / "data/raw/binance/funding/BTCUSDT/data.parquet",
++    }
++    supplied_sources = {
++        PERP_SOURCE_ID: Path(perp_source),
++        FUNDING_SOURCE_ID: Path(funding_source),
++    }
++    for source_id, expected_path in expected_sources.items():
++        supplied_path = supplied_sources[source_id]
++        if supplied_path.is_symlink():
++            raise InputFreezeError(f"canonical source leaf may not be a symlink: {source_id}")
++        if supplied_path.resolve() != expected_path.resolve():
++            raise InputFreezeError(f"canonical source path mismatch: {source_id}")
++
++
+ def _parser() -> argparse.ArgumentParser:
+     parser = argparse.ArgumentParser(description=__doc__)
+     parser.add_argument("--spot-1d", required=True, type=Path)
+@@ -734,6 +757,10 @@ def main(argv: Sequence[str] | None = None) -> int:
+         parser.error(f"fixed reused end must be {FIXED_REUSED_END}")
+ 
+     repository_root = Path(__file__).resolve().parents[1]
++    try:
++        _validate_cli_canonical_sources(repository_root, args.perp_source, args.funding_source)
++    except InputFreezeError as exc:
++        parser.error(str(exc))
+     common = {
+         "spot_1d_path": args.spot_1d,
+         "spot_raw_paths": tuple(args.spot_raw),
+diff --git a/tests/test_trend_research_input_freeze.py b/tests/test_trend_research_input_freeze.py
+index 8a43115..dd10ad1 100644
+--- a/tests/test_trend_research_input_freeze.py
++++ b/tests/test_trend_research_input_freeze.py
+@@ -617,9 +617,45 @@ def test_cli_rejects_dynamic_end_and_never_emits_partial_output(tmp_path: Path)
+     assert not output_dir.exists()
+ 
+ 
+-def test_cli_lineage_failure_never_emits_partial_output(tmp_path: Path) -> None:
++def test_cli_rejects_substituted_market_sources_before_any_hash_or_read(tmp_path: Path, monkeypatch) -> None:
++    inputs = _inputs(tmp_path)
++    output_dir = tmp_path / "registrations"
++    monkeypatch.setattr(module, "_sha256_file", lambda *_: pytest.fail("hashing must not occur"))
++
++    with pytest.raises(SystemExit):
++        module.main(
++            [
++                "--spot-1d",
++                str(inputs.spot_1d_path),
++                "--spot-raw",
++                str(inputs.spot_raw_paths[0]),
++                "--perp-5m",
++                str(inputs.perp_5m_path),
++                "--perp-source",
++                str(inputs.perp_source_path),
++                "--funding",
++                str(inputs.funding_path),
++                "--funding-source",
++                str(inputs.funding_source_path),
++                "--market-tail-provenance",
++                str(inputs.market_tail_provenance_path),
++                "--time-space-hypothesis",
++                "config/research/time_space_shadow_hypothesis_v1.json",
++                "--trend-hypothesis",
++                "config/research/trend_participation_hypothesis_v1.json",
++                "--reused-start",
++                "2026-01-01T00:00:00Z",
++                "--reused-end",
++                "2026-08-24T00:00:00Z",
++                "--output-dir",
++                str(output_dir),
++            ]
++        )
++    assert not output_dir.exists()
++
++
++def test_cli_subprocess_rejects_substituted_market_sources_without_publication(tmp_path: Path) -> None:
+     inputs = _inputs(tmp_path)
+-    inputs.spot_raw_paths[0].write_text("not a valid daily archive\n", encoding="utf-8")
+     output_dir = tmp_path / "registrations"
+     command = [
+         sys.executable,
+@@ -653,45 +689,104 @@ def test_cli_lineage_failure_never_emits_partial_output(tmp_path: Path) -> None:
+     completed = subprocess.run(command, check=False, capture_output=True, text=True)
+ 
+     assert completed.returncode != 0
+-    assert "BINANCE_SPOT_BTCUSDT_1D" in completed.stderr
++    assert "canonical source path mismatch" in completed.stderr
+     assert not output_dir.exists()
+ 
+ 
+-def test_cli_writes_two_canonical_manifests_as_one_atomic_directory(tmp_path: Path) -> None:
++@pytest.mark.parametrize("symlinked_source", ["perp", "funding"])
++def test_cli_source_contract_rejects_leaf_symlink_even_at_expected_path(tmp_path: Path, symlinked_source: str) -> None:
++    repository = tmp_path / "repository"
++    perp_expected = repository / "data/raw/binance/klines/BTCUSDT/5m/data.parquet"
++    funding_expected = repository / "data/raw/binance/funding/BTCUSDT/data.parquet"
++    perp_expected.parent.mkdir(parents=True)
++    funding_expected.parent.mkdir(parents=True)
++    perp_expected.write_bytes(b"perp")
++    funding_expected.write_bytes(b"funding")
++    selected = {"perp": perp_expected, "funding": funding_expected}[symlinked_source]
++    target = tmp_path / f"{symlinked_source}-target.parquet"
++    target.write_bytes(symlinked_source.encode())
++    selected.unlink()
++    selected.symlink_to(target)
++
++    with pytest.raises(module.InputFreezeError, match="symlink"):
++        module._validate_cli_canonical_sources(repository, perp_expected, funding_expected)
++
++
++def test_cli_lineage_failure_never_emits_partial_output(tmp_path: Path, monkeypatch, capsys) -> None:
+     inputs = _inputs(tmp_path)
++    inputs.spot_raw_paths[0].write_text("not a valid daily archive\n", encoding="utf-8")
+     output_dir = tmp_path / "registrations"
+-    command = [
+-        sys.executable,
+-        "scripts/freeze_trend_research_inputs.py",
+-        "--spot-1d",
+-        str(inputs.spot_1d_path),
+-        "--spot-raw",
+-        str(inputs.spot_raw_paths[0]),
+-        "--perp-5m",
+-        str(inputs.perp_5m_path),
+-        "--perp-source",
+-        str(inputs.perp_source_path),
+-        "--funding",
+-        str(inputs.funding_path),
+-        "--funding-source",
+-        str(inputs.funding_source_path),
+-        "--market-tail-provenance",
+-        str(inputs.market_tail_provenance_path),
+-        "--time-space-hypothesis",
+-        "config/research/time_space_shadow_hypothesis_v1.json",
+-        "--trend-hypothesis",
+-        "config/research/trend_participation_hypothesis_v1.json",
+-        "--reused-start",
+-        "2026-01-01T00:00:00Z",
+-        "--reused-end",
+-        "2026-08-24T00:00:00Z",
+-        "--output-dir",
+-        str(output_dir),
+-    ]
++    monkeypatch.setattr(module, "_validate_cli_canonical_sources", lambda *_: None)
++
++    with pytest.raises(SystemExit):
++        module.main(
++            [
++                "--spot-1d",
++                str(inputs.spot_1d_path),
++                "--spot-raw",
++                str(inputs.spot_raw_paths[0]),
++                "--perp-5m",
++                str(inputs.perp_5m_path),
++                "--perp-source",
++                str(inputs.perp_source_path),
++                "--funding",
++                str(inputs.funding_path),
++                "--funding-source",
++                str(inputs.funding_source_path),
++                "--market-tail-provenance",
++                str(inputs.market_tail_provenance_path),
++                "--time-space-hypothesis",
++                "config/research/time_space_shadow_hypothesis_v1.json",
++                "--trend-hypothesis",
++                "config/research/trend_participation_hypothesis_v1.json",
++                "--reused-start",
++                "2026-01-01T00:00:00Z",
++                "--reused-end",
++                "2026-08-24T00:00:00Z",
++                "--output-dir",
++                str(output_dir),
++            ]
++        )
+ 
+-    completed = subprocess.run(command, check=False, capture_output=True, text=True)
++    assert "BINANCE_SPOT_BTCUSDT_1D" in capsys.readouterr().err
++    assert not output_dir.exists()
++
++
++def test_cli_writes_two_canonical_manifests_as_one_atomic_directory(tmp_path: Path, monkeypatch) -> None:
++    inputs = _inputs(tmp_path)
++    output_dir = tmp_path / "registrations"
++    monkeypatch.setattr(module, "_validate_cli_canonical_sources", lambda *_: None)
++
++    result = module.main(
++        [
++            "--spot-1d",
++            str(inputs.spot_1d_path),
++            "--spot-raw",
++            str(inputs.spot_raw_paths[0]),
++            "--perp-5m",
++            str(inputs.perp_5m_path),
++            "--perp-source",
++            str(inputs.perp_source_path),
++            "--funding",
++            str(inputs.funding_path),
++            "--funding-source",
++            str(inputs.funding_source_path),
++            "--market-tail-provenance",
++            str(inputs.market_tail_provenance_path),
++            "--time-space-hypothesis",
++            "config/research/time_space_shadow_hypothesis_v1.json",
++            "--trend-hypothesis",
++            "config/research/trend_participation_hypothesis_v1.json",
++            "--reused-start",
++            "2026-01-01T00:00:00Z",
++            "--reused-end",
++            "2026-08-24T00:00:00Z",
++            "--output-dir",
++            str(output_dir),
++        ]
++    )
+ 
+-    assert completed.returncode == 0, completed.stderr
++    assert result == 0
+     outputs = sorted(output_dir.glob("*.json"))
+     assert [path.name for path in outputs] == [
+         "time_space_shadow_execution_v1.json",

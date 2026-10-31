@@ -1,0 +1,93 @@
+commit e7d0f3d8afaea0f457b47e75c2328acc9695a7b0
+Author:     Disaster <clusternlh@gmail.com>
+AuthorDate: Mon Aug 24 11:22:10 2026 +0800
+Commit:     Disaster <clusternlh@gmail.com>
+CommitDate: Mon Aug 24 11:22:10 2026 +0800
+
+    test(research): cover dependency-free registration cli
+
+diff --git a/tests/test_trend_research_registration.py b/tests/test_trend_research_registration.py
+index ce0acc8..ee84043 100644
+--- a/tests/test_trend_research_registration.py
++++ b/tests/test_trend_research_registration.py
+@@ -239,6 +239,80 @@ def test_dependency_free_cli_builds_receipt(tmp_path: Path) -> None:
+     assert json.loads(output_path.read_text(encoding="utf-8"))["received_at_ns"] == 1787558400000000000
+ 
+ 
++def _run_dependency_free_registration_cli(*args: str) -> subprocess.CompletedProcess[str]:
++    return subprocess.run(
++        [sys.executable, "-S", "scripts/build_trend_registration_receipt.py", *args],
++        check=False,
++        capture_output=True,
++        text=True,
++    )
++
++
++def test_dependency_free_cli_selects_valid_manual_registration(tmp_path: Path) -> None:
++    github_env = tmp_path / "github.env"
++    result = _run_dependency_free_registration_cli(
++        "select-manual",
++        "--github-ref",
++        "refs/heads/main",
++        "--manifest-kind",
++        "hypothesis",
++        "--manifest-path",
++        "config/research/trend_participation_hypothesis_v1.json",
++        "--github-env",
++        str(github_env),
++    )
++    assert result.returncode == 0, result.stderr
++    assert github_env.read_text(encoding="utf-8") == (
++        "MANIFEST_KIND=hypothesis\nMANIFEST_PATH=config/research/trend_participation_hypothesis_v1.json\n"
++    )
++
++
++@pytest.mark.parametrize(
++    ("github_ref", "manifest_kind", "manifest_path"),
++    [
++        ("refs/heads/feature/other", "hypothesis", "config/research/time_space_shadow_hypothesis_v1.json"),
++        ("refs/heads/main", "execution", "config/research/time_space_shadow_hypothesis_v1.json"),
++    ],
++)
++def test_dependency_free_cli_rejects_invalid_manual_registration(
++    tmp_path: Path, github_ref: str, manifest_kind: str, manifest_path: str
++) -> None:
++    result = _run_dependency_free_registration_cli(
++        "select-manual",
++        "--github-ref",
++        github_ref,
++        "--manifest-kind",
++        manifest_kind,
++        "--manifest-path",
++        manifest_path,
++        "--github-env",
++        str(tmp_path / "github.env"),
++    )
++    assert result.returncode != 0
++
++
++def test_dependency_free_cli_validates_exact_registration_pair() -> None:
++    result = _run_dependency_free_registration_cli(
++        "validate",
++        "--manifest-kind",
++        "execution",
++        "--manifest-path",
++        "config/research/registrations/trend_participation_execution_v1.json",
++    )
++    assert result.returncode == 0, result.stderr
++
++
++def test_dependency_free_cli_rejects_invalid_registration_pair() -> None:
++    result = _run_dependency_free_registration_cli(
++        "validate",
++        "--manifest-kind",
++        "hypothesis",
++        "--manifest-path",
++        "config/research/registrations/trend_participation_execution_v1.json",
++    )
++    assert result.returncode != 0
++
++
+ def _write_manifest(tmp_path: Path, payload: dict[str, object] | None = None) -> Path:
+     path = tmp_path / "hypothesis.json"
+     path.write_text(json.dumps(payload or _manifest_payload()), encoding="utf-8")

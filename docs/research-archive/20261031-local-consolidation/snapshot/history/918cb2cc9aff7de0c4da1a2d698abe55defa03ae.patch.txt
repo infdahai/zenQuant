@@ -1,0 +1,28 @@
+commit 918cb2cc9aff7de0c4da1a2d698abe55defa03ae
+Author:     Disaster <clusternlh@gmail.com>
+AuthorDate: Mon Aug 24 17:17:50 2026 +0800
+Commit:     Disaster <clusternlh@gmail.com>
+CommitDate: Mon Aug 24 17:17:50 2026 +0800
+
+    style(research): sort time-space runner imports
+
+diff --git a/scripts/run_time_space_shadow.py b/scripts/run_time_space_shadow.py
+index 0a82fc3..32a7365 100644
+--- a/scripts/run_time_space_shadow.py
++++ b/scripts/run_time_space_shadow.py
+@@ -27,6 +27,7 @@ from zenquant.research.registration import (
+     load_hypothesis_manifest,
+     verify_github_receipt,
+ )
++from zenquant.research.time_space_export import VERIFIED, validate_registered_time_space_export
+ from zenquant.research.time_space_shadow import (
+     AcceptanceStatus,
+     FlipKind,
+@@ -39,7 +40,6 @@ from zenquant.research.time_space_shadow import (
+     evaluate_time_space_shadow,
+     mature_flip_labels,
+ )
+-from zenquant.research.time_space_export import VERIFIED, validate_registered_time_space_export
+ 
+ _EXPECTED_EXPORT_KEYS = frozenset(
+     {

@@ -1,0 +1,64 @@
+name: Generate canonical TimeSpace export
+
+on:
+  workflow_dispatch:
+    inputs:
+      as_of:
+        description: Literal confirmed 4h UTC cutoff
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  export:
+    # No registered corpus artifact exists today. This job is intentionally
+    # unreachable on GitHub-hosted runners and remains PENDING until Task 7
+    # proves a runner with the exact `zenquant-data` corpus mount is online.
+    runs-on: [self-hosted, zenquant-data]
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@v6
+      - name: Verify registered corpus precondition
+        shell: bash
+        run: |
+          set -euo pipefail
+          uv sync --frozen
+          test -f data/derived/trend_research/20260824/BTCUSDT/5m/data.parquet
+          test -f data/derived/trend_research/20260824/BTCUSDT/funding/data.parquet
+          test -f data/derived/trend_research/20260824/BTCUSDT/1d/data.parquet
+          uv run python - <<'PY'
+          from pathlib import Path
+          from zenquant.research.time_space_replay import _registered_source_files
+          from zenquant.research.registration import load_execution_manifest
+          manifest = load_execution_manifest(
+              Path("config/research/registrations/time_space_shadow_execution_v1.json")
+          )
+          _registered_source_files(manifest.payload["sources"])
+          PY
+      - name: Generate from registered baseline and point-in-time slices
+        shell: bash
+        env:
+          REQUESTED_AS_OF: ${{ inputs.as_of }}
+        run: |
+          set -euo pipefail
+          uv run python scripts/export_time_space_architecture.py \
+            --execution-manifest config/research/registrations/time_space_shadow_execution_v1.json \
+            --hypothesis-manifest config/research/time_space_shadow_hypothesis_v1.json \
+            --output-dir time-space-export \
+            --provider-run-id "$GITHUB_RUN_ID" \
+            --as-of "$REQUESTED_AS_OF"
+          cutoff=$(python -c 'from scripts.export_time_space_architecture import _parse_as_of; import sys; print(_parse_as_of(sys.argv[1]))' "$REQUESTED_AS_OF")
+          printf 'EXPORT_CUTOFF=%s\n' "$cutoff" >> "$GITHUB_ENV"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: time-space-export-${{ env.EXPORT_CUTOFF }}-${{ github.run_id }}
+          path: time-space-export
+          if-no-files-found: error
+          retention-days: 90

@@ -1,0 +1,360 @@
+"""PaulWei archive audit and causal fill diagnostics; no strategy or NAV inference."""
+
+from __future__ import annotations
+
+import json
+from pathlib import Path
+from typing import Any
+
+import numpy as np
+import pandas as pd
+
+from zenquant.research.frontier_lab.common import TRAIN_END, causal_features, file_hash, load_bars
+
+ARCHIVE = "data/raw/paulwei_public"
+FILES = [
+    "manifest.json",
+    "metadata.json",
+    "api-v1-execution-tradeHistory.csv",
+    "api-v1-instrument.all.csv",
+    "api-v1-position.snapshot.csv",
+]
+UPSTREAM = {
+    "checked_on": "2026-10-05",
+    "manifest_generated_at": "2026-09-11T10:15:30Z",
+    "spec_version": "1.1",
+    "release_status": "final_snapshot",
+    "trade_history_rows": 173577,
+    "trade_history_sha256": "c4343c6550b0429fa4c23e566aa1ba59ebfd4a6417675bf28f93bb6792767eac",
+    "execution_rows": 173592,
+    "lifecycle_event_count": 15,
+    "complete_historical_lifecycle_guaranteed": False,
+    "imported_into_this_experiment": False,
+}
+
+
+def _unique_executions(frame: pd.DataFrame) -> pd.DataFrame:
+    if frame.execID.isna().any():
+        raise ValueError("missing execution identity")
+    duplicates = frame[frame.execID.duplicated(keep=False)]
+    # Never silently keep a changed row with the same execution identity.
+    if not duplicates.empty and duplicates.groupby("execID").nunique(dropna=False).gt(1).any().any():
+        raise ValueError("conflicting duplicate execution identity")
+    return frame.drop_duplicates("execID").copy()
+
+
+def execution_clock_ns(frame: pd.DataFrame) -> np.ndarray:
+    """Pandas may parse microseconds: normalize explicitly before cutoff/join."""
+    clock = pd.to_datetime(frame.timestamp, utc=True, errors="raise")
+    transact = pd.to_datetime(frame.transactTime, utc=True, errors="raise")
+    if clock.isna().any() or transact.isna().any():
+        raise ValueError("missing execution clock")
+    return np.maximum(clock.dt.as_unit("ns").astype("int64"), transact.dt.as_unit("ns").astype("int64")).to_numpy()
+
+
+def aggregate_orders(frame: pd.DataFrame) -> pd.DataFrame:
+    """Retrospective order summary, never used to move later fills to first fill."""
+    frame = _unique_executions(frame)
+    if frame.orderID.isna().any():
+        raise ValueError("missing order identity")
+    if frame.groupby("orderID")[["symbol", "side"]].nunique().gt(1).any().any():
+        raise ValueError("order identity changes symbol or side")
+    if not frame.side.isin(["Buy", "Sell"]).all() or (frame.lastQty <= 0).any():
+        raise ValueError("invalid side or quantity")
+    orders = frame.groupby(["symbol", "orderID", "side"], as_index=False).agg(
+        qty_contracts=("lastQty", "sum"),
+        fragments=("execID", "size"),
+        first_ns=("action_ns", "min"),
+        last_ns=("action_ns", "max"),
+    )
+    orders["usd_face"] = orders.qty_contracts  # Only validated one-dollar inverse contracts.
+    return orders.sort_values(["first_ns", "orderID"]).reset_index(drop=True)
+
+
+def validated_inverse_fills(frame: pd.DataFrame, instruments: pd.DataFrame) -> pd.DataFrame:
+    """Signed contract deltas, not BTC balance or a linear-contract PnL formula."""
+    frame = _unique_executions(frame)
+    spec = instruments.set_index("symbol")
+    for symbol in frame.symbol.unique():
+        if symbol not in spec.index or not isinstance(spec.loc[symbol], pd.Series):
+            raise ValueError("missing or ambiguous inverse instrument spec")
+        row = spec.loc[symbol]
+        if not (
+            row.underlying == "XBT"
+            and row.quoteCurrency == "USD"
+            and row.settlCurrency == "XBt"
+            and bool(row.isInverse)
+            and not bool(row.isQuanto)
+            and row.multiplier == -100000000
+        ):
+            raise ValueError("unsupported inverse contract semantics")
+    numeric = frame[["lastQty", "lastPx", "homeNotional", "foreignNotional"]].to_numpy(float)
+    if (
+        not np.isfinite(numeric).all()
+        or (frame.lastQty <= 0).any()
+        or (frame.lastQty % 1 != 0).any()
+        or (frame.lastPx <= 0).any()
+        or not frame.side.isin(["Buy", "Sell"]).all()
+    ):
+        raise ValueError("invalid side, quantity, price or notional")
+    sign = frame.side.map({"Buy": 1, "Sell": -1})
+    frame["delta_contracts"] = sign * frame.lastQty
+    frame["btc_at_fill"] = frame.delta_contracts / frame.lastPx
+    # USD face is exact; archived BTC home notional has inverse-price rounding.
+    if not np.allclose(frame.foreignNotional, -frame.delta_contracts, rtol=0, atol=0) or not np.allclose(
+        frame.homeNotional, frame.btc_at_fill, rtol=0.001, atol=1e-9
+    ):
+        raise ValueError("inverse notional/side consistency failure")
+    return frame
+
+
+def classify_inventory(frame: pd.DataFrame, initial_contracts: float | None) -> pd.DataFrame:
+    """One symbol, exact-time net fills; only an explicit anchor enables labels."""
+    if frame.symbol.nunique() != 1:
+        raise ValueError("inventory classification requires separate instruments")
+    events = (
+        frame.groupby("action_ns", as_index=False)
+        .agg(
+            delta_contracts=("delta_contracts", "sum"),
+            side_count=("side", "nunique"),
+        )
+        .sort_values("action_ns")
+        .reset_index(drop=True)
+    )
+    if initial_contracts is None:
+        events["position_before"] = None
+        events["position_after"] = None
+        events["classification"] = "unanchored"
+        return events
+    if not np.isfinite(initial_contracts):
+        raise ValueError("invalid inventory anchor")
+    after = events.delta_contracts.cumsum() + initial_contracts
+    before = after - events.delta_contracts
+    same_side = np.sign(before) == np.sign(events.delta_contracts)
+    events["position_before"], events["position_after"] = before, after
+    events["classification"] = np.select(
+        [events.side_count > 1, before == 0, same_side, after == 0, np.sign(before) != np.sign(after)],
+        ["ambiguous_same_time", "open", "add", "close", "reversal"],
+        default="reduce",
+    )
+    return events
+
+
+def assign_prior_bar(frame: pd.DataFrame, bars: pd.DataFrame) -> pd.DataFrame:
+    """Assign each fragment to the last confirmed close at or before its time."""
+    result = frame.copy()
+    closes = bars.close_time_ns.to_numpy(np.int64)
+    if not len(closes) or (np.diff(closes) <= 0).any():
+        raise ValueError("unordered or empty close clock")
+    result["bar_index"] = np.searchsorted(closes, result.action_ns.to_numpy(np.int64), side="right") - 1
+    return result
+
+
+def _state_diagnostic(fills: pd.DataFrame, bars: pd.DataFrame) -> dict[str, Any]:
+    features = causal_features(bars)
+    closes = bars.close_time_ns.to_numpy(np.int64)
+    interval_end = np.r_[closes[1:], closes[-1] + 4 * 3600 * 10**9]
+    # Edge intervals are not complete archive exposure. Warm-up bars are excluded.
+    complete = (
+        (closes >= int(fills.action_ns.min()))
+        & (interval_end <= int(fills.action_ns.max()))
+        & features.vol_42.notna().to_numpy()
+        & features.momentum_42.notna().to_numpy()
+    )
+    train = closes < TRAIN_END.value
+    vol_cutoff = float(features.loc[complete & train, "vol_42"].median())
+    if not np.isfinite(vol_cutoff):
+        raise ValueError("no train volatility threshold")
+    table = pd.DataFrame(
+        {
+            "bar_index": np.arange(len(bars)),
+            "period": np.where(train, "train", "dev"),
+            "vol": np.where(features.vol_42 >= vol_cutoff, "high", "low"),
+            "trend": np.select(
+                [features.momentum_42 > 0.02, features.momentum_42 < -0.02], ["up", "down"], default="neutral"
+            ),
+        }
+    )
+    tagged = assign_prior_bar(fills, bars)
+    valid_indices = table.loc[complete, "bar_index"]
+    tagged = tagged[tagged.bar_index.isin(valid_indices)]
+    # A fill-order block uses only quantity executed in that interval, not eventual full-order size.
+    blocks = tagged.groupby(["bar_index", "symbol", "orderID", "side"], as_index=False).agg(
+        qty_contracts=("lastQty", "sum")
+    )
+    block_stats = blocks.groupby("bar_index").agg(blocks=("orderID", "size"), qty=("qty_contracts", "sum"))
+    starts = fills.groupby(["symbol", "orderID"]).action_ns.min().reset_index()
+    starts = assign_prior_bar(starts, bars).groupby("bar_index").size()
+    table = table[complete].merge(block_stats, left_on="bar_index", right_index=True, how="left")
+    table["starts"] = table.bar_index.map(starts).fillna(0)
+    table[["blocks", "qty"]] = table[["blocks", "qty"]].fillna(0)
+    blocks = blocks.merge(table[["bar_index", "period", "vol", "trend"]], on="bar_index")
+    strata: dict[str, Any] = {}
+    for dimensions in [("period", "vol"), ("period", "trend")]:
+        for key, group in table.groupby(list(dimensions)):
+            mask = np.ones(len(blocks), dtype=bool)
+            for column, value in zip(dimensions, key, strict=True):
+                mask &= blocks[column].eq(value).to_numpy()
+            sizes = blocks.loc[mask, "qty_contracts"]
+            strata["/".join(key)] = {
+                "full_4h_intervals": len(group),
+                "active_intervals": int((group.blocks > 0).sum()),
+                "active_interval_rate": float((group.blocks > 0).mean()),
+                "fill_order_blocks_per_interval": float(group.blocks.mean()),
+                "observed_order_starts_per_interval": float(group.starts.mean()),
+                "median_executed_usd_face_per_order_block": float(sizes.median()) if len(sizes) else None,
+            }
+    return {
+        "volatility_high_threshold_train_median": vol_cutoff,
+        "trend_log_return_threshold_42_bars": 0.02,
+        "joined_fragments": len(tagged),
+        "order_bar_blocks": len(blocks),
+        "excluded_edge_or_unmatched_fragments": len(fills) - len(tagged),
+        "strata": strata,
+        "rate_denominator": "complete four-hour archive intervals; no fill is not a known flat decision",
+    }
+
+
+def run(context: dict[str, Any]) -> dict[str, Any]:
+    root = Path(context["repo_root"])
+    archive = root / ARCHIVE
+    manifest = json.loads((archive / "manifest.json").read_text())
+    metadata = json.loads((archive / "metadata.json").read_text())
+    manifest_files = {row["file"]: row for row in manifest["files"]}
+    checks = {name: file_hash(archive / name) == manifest_files[name]["sha256"] for name in FILES[2:]}
+    if not all(checks.values()):
+        raise ValueError("archive manifest checksum mismatch")
+    columns = [
+        "timestamp",
+        "transactTime",
+        "execType",
+        "symbol",
+        "side",
+        "lastQty",
+        "lastPx",
+        "orderID",
+        "execID",
+        "homeNotional",
+        "foreignNotional",
+        "text",
+    ]
+    raw = pd.read_csv(archive / FILES[2], usecols=columns, low_memory=False)
+    raw["action_ns"] = execution_clock_ns(raw)
+    pre2026 = raw[raw.action_ns < pd.Timestamp("2026-01-01", tz="UTC").value]
+    trades = pre2026[pre2026.execType == "Trade"]
+    instruments = pd.read_csv(archive / FILES[3], low_memory=False)
+    eligible = instruments[
+        (instruments.underlying == "XBT")
+        & (instruments.quoteCurrency == "USD")
+        & instruments.isInverse
+        & ~instruments.isQuanto
+        & (instruments.multiplier == -100000000)
+    ]
+    btc = trades[trades.symbol.isin(eligible.symbol)].copy()
+    fills = validated_inverse_fills(btc, instruments)
+    identified = fills[fills.orderID.notna()]
+    orders = aggregate_orders(identified)
+    anchors = pd.read_csv(archive / FILES[4], usecols=["timestamp", "symbol"])
+    anchor_count = int((pd.to_datetime(anchors.timestamp, utc=True) < "2026-01-01").sum())
+    if anchor_count:
+        raise ValueError("new historical anchor requires explicit reconciliation")
+    inverse_metrics = {}
+    for symbol, group in fills.groupby("symbol"):
+        summary = orders[orders.symbol == symbol]
+        inverse_metrics[symbol] = {
+            "fragments": len(group),
+            "orders": len(summary),
+            "identified_order_fragments": int(group.orderID.notna().sum()),
+            "unidentified_order_fragments": int(group.orderID.isna().sum()),
+            "fragment_inflation_factor": float(group.orderID.notna().sum() / len(summary)),
+            "median_fragments_per_order": float(summary.fragments.median()),
+            "multi_fragment_order_fraction": float((summary.fragments > 1).mean()),
+            "median_order_usd_face": float(summary.qty_contracts.median()),
+            "gross_executed_usd_face": int(group.lastQty.sum()),
+            "signed_contract_delta": int(group.delta_contracts.sum()),
+            "max_btc_home_notional_relative_rounding": float((group.homeNotional / group.btc_at_fill - 1).abs().max()),
+        }
+    main = fills[fills.symbol == "XBTUSD"]
+    sensitivity = {}
+    for offset in [-1000000, 0, 1000000]:
+        classified = classify_inventory(main, offset)
+        sensitivity[str(offset)] = {
+            name: int(value) for name, value in classified.classification.value_counts().items()
+        }
+    bars = load_bars(context)
+    behavior = _state_diagnostic(main[main.orderID.notna()], bars)
+    forced = main[main.orderID.isna()]
+    forced_summary = {
+        str(label): {
+            "fragments": len(group),
+            "gross_usd_face": int(group.lastQty.sum()),
+            "signed_contract_delta": int(group.delta_contracts.sum()),
+            "symbol": "XBTUSD",
+            "first_time": pd.Timestamp(int(group.action_ns.min()), tz="UTC").isoformat(),
+            "last_time": pd.Timestamp(int(group.action_ns.max()), tz="UTC").isoformat(),
+            "event_times": [pd.Timestamp(int(t), tz="UTC").isoformat() for t in sorted(group.action_ns)],
+        }
+        for label, group in forced.groupby("text", dropna=False)
+    }
+    years = {
+        str(year): {
+            "fragments": len(group),
+            "gross_executed_usd_face": int(group.lastQty.sum()),
+            "orders": int(group.orderID.nunique()),
+        }
+        for year, group in main.groupby(pd.to_datetime(main.action_ns, utc=True).dt.year)
+    }
+    return {
+        "direction_id": "d03",
+        "hypothesis": "Repeated partial fills exaggerate apparent discretionary activity; inverse BTC action intensity varies with prior confirmed volatility/state.",
+        "evidence_type": "mixed",
+        "method": "Checksum local April archive; use only pre2026 tradeHistory Trade rows, deduplicate execID and aggregate lastQty by orderID. Validate inverse USD-face semantics from local spec and signed foreign/home notional. Join each fragment to last confirmed BTC 4h close; freeze volatility median using train only. Compare order-bar executed size and archive activity rates; hypothetical inventory offsets never establish actual inventory.",
+        "metrics": {
+            "provenance": {
+                "local_generated_at": manifest["generated_at"],
+                "local_spec_version": manifest["spec_version"],
+                "copied_at": metadata["copied_at"],
+                "local_dataset_last_time": manifest["dataset_window"]["last_time"],
+                "local_trade_history_rows": len(raw),
+                "checksum_matches": checks,
+                "execution_endpoint_present": (archive / "api-v1-execution.csv").exists(),
+                "latest_upstream_observation": UPSTREAM,
+            },
+            "pre2026_rows": len(pre2026),
+            "excluded_post2025_rows": len(raw) - len(pre2026),
+            "pre2026_event_types": {str(k): int(v) for k, v in pre2026.execType.value_counts().items()},
+            "pre2026_all_symbol_trade_fragments": len(trades),
+            "inverse_symbols": inverse_metrics,
+            "excluded_btc_spot_trade_fragments": int(trades.symbol.eq("XBT_USDT").sum()),
+            "duplicate_inverse_execIDs": int(btc.execID.duplicated().sum()),
+            "historical_position_anchors_pre2026": anchor_count,
+            "actual_inventory_classification": "unanchored; add/reduce/reversal are not established",
+            "non_order_inventory_change_labels": forced_summary,
+            "hypothetical_XBTUSD_initial_contracts_sensitivity": sensitivity,
+            "annual_XBTUSD_activity": years,
+            "prior_close_state_diagnostic": behavior,
+        },
+        "verdict": "Audit supports fragment consolidation and conditional fill-activity diagnostics; it cannot establish portfolio conviction, actual reversal cadence or tradable alpha.",
+        "limitations": [
+            "April local snapshot is not the September final upstream archive; no reconciliation or latest-data claim.",
+            "Only tradeHistory is used. Execution and tradeHistory overlap and are never concatenated; even upstream execution lifecycle is explicitly incomplete.",
+            "No pre2026 position anchor or independently reconciled ledger completeness: inventory classifications depend on hypothetical opening offsets; simultaneous opposite fills are ambiguous.",
+            "Inverse contracts are USD-face quantities, with BTC exposure changing as quantity/price; no linear PnL, inferred NAV, leverage, collateral wealth or conviction.",
+            "Orders are observed filled orders, not complete submitted intentions or discretionary decisions; unfilled/no-trade decisions cannot be reconstructed. Missing-orderID liquidation/lot-size adjustment fills remain in delta audit but are excluded from order activity and size diagnostics.",
+            "Market bars are a Binance BTC proxy; exchange basis and activity selection confound state associations. Archive clocks and historical availability are not independently verified.",
+            "Aggregate order size is retrospective; causal state diagnostics only allocate actually executed fragments within each interval. Rate comparisons are descriptive, not an independent alpha test.",
+            "2024-2025 is previously observed development data; no 2026 fills, acceptance test, public identity attribution or strategy promotion.",
+        ],
+        "falsification": "Reject actionable style copying unless a reconciled opening inventory and complete execution lifecycle preserve the low-switch conclusion; reject volatility/state rules if conditional effects disappear across train/dev or after venue/account-size controls.",
+        "next_experiment": "Import the frozen September final archive into a separate audited snapshot, reconcile tradeHistory without duplicate execution events, obtain <=2025 inventory anchors and order lifecycle coverage, then pre-register a new prospective state-conditioned execution study.",
+        "input_paths": [f"{ARCHIVE}/{name}" for name in FILES],
+        "internet_sources": [
+            "https://github.com/bwjoke/BTC-Trading-Since-2020",
+            "https://raw.githubusercontent.com/bwjoke/BTC-Trading-Since-2020/main/manifest.json",
+            "https://www.bitmex.com/app/perpetualContractsGuide",
+            "https://docs.bitmex.com/api-explorer/get-execution.html",
+        ],
+        "rankable": False,
+        "live_eligible": False,
+        "promotion_eligible": False,
+    }

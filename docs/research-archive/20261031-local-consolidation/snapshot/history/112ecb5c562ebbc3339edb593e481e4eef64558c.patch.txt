@@ -1,0 +1,354 @@
+commit 112ecb5c562ebbc3339edb593e481e4eef64558c
+Author:     Disaster <clusternlh@gmail.com>
+AuthorDate: Mon Aug 24 17:00:16 2026 +0800
+Commit:     Disaster <clusternlh@gmail.com>
+CommitDate: Mon Aug 24 17:00:16 2026 +0800
+
+    fix(research): harden time-space evidence boundaries
+
+diff --git a/scripts/run_time_space_shadow.py b/scripts/run_time_space_shadow.py
+index 6083d72..c718864 100644
+--- a/scripts/run_time_space_shadow.py
++++ b/scripts/run_time_space_shadow.py
+@@ -96,11 +96,27 @@ _ARTIFACT_NAMES = (
+     "time_space_shadow_registration_envelope.json",
+     "time_space_shadow_attribution.json",
+ )
+-_FORBIDDEN_OUTPUT_KEYS = frozenset(
+-    {"target_qty", "order", "risk_multiplier", "position_authority", "activation_recommendation"}
++_REQUIRED_DECISION_STAGES = frozenset({"A1_SIGN", "A5_SHADOW", "FILLED_POSITION"})
++_FORBIDDEN_AUTHORITY_TOKENS = frozenset(
++    {
++        "activation_recommendation",
++        "order",
++        "position",
++        "position_authority",
++        "risk_multiplier",
++        "target",
++        "target_qty",
++    }
+ )
+ 
+ 
++class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
++    """Refuse redirects so an authorization header can never leave api.github.com."""
++
++    def redirect_request(self, *args, **kwargs):
++        return None
++
++
+ @dataclass(frozen=True, slots=True)
+ class RunArgs:
+     hypothesis_manifest: Path
+@@ -149,19 +165,37 @@ def run_time_space_shadow(
+ 
+     registration_input = _load_json(Path(args.registration_envelope), "registration envelope")
+     trust = _load_registration_trust()
+-    receipt_payload, receipts, forward_start_ns = _verify_registration_pair(
+-        registration_input,
+-        hypothesis=hypothesis,
+-        execution=execution,
+-        trust=trust,
+-        provider_fetcher=provider_fetcher or _fetch_github_provider_run,
+-    )
+-    role, observation_start_ns, observation_end_ns = _resolve_role_window(
+-        as_of_ns=as_of_ns,
+-        reused_start_ns=hypothesis.reused_start_ns,
+-        reused_end_ns=hypothesis.reused_end_ns,
+-        forward_start_ns=forward_start_ns,
+-    )
++    _validate_retained_registration(registration_input, trust=trust)
++    receipt_payload: list[dict[str, Any]] = []
++    receipts: tuple[Any, ...] = ()
++    forward_start_ns: int | None = None
++    registration_status = "REGISTRATION_UNVERIFIED"
++    try:
++        receipt_payload, receipts, forward_start_ns = _verify_registration_pair(
++            registration_input,
++            hypothesis=hypothesis,
++            execution=execution,
++            trust=trust,
++            provider_fetcher=provider_fetcher or _fetch_github_provider_run,
++        )
++        registration_status = "REGISTRATION_VERIFIED"
++    except ValueError:
++        if as_of_ns != hypothesis.reused_end_ns:
++            raise ValueError("REGISTRATION_UNVERIFIED") from None
++
++    if as_of_ns == hypothesis.reused_end_ns:
++        role = EvidenceRole.TEST_REUSED_DIAGNOSTIC
++        observation_start_ns = hypothesis.reused_start_ns
++        observation_end_ns = hypothesis.reused_end_ns
++    else:
++        if forward_start_ns is None:
++            raise ValueError("REGISTRATION_UNVERIFIED")
++        role, observation_start_ns, observation_end_ns = _resolve_role_window(
++            as_of_ns=as_of_ns,
++            reused_start_ns=hypothesis.reused_start_ns,
++            reused_end_ns=hypothesis.reused_end_ns,
++            forward_start_ns=forward_start_ns,
++        )
+     if role is EvidenceRole.FORWARD_CONFIRMATION:
+         raise ValueError("EXPORT_REGISTRATION_REQUIRED")
+ 
+@@ -189,6 +223,7 @@ def run_time_space_shadow(
+             "execution_sha256": execution.sha256,
+             "frozen_export_sha256": export_sha256,
+             "evidence_role": role.value,
++            "registration_status": registration_status,
+             "observation_window": [observation_start_ns, observation_end_ns],
+             "as_of_ns": as_of_ns,
+         }
+@@ -221,7 +256,8 @@ def run_time_space_shadow(
+         "hypothesis_sha256": hypothesis.sha256,
+         "execution_sha256": execution.sha256,
+         "receipts": receipt_payload,
+-        "registration_received_at_ns": max(item.received_at_ns for item in receipts),
++        "registration_status": registration_status,
++        "registration_received_at_ns": max((item.received_at_ns for item in receipts), default=None),
+         "forward_start_ns": forward_start_ns,
+     }
+     registration_sha256 = canonical_sha256(normalized_registration)
+@@ -253,6 +289,7 @@ def run_time_space_shadow(
+         "source_set_sha256_after": after_source_sha256,
+         "as_of_ns": as_of_ns,
+         "evidence_role": role.value,
++        "registration_status": registration_status,
+         "observation_window": [observation_start_ns, observation_end_ns],
+         "forward_start_ns": forward_start_ns,
+         "forward_evidence": False,
+@@ -268,7 +305,7 @@ def run_time_space_shadow(
+         "acceptance": acceptance_payload,
+         "status": acceptance.status.value,
+     }
+-    _reject_forbidden_output_keys(attribution)
++    _reject_forbidden_authority_tokens(attribution)
+ 
+     payloads = dict(
+         zip(
+@@ -295,31 +332,12 @@ def _verify_registration_pair(
+     trust: dict[str, Any],
+     provider_fetcher: Callable[[str, int], Mapping[str, Any]],
+ ):
+-    if set(registration) != {"schema_version", "layer", "hypothesis", "execution"}:
+-        raise ValueError("registration envelope keys are invalid")
+-    if registration["schema_version"] != "trend-registration-pair.v1" or registration["layer"] != "time_space_shadow":
+-        raise ValueError("registration envelope identity is invalid")
++    _validate_retained_registration(registration, trust=trust)
+     verified = []
+     normalized = []
+     for name in ("hypothesis", "execution"):
+         item = registration[name]
+-        if not isinstance(item, dict) or set(item) != {
+-            "provider_run_id",
+-            "commit_sha",
+-            "remote_identity",
+-            "manifest_sha256",
+-            "received_at_ns",
+-        }:
+-            raise ValueError(f"{name} registration descriptor is invalid")
+         pinned = trust[name]
+-        expected = {
+-            "provider_run_id": pinned["provider_run_id"],
+-            "commit_sha": pinned["commit_sha"],
+-            "remote_identity": trust["remote_identity"],
+-            "manifest_sha256": pinned["manifest_sha256"],
+-        }
+-        if any(item.get(key) != value for key, value in expected.items()):
+-            raise ValueError(f"{name} does not match trusted registration")
+         try:
+             provider = provider_fetcher(trust["remote_identity"], int(pinned["provider_run_id"]))
+         except Exception as exc:
+@@ -357,6 +375,32 @@ def _verify_registration_pair(
+     return normalized, tuple(verified), forward_start_ns
+ 
+ 
++def _validate_retained_registration(registration: dict[str, Any], *, trust: dict[str, Any]) -> None:
++    if set(registration) != {"schema_version", "layer", "hypothesis", "execution"}:
++        raise ValueError("registration envelope keys are invalid")
++    if registration["schema_version"] != "trend-registration-pair.v1" or registration["layer"] != "time_space_shadow":
++        raise ValueError("registration envelope identity is invalid")
++    for name in ("hypothesis", "execution"):
++        item = registration[name]
++        if not isinstance(item, dict) or set(item) != {
++            "provider_run_id",
++            "commit_sha",
++            "remote_identity",
++            "manifest_sha256",
++            "received_at_ns",
++        }:
++            raise ValueError(f"{name} registration descriptor is invalid")
++        pinned = trust[name]
++        expected = {
++            "provider_run_id": pinned["provider_run_id"],
++            "commit_sha": pinned["commit_sha"],
++            "remote_identity": trust["remote_identity"],
++            "manifest_sha256": pinned["manifest_sha256"],
++        }
++        if any(item.get(key) != value for key, value in expected.items()):
++            raise ValueError(f"{name} does not match trusted registration")
++
++
+ def _resolve_role_window(*, as_of_ns: int, reused_start_ns: int, reused_end_ns: int, forward_start_ns: int):
+     if reused_end_ns > forward_start_ns:
+         raise ValueError("reused and forward evidence roles overlap")
+@@ -404,7 +448,8 @@ def _fetch_github_provider_run(remote_identity: str, provider_run_id: int) -> Ma
+         url,
+         headers=headers,
+     )
+-    with urllib.request.urlopen(request, timeout=30) as response:
++    opener = urllib.request.build_opener(_NoRedirectHandler())
++    with opener.open(request, timeout=30) as response:
+         payload = json.loads(response.read().decode("utf-8"))
+     if not isinstance(payload, Mapping):
+         raise ValueError("GitHub provider response is not an object")
+@@ -502,6 +547,9 @@ def _build_path(raw_rows: Any, *, as_of_ns: int, identities: dict[str, str]) ->
+         decisions = raw["decision_id_by_stage"]
+         if not isinstance(decisions, dict):
+             raise ValueError("decision_id_by_stage must be an object")
++        if set(decisions) != _REQUIRED_DECISION_STAGES:
++            raise ValueError("decision stages must be exactly A1_SIGN, A5_SHADOW, FILLED_POSITION")
++        _reject_forbidden_authority_tokens(decisions)
+         state_input = TimeSpaceInputRow(
+             **{
+                 key: raw[key]
+@@ -640,16 +688,21 @@ def _without_shadow_authority_fields(value: Any) -> dict[str, Any]:
+     return payload
+ 
+ 
+-def _reject_forbidden_output_keys(value: Any) -> None:
++def _reject_forbidden_authority_tokens(value: Any) -> None:
+     if isinstance(value, dict):
+-        forbidden = _FORBIDDEN_OUTPUT_KEYS.intersection(value)
+-        if forbidden:
+-            raise ValueError(f"shadow artifact contains authority field: {sorted(forbidden)[0]}")
+-        for item in value.values():
+-            _reject_forbidden_output_keys(item)
++        for key, item in value.items():
++            _reject_authority_token(key)
++            _reject_forbidden_authority_tokens(item)
+     elif isinstance(value, list | tuple):
+         for item in value:
+-            _reject_forbidden_output_keys(item)
++            _reject_forbidden_authority_tokens(item)
++    elif isinstance(value, str):
++        _reject_authority_token(value)
++
++
++def _reject_authority_token(value: Any) -> None:
++    if isinstance(value, str) and value.lower() in _FORBIDDEN_AUTHORITY_TOKENS:
++        raise ValueError(f"shadow artifact contains authority token: {value.lower()}")
+ 
+ 
+ def _canonical_bytes(payload: dict[str, Any]) -> bytes:
+diff --git a/tests/test_time_space_shadow_cli.py b/tests/test_time_space_shadow_cli.py
+index 7aa9ec6..457fe21 100644
+--- a/tests/test_time_space_shadow_cli.py
++++ b/tests/test_time_space_shadow_cli.py
+@@ -417,18 +417,100 @@ def test_default_provider_fetcher_uses_github_token_without_changing_pinned_iden
+                 json.dumps(_provider(HYPOTHESIS_RUN_ID, HYPOTHESIS_COMMIT, "2026-08-24T03:23:18Z")).encode()
+             ).read()
+ 
+-    def fake_urlopen(request, timeout):
+-        observed["url"] = request.full_url
+-        observed["authorization"] = request.get_header("Authorization")
+-        observed["timeout"] = timeout
+-        return Response()
++    class Opener:
++        def open(self, request, timeout):
++            observed["url"] = request.full_url
++            observed["authorization"] = request.get_header("Authorization")
++            observed["timeout"] = timeout
++            return Response()
++
++    def fake_build_opener(*handlers):
++        observed["handlers"] = handlers
++        return Opener()
+ 
+     monkeypatch.setenv("GITHUB_TOKEN", "secret-token")
+-    monkeypatch.setattr(module.urllib.request, "urlopen", fake_urlopen)
++    monkeypatch.setattr(module.urllib.request, "build_opener", fake_build_opener)
+     payload = module._fetch_github_provider_run(TRUSTED_REPO, HYPOTHESIS_RUN_ID)
+     assert payload["id"] == HYPOTHESIS_RUN_ID
++    handlers = observed.pop("handlers")
++    assert len(handlers) == 1
++    assert isinstance(handlers[0], module._NoRedirectHandler)
++    assert (
++        handlers[0].redirect_request(None, None, 302, "Found", {}, "https://evil.invalid", "https://api.github.com")
++        is None
++    )
+     assert observed == {
+         "url": f"https://api.github.com/repos/{TRUSTED_REPO}/actions/runs/{HYPOTHESIS_RUN_ID}",
+         "authorization": "Bearer secret-token",
+         "timeout": 30,
+     }
++
++
++def test_reused_diagnostic_survives_unavailable_provider_without_forward_claim(
++    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
++) -> None:
++    module = _load_runner()
++    monkeypatch.setattr(module, "_hash_bound_sources", lambda execution: execution.payload["source_set_sha256"])
++
++    def unavailable(_repo: str, _run_id: int):
++        raise OSError("offline")
++
++    result = module.run_time_space_shadow(_args(module, tmp_path), provider_fetcher=unavailable)
++    attribution = json.loads(result.attribution_path.read_text())
++    registration = json.loads((result.output_dir / "time_space_shadow_registration_envelope.json").read_text())
++    assert attribution["registration_status"] == "REGISTRATION_UNVERIFIED"
++    assert attribution["forward_start_ns"] is None
++    assert attribution["forward_evidence"] is False
++    assert attribution["forward_eligible"] is False
++    assert registration["registration_status"] == "REGISTRATION_UNVERIFIED"
++    assert registration["receipts"] == []
++
++
++def test_post_reused_cutoff_never_guesses_role_from_unverified_local_receipts(
++    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
++) -> None:
++    module = _load_runner()
++    forward_as_of = 1_788_163_200_000_000_000
++    frozen_export = _export(tmp_path, as_of_ns=forward_as_of)
++    monkeypatch.setattr(module, "_hash_bound_sources", lambda execution: execution.payload["source_set_sha256"])
++
++    def unavailable(_repo: str, _run_id: int):
++        raise OSError("rate limited")
++
++    with pytest.raises(ValueError, match="REGISTRATION_UNVERIFIED"):
++        module.run_time_space_shadow(
++            _args(module, tmp_path, frozen_export=frozen_export, as_of="2026-09-08T00:00:00Z"),
++            provider_fetcher=unavailable,
++        )
++
++
++@pytest.mark.parametrize("forbidden", ["order", "target_qty", "risk_multiplier", "position"])
++def test_export_rejects_extra_or_value_encoded_authority_stages(
++    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, forbidden: str
++) -> None:
++    module = _load_runner()
++    frozen_export = _export(tmp_path)
++    payload = json.loads(frozen_export.read_text())
++    payload["rows"][0]["decision_id_by_stage"][forbidden] = "extra"
++    frozen_export.write_bytes(_canonical_bytes(payload))
++    monkeypatch.setattr(module, "_hash_bound_sources", lambda execution: execution.payload["source_set_sha256"])
++    with pytest.raises(ValueError, match=r"decision stages|authority token"):
++        module.run_time_space_shadow(
++            _args(module, tmp_path, frozen_export=frozen_export), provider_fetcher=_trusted_fetcher
++        )
++
++
++@pytest.mark.parametrize("forbidden", ["order", "target_qty", "risk_multiplier", "position"])
++def test_export_rejects_authority_token_hidden_in_decision_id_value(
++    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, forbidden: str
++) -> None:
++    module = _load_runner()
++    frozen_export = _export(tmp_path)
++    payload = json.loads(frozen_export.read_text())
++    payload["rows"][0]["decision_id_by_stage"]["A1_SIGN"] = forbidden
++    frozen_export.write_bytes(_canonical_bytes(payload))
++    monkeypatch.setattr(module, "_hash_bound_sources", lambda execution: execution.payload["source_set_sha256"])
++    with pytest.raises(ValueError, match="authority token"):
++        module.run_time_space_shadow(
++            _args(module, tmp_path, frozen_export=frozen_export), provider_fetcher=_trusted_fetcher
++        )

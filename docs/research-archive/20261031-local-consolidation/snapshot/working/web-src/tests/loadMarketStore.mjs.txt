@@ -1,0 +1,35 @@
+import { fileURLToPath } from "node:url";
+import { createPinia, disposePinia } from "pinia";
+import { createServer } from "vite";
+
+// Use the same TypeScript resolver as the app, without opening HTTP/WS ports
+// or depending on generated assets under zenquant/web.
+export async function loadMarketStore() {
+  const server = await createServer({
+    root: fileURLToPath(new URL("../", import.meta.url)),
+    configFile: false,
+    server: { middlewareMode: true, ws: false, hmr: false, watch: null },
+    optimizeDeps: { noDiscovery: true, include: [] },
+  });
+  const pinia = createPinia();
+  let store;
+  try {
+    const { useMarketStore } = await server.ssrLoadModule("/src/stores/market.ts");
+    store = useMarketStore(pinia);
+  } catch (error) {
+    disposePinia(pinia);
+    await server.close();
+    throw error;
+  }
+  return {
+    store,
+    async close() {
+      try {
+        store.cleanupSocket();
+      } finally {
+        disposePinia(pinia);
+        await server.close();
+      }
+    },
+  };
+}

@@ -1,0 +1,40 @@
+commit 654af1c628859e67d2e5f8af0e2bc4d7f83491fe
+Author:     Disaster <clusternlh@gmail.com>
+AuthorDate: Tue Aug 25 01:17:36 2026 +0800
+Commit:     Disaster <clusternlh@gmail.com>
+CommitDate: Tue Aug 25 01:17:36 2026 +0800
+
+    ci(research): gate registration on external protection
+
+diff --git a/.github/workflows/time-space-export-checkpoint.yml b/.github/workflows/time-space-export-checkpoint.yml
+index 49cd9c8..9b04765 100644
+--- a/.github/workflows/time-space-export-checkpoint.yml
++++ b/.github/workflows/time-space-export-checkpoint.yml
+@@ -24,6 +24,11 @@ jobs:
+           PUSH_AFTER: ${{ github.sha }}
+         run: |
+           set -euo pipefail
++          base_protection_validator="$RUNNER_TEMP/time-space-external-protection-validator.py"
++          base_protection_config="$RUNNER_TEMP/time-space-external-protection.json"
++          git show "$PUSH_BEFORE:scripts/validate_time_space_external_protection.py" > "$base_protection_validator"
++          git show "$PUSH_BEFORE:config/research/time_space_export_external_protection_v1.json" > "$base_protection_config"
++          python "$base_protection_validator" --config "$base_protection_config"
+           base_validator="$RUNNER_TEMP/time-space-registration-push-validator.py"
+           git show "$PUSH_BEFORE:scripts/validate_time_space_registration_push.py" > "$base_validator"
+           python "$base_validator" \
+diff --git a/.github/workflows/time-space-export-persist.yml b/.github/workflows/time-space-export-persist.yml
+index a456ea7..ab364f6 100644
+--- a/.github/workflows/time-space-export-persist.yml
++++ b/.github/workflows/time-space-export-persist.yml
+@@ -24,6 +24,11 @@ jobs:
+           PUSH_AFTER: ${{ github.sha }}
+         run: |
+           set -euo pipefail
++          base_protection_validator="$RUNNER_TEMP/time-space-external-protection-validator.py"
++          base_protection_config="$RUNNER_TEMP/time-space-external-protection.json"
++          git show "$PUSH_BEFORE:scripts/validate_time_space_external_protection.py" > "$base_protection_validator"
++          git show "$PUSH_BEFORE:config/research/time_space_export_external_protection_v1.json" > "$base_protection_config"
++          python "$base_protection_validator" --config "$base_protection_config"
+           base_validator="$RUNNER_TEMP/time-space-registration-push-validator.py"
+           git show "$PUSH_BEFORE:scripts/validate_time_space_registration_push.py" > "$base_validator"
+           python "$base_validator" \

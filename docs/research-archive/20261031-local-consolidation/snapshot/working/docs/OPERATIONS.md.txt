@@ -1,0 +1,313 @@
+# Operations Guide
+
+How to optimize, deploy, monitor, and iterate on the strategy.
+
+## Current operating boundary
+
+Quant V2 is implemented in the default-off research path. Its frozen acceptance
+decision is **BLOCKED_PAUSE_PROMOTION_AND_TRAINING**. New parameter searches,
+profile promotion and paper-live launch remain paused. The optimization and
+deployment procedures below are reference procedures for a separately approved
+experiment or an admitted candidate, not instructions to resume automatically.
+
+The authoritative operator contract is
+[`LIVE_VALIDATION_HANDOFF_SPEC.md`](LIVE_VALIDATION_HANDOFF_SPEC.md); frozen
+evidence and rerun requirements are in
+[`QUANT_V2_ACCEPTANCE_HANDOFF.md`](QUANT_V2_ACCEPTANCE_HANDOFF.md).
+Engineering checks and forward data collection can continue. A successful
+check or fresh collection status does not grant strategy admission.
+
+## Maintenance review — 2026-10-02
+
+Scope: local engineering gates, runtime event boundaries, frozen acceptance
+validation and frontend test entrypoints. No training, promotion, deployment or
+exchange execution was performed. The product owner chose to **record only**
+the production-path findings below; they remain unresolved.
+
+Engineering repairs in this review:
+
+- Gate F now exits nonzero for any `OVERFIT` window or an empty evaluation.
+  Its thresholds and strategy logic are unchanged; offline CLI regression lives
+  in [`test_walk_forward_gate.py`](../tests/test_walk_forward_gate.py).
+- Quant V2 summary validation rejects missing execution evidence and Options
+  summaries that disagree with per-run evidence. Invalid artifacts exit `2`
+  without writing a new summary; valid blocked artifacts still exit `1`.
+- Frontend store tests load the actual Pinia implementation. E2E tests use the
+  current Vue source and demo API; `build:web` includes TypeScript checking.
+- Three existing format-only failures were corrected; Python ASTs were unchanged.
+  Entry documentation now distinguishes the implemented research path from
+  production promotion and keeps training/deployment examples gated.
+
+Recheck with `uv run zenquant-check --quick`, `uv run pytest -q --tb=short -ra`
+and `npm run test:frontend`; frontend dependency setup is in the README.
+Before the later accounting changes, local verification passed Gate A and full pytest reported **1430 passed,
+4 skipped, 34 subtests passed**. All four skips require opt-in live Deribit
+validation. The actual-source store test, Vue typecheck and temporary-output
+production build passed; Playwright reported **5 passed** against Vue sources
+and the demo API. Import boundaries, golden output and plugin/legacy parity
+are included in the full pytest result.
+Full historical Gate F was not rerun in this maintenance review. Its offline
+exit-code tests do not establish strategy robustness or eligibility.
+
+| Priority | Finding and reproduction | Affected code |
+| --- | --- | --- |
+| P1 | A mark update one second after bar close arrives before the close notification. A candle closing at 100 yields an indicator price of 200 with quality `OK`. The cached price has no cutoff-time check. | [`market/snapshot.py`](../zenquant/market/snapshot.py) |
+| P1 | Deliver the same confirmed kline twice after a buy trade of size 5. Two indicators share the same cutoff; CVD slope changes from `0.0` to `-2.0`, and candle history advances twice. | [`ingestor/binance_ws.py`](../zenquant/ingestor/binance_ws.py), [`indicator/engine.py`](../zenquant/indicator/engine.py) |
+| P2 | Return `PARTIALLY_FILLED` with quantity `0.4` for a target of 1. Legacy execution still records position 0 while risk records 0.4. The current paper gateway does not emit partial fills, but a partial-fill adapter would expose this divergence. | [`execution/router.py`](../zenquant/execution/router.py), [`risk/guard.py`](../zenquant/risk/guard.py) |
+
+These input sequences were reproduced offline. Passing existing parity or unit
+tests does not close these findings. Any future fix must add these event
+sequences to regression coverage before changing the production path.
+The offline reproduction and full test log are saved locally under
+[`results/maintenance/20261002/`](../results/maintenance/20261002/), with a
+SHA-256 manifest. Reproduce from the repo root with
+`PYTHONPATH=. uv run python results/maintenance/20261002/reproduce_runtime_findings.py`.
+
+### Accounting repair and research rerun — 2026-10-02
+
+The initial six fixed backtests exposed cash-liability erasure and funding outside
+risk equity. The product owner's subsequent “请处理” authorized these accounting
+repairs. They are now fixed locally, with chronological market marks and atomic
+funding valuation added after independent review. No production deployment,
+strategy/profile tuning or promotion was performed. The three earlier findings
+in the table above remain record-only and unresolved.
+
+Final evidence: [accounting report](../results/btc_single_asset_research/20261002/accounting_repair/REPORT.md)
+and [route decision](../results/btc_single_asset_research/20261002/route_comparison/REPORT.md).
+The final fixed experiment consists of 28 runs, each independently reconciled;
+the 2024–2025 risk/return screen still fails for both actual legacy and default
+plugin paths. Earlier false-profit artifacts remain archived, not valid baselines.
+
+Targeted regression: **153 passed**. Final Gate E: `5 failed, 1468 passed, 4 skipped, 34 subtests passed in 261.71s (0:04:21)`.
+Full harness remains blocked by profitability/execution-sensitivity checks and
+the old golden output; no thresholds or golden baseline were relaxed.
+Gate F passing is only the existing OVERFIT detector, not positive expectancy.
+See the linked full log for exact gate outcomes.
+
+No live exchange funding consumer was added. End-of-fill open-episode unrealized
+PnL can still await the next market mark; primary risk NAV is independently
+reconciled. Replay's default plugin versus production's default legacy, and
+the replay constructor's unapplied profile `[engine]` section, remain explicit
+configuration differences. Historical close-price fills and funding-mark proxies
+are model assumptions, not venue execution proof.
+
+Local operational evidence also has limits:
+
+- `results/data_readiness/forward_collection_latest.json` last finished on
+  `2026-09-18T14:02:47.729508+00:00` with `ok=false` and `IncompleteRead`.
+- `results/data_readiness/forward_collection_health.json` was checked on
+  `2026-09-18T14:10:05.424477+00:00`; it reports `readiness_stale`,
+  `hyperliquid_stale` and `merged_liquidation_stale`. This is an old failed
+  snapshot, not a current collector/process check.
+- The frozen manifest, candidate-parameter and profile hashes match the
+  acceptance handoff. Its referenced raw report and compact summary are absent
+  from this checkout, so the historical 30-run result and artifact hashes were
+  not reverified. Keep the documented blocked decision; missing evidence does
+  not authorize a new experiment or promotion.
+
+---
+
+## 1. Historical Optimization
+
+### Clean Tuning Campaign
+
+```bash
+# Download data (540 days default)
+uv run python scripts/download_binance_data.py
+
+# Convert to Parquet
+uv run python scripts/convert_csv_to_parquet.py
+
+# Check data readiness first
+uv run python scripts/data_readiness_status.py
+
+# Start the authoritative clean tuning campaign
+uv run python scripts/run_framework_campaign.py \
+  --root data/raw/binance \
+  --symbol BTCUSDT \
+  --liquidation-dir data/raw/merged_liquidations/aggregated \
+  --output-dir results/framework_optimization \
+  --budget fast
+```
+
+Authority rules:
+- `scripts/run_framework_campaign.py` is the only authoritative clean tuning entrypoint.
+- `scripts/run_auto_research.py` is internal/dev-only and may help generate train/dev research artifacts, but it is not a final promote path.
+- `test` is reserved for the framework campaign's final verdict stage and must not participate in search or ranking.
+
+### Campaign Outputs
+
+```bash
+# Running truth
+cat results/framework_optimization/campaign_status.json
+
+# Final report (only after stage3_complete)
+cat results/framework_optimization/framework_optimization.json
+```
+
+Important:
+- if a prior campaign was interrupted or invalidated, fresh runs archive old checkpoints/results before restarting
+- do not treat a stale `campaign_status.json` with `status=running` as evidence of an active job unless a live process actually exists
+- only `framework_optimization.json/.md` count as final truth, and only after `campaign_status.json` reaches `stage3_complete`
+
+### Domain Randomization (Robustness Test)
+
+```python
+from zenquant.historical import HistoricalBacktest, HistoricalBacktestConfig, PerturbationConfig
+
+config = HistoricalBacktestConfig(
+    perturbation=PerturbationConfig(
+        seed=42,
+        price_noise_pct=0.001,   # ±0.1% price noise
+        volume_noise_pct=0.05,   # ±5% volume noise
+        bar_dropout_pct=0.02,    # 2% bars dropped
+    )
+)
+result = HistoricalBacktest(config).run()
+```
+
+Strategy must pass validation on **5 different seeds** to be considered robust.
+
+---
+
+## 2. Paper-Live Deployment
+
+### Setup
+
+```bash
+# Create database
+createdb zenquant_live
+
+# Start paper-live runtime
+export ZENQUANT_PG_DSN="postgresql://localhost/zenquant_live"
+uv run zenquant-web --host 127.0.0.1 --port 8090 --mode live
+
+# Verify health
+curl http://127.0.0.1:8090/healthz
+uv run zenquant-live-validate --base-url http://127.0.0.1:8090 --require-db
+```
+
+Important:
+- running the service once does **not** mean paper trading is complete
+- paper trading is complete only after a sustained `2 weeks` run and at least one formal `paper-live` export/review
+- current repo evidence should be treated as partial progress, not final validation
+- tester/operator handoff is defined only by [`LIVE_VALIDATION_HANDOFF_SPEC.md`](/Users/disaster/workspace/code/zenQuant/docs/LIVE_VALIDATION_HANDOFF_SPEC.md)
+- do not treat `campaign_status=completed` as paper-live eligibility
+- only [`results/framework_optimization/framework_optimization.json`](/Users/disaster/workspace/code/zenQuant/results/framework_optimization/framework_optimization.json) `final_verdict` can mark a candidate `eligible_for_paper_live`
+
+### Dashboard
+
+Open `http://127.0.0.1:8090`. Key panels:
+- **Market State**: 4D classification (directional, volatility, positioning, quality)
+- **Playbook**: Active strategy and confidence level
+- **Position**: Direction, leverage, trailing stop
+- **Exit Decision**: Current exit type and urgency
+
+### Daily Monitoring Checklist
+
+| Check | How | Healthy |
+|-------|-----|---------|
+| System running | `curl /healthz` | `status: ok` |
+| Data fresh | Dashboard last_price timestamp | < 5 min old |
+| Bar close firing | Check indicator timestamp | Updates every 4h |
+| PostgreSQL writing | `SELECT count(*) FROM market_states` | Grows each 4h |
+| No quality degradation | Dashboard quality flags | Shows `OK` |
+
+### Weekly Review
+
+```sql
+-- Decision quality: playbook distribution
+SELECT playbook_id, count(*) FROM playbook_selections
+WHERE cutoff_time_ns > extract(epoch from now() - interval '7 days') * 1e9
+GROUP BY playbook_id;
+
+-- Exit effectiveness
+SELECT exit_type, count(*) FROM exit_decisions
+WHERE exit_type != 'NONE'
+AND cutoff_time_ns > extract(epoch from now() - interval '7 days') * 1e9
+GROUP BY exit_type;
+
+-- Risk events
+SELECT flags, count(*) FROM risk_snapshots
+WHERE ts_ns > extract(epoch from now() - interval '7 days') * 1e9
+AND array_length(flags, 1) > 0
+GROUP BY flags;
+```
+
+Completion evidence should include:
+- continuous runtime window
+- successful `paper-live` export
+- parity / risk / execution review
+- health and persistence evidence
+
+---
+
+## 3. Weekly Optimization Cycle
+
+This cycle is paused under the current frozen decision. Resuming it requires a
+separately approved experiment; changing a profile requires historical and
+robustness validation before any paper-live admission decision.
+
+```
+Monday:    Export live audit data → research dataset
+Tuesday:   Run walk-forward on expanded dataset
+Wednesday: Compare live vs backtest performance
+Thursday:  If improved → update TOML profile (config/profiles/)
+Friday:    Deploy updated profile, monitor first bar close
+```
+
+### Export Live Data for Research
+
+```bash
+uv run zenquant-live-export \
+  --dsn "$ZENQUANT_PG_DSN" \
+  --symbol BTCUSDT_PERP \
+  --label weekly-review
+```
+
+---
+
+## 4. Plugin Profile Management
+
+Strategy behavior is controlled via TOML profiles in `config/profiles/`:
+
+```bash
+# Default balanced strategy
+config/profiles/default.toml
+
+# Switch to aggressive (higher momentum weight, wider stops)
+# by modifying the TOML or creating a new profile
+```
+
+Key tunable parameters in the TOML:
+- `signals.*.weight` — signal combination weights
+- `sizers.*.boost_max` — conviction boost ceiling
+- `exits.trailing_stop_exit.atr_mult` — stop distance
+- `exits.regime_change_exit.transition_risk_threshold` — exit sensitivity
+
+---
+
+## 5. Rollback Procedure
+
+If live performance degrades:
+
+1. **Immediate**: Switch to conservative profile or disable plugin path
+2. **Investigate**: Compare live audit trail vs historical backtest
+3. **Revert**: `git checkout` previous known-good TOML profile
+4. **Re-validate**: Run walk-forward on latest data before re-deploying
+
+Trigger conditions for rollback:
+- Max drawdown > 15% in any 7-day window
+- Sharpe drops below 1.0 over 30 days
+- Quality flags consistently non-OK for > 24 hours
+
+---
+
+## 6. Scaling to Real Capital
+
+| Phase | Capital | Duration | Gate |
+|-------|---------|----------|------|
+| Paper | $0 | 2 weeks | Stable operation, no crashes |
+| Micro | $1,000 | 2 weeks | Live Sharpe > 2.0 |
+| Small | $5,000 | 4 weeks | Live drawdown < 10% |
+| Standard | $25,000 | Ongoing | Consistent positive PnL |

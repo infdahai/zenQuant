@@ -1,0 +1,20 @@
+commit c8c809e3781c32fbbaf8ec5578910047b54f16e0
+Author:     Disaster <clusternlh@gmail.com>
+AuthorDate: Tue Aug 25 00:53:46 2026 +0800
+Commit:     Disaster <clusternlh@gmail.com>
+CommitDate: Tue Aug 25 00:53:46 2026 +0800
+
+    fix(research): scope persist baseline input
+
+diff --git a/.github/workflows/time-space-export-persist.yml b/.github/workflows/time-space-export-persist.yml
+index 1f82851..43ce727 100644
+--- a/.github/workflows/time-space-export-persist.yml
++++ b/.github/workflows/time-space-export-persist.yml
+@@ -36,6 +36,7 @@ jobs:
+         shell: bash
+         env:
+           GH_TOKEN: ${{ github.token }}
++          PUSH_BEFORE: ${{ github.event.before }}
+         run: |
+           set -euo pipefail
+           checkpoint=$REGISTRATION_CHECKPOINT

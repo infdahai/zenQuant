@@ -1,0 +1,41 @@
+commit 6aa85341ca16aea8da0a9b09d1f71481c372d65b
+Author:     Disaster <clusternlh@gmail.com>
+AuthorDate: Sun Aug 23 00:34:00 2026 +0800
+Commit:     Disaster <clusternlh@gmail.com>
+CommitDate: Sun Aug 23 00:34:00 2026 +0800
+
+    docs(research): clarify unresolved acceptance evidence
+
+diff --git a/docs/ARCHITECTURE.md b/docs/ARCHITECTURE.md
+index b17f1d5..1304aa9 100644
+--- a/docs/ARCHITECTURE.md
++++ b/docs/ARCHITECTURE.md
+@@ -533,12 +533,13 @@ Required reporting:
+ - target overshoot and unexpected reversal counts;
+ - executor-created exposure count.
+ 
+-Frozen hard acceptance conditions:
++Declared hard acceptance conditions:
+ 
+ - no seed reaches `20%` maximum drawdown;
+ - episode-level full-train net profit factor after fees is at least `1.0`;
+ - late-dev remains positive under 15bp additional cost;
+-- hostile windows remain controlled;
++- hostile windows remain controlled; this condition was not frozen in the
++  manifest and is `NOT_EVALUABLE` in the current run;
+ - no more than two switches per day under the normal Gate policy;
+ - no more than five switches per day under any accepted operating condition;
+ - no unexplained multi-order-of-magnitude seed dispersion;
+diff --git a/docs/QUANT_V2_ARCHITECTURE_EXPERT_REVIEW.md b/docs/QUANT_V2_ARCHITECTURE_EXPERT_REVIEW.md
+index 024c985..0baec52 100644
+--- a/docs/QUANT_V2_ARCHITECTURE_EXPERT_REVIEW.md
++++ b/docs/QUANT_V2_ARCHITECTURE_EXPERT_REVIEW.md
+@@ -130,7 +130,7 @@ incremental information” and not “promote confidence as a standalone edge.
+ Established:
+ 
+ - the donor fails late-dev at baseline and under extra 15bp costs;
+-- confidence compresses loss but does not restore positive expectancy;
++- confidence compresses loss but does not restore positive OOS net profitability;
+ - execution does not create unauthorized exposure;
+ - OptionsState has no order or position effect;
+ - more training on this donor is not justified.

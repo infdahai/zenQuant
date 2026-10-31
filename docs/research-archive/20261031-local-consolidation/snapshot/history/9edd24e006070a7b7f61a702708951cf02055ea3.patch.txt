@@ -1,0 +1,798 @@
+commit 9edd24e006070a7b7f61a702708951cf02055ea3
+Author:     Disaster <clusternlh@gmail.com>
+AuthorDate: Mon Aug 24 16:45:56 2026 +0800
+Commit:     Disaster <clusternlh@gmail.com>
+CommitDate: Mon Aug 24 16:45:56 2026 +0800
+
+    fix(research): harden time-space runner evidence
+
+diff --git a/config/research/time_space_shadow_registration_trust_v1.json b/config/research/time_space_shadow_registration_trust_v1.json
+new file mode 100644
+index 0000000..b27fb50
+--- /dev/null
++++ b/config/research/time_space_shadow_registration_trust_v1.json
+@@ -0,0 +1,15 @@
++{
++  "schema_version": "time-space-shadow-registration-trust.v1",
++  "layer": "time_space_shadow",
++  "remote_identity": "infdahai/zenQuant",
++  "hypothesis": {
++    "provider_run_id": "32686267806",
++    "commit_sha": "e7d0f3d8afaea0f457b47e75c2328acc9695a7b0",
++    "manifest_sha256": "a01f4a385adf36b9816ce07577bbeab32ec522dd6be19c53395dc94e25c19cb3"
++  },
++  "execution": {
++    "provider_run_id": "32697642994",
++    "commit_sha": "7d93cc1e53c8908ef26c753e83935877f5861853",
++    "manifest_sha256": "001c3ee8f3324dd55e8b9be0358436cce45af412ca84dcbe3a6e856940ec0808"
++  }
++}
+diff --git a/docs/superpowers/specs/2026-08-23-time-space-shadow-design.md b/docs/superpowers/specs/2026-08-23-time-space-shadow-design.md
+index 5431496..85d7ef6 100644
+--- a/docs/superpowers/specs/2026-08-23-time-space-shadow-design.md
++++ b/docs/superpowers/specs/2026-08-23-time-space-shadow-design.md
+@@ -127,6 +127,15 @@ side and alpha identity match and its cutoff is within one retained 4h bar;
+ otherwise that seed-event is censored. Five perturbation seeds measure path
+ stability but are not independent statistical samples.
+ 
++The Task 5 runner can authenticate the frozen hypothesis/execution receipts,
++but the architecture export itself is not yet a registered derivative of the
++replay corpus. Until Task 6 provides mechanically bound exporter provenance,
++the runner permits that export only for `TEST_REUSED_DIAGNOSTIC`, marks it
++`REUSED_DIAGNOSTIC_ONLY`, and fails closed with
++`EXPORT_REGISTRATION_REQUIRED` for `FORWARD_CONFIRMATION`. Copied formula,
++config, execution, and source hashes are consistency checks, not proof of export
++origin, and can never accrue confirmation evidence.
++
+ ## Acceptance and rejection
+ 
+ Before forward observation begins, the manifest freezes:
+diff --git a/scripts/run_time_space_shadow.py b/scripts/run_time_space_shadow.py
+index ce6a03d..47e471b 100644
+--- a/scripts/run_time_space_shadow.py
++++ b/scripts/run_time_space_shadow.py
+@@ -10,7 +10,8 @@ import json
+ import math
+ import os
+ import shutil
+-import tempfile
++import urllib.request
++from collections.abc import Callable, Mapping
+ from dataclasses import dataclass
+ from datetime import UTC, datetime
+ from enum import Enum
+@@ -49,7 +50,7 @@ _EXPECTED_EXPORT_KEYS = frozenset(
+         "config_sha256",
+         "source_set_sha256",
+         "as_of_ns",
+-        "market_state_transition_count",
++        "market_state_transition_events",
+         "rows",
+         "perturbation_paths",
+     }
+@@ -77,6 +78,24 @@ _EXPECTED_ROW_KEYS = frozenset(
+     }
+ )
+ _EXPECTED_SEEDS = (42, 123, 456, 789, 1024)
++_TRUST_RECORD_PATH = Path(__file__).parents[1] / "config/research/time_space_shadow_registration_trust_v1.json"
++_TRUSTED_REMOTE = "infdahai/zenQuant"
++_TRUSTED_RUNS = {"hypothesis": "32686267806", "execution": "32697642994"}
++_TRUSTED_COMMITS = {
++    "hypothesis": "e7d0f3d8afaea0f457b47e75c2328acc9695a7b0",
++    "execution": "7d93cc1e53c8908ef26c753e83935877f5861853",
++}
++_TRUSTED_MANIFESTS = {
++    "hypothesis": "a01f4a385adf36b9816ce07577bbeab32ec522dd6be19c53395dc94e25c19cb3",
++    "execution": "001c3ee8f3324dd55e8b9be0358436cce45af412ca84dcbe3a6e856940ec0808",
++}
++_COMPLETE_MARKER = "TIME_SPACE_SHADOW_COMPLETE.json"
++_ARTIFACT_NAMES = (
++    "time_space_shadow_hypothesis_manifest.json",
++    "time_space_shadow_execution_manifest.json",
++    "time_space_shadow_registration_envelope.json",
++    "time_space_shadow_attribution.json",
++)
+ _FORBIDDEN_OUTPUT_KEYS = frozenset(
+     {"target_qty", "order", "risk_multiplier", "position_authority", "activation_recommendation"}
+ )
+@@ -110,7 +129,11 @@ class _LoadedPath:
+     labels: tuple[Any, ...]
+ 
+ 
+-def run_time_space_shadow(args: RunArgs) -> RunResult:
++def run_time_space_shadow(
++    args: RunArgs,
++    *,
++    provider_fetcher: Callable[[str, int], Mapping[str, Any]] | None = None,
++) -> RunResult:
+     """Validate, compute, re-hash, and atomically publish one shadow run."""
+ 
+     if type(args) is not RunArgs:
+@@ -118,7 +141,6 @@ def run_time_space_shadow(args: RunArgs) -> RunResult:
+     output_dir = Path(args.output_dir)
+     if output_dir.exists() or output_dir.is_symlink():
+         raise FileExistsError("output directory already exists")
+-
+     as_of_ns = _parse_literal_as_of(args.as_of)
+     hypothesis = load_hypothesis_manifest(Path(args.hypothesis_manifest))
+     execution = load_execution_manifest(Path(args.execution_manifest))
+@@ -126,10 +148,13 @@ def run_time_space_shadow(args: RunArgs) -> RunResult:
+         raise ValueError("runner accepts only the time_space_shadow layer")
+ 
+     registration_input = _load_json(Path(args.registration_envelope), "registration envelope")
++    trust = _load_registration_trust()
+     receipt_payload, receipts, forward_start_ns = _verify_registration_pair(
+         registration_input,
+         hypothesis=hypothesis,
+         execution=execution,
++        trust=trust,
++        provider_fetcher=provider_fetcher or _fetch_github_provider_run,
+     )
+     role, observation_start_ns, observation_end_ns = _resolve_role_window(
+         as_of_ns=as_of_ns,
+@@ -137,14 +162,18 @@ def run_time_space_shadow(args: RunArgs) -> RunResult:
+         reused_end_ns=hypothesis.reused_end_ns,
+         forward_start_ns=forward_start_ns,
+     )
++    if role is EvidenceRole.FORWARD_CONFIRMATION:
++        raise ValueError("EXPORT_REGISTRATION_REQUIRED")
+ 
+     before_source_sha256 = _hash_bound_sources(execution)
+     export_payload = _load_json(Path(args.frozen_export), "frozen export")
+     export_sha256 = canonical_sha256(export_payload)
+-    canonical_path, perturbation_paths, market_state_transitions = _load_export(
++    canonical_path, perturbation_paths, transition_events, market_state_transitions = _load_export(
+         export_payload,
+         as_of_ns=as_of_ns,
+         execution=execution,
++        observation_start_ns=observation_start_ns,
++        observation_end_ns=observation_end_ns,
+     )
+ 
+     primary_flips = tuple(
+@@ -202,6 +231,7 @@ def run_time_space_shadow(args: RunArgs) -> RunResult:
+         "states": [_without_shadow_authority_fields(item) for item in canonical_path.states],
+         "flips": [_plain_json(item) for item in canonical_path.flips],
+         "labels": [_plain_json(item) for item in canonical_path.labels],
++        "market_state_transition_events": transition_events,
+     }
+     perturbation_evidence = [
+         {
+@@ -225,7 +255,9 @@ def run_time_space_shadow(args: RunArgs) -> RunResult:
+         "evidence_role": role.value,
+         "observation_window": [observation_start_ns, observation_end_ns],
+         "forward_start_ns": forward_start_ns,
+-        "forward_eligible": role is EvidenceRole.FORWARD_CONFIRMATION,
++        "forward_evidence": False,
++        "forward_eligible": False,
++        "export_trust": "REUSED_DIAGNOSTIC_ONLY",
+         "state_count": len(canonical_path.states),
+         "flip_count_by_kind": {
+             kind.value: sum(flip.kind is kind for flip in canonical_path.flips) for kind in FlipKind
+@@ -238,13 +270,14 @@ def run_time_space_shadow(args: RunArgs) -> RunResult:
+     }
+     _reject_forbidden_output_keys(attribution)
+ 
+-    payloads = {
+-        "time_space_shadow_hypothesis_manifest.json": hypothesis_payload,
+-        "time_space_shadow_execution_manifest.json": execution_payload,
+-        "time_space_shadow_registration_envelope.json": normalized_registration,
+-        "time_space_shadow_attribution.json": attribution,
+-    }
+-    paths = _write_artifacts_atomically(payloads, output_dir)
++    payloads = dict(
++        zip(
++            _ARTIFACT_NAMES,
++            (hypothesis_payload, execution_payload, normalized_registration, attribution),
++            strict=True,
++        )
++    )
++    paths = _write_artifacts_transactionally(payloads, output_dir)
+     attribution_path = output_dir / "time_space_shadow_attribution.json"
+     return RunResult(
+         output_dir=output_dir,
+@@ -254,24 +287,50 @@ def run_time_space_shadow(args: RunArgs) -> RunResult:
+     )
+ 
+ 
+-def _verify_registration_pair(registration: dict[str, Any], *, hypothesis, execution):
++def _verify_registration_pair(
++    registration: dict[str, Any],
++    *,
++    hypothesis,
++    execution,
++    trust: dict[str, Any],
++    provider_fetcher: Callable[[str, int], Mapping[str, Any]],
++):
+     if set(registration) != {"schema_version", "layer", "hypothesis", "execution"}:
+         raise ValueError("registration envelope keys are invalid")
+     if registration["schema_version"] != "trend-registration-pair.v1" or registration["layer"] != "time_space_shadow":
+         raise ValueError("registration envelope identity is invalid")
+     verified = []
+     normalized = []
+-    providers = []
+     for name in ("hypothesis", "execution"):
+         item = registration[name]
+-        if not isinstance(item, dict) or set(item) != {"envelope", "provider"}:
++        if not isinstance(item, dict) or set(item) != {
++            "provider_run_id",
++            "commit_sha",
++            "remote_identity",
++            "manifest_sha256",
++            "received_at_ns",
++        }:
+             raise ValueError(f"{name} registration descriptor is invalid")
++        pinned = trust[name]
++        expected = {
++            "provider_run_id": pinned["provider_run_id"],
++            "commit_sha": pinned["commit_sha"],
++            "remote_identity": trust["remote_identity"],
++            "manifest_sha256": pinned["manifest_sha256"],
++        }
++        if any(item.get(key) != value for key, value in expected.items()):
++            raise ValueError(f"{name} does not match trusted registration")
+         try:
+-            receipt = verify_github_receipt(item["envelope"], item["provider"])
++            provider = provider_fetcher(trust["remote_identity"], int(pinned["provider_run_id"]))
++        except Exception as exc:
++            raise ValueError(f"cannot fetch authoritative {name} provider receipt") from exc
++        try:
++            receipt = verify_github_receipt(item, provider)
+         except RegistrationError as exc:
+             raise ValueError(f"{name} receipt is unverified") from exc
++        if item["received_at_ns"] != receipt.received_at_ns:
++            raise ValueError(f"{name} retained receipt timestamp does not match provider")
+         verified.append(receipt)
+-        providers.append(item["provider"])
+         normalized.append(
+             {
+                 "kind": name,
+@@ -282,17 +341,16 @@ def _verify_registration_pair(registration: dict[str, Any], *, hypothesis, execu
+                 "received_at_ns": receipt.received_at_ns,
+             }
+         )
+-    remote = verified[0].remote_identity
+     try:
+         forward_start_ns = derive_forward_start_ns(
+             hypothesis,
+             execution,
+             verified,
+-            expected_remote_identity=remote,
+-            expected_hypothesis_provider_run_id=providers[0]["id"],
+-            expected_hypothesis_commit_sha=providers[0]["head_sha"],
+-            expected_execution_provider_run_id=providers[1]["id"],
+-            expected_execution_commit_sha=providers[1]["head_sha"],
++            expected_remote_identity=trust["remote_identity"],
++            expected_hypothesis_provider_run_id=trust["hypothesis"]["provider_run_id"],
++            expected_hypothesis_commit_sha=trust["hypothesis"]["commit_sha"],
++            expected_execution_provider_run_id=trust["execution"]["provider_run_id"],
++            expected_execution_commit_sha=trust["execution"]["commit_sha"],
+         )
+     except (KeyError, RegistrationError) as exc:
+         raise ValueError("receipt pair is unverified or role-swapped") from exc
+@@ -311,7 +369,85 @@ def _resolve_role_window(*, as_of_ns: int, reused_start_ns: int, reused_end_ns:
+     return EvidenceRole.FORWARD_CONFIRMATION, forward_start_ns, as_of_ns
+ 
+ 
+-def _load_export(payload: dict[str, Any], *, as_of_ns: int, execution):
++def _load_registration_trust() -> dict[str, Any]:
++    trust = _load_json(_TRUST_RECORD_PATH, "registration trust record")
++    if set(trust) != {"schema_version", "layer", "remote_identity", "hypothesis", "execution"}:
++        raise ValueError("registration trust record keys are invalid")
++    if (
++        trust["schema_version"] != "time-space-shadow-registration-trust.v1"
++        or trust["layer"] != "time_space_shadow"
++        or trust["remote_identity"] != _TRUSTED_REMOTE
++    ):
++        raise ValueError("registration trust record identity is invalid")
++    for name in ("hypothesis", "execution"):
++        item = trust[name]
++        if not isinstance(item, dict) or set(item) != {"provider_run_id", "commit_sha", "manifest_sha256"}:
++            raise ValueError(f"trusted {name} descriptor is invalid")
++        if (
++            item["provider_run_id"] != _TRUSTED_RUNS[name]
++            or item["commit_sha"] != _TRUSTED_COMMITS[name]
++            or item["manifest_sha256"] != _TRUSTED_MANIFESTS[name]
++        ):
++            raise ValueError(f"trusted {name} provider identity is invalid")
++    return trust
++
++
++def _fetch_github_provider_run(remote_identity: str, provider_run_id: int) -> Mapping[str, Any]:
++    if remote_identity != _TRUSTED_REMOTE or str(provider_run_id) not in set(_TRUSTED_RUNS.values()):
++        raise ValueError("provider fetch is outside the pinned trust root")
++    url = f"https://api.github.com/repos/{remote_identity}/actions/runs/{provider_run_id}"
++    request = urllib.request.Request(
++        url,
++        headers={"Accept": "application/vnd.github+json", "User-Agent": "zenquant-time-space-shadow/1"},
++    )
++    with urllib.request.urlopen(request, timeout=30) as response:
++        payload = json.loads(response.read().decode("utf-8"))
++    if not isinstance(payload, Mapping):
++        raise ValueError("GitHub provider response is not an object")
++    return payload
++
++
++def _validate_transition_events(raw_events: Any, states: tuple[Any, ...]) -> list[dict[str, Any]]:
++    if not isinstance(raw_events, list):
++        raise ValueError("market state transition events must be a list")
++    state_index = {state.cutoff_time_ns: index for index, state in enumerate(states)}
++    validated: list[dict[str, Any]] = []
++    previous_cutoff: int | None = None
++    for event in raw_events:
++        if not isinstance(event, dict) or set(event) != {"cutoff_time_ns", "prior_state_id", "state_id"}:
++            raise ValueError("transition event schema is invalid")
++        cutoff = event["cutoff_time_ns"]
++        if (
++            isinstance(cutoff, bool)
++            or not isinstance(cutoff, int)
++            or cutoff < 0
++            or cutoff % (4 * 60 * 60 * 1_000_000_000)
++        ):
++            raise ValueError("transition cutoff must use the canonical UTC 4h grid")
++        if previous_cutoff is not None and cutoff <= previous_cutoff:
++            raise ValueError("transition cutoffs must be unique and strictly increasing")
++        index = state_index.get(cutoff)
++        if index is None or index == 0:
++            raise ValueError("transition event is missing an adjacent prior state")
++        prior = states[index - 1]
++        current = states[index]
++        if event["prior_state_id"] != prior.state_id or event["state_id"] != current.state_id:
++            raise ValueError("transition event state identity mismatch")
++        if prior.market_structure_side == current.market_structure_side:
++            raise ValueError("transition event does not change market state")
++        validated.append(dict(event))
++        previous_cutoff = cutoff
++    return validated
++
++
++def _load_export(
++    payload: dict[str, Any],
++    *,
++    as_of_ns: int,
++    execution,
++    observation_start_ns: int,
++    observation_end_ns: int,
++):
+     if set(payload) != _EXPECTED_EXPORT_KEYS:
+         raise ValueError("frozen export keys are invalid")
+     if payload["schema_version"] != "time-space-shadow-export.v1" or payload["layer"] != "time_space_shadow":
+@@ -328,10 +464,11 @@ def _load_export(payload: dict[str, Any], *, as_of_ns: int, execution):
+             raise ValueError(f"frozen export {field} does not bind registered execution")
+     if payload["as_of_ns"] != as_of_ns:
+         raise ValueError("frozen export as_of_ns does not match literal as_of")
+-    transition_count = payload["market_state_transition_count"]
+-    if isinstance(transition_count, bool) or not isinstance(transition_count, int) or transition_count < 0:
+-        raise ValueError("market_state_transition_count must be a non-negative integer")
+     canonical = _build_path(payload["rows"], as_of_ns=as_of_ns, identities=expected_identities)
++    transition_events = _validate_transition_events(payload["market_state_transition_events"], canonical.states)
++    transition_count = sum(
++        observation_start_ns <= event["cutoff_time_ns"] < observation_end_ns for event in transition_events
++    )
+     perturbations = payload["perturbation_paths"]
+     if not isinstance(perturbations, dict) or set(perturbations) != {str(seed) for seed in _EXPECTED_SEEDS}:
+         raise ValueError("perturbation paths must use the five frozen seeds in canonical order")
+@@ -339,7 +476,7 @@ def _load_export(payload: dict[str, Any], *, as_of_ns: int, execution):
+     for seed in _EXPECTED_SEEDS:
+         path = _build_path(perturbations[str(seed)], as_of_ns=as_of_ns, identities=expected_identities)
+         path_evidence.append(PerturbationPathEvidence(seed=seed, flips=path.flips, labels=path.labels))
+-    return canonical, tuple(path_evidence), transition_count
++    return canonical, tuple(path_evidence), transition_events, transition_count
+ 
+ 
+ def _build_path(raw_rows: Any, *, as_of_ns: int, identities: dict[str, str]) -> _LoadedPath:
+@@ -517,21 +654,79 @@ def _canonical_bytes(payload: dict[str, Any]) -> bytes:
+     ).encode("utf-8")
+ 
+ 
+-def _write_artifacts_atomically(payloads: dict[str, dict[str, Any]], output_dir: Path) -> tuple[Path, ...]:
++def _write_artifacts_transactionally(payloads: dict[str, dict[str, Any]], output_dir: Path) -> tuple[Path, ...]:
++    if tuple(payloads) != _ARTIFACT_NAMES:
++        raise ValueError("artifact set is not canonical")
+     output_dir.parent.mkdir(parents=True, exist_ok=True)
+-    temporary = Path(tempfile.mkdtemp(prefix=f".{output_dir.name}.", dir=output_dir.parent))
+     try:
++        output_dir.mkdir()
++    except FileExistsError as exc:
++        raise FileExistsError("output directory already exists") from exc
++    _fsync_directory(output_dir.parent)
++    try:
++        artifact_hashes = {}
+         for name, payload in payloads.items():
+-            path = temporary / name
+-            with path.open("xb") as handle:
+-                handle.write(_canonical_bytes(payload))
+-                handle.flush()
+-                os.fsync(handle.fileno())
+-        os.replace(temporary, output_dir)
+-    except BaseException:
+-        shutil.rmtree(temporary, ignore_errors=True)
++            path = output_dir / name
++            _write_canonical_file(path, payload)
++            artifact_hashes[name] = _sha256_file(path)
++        marker = {
++            "schema_version": "time-space-shadow-complete.v1",
++            "layer": "time_space_shadow",
++            "artifacts": artifact_hashes,
++        }
++        _write_canonical_file(output_dir / _COMPLETE_MARKER, marker)
++        _fsync_directory(output_dir)
++        _fsync_directory(output_dir.parent)
++        paths = validate_completed_output(output_dir)
++    except Exception:
++        shutil.rmtree(output_dir, ignore_errors=True)
++        _fsync_directory(output_dir.parent)
+         raise
+-    return tuple(output_dir / name for name in payloads)
++    return paths
++
++
++def _write_canonical_file(path: Path, payload: dict[str, Any]) -> None:
++    with path.open("xb") as handle:
++        handle.write(_canonical_bytes(payload))
++        handle.flush()
++        os.fsync(handle.fileno())
++
++
++def validate_completed_output(output_dir: Path) -> tuple[Path, ...]:
++    marker_path = output_dir / _COMPLETE_MARKER
++    if not marker_path.is_file():
++        raise ValueError("time-space shadow output is incomplete")
++    marker = _load_json(marker_path, "completion marker")
++    if set(marker) != {"schema_version", "layer", "artifacts"} or (marker["schema_version"], marker["layer"]) != (
++        "time-space-shadow-complete.v1",
++        "time_space_shadow",
++    ):
++        raise ValueError("completion marker identity is invalid")
++    artifacts = marker["artifacts"]
++    if not isinstance(artifacts, dict) or set(artifacts) != set(_ARTIFACT_NAMES):
++        raise ValueError("completion marker artifact set is invalid")
++    expected_entries = set(_ARTIFACT_NAMES) | {_COMPLETE_MARKER}
++    if {path.name for path in output_dir.iterdir()} != expected_entries:
++        raise ValueError("completed output contains unexpected or missing files")
++    paths = tuple(output_dir / name for name in _ARTIFACT_NAMES)
++    for path in paths:
++        payload = _load_json(path, f"artifact {path.name}")
++        if path.read_bytes() != _canonical_bytes(payload) or _sha256_file(path) != artifacts[path.name]:
++            raise ValueError(f"completed artifact is invalid: {path.name}")
++    return paths
++
++
++def _fsync_directory(path: Path) -> None:
++    try:
++        descriptor = os.open(path, os.O_RDONLY)
++    except OSError:
++        return
++    try:
++        os.fsync(descriptor)
++    except OSError:
++        pass
++    finally:
++        os.close(descriptor)
+ 
+ 
+ def _sha256_file(path: Path) -> str:
+diff --git a/tests/test_time_space_shadow_cli.py b/tests/test_time_space_shadow_cli.py
+index e1e2492..c3252fc 100644
+--- a/tests/test_time_space_shadow_cli.py
++++ b/tests/test_time_space_shadow_cli.py
+@@ -16,6 +16,11 @@ EXECUTION = Path(__file__).parents[1] / "config/research/registrations/time_spac
+ FOUR_HOURS_NS = 14_400_000_000_000
+ COMMIT_A = "a" * 40
+ COMMIT_B = "b" * 40
++TRUSTED_REPO = "infdahai/zenQuant"
++HYPOTHESIS_RUN_ID = 32686267806
++EXECUTION_RUN_ID = 32697642994
++HYPOTHESIS_COMMIT = "e7d0f3d8afaea0f457b47e75c2328acc9695a7b0"
++EXECUTION_COMMIT = "7d93cc1e53c8908ef26c753e83935877f5861853"
+ 
+ 
+ def _load_runner():
+@@ -33,42 +38,34 @@ def _canonical_bytes(payload: object) -> bytes:
+     ).encode()
+ 
+ 
+-def _provider(run_id: int, commit: str, created_at: str) -> dict[str, object]:
++def _provider(run_id: int, commit: str, created_at: str, *, repo: str = TRUSTED_REPO) -> dict[str, object]:
+     return {
+         "id": run_id,
+         "head_sha": commit,
+         "created_at": created_at,
+-        "repository": {"full_name": "owner/zenQuant"},
++        "repository": {"full_name": repo},
+     }
+ 
+ 
+ def _registration_envelope(tmp_path: Path) -> Path:
+     hypothesis_payload = json.loads(HYPOTHESIS.read_text())
+     execution_payload = json.loads(EXECUTION.read_text())
+-    h_provider = _provider(101, COMMIT_A, "2026-08-24T03:23:18Z")
+-    e_provider = _provider(102, COMMIT_B, "2026-08-24T06:30:49Z")
+     payload = {
+         "schema_version": "trend-registration-pair.v1",
+         "layer": "time_space_shadow",
+         "hypothesis": {
+-            "envelope": {
+-                "provider_run_id": "101",
+-                "commit_sha": COMMIT_A,
+-                "remote_identity": "owner/zenQuant",
+-                "manifest_sha256": canonical_sha256(hypothesis_payload),
+-                "received_at_ns": 0,
+-            },
+-            "provider": h_provider,
++            "provider_run_id": str(HYPOTHESIS_RUN_ID),
++            "commit_sha": HYPOTHESIS_COMMIT,
++            "remote_identity": TRUSTED_REPO,
++            "manifest_sha256": canonical_sha256(hypothesis_payload),
++            "received_at_ns": 1787541798000000000,
+         },
+         "execution": {
+-            "envelope": {
+-                "provider_run_id": "102",
+-                "commit_sha": COMMIT_B,
+-                "remote_identity": "owner/zenQuant",
+-                "manifest_sha256": canonical_sha256(execution_payload),
+-                "received_at_ns": 0,
+-            },
+-            "provider": e_provider,
++            "provider_run_id": str(EXECUTION_RUN_ID),
++            "commit_sha": EXECUTION_COMMIT,
++            "remote_identity": TRUSTED_REPO,
++            "manifest_sha256": canonical_sha256(execution_payload),
++            "received_at_ns": 1787553049000000000,
+         },
+     }
+     path = tmp_path / "registration.json"
+@@ -116,7 +113,7 @@ def _export(tmp_path: Path, *, as_of_ns: int = REUSED_END_NS) -> Path:
+         "config_sha256": execution["config_sha256"],
+         "source_set_sha256": execution["source_set_sha256"],
+         "as_of_ns": as_of_ns,
+-        "market_state_transition_count": 0,
++        "market_state_transition_events": [],
+         "rows": rows,
+         "perturbation_paths": {str(seed): rows for seed in (42, 123, 456, 789, 1024)},
+     }
+@@ -140,13 +137,22 @@ def _args(module, tmp_path: Path, **changes):
+     return module.RunArgs(**values)
+ 
+ 
++def _trusted_fetcher(repo: str, run_id: int) -> dict[str, object]:
++    assert repo == TRUSTED_REPO
++    if run_id == HYPOTHESIS_RUN_ID:
++        return _provider(run_id, HYPOTHESIS_COMMIT, "2026-08-24T03:23:18Z")
++    if run_id == EXECUTION_RUN_ID:
++        return _provider(run_id, EXECUTION_COMMIT, "2026-08-24T06:30:49Z")
++    raise AssertionError(f"unexpected run {run_id}")
++
++
+ def test_runner_writes_four_identity_bound_canonical_artifacts_without_authority_fields(
+     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+ ) -> None:
+     module = _load_runner()
+     monkeypatch.setattr(module, "_hash_bound_sources", lambda execution: execution.payload["source_set_sha256"])
+ 
+-    result = module.run_time_space_shadow(_args(module, tmp_path))
++    result = module.run_time_space_shadow(_args(module, tmp_path), provider_fetcher=_trusted_fetcher)
+ 
+     assert {path.name for path in result.paths} == {
+         "time_space_shadow_hypothesis_manifest.json",
+@@ -158,6 +164,7 @@ def test_runner_writes_four_identity_bound_canonical_artifacts_without_authority
+     assert attribution["hypothesis_sha256"] == canonical_sha256(json.loads(HYPOTHESIS.read_text()))
+     assert attribution["evidence_role"] == "TEST_REUSED_DIAGNOSTIC"
+     assert attribution["forward_eligible"] is False
++    assert attribution["export_trust"] == "REUSED_DIAGNOSTIC_ONLY"
+     assert attribution["status"] != "ELIGIBLE_FOR_SEPARATE_ACTIVATION_REVIEW"
+     forbidden = ("target_qty", "order", "risk_multiplier", "position_authority", "activation_recommendation")
+     serialized = json.dumps(attribution)
+@@ -172,7 +179,7 @@ def test_runner_writes_four_identity_bound_canonical_artifacts_without_authority
+ def test_runner_rejects_dynamic_or_noncanonical_as_of(tmp_path: Path, as_of: str) -> None:
+     module = _load_runner()
+     with pytest.raises(ValueError, match="literal canonical UTC 4h cutoff"):
+-        module.run_time_space_shadow(_args(module, tmp_path, as_of=as_of))
++        module.run_time_space_shadow(_args(module, tmp_path, as_of=as_of), provider_fetcher=_trusted_fetcher)
+     assert not (tmp_path / "out").exists()
+ 
+ 
+@@ -185,7 +192,7 @@ def test_forward_mode_rejects_role_swapped_receipts(tmp_path: Path, monkeypatch:
+     forward_as_of = 1_788_163_200_000_000_000
+     export = _export(tmp_path, as_of_ns=forward_as_of)
+     monkeypatch.setattr(module, "_hash_bound_sources", lambda execution: execution.payload["source_set_sha256"])
+-    with pytest.raises(ValueError, match=r"receipt|manifest hash"):
++    with pytest.raises(ValueError, match=r"receipt|manifest hash|trusted registration"):
+         module.run_time_space_shadow(
+             _args(
+                 module,
+@@ -193,7 +200,8 @@ def test_forward_mode_rejects_role_swapped_receipts(tmp_path: Path, monkeypatch:
+                 registration_envelope=envelope_path,
+                 frozen_export=export,
+                 as_of="2026-09-08T00:00:00Z",
+-            )
++            ),
++            provider_fetcher=_trusted_fetcher,
+         )
+ 
+ 
+@@ -202,7 +210,7 @@ def test_runner_rejects_source_drift_without_partial_publish(tmp_path: Path, mon
+     hashes = iter(("sha256:" + "1" * 64, "sha256:" + "2" * 64))
+     monkeypatch.setattr(module, "_hash_bound_sources", lambda execution: next(hashes))
+     with pytest.raises(RuntimeError, match="source corpus changed during run"):
+-        module.run_time_space_shadow(_args(module, tmp_path))
++        module.run_time_space_shadow(_args(module, tmp_path), provider_fetcher=_trusted_fetcher)
+     assert not (tmp_path / "out").exists()
+ 
+ 
+@@ -215,10 +223,10 @@ def test_runner_rejects_unavailable_labels_and_existing_output(tmp_path: Path, m
+     monkeypatch.setattr(module, "_hash_bound_sources", lambda execution: execution.payload["source_set_sha256"])
+     args = _args(module, tmp_path, frozen_export=frozen_export)
+     with pytest.raises(ValueError, match="unavailable label"):
+-        module.run_time_space_shadow(args)
++        module.run_time_space_shadow(args, provider_fetcher=_trusted_fetcher)
+     args.output_dir.mkdir()
+     with pytest.raises(FileExistsError, match="output directory already exists"):
+-        module.run_time_space_shadow(args)
++        module.run_time_space_shadow(args, provider_fetcher=_trusted_fetcher)
+ 
+ 
+ def test_runner_rejects_export_not_bound_to_registered_execution(
+@@ -231,4 +239,160 @@ def test_runner_rejects_export_not_bound_to_registered_execution(
+     frozen_export.write_bytes(_canonical_bytes(payload))
+     monkeypatch.setattr(module, "_hash_bound_sources", lambda execution: execution.payload["source_set_sha256"])
+     with pytest.raises(ValueError, match=r"frozen export.*execution"):
+-        module.run_time_space_shadow(_args(module, tmp_path, frozen_export=frozen_export))
++        module.run_time_space_shadow(
++            _args(module, tmp_path, frozen_export=frozen_export), provider_fetcher=_trusted_fetcher
++        )
++
++
++def test_self_consistent_evil_provider_pair_cannot_replace_trust_root(
++    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
++) -> None:
++    module = _load_runner()
++    envelope_path = _registration_envelope(tmp_path)
++    envelope = json.loads(envelope_path.read_text())
++    for item, run_id, commit in (
++        (envelope["hypothesis"], 7001, COMMIT_A),
++        (envelope["execution"], 7002, COMMIT_B),
++    ):
++        item["provider_run_id"] = str(run_id)
++        item["commit_sha"] = commit
++        item["remote_identity"] = "evil/repo"
++    envelope_path.write_bytes(_canonical_bytes(envelope))
++
++    def evil_fetcher(repo: str, run_id: int):
++        return _provider(run_id, COMMIT_A if run_id == 7001 else COMMIT_B, "2026-08-24T06:30:49Z", repo=repo)
++
++    monkeypatch.setattr(module, "_hash_bound_sources", lambda execution: execution.payload["source_set_sha256"])
++    with pytest.raises(ValueError, match="trusted registration"):
++        module.run_time_space_shadow(
++            _args(module, tmp_path, registration_envelope=envelope_path), provider_fetcher=evil_fetcher
++        )
++
++
++def test_valid_forward_receipts_still_require_registered_export(
++    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
++) -> None:
++    module = _load_runner()
++    forward_as_of = 1_788_163_200_000_000_000
++    frozen_export = _export(tmp_path, as_of_ns=forward_as_of)
++    monkeypatch.setattr(module, "_hash_bound_sources", lambda execution: execution.payload["source_set_sha256"])
++    with pytest.raises(ValueError, match="EXPORT_REGISTRATION_REQUIRED"):
++        module.run_time_space_shadow(
++            _args(module, tmp_path, frozen_export=frozen_export, as_of="2026-09-08T00:00:00Z"),
++            provider_fetcher=_trusted_fetcher,
++        )
++    assert not (tmp_path / "out").exists()
++
++
++def test_transition_events_must_bind_exact_adjacent_state_ids(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
++    module = _load_runner()
++    frozen_export = _export(tmp_path)
++    payload = json.loads(frozen_export.read_text())
++    payload["market_state_transition_events"] = [
++        {
++            "cutoff_time_ns": payload["rows"][1]["cutoff_time_ns"],
++            "prior_state_id": "a" * 64,
++            "state_id": "b" * 64,
++        }
++    ]
++    frozen_export.write_bytes(_canonical_bytes(payload))
++    monkeypatch.setattr(module, "_hash_bound_sources", lambda execution: execution.payload["source_set_sha256"])
++    with pytest.raises(ValueError, match=r"transition.*state"):
++        module.run_time_space_shadow(
++            _args(module, tmp_path, frozen_export=frozen_export), provider_fetcher=_trusted_fetcher
++        )
++
++
++def test_atomic_publication_writes_marker_last_and_validator_rejects_orphan(
++    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
++) -> None:
++    module = _load_runner()
++    monkeypatch.setattr(module, "_hash_bound_sources", lambda execution: execution.payload["source_set_sha256"])
++    writes: list[str] = []
++    real_write = module._write_canonical_file
++
++    def record_write(path, payload):
++        writes.append(path.name)
++        return real_write(path, payload)
++
++    monkeypatch.setattr(module, "_write_canonical_file", record_write)
++    result = module.run_time_space_shadow(_args(module, tmp_path), provider_fetcher=_trusted_fetcher)
++    marker = result.output_dir / "TIME_SPACE_SHADOW_COMPLETE.json"
++    assert marker.exists()
++    assert writes[-1] == marker.name
++    assert module.validate_completed_output(result.output_dir) == result.paths
++    marker.unlink()
++    with pytest.raises(ValueError, match="incomplete"):
++        module.validate_completed_output(result.output_dir)
++
++
++def test_publication_failure_rolls_back_owned_reservation(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
++    module = _load_runner()
++    monkeypatch.setattr(module, "_hash_bound_sources", lambda execution: execution.payload["source_set_sha256"])
++    real_write = module._write_canonical_file
++    calls = 0
++
++    def fail_second(path, payload):
++        nonlocal calls
++        calls += 1
++        if calls == 2:
++            raise OSError("injected")
++        return real_write(path, payload)
++
++    monkeypatch.setattr(module, "_write_canonical_file", fail_second)
++    with pytest.raises(OSError, match="injected"):
++        module.run_time_space_shadow(_args(module, tmp_path), provider_fetcher=_trusted_fetcher)
++    assert not (tmp_path / "out").exists()
++
++
++@pytest.mark.parametrize("nonempty", [False, True])
++def test_existing_empty_or_nonempty_target_is_never_overwritten(
++    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, nonempty: bool
++) -> None:
++    module = _load_runner()
++    output = tmp_path / "out"
++    output.mkdir()
++    sentinel = output / "external-owner"
++    if nonempty:
++        sentinel.write_text("keep")
++    monkeypatch.setattr(module, "_hash_bound_sources", lambda execution: execution.payload["source_set_sha256"])
++    with pytest.raises(FileExistsError, match="output directory already exists"):
++        module.run_time_space_shadow(_args(module, tmp_path), provider_fetcher=_trusted_fetcher)
++    assert output.is_dir()
++    assert sentinel.exists() is nonempty
++
++
++def test_transition_count_is_derived_only_from_events_inside_requested_window(tmp_path: Path) -> None:
++    module = _load_runner()
++    frozen_export = _export(tmp_path)
++    payload = json.loads(frozen_export.read_text())
++    payload["rows"][1]["structure_side"] = -1
++    identities = {
++        key: payload[key]
++        for key in ("hypothesis_sha256", "execution_sha256", "formula_sha256", "config_sha256", "source_set_sha256")
++    }
++    path = module._build_path(payload["rows"], as_of_ns=payload["as_of_ns"], identities=identities)
++    payload["market_state_transition_events"] = [
++        {
++            "cutoff_time_ns": path.states[1].cutoff_time_ns,
++            "prior_state_id": path.states[0].state_id,
++            "state_id": path.states[1].state_id,
++        }
++    ]
++    execution = module.load_execution_manifest(EXECUTION)
++    *_, inside_count = module._load_export(
++        payload,
++        as_of_ns=payload["as_of_ns"],
++        execution=execution,
++        observation_start_ns=path.states[0].cutoff_time_ns,
++        observation_end_ns=payload["as_of_ns"],
++    )
++    *_, outside_count = module._load_export(
++        payload,
++        as_of_ns=payload["as_of_ns"],
++        execution=execution,
++        observation_start_ns=path.states[1].cutoff_time_ns + FOUR_HOURS_NS,
++        observation_end_ns=payload["as_of_ns"],
++    )
++    assert inside_count == 1
++    assert outside_count == 0

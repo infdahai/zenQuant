@@ -1,0 +1,211 @@
+"""Frozen state-age risk forecasting probe; no strategy or execution changes."""
+
+from __future__ import annotations
+
+from typing import Any
+
+import numpy as np
+import pandas as pd
+
+from zenquant.research.frontier_lab.common import (
+    SEEDS,
+    TRAIN_END,
+    causal_features,
+    load_bars,
+    next_open_labels,
+    prediction_metrics,
+    ridge_predict,
+    split_masks,
+)
+
+STATE_NAMES = ["bear_low_vol", "bear_high_vol", "neutral_low_vol", "neutral_high_vol", "bull_low_vol", "bull_high_vol"]
+CURRENT_COLUMNS = ["return_1", "momentum_6", "momentum_42", "vol_42", "range", "volume_z"]
+
+
+def age_clocks(states: np.ndarray, shocks: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """State age includes its current bar; events include the current known shock.
+
+    Missing state (-1) resets both clocks. No final episode length or future
+    transition appears in the features. Arrays must already be time ordered.
+    """
+    states, shocks = np.asarray(states), np.asarray(shocks, dtype=bool)
+    if states.ndim != 1 or shocks.shape != states.shape:
+        raise ValueError("state and shock arrays must be matching vectors")
+    ages, counts = np.zeros(len(states), dtype=int), np.zeros(len(states), dtype=int)
+    previous, age, count = -1, 0, 0
+    for index, (state, shock) in enumerate(zip(states, shocks, strict=True)):
+        if state < 0:
+            previous, age, count = -1, 0, 0
+            continue
+        age, count = (age + 1, count) if state == previous else (1, 0)
+        count += int(shock)
+        ages[index], counts[index], previous = age, count, state
+    return ages, counts
+
+
+def causal_states(features: pd.DataFrame, train: np.ndarray) -> tuple[np.ndarray, np.ndarray, float]:
+    """Freeze 3 trend x 2 volatility states without future episode segmentation."""
+    volatility = features["vol_42"].to_numpy(dtype=float)
+    threshold = float(np.nanmedian(volatility[train]))
+    if not np.isfinite(threshold) or threshold <= 0:
+        raise ValueError("training period has no positive volatility")
+    normalized = features["momentum_42"].to_numpy(dtype=float) / (volatility * np.sqrt(42))
+    trend = np.where(normalized < -0.75, 0, np.where(normalized > 0.75, 2, 1))
+    states = 2 * trend + (volatility >= threshold).astype(int)
+    valid = np.isfinite(normalized) & np.isfinite(volatility) & (volatility > 0)
+    states[~valid] = -1
+    prior_volatility = features["vol_42"].shift(1).to_numpy(dtype=float)
+    shocks = np.abs(features["return_1"].to_numpy(dtype=float)) > 2 * prior_volatility
+    shocks &= np.isfinite(prior_volatility) & (prior_volatility > 0)
+    return states, shocks, threshold
+
+
+def purged_labels(frame: pd.DataFrame) -> tuple[pd.DataFrame, np.ndarray, np.ndarray]:
+    labels = next_open_labels(frame)
+    train, dev = split_masks(frame, labels["label_end_ns"])
+    train = train & (frame["close_time_ns"].to_numpy() >= pd.Timestamp("2020-01-01", tz="UTC").value)
+    return labels, train, dev
+
+
+def synthetic_check(seed: int, *, effect: bool) -> dict[str, Any]:
+    """Positive control uses duration; negative control has only current-state signal."""
+    rng = np.random.default_rng(seed)
+    states = np.concatenate([np.full(rng.integers(3, 61), index % 2) for index in range(400)])
+    ages, _ = age_clocks(states, np.zeros(len(states), dtype=bool))
+    one_hot = np.eye(2)[states]
+    current = np.column_stack([one_hot, rng.normal(size=len(states))])
+    duration = np.column_stack([current, np.log1p(ages)[:, None] * one_hot])
+    target = 0.5 + 0.1 * states + rng.normal(0, 0.02 if effect else 0.1, len(states))
+    if effect:
+        target += 0.15 * np.log1p(ages)
+    cutoff = int(len(states) * 0.7)
+    predictions = {
+        name: ridge_predict(x[:cutoff], target[:cutoff], x[cutoff:], alpha=1.0)
+        for name, x in [("current", current), ("duration", duration)]
+    }
+    mse = {name: float(np.mean((target[cutoff:] - predicted) ** 2)) for name, predicted in predictions.items()}
+    return {
+        "seed": seed,
+        "mechanism": "duration_drives_target" if effect else "state_only_null",
+        "n_train": cutoff,
+        "n_dev": len(states) - cutoff,
+        "current_mse": mse["current"],
+        "duration_mse": mse["duration"],
+        "duration_mse_reduction_fraction": 1 - mse["duration"] / mse["current"],
+    }
+
+
+def score_models(actual: np.ndarray, predictions: dict[str, np.ndarray], *, tail: bool) -> dict[str, Any]:
+    mse = {name: float(np.mean((actual - predicted) ** 2)) for name, predicted in predictions.items()}
+    return {
+        name: {
+            **prediction_metrics(actual, predicted),
+            "brier_score" if tail else "mse": mse[name],
+            "mse_reduction_vs_current_fraction": 1 - mse[name] / mse["current"],
+        }
+        for name, predicted in predictions.items()
+    }
+
+
+def run(context: dict[str, Any]) -> dict[str, Any]:
+    frame = load_bars(context)
+    features = causal_features(frame)
+    labels, train, dev = purged_labels(frame)
+    valid = np.isfinite(features[CURRENT_COLUMNS].to_numpy(dtype=float)).all(axis=1)
+    valid &= np.isfinite(labels["return"].to_numpy(dtype=float))
+    train, dev = train & valid, dev & valid
+    states, shocks, threshold = causal_states(features, train)
+    ages, counts = age_clocks(states, shocks)
+    one_hot = np.eye(6)[np.maximum(states, 0)]
+    current = np.column_stack([one_hot, features[CURRENT_COLUMNS].to_numpy(dtype=float)])
+    duration = np.log1p(ages)[:, None] * one_hot
+    events = np.log1p(counts)[:, None] * one_hot
+    designs = {
+        "current": current,
+        "plus_duration": np.column_stack([current, duration]),
+        "plus_shock_count": np.column_stack([current, events]),
+        "plus_both": np.column_stack([current, duration, events]),
+    }
+    absolute_return = np.abs(labels["return"].to_numpy(dtype=float))
+    tail_threshold = float(np.quantile(absolute_return[train], 0.95))
+    targets = {"absolute_return": absolute_return, "tail_proxy": (absolute_return > tail_threshold).astype(float)}
+    years = pd.to_datetime(frame.loc[dev, "close_time_ns"], unit="ns", utc=True).dt.year.to_numpy()
+    dev_states = states[dev]
+    tasks: dict[str, Any] = {}
+    for task, target in targets.items():
+        predictions = {
+            name: np.clip(
+                ridge_predict(x[train], target[train], x[dev], alpha=1.0), 0, 1 if task == "tail_proxy" else np.inf
+            )
+            for name, x in designs.items()
+        }
+        actual = target[dev]
+        groups = {f"year_{year}": years == year for year in [2024, 2025]}
+        groups.update({state: dev_states == index for index, state in enumerate(STATE_NAMES)})
+        groups.update(
+            {
+                f"{year}_{state}": (years == year) & (dev_states == index)
+                for year in [2024, 2025]
+                for index, state in enumerate(STATE_NAMES)
+            }
+        )
+        tasks[task] = {
+            "dev": score_models(actual, predictions, tail=task == "tail_proxy"),
+            "dev_target_mean": float(actual.mean()),
+            "breakdown": {
+                name: score_models(
+                    actual[mask], {key: value[mask] for key, value in predictions.items()}, tail=task == "tail_proxy"
+                )
+                for name, mask in groups.items()
+                if mask.any()
+            },
+        }
+    gains = {task: tasks[task]["dev"]["plus_duration"]["mse_reduction_vs_current_fraction"] for task in targets}
+    verdict = "duration_increment_is_small_or_inconsistent_in_observed_dev"
+    if all(value > 0.01 for value in gains.values()):
+        verdict = "duration_has_descriptive_dev_increment_requires_frozen_confirmation"
+    return {
+        "direction_id": "d02",
+        "hypothesis": "Within an identical causal trend/volatility state, elapsed age or accumulated shocks add next-open risk information beyond current features.",
+        "evidence_type": "mixed",
+        "method": {
+            "state": "momentum_42/(vol_42*sqrt(42)) below -0.75, between, above 0.75; volatility above training median",
+            "shock": "abs(current close-to-close log return) > 2 * previous-bar vol_42",
+            "clocks": "observed bars and shock count since latest state transition, including current confirmed close; missing state resets",
+            "regressor": "fixed alpha=1 ridge; train-only standardization; state one-hot plus six current causal features; log1p clocks interacted with state",
+            "targets": "abs(open[i+2]/open[i+1]-1); tail binary above training 95th percentile of that absolute return",
+            "split": "train2020-2023; observed dev2024-2025; next-open label end purged at both boundaries; no fitting/refit on dev",
+            "forecast_clipping": "absolute-return >=0; tail proxy probability within [0,1]",
+            "parameter_search": False,
+        },
+        "metrics": {
+            "n_train": int(train.sum()),
+            "n_dev": int(dev.sum()),
+            "train_last_label_end_ns": int(labels.loc[train, "label_end_ns"].max()),
+            "train_boundary_ns": int(TRAIN_END.value),
+            "training_volatility_median": threshold,
+            "training_tail_absolute_return_threshold": tail_threshold,
+            "dev_age_median_bars": float(np.median(ages[dev])),
+            "dev_age_max_bars": int(ages[dev].max()),
+            "dev_shock_count_max": int(counts[dev].max()),
+            "tasks": tasks,
+            "synthetic_duration_mechanism": [synthetic_check(seed, effect=True) for seed in SEEDS],
+            "synthetic_no_duration_effect": [synthetic_check(seed, effect=False) for seed in SEEDS],
+        },
+        "verdict": verdict,
+        "limitations": [
+            "2024-2025 was previously observed and is development diagnosis, not untouched OOS or alpha evidence.",
+            "BTC one venue, 4h sampling and frozen six-state definition; state switching can make age short and event counts sparse.",
+            "Linear ridge with state-specific log clocks can miss nonlinear duration interactions; no parameter or feature search was performed.",
+            "Tail proxy predicts a single next-open interval, not liquidation, loss under leverage, or executable PnL.",
+            "No confidence interval, adjusted multiple-testing claim, execution-cost experiment or live validation; five seeds apply only to synthetic controls.",
+            "Exchange bar available-at history is unverified; retrospective timestamps alone do not prove historical ingestion availability.",
+        ],
+        "falsification": "Age fails if frozen forward data shows nonpositive MSE/Brier improvement after conditioning on current features, or benefit reverses by year/state; synthetic null must not systematically gain.",
+        "next_experiment": "Keep the state thresholds, ridge and targets frozen; collect an untouched forward sample and evaluate duration increments with chronological block confidence intervals before any risk-overlay design.",
+        "input_paths": [],
+        "internet_sources": [],
+        "rankable": False,
+        "live_eligible": False,
+        "promotion_eligible": False,
+    }

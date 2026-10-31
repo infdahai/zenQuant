@@ -1,0 +1,209 @@
+"""Immutable local run identities and a durable, append-only trial journal.
+
+The caller supplies the complete code/data/config/policy/seed/window identity;
+this module does not invent defaults or infer provenance from parameters.
+Operations serialize with a local advisory flock. All writers must use this
+API on a filesystem supporting flock, atomic links/replace and fsync. This is
+not a distributed journal. Corruption or an interrupted commit requires human
+inspection or a new run directory; this API never truncates or repairs evidence.
+"""
+
+from __future__ import annotations
+
+import fcntl
+import hashlib
+import json
+import math
+import os
+import tempfile
+from collections.abc import Iterator, Mapping
+from contextlib import contextmanager
+from pathlib import Path
+from typing import Any
+
+_SCHEMA = "trial-journal.v1"
+
+
+def _json_value(value: Any, ancestors: frozenset[int] = frozenset()) -> Any:
+    if value is None or type(value) in (str, bool, int):
+        return value
+    if type(value) is float:
+        if not math.isfinite(value):
+            raise ValueError("non-finite JSON value")
+        return value
+    if isinstance(value, Mapping) or type(value) is list:
+        if id(value) in ancestors:
+            raise ValueError("cyclic JSON value")
+        ancestors = ancestors | {id(value)}
+        if isinstance(value, Mapping):
+            if any(type(key) is not str for key in value):
+                raise ValueError("JSON object keys must be strings")
+            return {key: _json_value(item, ancestors) for key, item in value.items()}
+        return [_json_value(item, ancestors) for item in value]
+    raise ValueError(f"unsupported JSON value: {type(value).__name__}")
+
+
+def _canonical(payload: Mapping[str, Any]) -> bytes:
+    if not isinstance(payload, Mapping):
+        raise ValueError("JSON payload must be a mapping")
+    try:
+        return json.dumps(
+            _json_value(payload), sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False
+        ).encode("utf-8")
+    except (RecursionError, UnicodeError) as exc:
+        raise ValueError("invalid JSON value") from exc
+
+
+def identity_hash(payload: Mapping[str, Any]) -> str:
+    """SHA-256 of the entire strict, canonical JSON mapping, without coercion."""
+    return hashlib.sha256(_canonical(payload)).hexdigest()
+
+
+def _unique_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    result: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError(f"duplicate JSON key: {key}")
+        result[key] = value
+    return result
+
+
+def _read_object(content: bytes) -> dict[str, Any]:
+    try:
+        result = json.loads(content, object_pairs_hook=_unique_object)
+        _canonical(result)
+    except (ValueError, RecursionError) as exc:
+        raise ValueError("invalid journal JSON") from exc
+    return result
+
+
+def _validate_record(record: Mapping[str, Any]) -> dict[str, Any]:
+    detached = _read_object(_canonical(record))
+    attempt_id = detached.get("attempt_id")
+    if type(attempt_id) is not str or not attempt_id.strip():
+        raise ValueError("record requires a non-empty string attempt_id")
+    return detached
+
+
+class TrialJournal:
+    """Identity-bound journal; append returns a detached copy of the input record.
+
+    ``identity.json`` is created atomically and never overwritten. Each line of
+    ``trials.jsonl`` is checksummed and chained to the run identity. The atomic
+    ``journal_state.json`` commits its count and final hash: loss of complete
+    lines and crashes between data fsync and state publication fail closed too.
+    Attempt IDs are unique within a run; even an identical duplicate is rejected.
+    """
+
+    def __init__(self, root: Path, identity: Mapping[str, Any]) -> None:
+        self._root = Path(root)
+        self._identity = _read_object(_canonical(identity))
+        self._identity_hash = identity_hash(self._identity)
+        self._manifest = {
+            "schema_version": _SCHEMA,
+            "identity_hash": self._identity_hash,
+            "identity": self._identity,
+        }
+        self._root.mkdir(parents=True, exist_ok=True)
+        with self._locked():
+            if not (self._root / "identity.json").exists():
+                if any(path.name != ".journal.lock" for path in self._root.iterdir()):
+                    raise ValueError("missing identity manifest in non-empty journal directory")
+                self._publish_json("identity.json", self._manifest, create_only=True)
+                descriptor = os.open(self._root / "trials.jsonl", os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+                with os.fdopen(descriptor, "wb") as handle:
+                    handle.flush()
+                    os.fsync(handle.fileno())
+                self._sync_directory()
+                self._publish_json("journal_state.json", self._state(0, self._identity_hash), create_only=True)
+            self._validated_records()
+
+    def append(self, record: Mapping[str, Any]) -> dict[str, Any]:
+        """Durably append one unique attempt; never overwrite failed attempts."""
+        detached = _validate_record(record)
+        with self._locked():
+            records, tip = self._validated_records()
+            if any(item["attempt_id"] == detached["attempt_id"] for item in records):
+                raise ValueError(f"duplicate attempt_id: {detached['attempt_id']}")
+            body = {"sequence": len(records) + 1, "previous_hash": tip, "record": detached}
+            record_hash = identity_hash(body)
+            entry = {**body, "record_hash": record_hash}
+            descriptor = os.open(self._root / "trials.jsonl", os.O_WRONLY | os.O_APPEND)
+            with os.fdopen(descriptor, "ab") as handle:
+                handle.write(_canonical(entry) + b"\n")
+                handle.flush()
+                os.fsync(handle.fileno())
+            self._publish_json("journal_state.json", self._state(len(records) + 1, record_hash))
+        return detached
+
+    def records(self) -> list[dict[str, Any]]:
+        """Read all committed attempts, rejecting any missing or corrupt evidence."""
+        with self._locked():
+            return self._validated_records()[0]
+
+    @contextmanager
+    def _locked(self) -> Iterator[None]:
+        with (self._root / ".journal.lock").open("a+b") as handle:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+            try:
+                yield
+            finally:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+
+    def _state(self, count: int, tip: str) -> dict[str, Any]:
+        return {"identity_hash": self._identity_hash, "record_count": count, "tip_hash": tip}
+
+    def _validated_records(self) -> tuple[list[dict[str, Any]], str]:
+        try:
+            manifest = _read_object((self._root / "identity.json").read_bytes())
+            content = (self._root / "trials.jsonl").read_bytes()
+            state = _read_object((self._root / "journal_state.json").read_bytes())
+        except OSError as exc:
+            raise ValueError("journal evidence missing or unreadable") from exc
+        if _canonical(manifest) != _canonical(self._manifest):
+            raise ValueError("journal identity mismatch")
+        if content and not content.endswith(b"\n"):
+            raise ValueError("truncated journal record")
+        records: list[dict[str, Any]] = []
+        attempts: set[str] = set()
+        tip = self._identity_hash
+        for line in content.splitlines():
+            entry = _read_object(line)
+            record = _validate_record(entry.get("record"))
+            body = {"sequence": len(records) + 1, "previous_hash": tip, "record": record}
+            expected_hash = identity_hash(body)
+            if _canonical(entry) != _canonical({**body, "record_hash": expected_hash}):
+                raise ValueError("journal record checksum or sequence mismatch")
+            if record["attempt_id"] in attempts:
+                raise ValueError("journal contains duplicate attempt_id")
+            attempts.add(record["attempt_id"])
+            records.append(record)
+            tip = expected_hash
+        if _canonical(state) != _canonical(self._state(len(records), tip)):
+            raise ValueError("journal commit state mismatch; interrupted or truncated journal")
+        return records, tip
+
+    def _sync_directory(self) -> None:
+        descriptor = os.open(self._root, os.O_RDONLY)
+        try:
+            os.fsync(descriptor)
+        finally:
+            os.close(descriptor)
+
+    def _publish_json(self, name: str, payload: Mapping[str, Any], *, create_only: bool = False) -> None:
+        descriptor, temporary = tempfile.mkstemp(prefix=".journal-pending-", dir=self._root)
+        try:
+            with os.fdopen(descriptor, "wb") as handle:
+                handle.write(_canonical(payload) + b"\n")
+                handle.flush()
+                os.fsync(handle.fileno())
+            target = self._root / name
+            if create_only:
+                os.link(temporary, target)
+            else:
+                os.replace(temporary, target)
+            self._sync_directory()
+        finally:
+            if os.path.exists(temporary):
+                os.unlink(temporary)
+                self._sync_directory()

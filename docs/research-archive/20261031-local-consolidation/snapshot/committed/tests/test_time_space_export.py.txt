@@ -1,0 +1,1006 @@
+from __future__ import annotations
+
+import copy
+import hashlib
+import importlib.util
+import json
+import subprocess
+import sys
+import tempfile
+from pathlib import Path
+
+import pytest
+
+from zenquant.historical import PerturbationConfig
+from zenquant.research.registration import canonical_sha256, load_execution_manifest
+from zenquant.research.time_space_export import (
+    EXPORT_REGISTRATION_REQUIRED,
+    VERIFIED,
+    _checkpoint_manifest_path,
+    _fetch_provider,
+    _generator_dependency_identity,
+    _load_persisted_registration,
+    _validate_registered_time_space_export_payloads,
+    hash_execution_materials,
+    recompute_time_space_export,
+    validate_registered_time_space_export,
+)
+from zenquant.research.time_space_replay import (
+    ReplayRequest,
+    _aggregate_candles,
+    _append_forward_rows,
+    _build_replay_view,
+    _normalize_forward_five_min,
+    _normalize_forward_funding,
+    _normalize_frozen_five_min,
+    _registered_source_files,
+    _run_path,
+    _validate_forward_grid,
+)
+
+ROOT = Path(__file__).parents[1]
+EXECUTION = ROOT / "config/research/registrations/time_space_shadow_execution_v1.json"
+HYPOTHESIS = ROOT / "config/research/time_space_shadow_hypothesis_v1.json"
+TRUST = ROOT / "config/research/time_space_export_registration_trust_v1.json"
+SCRIPT = ROOT / "scripts/export_time_space_architecture.py"
+FOUR_HOURS_NS = 4 * 60 * 60 * 1_000_000_000
+AS_OF_NS = 1787529600000000000
+SEEDS = (42, 123, 456, 789, 1024)
+CANONICAL_REPOSITORY = "infdahai/zenQuant"
+ATTACKER_REPOSITORY = "attacker/forged-zenquant"
+
+
+def _canonical_bytes(value: object) -> bytes:
+    return (json.dumps(value, sort_keys=True, separators=(",", ":"), allow_nan=False) + "\n").encode()
+
+
+def test_registered_frozen_five_min_schema_aggregates_without_fabricated_trade_counts() -> None:
+    import pandas as pd
+
+    frame = pd.DataFrame(
+        [
+            {
+                "open_time_ns": index * 300_000_000_000,
+                "close_time_ns": (index + 1) * 300_000_000_000 - 1_000_000,
+                "open": 100.0 + index,
+                "high": 101.0 + index,
+                "low": 99.0 + index,
+                "close": 100.5 + index,
+                "volume": 1.0,
+            }
+            for index in range(12)
+        ]
+    )
+    normalized = _normalize_frozen_five_min(frame)
+    aggregated = _aggregate_candles(normalized, "1h")
+
+    assert normalized["symbol"].unique().tolist() == ["BTCUSDT"]
+    assert normalized["trade_count"].eq(0).all()
+    assert normalized["trade_count_available"].eq(False).all()
+    assert aggregated["trade_count"].tolist() == [0]
+
+
+def test_generator_identity_changes_when_previously_omitted_behavior_module_changes() -> None:
+    files, before = _generator_dependency_identity()
+    assert any(item["path"] == "zenquant/strategy/engine.py" for item in files)
+
+    def tampered(path: Path) -> bytes:
+        content = path.read_bytes()
+        if path == ROOT / "zenquant/strategy/engine.py":
+            return content + b"\n# tampered behavior dependency\n"
+        return content
+
+    _files, after = _generator_dependency_identity(read_bytes=tampered)
+    assert after != before
+
+
+@pytest.mark.parametrize(
+    "protected_path",
+    [
+        ".github/workflows/time-space-export-checkpoint.yml",
+        ".github/workflows/time-space-export-generate.yml",
+        ".github/workflows/time-space-export-persist.yml",
+        ".github/workflows/time-space-export-receipt.yml",
+        "config/research/time_space_export_external_protection_v1.json",
+        "config/research/time_space_export_registration_trust_v1.json",
+        "scripts/validate_time_space_external_protection.py",
+        "scripts/validate_time_space_persisted_registration.py",
+        "scripts/validate_time_space_registration_push.py",
+    ],
+)
+def test_generator_identity_binds_registration_authority_files(protected_path: str) -> None:
+    files, before = _generator_dependency_identity()
+    assert protected_path in {item["path"] for item in files}
+
+    def tampered(path: Path) -> bytes:
+        content = path.read_bytes()
+        return content + b"\n# weakened authority\n" if path == ROOT / protected_path else content
+
+    _files, after = _generator_dependency_identity(read_bytes=tampered)
+    assert after != before
+
+
+def test_forward_slice_is_append_only_and_excludes_rows_after_literal_cutoff() -> None:
+    import pandas as pd
+
+    baseline = pd.DataFrame([{"close_time_ns": AS_OF_NS - 1, "close": 100.0}])
+    forward = pd.DataFrame(
+        [
+            {"close_time_ns": AS_OF_NS + FOUR_HOURS_NS - 1, "close": 101.0},
+            {"close_time_ns": AS_OF_NS + 2 * FOUR_HOURS_NS - 1, "close": 999.0},
+        ]
+    )
+    combined, identity = _append_forward_rows(
+        baseline,
+        forward,
+        time_column="close_time_ns",
+        reused_end_ns=AS_OF_NS,
+        as_of_ns=AS_OF_NS + FOUR_HOURS_NS,
+        source_id="TEST:forward_slice",
+        source_path=ROOT / "data/raw/binance/klines/BTCUSDT/5m/data.parquet",
+    )
+    changed_future = forward.copy()
+    changed_future.loc[1, "close"] = 555.0
+    _combined, changed_identity = _append_forward_rows(
+        baseline,
+        changed_future,
+        time_column="close_time_ns",
+        reused_end_ns=AS_OF_NS,
+        as_of_ns=AS_OF_NS + FOUR_HOURS_NS,
+        source_id="TEST:forward_slice",
+        source_path=ROOT / "data/raw/binance/klines/BTCUSDT/5m/data.parquet",
+    )
+
+    assert combined["close"].tolist() == [100.0, 101.0]
+    assert changed_identity["sha256"] == identity["sha256"]
+    assert identity["path"].endswith(f"#through={AS_OF_NS + FOUR_HOURS_NS}")
+
+
+@pytest.mark.parametrize("timestamps", [[1, 3], [1, 2, 2, 3]])
+def test_forward_five_min_grid_rejects_gap_or_duplicate(timestamps: list[int]) -> None:
+    import pandas as pd
+
+    with pytest.raises(ValueError, match="exact, continuous, and duplicate-free"):
+        _validate_forward_grid(
+            pd.DataFrame({"close_time_ns": timestamps}),
+            time_column="close_time_ns",
+            first_ns=1,
+            last_ns=3,
+            step_ns=1,
+            label="5m",
+        )
+
+
+def _candle_frame(*, interval_ns: int, shifted_open_ns: int = 0, **changes):
+    import pandas as pd
+
+    row = {
+        "open_time_ns": AS_OF_NS + shifted_open_ns,
+        "close_time_ns": AS_OF_NS + interval_ns - 1_000_000,
+        "open": 100.0,
+        "high": 102.0,
+        "low": 99.0,
+        "close": 101.0,
+        "volume": 10.0,
+    }
+    row.update(changes)
+    return pd.DataFrame([row])
+
+
+def test_forward_five_min_rejects_shifted_open_with_valid_close_grid() -> None:
+    with pytest.raises(ValueError, match=r"5m.*open|open.*5m"):
+        _normalize_forward_five_min(_candle_frame(interval_ns=5 * 60 * 1_000_000_000, shifted_open_ns=1_000_000))
+
+
+@pytest.mark.parametrize("column", ["open", "high", "low", "close", "volume"])
+def test_forward_five_min_rejects_nonfinite_ohlcv(column: str) -> None:
+    with pytest.raises(ValueError, match="finite"):
+        _normalize_forward_five_min(_candle_frame(interval_ns=5 * 60 * 1_000_000_000, **{column: float("nan")}))
+
+
+@pytest.mark.parametrize(
+    "changes",
+    [
+        {"high": 100.5},
+        {"low": 101.5},
+        {"volume": -1.0},
+    ],
+)
+def test_forward_five_min_rejects_invalid_ohlcv_relationships(changes: dict[str, float]) -> None:
+    with pytest.raises(ValueError, match="OHLCV"):
+        _normalize_forward_five_min(_candle_frame(interval_ns=5 * 60 * 1_000_000_000, **changes))
+
+
+def test_forward_daily_rejects_shifted_or_nonfinite_candle() -> None:
+    from zenquant.research import time_space_replay as replay
+
+    day = 24 * 60 * 60 * 1_000_000_000
+    with pytest.raises(ValueError, match=r"1d.*open|open.*1d"):
+        replay._normalize_forward_daily(
+            _candle_frame(interval_ns=day, shifted_open_ns=1_000_000),
+            reused_end_ns=AS_OF_NS,
+            as_of_ns=AS_OF_NS + day,
+        )
+    with pytest.raises(ValueError, match="finite"):
+        replay._normalize_forward_daily(
+            _candle_frame(interval_ns=day, close=float("inf")),
+            reused_end_ns=AS_OF_NS,
+            as_of_ns=AS_OF_NS + day,
+        )
+
+
+def test_forward_funding_rejects_missing_anchor_and_out_of_rule_jitter() -> None:
+    import pandas as pd
+
+    interval = 8 * 60 * 60 * 1_000_000_000
+
+    def funding_frame(timestamps):
+        return pd.DataFrame(
+            {
+                "funding_time_ns": timestamps,
+                "funding_rate": [0.001] * len(timestamps),
+                "mark_price": [100.0] * len(timestamps),
+                "symbol": ["BTCUSDT"] * len(timestamps),
+            }
+        )
+
+    complete = _normalize_forward_funding(
+        funding_frame([AS_OF_NS, AS_OF_NS + interval]),
+        reused_end_ns=AS_OF_NS,
+        as_of_ns=AS_OF_NS + interval + 4 * 60 * 60 * 1_000_000_000,
+    )
+    assert complete["funding_time_ns"].tolist() == [AS_OF_NS, AS_OF_NS + interval]
+    with pytest.raises(ValueError, match="coverage"):
+        _normalize_forward_funding(
+            funding_frame([AS_OF_NS + interval]),
+            reused_end_ns=AS_OF_NS,
+            as_of_ns=AS_OF_NS + 2 * interval,
+        )
+    with pytest.raises(ValueError, match="jitter"):
+        _normalize_forward_funding(
+            funding_frame([AS_OF_NS + interval + 61 * 1_000_000_000]),
+            reused_end_ns=AS_OF_NS,
+            as_of_ns=AS_OF_NS + interval + 4 * 60 * 60 * 1_000_000_000,
+        )
+
+
+@pytest.mark.parametrize(
+    "changes",
+    [
+        {"funding_rate": float("nan"), "mark_price": 100.0},
+        {"funding_rate": 0.001, "mark_price": float("inf")},
+        {"funding_rate": 2.0, "mark_price": 100.0},
+        {"funding_rate": 0.001, "mark_price": -1.0},
+    ],
+)
+def test_forward_funding_rejects_nonfinite_or_out_of_contract_values(changes: dict[str, float]) -> None:
+    import pandas as pd
+
+    with pytest.raises(ValueError, match="funding"):
+        _normalize_forward_funding(
+            pd.DataFrame([{"funding_time_ns": AS_OF_NS, "symbol": "BTCUSDT", **changes}]),
+            reused_end_ns=AS_OF_NS,
+            as_of_ns=AS_OF_NS + 4 * 60 * 60 * 1_000_000_000,
+        )
+
+
+def test_forward_daily_rejects_incomplete_or_stale_completed_close() -> None:
+    import pandas as pd
+
+    day = 24 * 60 * 60 * 1_000_000_000
+    with pytest.raises(ValueError, match="coverage"):
+        _validate_forward_grid(
+            pd.DataFrame({"close_time_ns": [AS_OF_NS + day - 1_000_000]}),
+            time_column="close_time_ns",
+            first_ns=AS_OF_NS + day - 1_000_000,
+            last_ns=AS_OF_NS + 2 * day - 1_000_000,
+            step_ns=day,
+            label="1d completed",
+        )
+
+
+def _market_row(index: int, *, side: int = 1) -> dict[str, object]:
+    cutoff = AS_OF_NS - (3 - index) * FOUR_HOURS_NS
+    return {
+        "alpha_id": f"alpha-{index}",
+        "cutoff_time_ns": cutoff,
+        "interval_start_ns": cutoff - FOUR_HOURS_NS,
+        "close": 100.0 + index,
+        "structure_side": side,
+        "prior_long_boundary": 99.0,
+        "prior_short_boundary": None,
+        "current_long_pivot": None,
+        "current_short_pivot": None,
+        "prior_long_invalidation": 90.0,
+        "prior_short_invalidation": 110.0,
+    }
+
+
+def _path() -> dict[str, object]:
+    market_rows = [_market_row(0), _market_row(1, side=-1), _market_row(2, side=-1)]
+    cutoffs = [row["cutoff_time_ns"] for row in market_rows]
+    return {
+        "market_rows": market_rows,
+        "stage_rows": {
+            "A1_SIGN": [
+                {"cutoff_time_ns": cutoff, "decision_id": f"a1-{i}", "value": 1 if i == 0 else -1}
+                for i, cutoff in enumerate(cutoffs)
+            ],
+            "A5_SHADOW": [
+                {"cutoff_time_ns": cutoff, "decision_id": f"a5-{i}", "value": 0.5 if i == 0 else -0.5}
+                for i, cutoff in enumerate(cutoffs)
+            ],
+            "FILLED_POSITION": [
+                {"cutoff_time_ns": cutoff, "decision_id": f"fill-{i}", "value": 0.4 if i == 0 else -0.4}
+                for i, cutoff in enumerate(cutoffs)
+            ],
+        },
+    }
+
+
+def _source(*, as_of_ns: int = AS_OF_NS) -> dict[str, object]:
+    canonical = _path()
+    return {
+        "schema_version": "architecture-time-space-replay.v2",
+        "as_of_ns": as_of_ns,
+        "windows": {
+            "reused": [1767225600000000000, AS_OF_NS],
+            "embargo": [AS_OF_NS, 1787644800000000000],
+            "forward": [1787644800000000000, None],
+        },
+        "seeds": list(SEEDS),
+        "canonical": canonical,
+        "perturbations": {str(seed): copy.deepcopy(canonical) for seed in SEEDS},
+        "execution_materials": {
+            "snapshots": [{"decision_id": "d-1"}],
+            "targets": [{"target_qty": 0.5}],
+            "orders": [{"order_id": "o-1"}],
+            "fills": [{"fill_id": "f-1"}],
+            "equity": [{"cutoff_time_ns": AS_OF_NS, "equity": 100001.0}],
+            "episodes": [{"episode_id": "e-1"}],
+        },
+        "source_files": [{"source_id": "SOURCE", "path": "registered.parquet", "sha256": "b" * 64}],
+    }
+
+
+def _build(tmp_path: Path):
+    return recompute_time_space_export(
+        ReplayRequest(execution_manifest=EXECUTION, hypothesis_manifest=HYPOTHESIS, as_of_ns=AS_OF_NS),
+        repository_identity="infdahai/zenQuant",
+        commit_sha="a" * 40,
+        provider_run_id="12345",
+        replay_producer=lambda _request: _source(),
+    )
+
+
+def _build_forward(tmp_path: Path, as_of_ns: int):
+    return recompute_time_space_export(
+        ReplayRequest(execution_manifest=EXECUTION, hypothesis_manifest=HYPOTHESIS, as_of_ns=as_of_ns),
+        repository_identity="infdahai/zenQuant",
+        commit_sha="a" * 40,
+        provider_run_id="12345",
+        replay_producer=lambda _request: _source(as_of_ns=as_of_ns),
+    )
+
+
+def _registered(bundle):
+    export = copy.deepcopy(bundle.export)
+    provenance = copy.deepcopy(bundle.provenance)
+    checkpoint = copy.deepcopy(bundle.checkpoint)
+    manifest_sha256 = hashlib.sha256(_canonical_bytes(checkpoint)).hexdigest()
+    receipt = {
+        "schema_version": "time-space-export-registration-receipt.v1",
+        "manifest_path": _checkpoint_manifest_path(bundle.export["as_of_ns"]),
+        "manifest_sha256": manifest_sha256,
+        "export_sha256": checkpoint["export_sha256"],
+        "provenance_sha256": checkpoint["provenance_sha256"],
+        "provider_run_id": "12345",
+        "provider_created_at_ns": 1787558400000000000,
+        "commit_sha": "a" * 40,
+        "remote_identity": "infdahai/zenQuant",
+        "workflow": {"id": 9001, "path": ".github/workflows/time-space-export-checkpoint.yml"},
+        "event": "push",
+        "ref": "refs/heads/feature/trend-registration-time-space-export",
+        "artifact": {
+            "id": 777,
+            "name": f"time-space-export-checkpoint-{bundle.export['as_of_ns']}-12345",
+        },
+        "generator_artifact": {
+            "id": 778,
+            "name": f"time-space-export-{bundle.export['as_of_ns']}-12345",
+            "export_sha256": checkpoint["export_sha256"],
+            "provenance_sha256": checkpoint["provenance_sha256"],
+            "source_slice_sha256": checkpoint["source_slice_sha256"],
+        },
+    }
+    trust = {
+        "schema_version": "time-space-export-registration-trust.v1",
+        "layer": "time_space_shadow",
+        "registration_status": VERIFIED,
+        "remote_identity": "infdahai/zenQuant",
+        "checkpoint_workflow_id": 9001,
+        "checkpoint_workflow_path": ".github/workflows/time-space-export-checkpoint.yml",
+        "checkpoint_branch": "feature/trend-registration-time-space-export",
+        "provider_run_id": "12345",
+        "commit_sha": "a" * 40,
+        "checkpoint_manifest_sha256": manifest_sha256,
+        "provider_created_at_ns": 1787558400000000000,
+        "checkpoint_artifact_id": 777,
+        "checkpoint_artifact_name": f"time-space-export-checkpoint-{bundle.export['as_of_ns']}-12345",
+        "receipt_artifact_sha256": hashlib.sha256(_canonical_bytes(receipt)).hexdigest(),
+        "generator_commit_sha": "a" * 40,
+        "generator_provider_run_id": "12345",
+        "generator_workflow_id": 9002,
+        "generator_workflow_path": ".github/workflows/time-space-export-generate.yml",
+        "generator_event": "workflow_dispatch",
+        "generator_branch": "codex/late-dev-cost-attribution",
+        "generator_created_at_ns": 1787558400000000000,
+        "generator_artifact_id": 778,
+        "generator_artifact_name": f"time-space-export-{bundle.export['as_of_ns']}-12345",
+    }
+    provider = {
+        "id": 12345,
+        "head_sha": "a" * 40,
+        "created_at": "2026-08-24T08:00:00Z",
+        "conclusion": "success",
+        "event": "push",
+        "head_branch": "feature/trend-registration-time-space-export",
+        "path": ".github/workflows/time-space-export-checkpoint.yml",
+        "workflow_id": 9001,
+        "repository": {"full_name": "infdahai/zenQuant"},
+    }
+    generator_provider = {
+        **provider,
+        "event": "workflow_dispatch",
+        "head_branch": "codex/late-dev-cost-attribution",
+        "path": ".github/workflows/time-space-export-generate.yml",
+        "workflow_id": 9002,
+    }
+    return export, provenance, checkpoint, receipt, trust, provider, generator_provider
+
+
+def test_exporter_recomputes_exact_rows_transitions_and_material_hashes(tmp_path: Path) -> None:
+    bundle = _build(tmp_path)
+
+    assert bundle.export["schema_version"] == "time-space-shadow-export.v1"
+    assert bundle.export["as_of_ns"] == AS_OF_NS
+    assert bundle.export["seeds"] == list(SEEDS)
+    assert len(bundle.export["rows"]) == 3
+    assert set(bundle.export["rows"][0]["decision_id_by_stage"]) == {
+        "A1_SIGN",
+        "A5_SHADOW",
+        "FILLED_POSITION",
+    }
+    assert bundle.export["rows"][0]["row_id"] == canonical_sha256(
+        {key: value for key, value in bundle.export["rows"][0].items() if key != "row_id"}
+    )
+    assert len(bundle.export["market_state_transition_events"]) == 1
+    assert bundle.provenance["ordered_row_ids"] == [row["row_id"] for row in bundle.export["rows"]]
+    assert bundle.provenance["material_sha256"] == hash_execution_materials(_source()["execution_materials"])
+    assert bundle.checkpoint["registration_status"] == "PENDING"
+    assert bundle.checkpoint["export_sha256"] == canonical_sha256(bundle.export)
+    assert bundle.checkpoint["provenance_sha256"] == canonical_sha256(bundle.provenance)
+
+
+def test_exact_pinned_checkpoint_is_the_only_verified_path(tmp_path: Path) -> None:
+    export, provenance, checkpoint, receipt, trust, provider, generator_provider = _registered(_build(tmp_path))
+
+    assert (
+        _validate_registered_time_space_export_payloads(
+            export,
+            provenance,
+            checkpoint,
+            receipt,
+            trust_payload=trust,
+            provider_payload=provider,
+            generator_provider_payload=generator_provider,
+            generator_path=ROOT / "zenquant/research/time_space_export.py",
+            recomputed_bundle=_build(tmp_path),
+        )
+        == VERIFIED
+    )
+
+
+def test_correlated_repository_substitution_cannot_verify(tmp_path: Path) -> None:
+    bundle = recompute_time_space_export(
+        ReplayRequest(execution_manifest=EXECUTION, hypothesis_manifest=HYPOTHESIS, as_of_ns=AS_OF_NS),
+        repository_identity=ATTACKER_REPOSITORY,
+        commit_sha="a" * 40,
+        provider_run_id="12345",
+        replay_producer=lambda _request: _source(),
+    )
+    export, provenance, checkpoint, receipt, trust, provider, generator_provider = _registered(bundle)
+    receipt["remote_identity"] = ATTACKER_REPOSITORY
+    trust["remote_identity"] = ATTACKER_REPOSITORY
+    provider["repository"] = {"full_name": ATTACKER_REPOSITORY}
+    generator_provider["repository"] = {"full_name": ATTACKER_REPOSITORY}
+    trust["receipt_artifact_sha256"] = hashlib.sha256(_canonical_bytes(receipt)).hexdigest()
+
+    assert (
+        _validate_registered_time_space_export_payloads(
+            export,
+            provenance,
+            checkpoint,
+            receipt,
+            trust_payload=trust,
+            provider_payload=provider,
+            generator_provider_payload=generator_provider,
+            generator_path=ROOT / "zenquant/research/time_space_export.py",
+            recomputed_bundle=bundle,
+        )
+        == EXPORT_REGISTRATION_REQUIRED
+    )
+
+
+def test_provider_fetcher_rejects_attacker_repository_before_network(monkeypatch: pytest.MonkeyPatch) -> None:
+    called = False
+
+    def unexpected_network(*_args, **_kwargs):
+        nonlocal called
+        called = True
+        raise AssertionError("network must not be reached")
+
+    monkeypatch.setattr("urllib.request.urlopen", unexpected_network)
+
+    with pytest.raises(ValueError, match="canonical repository"):
+        _fetch_provider(ATTACKER_REPOSITORY, 12345)
+    assert called is False
+
+
+def test_registered_baseline_checkpoint_cannot_authorize_incremental_forward_cutoff(
+    tmp_path: Path,
+) -> None:
+    baseline = _build(tmp_path)
+    export, provenance, _unused, receipt, trust, provider, generator_provider = _registered(baseline)
+    forward_as_of = 1_787_659_200_000_000_000
+    forward = _build_forward(tmp_path, forward_as_of)
+
+    assert (
+        _validate_registered_time_space_export_payloads(
+            forward.export,
+            forward.provenance,
+            baseline.checkpoint,
+            receipt,
+            trust_payload=trust,
+            provider_payload=provider,
+            generator_provider_payload=generator_provider,
+            generator_path=ROOT / "zenquant/research/time_space_export.py",
+            recomputed_bundle=forward,
+        )
+        == EXPORT_REGISTRATION_REQUIRED
+    )
+    assert export["as_of_ns"] == AS_OF_NS
+    assert forward.export["as_of_ns"] == forward_as_of
+
+
+def test_forward_cutoff_requires_its_own_exact_checkpoint_and_receipt(tmp_path: Path) -> None:
+    forward = _build_forward(tmp_path, 1_787_659_200_000_000_000)
+    export, provenance, checkpoint, receipt, trust, provider, generator_provider = _registered(forward)
+
+    assert (
+        _validate_registered_time_space_export_payloads(
+            export,
+            provenance,
+            checkpoint,
+            receipt,
+            trust_payload=trust,
+            provider_payload=provider,
+            generator_provider_payload=generator_provider,
+            generator_path=ROOT / "zenquant/research/time_space_export.py",
+            recomputed_bundle=forward,
+        )
+        == VERIFIED
+    )
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        {"workflow_id": 99},
+        {"path": ".github/workflows/other.yml"},
+        {"event": "push"},
+        {"head_branch": "main"},
+        {"created_at": "2026-08-24T09:00:00Z"},
+    ],
+)
+def test_generator_provider_rejects_wrong_workflow_event_ref_or_time(tmp_path: Path, change: dict[str, object]) -> None:
+    bundle = _build(tmp_path)
+    export, provenance, checkpoint, receipt, trust, provider, generator_provider = _registered(bundle)
+    generator_provider.update(change)
+
+    assert (
+        _validate_registered_time_space_export_payloads(
+            export,
+            provenance,
+            checkpoint,
+            receipt,
+            trust_payload=trust,
+            provider_payload=provider,
+            generator_provider_payload=generator_provider,
+            generator_path=ROOT / "zenquant/research/time_space_export.py",
+            recomputed_bundle=bundle,
+        )
+        == EXPORT_REGISTRATION_REQUIRED
+    )
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        lambda export, provenance, checkpoint, receipt: export["rows"][0].update(close=999.0),
+        lambda export, provenance, checkpoint, receipt: export["market_state_transition_events"].clear(),
+        lambda export, provenance, checkpoint, receipt: export.update(as_of_ns=export["as_of_ns"] - FOUR_HOURS_NS),
+        lambda export, provenance, checkpoint, receipt: export["seeds"].pop(),
+        lambda export, provenance, checkpoint, receipt: provenance.update(generator_code_sha256="0" * 64),
+        lambda export, provenance, checkpoint, receipt: provenance.update(source_set_sha256="sha256:" + "0" * 64),
+        lambda export, provenance, checkpoint, receipt: provenance["material_sha256"].update(fills="0" * 64),
+        lambda export, provenance, checkpoint, receipt: provenance["source_files"][0].update(sha256="0" * 64),
+        lambda export, provenance, checkpoint, receipt: provenance.update(commit_sha="c" * 40),
+        lambda export, provenance, checkpoint, receipt: provenance.update(provider_run_id="67890"),
+        lambda export, provenance, checkpoint, receipt: provenance["windows"].update(reused=[0, 1]),
+        lambda export, provenance, checkpoint, receipt: checkpoint.update(export_sha256="0" * 64),
+        lambda export, provenance, checkpoint, receipt: receipt.update(provider_run_id="999"),
+        lambda export, provenance, checkpoint, receipt: receipt["generator_artifact"].update(id=999),
+        lambda export, provenance, checkpoint, receipt: receipt["generator_artifact"].update(
+            name="time-space-export-forged"
+        ),
+        lambda export, provenance, checkpoint, receipt: receipt["generator_artifact"].update(
+            source_slice_sha256="0" * 64
+        ),
+    ],
+)
+def test_registration_fails_closed_for_export_provenance_and_receipt_tampering(tmp_path: Path, mutation) -> None:
+    bundle = _build(tmp_path)
+    export, provenance, checkpoint, receipt, trust, provider, generator_provider = _registered(bundle)
+    mutation(export, provenance, checkpoint, receipt)
+
+    assert (
+        _validate_registered_time_space_export_payloads(
+            export,
+            provenance,
+            checkpoint,
+            receipt,
+            trust_payload=trust,
+            provider_payload=provider,
+            generator_provider_payload=generator_provider,
+            generator_path=ROOT / "zenquant/research/time_space_export.py",
+            recomputed_bundle=bundle,
+        )
+        == EXPORT_REGISTRATION_REQUIRED
+    )
+
+
+def test_checked_in_trust_root_cannot_unlock_before_independent_checkpoint() -> None:
+    trust = json.loads(TRUST.read_text())
+    assert trust["registration_status"] == "PENDING"
+
+    bundle = recompute_time_space_export(
+        ReplayRequest(execution_manifest=EXECUTION, hypothesis_manifest=HYPOTHESIS, as_of_ns=AS_OF_NS),
+        repository_identity="infdahai/zenQuant",
+        commit_sha="a" * 40,
+        provider_run_id="12345",
+        replay_producer=lambda _request: _source(),
+    )
+    assert (
+        validate_registered_time_space_export(
+            bundle.export,
+            bundle.provenance,
+            bundle.checkpoint,
+        )
+        == EXPORT_REGISTRATION_REQUIRED
+    )
+
+
+def test_runtime_requires_exact_persisted_receipt_after_provider_artifact_expiry(tmp_path: Path) -> None:
+    registration_dir = tmp_path / str(AS_OF_NS)
+    registration_dir.mkdir()
+    persisted = {"schema_version": "time-space-export-registration-receipt.v1", "digest": "exact"}
+    durable_export = {"schema_version": "time-space-shadow-export.v1", "as_of_ns": AS_OF_NS}
+    durable_provenance = {"schema_version": "time-space-shadow-export-provenance.v1", "as_of_ns": AS_OF_NS}
+    (registration_dir / "time_space_export_registration_receipt_v1.json").write_bytes(_canonical_bytes(persisted))
+    (registration_dir / "time_space_export_registration_trust_v1.json").write_bytes(
+        _canonical_bytes({"registration_status": VERIFIED, "remote_identity": CANONICAL_REPOSITORY})
+    )
+    (registration_dir / "time_space_shadow_export.json").write_bytes(_canonical_bytes(durable_export))
+    (registration_dir / "time_space_shadow_export_provenance.json").write_bytes(_canonical_bytes(durable_provenance))
+
+    trust, receipt, export, provenance = _load_persisted_registration(
+        AS_OF_NS,
+        persisted,
+        durable_export,
+        durable_provenance,
+        registration_root=tmp_path,
+    )
+    assert trust["registration_status"] == VERIFIED
+    assert receipt == persisted
+    assert export == durable_export
+    assert provenance == durable_provenance
+    with pytest.raises(ValueError, match="immutable checked-in receipt"):
+        _load_persisted_registration(
+            AS_OF_NS,
+            {**persisted, "digest": "forged"},
+            durable_export,
+            durable_provenance,
+            registration_root=tmp_path,
+        )
+    with pytest.raises(ValueError, match="immutable checked-in export"):
+        _load_persisted_registration(
+            AS_OF_NS,
+            persisted,
+            {**durable_export, "as_of_ns": AS_OF_NS + FOUR_HOURS_NS},
+            durable_provenance,
+            registration_root=tmp_path,
+        )
+
+
+def test_read_only_sidecar_preserves_all_execution_material_bytes(tmp_path: Path) -> None:
+    source = _source()
+    before = hash_execution_materials(source["execution_materials"])
+    source_bytes = _canonical_bytes(source)
+
+    recompute_time_space_export(
+        ReplayRequest(execution_manifest=EXECUTION, hypothesis_manifest=HYPOTHESIS, as_of_ns=AS_OF_NS),
+        repository_identity="infdahai/zenQuant",
+        commit_sha="a" * 40,
+        provider_run_id="12345",
+        replay_producer=lambda _request: source,
+    )
+
+    assert _canonical_bytes(source) == source_bytes
+    assert hash_execution_materials(source["execution_materials"]) == before
+    assert set(before) == {"snapshots", "targets", "orders", "fills", "equity", "episodes"}
+    assert all(len(bytes.fromhex(value)) == hashlib.sha256().digest_size for value in before.values())
+
+
+def test_actual_historical_producer_and_sidecar_preserve_same_causal_six_streams() -> None:
+    execution = load_execution_manifest(EXECUTION)
+    source_files = _registered_source_files(execution.payload["sources"])
+    with tempfile.TemporaryDirectory(prefix="time-space-parity-") as directory:
+        replay_root = Path(directory)
+        _build_replay_view(
+            replay_root,
+            source_files,
+            as_of_ns=AS_OF_NS,
+            reused_end_ns=AS_OF_NS,
+        )
+        canonical, materials = _run_path(
+            replay_root,
+            start_ns=1767225600000000000,
+            end_ns=AS_OF_NS,
+            perturbation=PerturbationConfig(seed=42),
+        )
+    source = _source()
+    source["canonical"] = canonical
+    source["perturbations"] = {str(seed): copy.deepcopy(canonical) for seed in SEEDS}
+    source["execution_materials"] = materials
+    source["source_files"] = source_files
+    frozen_bytes = _canonical_bytes(materials)
+    before = hash_execution_materials(materials)
+
+    bundle = recompute_time_space_export(
+        ReplayRequest(EXECUTION, HYPOTHESIS, AS_OF_NS),
+        repository_identity="infdahai/zenQuant",
+        commit_sha="a" * 40,
+        provider_run_id="12345",
+        replay_producer=lambda _request: source,
+    )
+
+    assert _canonical_bytes(materials) == frozen_bytes
+    assert bundle.provenance["material_sha256"] == before
+    assert set(before) == {"snapshots", "targets", "orders", "fills", "equity", "episodes"}
+
+
+def test_export_script_writes_canonical_files_without_overwrite(tmp_path: Path) -> None:
+    spec = importlib.util.spec_from_file_location("export_time_space_architecture", SCRIPT)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    output = tmp_path / "out"
+    args = module.ExportArgs(
+        execution_manifest=EXECUTION,
+        hypothesis_manifest=HYPOTHESIS,
+        output_dir=output,
+        provider_run_id="12345",
+        as_of="2026-08-24T00:00:00Z",
+    )
+
+    result = module._export_architecture_with_producer(
+        args,
+        replay_producer=lambda _request: _source(),
+        repository_resolver=lambda: ("infdahai/zenQuant", "a" * 40),
+    )
+
+    assert [path.name for path in result] == [
+        "time_space_shadow_export.json",
+        "time_space_shadow_export_provenance.json",
+        "time_space_shadow_export_checkpoint.json",
+    ]
+    for path in result:
+        assert path.read_bytes() == _canonical_bytes(json.loads(path.read_text()))
+    module._validate_complete_export(output)
+    with pytest.raises(FileExistsError, match="already exists"):
+        module._export_architecture_with_producer(
+            args,
+            replay_producer=lambda _request: _source(),
+            repository_resolver=lambda: ("infdahai/zenQuant", "a" * 40),
+        )
+
+
+def test_export_repository_identity_uses_origin_and_checked_in_pin_only(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    module = _load_script_module()
+    repository = tmp_path / "repository"
+    repository.mkdir()
+    subprocess.run(["git", "init", "-q", str(repository)], check=True)
+    (repository / "tracked.txt").write_text("clean\n")
+    subprocess.run(["git", "-C", str(repository), "add", "tracked.txt"], check=True)
+    subprocess.run(
+        [
+            "git",
+            "-C",
+            str(repository),
+            "-c",
+            "user.name=TimeSpace Test",
+            "-c",
+            "user.email=time-space@example.invalid",
+            "commit",
+            "-q",
+            "-m",
+            "baseline",
+        ],
+        check=True,
+    )
+    subprocess.run(
+        [
+            "git",
+            "-C",
+            str(repository),
+            "remote",
+            "add",
+            "origin",
+            "https://github.com/infdahai/zenQuant.git",
+        ],
+        check=True,
+    )
+    trust = repository / "config/research/time_space_export_registration_trust_v1.json"
+    trust.parent.mkdir(parents=True)
+    trust.write_text(json.dumps({"remote_identity": "infdahai/zenQuant"}))
+    subprocess.run(["git", "-C", str(repository), "add", trust.relative_to(repository)], check=True)
+    subprocess.run(
+        [
+            "git",
+            "-C",
+            str(repository),
+            "-c",
+            "user.name=TimeSpace Test",
+            "-c",
+            "user.email=time-space@example.invalid",
+            "commit",
+            "-q",
+            "-m",
+            "pin repository",
+        ],
+        check=True,
+    )
+    monkeypatch.setattr(module, "_ROOT", repository)
+
+    identity, commit = module._resolve_repository()
+
+    assert identity == "infdahai/zenQuant"
+    assert (
+        commit
+        == subprocess.run(
+            ["git", "-C", str(repository), "rev-parse", "HEAD"],
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+    )
+
+
+def test_export_repository_identity_rejects_correlated_attacker_origin_and_trust(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    module = _load_script_module()
+    trust = tmp_path / "config/research/time_space_export_registration_trust_v1.json"
+    trust.parent.mkdir(parents=True)
+    trust.write_text(json.dumps({"remote_identity": ATTACKER_REPOSITORY}))
+    monkeypatch.setattr(module, "_ROOT", tmp_path)
+
+    def fake_git(*args: str) -> str:
+        if args == ("rev-parse", "HEAD"):
+            return "a" * 40
+        if args == ("status", "--porcelain", "--untracked-files=no"):
+            return ""
+        if args == ("remote", "get-url", "origin"):
+            return f"https://github.com/{ATTACKER_REPOSITORY}.git"
+        raise AssertionError(args)
+
+    monkeypatch.setattr(module, "_git", fake_git)
+
+    with pytest.raises(ValueError, match="canonical repository"):
+        module._resolve_repository()
+
+
+def test_export_script_rejects_symlink_or_orphan_target(tmp_path: Path) -> None:
+    module = _load_script_module()
+    args = module.ExportArgs(EXECUTION, HYPOTHESIS, tmp_path / "out", "12345", "2026-08-24T00:00:00Z")
+    target = tmp_path / "out"
+    target.symlink_to(tmp_path / "missing", target_is_directory=True)
+    with pytest.raises(FileExistsError):
+        module._export_architecture_with_producer(
+            args,
+            replay_producer=lambda _request: _source(),
+            repository_resolver=lambda: ("infdahai/zenQuant", "a" * 40),
+        )
+    target.unlink()
+    target.mkdir()
+    with pytest.raises(FileExistsError):
+        module._export_architecture_with_producer(
+            args,
+            replay_producer=lambda _request: _source(),
+            repository_resolver=lambda: ("infdahai/zenQuant", "a" * 40),
+        )
+
+
+def test_complete_reader_rejects_tampered_marker_or_artifact(tmp_path: Path) -> None:
+    module = _load_script_module()
+    output = tmp_path / "out"
+    args = module.ExportArgs(EXECUTION, HYPOTHESIS, output, "12345", "2026-08-24T00:00:00Z")
+    module._export_architecture_with_producer(
+        args,
+        replay_producer=lambda _request: _source(),
+        repository_resolver=lambda: ("infdahai/zenQuant", "a" * 40),
+    )
+    (output / "time_space_shadow_export.json").write_text("{}\n")
+    with pytest.raises(ValueError, match="completion validation"):
+        module._validate_complete_export(output)
+
+
+def test_production_cli_has_no_caller_authored_replay_or_material_input(monkeypatch: pytest.MonkeyPatch) -> None:
+    module = _load_script_module()
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            str(SCRIPT),
+            "--execution-manifest",
+            str(EXECUTION),
+            "--output-dir",
+            "out",
+            "--provider-run-id",
+            "12345",
+            "--as-of",
+            "2026-08-24T00:00:00Z",
+            "--source-replay",
+            "forged.json",
+        ],
+    )
+    with pytest.raises(SystemExit):
+        module._parse_args()
+
+
+def test_authoritative_replay_rejects_copied_registration_manifest_paths(tmp_path: Path) -> None:
+    from zenquant.research.time_space_replay import produce_frozen_architecture_replay
+
+    copied_execution = tmp_path / EXECUTION.name
+    copied_execution.write_bytes(EXECUTION.read_bytes())
+    with pytest.raises(ValueError, match="registered allowlisted path"):
+        produce_frozen_architecture_replay(
+            ReplayRequest(
+                execution_manifest=copied_execution,
+                hypothesis_manifest=HYPOTHESIS,
+                as_of_ns=AS_OF_NS,
+            )
+        )
+
+
+def _load_script_module():
+    spec = importlib.util.spec_from_file_location("export_time_space_architecture_atomic", SCRIPT)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
