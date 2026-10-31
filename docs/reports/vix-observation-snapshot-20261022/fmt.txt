@@ -1,0 +1,2 @@
+cargo fmt --manifest-path rust/Cargo.toml --all -- --check
+exit_code=0

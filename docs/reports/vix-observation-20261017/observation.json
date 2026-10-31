@@ -1,0 +1,74 @@
+{
+  "report": {
+    "schema_version": "vix-observation-report.rust.v1",
+    "model_version": "monthly-vx-and-spot-horizons.exact.v1",
+    "mode": "DEMONSTRATION",
+    "evidence_status": "UNVERIFIED",
+    "cutoff_ms": 1792180800000,
+    "max_age_ms": 60000,
+    "input_sha256": "372edb85ecadf97d4b2b0b8bd64e0ac86414890687dcb3a5e8b1f61b05dd73d3",
+    "futures": {
+      "status": "READY",
+      "reason": "AT_INPUT_CUTOFF_ONLY",
+      "metrics": {
+        "first_value": "24",
+        "second_value": "20",
+        "spread_points": "4",
+        "ratio": {
+          "numerator": "24",
+          "denominator": "20",
+          "decimal_exact": "1.2"
+        },
+        "ratio_minus_one": {
+          "numerator": "4",
+          "denominator": "20",
+          "decimal_exact": "0.2"
+        },
+        "classification": "BACKWARDATION"
+      },
+      "selected_contracts": [
+        {
+          "symbol": "VX/V6",
+          "tenor": "MONTHLY",
+          "delivery_month": 202610,
+          "last_trade_ms": 1792587600000,
+          "settlement_date": "2026-10-21"
+        },
+        {
+          "symbol": "VX/X6",
+          "tenor": "MONTHLY",
+          "delivery_month": 202611,
+          "last_trade_ms": 1795010400000,
+          "settlement_date": "2026-11-18"
+        }
+      ],
+      "roll": "UNKNOWN_NO_PREVIOUS_PAIR"
+    },
+    "spot": {
+      "status": "READY",
+      "reason": "AT_INPUT_CUTOFF_ONLY",
+      "metrics": {
+        "first_value": "27",
+        "second_value": "24",
+        "spread_points": "3",
+        "ratio": {
+          "numerator": "27",
+          "denominator": "24",
+          "decimal_exact": "1.125"
+        },
+        "ratio_minus_one": {
+          "numerator": "3",
+          "denominator": "24",
+          "decimal_exact": "0.125"
+        },
+        "classification": "SHORT_HORIZON_HIGHER"
+      },
+      "selected_contracts": [],
+      "roll": "UNKNOWN_NO_PREVIOUS_PAIR"
+    }
+  },
+  "request_json": "{\n  \"schema_version\": \"vix-observation-request.rust.v1\",\n  \"mode\": \"DEMONSTRATION\",\n  \"cutoff_ms\": 1792180800000,\n  \"max_age_ms\": 60000,\n  \"futures\": {\n    \"roll_rule\": \"MONTHLY_AT_SUPPLIED_LAST_TRADE_V1\",\n    \"calendar\": {\n      \"source\": {\n        \"reference\": \"DEMONSTRATION: calendar dates from Cboe daily settlements; explicit 08:00 Chicago from VX fact sheet; invented prices, no licensed feed\",\n        \"sha256\": \"ae044e247371b4bb2b9d007f37a6a7fbb82a848bcfe3e2202d1154cce11bed69\",\n        \"timezone\": \"UTC\",\n        \"known_ms\": 1790812800000\n      },\n      \"exchange_timezone\": \"America/Chicago\",\n      \"valid_from_ms\": 1790812800000,\n      \"valid_until_ms\": 1795010400000,\n      \"first_delivery_month\": 202610,\n      \"contracts\": [\n        {\n          \"symbol\": \"VX/V6\",\n          \"tenor\": \"MONTHLY\",\n          \"delivery_month\": 202610,\n          \"last_trade_ms\": 1792587600000,\n          \"settlement_date\": \"2026-10-21\"\n        },\n        {\n          \"symbol\": \"VX43/V6\",\n          \"tenor\": \"WEEKLY\",\n          \"delivery_month\": 202610,\n          \"last_trade_ms\": 1793192400000,\n          \"settlement_date\": \"2026-10-28\"\n        },\n        {\n          \"symbol\": \"VX/X6\",\n          \"tenor\": \"MONTHLY\",\n          \"delivery_month\": 202611,\n          \"last_trade_ms\": 1795010400000,\n          \"settlement_date\": \"2026-11-18\"\n        },\n        {\n          \"symbol\": \"VX/Z6\",\n          \"tenor\": \"MONTHLY\",\n          \"delivery_month\": 202612,\n          \"last_trade_ms\": 1797429600000,\n          \"settlement_date\": \"2026-12-16\"\n        }\n      ]\n    },\n    \"quotes\": [\n      {\n        \"symbol\": \"VX/V6\",\n        \"price\": {\n          \"kind\": \"SETTLEMENT\",\n          \"value\": \"24\"\n        },\n        \"source\": {\n          \"reference\": \"DEMONSTRATION: VX/V6; invented prices, no licensed feed\",\n          \"sha256\": \"d81961d557b9af6eb9d3e362a76407b6dcfbfa99b9ed4e99647a219b92e3b767\",\n          \"timezone\": \"UTC\",\n          \"known_ms\": 1792180800000\n        },\n        \"observed_ms\": 1792180799000,\n        \"received_ms\": 1792180800000,\n        \"trading_session_date\": \"2026-10-16\",\n        \"declared_delay_ms\": 1000\n      },\n      {\n        \"symbol\": \"VX/X6\",\n        \"price\": {\n          \"kind\": \"SETTLEMENT\",\n          \"value\": \"20\"\n        },\n        \"source\": {\n          \"reference\": \"DEMONSTRATION: VX/X6; invented prices, no licensed feed\",\n          \"sha256\": \"8543520383c9dee280b086663cea458f8763f5a2f05f8087dc1d481f09ebf003\",\n          \"timezone\": \"UTC\",\n          \"known_ms\": 1792180800000\n        },\n        \"observed_ms\": 1792180799000,\n        \"received_ms\": 1792180800000,\n        \"trading_session_date\": \"2026-10-16\",\n        \"declared_delay_ms\": 1000\n      },\n      {\n        \"symbol\": \"VX/Z6\",\n        \"price\": {\n          \"kind\": \"SETTLEMENT\",\n          \"value\": \"22\"\n        },\n        \"source\": {\n          \"reference\": \"DEMONSTRATION: VX/Z6; invented prices, no licensed feed\",\n          \"sha256\": \"c8256aceee0608aacdaced2cdc110f604ebf37ac9331d6bacb26a1fee6fe8d5b\",\n          \"timezone\": \"UTC\",\n          \"known_ms\": 1792180800000\n        },\n        \"observed_ms\": 1792180799000,\n        \"received_ms\": 1792180800000,\n        \"trading_session_date\": \"2026-10-16\",\n        \"declared_delay_ms\": 1000\n      }\n    ],\n    \"previous_pair\": null\n  },\n  \"spot\": {\n    \"vix9d\": {\n      \"symbol\": \"VIX9D\",\n      \"price\": {\n        \"kind\": \"INDEX\",\n        \"value\": \"27\"\n      },\n      \"source\": {\n        \"reference\": \"DEMONSTRATION: VIX9D; invented prices, no licensed feed\",\n        \"sha256\": \"1ea5a14af7c2cb624c6cd32830d986ec680dfb6e6cf78b9d853547e349d0cb84\",\n        \"timezone\": \"UTC\",\n        \"known_ms\": 1792180800000\n      },\n      \"observed_ms\": 1792180799000,\n      \"received_ms\": 1792180800000,\n      \"trading_session_date\": \"2026-10-16\",\n      \"declared_delay_ms\": 1000\n    },\n    \"vix\": {\n      \"symbol\": \"VIX\",\n      \"price\": {\n        \"kind\": \"INDEX\",\n        \"value\": \"24\"\n      },\n      \"source\": {\n        \"reference\": \"DEMONSTRATION: VIX; invented prices, no licensed feed\",\n        \"sha256\": \"e5f5fec939aed73b5e3085084a36d87532312ad16540fd0e87c836a77c1a536f\",\n        \"timezone\": \"UTC\",\n        \"known_ms\": 1792180800000\n      },\n      \"observed_ms\": 1792180799000,\n      \"received_ms\": 1792180800000,\n      \"trading_session_date\": \"2026-10-16\",\n      \"declared_delay_ms\": 1000\n    }\n  }\n}",
+  "transport_sha256": "10a0c5a94618082875b988fcffc0bde63f501594b5adcae1ff58e9213f40dd80",
+  "code_sha256": "0e5c398c14104c7357d48450ef5bb95753752cf5c90f315050848c92d21bfb9f",
+  "cargo_lock_sha256": "9e97aaaf089b0c5c67b1816e541ccdf314dafe77b4b7a3d2df8d5718327c0044"
+}

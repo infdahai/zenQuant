@@ -1,0 +1,6 @@
+f631221e2c10d950ce35c9e30566ffdef304ff13346e9ced34d519e7fc0bc930  rust/options-workbench/src/vix_snapshot.rs
+2fab2d1bc600ef63dc46d7564f59f954f441d8bbb93378468a16d1f0912ce2df  rust/options-workbench/src/bin/vix-snapshot.rs
+6d7eed0e54f672f42de37c896029b697b307dc004646cd6c482ce19361b73a8d  rust/options-workbench/src/lib.rs
+50fcaaac38ec7179c15c220d690b2fa6b0082c83ca4361ee629c74ee5dd641ab  rust/options-workbench/tests/vix_snapshot.rs
+9e97aaaf089b0c5c67b1816e541ccdf314dafe77b4b7a3d2df8d5718327c0044  rust/Cargo.lock
+cb602ffc8e179041388afdcbac96a77188f649f39e67330f351e74683a38169a  rust/options-workbench/fixtures/vix/demo.json
