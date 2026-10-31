@@ -1,4 +1,44 @@
-# ZenQuant 4.0
+# ZenQuant — Go mainline
+
+The default development product is the native Go local options and manual paper
+workbench, with the existing Svelte UI. It records manual declarations and
+unassessed intents; it does not place orders, generate fills, or authorize live
+trading. Python research and standalone Rust diagnostics remain available as
+explicit legacy tools, outside the default build and runtime.
+
+## Default quick start
+
+Requires Go 1.25+, Node 24 and npm (macOS or Linux).
+
+```sh
+npm ci --ignore-scripts
+npm ci --ignore-scripts --prefix options-ui
+make build
+./bin/zenquant serve
+# http://127.0.0.1:8092/ and /paper
+make check
+make browser
+```
+
+`make build` builds Svelte and a real Go backend; it does not invoke Python or
+Rust. `make check` runs Go formatting, vet, race tests and frontend checks.
+`./bin/zenquant serve --engineering` uses an isolated temporary paper journal.
+The ordinary entrypoint preserves the single repository `.manual-paper`
+authority across linked worktrees; it never initializes a second USD100000 pool.
+
+See [migration scope and reference patterns](docs/GO_MIGRATION.md),
+[Go operations](docs/GO_OPERATIONS.md), and the
+[manual workflow contract](docs/MANUAL_PAPER_RUST_GUIDE.md).
+Existing schema names containing `rust.v1` identify wire/storage compatibility;
+they do not mean that the Go service invokes Rust.
+
+## Legacy research documentation
+
+The following historical documentation describes the retained Python/Rust
+systems, **not the default Go entrypoint**. Training, tuning and promotion remain
+blocked by the authoritative handoff gates. Historical commands below do not
+override that freeze. Standalone Rust quote/terminal diagnostics, simulated-intent
+and reservation CLIs are retained; they are not claimed as migrated Go commands.
 
 **Deterministic crypto trading infrastructure for building auditable, explainable strategies on major crypto perpetuals.**
 

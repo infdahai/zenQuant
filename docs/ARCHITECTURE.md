@@ -2,7 +2,14 @@
 
 **Status:** canonical architecture review entrypoint
 
-**Snapshot date:** 2026-08-22
+**Default development framework:** native Go local workbench (2026-10-31).
+See [GO_MIGRATION.md](GO_MIGRATION.md) for the explicit migration matrix and
+[GO_OPERATIONS.md](GO_OPERATIONS.md) for build/run/check commands. The Go domain
+packages implement options diagnostics and manual record-only paper operations;
+Svelte remains the UI. Retained Python research and standalone Rust tools are
+non-default, and no strategy promotion is implied.
+
+**Research snapshot date:** 2026-08-22
 
 **Asset scope:** BTC first
 
