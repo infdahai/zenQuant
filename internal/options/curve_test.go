@@ -45,6 +45,23 @@ func rebind(r *Request) {
 	}
 }
 
+func TestSourceHashCachedReportMatchesEmbeddedSources(t *testing.T) {
+	want := sourceHash()
+	for i := 0; i < 2; i++ {
+		b, err := Evaluate("/api/synthetic", []byte(controls))
+		if err != nil {
+			t.Fatal(err)
+		}
+		var r Response
+		if err := json.Unmarshal(b, &r); err != nil {
+			t.Fatal(err)
+		}
+		if r.CodeSHA256 != want {
+			t.Fatalf("source hash %q, want %q", r.CodeSHA256, want)
+		}
+	}
+}
+
 func TestSyntheticRustHandOracle(t *testing.T) {
 	b, e := Evaluate("/api/synthetic", []byte(controls))
 	if e != nil {

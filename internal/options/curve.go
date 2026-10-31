@@ -32,6 +32,9 @@ func sourceHash() string {
 	return hash(pairs)
 }
 
+// Embedded source bytes are immutable for the lifetime of the binary.
+var embeddedSourceHash = sourceHash()
+
 type Response struct {
 	Report          Report `json:"report"`
 	RequestJSON     string `json:"request_json"`
@@ -63,7 +66,7 @@ func Evaluate(path string, body []byte) (result []byte, err error) {
 	elapsed := time.Since(start).Microseconds()
 	pretty, e := json.MarshalIndent(r, "", "  ")
 	require(e == nil, "INTERNAL")
-	return rawJSON(Response{report, string(pretty), elapsed, sha(body), sourceHash(), nil, "options-payoff-native.go.v1"}), nil
+	return rawJSON(Response{report, string(pretty), elapsed, sha(body), embeddedSourceHash, nil, "options-payoff-native.go.v1"}), nil
 }
 
 func terminal(r Request, scenarios TerminalScenarios) TerminalDiagnostic {
