@@ -208,6 +208,45 @@ def test_swarm_blocks_cot_projection_without_date_when_provenance_is_known(tmp_p
     )
 
 
+@pytest.mark.parametrize("partitioned", [False, True])
+def test_swarm_blocks_raw_cot_oi_without_declared_provenance(tmp_path: Path, partitioned: bool) -> None:
+    date = 1_600_000_000_000_000_000
+    path = tmp_path / "dataset" if partitioned else tmp_path / "projection.pq"
+    if partitioned:
+        partition = path / f"position_as_of_date_ns={date}"
+        partition.mkdir(parents=True)
+        pq.write_table(pa.table({"total_oi": [42]}), partition / "part.parquet")
+    else:
+        pq.write_table(pa.table({"position_as_of_date_ns": [date], "total_oi": [42]}), path)
+    assert DataAdmissionAgent().review([_candidate(path.name)], repo_root=tmp_path)[0].blocked_by == (
+        "cot_publication_time_unavailable"
+    )
+
+
+@pytest.mark.parametrize("provenance", ["provider", "source_type", "cftc_cot"])
+@pytest.mark.parametrize("field", ["renamed_position", "ts_ns", "report_date_ns"])
+def test_swarm_blocks_declared_cot_regardless_of_projection(tmp_path: Path, provenance: str, field: str) -> None:
+    path = tmp_path / "projection.pq"
+    pq.write_table(pa.table({field: [1_600_000_000_000_000_000]}), path)
+    candidate = _candidate(path.name)
+    if provenance == "provider":
+        candidate = replace(candidate, provider="cftc")
+    else:
+        candidate = replace(candidate, source_type="cot" if provenance == "source_type" else "cftc_cot")
+    assert DataAdmissionAgent().review([candidate], repo_root=tmp_path)[0].blocked_by == (
+        "cot_publication_time_unavailable"
+    )
+
+
+def test_swarm_blocks_declared_cot_non_parquet(tmp_path: Path) -> None:
+    path = tmp_path / "cot.json"
+    path.write_text('{"value": 1}', encoding="utf-8")
+    candidate = replace(_candidate(path.name), provider="cftc")
+    assert DataAdmissionAgent().review([candidate], repo_root=tmp_path)[0].blocked_by == (
+        "cot_publication_time_unavailable"
+    )
+
+
 def test_swarm_admits_generic_oi_and_non_parquet_files(tmp_path: Path) -> None:
     path = tmp_path / "oi.pq"
     pq.write_table(pa.table({"report_date_ns": [1_600_000_000_000_000_000], "total_oi": [42]}), path)
