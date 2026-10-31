@@ -19,6 +19,8 @@ The coordinator fetched `personal` at task start. This worker's comparison is fr
 
 All 171 commits reachable from local main but not personal/main have SHA, parent list, subject, per-file path list, exclusions, and a first-parent patch. This includes intermediate changes that were later reverted or changed again, and the consolidation merge. Per-commit patches are evidence, not a recommendation to apply them. Their overlapping changes must not be replayed as one linear patch series.
 
+The manifest records historical source paths, which need not remain active files. The former `.superpowers/sdd/2026-10-10-options-workbench-rust/task-1-report.md` is retained byte-for-byte at [the archived report](../../reports/options-workbench-rust-20261010/task-1-report.md), whose size and SHA-256 are recorded in its [archive manifest](../../reports/options-workbench-rust-20261010/archive-manifest.json).
+
 The 382 payloads total 7,864,514 bytes. Every payload has SHA-256 and byte length. Original source bytes are stored under `snapshot/committed/` and `snapshot/working/`; history patches are under `snapshot/history/`. All payload names end in `.txt`, including old Python tests, CI definitions, package metadata, frontend sources and deployment unit examples. They are not importable modules, discovered tests, active workflows, or executable deployment definitions.
 
 ## Decisions by source family
