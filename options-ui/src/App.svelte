@@ -7,7 +7,7 @@
   let mode = 'synthetic';
   let kind = 'C', strike = '100', quantity = '0.01', ask = '2', bid = '1.9', fee = '0.0003', terminalFee = '0.001';
   let first = '50', step = '0.1', count = 1001;
-  let signalEnabled = false, hypothesis = '人工假设：检查上涨价格情景；未赋予概率', signalKnown = '10', signalUntil = '1000';
+  let signalEnabled = false, hypothesis = 'Manual hypothesis: examine rising price scenarios; no probability assigned', signalKnown = '10', signalUntil = '1000';
   let raw = '', response: Response | null = null, busy = false, error = '', elapsed = 0, selected = 500;
   let timer: ReturnType<typeof setTimeout>;
   let serverMode = 'synthetic';
@@ -23,7 +23,7 @@
     }, (message: string) => { error = message; busy = false; });
   }
   function switchMode() { invalidate(); }
-  function cancel() { invalidate(); error = '已取消请求；再次计算可恢复。'; }
+  function cancel() { invalidate(); error = 'Request canceled; calculate again to resume.'; }
   function download() {
     if (!response) return;
     const url = URL.createObjectURL(new Blob([JSON.stringify(response, null, 2)], {type:'application/json'}));
@@ -35,60 +35,60 @@
   onDestroy(() => { client.cancel(); clearTimeout(timer); });
 </script>
 
-<svelte:head><title>ZenQuant · 期权情景实验台</title></svelte:head>
-<header><a class="brand" href="/">Z<span>EN</span>QUANT <small>OPTIONS LAB</small></a><span class="pill">Go 计算 · Svelte 交互</span></header>
+<svelte:head><title>ZenQuant · Options Scenario Lab</title></svelte:head>
+<header><a class="brand" href="/">Z<span>EN</span>QUANT <small>OPTIONS LAB</small></a><span class="pill">Go calculation · Svelte interaction</span></header>
 <main>
-  <div class="intro"><div><p class="eyebrow">CONDITIONAL PAYOFF / V1</p><h1>价格变化，收益如何变化？</h1><p class="muted">线性欧式期权 · BUY 单腿 · 到期结算情景</p></div><span class="badge">研究演示 · 无交易权限</span></div>
-  <div class="notice"><strong>到期情景分析</strong>　这不是历史回测、当前盯市或盈利概率。毛收益是到期支付；净损益仅扣除输入报价成本与明确费用，不预测滑点或成交。</div>
-  <nav aria-label="页面定位"><a href="/paper">人工 Paper 工作台 ↗</a><a href="#inputs">调整输入 ↓</a><a href="#curve">查看曲线 ↓</a></nav>
+  <div class="intro"><div><p class="eyebrow">CONDITIONAL PAYOFF / V1</p><h1>How does payoff change with price?</h1><p class="muted">Linear European option · single-leg BUY · expiry settlement scenarios</p></div><span class="badge">Research demo · no trading access</span></div>
+  <div class="notice"><strong>Expiry scenario analysis</strong>　This is not a historical backtest, current mark-to-market, or profit probability. Gross payoff is the expiry payout; net P&L deducts only the entered quote cost and explicit fees, and does not predict slippage or fills.</div>
+  <nav aria-label="Page navigation"><a href="/paper">Manual Paper Workbench ↗</a><a href="#inputs">Adjust inputs ↓</a><a href="#curve">View curve ↓</a></nav>
   <div class="workspace">
     <section class="controls card" id="inputs">
-      <h2>01 / 输入与假设</h2>
-      <label>输入方式<select aria-label="输入方式" bind:value={mode} onchange={switchMode}><option value="synthetic">合成数学样例 · 调参演示</option><option value="evidence">完整证据 JSON · 精确输入</option></select></label>
+      <h2>01 / Inputs and assumptions</h2>
+      <label>Input method<select aria-label="Input method" bind:value={mode} onchange={switchMode}><option value="synthetic">Synthetic mathematical example · parameter demonstration</option><option value="evidence">Full evidence JSON · exact input</option></select></label>
       {#if mode === 'synthetic'}
-        <p class="hint">ETH / USDC · 合成时钟 cutoff=10 ns，到期=1000 ns。非市场行情。数量单位为基础资产；样例深度明确等于输入数量。</p>
+        <p class="hint">ETH / USDC · synthetic clock cutoff=10 ns, expiry=1000 ns. Not market data. Quantity is in base asset units; example depth explicitly equals the entered quantity.</p>
         <form onsubmit={event => { event.preventDefault(); calculate(); }}>
           <div class="fields">
-            <label>期权类型<select aria-label="期权类型" bind:value={kind} onchange={changed}><option value="C">Call 看涨</option><option value="P">Put 看跌</option></select></label>
-            <label>行权价<input aria-label="行权价" inputmode="decimal" bind:value={strike} oninput={changed}></label>
-            <label>数量 / ETH<input aria-label="数量" inputmode="decimal" bind:value={quantity} oninput={changed}></label>
-            <label>卖一价 / USDC<input aria-label="卖一价" inputmode="decimal" bind:value={ask} oninput={changed}></label>
-            <label>买一价 / USDC<input aria-label="买一价" inputmode="decimal" bind:value={bid} oninput={changed}></label>
-            <label>开仓费率<input aria-label="开仓费率" placeholder="留空 = 缺失" bind:value={fee} oninput={changed}></label>
-            <label>到期总费用<input aria-label="到期总费用" placeholder="留空 = 缺失" bind:value={terminalFee} oninput={changed}></label>
+            <label>Option type<select aria-label="Option type" bind:value={kind} onchange={changed}><option value="C">Call </option><option value="P">Put </option></select></label>
+            <label>Strike price<input aria-label="Strike price" inputmode="decimal" bind:value={strike} oninput={changed}></label>
+            <label>Quantity / ETH<input aria-label="Quantity" inputmode="decimal" bind:value={quantity} oninput={changed}></label>
+            <label>Best ask / USDC<input aria-label="Best ask" inputmode="decimal" bind:value={ask} oninput={changed}></label>
+            <label>Best bid / USDC<input aria-label="Best bid" inputmode="decimal" bind:value={bid} oninput={changed}></label>
+            <label>Entry fee rate<input aria-label="Entry fee rate" placeholder="Leave blank = missing" bind:value={fee} oninput={changed}></label>
+            <label>Total expiry fee<input aria-label="Total expiry fee" placeholder="Leave blank = missing" bind:value={terminalFee} oninput={changed}></label>
           </div>
-          <p class="hint">开仓费使用既有规则：费率 × 指数 × 数量，受权利金 12.5% 上限约束。样例指数固定 100，非真实交易所认证费率。</p>
-          <h3>到期价格网格</h3><div class="fields"><label>起始价格<input aria-label="起始价格" bind:value={first} oninput={changed}></label><label>价格步长<input aria-label="价格步长" bind:value={step} oninput={changed}></label><label>点数 / 2–4096<input aria-label="点数" type="number" min="2" max="4096" bind:value={count} oninput={changed}></label></div>
-          <label class="check"><input type="checkbox" bind:checked={signalEnabled} onchange={changed}>附加人工信号假设（可选）</label>
-          {#if signalEnabled}<label>假设内容<input aria-label="假设内容" bind:value={hypothesis} oninput={changed}></label><div class="fields"><label>已知时点 / ns<input aria-label="信号已知时点" bind:value={signalKnown} oninput={changed}></label><label>有效截止 / ns<input aria-label="信号有效截止" bind:value={signalUntil} oninput={changed}></label></div><p class="hint">信号绑定本候选和价格假设；不自动选合约、不产生概率、不影响独立期权数学。</p>{/if}
-          <button class="primary" type="submit">计算整条曲线</button>
+          <p class="hint">Entry fees follow the existing rule: rate × index × quantity, capped at 12.5% of premium. The example index is fixed at 100; this is not an exchange-verified fee rate.</p>
+          <h3>Expiry price grid</h3><div class="fields"><label>Starting price<input aria-label="Starting price" bind:value={first} oninput={changed}></label><label>Price step<input aria-label="Price step" bind:value={step} oninput={changed}></label><label>Points / 2–4096<input aria-label="Points" type="number" min="2" max="4096" bind:value={count} oninput={changed}></label></div>
+          <label class="check"><input type="checkbox" bind:checked={signalEnabled} onchange={changed}>Add manual signal hypothesis (optional)</label>
+          {#if signalEnabled}<label>Hypothesis<input aria-label="Hypothesis" bind:value={hypothesis} oninput={changed}></label><div class="fields"><label>Known at / ns<input aria-label="Signal known at" bind:value={signalKnown} oninput={changed}></label><label>Valid until / ns<input aria-label="Signal valid until" bind:value={signalUntil} oninput={changed}></label></div><p class="hint">The signal binds to this candidate and price hypothesis; it does not select contracts, assign probabilities, or affect the independent option math.</p>{/if}
+          <button class="primary" type="submit">Calculate full curve</button>
         </form>
       {:else}
-        <p class="hint">提交 options-payoff-curve-request.rust.v1。JSON 文本原样送至 Go，金额使用字符串，纳秒整数不经浏览器解析。缺候选或网格会返回缺项。来源 hash 仅标识证据，不认证其真实性。</p>
-        <label>证据 JSON<textarea aria-label="证据 JSON" spellcheck="false" bind:value={raw} oninput={invalidate}></textarea></label>
-        <button class="primary" onclick={calculate}>评估输入证据</button>
+        <p class="hint">Submit options-payoff-curve-request.rust.v1. JSON text is sent unchanged to Go; amounts use strings and nanosecond integers are not parsed by the browser. Missing candidates or grids are reported. Source hashes identify evidence but do not authenticate it.</p>
+        <label>Evidence JSON<textarea aria-label="Evidence JSON" spellcheck="false" bind:value={raw} oninput={invalidate}></textarea></label>
+        <button class="primary" onclick={calculate}>Evaluate input evidence</button>
       {/if}
     </section>
     <div class="results">
       <section class="card chart-card" id="curve">
-        <div class="section-head"><div><h2>02 / 条件盈亏曲线</h2><p class="muted">一次请求 · Go 批量计算 · 精确金额</p></div>{#if busy}<button onclick={cancel}>取消计算</button>{:else}<span class="pill">{response?.report.points.length ?? 0} 个情景</span>{/if}</div>
-        <div aria-live="polite" class="state">{#if busy}正在计算，旧结果已清除…{:else if error}<strong role="alert">无法完成：{error}</strong>{:else if response?.report.missing.length}<strong role="alert">不可评估：缺少 {response.report.missing.join(' / ')}</strong>{:else if diagnostic}<span data-testid="net-status">净损益 {diagnostic.net_status.status} · {diagnostic.net_status.reason}</span>{:else}输入参数后开始评估。{/if}</div>
+        <div class="section-head"><div><h2>02 / Conditional P&L curve</h2><p class="muted">One request · Go batch calculation · exact amounts</p></div>{#if busy}<button onclick={cancel}>Cancel calculation</button>{:else}<span class="pill">{response?.report.points.length ?? 0} scenarios</span>{/if}</div>
+        <div aria-live="polite" class="state">{#if busy}Calculating; previous results cleared…{:else if error}<strong role="alert">Unable to complete: {error}</strong>{:else if response?.report.missing.length}<strong role="alert">Not evaluable: missing {response.report.missing.join(' / ')}</strong>{:else if diagnostic}<span data-testid="net-status">Net P&L {diagnostic.net_status.status} · {diagnostic.net_status.reason}</span>{:else}Enter parameters to start evaluation.{/if}</div>
         {#if response?.report.points.length}
-          <div class="legend"><span class="gross">● 到期毛收益</span><span class="net">● 条件净损益</span><span>{serverMode === 'synthetic' ? 'SYNTHETIC · 合成样例' : '输入证据 · 未独立核验'}</span></div>
+          <div class="legend"><span class="gross">● Gross expiry payoff</span><span class="net">● Conditional net P&L</span><span>{serverMode === 'synthetic' ? 'SYNTHETIC · synthetic example' : 'input evidence · not independently verified'}</span></div>
           <Curve points={response.report.points} currency={response.report.report_currency}/>
-          <p class="hint plot-note">绘图坐标使用近似数值；下方与导出保留 Go 精确小数。横轴是价格，不是时间。</p>
-          <div class="inspector"><label>查看情景<input aria-label="查看情景" type="range" min="0" max={response.report.points.length - 1} step="1" bind:value={selected}></label>{#if point}<div class="metrics"><div><small>到期价格</small><b data-testid="price">{point.delivery_price}</b></div><div><small>毛收益</small><b>{point.gross_payoff ?? '不可评估'}</b></div><div><small>净损益</small><b class="net" data-testid="pnl">{point.conditional_model_pnl ?? '不可评估'}</b></div></div>{/if}</div>
+          <p class="hint plot-note">Plot coordinates use approximate numbers; the inspector and export preserve exact Go decimals. The horizontal axis is price, not time.</p>
+          <div class="inspector"><label>Inspect scenario<input aria-label="Inspect scenario" type="range" min="0" max={response.report.points.length - 1} step="1" bind:value={selected}></label>{#if point}<div class="metrics"><div><small>Expiry price</small><b data-testid="price">{point.delivery_price}</b></div><div><small>Gross payoff</small><b>{point.gross_payoff ?? 'Not evaluable'}</b></div><div><small>Net P&L</small><b class="net" data-testid="pnl">{point.conditional_model_pnl ?? 'Not evaluable'}</b></div></div>{/if}</div>
         {/if}
       </section>
       {#if response}
-        <section class="card evidence"><h2>03 / 成本与证据 · {response.report.report_currency}</h2><div class="metrics"><div><small>开仓权利金</small><b>{diagnostic?.cost?.premium_native ?? '不可评估'}</b></div><div><small>开仓手续费</small><b>{diagnostic?.cost?.fee_native ?? '不可评估'}</b></div><div><small>开仓总成本</small><b>{diagnostic?.cost?.total_report_currency ?? '不可评估'}</b></div></div>
-          <dl><dt>到期费用假设</dt><dd>{response.report.terminal_fee_assumption ?? '缺失 · 净损益不可评估'}</dd><dt>评估 / 到期时点</dt><dd>{response.report.cutoff_ns} / {response.report.expiry_ns ?? '缺失'} ns</dd><dt>模型支持</dt><dd>{diagnostic?.support.model_support.status ?? 'NOT_EVALUABLE'} · {diagnostic?.support.model_support.reason ?? response.report.missing.join(', ')}</dd><dt>可选信号</dt><dd data-testid="signal-status">{response.report.signal_status.status} · {response.report.signal_status.reason}</dd><dt>账户 / 执行</dt><dd>UNVERIFIED / UNVERIFIED · 未评估账户风控，无真实成交证据</dd><dt>输入身份</dt><dd class="hash">{response.report.input_hash}</dd></dl>
-          <div class="foot"><span>Go 计算 {(response.calculation_us / 1000).toFixed(1)} ms · 请求往返 {elapsed.toFixed(1)} ms</span><button onclick={download}>导出精确 JSON</button></div>
+        <section class="card evidence"><h2>03 / Costs and evidence · {response.report.report_currency}</h2><div class="metrics"><div><small>Entry premium</small><b>{diagnostic?.cost?.premium_native ?? 'Not evaluable'}</b></div><div><small>Entry fee</small><b>{diagnostic?.cost?.fee_native ?? 'Not evaluable'}</b></div><div><small>Total entry cost</small><b>{diagnostic?.cost?.total_report_currency ?? 'Not evaluable'}</b></div></div>
+          <dl><dt>Expiry fee assumption</dt><dd>{response.report.terminal_fee_assumption ?? 'Missing · net P&L not evaluable'}</dd><dt>Evaluation / expiry</dt><dd>{response.report.cutoff_ns} / {response.report.expiry_ns ?? 'Missing'} ns</dd><dt>Model support</dt><dd>{diagnostic?.support.model_support.status ?? 'NOT_EVALUABLE'} · {diagnostic?.support.model_support.reason ?? response.report.missing.join(', ')}</dd><dt>Optional signal</dt><dd data-testid="signal-status">{response.report.signal_status.status} · {response.report.signal_status.reason}</dd><dt>Account / execution</dt><dd>UNVERIFIED / UNVERIFIED · Account risk not assessed; no evidence of real fills</dd><dt>Input identity</dt><dd class="hash">{response.report.input_hash}</dd></dl>
+          <div class="foot"><span>Go calculation {(response.calculation_us / 1000).toFixed(1)} ms · Request round trip {elapsed.toFixed(1)} ms</span><button onclick={download}>Export exact JSON</button></div>
         </section>
       {/if}
     </div>
   </div>
-  <footer>ZenQuant MVP · 核心公式由 Go 计算 · 无实盘接入</footer>
+  <footer>ZenQuant MVP · Core formulas calculated by Go · no live trading connection</footer>
 </main>
 
 <style>
