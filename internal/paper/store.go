@@ -2,6 +2,8 @@ package paper
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"io"
 	"os"
 	"path/filepath"
@@ -269,7 +271,191 @@ func trustedParent(path string) error {
 	}
 }
 
-func initialize(p string, c object, clock func() uint64, h hooks) (object, bool, bool, error) {
+// A marker binds a stage to one destination. Unmarked and unexpected data are
+// never reclaimed: they may belong to an older writer or another application.
+func stageMarker(p string) []byte {
+	sum := sha256.Sum256([]byte(filepath.Base(p)))
+	return []byte("zenquant-paper-stage-v1:" + hex.EncodeToString(sum[:]))
+}
+
+func recoverStages(p string, h hooks) error {
+	parentPath := filepath.Dir(p)
+	parent, e := os.OpenRoot(parentPath)
+	if e != nil {
+		return e
+	}
+	defer parent.Close()
+	pd, e := parent.Open(".")
+	if e != nil {
+		return e
+	}
+	defer pd.Close()
+	entries, e := pd.ReadDir(-1)
+	if e != nil {
+		return e
+	}
+	for _, entry := range entries {
+		if !strings.HasPrefix(entry.Name(), ".paper-init-v1-") || !entry.IsDir() {
+			continue
+		}
+		dir, e := parent.OpenFile(entry.Name(), os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_DIRECTORY, 0)
+		if e != nil {
+			continue
+		}
+		stage, e := parent.OpenRoot(entry.Name())
+		if e != nil {
+			dir.Close()
+			continue
+		}
+		rootDir, e := stage.Open(".")
+		if e != nil {
+			dir.Close()
+			stage.Close()
+			continue
+		}
+		a, ea := dir.Stat()
+		b, eb := rootDir.Stat()
+		rootDir.Close()
+		if ea != nil || eb != nil || !os.SameFile(a, b) {
+			dir.Close()
+			stage.Close()
+			continue
+		}
+		if syscall.Flock(int(dir.Fd()), syscall.LOCK_EX|syscall.LOCK_NB) != nil {
+			dir.Close()
+			stage.Close()
+			continue
+		}
+		e = recoverStage(parent, pd, stage, dir, entry.Name(), stageMarker(p), h)
+		syscall.Flock(int(dir.Fd()), syscall.LOCK_UN)
+		dir.Close()
+		stage.Close()
+		if e != nil {
+			return e
+		}
+	}
+	return nil
+}
+
+func recoverStage(parent *os.Root, pd *os.File, stage *os.Root, dir *os.File, stageName string, marker []byte, h hooks) error {
+	opened, e := dir.Stat()
+	if e != nil {
+		return e
+	}
+	current, e := parent.Lstat(stageName)
+	if e != nil || !current.IsDir() || !os.SameFile(opened, current) {
+		return nil
+	}
+	st, ok := opened.Sys().(*syscall.Stat_t)
+	if !ok || st.Uid != uint32(os.Geteuid()) || opened.Mode().Perm()&0077 != 0 {
+		return nil
+	}
+	validFile := func(root *os.Root, name string) bool {
+		i, e := root.Lstat(name)
+		if e != nil || !i.Mode().IsRegular() {
+			return false
+		}
+		s, ok := i.Sys().(*syscall.Stat_t)
+		return ok && s.Nlink == 1 && s.Uid == uint32(os.Geteuid()) && i.Mode().Perm()&0077 == 0
+	}
+	if !validFile(stage, "owner") {
+		return nil
+	}
+	f, e := stage.OpenFile("owner", os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0)
+	if e != nil {
+		return nil
+	}
+	b, e := io.ReadAll(io.LimitReader(f, 256))
+	f.Close()
+	if e != nil || !bytes.Equal(b, marker) {
+		return nil
+	}
+	entries, e := dir.ReadDir(-1)
+	if e != nil {
+		return e
+	}
+	var journal *os.Root
+	for _, entry := range entries {
+		switch entry.Name() {
+		case "owner":
+		case "journal":
+			i, err := stage.Lstat("journal")
+			if err != nil || !i.IsDir() {
+				return nil
+			}
+			s, ok := i.Sys().(*syscall.Stat_t)
+			if !ok || s.Uid != uint32(os.Geteuid()) || i.Mode().Perm()&0077 != 0 {
+				return nil
+			}
+			journal, err = stage.OpenRoot("journal")
+			if err != nil {
+				return nil
+			}
+			defer journal.Close()
+			jd, err := journal.Open(".")
+			if err != nil {
+				return nil
+			}
+			opened, err := jd.Stat()
+			jd.Close()
+			if err != nil || !os.SameFile(i, opened) {
+				return nil
+			}
+		default:
+			return nil
+		}
+	}
+	if journal != nil {
+		jd, err := journal.Open(".")
+		if err != nil {
+			return err
+		}
+		children, err := jd.ReadDir(-1)
+		jd.Close()
+		if err != nil {
+			return err
+		}
+		for _, child := range children {
+			if (child.Name() != "pending.json" && child.Name() != "snapshot.json") || !validFile(journal, child.Name()) {
+				return nil
+			}
+		}
+		current, err := parent.Lstat(stageName)
+		if err != nil || !os.SameFile(opened, current) {
+			return nil
+		}
+		for _, child := range children {
+			if err = journal.Remove(child.Name()); err != nil {
+				return err
+			}
+		}
+		if err = h.checkpoint("cleanup_files"); err != nil {
+			return err
+		}
+		if err = stage.Remove("journal"); err != nil {
+			return err
+		}
+	}
+	if e = h.checkpoint("cleanup_journal"); e != nil {
+		return e
+	}
+	current, e = parent.Lstat(stageName)
+	if e != nil || !os.SameFile(opened, current) {
+		return nil
+	}
+	if e = stage.Remove("owner"); e != nil {
+		return e
+	}
+	if e = parent.Remove(stageName); e != nil {
+		return e
+	}
+	if e = pd.Sync(); e != nil {
+		return failure("DurabilityUnconfirmed")
+	}
+	return nil
+}
+
+func initialize(p string, c object, clock func() uint64, h hooks) (result object, replayed bool, pending bool, resultErr error) {
 	if _, _, e := confirm(emptyJournal(), c, clock()); e != nil {
 		return nil, false, false, e
 	}
@@ -282,13 +468,8 @@ func initialize(p string, c object, clock func() uint64, h hooks) (object, bool,
 		return nil, false, false, e
 	}
 	defer parent.Close()
-	stageParent, e := os.MkdirTemp(parentPath, ".paper-init-")
+	stageParent, e := os.MkdirTemp(parentPath, ".paper-init-v1-")
 	if e != nil {
-		return nil, false, false, e
-	}
-	defer os.RemoveAll(stageParent)
-	stage := filepath.Join(stageParent, "journal")
-	if e = os.Mkdir(stage, 0700); e != nil {
 		return nil, false, false, e
 	}
 	stageFD, e := os.Open(stageParent)
@@ -296,6 +477,47 @@ func initialize(p string, c object, clock func() uint64, h hooks) (object, bool,
 		return nil, false, false, e
 	}
 	defer stageFD.Close()
+	if e = syscall.Flock(int(stageFD.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); e != nil {
+		return nil, false, false, e
+	}
+	defer syscall.Flock(int(stageFD.Fd()), syscall.LOCK_UN)
+	marker, e := os.OpenFile(filepath.Join(stageParent, "owner"), os.O_WRONLY|os.O_CREATE|os.O_EXCL|syscall.O_NOFOLLOW, 0600)
+	if e != nil {
+		return nil, false, false, e
+	}
+	_, e = marker.Write(stageMarker(p))
+	if e == nil {
+		e = marker.Sync()
+	}
+	if closeErr := marker.Close(); e == nil {
+		e = closeErr
+	}
+	if e != nil {
+		return nil, false, false, e
+	}
+	if e = stageFD.Sync(); e != nil {
+		return nil, false, false, e
+	}
+	defer func() {
+		parentRoot, err := os.OpenRoot(parentPath)
+		if err == nil {
+			defer parentRoot.Close()
+			stageRoot, openErr := parentRoot.OpenRoot(filepath.Base(stageParent))
+			if openErr == nil {
+				defer stageRoot.Close()
+				err = recoverStage(parentRoot, parent, stageRoot, stageFD, filepath.Base(stageParent), stageMarker(p), hooks{})
+			} else {
+				err = openErr
+			}
+		}
+		if err != nil && resultErr == nil {
+			resultErr = failure("DurabilityUnconfirmed")
+		}
+	}()
+	stage := filepath.Join(stageParent, "journal")
+	if e = os.Mkdir(stage, 0700); e != nil {
+		return nil, false, false, e
+	}
 	l, e := lock(stage)
 	if e != nil {
 		return nil, false, false, e
@@ -399,6 +621,9 @@ func (s *Store) commit(c object, clock func() uint64, h hooks) (object, bool, bo
 		return nil, false, false, e
 	}
 	if e = trustedParent(filepath.Dir(p)); e != nil {
+		return nil, false, false, e
+	}
+	if e = recoverStages(p, h); e != nil {
 		return nil, false, false, e
 	}
 	j := emptyJournal()

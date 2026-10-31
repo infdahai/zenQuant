@@ -122,6 +122,7 @@ impl Store {
     ) -> Result<(Journal, bool, bool)> {
         let path = disk::safe_path(&self.path).map_err(err)?;
         disk::trusted_parent(path.parent().ok_or("InvalidStore")?).map_err(err)?;
+        disk::recover_stages(&path).map_err(err)?;
         let (dir, journal, pending) = match std::fs::symlink_metadata(&path) {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
                 // Validate before creating anything; preview and rejected confirmation do not initialize.
