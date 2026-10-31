@@ -6,7 +6,8 @@
     "timeframe": "5m",
     "atr": 0.0,
     "vol": 0.0,
-    "roc": 0.0
+    "roc": 0.0,
+    "kappa": 0.0
   },
   {
     "name": "empty",
@@ -15,7 +16,8 @@
     "timeframe": "1h",
     "atr": 0.0,
     "vol": 0.0,
-    "roc": 0.0
+    "roc": 0.0,
+    "kappa": 0.0
   },
   {
     "name": "empty",
@@ -24,7 +26,8 @@
     "timeframe": "4h",
     "atr": 0.0,
     "vol": 0.0,
-    "roc": 0.0
+    "roc": 0.0,
+    "kappa": 0.0
   },
   {
     "name": "empty",
@@ -33,7 +36,8 @@
     "timeframe": "1d",
     "atr": 0.0,
     "vol": 0.0,
-    "roc": 0.0
+    "roc": 0.0,
+    "kappa": 0.0
   },
   {
     "name": "empty",
@@ -42,7 +46,8 @@
     "timeframe": "unknown",
     "atr": 0.0,
     "vol": 0.0,
-    "roc": 0.0
+    "roc": 0.0,
+    "kappa": 0.0
   },
   {
     "name": "empty",
@@ -51,7 +56,8 @@
     "timeframe": "5m",
     "atr": 0.0,
     "vol": 0.0,
-    "roc": 0.0
+    "roc": 0.0,
+    "kappa": 0.0
   },
   {
     "name": "empty",
@@ -60,7 +66,8 @@
     "timeframe": "1h",
     "atr": 0.0,
     "vol": 0.0,
-    "roc": 0.0
+    "roc": 0.0,
+    "kappa": 0.0
   },
   {
     "name": "empty",
@@ -69,7 +76,8 @@
     "timeframe": "4h",
     "atr": 0.0,
     "vol": 0.0,
-    "roc": 0.0
+    "roc": 0.0,
+    "kappa": 0.0
   },
   {
     "name": "empty",
@@ -78,7 +86,8 @@
     "timeframe": "1d",
     "atr": 0.0,
     "vol": 0.0,
-    "roc": 0.0
+    "roc": 0.0,
+    "kappa": 0.0
   },
   {
     "name": "empty",
@@ -87,7 +96,8 @@
     "timeframe": "unknown",
     "atr": 0.0,
     "vol": 0.0,
-    "roc": 0.0
+    "roc": 0.0,
+    "kappa": 0.0
   },
   {
     "name": "empty",
@@ -96,7 +106,8 @@
     "timeframe": "5m",
     "atr": 0.0,
     "vol": 0.0,
-    "roc": 0.0
+    "roc": 0.0,
+    "kappa": 0.0
   },
   {
     "name": "empty",
@@ -105,7 +116,8 @@
     "timeframe": "1h",
     "atr": 0.0,
     "vol": 0.0,
-    "roc": 0.0
+    "roc": 0.0,
+    "kappa": 0.0
   },
   {
     "name": "empty",
@@ -114,7 +126,8 @@
     "timeframe": "4h",
     "atr": 0.0,
     "vol": 0.0,
-    "roc": 0.0
+    "roc": 0.0,
+    "kappa": 0.0
   },
   {
     "name": "empty",
@@ -123,7 +136,8 @@
     "timeframe": "1d",
     "atr": 0.0,
     "vol": 0.0,
-    "roc": 0.0
+    "roc": 0.0,
+    "kappa": 0.0
   },
   {
     "name": "empty",
@@ -132,7 +146,8 @@
     "timeframe": "unknown",
     "atr": 0.0,
     "vol": 0.0,
-    "roc": 0.0
+    "roc": 0.0,
+    "kappa": 0.0
   },
   {
     "name": "empty",
@@ -141,7 +156,8 @@
     "timeframe": "5m",
     "atr": 0.0,
     "vol": 0.0,
-    "roc": 0.0
+    "roc": 0.0,
+    "kappa": 0.0
   },
   {
     "name": "empty",
@@ -150,7 +166,8 @@
     "timeframe": "1h",
     "atr": 0.0,
     "vol": 0.0,
-    "roc": 0.0
+    "roc": 0.0,
+    "kappa": 0.0
   },
   {
     "name": "empty",
@@ -159,7 +176,8 @@
     "timeframe": "4h",
     "atr": 0.0,
     "vol": 0.0,
-    "roc": 0.0
+    "roc": 0.0,
+    "kappa": 0.0
   },
   {
     "name": "empty",
@@ -168,7 +186,8 @@
     "timeframe": "1d",
     "atr": 0.0,
     "vol": 0.0,
-    "roc": 0.0
+    "roc": 0.0,
+    "kappa": 0.0
   },
   {
     "name": "empty",
@@ -177,7 +196,8 @@
     "timeframe": "unknown",
     "atr": 0.0,
     "vol": 0.0,
-    "roc": 0.0
+    "roc": 0.0,
+    "kappa": 0.0
   },
   {
     "name": "single",
@@ -192,7 +212,8 @@
     "timeframe": "5m",
     "atr": 0.0,
     "vol": 0.0,
-    "roc": 0.0
+    "roc": 0.0,
+    "kappa": 0.0
   },
   {
     "name": "single",
@@ -207,7 +228,8 @@
     "timeframe": "1h",
     "atr": 0.0,
     "vol": 0.0,
-    "roc": 0.0
+    "roc": 0.0,
+    "kappa": 0.0
   },
   {
     "name": "single",
@@ -222,7 +244,8 @@
     "timeframe": "4h",
     "atr": 0.0,
     "vol": 0.0,
-    "roc": 0.0
+    "roc": 0.0,
+    "kappa": 0.0
   },
   {
     "name": "single",
@@ -237,7 +260,8 @@
     "timeframe": "1d",
     "atr": 0.0,
     "vol": 0.0,
-    "roc": 0.0
+    "roc": 0.0,
+    "kappa": 0.0
   },
   {
     "name": "single",
@@ -252,7 +276,8 @@
     "timeframe": "unknown",
     "atr": 0.0,
     "vol": 0.0,
-    "roc": 0.0
+    "roc": 0.0,
+    "kappa": 0.0
   },
   {
     "name": "single",
@@ -267,7 +292,8 @@
     "timeframe": "5m",
     "atr": 0.0,
     "vol": 0.0,
-    "roc": 0.0
+    "roc": 0.0,
+    "kappa": 0.0
   },
   {
     "name": "single",
@@ -282,7 +308,8 @@
     "timeframe": "1h",
     "atr": 0.0,
     "vol": 0.0,
-    "roc": 0.0
+    "roc": 0.0,
+    "kappa": 0.0
   },
   {
     "name": "single",
@@ -297,7 +324,8 @@
     "timeframe": "4h",
     "atr": 0.0,
     "vol": 0.0,
-    "roc": 0.0
+    "roc": 0.0,
+    "kappa": 0.0
   },
   {
     "name": "single",
@@ -312,7 +340,8 @@
     "timeframe": "1d",
     "atr": 0.0,
     "vol": 0.0,
-    "roc": 0.0
+    "roc": 0.0,
+    "kappa": 0.0
   },
   {
     "name": "single",
@@ -327,7 +356,8 @@
     "timeframe": "unknown",
     "atr": 0.0,
     "vol": 0.0,
-    "roc": 0.0
+    "roc": 0.0,
+    "kappa": 0.0
   },
   {
     "name": "single",
@@ -342,7 +372,8 @@
     "timeframe": "5m",
     "atr": 0.0,
     "vol": 0.0,
-    "roc": 0.0
+    "roc": 0.0,
+    "kappa": 0.0
   },
   {
     "name": "single",
@@ -357,7 +388,8 @@
     "timeframe": "1h",
     "atr": 0.0,
     "vol": 0.0,
-    "roc": 0.0
+    "roc": 0.0,
+    "kappa": 0.0
   },
   {
     "name": "single",
@@ -372,7 +404,8 @@
     "timeframe": "4h",
     "atr": 0.0,
     "vol": 0.0,
-    "roc": 0.0
+    "roc": 0.0,
+    "kappa": 0.0
   },
   {
     "name": "single",
@@ -387,7 +420,8 @@
     "timeframe": "1d",
     "atr": 0.0,
     "vol": 0.0,
-    "roc": 0.0
+    "roc": 0.0,
+    "kappa": 0.0
   },
   {
     "name": "single",
@@ -402,7 +436,8 @@
     "timeframe": "unknown",
     "atr": 0.0,
     "vol": 0.0,
-    "roc": 0.0
+    "roc": 0.0,
+    "kappa": 0.0
   },
   {
     "name": "single",
@@ -417,7 +452,8 @@
     "timeframe": "5m",
     "atr": 0.0,
     "vol": 0.0,
-    "roc": 0.0
+    "roc": 0.0,
+    "kappa": 0.0
   },
   {
     "name": "single",
@@ -432,7 +468,8 @@
     "timeframe": "1h",
     "atr": 0.0,
     "vol": 0.0,
-    "roc": 0.0
+    "roc": 0.0,
+    "kappa": 0.0
   },
   {
     "name": "single",
@@ -447,7 +484,8 @@
     "timeframe": "4h",
     "atr": 0.0,
     "vol": 0.0,
-    "roc": 0.0
+    "roc": 0.0,
+    "kappa": 0.0
   },
   {
     "name": "single",
@@ -462,7 +500,8 @@
     "timeframe": "1d",
     "atr": 0.0,
     "vol": 0.0,
-    "roc": 0.0
+    "roc": 0.0,
+    "kappa": 0.0
   },
   {
     "name": "single",
@@ -477,7 +516,8 @@
     "timeframe": "unknown",
     "atr": 0.0,
     "vol": 0.0,
-    "roc": 0.0
+    "roc": 0.0,
+    "kappa": 0.0
   },
   {
     "name": "varying",
@@ -512,7 +552,8 @@
     "timeframe": "5m",
     "atr": 6.0,
     "vol": 0.0,
-    "roc": 0.01941747572815533
+    "roc": 0.01941747572815533,
+    "kappa": 0.0
   },
   {
     "name": "varying",
@@ -547,7 +588,8 @@
     "timeframe": "1h",
     "atr": 6.0,
     "vol": 0.0,
-    "roc": 0.01941747572815533
+    "roc": 0.01941747572815533,
+    "kappa": 0.0
   },
   {
     "name": "varying",
@@ -582,7 +624,8 @@
     "timeframe": "4h",
     "atr": 6.0,
     "vol": 0.0,
-    "roc": 0.01941747572815533
+    "roc": 0.01941747572815533,
+    "kappa": 0.0
   },
   {
     "name": "varying",
@@ -617,7 +660,8 @@
     "timeframe": "1d",
     "atr": 6.0,
     "vol": 0.0,
-    "roc": 0.01941747572815533
+    "roc": 0.01941747572815533,
+    "kappa": 0.0
   },
   {
     "name": "varying",
@@ -652,7 +696,8 @@
     "timeframe": "unknown",
     "atr": 6.0,
     "vol": 0.0,
-    "roc": 0.01941747572815533
+    "roc": 0.01941747572815533,
+    "kappa": 0.0
   },
   {
     "name": "varying",
@@ -687,7 +732,8 @@
     "timeframe": "5m",
     "atr": 11.0,
     "vol": 21.483706466218745,
-    "roc": 0.14130434782608692
+    "roc": 0.14130434782608692,
+    "kappa": 0.8297211624532193
   },
   {
     "name": "varying",
@@ -722,7 +768,8 @@
     "timeframe": "1h",
     "atr": 11.0,
     "vol": 6.201811855731149,
-    "roc": 0.14130434782608692
+    "roc": 0.14130434782608692,
+    "kappa": 0.8297211624532193
   },
   {
     "name": "varying",
@@ -757,7 +804,8 @@
     "timeframe": "4h",
     "atr": 11.0,
     "vol": 3.1009059278655746,
-    "roc": 0.14130434782608692
+    "roc": 0.14130434782608692,
+    "kappa": 0.8297211624532193
   },
   {
     "name": "varying",
@@ -792,7 +840,8 @@
     "timeframe": "1d",
     "atr": 11.0,
     "vol": 1.2659395439403796,
-    "roc": 0.14130434782608692
+    "roc": 0.14130434782608692,
+    "kappa": 0.8297211624532193
   },
   {
     "name": "varying",
@@ -827,7 +876,8 @@
     "timeframe": "unknown",
     "atr": 11.0,
     "vol": 3.1009059278655746,
-    "roc": 0.14130434782608692
+    "roc": 0.14130434782608692,
+    "kappa": 0.8297211624532193
   },
   {
     "name": "varying",
@@ -862,7 +912,8 @@
     "timeframe": "5m",
     "atr": 12.75,
     "vol": 39.33792745802726,
-    "roc": 0.050000000000000044
+    "roc": 0.050000000000000044,
+    "kappa": 1.576972163609373
   },
   {
     "name": "varying",
@@ -897,7 +948,8 @@
     "timeframe": "1h",
     "atr": 12.75,
     "vol": 11.355881503627007,
-    "roc": 0.050000000000000044
+    "roc": 0.050000000000000044,
+    "kappa": 1.576972163609373
   },
   {
     "name": "varying",
@@ -932,7 +984,8 @@
     "timeframe": "4h",
     "atr": 12.75,
     "vol": 5.677940751813503,
-    "roc": 0.050000000000000044
+    "roc": 0.050000000000000044,
+    "kappa": 1.576972163609373
   },
   {
     "name": "varying",
@@ -967,7 +1020,8 @@
     "timeframe": "1d",
     "atr": 12.75,
     "vol": 2.3180096052829637,
-    "roc": 0.050000000000000044
+    "roc": 0.050000000000000044,
+    "kappa": 1.576972163609373
   },
   {
     "name": "varying",
@@ -1002,7 +1056,8 @@
     "timeframe": "unknown",
     "atr": 12.75,
     "vol": 5.677940751813503,
-    "roc": 0.050000000000000044
+    "roc": 0.050000000000000044,
+    "kappa": 1.576972163609373
   },
   {
     "name": "varying",
@@ -1037,7 +1092,8 @@
     "timeframe": "5m",
     "atr": 12.75,
     "vol": 39.33792745802726,
-    "roc": 0.0
+    "roc": 0.0,
+    "kappa": 0.0
   },
   {
     "name": "varying",
@@ -1072,7 +1128,8 @@
     "timeframe": "1h",
     "atr": 12.75,
     "vol": 11.355881503627007,
-    "roc": 0.0
+    "roc": 0.0,
+    "kappa": 0.0
   },
   {
     "name": "varying",
@@ -1107,7 +1164,8 @@
     "timeframe": "4h",
     "atr": 12.75,
     "vol": 5.677940751813503,
-    "roc": 0.0
+    "roc": 0.0,
+    "kappa": 0.0
   },
   {
     "name": "varying",
@@ -1142,7 +1200,8 @@
     "timeframe": "1d",
     "atr": 12.75,
     "vol": 2.3180096052829637,
-    "roc": 0.0
+    "roc": 0.0,
+    "kappa": 0.0
   },
   {
     "name": "varying",
@@ -1177,7 +1236,8 @@
     "timeframe": "unknown",
     "atr": 12.75,
     "vol": 5.677940751813503,
-    "roc": 0.0
+    "roc": 0.0,
+    "kappa": 0.0
   },
   {
     "name": "invalid_closes",
@@ -1222,7 +1282,8 @@
     "timeframe": "5m",
     "atr": 10.0,
     "vol": 0.0,
-    "roc": 0.0
+    "roc": 0.0,
+    "kappa": 0.0
   },
   {
     "name": "invalid_closes",
@@ -1267,7 +1328,8 @@
     "timeframe": "1h",
     "atr": 10.0,
     "vol": 0.0,
-    "roc": 0.0
+    "roc": 0.0,
+    "kappa": 0.0
   },
   {
     "name": "invalid_closes",
@@ -1312,7 +1374,8 @@
     "timeframe": "4h",
     "atr": 10.0,
     "vol": 0.0,
-    "roc": 0.0
+    "roc": 0.0,
+    "kappa": 0.0
   },
   {
     "name": "invalid_closes",
@@ -1357,7 +1420,8 @@
     "timeframe": "1d",
     "atr": 10.0,
     "vol": 0.0,
-    "roc": 0.0
+    "roc": 0.0,
+    "kappa": 0.0
   },
   {
     "name": "invalid_closes",
@@ -1402,7 +1466,8 @@
     "timeframe": "unknown",
     "atr": 10.0,
     "vol": 0.0,
-    "roc": 0.0
+    "roc": 0.0,
+    "kappa": 0.0
   },
   {
     "name": "invalid_closes",
@@ -1447,7 +1512,8 @@
     "timeframe": "5m",
     "atr": 7.0,
     "vol": 0.0,
-    "roc": 0.33333333333333326
+    "roc": 0.33333333333333326,
+    "kappa": 2.0127773372909727
   },
   {
     "name": "invalid_closes",
@@ -1492,7 +1558,8 @@
     "timeframe": "1h",
     "atr": 7.0,
     "vol": 0.0,
-    "roc": 0.33333333333333326
+    "roc": 0.33333333333333326,
+    "kappa": 2.0127773372909727
   },
   {
     "name": "invalid_closes",
@@ -1537,7 +1604,8 @@
     "timeframe": "4h",
     "atr": 7.0,
     "vol": 0.0,
-    "roc": 0.33333333333333326
+    "roc": 0.33333333333333326,
+    "kappa": 2.0127773372909727
   },
   {
     "name": "invalid_closes",
@@ -1582,7 +1650,8 @@
     "timeframe": "1d",
     "atr": 7.0,
     "vol": 0.0,
-    "roc": 0.33333333333333326
+    "roc": 0.33333333333333326,
+    "kappa": 2.0127773372909727
   },
   {
     "name": "invalid_closes",
@@ -1627,7 +1696,8 @@
     "timeframe": "unknown",
     "atr": 7.0,
     "vol": 0.0,
-    "roc": 0.33333333333333326
+    "roc": 0.33333333333333326,
+    "kappa": 2.0127773372909727
   },
   {
     "name": "invalid_closes",
@@ -1672,7 +1742,8 @@
     "timeframe": "5m",
     "atr": 5.75,
     "vol": 0.0,
-    "roc": 0.0
+    "roc": 0.0,
+    "kappa": 1.5109879712974328
   },
   {
     "name": "invalid_closes",
@@ -1717,7 +1788,8 @@
     "timeframe": "1h",
     "atr": 5.75,
     "vol": 0.0,
-    "roc": 0.0
+    "roc": 0.0,
+    "kappa": 1.5109879712974328
   },
   {
     "name": "invalid_closes",
@@ -1762,7 +1834,8 @@
     "timeframe": "4h",
     "atr": 5.75,
     "vol": 0.0,
-    "roc": 0.0
+    "roc": 0.0,
+    "kappa": 1.5109879712974328
   },
   {
     "name": "invalid_closes",
@@ -1807,7 +1880,8 @@
     "timeframe": "1d",
     "atr": 5.75,
     "vol": 0.0,
-    "roc": 0.0
+    "roc": 0.0,
+    "kappa": 1.5109879712974328
   },
   {
     "name": "invalid_closes",
@@ -1852,7 +1926,8 @@
     "timeframe": "unknown",
     "atr": 5.75,
     "vol": 0.0,
-    "roc": 0.0
+    "roc": 0.0,
+    "kappa": 1.5109879712974328
   },
   {
     "name": "invalid_closes",
@@ -1897,7 +1972,8 @@
     "timeframe": "5m",
     "atr": 4.833333333333333,
     "vol": 0.0,
-    "roc": 0.0
+    "roc": 0.0,
+    "kappa": 0.0
   },
   {
     "name": "invalid_closes",
@@ -1942,7 +2018,8 @@
     "timeframe": "1h",
     "atr": 4.833333333333333,
     "vol": 0.0,
-    "roc": 0.0
+    "roc": 0.0,
+    "kappa": 0.0
   },
   {
     "name": "invalid_closes",
@@ -1987,7 +2064,8 @@
     "timeframe": "4h",
     "atr": 4.833333333333333,
     "vol": 0.0,
-    "roc": 0.0
+    "roc": 0.0,
+    "kappa": 0.0
   },
   {
     "name": "invalid_closes",
@@ -2032,7 +2110,8 @@
     "timeframe": "1d",
     "atr": 4.833333333333333,
     "vol": 0.0,
-    "roc": 0.0
+    "roc": 0.0,
+    "kappa": 0.0
   },
   {
     "name": "invalid_closes",
@@ -2077,7 +2156,8 @@
     "timeframe": "unknown",
     "atr": 4.833333333333333,
     "vol": 0.0,
-    "roc": 0.0
+    "roc": 0.0,
+    "kappa": 0.0
   },
   {
     "name": "flat",
@@ -2107,7 +2187,8 @@
     "timeframe": "5m",
     "atr": 0.0,
     "vol": 0.0,
-    "roc": 0.0
+    "roc": 0.0,
+    "kappa": 0.0
   },
   {
     "name": "flat",
@@ -2137,7 +2218,8 @@
     "timeframe": "1h",
     "atr": 0.0,
     "vol": 0.0,
-    "roc": 0.0
+    "roc": 0.0,
+    "kappa": 0.0
   },
   {
     "name": "flat",
@@ -2167,7 +2249,8 @@
     "timeframe": "4h",
     "atr": 0.0,
     "vol": 0.0,
-    "roc": 0.0
+    "roc": 0.0,
+    "kappa": 0.0
   },
   {
     "name": "flat",
@@ -2197,7 +2280,8 @@
     "timeframe": "1d",
     "atr": 0.0,
     "vol": 0.0,
-    "roc": 0.0
+    "roc": 0.0,
+    "kappa": 0.0
   },
   {
     "name": "flat",
@@ -2227,7 +2311,8 @@
     "timeframe": "unknown",
     "atr": 0.0,
     "vol": 0.0,
-    "roc": 0.0
+    "roc": 0.0,
+    "kappa": 0.0
   },
   {
     "name": "flat",
@@ -2257,7 +2342,8 @@
     "timeframe": "5m",
     "atr": 0.0,
     "vol": 0.0,
-    "roc": 0.0
+    "roc": 0.0,
+    "kappa": 0.0
   },
   {
     "name": "flat",
@@ -2287,7 +2373,8 @@
     "timeframe": "1h",
     "atr": 0.0,
     "vol": 0.0,
-    "roc": 0.0
+    "roc": 0.0,
+    "kappa": 0.0
   },
   {
     "name": "flat",
@@ -2317,7 +2404,8 @@
     "timeframe": "4h",
     "atr": 0.0,
     "vol": 0.0,
-    "roc": 0.0
+    "roc": 0.0,
+    "kappa": 0.0
   },
   {
     "name": "flat",
@@ -2347,7 +2435,8 @@
     "timeframe": "1d",
     "atr": 0.0,
     "vol": 0.0,
-    "roc": 0.0
+    "roc": 0.0,
+    "kappa": 0.0
   },
   {
     "name": "flat",
@@ -2377,7 +2466,8 @@
     "timeframe": "unknown",
     "atr": 0.0,
     "vol": 0.0,
-    "roc": 0.0
+    "roc": 0.0,
+    "kappa": 0.0
   },
   {
     "name": "flat",
@@ -2407,7 +2497,8 @@
     "timeframe": "5m",
     "atr": 0.0,
     "vol": 0.0,
-    "roc": 0.0
+    "roc": 0.0,
+    "kappa": 0.0
   },
   {
     "name": "flat",
@@ -2437,7 +2528,8 @@
     "timeframe": "1h",
     "atr": 0.0,
     "vol": 0.0,
-    "roc": 0.0
+    "roc": 0.0,
+    "kappa": 0.0
   },
   {
     "name": "flat",
@@ -2467,7 +2559,8 @@
     "timeframe": "4h",
     "atr": 0.0,
     "vol": 0.0,
-    "roc": 0.0
+    "roc": 0.0,
+    "kappa": 0.0
   },
   {
     "name": "flat",
@@ -2497,7 +2590,8 @@
     "timeframe": "1d",
     "atr": 0.0,
     "vol": 0.0,
-    "roc": 0.0
+    "roc": 0.0,
+    "kappa": 0.0
   },
   {
     "name": "flat",
@@ -2527,7 +2621,8 @@
     "timeframe": "unknown",
     "atr": 0.0,
     "vol": 0.0,
-    "roc": 0.0
+    "roc": 0.0,
+    "kappa": 0.0
   },
   {
     "name": "flat",
@@ -2557,7 +2652,8 @@
     "timeframe": "5m",
     "atr": 0.0,
     "vol": 0.0,
-    "roc": 0.0
+    "roc": 0.0,
+    "kappa": 0.0
   },
   {
     "name": "flat",
@@ -2587,7 +2683,8 @@
     "timeframe": "1h",
     "atr": 0.0,
     "vol": 0.0,
-    "roc": 0.0
+    "roc": 0.0,
+    "kappa": 0.0
   },
   {
     "name": "flat",
@@ -2617,7 +2714,8 @@
     "timeframe": "4h",
     "atr": 0.0,
     "vol": 0.0,
-    "roc": 0.0
+    "roc": 0.0,
+    "kappa": 0.0
   },
   {
     "name": "flat",
@@ -2647,7 +2745,8 @@
     "timeframe": "1d",
     "atr": 0.0,
     "vol": 0.0,
-    "roc": 0.0
+    "roc": 0.0,
+    "kappa": 0.0
   },
   {
     "name": "flat",
@@ -2677,6 +2776,7 @@
     "timeframe": "unknown",
     "atr": 0.0,
     "vol": 0.0,
-    "roc": 0.0
+    "roc": 0.0,
+    "kappa": 0.0
   }
 ]
