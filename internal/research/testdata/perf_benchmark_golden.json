@@ -1,0 +1,479 @@
+[
+  {
+    "failed": {
+      "status": "running",
+      "phase": "stage1",
+      "optuna_trials_completed": 3
+    },
+    "baseline": {
+      "stage1_runtime_s": 188.33,
+      "stage1_avg_indicator_step_s": 33.7124,
+      "stage2_prepare_variant_miss_reasons": {
+        "old": 1
+      }
+    },
+    "rerun": {
+      "status": "completed",
+      "stage1_runtime_s": 183.44,
+      "stage1_avg_indicator_step_s": 36.566,
+      "stage2_prepare_variant_cache_hits": 2,
+      "stage2_prepare_variant_miss_reasons": {
+        "cache": 3
+      }
+    },
+    "report_present": true,
+    "expected": {
+      "benchmark_scope": "cpu_hot_path_stage2_reuse",
+      "failed_benchmark_root_cause": "stage1 benchmark run ended without authoritative terminal state",
+      "failed_benchmark_evidence": {
+        "phase": "stage1",
+        "status": "running",
+        "optuna_trials_completed": 3,
+        "optuna_trials_requested": null,
+        "stage2_progress_completed": null,
+        "framework_report_present": false
+      },
+      "baseline_source": "results/framework_optimization_loop_v27/runs/round_003/campaign_status.json",
+      "rerun_source": "results/perf_stage2_benchmark_fast_rerun/campaign_status.json",
+      "rerun_terminal_state": {
+        "status": "completed",
+        "phase": null,
+        "best_variant": null,
+        "framework_report_present": true
+      },
+      "metric_comparison": {
+        "stage1_runtime_s": {
+          "baseline": 188.33,
+          "rerun": 183.44,
+          "delta": -4.89
+        },
+        "stage1_avg_trial_runtime_s": {
+          "baseline": null,
+          "rerun": null,
+          "delta": null
+        },
+        "stage1_avg_replay_run_s": {
+          "baseline": null,
+          "rerun": null,
+          "delta": null
+        },
+        "stage1_avg_indicator_step_s": {
+          "baseline": 33.7124,
+          "rerun": 36.566,
+          "delta": 2.8536
+        },
+        "trial_replay_cache_hit_rate": {
+          "baseline": null,
+          "rerun": null,
+          "delta": null
+        },
+        "replay_context_cache_hit_rate": {
+          "baseline": null,
+          "rerun": null,
+          "delta": null
+        },
+        "validation_cache_hit_rate": {
+          "baseline": null,
+          "rerun": null,
+          "delta": null
+        },
+        "window_snapshot_cache_hit_rate": {
+          "baseline": null,
+          "rerun": null,
+          "delta": null
+        },
+        "stage2_prepare_variant_cache_hits": {
+          "baseline": null,
+          "rerun": 2,
+          "delta": null
+        },
+        "stage2_prepare_variant_replay_reused": {
+          "baseline": null,
+          "rerun": null,
+          "delta": null
+        },
+        "stage2_prepare_variant_miss_reasons": {
+          "baseline": {
+            "old": 1
+          },
+          "rerun": {
+            "cache": 3
+          }
+        }
+      },
+      "classification": "success",
+      "interpretation": {
+        "indicator_hot_path_improved": false,
+        "stage2_reuse_visible": true,
+        "main_takeaway": "stage2 reuse is now observable and the rerun completed cleanly, but indicator hot path did not improve yet"
+      }
+    }
+  },
+  {
+    "failed": {},
+    "baseline": {
+      "stage1_avg_indicator_step_s": 2
+    },
+    "rerun": {
+      "status": "completed",
+      "stage1_avg_indicator_step_s": 1.5
+    },
+    "report_present": false,
+    "expected": {
+      "benchmark_scope": "cpu_hot_path_stage2_reuse",
+      "failed_benchmark_root_cause": "stage1 benchmark run ended without authoritative terminal state",
+      "failed_benchmark_evidence": {
+        "phase": null,
+        "status": null,
+        "optuna_trials_completed": null,
+        "optuna_trials_requested": null,
+        "stage2_progress_completed": null,
+        "framework_report_present": false
+      },
+      "baseline_source": "results/framework_optimization_loop_v27/runs/round_003/campaign_status.json",
+      "rerun_source": "results/perf_stage2_benchmark_fast_rerun/campaign_status.json",
+      "rerun_terminal_state": {
+        "status": "completed",
+        "phase": null,
+        "best_variant": null,
+        "framework_report_present": false
+      },
+      "metric_comparison": {
+        "stage1_runtime_s": {
+          "baseline": null,
+          "rerun": null,
+          "delta": null
+        },
+        "stage1_avg_trial_runtime_s": {
+          "baseline": null,
+          "rerun": null,
+          "delta": null
+        },
+        "stage1_avg_replay_run_s": {
+          "baseline": null,
+          "rerun": null,
+          "delta": null
+        },
+        "stage1_avg_indicator_step_s": {
+          "baseline": 2,
+          "rerun": 1.5,
+          "delta": -0.5
+        },
+        "trial_replay_cache_hit_rate": {
+          "baseline": null,
+          "rerun": null,
+          "delta": null
+        },
+        "replay_context_cache_hit_rate": {
+          "baseline": null,
+          "rerun": null,
+          "delta": null
+        },
+        "validation_cache_hit_rate": {
+          "baseline": null,
+          "rerun": null,
+          "delta": null
+        },
+        "window_snapshot_cache_hit_rate": {
+          "baseline": null,
+          "rerun": null,
+          "delta": null
+        },
+        "stage2_prepare_variant_cache_hits": {
+          "baseline": null,
+          "rerun": null,
+          "delta": null
+        },
+        "stage2_prepare_variant_replay_reused": {
+          "baseline": null,
+          "rerun": null,
+          "delta": null
+        },
+        "stage2_prepare_variant_miss_reasons": {
+          "baseline": null,
+          "rerun": null
+        }
+      },
+      "classification": "partial_success",
+      "interpretation": {
+        "indicator_hot_path_improved": true,
+        "stage2_reuse_visible": false,
+        "main_takeaway": "diagnostics are wired correctly, but measured runtime improvement remains limited"
+      }
+    }
+  },
+  {
+    "failed": {},
+    "baseline": {
+      "stage1_avg_indicator_step_s": 2
+    },
+    "rerun": {
+      "status": "completed",
+      "stage1_avg_indicator_step_s": 1.4999
+    },
+    "report_present": false,
+    "expected": {
+      "benchmark_scope": "cpu_hot_path_stage2_reuse",
+      "failed_benchmark_root_cause": "stage1 benchmark run ended without authoritative terminal state",
+      "failed_benchmark_evidence": {
+        "phase": null,
+        "status": null,
+        "optuna_trials_completed": null,
+        "optuna_trials_requested": null,
+        "stage2_progress_completed": null,
+        "framework_report_present": false
+      },
+      "baseline_source": "results/framework_optimization_loop_v27/runs/round_003/campaign_status.json",
+      "rerun_source": "results/perf_stage2_benchmark_fast_rerun/campaign_status.json",
+      "rerun_terminal_state": {
+        "status": "completed",
+        "phase": null,
+        "best_variant": null,
+        "framework_report_present": false
+      },
+      "metric_comparison": {
+        "stage1_runtime_s": {
+          "baseline": null,
+          "rerun": null,
+          "delta": null
+        },
+        "stage1_avg_trial_runtime_s": {
+          "baseline": null,
+          "rerun": null,
+          "delta": null
+        },
+        "stage1_avg_replay_run_s": {
+          "baseline": null,
+          "rerun": null,
+          "delta": null
+        },
+        "stage1_avg_indicator_step_s": {
+          "baseline": 2,
+          "rerun": 1.4999,
+          "delta": -0.5001
+        },
+        "trial_replay_cache_hit_rate": {
+          "baseline": null,
+          "rerun": null,
+          "delta": null
+        },
+        "replay_context_cache_hit_rate": {
+          "baseline": null,
+          "rerun": null,
+          "delta": null
+        },
+        "validation_cache_hit_rate": {
+          "baseline": null,
+          "rerun": null,
+          "delta": null
+        },
+        "window_snapshot_cache_hit_rate": {
+          "baseline": null,
+          "rerun": null,
+          "delta": null
+        },
+        "stage2_prepare_variant_cache_hits": {
+          "baseline": null,
+          "rerun": null,
+          "delta": null
+        },
+        "stage2_prepare_variant_replay_reused": {
+          "baseline": null,
+          "rerun": null,
+          "delta": null
+        },
+        "stage2_prepare_variant_miss_reasons": {
+          "baseline": null,
+          "rerun": null
+        }
+      },
+      "classification": "success",
+      "interpretation": {
+        "indicator_hot_path_improved": true,
+        "stage2_reuse_visible": false,
+        "main_takeaway": "rerun completed cleanly with observable cache reuse and measurable runtime improvement"
+      }
+    }
+  },
+  {
+    "failed": {},
+    "baseline": {},
+    "rerun": {
+      "status": "running",
+      "stage2_prepare_variant_replay_reused": 4
+    },
+    "report_present": false,
+    "expected": {
+      "benchmark_scope": "cpu_hot_path_stage2_reuse",
+      "failed_benchmark_root_cause": "stage1 benchmark run ended without authoritative terminal state",
+      "failed_benchmark_evidence": {
+        "phase": null,
+        "status": null,
+        "optuna_trials_completed": null,
+        "optuna_trials_requested": null,
+        "stage2_progress_completed": null,
+        "framework_report_present": false
+      },
+      "baseline_source": "results/framework_optimization_loop_v27/runs/round_003/campaign_status.json",
+      "rerun_source": "results/perf_stage2_benchmark_fast_rerun/campaign_status.json",
+      "rerun_terminal_state": {
+        "status": "running",
+        "phase": null,
+        "best_variant": null,
+        "framework_report_present": false
+      },
+      "metric_comparison": {
+        "stage1_runtime_s": {
+          "baseline": null,
+          "rerun": null,
+          "delta": null
+        },
+        "stage1_avg_trial_runtime_s": {
+          "baseline": null,
+          "rerun": null,
+          "delta": null
+        },
+        "stage1_avg_replay_run_s": {
+          "baseline": null,
+          "rerun": null,
+          "delta": null
+        },
+        "stage1_avg_indicator_step_s": {
+          "baseline": null,
+          "rerun": null,
+          "delta": null
+        },
+        "trial_replay_cache_hit_rate": {
+          "baseline": null,
+          "rerun": null,
+          "delta": null
+        },
+        "replay_context_cache_hit_rate": {
+          "baseline": null,
+          "rerun": null,
+          "delta": null
+        },
+        "validation_cache_hit_rate": {
+          "baseline": null,
+          "rerun": null,
+          "delta": null
+        },
+        "window_snapshot_cache_hit_rate": {
+          "baseline": null,
+          "rerun": null,
+          "delta": null
+        },
+        "stage2_prepare_variant_cache_hits": {
+          "baseline": null,
+          "rerun": null,
+          "delta": null
+        },
+        "stage2_prepare_variant_replay_reused": {
+          "baseline": null,
+          "rerun": 4,
+          "delta": null
+        },
+        "stage2_prepare_variant_miss_reasons": {
+          "baseline": null,
+          "rerun": null
+        }
+      },
+      "classification": "failed",
+      "interpretation": {
+        "indicator_hot_path_improved": false,
+        "stage2_reuse_visible": true,
+        "main_takeaway": "diagnostics are wired correctly, but measured runtime improvement remains limited"
+      }
+    }
+  },
+  {
+    "failed": {},
+    "baseline": {},
+    "rerun": {
+      "status": "completed"
+    },
+    "report_present": false,
+    "expected": {
+      "benchmark_scope": "cpu_hot_path_stage2_reuse",
+      "failed_benchmark_root_cause": "stage1 benchmark run ended without authoritative terminal state",
+      "failed_benchmark_evidence": {
+        "phase": null,
+        "status": null,
+        "optuna_trials_completed": null,
+        "optuna_trials_requested": null,
+        "stage2_progress_completed": null,
+        "framework_report_present": false
+      },
+      "baseline_source": "results/framework_optimization_loop_v27/runs/round_003/campaign_status.json",
+      "rerun_source": "results/perf_stage2_benchmark_fast_rerun/campaign_status.json",
+      "rerun_terminal_state": {
+        "status": "completed",
+        "phase": null,
+        "best_variant": null,
+        "framework_report_present": false
+      },
+      "metric_comparison": {
+        "stage1_runtime_s": {
+          "baseline": null,
+          "rerun": null,
+          "delta": null
+        },
+        "stage1_avg_trial_runtime_s": {
+          "baseline": null,
+          "rerun": null,
+          "delta": null
+        },
+        "stage1_avg_replay_run_s": {
+          "baseline": null,
+          "rerun": null,
+          "delta": null
+        },
+        "stage1_avg_indicator_step_s": {
+          "baseline": null,
+          "rerun": null,
+          "delta": null
+        },
+        "trial_replay_cache_hit_rate": {
+          "baseline": null,
+          "rerun": null,
+          "delta": null
+        },
+        "replay_context_cache_hit_rate": {
+          "baseline": null,
+          "rerun": null,
+          "delta": null
+        },
+        "validation_cache_hit_rate": {
+          "baseline": null,
+          "rerun": null,
+          "delta": null
+        },
+        "window_snapshot_cache_hit_rate": {
+          "baseline": null,
+          "rerun": null,
+          "delta": null
+        },
+        "stage2_prepare_variant_cache_hits": {
+          "baseline": null,
+          "rerun": null,
+          "delta": null
+        },
+        "stage2_prepare_variant_replay_reused": {
+          "baseline": null,
+          "rerun": null,
+          "delta": null
+        },
+        "stage2_prepare_variant_miss_reasons": {
+          "baseline": null,
+          "rerun": null
+        }
+      },
+      "classification": "partial_success",
+      "interpretation": {
+        "indicator_hot_path_improved": false,
+        "stage2_reuse_visible": false,
+        "main_takeaway": "diagnostics are wired correctly, but measured runtime improvement remains limited"
+      }
+    }
+  }
+]
