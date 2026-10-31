@@ -35,7 +35,7 @@ func Run(args []string, out, stderr io.Writer) error {
 		flags := flag.NewFlagSet("download-deribit-options", flag.ContinueOnError)
 		flags.SetOutput(stderr)
 		currency := flags.String("currency", "BTC", "underlying currency")
-		root := flags.String("output-root", "data/raw/deribit_options", "snapshot output root")
+		root := flags.String("output-root", "data/raw/deribit_options_go", "snapshot output root (separate from Python collector by default)")
 		endpoint := flags.String("endpoint", deribit.DefaultEndpoint, "Deribit public API base URL")
 		if err := flags.Parse(args[1:]); err != nil {
 			if errors.Is(err, flag.ErrHelp) {

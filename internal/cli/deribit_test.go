@@ -48,13 +48,20 @@ func TestDeribitCLI(t *testing.T) {
 		}
 	}))
 	defer server.Close()
+	var help bytes.Buffer
+	if err := Run([]string{"download-deribit-options", "--help"}, io.Discard, &help); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(help.String(), "data/raw/deribit_options_go") {
+		t.Fatalf("help omits Go output default: %s", help.String())
+	}
 	root := t.TempDir()
 	var out bytes.Buffer
 	args := []string{"download-deribit-options", "--endpoint", server.URL, "--currency", "btc", "--output-root", root}
 	if err := Run(args, &out, io.Discard); err != nil {
 		t.Fatal(err)
 	}
-	files, err := filepath.Glob(filepath.Join(root, "BTC", "*", "*"))
+	files, err := filepath.Glob(filepath.Join(root, "BTC", "*", "*", "snapshot", "*"))
 	if err != nil || len(files) != 2 {
 		t.Fatalf("files=%v err=%v", files, err)
 	}

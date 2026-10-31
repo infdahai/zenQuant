@@ -19,7 +19,6 @@ import (
 
 const DefaultEndpoint = "https://www.deribit.com/api/v2/public"
 const maxResponse = 16 << 20
-const stagedParquetName = "data.parquet.tmp"
 
 type Row struct {
 	SnapshotTS       int64    `json:"snapshot_ts_ns" parquet:"snapshot_ts_ns"`
@@ -171,8 +170,12 @@ func Download(client *http.Client, endpoint, currency string, now func() time.Ti
 	return rows, nil
 }
 
-// Save stages both files before publishing. Existing names are never overwritten.
+// Save publishes a complete snapshot with a single directory rename.
 func Save(rows []Row, root string) (string, string, error) {
+	return save(rows, root, nil)
+}
+
+func save(rows []Row, root string, checkpoint func(string) error) (string, string, error) {
 	if len(rows) == 0 {
 		return "", "", errors.New("no rows")
 	}
@@ -182,20 +185,34 @@ func Save(rows []Row, root string) (string, string, error) {
 		return "", "", err
 	}
 	stem := "options_chain_" + t.Format("20060102T150405Z")
-	jp, pp := filepath.Join(dir, stem+".json"), filepath.Join(dir, stem+".parquet")
-	stage, err := os.MkdirTemp(dir, ".options-chain-")
+	stagingRoot := filepath.Join(root, ".options-chain-staging")
+	if err := os.MkdirAll(stagingRoot, 0755); err != nil {
+		return "", "", err
+	}
+	stage, err := os.MkdirTemp(stagingRoot, "run-")
 	if err != nil {
 		return "", "", err
 	}
 	defer os.RemoveAll(stage)
+	run, err := os.MkdirTemp(dir, "go-run-")
+	if err != nil {
+		return "", "", err
+	}
+	// Remove only our empty parent on failure; never remove published data.
+	defer os.Remove(run)
+	if checkpoint != nil {
+		if err := checkpoint("created"); err != nil {
+			return "", "", err
+		}
+	}
 	b, err := json.MarshalIndent(rows, "", "  ")
 	if err != nil {
 		return "", "", err
 	}
-	if err = os.WriteFile(filepath.Join(stage, "data.json"), b, 0644); err != nil {
+	if err = os.WriteFile(filepath.Join(stage, stem+".json"), b, 0644); err != nil {
 		return "", "", err
 	}
-	f, err := os.Create(filepath.Join(stage, stagedParquetName))
+	f, err := os.Create(filepath.Join(stage, stem+".parquet"))
 	if err != nil {
 		return "", "", err
 	}
@@ -211,15 +228,19 @@ func Save(rows []Row, root string) (string, string, error) {
 	if closeErr != nil {
 		return "", "", closeErr
 	}
-	// Hard links publish without overwriting another snapshot; roll back the first on failure.
-	if err = os.Link(filepath.Join(stage, "data.json"), jp); err != nil {
-		return "", "", err
-	}
-	if err = os.Link(filepath.Join(stage, stagedParquetName), pp); err != nil {
-		if removeErr := os.Remove(jp); removeErr != nil {
-			return "", "", fmt.Errorf("publish parquet: %v; remove %s: %w", err, jp, removeErr)
+	if checkpoint != nil {
+		if err := checkpoint("staged"); err != nil {
+			return "", "", err
 		}
+	}
+	published := filepath.Join(run, "snapshot")
+	if err := os.Rename(stage, published); err != nil {
 		return "", "", err
 	}
-	return jp, pp, nil
+	if checkpoint != nil {
+		if err := checkpoint("published"); err != nil {
+			return "", "", err
+		}
+	}
+	return filepath.Join(published, stem+".json"), filepath.Join(published, stem+".parquet"), nil
 }
