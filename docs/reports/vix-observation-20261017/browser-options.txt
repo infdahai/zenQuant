@@ -1,0 +1,38 @@
+
+> test:options
+> npm --prefix options-ui test && playwright test --config playwright.options.config.js
+
+
+> zenquant-options-ui@0.1.0 test
+> node --test tests/*.test.js
+
+✔ newer response wins even when old fetch ignores cancellation (1.984781ms)
+✔ explicit cancel prevents completion; failed request can recover (0.400293ms)
+ℹ tests 2
+ℹ suites 0
+ℹ pass 2
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 63.838585
+
+Running 6 tests using 1 worker
+
+(node:16558) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:16558) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+(Use `node --trace-warnings ...` to show where the warning was created)
+  ✓  1 options-ui/e2e/payoff.spec.js:6:1 › running UI: default curve, changed inputs, missing costs and mobile layout (1.9s)
+  ✓  2 options-ui/e2e/payoff.spec.js:30:1 › raw evidence preserves missing inputs; bad request can recover (704ms)
+  ✓  3 options-ui/e2e/payoff.spec.js:45:1 › 4096 point browser work is measured separately and rapid edits keep final result (1.2s)
+  ✓  4 options-ui/e2e/risk.spec.js:6:1 › separate Rust observations, fixed demo disclosure, evidence export and mobile layout (563ms)
+  ✓  5 options-ui/e2e/risk.spec.js:29:1 › unavailable values, asynchronous rejection and explicit monthly roll (608ms)
+  ✓  6 options-ui/e2e/risk.spec.js:42:1 › strict raw input preserves independence and exact recurring ratios, rejected edits clear results (631ms)
+
+  6 passed (6.9s)
+npm notice
+npm notice New major version of npm available! 11.9.0 -> 12.2.0
+npm notice Changelog: https://github.com/npm/cli/releases/tag/v12.2.0
+npm notice To update run: npm install -g npm@12.2.0
+npm notice

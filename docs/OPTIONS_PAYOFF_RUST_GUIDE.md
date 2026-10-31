@@ -1,5 +1,7 @@
 # Svelte + Rust 期权情景 MVP
 
+**历史文档：**Rust 源码与服务正从当前工作树移除，下方 Rust 构建、命令、路径和测试记录的是当时的实现。当前由 Go 后端和 Svelte UI 提供本地期权情景及人工 paper 工作流，运行说明见 [Go 运维说明](GO_OPERATIONS.md)。历史跨语言测试结果不是当前完整兼容性的证明。
+
 后续新增 [人工 paper 设置与意图记录](MANUAL_PAPER_RUST_GUIDE.md)，同一服务访问 `/paper`。下文描述的曲线入口仍保持独立；新增 paper 路由只写预算声明/意图日志，不构成账户资金、OMS或成交能力。
 
 本轮入口是独立的 `options-ui/` Svelte 客户端与 Rust `options-ui` 二进制。旧 `web-src/` Vue 和 Python 项目保留作迁移参考，没有复制旧仪表盘或建立双主线。没有 Go、Python 运行依赖、回测、实时行情订阅、OMS、成交、账户风控或下单功能。

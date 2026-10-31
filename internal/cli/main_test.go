@@ -1,7 +1,9 @@
 package cli
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net"
@@ -9,9 +11,73 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
+
+func TestReviewLoopStabilityCommand(t *testing.T) {
+	root := t.TempDir()
+	output := filepath.Join(root, "reports")
+	var out bytes.Buffer
+	if err := Run([]string{"review-loop-stability", "--results-root", filepath.Join(root, "missing"), "--output-dir", output}, &out, io.Discard); err != nil {
+		t.Fatal(err)
+	}
+	var result struct {
+		Review    map[string]string `json:"review"`
+		LoopCount int               `json:"loop_count"`
+	}
+	if err := json.Unmarshal(out.Bytes(), &result); err != nil || result.LoopCount != 0 {
+		t.Fatalf("unexpected output: %s (%v)", out.String(), err)
+	}
+	for _, path := range result.Review {
+		if _, err := os.Stat(path); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if len(result.Review) != 2 {
+		t.Fatalf("unexpected paths: %v", result.Review)
+	}
+}
+
+type failingOutput struct{}
+
+func (failingOutput) Write([]byte) (int, error) { return 0, fmt.Errorf("output failed") }
+
+func TestReviewLoopStabilityOutputFailureReportsPath(t *testing.T) {
+	root := t.TempDir()
+	err := Run([]string{"review-loop-stability", "--results-root", filepath.Join(root, "missing"), "--output-dir", root}, failingOutput{}, io.Discard)
+	entries, readErr := os.ReadDir(root)
+	if readErr != nil || len(entries) != 1 {
+		t.Fatalf("unexpected output directory: %v %v", entries, readErr)
+	}
+	path := filepath.Join(root, entries[0].Name(), "report-v2")
+	if err == nil || !strings.Contains(err.Error(), path) {
+		t.Fatalf("missing published path: %v", err)
+	}
+	if _, statErr := os.Stat(path); statErr != nil {
+		t.Fatal(statErr)
+	}
+}
+
+func TestResearchSplitsCommand(t *testing.T) {
+	var out bytes.Buffer
+	if err := Run([]string{"research-splits"}, &out, io.Discard); err != nil {
+		t.Fatal(err)
+	}
+	var summary struct {
+		Version string `json:"version"`
+		Test    struct {
+			End *int64 `json:"end_ns"`
+		} `json:"test"`
+	}
+	if err := json.Unmarshal(out.Bytes(), &summary); err != nil || summary.Version != "btc_temporal_v2_train_selection_only" || summary.Test.End != nil {
+		t.Fatalf("unexpected summary %s: %v", out.String(), err)
+	}
+	if err := Run([]string{"research-splits", "extra"}, io.Discard, io.Discard); err == nil {
+		t.Fatal("unexpected argument accepted")
+	}
+}
 
 func TestServeFromLinkedCheckoutSubdirectory(t *testing.T) {
 	if os.Getenv("ZQ_CLI_CHILD") == "1" {

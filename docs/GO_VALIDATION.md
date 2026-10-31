@@ -1,6 +1,8 @@
 # Go migration validation
 
-Recorded 2026-10-31 in branch `refactor/go-mainline-20261031`, based on fetched `personal/main` `5fca5d69222567dd0108deb3bbd54177d61de1a7`. No production data, deployment, real orders or strategy promotion is part of this change.
+Recorded 2026-10-31 in branch `refactor/go-mainline-20261031`, based on fetched `personal/main` `5fca5d69222567dd0108deb3bbd54177d61de1a7`. The results below are historical observations of those revisions, not a new run against the current worktree. No production data, deployment, real orders or strategy promotion was part of that change.
+
+Rust source, its helper and its dedicated CI are being removed. The current Go CI configuration does not build the Rust helper or run live Go/Rust differential and cross-language writer tests. Archived Rust-generated fixtures still cover specific recorded examples, but cannot establish full parity or current mixed-writer safety. The historical Linux results below remain evidence of the revisions and cases actually tested.
 
 ## Executed checks
 
@@ -45,7 +47,7 @@ This establishes Linux runtime evidence as well as local macOS evidence. The loc
 
 The initial mkdir-before-snapshot defect is addressed in both Go and Rust: prepare a complete journal in a private staging directory, retain the directory flock, publish with descriptor-relative no-replace rename, then confirm parent durability. Competing initializers reopen and validate the winner rather than treating EEXIST as fatal. Existing missing or corrupt snapshots still fail closed; no user journal is migrated or reset.
 
-New coverage includes first-write injected failure checkpoints, initial-creation process termination, concurrent first confirmations, and Linux Go/Rust process exclusion and replay. Linux CI builds the pinned Rust test helper and runs these cross-language tests explicitly. Independent review identified published-directory permissions and existing-store trust checks; both were corrected with mode/ownership rejection tests. Mixed use requires updated binaries on both sides; older binaries cannot gain the new recovery guarantees retroactively. See the manual guide for the Unix owner/mode trust boundary and limits.
+At that revision, coverage included first-write injected failure checkpoints, initial-creation process termination, concurrent first confirmations, and Linux Go/Rust process exclusion and replay. The historical Linux CI built the pinned Rust test helper and ran these cross-language tests explicitly; current CI no longer does so. Independent review identified published-directory permissions and existing-store trust checks; both were corrected with mode/ownership rejection tests. The historical protocol required updated binaries on both sides; older binaries cannot gain the new recovery guarantees retroactively, and current mixed-writer safety has not been established. See the manual guide for the Unix owner/mode trust boundary and limits.
 
 Final local follow-up checks passed: `make check` (Go format/vet/race and frontend checks), `make browser` (3 options tests and 1 full paper workflow), `GOOS=linux go vet ./...`, Rust format/clippy, benchmark-script Ruff checks and `git diff --check`. Process tests cover same-request replay and different-request stale rejection. At delivery commit `16a412e588ee0c92a49503f355526bd5009a173f`, the Linux job in [Go PR run 41206817180](https://github.com/infdahai/zenQuant/actions/runs/41206817180) successfully built the Rust helper and passed the explicit Go/Rust process exclusion/replay step. The [retained Rust run 41206817228](https://github.com/infdahai/zenQuant/actions/runs/41206817228) completed successfully in both core and browser jobs. These are Linux runtime results, not macOS cross-compilation claims. Final aggregate checks are linked from PR #24.
 
@@ -53,7 +55,7 @@ The local lightweight performance measurement uses only an engineering journal; 
 
 ## Scope and limits
 
-- The default Go product implements the current options UI and manual record-only paper behavior. Standalone Rust quote/terminal CLI publication, simulated-intent and reservation CLIs remain explicit legacy tools. Python strategy/research/collectors are retained outside the default service. This is not a claim that every historical command was ported.
+- The default Go product implements the current options UI and manual record-only paper behavior. Rust source and standalone quote/terminal, simulated-intent and reservation CLIs are being removed, with no equivalent Go commands for those standalone workflows. Python strategy/research/collectors remain outside the default service. This is not a claim that every historical command was ported.
 - Runtime validation was on macOS with Go 1.27.3; module minimum is Go 1.25. Remote Go CI passed on Ubuntu 24.04 and macOS, as linked above. Windows is unsupported by this Unix file-lock implementation.
 - A Rust-produced journal fixture proves compatibility for the covered events; no user journal was accessed or migrated. File-sync and kill tests do not prove every hardware/power-loss scenario.
 - Svelte dependency installation reported two low-severity advisories in the existing locked dependency graph; dependencies were not upgraded as part of migration.

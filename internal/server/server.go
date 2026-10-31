@@ -28,8 +28,8 @@ type Asset struct {
 	Body []byte
 }
 type Server struct {
-	Assets         map[string]Asset
-	Options, Paper Evaluate
+	Assets                   map[string]Asset
+	Options, Paper, Research Evaluate
 }
 
 // LoadAssets admits only a bounded, explicitly built static bundle; never follows symlinks.
@@ -92,6 +92,7 @@ func LoadAssets(root string) (map[string]Asset, error) {
 	}
 	assets["/"] = index
 	assets["/paper"] = index
+	assets["/risk"] = index
 	return assets, nil
 }
 
@@ -168,10 +169,12 @@ func (s *Server) handle(conn net.Conn, host string) {
 	}
 	var evaluate Evaluate
 	switch req.RequestURI {
-	case "/api/curve", "/api/synthetic":
+	case "/api/curve", "/api/synthetic", "/api/vix/evaluate", "/api/vix/demo":
 		evaluate = s.Options
 	case "/api/paper/state", "/api/paper/preview", "/api/paper/confirm":
 		evaluate = s.Paper
+	case "/api/research/import", "/api/research/list", "/api/research/snapshot", "/api/research/result", "/api/research/compare", "/api/research/jobs", "/api/research/submit", "/api/research/cancel":
+		evaluate = s.Research
 	}
 	if evaluate == nil {
 		respond(conn, 404, "application/json", []byte(`{"error":"NOT_FOUND"}`))

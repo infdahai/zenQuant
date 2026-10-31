@@ -21,6 +21,7 @@ from typing import Any
 
 import duckdb
 
+from zenquant.data.cot_store import cot_data_available
 from zenquant.research.splits import DatasetSplitSpec, default_btc_split_spec
 
 TIMESTAMP_CANDIDATES = (
@@ -302,6 +303,7 @@ def _macro_source_specs(*, data_root: Path) -> list[DataSourceSpec]:
             formal_train_enabled=False,
             allowed_uses=("regime_prior", "positioning_state", "dashboard_context"),
             policy_blockers=("weekly_context_not_execution_truth",),
+            timestamp_candidates=("report_date_ns",),
         ),
         DataSourceSpec(
             source_id="binance_metrics_factors",
@@ -360,7 +362,38 @@ def build_data_coverage_audit(
 
 
 def audit_source(source: DataSourceSpec, *, split_spec: DatasetSplitSpec) -> dict[str, Any]:
-    parquet = [_scan_parquet_glob(path_glob, source.timestamp_candidates) for path_glob in source.parquet_globs]
+    parquet = []
+    for path_glob in source.parquet_globs:
+        matches = sorted(Path(path) for path in glob.glob(path_glob, recursive=True))
+        incompatible = False
+        if source.source_id == "cme_cot_btc" and matches:
+            incompatible = any(not cot_data_available(path) for path in matches)
+            if not incompatible:
+                import pyarrow.parquet as pq
+
+                schemas = [
+                    set(fragment.physical_schema.names)
+                    for path in matches
+                    for fragment in pq.ParquetDataset(path).fragments
+                ]
+                incompatible = any(schema != schemas[0] for schema in schemas)
+        if incompatible:
+            parquet.append(
+                ArtifactCoverage(
+                    kind="parquet",
+                    path_glob=path_glob,
+                    file_count=len(matches),
+                    row_count=None,
+                    start_at=None,
+                    end_at=None,
+                    latest_partition=None,
+                    latest_file_mtime=None,
+                    timestamp_column=None,
+                    error="cot_unavailable_or_incompatible",
+                )
+            )
+        else:
+            parquet.append(_scan_parquet_glob(path_glob, source.timestamp_candidates))
     csv = [_scan_csv_glob(path_glob) for path_glob in source.csv_globs]
     parquet_start_ns = _min_ns(
         [_iso_to_ns(item.start_at) for item in parquet if item.file_count > 0 and item.error is None]

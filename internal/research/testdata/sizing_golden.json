@@ -1,0 +1,546 @@
+{
+  "version": 1,
+  "cases": [
+    {
+      "name": "default_floor",
+      "state": {
+        "symbol": "SYNTHETIC",
+        "timeframe": "4h",
+        "cutoff_time_ns": 123,
+        "directional_confidence": 0.8,
+        "volatility_state": "NORMAL",
+        "volatility_confidence": 0.8,
+        "positioning_confidence": 0.8,
+        "quality_state": "TRADABLE",
+        "quality_confidence": 0.9
+      },
+      "playbook": {
+        "playbook_confidence": 0.82,
+        "max_leverage": 3.0
+      },
+      "indicators": {},
+      "config": {
+        "target_vol_5m": 0.45,
+        "target_vol_1h": 0.55,
+        "target_vol_4h": 0.6,
+        "target_vol_1d": 0.5,
+        "min_realized_vol_ratio": 0.25,
+        "crowding_reason_threshold": 1.8,
+        "positioning_discount_max": 0.65,
+        "positioning_discount_floor": 0.35,
+        "volatility_distorted_multiple": 2.8,
+        "volatility_high_multiple": 1.5,
+        "volatility_distorted_discount": 0.75,
+        "volatility_high_discount": 0.9
+      },
+      "expected": {
+        "symbol": "SYNTHETIC",
+        "timeframe": "4h",
+        "cutoff_time_ns": 123,
+        "base_size": 4.0,
+        "confidence_multiplier": 0.821953,
+        "stress_discount": 1.0,
+        "execution_haircut": 1.0,
+        "final_leverage": 3.0,
+        "reason_codes": [
+          "SIZE_BASE_VOL_TARGET",
+          "SIZE_CONFIDENCE_BLEND",
+          "SIZE_MAX_LEVERAGE_CAP"
+        ]
+      }
+    },
+    {
+      "name": "cap",
+      "state": {
+        "symbol": "SYNTHETIC",
+        "timeframe": "4h",
+        "cutoff_time_ns": 123,
+        "directional_confidence": 0.8,
+        "volatility_state": "NORMAL",
+        "volatility_confidence": 0.8,
+        "positioning_confidence": 0.8,
+        "quality_state": "TRADABLE",
+        "quality_confidence": 0.9
+      },
+      "playbook": {
+        "playbook_confidence": 0.82,
+        "max_leverage": 1.0
+      },
+      "indicators": {
+        "realized_vol": 0.05
+      },
+      "config": {
+        "target_vol_5m": 0.45,
+        "target_vol_1h": 0.55,
+        "target_vol_4h": 0.6,
+        "target_vol_1d": 0.5,
+        "min_realized_vol_ratio": 0.25,
+        "crowding_reason_threshold": 1.8,
+        "positioning_discount_max": 0.65,
+        "positioning_discount_floor": 0.35,
+        "volatility_distorted_multiple": 2.8,
+        "volatility_high_multiple": 1.5,
+        "volatility_distorted_discount": 0.75,
+        "volatility_high_discount": 0.9
+      },
+      "expected": {
+        "symbol": "SYNTHETIC",
+        "timeframe": "4h",
+        "cutoff_time_ns": 123,
+        "base_size": 4.0,
+        "confidence_multiplier": 0.821953,
+        "stress_discount": 1.0,
+        "execution_haircut": 1.0,
+        "final_leverage": 1.0,
+        "reason_codes": [
+          "SIZE_BASE_VOL_TARGET",
+          "SIZE_CONFIDENCE_BLEND",
+          "SIZE_MAX_LEVERAGE_CAP"
+        ]
+      }
+    },
+    {
+      "name": "noisy_crowded",
+      "state": {
+        "symbol": "SYNTHETIC",
+        "timeframe": "4h",
+        "cutoff_time_ns": 123,
+        "directional_confidence": 0.8,
+        "volatility_state": "NORMAL",
+        "volatility_confidence": 0.8,
+        "positioning_confidence": 0.8,
+        "quality_state": "NOISY",
+        "quality_confidence": 0.9
+      },
+      "playbook": {
+        "playbook_confidence": 0.82,
+        "max_leverage": 3.0
+      },
+      "indicators": {
+        "realized_vol": 0.4,
+        "funding_oi_z": -2.1
+      },
+      "config": {
+        "target_vol_5m": 0.45,
+        "target_vol_1h": 0.55,
+        "target_vol_4h": 0.6,
+        "target_vol_1d": 0.5,
+        "min_realized_vol_ratio": 0.25,
+        "crowding_reason_threshold": 1.8,
+        "positioning_discount_max": 0.65,
+        "positioning_discount_floor": 0.35,
+        "volatility_distorted_multiple": 2.8,
+        "volatility_high_multiple": 1.5,
+        "volatility_distorted_discount": 0.75,
+        "volatility_high_discount": 0.9
+      },
+      "expected": {
+        "symbol": "SYNTHETIC",
+        "timeframe": "4h",
+        "cutoff_time_ns": 123,
+        "base_size": 1.5,
+        "confidence_multiplier": 0.821953,
+        "stress_discount": 0.475,
+        "execution_haircut": 0.9,
+        "final_leverage": 0.5271,
+        "reason_codes": [
+          "SIZE_BASE_VOL_TARGET",
+          "SIZE_CONFIDENCE_BLEND",
+          "CROWDING_DISCOUNT",
+          "QUALITY_DEGRADED",
+          "SIZE_EXECUTION_HAIRCUT"
+        ]
+      }
+    },
+    {
+      "name": "degraded_high",
+      "state": {
+        "symbol": "SYNTHETIC",
+        "timeframe": "1h",
+        "cutoff_time_ns": 123,
+        "directional_confidence": 0.8,
+        "volatility_state": "HIGH",
+        "volatility_confidence": 0.8,
+        "positioning_confidence": 0.8,
+        "quality_state": "DEGRADED",
+        "quality_confidence": 0.9
+      },
+      "playbook": {
+        "playbook_confidence": 0.82,
+        "max_leverage": 3.0
+      },
+      "indicators": {
+        "realized_vol": 0.8,
+        "funding_oi_z": 1.8
+      },
+      "config": {
+        "target_vol_5m": 0.45,
+        "target_vol_1h": 0.55,
+        "target_vol_4h": 0.6,
+        "target_vol_1d": 0.5,
+        "min_realized_vol_ratio": 0.25,
+        "crowding_reason_threshold": 1.8,
+        "positioning_discount_max": 0.65,
+        "positioning_discount_floor": 0.35,
+        "volatility_distorted_multiple": 2.8,
+        "volatility_high_multiple": 1.5,
+        "volatility_distorted_discount": 0.75,
+        "volatility_high_discount": 0.9
+      },
+      "expected": {
+        "symbol": "SYNTHETIC",
+        "timeframe": "1h",
+        "cutoff_time_ns": 123,
+        "base_size": 0.6875,
+        "confidence_multiplier": 0.821953,
+        "stress_discount": 0.4455,
+        "execution_haircut": 0.7,
+        "final_leverage": 0.1762,
+        "reason_codes": [
+          "SIZE_BASE_VOL_TARGET",
+          "SIZE_CONFIDENCE_BLEND",
+          "QUALITY_DEGRADED",
+          "SIZE_EXECUTION_HAIRCUT"
+        ]
+      }
+    },
+    {
+      "name": "unsafe_distorted",
+      "state": {
+        "symbol": "SYNTHETIC",
+        "timeframe": "1d",
+        "cutoff_time_ns": 123,
+        "directional_confidence": 0.8,
+        "volatility_state": "DISTORTED",
+        "volatility_confidence": 0.8,
+        "positioning_confidence": 0.8,
+        "quality_state": "UNSAFE",
+        "quality_confidence": 0.9
+      },
+      "playbook": {
+        "playbook_confidence": 0.82,
+        "max_leverage": 3.0
+      },
+      "indicators": {
+        "realized_vol": 2.0
+      },
+      "config": {
+        "target_vol_5m": 0.45,
+        "target_vol_1h": 0.55,
+        "target_vol_4h": 0.6,
+        "target_vol_1d": 0.5,
+        "min_realized_vol_ratio": 0.25,
+        "crowding_reason_threshold": 1.8,
+        "positioning_discount_max": 0.65,
+        "positioning_discount_floor": 0.35,
+        "volatility_distorted_multiple": 2.8,
+        "volatility_high_multiple": 1.5,
+        "volatility_distorted_discount": 0.75,
+        "volatility_high_discount": 0.9
+      },
+      "expected": {
+        "symbol": "SYNTHETIC",
+        "timeframe": "1d",
+        "cutoff_time_ns": 123,
+        "base_size": 0.25,
+        "confidence_multiplier": 0.821953,
+        "stress_discount": 0.0,
+        "execution_haircut": 0.0,
+        "final_leverage": 0.0,
+        "reason_codes": [
+          "SIZE_BASE_VOL_TARGET",
+          "SIZE_CONFIDENCE_BLEND",
+          "SIZE_VOLATILITY_STRESS",
+          "QUALITY_DEGRADED",
+          "SIZE_EXECUTION_HAIRCUT"
+        ]
+      }
+    },
+    {
+      "name": "unknown_quality",
+      "state": {
+        "symbol": "SYNTHETIC",
+        "timeframe": "5m",
+        "cutoff_time_ns": 123,
+        "directional_confidence": 0.8,
+        "volatility_state": "NORMAL",
+        "volatility_confidence": 0.8,
+        "positioning_confidence": 0.8,
+        "quality_state": "OTHER",
+        "quality_confidence": 0.9
+      },
+      "playbook": {
+        "playbook_confidence": 0.82,
+        "max_leverage": 3.0
+      },
+      "indicators": {
+        "realized_vol": 0.9
+      },
+      "config": {
+        "target_vol_5m": 0.45,
+        "target_vol_1h": 0.55,
+        "target_vol_4h": 0.6,
+        "target_vol_1d": 0.5,
+        "min_realized_vol_ratio": 0.25,
+        "crowding_reason_threshold": 1.8,
+        "positioning_discount_max": 0.65,
+        "positioning_discount_floor": 0.35,
+        "volatility_distorted_multiple": 2.8,
+        "volatility_high_multiple": 1.5,
+        "volatility_distorted_discount": 0.75,
+        "volatility_high_discount": 0.9
+      },
+      "expected": {
+        "symbol": "SYNTHETIC",
+        "timeframe": "5m",
+        "cutoff_time_ns": 123,
+        "base_size": 0.5,
+        "confidence_multiplier": 0.821953,
+        "stress_discount": 0.81,
+        "execution_haircut": 0.7,
+        "final_leverage": 0.233,
+        "reason_codes": [
+          "SIZE_BASE_VOL_TARGET",
+          "SIZE_CONFIDENCE_BLEND",
+          "SIZE_EXECUTION_HAIRCUT"
+        ]
+      }
+    },
+    {
+      "name": "configured",
+      "state": {
+        "symbol": "SYNTHETIC",
+        "timeframe": "4h",
+        "cutoff_time_ns": 123,
+        "directional_confidence": 0.8,
+        "volatility_state": "NORMAL",
+        "volatility_confidence": 0.8,
+        "positioning_confidence": 0.8,
+        "quality_state": "TRADABLE",
+        "quality_confidence": 0.9
+      },
+      "playbook": {
+        "playbook_confidence": 0.82,
+        "max_leverage": 3.0
+      },
+      "indicators": {
+        "realized_vol": 0.8,
+        "funding_oi_z": 2.1
+      },
+      "config": {
+        "target_vol_5m": 0.45,
+        "target_vol_1h": 0.55,
+        "target_vol_4h": 0.6,
+        "target_vol_1d": 0.5,
+        "min_realized_vol_ratio": 0.25,
+        "crowding_reason_threshold": 3.0,
+        "positioning_discount_max": 0.65,
+        "positioning_discount_floor": 0.35,
+        "volatility_distorted_multiple": 2.8,
+        "volatility_high_multiple": 1.1,
+        "volatility_distorted_discount": 0.75,
+        "volatility_high_discount": 0.8
+      },
+      "expected": {
+        "symbol": "SYNTHETIC",
+        "timeframe": "4h",
+        "cutoff_time_ns": 123,
+        "base_size": 0.75,
+        "confidence_multiplier": 0.821953,
+        "stress_discount": 0.38,
+        "execution_haircut": 1.0,
+        "final_leverage": 0.2343,
+        "reason_codes": [
+          "SIZE_BASE_VOL_TARGET",
+          "SIZE_CONFIDENCE_BLEND"
+        ]
+      }
+    },
+    {
+      "name": "confidence_clamp",
+      "state": {
+        "symbol": "SYNTHETIC",
+        "timeframe": "4h",
+        "cutoff_time_ns": 123,
+        "directional_confidence": 1.0,
+        "volatility_state": "NORMAL",
+        "volatility_confidence": 1.0,
+        "positioning_confidence": 1.0,
+        "quality_state": "TRADABLE",
+        "quality_confidence": 1.0
+      },
+      "playbook": {
+        "playbook_confidence": 2.0,
+        "max_leverage": 3.0
+      },
+      "indicators": {
+        "realized_vol": 0.6
+      },
+      "config": {
+        "target_vol_5m": 0.45,
+        "target_vol_1h": 0.55,
+        "target_vol_4h": 0.6,
+        "target_vol_1d": 0.5,
+        "min_realized_vol_ratio": 0.25,
+        "crowding_reason_threshold": 1.8,
+        "positioning_discount_max": 0.65,
+        "positioning_discount_floor": 0.35,
+        "volatility_distorted_multiple": 2.8,
+        "volatility_high_multiple": 1.5,
+        "volatility_distorted_discount": 0.75,
+        "volatility_high_discount": 0.9
+      },
+      "expected": {
+        "symbol": "SYNTHETIC",
+        "timeframe": "4h",
+        "cutoff_time_ns": 123,
+        "base_size": 1.0,
+        "confidence_multiplier": 1.0,
+        "stress_discount": 1.0,
+        "execution_haircut": 1.0,
+        "final_leverage": 1.0,
+        "reason_codes": [
+          "SIZE_BASE_VOL_TARGET",
+          "SIZE_CONFIDENCE_BLEND"
+        ]
+      }
+    },
+    {
+      "name": "round_down",
+      "state": {
+        "symbol": "SYNTHETIC",
+        "timeframe": "4h",
+        "cutoff_time_ns": 123,
+        "directional_confidence": 1.0,
+        "volatility_state": "NORMAL",
+        "volatility_confidence": 1.0,
+        "positioning_confidence": 1.0,
+        "quality_state": "TRADABLE",
+        "quality_confidence": 1.0
+      },
+      "playbook": {
+        "playbook_confidence": 1.0,
+        "max_leverage": 0.12345
+      },
+      "indicators": {
+        "realized_vol": 0.6
+      },
+      "config": {
+        "target_vol_5m": 0.45,
+        "target_vol_1h": 0.55,
+        "target_vol_4h": 0.6,
+        "target_vol_1d": 0.5,
+        "min_realized_vol_ratio": 0.25,
+        "crowding_reason_threshold": 1.8,
+        "positioning_discount_max": 0.65,
+        "positioning_discount_floor": 0.35,
+        "volatility_distorted_multiple": 2.8,
+        "volatility_high_multiple": 1.5,
+        "volatility_distorted_discount": 0.75,
+        "volatility_high_discount": 0.9
+      },
+      "expected": {
+        "symbol": "SYNTHETIC",
+        "timeframe": "4h",
+        "cutoff_time_ns": 123,
+        "base_size": 1.0,
+        "confidence_multiplier": 1.0,
+        "stress_discount": 1.0,
+        "execution_haircut": 1.0,
+        "final_leverage": 0.1235,
+        "reason_codes": [
+          "SIZE_BASE_VOL_TARGET",
+          "SIZE_CONFIDENCE_BLEND",
+          "SIZE_MAX_LEVERAGE_CAP"
+        ]
+      }
+    },
+    {
+      "name": "round_up",
+      "state": {
+        "symbol": "SYNTHETIC",
+        "timeframe": "4h",
+        "cutoff_time_ns": 123,
+        "directional_confidence": 1.0,
+        "volatility_state": "NORMAL",
+        "volatility_confidence": 1.0,
+        "positioning_confidence": 1.0,
+        "quality_state": "TRADABLE",
+        "quality_confidence": 1.0
+      },
+      "playbook": {
+        "playbook_confidence": 1.0,
+        "max_leverage": 0.12355
+      },
+      "indicators": {
+        "realized_vol": 0.6
+      },
+      "config": {
+        "target_vol_5m": 0.45,
+        "target_vol_1h": 0.55,
+        "target_vol_4h": 0.6,
+        "target_vol_1d": 0.5,
+        "min_realized_vol_ratio": 0.25,
+        "crowding_reason_threshold": 1.8,
+        "positioning_discount_max": 0.65,
+        "positioning_discount_floor": 0.35,
+        "volatility_distorted_multiple": 2.8,
+        "volatility_high_multiple": 1.5,
+        "volatility_distorted_discount": 0.75,
+        "volatility_high_discount": 0.9
+      },
+      "expected": {
+        "symbol": "SYNTHETIC",
+        "timeframe": "4h",
+        "cutoff_time_ns": 123,
+        "base_size": 1.0,
+        "confidence_multiplier": 1.0,
+        "stress_discount": 1.0,
+        "execution_haircut": 1.0,
+        "final_leverage": 0.1235,
+        "reason_codes": [
+          "SIZE_BASE_VOL_TARGET",
+          "SIZE_CONFIDENCE_BLEND",
+          "SIZE_MAX_LEVERAGE_CAP"
+        ]
+      }
+    }
+  ],
+  "rounding": [
+    {
+      "value": 0.12345,
+      "digits": 4,
+      "expected": 0.1235
+    },
+    {
+      "value": 0.12355,
+      "digits": 4,
+      "expected": 0.1235
+    },
+    {
+      "value": 1.234565,
+      "digits": 6,
+      "expected": 1.234565
+    },
+    {
+      "value": 1.234575,
+      "digits": 6,
+      "expected": 1.234575
+    },
+    {
+      "value": 2.5,
+      "digits": 0,
+      "expected": 2.0
+    },
+    {
+      "value": 3.5,
+      "digits": 0,
+      "expected": 4.0
+    },
+    {
+      "value": -2.5,
+      "digits": 0,
+      "expected": -2.0
+    }
+  ]
+}

@@ -19,6 +19,38 @@ from pathlib import Path
 from zenquant.data._z_utils import robust_z as _robust_z
 
 
+def has_raw_cot_fragments(dataset: object) -> bool:
+    """Identify Go COT in any physical fragment, even in mixed-schema datasets."""
+    return "position_as_of_date_ns" in dataset.schema.names or any(
+        "position_as_of_date_ns" in fragment.physical_schema.names for fragment in dataset.fragments
+    )
+
+
+def cot_data_available(path: Path) -> bool:
+    """Check legacy compatibility and presence of usable positioning data."""
+    store = CotDataStore(CotStoreConfig(cot_path=path))
+    store.load()
+    if not store.loaded:
+        return False
+    import pyarrow.parquet as pq
+
+    dataset = pq.ParquetDataset(path)
+    fields = {"asset_mgr_net", "leveraged_net", "dealer_net", "total_oi"} & set(dataset.schema.names)
+    table = dataset.read(columns=sorted(fields))
+    return any(table.column(name).null_count < table.num_rows for name in fields)
+
+
+def macro_cot_available(path: Path) -> bool:
+    """Use the macro store's COT loader without loading other macro series."""
+    from zenquant.data.macro_store import MacroDataStore
+
+    if not path.exists():
+        return False
+    store = MacroDataStore()
+    store._load_cme_cot(path)
+    return store.loaded
+
+
 @dataclass(slots=True)
 class CotStoreConfig:
     """Configuration for COT data store."""
@@ -69,23 +101,44 @@ class CotDataStore:
     def load(self) -> None:
         """Load COT parquet file."""
         self._lookup_cache.clear()
+        self._timestamps.clear()
+        self._asset_mgr_net.clear()
+        self._leveraged_net.clear()
+        self._dealer_net.clear()
+        self._total_oi.clear()
         if not self._config.cot_path.exists():
             return
 
         import pyarrow.parquet as pq
 
         try:
-            table = pq.read_table(self._config.cot_path)
-            df = table.to_pandas()
+            dataset = pq.ParquetDataset(self._config.cot_path)
+            schemas = [set(fragment.physical_schema.names) for fragment in dataset.fragments]
+            if has_raw_cot_fragments(dataset) or any(
+                "report_date_ns" not in columns or columns != schemas[0] for columns in schemas
+            ):
+                return
+            df = dataset.read().to_pandas()
 
-            for _, row in df.sort_values("report_date_ns").iterrows():
-                self._timestamps.append(int(row["report_date_ns"]))
-                self._asset_mgr_net.append(int(row.get("asset_mgr_net", 0)))
-                self._leveraged_net.append(int(row.get("leveraged_net", 0)))
-                self._dealer_net.append(int(row.get("dealer_net", 0)))
-                self._total_oi.append(int(row.get("total_oi", 0)))
+            rows = [
+                (
+                    int(row["report_date_ns"]),
+                    int(row.get("asset_mgr_net", 0)),
+                    int(row.get("leveraged_net", 0)),
+                    int(row.get("dealer_net", 0)),
+                    int(row.get("total_oi", 0)),
+                )
+                for _, row in df.sort_values("report_date_ns").iterrows()
+            ]
         except Exception:
             return
+
+        for timestamp, asset_mgr, leveraged, dealer, total_oi in rows:
+            self._timestamps.append(timestamp)
+            self._asset_mgr_net.append(asset_mgr)
+            self._leveraged_net.append(leveraged)
+            self._dealer_net.append(dealer)
+            self._total_oi.append(total_oi)
 
     def lookup(self, cutoff_time_ns: int) -> CotSnapshot:
         """Return latest COT data before cutoff (point-in-time correct)."""

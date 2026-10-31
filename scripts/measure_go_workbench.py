@@ -17,7 +17,7 @@ from collections import Counter
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-FIXTURES = ROOT / "rust/options-workbench/fixtures"
+FIXTURES = ROOT / "testdata/legacy-options"
 
 
 def payload(value):
