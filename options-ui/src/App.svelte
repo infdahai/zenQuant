@@ -40,7 +40,7 @@
 <main>
   <div class="intro"><div><p class="eyebrow">CONDITIONAL PAYOFF / V1</p><h1>How does payoff change with price?</h1><p class="muted">Linear European option · single-leg BUY · expiry settlement scenarios</p></div><span class="badge">Research demo · no trading access</span></div>
   <div class="notice"><strong>Expiry scenario analysis</strong>　This is not a historical backtest, current mark-to-market, or profit probability. Gross payoff is the expiry payout; net P&L deducts only the entered quote cost and explicit fees, and does not predict slippage or fills.</div>
-  <nav aria-label="Page navigation"><a href="/paper">Manual Paper Workbench ↗</a><a href="#inputs">Adjust inputs ↓</a><a href="#curve">View curve ↓</a></nav>
+  <nav aria-label="Page navigation"><a href="/risk">Volatility observation ↗</a><a href="/paper">Manual Paper Workbench ↗</a><a href="#inputs">Adjust inputs ↓</a><a href="#curve">View curve ↓</a></nav>
   <div class="workspace">
     <section class="controls card" id="inputs">
       <h2>01 / Inputs and assumptions</h2>

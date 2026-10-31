@@ -231,6 +231,23 @@ func shape(x any, t reflect.Type) {
 		return
 	}
 	require(x != nil, "INVALID_INPUT")
+	if t == reflect.TypeOf(VixPrice{}) {
+		m, ok := x.(map[string]any)
+		require(ok, "INVALID_INPUT")
+		kind, ok := m["kind"].(string)
+		require(ok, "INVALID_INPUT")
+		switch kind {
+		case "MIDPOINT":
+			_, value := m["value"]
+			require(!value, "INVALID_INPUT")
+		case "INDEX", "SETTLEMENT":
+			_, bid := m["bid"]
+			_, ask := m["ask"]
+			require(!bid && !ask, "INVALID_INPUT")
+		default:
+			fail("INVALID_INPUT")
+		}
+	}
 	if t == reflect.TypeOf(Dec{}) {
 		_, ok := x.(string)
 		require(ok, "INVALID_INPUT")
@@ -289,6 +306,9 @@ func shape(x any, t reflect.Type) {
 		}
 	case reflect.String:
 		_, ok := x.(string)
+		require(ok, "INVALID_INPUT")
+	case reflect.Bool:
+		_, ok := x.(bool)
 		require(ok, "INVALID_INPUT")
 	default:
 		_, ok := x.(json.Number)
