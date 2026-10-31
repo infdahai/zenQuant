@@ -142,6 +142,74 @@ func TestExcursionsAfterReduction(t *testing.T) {
 	near(t, e.NetPnL, 7)
 }
 
+func TestRejectedEventDoesNotInitializeZeroLedger(t *testing.T) {
+	var l PositionEpisodeLedger
+	if err := l.OnFill(fill("BTC", 0, 1, 100, 0, 1)); err == nil {
+		t.Fatal("expected invalid side")
+	}
+	if l.positionEpisodeLedgerState != nil {
+		t.Fatal("rejected event initialized ledger")
+	}
+	if err := l.applyAtomic(func(staged *PositionEpisodeLedger) error {
+		return staged.ObservePrice(PriceObservation{"BTC", 1, 1, 2, 1})
+	}); err == nil {
+		t.Fatal("expected invalid price")
+	}
+	if l.positionEpisodeLedgerState != nil {
+		t.Fatal("rejected transaction initialized ledger")
+	}
+	copy := l
+	must(t, l.OnFill(fill("BTC", 1, 1, 100, 0, 1)))
+	must(t, copy.OnFill(fill("ETH", 1, 1, 100, 0, 1)))
+	if l.PositionQty("ETH") != 0 || copy.PositionQty("BTC") != 0 {
+		t.Fatal("copies of unused ledger must initialize independently")
+	}
+}
+
+func TestIgnoredFillsDoNotInitializeZeroLedger(t *testing.T) {
+	var l PositionEpisodeLedger
+	must(t, l.OnFill(fill("BTC", 0, 0, 100, 0, 10)))
+	must(t, l.OnFill(fill("BTC", 0, 1, 0, 0, 10)))
+	if err := l.OnFill(fill("BTC", 0, 0, 100, math.NaN(), 10)); err == nil {
+		t.Fatal("ignored fill with non-finite fee accepted")
+	}
+	if l.positionEpisodeLedgerState != nil {
+		t.Fatal("ignored or rejected fill initialized ledger")
+	}
+	copy := l
+	must(t, l.OnFill(fill("BTC", 1, 1, 100, 0, 1)))
+	must(t, copy.OnFill(fill("ETH", 1, 1, 100, 0, 1)))
+	if l.PositionQty("ETH") != 0 || copy.PositionQty("BTC") != 0 {
+		t.Fatal("copies of unused ledger share state")
+	}
+}
+
+func TestAtomicTransactionReusesClosedHistory(t *testing.T) {
+	l := NewPositionEpisodeLedger()
+	for i := int64(0); i < 500; i++ {
+		must(t, l.OnFill(fill("BTC", 1, 1, 100, 0, 2*i)))
+		must(t, l.OnFill(fill("BTC", -1, 1, 100, 0, 2*i+1)))
+	}
+	original := &l.closed[0]
+	must(t, l.applyAtomic(func(staged *PositionEpisodeLedger) error {
+		if &staged.closed[0] != original || cap(staged.closed) != len(staged.closed) {
+			t.Fatal("closed history was copied or left mutable")
+		}
+		return staged.ObservePrice(PriceObservation{"BTC", 1000, 100, 100, 100})
+	}))
+	if &l.closed[0] != original || len(l.closed) != 500 {
+		t.Fatal("read-only transaction copied closed history")
+	}
+	err := l.applyAtomic(func(staged *PositionEpisodeLedger) error {
+		must(t, staged.OnFill(fill("BTC", 1, 1, 100, 0, 1001)))
+		must(t, staged.OnFill(fill("BTC", -1, 1, 100, 0, 1002)))
+		return fmt.Errorf("abort")
+	})
+	if err == nil || len(l.closed) != 500 || &l.closed[0] != original || l.PositionQty("BTC") != 0 {
+		t.Fatal("aborted transaction changed history")
+	}
+}
+
 func TestLedgerCopiesShareCompleteState(t *testing.T) {
 	l := NewPositionEpisodeLedger()
 	copy := *l
@@ -175,6 +243,45 @@ func TestDurationOverflowRejectedWithoutMutation(t *testing.T) {
 	must(t, l.OnFill(fill("BTC", -1, 1, 100, 0, -1)))
 	if l.ClosedEpisodes()[0].HoldingDurationNS != math.MaxInt64 {
 		t.Fatal("boundary duration not preserved")
+	}
+}
+
+func TestDerivedOverflowIsTransactional(t *testing.T) {
+	cases := []struct {
+		name    string
+		start   ExecutionReport
+		prepare func(*PositionEpisodeLedger) error
+		reject  func(*PositionEpisodeLedger) error
+	}{
+		{"weighted entry", fill("BTC", 1, 1e200, 1e108, 0, 1), nil, func(l *PositionEpisodeLedger) error { return l.OnFill(fill("BTC", 1, 1e200, 1e108, 0, 3)) }},
+		{"exit notional", fill("BTC", 1, 1e200, 1e109, 0, 1), nil, func(l *PositionEpisodeLedger) error { return l.OnFill(fill("BTC", -1, 1e200, 1e109, 0, 3)) }},
+		{"excursion", fill("BTC", 1, 1e200, 1, 0, 1), nil, func(l *PositionEpisodeLedger) error { return l.ObservePrice(PriceObservation{"BTC", 3, 1e200, 1, 1}) }},
+		{"funding", fill("BTC", 1, 1, 1, 0, 1), func(l *PositionEpisodeLedger) error {
+			return l.AllocateFunding(FundingAllocation{"BTC", 1, math.MaxFloat64})
+		}, func(l *PositionEpisodeLedger) error {
+			return l.AllocateFunding(FundingAllocation{"BTC", 3, math.MaxFloat64})
+		}},
+		{"net pnl", fill("BTC", 1, 1, 1, math.MaxFloat64, 1), nil, func(l *PositionEpisodeLedger) error {
+			return l.AllocateFunding(FundingAllocation{"BTC", 3, -math.MaxFloat64})
+		}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			l := NewPositionEpisodeLedger()
+			must(t, l.OnFill(tc.start))
+			if tc.prepare != nil {
+				must(t, tc.prepare(l))
+			}
+			before := l.Episodes()
+			alias := *l
+			if err := tc.reject(l); err == nil || !strings.Contains(err.Error(), "non-finite") {
+				t.Fatalf("expected arithmetic error, got %v", err)
+			}
+			if !reflect.DeepEqual(before, l.Episodes()) || !reflect.DeepEqual(before, alias.Episodes()) {
+				t.Fatal("rejected event changed state")
+			}
+			must(t, l.ObservePrice(PriceObservation{"BTC", 2, tc.start.AvgPrice, tc.start.AvgPrice, tc.start.AvgPrice}))
+		})
 	}
 }
 
