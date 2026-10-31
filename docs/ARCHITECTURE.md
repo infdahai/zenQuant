@@ -2,12 +2,20 @@
 
 **Status:** canonical architecture review entrypoint
 
-**Default development framework:** native Go local workbench (2026-10-31).
-See [GO_MIGRATION.md](GO_MIGRATION.md) for the explicit migration matrix and
-[GO_OPERATIONS.md](GO_OPERATIONS.md) for build/run/check commands. The Go domain
-packages implement options diagnostics and manual record-only paper operations;
-Svelte remains the UI. Retained Python research and standalone Rust tools are
-non-default, and no strategy promotion is implied.
+**Product direction:** a Go-native trading research workbench, with deterministic,
+auditable research and clear separation of strategy, risk and execution authority.
+
+**Current default product (2026-10-31):** the Go local workbench implements
+options diagnostics and manual record-only paper operations with a Svelte UI.
+It does not yet implement the Python strategy/replay, data collection, automated
+risk/execution or paper-live runtime. Python research remains separate; Rust
+source and standalone tools are being removed. The Go backend owns domain and
+paper-state decisions, while Svelte collects user input and displays results.
+Go manual intent records are not reservations or execution authority. See
+[GO_MIGRATION.md](GO_MIGRATION.md) for unported standalone functions, historical
+cross-language evidence and its limits, and [GO_OPERATIONS.md](GO_OPERATIONS.md)
+for build/run/check commands. The broader workbench is a future direction, not a
+parity or promotion claim.
 
 **Research snapshot date:** 2026-08-22
 
@@ -15,11 +23,13 @@ non-default, and no strategy promotion is implied.
 
 **Promotion status:** research only; not eligible for paper-live
 
-This document separates three things that must not be confused:
-
-1. the architecture implemented in the repository today;
-2. the evidence produced by the latest bounded Gate v2 rescore;
-3. the proposed Quant System v2 architecture that has not yet been implemented.
+The sections below describe the retained Python research architecture, its
+historical Gate v2 evidence, and the proposed Quant System v2 authority boundary;
+they do not describe the default Go service. The V2 research experiment was
+subsequently implemented behind default-off research modes and evaluated; its
+frozen acceptance is blocked, as recorded in
+[QUANT_V2_ACCEPTANCE_HANDOFF.md](QUANT_V2_ACCEPTANCE_HANDOFF.md). That research
+implementation is not a production or Go migration.
 
 For product principles and non-negotiable invariants, read [`../AGENTS.md`](../AGENTS.md). For the current tester and operator contract, read [`LIVE_VALIDATION_HANDOFF_SPEC.md`](LIVE_VALIDATION_HANDOFF_SPEC.md). Neither document is replaced by this architecture review.
 

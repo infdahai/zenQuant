@@ -1,10 +1,30 @@
-# ZenQuant — Go mainline
+# ZenQuant — trading research workbench
 
-The default development product is the native Go local options and manual paper
-workbench, with the existing Svelte UI. It records manual declarations and
-unassessed intents; it does not place orders, generate fills, or authorize live
-trading. Python research and standalone Rust diagnostics remain available as
-explicit legacy tools, outside the default build and runtime.
+ZenQuant is moving toward a Go-native, auditable trading research workbench for
+BTC-first strategy research. Today the default Go product is a local options
+and manual paper workbench with a Svelte UI. It evaluates supplied or synthetic
+option scenarios and records manual declarations and unassessed intents; it
+does not place orders, generate fills, run an automated strategy, or authorize
+live trading.
+
+The broader research workbench is product direction, not a claim that the Python
+strategy, historical replay, data collection, risk, execution, or paper-live
+runtime has already been ported to Go. Those capabilities remain in the retained
+Python research system. Rust source and standalone CLIs are being removed;
+standalone quote-cost and terminal diagnostics, sealed-panel report publication,
+simulated-intent and cash-reservation workflows are not available as equivalent
+Go commands. Any future Go implementation
+must preserve point-in-time correctness, bar-close decisions, intent before
+orders, risk authority, realistic execution, and replay auditability.
+
+Research admission has not changed: parameters are learned on train, candidates
+are ranked on dev, and test is reserved for final historical acceptance. The
+frozen Quant V2 result blocks promotion and further parameter training: late-dev
+was negative at extra 15bp on all five seeds, with robustness 0/5. Historical
+acceptance, robustness checks, the final eligibility verdict and the operator
+handoff remain prerequisites for paper-live; live capital requires separate
+approval. See [the acceptance handoff](docs/QUANT_V2_ACCEPTANCE_HANDOFF.md) and
+[operator contract](docs/LIVE_VALIDATION_HANDOFF_SPEC.md).
 
 ## Default quick start
 
@@ -29,16 +49,23 @@ authority across linked worktrees; it never initializes a second USD100000 pool.
 See [migration scope and reference patterns](docs/GO_MIGRATION.md),
 [Go operations](docs/GO_OPERATIONS.md), and the
 [manual workflow contract](docs/MANUAL_PAPER_RUST_GUIDE.md).
-Existing schema names containing `rust.v1` identify wire/storage compatibility;
-they do not mean that the Go service invokes Rust.
+The Go backend owns domain validation and paper-state authority; Svelte collects
+input and presents results. Existing schema names containing `rust.v1` identify
+wire/storage compatibility; they do not mean that the Go service invokes Rust.
+Previously recorded cross-language tests remain historical evidence. Removing
+Rust source and helpers prevents fresh Go/Rust differential and concurrent-writer
+testing from this checkout; fixture coverage alone cannot establish full parity.
 
-## Legacy research documentation
+## Historical Python and Rust research reference
 
-The following historical documentation describes the retained Python/Rust
-systems, **not the default Go entrypoint**. Training, tuning and promotion remain
-blocked by the authoritative handoff gates. Historical commands below do not
-override that freeze. Standalone Rust quote/terminal diagnostics, simulated-intent
-and reservation CLIs are retained; they are not claimed as migrated Go commands.
+Everything below this heading describes the retained Python system, the removed Rust system, and
+historical plans or snapshots, **not current Go capabilities or a current
+operating runbook**. Example training, tuning and paper-live commands are kept
+for historical context and must not be interpreted as permission to run them;
+the current freeze and operator handoff govern. Test counts, roadmap dates and
+claims of implementation below are historical, not current verification.
+Standalone Rust quote/terminal diagnostics, simulated-intent and reservation
+CLIs described below are historical; they are not claimed as migrated Go commands.
 
 **Deterministic crypto trading infrastructure for building auditable, explainable strategies on major crypto perpetuals.**
 

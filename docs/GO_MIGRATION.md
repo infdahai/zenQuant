@@ -1,6 +1,41 @@
 # Go mainline migration
 
-Status: native Go default product implemented; migration scope is bounded by the matrix below. Verification and known limitations are recorded in [GO_VALIDATION.md](GO_VALIDATION.md).
+Status: the native Go local options and manual paper product is implemented; the broader Go-native trading research workbench is the direction of travel, not a completed migration. The matrix below defines the delivered migration scope. Verification and known limitations are recorded in [GO_VALIDATION.md](GO_VALIDATION.md).
+
+## Product direction and admission
+
+The intended workbench should make trading research reproducible and auditable,
+from point-in-time data and confirmed bar-close decisions through strategy
+intent, risk, realistic execution and replay. Today the Go service provides
+options diagnostics and record-only manual paper workflows. It does not provide
+the retained Python strategy/replay pipeline, data collectors, automated risk
+and execution runtime, or paper-live operation. The Rust source and standalone
+CLIs are being removed from this worktree. Their standalone quote-cost and
+terminal diagnostics, sealed-panel report publication, simulated-intent and
+cash-reservation workflows have no equivalent standalone Go command; Go's
+options UI and manual record-only paper flow cover a narrower scope. These
+capabilities require explicit implementation and validation before they can be
+claimed as Go-native; the migration matrix does not establish parity for them.
+
+The user-facing workflow is owned by the Go backend and Svelte UI: domain
+validation and paper-state authority belong in Go, while the UI collects input
+and presents results. Manual records do not become reservations, fills, or
+execution authorization. Historical Rust-generated fixtures and prior Linux
+cross-language results are evidence for the cases exercised at the time; after
+source and helper removal, fresh Go/Rust differential and concurrent-writer
+tests cannot be run from this checkout. Fixture checks alone do not prove full
+cross-language compatibility or safety of mixed writers.
+
+The language change does not change admission: use train for parameter learning,
+dev for candidate selection and robustness, and frozen test only for final
+historical acceptance. The Quant V2 frozen acceptance failed late-dev at extra
+15bp on all five seeds (strict robustness 0/5); promotion and new parameter
+training remain paused. Paper-live requires the existing validation gates, a
+positive eligibility verdict and the [operator handoff](LIVE_VALIDATION_HANDOFF_SPEC.md);
+real capital requires separate approval. See [architecture](ARCHITECTURE.md)
+and [Quant V2 acceptance](QUANT_V2_ACCEPTANCE_HANDOFF.md) for evidence and
+limits. Manual paper declarations and unassessed intents are not paper-live
+admission or execution authority.
 
 ## Design and acceptance
 
@@ -15,7 +50,7 @@ An alternative is a Go launcher calling the existing Python/Rust programs. Rejec
 | Paper snapshot persistence | `internal/paper` adapter | Canonical replay, compatible hashes, exclusive writes, atomic durable publication, corrupt/missing existing state fails closed |
 | Local HTTP and static UI | `internal/server` | Loopback only; bounded workers, bytes and deadlines; Host/Origin/header checks; no arbitrary file routes; original browser workflows |
 | Default run/build/check | `cmd/zenquant`, Makefile, npm and Go CI | Go build, vet and race tests; Svelte checks and browser tests; no Python/Rust subprocess implementation |
-| Existing standalone Rust diagnostic/reservation CLIs | Retained explicitly as legacy tools | Preserve source and contracts; describe any unported commands rather than claim whole-repository parity |
+| Standalone Rust diagnostics, intent and reservation CLIs | Removed with Rust source | Historical evidence remains; these commands and their unported functions are unavailable in the current checkout |
 | Python research and local-only changes | Reviewed consolidation/archive | Per-file disposition, source hashes, local-only history preserved, no training/tuning/promotion |
 
 The work uses the designated worktree. The primary checkout is a read-only source. Tests use temporary paper stores, never the user's allocation authority. No production changes, deployment, real orders or training are part of this migration.

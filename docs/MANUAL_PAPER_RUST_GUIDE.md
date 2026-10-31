@@ -1,9 +1,6 @@
 # 人工 paper 设置与意图记录
 
-默认入口已迁移至原生 Go，见 [Go 运维说明](GO_OPERATIONS.md)。下列 npm
-build/start 命令现在构建并运行 Go 服务；本文件的业务边界和版本化协议继续有效。
-Rust 实现保留为历史参考，文中的 crate/源码路径及 Rust 测试命令描述该参考实现。
-当前默认构建需要 Go 1.25+、Node；运行不调用 Rust 或 Python。
+**当前与历史范围：**默认入口是原生 Go 后端和 Svelte 界面，见 [Go 运维说明](GO_OPERATIONS.md)。下方“运行与使用”的 npm 命令及人工记录业务边界适用于当前 Go 工作流；Go 负责领域校验与 paper 状态，UI 负责收集输入和展示结果。Rust 源码及 CLI 正在从当前工作树移除，本文的 crate、Rust 命令、实现细节和测试结果均为历史记录，不能作为当前操作或测试指南。`rust.v1` 是兼容标识，不表示调用 Rust。原跨语言结果只证明当时覆盖的场景，当前仓库不能重跑 Rust 差分或跨语言并发写入测试；不得据此推断混合写入安全。当前默认构建需要 Go 1.25+、Node；运行不调用 Rust 或 Python。
 
 本切片支持用户确认的两条线：Deribit 期权与 Binance USD-M BTCUSDT 永续；总模拟资本声明 **USD100000（两条线合计）**。仅人工输入，不接自动策略、实盘或真实账户。期权首个表单范围是线性 USDC、BUY 单腿，用户填写实际合约、到期、Call/Put 和数量；不自动推荐。反向期权、卖方、多腿与结算均未实现。
 
@@ -29,7 +26,7 @@ npm run start:options
 
 ## 权威与兼容
 
-仍是两个 crate、四个逻辑边界。`paper.rs` 在交易组，处理纯配置/记录状态转移；`paper_store.rs` 在适配组，复用已有目录锁、严格读取、fsync/rename/目录fsync。`curve_http.rs` 仅增加三个同源 POST 路由；`Paper.svelte` 不含金额或保证金计算公式。
+当前 Go 的 `internal/paper` 处理配置、记录状态和持久化，`internal/server` 提供 HTTP 适配；`Paper.svelte` 不持有金额或保证金计算权威。历史 Rust 的两个 crate、`paper.rs`、`paper_store.rs` 和 `curve_http.rs` 仅供理解既往实现。
 
 - 新入口：`manual-paper-command.rust.v1`，动作 CONFIGURE / RECORD_INTENT / WITHDRAW_INTENT。
 - 永续独立：`manual-binance-usdm-perpetual.rust.v1`，仅 BTCUSDT，数量 BTC，限价 USDT/BTC；没有虚构行权价、到期或 View。
@@ -77,7 +74,9 @@ HTTP继续限制Host、同源Origin、自定义头、正文长度与超时，不
 
 未来若接流，mark事件`E`是事件时点、`T`是下次资金费时点；不能与私有流中表示撮合交易时点的`T`混用。保留本地可获得时点，资金费按结算事件幂等记账，不因下载历史数据就声称当时已知。新文档部分端点提及UM/CM迁移，产品身份必须显式核实，不能只凭主机名认定USD-M。
 
-## 测试
+## 历史 Rust 测试
+
+以下命令和结果记录当时的 Rust 实现，不适用于移除 Rust 源码后的当前工作树。当前 Go 检查见 [Go 运维说明](GO_OPERATIONS.md)。
 
 ```sh
 cd rust
