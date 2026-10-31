@@ -3,6 +3,7 @@ package paper
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -206,9 +207,10 @@ func TestCorruptionAndLinks(t *testing.T) {
 	if e == nil {
 		t.Fatal("expected failed initialization")
 	}
-	if _, _, e = s.read(); e == nil {
-		t.Fatal("reinitialized incomplete state")
+	if _, _, e = s.read(); e != nil {
+		t.Fatal("failed initialization must remain retryable", e)
 	}
+	call(t, s, "confirm", object{"preview": p, "acknowledged_record_only": true}, testNow, hooks{})
 }
 func TestConcurrentConfirmations(t *testing.T) {
 	s := setup(t)
@@ -384,16 +386,381 @@ func TestCrashWorker(t *testing.T) {
 	if e != nil {
 		t.Fatal(e)
 	}
-	_, e = NewStore(path).api("/api/paper/confirm", b, func() uint64 { return testNow }, hooks{observe: func(point string) {
+	result, e := NewStore(path).api("/api/paper/confirm", b, func() uint64 { return testNow }, hooks{observe: func(point string) {
 		if point == os.Getenv("ZQ_GO_PAPER_CRASH_PHASE") {
 			os.WriteFile(os.Getenv("ZQ_GO_PAPER_CRASH_MARKER"), []byte(point), 0600)
-			select {}
+			if release := os.Getenv("ZQ_GO_PAPER_RELEASE"); release != "" {
+				for {
+					if _, err := os.Stat(release); err == nil {
+						break
+					}
+					time.Sleep(5 * time.Millisecond)
+				}
+			} else {
+				select {}
+			}
 		}
 	}})
+	if output := os.Getenv("ZQ_GO_PAPER_RESULT"); output != "" {
+		if e != nil {
+			result = []byte(e.Error())
+		}
+		if err := os.WriteFile(output, result, 0600); err != nil {
+			t.Fatal(err)
+		}
+		return
+	}
 	if e != nil {
 		t.Fatal(e)
 	}
 }
+func TestCrossLanguageFirstConfirmation(t *testing.T) {
+	rust := os.Getenv("ZQ_RUST_PAPER_TEST_BINARY")
+	if rust == "" {
+		t.Skip("Linux cross-language helper not configured")
+	}
+	for _, phase := range []string{"before_publish", "published"} {
+		t.Run(phase, func(t *testing.T) {
+			s := NewStore(filepath.Join(tempRoot(t), "journal"))
+			p := call(t, s, "preview", fixture(t, "settings"), testNow, hooks{})["preview"]
+			c := object{"preview": p, "acknowledged_record_only": true}
+			root := filepath.Dir(s.path)
+			input, marker := filepath.Join(root, "input"), filepath.Join(root, "marker")
+			if err := os.WriteFile(input, canonical(c), 0600); err != nil {
+				t.Fatal(err)
+			}
+			cmd := exec.Command(rust, "--exact", "paper_store::tests::process_worker", "--nocapture")
+			output, release := filepath.Join(root, "rust-result"), filepath.Join(root, "release")
+			cmd.Env = append(os.Environ(), "ZQ_PAPER_CRASH_STORE="+s.path, "ZQ_PAPER_CRASH_INPUT="+input, "ZQ_PAPER_CRASH_MARKER="+marker, "ZQ_PAPER_CRASH_PHASE="+phase, "ZQ_PAPER_RESULT="+output, "ZQ_PAPER_RELEASE="+release)
+			if err := cmd.Start(); err != nil {
+				t.Fatal(err)
+			}
+			deadline := time.Now().Add(10 * time.Second)
+			for time.Now().Before(deadline) {
+				if _, err := os.Stat(marker); err == nil {
+					break
+				}
+				time.Sleep(10 * time.Millisecond)
+			}
+			if _, err := os.Stat(marker); err != nil {
+				cmd.Process.Kill()
+				cmd.Wait()
+				t.Fatal(err)
+			}
+			if phase == "before_publish" {
+				r := call(t, s, "confirm", c, testNow, hooks{})
+				if r["replayed"] != false {
+					t.Fatal(r)
+				}
+			} else {
+				_, err := s.api("/api/paper/confirm", canonical(c), func() uint64 { return testNow }, hooks{})
+				if err == nil {
+					t.Fatal("Rust lock did not exclude Go")
+				}
+			}
+			if err := os.WriteFile(release, nil, 0600); err != nil {
+				t.Fatal(err)
+			}
+			if err := cmd.Wait(); err != nil {
+				t.Fatal(err)
+			}
+			b, err := os.ReadFile(output)
+			if err != nil {
+				t.Fatal(err)
+			}
+			v, err := decode(b, maxStoreBytes)
+			if err != nil || obj(v)["replayed"] != (phase == "before_publish") {
+				t.Fatalf("Rust result: %s %v", b, err)
+			}
+			r := call(t, s, "confirm", c, testNow, hooks{})
+			if r["replayed"] != true {
+				t.Fatal(r)
+			}
+		})
+	}
+}
+
+func TestCrossLanguageGoLockExcludesRust(t *testing.T) {
+	rust := os.Getenv("ZQ_RUST_PAPER_TEST_BINARY")
+	if rust == "" {
+		t.Skip("Linux cross-language helper not configured")
+	}
+	root := tempRoot(t)
+	s := NewStore(filepath.Join(root, "journal"))
+	p := call(t, s, "preview", fixture(t, "settings"), testNow, hooks{})["preview"]
+	input, marker, release, output := filepath.Join(root, "input"), filepath.Join(root, "marker"), filepath.Join(root, "release"), filepath.Join(root, "output")
+	if err := os.WriteFile(input, canonical(object{"preview": p, "acknowledged_record_only": true}), 0600); err != nil {
+		t.Fatal(err)
+	}
+	exe, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command(exe, "-test.run=^TestCrashWorker$")
+	cmd.Env = append(os.Environ(), "ZQ_GO_PAPER_CRASH_STORE="+s.path, "ZQ_GO_PAPER_CRASH_INPUT="+input, "ZQ_GO_PAPER_CRASH_MARKER="+marker, "ZQ_GO_PAPER_CRASH_PHASE=published", "ZQ_GO_PAPER_RELEASE="+release, "ZQ_GO_PAPER_RESULT="+output)
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if cmd.ProcessState == nil {
+			cmd.Process.Kill()
+			cmd.Wait()
+		}
+	}()
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		if _, err := os.Stat(marker); err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("missing Go checkpoint")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	runRust := func() ([]byte, error) {
+		helper := exec.Command(rust, "--exact", "paper_store::tests::process_worker")
+		helper.Env = append(os.Environ(), "ZQ_PAPER_CRASH_STORE="+s.path, "ZQ_PAPER_CRASH_INPUT="+input, "ZQ_PAPER_RESULT="+filepath.Join(root, "rust-output"))
+		return helper.CombinedOutput()
+	}
+	if b, err := runRust(); err == nil || !bytes.Contains(b, []byte("Busy")) {
+		t.Fatalf("Rust must be excluded: %s %v", b, err)
+	}
+	if err := os.WriteFile(release, nil, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := cmd.Wait(); err != nil {
+		t.Fatal(err)
+	}
+	if b, err := runRust(); err != nil {
+		t.Fatalf("Rust replay: %s %v", b, err)
+	}
+	b, err := os.ReadFile(filepath.Join(root, "rust-output"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	v, err := decode(b, maxStoreBytes)
+	if err != nil || obj(v)["replayed"] != true {
+		t.Fatalf("Rust replay: %s %v", b, err)
+	}
+}
+
+func TestProcessConcurrentFirstConfirmations(t *testing.T) {
+	for _, distinct := range []bool{false, true} {
+		t.Run(fmt.Sprint(distinct), func(t *testing.T) {
+			root := tempRoot(t)
+			s := NewStore(filepath.Join(root, "journal"))
+			p := call(t, s, "preview", fixture(t, "settings"), testNow, hooks{})["preview"]
+			c := object{"preview": p, "acknowledged_record_only": true}
+			other := c
+			if distinct {
+				command := fixture(t, "settings")
+				command["request_id"] = "other"
+				other = object{"preview": call(t, s, "preview", command, testNow, hooks{})["preview"], "acknowledged_record_only": true}
+			}
+			exe, err := os.Executable()
+			if err != nil {
+				t.Fatal(err)
+			}
+			release := filepath.Join(root, "release")
+			var cmds []*exec.Cmd
+			for i, item := range []object{c, other} {
+				input := filepath.Join(root, fmt.Sprintf("input%d", i))
+				marker := filepath.Join(root, fmt.Sprintf("marker%d", i))
+				output := filepath.Join(root, fmt.Sprintf("output%d", i))
+				if err := os.WriteFile(input, canonical(item), 0600); err != nil {
+					t.Fatal(err)
+				}
+				cmd := exec.Command(exe, "-test.run=^TestCrashWorker$")
+				cmd.Env = append(os.Environ(), "ZQ_GO_PAPER_CRASH_STORE="+s.path, "ZQ_GO_PAPER_CRASH_INPUT="+input, "ZQ_GO_PAPER_CRASH_MARKER="+marker, "ZQ_GO_PAPER_CRASH_PHASE=before_publish", "ZQ_GO_PAPER_RELEASE="+release, "ZQ_GO_PAPER_RESULT="+output)
+				if err := cmd.Start(); err != nil {
+					t.Fatal(err)
+				}
+				cmds = append(cmds, cmd)
+			}
+			defer func() {
+				for _, cmd := range cmds {
+					if cmd.ProcessState == nil {
+						cmd.Process.Kill()
+						cmd.Wait()
+					}
+				}
+			}()
+			deadline := time.Now().Add(10 * time.Second)
+			for i := range cmds {
+				marker := filepath.Join(root, fmt.Sprintf("marker%d", i))
+				for {
+					if _, err := os.Stat(marker); err == nil {
+						break
+					}
+					if time.Now().After(deadline) {
+						t.Fatal("missing process checkpoint", i)
+					}
+					time.Sleep(5 * time.Millisecond)
+				}
+			}
+			if err := os.WriteFile(release, nil, 0600); err != nil {
+				t.Fatal(err)
+			}
+			for _, cmd := range cmds {
+				if err := cmd.Wait(); err != nil {
+					t.Fatal(err)
+				}
+			}
+			committed, replayed, stale := 0, 0, 0
+			for i := range cmds {
+				b, err := os.ReadFile(filepath.Join(root, fmt.Sprintf("output%d", i)))
+				if err != nil {
+					t.Fatal(err)
+				}
+				v, err := decode(b, maxStoreBytes)
+				if err != nil {
+					if strings.Contains(string(b), "StalePreview") {
+						stale++
+						continue
+					}
+					t.Fatalf("unexpected process error %s", b)
+				}
+				if obj(v)["replayed"] == true {
+					replayed++
+				} else {
+					committed++
+				}
+			}
+			if committed != 1 || (!distinct && (replayed != 1 || stale != 0)) || (distinct && (stale != 1 || replayed != 0)) {
+				t.Fatalf("commit=%d replay=%d stale=%d", committed, replayed, stale)
+			}
+			if num(obj(state(t, s)["view"]), "revision") != 1 {
+				t.Fatal("duplicate revision")
+			}
+		})
+	}
+}
+
+func TestUnsafeExistingPermissions(t *testing.T) {
+	for _, target := range []string{"parent", "journal", "snapshot"} {
+		t.Run(target, func(t *testing.T) {
+			s := setup(t)
+			path := filepath.Dir(s.path)
+			if target == "journal" {
+				path = s.path
+			}
+			if target == "snapshot" {
+				path = filepath.Join(s.path, "snapshot.json")
+			}
+			if err := os.Chmod(path, 0777); err != nil {
+				t.Fatal(err)
+			}
+			defer os.Chmod(path, 0700)
+			if _, _, err := s.read(); err == nil {
+				t.Fatal("accepted unsafe permissions")
+			}
+		})
+	}
+}
+
+func TestConcurrentFirstConfirmations(t *testing.T) {
+	for _, distinct := range []bool{false, true} {
+		t.Run(fmt.Sprint(distinct), func(t *testing.T) {
+			s := NewStore(filepath.Join(tempRoot(t), "journal"))
+			p := call(t, s, "preview", fixture(t, "settings"), testNow, hooks{})["preview"]
+			c := object{"preview": p, "acknowledged_record_only": true}
+			other := c
+			if distinct {
+				command := fixture(t, "settings")
+				command["request_id"] = "other"
+				other = object{"preview": call(t, s, "preview", command, testNow, hooks{})["preview"], "acknowledged_record_only": true}
+			}
+			ready := make(chan struct{}, 2)
+			release := make(chan struct{})
+			result := make(chan error, 2)
+			for _, item := range []object{c, other} {
+				go func(item object) {
+					_, err := s.api("/api/paper/confirm", canonical(item), func() uint64 { return testNow }, hooks{observe: func(phase string) {
+						if phase == "before_publish" {
+							ready <- struct{}{}
+							<-release
+						}
+					}})
+					result <- err
+				}(item)
+			}
+			<-ready
+			<-ready
+			close(release)
+			a, b := <-result, <-result
+			if distinct {
+				if (a == nil) == (b == nil) {
+					t.Fatalf("expected one stale confirmation: %v %v", a, b)
+				}
+			} else if a != nil || b != nil {
+				t.Fatalf("expected commit and replay: %v %v", a, b)
+			}
+			if num(obj(state(t, s)["view"]), "revision") != 1 {
+				t.Fatal("duplicate entry")
+			}
+		})
+	}
+}
+
+func TestFirstInitializationBoundaries(t *testing.T) {
+	for _, phase := range []string{"before_create", "temp_created", "before_file_sync", "file_synced", "renamed", "directory_synced", "before_publish", "published", "parent_synced"} {
+		t.Run(phase, func(t *testing.T) {
+			s := NewStore(filepath.Join(tempRoot(t), "journal"))
+			p := call(t, s, "preview", fixture(t, "settings"), testNow, hooks{})["preview"]
+			c := object{"preview": p, "acknowledged_record_only": true}
+			_, err := s.api("/api/paper/confirm", canonical(c), func() uint64 { return testNow }, hooks{failAt: phase})
+			if err == nil {
+				t.Fatal("expected injected failure")
+			}
+			committed := phase == "published" || phase == "parent_synced"
+			r := call(t, s, "confirm", c, testNow, hooks{})
+			if r["replayed"] != committed || num(obj(r["view"]), "revision") != 1 {
+				t.Fatal(r)
+			}
+		})
+	}
+}
+
+func TestFirstInitializationProcessCrash(t *testing.T) {
+	for _, phase := range []string{"temp_created", "file_synced", "renamed", "directory_synced", "before_publish", "published", "parent_synced"} {
+		t.Run(phase, func(t *testing.T) {
+			s := NewStore(filepath.Join(tempRoot(t), "journal"))
+			p := call(t, s, "preview", fixture(t, "settings"), testNow, hooks{})["preview"]
+			c := object{"preview": p, "acknowledged_record_only": true}
+			root := filepath.Dir(s.path)
+			input, marker := filepath.Join(root, "input"), filepath.Join(root, "marker")
+			if err := os.WriteFile(input, canonical(c), 0600); err != nil {
+				t.Fatal(err)
+			}
+			exe, err := os.Executable()
+			if err != nil {
+				t.Fatal(err)
+			}
+			cmd := exec.Command(exe, "-test.run=^TestCrashWorker$")
+			cmd.Env = append(os.Environ(), "ZQ_GO_PAPER_CRASH_STORE="+s.path, "ZQ_GO_PAPER_CRASH_INPUT="+input, "ZQ_GO_PAPER_CRASH_MARKER="+marker, "ZQ_GO_PAPER_CRASH_PHASE="+phase)
+			if err = cmd.Start(); err != nil {
+				t.Fatal(err)
+			}
+			deadline := time.Now().Add(10 * time.Second)
+			for time.Now().Before(deadline) {
+				if _, err = os.Stat(marker); err == nil {
+					break
+				}
+				time.Sleep(10 * time.Millisecond)
+			}
+			cmd.Process.Kill()
+			cmd.Wait()
+			if _, err = os.Stat(marker); err != nil {
+				t.Fatal("missing checkpoint", err)
+			}
+			r := call(t, s, "confirm", c, testNow, hooks{})
+			if r["replayed"] != (phase == "published" || phase == "parent_synced") {
+				t.Fatal(r)
+			}
+		})
+	}
+}
+
 func TestProcessCrashRecovery(t *testing.T) {
 	for _, phase := range []string{"temp_created", "file_synced", "renamed", "directory_synced"} {
 		t.Run(phase, func(t *testing.T) {

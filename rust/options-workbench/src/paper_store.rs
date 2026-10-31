@@ -44,9 +44,18 @@ fn err(e: impl std::fmt::Debug) -> String {
     format!("{e:?}")
 }
 fn load(dir: &disk::DirectoryLock) -> Result<(Journal, bool)> {
+    use std::os::unix::fs::MetadataExt;
+    let meta = dir.metadata().map_err(err)?;
+    if meta.uid() != unsafe { libc::geteuid() } || meta.mode() & 0o022 != 0 {
+        return Err("InvalidStore".into());
+    }
     let mut file = disk::open_file(dir, "snapshot.json")
         .map_err(err)?
         .ok_or("CORRUPT_OR_MISSING_PAPER_JOURNAL")?;
+    let snapshot_meta = file.metadata().map_err(err)?;
+    if snapshot_meta.uid() != unsafe { libc::geteuid() } || snapshot_meta.mode() & 0o022 != 0 {
+        return Err("InvalidStore".into());
+    }
     let mut bytes = Vec::new();
     (&mut file)
         .take(disk::MAX_STORE_BYTES as u64 + 1)
@@ -61,10 +70,14 @@ fn load(dir: &disk::DirectoryLock) -> Result<(Journal, bool)> {
     e.journal.validate().map_err(err)?;
     file.sync_all()
         .map_err(|_| "PAPER_DURABILITY_UNCONFIRMED")?;
-    Ok((
-        e.journal,
-        disk::open_file(dir, "pending.json").map_err(err)?.is_some(),
-    ))
+    let pending = disk::open_file(dir, "pending.json").map_err(err)?;
+    if let Some(ref file) = pending {
+        let meta = file.metadata().map_err(err)?;
+        if meta.uid() != unsafe { libc::geteuid() } || meta.mode() & 0o022 != 0 {
+            return Err("InvalidStore".into());
+        }
+    }
+    Ok((e.journal, pending.is_some()))
 }
 fn persist(path: &Path, dir: &disk::DirectoryLock, j: &Journal, hooks: Hooks) -> Result<()> {
     let e = Envelope {
@@ -89,6 +102,7 @@ impl Store {
     }
     fn read(&self) -> Result<(Journal, bool)> {
         let path = disk::safe_path(&self.path).map_err(err)?;
+        disk::trusted_parent(path.parent().ok_or("InvalidStore")?).map_err(err)?;
         match std::fs::symlink_metadata(&path) {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok((Journal::default(), false)),
             Err(e) => Err(err(e)),
@@ -107,11 +121,40 @@ impl Store {
         hooks: Hooks,
     ) -> Result<(Journal, bool, bool)> {
         let path = disk::safe_path(&self.path).map_err(err)?;
+        disk::trusted_parent(path.parent().ok_or("InvalidStore")?).map_err(err)?;
         let (dir, journal, pending) = match std::fs::symlink_metadata(&path) {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
                 // Validate before creating anything; preview and rejected confirmation do not initialize.
                 Journal::default().confirm(c, clock()?).map_err(err)?;
-                (disk::create(&path).map_err(err)?, Journal::default(), false)
+                let mut first = None;
+                let published = disk::publish_initial(&path, hooks, |stage, dir| {
+                    let (next, _) = Journal::default()
+                        .confirm(c, clock().map_err(|_| disk::StoreError::WriteFailed)?)
+                        .map_err(|_| disk::StoreError::InvalidInput)?;
+                    persist(stage, dir, &next, hooks).map_err(|_| disk::StoreError::WriteFailed)?;
+                    first = Some(next);
+                    Ok(())
+                })
+                .map_err(err)?;
+                if published {
+                    return Ok((first.expect("published journal"), false, false));
+                }
+                let mut held = None;
+                for _ in 0..100 {
+                    match disk::lock(&path, false) {
+                        Ok(dir) => {
+                            held = Some(dir);
+                            break;
+                        }
+                        Err(disk::StoreError::Busy) => {
+                            std::thread::sleep(std::time::Duration::from_millis(10))
+                        }
+                        Err(e) => return Err(err(e)),
+                    }
+                }
+                let dir = held.ok_or("Busy")?;
+                let (j, p) = load(&dir)?;
+                (dir, j, p)
             }
             Err(e) => return Err(err(e)),
             Ok(_) => {

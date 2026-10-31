@@ -83,6 +83,18 @@ func lock(path string) (*locked, error) {
 		r.Close()
 		return nil, e
 	}
+	info, e := d.Stat()
+	if e != nil {
+		d.Close()
+		r.Close()
+		return nil, e
+	}
+	st, ok := info.Sys().(*syscall.Stat_t)
+	if !ok || st.Uid != uint32(os.Geteuid()) || info.Mode().Perm()&0022 != 0 {
+		d.Close()
+		r.Close()
+		return nil, failure("InvalidStore")
+	}
 	l := &locked{r, d, path}
 	if e = syscall.Flock(int(d.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); e != nil {
 		d.Close()
@@ -106,7 +118,7 @@ func (l *locked) open(name string) (*os.File, error) {
 		return nil, e
 	}
 	st, ok := i.Sys().(*syscall.Stat_t)
-	if !i.Mode().IsRegular() || !ok || st.Nlink != 1 {
+	if !i.Mode().IsRegular() || !ok || st.Nlink != 1 || st.Uid != uint32(os.Geteuid()) || i.Mode().Perm()&0022 != 0 {
 		f.Close()
 		return nil, failure("CorruptStore")
 	}
@@ -117,6 +129,14 @@ func (l *locked) sync() error {
 		return e
 	}
 	if e := l.dir.Sync(); e != nil {
+		return failure("DurabilityUnconfirmed")
+	}
+	parent, e := os.Open(filepath.Dir(l.path))
+	if e != nil {
+		return failure("DurabilityUnconfirmed")
+	}
+	defer parent.Close()
+	if e = parent.Sync(); e != nil {
 		return failure("DurabilityUnconfirmed")
 	}
 	return l.same()
@@ -227,9 +247,133 @@ func persist(l *locked, j object, h hooks) error {
 	}
 	return nil
 }
+
+// First publication requires an owner-controlled parent. Same-UID processes are
+// trusted: they can already modify the journal and its directory directly.
+func trustedParent(path string) error {
+	for cur := path; ; cur = filepath.Dir(cur) {
+		i, e := os.Lstat(cur)
+		if e != nil {
+			return e
+		}
+		st, ok := i.Sys().(*syscall.Stat_t)
+		if !ok || !i.IsDir() || (st.Uid != uint32(os.Geteuid()) && st.Uid != 0) || (i.Mode().Perm()&0022 != 0 && (i.Mode()&os.ModeSticky == 0 || st.Uid != 0)) {
+			return failure("InvalidStore")
+		}
+		if cur == path && (st.Uid != uint32(os.Geteuid()) || i.Mode().Perm()&0022 != 0) {
+			return failure("InvalidStore")
+		}
+		if filepath.Dir(cur) == cur {
+			return nil
+		}
+	}
+}
+
+func initialize(p string, c object, clock func() uint64, h hooks) (object, bool, bool, error) {
+	if _, _, e := confirm(emptyJournal(), c, clock()); e != nil {
+		return nil, false, false, e
+	}
+	parentPath := filepath.Dir(p)
+	if e := trustedParent(parentPath); e != nil {
+		return nil, false, false, e
+	}
+	parent, e := os.Open(parentPath)
+	if e != nil {
+		return nil, false, false, e
+	}
+	defer parent.Close()
+	stageParent, e := os.MkdirTemp(parentPath, ".paper-init-")
+	if e != nil {
+		return nil, false, false, e
+	}
+	defer os.RemoveAll(stageParent)
+	stage := filepath.Join(stageParent, "journal")
+	if e = os.Mkdir(stage, 0700); e != nil {
+		return nil, false, false, e
+	}
+	stageFD, e := os.Open(stageParent)
+	if e != nil {
+		return nil, false, false, e
+	}
+	defer stageFD.Close()
+	l, e := lock(stage)
+	if e != nil {
+		return nil, false, false, e
+	}
+	defer l.close()
+	next, _, e := confirm(emptyJournal(), c, clock())
+	if e != nil {
+		return nil, false, false, e
+	}
+	if e = persist(l, next, h); e != nil {
+		return nil, false, false, e
+	}
+	if e = h.checkpoint("before_publish"); e != nil {
+		return nil, false, false, e
+	}
+	if e = trustedParent(parentPath); e != nil {
+		return nil, false, false, e
+	}
+	parentInfo, e := parent.Stat()
+	if e != nil {
+		return nil, false, false, e
+	}
+	currentInfo, e := os.Stat(parentPath)
+	if e != nil || !os.SameFile(parentInfo, currentInfo) {
+		return nil, false, false, failure("InvalidStore")
+	}
+	if e = l.same(); e != nil {
+		return nil, false, false, e
+	}
+	if e = renameExclusive(int(stageFD.Fd()), "journal", int(parent.Fd()), filepath.Base(p)); e != nil {
+		if os.IsExist(e) {
+			// The winner keeps the directory lock until its parent fsync finishes.
+			for i := 0; i < 100; i++ {
+				l, err := lock(p)
+				if err == nil {
+					defer l.close()
+					j, pending, err := load(l)
+					if err != nil {
+						return nil, false, false, err
+					}
+					next, replay, err := confirm(j, c, clock())
+					if err != nil {
+						return nil, false, false, err
+					}
+					if replay {
+						err = l.sync()
+					} else {
+						err = persist(l, next, h)
+					}
+					return next, replay, pending && replay, err
+				}
+				if err.Error() != "Busy" {
+					return nil, false, false, err
+				}
+				time.Sleep(10 * time.Millisecond)
+			}
+			return nil, false, false, failure("Busy")
+		}
+		return nil, false, false, e
+	}
+	l.path = p
+	if e = h.checkpoint("published"); e != nil {
+		return nil, false, false, failure("DurabilityUnconfirmed")
+	}
+	if e = l.sync(); e != nil {
+		return nil, false, false, e
+	}
+	if e = h.checkpoint("parent_synced"); e != nil {
+		return nil, false, false, failure("DurabilityUnconfirmed")
+	}
+	return next, false, false, nil
+}
 func (s *Store) read() (object, bool, error) {
 	p, e := safePath(s.path)
 	if e != nil {
+		return nil, false, e
+	}
+	if e = trustedParent(filepath.Dir(p)); e != nil {
 		return nil, false, e
 	}
 	if _, e = os.Lstat(p); os.IsNotExist(e) {
@@ -254,44 +398,14 @@ func (s *Store) commit(c object, clock func() uint64, h hooks) (object, bool, bo
 	if e != nil {
 		return nil, false, false, e
 	}
+	if e = trustedParent(filepath.Dir(p)); e != nil {
+		return nil, false, false, e
+	}
 	j := emptyJournal()
 	pending := false
 	var l *locked
 	if _, e = os.Lstat(p); os.IsNotExist(e) {
-		if _, _, e = confirm(j, c, clock()); e != nil {
-			return nil, false, false, e
-		}
-		parent, e := os.OpenRoot(filepath.Dir(p))
-		if e != nil {
-			return nil, false, false, e
-		}
-		defer parent.Close()
-		if e = parent.Mkdir(filepath.Base(p), 0700); e != nil {
-			return nil, false, false, e
-		}
-		f, e := parent.Open(".")
-		if e != nil {
-			return nil, false, false, e
-		}
-		e = f.Sync()
-		f.Close()
-		if e != nil {
-			return nil, false, false, failure("DurabilityUnconfirmed")
-		}
-		l, e = lock(p)
-		if e != nil {
-			return nil, false, false, e
-		}
-		for _, name := range []string{"snapshot.json", "pending.json"} {
-			f, e := l.open(name)
-			if f != nil {
-				f.Close()
-			}
-			if !os.IsNotExist(e) {
-				l.close()
-				return nil, false, false, failure("InvalidStore")
-			}
-		}
+		return initialize(p, c, clock, h)
 	} else {
 		if e != nil {
 			return nil, false, false, e

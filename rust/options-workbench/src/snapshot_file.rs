@@ -130,6 +130,14 @@ pub(crate) fn confirm(path: &Path, dir: &File) -> Result<()> {
     publication::same_parent(path, dir).map_err(|_| StoreError::DurabilityUnconfirmed)?;
     dir.sync_all()
         .map_err(|_| StoreError::DurabilityUnconfirmed)?;
+    let parent_path = path.parent().ok_or(StoreError::DurabilityUnconfirmed)?;
+    let parent =
+        publication::open_dir(parent_path, false).map_err(|_| StoreError::DurabilityUnconfirmed)?;
+    parent
+        .sync_all()
+        .map_err(|_| StoreError::DurabilityUnconfirmed)?;
+    publication::same_parent(parent_path, &parent)
+        .map_err(|_| StoreError::DurabilityUnconfirmed)?;
     publication::same_parent(path, dir).map_err(|_| StoreError::DurabilityUnconfirmed)
 }
 
@@ -194,6 +202,97 @@ pub(crate) fn replace(path: &Path, dir: &File, bytes: &[u8], h: Hooks) -> Result
     confirm(path, dir)?;
     checkpoint(h, "directory_synced").map_err(|_| StoreError::DurabilityUnconfirmed)?;
     Ok(())
+}
+
+// Other users cannot replace the staging parent; malicious same-UID processes
+// are outside this contract because they can already alter the journal itself.
+pub(crate) fn trusted_parent(path: &Path) -> Result<()> {
+    let uid = unsafe { libc::geteuid() };
+    for (i, p) in path.ancestors().enumerate() {
+        let m = std::fs::symlink_metadata(p).map_err(|_| StoreError::InvalidStore)?;
+        if !m.is_dir()
+            || (m.uid() != uid && m.uid() != 0)
+            || (m.mode() & 0o022 != 0 && !(m.uid() == 0 && m.mode() & 0o1000 != 0))
+            || (i == 0 && (m.uid() != uid || m.mode() & 0o022 != 0))
+        {
+            return Err(StoreError::InvalidStore);
+        }
+    }
+    Ok(())
+}
+
+pub(crate) fn publish_initial<F>(path: &Path, hooks: Hooks, write: F) -> Result<bool>
+where
+    F: FnOnce(&Path, &DirectoryLock) -> Result<()>,
+{
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    let parent_path = path.parent().ok_or(StoreError::InvalidStore)?;
+    trusted_parent(parent_path)?;
+    let parent = publication::open_dir(parent_path, false).map_err(|_| StoreError::InvalidStore)?;
+    use std::os::unix::fs::DirBuilderExt;
+    let stage_path = loop {
+        let candidate = parent_path.join(format!(
+            ".paper-init-{}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
+        ));
+        match std::fs::DirBuilder::new().mode(0o700).create(&candidate) {
+            Ok(()) => break candidate,
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(_) => return Err(StoreError::WriteFailed),
+        }
+    };
+    struct Cleanup(PathBuf);
+    impl Drop for Cleanup {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+    let _cleanup = Cleanup(stage_path.clone());
+    // create_dir uses the process umask; remove all group/other permissions.
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(&stage_path, std::fs::Permissions::from_mode(0o700))
+        .map_err(|_| StoreError::WriteFailed)?;
+    let stage_parent =
+        publication::open_dir(&stage_path, false).map_err(|_| StoreError::InvalidStore)?;
+    let stage = stage_path.join("journal");
+    std::fs::DirBuilder::new()
+        .mode(0o700)
+        .create(&stage)
+        .map_err(|_| StoreError::WriteFailed)?;
+    let dir = lock(&stage, false)?;
+    write(&stage, &dir)?;
+    checkpoint(hooks, "before_publish")?;
+    trusted_parent(parent_path)?;
+    publication::same_parent(parent_path, &parent).map_err(|_| StoreError::InvalidStore)?;
+    publication::same_parent(&stage_path, &stage_parent).map_err(|_| StoreError::InvalidStore)?;
+    publication::same_parent(&stage, &dir).map_err(|_| StoreError::InvalidStore)?;
+    #[cfg(target_os = "linux")]
+    let dest = CString::new(path.file_name().ok_or(StoreError::InvalidStore)?.as_bytes())
+        .map_err(|_| StoreError::InvalidStore)?;
+    #[cfg(target_os = "linux")]
+    let rc = unsafe {
+        libc::renameat2(
+            stage_parent.as_raw_fd(),
+            name("journal").as_ptr(),
+            parent.as_raw_fd(),
+            dest.as_ptr(),
+            libc::RENAME_NOREPLACE,
+        )
+    };
+    #[cfg(not(target_os = "linux"))]
+    let rc = -1;
+    if rc != 0 {
+        if std::io::Error::last_os_error().kind() == std::io::ErrorKind::AlreadyExists {
+            return Ok(false);
+        }
+        return Err(StoreError::WriteFailed);
+    }
+    checkpoint(hooks, "published").map_err(|_| StoreError::DurabilityUnconfirmed)?;
+    confirm(path, &dir)?;
+    checkpoint(hooks, "parent_synced").map_err(|_| StoreError::DurabilityUnconfirmed)?;
+    Ok(true)
 }
 
 pub(crate) fn create(path: &Path) -> Result<DirectoryLock> {

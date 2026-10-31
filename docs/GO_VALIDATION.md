@@ -41,6 +41,16 @@ Commit `6893e523a414bfae55851d72edf5a8a07c3940f0` pins both browser-consuming Li
 
 This establishes Linux runtime evidence as well as local macOS evidence. The local legacy Rust macOS `UnsupportedPlatform` result above remains a platform limitation, not a failing Linux CI gate. Workflow YAML parsing and `git diff --check` also passed. This follow-up changes only browser runner selection and verification documentation; no dependency upgrade, production action or main-checkout write occurred.
 
+## Paper initialization review follow-up
+
+The initial mkdir-before-snapshot defect is addressed in both Go and Rust: prepare a complete journal in a private staging directory, retain the directory flock, publish with descriptor-relative no-replace rename, then confirm parent durability. Competing initializers reopen and validate the winner rather than treating EEXIST as fatal. Existing missing or corrupt snapshots still fail closed; no user journal is migrated or reset.
+
+New coverage includes first-write injected failure checkpoints, initial-creation process termination, concurrent first confirmations, and Linux Go/Rust process exclusion and replay. Linux CI builds the pinned Rust test helper and runs these cross-language tests explicitly. Independent review identified published-directory permissions and existing-store trust checks; both were corrected with mode/ownership rejection tests. Mixed use requires updated binaries on both sides; older binaries cannot gain the new recovery guarantees retroactively. See the manual guide for the Unix owner/mode trust boundary and limits.
+
+Final local follow-up checks passed: `make check` (Go format/vet/race and frontend checks), `make browser` (3 options tests and 1 full paper workflow), `GOOS=linux go vet ./...`, Rust format/clippy, benchmark-script Ruff checks and `git diff --check`. Process tests cover same-request replay and different-request stale rejection. Linux cross-language runtime results are recorded separately after remote execution; macOS compilation alone does not establish them.
+
+The local lightweight performance measurement uses only an engineering journal; methodology, raw results and failure counts are in [GO_PERFORMANCE.md](GO_PERFORMANCE.md). It is not production capacity evidence.
+
 ## Scope and limits
 
 - The default Go product implements the current options UI and manual record-only paper behavior. Standalone Rust quote/terminal CLI publication, simulated-intent and reservation CLIs remain explicit legacy tools. Python strategy/research/collectors are retained outside the default service. This is not a claim that every historical command was ported.
