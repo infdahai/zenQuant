@@ -33,6 +33,20 @@ func TestRiskTargetPythonGolden(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
+			// Version 1 records Python's historical nearest rounding. These
+			// cases intentionally differ under the strict version 2 contract.
+			divergences := map[string][2]float64{
+				"round_above_limit":  {1.234567, 1},
+				"round_binary_tie":   {0.123456, 1.2344},
+				"round_reduce_only":  {0, 0.9999},
+				"round_leverage_cap": {0.1, 0.9999},
+			}
+			if values, ok := divergences[tc.Name]; ok {
+				if got.TargetQty == tc.Expected.TargetQty && got.TargetLeverage == tc.Expected.TargetLeverage {
+					t.Fatal("expected intentional divergence from Python v1")
+				}
+				tc.Expected.TargetQty, tc.Expected.TargetLeverage = values[0], values[1]
+			}
 			if !reflect.DeepEqual(got, tc.Expected) {
 				t.Fatalf("got %+v; want %+v", got, tc.Expected)
 			}
@@ -54,21 +68,46 @@ func TestRiskTargetFlagsAndReasons(t *testing.T) {
 	}
 }
 
-func TestRiskTargetRoundingCanExceedLimitsWithoutFlag(t *testing.T) {
-	in := RiskTargetInput{TargetQty: 0.0000006, TargetLeverage: 0.99996, CurrentPosition: 0.0000006, Equity: 1, LeverageCap: 1, Price: 1, ReduceOnly: true}
-	got, err := ClampRiskTarget(in)
-	if err != nil {
-		t.Fatal(err)
+func TestRiskTargetQuantizationRespectsLimits(t *testing.T) {
+	for _, sign := range []float64{-1, 1} {
+		in := RiskTargetInput{TargetQty: sign * 0.0000006, TargetLeverage: 0.99996, CurrentPosition: sign * 0.0000006, Equity: 1, LeverageCap: 1, Price: 1, ReduceOnly: true}
+		got, err := ClampRiskTarget(in)
+		if err != nil || got.TargetQty != 0 || got.TargetLeverage != 0.9999 {
+			t.Fatalf("tiny position: %+v, %v", got, err)
+		}
+		in = RiskTargetInput{TargetQty: sign * 2, TargetLeverage: 1, Equity: 1.2345676, LeverageCap: 0.99996, Price: 0.99996}
+		got, err = ClampRiskTarget(in)
+		if err != nil || got.TargetQty != sign*1.234567 || got.TargetLeverage != 0.9999 {
+			t.Fatalf("quantity cap: %+v, %v", got, err)
+		}
+		in.ReduceOnly, in.CurrentPosition = true, -sign
+		got, err = ClampRiskTarget(in)
+		if err != nil || got.TargetQty != 0 || !reflect.DeepEqual(got.Flags, []string{"REDUCE_ONLY_BLOCK_ADD"}) {
+			t.Fatalf("flip: %+v, %v", got, err)
+		}
 	}
-	if got.TargetQty != 0.000001 || got.TargetQty <= in.CurrentPosition || got.TargetLeverage != 1 || !reflect.DeepEqual(got.Flags, []string{"OK"}) {
-		t.Fatalf("unexpected rounding: %+v", got)
+}
+
+func TestRiskTargetQuantizationFloatingPointEdges(t *testing.T) {
+	for _, boundary := range []float64{1e-6, 0.1, 1.234567, 1e6, 1e12} {
+		for _, value := range []float64{math.Nextafter(boundary, 0), boundary, math.Nextafter(boundary, math.Inf(1))} {
+			for _, sign := range []float64{-1, 1} {
+				in := RiskTargetInput{TargetQty: sign * value, TargetLeverage: 0.99996, CurrentPosition: sign * value, Equity: value, LeverageCap: 1, Price: 1, ReduceOnly: true}
+				got, err := ClampRiskTarget(in)
+				if err != nil || math.Abs(got.TargetQty) > value || got.TargetQty*sign < 0 || got.TargetLeverage > in.TargetLeverage || got.TargetLeverage > in.LeverageCap {
+					t.Fatalf("value %.17g sign %v: %+v, %v", value, sign, got, err)
+				}
+			}
+		}
 	}
-	in.ReduceOnly = false
-	in.LeverageCap = 0.99996
-	in.TargetLeverage = 1
-	got, err = ClampRiskTarget(in)
-	if err != nil || got.TargetLeverage != 1 || got.TargetLeverage <= in.LeverageCap || !reflect.DeepEqual(got.Flags, []string{"OK"}) {
-		t.Fatalf("unexpected leverage rounding: %+v, %v", got, err)
+}
+
+func TestRiskTargetQuantizationStable(t *testing.T) {
+	for _, value := range []float64{1.0000045, 4503599627.3705015, -1.0000045, math.SmallestNonzeroFloat64} {
+		got := riskQuantizeTowardZero(value, 1e6)
+		if math.Abs(got) > math.Abs(value) || riskQuantizeTowardZero(got, 1e6) != got {
+			t.Fatalf("unstable quantization %.17g -> %.17g -> %.17g", value, got, riskQuantizeTowardZero(got, 1e6))
+		}
 	}
 }
 
