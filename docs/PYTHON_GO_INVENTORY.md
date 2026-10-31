@@ -30,6 +30,8 @@ The offline replay event slice filters and orders in-memory candles and derives 
 
 The offline mark-price execution slice produces synthetic full-fill or rejected reports with an explicit timestamp and taker fee, and can feed replay accounting. It rejects invalid numeric inputs and unsupported limit, non-market and reduce-only orders more strictly than Python. It does not enforce risk approval, reduce-only, position limits, slippage or limit orders, and has no live order path. Its fixture generator postdates the baseline manifest; the Python gateway and callers remain active.
 
+The offline risk target clamp ports the final exposure and reduce-only quantity calculation using an already computed cap and position. Python-generated synthetic cases cover both position directions, caps and rounding. Python-compatible rounding can move the returned quantity or leverage slightly beyond the unrounded cap or reduce-only position without adding a flag, so this component alone does not guarantee a strict post-rounding exposure bound. It does not calculate risk state, approve orders or replace the Python overlay. Its fixture generator postdates the baseline manifest.
+
 The current product UI and newly revised documentation use English. Historical evidence and archived records retain their original language and content; existing authoritative operational documents remain in force and are not translated by changing archived evidence.
 
 A proposed sequence, with a separately reviewed scope and explicit evidence at each stage:
