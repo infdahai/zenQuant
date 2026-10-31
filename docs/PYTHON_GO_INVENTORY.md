@@ -36,6 +36,8 @@ The offline trade proxy slice normalizes synthetic Hyperliquid recent trades and
 
 The offline basis slice joins in-memory spot and perpetual rows and provides cutoff-based basis and robust z-score snapshots, compared against synthetic Python fixtures. Input timestamps must share a unit and represent data already available at that time, including any duplicate corrections; the slice does not establish publication or receipt timing. Go rejects non-finite values, nonpositive perpetual prices and invalid window parameters. It does not replace Python storage or ingestion. Its fixture generator postdates the baseline manifest.
 
+The offline indicator slice implements ATR, annualized realized volatility and rate of change for synthetic ordered candles. Python reference fixtures cover windows, short histories and timeframe fallback with floating-point tolerance. Go requires finite inputs, positive bounded windows and bounded input size; it rejects detected overflow and volatility ratio underflow. It does not implement the complete indicator engine, event processing or strategy. Its fixture generator postdates the baseline manifest.
+
 The current product UI and newly revised documentation use English. Historical evidence and archived records retain their original language and content; existing authoritative operational documents remain in force and are not translated by changing archived evidence.
 
 A proposed sequence, with a separately reviewed scope and explicit evidence at each stage:

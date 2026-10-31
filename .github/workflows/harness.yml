@@ -55,6 +55,9 @@ jobs:
       - name: Check basis Python reference fixture
         run: uv run python scripts/generate_basis_golden.py --check
 
+      - name: Check indicator Python reference fixture
+        run: uv run python scripts/generate_indicators_golden.py --check
+
       - name: "Gate B: import boundaries"
         run: uv run pytest tests/test_import_boundaries.py -v --tb=short
 
