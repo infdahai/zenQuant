@@ -24,7 +24,7 @@ import (
 
 func Run(args []string, out, stderr io.Writer) error {
 	if len(args) == 0 || args[0] == "help" || args[0] == "--help" {
-		fmt.Fprintln(out, "zenquant serve [--port 8092] [--assets options-ui/dist] [--engineering] [--research-store DIR]\nzenquant workbench --store DIR import|list|snapshot|submit|jobs|cancel|result|compare < request.json\nzenquant evaluate --route /api/curve < request.json\nzenquant research-splits\nzenquant gate-v3 < request.json\nNative Go local diagnostics and manual record-only paper workbench.")
+		fmt.Fprintln(out, "zenquant serve [--port 8092] [--assets options-ui/dist] [--engineering] [--research-store DIR]\nzenquant workbench --store DIR import|list|snapshot|submit|jobs|cancel|result|compare < request.json\nzenquant evaluate --route /api/curve < request.json\nzenquant vix-snapshot --request FILE --manifest FILE --evidence DIR\nzenquant research-splits\nzenquant gate-v3 < request.json\nNative Go local diagnostics and manual record-only paper workbench.")
 		return nil
 	}
 	switch args[0] {
@@ -61,6 +61,44 @@ func Run(args []string, out, stderr io.Writer) error {
 		}
 		_, err = fmt.Fprintln(out, string(b))
 		return err
+	case "vix-snapshot":
+		flags := flag.NewFlagSet("vix-snapshot", flag.ContinueOnError)
+		flags.SetOutput(stderr)
+		request := flags.String("request", "", "observation request JSON")
+		manifest := flags.String("manifest", "", "snapshot manifest JSON")
+		evidence := flags.String("evidence", "", "local evidence directory")
+		if err := flags.Parse(args[1:]); err != nil {
+			return err
+		}
+		if flags.NArg() != 0 || *request == "" || *manifest == "" || *evidence == "" {
+			return errors.New("request, manifest and evidence are required")
+		}
+		read := func(path string) ([]byte, error) {
+			f, e := os.Open(path)
+			if e != nil {
+				return nil, e
+			}
+			defer f.Close()
+			b, e := io.ReadAll(io.LimitReader(f, server.BodyLimit+1))
+			if e == nil && len(b) > server.BodyLimit {
+				return nil, errors.New("input exceeds limit")
+			}
+			return b, e
+		}
+		r, e := read(*request)
+		if e != nil {
+			return e
+		}
+		m, e := read(*manifest)
+		if e != nil {
+			return e
+		}
+		b, e := options.AdmitVixSnapshot(r, m, *evidence)
+		if e != nil {
+			return e
+		}
+		_, e = fmt.Fprintln(out, string(b))
+		return e
 	case "workbench":
 		return runWorkbench(args[1:], out, stderr)
 	case "serve":

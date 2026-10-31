@@ -1,0 +1,141 @@
+{
+  "schema_version": "vix-observation-request.rust.v1",
+  "mode": "DEMONSTRATION",
+  "cutoff_ms": 1792180800000,
+  "max_age_ms": 60000,
+  "futures": {
+    "roll_rule": "MONTHLY_AT_SUPPLIED_LAST_TRADE_V1",
+    "calendar": {
+      "source": {
+        "reference": "DEMONSTRATION: calendar dates from Cboe daily settlements; explicit 08:00 Chicago from VX fact sheet; invented prices, no licensed feed",
+        "sha256": "ae044e247371b4bb2b9d007f37a6a7fbb82a848bcfe3e2202d1154cce11bed69",
+        "timezone": "UTC",
+        "known_ms": 1790812800000
+      },
+      "exchange_timezone": "America/Chicago",
+      "valid_from_ms": 1790812800000,
+      "valid_until_ms": 1795010400000,
+      "first_delivery_month": 202610,
+      "contracts": [
+        {
+          "symbol": "VX/V6",
+          "tenor": "MONTHLY",
+          "delivery_month": 202610,
+          "last_trade_ms": 1792587600000,
+          "settlement_date": "2026-10-21"
+        },
+        {
+          "symbol": "VX43/V6",
+          "tenor": "WEEKLY",
+          "delivery_month": 202610,
+          "last_trade_ms": 1793192400000,
+          "settlement_date": "2026-10-28"
+        },
+        {
+          "symbol": "VX/X6",
+          "tenor": "MONTHLY",
+          "delivery_month": 202611,
+          "last_trade_ms": 1795010400000,
+          "settlement_date": "2026-11-18"
+        },
+        {
+          "symbol": "VX/Z6",
+          "tenor": "MONTHLY",
+          "delivery_month": 202612,
+          "last_trade_ms": 1797429600000,
+          "settlement_date": "2026-12-16"
+        }
+      ]
+    },
+    "quotes": [
+      {
+        "symbol": "VX/V6",
+        "price": {
+          "kind": "SETTLEMENT",
+          "value": "24"
+        },
+        "source": {
+          "reference": "DEMONSTRATION: VX/V6; invented prices, no licensed feed",
+          "sha256": "d81961d557b9af6eb9d3e362a76407b6dcfbfa99b9ed4e99647a219b92e3b767",
+          "timezone": "UTC",
+          "known_ms": 1792180800000
+        },
+        "observed_ms": 1792180799000,
+        "received_ms": 1792180800000,
+        "trading_session_date": "2026-10-16",
+        "declared_delay_ms": 1000
+      },
+      {
+        "symbol": "VX/X6",
+        "price": {
+          "kind": "SETTLEMENT",
+          "value": "20"
+        },
+        "source": {
+          "reference": "DEMONSTRATION: VX/X6; invented prices, no licensed feed",
+          "sha256": "8543520383c9dee280b086663cea458f8763f5a2f05f8087dc1d481f09ebf003",
+          "timezone": "UTC",
+          "known_ms": 1792180800000
+        },
+        "observed_ms": 1792180799000,
+        "received_ms": 1792180800000,
+        "trading_session_date": "2026-10-16",
+        "declared_delay_ms": 1000
+      },
+      {
+        "symbol": "VX/Z6",
+        "price": {
+          "kind": "SETTLEMENT",
+          "value": "22"
+        },
+        "source": {
+          "reference": "DEMONSTRATION: VX/Z6; invented prices, no licensed feed",
+          "sha256": "c8256aceee0608aacdaced2cdc110f604ebf37ac9331d6bacb26a1fee6fe8d5b",
+          "timezone": "UTC",
+          "known_ms": 1792180800000
+        },
+        "observed_ms": 1792180799000,
+        "received_ms": 1792180800000,
+        "trading_session_date": "2026-10-16",
+        "declared_delay_ms": 1000
+      }
+    ],
+    "previous_pair": null
+  },
+  "spot": {
+    "vix9d": {
+      "symbol": "VIX9D",
+      "price": {
+        "kind": "INDEX",
+        "value": "27"
+      },
+      "source": {
+        "reference": "DEMONSTRATION: VIX9D; invented prices, no licensed feed",
+        "sha256": "1ea5a14af7c2cb624c6cd32830d986ec680dfb6e6cf78b9d853547e349d0cb84",
+        "timezone": "UTC",
+        "known_ms": 1792180800000
+      },
+      "observed_ms": 1792180799000,
+      "received_ms": 1792180800000,
+      "trading_session_date": "2026-10-16",
+      "declared_delay_ms": 1000
+    },
+    "vix": {
+      "symbol": "VIX",
+      "price": {
+        "kind": "INDEX",
+        "value": "24"
+      },
+      "source": {
+        "reference": "DEMONSTRATION: VIX; invented prices, no licensed feed",
+        "sha256": "e5f5fec939aed73b5e3085084a36d87532312ad16540fd0e87c836a77c1a536f",
+        "timezone": "UTC",
+        "known_ms": 1792180800000
+      },
+      "observed_ms": 1792180799000,
+      "received_ms": 1792180800000,
+      "trading_session_date": "2026-10-16",
+      "declared_delay_ms": 1000
+    }
+  }
+}

@@ -12,7 +12,7 @@ import (
 
 // Embed native implementation bytes so provenance follows the binary, never the checkout.
 //
-//go:embed *.go
+//go:embed *.go vix_demo.json
 var sources embed.FS
 
 func sourceHash() string {
@@ -50,6 +50,12 @@ type Response struct {
 // with no file, network, clock-dependent pricing, account or execution side effects.
 func Evaluate(path string, body []byte) (result []byte, err error) {
 	defer catch(&err)
+	if path == "/api/vix/evaluate" {
+		return vixResponse(body), nil
+	}
+	if path == "/api/vix/demo" {
+		return vixDemo(body), nil
+	}
 	var r Request
 	switch path {
 	case "/api/curve":

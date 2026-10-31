@@ -92,6 +92,7 @@ func LoadAssets(root string) (map[string]Asset, error) {
 	}
 	assets["/"] = index
 	assets["/paper"] = index
+	assets["/risk"] = index
 	return assets, nil
 }
 
@@ -168,7 +169,7 @@ func (s *Server) handle(conn net.Conn, host string) {
 	}
 	var evaluate Evaluate
 	switch req.RequestURI {
-	case "/api/curve", "/api/synthetic":
+	case "/api/curve", "/api/synthetic", "/api/vix/evaluate", "/api/vix/demo":
 		evaluate = s.Options
 	case "/api/paper/state", "/api/paper/preview", "/api/paper/confirm":
 		evaluate = s.Paper
