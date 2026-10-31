@@ -28,7 +28,7 @@ import (
 
 func Run(args []string, out, stderr io.Writer) error {
 	if len(args) == 0 || args[0] == "help" || args[0] == "--help" {
-		fmt.Fprintln(out, "zenquant serve [--port 8092] [--assets options-ui/dist] [--engineering] [--research-store DIR]\nzenquant workbench --store DIR import|list|snapshot|submit|jobs|cancel|result|compare < request.json\nzenquant evaluate --route /api/curve < request.json\nzenquant vix-snapshot --request FILE --manifest FILE --evidence DIR\nzenquant research-splits\nzenquant download-cot [--years 5] [--output-root DIR] [--base-url URL] [--market NAME]\nzenquant download-deribit-options [--currency BTC] [--output-root DIR] [--endpoint URL]\nzenquant review-loop-stability [--results-root DIR] [--output-dir DIR]\nzenquant gate-v3 < request.json\nNative Go local diagnostics and manual record-only paper workbench.")
+		fmt.Fprintln(out, "zenquant serve [--port 8092] [--assets options-ui/dist] [--engineering] [--research-store DIR]\nzenquant workbench --store DIR import|list|snapshot|submit|jobs|cancel|result|compare < request.json\nzenquant evaluate --route /api/curve < request.json\nzenquant vix-snapshot --request FILE --manifest FILE --evidence DIR\nzenquant research-splits\nzenquant download-cot [--years 5] [--output-root DIR] [--base-url URL] [--market NAME]\nzenquant download-deribit-options [--currency BTC] [--output-root DIR] [--endpoint URL]\nzenquant review-loop-stability [--results-root DIR] [--output-dir DIR]\nzenquant review-stage2-benchmark --failed-status FILE --baseline-status FILE --rerun-status FILE --output-dir DIR [--rerun-report FILE]\nzenquant gate-v3 < request.json\nNative Go local diagnostics and manual record-only paper workbench.")
 		return nil
 	}
 	switch args[0] {
@@ -120,6 +120,8 @@ func Run(args []string, out, stderr io.Writer) error {
 			return fmt.Errorf("report published at %s; stdout failed: %w", filepath.Dir(written["json_path"]), err)
 		}
 		return nil
+	case "review-stage2-benchmark":
+		return runBenchmarkReview(args[1:], out, stderr)
 	case "gate-v3":
 		if len(args) != 1 {
 			return errors.New("unexpected argument")

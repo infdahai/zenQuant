@@ -35,6 +35,9 @@ jobs:
       - name: "Gate A: ruff format"
         run: uv run ruff format --check zenquant/ tests/ scripts/
 
+      - name: Check stage2 benchmark Python reference fixture
+        run: uv run python scripts/generate_perf_benchmark_golden.py --check
+
       - name: Check Gate v3 Python reference fixture
         run: uv run python scripts/generate_gate_v3_golden.py --check
 
