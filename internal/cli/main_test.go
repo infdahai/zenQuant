@@ -1,7 +1,9 @@
 package cli
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net"
@@ -12,6 +14,25 @@ import (
 	"testing"
 	"time"
 )
+
+func TestResearchSplitsCommand(t *testing.T) {
+	var out bytes.Buffer
+	if err := Run([]string{"research-splits"}, &out, io.Discard); err != nil {
+		t.Fatal(err)
+	}
+	var summary struct {
+		Version string `json:"version"`
+		Test    struct {
+			End *int64 `json:"end_ns"`
+		} `json:"test"`
+	}
+	if err := json.Unmarshal(out.Bytes(), &summary); err != nil || summary.Version != "btc_temporal_v2_train_selection_only" || summary.Test.End != nil {
+		t.Fatalf("unexpected summary %s: %v", out.String(), err)
+	}
+	if err := Run([]string{"research-splits", "extra"}, io.Discard, io.Discard); err == nil {
+		t.Fatal("unexpected argument accepted")
+	}
+}
 
 func TestServeFromLinkedCheckoutSubdirectory(t *testing.T) {
 	if os.Getenv("ZQ_CLI_CHILD") == "1" {
