@@ -94,7 +94,7 @@
   <section class="card review" id="review"><h2>03 / 预览与确认</h2>
     <div aria-live="polite">{#if busy}<p>正在核对或持久化…</p>{/if}{#if error}<p class="error" role="alert">{error}</p>{/if}{#if notice}<p class="success" role="status">{notice}</p>{/if}</div>
     {#if preview}
-      <p>操作：<strong data-testid="preview-kind">{preview.command.action.kind}</strong> · 原请求 ID：{preview.command.request_id}</p><p class="hash">参数、证据与配置绑定：{preview.sha256}</p><p class="hint">预览有效截止：{new Date(preview.expires_ms).toISOString()}；原 ID 重放返回已有结果。修改参数、证据或已确认配置后，请重新预览。</p>
+      <p>操作：<strong data-testid="preview-kind">{preview.command.action.kind}</strong> · 原请求 ID：{preview.command.request_id}</p><p class="hash">参数、证据与配置绑定：{preview.sha256}</p><p class="hint">原预览有效截止：{new Date(preview.expires_ms).toISOString()}；原 ID 重放仍可返回已有结果。修改参数、证据或已确认配置后，请重新预览。</p>
       {@const value = preview.command.action.value}
       {#if preview.command.action.kind === 'CONFIGURE'}
         <div class="banner">两条线合计预算 USD {value.total_budget_usd}。<br>Deribit：分配 USD {value.deribit_usdc?.allocation_usd ?? '0（未配置）'}，单笔申请上限 USD {value.deribit_usdc?.single_intent_cap_usd ?? '未设置'}。<br>Binance：分配 USD {value.binance_usdt?.allocation.allocation_usd ?? '0（未配置）'}，单笔申请上限 USD {value.binance_usdt?.allocation.single_intent_cap_usd ?? '未设置'}；模式 {value.binance_usdt?.margin_mode ?? '未设置'}，杠杆上限 {value.binance_usdt?.max_leverage ?? '未设置'}。<br>已分配账户均使用显式实验假设 1 USD = 1 USDC/USDT（v1），不代表真实汇率或共享抵押金。</div>
