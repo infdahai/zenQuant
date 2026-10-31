@@ -1,6 +1,7 @@
 package cot
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -14,7 +15,12 @@ func TestParseCSVRejectsInvalidBitcoinReports(t *testing.T) {
 		"short row":           header + "BITCOIN,2026-01-06,1,2\n",
 		"invalid number":      header + "BITCOIN,2026-01-06,abc,2,3,4,5,6,7\n",
 		"integer overflow":    header + "BITCOIN,2026-01-06,9223372036854775808,0,0,0,0,0,0\n",
-		"net overflow":        header + "BITCOIN,2026-01-06,9223372036854775807,-1,0,0,0,0,0\n",
+		"negative count":      header + "BITCOIN,2026-01-06,9223372036854775807,-1,0,0,0,0,0\n",
+	}
+	for i := 0; i < 7; i++ {
+		counts := []string{"1", "2", "3", "4", "5", "6", "7"}
+		counts[i] = "-1"
+		cases[fmt.Sprintf("negative field %d", i)] = header + "BITCOIN,2026-01-06," + strings.Join(counts, ",") + "\n"
 	}
 	for name, input := range cases {
 		t.Run(name, func(t *testing.T) {

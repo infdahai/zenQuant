@@ -24,7 +24,7 @@ const DefaultBaseURL = "https://www.cftc.gov/files/dea/history"
 const limit = 64 << 20
 
 type Row struct {
-	ReportDate     int64  `parquet:"report_date_ns"`
+	ReportDate     int64  `parquet:"position_as_of_date_ns"`
 	Market         string `parquet:"market_name"`
 	AssetLong      int64  `parquet:"asset_mgr_long"`
 	AssetShort     int64  `parquet:"asset_mgr_short"`
@@ -73,6 +73,9 @@ func Download(client *http.Client, base, market string, start, end int) ([]Row, 
 		parsed, err := parseArchive(b, market)
 		if err != nil {
 			return nil, fmt.Errorf("year %d: %w", year, err)
+		}
+		if len(parsed) == 0 {
+			return nil, fmt.Errorf("year %d: no Bitcoin COT records for selected market", year)
 		}
 		for _, row := range parsed {
 			if time.Unix(0, row.ReportDate).UTC().Year() != year {
@@ -200,6 +203,9 @@ func parseCSV(b []byte, selectedMarket string) ([]Row, error) {
 			value, err := strconv.ParseInt(raw, 10, 64)
 			if err != nil {
 				return nil, fmt.Errorf("invalid Bitcoin %s value %q: %w", column, raw, err)
+			}
+			if value < 0 {
+				return nil, fmt.Errorf("invalid Bitcoin %s value %q: count must be nonnegative", column, raw)
 			}
 			values[i] = value
 		}

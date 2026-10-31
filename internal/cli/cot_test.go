@@ -113,6 +113,34 @@ func TestDownloadCOTRejectsConflictingOrWrongYear(t *testing.T) {
 	}
 }
 
+func TestDownloadCOTMissingYearDoesNotPublish(t *testing.T) {
+	year := time.Now().UTC().Year()
+	header := "Market_and_Exchange_Names,Report_Date_as_YYYY-MM-DD,Asset_Mgr_Positions_Long_All,Asset_Mgr_Positions_Short_All,Lev_Money_Positions_Long_All,Lev_Money_Positions_Short_All,Dealer_Positions_Long_All,Dealer_Positions_Short_All,Open_Interest_All\n"
+	for _, market := range []string{"ETH", "MICRO BITCOIN"} {
+		t.Run(market, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				rowMarket := "BITCOIN CME"
+				rowYear := year - 1
+				if strings.HasSuffix(r.URL.Path, fmt.Sprintf("%d.zip", year)) {
+					rowMarket = market
+					rowYear = year
+				}
+				w.Write(cotArchive(t, header+fmt.Sprintf("%s,%d-01-03,1,0,0,0,0,0,1\n", rowMarket, rowYear)))
+			}))
+			defer server.Close()
+			root := t.TempDir()
+			err := Run([]string{"download-cot", "--years", "2", "--base-url", server.URL, "--output-root", root, "--market", "BITCOIN CME"}, &bytes.Buffer{}, &bytes.Buffer{})
+			if err == nil || !strings.Contains(err.Error(), fmt.Sprintf("year %d: no Bitcoin COT records", year)) {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			entries, err := os.ReadDir(root)
+			if err != nil || len(entries) != 0 {
+				t.Fatalf("entries %v error %v", entries, err)
+			}
+		})
+	}
+}
+
 func TestDownloadCOTMarketSelection(t *testing.T) {
 	year := time.Now().UTC().Year()
 	header := "Market_and_Exchange_Names,Report_Date_as_YYYY-MM-DD,Asset_Mgr_Positions_Long_All,Asset_Mgr_Positions_Short_All,Lev_Money_Positions_Long_All,Lev_Money_Positions_Short_All,Dealer_Positions_Long_All,Dealer_Positions_Short_All,Open_Interest_All\n"
