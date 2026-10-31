@@ -23,10 +23,15 @@ import (
 
 func Run(args []string, out, stderr io.Writer) error {
 	if len(args) == 0 || args[0] == "help" || args[0] == "--help" {
-		fmt.Fprintln(out, "zenquant serve [--port 8092] [--assets options-ui/dist] [--engineering]\nzenquant evaluate --route /api/curve < request.json\nzenquant research-splits\nNative Go local diagnostics and manual record-only paper workbench.")
+		fmt.Fprintln(out, "zenquant serve [--port 8092] [--assets options-ui/dist] [--engineering]\nzenquant evaluate --route /api/curve < request.json\nzenquant research-splits\nzenquant gate-v3 < request.json\nNative Go local diagnostics and manual record-only paper workbench.")
 		return nil
 	}
 	switch args[0] {
+	case "gate-v3":
+		if len(args) != 1 {
+			return errors.New("unexpected argument")
+		}
+		return runGateV3(os.Stdin, out)
 	case "research-splits":
 		if len(args) != 1 {
 			return errors.New("unexpected argument")

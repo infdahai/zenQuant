@@ -17,7 +17,7 @@ export function latestRequest(fetcher = fetch) {
       if (!response.ok) throw new Error(result.error || `HTTP ${response.status}`);
       accept(result);
     } catch (error) {
-      if (ticket === sequence && error.name !== 'AbortError') reject(error.message || '请求失败');
+      if (ticket === sequence && error.name !== 'AbortError') reject(error.message || 'Request failed');
     }
   }
   return { run, cancel };

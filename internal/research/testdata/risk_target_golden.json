@@ -1,0 +1,407 @@
+{
+  "version": 1,
+  "cases": [
+    {
+      "name": "within_cap",
+      "input": {
+        "target_qty": 1.25,
+        "target_leverage": 2.0,
+        "current_position": 0.0,
+        "equity": 100.0,
+        "leverage_cap": 3.0,
+        "price": 100.0,
+        "reduce_only": false,
+        "reason_codes": [
+          "Z",
+          "A",
+          "Z"
+        ],
+        "flags": []
+      },
+      "expected": {
+        "target_qty": 1.25,
+        "target_leverage": 2.0,
+        "reduce_only": false,
+        "reason_codes": [
+          "A",
+          "Z"
+        ],
+        "flags": [
+          "OK"
+        ]
+      }
+    },
+    {
+      "name": "long_cap",
+      "input": {
+        "target_qty": 8.0,
+        "target_leverage": 5.0,
+        "current_position": 0.0,
+        "equity": 100.0,
+        "leverage_cap": 2.0,
+        "price": 100.0,
+        "reduce_only": false,
+        "reason_codes": [],
+        "flags": []
+      },
+      "expected": {
+        "target_qty": 2.0,
+        "target_leverage": 2.0,
+        "reduce_only": false,
+        "reason_codes": [],
+        "flags": [
+          "OK"
+        ]
+      }
+    },
+    {
+      "name": "short_cap",
+      "input": {
+        "target_qty": -8.0,
+        "target_leverage": 5.0,
+        "current_position": 0.0,
+        "equity": 100.0,
+        "leverage_cap": 2.0,
+        "price": 100.0,
+        "reduce_only": false,
+        "reason_codes": [],
+        "flags": []
+      },
+      "expected": {
+        "target_qty": -2.0,
+        "target_leverage": 2.0,
+        "reduce_only": false,
+        "reason_codes": [],
+        "flags": [
+          "OK"
+        ]
+      }
+    },
+    {
+      "name": "long_add",
+      "input": {
+        "target_qty": 3.0,
+        "target_leverage": 2.0,
+        "current_position": 1.0,
+        "equity": 100.0,
+        "leverage_cap": 10.0,
+        "price": 100.0,
+        "reduce_only": true,
+        "reason_codes": [
+          "Z"
+        ],
+        "flags": []
+      },
+      "expected": {
+        "target_qty": 1.0,
+        "target_leverage": 2.0,
+        "reduce_only": true,
+        "reason_codes": [
+          "REDUCE_ONLY_BLOCK_ADD",
+          "Z"
+        ],
+        "flags": [
+          "REDUCE_ONLY_BLOCK_ADD"
+        ]
+      }
+    },
+    {
+      "name": "long_flip",
+      "input": {
+        "target_qty": -1.0,
+        "target_leverage": 2.0,
+        "current_position": 1.0,
+        "equity": 100.0,
+        "leverage_cap": 10.0,
+        "price": 100.0,
+        "reduce_only": true,
+        "reason_codes": [],
+        "flags": []
+      },
+      "expected": {
+        "target_qty": 0.0,
+        "target_leverage": 2.0,
+        "reduce_only": true,
+        "reason_codes": [
+          "REDUCE_ONLY_BLOCK_ADD"
+        ],
+        "flags": [
+          "REDUCE_ONLY_BLOCK_ADD"
+        ]
+      }
+    },
+    {
+      "name": "short_add",
+      "input": {
+        "target_qty": -3.0,
+        "target_leverage": 2.0,
+        "current_position": -1.0,
+        "equity": 100.0,
+        "leverage_cap": 10.0,
+        "price": 100.0,
+        "reduce_only": true,
+        "reason_codes": [],
+        "flags": []
+      },
+      "expected": {
+        "target_qty": -1.0,
+        "target_leverage": 2.0,
+        "reduce_only": true,
+        "reason_codes": [
+          "REDUCE_ONLY_BLOCK_ADD"
+        ],
+        "flags": [
+          "REDUCE_ONLY_BLOCK_ADD"
+        ]
+      }
+    },
+    {
+      "name": "short_flip",
+      "input": {
+        "target_qty": 1.0,
+        "target_leverage": 2.0,
+        "current_position": -1.0,
+        "equity": 100.0,
+        "leverage_cap": 10.0,
+        "price": 100.0,
+        "reduce_only": true,
+        "reason_codes": [],
+        "flags": []
+      },
+      "expected": {
+        "target_qty": 0.0,
+        "target_leverage": 2.0,
+        "reduce_only": true,
+        "reason_codes": [
+          "REDUCE_ONLY_BLOCK_ADD"
+        ],
+        "flags": [
+          "REDUCE_ONLY_BLOCK_ADD"
+        ]
+      }
+    },
+    {
+      "name": "flat",
+      "input": {
+        "target_qty": 1.0,
+        "target_leverage": 2.0,
+        "current_position": 0.0,
+        "equity": 100.0,
+        "leverage_cap": 10.0,
+        "price": 100.0,
+        "reduce_only": true,
+        "reason_codes": [],
+        "flags": []
+      },
+      "expected": {
+        "target_qty": 0.0,
+        "target_leverage": 2.0,
+        "reduce_only": true,
+        "reason_codes": [
+          "REDUCE_ONLY_BLOCK_ADD"
+        ],
+        "flags": [
+          "REDUCE_ONLY_BLOCK_ADD"
+        ]
+      }
+    },
+    {
+      "name": "reduction",
+      "input": {
+        "target_qty": 0.5,
+        "target_leverage": 2.0,
+        "current_position": 1.0,
+        "equity": 100.0,
+        "leverage_cap": 10.0,
+        "price": 100.0,
+        "reduce_only": true,
+        "reason_codes": [],
+        "flags": []
+      },
+      "expected": {
+        "target_qty": 0.5,
+        "target_leverage": 2.0,
+        "reduce_only": true,
+        "reason_codes": [],
+        "flags": [
+          "OK"
+        ]
+      }
+    },
+    {
+      "name": "cap_then_reduce",
+      "input": {
+        "target_qty": 3.0,
+        "target_leverage": 2.0,
+        "current_position": 2.0,
+        "equity": 100.0,
+        "leverage_cap": 1.0,
+        "price": 100.0,
+        "reduce_only": true,
+        "reason_codes": [
+          "REDUCE_ONLY_BLOCK_ADD"
+        ],
+        "flags": []
+      },
+      "expected": {
+        "target_qty": 1.0,
+        "target_leverage": 1.0,
+        "reduce_only": true,
+        "reason_codes": [
+          "REDUCE_ONLY_BLOCK_ADD"
+        ],
+        "flags": [
+          "REDUCE_ONLY_BLOCK_ADD"
+        ]
+      }
+    },
+    {
+      "name": "round_above_limit",
+      "input": {
+        "target_qty": 2.0,
+        "target_leverage": 1.23445,
+        "current_position": 0.0,
+        "equity": 1.2345676,
+        "leverage_cap": 1.0,
+        "price": 1.0,
+        "reduce_only": false,
+        "reason_codes": [],
+        "flags": []
+      },
+      "expected": {
+        "target_qty": 1.234568,
+        "target_leverage": 1.0,
+        "reduce_only": false,
+        "reason_codes": [],
+        "flags": [
+          "OK"
+        ]
+      }
+    },
+    {
+      "name": "round_binary_tie",
+      "input": {
+        "target_qty": 0.1234565,
+        "target_leverage": 1.23445,
+        "current_position": 0.0,
+        "equity": 10.0,
+        "leverage_cap": 2.0,
+        "price": 1.0,
+        "reduce_only": false,
+        "reason_codes": [],
+        "flags": []
+      },
+      "expected": {
+        "target_qty": 0.123456,
+        "target_leverage": 1.2345,
+        "reduce_only": false,
+        "reason_codes": [],
+        "flags": [
+          "OK"
+        ]
+      }
+    },
+    {
+      "name": "round_reduce_only",
+      "input": {
+        "target_qty": 6e-07,
+        "target_leverage": 0.99996,
+        "current_position": 6e-07,
+        "equity": 1.0,
+        "leverage_cap": 1.0,
+        "price": 1.0,
+        "reduce_only": true,
+        "reason_codes": [],
+        "flags": []
+      },
+      "expected": {
+        "target_qty": 1e-06,
+        "target_leverage": 1.0,
+        "reduce_only": true,
+        "reason_codes": [],
+        "flags": [
+          "OK"
+        ]
+      }
+    },
+    {
+      "name": "round_leverage_cap",
+      "input": {
+        "target_qty": 0.1,
+        "target_leverage": 1.0,
+        "current_position": 0.0,
+        "equity": 1.0,
+        "leverage_cap": 0.99996,
+        "price": 1.0,
+        "reduce_only": false,
+        "reason_codes": [],
+        "flags": []
+      },
+      "expected": {
+        "target_qty": 0.1,
+        "target_leverage": 1.0,
+        "reduce_only": false,
+        "reason_codes": [],
+        "flags": [
+          "OK"
+        ]
+      }
+    },
+    {
+      "name": "drawdown_flag",
+      "input": {
+        "target_qty": 3.0,
+        "target_leverage": 2.0,
+        "current_position": 1.0,
+        "equity": 100.0,
+        "leverage_cap": 1.0,
+        "price": 100.0,
+        "reduce_only": true,
+        "reason_codes": [
+          "Z",
+          "DD_STEP_3"
+        ],
+        "flags": [
+          "DD_STEP_3"
+        ]
+      },
+      "expected": {
+        "target_qty": 1.0,
+        "target_leverage": 1.0,
+        "reduce_only": true,
+        "reason_codes": [
+          "DD_STEP_3",
+          "REDUCE_ONLY_BLOCK_ADD",
+          "Z"
+        ],
+        "flags": [
+          "DD_STEP_3",
+          "REDUCE_ONLY_BLOCK_ADD"
+        ]
+      }
+    },
+    {
+      "name": "zero_equity",
+      "input": {
+        "target_qty": 2.0,
+        "target_leverage": 1.0,
+        "current_position": 0.0,
+        "equity": 0.0,
+        "leverage_cap": 1.0,
+        "price": 1.0,
+        "reduce_only": false,
+        "reason_codes": [],
+        "flags": []
+      },
+      "expected": {
+        "target_qty": -0.0,
+        "target_leverage": 1.0,
+        "reduce_only": false,
+        "reason_codes": [],
+        "flags": [
+          "OK"
+        ]
+      }
+    }
+  ]
+}

@@ -1,0 +1,1518 @@
+{
+  "version": 1,
+  "source": "zenquant.research.gate_v3.evaluate_gate_v3",
+  "cases": [
+    {
+      "name": "normal_boundary",
+      "input": {
+        "episodes": [
+          {
+            "episode_id": "win",
+            "symbol": "BTCUSDT",
+            "side": 1,
+            "opened_at_ns": 10,
+            "closed_at_ns": 11,
+            "entry_price": 100.0,
+            "exit_price": 100.0,
+            "max_abs_qty": 1.0,
+            "remaining_qty": 0.0,
+            "gross_realized_pnl": 10.0,
+            "fees": 0.0,
+            "funding_pnl": 0.0,
+            "net_pnl": 10.0,
+            "mfe_pnl": 10.0,
+            "mae_pnl": 0.0,
+            "unrealized_pnl": 0.0,
+            "fill_count": 2,
+            "closed": true,
+            "add_count": 0,
+            "reduce_count": 0,
+            "holding_duration_ns": 0
+          },
+          {
+            "episode_id": "loss",
+            "symbol": "BTCUSDT",
+            "side": -1,
+            "opened_at_ns": 20,
+            "closed_at_ns": 21,
+            "entry_price": 100.0,
+            "exit_price": 100.0,
+            "max_abs_qty": 1.0,
+            "remaining_qty": 0.0,
+            "gross_realized_pnl": -5.0,
+            "fees": 0.0,
+            "funding_pnl": 0.0,
+            "net_pnl": -5.0,
+            "mfe_pnl": 0.0,
+            "mae_pnl": -5.0,
+            "unrealized_pnl": 0.0,
+            "fill_count": 2,
+            "closed": true,
+            "add_count": 0,
+            "reduce_count": 0,
+            "holding_duration_ns": 0
+          }
+        ],
+        "options": {
+          "switches_per_day": 1.0,
+          "fill_profit_factor": 0.1,
+          "action_profit_factor": {
+            "reduce": 0.2,
+            "add": 3.0
+          }
+        }
+      },
+      "expected": {
+        "result": {
+          "episode_profit_factor": {
+            "value": 2.0,
+            "status": "DEFINED",
+            "closed_episode_count": 2,
+            "gross_profit": 10.0,
+            "gross_loss": 5.0
+          },
+          "cadence": {
+            "switches_per_day": 1.0,
+            "severity": "NONE",
+            "policy": "normal",
+            "reason": null
+          },
+          "hard_failed": false,
+          "passed": true,
+          "hard_failures": [],
+          "soft_flags": [],
+          "diagnostics": {
+            "fill_profit_factor": 0.1,
+            "action_profit_factor": {
+              "add": 3.0,
+              "reduce": 0.2
+            },
+            "position_switch_count": 1
+          }
+        }
+      }
+    },
+    {
+      "name": "soft_lower",
+      "input": {
+        "episodes": [
+          {
+            "episode_id": "win",
+            "symbol": "BTCUSDT",
+            "side": 1,
+            "opened_at_ns": 10,
+            "closed_at_ns": 11,
+            "entry_price": 100.0,
+            "exit_price": 100.0,
+            "max_abs_qty": 1.0,
+            "remaining_qty": 0.0,
+            "gross_realized_pnl": 10.0,
+            "fees": 0.0,
+            "funding_pnl": 0.0,
+            "net_pnl": 10.0,
+            "mfe_pnl": 10.0,
+            "mae_pnl": 0.0,
+            "unrealized_pnl": 0.0,
+            "fill_count": 2,
+            "closed": true,
+            "add_count": 0,
+            "reduce_count": 0,
+            "holding_duration_ns": 0
+          },
+          {
+            "episode_id": "loss",
+            "symbol": "BTCUSDT",
+            "side": -1,
+            "opened_at_ns": 20,
+            "closed_at_ns": 21,
+            "entry_price": 100.0,
+            "exit_price": 100.0,
+            "max_abs_qty": 1.0,
+            "remaining_qty": 0.0,
+            "gross_realized_pnl": -5.0,
+            "fees": 0.0,
+            "funding_pnl": 0.0,
+            "net_pnl": -5.0,
+            "mfe_pnl": 0.0,
+            "mae_pnl": -5.0,
+            "unrealized_pnl": 0.0,
+            "fill_count": 2,
+            "closed": true,
+            "add_count": 0,
+            "reduce_count": 0,
+            "holding_duration_ns": 0
+          }
+        ],
+        "options": {
+          "switches_per_day": 1.000001
+        }
+      },
+      "expected": {
+        "result": {
+          "episode_profit_factor": {
+            "value": 2.0,
+            "status": "DEFINED",
+            "closed_episode_count": 2,
+            "gross_profit": 10.0,
+            "gross_loss": 5.0
+          },
+          "cadence": {
+            "switches_per_day": 1.000001,
+            "severity": "SOFT",
+            "policy": "normal",
+            "reason": "position_switch_cadence_above_preferred"
+          },
+          "hard_failed": false,
+          "passed": true,
+          "hard_failures": [],
+          "soft_flags": [
+            "position_switch_cadence_above_preferred"
+          ],
+          "diagnostics": {
+            "fill_profit_factor": null,
+            "action_profit_factor": {},
+            "position_switch_count": 1
+          }
+        }
+      }
+    },
+    {
+      "name": "soft_upper",
+      "input": {
+        "episodes": [
+          {
+            "episode_id": "win",
+            "symbol": "BTCUSDT",
+            "side": 1,
+            "opened_at_ns": 10,
+            "closed_at_ns": 11,
+            "entry_price": 100.0,
+            "exit_price": 100.0,
+            "max_abs_qty": 1.0,
+            "remaining_qty": 0.0,
+            "gross_realized_pnl": 10.0,
+            "fees": 0.0,
+            "funding_pnl": 0.0,
+            "net_pnl": 10.0,
+            "mfe_pnl": 10.0,
+            "mae_pnl": 0.0,
+            "unrealized_pnl": 0.0,
+            "fill_count": 2,
+            "closed": true,
+            "add_count": 0,
+            "reduce_count": 0,
+            "holding_duration_ns": 0
+          },
+          {
+            "episode_id": "loss",
+            "symbol": "BTCUSDT",
+            "side": -1,
+            "opened_at_ns": 20,
+            "closed_at_ns": 21,
+            "entry_price": 100.0,
+            "exit_price": 100.0,
+            "max_abs_qty": 1.0,
+            "remaining_qty": 0.0,
+            "gross_realized_pnl": -5.0,
+            "fees": 0.0,
+            "funding_pnl": 0.0,
+            "net_pnl": -5.0,
+            "mfe_pnl": 0.0,
+            "mae_pnl": -5.0,
+            "unrealized_pnl": 0.0,
+            "fill_count": 2,
+            "closed": true,
+            "add_count": 0,
+            "reduce_count": 0,
+            "holding_duration_ns": 0
+          }
+        ],
+        "options": {
+          "switches_per_day": 2.0
+        }
+      },
+      "expected": {
+        "result": {
+          "episode_profit_factor": {
+            "value": 2.0,
+            "status": "DEFINED",
+            "closed_episode_count": 2,
+            "gross_profit": 10.0,
+            "gross_loss": 5.0
+          },
+          "cadence": {
+            "switches_per_day": 2.0,
+            "severity": "SOFT",
+            "policy": "normal",
+            "reason": "position_switch_cadence_above_preferred"
+          },
+          "hard_failed": false,
+          "passed": true,
+          "hard_failures": [],
+          "soft_flags": [
+            "position_switch_cadence_above_preferred"
+          ],
+          "diagnostics": {
+            "fill_profit_factor": null,
+            "action_profit_factor": {},
+            "position_switch_count": 1
+          }
+        }
+      }
+    },
+    {
+      "name": "hard_normal_limit",
+      "input": {
+        "episodes": [
+          {
+            "episode_id": "win",
+            "symbol": "BTCUSDT",
+            "side": 1,
+            "opened_at_ns": 10,
+            "closed_at_ns": 11,
+            "entry_price": 100.0,
+            "exit_price": 100.0,
+            "max_abs_qty": 1.0,
+            "remaining_qty": 0.0,
+            "gross_realized_pnl": 10.0,
+            "fees": 0.0,
+            "funding_pnl": 0.0,
+            "net_pnl": 10.0,
+            "mfe_pnl": 10.0,
+            "mae_pnl": 0.0,
+            "unrealized_pnl": 0.0,
+            "fill_count": 2,
+            "closed": true,
+            "add_count": 0,
+            "reduce_count": 0,
+            "holding_duration_ns": 0
+          },
+          {
+            "episode_id": "loss",
+            "symbol": "BTCUSDT",
+            "side": -1,
+            "opened_at_ns": 20,
+            "closed_at_ns": 21,
+            "entry_price": 100.0,
+            "exit_price": 100.0,
+            "max_abs_qty": 1.0,
+            "remaining_qty": 0.0,
+            "gross_realized_pnl": -5.0,
+            "fees": 0.0,
+            "funding_pnl": 0.0,
+            "net_pnl": -5.0,
+            "mfe_pnl": 0.0,
+            "mae_pnl": -5.0,
+            "unrealized_pnl": 0.0,
+            "fill_count": 2,
+            "closed": true,
+            "add_count": 0,
+            "reduce_count": 0,
+            "holding_duration_ns": 0
+          }
+        ],
+        "options": {
+          "switches_per_day": 2.000001
+        }
+      },
+      "expected": {
+        "result": {
+          "episode_profit_factor": {
+            "value": 2.0,
+            "status": "DEFINED",
+            "closed_episode_count": 2,
+            "gross_profit": 10.0,
+            "gross_loss": 5.0
+          },
+          "cadence": {
+            "switches_per_day": 2.000001,
+            "severity": "HARD",
+            "policy": "normal",
+            "reason": "position_switch_cadence_above_normal_limit"
+          },
+          "hard_failed": true,
+          "passed": false,
+          "hard_failures": [
+            "position_switch_cadence_above_normal_limit"
+          ],
+          "soft_flags": [],
+          "diagnostics": {
+            "fill_profit_factor": null,
+            "action_profit_factor": {},
+            "position_switch_count": 1
+          }
+        }
+      }
+    },
+    {
+      "name": "hard_five_boundary",
+      "input": {
+        "episodes": [
+          {
+            "episode_id": "win",
+            "symbol": "BTCUSDT",
+            "side": 1,
+            "opened_at_ns": 10,
+            "closed_at_ns": 11,
+            "entry_price": 100.0,
+            "exit_price": 100.0,
+            "max_abs_qty": 1.0,
+            "remaining_qty": 0.0,
+            "gross_realized_pnl": 10.0,
+            "fees": 0.0,
+            "funding_pnl": 0.0,
+            "net_pnl": 10.0,
+            "mfe_pnl": 10.0,
+            "mae_pnl": 0.0,
+            "unrealized_pnl": 0.0,
+            "fill_count": 2,
+            "closed": true,
+            "add_count": 0,
+            "reduce_count": 0,
+            "holding_duration_ns": 0
+          },
+          {
+            "episode_id": "loss",
+            "symbol": "BTCUSDT",
+            "side": -1,
+            "opened_at_ns": 20,
+            "closed_at_ns": 21,
+            "entry_price": 100.0,
+            "exit_price": 100.0,
+            "max_abs_qty": 1.0,
+            "remaining_qty": 0.0,
+            "gross_realized_pnl": -5.0,
+            "fees": 0.0,
+            "funding_pnl": 0.0,
+            "net_pnl": -5.0,
+            "mfe_pnl": 0.0,
+            "mae_pnl": -5.0,
+            "unrealized_pnl": 0.0,
+            "fill_count": 2,
+            "closed": true,
+            "add_count": 0,
+            "reduce_count": 0,
+            "holding_duration_ns": 0
+          }
+        ],
+        "options": {
+          "switches_per_day": 5.0
+        }
+      },
+      "expected": {
+        "result": {
+          "episode_profit_factor": {
+            "value": 2.0,
+            "status": "DEFINED",
+            "closed_episode_count": 2,
+            "gross_profit": 10.0,
+            "gross_loss": 5.0
+          },
+          "cadence": {
+            "switches_per_day": 5.0,
+            "severity": "HARD",
+            "policy": "normal",
+            "reason": "position_switch_cadence_above_normal_limit"
+          },
+          "hard_failed": true,
+          "passed": false,
+          "hard_failures": [
+            "position_switch_cadence_above_normal_limit"
+          ],
+          "soft_flags": [],
+          "diagnostics": {
+            "fill_profit_factor": null,
+            "action_profit_factor": {},
+            "position_switch_count": 1
+          }
+        }
+      }
+    },
+    {
+      "name": "hard_absolute_limit",
+      "input": {
+        "episodes": [
+          {
+            "episode_id": "win",
+            "symbol": "BTCUSDT",
+            "side": 1,
+            "opened_at_ns": 10,
+            "closed_at_ns": 11,
+            "entry_price": 100.0,
+            "exit_price": 100.0,
+            "max_abs_qty": 1.0,
+            "remaining_qty": 0.0,
+            "gross_realized_pnl": 10.0,
+            "fees": 0.0,
+            "funding_pnl": 0.0,
+            "net_pnl": 10.0,
+            "mfe_pnl": 10.0,
+            "mae_pnl": 0.0,
+            "unrealized_pnl": 0.0,
+            "fill_count": 2,
+            "closed": true,
+            "add_count": 0,
+            "reduce_count": 0,
+            "holding_duration_ns": 0
+          },
+          {
+            "episode_id": "loss",
+            "symbol": "BTCUSDT",
+            "side": -1,
+            "opened_at_ns": 20,
+            "closed_at_ns": 21,
+            "entry_price": 100.0,
+            "exit_price": 100.0,
+            "max_abs_qty": 1.0,
+            "remaining_qty": 0.0,
+            "gross_realized_pnl": -5.0,
+            "fees": 0.0,
+            "funding_pnl": 0.0,
+            "net_pnl": -5.0,
+            "mfe_pnl": 0.0,
+            "mae_pnl": -5.0,
+            "unrealized_pnl": 0.0,
+            "fill_count": 2,
+            "closed": true,
+            "add_count": 0,
+            "reduce_count": 0,
+            "holding_duration_ns": 0
+          }
+        ],
+        "options": {
+          "switches_per_day": 5.000001,
+          "policy": "research"
+        }
+      },
+      "expected": {
+        "result": {
+          "episode_profit_factor": {
+            "value": 2.0,
+            "status": "DEFINED",
+            "closed_episode_count": 2,
+            "gross_profit": 10.0,
+            "gross_loss": 5.0
+          },
+          "cadence": {
+            "switches_per_day": 5.000001,
+            "severity": "HARD",
+            "policy": "research",
+            "reason": "position_switch_cadence_above_absolute_limit"
+          },
+          "hard_failed": true,
+          "passed": false,
+          "hard_failures": [
+            "position_switch_cadence_above_absolute_limit"
+          ],
+          "soft_flags": [],
+          "diagnostics": {
+            "fill_profit_factor": null,
+            "action_profit_factor": {},
+            "position_switch_count": 1
+          }
+        }
+      }
+    },
+    {
+      "name": "below_minimum",
+      "input": {
+        "episodes": [
+          {
+            "episode_id": "win",
+            "symbol": "BTCUSDT",
+            "side": 1,
+            "opened_at_ns": 10,
+            "closed_at_ns": 11,
+            "entry_price": 100.0,
+            "exit_price": 100.0,
+            "max_abs_qty": 1.0,
+            "remaining_qty": 0.0,
+            "gross_realized_pnl": 4.0,
+            "fees": 0.0,
+            "funding_pnl": 0.0,
+            "net_pnl": 4.0,
+            "mfe_pnl": 4.0,
+            "mae_pnl": 0.0,
+            "unrealized_pnl": 0.0,
+            "fill_count": 2,
+            "closed": true,
+            "add_count": 0,
+            "reduce_count": 0,
+            "holding_duration_ns": 0
+          },
+          {
+            "episode_id": "loss",
+            "symbol": "BTCUSDT",
+            "side": 1,
+            "opened_at_ns": 20,
+            "closed_at_ns": 21,
+            "entry_price": 100.0,
+            "exit_price": 100.0,
+            "max_abs_qty": 1.0,
+            "remaining_qty": 0.0,
+            "gross_realized_pnl": -5.0,
+            "fees": 0.0,
+            "funding_pnl": 0.0,
+            "net_pnl": -5.0,
+            "mfe_pnl": 0.0,
+            "mae_pnl": -5.0,
+            "unrealized_pnl": 0.0,
+            "fill_count": 2,
+            "closed": true,
+            "add_count": 0,
+            "reduce_count": 0,
+            "holding_duration_ns": 0
+          }
+        ],
+        "options": {
+          "switches_per_day": 0.0
+        }
+      },
+      "expected": {
+        "result": {
+          "episode_profit_factor": {
+            "value": 0.8,
+            "status": "DEFINED",
+            "closed_episode_count": 2,
+            "gross_profit": 4.0,
+            "gross_loss": 5.0
+          },
+          "cadence": {
+            "switches_per_day": 0.0,
+            "severity": "NONE",
+            "policy": "normal",
+            "reason": null
+          },
+          "hard_failed": true,
+          "passed": false,
+          "hard_failures": [
+            "episode_profit_factor_below_minimum"
+          ],
+          "soft_flags": [],
+          "diagnostics": {
+            "fill_profit_factor": null,
+            "action_profit_factor": {},
+            "position_switch_count": 0
+          }
+        }
+      }
+    },
+    {
+      "name": "no_loss_one",
+      "input": {
+        "episodes": [
+          {
+            "episode_id": "win",
+            "symbol": "BTCUSDT",
+            "side": 1,
+            "opened_at_ns": 10,
+            "closed_at_ns": 11,
+            "entry_price": 100.0,
+            "exit_price": 100.0,
+            "max_abs_qty": 1.0,
+            "remaining_qty": 0.0,
+            "gross_realized_pnl": 5.0,
+            "fees": 0.0,
+            "funding_pnl": 0.0,
+            "net_pnl": 5.0,
+            "mfe_pnl": 5.0,
+            "mae_pnl": 0.0,
+            "unrealized_pnl": 0.0,
+            "fill_count": 2,
+            "closed": true,
+            "add_count": 0,
+            "reduce_count": 0,
+            "holding_duration_ns": 0
+          }
+        ],
+        "options": {
+          "switches_per_day": 0.0
+        }
+      },
+      "expected": {
+        "result": {
+          "episode_profit_factor": {
+            "value": null,
+            "status": "NO_LOSS_EPISODES",
+            "closed_episode_count": 1,
+            "gross_profit": 5.0,
+            "gross_loss": 0.0
+          },
+          "cadence": {
+            "switches_per_day": 0.0,
+            "severity": "NONE",
+            "policy": "normal",
+            "reason": null
+          },
+          "hard_failed": true,
+          "passed": false,
+          "hard_failures": [
+            "episode_profit_factor_no_loss_sample_too_small"
+          ],
+          "soft_flags": [],
+          "diagnostics": {
+            "fill_profit_factor": null,
+            "action_profit_factor": {},
+            "position_switch_count": 0
+          }
+        }
+      }
+    },
+    {
+      "name": "no_loss_two",
+      "input": {
+        "episodes": [
+          {
+            "episode_id": "win",
+            "symbol": "BTCUSDT",
+            "side": 1,
+            "opened_at_ns": 10,
+            "closed_at_ns": 11,
+            "entry_price": 100.0,
+            "exit_price": 100.0,
+            "max_abs_qty": 1.0,
+            "remaining_qty": 0.0,
+            "gross_realized_pnl": 5.0,
+            "fees": 0.0,
+            "funding_pnl": 0.0,
+            "net_pnl": 5.0,
+            "mfe_pnl": 5.0,
+            "mae_pnl": 0.0,
+            "unrealized_pnl": 0.0,
+            "fill_count": 2,
+            "closed": true,
+            "add_count": 0,
+            "reduce_count": 0,
+            "holding_duration_ns": 0
+          },
+          {
+            "episode_id": "flat",
+            "symbol": "BTCUSDT",
+            "side": 1,
+            "opened_at_ns": 20,
+            "closed_at_ns": 21,
+            "entry_price": 100.0,
+            "exit_price": 100.0,
+            "max_abs_qty": 1.0,
+            "remaining_qty": 0.0,
+            "gross_realized_pnl": 0.0,
+            "fees": 0.0,
+            "funding_pnl": 0.0,
+            "net_pnl": 0.0,
+            "mfe_pnl": 0.0,
+            "mae_pnl": 0.0,
+            "unrealized_pnl": 0.0,
+            "fill_count": 2,
+            "closed": true,
+            "add_count": 0,
+            "reduce_count": 0,
+            "holding_duration_ns": 0
+          }
+        ],
+        "options": {
+          "switches_per_day": 0.0
+        }
+      },
+      "expected": {
+        "result": {
+          "episode_profit_factor": {
+            "value": null,
+            "status": "NO_LOSS_EPISODES",
+            "closed_episode_count": 2,
+            "gross_profit": 5.0,
+            "gross_loss": 0.0
+          },
+          "cadence": {
+            "switches_per_day": 0.0,
+            "severity": "NONE",
+            "policy": "normal",
+            "reason": null
+          },
+          "hard_failed": false,
+          "passed": true,
+          "hard_failures": [],
+          "soft_flags": [],
+          "diagnostics": {
+            "fill_profit_factor": null,
+            "action_profit_factor": {},
+            "position_switch_count": 0
+          }
+        }
+      }
+    },
+    {
+      "name": "no_closed",
+      "input": {
+        "episodes": [
+          {
+            "episode_id": "open",
+            "symbol": "BTCUSDT",
+            "side": 1,
+            "opened_at_ns": 10,
+            "closed_at_ns": null,
+            "entry_price": 100.0,
+            "exit_price": null,
+            "max_abs_qty": 1.0,
+            "remaining_qty": 1.0,
+            "gross_realized_pnl": 1000.0,
+            "fees": 0.0,
+            "funding_pnl": 0.0,
+            "net_pnl": 1000.0,
+            "mfe_pnl": 1000.0,
+            "mae_pnl": 0.0,
+            "unrealized_pnl": 0.0,
+            "fill_count": 1,
+            "closed": false,
+            "add_count": 0,
+            "reduce_count": 0,
+            "holding_duration_ns": 0
+          }
+        ],
+        "options": {
+          "switches_per_day": 0.0
+        }
+      },
+      "expected": {
+        "result": {
+          "episode_profit_factor": {
+            "value": null,
+            "status": "INSUFFICIENT_SAMPLE",
+            "closed_episode_count": 0,
+            "gross_profit": 0,
+            "gross_loss": 0
+          },
+          "cadence": {
+            "switches_per_day": 0.0,
+            "severity": "NONE",
+            "policy": "normal",
+            "reason": null
+          },
+          "hard_failed": true,
+          "passed": false,
+          "hard_failures": [
+            "episode_profit_factor_insufficient_sample"
+          ],
+          "soft_flags": [],
+          "diagnostics": {
+            "fill_profit_factor": null,
+            "action_profit_factor": {},
+            "position_switch_count": 0
+          }
+        }
+      }
+    },
+    {
+      "name": "zero_profit",
+      "input": {
+        "episodes": [
+          {
+            "episode_id": "flat",
+            "symbol": "BTCUSDT",
+            "side": 1,
+            "opened_at_ns": 10,
+            "closed_at_ns": 11,
+            "entry_price": 100.0,
+            "exit_price": 100.0,
+            "max_abs_qty": 1.0,
+            "remaining_qty": 0.0,
+            "gross_realized_pnl": 0.0,
+            "fees": 0.0,
+            "funding_pnl": 0.0,
+            "net_pnl": 0.0,
+            "mfe_pnl": 0.0,
+            "mae_pnl": 0.0,
+            "unrealized_pnl": 0.0,
+            "fill_count": 2,
+            "closed": true,
+            "add_count": 0,
+            "reduce_count": 0,
+            "holding_duration_ns": 0
+          }
+        ],
+        "options": {
+          "switches_per_day": 0.0
+        }
+      },
+      "expected": {
+        "result": {
+          "episode_profit_factor": {
+            "value": 0.0,
+            "status": "DEFINED",
+            "closed_episode_count": 1,
+            "gross_profit": 0.0,
+            "gross_loss": 0.0
+          },
+          "cadence": {
+            "switches_per_day": 0.0,
+            "severity": "NONE",
+            "policy": "normal",
+            "reason": null
+          },
+          "hard_failed": true,
+          "passed": false,
+          "hard_failures": [
+            "episode_profit_factor_below_minimum"
+          ],
+          "soft_flags": [],
+          "diagnostics": {
+            "fill_profit_factor": null,
+            "action_profit_factor": {},
+            "position_switch_count": 0
+          }
+        }
+      }
+    },
+    {
+      "name": "compensated_float_sum",
+      "input": {
+        "episodes": [
+          {
+            "episode_id": "sum-1",
+            "symbol": "BTCUSDT",
+            "side": 1,
+            "opened_at_ns": 10,
+            "closed_at_ns": 11,
+            "entry_price": 100.0,
+            "exit_price": 100.0,
+            "max_abs_qty": 1.0,
+            "remaining_qty": 0.0,
+            "gross_realized_pnl": 1e+16,
+            "fees": 0.0,
+            "funding_pnl": 0.0,
+            "net_pnl": 1e+16,
+            "mfe_pnl": 1e+16,
+            "mae_pnl": 0.0,
+            "unrealized_pnl": 0.0,
+            "fill_count": 2,
+            "closed": true,
+            "add_count": 0,
+            "reduce_count": 0,
+            "holding_duration_ns": 0
+          },
+          {
+            "episode_id": "sum-2",
+            "symbol": "BTCUSDT",
+            "side": 1,
+            "opened_at_ns": 20,
+            "closed_at_ns": 21,
+            "entry_price": 100.0,
+            "exit_price": 100.0,
+            "max_abs_qty": 1.0,
+            "remaining_qty": 0.0,
+            "gross_realized_pnl": 1.0,
+            "fees": 0.0,
+            "funding_pnl": 0.0,
+            "net_pnl": 1.0,
+            "mfe_pnl": 1.0,
+            "mae_pnl": 0.0,
+            "unrealized_pnl": 0.0,
+            "fill_count": 2,
+            "closed": true,
+            "add_count": 0,
+            "reduce_count": 0,
+            "holding_duration_ns": 0
+          },
+          {
+            "episode_id": "sum-3",
+            "symbol": "BTCUSDT",
+            "side": 1,
+            "opened_at_ns": 30,
+            "closed_at_ns": 31,
+            "entry_price": 100.0,
+            "exit_price": 100.0,
+            "max_abs_qty": 1.0,
+            "remaining_qty": 0.0,
+            "gross_realized_pnl": 1.0,
+            "fees": 0.0,
+            "funding_pnl": 0.0,
+            "net_pnl": 1.0,
+            "mfe_pnl": 1.0,
+            "mae_pnl": 0.0,
+            "unrealized_pnl": 0.0,
+            "fill_count": 2,
+            "closed": true,
+            "add_count": 0,
+            "reduce_count": 0,
+            "holding_duration_ns": 0
+          },
+          {
+            "episode_id": "sum-4",
+            "symbol": "BTCUSDT",
+            "side": 1,
+            "opened_at_ns": 40,
+            "closed_at_ns": 41,
+            "entry_price": 100.0,
+            "exit_price": 100.0,
+            "max_abs_qty": 1.0,
+            "remaining_qty": 0.0,
+            "gross_realized_pnl": -1.0000000000000002e+16,
+            "fees": 0.0,
+            "funding_pnl": 0.0,
+            "net_pnl": -1.0000000000000002e+16,
+            "mfe_pnl": 0.0,
+            "mae_pnl": -1.0000000000000002e+16,
+            "unrealized_pnl": 0.0,
+            "fill_count": 2,
+            "closed": true,
+            "add_count": 0,
+            "reduce_count": 0,
+            "holding_duration_ns": 0
+          }
+        ],
+        "options": {
+          "switches_per_day": 0.0
+        }
+      },
+      "expected": {
+        "result": {
+          "episode_profit_factor": {
+            "value": 1.0,
+            "status": "DEFINED",
+            "closed_episode_count": 4,
+            "gross_profit": 1.0000000000000002e+16,
+            "gross_loss": 1.0000000000000002e+16
+          },
+          "cadence": {
+            "switches_per_day": 0.0,
+            "severity": "NONE",
+            "policy": "normal",
+            "reason": null
+          },
+          "hard_failed": false,
+          "passed": true,
+          "hard_failures": [],
+          "soft_flags": [],
+          "diagnostics": {
+            "fill_profit_factor": null,
+            "action_profit_factor": {},
+            "position_switch_count": 0
+          }
+        }
+      }
+    },
+    {
+      "name": "multi_symbol_stable_order",
+      "input": {
+        "episodes": [
+          {
+            "episode_id": "btc-later",
+            "symbol": "BTCUSDT",
+            "side": -1,
+            "opened_at_ns": 30,
+            "closed_at_ns": 31,
+            "entry_price": 100.0,
+            "exit_price": 100.0,
+            "max_abs_qty": 1.0,
+            "remaining_qty": 0.0,
+            "gross_realized_pnl": 1.0,
+            "fees": 0.0,
+            "funding_pnl": 0.0,
+            "net_pnl": 1.0,
+            "mfe_pnl": 1.0,
+            "mae_pnl": 0.0,
+            "unrealized_pnl": 0.0,
+            "fill_count": 2,
+            "closed": true,
+            "add_count": 0,
+            "reduce_count": 0,
+            "holding_duration_ns": 0
+          },
+          {
+            "episode_id": "eth-z",
+            "symbol": "ETHUSDT",
+            "side": 1,
+            "opened_at_ns": 10,
+            "closed_at_ns": 11,
+            "entry_price": 100.0,
+            "exit_price": 100.0,
+            "max_abs_qty": 1.0,
+            "remaining_qty": 0.0,
+            "gross_realized_pnl": 1.0,
+            "fees": 0.0,
+            "funding_pnl": 0.0,
+            "net_pnl": 1.0,
+            "mfe_pnl": 1.0,
+            "mae_pnl": 0.0,
+            "unrealized_pnl": 0.0,
+            "fill_count": 2,
+            "closed": true,
+            "add_count": 0,
+            "reduce_count": 0,
+            "holding_duration_ns": 0
+          },
+          {
+            "episode_id": "btc-first",
+            "symbol": "BTCUSDT",
+            "side": 1,
+            "opened_at_ns": 10,
+            "closed_at_ns": 11,
+            "entry_price": 100.0,
+            "exit_price": 100.0,
+            "max_abs_qty": 1.0,
+            "remaining_qty": 0.0,
+            "gross_realized_pnl": 1.0,
+            "fees": 0.0,
+            "funding_pnl": 0.0,
+            "net_pnl": 1.0,
+            "mfe_pnl": 1.0,
+            "mae_pnl": 0.0,
+            "unrealized_pnl": 0.0,
+            "fill_count": 2,
+            "closed": true,
+            "add_count": 0,
+            "reduce_count": 0,
+            "holding_duration_ns": 0
+          },
+          {
+            "episode_id": "eth-a",
+            "symbol": "ETHUSDT",
+            "side": -1,
+            "opened_at_ns": 10,
+            "closed_at_ns": 11,
+            "entry_price": 100.0,
+            "exit_price": 100.0,
+            "max_abs_qty": 1.0,
+            "remaining_qty": 0.0,
+            "gross_realized_pnl": 1.0,
+            "fees": 0.0,
+            "funding_pnl": 0.0,
+            "net_pnl": 1.0,
+            "mfe_pnl": 1.0,
+            "mae_pnl": 0.0,
+            "unrealized_pnl": 0.0,
+            "fill_count": 2,
+            "closed": true,
+            "add_count": 0,
+            "reduce_count": 0,
+            "holding_duration_ns": 0
+          },
+          {
+            "episode_id": "eth-m",
+            "symbol": "ETHUSDT",
+            "side": 1,
+            "opened_at_ns": 10,
+            "closed_at_ns": 11,
+            "entry_price": 100.0,
+            "exit_price": 100.0,
+            "max_abs_qty": 1.0,
+            "remaining_qty": 0.0,
+            "gross_realized_pnl": 1.0,
+            "fees": 0.0,
+            "funding_pnl": 0.0,
+            "net_pnl": 1.0,
+            "mfe_pnl": 1.0,
+            "mae_pnl": 0.0,
+            "unrealized_pnl": 0.0,
+            "fill_count": 2,
+            "closed": true,
+            "add_count": 0,
+            "reduce_count": 0,
+            "holding_duration_ns": 0
+          },
+          {
+            "episode_id": "btc-same",
+            "symbol": "BTCUSDT",
+            "side": 1,
+            "opened_at_ns": 20,
+            "closed_at_ns": null,
+            "entry_price": 100.0,
+            "exit_price": null,
+            "max_abs_qty": 1.0,
+            "remaining_qty": 1.0,
+            "gross_realized_pnl": 1.0,
+            "fees": 0.0,
+            "funding_pnl": 0.0,
+            "net_pnl": 1.0,
+            "mfe_pnl": 1.0,
+            "mae_pnl": 0.0,
+            "unrealized_pnl": 0.0,
+            "fill_count": 1,
+            "closed": false,
+            "add_count": 0,
+            "reduce_count": 0,
+            "holding_duration_ns": 0
+          }
+        ],
+        "options": {
+          "elapsed_days": 1.0
+        }
+      },
+      "expected": {
+        "result": {
+          "episode_profit_factor": {
+            "value": null,
+            "status": "NO_LOSS_EPISODES",
+            "closed_episode_count": 5,
+            "gross_profit": 5.0,
+            "gross_loss": 0.0
+          },
+          "cadence": {
+            "switches_per_day": 3.0,
+            "severity": "HARD",
+            "policy": "normal",
+            "reason": "position_switch_cadence_above_normal_limit"
+          },
+          "hard_failed": true,
+          "passed": false,
+          "hard_failures": [
+            "position_switch_cadence_above_normal_limit"
+          ],
+          "soft_flags": [],
+          "diagnostics": {
+            "fill_profit_factor": null,
+            "action_profit_factor": {},
+            "position_switch_count": 3
+          }
+        }
+      }
+    },
+    {
+      "name": "invalid_side",
+      "input": {
+        "episodes": [
+          {
+            "episode_id": "invalid",
+            "symbol": "BTCUSDT",
+            "side": 0,
+            "opened_at_ns": 10,
+            "closed_at_ns": 11,
+            "entry_price": 100.0,
+            "exit_price": 100.0,
+            "max_abs_qty": 1.0,
+            "remaining_qty": 0.0,
+            "gross_realized_pnl": 1.0,
+            "fees": 0.0,
+            "funding_pnl": 0.0,
+            "net_pnl": 1.0,
+            "mfe_pnl": 1.0,
+            "mae_pnl": 0.0,
+            "unrealized_pnl": 0.0,
+            "fill_count": 2,
+            "closed": true,
+            "add_count": 0,
+            "reduce_count": 0,
+            "holding_duration_ns": 0
+          }
+        ],
+        "options": {
+          "elapsed_days": 1.0
+        }
+      },
+      "expected": {
+        "error": {
+          "type": "ValueError",
+          "message": "episode side must be -1 or 1"
+        }
+      }
+    },
+    {
+      "name": "negative_cadence",
+      "input": {
+        "episodes": [
+          {
+            "episode_id": "win",
+            "symbol": "BTCUSDT",
+            "side": 1,
+            "opened_at_ns": 10,
+            "closed_at_ns": 11,
+            "entry_price": 100.0,
+            "exit_price": 100.0,
+            "max_abs_qty": 1.0,
+            "remaining_qty": 0.0,
+            "gross_realized_pnl": 10.0,
+            "fees": 0.0,
+            "funding_pnl": 0.0,
+            "net_pnl": 10.0,
+            "mfe_pnl": 10.0,
+            "mae_pnl": 0.0,
+            "unrealized_pnl": 0.0,
+            "fill_count": 2,
+            "closed": true,
+            "add_count": 0,
+            "reduce_count": 0,
+            "holding_duration_ns": 0
+          },
+          {
+            "episode_id": "loss",
+            "symbol": "BTCUSDT",
+            "side": -1,
+            "opened_at_ns": 20,
+            "closed_at_ns": 21,
+            "entry_price": 100.0,
+            "exit_price": 100.0,
+            "max_abs_qty": 1.0,
+            "remaining_qty": 0.0,
+            "gross_realized_pnl": -5.0,
+            "fees": 0.0,
+            "funding_pnl": 0.0,
+            "net_pnl": -5.0,
+            "mfe_pnl": 0.0,
+            "mae_pnl": -5.0,
+            "unrealized_pnl": 0.0,
+            "fill_count": 2,
+            "closed": true,
+            "add_count": 0,
+            "reduce_count": 0,
+            "holding_duration_ns": 0
+          }
+        ],
+        "options": {
+          "switches_per_day": -1.0
+        }
+      },
+      "expected": {
+        "error": {
+          "type": "ValueError",
+          "message": "switches_per_day cannot be negative"
+        }
+      }
+    },
+    {
+      "name": "negative_minimum",
+      "input": {
+        "episodes": [
+          {
+            "episode_id": "win",
+            "symbol": "BTCUSDT",
+            "side": 1,
+            "opened_at_ns": 10,
+            "closed_at_ns": 11,
+            "entry_price": 100.0,
+            "exit_price": 100.0,
+            "max_abs_qty": 1.0,
+            "remaining_qty": 0.0,
+            "gross_realized_pnl": 10.0,
+            "fees": 0.0,
+            "funding_pnl": 0.0,
+            "net_pnl": 10.0,
+            "mfe_pnl": 10.0,
+            "mae_pnl": 0.0,
+            "unrealized_pnl": 0.0,
+            "fill_count": 2,
+            "closed": true,
+            "add_count": 0,
+            "reduce_count": 0,
+            "holding_duration_ns": 0
+          },
+          {
+            "episode_id": "loss",
+            "symbol": "BTCUSDT",
+            "side": -1,
+            "opened_at_ns": 20,
+            "closed_at_ns": 21,
+            "entry_price": 100.0,
+            "exit_price": 100.0,
+            "max_abs_qty": 1.0,
+            "remaining_qty": 0.0,
+            "gross_realized_pnl": -5.0,
+            "fees": 0.0,
+            "funding_pnl": 0.0,
+            "net_pnl": -5.0,
+            "mfe_pnl": 0.0,
+            "mae_pnl": -5.0,
+            "unrealized_pnl": 0.0,
+            "fill_count": 2,
+            "closed": true,
+            "add_count": 0,
+            "reduce_count": 0,
+            "holding_duration_ns": 0
+          }
+        ],
+        "options": {
+          "switches_per_day": 0.0,
+          "min_episode_profit_factor": -1.0
+        }
+      },
+      "expected": {
+        "error": {
+          "type": "ValueError",
+          "message": "min_episode_profit_factor cannot be negative"
+        }
+      }
+    },
+    {
+      "name": "missing_elapsed",
+      "input": {
+        "episodes": [
+          {
+            "episode_id": "win",
+            "symbol": "BTCUSDT",
+            "side": 1,
+            "opened_at_ns": 10,
+            "closed_at_ns": 11,
+            "entry_price": 100.0,
+            "exit_price": 100.0,
+            "max_abs_qty": 1.0,
+            "remaining_qty": 0.0,
+            "gross_realized_pnl": 10.0,
+            "fees": 0.0,
+            "funding_pnl": 0.0,
+            "net_pnl": 10.0,
+            "mfe_pnl": 10.0,
+            "mae_pnl": 0.0,
+            "unrealized_pnl": 0.0,
+            "fill_count": 2,
+            "closed": true,
+            "add_count": 0,
+            "reduce_count": 0,
+            "holding_duration_ns": 0
+          },
+          {
+            "episode_id": "loss",
+            "symbol": "BTCUSDT",
+            "side": -1,
+            "opened_at_ns": 20,
+            "closed_at_ns": 21,
+            "entry_price": 100.0,
+            "exit_price": 100.0,
+            "max_abs_qty": 1.0,
+            "remaining_qty": 0.0,
+            "gross_realized_pnl": -5.0,
+            "fees": 0.0,
+            "funding_pnl": 0.0,
+            "net_pnl": -5.0,
+            "mfe_pnl": 0.0,
+            "mae_pnl": -5.0,
+            "unrealized_pnl": 0.0,
+            "fill_count": 2,
+            "closed": true,
+            "add_count": 0,
+            "reduce_count": 0,
+            "holding_duration_ns": 0
+          }
+        ],
+        "options": {}
+      },
+      "expected": {
+        "error": {
+          "type": "ValueError",
+          "message": "positive elapsed_days is required when switches_per_day is omitted"
+        }
+      }
+    },
+    {
+      "name": "zero_elapsed",
+      "input": {
+        "episodes": [
+          {
+            "episode_id": "win",
+            "symbol": "BTCUSDT",
+            "side": 1,
+            "opened_at_ns": 10,
+            "closed_at_ns": 11,
+            "entry_price": 100.0,
+            "exit_price": 100.0,
+            "max_abs_qty": 1.0,
+            "remaining_qty": 0.0,
+            "gross_realized_pnl": 10.0,
+            "fees": 0.0,
+            "funding_pnl": 0.0,
+            "net_pnl": 10.0,
+            "mfe_pnl": 10.0,
+            "mae_pnl": 0.0,
+            "unrealized_pnl": 0.0,
+            "fill_count": 2,
+            "closed": true,
+            "add_count": 0,
+            "reduce_count": 0,
+            "holding_duration_ns": 0
+          },
+          {
+            "episode_id": "loss",
+            "symbol": "BTCUSDT",
+            "side": -1,
+            "opened_at_ns": 20,
+            "closed_at_ns": 21,
+            "entry_price": 100.0,
+            "exit_price": 100.0,
+            "max_abs_qty": 1.0,
+            "remaining_qty": 0.0,
+            "gross_realized_pnl": -5.0,
+            "fees": 0.0,
+            "funding_pnl": 0.0,
+            "net_pnl": -5.0,
+            "mfe_pnl": 0.0,
+            "mae_pnl": -5.0,
+            "unrealized_pnl": 0.0,
+            "fill_count": 2,
+            "closed": true,
+            "add_count": 0,
+            "reduce_count": 0,
+            "holding_duration_ns": 0
+          }
+        ],
+        "options": {
+          "elapsed_days": 0.0
+        }
+      },
+      "expected": {
+        "error": {
+          "type": "ValueError",
+          "message": "positive elapsed_days is required when switches_per_day is omitted"
+        }
+      }
+    },
+    {
+      "name": "negative_elapsed",
+      "input": {
+        "episodes": [
+          {
+            "episode_id": "win",
+            "symbol": "BTCUSDT",
+            "side": 1,
+            "opened_at_ns": 10,
+            "closed_at_ns": 11,
+            "entry_price": 100.0,
+            "exit_price": 100.0,
+            "max_abs_qty": 1.0,
+            "remaining_qty": 0.0,
+            "gross_realized_pnl": 10.0,
+            "fees": 0.0,
+            "funding_pnl": 0.0,
+            "net_pnl": 10.0,
+            "mfe_pnl": 10.0,
+            "mae_pnl": 0.0,
+            "unrealized_pnl": 0.0,
+            "fill_count": 2,
+            "closed": true,
+            "add_count": 0,
+            "reduce_count": 0,
+            "holding_duration_ns": 0
+          },
+          {
+            "episode_id": "loss",
+            "symbol": "BTCUSDT",
+            "side": -1,
+            "opened_at_ns": 20,
+            "closed_at_ns": 21,
+            "entry_price": 100.0,
+            "exit_price": 100.0,
+            "max_abs_qty": 1.0,
+            "remaining_qty": 0.0,
+            "gross_realized_pnl": -5.0,
+            "fees": 0.0,
+            "funding_pnl": 0.0,
+            "net_pnl": -5.0,
+            "mfe_pnl": 0.0,
+            "mae_pnl": -5.0,
+            "unrealized_pnl": 0.0,
+            "fill_count": 2,
+            "closed": true,
+            "add_count": 0,
+            "reduce_count": 0,
+            "holding_duration_ns": 0
+          }
+        ],
+        "options": {
+          "elapsed_days": -1.0
+        }
+      },
+      "expected": {
+        "error": {
+          "type": "ValueError",
+          "message": "positive elapsed_days is required when switches_per_day is omitted"
+        }
+      }
+    }
+  ]
+}
