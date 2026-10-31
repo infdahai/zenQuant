@@ -60,11 +60,13 @@ type Result struct {
 	Reports     []research.ExecutionReport `json:"reports"`
 	Episodes    []research.PositionEpisode `json:"episodes"`
 	PositionQty float64                    `json:"position_qty"`
+	Metrics     *Metrics                   `json:"metrics,omitempty"`
 }
 type Store struct {
-	root   string
-	worker chan struct{}
-	mu     sync.Mutex
+	root      string
+	worker    chan struct{}
+	mu        sync.Mutex
+	jobIOHook func(string, Job) error
 }
 
 func Open(root string) (*Store, error) {
@@ -254,9 +256,9 @@ func (s *Store) List(kind string) ([]string, error) {
 	return ids, nil
 }
 
-// Run executes a fixed buy-first/sell-last diagnostic. The policy has no
+// run executes a fixed buy-first/sell-last diagnostic. The policy has no
 // predictive or trading authority. The queue is bounded to one active run.
-func (s *Store) Run(ctx context.Context, id string, fee float64) (Result, error) {
+func (s *Store) run(ctx context.Context, id string, fee float64) (Result, error) {
 	var out Result
 	select {
 	case s.worker <- struct{}{}:
@@ -307,7 +309,11 @@ func (s *Store) Run(ctx context.Context, id string, fee float64) (Result, error)
 	if err = ctx.Err(); err != nil {
 		return out, err
 	}
-	out = Result{SnapshotID: id, Engine: "fixed-buy-first-sell-last-v1", Assumptions: "Synthetic same-close full fills, no slippage; only the latest visible funding row is charged per bar. Historical availability unknown. Diagnostic only; no live parity or profit claim.", FeeRate: fee, Reports: replay.Reports, Episodes: replay.Episodes, PositionQty: replay.PositionQty}
+	metrics, err := calculateMetrics(d, replay)
+	if err != nil {
+		return out, err
+	}
+	out = Result{SnapshotID: id, Engine: "fixed-buy-first-sell-last-v2", Assumptions: "Synthetic same-close full fills, no slippage; only the latest visible funding row is charged per bar. Historical availability unknown. Diagnostic only; no live parity or profit claim.", FeeRate: fee, Reports: replay.Reports, Episodes: replay.Episodes, PositionQty: replay.PositionQty, Metrics: &metrics}
 	b, err := encode(out)
 	if err != nil {
 		return Result{}, err
@@ -325,8 +331,11 @@ func Compare(a, b Result) (string, error) {
 	if len(a.Episodes) != 1 || len(b.Episodes) != 1 {
 		return "", fmt.Errorf("comparison requires one episode per result")
 	}
+	if a.Metrics == nil || b.Metrics == nil {
+		return "", errors.New("comparison requires results with reconciled metrics")
+	}
 	if a.SnapshotID != b.SnapshotID || a.Engine != b.Engine || a.Assumptions != b.Assumptions {
 		return "", errors.New("comparison requires the same snapshot and engine assumptions")
 	}
-	return fmt.Sprintf("Same snapshot; fee rates %.6g vs %.6g. Net P&L: %.8f vs %.8f; difference %.8f", a.FeeRate, b.FeeRate, a.Episodes[0].NetPnL, b.Episodes[0].NetPnL, b.Episodes[0].NetPnL-a.Episodes[0].NetPnL), nil
+	return fmt.Sprintf("Same snapshot %s, engine %s; fee rates %.6g vs %.6g. Net P&L: %.8f vs %.8f; difference %.8f. Max drawdown: %.8f vs %.8f; turnover: %.8f vs %.8f", a.SnapshotID, a.Engine, a.FeeRate, b.FeeRate, a.Metrics.NetPnL, b.Metrics.NetPnL, b.Metrics.NetPnL-a.Metrics.NetPnL, a.Metrics.MaxDrawdown, b.Metrics.MaxDrawdown, a.Metrics.Turnover, b.Metrics.Turnover), nil
 }

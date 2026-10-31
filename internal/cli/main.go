@@ -24,7 +24,7 @@ import (
 
 func Run(args []string, out, stderr io.Writer) error {
 	if len(args) == 0 || args[0] == "help" || args[0] == "--help" {
-		fmt.Fprintln(out, "zenquant serve [--port 8092] [--assets options-ui/dist] [--engineering] [--research-store DIR]\nzenquant workbench --store DIR import|list|snapshot|run|result|compare < request.json\nzenquant evaluate --route /api/curve < request.json\nzenquant research-splits\nzenquant gate-v3 < request.json\nNative Go local diagnostics and manual record-only paper workbench.")
+		fmt.Fprintln(out, "zenquant serve [--port 8092] [--assets options-ui/dist] [--engineering] [--research-store DIR]\nzenquant workbench --store DIR import|list|snapshot|submit|jobs|cancel|result|compare < request.json\nzenquant evaluate --route /api/curve < request.json\nzenquant research-splits\nzenquant gate-v3 < request.json\nNative Go local diagnostics and manual record-only paper workbench.")
 		return nil
 	}
 	switch args[0] {
@@ -132,6 +132,11 @@ func serve(args []string, out, stderr io.Writer) error {
 		if err != nil {
 			return err
 		}
+		worker, err := workbench.StartJobs(researchStore)
+		if err != nil {
+			return err
+		}
+		defer worker.Close()
 		researchAPI = researchStore.API
 		for path, asset := range server.ResearchAssets() {
 			assets[path] = asset

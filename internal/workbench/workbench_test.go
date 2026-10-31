@@ -34,7 +34,7 @@ func TestImportRunReopenCompare(t *testing.T) {
 	if err != nil || same.ID != snap.ID {
 		t.Fatalf("snapshot identity: %+v %v", same, err)
 	}
-	r, err := s.Run(context.Background(), snap.ID, .001)
+	r, err := s.run(context.Background(), snap.ID, .001)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -80,7 +80,7 @@ func TestImportRejectsInvalidAndRunCancellation(t *testing.T) {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	if _, err = s.Run(ctx, snap.ID, 0); err == nil {
+	if _, err = s.run(ctx, snap.ID, 0); err == nil {
 		t.Fatal("cancelled run accepted")
 	}
 	ids, err := s.List("result")
@@ -108,7 +108,7 @@ func TestGapIsVisibleAndBlocksRun(t *testing.T) {
 	if err != nil || snap.Quality.Gaps != 1 {
 		t.Fatalf("quality: %+v %v", snap, err)
 	}
-	if _, err = s.Run(context.Background(), snap.ID, 0); err == nil {
+	if _, err = s.run(context.Background(), snap.ID, 0); err == nil {
 		t.Fatal("gap accepted")
 	}
 }

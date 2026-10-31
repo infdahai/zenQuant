@@ -1,7 +1,6 @@
 package workbench
 
 import (
-	"context"
 	"encoding/json"
 	"errors"
 )
@@ -52,7 +51,17 @@ func (s *Store) API(route string, body []byte) ([]byte, error) {
 			return nil, err
 		}
 		value = x
-	case "/api/research/run":
+	case "/api/research/jobs":
+		var req struct{}
+		if err := strictDecode(body, &req); err != nil {
+			return nil, err
+		}
+		x, err := s.JobsList()
+		if err != nil {
+			return nil, err
+		}
+		value = x
+	case "/api/research/submit":
 		var req struct {
 			SnapshotID string  `json:"snapshot_id"`
 			FeeRate    float64 `json:"fee_rate"`
@@ -60,7 +69,19 @@ func (s *Store) API(route string, body []byte) ([]byte, error) {
 		if err := strictDecode(body, &req); err != nil {
 			return nil, err
 		}
-		x, err := s.Run(context.Background(), req.SnapshotID, req.FeeRate)
+		x, err := s.Submit(req.SnapshotID, req.FeeRate)
+		if err != nil {
+			return nil, err
+		}
+		value = x
+	case "/api/research/cancel":
+		var req struct {
+			ID string `json:"id"`
+		}
+		if err := strictDecode(body, &req); err != nil {
+			return nil, err
+		}
+		x, err := s.CancelJob(req.ID)
 		if err != nil {
 			return nil, err
 		}

@@ -19,11 +19,11 @@ func runWorkbench(args []string, out, stderr io.Writer) error {
 		return err
 	}
 	if *storePath == "" || flags.NArg() != 1 {
-		return errors.New("usage: zenquant workbench --store DIR import|list|snapshot|run|result|compare < request.json")
+		return errors.New("usage: zenquant workbench --store DIR import|list|snapshot|submit|jobs|cancel|result|compare < request.json")
 	}
 	action := flags.Arg(0)
 	switch action {
-	case "import", "list", "snapshot", "run", "result", "compare":
+	case "import", "list", "snapshot", "result", "compare", "jobs", "submit", "cancel":
 	default:
 		return errors.New("unknown workbench action")
 	}

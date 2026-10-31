@@ -172,7 +172,7 @@ func (s *Server) handle(conn net.Conn, host string) {
 		evaluate = s.Options
 	case "/api/paper/state", "/api/paper/preview", "/api/paper/confirm":
 		evaluate = s.Paper
-	case "/api/research/import", "/api/research/list", "/api/research/snapshot", "/api/research/result", "/api/research/run", "/api/research/compare":
+	case "/api/research/import", "/api/research/list", "/api/research/snapshot", "/api/research/result", "/api/research/compare", "/api/research/jobs", "/api/research/submit", "/api/research/cancel":
 		evaluate = s.Research
 	}
 	if evaluate == nil {
