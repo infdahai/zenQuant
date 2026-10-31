@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"net/http"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -16,6 +17,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/infdahai/zenQuant/internal/deribit"
 	"github.com/infdahai/zenQuant/internal/options"
 	"github.com/infdahai/zenQuant/internal/paper"
 	"github.com/infdahai/zenQuant/internal/research"
@@ -25,10 +27,38 @@ import (
 
 func Run(args []string, out, stderr io.Writer) error {
 	if len(args) == 0 || args[0] == "help" || args[0] == "--help" {
-		fmt.Fprintln(out, "zenquant serve [--port 8092] [--assets options-ui/dist] [--engineering] [--research-store DIR]\nzenquant workbench --store DIR import|list|snapshot|submit|jobs|cancel|result|compare < request.json\nzenquant evaluate --route /api/curve < request.json\nzenquant vix-snapshot --request FILE --manifest FILE --evidence DIR\nzenquant research-splits\nzenquant review-loop-stability [--results-root DIR] [--output-dir DIR]\nzenquant gate-v3 < request.json\nNative Go local diagnostics and manual record-only paper workbench.")
+		fmt.Fprintln(out, "zenquant serve [--port 8092] [--assets options-ui/dist] [--engineering] [--research-store DIR]\nzenquant workbench --store DIR import|list|snapshot|submit|jobs|cancel|result|compare < request.json\nzenquant evaluate --route /api/curve < request.json\nzenquant vix-snapshot --request FILE --manifest FILE --evidence DIR\nzenquant research-splits\nzenquant download-deribit-options [--currency BTC] [--output-root DIR] [--endpoint URL]\nzenquant review-loop-stability [--results-root DIR] [--output-dir DIR]\nzenquant gate-v3 < request.json\nNative Go local diagnostics and manual record-only paper workbench.")
 		return nil
 	}
 	switch args[0] {
+	case "download-deribit-options":
+		flags := flag.NewFlagSet("download-deribit-options", flag.ContinueOnError)
+		flags.SetOutput(stderr)
+		currency := flags.String("currency", "BTC", "underlying currency")
+		root := flags.String("output-root", "data/raw/deribit_options", "snapshot output root")
+		endpoint := flags.String("endpoint", deribit.DefaultEndpoint, "Deribit public API base URL")
+		if err := flags.Parse(args[1:]); err != nil {
+			if errors.Is(err, flag.ErrHelp) {
+				return nil
+			}
+			return err
+		}
+		if flags.NArg() != 0 {
+			return errors.New("unexpected argument")
+		}
+		client := &http.Client{Timeout: 15 * time.Second}
+		rows, err := deribit.Download(client, *endpoint, *currency, time.Now)
+		if err != nil {
+			return err
+		}
+		jp, pp, err := deribit.Save(rows, *root)
+		if err != nil {
+			return err
+		}
+		if _, err := fmt.Fprintf(out, "Deribit options chain snapshot complete\nrows=%d\njson=%s\nparquet=%s\n", len(rows), jp, pp); err != nil {
+			return fmt.Errorf("snapshot published at %s and %s; stdout failed: %w", jp, pp, err)
+		}
+		return nil
 	case "review-loop-stability":
 		flags := flag.NewFlagSet("review-loop-stability", flag.ContinueOnError)
 		flags.SetOutput(stderr)
