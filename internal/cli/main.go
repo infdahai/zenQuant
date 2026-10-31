@@ -17,6 +17,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/infdahai/zenQuant/internal/cot"
 	"github.com/infdahai/zenQuant/internal/deribit"
 	"github.com/infdahai/zenQuant/internal/options"
 	"github.com/infdahai/zenQuant/internal/paper"
@@ -27,10 +28,39 @@ import (
 
 func Run(args []string, out, stderr io.Writer) error {
 	if len(args) == 0 || args[0] == "help" || args[0] == "--help" {
-		fmt.Fprintln(out, "zenquant serve [--port 8092] [--assets options-ui/dist] [--engineering] [--research-store DIR]\nzenquant workbench --store DIR import|list|snapshot|submit|jobs|cancel|result|compare < request.json\nzenquant evaluate --route /api/curve < request.json\nzenquant vix-snapshot --request FILE --manifest FILE --evidence DIR\nzenquant research-splits\nzenquant download-deribit-options [--currency BTC] [--output-root DIR] [--endpoint URL]\nzenquant review-loop-stability [--results-root DIR] [--output-dir DIR]\nzenquant gate-v3 < request.json\nNative Go local diagnostics and manual record-only paper workbench.")
+		fmt.Fprintln(out, "zenquant serve [--port 8092] [--assets options-ui/dist] [--engineering] [--research-store DIR]\nzenquant workbench --store DIR import|list|snapshot|submit|jobs|cancel|result|compare < request.json\nzenquant evaluate --route /api/curve < request.json\nzenquant vix-snapshot --request FILE --manifest FILE --evidence DIR\nzenquant research-splits\nzenquant download-cot [--years 5] [--output-root DIR] [--base-url URL] [--market NAME]\nzenquant download-deribit-options [--currency BTC] [--output-root DIR] [--endpoint URL]\nzenquant review-loop-stability [--results-root DIR] [--output-dir DIR]\nzenquant gate-v3 < request.json\nNative Go local diagnostics and manual record-only paper workbench.")
 		return nil
 	}
 	switch args[0] {
+	case "download-cot":
+		flags := flag.NewFlagSet("download-cot", flag.ContinueOnError)
+		flags.SetOutput(stderr)
+		years := flags.Int("years", 5, "number of years including the current year")
+		root := flags.String("output-root", "data/raw/cftc_go", "isolated output root")
+		base := flags.String("base-url", cot.DefaultBaseURL, "CFTC report base URL")
+		market := flags.String("market", "", "exact Bitcoin market name (case insensitive)")
+		if err := flags.Parse(args[1:]); err != nil {
+			if errors.Is(err, flag.ErrHelp) {
+				return nil
+			}
+			return err
+		}
+		if flags.NArg() != 0 || *years < 1 || *years > 100 {
+			return errors.New("invalid arguments")
+		}
+		year := time.Now().UTC().Year()
+		rows, err := cot.Download(&http.Client{Timeout: 60 * time.Second}, *base, *market, year-*years+1, year)
+		if err != nil {
+			return err
+		}
+		path, err := cot.Save(rows, *root)
+		if err != nil {
+			return err
+		}
+		if _, err := fmt.Fprintf(out, "rows=%d\nparquet=%s\n", len(rows), path); err != nil {
+			return fmt.Errorf("dataset published at %s; stdout failed: %w", path, err)
+		}
+		return nil
 	case "download-deribit-options":
 		flags := flag.NewFlagSet("download-deribit-options", flag.ContinueOnError)
 		flags.SetOutput(stderr)
