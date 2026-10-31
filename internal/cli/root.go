@@ -7,6 +7,28 @@ import (
 	"strings"
 )
 
+// CheckoutRoot locates the checkout containing start, including linked worktrees.
+func CheckoutRoot(start string) (string, error) {
+	dir, err := filepath.Abs(start)
+	if err != nil {
+		return "", err
+	}
+	for {
+		_, err := os.Lstat(filepath.Join(dir, ".git"))
+		if err == nil {
+			return dir, nil
+		}
+		if !os.IsNotExist(err) {
+			return "", err
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return "", errors.New("run from a repository checkout")
+		}
+		dir = parent
+	}
+}
+
 // RepositoryRoot resolves linked worktrees to the single repository allocation authority.
 // It reads only Git location metadata and never invokes Git or a legacy backend.
 func RepositoryRoot(start string) (string, error) {

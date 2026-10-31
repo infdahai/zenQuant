@@ -1,6 +1,6 @@
 # Go workbench operations
 
-The default runtime is `bin/zenquant`, built with `make build`. It requires only the binary and `options-ui/dist` at runtime; no Python, Rust or network service is called to evaluate requests. Run from the repository checkout, or pass `--assets` for the static bundle. Supported hosts for this first migration are macOS and Linux.
+The default runtime is `bin/zenquant`, built with `make build`. It requires only the binary and `options-ui/dist` at runtime; no Python, Rust or network service is called to evaluate requests. Run from the repository checkout or any of its subdirectories; the default static bundle comes from that checkout, including linked worktrees. An explicit `--assets` path remains relative to the current directory unless absolute. Supported hosts for this first migration are macOS and Linux.
 
 ```sh
 npm ci --ignore-scripts

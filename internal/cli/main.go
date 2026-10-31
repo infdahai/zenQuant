@@ -66,6 +66,23 @@ func serve(args []string, out, stderr io.Writer) error {
 	if flags.NArg() != 0 || *port < 1 || *port > 65535 {
 		return errors.New("invalid serve arguments")
 	}
+	assetsSpecified := false
+	flags.Visit(func(f *flag.Flag) {
+		if f.Name == "assets" {
+			assetsSpecified = true
+		}
+	})
+	if !assetsSpecified {
+		cwd, err := os.Getwd()
+		if err != nil {
+			return err
+		}
+		root, err := CheckoutRoot(cwd)
+		if err != nil {
+			return err
+		}
+		*assetsPath = filepath.Join(root, "options-ui", "dist")
+	}
 	assets, err := server.LoadAssets(*assetsPath)
 	if err != nil {
 		return err
