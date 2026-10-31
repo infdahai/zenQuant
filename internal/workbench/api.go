@@ -41,7 +41,7 @@ func (s *Store) API(route string, body []byte) ([]byte, error) {
 			}
 			filtered := x[:0]
 			for _, id := range x {
-				if allowed[id] || s.legacyResult(id) {
+				if allowed[id] {
 					filtered = append(filtered, id)
 				}
 			}
@@ -163,14 +163,7 @@ func (s *Store) resultVisible(id string) error {
 			return nil
 		}
 	}
-	if s.legacyResult(id) {
-		return nil
-	}
-	return errors.New("result is not linked to a succeeded job")
-}
-func (s *Store) legacyResult(id string) bool {
-	r, err := s.Result(id)
-	return err == nil && (r.Engine == "fixed-buy-first-sell-last-v1" || r.Engine == "fixed-buy-first-sell-last-v2")
+	return errors.New("result is not linked to a succeeded job; legacy or orphaned artifacts require manual review")
 }
 
 // Browser JSON must not round nanosecond timestamps through JavaScript numbers.

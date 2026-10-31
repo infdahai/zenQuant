@@ -221,7 +221,7 @@ func (s *Store) Submit(id string, fee float64) (Job, error) {
 		if e != nil {
 			return j, e
 		}
-		if x.Status == "queued" || x.Status == "running" {
+		if x.Status == "queued" || x.Status == "running" || x.Status == "committing" {
 			count++
 		}
 	}

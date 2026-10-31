@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"embed"
 	"fmt"
+	"regexp"
 	"runtime"
 	"strings"
 	"sync"
@@ -16,6 +17,10 @@ var workbenchSources embed.FS
 var identityOnce sync.Once
 var identityValue string
 var identityError error
+
+var engineIdentityPattern = regexp.MustCompile(`^diagnostic-v3;numeric=binary64;go=[^;]+;source-sha256=[a-f0-9]{64}$`)
+
+func verifiedEngine(identity string) bool { return engineIdentityPattern.MatchString(identity) }
 
 // EngineIdentity hashes embedded source and the numeric/toolchain contract.
 func EngineIdentity() (string, error) {

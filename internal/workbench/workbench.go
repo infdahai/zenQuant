@@ -331,6 +331,9 @@ func (s *Store) run(ctx context.Context, id string, fee float64) (Result, error)
 	return out, nil
 }
 func Compare(a, b Result) (string, error) {
+	if !verifiedEngine(a.Engine) || !verifiedEngine(b.Engine) {
+		return "", errors.New("comparison unavailable: legacy engine implementation identity is unverified")
+	}
 	if len(a.Episodes) != 1 || len(b.Episodes) != 1 {
 		return "", fmt.Errorf("comparison requires one episode per result")
 	}
