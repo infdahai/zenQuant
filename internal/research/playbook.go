@@ -3,6 +3,7 @@ package research
 import (
 	"fmt"
 	"math"
+	"math/big"
 )
 
 // PlaybookState is the subset of MarketState used by offline selection.
@@ -62,6 +63,35 @@ type PlaybookSelection struct {
 	ReasonCodes         []string  `json:"reason_codes"`
 }
 
+// playbookConfidenceBelow compares the correctly rounded fourth root against a
+// finite threshold. The exact midpoint comparison makes the boundary independent
+// of the platform math.Pow implementation. Python's platform pow can differ
+// from the correctly rounded result, changing the decision at the boundary.
+func playbookConfidenceBelow(product, threshold float64) bool {
+	if threshold <= 0 {
+		return false
+	}
+	// Two correctly rounded square roots are within one ULP of the exact
+	// fourth root; only comparisons near the threshold need exact arithmetic.
+	approx := math.Sqrt(math.Sqrt(product))
+	lower := math.Nextafter(math.Nextafter(threshold, math.Inf(-1)), math.Inf(-1))
+	upper := math.Nextafter(math.Nextafter(threshold, math.Inf(1)), math.Inf(1))
+	if approx < lower {
+		return true
+	}
+	if approx > upper {
+		return false
+	}
+	previous := math.Nextafter(threshold, math.Inf(-1))
+	midpoint := new(big.Rat).Add(new(big.Rat).SetFloat64(previous), new(big.Rat).SetFloat64(threshold))
+	midpoint.Quo(midpoint, big.NewRat(2, 1))
+	square := new(big.Rat).Mul(midpoint, midpoint)
+	fourth := new(big.Rat).Mul(square, square)
+	comparison := new(big.Rat).SetFloat64(product).Cmp(fourth)
+	// A tie rounds to the even significand of the two adjacent floats.
+	return comparison < 0 || (comparison == 0 && math.Float64bits(previous)&1 == 0)
+}
+
 // SelectPlaybook supports finite inputs and finite intermediate arithmetic. A
 // negative confidence product is rejected because Python would produce a complex value.
 // Invalid inputs return an error and a zero selection even when a preservation
@@ -86,7 +116,7 @@ func SelectPlaybook(s PlaybookState, c PlaybookConfig) (PlaybookSelection, error
 		return PlaybookSelection{}, fmt.Errorf("playbook confidence product must be nonnegative")
 	}
 	out := PlaybookSelection{Symbol: s.Symbol, Timeframe: s.Timeframe, CutoffTimeNS: s.CutoffTimeNS}
-	preserve := s.VolatilityState == "DISTORTED" || s.QualityState == "DEGRADED" || s.QualityState == "UNSAFE" || s.TransitionRisk >= c.PreserveCapitalTransitionRisk || math.Pow(product, 0.25) < c.PreserveCapitalMinOverallConfidence
+	preserve := s.VolatilityState == "DISTORTED" || s.QualityState == "DEGRADED" || s.QualityState == "UNSAFE" || s.TransitionRisk >= c.PreserveCapitalTransitionRisk || playbookConfidenceBelow(product, c.PreserveCapitalMinOverallConfidence)
 	tradable := s.QualityState == "TRADABLE" || s.QualityState == "NOISY"
 	bull := s.DirectionalState == "UPTREND" && tradable && s.PositioningState != "CROWDED_LONG" && s.DirectionalConfidence >= c.TradeDirectionalConfidenceFloor
 	bear := tradable && s.PositioningState != "CROWDED_SHORT" && ((s.DirectionalState == "DOWNTREND" && s.DirectionalConfidence >= c.TradeDirectionalConfidenceFloor) || (s.DirectionalState == "TRANSITION" && s.DirectionSignal <= c.BearishOverrideDirectionSignal && s.DirectionalConfidence >= c.BearishOverrideConfidenceFloor))

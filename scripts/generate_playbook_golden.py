@@ -4,6 +4,7 @@
 import argparse
 import importlib.util
 import json
+import math
 import sys
 from dataclasses import asdict
 from pathlib import Path
@@ -93,6 +94,19 @@ def build_fixture():
                 "quality_confidence": 0.35,
             },
             {},
+        ),
+        *(
+            (
+                f"confidence_ulp_{name}",
+                {
+                    "directional_confidence": value,
+                    "volatility_confidence": value,
+                    "positioning_confidence": value,
+                    "quality_confidence": value,
+                },
+                {},
+            )
+            for name, value in (("below", math.nextafter(0.35, -math.inf)), ("above", math.nextafter(0.35, math.inf)))
         ),
         (
             "custom_bull",

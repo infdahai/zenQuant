@@ -35,6 +35,71 @@ func TestPlaybookPythonGolden(t *testing.T) {
 	}
 }
 
+func TestPlaybookConfidenceBoundary(t *testing.T) {
+	thresholds := []float64{math.SmallestNonzeroFloat64, 0.35, 0.5, 1, 2, math.MaxFloat64}
+	for _, threshold := range thresholds {
+		// Cover zero, a subnormal product, ordinary values and the maximum float.
+		for _, product := range []float64{0, math.SmallestNonzeroFloat64, 0.0625, 1, math.MaxFloat64} {
+			got := playbookConfidenceBelow(product, threshold)
+			// At these products the fourth root is known exactly, except MaxFloat64,
+			// whose root is strictly between 1 and MaxFloat64.
+			var root float64
+			switch product {
+			case 0:
+				root = 0
+			case math.SmallestNonzeroFloat64:
+				root = math.Ldexp(1, -268) * math.Sqrt2
+			case 0.0625:
+				root = 0.5
+			case 1:
+				root = 1
+			default:
+				root = math.Ldexp(1, 256)
+			}
+			if got != (root < threshold) {
+				t.Fatalf("product=%g threshold=%g got %t", product, threshold, got)
+			}
+		}
+	}
+	p := 0.35 * 0.35
+	p *= 0.35
+	p *= 0.35
+	for _, tc := range []struct {
+		threshold float64
+		below     bool
+	}{
+		{math.Nextafter(0.35, math.Inf(-1)), false}, {0.35, false}, {math.Nextafter(0.35, math.Inf(1)), true},
+	} {
+		if got := playbookConfidenceBelow(p, tc.threshold); got != tc.below {
+			t.Fatalf("threshold %.17g: got %t want %t", tc.threshold, got, tc.below)
+		}
+	}
+}
+
+func TestPlaybookConfidencePythonPowDivergence(t *testing.T) {
+	// Some Python libm implementations return 0.959600497389907 for this
+	// product. The correctly rounded fourth root is the next float above it.
+	const product = 0.8479336249272827
+	const pythonRoot = 0.959600497389907
+	const roundedRoot = 0.9596004973899072
+	state := PlaybookState{DirectionalState: "NEUTRAL", DirectionalConfidence: product, VolatilityConfidence: 1, PositioningConfidence: 1, QualityConfidence: 1, QualityState: "TRADABLE"}
+	config := DefaultPlaybookConfig()
+	for _, tc := range []struct {
+		threshold float64
+		want      string
+	}{
+		{pythonRoot, "RANGE_LIGHT"},
+		{roundedRoot, "RANGE_LIGHT"},
+		{math.Nextafter(roundedRoot, math.Inf(1)), "CAPITAL_PRESERVATION"},
+	} {
+		config.PreserveCapitalMinOverallConfidence = tc.threshold
+		got, err := SelectPlaybook(state, config)
+		if err != nil || got.PlaybookID != tc.want {
+			t.Fatalf("threshold %.17g: got %s, %v; want %s", tc.threshold, got.PlaybookID, err, tc.want)
+		}
+	}
+}
+
 func TestPlaybookInvalidNumbers(t *testing.T) {
 	base := PlaybookState{DirectionalState: "UPTREND", DirectionalConfidence: 0.8, VolatilityConfidence: 0.8, PositioningConfidence: 0.8, QualityConfidence: 0.8, QualityState: "TRADABLE"}
 	config := DefaultPlaybookConfig()
