@@ -17,7 +17,7 @@
     ctx.scale(ratio, ratio); ctx.clearRect(0, 0, width, height);
     const rows = points.map(p => ({ x: Number(p.delivery_price), gross: p.gross_payoff === null ? null : Number(p.gross_payoff), net: p.conditional_model_pnl === null ? null : Number(p.conditional_model_pnl) }));
     if (!rows.length) return;
-    if (rows.some(p => !Number.isFinite(p.x) || (p.gross !== null && !Number.isFinite(p.gross)) || (p.net !== null && !Number.isFinite(p.net)))) { problem = '数值超出浏览器绘图范围；请查看精确 JSON。'; return; }
+    if (rows.some(p => !Number.isFinite(p.x) || (p.gross !== null && !Number.isFinite(p.gross)) || (p.net !== null && !Number.isFinite(p.net)))) { problem = 'Values exceed the browser plotting range; see the exact JSON.'; return; }
     problem = '';
     let low = 0, high = 0;
     for (const p of rows) for (const v of [p.gross, p.net]) if (v !== null) { low = Math.min(low, v); high = Math.max(high, v); }
@@ -25,7 +25,7 @@
     const pad = (high - low) * .1; low -= pad; high += pad;
     const left = 64, right = width - 18, top = 24, bottom = height - 44;
     const minX = rows[0].x, maxX = rows[rows.length - 1].x;
-    if (minX === maxX) { problem = '价格差小于浏览器绘图精度；精确结果仍可查看。'; return; }
+    if (minX === maxX) { problem = 'The price difference is below browser plotting precision; exact results remain available.'; return; }
     const x = (v: number) => left + (v - minX) / (maxX - minX) * (right - left);
     const y = (v: number) => bottom - (v - low) / (high - low) * (bottom - top);
     ctx.font = '11px system-ui';
@@ -47,7 +47,7 @@
   $: if (points && width) draw();
   onMount(() => { const ro = new ResizeObserver(entries => { width = Math.floor(entries[0].contentRect.width); draw(); }); ro.observe(canvas); draw(); return () => ro.disconnect(); });
 </script>
-<canvas bind:this={canvas} aria-label="到期标的价格与条件毛收益及净损益曲线">曲线的精确值见下方情景查看器。</canvas>
+<canvas bind:this={canvas} aria-label="Expiry underlying price versus gross payoff and conditional net P&L">Exact curve values are available in the scenario inspector below.</canvas>
 {#if problem}<p role="alert">{problem}</p>{/if}
-<div class="caption"><span>横轴：到期标的价格 · 纵轴：{currency}</span><span data-testid="draw-time">绘图 {drawMs.toFixed(1)} ms</span></div>
+<div class="caption"><span>Horizontal axis: expiry underlying price · vertical axis: {currency}</span><span data-testid="draw-time">Drawing {drawMs.toFixed(1)} ms</span></div>
 <style>canvas { display:block;width:100%;height:330px } .caption {display:flex;justify-content:space-between;gap:12px;color:#8da4b8;font-size:11px;padding:0 16px} p {color:#ffc68a}</style>
