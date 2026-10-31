@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"syscall"
+	"time"
 
 	"github.com/infdahai/zenQuant/internal/options"
 	"github.com/infdahai/zenQuant/internal/paper"
@@ -24,10 +25,38 @@ import (
 
 func Run(args []string, out, stderr io.Writer) error {
 	if len(args) == 0 || args[0] == "help" || args[0] == "--help" {
-		fmt.Fprintln(out, "zenquant serve [--port 8092] [--assets options-ui/dist] [--engineering] [--research-store DIR]\nzenquant workbench --store DIR import|list|snapshot|submit|jobs|cancel|result|compare < request.json\nzenquant evaluate --route /api/curve < request.json\nzenquant vix-snapshot --request FILE --manifest FILE --evidence DIR\nzenquant research-splits\nzenquant gate-v3 < request.json\nNative Go local diagnostics and manual record-only paper workbench.")
+		fmt.Fprintln(out, "zenquant serve [--port 8092] [--assets options-ui/dist] [--engineering] [--research-store DIR]\nzenquant workbench --store DIR import|list|snapshot|submit|jobs|cancel|result|compare < request.json\nzenquant evaluate --route /api/curve < request.json\nzenquant vix-snapshot --request FILE --manifest FILE --evidence DIR\nzenquant research-splits\nzenquant review-loop-stability [--results-root DIR] [--output-dir DIR]\nzenquant gate-v3 < request.json\nNative Go local diagnostics and manual record-only paper workbench.")
 		return nil
 	}
 	switch args[0] {
+	case "review-loop-stability":
+		flags := flag.NewFlagSet("review-loop-stability", flag.ContinueOnError)
+		flags.SetOutput(stderr)
+		root := flags.String("results-root", "results", "campaign results directory")
+		output := flags.String("output-dir", "results", "review output directory")
+		if err := flags.Parse(args[1:]); err != nil {
+			if errors.Is(err, flag.ErrHelp) {
+				return nil
+			}
+			return err
+		}
+		if flags.NArg() != 0 {
+			return errors.New("unexpected argument")
+		}
+		review, err := research.ReviewLoopStability(*root, time.Now())
+		if err != nil {
+			return err
+		}
+		written, err := research.WriteLoopReview(review, *output)
+		if err != nil {
+			return err
+		}
+		enc := json.NewEncoder(out)
+		enc.SetIndent("", "  ")
+		return enc.Encode(struct {
+			Review    map[string]string `json:"review"`
+			LoopCount int               `json:"loop_count"`
+		}{written, review.LoopCount})
 	case "gate-v3":
 		if len(args) != 1 {
 			return errors.New("unexpected argument")
