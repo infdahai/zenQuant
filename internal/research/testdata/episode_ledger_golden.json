@@ -1,0 +1,4178 @@
+{
+  "version": 1,
+  "source": "zenquant.research.episode_ledger.PositionEpisodeLedger",
+  "schema": {
+    "cases": "Array of independent ledgers. Replay steps in array order, including after errors.",
+    "step": "event has type fill, funding or price and remaining fields map to the Python input dataclass; error is null or {type,message}; state is the post-call snapshot.",
+    "state": "episodes, open_episodes and closed_episodes are ordered arrays of all PositionEpisode dataclass fields; position_qty maps symbol to signed number; position_switch_count is an integer.",
+    "numbers": "Timestamps and durations are integer nanoseconds; other quantities are JSON numbers interpreted as IEEE-754 binary64. Nullable episode fields remain null.",
+    "builder": "Separate input streams and expected episodes for build_position_episodes; equal timestamps order price, funding, fill, stable within each stream."
+  },
+  "cases": [
+    {
+      "name": "adds_partial_funding_excursions",
+      "steps": [
+        {
+          "event": {
+            "type": "funding",
+            "symbol": "BTC",
+            "timestamp_ns": 1,
+            "pnl": 9
+          },
+          "error": null,
+          "state": {
+            "episodes": [],
+            "open_episodes": [],
+            "closed_episodes": [],
+            "position_qty": {
+              "BTC": 0.0,
+              "MISSING": 0.0
+            },
+            "position_switch_count": 0
+          }
+        },
+        {
+          "event": {
+            "type": "price",
+            "symbol": "BTC",
+            "timestamp_ns": 2,
+            "high": 105,
+            "low": 95,
+            "close": 100
+          },
+          "error": null,
+          "state": {
+            "episodes": [],
+            "open_episodes": [],
+            "closed_episodes": [],
+            "position_qty": {
+              "BTC": 0.0,
+              "MISSING": 0.0
+            },
+            "position_switch_count": 0
+          }
+        },
+        {
+          "event": {
+            "type": "fill",
+            "client_order_id": "order-BTC-3",
+            "symbol": "BTC",
+            "side": 1,
+            "status": "FILLED",
+            "filled_qty": 1,
+            "avg_price": 100,
+            "fee": 1,
+            "transaction_time_ns": 3
+          },
+          "error": null,
+          "state": {
+            "episodes": [
+              {
+                "episode_id": "a00a71997a760cc42411a1fc1a27c805c1bb2de275b4b172c923e0a7e288822d",
+                "symbol": "BTC",
+                "side": 1,
+                "opened_at_ns": 3,
+                "closed_at_ns": null,
+                "entry_price": 100,
+                "exit_price": null,
+                "max_abs_qty": 1,
+                "remaining_qty": 1,
+                "gross_realized_pnl": 0.0,
+                "fees": 1,
+                "funding_pnl": 0.0,
+                "net_pnl": -1.0,
+                "mfe_pnl": 0.0,
+                "mae_pnl": 0.0,
+                "unrealized_pnl": 0.0,
+                "fill_count": 1,
+                "closed": false,
+                "add_count": 0,
+                "reduce_count": 0,
+                "holding_duration_ns": 0
+              }
+            ],
+            "open_episodes": [
+              {
+                "episode_id": "a00a71997a760cc42411a1fc1a27c805c1bb2de275b4b172c923e0a7e288822d",
+                "symbol": "BTC",
+                "side": 1,
+                "opened_at_ns": 3,
+                "closed_at_ns": null,
+                "entry_price": 100,
+                "exit_price": null,
+                "max_abs_qty": 1,
+                "remaining_qty": 1,
+                "gross_realized_pnl": 0.0,
+                "fees": 1,
+                "funding_pnl": 0.0,
+                "net_pnl": -1.0,
+                "mfe_pnl": 0.0,
+                "mae_pnl": 0.0,
+                "unrealized_pnl": 0.0,
+                "fill_count": 1,
+                "closed": false,
+                "add_count": 0,
+                "reduce_count": 0,
+                "holding_duration_ns": 0
+              }
+            ],
+            "closed_episodes": [],
+            "position_qty": {
+              "BTC": 1,
+              "MISSING": 0.0
+            },
+            "position_switch_count": 0
+          }
+        },
+        {
+          "event": {
+            "type": "fill",
+            "client_order_id": "order-BTC-4",
+            "symbol": "BTC",
+            "side": 1,
+            "status": "FILLED",
+            "filled_qty": 1,
+            "avg_price": 120,
+            "fee": 1,
+            "transaction_time_ns": 4
+          },
+          "error": null,
+          "state": {
+            "episodes": [
+              {
+                "episode_id": "a00a71997a760cc42411a1fc1a27c805c1bb2de275b4b172c923e0a7e288822d",
+                "symbol": "BTC",
+                "side": 1,
+                "opened_at_ns": 3,
+                "closed_at_ns": null,
+                "entry_price": 110.0,
+                "exit_price": null,
+                "max_abs_qty": 2,
+                "remaining_qty": 2,
+                "gross_realized_pnl": 0.0,
+                "fees": 2,
+                "funding_pnl": 0.0,
+                "net_pnl": -2.0,
+                "mfe_pnl": 20.0,
+                "mae_pnl": 0.0,
+                "unrealized_pnl": 20,
+                "fill_count": 2,
+                "closed": false,
+                "add_count": 1,
+                "reduce_count": 0,
+                "holding_duration_ns": 1
+              }
+            ],
+            "open_episodes": [
+              {
+                "episode_id": "a00a71997a760cc42411a1fc1a27c805c1bb2de275b4b172c923e0a7e288822d",
+                "symbol": "BTC",
+                "side": 1,
+                "opened_at_ns": 3,
+                "closed_at_ns": null,
+                "entry_price": 110.0,
+                "exit_price": null,
+                "max_abs_qty": 2,
+                "remaining_qty": 2,
+                "gross_realized_pnl": 0.0,
+                "fees": 2,
+                "funding_pnl": 0.0,
+                "net_pnl": -2.0,
+                "mfe_pnl": 20.0,
+                "mae_pnl": 0.0,
+                "unrealized_pnl": 20,
+                "fill_count": 2,
+                "closed": false,
+                "add_count": 1,
+                "reduce_count": 0,
+                "holding_duration_ns": 1
+              }
+            ],
+            "closed_episodes": [],
+            "position_qty": {
+              "BTC": 2,
+              "MISSING": 0.0
+            },
+            "position_switch_count": 0
+          }
+        },
+        {
+          "event": {
+            "type": "price",
+            "symbol": "BTC",
+            "timestamp_ns": 5,
+            "high": 140,
+            "low": 90,
+            "close": 125
+          },
+          "error": null,
+          "state": {
+            "episodes": [
+              {
+                "episode_id": "a00a71997a760cc42411a1fc1a27c805c1bb2de275b4b172c923e0a7e288822d",
+                "symbol": "BTC",
+                "side": 1,
+                "opened_at_ns": 3,
+                "closed_at_ns": null,
+                "entry_price": 110.0,
+                "exit_price": null,
+                "max_abs_qty": 2,
+                "remaining_qty": 2,
+                "gross_realized_pnl": 0.0,
+                "fees": 2,
+                "funding_pnl": 0.0,
+                "net_pnl": -2.0,
+                "mfe_pnl": 60.0,
+                "mae_pnl": -40.0,
+                "unrealized_pnl": 30.0,
+                "fill_count": 2,
+                "closed": false,
+                "add_count": 1,
+                "reduce_count": 0,
+                "holding_duration_ns": 2
+              }
+            ],
+            "open_episodes": [
+              {
+                "episode_id": "a00a71997a760cc42411a1fc1a27c805c1bb2de275b4b172c923e0a7e288822d",
+                "symbol": "BTC",
+                "side": 1,
+                "opened_at_ns": 3,
+                "closed_at_ns": null,
+                "entry_price": 110.0,
+                "exit_price": null,
+                "max_abs_qty": 2,
+                "remaining_qty": 2,
+                "gross_realized_pnl": 0.0,
+                "fees": 2,
+                "funding_pnl": 0.0,
+                "net_pnl": -2.0,
+                "mfe_pnl": 60.0,
+                "mae_pnl": -40.0,
+                "unrealized_pnl": 30.0,
+                "fill_count": 2,
+                "closed": false,
+                "add_count": 1,
+                "reduce_count": 0,
+                "holding_duration_ns": 2
+              }
+            ],
+            "closed_episodes": [],
+            "position_qty": {
+              "BTC": 2,
+              "MISSING": 0.0
+            },
+            "position_switch_count": 0
+          }
+        },
+        {
+          "event": {
+            "type": "funding",
+            "symbol": "BTC",
+            "timestamp_ns": 6,
+            "pnl": -2
+          },
+          "error": null,
+          "state": {
+            "episodes": [
+              {
+                "episode_id": "a00a71997a760cc42411a1fc1a27c805c1bb2de275b4b172c923e0a7e288822d",
+                "symbol": "BTC",
+                "side": 1,
+                "opened_at_ns": 3,
+                "closed_at_ns": null,
+                "entry_price": 110.0,
+                "exit_price": null,
+                "max_abs_qty": 2,
+                "remaining_qty": 2,
+                "gross_realized_pnl": 0.0,
+                "fees": 2,
+                "funding_pnl": -2.0,
+                "net_pnl": -4.0,
+                "mfe_pnl": 60.0,
+                "mae_pnl": -40.0,
+                "unrealized_pnl": 30.0,
+                "fill_count": 2,
+                "closed": false,
+                "add_count": 1,
+                "reduce_count": 0,
+                "holding_duration_ns": 3
+              }
+            ],
+            "open_episodes": [
+              {
+                "episode_id": "a00a71997a760cc42411a1fc1a27c805c1bb2de275b4b172c923e0a7e288822d",
+                "symbol": "BTC",
+                "side": 1,
+                "opened_at_ns": 3,
+                "closed_at_ns": null,
+                "entry_price": 110.0,
+                "exit_price": null,
+                "max_abs_qty": 2,
+                "remaining_qty": 2,
+                "gross_realized_pnl": 0.0,
+                "fees": 2,
+                "funding_pnl": -2.0,
+                "net_pnl": -4.0,
+                "mfe_pnl": 60.0,
+                "mae_pnl": -40.0,
+                "unrealized_pnl": 30.0,
+                "fill_count": 2,
+                "closed": false,
+                "add_count": 1,
+                "reduce_count": 0,
+                "holding_duration_ns": 3
+              }
+            ],
+            "closed_episodes": [],
+            "position_qty": {
+              "BTC": 2,
+              "MISSING": 0.0
+            },
+            "position_switch_count": 0
+          }
+        },
+        {
+          "event": {
+            "type": "fill",
+            "client_order_id": "order-BTC-7",
+            "symbol": "BTC",
+            "side": -1,
+            "status": "FILLED",
+            "filled_qty": 0.5,
+            "avg_price": 130,
+            "fee": 0.5,
+            "transaction_time_ns": 7
+          },
+          "error": null,
+          "state": {
+            "episodes": [
+              {
+                "episode_id": "a00a71997a760cc42411a1fc1a27c805c1bb2de275b4b172c923e0a7e288822d",
+                "symbol": "BTC",
+                "side": 1,
+                "opened_at_ns": 3,
+                "closed_at_ns": null,
+                "entry_price": 110.0,
+                "exit_price": 130.0,
+                "max_abs_qty": 2,
+                "remaining_qty": 1.5,
+                "gross_realized_pnl": 10.0,
+                "fees": 2.5,
+                "funding_pnl": -2.0,
+                "net_pnl": 5.5,
+                "mfe_pnl": 60.0,
+                "mae_pnl": -40.0,
+                "unrealized_pnl": 30.0,
+                "fill_count": 3,
+                "closed": false,
+                "add_count": 1,
+                "reduce_count": 1,
+                "holding_duration_ns": 4
+              }
+            ],
+            "open_episodes": [
+              {
+                "episode_id": "a00a71997a760cc42411a1fc1a27c805c1bb2de275b4b172c923e0a7e288822d",
+                "symbol": "BTC",
+                "side": 1,
+                "opened_at_ns": 3,
+                "closed_at_ns": null,
+                "entry_price": 110.0,
+                "exit_price": 130.0,
+                "max_abs_qty": 2,
+                "remaining_qty": 1.5,
+                "gross_realized_pnl": 10.0,
+                "fees": 2.5,
+                "funding_pnl": -2.0,
+                "net_pnl": 5.5,
+                "mfe_pnl": 60.0,
+                "mae_pnl": -40.0,
+                "unrealized_pnl": 30.0,
+                "fill_count": 3,
+                "closed": false,
+                "add_count": 1,
+                "reduce_count": 1,
+                "holding_duration_ns": 4
+              }
+            ],
+            "closed_episodes": [],
+            "position_qty": {
+              "BTC": 1.5,
+              "MISSING": 0.0
+            },
+            "position_switch_count": 0
+          }
+        },
+        {
+          "event": {
+            "type": "price",
+            "symbol": "BTC",
+            "timestamp_ns": 8,
+            "high": 135,
+            "low": 100,
+            "close": 108
+          },
+          "error": null,
+          "state": {
+            "episodes": [
+              {
+                "episode_id": "a00a71997a760cc42411a1fc1a27c805c1bb2de275b4b172c923e0a7e288822d",
+                "symbol": "BTC",
+                "side": 1,
+                "opened_at_ns": 3,
+                "closed_at_ns": null,
+                "entry_price": 110.0,
+                "exit_price": 130.0,
+                "max_abs_qty": 2,
+                "remaining_qty": 1.5,
+                "gross_realized_pnl": 10.0,
+                "fees": 2.5,
+                "funding_pnl": -2.0,
+                "net_pnl": 5.5,
+                "mfe_pnl": 60.0,
+                "mae_pnl": -40.0,
+                "unrealized_pnl": -3.0,
+                "fill_count": 3,
+                "closed": false,
+                "add_count": 1,
+                "reduce_count": 1,
+                "holding_duration_ns": 5
+              }
+            ],
+            "open_episodes": [
+              {
+                "episode_id": "a00a71997a760cc42411a1fc1a27c805c1bb2de275b4b172c923e0a7e288822d",
+                "symbol": "BTC",
+                "side": 1,
+                "opened_at_ns": 3,
+                "closed_at_ns": null,
+                "entry_price": 110.0,
+                "exit_price": 130.0,
+                "max_abs_qty": 2,
+                "remaining_qty": 1.5,
+                "gross_realized_pnl": 10.0,
+                "fees": 2.5,
+                "funding_pnl": -2.0,
+                "net_pnl": 5.5,
+                "mfe_pnl": 60.0,
+                "mae_pnl": -40.0,
+                "unrealized_pnl": -3.0,
+                "fill_count": 3,
+                "closed": false,
+                "add_count": 1,
+                "reduce_count": 1,
+                "holding_duration_ns": 5
+              }
+            ],
+            "closed_episodes": [],
+            "position_qty": {
+              "BTC": 1.5,
+              "MISSING": 0.0
+            },
+            "position_switch_count": 0
+          }
+        },
+        {
+          "event": {
+            "type": "fill",
+            "client_order_id": "order-BTC-9",
+            "symbol": "BTC",
+            "side": -1,
+            "status": "FILLED",
+            "filled_qty": 1.5,
+            "avg_price": 125,
+            "fee": 1.5,
+            "transaction_time_ns": 9
+          },
+          "error": null,
+          "state": {
+            "episodes": [
+              {
+                "episode_id": "a00a71997a760cc42411a1fc1a27c805c1bb2de275b4b172c923e0a7e288822d",
+                "symbol": "BTC",
+                "side": 1,
+                "opened_at_ns": 3,
+                "closed_at_ns": 9,
+                "entry_price": 110.0,
+                "exit_price": 126.25,
+                "max_abs_qty": 2,
+                "remaining_qty": 0.0,
+                "gross_realized_pnl": 32.5,
+                "fees": 4.0,
+                "funding_pnl": -2.0,
+                "net_pnl": 26.5,
+                "mfe_pnl": 60.0,
+                "mae_pnl": -40.0,
+                "unrealized_pnl": 0.0,
+                "fill_count": 4,
+                "closed": true,
+                "add_count": 1,
+                "reduce_count": 2,
+                "holding_duration_ns": 6
+              }
+            ],
+            "open_episodes": [],
+            "closed_episodes": [
+              {
+                "episode_id": "a00a71997a760cc42411a1fc1a27c805c1bb2de275b4b172c923e0a7e288822d",
+                "symbol": "BTC",
+                "side": 1,
+                "opened_at_ns": 3,
+                "closed_at_ns": 9,
+                "entry_price": 110.0,
+                "exit_price": 126.25,
+                "max_abs_qty": 2,
+                "remaining_qty": 0.0,
+                "gross_realized_pnl": 32.5,
+                "fees": 4.0,
+                "funding_pnl": -2.0,
+                "net_pnl": 26.5,
+                "mfe_pnl": 60.0,
+                "mae_pnl": -40.0,
+                "unrealized_pnl": 0.0,
+                "fill_count": 4,
+                "closed": true,
+                "add_count": 1,
+                "reduce_count": 2,
+                "holding_duration_ns": 6
+              }
+            ],
+            "position_qty": {
+              "BTC": 0.0,
+              "MISSING": 0.0
+            },
+            "position_switch_count": 0
+          }
+        },
+        {
+          "event": {
+            "type": "funding",
+            "symbol": "BTC",
+            "timestamp_ns": 10,
+            "pnl": 3
+          },
+          "error": null,
+          "state": {
+            "episodes": [
+              {
+                "episode_id": "a00a71997a760cc42411a1fc1a27c805c1bb2de275b4b172c923e0a7e288822d",
+                "symbol": "BTC",
+                "side": 1,
+                "opened_at_ns": 3,
+                "closed_at_ns": 9,
+                "entry_price": 110.0,
+                "exit_price": 126.25,
+                "max_abs_qty": 2,
+                "remaining_qty": 0.0,
+                "gross_realized_pnl": 32.5,
+                "fees": 4.0,
+                "funding_pnl": -2.0,
+                "net_pnl": 26.5,
+                "mfe_pnl": 60.0,
+                "mae_pnl": -40.0,
+                "unrealized_pnl": 0.0,
+                "fill_count": 4,
+                "closed": true,
+                "add_count": 1,
+                "reduce_count": 2,
+                "holding_duration_ns": 6
+              }
+            ],
+            "open_episodes": [],
+            "closed_episodes": [
+              {
+                "episode_id": "a00a71997a760cc42411a1fc1a27c805c1bb2de275b4b172c923e0a7e288822d",
+                "symbol": "BTC",
+                "side": 1,
+                "opened_at_ns": 3,
+                "closed_at_ns": 9,
+                "entry_price": 110.0,
+                "exit_price": 126.25,
+                "max_abs_qty": 2,
+                "remaining_qty": 0.0,
+                "gross_realized_pnl": 32.5,
+                "fees": 4.0,
+                "funding_pnl": -2.0,
+                "net_pnl": 26.5,
+                "mfe_pnl": 60.0,
+                "mae_pnl": -40.0,
+                "unrealized_pnl": 0.0,
+                "fill_count": 4,
+                "closed": true,
+                "add_count": 1,
+                "reduce_count": 2,
+                "holding_duration_ns": 6
+              }
+            ],
+            "position_qty": {
+              "BTC": 0.0,
+              "MISSING": 0.0
+            },
+            "position_switch_count": 0
+          }
+        }
+      ]
+    },
+    {
+      "name": "flips_and_flat_reopens",
+      "steps": [
+        {
+          "event": {
+            "type": "fill",
+            "client_order_id": "order-BTC-1",
+            "symbol": "BTC",
+            "side": 1,
+            "status": "FILLED",
+            "filled_qty": 2,
+            "avg_price": 100,
+            "fee": 2,
+            "transaction_time_ns": 1
+          },
+          "error": null,
+          "state": {
+            "episodes": [
+              {
+                "episode_id": "74331823f4c35d5927f09c01d1f9b1c739415b2ca5032f746d4203a6b01f8cb4",
+                "symbol": "BTC",
+                "side": 1,
+                "opened_at_ns": 1,
+                "closed_at_ns": null,
+                "entry_price": 100,
+                "exit_price": null,
+                "max_abs_qty": 2,
+                "remaining_qty": 2,
+                "gross_realized_pnl": 0.0,
+                "fees": 2,
+                "funding_pnl": 0.0,
+                "net_pnl": -2.0,
+                "mfe_pnl": 0.0,
+                "mae_pnl": 0.0,
+                "unrealized_pnl": 0.0,
+                "fill_count": 1,
+                "closed": false,
+                "add_count": 0,
+                "reduce_count": 0,
+                "holding_duration_ns": 0
+              }
+            ],
+            "open_episodes": [
+              {
+                "episode_id": "74331823f4c35d5927f09c01d1f9b1c739415b2ca5032f746d4203a6b01f8cb4",
+                "symbol": "BTC",
+                "side": 1,
+                "opened_at_ns": 1,
+                "closed_at_ns": null,
+                "entry_price": 100,
+                "exit_price": null,
+                "max_abs_qty": 2,
+                "remaining_qty": 2,
+                "gross_realized_pnl": 0.0,
+                "fees": 2,
+                "funding_pnl": 0.0,
+                "net_pnl": -2.0,
+                "mfe_pnl": 0.0,
+                "mae_pnl": 0.0,
+                "unrealized_pnl": 0.0,
+                "fill_count": 1,
+                "closed": false,
+                "add_count": 0,
+                "reduce_count": 0,
+                "holding_duration_ns": 0
+              }
+            ],
+            "closed_episodes": [],
+            "position_qty": {
+              "BTC": 2,
+              "MISSING": 0.0
+            },
+            "position_switch_count": 0
+          }
+        },
+        {
+          "event": {
+            "type": "fill",
+            "client_order_id": "order-BTC-2",
+            "symbol": "BTC",
+            "side": -1,
+            "status": "FILLED",
+            "filled_qty": 3,
+            "avg_price": 90,
+            "fee": 3,
+            "transaction_time_ns": 2
+          },
+          "error": null,
+          "state": {
+            "episodes": [
+              {
+                "episode_id": "74331823f4c35d5927f09c01d1f9b1c739415b2ca5032f746d4203a6b01f8cb4",
+                "symbol": "BTC",
+                "side": 1,
+                "opened_at_ns": 1,
+                "closed_at_ns": 2,
+                "entry_price": 100,
+                "exit_price": 90.0,
+                "max_abs_qty": 2,
+                "remaining_qty": 0.0,
+                "gross_realized_pnl": -20.0,
+                "fees": 4.0,
+                "funding_pnl": 0.0,
+                "net_pnl": -24.0,
+                "mfe_pnl": 0.0,
+                "mae_pnl": -20.0,
+                "unrealized_pnl": 0.0,
+                "fill_count": 2,
+                "closed": true,
+                "add_count": 0,
+                "reduce_count": 1,
+                "holding_duration_ns": 1
+              },
+              {
+                "episode_id": "8baf9d3a534cf3453520128f84f8c7f424a97aed5f83e7db7c0ae6fae572a00f",
+                "symbol": "BTC",
+                "side": -1,
+                "opened_at_ns": 2,
+                "closed_at_ns": null,
+                "entry_price": 90,
+                "exit_price": null,
+                "max_abs_qty": 1,
+                "remaining_qty": 1,
+                "gross_realized_pnl": 0.0,
+                "fees": 1.0,
+                "funding_pnl": 0.0,
+                "net_pnl": -1.0,
+                "mfe_pnl": 0.0,
+                "mae_pnl": 0.0,
+                "unrealized_pnl": 0.0,
+                "fill_count": 1,
+                "closed": false,
+                "add_count": 0,
+                "reduce_count": 0,
+                "holding_duration_ns": 0
+              }
+            ],
+            "open_episodes": [
+              {
+                "episode_id": "8baf9d3a534cf3453520128f84f8c7f424a97aed5f83e7db7c0ae6fae572a00f",
+                "symbol": "BTC",
+                "side": -1,
+                "opened_at_ns": 2,
+                "closed_at_ns": null,
+                "entry_price": 90,
+                "exit_price": null,
+                "max_abs_qty": 1,
+                "remaining_qty": 1,
+                "gross_realized_pnl": 0.0,
+                "fees": 1.0,
+                "funding_pnl": 0.0,
+                "net_pnl": -1.0,
+                "mfe_pnl": 0.0,
+                "mae_pnl": 0.0,
+                "unrealized_pnl": 0.0,
+                "fill_count": 1,
+                "closed": false,
+                "add_count": 0,
+                "reduce_count": 0,
+                "holding_duration_ns": 0
+              }
+            ],
+            "closed_episodes": [
+              {
+                "episode_id": "74331823f4c35d5927f09c01d1f9b1c739415b2ca5032f746d4203a6b01f8cb4",
+                "symbol": "BTC",
+                "side": 1,
+                "opened_at_ns": 1,
+                "closed_at_ns": 2,
+                "entry_price": 100,
+                "exit_price": 90.0,
+                "max_abs_qty": 2,
+                "remaining_qty": 0.0,
+                "gross_realized_pnl": -20.0,
+                "fees": 4.0,
+                "funding_pnl": 0.0,
+                "net_pnl": -24.0,
+                "mfe_pnl": 0.0,
+                "mae_pnl": -20.0,
+                "unrealized_pnl": 0.0,
+                "fill_count": 2,
+                "closed": true,
+                "add_count": 0,
+                "reduce_count": 1,
+                "holding_duration_ns": 1
+              }
+            ],
+            "position_qty": {
+              "BTC": -1,
+              "MISSING": 0.0
+            },
+            "position_switch_count": 1
+          }
+        },
+        {
+          "event": {
+            "type": "price",
+            "symbol": "BTC",
+            "timestamp_ns": 3,
+            "high": 95,
+            "low": 75,
+            "close": 80
+          },
+          "error": null,
+          "state": {
+            "episodes": [
+              {
+                "episode_id": "74331823f4c35d5927f09c01d1f9b1c739415b2ca5032f746d4203a6b01f8cb4",
+                "symbol": "BTC",
+                "side": 1,
+                "opened_at_ns": 1,
+                "closed_at_ns": 2,
+                "entry_price": 100,
+                "exit_price": 90.0,
+                "max_abs_qty": 2,
+                "remaining_qty": 0.0,
+                "gross_realized_pnl": -20.0,
+                "fees": 4.0,
+                "funding_pnl": 0.0,
+                "net_pnl": -24.0,
+                "mfe_pnl": 0.0,
+                "mae_pnl": -20.0,
+                "unrealized_pnl": 0.0,
+                "fill_count": 2,
+                "closed": true,
+                "add_count": 0,
+                "reduce_count": 1,
+                "holding_duration_ns": 1
+              },
+              {
+                "episode_id": "8baf9d3a534cf3453520128f84f8c7f424a97aed5f83e7db7c0ae6fae572a00f",
+                "symbol": "BTC",
+                "side": -1,
+                "opened_at_ns": 2,
+                "closed_at_ns": null,
+                "entry_price": 90,
+                "exit_price": null,
+                "max_abs_qty": 1,
+                "remaining_qty": 1,
+                "gross_realized_pnl": 0.0,
+                "fees": 1.0,
+                "funding_pnl": 0.0,
+                "net_pnl": -1.0,
+                "mfe_pnl": 15.0,
+                "mae_pnl": -5.0,
+                "unrealized_pnl": 10,
+                "fill_count": 1,
+                "closed": false,
+                "add_count": 0,
+                "reduce_count": 0,
+                "holding_duration_ns": 1
+              }
+            ],
+            "open_episodes": [
+              {
+                "episode_id": "8baf9d3a534cf3453520128f84f8c7f424a97aed5f83e7db7c0ae6fae572a00f",
+                "symbol": "BTC",
+                "side": -1,
+                "opened_at_ns": 2,
+                "closed_at_ns": null,
+                "entry_price": 90,
+                "exit_price": null,
+                "max_abs_qty": 1,
+                "remaining_qty": 1,
+                "gross_realized_pnl": 0.0,
+                "fees": 1.0,
+                "funding_pnl": 0.0,
+                "net_pnl": -1.0,
+                "mfe_pnl": 15.0,
+                "mae_pnl": -5.0,
+                "unrealized_pnl": 10,
+                "fill_count": 1,
+                "closed": false,
+                "add_count": 0,
+                "reduce_count": 0,
+                "holding_duration_ns": 1
+              }
+            ],
+            "closed_episodes": [
+              {
+                "episode_id": "74331823f4c35d5927f09c01d1f9b1c739415b2ca5032f746d4203a6b01f8cb4",
+                "symbol": "BTC",
+                "side": 1,
+                "opened_at_ns": 1,
+                "closed_at_ns": 2,
+                "entry_price": 100,
+                "exit_price": 90.0,
+                "max_abs_qty": 2,
+                "remaining_qty": 0.0,
+                "gross_realized_pnl": -20.0,
+                "fees": 4.0,
+                "funding_pnl": 0.0,
+                "net_pnl": -24.0,
+                "mfe_pnl": 0.0,
+                "mae_pnl": -20.0,
+                "unrealized_pnl": 0.0,
+                "fill_count": 2,
+                "closed": true,
+                "add_count": 0,
+                "reduce_count": 1,
+                "holding_duration_ns": 1
+              }
+            ],
+            "position_qty": {
+              "BTC": -1,
+              "MISSING": 0.0
+            },
+            "position_switch_count": 1
+          }
+        },
+        {
+          "event": {
+            "type": "funding",
+            "symbol": "BTC",
+            "timestamp_ns": 4,
+            "pnl": 1.5
+          },
+          "error": null,
+          "state": {
+            "episodes": [
+              {
+                "episode_id": "74331823f4c35d5927f09c01d1f9b1c739415b2ca5032f746d4203a6b01f8cb4",
+                "symbol": "BTC",
+                "side": 1,
+                "opened_at_ns": 1,
+                "closed_at_ns": 2,
+                "entry_price": 100,
+                "exit_price": 90.0,
+                "max_abs_qty": 2,
+                "remaining_qty": 0.0,
+                "gross_realized_pnl": -20.0,
+                "fees": 4.0,
+                "funding_pnl": 0.0,
+                "net_pnl": -24.0,
+                "mfe_pnl": 0.0,
+                "mae_pnl": -20.0,
+                "unrealized_pnl": 0.0,
+                "fill_count": 2,
+                "closed": true,
+                "add_count": 0,
+                "reduce_count": 1,
+                "holding_duration_ns": 1
+              },
+              {
+                "episode_id": "8baf9d3a534cf3453520128f84f8c7f424a97aed5f83e7db7c0ae6fae572a00f",
+                "symbol": "BTC",
+                "side": -1,
+                "opened_at_ns": 2,
+                "closed_at_ns": null,
+                "entry_price": 90,
+                "exit_price": null,
+                "max_abs_qty": 1,
+                "remaining_qty": 1,
+                "gross_realized_pnl": 0.0,
+                "fees": 1.0,
+                "funding_pnl": 1.5,
+                "net_pnl": 0.5,
+                "mfe_pnl": 15.0,
+                "mae_pnl": -5.0,
+                "unrealized_pnl": 10,
+                "fill_count": 1,
+                "closed": false,
+                "add_count": 0,
+                "reduce_count": 0,
+                "holding_duration_ns": 2
+              }
+            ],
+            "open_episodes": [
+              {
+                "episode_id": "8baf9d3a534cf3453520128f84f8c7f424a97aed5f83e7db7c0ae6fae572a00f",
+                "symbol": "BTC",
+                "side": -1,
+                "opened_at_ns": 2,
+                "closed_at_ns": null,
+                "entry_price": 90,
+                "exit_price": null,
+                "max_abs_qty": 1,
+                "remaining_qty": 1,
+                "gross_realized_pnl": 0.0,
+                "fees": 1.0,
+                "funding_pnl": 1.5,
+                "net_pnl": 0.5,
+                "mfe_pnl": 15.0,
+                "mae_pnl": -5.0,
+                "unrealized_pnl": 10,
+                "fill_count": 1,
+                "closed": false,
+                "add_count": 0,
+                "reduce_count": 0,
+                "holding_duration_ns": 2
+              }
+            ],
+            "closed_episodes": [
+              {
+                "episode_id": "74331823f4c35d5927f09c01d1f9b1c739415b2ca5032f746d4203a6b01f8cb4",
+                "symbol": "BTC",
+                "side": 1,
+                "opened_at_ns": 1,
+                "closed_at_ns": 2,
+                "entry_price": 100,
+                "exit_price": 90.0,
+                "max_abs_qty": 2,
+                "remaining_qty": 0.0,
+                "gross_realized_pnl": -20.0,
+                "fees": 4.0,
+                "funding_pnl": 0.0,
+                "net_pnl": -24.0,
+                "mfe_pnl": 0.0,
+                "mae_pnl": -20.0,
+                "unrealized_pnl": 0.0,
+                "fill_count": 2,
+                "closed": true,
+                "add_count": 0,
+                "reduce_count": 1,
+                "holding_duration_ns": 1
+              }
+            ],
+            "position_qty": {
+              "BTC": -1,
+              "MISSING": 0.0
+            },
+            "position_switch_count": 1
+          }
+        },
+        {
+          "event": {
+            "type": "fill",
+            "client_order_id": "order-BTC-5",
+            "symbol": "BTC",
+            "side": 1,
+            "status": "FILLED",
+            "filled_qty": 1,
+            "avg_price": 80,
+            "fee": 1,
+            "transaction_time_ns": 5
+          },
+          "error": null,
+          "state": {
+            "episodes": [
+              {
+                "episode_id": "74331823f4c35d5927f09c01d1f9b1c739415b2ca5032f746d4203a6b01f8cb4",
+                "symbol": "BTC",
+                "side": 1,
+                "opened_at_ns": 1,
+                "closed_at_ns": 2,
+                "entry_price": 100,
+                "exit_price": 90.0,
+                "max_abs_qty": 2,
+                "remaining_qty": 0.0,
+                "gross_realized_pnl": -20.0,
+                "fees": 4.0,
+                "funding_pnl": 0.0,
+                "net_pnl": -24.0,
+                "mfe_pnl": 0.0,
+                "mae_pnl": -20.0,
+                "unrealized_pnl": 0.0,
+                "fill_count": 2,
+                "closed": true,
+                "add_count": 0,
+                "reduce_count": 1,
+                "holding_duration_ns": 1
+              },
+              {
+                "episode_id": "8baf9d3a534cf3453520128f84f8c7f424a97aed5f83e7db7c0ae6fae572a00f",
+                "symbol": "BTC",
+                "side": -1,
+                "opened_at_ns": 2,
+                "closed_at_ns": 5,
+                "entry_price": 90,
+                "exit_price": 80.0,
+                "max_abs_qty": 1,
+                "remaining_qty": 0.0,
+                "gross_realized_pnl": 10.0,
+                "fees": 2.0,
+                "funding_pnl": 1.5,
+                "net_pnl": 9.5,
+                "mfe_pnl": 15.0,
+                "mae_pnl": -5.0,
+                "unrealized_pnl": 0.0,
+                "fill_count": 2,
+                "closed": true,
+                "add_count": 0,
+                "reduce_count": 1,
+                "holding_duration_ns": 3
+              }
+            ],
+            "open_episodes": [],
+            "closed_episodes": [
+              {
+                "episode_id": "74331823f4c35d5927f09c01d1f9b1c739415b2ca5032f746d4203a6b01f8cb4",
+                "symbol": "BTC",
+                "side": 1,
+                "opened_at_ns": 1,
+                "closed_at_ns": 2,
+                "entry_price": 100,
+                "exit_price": 90.0,
+                "max_abs_qty": 2,
+                "remaining_qty": 0.0,
+                "gross_realized_pnl": -20.0,
+                "fees": 4.0,
+                "funding_pnl": 0.0,
+                "net_pnl": -24.0,
+                "mfe_pnl": 0.0,
+                "mae_pnl": -20.0,
+                "unrealized_pnl": 0.0,
+                "fill_count": 2,
+                "closed": true,
+                "add_count": 0,
+                "reduce_count": 1,
+                "holding_duration_ns": 1
+              },
+              {
+                "episode_id": "8baf9d3a534cf3453520128f84f8c7f424a97aed5f83e7db7c0ae6fae572a00f",
+                "symbol": "BTC",
+                "side": -1,
+                "opened_at_ns": 2,
+                "closed_at_ns": 5,
+                "entry_price": 90,
+                "exit_price": 80.0,
+                "max_abs_qty": 1,
+                "remaining_qty": 0.0,
+                "gross_realized_pnl": 10.0,
+                "fees": 2.0,
+                "funding_pnl": 1.5,
+                "net_pnl": 9.5,
+                "mfe_pnl": 15.0,
+                "mae_pnl": -5.0,
+                "unrealized_pnl": 0.0,
+                "fill_count": 2,
+                "closed": true,
+                "add_count": 0,
+                "reduce_count": 1,
+                "holding_duration_ns": 3
+              }
+            ],
+            "position_qty": {
+              "BTC": 0.0,
+              "MISSING": 0.0
+            },
+            "position_switch_count": 1
+          }
+        },
+        {
+          "event": {
+            "type": "fill",
+            "client_order_id": "order-BTC-6",
+            "symbol": "BTC",
+            "side": -1,
+            "status": "FILLED",
+            "filled_qty": 1,
+            "avg_price": 85,
+            "fee": 0.0,
+            "transaction_time_ns": 6
+          },
+          "error": null,
+          "state": {
+            "episodes": [
+              {
+                "episode_id": "74331823f4c35d5927f09c01d1f9b1c739415b2ca5032f746d4203a6b01f8cb4",
+                "symbol": "BTC",
+                "side": 1,
+                "opened_at_ns": 1,
+                "closed_at_ns": 2,
+                "entry_price": 100,
+                "exit_price": 90.0,
+                "max_abs_qty": 2,
+                "remaining_qty": 0.0,
+                "gross_realized_pnl": -20.0,
+                "fees": 4.0,
+                "funding_pnl": 0.0,
+                "net_pnl": -24.0,
+                "mfe_pnl": 0.0,
+                "mae_pnl": -20.0,
+                "unrealized_pnl": 0.0,
+                "fill_count": 2,
+                "closed": true,
+                "add_count": 0,
+                "reduce_count": 1,
+                "holding_duration_ns": 1
+              },
+              {
+                "episode_id": "8baf9d3a534cf3453520128f84f8c7f424a97aed5f83e7db7c0ae6fae572a00f",
+                "symbol": "BTC",
+                "side": -1,
+                "opened_at_ns": 2,
+                "closed_at_ns": 5,
+                "entry_price": 90,
+                "exit_price": 80.0,
+                "max_abs_qty": 1,
+                "remaining_qty": 0.0,
+                "gross_realized_pnl": 10.0,
+                "fees": 2.0,
+                "funding_pnl": 1.5,
+                "net_pnl": 9.5,
+                "mfe_pnl": 15.0,
+                "mae_pnl": -5.0,
+                "unrealized_pnl": 0.0,
+                "fill_count": 2,
+                "closed": true,
+                "add_count": 0,
+                "reduce_count": 1,
+                "holding_duration_ns": 3
+              },
+              {
+                "episode_id": "ca05f8fa2e97f8d13993fa6b03629ad159e50a1f2f4c59932d89921631636c55",
+                "symbol": "BTC",
+                "side": -1,
+                "opened_at_ns": 6,
+                "closed_at_ns": null,
+                "entry_price": 85,
+                "exit_price": null,
+                "max_abs_qty": 1,
+                "remaining_qty": 1,
+                "gross_realized_pnl": 0.0,
+                "fees": 0.0,
+                "funding_pnl": 0.0,
+                "net_pnl": 0.0,
+                "mfe_pnl": 0.0,
+                "mae_pnl": 0.0,
+                "unrealized_pnl": 0.0,
+                "fill_count": 1,
+                "closed": false,
+                "add_count": 0,
+                "reduce_count": 0,
+                "holding_duration_ns": 0
+              }
+            ],
+            "open_episodes": [
+              {
+                "episode_id": "ca05f8fa2e97f8d13993fa6b03629ad159e50a1f2f4c59932d89921631636c55",
+                "symbol": "BTC",
+                "side": -1,
+                "opened_at_ns": 6,
+                "closed_at_ns": null,
+                "entry_price": 85,
+                "exit_price": null,
+                "max_abs_qty": 1,
+                "remaining_qty": 1,
+                "gross_realized_pnl": 0.0,
+                "fees": 0.0,
+                "funding_pnl": 0.0,
+                "net_pnl": 0.0,
+                "mfe_pnl": 0.0,
+                "mae_pnl": 0.0,
+                "unrealized_pnl": 0.0,
+                "fill_count": 1,
+                "closed": false,
+                "add_count": 0,
+                "reduce_count": 0,
+                "holding_duration_ns": 0
+              }
+            ],
+            "closed_episodes": [
+              {
+                "episode_id": "74331823f4c35d5927f09c01d1f9b1c739415b2ca5032f746d4203a6b01f8cb4",
+                "symbol": "BTC",
+                "side": 1,
+                "opened_at_ns": 1,
+                "closed_at_ns": 2,
+                "entry_price": 100,
+                "exit_price": 90.0,
+                "max_abs_qty": 2,
+                "remaining_qty": 0.0,
+                "gross_realized_pnl": -20.0,
+                "fees": 4.0,
+                "funding_pnl": 0.0,
+                "net_pnl": -24.0,
+                "mfe_pnl": 0.0,
+                "mae_pnl": -20.0,
+                "unrealized_pnl": 0.0,
+                "fill_count": 2,
+                "closed": true,
+                "add_count": 0,
+                "reduce_count": 1,
+                "holding_duration_ns": 1
+              },
+              {
+                "episode_id": "8baf9d3a534cf3453520128f84f8c7f424a97aed5f83e7db7c0ae6fae572a00f",
+                "symbol": "BTC",
+                "side": -1,
+                "opened_at_ns": 2,
+                "closed_at_ns": 5,
+                "entry_price": 90,
+                "exit_price": 80.0,
+                "max_abs_qty": 1,
+                "remaining_qty": 0.0,
+                "gross_realized_pnl": 10.0,
+                "fees": 2.0,
+                "funding_pnl": 1.5,
+                "net_pnl": 9.5,
+                "mfe_pnl": 15.0,
+                "mae_pnl": -5.0,
+                "unrealized_pnl": 0.0,
+                "fill_count": 2,
+                "closed": true,
+                "add_count": 0,
+                "reduce_count": 1,
+                "holding_duration_ns": 3
+              }
+            ],
+            "position_qty": {
+              "BTC": -1,
+              "MISSING": 0.0
+            },
+            "position_switch_count": 1
+          }
+        },
+        {
+          "event": {
+            "type": "fill",
+            "client_order_id": "order-BTC-7",
+            "symbol": "BTC",
+            "side": 1,
+            "status": "FILLED",
+            "filled_qty": 1,
+            "avg_price": 90,
+            "fee": 0.0,
+            "transaction_time_ns": 7
+          },
+          "error": null,
+          "state": {
+            "episodes": [
+              {
+                "episode_id": "74331823f4c35d5927f09c01d1f9b1c739415b2ca5032f746d4203a6b01f8cb4",
+                "symbol": "BTC",
+                "side": 1,
+                "opened_at_ns": 1,
+                "closed_at_ns": 2,
+                "entry_price": 100,
+                "exit_price": 90.0,
+                "max_abs_qty": 2,
+                "remaining_qty": 0.0,
+                "gross_realized_pnl": -20.0,
+                "fees": 4.0,
+                "funding_pnl": 0.0,
+                "net_pnl": -24.0,
+                "mfe_pnl": 0.0,
+                "mae_pnl": -20.0,
+                "unrealized_pnl": 0.0,
+                "fill_count": 2,
+                "closed": true,
+                "add_count": 0,
+                "reduce_count": 1,
+                "holding_duration_ns": 1
+              },
+              {
+                "episode_id": "8baf9d3a534cf3453520128f84f8c7f424a97aed5f83e7db7c0ae6fae572a00f",
+                "symbol": "BTC",
+                "side": -1,
+                "opened_at_ns": 2,
+                "closed_at_ns": 5,
+                "entry_price": 90,
+                "exit_price": 80.0,
+                "max_abs_qty": 1,
+                "remaining_qty": 0.0,
+                "gross_realized_pnl": 10.0,
+                "fees": 2.0,
+                "funding_pnl": 1.5,
+                "net_pnl": 9.5,
+                "mfe_pnl": 15.0,
+                "mae_pnl": -5.0,
+                "unrealized_pnl": 0.0,
+                "fill_count": 2,
+                "closed": true,
+                "add_count": 0,
+                "reduce_count": 1,
+                "holding_duration_ns": 3
+              },
+              {
+                "episode_id": "ca05f8fa2e97f8d13993fa6b03629ad159e50a1f2f4c59932d89921631636c55",
+                "symbol": "BTC",
+                "side": -1,
+                "opened_at_ns": 6,
+                "closed_at_ns": 7,
+                "entry_price": 85,
+                "exit_price": 90.0,
+                "max_abs_qty": 1,
+                "remaining_qty": 0.0,
+                "gross_realized_pnl": -5.0,
+                "fees": 0.0,
+                "funding_pnl": 0.0,
+                "net_pnl": -5.0,
+                "mfe_pnl": 0.0,
+                "mae_pnl": -5.0,
+                "unrealized_pnl": 0.0,
+                "fill_count": 2,
+                "closed": true,
+                "add_count": 0,
+                "reduce_count": 1,
+                "holding_duration_ns": 1
+              }
+            ],
+            "open_episodes": [],
+            "closed_episodes": [
+              {
+                "episode_id": "74331823f4c35d5927f09c01d1f9b1c739415b2ca5032f746d4203a6b01f8cb4",
+                "symbol": "BTC",
+                "side": 1,
+                "opened_at_ns": 1,
+                "closed_at_ns": 2,
+                "entry_price": 100,
+                "exit_price": 90.0,
+                "max_abs_qty": 2,
+                "remaining_qty": 0.0,
+                "gross_realized_pnl": -20.0,
+                "fees": 4.0,
+                "funding_pnl": 0.0,
+                "net_pnl": -24.0,
+                "mfe_pnl": 0.0,
+                "mae_pnl": -20.0,
+                "unrealized_pnl": 0.0,
+                "fill_count": 2,
+                "closed": true,
+                "add_count": 0,
+                "reduce_count": 1,
+                "holding_duration_ns": 1
+              },
+              {
+                "episode_id": "8baf9d3a534cf3453520128f84f8c7f424a97aed5f83e7db7c0ae6fae572a00f",
+                "symbol": "BTC",
+                "side": -1,
+                "opened_at_ns": 2,
+                "closed_at_ns": 5,
+                "entry_price": 90,
+                "exit_price": 80.0,
+                "max_abs_qty": 1,
+                "remaining_qty": 0.0,
+                "gross_realized_pnl": 10.0,
+                "fees": 2.0,
+                "funding_pnl": 1.5,
+                "net_pnl": 9.5,
+                "mfe_pnl": 15.0,
+                "mae_pnl": -5.0,
+                "unrealized_pnl": 0.0,
+                "fill_count": 2,
+                "closed": true,
+                "add_count": 0,
+                "reduce_count": 1,
+                "holding_duration_ns": 3
+              },
+              {
+                "episode_id": "ca05f8fa2e97f8d13993fa6b03629ad159e50a1f2f4c59932d89921631636c55",
+                "symbol": "BTC",
+                "side": -1,
+                "opened_at_ns": 6,
+                "closed_at_ns": 7,
+                "entry_price": 85,
+                "exit_price": 90.0,
+                "max_abs_qty": 1,
+                "remaining_qty": 0.0,
+                "gross_realized_pnl": -5.0,
+                "fees": 0.0,
+                "funding_pnl": 0.0,
+                "net_pnl": -5.0,
+                "mfe_pnl": 0.0,
+                "mae_pnl": -5.0,
+                "unrealized_pnl": 0.0,
+                "fill_count": 2,
+                "closed": true,
+                "add_count": 0,
+                "reduce_count": 1,
+                "holding_duration_ns": 1
+              }
+            ],
+            "position_qty": {
+              "BTC": 0.0,
+              "MISSING": 0.0
+            },
+            "position_switch_count": 1
+          }
+        },
+        {
+          "event": {
+            "type": "fill",
+            "client_order_id": "order-BTC-8",
+            "symbol": "BTC",
+            "side": 1,
+            "status": "FILLED",
+            "filled_qty": 1,
+            "avg_price": 91,
+            "fee": 0.0,
+            "transaction_time_ns": 8
+          },
+          "error": null,
+          "state": {
+            "episodes": [
+              {
+                "episode_id": "74331823f4c35d5927f09c01d1f9b1c739415b2ca5032f746d4203a6b01f8cb4",
+                "symbol": "BTC",
+                "side": 1,
+                "opened_at_ns": 1,
+                "closed_at_ns": 2,
+                "entry_price": 100,
+                "exit_price": 90.0,
+                "max_abs_qty": 2,
+                "remaining_qty": 0.0,
+                "gross_realized_pnl": -20.0,
+                "fees": 4.0,
+                "funding_pnl": 0.0,
+                "net_pnl": -24.0,
+                "mfe_pnl": 0.0,
+                "mae_pnl": -20.0,
+                "unrealized_pnl": 0.0,
+                "fill_count": 2,
+                "closed": true,
+                "add_count": 0,
+                "reduce_count": 1,
+                "holding_duration_ns": 1
+              },
+              {
+                "episode_id": "8baf9d3a534cf3453520128f84f8c7f424a97aed5f83e7db7c0ae6fae572a00f",
+                "symbol": "BTC",
+                "side": -1,
+                "opened_at_ns": 2,
+                "closed_at_ns": 5,
+                "entry_price": 90,
+                "exit_price": 80.0,
+                "max_abs_qty": 1,
+                "remaining_qty": 0.0,
+                "gross_realized_pnl": 10.0,
+                "fees": 2.0,
+                "funding_pnl": 1.5,
+                "net_pnl": 9.5,
+                "mfe_pnl": 15.0,
+                "mae_pnl": -5.0,
+                "unrealized_pnl": 0.0,
+                "fill_count": 2,
+                "closed": true,
+                "add_count": 0,
+                "reduce_count": 1,
+                "holding_duration_ns": 3
+              },
+              {
+                "episode_id": "ca05f8fa2e97f8d13993fa6b03629ad159e50a1f2f4c59932d89921631636c55",
+                "symbol": "BTC",
+                "side": -1,
+                "opened_at_ns": 6,
+                "closed_at_ns": 7,
+                "entry_price": 85,
+                "exit_price": 90.0,
+                "max_abs_qty": 1,
+                "remaining_qty": 0.0,
+                "gross_realized_pnl": -5.0,
+                "fees": 0.0,
+                "funding_pnl": 0.0,
+                "net_pnl": -5.0,
+                "mfe_pnl": 0.0,
+                "mae_pnl": -5.0,
+                "unrealized_pnl": 0.0,
+                "fill_count": 2,
+                "closed": true,
+                "add_count": 0,
+                "reduce_count": 1,
+                "holding_duration_ns": 1
+              },
+              {
+                "episode_id": "140fac02f544ce5e404ef9ba57370af0c649754b9ab5838dffdf1ef739a72fa4",
+                "symbol": "BTC",
+                "side": 1,
+                "opened_at_ns": 8,
+                "closed_at_ns": null,
+                "entry_price": 91,
+                "exit_price": null,
+                "max_abs_qty": 1,
+                "remaining_qty": 1,
+                "gross_realized_pnl": 0.0,
+                "fees": 0.0,
+                "funding_pnl": 0.0,
+                "net_pnl": 0.0,
+                "mfe_pnl": 0.0,
+                "mae_pnl": 0.0,
+                "unrealized_pnl": 0.0,
+                "fill_count": 1,
+                "closed": false,
+                "add_count": 0,
+                "reduce_count": 0,
+                "holding_duration_ns": 0
+              }
+            ],
+            "open_episodes": [
+              {
+                "episode_id": "140fac02f544ce5e404ef9ba57370af0c649754b9ab5838dffdf1ef739a72fa4",
+                "symbol": "BTC",
+                "side": 1,
+                "opened_at_ns": 8,
+                "closed_at_ns": null,
+                "entry_price": 91,
+                "exit_price": null,
+                "max_abs_qty": 1,
+                "remaining_qty": 1,
+                "gross_realized_pnl": 0.0,
+                "fees": 0.0,
+                "funding_pnl": 0.0,
+                "net_pnl": 0.0,
+                "mfe_pnl": 0.0,
+                "mae_pnl": 0.0,
+                "unrealized_pnl": 0.0,
+                "fill_count": 1,
+                "closed": false,
+                "add_count": 0,
+                "reduce_count": 0,
+                "holding_duration_ns": 0
+              }
+            ],
+            "closed_episodes": [
+              {
+                "episode_id": "74331823f4c35d5927f09c01d1f9b1c739415b2ca5032f746d4203a6b01f8cb4",
+                "symbol": "BTC",
+                "side": 1,
+                "opened_at_ns": 1,
+                "closed_at_ns": 2,
+                "entry_price": 100,
+                "exit_price": 90.0,
+                "max_abs_qty": 2,
+                "remaining_qty": 0.0,
+                "gross_realized_pnl": -20.0,
+                "fees": 4.0,
+                "funding_pnl": 0.0,
+                "net_pnl": -24.0,
+                "mfe_pnl": 0.0,
+                "mae_pnl": -20.0,
+                "unrealized_pnl": 0.0,
+                "fill_count": 2,
+                "closed": true,
+                "add_count": 0,
+                "reduce_count": 1,
+                "holding_duration_ns": 1
+              },
+              {
+                "episode_id": "8baf9d3a534cf3453520128f84f8c7f424a97aed5f83e7db7c0ae6fae572a00f",
+                "symbol": "BTC",
+                "side": -1,
+                "opened_at_ns": 2,
+                "closed_at_ns": 5,
+                "entry_price": 90,
+                "exit_price": 80.0,
+                "max_abs_qty": 1,
+                "remaining_qty": 0.0,
+                "gross_realized_pnl": 10.0,
+                "fees": 2.0,
+                "funding_pnl": 1.5,
+                "net_pnl": 9.5,
+                "mfe_pnl": 15.0,
+                "mae_pnl": -5.0,
+                "unrealized_pnl": 0.0,
+                "fill_count": 2,
+                "closed": true,
+                "add_count": 0,
+                "reduce_count": 1,
+                "holding_duration_ns": 3
+              },
+              {
+                "episode_id": "ca05f8fa2e97f8d13993fa6b03629ad159e50a1f2f4c59932d89921631636c55",
+                "symbol": "BTC",
+                "side": -1,
+                "opened_at_ns": 6,
+                "closed_at_ns": 7,
+                "entry_price": 85,
+                "exit_price": 90.0,
+                "max_abs_qty": 1,
+                "remaining_qty": 0.0,
+                "gross_realized_pnl": -5.0,
+                "fees": 0.0,
+                "funding_pnl": 0.0,
+                "net_pnl": -5.0,
+                "mfe_pnl": 0.0,
+                "mae_pnl": -5.0,
+                "unrealized_pnl": 0.0,
+                "fill_count": 2,
+                "closed": true,
+                "add_count": 0,
+                "reduce_count": 1,
+                "holding_duration_ns": 1
+              }
+            ],
+            "position_qty": {
+              "BTC": 1,
+              "MISSING": 0.0
+            },
+            "position_switch_count": 2
+          }
+        }
+      ]
+    },
+    {
+      "name": "same_timestamp_order_and_symbols",
+      "steps": [
+        {
+          "event": {
+            "type": "fill",
+            "client_order_id": "order-BTC-10",
+            "symbol": "BTC",
+            "side": 1,
+            "status": "FILLED",
+            "filled_qty": 1,
+            "avg_price": 100,
+            "fee": 0.0,
+            "transaction_time_ns": 10
+          },
+          "error": null,
+          "state": {
+            "episodes": [
+              {
+                "episode_id": "23701516601026fc53d3d190bf024c29646a719c50f962731a750a6b126a1d94",
+                "symbol": "BTC",
+                "side": 1,
+                "opened_at_ns": 10,
+                "closed_at_ns": null,
+                "entry_price": 100,
+                "exit_price": null,
+                "max_abs_qty": 1,
+                "remaining_qty": 1,
+                "gross_realized_pnl": 0.0,
+                "fees": 0.0,
+                "funding_pnl": 0.0,
+                "net_pnl": 0.0,
+                "mfe_pnl": 0.0,
+                "mae_pnl": 0.0,
+                "unrealized_pnl": 0.0,
+                "fill_count": 1,
+                "closed": false,
+                "add_count": 0,
+                "reduce_count": 0,
+                "holding_duration_ns": 0
+              }
+            ],
+            "open_episodes": [
+              {
+                "episode_id": "23701516601026fc53d3d190bf024c29646a719c50f962731a750a6b126a1d94",
+                "symbol": "BTC",
+                "side": 1,
+                "opened_at_ns": 10,
+                "closed_at_ns": null,
+                "entry_price": 100,
+                "exit_price": null,
+                "max_abs_qty": 1,
+                "remaining_qty": 1,
+                "gross_realized_pnl": 0.0,
+                "fees": 0.0,
+                "funding_pnl": 0.0,
+                "net_pnl": 0.0,
+                "mfe_pnl": 0.0,
+                "mae_pnl": 0.0,
+                "unrealized_pnl": 0.0,
+                "fill_count": 1,
+                "closed": false,
+                "add_count": 0,
+                "reduce_count": 0,
+                "holding_duration_ns": 0
+              }
+            ],
+            "closed_episodes": [],
+            "position_qty": {
+              "BTC": 1,
+              "ETH": 0.0,
+              "MISSING": 0.0,
+              "OTHER": 0.0
+            },
+            "position_switch_count": 0
+          }
+        },
+        {
+          "event": {
+            "type": "fill",
+            "client_order_id": "order-ETH-10",
+            "symbol": "ETH",
+            "side": -1,
+            "status": "FILLED",
+            "filled_qty": 2,
+            "avg_price": 50,
+            "fee": 0.0,
+            "transaction_time_ns": 10
+          },
+          "error": null,
+          "state": {
+            "episodes": [
+              {
+                "episode_id": "23701516601026fc53d3d190bf024c29646a719c50f962731a750a6b126a1d94",
+                "symbol": "BTC",
+                "side": 1,
+                "opened_at_ns": 10,
+                "closed_at_ns": null,
+                "entry_price": 100,
+                "exit_price": null,
+                "max_abs_qty": 1,
+                "remaining_qty": 1,
+                "gross_realized_pnl": 0.0,
+                "fees": 0.0,
+                "funding_pnl": 0.0,
+                "net_pnl": 0.0,
+                "mfe_pnl": 0.0,
+                "mae_pnl": 0.0,
+                "unrealized_pnl": 0.0,
+                "fill_count": 1,
+                "closed": false,
+                "add_count": 0,
+                "reduce_count": 0,
+                "holding_duration_ns": 0
+              },
+              {
+                "episode_id": "40c734a7114f3df0019c855779909da776c9881d16da1f40ac44f2c7edb99654",
+                "symbol": "ETH",
+                "side": -1,
+                "opened_at_ns": 10,
+                "closed_at_ns": null,
+                "entry_price": 50,
+                "exit_price": null,
+                "max_abs_qty": 2,
+                "remaining_qty": 2,
+                "gross_realized_pnl": 0.0,
+                "fees": 0.0,
+                "funding_pnl": 0.0,
+                "net_pnl": 0.0,
+                "mfe_pnl": 0.0,
+                "mae_pnl": 0.0,
+                "unrealized_pnl": 0.0,
+                "fill_count": 1,
+                "closed": false,
+                "add_count": 0,
+                "reduce_count": 0,
+                "holding_duration_ns": 0
+              }
+            ],
+            "open_episodes": [
+              {
+                "episode_id": "23701516601026fc53d3d190bf024c29646a719c50f962731a750a6b126a1d94",
+                "symbol": "BTC",
+                "side": 1,
+                "opened_at_ns": 10,
+                "closed_at_ns": null,
+                "entry_price": 100,
+                "exit_price": null,
+                "max_abs_qty": 1,
+                "remaining_qty": 1,
+                "gross_realized_pnl": 0.0,
+                "fees": 0.0,
+                "funding_pnl": 0.0,
+                "net_pnl": 0.0,
+                "mfe_pnl": 0.0,
+                "mae_pnl": 0.0,
+                "unrealized_pnl": 0.0,
+                "fill_count": 1,
+                "closed": false,
+                "add_count": 0,
+                "reduce_count": 0,
+                "holding_duration_ns": 0
+              },
+              {
+                "episode_id": "40c734a7114f3df0019c855779909da776c9881d16da1f40ac44f2c7edb99654",
+                "symbol": "ETH",
+                "side": -1,
+                "opened_at_ns": 10,
+                "closed_at_ns": null,
+                "entry_price": 50,
+                "exit_price": null,
+                "max_abs_qty": 2,
+                "remaining_qty": 2,
+                "gross_realized_pnl": 0.0,
+                "fees": 0.0,
+                "funding_pnl": 0.0,
+                "net_pnl": 0.0,
+                "mfe_pnl": 0.0,
+                "mae_pnl": 0.0,
+                "unrealized_pnl": 0.0,
+                "fill_count": 1,
+                "closed": false,
+                "add_count": 0,
+                "reduce_count": 0,
+                "holding_duration_ns": 0
+              }
+            ],
+            "closed_episodes": [],
+            "position_qty": {
+              "BTC": 1,
+              "ETH": -2,
+              "MISSING": 0.0,
+              "OTHER": 0.0
+            },
+            "position_switch_count": 0
+          }
+        },
+        {
+          "event": {
+            "type": "price",
+            "symbol": "BTC",
+            "timestamp_ns": 10,
+            "high": 110,
+            "low": 90,
+            "close": 105
+          },
+          "error": null,
+          "state": {
+            "episodes": [
+              {
+                "episode_id": "23701516601026fc53d3d190bf024c29646a719c50f962731a750a6b126a1d94",
+                "symbol": "BTC",
+                "side": 1,
+                "opened_at_ns": 10,
+                "closed_at_ns": null,
+                "entry_price": 100,
+                "exit_price": null,
+                "max_abs_qty": 1,
+                "remaining_qty": 1,
+                "gross_realized_pnl": 0.0,
+                "fees": 0.0,
+                "funding_pnl": 0.0,
+                "net_pnl": 0.0,
+                "mfe_pnl": 10.0,
+                "mae_pnl": -10.0,
+                "unrealized_pnl": 5,
+                "fill_count": 1,
+                "closed": false,
+                "add_count": 0,
+                "reduce_count": 0,
+                "holding_duration_ns": 0
+              },
+              {
+                "episode_id": "40c734a7114f3df0019c855779909da776c9881d16da1f40ac44f2c7edb99654",
+                "symbol": "ETH",
+                "side": -1,
+                "opened_at_ns": 10,
+                "closed_at_ns": null,
+                "entry_price": 50,
+                "exit_price": null,
+                "max_abs_qty": 2,
+                "remaining_qty": 2,
+                "gross_realized_pnl": 0.0,
+                "fees": 0.0,
+                "funding_pnl": 0.0,
+                "net_pnl": 0.0,
+                "mfe_pnl": 0.0,
+                "mae_pnl": 0.0,
+                "unrealized_pnl": 0.0,
+                "fill_count": 1,
+                "closed": false,
+                "add_count": 0,
+                "reduce_count": 0,
+                "holding_duration_ns": 0
+              }
+            ],
+            "open_episodes": [
+              {
+                "episode_id": "23701516601026fc53d3d190bf024c29646a719c50f962731a750a6b126a1d94",
+                "symbol": "BTC",
+                "side": 1,
+                "opened_at_ns": 10,
+                "closed_at_ns": null,
+                "entry_price": 100,
+                "exit_price": null,
+                "max_abs_qty": 1,
+                "remaining_qty": 1,
+                "gross_realized_pnl": 0.0,
+                "fees": 0.0,
+                "funding_pnl": 0.0,
+                "net_pnl": 0.0,
+                "mfe_pnl": 10.0,
+                "mae_pnl": -10.0,
+                "unrealized_pnl": 5,
+                "fill_count": 1,
+                "closed": false,
+                "add_count": 0,
+                "reduce_count": 0,
+                "holding_duration_ns": 0
+              },
+              {
+                "episode_id": "40c734a7114f3df0019c855779909da776c9881d16da1f40ac44f2c7edb99654",
+                "symbol": "ETH",
+                "side": -1,
+                "opened_at_ns": 10,
+                "closed_at_ns": null,
+                "entry_price": 50,
+                "exit_price": null,
+                "max_abs_qty": 2,
+                "remaining_qty": 2,
+                "gross_realized_pnl": 0.0,
+                "fees": 0.0,
+                "funding_pnl": 0.0,
+                "net_pnl": 0.0,
+                "mfe_pnl": 0.0,
+                "mae_pnl": 0.0,
+                "unrealized_pnl": 0.0,
+                "fill_count": 1,
+                "closed": false,
+                "add_count": 0,
+                "reduce_count": 0,
+                "holding_duration_ns": 0
+              }
+            ],
+            "closed_episodes": [],
+            "position_qty": {
+              "BTC": 1,
+              "ETH": -2,
+              "MISSING": 0.0,
+              "OTHER": 0.0
+            },
+            "position_switch_count": 0
+          }
+        },
+        {
+          "event": {
+            "type": "funding",
+            "symbol": "BTC",
+            "timestamp_ns": 10,
+            "pnl": -1
+          },
+          "error": null,
+          "state": {
+            "episodes": [
+              {
+                "episode_id": "23701516601026fc53d3d190bf024c29646a719c50f962731a750a6b126a1d94",
+                "symbol": "BTC",
+                "side": 1,
+                "opened_at_ns": 10,
+                "closed_at_ns": null,
+                "entry_price": 100,
+                "exit_price": null,
+                "max_abs_qty": 1,
+                "remaining_qty": 1,
+                "gross_realized_pnl": 0.0,
+                "fees": 0.0,
+                "funding_pnl": -1.0,
+                "net_pnl": -1.0,
+                "mfe_pnl": 10.0,
+                "mae_pnl": -10.0,
+                "unrealized_pnl": 5,
+                "fill_count": 1,
+                "closed": false,
+                "add_count": 0,
+                "reduce_count": 0,
+                "holding_duration_ns": 0
+              },
+              {
+                "episode_id": "40c734a7114f3df0019c855779909da776c9881d16da1f40ac44f2c7edb99654",
+                "symbol": "ETH",
+                "side": -1,
+                "opened_at_ns": 10,
+                "closed_at_ns": null,
+                "entry_price": 50,
+                "exit_price": null,
+                "max_abs_qty": 2,
+                "remaining_qty": 2,
+                "gross_realized_pnl": 0.0,
+                "fees": 0.0,
+                "funding_pnl": 0.0,
+                "net_pnl": 0.0,
+                "mfe_pnl": 0.0,
+                "mae_pnl": 0.0,
+                "unrealized_pnl": 0.0,
+                "fill_count": 1,
+                "closed": false,
+                "add_count": 0,
+                "reduce_count": 0,
+                "holding_duration_ns": 0
+              }
+            ],
+            "open_episodes": [
+              {
+                "episode_id": "23701516601026fc53d3d190bf024c29646a719c50f962731a750a6b126a1d94",
+                "symbol": "BTC",
+                "side": 1,
+                "opened_at_ns": 10,
+                "closed_at_ns": null,
+                "entry_price": 100,
+                "exit_price": null,
+                "max_abs_qty": 1,
+                "remaining_qty": 1,
+                "gross_realized_pnl": 0.0,
+                "fees": 0.0,
+                "funding_pnl": -1.0,
+                "net_pnl": -1.0,
+                "mfe_pnl": 10.0,
+                "mae_pnl": -10.0,
+                "unrealized_pnl": 5,
+                "fill_count": 1,
+                "closed": false,
+                "add_count": 0,
+                "reduce_count": 0,
+                "holding_duration_ns": 0
+              },
+              {
+                "episode_id": "40c734a7114f3df0019c855779909da776c9881d16da1f40ac44f2c7edb99654",
+                "symbol": "ETH",
+                "side": -1,
+                "opened_at_ns": 10,
+                "closed_at_ns": null,
+                "entry_price": 50,
+                "exit_price": null,
+                "max_abs_qty": 2,
+                "remaining_qty": 2,
+                "gross_realized_pnl": 0.0,
+                "fees": 0.0,
+                "funding_pnl": 0.0,
+                "net_pnl": 0.0,
+                "mfe_pnl": 0.0,
+                "mae_pnl": 0.0,
+                "unrealized_pnl": 0.0,
+                "fill_count": 1,
+                "closed": false,
+                "add_count": 0,
+                "reduce_count": 0,
+                "holding_duration_ns": 0
+              }
+            ],
+            "closed_episodes": [],
+            "position_qty": {
+              "BTC": 1,
+              "ETH": -2,
+              "MISSING": 0.0,
+              "OTHER": 0.0
+            },
+            "position_switch_count": 0
+          }
+        },
+        {
+          "event": {
+            "type": "fill",
+            "client_order_id": "order-BTC-10",
+            "symbol": "BTC",
+            "side": -1,
+            "status": "FILLED",
+            "filled_qty": 2,
+            "avg_price": 110,
+            "fee": 2,
+            "transaction_time_ns": 10
+          },
+          "error": null,
+          "state": {
+            "episodes": [
+              {
+                "episode_id": "23701516601026fc53d3d190bf024c29646a719c50f962731a750a6b126a1d94",
+                "symbol": "BTC",
+                "side": 1,
+                "opened_at_ns": 10,
+                "closed_at_ns": 10,
+                "entry_price": 100,
+                "exit_price": 110.0,
+                "max_abs_qty": 1,
+                "remaining_qty": 0.0,
+                "gross_realized_pnl": 10.0,
+                "fees": 1.0,
+                "funding_pnl": -1.0,
+                "net_pnl": 8.0,
+                "mfe_pnl": 10.0,
+                "mae_pnl": -10.0,
+                "unrealized_pnl": 0.0,
+                "fill_count": 2,
+                "closed": true,
+                "add_count": 0,
+                "reduce_count": 1,
+                "holding_duration_ns": 0
+              },
+              {
+                "episode_id": "f12e308d036ec59124540bcbc8ab055b7a67da19feb9dbd8732f153e343d1caa",
+                "symbol": "BTC",
+                "side": -1,
+                "opened_at_ns": 10,
+                "closed_at_ns": null,
+                "entry_price": 110,
+                "exit_price": null,
+                "max_abs_qty": 1,
+                "remaining_qty": 1,
+                "gross_realized_pnl": 0.0,
+                "fees": 1.0,
+                "funding_pnl": 0.0,
+                "net_pnl": -1.0,
+                "mfe_pnl": 0.0,
+                "mae_pnl": 0.0,
+                "unrealized_pnl": 0.0,
+                "fill_count": 1,
+                "closed": false,
+                "add_count": 0,
+                "reduce_count": 0,
+                "holding_duration_ns": 0
+              },
+              {
+                "episode_id": "40c734a7114f3df0019c855779909da776c9881d16da1f40ac44f2c7edb99654",
+                "symbol": "ETH",
+                "side": -1,
+                "opened_at_ns": 10,
+                "closed_at_ns": null,
+                "entry_price": 50,
+                "exit_price": null,
+                "max_abs_qty": 2,
+                "remaining_qty": 2,
+                "gross_realized_pnl": 0.0,
+                "fees": 0.0,
+                "funding_pnl": 0.0,
+                "net_pnl": 0.0,
+                "mfe_pnl": 0.0,
+                "mae_pnl": 0.0,
+                "unrealized_pnl": 0.0,
+                "fill_count": 1,
+                "closed": false,
+                "add_count": 0,
+                "reduce_count": 0,
+                "holding_duration_ns": 0
+              }
+            ],
+            "open_episodes": [
+              {
+                "episode_id": "f12e308d036ec59124540bcbc8ab055b7a67da19feb9dbd8732f153e343d1caa",
+                "symbol": "BTC",
+                "side": -1,
+                "opened_at_ns": 10,
+                "closed_at_ns": null,
+                "entry_price": 110,
+                "exit_price": null,
+                "max_abs_qty": 1,
+                "remaining_qty": 1,
+                "gross_realized_pnl": 0.0,
+                "fees": 1.0,
+                "funding_pnl": 0.0,
+                "net_pnl": -1.0,
+                "mfe_pnl": 0.0,
+                "mae_pnl": 0.0,
+                "unrealized_pnl": 0.0,
+                "fill_count": 1,
+                "closed": false,
+                "add_count": 0,
+                "reduce_count": 0,
+                "holding_duration_ns": 0
+              },
+              {
+                "episode_id": "40c734a7114f3df0019c855779909da776c9881d16da1f40ac44f2c7edb99654",
+                "symbol": "ETH",
+                "side": -1,
+                "opened_at_ns": 10,
+                "closed_at_ns": null,
+                "entry_price": 50,
+                "exit_price": null,
+                "max_abs_qty": 2,
+                "remaining_qty": 2,
+                "gross_realized_pnl": 0.0,
+                "fees": 0.0,
+                "funding_pnl": 0.0,
+                "net_pnl": 0.0,
+                "mfe_pnl": 0.0,
+                "mae_pnl": 0.0,
+                "unrealized_pnl": 0.0,
+                "fill_count": 1,
+                "closed": false,
+                "add_count": 0,
+                "reduce_count": 0,
+                "holding_duration_ns": 0
+              }
+            ],
+            "closed_episodes": [
+              {
+                "episode_id": "23701516601026fc53d3d190bf024c29646a719c50f962731a750a6b126a1d94",
+                "symbol": "BTC",
+                "side": 1,
+                "opened_at_ns": 10,
+                "closed_at_ns": 10,
+                "entry_price": 100,
+                "exit_price": 110.0,
+                "max_abs_qty": 1,
+                "remaining_qty": 0.0,
+                "gross_realized_pnl": 10.0,
+                "fees": 1.0,
+                "funding_pnl": -1.0,
+                "net_pnl": 8.0,
+                "mfe_pnl": 10.0,
+                "mae_pnl": -10.0,
+                "unrealized_pnl": 0.0,
+                "fill_count": 2,
+                "closed": true,
+                "add_count": 0,
+                "reduce_count": 1,
+                "holding_duration_ns": 0
+              }
+            ],
+            "position_qty": {
+              "BTC": -1,
+              "ETH": -2,
+              "MISSING": 0.0,
+              "OTHER": 0.0
+            },
+            "position_switch_count": 1
+          }
+        },
+        {
+          "event": {
+            "type": "funding",
+            "symbol": "BTC",
+            "timestamp_ns": 10,
+            "pnl": 2
+          },
+          "error": null,
+          "state": {
+            "episodes": [
+              {
+                "episode_id": "23701516601026fc53d3d190bf024c29646a719c50f962731a750a6b126a1d94",
+                "symbol": "BTC",
+                "side": 1,
+                "opened_at_ns": 10,
+                "closed_at_ns": 10,
+                "entry_price": 100,
+                "exit_price": 110.0,
+                "max_abs_qty": 1,
+                "remaining_qty": 0.0,
+                "gross_realized_pnl": 10.0,
+                "fees": 1.0,
+                "funding_pnl": -1.0,
+                "net_pnl": 8.0,
+                "mfe_pnl": 10.0,
+                "mae_pnl": -10.0,
+                "unrealized_pnl": 0.0,
+                "fill_count": 2,
+                "closed": true,
+                "add_count": 0,
+                "reduce_count": 1,
+                "holding_duration_ns": 0
+              },
+              {
+                "episode_id": "f12e308d036ec59124540bcbc8ab055b7a67da19feb9dbd8732f153e343d1caa",
+                "symbol": "BTC",
+                "side": -1,
+                "opened_at_ns": 10,
+                "closed_at_ns": null,
+                "entry_price": 110,
+                "exit_price": null,
+                "max_abs_qty": 1,
+                "remaining_qty": 1,
+                "gross_realized_pnl": 0.0,
+                "fees": 1.0,
+                "funding_pnl": 2.0,
+                "net_pnl": 1.0,
+                "mfe_pnl": 0.0,
+                "mae_pnl": 0.0,
+                "unrealized_pnl": 0.0,
+                "fill_count": 1,
+                "closed": false,
+                "add_count": 0,
+                "reduce_count": 0,
+                "holding_duration_ns": 0
+              },
+              {
+                "episode_id": "40c734a7114f3df0019c855779909da776c9881d16da1f40ac44f2c7edb99654",
+                "symbol": "ETH",
+                "side": -1,
+                "opened_at_ns": 10,
+                "closed_at_ns": null,
+                "entry_price": 50,
+                "exit_price": null,
+                "max_abs_qty": 2,
+                "remaining_qty": 2,
+                "gross_realized_pnl": 0.0,
+                "fees": 0.0,
+                "funding_pnl": 0.0,
+                "net_pnl": 0.0,
+                "mfe_pnl": 0.0,
+                "mae_pnl": 0.0,
+                "unrealized_pnl": 0.0,
+                "fill_count": 1,
+                "closed": false,
+                "add_count": 0,
+                "reduce_count": 0,
+                "holding_duration_ns": 0
+              }
+            ],
+            "open_episodes": [
+              {
+                "episode_id": "f12e308d036ec59124540bcbc8ab055b7a67da19feb9dbd8732f153e343d1caa",
+                "symbol": "BTC",
+                "side": -1,
+                "opened_at_ns": 10,
+                "closed_at_ns": null,
+                "entry_price": 110,
+                "exit_price": null,
+                "max_abs_qty": 1,
+                "remaining_qty": 1,
+                "gross_realized_pnl": 0.0,
+                "fees": 1.0,
+                "funding_pnl": 2.0,
+                "net_pnl": 1.0,
+                "mfe_pnl": 0.0,
+                "mae_pnl": 0.0,
+                "unrealized_pnl": 0.0,
+                "fill_count": 1,
+                "closed": false,
+                "add_count": 0,
+                "reduce_count": 0,
+                "holding_duration_ns": 0
+              },
+              {
+                "episode_id": "40c734a7114f3df0019c855779909da776c9881d16da1f40ac44f2c7edb99654",
+                "symbol": "ETH",
+                "side": -1,
+                "opened_at_ns": 10,
+                "closed_at_ns": null,
+                "entry_price": 50,
+                "exit_price": null,
+                "max_abs_qty": 2,
+                "remaining_qty": 2,
+                "gross_realized_pnl": 0.0,
+                "fees": 0.0,
+                "funding_pnl": 0.0,
+                "net_pnl": 0.0,
+                "mfe_pnl": 0.0,
+                "mae_pnl": 0.0,
+                "unrealized_pnl": 0.0,
+                "fill_count": 1,
+                "closed": false,
+                "add_count": 0,
+                "reduce_count": 0,
+                "holding_duration_ns": 0
+              }
+            ],
+            "closed_episodes": [
+              {
+                "episode_id": "23701516601026fc53d3d190bf024c29646a719c50f962731a750a6b126a1d94",
+                "symbol": "BTC",
+                "side": 1,
+                "opened_at_ns": 10,
+                "closed_at_ns": 10,
+                "entry_price": 100,
+                "exit_price": 110.0,
+                "max_abs_qty": 1,
+                "remaining_qty": 0.0,
+                "gross_realized_pnl": 10.0,
+                "fees": 1.0,
+                "funding_pnl": -1.0,
+                "net_pnl": 8.0,
+                "mfe_pnl": 10.0,
+                "mae_pnl": -10.0,
+                "unrealized_pnl": 0.0,
+                "fill_count": 2,
+                "closed": true,
+                "add_count": 0,
+                "reduce_count": 1,
+                "holding_duration_ns": 0
+              }
+            ],
+            "position_qty": {
+              "BTC": -1,
+              "ETH": -2,
+              "MISSING": 0.0,
+              "OTHER": 0.0
+            },
+            "position_switch_count": 1
+          }
+        },
+        {
+          "event": {
+            "type": "price",
+            "symbol": "BTC",
+            "timestamp_ns": 10,
+            "high": 120,
+            "low": 100,
+            "close": 105
+          },
+          "error": null,
+          "state": {
+            "episodes": [
+              {
+                "episode_id": "23701516601026fc53d3d190bf024c29646a719c50f962731a750a6b126a1d94",
+                "symbol": "BTC",
+                "side": 1,
+                "opened_at_ns": 10,
+                "closed_at_ns": 10,
+                "entry_price": 100,
+                "exit_price": 110.0,
+                "max_abs_qty": 1,
+                "remaining_qty": 0.0,
+                "gross_realized_pnl": 10.0,
+                "fees": 1.0,
+                "funding_pnl": -1.0,
+                "net_pnl": 8.0,
+                "mfe_pnl": 10.0,
+                "mae_pnl": -10.0,
+                "unrealized_pnl": 0.0,
+                "fill_count": 2,
+                "closed": true,
+                "add_count": 0,
+                "reduce_count": 1,
+                "holding_duration_ns": 0
+              },
+              {
+                "episode_id": "f12e308d036ec59124540bcbc8ab055b7a67da19feb9dbd8732f153e343d1caa",
+                "symbol": "BTC",
+                "side": -1,
+                "opened_at_ns": 10,
+                "closed_at_ns": null,
+                "entry_price": 110,
+                "exit_price": null,
+                "max_abs_qty": 1,
+                "remaining_qty": 1,
+                "gross_realized_pnl": 0.0,
+                "fees": 1.0,
+                "funding_pnl": 2.0,
+                "net_pnl": 1.0,
+                "mfe_pnl": 10.0,
+                "mae_pnl": -10.0,
+                "unrealized_pnl": 5,
+                "fill_count": 1,
+                "closed": false,
+                "add_count": 0,
+                "reduce_count": 0,
+                "holding_duration_ns": 0
+              },
+              {
+                "episode_id": "40c734a7114f3df0019c855779909da776c9881d16da1f40ac44f2c7edb99654",
+                "symbol": "ETH",
+                "side": -1,
+                "opened_at_ns": 10,
+                "closed_at_ns": null,
+                "entry_price": 50,
+                "exit_price": null,
+                "max_abs_qty": 2,
+                "remaining_qty": 2,
+                "gross_realized_pnl": 0.0,
+                "fees": 0.0,
+                "funding_pnl": 0.0,
+                "net_pnl": 0.0,
+                "mfe_pnl": 0.0,
+                "mae_pnl": 0.0,
+                "unrealized_pnl": 0.0,
+                "fill_count": 1,
+                "closed": false,
+                "add_count": 0,
+                "reduce_count": 0,
+                "holding_duration_ns": 0
+              }
+            ],
+            "open_episodes": [
+              {
+                "episode_id": "f12e308d036ec59124540bcbc8ab055b7a67da19feb9dbd8732f153e343d1caa",
+                "symbol": "BTC",
+                "side": -1,
+                "opened_at_ns": 10,
+                "closed_at_ns": null,
+                "entry_price": 110,
+                "exit_price": null,
+                "max_abs_qty": 1,
+                "remaining_qty": 1,
+                "gross_realized_pnl": 0.0,
+                "fees": 1.0,
+                "funding_pnl": 2.0,
+                "net_pnl": 1.0,
+                "mfe_pnl": 10.0,
+                "mae_pnl": -10.0,
+                "unrealized_pnl": 5,
+                "fill_count": 1,
+                "closed": false,
+                "add_count": 0,
+                "reduce_count": 0,
+                "holding_duration_ns": 0
+              },
+              {
+                "episode_id": "40c734a7114f3df0019c855779909da776c9881d16da1f40ac44f2c7edb99654",
+                "symbol": "ETH",
+                "side": -1,
+                "opened_at_ns": 10,
+                "closed_at_ns": null,
+                "entry_price": 50,
+                "exit_price": null,
+                "max_abs_qty": 2,
+                "remaining_qty": 2,
+                "gross_realized_pnl": 0.0,
+                "fees": 0.0,
+                "funding_pnl": 0.0,
+                "net_pnl": 0.0,
+                "mfe_pnl": 0.0,
+                "mae_pnl": 0.0,
+                "unrealized_pnl": 0.0,
+                "fill_count": 1,
+                "closed": false,
+                "add_count": 0,
+                "reduce_count": 0,
+                "holding_duration_ns": 0
+              }
+            ],
+            "closed_episodes": [
+              {
+                "episode_id": "23701516601026fc53d3d190bf024c29646a719c50f962731a750a6b126a1d94",
+                "symbol": "BTC",
+                "side": 1,
+                "opened_at_ns": 10,
+                "closed_at_ns": 10,
+                "entry_price": 100,
+                "exit_price": 110.0,
+                "max_abs_qty": 1,
+                "remaining_qty": 0.0,
+                "gross_realized_pnl": 10.0,
+                "fees": 1.0,
+                "funding_pnl": -1.0,
+                "net_pnl": 8.0,
+                "mfe_pnl": 10.0,
+                "mae_pnl": -10.0,
+                "unrealized_pnl": 0.0,
+                "fill_count": 2,
+                "closed": true,
+                "add_count": 0,
+                "reduce_count": 1,
+                "holding_duration_ns": 0
+              }
+            ],
+            "position_qty": {
+              "BTC": -1,
+              "ETH": -2,
+              "MISSING": 0.0,
+              "OTHER": 0.0
+            },
+            "position_switch_count": 1
+          }
+        },
+        {
+          "event": {
+            "type": "fill",
+            "client_order_id": "order-BTC-10",
+            "symbol": "BTC",
+            "side": 1,
+            "status": "FILLED",
+            "filled_qty": 1,
+            "avg_price": 100,
+            "fee": 0.0,
+            "transaction_time_ns": 10
+          },
+          "error": null,
+          "state": {
+            "episodes": [
+              {
+                "episode_id": "23701516601026fc53d3d190bf024c29646a719c50f962731a750a6b126a1d94",
+                "symbol": "BTC",
+                "side": 1,
+                "opened_at_ns": 10,
+                "closed_at_ns": 10,
+                "entry_price": 100,
+                "exit_price": 110.0,
+                "max_abs_qty": 1,
+                "remaining_qty": 0.0,
+                "gross_realized_pnl": 10.0,
+                "fees": 1.0,
+                "funding_pnl": -1.0,
+                "net_pnl": 8.0,
+                "mfe_pnl": 10.0,
+                "mae_pnl": -10.0,
+                "unrealized_pnl": 0.0,
+                "fill_count": 2,
+                "closed": true,
+                "add_count": 0,
+                "reduce_count": 1,
+                "holding_duration_ns": 0
+              },
+              {
+                "episode_id": "f12e308d036ec59124540bcbc8ab055b7a67da19feb9dbd8732f153e343d1caa",
+                "symbol": "BTC",
+                "side": -1,
+                "opened_at_ns": 10,
+                "closed_at_ns": 10,
+                "entry_price": 110,
+                "exit_price": 100.0,
+                "max_abs_qty": 1,
+                "remaining_qty": 0.0,
+                "gross_realized_pnl": 10.0,
+                "fees": 1.0,
+                "funding_pnl": 2.0,
+                "net_pnl": 11.0,
+                "mfe_pnl": 10.0,
+                "mae_pnl": -10.0,
+                "unrealized_pnl": 0.0,
+                "fill_count": 2,
+                "closed": true,
+                "add_count": 0,
+                "reduce_count": 1,
+                "holding_duration_ns": 0
+              },
+              {
+                "episode_id": "40c734a7114f3df0019c855779909da776c9881d16da1f40ac44f2c7edb99654",
+                "symbol": "ETH",
+                "side": -1,
+                "opened_at_ns": 10,
+                "closed_at_ns": null,
+                "entry_price": 50,
+                "exit_price": null,
+                "max_abs_qty": 2,
+                "remaining_qty": 2,
+                "gross_realized_pnl": 0.0,
+                "fees": 0.0,
+                "funding_pnl": 0.0,
+                "net_pnl": 0.0,
+                "mfe_pnl": 0.0,
+                "mae_pnl": 0.0,
+                "unrealized_pnl": 0.0,
+                "fill_count": 1,
+                "closed": false,
+                "add_count": 0,
+                "reduce_count": 0,
+                "holding_duration_ns": 0
+              }
+            ],
+            "open_episodes": [
+              {
+                "episode_id": "40c734a7114f3df0019c855779909da776c9881d16da1f40ac44f2c7edb99654",
+                "symbol": "ETH",
+                "side": -1,
+                "opened_at_ns": 10,
+                "closed_at_ns": null,
+                "entry_price": 50,
+                "exit_price": null,
+                "max_abs_qty": 2,
+                "remaining_qty": 2,
+                "gross_realized_pnl": 0.0,
+                "fees": 0.0,
+                "funding_pnl": 0.0,
+                "net_pnl": 0.0,
+                "mfe_pnl": 0.0,
+                "mae_pnl": 0.0,
+                "unrealized_pnl": 0.0,
+                "fill_count": 1,
+                "closed": false,
+                "add_count": 0,
+                "reduce_count": 0,
+                "holding_duration_ns": 0
+              }
+            ],
+            "closed_episodes": [
+              {
+                "episode_id": "23701516601026fc53d3d190bf024c29646a719c50f962731a750a6b126a1d94",
+                "symbol": "BTC",
+                "side": 1,
+                "opened_at_ns": 10,
+                "closed_at_ns": 10,
+                "entry_price": 100,
+                "exit_price": 110.0,
+                "max_abs_qty": 1,
+                "remaining_qty": 0.0,
+                "gross_realized_pnl": 10.0,
+                "fees": 1.0,
+                "funding_pnl": -1.0,
+                "net_pnl": 8.0,
+                "mfe_pnl": 10.0,
+                "mae_pnl": -10.0,
+                "unrealized_pnl": 0.0,
+                "fill_count": 2,
+                "closed": true,
+                "add_count": 0,
+                "reduce_count": 1,
+                "holding_duration_ns": 0
+              },
+              {
+                "episode_id": "f12e308d036ec59124540bcbc8ab055b7a67da19feb9dbd8732f153e343d1caa",
+                "symbol": "BTC",
+                "side": -1,
+                "opened_at_ns": 10,
+                "closed_at_ns": 10,
+                "entry_price": 110,
+                "exit_price": 100.0,
+                "max_abs_qty": 1,
+                "remaining_qty": 0.0,
+                "gross_realized_pnl": 10.0,
+                "fees": 1.0,
+                "funding_pnl": 2.0,
+                "net_pnl": 11.0,
+                "mfe_pnl": 10.0,
+                "mae_pnl": -10.0,
+                "unrealized_pnl": 0.0,
+                "fill_count": 2,
+                "closed": true,
+                "add_count": 0,
+                "reduce_count": 1,
+                "holding_duration_ns": 0
+              }
+            ],
+            "position_qty": {
+              "BTC": 0.0,
+              "ETH": -2,
+              "MISSING": 0.0,
+              "OTHER": 0.0
+            },
+            "position_switch_count": 1
+          }
+        },
+        {
+          "event": {
+            "type": "fill",
+            "client_order_id": "order-OTHER-1",
+            "symbol": "OTHER",
+            "side": 1,
+            "status": "FILLED",
+            "filled_qty": 1,
+            "avg_price": 40,
+            "fee": 0.0,
+            "transaction_time_ns": 1
+          },
+          "error": null,
+          "state": {
+            "episodes": [
+              {
+                "episode_id": "6e31855e734b48b677abef4c823fb0d31ece12671e44c2be87717cde7e8a43d5",
+                "symbol": "OTHER",
+                "side": 1,
+                "opened_at_ns": 1,
+                "closed_at_ns": null,
+                "entry_price": 40,
+                "exit_price": null,
+                "max_abs_qty": 1,
+                "remaining_qty": 1,
+                "gross_realized_pnl": 0.0,
+                "fees": 0.0,
+                "funding_pnl": 0.0,
+                "net_pnl": 0.0,
+                "mfe_pnl": 0.0,
+                "mae_pnl": 0.0,
+                "unrealized_pnl": 0.0,
+                "fill_count": 1,
+                "closed": false,
+                "add_count": 0,
+                "reduce_count": 0,
+                "holding_duration_ns": 0
+              },
+              {
+                "episode_id": "23701516601026fc53d3d190bf024c29646a719c50f962731a750a6b126a1d94",
+                "symbol": "BTC",
+                "side": 1,
+                "opened_at_ns": 10,
+                "closed_at_ns": 10,
+                "entry_price": 100,
+                "exit_price": 110.0,
+                "max_abs_qty": 1,
+                "remaining_qty": 0.0,
+                "gross_realized_pnl": 10.0,
+                "fees": 1.0,
+                "funding_pnl": -1.0,
+                "net_pnl": 8.0,
+                "mfe_pnl": 10.0,
+                "mae_pnl": -10.0,
+                "unrealized_pnl": 0.0,
+                "fill_count": 2,
+                "closed": true,
+                "add_count": 0,
+                "reduce_count": 1,
+                "holding_duration_ns": 0
+              },
+              {
+                "episode_id": "f12e308d036ec59124540bcbc8ab055b7a67da19feb9dbd8732f153e343d1caa",
+                "symbol": "BTC",
+                "side": -1,
+                "opened_at_ns": 10,
+                "closed_at_ns": 10,
+                "entry_price": 110,
+                "exit_price": 100.0,
+                "max_abs_qty": 1,
+                "remaining_qty": 0.0,
+                "gross_realized_pnl": 10.0,
+                "fees": 1.0,
+                "funding_pnl": 2.0,
+                "net_pnl": 11.0,
+                "mfe_pnl": 10.0,
+                "mae_pnl": -10.0,
+                "unrealized_pnl": 0.0,
+                "fill_count": 2,
+                "closed": true,
+                "add_count": 0,
+                "reduce_count": 1,
+                "holding_duration_ns": 0
+              },
+              {
+                "episode_id": "40c734a7114f3df0019c855779909da776c9881d16da1f40ac44f2c7edb99654",
+                "symbol": "ETH",
+                "side": -1,
+                "opened_at_ns": 10,
+                "closed_at_ns": null,
+                "entry_price": 50,
+                "exit_price": null,
+                "max_abs_qty": 2,
+                "remaining_qty": 2,
+                "gross_realized_pnl": 0.0,
+                "fees": 0.0,
+                "funding_pnl": 0.0,
+                "net_pnl": 0.0,
+                "mfe_pnl": 0.0,
+                "mae_pnl": 0.0,
+                "unrealized_pnl": 0.0,
+                "fill_count": 1,
+                "closed": false,
+                "add_count": 0,
+                "reduce_count": 0,
+                "holding_duration_ns": 0
+              }
+            ],
+            "open_episodes": [
+              {
+                "episode_id": "40c734a7114f3df0019c855779909da776c9881d16da1f40ac44f2c7edb99654",
+                "symbol": "ETH",
+                "side": -1,
+                "opened_at_ns": 10,
+                "closed_at_ns": null,
+                "entry_price": 50,
+                "exit_price": null,
+                "max_abs_qty": 2,
+                "remaining_qty": 2,
+                "gross_realized_pnl": 0.0,
+                "fees": 0.0,
+                "funding_pnl": 0.0,
+                "net_pnl": 0.0,
+                "mfe_pnl": 0.0,
+                "mae_pnl": 0.0,
+                "unrealized_pnl": 0.0,
+                "fill_count": 1,
+                "closed": false,
+                "add_count": 0,
+                "reduce_count": 0,
+                "holding_duration_ns": 0
+              },
+              {
+                "episode_id": "6e31855e734b48b677abef4c823fb0d31ece12671e44c2be87717cde7e8a43d5",
+                "symbol": "OTHER",
+                "side": 1,
+                "opened_at_ns": 1,
+                "closed_at_ns": null,
+                "entry_price": 40,
+                "exit_price": null,
+                "max_abs_qty": 1,
+                "remaining_qty": 1,
+                "gross_realized_pnl": 0.0,
+                "fees": 0.0,
+                "funding_pnl": 0.0,
+                "net_pnl": 0.0,
+                "mfe_pnl": 0.0,
+                "mae_pnl": 0.0,
+                "unrealized_pnl": 0.0,
+                "fill_count": 1,
+                "closed": false,
+                "add_count": 0,
+                "reduce_count": 0,
+                "holding_duration_ns": 0
+              }
+            ],
+            "closed_episodes": [
+              {
+                "episode_id": "23701516601026fc53d3d190bf024c29646a719c50f962731a750a6b126a1d94",
+                "symbol": "BTC",
+                "side": 1,
+                "opened_at_ns": 10,
+                "closed_at_ns": 10,
+                "entry_price": 100,
+                "exit_price": 110.0,
+                "max_abs_qty": 1,
+                "remaining_qty": 0.0,
+                "gross_realized_pnl": 10.0,
+                "fees": 1.0,
+                "funding_pnl": -1.0,
+                "net_pnl": 8.0,
+                "mfe_pnl": 10.0,
+                "mae_pnl": -10.0,
+                "unrealized_pnl": 0.0,
+                "fill_count": 2,
+                "closed": true,
+                "add_count": 0,
+                "reduce_count": 1,
+                "holding_duration_ns": 0
+              },
+              {
+                "episode_id": "f12e308d036ec59124540bcbc8ab055b7a67da19feb9dbd8732f153e343d1caa",
+                "symbol": "BTC",
+                "side": -1,
+                "opened_at_ns": 10,
+                "closed_at_ns": 10,
+                "entry_price": 110,
+                "exit_price": 100.0,
+                "max_abs_qty": 1,
+                "remaining_qty": 0.0,
+                "gross_realized_pnl": 10.0,
+                "fees": 1.0,
+                "funding_pnl": 2.0,
+                "net_pnl": 11.0,
+                "mfe_pnl": 10.0,
+                "mae_pnl": -10.0,
+                "unrealized_pnl": 0.0,
+                "fill_count": 2,
+                "closed": true,
+                "add_count": 0,
+                "reduce_count": 1,
+                "holding_duration_ns": 0
+              }
+            ],
+            "position_qty": {
+              "BTC": 0.0,
+              "ETH": -2,
+              "MISSING": 0.0,
+              "OTHER": 1
+            },
+            "position_switch_count": 1
+          }
+        }
+      ]
+    },
+    {
+      "name": "dust_and_ignored_fills",
+      "steps": [
+        {
+          "event": {
+            "type": "fill",
+            "client_order_id": "order-BTC-10",
+            "symbol": "BTC",
+            "side": 1,
+            "status": "FILLED",
+            "filled_qty": 0.3,
+            "avg_price": 100,
+            "fee": 0.0,
+            "transaction_time_ns": 10
+          },
+          "error": null,
+          "state": {
+            "episodes": [
+              {
+                "episode_id": "23701516601026fc53d3d190bf024c29646a719c50f962731a750a6b126a1d94",
+                "symbol": "BTC",
+                "side": 1,
+                "opened_at_ns": 10,
+                "closed_at_ns": null,
+                "entry_price": 100,
+                "exit_price": null,
+                "max_abs_qty": 0.3,
+                "remaining_qty": 0.3,
+                "gross_realized_pnl": 0.0,
+                "fees": 0.0,
+                "funding_pnl": 0.0,
+                "net_pnl": 0.0,
+                "mfe_pnl": 0.0,
+                "mae_pnl": 0.0,
+                "unrealized_pnl": 0.0,
+                "fill_count": 1,
+                "closed": false,
+                "add_count": 0,
+                "reduce_count": 0,
+                "holding_duration_ns": 0
+              }
+            ],
+            "open_episodes": [
+              {
+                "episode_id": "23701516601026fc53d3d190bf024c29646a719c50f962731a750a6b126a1d94",
+                "symbol": "BTC",
+                "side": 1,
+                "opened_at_ns": 10,
+                "closed_at_ns": null,
+                "entry_price": 100,
+                "exit_price": null,
+                "max_abs_qty": 0.3,
+                "remaining_qty": 0.3,
+                "gross_realized_pnl": 0.0,
+                "fees": 0.0,
+                "funding_pnl": 0.0,
+                "net_pnl": 0.0,
+                "mfe_pnl": 0.0,
+                "mae_pnl": 0.0,
+                "unrealized_pnl": 0.0,
+                "fill_count": 1,
+                "closed": false,
+                "add_count": 0,
+                "reduce_count": 0,
+                "holding_duration_ns": 0
+              }
+            ],
+            "closed_episodes": [],
+            "position_qty": {
+              "BTC": 0.3,
+              "MISSING": 0.0
+            },
+            "position_switch_count": 0
+          }
+        },
+        {
+          "event": {
+            "type": "fill",
+            "client_order_id": "order-BTC-11",
+            "symbol": "BTC",
+            "side": -1,
+            "status": "FILLED",
+            "filled_qty": 0.30000000000000004,
+            "avg_price": 101,
+            "fee": 0.0,
+            "transaction_time_ns": 11
+          },
+          "error": null,
+          "state": {
+            "episodes": [
+              {
+                "episode_id": "23701516601026fc53d3d190bf024c29646a719c50f962731a750a6b126a1d94",
+                "symbol": "BTC",
+                "side": 1,
+                "opened_at_ns": 10,
+                "closed_at_ns": 11,
+                "entry_price": 100,
+                "exit_price": 101.0,
+                "max_abs_qty": 0.3,
+                "remaining_qty": 0.0,
+                "gross_realized_pnl": 0.3,
+                "fees": 0.0,
+                "funding_pnl": 0.0,
+                "net_pnl": 0.3,
+                "mfe_pnl": 0.3,
+                "mae_pnl": 0.0,
+                "unrealized_pnl": 0.0,
+                "fill_count": 2,
+                "closed": true,
+                "add_count": 0,
+                "reduce_count": 1,
+                "holding_duration_ns": 1
+              }
+            ],
+            "open_episodes": [],
+            "closed_episodes": [
+              {
+                "episode_id": "23701516601026fc53d3d190bf024c29646a719c50f962731a750a6b126a1d94",
+                "symbol": "BTC",
+                "side": 1,
+                "opened_at_ns": 10,
+                "closed_at_ns": 11,
+                "entry_price": 100,
+                "exit_price": 101.0,
+                "max_abs_qty": 0.3,
+                "remaining_qty": 0.0,
+                "gross_realized_pnl": 0.3,
+                "fees": 0.0,
+                "funding_pnl": 0.0,
+                "net_pnl": 0.3,
+                "mfe_pnl": 0.3,
+                "mae_pnl": 0.0,
+                "unrealized_pnl": 0.0,
+                "fill_count": 2,
+                "closed": true,
+                "add_count": 0,
+                "reduce_count": 1,
+                "holding_duration_ns": 1
+              }
+            ],
+            "position_qty": {
+              "BTC": 0.0,
+              "MISSING": 0.0
+            },
+            "position_switch_count": 0
+          }
+        },
+        {
+          "event": {
+            "type": "fill",
+            "client_order_id": "order-BTC-1",
+            "symbol": "BTC",
+            "side": 0,
+            "status": "FILLED",
+            "filled_qty": 0,
+            "avg_price": 0,
+            "fee": 0.0,
+            "transaction_time_ns": 1
+          },
+          "error": null,
+          "state": {
+            "episodes": [
+              {
+                "episode_id": "23701516601026fc53d3d190bf024c29646a719c50f962731a750a6b126a1d94",
+                "symbol": "BTC",
+                "side": 1,
+                "opened_at_ns": 10,
+                "closed_at_ns": 11,
+                "entry_price": 100,
+                "exit_price": 101.0,
+                "max_abs_qty": 0.3,
+                "remaining_qty": 0.0,
+                "gross_realized_pnl": 0.3,
+                "fees": 0.0,
+                "funding_pnl": 0.0,
+                "net_pnl": 0.3,
+                "mfe_pnl": 0.3,
+                "mae_pnl": 0.0,
+                "unrealized_pnl": 0.0,
+                "fill_count": 2,
+                "closed": true,
+                "add_count": 0,
+                "reduce_count": 1,
+                "holding_duration_ns": 1
+              }
+            ],
+            "open_episodes": [],
+            "closed_episodes": [
+              {
+                "episode_id": "23701516601026fc53d3d190bf024c29646a719c50f962731a750a6b126a1d94",
+                "symbol": "BTC",
+                "side": 1,
+                "opened_at_ns": 10,
+                "closed_at_ns": 11,
+                "entry_price": 100,
+                "exit_price": 101.0,
+                "max_abs_qty": 0.3,
+                "remaining_qty": 0.0,
+                "gross_realized_pnl": 0.3,
+                "fees": 0.0,
+                "funding_pnl": 0.0,
+                "net_pnl": 0.3,
+                "mfe_pnl": 0.3,
+                "mae_pnl": 0.0,
+                "unrealized_pnl": 0.0,
+                "fill_count": 2,
+                "closed": true,
+                "add_count": 0,
+                "reduce_count": 1,
+                "holding_duration_ns": 1
+              }
+            ],
+            "position_qty": {
+              "BTC": 0.0,
+              "MISSING": 0.0
+            },
+            "position_switch_count": 0
+          }
+        },
+        {
+          "event": {
+            "type": "fill",
+            "client_order_id": "order-BTC-12",
+            "symbol": "BTC",
+            "side": -1,
+            "status": "FILLED",
+            "filled_qty": 1,
+            "avg_price": 100,
+            "fee": 0.0,
+            "transaction_time_ns": 12
+          },
+          "error": null,
+          "state": {
+            "episodes": [
+              {
+                "episode_id": "23701516601026fc53d3d190bf024c29646a719c50f962731a750a6b126a1d94",
+                "symbol": "BTC",
+                "side": 1,
+                "opened_at_ns": 10,
+                "closed_at_ns": 11,
+                "entry_price": 100,
+                "exit_price": 101.0,
+                "max_abs_qty": 0.3,
+                "remaining_qty": 0.0,
+                "gross_realized_pnl": 0.3,
+                "fees": 0.0,
+                "funding_pnl": 0.0,
+                "net_pnl": 0.3,
+                "mfe_pnl": 0.3,
+                "mae_pnl": 0.0,
+                "unrealized_pnl": 0.0,
+                "fill_count": 2,
+                "closed": true,
+                "add_count": 0,
+                "reduce_count": 1,
+                "holding_duration_ns": 1
+              },
+              {
+                "episode_id": "3e4827dd11b387400a253127114cded52d66191a7c176120f0bd4d95198db5cd",
+                "symbol": "BTC",
+                "side": -1,
+                "opened_at_ns": 12,
+                "closed_at_ns": null,
+                "entry_price": 100,
+                "exit_price": null,
+                "max_abs_qty": 1,
+                "remaining_qty": 1,
+                "gross_realized_pnl": 0.0,
+                "fees": 0.0,
+                "funding_pnl": 0.0,
+                "net_pnl": 0.0,
+                "mfe_pnl": 0.0,
+                "mae_pnl": 0.0,
+                "unrealized_pnl": 0.0,
+                "fill_count": 1,
+                "closed": false,
+                "add_count": 0,
+                "reduce_count": 0,
+                "holding_duration_ns": 0
+              }
+            ],
+            "open_episodes": [
+              {
+                "episode_id": "3e4827dd11b387400a253127114cded52d66191a7c176120f0bd4d95198db5cd",
+                "symbol": "BTC",
+                "side": -1,
+                "opened_at_ns": 12,
+                "closed_at_ns": null,
+                "entry_price": 100,
+                "exit_price": null,
+                "max_abs_qty": 1,
+                "remaining_qty": 1,
+                "gross_realized_pnl": 0.0,
+                "fees": 0.0,
+                "funding_pnl": 0.0,
+                "net_pnl": 0.0,
+                "mfe_pnl": 0.0,
+                "mae_pnl": 0.0,
+                "unrealized_pnl": 0.0,
+                "fill_count": 1,
+                "closed": false,
+                "add_count": 0,
+                "reduce_count": 0,
+                "holding_duration_ns": 0
+              }
+            ],
+            "closed_episodes": [
+              {
+                "episode_id": "23701516601026fc53d3d190bf024c29646a719c50f962731a750a6b126a1d94",
+                "symbol": "BTC",
+                "side": 1,
+                "opened_at_ns": 10,
+                "closed_at_ns": 11,
+                "entry_price": 100,
+                "exit_price": 101.0,
+                "max_abs_qty": 0.3,
+                "remaining_qty": 0.0,
+                "gross_realized_pnl": 0.3,
+                "fees": 0.0,
+                "funding_pnl": 0.0,
+                "net_pnl": 0.3,
+                "mfe_pnl": 0.3,
+                "mae_pnl": 0.0,
+                "unrealized_pnl": 0.0,
+                "fill_count": 2,
+                "closed": true,
+                "add_count": 0,
+                "reduce_count": 1,
+                "holding_duration_ns": 1
+              }
+            ],
+            "position_qty": {
+              "BTC": -1,
+              "MISSING": 0.0
+            },
+            "position_switch_count": 1
+          }
+        }
+      ]
+    },
+    {
+      "name": "errors_and_recovery",
+      "steps": [
+        {
+          "event": {
+            "type": "fill",
+            "client_order_id": "order-BTC-5",
+            "symbol": "BTC",
+            "side": 1,
+            "status": "FILLED",
+            "filled_qty": 1,
+            "avg_price": 100,
+            "fee": 0.0,
+            "transaction_time_ns": 5
+          },
+          "error": null,
+          "state": {
+            "episodes": [
+              {
+                "episode_id": "0162feb3d915c412e6a3339c19ed08671803379ba26a6531958ea74a5f4a8d82",
+                "symbol": "BTC",
+                "side": 1,
+                "opened_at_ns": 5,
+                "closed_at_ns": null,
+                "entry_price": 100,
+                "exit_price": null,
+                "max_abs_qty": 1,
+                "remaining_qty": 1,
+                "gross_realized_pnl": 0.0,
+                "fees": 0.0,
+                "funding_pnl": 0.0,
+                "net_pnl": 0.0,
+                "mfe_pnl": 0.0,
+                "mae_pnl": 0.0,
+                "unrealized_pnl": 0.0,
+                "fill_count": 1,
+                "closed": false,
+                "add_count": 0,
+                "reduce_count": 0,
+                "holding_duration_ns": 0
+              }
+            ],
+            "open_episodes": [
+              {
+                "episode_id": "0162feb3d915c412e6a3339c19ed08671803379ba26a6531958ea74a5f4a8d82",
+                "symbol": "BTC",
+                "side": 1,
+                "opened_at_ns": 5,
+                "closed_at_ns": null,
+                "entry_price": 100,
+                "exit_price": null,
+                "max_abs_qty": 1,
+                "remaining_qty": 1,
+                "gross_realized_pnl": 0.0,
+                "fees": 0.0,
+                "funding_pnl": 0.0,
+                "net_pnl": 0.0,
+                "mfe_pnl": 0.0,
+                "mae_pnl": 0.0,
+                "unrealized_pnl": 0.0,
+                "fill_count": 1,
+                "closed": false,
+                "add_count": 0,
+                "reduce_count": 0,
+                "holding_duration_ns": 0
+              }
+            ],
+            "closed_episodes": [],
+            "position_qty": {
+              "BTC": 1,
+              "MISSING": 0.0
+            },
+            "position_switch_count": 0
+          }
+        },
+        {
+          "event": {
+            "type": "fill",
+            "client_order_id": "order-BTC-6",
+            "symbol": "BTC",
+            "side": 0,
+            "status": "FILLED",
+            "filled_qty": 1,
+            "avg_price": 100,
+            "fee": 0.0,
+            "transaction_time_ns": 6
+          },
+          "error": {
+            "type": "ValueError",
+            "message": "filled execution report side must be -1 or 1"
+          },
+          "state": {
+            "episodes": [
+              {
+                "episode_id": "0162feb3d915c412e6a3339c19ed08671803379ba26a6531958ea74a5f4a8d82",
+                "symbol": "BTC",
+                "side": 1,
+                "opened_at_ns": 5,
+                "closed_at_ns": null,
+                "entry_price": 100,
+                "exit_price": null,
+                "max_abs_qty": 1,
+                "remaining_qty": 1,
+                "gross_realized_pnl": 0.0,
+                "fees": 0.0,
+                "funding_pnl": 0.0,
+                "net_pnl": 0.0,
+                "mfe_pnl": 0.0,
+                "mae_pnl": 0.0,
+                "unrealized_pnl": 0.0,
+                "fill_count": 1,
+                "closed": false,
+                "add_count": 0,
+                "reduce_count": 0,
+                "holding_duration_ns": 0
+              }
+            ],
+            "open_episodes": [
+              {
+                "episode_id": "0162feb3d915c412e6a3339c19ed08671803379ba26a6531958ea74a5f4a8d82",
+                "symbol": "BTC",
+                "side": 1,
+                "opened_at_ns": 5,
+                "closed_at_ns": null,
+                "entry_price": 100,
+                "exit_price": null,
+                "max_abs_qty": 1,
+                "remaining_qty": 1,
+                "gross_realized_pnl": 0.0,
+                "fees": 0.0,
+                "funding_pnl": 0.0,
+                "net_pnl": 0.0,
+                "mfe_pnl": 0.0,
+                "mae_pnl": 0.0,
+                "unrealized_pnl": 0.0,
+                "fill_count": 1,
+                "closed": false,
+                "add_count": 0,
+                "reduce_count": 0,
+                "holding_duration_ns": 0
+              }
+            ],
+            "closed_episodes": [],
+            "position_qty": {
+              "BTC": 1,
+              "MISSING": 0.0
+            },
+            "position_switch_count": 0
+          }
+        },
+        {
+          "event": {
+            "type": "price",
+            "symbol": "BTC",
+            "timestamp_ns": 6,
+            "high": 90,
+            "low": 100,
+            "close": 95
+          },
+          "error": {
+            "type": "ValueError",
+            "message": "price observation high must be at least low"
+          },
+          "state": {
+            "episodes": [
+              {
+                "episode_id": "0162feb3d915c412e6a3339c19ed08671803379ba26a6531958ea74a5f4a8d82",
+                "symbol": "BTC",
+                "side": 1,
+                "opened_at_ns": 5,
+                "closed_at_ns": null,
+                "entry_price": 100,
+                "exit_price": null,
+                "max_abs_qty": 1,
+                "remaining_qty": 1,
+                "gross_realized_pnl": 0.0,
+                "fees": 0.0,
+                "funding_pnl": 0.0,
+                "net_pnl": 0.0,
+                "mfe_pnl": 0.0,
+                "mae_pnl": 0.0,
+                "unrealized_pnl": 0.0,
+                "fill_count": 1,
+                "closed": false,
+                "add_count": 0,
+                "reduce_count": 0,
+                "holding_duration_ns": 0
+              }
+            ],
+            "open_episodes": [
+              {
+                "episode_id": "0162feb3d915c412e6a3339c19ed08671803379ba26a6531958ea74a5f4a8d82",
+                "symbol": "BTC",
+                "side": 1,
+                "opened_at_ns": 5,
+                "closed_at_ns": null,
+                "entry_price": 100,
+                "exit_price": null,
+                "max_abs_qty": 1,
+                "remaining_qty": 1,
+                "gross_realized_pnl": 0.0,
+                "fees": 0.0,
+                "funding_pnl": 0.0,
+                "net_pnl": 0.0,
+                "mfe_pnl": 0.0,
+                "mae_pnl": 0.0,
+                "unrealized_pnl": 0.0,
+                "fill_count": 1,
+                "closed": false,
+                "add_count": 0,
+                "reduce_count": 0,
+                "holding_duration_ns": 0
+              }
+            ],
+            "closed_episodes": [],
+            "position_qty": {
+              "BTC": 1,
+              "MISSING": 0.0
+            },
+            "position_switch_count": 0
+          }
+        },
+        {
+          "event": {
+            "type": "price",
+            "symbol": "BTC",
+            "timestamp_ns": 6,
+            "high": 100,
+            "low": 0,
+            "close": 95
+          },
+          "error": {
+            "type": "ValueError",
+            "message": "price observations must be positive"
+          },
+          "state": {
+            "episodes": [
+              {
+                "episode_id": "0162feb3d915c412e6a3339c19ed08671803379ba26a6531958ea74a5f4a8d82",
+                "symbol": "BTC",
+                "side": 1,
+                "opened_at_ns": 5,
+                "closed_at_ns": null,
+                "entry_price": 100,
+                "exit_price": null,
+                "max_abs_qty": 1,
+                "remaining_qty": 1,
+                "gross_realized_pnl": 0.0,
+                "fees": 0.0,
+                "funding_pnl": 0.0,
+                "net_pnl": 0.0,
+                "mfe_pnl": 0.0,
+                "mae_pnl": 0.0,
+                "unrealized_pnl": 0.0,
+                "fill_count": 1,
+                "closed": false,
+                "add_count": 0,
+                "reduce_count": 0,
+                "holding_duration_ns": 0
+              }
+            ],
+            "open_episodes": [
+              {
+                "episode_id": "0162feb3d915c412e6a3339c19ed08671803379ba26a6531958ea74a5f4a8d82",
+                "symbol": "BTC",
+                "side": 1,
+                "opened_at_ns": 5,
+                "closed_at_ns": null,
+                "entry_price": 100,
+                "exit_price": null,
+                "max_abs_qty": 1,
+                "remaining_qty": 1,
+                "gross_realized_pnl": 0.0,
+                "fees": 0.0,
+                "funding_pnl": 0.0,
+                "net_pnl": 0.0,
+                "mfe_pnl": 0.0,
+                "mae_pnl": 0.0,
+                "unrealized_pnl": 0.0,
+                "fill_count": 1,
+                "closed": false,
+                "add_count": 0,
+                "reduce_count": 0,
+                "holding_duration_ns": 0
+              }
+            ],
+            "closed_episodes": [],
+            "position_qty": {
+              "BTC": 1,
+              "MISSING": 0.0
+            },
+            "position_switch_count": 0
+          }
+        },
+        {
+          "event": {
+            "type": "price",
+            "symbol": "BTC",
+            "timestamp_ns": 6,
+            "high": 100,
+            "low": 90,
+            "close": 0
+          },
+          "error": {
+            "type": "ValueError",
+            "message": "price observations must be positive"
+          },
+          "state": {
+            "episodes": [
+              {
+                "episode_id": "0162feb3d915c412e6a3339c19ed08671803379ba26a6531958ea74a5f4a8d82",
+                "symbol": "BTC",
+                "side": 1,
+                "opened_at_ns": 5,
+                "closed_at_ns": null,
+                "entry_price": 100,
+                "exit_price": null,
+                "max_abs_qty": 1,
+                "remaining_qty": 1,
+                "gross_realized_pnl": 0.0,
+                "fees": 0.0,
+                "funding_pnl": 0.0,
+                "net_pnl": 0.0,
+                "mfe_pnl": 0.0,
+                "mae_pnl": 0.0,
+                "unrealized_pnl": 0.0,
+                "fill_count": 1,
+                "closed": false,
+                "add_count": 0,
+                "reduce_count": 0,
+                "holding_duration_ns": 0
+              }
+            ],
+            "open_episodes": [
+              {
+                "episode_id": "0162feb3d915c412e6a3339c19ed08671803379ba26a6531958ea74a5f4a8d82",
+                "symbol": "BTC",
+                "side": 1,
+                "opened_at_ns": 5,
+                "closed_at_ns": null,
+                "entry_price": 100,
+                "exit_price": null,
+                "max_abs_qty": 1,
+                "remaining_qty": 1,
+                "gross_realized_pnl": 0.0,
+                "fees": 0.0,
+                "funding_pnl": 0.0,
+                "net_pnl": 0.0,
+                "mfe_pnl": 0.0,
+                "mae_pnl": 0.0,
+                "unrealized_pnl": 0.0,
+                "fill_count": 1,
+                "closed": false,
+                "add_count": 0,
+                "reduce_count": 0,
+                "holding_duration_ns": 0
+              }
+            ],
+            "closed_episodes": [],
+            "position_qty": {
+              "BTC": 1,
+              "MISSING": 0.0
+            },
+            "position_switch_count": 0
+          }
+        },
+        {
+          "event": {
+            "type": "funding",
+            "symbol": "BTC",
+            "timestamp_ns": 4,
+            "pnl": 1
+          },
+          "error": {
+            "type": "ValueError",
+            "message": "events for BTC must be chronological: timestamp_ns=4 last_timestamp_ns=5"
+          },
+          "state": {
+            "episodes": [
+              {
+                "episode_id": "0162feb3d915c412e6a3339c19ed08671803379ba26a6531958ea74a5f4a8d82",
+                "symbol": "BTC",
+                "side": 1,
+                "opened_at_ns": 5,
+                "closed_at_ns": null,
+                "entry_price": 100,
+                "exit_price": null,
+                "max_abs_qty": 1,
+                "remaining_qty": 1,
+                "gross_realized_pnl": 0.0,
+                "fees": 0.0,
+                "funding_pnl": 0.0,
+                "net_pnl": 0.0,
+                "mfe_pnl": 0.0,
+                "mae_pnl": 0.0,
+                "unrealized_pnl": 0.0,
+                "fill_count": 1,
+                "closed": false,
+                "add_count": 0,
+                "reduce_count": 0,
+                "holding_duration_ns": 0
+              }
+            ],
+            "open_episodes": [
+              {
+                "episode_id": "0162feb3d915c412e6a3339c19ed08671803379ba26a6531958ea74a5f4a8d82",
+                "symbol": "BTC",
+                "side": 1,
+                "opened_at_ns": 5,
+                "closed_at_ns": null,
+                "entry_price": 100,
+                "exit_price": null,
+                "max_abs_qty": 1,
+                "remaining_qty": 1,
+                "gross_realized_pnl": 0.0,
+                "fees": 0.0,
+                "funding_pnl": 0.0,
+                "net_pnl": 0.0,
+                "mfe_pnl": 0.0,
+                "mae_pnl": 0.0,
+                "unrealized_pnl": 0.0,
+                "fill_count": 1,
+                "closed": false,
+                "add_count": 0,
+                "reduce_count": 0,
+                "holding_duration_ns": 0
+              }
+            ],
+            "closed_episodes": [],
+            "position_qty": {
+              "BTC": 1,
+              "MISSING": 0.0
+            },
+            "position_switch_count": 0
+          }
+        },
+        {
+          "event": {
+            "type": "price",
+            "symbol": "BTC",
+            "timestamp_ns": 4,
+            "high": 110,
+            "low": 90,
+            "close": 100
+          },
+          "error": {
+            "type": "ValueError",
+            "message": "events for BTC must be chronological: timestamp_ns=4 last_timestamp_ns=5"
+          },
+          "state": {
+            "episodes": [
+              {
+                "episode_id": "0162feb3d915c412e6a3339c19ed08671803379ba26a6531958ea74a5f4a8d82",
+                "symbol": "BTC",
+                "side": 1,
+                "opened_at_ns": 5,
+                "closed_at_ns": null,
+                "entry_price": 100,
+                "exit_price": null,
+                "max_abs_qty": 1,
+                "remaining_qty": 1,
+                "gross_realized_pnl": 0.0,
+                "fees": 0.0,
+                "funding_pnl": 0.0,
+                "net_pnl": 0.0,
+                "mfe_pnl": 0.0,
+                "mae_pnl": 0.0,
+                "unrealized_pnl": 0.0,
+                "fill_count": 1,
+                "closed": false,
+                "add_count": 0,
+                "reduce_count": 0,
+                "holding_duration_ns": 0
+              }
+            ],
+            "open_episodes": [
+              {
+                "episode_id": "0162feb3d915c412e6a3339c19ed08671803379ba26a6531958ea74a5f4a8d82",
+                "symbol": "BTC",
+                "side": 1,
+                "opened_at_ns": 5,
+                "closed_at_ns": null,
+                "entry_price": 100,
+                "exit_price": null,
+                "max_abs_qty": 1,
+                "remaining_qty": 1,
+                "gross_realized_pnl": 0.0,
+                "fees": 0.0,
+                "funding_pnl": 0.0,
+                "net_pnl": 0.0,
+                "mfe_pnl": 0.0,
+                "mae_pnl": 0.0,
+                "unrealized_pnl": 0.0,
+                "fill_count": 1,
+                "closed": false,
+                "add_count": 0,
+                "reduce_count": 0,
+                "holding_duration_ns": 0
+              }
+            ],
+            "closed_episodes": [],
+            "position_qty": {
+              "BTC": 1,
+              "MISSING": 0.0
+            },
+            "position_switch_count": 0
+          }
+        },
+        {
+          "event": {
+            "type": "fill",
+            "client_order_id": "order-BTC-4",
+            "symbol": "BTC",
+            "side": -1,
+            "status": "FILLED",
+            "filled_qty": 1,
+            "avg_price": 100,
+            "fee": 0.0,
+            "transaction_time_ns": 4
+          },
+          "error": {
+            "type": "ValueError",
+            "message": "events for BTC must be chronological: timestamp_ns=4 last_timestamp_ns=5"
+          },
+          "state": {
+            "episodes": [
+              {
+                "episode_id": "0162feb3d915c412e6a3339c19ed08671803379ba26a6531958ea74a5f4a8d82",
+                "symbol": "BTC",
+                "side": 1,
+                "opened_at_ns": 5,
+                "closed_at_ns": null,
+                "entry_price": 100,
+                "exit_price": null,
+                "max_abs_qty": 1,
+                "remaining_qty": 1,
+                "gross_realized_pnl": 0.0,
+                "fees": 0.0,
+                "funding_pnl": 0.0,
+                "net_pnl": 0.0,
+                "mfe_pnl": 0.0,
+                "mae_pnl": 0.0,
+                "unrealized_pnl": 0.0,
+                "fill_count": 1,
+                "closed": false,
+                "add_count": 0,
+                "reduce_count": 0,
+                "holding_duration_ns": 0
+              }
+            ],
+            "open_episodes": [
+              {
+                "episode_id": "0162feb3d915c412e6a3339c19ed08671803379ba26a6531958ea74a5f4a8d82",
+                "symbol": "BTC",
+                "side": 1,
+                "opened_at_ns": 5,
+                "closed_at_ns": null,
+                "entry_price": 100,
+                "exit_price": null,
+                "max_abs_qty": 1,
+                "remaining_qty": 1,
+                "gross_realized_pnl": 0.0,
+                "fees": 0.0,
+                "funding_pnl": 0.0,
+                "net_pnl": 0.0,
+                "mfe_pnl": 0.0,
+                "mae_pnl": 0.0,
+                "unrealized_pnl": 0.0,
+                "fill_count": 1,
+                "closed": false,
+                "add_count": 0,
+                "reduce_count": 0,
+                "holding_duration_ns": 0
+              }
+            ],
+            "closed_episodes": [],
+            "position_qty": {
+              "BTC": 1,
+              "MISSING": 0.0
+            },
+            "position_switch_count": 0
+          }
+        },
+        {
+          "event": {
+            "type": "funding",
+            "symbol": "BTC",
+            "timestamp_ns": 6,
+            "pnl": -1
+          },
+          "error": null,
+          "state": {
+            "episodes": [
+              {
+                "episode_id": "0162feb3d915c412e6a3339c19ed08671803379ba26a6531958ea74a5f4a8d82",
+                "symbol": "BTC",
+                "side": 1,
+                "opened_at_ns": 5,
+                "closed_at_ns": null,
+                "entry_price": 100,
+                "exit_price": null,
+                "max_abs_qty": 1,
+                "remaining_qty": 1,
+                "gross_realized_pnl": 0.0,
+                "fees": 0.0,
+                "funding_pnl": -1.0,
+                "net_pnl": -1.0,
+                "mfe_pnl": 0.0,
+                "mae_pnl": 0.0,
+                "unrealized_pnl": 0.0,
+                "fill_count": 1,
+                "closed": false,
+                "add_count": 0,
+                "reduce_count": 0,
+                "holding_duration_ns": 1
+              }
+            ],
+            "open_episodes": [
+              {
+                "episode_id": "0162feb3d915c412e6a3339c19ed08671803379ba26a6531958ea74a5f4a8d82",
+                "symbol": "BTC",
+                "side": 1,
+                "opened_at_ns": 5,
+                "closed_at_ns": null,
+                "entry_price": 100,
+                "exit_price": null,
+                "max_abs_qty": 1,
+                "remaining_qty": 1,
+                "gross_realized_pnl": 0.0,
+                "fees": 0.0,
+                "funding_pnl": -1.0,
+                "net_pnl": -1.0,
+                "mfe_pnl": 0.0,
+                "mae_pnl": 0.0,
+                "unrealized_pnl": 0.0,
+                "fill_count": 1,
+                "closed": false,
+                "add_count": 0,
+                "reduce_count": 0,
+                "holding_duration_ns": 1
+              }
+            ],
+            "closed_episodes": [],
+            "position_qty": {
+              "BTC": 1,
+              "MISSING": 0.0
+            },
+            "position_switch_count": 0
+          }
+        },
+        {
+          "event": {
+            "type": "fill",
+            "client_order_id": "order-BTC-6",
+            "symbol": "BTC",
+            "side": -1,
+            "status": "FILLED",
+            "filled_qty": 1,
+            "avg_price": 110,
+            "fee": 0.0,
+            "transaction_time_ns": 6
+          },
+          "error": null,
+          "state": {
+            "episodes": [
+              {
+                "episode_id": "0162feb3d915c412e6a3339c19ed08671803379ba26a6531958ea74a5f4a8d82",
+                "symbol": "BTC",
+                "side": 1,
+                "opened_at_ns": 5,
+                "closed_at_ns": 6,
+                "entry_price": 100,
+                "exit_price": 110.0,
+                "max_abs_qty": 1,
+                "remaining_qty": 0.0,
+                "gross_realized_pnl": 10.0,
+                "fees": 0.0,
+                "funding_pnl": -1.0,
+                "net_pnl": 9.0,
+                "mfe_pnl": 10.0,
+                "mae_pnl": 0.0,
+                "unrealized_pnl": 0.0,
+                "fill_count": 2,
+                "closed": true,
+                "add_count": 0,
+                "reduce_count": 1,
+                "holding_duration_ns": 1
+              }
+            ],
+            "open_episodes": [],
+            "closed_episodes": [
+              {
+                "episode_id": "0162feb3d915c412e6a3339c19ed08671803379ba26a6531958ea74a5f4a8d82",
+                "symbol": "BTC",
+                "side": 1,
+                "opened_at_ns": 5,
+                "closed_at_ns": 6,
+                "entry_price": 100,
+                "exit_price": 110.0,
+                "max_abs_qty": 1,
+                "remaining_qty": 0.0,
+                "gross_realized_pnl": 10.0,
+                "fees": 0.0,
+                "funding_pnl": -1.0,
+                "net_pnl": 9.0,
+                "mfe_pnl": 10.0,
+                "mae_pnl": 0.0,
+                "unrealized_pnl": 0.0,
+                "fill_count": 2,
+                "closed": true,
+                "add_count": 0,
+                "reduce_count": 1,
+                "holding_duration_ns": 1
+              }
+            ],
+            "position_qty": {
+              "BTC": 0.0,
+              "MISSING": 0.0
+            },
+            "position_switch_count": 0
+          }
+        }
+      ]
+    }
+  ],
+  "builder": {
+    "input": {
+      "fills": [
+        {
+          "type": "fill",
+          "client_order_id": "order-BTC-10",
+          "symbol": "BTC",
+          "side": 1,
+          "status": "FILLED",
+          "filled_qty": 1,
+          "avg_price": 100,
+          "fee": 0.0,
+          "transaction_time_ns": 10
+        },
+        {
+          "type": "fill",
+          "client_order_id": "order-BTC-20",
+          "symbol": "BTC",
+          "side": -1,
+          "status": "FILLED",
+          "filled_qty": 2,
+          "avg_price": 110,
+          "fee": 2,
+          "transaction_time_ns": 20
+        }
+      ],
+      "funding": [
+        {
+          "type": "funding",
+          "symbol": "BTC",
+          "timestamp_ns": 10,
+          "pnl": -5
+        },
+        {
+          "type": "funding",
+          "symbol": "BTC",
+          "timestamp_ns": 20,
+          "pnl": -2
+        }
+      ],
+      "prices": [
+        {
+          "type": "price",
+          "symbol": "BTC",
+          "timestamp_ns": 10,
+          "high": 120,
+          "low": 90,
+          "close": 100
+        },
+        {
+          "type": "price",
+          "symbol": "BTC",
+          "timestamp_ns": 20,
+          "high": 130,
+          "low": 80,
+          "close": 105
+        }
+      ]
+    },
+    "expected_episodes": [
+      {
+        "episode_id": "23701516601026fc53d3d190bf024c29646a719c50f962731a750a6b126a1d94",
+        "symbol": "BTC",
+        "side": 1,
+        "opened_at_ns": 10,
+        "closed_at_ns": 20,
+        "entry_price": 100,
+        "exit_price": 110.0,
+        "max_abs_qty": 1,
+        "remaining_qty": 0.0,
+        "gross_realized_pnl": 10.0,
+        "fees": 1.0,
+        "funding_pnl": -2.0,
+        "net_pnl": 7.0,
+        "mfe_pnl": 30.0,
+        "mae_pnl": -20.0,
+        "unrealized_pnl": 0.0,
+        "fill_count": 2,
+        "closed": true,
+        "add_count": 0,
+        "reduce_count": 1,
+        "holding_duration_ns": 10
+      },
+      {
+        "episode_id": "5486bd65b3dfe83e7a6f88ba9305357ca5efdef02e2d7d6ea2dc9d6eff8eb420",
+        "symbol": "BTC",
+        "side": -1,
+        "opened_at_ns": 20,
+        "closed_at_ns": null,
+        "entry_price": 110,
+        "exit_price": null,
+        "max_abs_qty": 1,
+        "remaining_qty": 1,
+        "gross_realized_pnl": 0.0,
+        "fees": 1.0,
+        "funding_pnl": 0.0,
+        "net_pnl": -1.0,
+        "mfe_pnl": 0.0,
+        "mae_pnl": 0.0,
+        "unrealized_pnl": 0.0,
+        "fill_count": 1,
+        "closed": false,
+        "add_count": 0,
+        "reduce_count": 0,
+        "holding_duration_ns": 0
+      }
+    ]
+  }
+}
