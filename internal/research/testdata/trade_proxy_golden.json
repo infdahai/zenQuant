@@ -1,0 +1,122 @@
+{
+  "rows": [
+    {
+      "side": "A",
+      "px": "25000",
+      "sz": "2",
+      "time": 14400000,
+      "tid": 1,
+      "hash": null
+    },
+    {
+      "side": "B",
+      "px": "20000",
+      "sz": "3",
+      "time": 14399999,
+      "tid": 2,
+      "hash": "synthetic"
+    },
+    {
+      "side": "B",
+      "px": "25000",
+      "sz": "2",
+      "time": 14400001,
+      "tid": 3
+    },
+    {
+      "side": "A",
+      "px": "1",
+      "sz": "1",
+      "time": 1,
+      "tid": 4
+    },
+    {
+      "side": "A",
+      "px": "25000",
+      "sz": "2",
+      "time": 14400000,
+      "tid": 1,
+      "hash": null
+    }
+  ],
+  "trades": [
+    {
+      "symbol": "BTCUSDT",
+      "side": "SELL",
+      "price": 25000.0,
+      "size": 2.0,
+      "ts_ms": 14400000,
+      "trade_id": 1,
+      "notional_usd": 50000.0,
+      "hash": null
+    },
+    {
+      "symbol": "BTCUSDT",
+      "side": "BUY",
+      "price": 20000.0,
+      "size": 3.0,
+      "ts_ms": 14399999,
+      "trade_id": 2,
+      "notional_usd": 60000.0,
+      "hash": "synthetic"
+    },
+    {
+      "symbol": "BTCUSDT",
+      "side": "BUY",
+      "price": 25000.0,
+      "size": 2.0,
+      "ts_ms": 14400001,
+      "trade_id": 3,
+      "notional_usd": 50000.0,
+      "hash": null
+    },
+    {
+      "symbol": "BTCUSDT",
+      "side": "SELL",
+      "price": 1.0,
+      "size": 1.0,
+      "ts_ms": 1,
+      "trade_id": 4,
+      "notional_usd": 1.0,
+      "hash": null
+    },
+    {
+      "symbol": "BTCUSDT",
+      "side": "SELL",
+      "price": 25000.0,
+      "size": 2.0,
+      "ts_ms": 14400000,
+      "trade_id": 1,
+      "notional_usd": 50000.0,
+      "hash": null
+    }
+  ],
+  "buckets": [
+    {
+      "bucket_start_ns": 0,
+      "bucket_end_ns": 14400000000000,
+      "symbol": "BTCUSDT",
+      "long_liq_count": 0,
+      "short_liq_count": 1,
+      "long_liq_usd": 0.0,
+      "short_liq_usd": 60000.0,
+      "total_liq_usd": 60000.0,
+      "max_single_liq_usd": 60000.0,
+      "liq_imbalance": -1.0,
+      "source": "hyperliquid_public"
+    },
+    {
+      "bucket_start_ns": 14400000000000,
+      "bucket_end_ns": 28800000000000,
+      "symbol": "BTCUSDT",
+      "long_liq_count": 2,
+      "short_liq_count": 1,
+      "long_liq_usd": 100000.0,
+      "short_liq_usd": 50000.0,
+      "total_liq_usd": 150000.0,
+      "max_single_liq_usd": 50000.0,
+      "liq_imbalance": 0.3333,
+      "source": "hyperliquid_public"
+    }
+  ]
+}

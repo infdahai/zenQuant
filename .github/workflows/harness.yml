@@ -49,6 +49,21 @@ jobs:
       - name: Check risk target Python reference fixture
         run: uv run python scripts/generate_risk_target_golden.py --check
 
+      - name: Check trade proxy Python reference fixture
+        run: uv run python scripts/generate_trade_proxy_golden.py --check
+
+      - name: Check basis Python reference fixture
+        run: uv run python scripts/generate_basis_golden.py --check
+
+      - name: Check indicator Python reference fixture
+        run: uv run python scripts/generate_indicators_golden.py --check
+
+      - name: Check exit engine Python reference fixture
+        run: uv run python scripts/generate_exit_engine_golden.py --check
+
+      - name: Check playbook Python reference fixture
+        run: uv run python scripts/generate_playbook_golden.py --check
+
       - name: "Gate B: import boundaries"
         run: uv run pytest tests/test_import_boundaries.py -v --tb=short
 

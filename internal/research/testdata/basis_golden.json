@@ -1,0 +1,234 @@
+{
+  "spot": [
+    {
+      "time_ns": 30,
+      "price": 100
+    },
+    {
+      "time_ns": 10,
+      "price": 100
+    },
+    {
+      "time_ns": 20,
+      "price": 100
+    },
+    {
+      "time_ns": 20,
+      "price": 200
+    },
+    {
+      "time_ns": 40,
+      "price": 100
+    },
+    {
+      "time_ns": 50,
+      "price": 100
+    },
+    {
+      "time_ns": 60,
+      "price": 100
+    },
+    {
+      "time_ns": 70,
+      "price": 0
+    },
+    {
+      "time_ns": 80,
+      "price": 100
+    },
+    {
+      "time_ns": 90,
+      "price": 100
+    }
+  ],
+  "perp": [
+    {
+      "time_ns": 10,
+      "price": 101
+    },
+    {
+      "time_ns": 20,
+      "price": 210
+    },
+    {
+      "time_ns": 30,
+      "price": 103
+    },
+    {
+      "time_ns": 40,
+      "price": 104
+    },
+    {
+      "time_ns": 50,
+      "price": 120
+    },
+    {
+      "time_ns": 60,
+      "price": 80
+    },
+    {
+      "time_ns": 70,
+      "price": 101
+    },
+    {
+      "time_ns": 80,
+      "price": 100.00005
+    },
+    {
+      "time_ns": 90,
+      "price": 100.00015
+    },
+    {
+      "time_ns": 99,
+      "price": 100
+    }
+  ],
+  "window": 5,
+  "min_samples": 2,
+  "lookups": [
+    {
+      "cutoff_ns": 0,
+      "snapshot": {
+        "basis_pct": 0.0,
+        "basis_z": 0.0,
+        "spot_price": 0.0,
+        "perp_price": 0.0,
+        "quality_flags": []
+      }
+    },
+    {
+      "cutoff_ns": 10,
+      "snapshot": {
+        "basis_pct": 0.01,
+        "basis_z": 0.0,
+        "spot_price": 100,
+        "perp_price": 101,
+        "quality_flags": []
+      }
+    },
+    {
+      "cutoff_ns": 19,
+      "snapshot": {
+        "basis_pct": 0.01,
+        "basis_z": 0.0,
+        "spot_price": 100,
+        "perp_price": 101,
+        "quality_flags": []
+      }
+    },
+    {
+      "cutoff_ns": 20,
+      "snapshot": {
+        "basis_pct": 0.05,
+        "basis_z": 0.0,
+        "spot_price": 200,
+        "perp_price": 210,
+        "quality_flags": []
+      }
+    },
+    {
+      "cutoff_ns": 30,
+      "snapshot": {
+        "basis_pct": 0.03,
+        "basis_z": -1.1700709845463562e-16,
+        "spot_price": 100,
+        "perp_price": 103,
+        "quality_flags": []
+      }
+    },
+    {
+      "cutoff_ns": 40,
+      "snapshot": {
+        "basis_pct": 0.04,
+        "basis_z": 0.3372500000000001,
+        "spot_price": 100,
+        "perp_price": 104,
+        "quality_flags": []
+      }
+    },
+    {
+      "cutoff_ns": 50,
+      "snapshot": {
+        "basis_pct": 0.2,
+        "basis_z": 6.0,
+        "spot_price": 100,
+        "perp_price": 120,
+        "quality_flags": []
+      }
+    },
+    {
+      "cutoff_ns": 60,
+      "snapshot": {
+        "basis_pct": -0.2,
+        "basis_z": -6.0,
+        "spot_price": 100,
+        "perp_price": 80,
+        "quality_flags": []
+      }
+    },
+    {
+      "cutoff_ns": 70,
+      "snapshot": {
+        "basis_pct": -0.2,
+        "basis_z": -6.0,
+        "spot_price": 100,
+        "perp_price": 80,
+        "quality_flags": []
+      }
+    },
+    {
+      "cutoff_ns": 80,
+      "snapshot": {
+        "basis_pct": 1e-06,
+        "basis_z": -0.2777313264705881,
+        "spot_price": 100,
+        "perp_price": 100.00005,
+        "quality_flags": []
+      }
+    },
+    {
+      "cutoff_ns": 90,
+      "snapshot": {
+        "basis_pct": 2e-06,
+        "basis_z": -0.13489190597976466,
+        "spot_price": 100,
+        "perp_price": 100.00015,
+        "quality_flags": []
+      }
+    },
+    {
+      "cutoff_ns": 100,
+      "snapshot": {
+        "basis_pct": 2e-06,
+        "basis_z": -0.13489190597976466,
+        "spot_price": 100,
+        "perp_price": 100.00015,
+        "quality_flags": []
+      }
+    }
+  ],
+  "scores": [
+    {
+      "values": [
+        -1e-08,
+        0,
+        1e-08,
+        1e+308
+      ],
+      "current": 1e+308,
+      "min_samples": 3,
+      "expected": 6.0
+    },
+    {
+      "values": [
+        -1e-08,
+        0,
+        1e-08,
+        -1e+308
+      ],
+      "current": -1e+308,
+      "min_samples": 3,
+      "expected": -6.0
+    }
+  ]
+}
