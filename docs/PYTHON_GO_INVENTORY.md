@@ -1,6 +1,6 @@
 # Python to Go inventory
 
-This is an inventory and migration planning baseline, not an authorization to remove Python or promote a strategy. The companion [manifest](python-go-inventory.json) enumerates every Git-tracked `.py` at the source revision identified in it, including tests. It records each file's SHA-256, category, syntactic imports and entrypoint indicators. The 425 files at that revision comprise 181 `zenquant`, 91 `scripts`, and 153 `tests` files. Git-tracked paths, rather than installed packages or a working-directory walk, determine coverage; ignored and untracked files are excluded. Changes to tracked Python content require regeneration. The source revision identifies the baseline, not the commit containing this document.
+The manifest was regenerated at `7a1731e` and covers 437 tracked Python files. This is an inventory and migration planning baseline, not an authorization to remove Python or promote a strategy. The companion [manifest](python-go-inventory.json) enumerates every Git-tracked `.py` at the source revision identified in it, including tests. It records each file's SHA-256, category, syntactic imports and entrypoint indicators. The historical 425-file count below described the earlier baseline; consult the regenerated manifest for current counts. Git-tracked paths, rather than installed packages or a working-directory walk, determine coverage; ignored and untracked files are excluded. Changes to tracked Python content require regeneration. The source revision identifies the baseline, not the commit containing this document.
 
 ## Scope and interpretation
 
@@ -14,7 +14,24 @@ Python requires >=3.11. The project declares DuckDB, FastAPI, PyArrow, psycopg, 
 
 [Harness CI](../.github/workflows/harness.yml) uses Python 3.12, `uv sync --group dev`, Ruff and pytest gates A–E on main-targeting PRs and specified pushes. `make legacy-python` explicitly runs A–E; it excludes the data-dependent research Gate F. [Go CI](../.github/workflows/go.yml) covers the Go/UI product, not Python-to-Go research parity. Scheduled/manual [data sync](../.github/workflows/data_sync.yml) and [options collection](../.github/workflows/collect_options.yml) invoke Python and may access external data and storage; they are operational callers, not migration tests. Inspect current workflow and branch protections before making CI changes.
 
+## Entrypoint and caller disposition (2026-11-02)
+
+All ten console commands in [pyproject.toml](../pyproject.toml) remain Python-owned and require a verified replacement before retirement:
+
+| Entrypoint | Actual responsibility and disposition |
+| --- | --- |
+| `zenquant-backtest`, `zenquant-demo` | Historical strategy replay and pipeline demo; port and validate the full workflow. The Go diagnostic replay is narrower. |
+| `zenquant-history-sync`, `zenquant-forward-collect` | Historical downloads and forward collection/health; port collectors, storage, scheduler and recovery. |
+| `zenquant-live-export`, `zenquant-live-scorecard`, `zenquant-live-validate` | Export, paper-live scorecard and validation; retain pending audited Go replacements and admission. |
+| `zenquant-web` | Python demo/live web runtime; Go manual paper UI is not equivalent. |
+| `zenquant-check` | Python harness gates including data-dependent research gate; retain until all callers and gates are replaced. |
+| `zenquant-rl-tune` | RL tuning; retained research capability, training remains paused. |
+
+Direct operational callers also remain: [data sync](../.github/workflows/data_sync.yml) schedules historical, macro and options scripts; [options collection](../.github/workflows/collect_options.yml) schedules Deribit collection and storage; [harness CI](../.github/workflows/harness.yml) calls Python tests and fixture checks. These callers are not replaced by the Go workspace. External timers, dynamic imports, fixtures and the remaining scripts still require individual ownership review; this table is not a complete retirement authorization.
+
 ## Migration status and staged acceptance
+
+The Go diagnostic workspace adds an isolated JSON snapshot and synthetic replay workflow; it does not replace Python data collection, strategy, risk, realistic execution, scheduled jobs, fixture generation or the Python validation gates. The manifest remains an inventory, not a complete disposition map: callers, schedules and ownership still require review before any Python retirement. See [GO_RESEARCH_WORKSPACE.md](GO_RESEARCH_WORKSPACE.md).
 
 [GO_MIGRATION.md](GO_MIGRATION.md), [GO_VALIDATION.md](GO_VALIDATION.md) and [ARCHITECTURE.md](ARCHITECTURE.md) describe the actual boundary: the local options and record-only manual paper product is Go; the Python strategy/replay, collection, automated risk/execution and paper-live runtime are not established as Go-native. Historical fixtures or passing Go product tests do not establish parity for those systems. Python research freeze and existing promotion rules remain in force. On 2026-10-31 PR [#25](https://github.com/infdahai/zenQuant/pull/25) was open with GitHub merge state `BLOCKED`; this is a time-specific observation, not a durable dependency or migration verdict. Recheck the PR and its checks before relying on that status.
 
@@ -43,6 +60,8 @@ The synthetic offline replay integration combines prepared candle events, indica
 The offline exit engine ports bounded position exit decisions and trailing-stop state transitions using synthetic Python reference cases. It requires finite inputs and rejects arithmetic overflow; it does not own position lifecycle, approve orders or replace the strategy engine. Its fixture generator postdates the baseline manifest.
 
 The offline playbook slice selects a bounded strategy playbook from caller-supplied state and compares complete synthetic decisions with Python. Go compares the correctly rounded binary64 fourth root of the sequentially rounded confidence product against the preservation threshold, with ties to even; Python uses `product ** 0.25`, whose result depends on the platform math library and need not be correctly rounded. Consequently the preservation decision can differ at thresholds between those results: for product `0.8479336249272827`, a Python platform may return `0.959600497389907` while the correctly rounded result is `0.9596004973899072`; at the latter threshold Python preserves capital and Go does not. Fixtures do not establish parity at all floating-point boundaries or across Python platforms. Go rejects unsupported non-finite or overflowing arithmetic even when Python might short-circuit to preservation; callers must treat errors as no decision. Configuration is a complete value and overrides should start from the default constructor. It does not classify market state or replace strategy orchestration. Its fixture generator postdates the baseline manifest.
+
+The offline state dimensions slice classifies volatility, positioning and data quality from caller-supplied indicators and flags, and computes transition risk with synthetic Python reference cases. It requires finite inputs and a bounded directional confidence. Directional classification, hysteresis, indicator extraction and the complete state engine remain in Python. Its fixture generator postdates the baseline manifest.
 
 The current product UI and newly revised documentation use English. Historical evidence and archived records retain their original language and content; existing authoritative operational documents remain in force and are not translated by changing archived evidence.
 

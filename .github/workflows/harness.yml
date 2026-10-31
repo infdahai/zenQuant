@@ -64,6 +64,9 @@ jobs:
       - name: Check playbook Python reference fixture
         run: uv run python scripts/generate_playbook_golden.py --check
 
+      - name: Check state dimensions Python reference fixture
+        run: uv run python scripts/generate_state_dimensions_golden.py --check
+
       - name: "Gate B: import boundaries"
         run: uv run pytest tests/test_import_boundaries.py -v --tb=short
 
