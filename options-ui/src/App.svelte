@@ -36,7 +36,7 @@
 </script>
 
 <svelte:head><title>ZenQuant · 期权情景实验台</title></svelte:head>
-<header><a class="brand" href="/">Z<span>EN</span>QUANT <small>OPTIONS LAB</small></a><span class="pill">Rust 计算 · Svelte 交互</span></header>
+<header><a class="brand" href="/">Z<span>EN</span>QUANT <small>OPTIONS LAB</small></a><span class="pill">Go 计算 · Svelte 交互</span></header>
 <main>
   <div class="intro"><div><p class="eyebrow">CONDITIONAL PAYOFF / V1</p><h1>价格变化，收益如何变化？</h1><p class="muted">线性欧式期权 · BUY 单腿 · 到期结算情景</p></div><span class="badge">研究演示 · 无交易权限</span></div>
   <div class="notice"><strong>到期情景分析</strong>　这不是历史回测、当前盯市或盈利概率。毛收益是到期支付；净损益仅扣除输入报价成本与明确费用，不预测滑点或成交。</div>
@@ -64,31 +64,31 @@
           <button class="primary" type="submit">计算整条曲线</button>
         </form>
       {:else}
-        <p class="hint">提交 options-payoff-curve-request.rust.v1。JSON 文本原样送至 Rust，金额使用字符串，纳秒整数不经浏览器解析。缺候选或网格会返回缺项。来源 hash 仅标识证据，不认证其真实性。</p>
+        <p class="hint">提交 options-payoff-curve-request.rust.v1。JSON 文本原样送至 Go，金额使用字符串，纳秒整数不经浏览器解析。缺候选或网格会返回缺项。来源 hash 仅标识证据，不认证其真实性。</p>
         <label>证据 JSON<textarea aria-label="证据 JSON" spellcheck="false" bind:value={raw} oninput={invalidate}></textarea></label>
         <button class="primary" onclick={calculate}>评估输入证据</button>
       {/if}
     </section>
     <div class="results">
       <section class="card chart-card" id="curve">
-        <div class="section-head"><div><h2>02 / 条件盈亏曲线</h2><p class="muted">一次请求 · Rust 批量计算 · 精确金额</p></div>{#if busy}<button onclick={cancel}>取消计算</button>{:else}<span class="pill">{response?.report.points.length ?? 0} 个情景</span>{/if}</div>
+        <div class="section-head"><div><h2>02 / 条件盈亏曲线</h2><p class="muted">一次请求 · Go 批量计算 · 精确金额</p></div>{#if busy}<button onclick={cancel}>取消计算</button>{:else}<span class="pill">{response?.report.points.length ?? 0} 个情景</span>{/if}</div>
         <div aria-live="polite" class="state">{#if busy}正在计算，旧结果已清除…{:else if error}<strong role="alert">无法完成：{error}</strong>{:else if response?.report.missing.length}<strong role="alert">不可评估：缺少 {response.report.missing.join(' / ')}</strong>{:else if diagnostic}<span data-testid="net-status">净损益 {diagnostic.net_status.status} · {diagnostic.net_status.reason}</span>{:else}输入参数后开始评估。{/if}</div>
         {#if response?.report.points.length}
           <div class="legend"><span class="gross">● 到期毛收益</span><span class="net">● 条件净损益</span><span>{serverMode === 'synthetic' ? 'SYNTHETIC · 合成样例' : '输入证据 · 未独立核验'}</span></div>
           <Curve points={response.report.points} currency={response.report.report_currency}/>
-          <p class="hint plot-note">绘图坐标使用近似数值；下方与导出保留 Rust 精确小数。横轴是价格，不是时间。</p>
+          <p class="hint plot-note">绘图坐标使用近似数值；下方与导出保留 Go 精确小数。横轴是价格，不是时间。</p>
           <div class="inspector"><label>查看情景<input aria-label="查看情景" type="range" min="0" max={response.report.points.length - 1} step="1" bind:value={selected}></label>{#if point}<div class="metrics"><div><small>到期价格</small><b data-testid="price">{point.delivery_price}</b></div><div><small>毛收益</small><b>{point.gross_payoff ?? '不可评估'}</b></div><div><small>净损益</small><b class="net" data-testid="pnl">{point.conditional_model_pnl ?? '不可评估'}</b></div></div>{/if}</div>
         {/if}
       </section>
       {#if response}
         <section class="card evidence"><h2>03 / 成本与证据 · {response.report.report_currency}</h2><div class="metrics"><div><small>开仓权利金</small><b>{diagnostic?.cost?.premium_native ?? '不可评估'}</b></div><div><small>开仓手续费</small><b>{diagnostic?.cost?.fee_native ?? '不可评估'}</b></div><div><small>开仓总成本</small><b>{diagnostic?.cost?.total_report_currency ?? '不可评估'}</b></div></div>
           <dl><dt>到期费用假设</dt><dd>{response.report.terminal_fee_assumption ?? '缺失 · 净损益不可评估'}</dd><dt>评估 / 到期时点</dt><dd>{response.report.cutoff_ns} / {response.report.expiry_ns ?? '缺失'} ns</dd><dt>模型支持</dt><dd>{diagnostic?.support.model_support.status ?? 'NOT_EVALUABLE'} · {diagnostic?.support.model_support.reason ?? response.report.missing.join(', ')}</dd><dt>可选信号</dt><dd data-testid="signal-status">{response.report.signal_status.status} · {response.report.signal_status.reason}</dd><dt>账户 / 执行</dt><dd>UNVERIFIED / UNVERIFIED · 未评估账户风控，无真实成交证据</dd><dt>输入身份</dt><dd class="hash">{response.report.input_hash}</dd></dl>
-          <div class="foot"><span>Rust 计算 {(response.calculation_us / 1000).toFixed(1)} ms · 请求往返 {elapsed.toFixed(1)} ms</span><button onclick={download}>导出精确 JSON</button></div>
+          <div class="foot"><span>Go 计算 {(response.calculation_us / 1000).toFixed(1)} ms · 请求往返 {elapsed.toFixed(1)} ms</span><button onclick={download}>导出精确 JSON</button></div>
         </section>
       {/if}
     </div>
   </div>
-  <footer>ZenQuant MVP · 核心公式只在 Rust · 无实盘接入 · 无 Go / Python 服务</footer>
+  <footer>ZenQuant MVP · 核心公式由 Go 计算 · 无实盘接入</footer>
 </main>
 
 <style>

@@ -95,7 +95,7 @@ func TestSyntheticRustHandOracle(t *testing.T) {
 func TestExistingRustFixtures(t *testing.T) {
 	for _, name := range []string{"terminal-eth-call", "terminal-eth-straddle", "terminal-vertical"} {
 		t.Run(name, func(t *testing.T) {
-			b, e := os.ReadFile("../../rust/options-workbench/fixtures/" + name + ".json")
+			b, e := os.ReadFile("../../testdata/legacy-options/" + name + ".json")
 			if e != nil {
 				t.Fatal(e)
 			}

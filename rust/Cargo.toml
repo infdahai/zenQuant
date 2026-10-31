@@ -1,3 +1,0 @@
-[workspace]
-members = ["options-core", "options-workbench"]
-resolver = "3"

@@ -1,4 +1,4 @@
-.PHONY: build run check test ui browser legacy-rust legacy-python
+.PHONY: build run check test ui browser legacy-python
 
 build: ui
 	go build -trimpath -o bin/zenquant ./cmd/zenquant
@@ -22,9 +22,6 @@ test: check
 browser: build
 	npm run test:options
 	npm run test:paper
-
-legacy-rust:
-	cd rust && cargo test --workspace --all-features --locked
 
 legacy-python:
 	uv run zenquant-check --gate a

@@ -3,9 +3,9 @@ name: Go mainline
 on:
   push:
     branches: [main, 'refactor/**', 'feat/**', 'fix/**']
-    paths: ['cmd/**', 'internal/**', 'go.mod', 'go.sum', 'rust/**', 'Makefile', 'options-ui/**', 'package*.json', 'playwright.*.config.js', '.github/workflows/go.yml']
+    paths: ['cmd/**', 'internal/**', 'go.mod', 'go.sum', 'testdata/**', 'docs/reports/**', 'Makefile', 'options-ui/**', 'package*.json', 'playwright.*.config.js', '.github/workflows/go.yml']
   pull_request:
-    paths: ['cmd/**', 'internal/**', 'go.mod', 'go.sum', 'rust/**', 'Makefile', 'options-ui/**', 'package*.json', 'playwright.*.config.js', '.github/workflows/go.yml']
+    paths: ['cmd/**', 'internal/**', 'go.mod', 'go.sum', 'testdata/**', 'docs/reports/**', 'Makefile', 'options-ui/**', 'package*.json', 'playwright.*.config.js', '.github/workflows/go.yml']
   workflow_dispatch:
 
 permissions:
@@ -29,15 +29,11 @@ jobs:
           node-version: '24'
       - run: npm ci --ignore-scripts
       - run: npm ci --ignore-scripts --prefix options-ui
-      - name: Build Rust paper process helper
-        if: runner.os == 'Linux'
-        working-directory: rust
+      - name: Verify archived validation evidence
         run: |
-          cargo test --locked -p options-workbench --lib --no-run --message-format=json > /tmp/zenquant-rust-build.jsonl
-          python3 -c 'import json; rows=[json.loads(s) for s in open("/tmp/zenquant-rust-build.jsonl")]; print(next(r["executable"] for r in rows if r.get("reason")=="compiler-artifact" and r.get("target",{}).get("name")=="options_workbench" and r.get("profile",{}).get("test") and r.get("executable")))' > /tmp/zenquant-rust-paper-test
-      - name: Test Go and Rust paper exclusion and replay
-        if: runner.os == 'Linux'
-        run: ZQ_RUST_PAPER_TEST_BINARY="$(</tmp/zenquant-rust-paper-test)" go test ./internal/paper -run 'TestCrossLanguage' -count=1
+          for manifest in docs/reports/manual-paper-*/SHA256SUMS docs/reports/options-payoff-mvp-*/SHA256SUMS docs/reports/options-*-diagnostics-*/SHA256SUMS docs/reports/simulated-intents-*/SHA256SUMS docs/reports/simulated-reservations-*/SHA256SUMS; do
+            (cd "$(dirname "$manifest")" && shasum -a 256 --check SHA256SUMS) || exit 1
+          done
       - run: make check
       - run: make build
       - name: Native binary without external executables
