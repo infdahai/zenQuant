@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "source_revision": "2b43b368e5ef739665f058b2d33c5c7eae109146",
+  "source_revision": "7a1731e0fe16da6e1164039fb4c6d75db42f8733",
   "source": "git ls-files -- *.py; working-tree contents",
   "files": [
     {
@@ -3847,6 +3847,831 @@
       ],
       "console_scripts": [],
       "shebang": true,
+      "parse_error": null
+    },
+    {
+      "path": "scripts/generate_basis_golden.py",
+      "category": "scripts",
+      "package": "scripts",
+      "sha256": "228d425ea65789ec908b464fd93a24423efa5b7745db483e31e958e18ff0f5ed",
+      "imports": [
+        {
+          "kind": "import",
+          "module": "argparse",
+          "names": [],
+          "line": 3
+        },
+        {
+          "kind": "import",
+          "module": "json",
+          "names": [],
+          "line": 4
+        },
+        {
+          "kind": "from",
+          "module": "dataclasses",
+          "names": [
+            "asdict"
+          ],
+          "line": 5
+        },
+        {
+          "kind": "from",
+          "module": "pathlib",
+          "names": [
+            "Path"
+          ],
+          "line": 6
+        },
+        {
+          "kind": "from",
+          "module": "zenquant.data._z_utils",
+          "names": [
+            "robust_z"
+          ],
+          "line": 8
+        },
+        {
+          "kind": "from",
+          "module": "zenquant.data.basis_store",
+          "names": [
+            "BasisDataStore",
+            "BasisStoreConfig"
+          ],
+          "line": 9
+        }
+      ],
+      "main_guard_lines": [
+        88
+      ],
+      "main_function_lines": [
+        75
+      ],
+      "console_scripts": [],
+      "shebang": false,
+      "parse_error": null
+    },
+    {
+      "path": "scripts/generate_episode_ledger_golden.py",
+      "category": "scripts",
+      "package": "scripts",
+      "sha256": "f28033287f3fd49d669559e7b09d67a9fcafdd86a7af5e6924ab660a71c5b8e2",
+      "imports": [
+        {
+          "kind": "from",
+          "module": "__future__",
+          "names": [
+            "annotations"
+          ],
+          "line": 8
+        },
+        {
+          "kind": "import",
+          "module": "argparse",
+          "names": [],
+          "line": 10
+        },
+        {
+          "kind": "import",
+          "module": "json",
+          "names": [],
+          "line": 11
+        },
+        {
+          "kind": "import",
+          "module": "sys",
+          "names": [],
+          "line": 12
+        },
+        {
+          "kind": "from",
+          "module": "dataclasses",
+          "names": [
+            "asdict"
+          ],
+          "line": 13
+        },
+        {
+          "kind": "from",
+          "module": "pathlib",
+          "names": [
+            "Path"
+          ],
+          "line": 14
+        },
+        {
+          "kind": "from",
+          "module": "zenquant.domain",
+          "names": [
+            "ExecutionReport"
+          ],
+          "line": 19
+        },
+        {
+          "kind": "from",
+          "module": "zenquant.research.episode_ledger",
+          "names": [
+            "FundingAllocation",
+            "PositionEpisodeLedger",
+            "PriceObservation",
+            "build_position_episodes"
+          ],
+          "line": 20
+        }
+      ],
+      "main_guard_lines": [
+        200
+      ],
+      "main_function_lines": [
+        183
+      ],
+      "console_scripts": [],
+      "shebang": true,
+      "parse_error": null
+    },
+    {
+      "path": "scripts/generate_exit_engine_golden.py",
+      "category": "scripts",
+      "package": "scripts",
+      "sha256": "dd1b070b7d30cf13df0df96755e1618393bbd2e356a61880bd71853e533c3e1e",
+      "imports": [
+        {
+          "kind": "import",
+          "module": "argparse",
+          "names": [],
+          "line": 4
+        },
+        {
+          "kind": "import",
+          "module": "json",
+          "names": [],
+          "line": 5
+        },
+        {
+          "kind": "import",
+          "module": "sys",
+          "names": [],
+          "line": 6
+        },
+        {
+          "kind": "from",
+          "module": "dataclasses",
+          "names": [
+            "asdict"
+          ],
+          "line": 7
+        },
+        {
+          "kind": "from",
+          "module": "pathlib",
+          "names": [
+            "Path"
+          ],
+          "line": 8
+        },
+        {
+          "kind": "from",
+          "module": "zenquant.domain",
+          "names": [
+            "MarketState",
+            "OpenPositionState",
+            "PlaybookSelection",
+            "Timeframe"
+          ],
+          "line": 13
+        },
+        {
+          "kind": "from",
+          "module": "zenquant.strategy",
+          "names": [
+            "ExitEngine",
+            "ExitEngineConfig"
+          ],
+          "line": 14
+        }
+      ],
+      "main_guard_lines": [
+        204
+      ],
+      "main_function_lines": [
+        188
+      ],
+      "console_scripts": [],
+      "shebang": true,
+      "parse_error": null
+    },
+    {
+      "path": "scripts/generate_gate_v3_golden.py",
+      "category": "scripts",
+      "package": "scripts",
+      "sha256": "91113551ced7404734ae6c1833f9302f0a07f0cd0b7779af5561ff9ec7404ca8",
+      "imports": [
+        {
+          "kind": "from",
+          "module": "__future__",
+          "names": [
+            "annotations"
+          ],
+          "line": 8
+        },
+        {
+          "kind": "import",
+          "module": "argparse",
+          "names": [],
+          "line": 10
+        },
+        {
+          "kind": "import",
+          "module": "json",
+          "names": [],
+          "line": 11
+        },
+        {
+          "kind": "import",
+          "module": "sys",
+          "names": [],
+          "line": 12
+        },
+        {
+          "kind": "from",
+          "module": "dataclasses",
+          "names": [
+            "asdict"
+          ],
+          "line": 13
+        },
+        {
+          "kind": "from",
+          "module": "pathlib",
+          "names": [
+            "Path"
+          ],
+          "line": 14
+        },
+        {
+          "kind": "from",
+          "module": "zenquant.domain",
+          "names": [
+            "PositionEpisode"
+          ],
+          "line": 19
+        },
+        {
+          "kind": "from",
+          "module": "zenquant.research.gate_v3",
+          "names": [
+            "evaluate_gate_v3"
+          ],
+          "line": 20
+        }
+      ],
+      "main_guard_lines": [
+        130
+      ],
+      "main_function_lines": [
+        111
+      ],
+      "console_scripts": [],
+      "shebang": true,
+      "parse_error": null
+    },
+    {
+      "path": "scripts/generate_indicators_golden.py",
+      "category": "scripts",
+      "package": "scripts",
+      "sha256": "044794a43489cc49e1dde32292ce3a783f55eda46725985b8242b7f6845d6b55",
+      "imports": [
+        {
+          "kind": "import",
+          "module": "argparse",
+          "names": [],
+          "line": 3
+        },
+        {
+          "kind": "import",
+          "module": "json",
+          "names": [],
+          "line": 4
+        },
+        {
+          "kind": "from",
+          "module": "pathlib",
+          "names": [
+            "Path"
+          ],
+          "line": 5
+        },
+        {
+          "kind": "from",
+          "module": "types",
+          "names": [
+            "SimpleNamespace"
+          ],
+          "line": 6
+        },
+        {
+          "kind": "from",
+          "module": "zenquant.domain.models",
+          "names": [
+            "Timeframe"
+          ],
+          "line": 8
+        },
+        {
+          "kind": "from",
+          "module": "zenquant.indicator.engine",
+          "names": [
+            "_atr",
+            "_rate_of_change",
+            "_realized_vol"
+          ],
+          "line": 9
+        }
+      ],
+      "main_guard_lines": [
+        55
+      ],
+      "main_function_lines": [
+        42
+      ],
+      "console_scripts": [],
+      "shebang": false,
+      "parse_error": null
+    },
+    {
+      "path": "scripts/generate_offline_execution_golden.py",
+      "category": "scripts",
+      "package": "scripts",
+      "sha256": "5cd300460693948c6e26ca131c14483a4b1ba3a46649e1f2ae08fa8e39bdad16",
+      "imports": [
+        {
+          "kind": "from",
+          "module": "__future__",
+          "names": [
+            "annotations"
+          ],
+          "line": 4
+        },
+        {
+          "kind": "import",
+          "module": "argparse",
+          "names": [],
+          "line": 6
+        },
+        {
+          "kind": "import",
+          "module": "importlib.util",
+          "names": [],
+          "line": 7
+        },
+        {
+          "kind": "import",
+          "module": "json",
+          "names": [],
+          "line": 8
+        },
+        {
+          "kind": "import",
+          "module": "sys",
+          "names": [],
+          "line": 9
+        },
+        {
+          "kind": "from",
+          "module": "dataclasses",
+          "names": [
+            "asdict"
+          ],
+          "line": 10
+        },
+        {
+          "kind": "from",
+          "module": "pathlib",
+          "names": [
+            "Path"
+          ],
+          "line": 11
+        },
+        {
+          "kind": "from",
+          "module": "zenquant.domain",
+          "names": [
+            "ExecutionOrder"
+          ],
+          "line": 16
+        }
+      ],
+      "main_guard_lines": [
+        77
+      ],
+      "main_function_lines": [
+        62
+      ],
+      "console_scripts": [],
+      "shebang": true,
+      "parse_error": null
+    },
+    {
+      "path": "scripts/generate_playbook_golden.py",
+      "category": "scripts",
+      "package": "scripts",
+      "sha256": "81cdff44f8451d0912f871ea0682a561ed1e7904d1e517491d973745033291f1",
+      "imports": [
+        {
+          "kind": "import",
+          "module": "argparse",
+          "names": [],
+          "line": 4
+        },
+        {
+          "kind": "import",
+          "module": "importlib.util",
+          "names": [],
+          "line": 5
+        },
+        {
+          "kind": "import",
+          "module": "json",
+          "names": [],
+          "line": 6
+        },
+        {
+          "kind": "import",
+          "module": "math",
+          "names": [],
+          "line": 7
+        },
+        {
+          "kind": "import",
+          "module": "sys",
+          "names": [],
+          "line": 8
+        },
+        {
+          "kind": "from",
+          "module": "dataclasses",
+          "names": [
+            "asdict"
+          ],
+          "line": 9
+        },
+        {
+          "kind": "from",
+          "module": "pathlib",
+          "names": [
+            "Path"
+          ],
+          "line": 10
+        },
+        {
+          "kind": "from",
+          "module": "zenquant.domain",
+          "names": [
+            "MarketState",
+            "Timeframe"
+          ],
+          "line": 13
+        }
+      ],
+      "main_guard_lines": [
+        175
+      ],
+      "main_function_lines": [
+        163
+      ],
+      "console_scripts": [],
+      "shebang": true,
+      "parse_error": null
+    },
+    {
+      "path": "scripts/generate_replay_events_golden.py",
+      "category": "scripts",
+      "package": "scripts",
+      "sha256": "de57dadf5a0084262de231456d18e492a556e2f5cfebc374aa9c8f1261991753",
+      "imports": [
+        {
+          "kind": "from",
+          "module": "__future__",
+          "names": [
+            "annotations"
+          ],
+          "line": 4
+        },
+        {
+          "kind": "import",
+          "module": "argparse",
+          "names": [],
+          "line": 6
+        },
+        {
+          "kind": "import",
+          "module": "json",
+          "names": [],
+          "line": 7
+        },
+        {
+          "kind": "import",
+          "module": "sys",
+          "names": [],
+          "line": 8
+        },
+        {
+          "kind": "from",
+          "module": "pathlib",
+          "names": [
+            "Path"
+          ],
+          "line": 9
+        },
+        {
+          "kind": "from",
+          "module": "zenquant.historical.replay",
+          "names": [
+            "_aggregate_five_min_rows_to_one_hour",
+            "_filter_rows_by_time",
+            "_timeframe_priority"
+          ],
+          "line": 14
+        }
+      ],
+      "main_guard_lines": [
+        135
+      ],
+      "main_function_lines": [
+        120
+      ],
+      "console_scripts": [],
+      "shebang": true,
+      "parse_error": null
+    },
+    {
+      "path": "scripts/generate_risk_target_golden.py",
+      "category": "scripts",
+      "package": "scripts",
+      "sha256": "1bf93c5a50208e9035fa0001cfb615643fb5d93ddbd12080c4cf9fe41e453a1f",
+      "imports": [
+        {
+          "kind": "import",
+          "module": "argparse",
+          "names": [],
+          "line": 4
+        },
+        {
+          "kind": "import",
+          "module": "json",
+          "names": [],
+          "line": 5
+        },
+        {
+          "kind": "import",
+          "module": "sys",
+          "names": [],
+          "line": 6
+        },
+        {
+          "kind": "from",
+          "module": "pathlib",
+          "names": [
+            "Path"
+          ],
+          "line": 7
+        },
+        {
+          "kind": "from",
+          "module": "zenquant.domain",
+          "names": [
+            "TargetPosition",
+            "Timeframe"
+          ],
+          "line": 12
+        },
+        {
+          "kind": "from",
+          "module": "zenquant.infra",
+          "names": [
+            "InMemoryJetStream"
+          ],
+          "line": 13
+        },
+        {
+          "kind": "from",
+          "module": "zenquant.risk",
+          "names": [
+            "RiskOverlay",
+            "RiskOverlayConfig"
+          ],
+          "line": 14
+        }
+      ],
+      "main_guard_lines": [
+        90
+      ],
+      "main_function_lines": [
+        74
+      ],
+      "console_scripts": [],
+      "shebang": true,
+      "parse_error": null
+    },
+    {
+      "path": "scripts/generate_sizing_golden.py",
+      "category": "scripts",
+      "package": "scripts",
+      "sha256": "5a7bdf8c3fb47d4f269521428a1d2081297392ae9f3001e885752b69c09c3e65",
+      "imports": [
+        {
+          "kind": "import",
+          "module": "argparse",
+          "names": [],
+          "line": 4
+        },
+        {
+          "kind": "import",
+          "module": "json",
+          "names": [],
+          "line": 5
+        },
+        {
+          "kind": "import",
+          "module": "sys",
+          "names": [],
+          "line": 6
+        },
+        {
+          "kind": "from",
+          "module": "dataclasses",
+          "names": [
+            "asdict"
+          ],
+          "line": 7
+        },
+        {
+          "kind": "from",
+          "module": "pathlib",
+          "names": [
+            "Path"
+          ],
+          "line": 8
+        },
+        {
+          "kind": "from",
+          "module": "zenquant.domain",
+          "names": [
+            "MarketState",
+            "PlaybookSelection",
+            "Timeframe"
+          ],
+          "line": 11
+        },
+        {
+          "kind": "from",
+          "module": "zenquant.strategy",
+          "names": [
+            "SizingEngine",
+            "SizingEngineConfig"
+          ],
+          "line": 12
+        }
+      ],
+      "main_guard_lines": [
+        153
+      ],
+      "main_function_lines": [
+        140
+      ],
+      "console_scripts": [],
+      "shebang": true,
+      "parse_error": null
+    },
+    {
+      "path": "scripts/generate_state_dimensions_golden.py",
+      "category": "scripts",
+      "package": "scripts",
+      "sha256": "56ed874c25a6fa5d0b3ab8545ed849c5c211bef989aaa32a5892983fd3f4ff3e",
+      "imports": [
+        {
+          "kind": "import",
+          "module": "argparse",
+          "names": [],
+          "line": 4
+        },
+        {
+          "kind": "import",
+          "module": "ast",
+          "names": [],
+          "line": 5
+        },
+        {
+          "kind": "import",
+          "module": "importlib",
+          "names": [],
+          "line": 6
+        },
+        {
+          "kind": "import",
+          "module": "importlib.util",
+          "names": [],
+          "line": 7
+        },
+        {
+          "kind": "import",
+          "module": "json",
+          "names": [],
+          "line": 8
+        },
+        {
+          "kind": "import",
+          "module": "sys",
+          "names": [],
+          "line": 9
+        },
+        {
+          "kind": "from",
+          "module": "dataclasses",
+          "names": [
+            "asdict"
+          ],
+          "line": 10
+        },
+        {
+          "kind": "from",
+          "module": "pathlib",
+          "names": [
+            "Path"
+          ],
+          "line": 11
+        }
+      ],
+      "main_guard_lines": [
+        127
+      ],
+      "main_function_lines": [
+        115
+      ],
+      "console_scripts": [],
+      "shebang": true,
+      "parse_error": null
+    },
+    {
+      "path": "scripts/generate_trade_proxy_golden.py",
+      "category": "scripts",
+      "package": "scripts",
+      "sha256": "aa5964b41d5cae645c3dfe78dcf2bd45a737a688725801267a01aec2af38ff9d",
+      "imports": [
+        {
+          "kind": "import",
+          "module": "argparse",
+          "names": [],
+          "line": 3
+        },
+        {
+          "kind": "import",
+          "module": "json",
+          "names": [],
+          "line": 4
+        },
+        {
+          "kind": "from",
+          "module": "dataclasses",
+          "names": [
+            "asdict"
+          ],
+          "line": 5
+        },
+        {
+          "kind": "from",
+          "module": "pathlib",
+          "names": [
+            "Path"
+          ],
+          "line": 6
+        },
+        {
+          "kind": "from",
+          "module": "unittest.mock",
+          "names": [
+            "patch"
+          ],
+          "line": 7
+        },
+        {
+          "kind": "from",
+          "module": "zenquant.data.hyperliquid_public",
+          "names": [
+            "fetch_recent_trades",
+            "recent_trades_to_buckets"
+          ],
+          "line": 9
+        }
+      ],
+      "main_guard_lines": [
+        44
+      ],
+      "main_function_lines": [
+        31
+      ],
+      "console_scripts": [],
+      "shebang": false,
       "parse_error": null
     },
     {
