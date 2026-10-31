@@ -1,0 +1,101 @@
+"""Causal event selection, conservative timing and fail-closed data checks."""
+
+import importlib
+import importlib.util
+
+import pytest
+
+
+@pytest.fixture
+def study():
+    name = "zenquant.research.tradfi_dislocation"
+    assert importlib.util.find_spec(name) is not None, "missing TradFi research diagnostic"
+    return importlib.import_module(name)
+
+
+def bars():
+    result = []
+    for i in range(100):
+        price = 100 if i < 10 else 95
+        result.append(
+            [
+                i * 60000,
+                str(price),
+                str(price + 1),
+                str(price - 1),
+                str(price),
+                "10",
+                (i + 1) * 60000 - 1,
+                "1000",
+                10,
+                "5",
+                "500",
+                "0",
+            ]
+        )
+    return result
+
+
+def test_selection_does_not_use_future_recovery(study):
+    data = bars()
+    original = study.analyze(data, as_of_ms=6_000_000)
+    data[11:] = [[*r[:1], "50", "51", "49", "50", *r[5:]] for r in data[11:]]
+    changed = study.analyze(data, as_of_ms=6_000_000)
+    assert original["events"][0]["decision_close_ms"] == changed["events"][0]["decision_close_ms"] == 659999
+    assert original["events"][0]["entry_reference_ms"] == 660000
+    assert original["events"][0]["entry_reference_price"] == 95
+    assert changed["events"][0]["entry_reference_price"] == 50
+
+
+def test_next_open_reference_and_costs_are_not_needle_fill(study):
+    data = bars()
+    data[10][3] = "70"
+    result = study.analyze(data, as_of_ms=6_000_000)
+    event = result["events"][0]
+    assert event["entry_reference_price"] == 95
+    assert event["forward"]["5"]["gross_reference_return_pct"] == 0
+    assert event["forward"]["5"]["net_sensitivity_pct"]["30"] == pytest.approx(-0.3)
+    assert result["promotion_eligible"] is False
+    assert result["forced_liquidation_confirmed"] is False
+
+
+@pytest.mark.parametrize("mode", ["duplicate", "gap", "nan", "bad_ohlc", "bad_close", "negative_volume", "bad_buy"])
+def test_bad_input_fails_closed(study, mode):
+    data = bars()
+    if mode == "duplicate":
+        data[8] = data[7]
+    elif mode == "gap":
+        del data[8]
+    elif mode == "nan":
+        data[8][4] = "NaN"
+    elif mode == "bad_ohlc":
+        data[8][2] = "50"
+    elif mode == "bad_close":
+        data[8][6] += 1
+    elif mode == "negative_volume":
+        data[8][7] = "-1"
+    else:
+        data[8][10] = "2000"
+    with pytest.raises(ValueError):
+        study.analyze(data, as_of_ms=6_000_000)
+
+
+def test_unclosed_bar_cannot_trigger_and_missing_labels_stay_missing(study):
+    data = bars()
+    assert study.analyze(data[:11], as_of_ms=659999)["events"] == []
+    event = study.analyze(data[:12], as_of_ms=720000)["events"][0]
+    assert event["forward"]["5"] is None
+    assert event["forward"]["60"] is None
+
+
+def test_cooldown_does_not_turn_correlated_minutes_into_events(study):
+    assert len(study.analyze(bars(), as_of_ms=6_000_000)["events"]) == 1
+
+
+def test_oi_uses_contract_count_not_price_driven_notional(study):
+    rows = [
+        {"timestamp": 0, "sumOpenInterest": "100", "sumOpenInterestValue": "10000"},
+        {"timestamp": 300000, "sumOpenInterest": "100", "sumOpenInterestValue": "9000"},
+    ]
+    assert study.oi_change(rows, 0, 300000)["contracts_change_pct"] == 0
+    assert study.oi_change(rows, 0, 600000) is None

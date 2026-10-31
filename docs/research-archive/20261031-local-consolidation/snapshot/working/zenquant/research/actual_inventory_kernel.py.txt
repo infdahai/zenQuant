@@ -1,0 +1,157 @@
+"""Explicit research-only inventory semantics; no production parity claim.
+
+The copied V2 tracker removes only post-fill inventory snapping. Approval,
+safety, quantity rounding, fees, residual completion and audit ordering remain
+shared semantics. Source and AST guards require review after upstream changes.
+"""
+
+from __future__ import annotations
+
+import ast
+import hashlib
+import inspect
+import math
+import textwrap
+
+from zenquant.domain import ExecutionOrder, ExecutionOrderAudit, TargetPosition
+from zenquant.execution.gateway import ExecutionGateway
+from zenquant.execution.router import ExecutionKernel, ExecutionKernelConfig, FeeApplier
+from zenquant.infra import EventBus
+
+_SHARED_METHOD_SHA256 = "6469526cab91f2fb49f257f12dc3126781ee675fb8e2b17a0f1d9eb59eb8ada4"
+_REMOVED_SNAP = (
+    "            if abs(position_after) <= self._config.quantity_epsilon:\n                position_after = 0.0\n"
+)
+
+
+def inventory_policy_metadata() -> dict[str, str]:
+    """Return auditable policy identity, refusing unreviewed source/AST drift."""
+    shared_source = inspect.getsource(ExecutionKernel._on_target_tracking_v2)
+    digest = hashlib.sha256(shared_source.encode()).hexdigest()
+    if digest != _SHARED_METHOD_SHA256 or shared_source.count(_REMOVED_SNAP) != 1:
+        raise RuntimeError("research inventory policy: shared method source drift requires review")
+    expected = ast.dump(ast.parse(textwrap.dedent(shared_source.replace(_REMOVED_SNAP, ""))))
+    actual = ast.dump(
+        ast.parse(textwrap.dedent(inspect.getsource(ResearchActualInventoryKernel._on_target_tracking_v2)))
+    )
+    if expected != actual:
+        raise RuntimeError("research inventory policy: AST delta exceeds removal of inventory snap")
+    return {
+        "inventory_policy": "actual_filled_inventory_v1",
+        "shared_method": "zenquant.execution.router.ExecutionKernel._on_target_tracking_v2",
+        "shared_method_source_sha256": digest,
+        "ast_delta_guard": "PASS: only post-fill position snap removed",
+        "semantic_delta": "retain actual signed fill inventory; do not snap abs(position)<=quantity_epsilon to zero",
+        "production_parity": "FAIL",
+        "production_parity_reason": "known dust inventory semantics differ from shared production kernel",
+    }
+
+
+class ResearchActualInventoryKernel(ExecutionKernel):
+    """V2-only research kernel that never discards actual filled dust inventory."""
+
+    def __init__(
+        self,
+        bus: EventBus,
+        gateway: ExecutionGateway,
+        risk_overlay: FeeApplier,
+        config: ExecutionKernelConfig | None = None,
+    ) -> None:
+        if config is None or config.execution_authority_mode != "target_tracking_v2":
+            raise ValueError("research inventory kernel requires explicit target_tracking_v2 config")
+        inventory_policy_metadata()
+        super().__init__(bus, gateway, risk_overlay, config)
+
+    def _on_target_tracking_v2(
+        self,
+        payload: TargetPosition,
+        *,
+        current_position: float,
+        mark_price: float,
+    ) -> None:
+        """Track exactly one risk-final approved target without market judgment."""
+        decision_key = (payload.portfolio, payload.symbol)
+        snapshot = self._active_snapshots.get(decision_key)
+        latest_cutoff = self._latest_decision_cutoffs.get(decision_key)
+        completion_key = (*decision_key, snapshot.decision_id) if snapshot is not None else None
+        if (
+            snapshot is None
+            or latest_cutoff != payload.cutoff_time_ns
+            or completion_key in self._completed_decisions
+            or not self._snapshot_approves_target(snapshot, payload)
+        ):
+            return
+
+        delta_qty = payload.target_qty - current_position
+        if abs(delta_qty) < self._config.min_trade_qty:
+            self._remaining_target_delta[decision_key] = delta_qty
+            self._completed_decisions.add((*decision_key, snapshot.decision_id))
+            return
+
+        safety_reason: str | None = None
+        if payload.reduce_only:
+            safety_reason = "|".join(sorted(set(payload.reason_codes))) or None
+            if safety_reason is None or not self._is_valid_hard_safety_target(payload.target_qty, current_position):
+                return
+
+        side = 1 if delta_qty > 0.0 else -1
+        requested_qty = min(abs(delta_qty), self._config.max_trade_qty_per_bar)
+        scale = 10**self._config.quantity_precision
+        trade_qty = math.floor((requested_qty + 1e-15) * scale) / scale
+        if trade_qty < self._config.min_trade_qty:
+            return
+
+        order = ExecutionOrder(
+            client_order_id=f"{payload.symbol}-{payload.cutoff_time_ns}-{next(self._order_seq)}-v2",
+            symbol=payload.symbol,
+            side=side,
+            quantity=trade_qty,
+            reduce_only=payload.reduce_only,
+            max_slippage_bps=self._config.max_slippage_bps,
+        )
+        self._bus.publish("exec.order.submit", order)
+        report = self._gateway.submit_order(
+            order,
+            mark_price=mark_price,
+            best_bid=self._best_bid.get(payload.symbol),
+            best_ask=self._best_ask.get(payload.symbol),
+            now_ns=payload.cutoff_time_ns,
+        )
+        self._bus.publish("exec.order.report", report)
+
+        filled_qty = max(0.0, report.filled_qty)
+        signed_filled_qty = side * filled_qty
+        position_after = current_position
+        if filled_qty > 0.0:
+            position_after = current_position + signed_filled_qty
+            self._positions[payload.symbol] = position_after
+            self._risk_overlay.apply_fee(report.fee)
+        remaining_delta = payload.target_qty - position_after
+        if abs(remaining_delta) <= self._config.quantity_epsilon:
+            remaining_delta = 0.0
+        self._remaining_target_delta[decision_key] = remaining_delta
+        if abs(remaining_delta) < self._config.min_trade_qty:
+            self._completed_decisions.add((*decision_key, snapshot.decision_id))
+
+        self._record_purity_observation(
+            approved_target=payload.target_qty,
+            position_before=current_position,
+            position_after=position_after,
+            order_delta=signed_filled_qty,
+        )
+        self._bus.publish(
+            "exec.order.audit",
+            ExecutionOrderAudit(
+                decision_id=snapshot.decision_id,
+                client_order_id=order.client_order_id,
+                symbol=payload.symbol,
+                cutoff_time_ns=payload.cutoff_time_ns,
+                approved_target_qty=payload.target_qty,
+                position_before_order=current_position,
+                position_after_fill=position_after,
+                order_delta_qty=signed_filled_qty,
+                hard_safety_reason=safety_reason,
+                status=report.status,
+                remaining_target_delta_qty=remaining_delta,
+            ),
+        )

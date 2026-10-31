@@ -1,0 +1,267 @@
+commit 46008670f4600281ab34ab50bde525ddce46b833
+Author:     Disaster <clusternlh@gmail.com>
+AuthorDate: Mon Aug 24 18:39:00 2026 +0800
+Commit:     Disaster <clusternlh@gmail.com>
+CommitDate: Mon Aug 24 18:39:00 2026 +0800
+
+    test(research): cover durable export attestations
+
+diff --git a/tests/test_time_space_export.py b/tests/test_time_space_export.py
+index b4a10aa..ef60b1e 100644
+--- a/tests/test_time_space_export.py
++++ b/tests/test_time_space_export.py
+@@ -17,6 +17,7 @@ from zenquant.research.time_space_export import (
+     VERIFIED,
+     _checkpoint_manifest_path,
+     _generator_dependency_identity,
++    _load_persisted_registration,
+     _validate_registered_time_space_export_payloads,
+     hash_execution_materials,
+     recompute_time_space_export,
+@@ -143,6 +144,12 @@ def test_forward_funding_rejects_missing_anchor_and_out_of_rule_jitter() -> None
+     import pandas as pd
+ 
+     interval = 8 * 60 * 60 * 1_000_000_000
++    complete = _normalize_forward_funding(
++        pd.DataFrame({"funding_time_ns": [AS_OF_NS, AS_OF_NS + interval]}),
++        reused_end_ns=AS_OF_NS,
++        as_of_ns=AS_OF_NS + interval + 4 * 60 * 60 * 1_000_000_000,
++    )
++    assert complete["funding_time_ns"].tolist() == [AS_OF_NS, AS_OF_NS + interval]
+     with pytest.raises(ValueError, match="coverage"):
+         _normalize_forward_funding(
+             pd.DataFrame({"funding_time_ns": [AS_OF_NS + interval]}),
+@@ -278,6 +285,13 @@ def _registered(bundle):
+             "id": 777,
+             "name": f"time-space-export-checkpoint-{bundle.export['as_of_ns']}-12345",
+         },
++        "generator_artifact": {
++            "id": 778,
++            "name": f"time-space-export-{bundle.export['as_of_ns']}-12345",
++            "export_sha256": checkpoint["export_sha256"],
++            "provenance_sha256": checkpoint["provenance_sha256"],
++            "source_slice_sha256": checkpoint["source_slice_sha256"],
++        },
+     }
+     trust = {
+         "schema_version": "time-space-export-registration-trust.v1",
+@@ -321,13 +335,6 @@ def _registered(bundle):
+         "head_branch": "codex/late-dev-cost-attribution",
+         "path": ".github/workflows/time-space-export-generate.yml",
+         "workflow_id": 9002,
+-        "artifacts": [
+-            {
+-                "id": 778,
+-                "name": f"time-space-export-{bundle.export['as_of_ns']}-12345",
+-                "expired": False,
+-            }
+-        ],
+     }
+     return export, provenance, checkpoint, receipt, trust, provider, generator_provider
+ 
+@@ -428,12 +435,9 @@ def test_forward_cutoff_requires_its_own_exact_checkpoint_and_receipt(tmp_path:
+         {"event": "push"},
+         {"head_branch": "main"},
+         {"created_at": "2026-08-24T09:00:00Z"},
+-        {"artifacts": [{"id": 778, "name": "forged", "expired": False}]},
+     ],
+ )
+-def test_generator_provider_rejects_wrong_workflow_event_ref_time_or_artifact(
+-    tmp_path: Path, change: dict[str, object]
+-) -> None:
++def test_generator_provider_rejects_wrong_workflow_event_ref_or_time(tmp_path: Path, change: dict[str, object]) -> None:
+     bundle = _build(tmp_path)
+     export, provenance, checkpoint, receipt, trust, provider, generator_provider = _registered(bundle)
+     generator_provider.update(change)
+@@ -470,6 +474,13 @@ def test_generator_provider_rejects_wrong_workflow_event_ref_time_or_artifact(
+         lambda export, provenance, checkpoint, receipt: provenance["windows"].update(reused=[0, 1]),
+         lambda export, provenance, checkpoint, receipt: checkpoint.update(export_sha256="0" * 64),
+         lambda export, provenance, checkpoint, receipt: receipt.update(provider_run_id="999"),
++        lambda export, provenance, checkpoint, receipt: receipt["generator_artifact"].update(id=999),
++        lambda export, provenance, checkpoint, receipt: receipt["generator_artifact"].update(
++            name="time-space-export-forged"
++        ),
++        lambda export, provenance, checkpoint, receipt: receipt["generator_artifact"].update(
++            source_slice_sha256="0" * 64
++        ),
+     ],
+ )
+ def test_registration_fails_closed_for_export_provenance_and_receipt_tampering(tmp_path: Path, mutation) -> None:
+@@ -514,6 +525,30 @@ def test_checked_in_trust_root_cannot_unlock_before_independent_checkpoint() ->
+     )
+ 
+ 
++def test_runtime_requires_exact_persisted_receipt_after_provider_artifact_expiry(tmp_path: Path) -> None:
++    registration_dir = tmp_path / str(AS_OF_NS)
++    registration_dir.mkdir()
++    persisted = {"schema_version": "time-space-export-registration-receipt.v1", "digest": "exact"}
++    (registration_dir / "time_space_export_registration_receipt_v1.json").write_text(json.dumps(persisted))
++    (registration_dir / "time_space_export_registration_trust_v1.json").write_text(
++        json.dumps({"registration_status": VERIFIED})
++    )
++
++    trust, receipt = _load_persisted_registration(
++        AS_OF_NS,
++        persisted,
++        registration_root=tmp_path,
++    )
++    assert trust["registration_status"] == VERIFIED
++    assert receipt == persisted
++    with pytest.raises(ValueError, match="immutable checked-in receipt"):
++        _load_persisted_registration(
++            AS_OF_NS,
++            {**persisted, "digest": "forged"},
++            registration_root=tmp_path,
++        )
++
++
+ def test_read_only_sidecar_preserves_all_execution_material_bytes(tmp_path: Path) -> None:
+     source = _source()
+     before = hash_execution_materials(source["execution_materials"])
+diff --git a/tests/test_time_space_export_registration.py b/tests/test_time_space_export_registration.py
+index ac153f6..0f8b731 100644
+--- a/tests/test_time_space_export_registration.py
++++ b/tests/test_time_space_export_registration.py
+@@ -28,13 +28,41 @@ def _module():
+ 
+ 
+ def _manifest() -> dict[str, object]:
++    export, provenance = _generator_payloads()
+     return {
+         "schema_version": "time-space-export-checkpoint.v1",
+         "layer": "time_space_shadow",
+         "registration_status": "PENDING",
+-        "export_sha256": "a" * 64,
+-        "provenance_sha256": "b" * 64,
++        "export_sha256": _canonical_sha256(export),
++        "provenance_sha256": _canonical_sha256(provenance),
+         "receipt": None,
++        "as_of_ns": AS_OF_NS,
++        "generator_provider_run_id": "54321",
++        "source_slice_sha256": _canonical_sha256(provenance["source_files"]),
++    }
++
++
++def _generator_payloads() -> tuple[dict[str, object], dict[str, object]]:
++    return {"as_of_ns": AS_OF_NS, "rows": []}, {
++        "as_of_ns": AS_OF_NS,
++        "source_files": [{"path": "frozen.parquet", "sha256": "a" * 64}],
++    }
++
++
++def _canonical_sha256(value: object) -> str:
++    return hashlib.sha256(json.dumps(value, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
++
++
++def _generator_args() -> dict[str, object]:
++    export, provenance = _generator_payloads()
++    return {
++        "generator_export_bytes": (json.dumps(export, sort_keys=True, separators=(",", ":")) + "\n").encode(),
++        "generator_provenance_bytes": (json.dumps(provenance, sort_keys=True, separators=(",", ":")) + "\n").encode(),
++        "generator_artifact": {
++            "id": 778,
++            "name": f"time-space-export-{AS_OF_NS}-54321",
++            "expired": False,
++        },
+     }
+ 
+ 
+@@ -79,6 +107,7 @@ def test_receipt_builder_binds_completed_push_workflow_and_uploaded_manifest() -
+         provider=_provider(),
+         artifact=_artifact(),
+         trust=_trust(),
++        **_generator_args(),
+     )
+ 
+     assert receipt["schema_version"] == "time-space-export-registration-receipt.v1"
+@@ -117,6 +146,7 @@ def test_receipt_builder_rejects_provider_or_artifact_tampering(provider_change,
+             provider=_provider(**provider_change),
+             artifact=_artifact(**artifact_change),
+             trust=_trust(),
++            **_generator_args(),
+         )
+ 
+ 
+@@ -130,6 +160,7 @@ def test_receipt_builder_rejects_wrong_manifest_path_schema_or_noncanonical_byte
+             provider=_provider(),
+             artifact=_artifact(),
+             trust=_trust(),
++            **_generator_args(),
+         )
+     altered = _manifest()
+     altered["receipt"] = {}
+@@ -140,6 +171,7 @@ def test_receipt_builder_rejects_wrong_manifest_path_schema_or_noncanonical_byte
+             provider=_provider(),
+             artifact=_artifact(),
+             trust=_trust(),
++            **_generator_args(),
+         )
+     with pytest.raises(ValueError, match="canonical"):
+         module._build_receipt(
+@@ -148,15 +180,66 @@ def test_receipt_builder_rejects_wrong_manifest_path_schema_or_noncanonical_byte
+             provider=_provider(),
+             artifact=_artifact(),
+             trust=_trust(),
++            **_generator_args(),
++        )
++
++
++@pytest.mark.parametrize(
++    "mutation,match",
++    [
++        (lambda args: args["generator_artifact"].update(id=0), "artifact identity"),
++        (lambda args: args["generator_artifact"].update(name="forged"), "artifact identity"),
++        (lambda args: args["generator_artifact"].update(expired=True), "artifact identity"),
++        (
++            lambda args: args.update(generator_export_bytes=b'{"as_of_ns":1787529600000000000,"rows":[999]}\n'),
++            "content does not match",
++        ),
++        (
++            lambda args: args.update(
++                generator_provenance_bytes=(b'{"as_of_ns":1787529600000000000,"source_files":[]}\n')
++            ),
++            "content does not match",
++        ),
++    ],
++)
++def test_receipt_builder_rejects_forged_or_expired_generator_artifact(mutation, match: str) -> None:
++    module = _module()
++    manifest_bytes = (json.dumps(_manifest(), sort_keys=True, separators=(",", ":")) + "\n").encode()
++    args = _generator_args()
++    mutation(args)
++
++    with pytest.raises(ValueError, match=match):
++        module._build_receipt(
++            manifest_path=MANIFEST_PATH,
++            manifest_bytes=manifest_bytes,
++            provider=_provider(),
++            artifact=_artifact(),
++            trust=_trust(),
++            **args,
+         )
+ 
+ 
+ def test_checkpoint_workflows_use_exact_bootstrap_and_completed_receipt_trigger() -> None:
+     checkpoint = Path(".github/workflows/time-space-export-checkpoint.yml").read_text()
++    generator = Path(".github/workflows/time-space-export-generate.yml").read_text()
+     receipt = Path(".github/workflows/time-space-export-receipt.yml").read_text()
++    persist = Path(".github/workflows/time-space-export-persist.yml").read_text()
+     assert BRANCH in checkpoint
+     assert "workflow_dispatch" not in checkpoint
++    assert "runs-on: [self-hosted, zenquant-data]" in generator
++    assert "_registered_source_files" in generator
++    assert "REQUESTED_AS_OF: ${{ inputs.as_of }}" in generator
++    assert generator.count("${{ inputs.as_of }}") == 1
+     assert "workflow_run" in receipt
+     assert "types: [completed]" in receipt
++    assert "generator-artifacts.json" in receipt
++    assert "--generator-export" in receipt
++    assert "--generator-provenance" in receipt
++    assert "--generator-artifact-json" in receipt
+     assert "actions/upload-artifact@v4" in checkpoint
+     assert "actions/upload-artifact@v4" in receipt
++    assert "time_space_export_registration_receipt_v1.json" in persist
++    assert "registrations/time_space_exports is append-only" in checkpoint
++    assert "registrations/time_space_exports is append-only" in persist
++    assert '$1 != "A"' in checkpoint
++    assert '$1 != "A"' in persist

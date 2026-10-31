@@ -1,0 +1,368 @@
+#!/usr/bin/env python3
+"""Run frozen single-asset diagnostics or a finite train-only search; never promote."""
+
+from __future__ import annotations
+
+import argparse
+import gzip
+import hashlib
+import importlib.metadata
+import json
+import math
+import os
+import platform
+import subprocess
+import time
+from pathlib import Path
+
+from zenquant.research.bounded_search import run_bounded_search
+from zenquant.research.campaign_data import load_window
+from zenquant.research.research_runner import EVALUATION_POLICY, RISK_BUDGET, evaluate_candidate
+from zenquant.research.run_evidence import TrialJournal, identity_hash
+
+ROOT = Path(__file__).resolve().parents[1]
+CATALOG = ROOT / "config/research/btc_strategy_families_v1.json"
+WINDOWS = {
+    "train": (1577836800000000000, 1704067200000000000),
+    "dev": (1704067200000000000, 1767225600000000000),
+}
+COSTS = (0, 5, 15)
+
+
+def _code_identity() -> dict:
+    paths = [*sorted((ROOT / "zenquant").rglob("*.py")), Path(__file__), CATALOG]
+    paths += [ROOT / name for name in ("pyproject.toml", "uv.lock", "pyproject.lock") if (ROOT / name).exists()]
+    files = {str(path.relative_to(ROOT)): hashlib.sha256(path.read_bytes()).hexdigest() for path in paths}
+    git = subprocess.run(["git", "rev-parse", "HEAD"], cwd=ROOT, capture_output=True, text=True, check=False)
+    return {
+        "files": files,
+        "source_content_hash": identity_hash(files),
+        "git_head": git.stdout.strip(),
+        "dirty_content_policy": "hash_actual_bytes_including_uncommitted_and_untracked_research_code",
+        "python": platform.python_version(),
+        "dependencies": {dist.metadata["Name"]: dist.version for dist in importlib.metadata.distributions()},
+    }
+
+
+def _write(path: Path, value, *, compressed: bool = False) -> str:
+    raw = (json.dumps(value, sort_keys=True, allow_nan=False) + "\n").encode()
+    payload = gzip.compress(raw, mtime=0) if compressed else raw
+    with path.open("xb") as handle:
+        handle.write(payload)
+        handle.flush()
+        os.fsync(handle.fileno())
+    return hashlib.sha256(payload).hexdigest()
+
+
+def _attempt(
+    output, bundle, family, params, window, code_hash, cost, attempt_id, inventory_policy="shared_production_proxy_v1"
+) -> tuple[dict, dict]:
+    began, cpu_began = time.perf_counter(), time.process_time()
+    case = {
+        "symbol": bundle["symbol"],
+        "inventory_policy": inventory_policy,
+        "attempt_id": attempt_id,
+        "family": family,
+        "params": params,
+        "window": window,
+        "extra_cost_bps": cost,
+    }
+    try:
+        evidence, report = evaluate_candidate(
+            bundle,
+            family,
+            params,
+            window=window,
+            code_hash=code_hash,
+            extra_cost_bps=cost,
+            inventory_policy=inventory_policy,
+        )
+        case["evidence_path"] = f"{attempt_id}.evidence.json.gz"
+        case["evidence_sha256"] = _write(output / case["evidence_path"], evidence, compressed=True)
+        case.update(status="COMPLETE", metrics=report["metrics"], gates=report["gates"])
+    except Exception as exc:
+        case.update(status="FAILED", error=f"{type(exc).__name__}: {exc}")
+        report = {"status": "FAILED", "error": case["error"], "diagnostic_only": True, "live_eligible": False}
+    report = {**report, "symbol": bundle["symbol"], "inventory_policy": inventory_policy}
+    case["report_path"] = f"{attempt_id}.report.json"
+    case["report_sha256"] = _write(output / case["report_path"], report)
+    case.update(
+        wall_seconds=time.perf_counter() - began,
+        cpu_seconds=time.process_time() - cpu_began,
+        evaluated_bars=len(bundle["bars"]) - bundle["warmup_count"],
+        strategy_warmup_bars=bundle["warmup_count"],
+    )
+    return case, report
+
+
+def _proxies(report: dict) -> list[float]:
+    if report.get("ruin", {}).get("occurred") or any(
+        name.startswith("E") and gate["status"] in {"FAIL", "INVALID", "STALE"}
+        for name, gate in report.get("gates", {}).items()
+    ):
+        raise ValueError("known engineering failure or ruin cannot supply optimizer feedback")
+    values = [report["metrics"][name]["value"] for name in ("net_return", "max_drawdown", "fees_initial_equity")]
+    if any(type(value) not in (int, float) or not math.isfinite(value) for value in values):
+        raise ValueError("proxy objectives require finite observed values")
+    return values
+
+
+def _markdown(summary: dict) -> str:
+    lines = [
+        f"# {summary['symbol']} single-asset research diagnostics",
+        f"Inventory policy: {summary['inventory_policy']}. Separate asset runs are not a portfolio.",
+        "",
+        f"Run status: {summary['status']}. All results remain diagnostic.",
+        "No winner selection, promotion, paper or live eligibility. Completion means every planned attempt ended.",
+        "The 15% drawdown threshold is an evaluation screen; it does not replace the shared risk overlay.",
+        "",
+    ]
+    if summary.get("error"):
+        lines += [f"Run error: {summary['error']}", ""]
+    for case in summary["cases"]:
+        lines += [f"## {case['attempt_id']}: {case['family']} +{case['extra_cost_bps']} bps", "", case["status"], ""]
+        if case.get("error"):
+            lines += [case["error"], ""]
+        lines += ["| Item | Value / status | Reason |", "|---|---|---|"]
+        for name, metric in case.get("metrics", {}).items():
+            lines.append(f"| {name} | {metric.get('value')} / {metric['status']} | {metric.get('reason', '')} |")
+        for name, gate in case.get("gates", {}).items():
+            lines.append(f"| {name} | {gate['status']} | {gate.get('reason', '')} |")
+        if case.get("report_path"):
+            lines += ["", f"[Full report]({case['report_path']})", ""]
+    return "\n".join(lines)
+
+
+def main(argv: list[str] | None = None) -> int:
+    began, cpu_began = time.perf_counter(), time.process_time()
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--mode", choices=("fixed", "search"), default="fixed")
+    parser.add_argument("--symbol", choices=("BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT"), default="BTCUSDT")
+    parser.add_argument(
+        "--inventory-policy",
+        choices=("shared_production_proxy_v1", "actual_filled_inventory_v1"),
+        default="shared_production_proxy_v1",
+    )
+    parser.add_argument("--window", choices=tuple(WINDOWS))
+    parser.add_argument("--family", choices=("trend", "breakout", "range_reversion"))
+    parser.add_argument("--sampler", choices=("random", "tpe"))
+    parser.add_argument("--budget", type=int, default=8)
+    parser.add_argument("--data-root", type=Path, default=ROOT / "data/raw/binance")
+    parser.add_argument("--output", type=Path, required=True, help="New directory; this CLI does not resume")
+    args = parser.parse_args(argv)
+    if args.mode == "search" and args.inventory_policy != "shared_production_proxy_v1":
+        parser.error(
+            "actual_filled_inventory_v1 has known production parity failure and cannot supply optimizer feedback"
+        )
+    if args.budget < 1:
+        parser.error("budget must be positive and frozen before the run")
+    if args.mode == "search" and (not args.family or not args.sampler or args.window not in (None, "train")):
+        parser.error("search requires --family and --sampler and may only use --window train")
+    if args.mode == "fixed" and (args.family or args.sampler):
+        parser.error("fixed mode uses all frozen defaults and baselines")
+    window = args.window or ("train" if args.mode == "search" else "dev")
+    try:
+        args.output.mkdir(parents=True, exist_ok=False)
+    except OSError as exc:
+        parser.error(str(exc))
+    code = _code_identity()
+    catalog = json.loads(CATALOG.read_text())
+    families = {row["family"]: row for row in catalog["families"]}
+    manifest = {
+        "schema_version": "btc-research-campaign.v1",
+        "mode": args.mode,
+        "symbol": args.symbol,
+        "inventory_policy": args.inventory_policy,
+        "window": window,
+        "start_ns": WINDOWS[window][0],
+        "end_ns_exclusive": WINDOWS[window][1],
+        "warmup_bars": 180,
+        "boundary_policy": "reset_flat_no_warmup_pnl",
+        "data_root": str(args.data_root.resolve()),
+        "code": code,
+        "code_hash": identity_hash(code),
+        "catalog": catalog,
+        "catalog_hash": identity_hash(catalog),
+        "policy": {**EVALUATION_POLICY, "symbol": args.symbol, "inventory_policy": args.inventory_policy},
+        "policy_hash": identity_hash(
+            {**EVALUATION_POLICY, "symbol": args.symbol, "inventory_policy": args.inventory_policy}
+        ),
+        "risk_budget": RISK_BUDGET,
+        "seed": catalog["random_seed"],
+        "family": args.family,
+        "sampler": args.sampler,
+        "budget": args.budget if args.mode == "search" else 18,
+        "budget_definition": "search proposals plus one separately counted common baseline"
+        if args.mode == "search"
+        else "six fixed candidates times three costs",
+        "costs_bps": [0] if args.mode == "search" else list(COSTS),
+        "diagnostic_only": True,
+        "rankable": False,
+        "live_eligible": False,
+    }
+    cases, finished, error = [], False, None
+    try:
+        bundle = load_window(args.data_root, *WINDOWS[window], warmup_bars=180, symbol=args.symbol)
+        manifest["data"] = bundle["manifest"]
+        _write(args.output / "run_manifest.json", manifest)
+        journal = TrialJournal(args.output / "journal", manifest)
+
+        def recorded(family, params, cost, attempt_id):
+            journal.append(
+                {
+                    "attempt_id": attempt_id + ":started",
+                    "event": "STARTED",
+                    "symbol": args.symbol,
+                    "inventory_policy": args.inventory_policy,
+                    "family": family,
+                    "params": params,
+                    "cost_bps": cost,
+                }
+            )
+            case, report = _attempt(
+                args.output,
+                bundle,
+                family,
+                params,
+                window,
+                manifest["code_hash"],
+                cost,
+                attempt_id,
+                args.inventory_policy,
+            )
+            cases.append(case)
+            journal.append({**case, "attempt_id": attempt_id + ":finished", "event": "FINISHED"})
+            return case, report
+
+        if args.mode == "fixed":
+            candidates = [(name, row["default_params"]) for name, row in families.items()]
+            candidates += [(name, {}) for name in ("cash", "vol_target", "buy_hold_1x")]
+            for family, params in candidates:
+                for cost in COSTS:
+                    recorded(family, params, cost, f"fixed-{len(cases):04d}")
+        else:
+            baseline, baseline_report = recorded("vol_target", {}, 0, "baseline")
+            if baseline["status"] != "COMPLETE":
+                raise ValueError("baseline failed; optimizer was not started")
+            baseline_return = _proxies(baseline_report)[0]
+
+            def evaluate(params, attempt_id):
+                case, report = _attempt(
+                    args.output,
+                    bundle,
+                    args.family,
+                    params,
+                    "train",
+                    manifest["code_hash"],
+                    0,
+                    attempt_id,
+                    args.inventory_policy,
+                )
+                cases.append(case)
+                try:
+                    if case["status"] != "COMPLETE":
+                        raise ValueError(case["error"])
+                    objectives = _proxies(report)
+                    objectives[0] -= baseline_return
+                except Exception as exc:
+                    case.update(status="FAILED", error=f"{type(exc).__name__}: {exc}")
+                    raise
+                return {"objectives": objectives, "case": case, "diagnostic_only": True}
+
+            search = run_bounded_search(
+                args.output / "search",
+                {
+                    "window": "train",
+                    "code_hash": manifest["code_hash"],
+                    "data_hash": bundle["manifest"]["window_data_hash"],
+                    "policy_hash": manifest["policy_hash"],
+                    "manifest_hash": identity_hash(manifest),
+                },
+                families[args.family]["search_space"],
+                evaluate,
+                sampler=args.sampler,
+                seed=catalog["random_seed"],
+                budget=args.budget,
+            )
+            by_id = {case["attempt_id"]: case for case in cases}
+            for attempt in search["attempts"]:
+                attempt_id = attempt["trial_id"]
+                case = by_id.get(attempt_id)
+                if case is None:
+                    case = {
+                        "attempt_id": attempt_id,
+                        "symbol": args.symbol,
+                        "inventory_policy": args.inventory_policy,
+                        "family": args.family,
+                        "params": attempt["params"],
+                        "window": "train",
+                        "extra_cost_bps": 0,
+                        "status": "FAILED",
+                        "error": attempt.get("error", "search attempt has no callback evidence"),
+                    }
+                    cases.append(case)
+                elif attempt["status"] != "COMPLETE":
+                    case.update(status="FAILED", error=attempt.get("error", "search attempt failed"))
+            _write(args.output / "search_summary.json", search)
+            if not search["complete"] or len(search["attempts"]) != args.budget:
+                raise ValueError("search did not finish the frozen attempt budget")
+        finished = True
+    except (Exception, KeyboardInterrupt) as exc:
+        error = f"{type(exc).__name__}: {exc}"
+        if not (args.output / "run_manifest.json").exists():
+            manifest["data_error"] = error
+            _write(args.output / "run_manifest.json", manifest)
+    try:
+        current_code = _code_identity()
+    except Exception as exc:
+        current_code = {"verification_error": f"{type(exc).__name__}: {exc}"}
+    stale = code != current_code
+    failed = sum(case["status"] != "COMPLETE" for case in cases)
+    status = "STALE" if stale else "FAILED" if error else "COMPLETE_WITH_FAILURES" if failed else "COMPLETE"
+    summary = {
+        "schema_version": manifest["schema_version"],
+        "symbol": args.symbol,
+        "inventory_policy": args.inventory_policy,
+        "status": status,
+        "complete": finished and not stale,
+        "manifest_hash": identity_hash(manifest),
+        "ending_code_hash": identity_hash(current_code),
+        "error": error,
+        "cases": cases,
+        "failed_attempts": failed,
+        "compute": {
+            "wall_seconds": time.perf_counter() - began,
+            "cpu_seconds": time.process_time() - cpu_began,
+            "finished_evaluations": len(cases),
+            "evaluated_bars": sum(case.get("evaluated_bars", 0) for case in cases),
+            "includes_baseline": args.mode == "search",
+            "gpu_used": False,
+        },
+        "diagnostic_only": True,
+        "rankable": False,
+        "live_eligible": False,
+    }
+    _write(args.output / "summary.json", summary)
+    with (args.output / "REPORT.md").open("x") as handle:
+        handle.write(_markdown(summary))
+        handle.flush()
+        os.fsync(handle.fileno())
+    if summary["complete"]:
+        _write(args.output / "completed.json", {"summary_hash": identity_hash(summary), "status": status})
+    print(
+        json.dumps(
+            {
+                "symbol": args.symbol,
+                "inventory_policy": args.inventory_policy,
+                "output": str(args.output),
+                "status": status,
+                "attempts": len(cases),
+                "live_eligible": False,
+            }
+        )
+    )
+    return 2 if stale or error or failed else 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

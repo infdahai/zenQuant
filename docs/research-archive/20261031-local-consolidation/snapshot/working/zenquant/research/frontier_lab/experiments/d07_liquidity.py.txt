@@ -1,0 +1,263 @@
+"""Causal bar-shock diagnostics and a separately labeled liquidity mechanism."""
+
+from __future__ import annotations
+
+from typing import Any
+
+import numpy as np
+import pandas as pd
+
+from zenquant.research.frontier_lab.common import (
+    DEV_END,
+    SEEDS,
+    TRAIN_END,
+    causal_features,
+    load_bars,
+    prediction_metrics,
+    ridge_predict,
+)
+
+HORIZONS = (1, 3, 6)
+CURRENT = ["return_1", "momentum_6", "momentum_42", "vol_42", "range", "volume_z", "imbalance"]
+
+
+def shock_candidates(features: pd.DataFrame, training: np.ndarray) -> tuple[np.ndarray, dict[str, float]]:
+    """Event i uses its close and volatility known before the shock bar."""
+    prior_vol = features["vol_42"].shift(1).to_numpy(dtype=float)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        size = np.abs(features["return_1"].to_numpy()) / prior_vol
+        spread = features["range"].to_numpy() / prior_vol
+    volume = features["volume_z"].to_numpy()
+    valid = np.isfinite(np.column_stack([size, spread, volume])).all(axis=1) & (prior_vol > 0)
+    fit = np.asarray(training, bool) & valid
+    if fit.sum() < 100:
+        raise ValueError("insufficient training bars for frozen shock thresholds")
+    thresholds = {
+        "normalized_return_q95": float(np.quantile(size[fit], 0.95)),
+        "normalized_range_q90": float(np.quantile(spread[fit], 0.9)),
+        "volume_z_q90": float(np.quantile(volume[fit], 0.9)),
+    }
+    candidates = valid & (size >= thresholds["normalized_return_q95"])
+    candidates &= (spread >= thresholds["normalized_range_q90"]) | (volume >= thresholds["volume_z_q90"])
+    return candidates, thresholds
+
+
+def nonoverlapping_events(candidates: np.ndarray, last_offset: int = 7) -> np.ndarray:
+    """Keep the first shock in a cluster, without consulting its future outcome.
+
+    A one-bar response observation plus a six-bar forecast ends at i+7.
+    Next event starts strictly after this end; overlapping candidates are counted
+    separately, never treated as independent outcomes.
+    """
+    candidates = np.asarray(candidates, bool)
+    if candidates.ndim != 1 or last_offset < 1:
+        raise ValueError("invalid event vector or horizon")
+    selected: list[int] = []
+    blocked_until = -1
+    for index in np.flatnonzero(candidates):
+        if index > blocked_until and index + last_offset < len(candidates):
+            selected.append(int(index))
+            blocked_until = int(index) + last_offset
+    return np.asarray(selected, dtype=int)
+
+
+def event_masks(frame: pd.DataFrame, events: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """Purge the full maximum observation/label window, including year boundaries."""
+    starts = frame["close_time_ns"].to_numpy()[events]
+    ends = frame["close_time_ns"].to_numpy()[events + 7]
+    train = (starts >= pd.Timestamp("2020-01-01", tz="UTC").value) & (ends < TRAIN_END.value)
+    dev = (starts >= TRAIN_END.value) & (ends < DEV_END.value)
+    return train, dev
+
+
+def response_features(features: pd.DataFrame, events: np.ndarray) -> np.ndarray:
+    """All features are known by confirmed close i+1, never by i alone."""
+    shock = features.iloc[events]
+    observed = features.iloc[events + 1]
+    prior_vol = features["vol_42"].shift(1).to_numpy()[events]
+    sign = np.sign(shock["return_1"].to_numpy())
+    return np.column_stack(
+        [
+            np.abs(shock["return_1"].to_numpy()) / prior_vol,
+            shock["range"].to_numpy() / prior_vol,
+            shock["volume_z"].to_numpy(),
+            sign * shock["imbalance"].to_numpy(),
+            sign * observed["return_1"].to_numpy() / np.abs(shock["return_1"].to_numpy()),
+            observed["range"].to_numpy() / shock["range"].to_numpy(),
+            observed["volume_z"].to_numpy() - shock["volume_z"].to_numpy(),
+            sign * (observed["imbalance"].to_numpy() - shock["imbalance"].to_numpy()),
+        ]
+    )
+
+
+def response_summary(values: np.ndarray, shock_size: np.ndarray) -> dict[str, Any]:
+    if not len(values):
+        return {"n": 0}
+    return {
+        "n": len(values),
+        "mean_signed_log_return": float(values.mean()),
+        "median_signed_log_return": float(np.median(values)),
+        "continuation_fraction": float((values > 0).mean()),
+        "recovery_fraction": float((values < 0).mean()),
+        "full_shock_recovery_fraction": float((values <= -shock_size).mean()),
+    }
+
+
+def model_scores(actual: np.ndarray, predictions: dict[str, np.ndarray]) -> dict[str, Any]:
+    mse = {name: float(np.mean((actual - pred) ** 2)) for name, pred in predictions.items()}
+    return {
+        name: {
+            **prediction_metrics(actual, pred),
+            "mse": mse[name],
+            "mse_reduction_vs_current_fraction": float(1 - mse[name] / mse["current"]),
+        }
+        for name, pred in predictions.items()
+    }
+
+
+def synthetic_process(seed: int, *, stable: bool = True, n: int = 2400) -> dict[str, Any]:
+    """Same initial -2% shock, observable depth restoration/withdrawal, future response.
+
+    This is a simulated book-state mechanism, not reconstructed exchange L2.
+    In the failure control, the post-observation liquidity regime is independently
+    redrawn, destroying persistence and the predictive value of observed depth.
+    """
+    rng = np.random.default_rng(seed)
+    observed_state = rng.choice([-1.0, 1.0], n)
+    future_state = observed_state if stable else rng.choice([-1.0, 1.0], n)
+    shock = np.full(n, -0.02)
+    depth_change = 0.3 * observed_state + rng.normal(0, 0.02, n)
+    first_response = rng.normal(0, 0.002, n)
+    current = np.column_stack([shock, first_response, rng.normal(0, 0.001, n)])
+    enhanced = np.column_stack([current, depth_change])
+    # Replenishment reverses temporary pressure; withdrawal sustains the shock.
+    future_returns = np.column_stack(
+        [0.0018 * future_state * np.exp(-step / 8) + rng.normal(0, 0.0015, n) for step in range(6)]
+    )
+    target = future_returns.sum(axis=1)
+    cutoff = int(n * 0.7)
+    predictions = {
+        name: ridge_predict(x[:cutoff], target[:cutoff], x[cutoff:])
+        for name, x in [("current", current), ("plus_depth_response", enhanced)]
+    }
+    return {
+        "seed": seed,
+        "mechanism": "persistent_replenishment_vs_withdrawal" if stable else "regime_redrawn_after_observation",
+        "initial_price_shock": -0.02,
+        "n_train": cutoff,
+        "n_dev": n - cutoff,
+        "models": model_scores(target[cutoff:], predictions),
+        "healthy_mean_future_return": float(target[observed_state > 0].mean()),
+        "withdrawal_mean_future_return": float(target[observed_state < 0].mean()),
+    }
+
+
+def run(context: dict[str, Any]) -> dict[str, Any]:
+    frame = load_bars(context)
+    features = causal_features(frame)
+    before_cutoff = frame["close_time_ns"].to_numpy() < TRAIN_END.value
+    candidates, thresholds = shock_candidates(features, before_cutoff)
+    events = nonoverlapping_events(candidates)
+    train, dev = event_masks(frame, events)
+    current = features.iloc[events + 1][CURRENT].to_numpy(dtype=float)
+    response = response_features(features, events)
+    valid = np.isfinite(np.column_stack([current, response])).all(axis=1)
+    train, dev = train & valid, dev & valid
+    if train.sum() < 30 or dev.sum() < 20:
+        raise ValueError("insufficient complete nonoverlapping shock events")
+    close = frame["close"].to_numpy(dtype=float)
+    sign = np.sign(features["return_1"].to_numpy()[events])
+    shock_size = np.abs(features["return_1"].to_numpy()[events])
+    current = np.column_stack([current, sign])
+    enhanced = np.column_stack([current, response])
+    years = pd.to_datetime(frame["close_time_ns"].iloc[events], unit="ns", utc=True).dt.year.to_numpy()
+    studies: dict[str, Any] = {}
+    forecasts: dict[str, Any] = {}
+    for horizon in HORIZONS:
+        # Descriptive event studies have no fill/position/PnL interpretation.
+        event_target = sign * np.log(close[events + horizon] / close[events])
+        studies[str(horizon)] = {
+            "train": response_summary(event_target[train], shock_size[train]),
+            "dev": response_summary(event_target[dev], shock_size[dev]),
+            **{
+                str(year): response_summary(event_target[dev & (years == year)], shock_size[dev & (years == year)])
+                for year in [2024, 2025]
+            },
+        }
+        # Forecast starts after one completed response bar; no response-label overlap.
+        target = sign * np.log(close[events + 1 + horizon] / close[events + 1])
+        continuation = (target > 0).astype(float)
+        tasks: dict[str, Any] = {}
+        for task, actual in [("signed_log_return", target), ("continuation_binary", continuation)]:
+            predictions = {
+                name: ridge_predict(x[train], actual[train], x[dev], alpha=1)
+                for name, x in [("current", current), ("plus_shock_response", enhanced)]
+            }
+            if task == "continuation_binary":
+                predictions = {name: np.clip(pred, 0, 1) for name, pred in predictions.items()}
+            tasks[task] = {
+                "dev": model_scores(actual[dev], predictions),
+                "by_year": {
+                    str(year): model_scores(
+                        actual[dev][years[dev] == year],
+                        {name: pred[years[dev] == year] for name, pred in predictions.items()},
+                    )
+                    for year in [2024, 2025]
+                },
+            }
+        forecasts[str(horizon)] = tasks
+    return {
+        "direction_id": "d07",
+        "hypothesis": "Causally observed shock context and first-bar response distinguish continuation from recovery beyond current bar state; genuine depth restoration can matter under a separately simulated mechanism.",
+        "evidence_type": "mixed",
+        "method": {
+            "shock_rule": "abs(close return)/previous vol_42 >= train q95 AND (range/previous vol_42 >= train q90 OR volume_z >= train q90)",
+            "selection": "chronological first event; suppress shocks through i+7; fixed 1/3/6-bar horizons",
+            "event_study": "shock-direction signed close-to-close log response at i+1/i+3/i+6, descriptive only",
+            "forecast": "decision close i+1; signed close return from i+1 to i+1+h, plus binary continuation; not executable payoff",
+            "baseline": "fixed alpha=1 ridge, train-only scaling; seven current causal features plus shock sign",
+            "enhanced": "baseline plus initial normalized magnitude/range/volume/imbalance and first completed bar response ratios/changes",
+            "split": "thresholds fitted before2024; full i+7 label end purged before2024 or2026; models train2020-2023, diagnose observed dev2024-2025",
+            "synthetic": "five seeded paired -2% shocks; observable depth recovery/withdrawal with persistent versus redrawn future regime",
+            "parameter_search": False,
+            "payoff_computed": False,
+        },
+        "metrics": {
+            "thresholds": thresholds,
+            "candidate_events": int(candidates.sum()),
+            "nonoverlapping_events": len(events),
+            "suppressed_dependent_or_incomplete_candidates": int(candidates.sum() - len(events)),
+            "n_train": int(train.sum()),
+            "n_dev": int(dev.sum()),
+            "n_dev_by_year": {str(year): int((dev & (years == year)).sum()) for year in [2024, 2025]},
+            "events_excluded_boundary_or_nonfinite": int(len(events) - train.sum() - dev.sum()),
+            "max_train_label_end_ns": int(frame["close_time_ns"].to_numpy()[events[train] + 7].max()),
+            "train_boundary_ns": int(TRAIN_END.value),
+            "minimum_selected_event_distance_bars": int(np.diff(events).min()),
+            "event_study": studies,
+            "forecast_diagnostic": forecasts,
+            "synthetic_stable": [synthetic_process(seed) for seed in SEEDS],
+            "synthetic_failure_control": [synthetic_process(seed, stable=False) for seed in SEEDS],
+            "real_liquidation_feed_used": False,
+            "real_l2_depth_used": False,
+            "historical_available_at_verified": False,
+        },
+        "verdict": "bar_response_increment_requires_frozen_confirmation_and_real_depth_evidence",
+        "limitations": [
+            "4h volume/range/taker imbalance are bar proxies, not actual forced liquidation or L2 replenishment measurements.",
+            "Feature-causal alignment is not causal identification: hidden news, venue selection and market regime can confound response.",
+            "First-response features are available only at close i+1; they cannot be traded at the initial shock close.",
+            "Nonoverlapping label windows reduce duplicate events but serial dependence can remain; no independence or significance claim.",
+            "2024-2025 is previously observed development data; no untouched forward, promotion, live or multiple-selection-adjusted evidence.",
+            "Synthetic depth is an explicit generated state; its positive result does not validate bar proxies or market alpha.",
+            "Bar timestamp history does not prove historical ingestion available-at; exchange corrections/latency are unverified.",
+            "Forecast and event-study marks are not strategy PnL; no fills, leverage, fees, funding or slippage are modeled.",
+        ],
+        "falsification": "Reject incremental response forecasting if frozen forward MSE/Brier gains are nonpositive or reverse by year; reject depth hypothesis if timely real depth cannot separate recovery after controlling shock/state/costs.",
+        "next_experiment": "Freeze these thresholds/features; collect timestamped L2 depth, trades and actual liquidation events with received-at timestamps; test response increment on untouched shocks with block uncertainty and next-open cost-aware execution.",
+        "input_paths": [],
+        "internet_sources": [],
+        "rankable": False,
+        "live_eligible": False,
+        "promotion_eligible": False,
+    }

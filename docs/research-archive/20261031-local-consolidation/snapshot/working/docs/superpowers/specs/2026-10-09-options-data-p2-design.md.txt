@@ -1,0 +1,180 @@
+# P2 期权数据证据与首批策略实验
+
+日期：2026-10-09。版本：`options-data-p2.design.v1`。发现基线：`62fd1639e7665a3a956b06fa739b82c728b2be0f`。
+
+**状态：完成多 agent 发现与离线价格复核，待审阅的下一阶段设计。没有实现新子系统、启动行情采集或取得策略收益。** 本规格细化已批准的期权平台 P2，不重新定义 P1，也不修改既有生产策略、风险、插件规则或准入。范围发生冲突时，以用户本轮选择“期权数据与策略实验”及本规格为拟议实施边界；三份研究报告是设计依据，不是运行授权。
+
+## 1. 用户任务和本期验收
+
+用户希望用一台 MacBook Pro、几千 U，研究多个币圈期权场所与收益结构，支持套利、方向与极端行情机会。产品范围已经扩展到多资产期权；BTC/ETH 是首批数据工程对象，BTC 是首个机制检验市场，ETH 是之后冻结条件的复制对象。
+
+这期要回答：**是否能可靠记录当时看得见的合约、报价与状态，并据此检验小账户能买到什么、付出多少、哪些研究尚不成立？** 先建立可证伪的观察与实验合同，再讨论盈利能力。
+
+第一批结果包括：当前合约单位/规则来源、连续盘口可用性、固定截止时的显示成本、合法数量与资金拒绝、可回放的失败窗口。十分钟数据不能评价未来利润率、Sharpe、稳定容量或黑天鹅盈利。相关报价条数不能替代独立事件。
+
+## 2. 已完成的发现怎样改变选择
+
+| 本轮证据 | 设计含义 |
+| --- | --- |
+| 三平台官方规则/协议核验；公开字段、账户与执行资格分列 | 先封存规则与逐合约 metadata；旧 proxy 不能改名 observed |
+| P1 的 `Book` 没有源 sequence / reconnect generation；现有 replay 是账户事件 replay | 新增纯行情 reducer 与独立 corpus loader，不复用账户回放来伪造连续行情 |
+| 旧 collector 是 4h sidecar；历史探针的阻塞读不受总 deadline 严格约束 | 新 transport 独立实现有界进程与 journal，旧路径和探针保持原身份 |
+| 原生 USDT 的最低 0.01 BTC 单腿支出：10 USDT 预算内 40/120，30 USDT 预算内 120/120 | 1000 与 3000 案例的可用表达不同，不能只报三档数量合并比例 |
+| 最小数量 ATM 双买支出约 33.9346–56.0345 USDT；两档 1% 预算均超限 | 双买是候选表达；预算拒绝是主要结果，不放宽资金限额来完成实验 |
+| 原面板 2586 个代理时效合格场景，186 个正毛价差，扣开仓费代理后 0 个正残差 | 保留成本研究；没有证据启用跨所卖腿套利。不能推断未来永远没有机会 |
+
+预算统计来自旧 BTC 面板的十轮相关报价，不是当前 Deribit/ETH 数据，也不是成交或独立样本。原生 USDT 不隐含兑换成 USDC；详细算术、输入 SHA 与限制见 [离线摩擦复核](../../../results/options_platform/p2_discovery_20261009/OFFLINE_FRICTION.md)。本期没有新增 PnL/Sharpe/容量估计。
+
+### 2.1 官方规则的关键区别
+
+- Deribit 线性期权 ITM 先转同到期 future，再立即结算 USDC；不能把事件链压成一笔现金入账，也不能重复收交割费。BTC 最小公开数量 0.01、ETH 0.1，逐合约值仍须当时 metadata 验证。[线性规格](https://support.deribit.com/hc/en-us/articles/31424932728093-Linear-USDC-Options)
+- Deribit full-book 提供 snapshot、delta、前序 change ID；公开 `agg2` 可用，`raw` 需授权。timestamp 是最后盘口变化，安静合约不等于 sequence gap；heartbeat 不使旧报价变新。[盘口协议](https://docs.deribit.com/subscriptions/orderbook/bookinstrument_nameinterval)
+- Bybit 当前公开规格是 USDT 期权，普通交易费用 cap 7%、交割 cap 12.5%；用户实际 fee tier 未取得。[费用说明](https://www.bybit.com/en/help-center/article/Bybit-Option-Fees-Explained)
+- OKX coin 为直接 inverse cash，USD_UM 为直接 linear cash，后者地区结算币/费用单位仍有缺证。P1 inverse 只支持价格诊断；新增 `inverse_cash` 表达能力应另登记，不在这期悄悄扩大执行范围。[规格](https://www.okx.com/en-eu/help/i-okx-options-introduction)
+
+现行网页不是历史 effective-time 证明。rule profile 保存文档/原响应 hash、核验时点、有效区间与知识时点；精确生效日期缺失保持缺证，不覆盖历史。
+
+## 3. 三种路径及推荐
+
+| 路径 | 能验证什么 | 主要代价 | 取舍 |
+| --- | --- | --- | --- |
+| A：单所定时 REST snapshot | 合法数量与显示成本、缺失覆盖 | 快照之间没有增量链；异步请求不等于同时成交 | 可做辅助审计 |
+| B：单所 public agg2 + immutable journal | 连续段、缺口/重连、因果截止、可复现盘口 | 中等工程复杂度；聚合流不能研究 maker queue/HFT 优势 | **首期采用** |
+| C：三所同采 | 更完整的报价对照 | 单位、币种、时间、恢复和资金复杂度扩大；执行资格仍未知 | 分阶段追加 |
+
+**Deribit-first 是数据工程选择，不是流动性排名。** 旧面板的 Bybit 显示往返摩擦较低；取得连续段后优先追加 Bybit 成本对照，再决定是否需要 OKX。三个场所的同 expiry/strike/C-P 只构成候选配对；未核验指数、结算链和钱包约束时只能叫相对定价。
+
+## 4. 最小架构与责任边界
+
+```mermaid
+flowchart LR
+    P[冻结 protocol / rules / 选品] --> T[有界 public transport]
+    T --> J[原始 journal / metadata epochs]
+    J --> S[封存 manifest + 外部 SHA pin]
+    S --> L[严格 corpus loader]
+    L --> R[纯行情 reducer / checkpoint replay]
+    R --> B[P1 Book / Observation 投影]
+    B --> C[显示成本与预算诊断]
+    R --> E[事件 / 覆盖 / 实验注册]
+    C --> V[独立证据裁决]
+    E --> V
+```
+
+| 拟新增模块 | 职责 | 验证要求 |
+| --- | --- | --- |
+| `scripts/collect_options_public.py` | 单所 transport、白名单、总预算、worker deadline、raw journal | 假 transport 的真实截止测试；不读交易凭证或 import 旧 sidecar |
+| `zenquant/options/market_data.py` | 不可变 envelope、元数据绑定、纯 snapshot/delta reducer | 同事件/配置同状态；gap、重复、冲突、旧 generation、迟到 metadata 明确处理 |
+| `zenquant/research/options_platform/corpus.py` | 外部 pin、原始大小/SHA/路径/链验证、版本化适配 | 路径穿越、symlink、缺失/截断、重复字段、身份不符 fail closed |
+| `zenquant/research/options_platform/market_replay.py` | 知识时间、固定 cutoff、投影、checkpoint、coverage | checkpoint 后缀等于全量；搬目录一致；不制造 fill/account events |
+| `config/research/options_public_deribit_v1.json` | 采集和用途预登记 | 参数变化新 run / trial，不覆盖旧协议 |
+| `config/research/options_rules/deribit_linear_usdc_v1.json` | rule evidence、codec、单位、结算身份 | public rule / observed metadata / account capability 分列 |
+
+所有路径都是提案，尚未创建产品文件或安装依赖。核心无网络、墙钟和非确定随机数；I/O 放适配器。P1 不反向依赖 collector/research；旧 runtime 不导入新模块。初期不增加云、GPU、数据库或调度服务。
+
+## 5. 数据合同与第一轮 protocol
+
+### 5.1 不可丢失的身份
+
+每个完整应用层 payload 保存原 bytes、source 时间/单位、received UTC/monotonic、available、local sequence、source/previous sequence、连接代次、metadata epoch、raw SHA、chunk/span、协议/代码 hash。无 source time 的控制事件保留 null；local sequence 不冒充 venue sequence。
+
+`available` 是完整 payload 被接纳的知识时点，不用 source timestamp 倒填；durable write 单列。新知识不回写旧 cutoff。snapshot + delta 重建的 Book 绑定完整 lineage/materialized hash，而非只有最后一条 delta 的 raw hash。
+
+metadata 记录 venue effective 与 researcher-known 两条时间轴，报价只使用截止前已知的 epoch。规则修改新身份；缺 units/min/step/tick/product/currency/settlement/index/window 就拒绝成本投影。Index、forward、IV、OI 各有来源时点；没有可靠独立更新时间的 ticker 字段保持代理标签。mark/IV/Greeks 不成为成交价；OI×gamma 不产生 dealer 符号。
+
+manifest 以不可变 chunks 封存，独立 pin 验证后才可离线读。截断 tail 为 PARTIAL；完整 chunk 可留工程诊断，但不宣称完整窗口。seal 只证明本地字节完整，不证明交易所签名、无采集损失或可成交。
+
+### 5.2 固定 universe
+
+首轮为 **BTC 4 + ETH 4 = 8 个 Deribit linear-USDC options**，每资产一个真实 DTE ∈[7,15] 的到期，距 10 日最近，tie 取更早。bootstrap 后、采样前封存确切 IDs，不动态扩表。
+
+工程选品使用已可用、带源时点的该资产 index：ATM strike 为最近合法 strike，tie 取较低 strike；OTM Call 为严格高于 ATM 与该 index 的最近上市 strike，OTM Put 为严格低于两者的最近上市 strike。C/P 的 ATM strike 相同，八个 IDs 不重复。缺 index、expiry、任何 instrument/完整规则就 `MISSING_SUPPORTED_UNIVERSE`，不切 inverse、不换资产或临时扩范围。
+
+这叫 **index-based 工程选品**。E02 的 forward-ATM 定义另行冻结；事件时目标若不在固定 universe，就记 `NOT_EVALUABLE_UNIVERSE`，不使用相邻 strike 冒充支持。首八合约中的邻近 OTM 不覆盖 E03 的 10% OTM / 21–45 DTE 协议。
+
+### 5.3 首次有界会话的限额
+
+| 项目 | 拟议 10 分钟协议 | 后续独立 30 分钟协议 |
+| --- | ---: | ---: |
+| 总 monotonic walltime，含初始化/恢复/退出/seal | ≤600s | ≤1800s |
+| bootstrap / selection | ≤30s | ≤30s |
+| 结束前停止业务请求并关闭/seal | 不晚于 T+590s | 不晚于 T+1790s |
+| grace | ≤2s，计入总 deadline | 同上 |
+| venue / 同时 WS / 恢复次数 | 1 / 1 / ≤2 | 同上 |
+| 确切 options / subscriptions | 8 / ≤20 | 同上 |
+| REST / 全部主动 JSON-RPC+HTTP | ≤6 / ≤96 | ≤6 / ≤192 |
+| 主动发送速率 | ≤1/s，burst=1；metadata ≤1/10s | 同上 |
+| application inbound receipts，含重复/error/control | ≤50,000 | ≤150,000 |
+| 完整 WS message / metadata response | ≤128 KiB / ≤2 MiB | 同上 |
+| 全 corpus 字节，含报告/索引/checkpoints | ≤128 MiB，含 4 MiB finalization reserve | ≤384 MiB，含 4 MiB reserve |
+| queue / 队列字节 / RSS 目标 | ≤256 / ≤16 MiB / ≤256 MiB | 同上 |
+| 启动 / 恢复 snapshot 等待 | ≤15s / ≤10s | 同上 |
+| 固定诊断 grid | 5s | 同上 |
+
+执行顺序必须先有 schema/规则 audit、纯 reducer/loader/预算/截止测试与冻结协议；这张表不启动采集。HTTP/WS 方法、host、channels、heartbeat/control 计数和配置 codec 必须在实施中形成明确白名单，不使用假设的 anonymous 20 req/s 权限。
+
+上限先到即停，不自动增量、换节点、读凭证或延长。403/429/451、订阅拒绝、nested rate error、schema/metadata conflict 首轮全局停止。transport 与 writer 受独立 supervisor 的剩余绝对 deadline 约束；不能只设 socket timeout 或无界 join。被迫 kill、deadline 超限、terminal seal 缺失都不能写 COMPLETE。TCP/WS 控制流与完整 application receipts 的统计口径必须分别说明，不能把应用消息数当成完整网络帧历史。
+
+两轮均为会话内 foreground job，无会话外 daemon。30 分钟需要独立 run/协议，不能在十分钟到点自动续采。初轮任意质量不足先定位原因，延长不修复缺链或时效问题。
+
+### 5.4 截止、连续性与状态
+
+- 固定 cutoff 只使用 `available ≤ cutoff` 的数据。无 future match、无跨 generation fill、无 hindsight 修订。
+- 初轮 book source age≤10s、index≤5s、forward（若使用）≤10s；跨币 FX≤30s。负 source age 拒绝。门槛只是报价诊断 policy，不是亚秒套利可执行标准。
+- server time 保存 send/receive bracket；RTT≤1s 且 bracket 能排除 >1s 时钟偏差才 clock-ready。原 timestamp 不被偏差估计改写；wall clock 回退/跳跃或不确定则拒绝诊断。
+- 状态为 `UNKNOWN → WAIT_SNAPSHOT → CONTIGUOUS → GAP/RESYNCING`。同 epoch/generation、前序匹配才应用 delta，不要求 change ID +1。
+- 精确重复只应用一次；同 ID 不同内容冲突。gap/disconnect/queue overflow 使受影响窗口失效；新 WS snapshot 开新连续段，缺失不消失。安静报价的 age 与连接 liveness 分列，heartbeat 不改 source time。
+
+第一轮报告分别裁决 `corpus_integrity / continuity / clock_readiness / diagnostic_coverage`。至少 90% 固定 cutoffs 支持完整指定集合才 `READY_DIAGNOSTIC`；这是待冻结工程门槛，不是盈利充分性。安静盘口可形成完整连续 corpus，但诊断 coverage 仍不足；二者不能合成一个策略 PASS。
+
+grid 锚定会话启动时保存的 UTC/monotonic anchor：`T0+5k 秒`，10 分钟取 k=0…119（120 个截止），30 分钟取 k=0…359（360 个截止），不含最终 deadline。分母包括 bootstrap、未取得 universe、关闭、gap 和时效不足窗口；未记录为合格的截止不得移出分母。提前 STOP 的剩余计划截止记 `CUT_NOT_OBSERVED`，另报实际观察时长，不称完整窗口。选品前的截止为 `UNIVERSE_NOT_YET_KNOWN`，不把 bootstrap 后锁定的 IDs 反填成当时已知。90% 判断按完整计划分母，逐资产/合约/依赖的覆盖另外报告。
+
+## 6. 实验组合：优先两项，第三项保留协议
+
+| 实验 | 第一性原理问题 | 真正的首批产物 | 停止/证伪条件 |
+| --- | --- | --- | --- |
+| E01 逐合约成本选择 | 同一交易目标是否有较低合法支出，还是时间/单位/结算差异？ | 原生币种成本、共同 cutoff、资金/合法量拒绝；Deribit 初轮只能审计单所，下一独立 Bybit 对照才有跨所数据 | 完整费用/钱包/退出/终值过滤后优势消失；成本排序不代表最佳执行 |
+| E02 可观测冲击后的表达 | 冲击看见后，继续/反向期权、双买或现金，谁能兑现后续变化？ | 触发/等待/报价/关闭覆盖审计；未形成完整序列时不计算策略 PnL | IV 已定价、冲击已过、预算不足、退出不可达、简单对照同样有效 |
+| E03 事前尾部持仓与等待 | 长期保费消耗是否换来有价值的凸性；事后买是否已太贵？ | 先审计持续预算与独立尾部 universe；初八 IDs 不执行 E03 | 最小量无持续覆盖、只在理论 mark 上盈利、全日历拖累超限、无独立危机证据 |
+
+完整经济机制、竞争解释与候选阈值见 [实验设计报告](../../../results/options_platform/p2_discovery_20261009/experiment_design.md)。E04 曲面信息、E05 同所 payoff 约束、E06 跨所现金流失调先保留诊断。首期不同时造六个交易器。
+
+E02 候选协议：90 日过去已确认 4h 的绝对收益 99% 分位数；当前 bar 不进入阈值；48h 内触发归同簇；主退出 24h；流动性以过去 30 日摩擦作独立分层。初十/三十分钟没有这些 warm-up、独立事件或关闭周期，不能把它们改成已验证输入。方向仍 confirmed close；1m vs 4h 改变信息集，是另注册 clock experiment。
+
+E03 候选协议：每月既定 confirmed close，21–45 真实 DTE、距 30 日最近、Put strike 最接近当时已知 index 的 90%；年保费含费用≤4%C，额度按月累积，不借未来月份；单次成本≤1%C。不只截取危机日，保留等待、NO_TRADE 与全日历消耗。现金账户加 Put 不能叫降低现金 drawdown；若评价保护，须另冻结外生风险敞口参考账户，且不增加 spot 执行权限。**用户尚未指定被保护敞口，首期目标是 standalone 凸性成本审计。**
+
+### 6.1 资本与比较合同
+
+1000/3000 是总资本案例，不在多个 venue 重复计算。初单所用 fixture 1000/3000 **USDC**，不伪称用户 USDT 余额；账户资格、真实 fee、真实填单均 UNKNOWN。独立 Bybit 对照保留 USDT 单位，跨币净成本需要可核验 FX，不能直接相加。
+
+资金化候选的单组合与合计未闭合期权预付成本含开仓 fee 均≤1%C，还需退出/费用 reserve；最小量不满足就是 NO_TRADE。未取得可靠关闭证据的库存继续占用预算，不能以未知退出释放资金再开风险；重复周转成本与累计亏损另外报告，1% 不是年度最大亏损。各表达 counterfactual 使用互斥参考账户，不能把每种表达的 1% 同时累加到一个账户。该比例是拟议研究合同，不改生产 risk policy。不能用“大多数表内条数超预算”夸大最小单不可行，也不能因最小单可行省略双买预算。
+
+显示成本与模型可行性不是账户或成交证明。没有可核验 fill / 明确批准的保守可达性模型和关闭现金流时，只输出条件报价轨迹；不填虚构账户 PnL。short、perp、inverse execution、margin、融资、转账仍不在 P2 执行范围。option vs cash/linear 是表达比较；同信息消融不得删除费用/PIT/资金/风控来造收益。
+
+### 6.2 证据与消融
+
+每题在新窗口前冻结机制、主假设、对照/全部 trial、唯一变化、资本/钱包、时钟、选品/截止、费用/FX/结算、退出/缺失、独立单位、源码/配置/输入 hash、seed、预算与停止线。修改生成新身份。已经查看的历史面板只用于开发，不改名 fresh OOS。
+
+同冲击的多合约/数量/场所共用一个事件簇；保留全部固定 cutoffs、NO_TRADE、未闭合腿和拒绝。样本至少 180 有效日/30 闭合周期/20 独立簇只是最低筛选，不是功效或罕见事件覆盖保证；月度周期不能靠更多 strikes 补足。成本节省、保护效用与超过现金的盈利分开裁决。
+
+首批适合的消融为“同一信息/表达/预算下，有无预登记流动性 veto”，并设置预算/激活率匹配的简单对照；最多再登记一个重点 2×2。不先训练 RL/JEPA，也不穷举策略。工程偏差诊断（mid、费用清零、错误单位、放松时效）永远 `rankable=false`。
+
+## 7. 验收、实施顺序与已有阻断
+
+复杂度：**中等的新数据子系统，较高的长期策略证据积累。** 所需资源是现有 Mac/Python 与公开数据；未安装新依赖。不需要账户密钥、GPU 或购买服务来完成首批工程验收。
+
+顺序：written spec 审阅 → written implementation plan → 纯数据合同/reducer → corpus/replay → bounded transport → 离线故障/截止验收 → 冻结第一会话协议 → 首次 10 分钟 → 独立离线裁决 → 后续 30 分钟或单场所对照。当前只完成第一步的设计材料，不省略计划审阅。
+
+必要检查是已知答案盘口、序列/重连/元数据/时钟故障、来源 tamper/portable loader/checkpoint、真实短预算的子进程 deadline/无残留 worker，以及 P1 回归与 import boundaries。生产决策、golden、封存面板与105份既有 dirty 文件保持原身份。
+
+**全仓 `zenquant-check` 的 A/C/E 仍存在上一阶段的失败，未在本轮修复或重新裁定根因。** 新阶段实施里要记录完整 gate 结果；merge/deploy/promote 必须遵守全链要求。独立只读采样必须先通过新数据边界、硬上限与相关回归检查；已有无关 gate 失败不自动要求修改 legacy 来完成本期数据观察，也不允许用本期数据成功宣称 integration PASS。
+
+首批产物固定 `execution_authority=NONE / rankable=false / live_eligible=false`。`actual_pnl / paper_pnl / net_strategy_pnl / sharpe / capacity = null`。下一阶段实施和首次有界观察需批准具体规格、计划及协议；不含无人值守采集、真实资金操作或额外市场。
+
+## 8. 发现材料与当前交付
+
+- [官方 venue/rule/fee 核验](../../../results/options_platform/p2_discovery_20261009/venue_rules.md)
+- [数据架构备选与测试边界](../../../results/options_platform/p2_discovery_20261009/data_architecture.md)
+- [六类机制与三项优先实验](../../../results/options_platform/p2_discovery_20261009/experiment_design.md)
+- [小资金/费用离线复核](../../../results/options_platform/p2_discovery_20261009/OFFLINE_FRICTION.md)
+
+本轮只新增研究材料和本规格；没有运行 collector、回测新策略、下单、部署、merge/push，未修全仓 A/C/E。独立审查、文件/hash/旧工作区保护核验另见同目录研究交付报告。

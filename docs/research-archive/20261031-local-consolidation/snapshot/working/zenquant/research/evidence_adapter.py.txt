@@ -1,0 +1,202 @@
+"""Explicit import boundary for recorded accounting-repair evidence.
+
+This adapter imports the saved 2026-10-02 fixed replay format. It does not
+reinterpret those same-close simulations as post-decision execution or claim
+that snapshot reconciliation proves every event in the original run.
+"""
+
+from __future__ import annotations
+
+import csv
+import hashlib
+import io
+import json
+import math
+from decimal import Decimal
+from pathlib import Path
+from typing import Any
+
+_STEP_NS = 4 * 60 * 60 * 1_000_000_000
+_MILLISECOND_NS = 1_000_000
+_FILES = (
+    "config.json",
+    "metrics.json",
+    "canonical_result.json",
+    "equity_4h.csv",
+    "fills.csv",
+    "funding_independent.csv",
+)
+
+
+def _invalid_constant(value: str) -> None:
+    raise ValueError(f"non-finite JSON constant: {value}")
+
+
+def _object(raw: bytes, name: str) -> dict[str, Any]:
+    try:
+        value = json.loads(raw, parse_constant=_invalid_constant)
+    except (ValueError, UnicodeDecodeError) as exc:
+        raise ValueError(f"invalid source {name}: {exc}") from exc
+    if not isinstance(value, dict):
+        raise ValueError(f"{name} must contain an object")
+    return value
+
+
+def _rows(raw: bytes, name: str, required: set[str]) -> list[dict[str, str]]:
+    try:
+        reader = csv.DictReader(io.StringIO(raw.decode("utf-8")))
+        if not required.issubset(set(reader.fieldnames or [])):
+            raise ValueError(f"{name}: missing required columns {sorted(required)}")
+        result = list(reader)
+        if any(None in row or any(row.get(key) in (None, "") for key in required) for row in result):
+            raise ValueError(f"{name}: truncated or malformed row")
+        return result
+    except (csv.Error, UnicodeDecodeError) as exc:
+        raise ValueError(f"invalid source {name}") from exc
+
+
+def _number(value: Any) -> float:
+    if isinstance(value, bool):
+        raise ValueError("boolean is not an account number")
+    result = float(value)
+    if not math.isfinite(result):
+        raise ValueError("non-finite source number")
+    return result
+
+
+def _gate(status: str, reason: str) -> dict[str, str]:
+    return {"status": status, "reason": reason}
+
+
+def import_repaired_run(source: Path | str) -> dict[str, Any]:
+    """Read exact recorded files and attach conservative, scoped evidence gates."""
+    source = Path(source)
+    contents: dict[str, bytes] = {}
+    for name in _FILES:
+        try:
+            contents[name] = (source / name).read_bytes()
+        except OSError as exc:
+            raise ValueError(f"unavailable source {name}") from exc
+    # Hash the bytes actually parsed, avoiding a second read of mutable inputs.
+    digests = {name: hashlib.sha256(raw).hexdigest() for name, raw in contents.items()}
+    config = _object(contents["config.json"], "config.json")
+    metrics = _object(contents["metrics.json"], "metrics.json")
+    canonical = _object(contents["canonical_result.json"], "canonical_result.json")
+    historical = config.get("historical")
+    if not isinstance(historical, dict) or historical.get("execution_timeframe") != "4h":
+        raise ValueError("recorded adapter requires an explicit historical 4h configuration")
+    initial = _number(historical["starting_equity"])
+    start_ns = int(historical["start_ns"])
+    if initial <= 0 or start_ns % _STEP_NS:
+        raise ValueError("invalid initial equity or 4h start boundary")
+    rows = _rows(
+        contents["equity_4h.csv"],
+        "equity_4h.csv",
+        {"time_ns", "close", "position_qty", "cash", "equity", "canonical_equity", "fees", "funding_cost", "turnover"},
+    )
+    if not rows:
+        raise ValueError("equity_4h.csv contains no observations")
+    curve: list[dict[str, Any]] = [{"time_ns": start_ns, "equity": initial}]
+    nav_residuals: list[float] = []
+    previous = start_ns
+    missing_bars = 0
+    for row in rows:
+        source_time = int(row["time_ns"])
+        boundary = source_time + _MILLISECOND_NS
+        if boundary % _STEP_NS or boundary <= previous:
+            raise ValueError("equity_4h.csv contains invalid or unordered 4h bar-close timestamps")
+        missing_bars += (boundary - previous) // _STEP_NS - 1
+        nav = _number(row["equity"])
+        cash, qty, price, canonical_nav = (
+            _number(row[k]) for k in ("cash", "position_qty", "close", "canonical_equity")
+        )
+        if price <= 0:
+            raise ValueError("nonpositive source price")
+        expected = Decimal(row["cash"]) + Decimal(row["position_qty"]) * Decimal(row["close"])
+        nav_residuals.append(max(float(abs(expected - Decimal(row["equity"]))), abs(nav - canonical_nav)))
+        curve.append({"time_ns": boundary, "source_time_ns": source_time, "equity": nav})
+        previous = boundary
+
+    fills = []
+    raw_fills = _rows(
+        contents["fills.csv"], "fills.csv", {"side", "filled_qty", "avg_price", "fee", "transaction_time_ns"}
+    )
+    for row in raw_fills:
+        side = int(row["side"])
+        quantity, price, fee = (_number(row[k]) for k in ("filled_qty", "avg_price", "fee"))
+        if side not in (-1, 1) or quantity < 0 or (quantity > 0 and price <= 0):
+            raise ValueError("fills.csv contains invalid side, quantity or price")
+        fills.append(
+            {
+                "time_ns": int(row["transaction_time_ns"]),
+                "signed_qty": side * quantity,
+                "price": price,
+                "fee": fee,
+            }
+        )
+    funding = [
+        {
+            "time_ns": int(row["available_at_ns"]),
+            "source_time_ns": int(row["source_time_ns"]),
+            "pnl": -_number(row["cost"]),
+        }
+        for row in _rows(
+            contents["funding_independent.csv"],
+            "funding_independent.csv",
+            {"source_time_ns", "available_at_ns", "cost"},
+        )
+    ]
+    if any(row["source_time_ns"] > row["time_ns"] for row in funding):
+        raise ValueError("funding source time exceeds recorded availability")
+    episodes = canonical.get("position_episodes")
+    if not isinstance(episodes, list) or any(not isinstance(row, dict) for row in episodes):
+        raise ValueError("canonical_result.json must contain position_episodes")
+    fees = sum(row["fee"] for row in fills)
+    funding_pnl = sum(row["pnl"] for row in funding)
+    turnover = sum(abs(row["signed_qty"] * row["price"]) for row in fills)
+    ending_cash = initial - sum(row["signed_qty"] * row["price"] + row["fee"] for row in fills) + funding_pnl
+    checks = {
+        "max_nav_residual": max(nav_residuals),
+        "ending_cash_residual": abs(ending_cash - _number(rows[-1]["cash"])),
+        "ending_qty_residual": abs(sum(row["signed_qty"] for row in fills) - _number(rows[-1]["position_qty"])),
+        "fee_total_residual": abs(fees - _number(rows[-1]["fees"])),
+        "funding_total_residual": abs(funding_pnl + _number(rows[-1]["funding_cost"])),
+        "turnover_total_residual": abs(turnover - _number(rows[-1]["turnover"])),
+        "missing_4h_bars": missing_bars,
+    }
+    inconsistent = any(value > 1e-6 for key, value in checks.items() if key.endswith("residual"))
+    accounting = _gate("NOT_EVALUABLE", "snapshot_and_terminal_reconciliation_only_not_every_event")
+    if inconsistent:
+        accounting = _gate("FAIL", "recorded_account_or_cost_reconciliation_mismatch")
+    return {
+        "schema_version": "research-evidence.fixed-repair.v1",
+        "initial_equity": initial,
+        "identity": {
+            "source_format": "accounting_repair.review_revision",
+            "case": metrics.get("case", source.name),
+            "window": metrics.get("window"),
+            "variant": metrics.get("variant"),
+            "seed": metrics.get("seed"),
+            "source_sha256": digests,
+            "strategy_path": "plugin" if historical.get("profile_path") else "legacy",
+            "resolved_config": config,
+        },
+        "evidence_role": "observed_historical_diagnostic",
+        "diagnostic_only": True,
+        "valuation_basis": "confirmed_4h_close_mark_carried_forward_1ms_to_known_boundary",
+        "sampling": "4h_marked_NAV_daily_statistics_at_UTC_midnight",
+        "curve": curve,
+        "fills": fills,
+        "funding": funding,
+        "episodes": episodes,
+        "engineering": {
+            "E0": _gate("NOT_EVALUABLE", "import_content_hashed_original_full_run_identity_not_revalidated"),
+            "E1": _gate("NOT_EVALUABLE", "raw_event_availability_not_revalidated"),
+            "E2": accounting,
+            "E3": _gate("NOT_EVALUABLE", "no_full_event_stream_live_replay_parity_evidence"),
+            "E4": _gate("FAIL", "recorded_same_close_execution_not_post_decision_price"),
+        },
+        "source_checks": checks,
+        "source_completed": not bool(canonical.get("terminated_early", False)),
+        "policy": {"min_daily_returns": 180, "min_closed_episodes": 30, "min_net_return": 0.0, "max_drawdown": 0.15},
+    }

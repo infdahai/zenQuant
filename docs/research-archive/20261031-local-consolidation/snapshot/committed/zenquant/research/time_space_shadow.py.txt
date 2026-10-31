@@ -1,0 +1,1379 @@
+"""Point-in-time, research-only time-space state construction.
+
+This module deliberately has no strategy, risk, execution, or domain-model
+imports.  It turns already-confirmed 4h research rows into immutable diagnostic
+state and has no authority to block or create orders.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import json
+import math
+import random
+from collections.abc import Sequence
+from dataclasses import dataclass, field, fields
+from datetime import UTC, datetime
+from enum import StrEnum
+from statistics import fmean
+
+from zenquant.research.registration import EvidenceRole
+
+FOUR_HOURS_NS = 4 * 60 * 60 * 1_000_000_000
+# Frozen ``decision_id_by_stage`` key for the canonical filled-position
+# observation visible at each 4h cutoff.
+FILLED_POSITION_STAGE = "FILLED_POSITION"
+_DAY_NS = 24 * 60 * 60 * 1_000_000_000
+_WEEK_NS = 7 * _DAY_NS
+# 1970-01-05T00:00:00Z, the first Monday after the Unix epoch.
+_MONDAY_EPOCH_NS = 4 * _DAY_NS
+_LABEL_HORIZONS = (1, 2, 3, 6)
+_FROZEN_PERTURBATION_SEEDS = (42, 123, 456, 789, 1024)
+_MINIMUM_EFFECT = 15 / 10_000
+_MINIMUM_ELAPSED_NS = 180 * _DAY_NS
+_MINIMUM_PRIMARY_FLIPS = 30
+_MINIMUM_MARKET_STATE_TRANSITIONS = 1
+_MINIMUM_POSITIVE_PATHS = 4
+_BOOTSTRAP_REPLICATIONS = 10_000
+_RETURN_REL_TOLERANCE = 1e-12
+_RETURN_ABS_TOLERANCE = 1e-15
+TIME_SPACE_HYPOTHESIS_SHA256 = "a01f4a385adf36b9816ce07577bbeab32ec522dd6be19c53395dc94e25c19cb3"
+
+
+class StructureIntegrity(StrEnum):
+    """Point-in-time integrity of a retained directional breakout."""
+
+    INTACT = "INTACT"
+    BROKEN = "BROKEN"
+    UNKNOWN = "UNKNOWN"
+
+
+class FlipKind(StrEnum):
+    """Independent flip populations retained for causal attribution."""
+
+    ALPHA = "alpha_flip"
+    APPROVED = "approved_flip"
+    FILLED = "filled_flip"
+
+
+class AcceptanceStatus(StrEnum):
+    """Research-only conclusion permitted by the frozen hypothesis."""
+
+    REJECT = "REJECT"
+    CONTINUE_FORWARD = "CONTINUE_FORWARD"
+    INSUFFICIENT_DATA = "INSUFFICIENT_DATA"
+    ELIGIBLE_FOR_SEPARATE_ACTIVATION_REVIEW = "ELIGIBLE_FOR_SEPARATE_ACTIVATION_REVIEW"
+
+
+_FLIP_KIND_ORDER = {
+    FlipKind.ALPHA: 0,
+    FlipKind.APPROVED: 1,
+    FlipKind.FILLED: 2,
+}
+
+
+@dataclass(frozen=True, slots=True)
+class TimeSpaceInputRow:
+    """Confirmed 4h research input visible at ``cutoff_time_ns``.
+
+    ``prior_*_boundary`` values were visible before the covered interval.
+    ``current_*_pivot`` values are confirmed by this interval and therefore
+    become eligible only for later rows.
+    """
+
+    alpha_id: str
+    cutoff_time_ns: int
+    interval_start_ns: int
+    close: float
+    structure_side: int
+    prior_long_boundary: float | None
+    prior_short_boundary: float | None
+    current_long_pivot: float | None
+    current_short_pivot: float | None
+    prior_long_invalidation: float | None
+    prior_short_invalidation: float | None
+    formula_hash: str
+    config_hash: str
+    source_data_hash: str
+    decision_id_by_stage: tuple[tuple[str, str], ...] = ()
+
+    def __post_init__(self) -> None:
+        _require_non_empty_str(self.alpha_id, "alpha_id")
+        _require_exact_int(self.cutoff_time_ns, "cutoff_time_ns")
+        _require_exact_int(self.interval_start_ns, "interval_start_ns")
+        if self.cutoff_time_ns % FOUR_HOURS_NS:
+            raise ValueError("cutoff_time_ns must use the canonical UTC 4h grid")
+        if self.interval_start_ns != self.cutoff_time_ns - FOUR_HOURS_NS:
+            raise ValueError("interval must follow the canonical UTC 4h grid")
+        if type(self.structure_side) is not int:
+            raise TypeError("structure_side must be an exact int")
+        if self.structure_side not in (-1, 0, 1):
+            raise ValueError("structure_side must be -1, 0, or 1")
+        object.__setattr__(self, "close", _canonical_price(self.close, "close"))
+        for name in (
+            "prior_long_boundary",
+            "prior_short_boundary",
+            "current_long_pivot",
+            "current_short_pivot",
+            "prior_long_invalidation",
+            "prior_short_invalidation",
+        ):
+            value = getattr(self, name)
+            if value is not None:
+                object.__setattr__(self, name, _canonical_price(value, name))
+        for name in ("formula_hash", "config_hash", "source_data_hash"):
+            _require_non_empty_str(getattr(self, name), name)
+
+        if type(self.decision_id_by_stage) is not tuple:
+            raise TypeError("decision_id_by_stage must be an exact tuple")
+        for item in self.decision_id_by_stage:
+            if type(item) is not tuple or len(item) != 2:
+                raise TypeError("each decision stage entry must be an exact pair tuple")
+            stage, decision_id = item
+            if type(stage) is not str or not stage or type(decision_id) is not str or not decision_id:
+                raise TypeError("decision stage and ID must be non-empty str values")
+        ordered_decisions = tuple(sorted(self.decision_id_by_stage))
+        if len({stage for stage, _ in ordered_decisions}) != len(ordered_decisions):
+            raise ValueError("decision stages must be unique")
+        object.__setattr__(self, "decision_id_by_stage", ordered_decisions)
+
+
+@dataclass(frozen=True, slots=True)
+class TimeSpaceState:
+    """Immutable time-space state at one confirmed cutoff."""
+
+    state_id: str
+    alpha_id: str
+    cutoff_time_ns: int
+    feature_available_at_ns: int
+    decision_id_by_stage: tuple[tuple[str, str], ...]
+    formula_hash: str
+    config_hash: str
+    source_data_hash: str
+    market_structure_side: int
+    close: float
+    visible_long_boundary: float | None
+    visible_short_boundary: float | None
+    long_invalidation_boundary: float | None
+    short_invalidation_boundary: float | None
+    trend_age_bars: int | None
+    trend_age_ns: int | None
+    long_breakout_age_bars: int | None
+    long_breakout_age_ns: int | None
+    short_breakout_age_bars: int | None
+    short_breakout_age_ns: int | None
+    utc_week_start_ns: int
+    weekly_completion_fraction: float
+    long_structure_integrity: StructureIntegrity
+    short_structure_integrity: StructureIntegrity
+    source_gap_bars: int
+    quality_flags: tuple[str, ...]
+    blocks_order: bool = field(default=False, init=False)
+
+
+@dataclass(frozen=True, slots=True)
+class TimeSpaceFlipObservation:
+    """One sign-crossing event bound to its point-in-time state."""
+
+    base_flip_id: str
+    kind: FlipKind
+    alpha_id: str
+    cutoff_time_ns: int
+    old_side: int
+    new_side: int
+    state_id: str
+    prior_source_identity: str
+    source_identity: str
+    primary_population: bool
+
+
+@dataclass(frozen=True, slots=True)
+class TimeSpaceLabel:
+    """One fixed-1x directional counterfactual at one retained-row horizon."""
+
+    base_flip_id: str
+    horizon_bars: int
+    flip_unit_return: float | None
+    hold_old_unit_return: float | None
+    hold_minus_flip: float | None
+    label_available_at_ns: int | None
+    right_censored: bool
+
+    def __post_init__(self) -> None:
+        _require_non_empty_str(self.base_flip_id, "base_flip_id")
+        if type(self.horizon_bars) is not int or self.horizon_bars not in _LABEL_HORIZONS:
+            raise ValueError("horizon_bars must be one of 1, 2, 3, or 6")
+        if type(self.right_censored) is not bool:
+            raise TypeError("right_censored must be an exact bool")
+        values = (
+            self.flip_unit_return,
+            self.hold_old_unit_return,
+            self.hold_minus_flip,
+        )
+        if self.right_censored:
+            if any(value is not None for value in values) or self.label_available_at_ns is not None:
+                raise ValueError("right-censored labels cannot contain future values")
+            return
+        if any(type(value) is not float or not math.isfinite(value) for value in values):
+            raise ValueError("mature label returns must be finite floats")
+        _require_exact_int(self.label_available_at_ns, "label_available_at_ns")
+        if self.label_available_at_ns % FOUR_HOURS_NS:
+            raise ValueError("label_available_at_ns must use the canonical UTC 4h grid")
+
+
+@dataclass(frozen=True, slots=True)
+class PerturbedFlipMapping:
+    """One deterministic, one-to-one base-to-perturbed event mapping."""
+
+    base_flip_id: str
+    perturbed_flip_id: str
+
+    def __post_init__(self) -> None:
+        _require_sha256(self.base_flip_id, "base_flip_id")
+        _require_sha256(self.perturbed_flip_id, "perturbed_flip_id")
+
+
+@dataclass(frozen=True, slots=True)
+class PerturbationPathEvidence:
+    """Identity-bearing events and matured labels from one frozen seed path."""
+
+    seed: int
+    flips: tuple[TimeSpaceFlipObservation, ...]
+    labels: tuple[TimeSpaceLabel, ...]
+
+    def __post_init__(self) -> None:
+        _require_exact_int(self.seed, "seed")
+        if self.seed not in _FROZEN_PERTURBATION_SEEDS:
+            raise ValueError("seed must be one of the five frozen perturbation seeds")
+        if type(self.flips) is not tuple:
+            raise TypeError("perturbation flips must be an exact tuple")
+        if type(self.labels) is not tuple:
+            raise TypeError("perturbation labels must be an exact tuple")
+
+
+@dataclass(frozen=True, slots=True)
+class TimeSpaceAcceptanceManifest:
+    """Frozen identity plus observation evidence needed by the acceptance gate."""
+
+    manifest_id: str
+    hypothesis_sha256: str
+    observation_start_ns: int
+    observation_end_ns: int
+    market_state_transition_count: int
+    primary_flips: tuple[TimeSpaceFlipObservation, ...]
+    perturbation_paths: tuple[PerturbationPathEvidence, ...]
+
+    def __post_init__(self) -> None:
+        _require_sha256(self.manifest_id, "manifest_id")
+        _require_sha256(self.hypothesis_sha256, "hypothesis_sha256")
+        if self.hypothesis_sha256 != TIME_SPACE_HYPOTHESIS_SHA256:
+            raise ValueError("hypothesis_sha256 must match the frozen TimeSpace hypothesis")
+        _require_exact_int(self.observation_start_ns, "observation_start_ns")
+        _require_exact_int(self.observation_end_ns, "observation_end_ns")
+        if self.observation_start_ns < 0 or self.observation_start_ns % FOUR_HOURS_NS:
+            raise ValueError("observation_start_ns must use the non-negative UTC 4h grid")
+        if self.observation_end_ns < self.observation_start_ns or self.observation_end_ns % FOUR_HOURS_NS:
+            raise ValueError("observation_end_ns must be on or after start on the UTC 4h grid")
+        _require_exact_int(self.market_state_transition_count, "market_state_transition_count")
+        if self.market_state_transition_count < 0:
+            raise ValueError("market_state_transition_count must be non-negative")
+        if type(self.primary_flips) is not tuple:
+            raise TypeError("primary_flips must be an exact tuple")
+        if type(self.perturbation_paths) is not tuple:
+            raise TypeError("perturbation_paths must be an exact tuple")
+        if any(type(path) is not PerturbationPathEvidence for path in self.perturbation_paths):
+            raise TypeError("perturbation_paths must contain PerturbationPathEvidence rows")
+        seeds = tuple(path.seed for path in self.perturbation_paths)
+        if seeds != _FROZEN_PERTURBATION_SEEDS:
+            raise ValueError("perturbation_paths must use the five frozen seeds in canonical order")
+
+
+@dataclass(frozen=True, slots=True)
+class TimeSpaceAcceptance:
+    """Auditable statistics with no strategy, risk, or execution authority."""
+
+    status: AcceptanceStatus
+    evidence_role: EvidenceRole
+    manifest_id: str
+    primary_flip_count: int
+    elapsed_ns: int
+    market_state_transition_count: int
+    canonical_mean_hold_minus_flip_6: float | None
+    bootstrap_lower_bound_95: float | None
+    bootstrap_seed: int
+    positive_perturbation_paths: int
+    perturbation_path_means: tuple[tuple[int, float | None], ...]
+    blocks_order: bool = field(default=False, init=False)
+
+
+@dataclass(frozen=True, slots=True)
+class FlipPopulationInputRow:
+    """Identity-bearing value from one canonical flip population source."""
+
+    kind: FlipKind
+    alpha_id: str
+    cutoff_time_ns: int
+    value: int | float
+    source_identity: str
+
+    def __post_init__(self) -> None:
+        if type(self.kind) is not FlipKind:
+            raise TypeError("kind must be a FlipKind")
+        _require_non_empty_str(self.alpha_id, "alpha_id")
+        _require_exact_int(self.cutoff_time_ns, "cutoff_time_ns")
+        if self.cutoff_time_ns % FOUR_HOURS_NS:
+            raise ValueError("cutoff_time_ns must use the canonical UTC 4h grid")
+        _require_non_empty_str(self.source_identity, "source_identity")
+
+
+@dataclass(frozen=True, slots=True)
+class _Breakout:
+    cutoff_time_ns: int
+    retained_index: int
+
+
+def build_time_space_states(rows: Sequence[TimeSpaceInputRow]) -> tuple[TimeSpaceState, ...]:
+    """Build deterministic PIT state from strictly ordered confirmed 4h rows."""
+
+    states: list[TimeSpaceState] = []
+    previous_row: TimeSpaceInputRow | None = None
+    trend_side = 0
+    trend_started_at_ns: int | None = None
+    trend_started_index: int | None = None
+    long_breakout: _Breakout | None = None
+    short_breakout: _Breakout | None = None
+    carried_long_boundary: float | None = None
+    carried_short_boundary: float | None = None
+
+    for retained_index, row in enumerate(rows):
+        source_gap_bars = _source_gap_bars(previous_row, row)
+        if source_gap_bars:
+            long_breakout = None
+            short_breakout = None
+
+        if row.structure_side == 0:
+            trend_side = 0
+            trend_started_at_ns = None
+            trend_started_index = None
+        elif row.structure_side != trend_side:
+            trend_side = row.structure_side
+            trend_started_at_ns = row.cutoff_time_ns
+            trend_started_index = retained_index
+
+        visible_long_boundary = (
+            row.prior_long_boundary if row.prior_long_boundary is not None else carried_long_boundary
+        )
+        visible_short_boundary = (
+            row.prior_short_boundary if row.prior_short_boundary is not None else carried_short_boundary
+        )
+        next_long_boundary = row.current_long_pivot if row.current_long_pivot is not None else visible_long_boundary
+        next_short_boundary = row.current_short_pivot if row.current_short_pivot is not None else visible_short_boundary
+
+        long_broken = False
+        short_broken = False
+        if long_breakout is not None and _crossed_long_invalidation(row):
+            long_breakout = None
+            long_broken = True
+        if short_breakout is not None and _crossed_short_invalidation(row):
+            short_breakout = None
+            short_broken = True
+
+        long_crossed = _crossed_long_boundary(
+            previous_row,
+            row,
+            visible_long_boundary,
+            source_gap_bars,
+        )
+        short_crossed = _crossed_short_boundary(
+            previous_row,
+            row,
+            visible_short_boundary,
+            source_gap_bars,
+        )
+        if long_crossed and short_crossed:
+            raise ValueError("one row cannot create both long and short breakouts")
+        if long_crossed:
+            short_breakout = None
+            short_broken = False
+            long_breakout = _Breakout(row.cutoff_time_ns, retained_index)
+            long_broken = False
+        elif short_crossed:
+            long_breakout = None
+            long_broken = False
+            short_breakout = _Breakout(row.cutoff_time_ns, retained_index)
+            short_broken = False
+
+        if long_breakout is not None and row.structure_side == -1:
+            long_breakout = None
+            long_broken = True
+        if short_breakout is not None and row.structure_side == 1:
+            short_breakout = None
+            short_broken = True
+        if row.structure_side == 0:
+            long_breakout = None
+            short_breakout = None
+
+        week_start_ns = _utc_week_start(row.interval_start_ns)
+        weekly_completion = min(
+            1.0,
+            max(0.0, (row.cutoff_time_ns - week_start_ns) / _WEEK_NS),
+        )
+        quality_flags = ("SOURCE_GAP",) if source_gap_bars else ()
+
+        state_values = {
+            "alpha_id": row.alpha_id,
+            "cutoff_time_ns": row.cutoff_time_ns,
+            "feature_available_at_ns": row.cutoff_time_ns,
+            "decision_id_by_stage": row.decision_id_by_stage,
+            "formula_hash": row.formula_hash,
+            "config_hash": row.config_hash,
+            "source_data_hash": row.source_data_hash,
+            "market_structure_side": row.structure_side,
+            "close": row.close,
+            "visible_long_boundary": next_long_boundary,
+            "visible_short_boundary": next_short_boundary,
+            "long_invalidation_boundary": row.prior_long_invalidation,
+            "short_invalidation_boundary": row.prior_short_invalidation,
+            "trend_age_bars": _age_bars(trend_started_index, retained_index),
+            "trend_age_ns": _age_ns(trend_started_at_ns, row.cutoff_time_ns),
+            "long_breakout_age_bars": _breakout_age_bars(long_breakout, retained_index),
+            "long_breakout_age_ns": _breakout_age_ns(long_breakout, row.cutoff_time_ns),
+            "short_breakout_age_bars": _breakout_age_bars(short_breakout, retained_index),
+            "short_breakout_age_ns": _breakout_age_ns(short_breakout, row.cutoff_time_ns),
+            "utc_week_start_ns": week_start_ns,
+            "weekly_completion_fraction": weekly_completion,
+            "long_structure_integrity": _integrity(
+                breakout=long_breakout,
+                broken=long_broken,
+                structure_side=row.structure_side,
+                expected_side=1,
+                invalidation=row.prior_long_invalidation,
+            ),
+            "short_structure_integrity": _integrity(
+                breakout=short_breakout,
+                broken=short_broken,
+                structure_side=row.structure_side,
+                expected_side=-1,
+                invalidation=row.prior_short_invalidation,
+            ),
+            "source_gap_bars": source_gap_bars,
+            "quality_flags": quality_flags,
+        }
+        state_id = _state_id(state_values)
+        states.append(TimeSpaceState(state_id=state_id, **state_values))
+
+        if long_broken:
+            long_breakout = None
+        if short_broken:
+            short_breakout = None
+        carried_long_boundary = next_long_boundary
+        carried_short_boundary = next_short_boundary
+        previous_row = row
+
+    return tuple(states)
+
+
+def build_flip_observations(
+    *,
+    states: Sequence[TimeSpaceState],
+    alpha_rows: Sequence[FlipPopulationInputRow],
+    approved_rows: Sequence[FlipPopulationInputRow],
+    filled_rows: Sequence[FlipPopulationInputRow],
+) -> tuple[TimeSpaceFlipObservation, ...]:
+    """Join aligned strategy, risk, and execution sign crossings to PIT state."""
+
+    populations: tuple[tuple[FlipKind, Sequence[FlipPopulationInputRow]], ...] = (
+        (FlipKind.ALPHA, alpha_rows),
+        (FlipKind.APPROVED, approved_rows),
+        (FlipKind.FILLED, filled_rows),
+    )
+
+    state_by_cutoff: dict[int, TimeSpaceState] = {}
+    previous_cutoff: int | None = None
+    for state in states:
+        if previous_cutoff is not None and state.cutoff_time_ns <= previous_cutoff:
+            raise ValueError("state cutoff_time_ns values must be strictly increasing")
+        state_by_cutoff[state.cutoff_time_ns] = state
+        previous_cutoff = state.cutoff_time_ns
+
+    joined: dict[FlipKind, tuple[tuple[FlipPopulationInputRow, int], ...]] = {}
+    for kind, rows in populations:
+        joined[kind] = _join_population_rows(states=states, rows=rows, kind=kind)
+
+    observations: list[TimeSpaceFlipObservation] = []
+    prior_rows: dict[FlipKind, tuple[FlipPopulationInputRow, int] | None] = {kind: None for kind, _ in populations}
+    for index, state in enumerate(states):
+        for kind, _ in populations:
+            row, new_side = joined[kind][index]
+            prior = prior_rows[kind]
+            if prior is not None:
+                prior_row, old_side = prior
+            else:
+                prior_row, old_side = None, None
+            if old_side is not None and old_side == -new_side and old_side != 0 and prior_row is not None:
+                identity = {
+                    "kind": kind.value,
+                    "alpha_id": state.alpha_id,
+                    "cutoff_time_ns": state.cutoff_time_ns,
+                    "old_side": old_side,
+                    "new_side": new_side,
+                    "state_id": state.state_id,
+                    "prior_source_identity": prior_row.source_identity,
+                    "source_identity": row.source_identity,
+                }
+                observations.append(
+                    TimeSpaceFlipObservation(
+                        base_flip_id=_canonical_id(identity),
+                        kind=kind,
+                        alpha_id=state.alpha_id,
+                        cutoff_time_ns=state.cutoff_time_ns,
+                        old_side=old_side,
+                        new_side=new_side,
+                        state_id=state.state_id,
+                        prior_source_identity=prior_row.source_identity,
+                        source_identity=row.source_identity,
+                        primary_population=(
+                            kind is FlipKind.ALPHA
+                            and _is_primary_alpha_flip(
+                                state=state,
+                                old_side=old_side,
+                                state_by_cutoff=state_by_cutoff,
+                            )
+                        ),
+                    )
+                )
+            prior_rows[kind] = (row, new_side)
+
+    return tuple(observations)
+
+
+def mature_flip_labels(
+    flips: Sequence[TimeSpaceFlipObservation],
+    closes: Sequence[TimeSpaceState],
+    *,
+    alpha_rows: Sequence[FlipPopulationInputRow],
+    approved_rows: Sequence[FlipPopulationInputRow],
+    filled_rows: Sequence[FlipPopulationInputRow],
+    as_of_ns: int,
+) -> tuple[TimeSpaceLabel, ...]:
+    """Mature fixed-horizon labels from rows actually retained by ``as_of_ns``.
+
+    Horizons count retained 4h rows, not inferred wall-clock slots. A source
+    gap therefore delays availability to the actual future row cutoff instead
+    of creating a synthetic close. ``flips`` may select a subset of the
+    observations rebuilt from the three required authoritative population
+    prefixes, but every selected observation must match that rebuild exactly.
+    """
+
+    _validate_as_of(as_of_ns)
+    close_rows = _validate_label_close_rows(closes, as_of_ns=as_of_ns)
+    close_index_by_cutoff = {state.cutoff_time_ns: index for index, state in enumerate(close_rows)}
+    canonical_flips: list[TimeSpaceFlipObservation] = []
+    seen_logical_keys: set[tuple[FlipKind, str, int, str]] = set()
+    labels: list[TimeSpaceLabel] = []
+
+    for flip in flips:
+        _validate_label_flip(flip)
+        logical_key = (
+            flip.kind,
+            flip.alpha_id,
+            flip.cutoff_time_ns,
+            flip.state_id,
+        )
+        if logical_key in seen_logical_keys:
+            raise ValueError("duplicate logical flip event")
+        seen_logical_keys.add(logical_key)
+        canonical_flips.append(flip)
+
+    canonical_flips.sort(
+        key=lambda item: (
+            item.cutoff_time_ns,
+            _FLIP_KIND_ORDER[item.kind],
+            item.alpha_id,
+            item.state_id,
+        )
+    )
+
+    for flip in canonical_flips:
+        if flip.cutoff_time_ns > as_of_ns:
+            raise ValueError("flip must be visible as_of_ns")
+        anchor_index = close_index_by_cutoff.get(flip.cutoff_time_ns)
+        if anchor_index is None:
+            raise ValueError("missing flip anchor close")
+        anchor = close_rows[anchor_index]
+        if anchor.alpha_id != flip.alpha_id or anchor.state_id != flip.state_id:
+            raise ValueError("flip anchor identity does not match close row")
+        _validate_flip_stage_identity(
+            flip=flip,
+            anchor_index=anchor_index,
+            closes=close_rows,
+        )
+
+    visible_count = len(close_rows)
+    rebuilt = build_flip_observations(
+        states=close_rows,
+        alpha_rows=_visible_population_prefix(alpha_rows, visible_count, FlipKind.ALPHA),
+        approved_rows=_visible_population_prefix(approved_rows, visible_count, FlipKind.APPROVED),
+        filled_rows=_visible_population_prefix(filled_rows, visible_count, FlipKind.FILLED),
+    )
+    rebuilt_by_logical_key = {_flip_logical_key(item): item for item in rebuilt}
+
+    for flip in canonical_flips:
+        authoritative = rebuilt_by_logical_key.get(_flip_logical_key(flip))
+        if authoritative is None or flip != authoritative:
+            raise ValueError("flip does not match authoritative flip provenance")
+        anchor_index = close_index_by_cutoff[flip.cutoff_time_ns]
+        anchor = close_rows[anchor_index]
+
+        for horizon in _LABEL_HORIZONS:
+            future_index = anchor_index + horizon
+            if future_index >= len(close_rows) or close_rows[future_index].cutoff_time_ns > as_of_ns:
+                labels.append(
+                    TimeSpaceLabel(
+                        base_flip_id=flip.base_flip_id,
+                        horizon_bars=horizon,
+                        flip_unit_return=None,
+                        hold_old_unit_return=None,
+                        hold_minus_flip=None,
+                        label_available_at_ns=None,
+                        right_censored=True,
+                    )
+                )
+                continue
+
+            future = close_rows[future_index]
+            unit_return = future.close / anchor.close - 1.0
+            flip_return = flip.new_side * unit_return
+            hold_return = flip.old_side * unit_return
+            hold_minus_flip = hold_return - flip_return
+            if not all(math.isfinite(value) for value in (unit_return, flip_return, hold_return, hold_minus_flip)):
+                raise ValueError("label returns must be finite")
+            labels.append(
+                TimeSpaceLabel(
+                    base_flip_id=flip.base_flip_id,
+                    horizon_bars=horizon,
+                    flip_unit_return=float(flip_return),
+                    hold_old_unit_return=float(hold_return),
+                    hold_minus_flip=float(hold_minus_flip),
+                    label_available_at_ns=future.cutoff_time_ns,
+                    right_censored=False,
+                )
+            )
+    return tuple(labels)
+
+
+def map_perturbed_flips(
+    base: Sequence[TimeSpaceFlipObservation],
+    perturbed: Sequence[TimeSpaceFlipObservation],
+) -> tuple[PerturbedFlipMapping, ...]:
+    """Map identity-compatible events within one retained 4h bar.
+
+    Chronological ordered matching preserves maximum event cardinality. Caller
+    order cannot change the result, neither side can be reused, and unmatched
+    events are censored rather than relabelled.
+    """
+
+    base_rows = _validated_unique_flips(base, name="base")
+    perturbed_rows = _validated_unique_flips(perturbed, name="perturbed")
+    base_by_signature: dict[tuple[FlipKind, str, int, int], list[TimeSpaceFlipObservation]] = {}
+    perturbed_by_signature: dict[tuple[FlipKind, str, int, int], list[TimeSpaceFlipObservation]] = {}
+    for base_flip in base_rows:
+        base_by_signature.setdefault(_perturbation_signature(base_flip), []).append(base_flip)
+    for perturbed_flip in perturbed_rows:
+        perturbed_by_signature.setdefault(_perturbation_signature(perturbed_flip), []).append(perturbed_flip)
+
+    matches: list[PerturbedFlipMapping] = []
+    for signature in sorted(base_by_signature, key=_perturbation_signature_order):
+        base_group = base_by_signature[signature]
+        perturbed_group = perturbed_by_signature.get(signature, [])
+        base_index = 0
+        perturbed_index = 0
+        while base_index < len(base_group) and perturbed_index < len(perturbed_group):
+            base_flip = base_group[base_index]
+            perturbed_flip = perturbed_group[perturbed_index]
+            delta = perturbed_flip.cutoff_time_ns - base_flip.cutoff_time_ns
+            if delta < -FOUR_HOURS_NS:
+                perturbed_index += 1
+            elif delta > FOUR_HOURS_NS:
+                base_index += 1
+            else:
+                matches.append(
+                    PerturbedFlipMapping(
+                        base_flip_id=base_flip.base_flip_id,
+                        perturbed_flip_id=perturbed_flip.base_flip_id,
+                    )
+                )
+                base_index += 1
+                perturbed_index += 1
+    matches.sort(key=lambda item: (item.base_flip_id, item.perturbed_flip_id))
+    return tuple(matches)
+
+
+def evaluate_time_space_shadow(
+    labels: Sequence[TimeSpaceLabel],
+    manifest: TimeSpaceAcceptanceManifest,
+    role: EvidenceRole,
+) -> TimeSpaceAcceptance:
+    """Evaluate the exact frozen TimeSpace hypothesis without trading authority."""
+
+    if type(manifest) is not TimeSpaceAcceptanceManifest:
+        raise TypeError("manifest must be a TimeSpaceAcceptanceManifest")
+    if type(role) is not EvidenceRole:
+        raise TypeError("role must be an EvidenceRole")
+    _validate_acceptance_manifest(manifest)
+
+    primary_by_id = {
+        flip.base_flip_id: flip
+        for flip in manifest.primary_flips
+        if flip.kind is FlipKind.ALPHA
+        and flip.primary_population
+        and flip.cutoff_time_ns >= manifest.observation_start_ns
+        and flip.cutoff_time_ns < manifest.observation_end_ns
+    }
+    canonical_labels = _mature_primary_labels(
+        labels,
+        flip_by_id=primary_by_id,
+        start_ns=manifest.observation_start_ns,
+        end_ns=manifest.observation_end_ns,
+    )
+    values = tuple(label.hold_minus_flip for _, label in canonical_labels)
+    if any(value is None for value in values):
+        raise AssertionError("mature primary labels cannot contain null values")
+    numeric_values = tuple(float(value) for value in values)
+    canonical_mean = fmean(numeric_values) if numeric_values else None
+    bootstrap_seed = _manifest_bootstrap_seed(manifest.manifest_id)
+    lower_bound = _month_block_lower_bound(
+        canonical_labels,
+        flip_by_id=primary_by_id,
+        seed=bootstrap_seed,
+    )
+
+    path_means: list[tuple[int, float | None]] = []
+    canonical_primary = tuple(primary_by_id.values())
+    for path in manifest.perturbation_paths:
+        perturbed_in_window = tuple(
+            flip
+            for flip in path.flips
+            if manifest.observation_start_ns <= flip.cutoff_time_ns < manifest.observation_end_ns
+        )
+        perturbed_by_id = {flip.base_flip_id: flip for flip in perturbed_in_window}
+        mappings = map_perturbed_flips(canonical_primary, perturbed_in_window)
+        perturbed_by_base_id = {
+            mapping.perturbed_flip_id: perturbed_by_id[mapping.perturbed_flip_id] for mapping in mappings
+        }
+        path_labels = _mature_primary_labels(
+            path.labels,
+            flip_by_id=perturbed_by_base_id,
+            start_ns=manifest.observation_start_ns,
+            end_ns=manifest.observation_end_ns,
+        )
+        path_values = tuple(float(label.hold_minus_flip) for _, label in path_labels)
+        path_means.append((path.seed, fmean(path_values) if path_values else None))
+
+    positive_paths = sum(mean is not None and mean > 0.0 for _, mean in path_means)
+    elapsed_ns = manifest.observation_end_ns - manifest.observation_start_ns
+    sample_ready = (
+        len(canonical_labels) >= _MINIMUM_PRIMARY_FLIPS
+        and elapsed_ns >= _MINIMUM_ELAPSED_NS
+        and manifest.market_state_transition_count >= _MINIMUM_MARKET_STATE_TRANSITIONS
+    )
+    effect_passes = (
+        canonical_mean is not None
+        and canonical_mean >= _MINIMUM_EFFECT
+        and lower_bound is not None
+        and lower_bound > 0.0
+        and positive_paths >= _MINIMUM_POSITIVE_PATHS
+    )
+
+    if role is EvidenceRole.EXCLUDED_EMBARGO or not sample_ready:
+        status = AcceptanceStatus.INSUFFICIENT_DATA
+    elif not effect_passes:
+        status = AcceptanceStatus.REJECT
+    elif role is EvidenceRole.FORWARD_CONFIRMATION:
+        status = AcceptanceStatus.ELIGIBLE_FOR_SEPARATE_ACTIVATION_REVIEW
+    else:
+        status = AcceptanceStatus.CONTINUE_FORWARD
+
+    return TimeSpaceAcceptance(
+        status=status,
+        evidence_role=role,
+        manifest_id=manifest.manifest_id,
+        primary_flip_count=len(canonical_labels),
+        elapsed_ns=elapsed_ns,
+        market_state_transition_count=manifest.market_state_transition_count,
+        canonical_mean_hold_minus_flip_6=canonical_mean,
+        bootstrap_lower_bound_95=lower_bound,
+        bootstrap_seed=bootstrap_seed,
+        positive_perturbation_paths=positive_paths,
+        perturbation_path_means=tuple(path_means),
+    )
+
+
+def _validated_unique_flips(
+    flips: Sequence[TimeSpaceFlipObservation],
+    *,
+    name: str,
+) -> tuple[TimeSpaceFlipObservation, ...]:
+    validated: list[TimeSpaceFlipObservation] = []
+    seen_ids: set[str] = set()
+    seen_event_slots: set[tuple[FlipKind, int]] = set()
+    for flip in flips:
+        _validate_label_flip(flip)
+        if flip.base_flip_id in seen_ids:
+            raise ValueError(f"{name} flips must have unique canonical IDs")
+        event_slot = (flip.kind, flip.cutoff_time_ns)
+        if event_slot in seen_event_slots:
+            raise ValueError(f"{name} flips must have a unique logical flip event slot")
+        seen_ids.add(flip.base_flip_id)
+        seen_event_slots.add(event_slot)
+        validated.append(flip)
+    return tuple(
+        sorted(
+            validated,
+            key=lambda item: (
+                item.cutoff_time_ns,
+                _FLIP_KIND_ORDER[item.kind],
+                item.alpha_id,
+                item.base_flip_id,
+            ),
+        )
+    )
+
+
+def _perturbation_signature(flip: TimeSpaceFlipObservation) -> tuple[FlipKind, str, int, int]:
+    return (flip.kind, flip.alpha_id, flip.old_side, flip.new_side)
+
+
+def _perturbation_signature_order(signature: tuple[FlipKind, str, int, int]) -> tuple[int, str, int, int]:
+    kind, alpha_id, old_side, new_side = signature
+    return (_FLIP_KIND_ORDER[kind], alpha_id, old_side, new_side)
+
+
+def _validate_acceptance_manifest(manifest: TimeSpaceAcceptanceManifest) -> None:
+    _require_sha256(manifest.manifest_id, "manifest_id")
+    if manifest.hypothesis_sha256 != TIME_SPACE_HYPOTHESIS_SHA256:
+        raise ValueError("manifest is not bound to the frozen TimeSpace hypothesis")
+    flips = _validated_unique_flips(manifest.primary_flips, name="manifest")
+    if tuple(manifest.primary_flips) != flips:
+        raise ValueError("manifest primary_flips must use canonical order")
+    seeds = tuple(path.seed for path in manifest.perturbation_paths)
+    if seeds != _FROZEN_PERTURBATION_SEEDS:
+        raise ValueError("manifest must contain exactly the five frozen perturbation paths")
+    for path in manifest.perturbation_paths:
+        _validated_unique_flips(path.flips, name=f"seed {path.seed}")
+        _validate_label_collection(path.labels, name=f"seed {path.seed}")
+
+
+def _validate_label_collection(labels: Sequence[TimeSpaceLabel], *, name: str) -> None:
+    if type(labels) is not tuple:
+        raise TypeError(f"{name} labels must be an exact tuple")
+    seen: set[tuple[str, int]] = set()
+    for label in labels:
+        if type(label) is not TimeSpaceLabel:
+            raise TypeError(f"{name} labels must contain TimeSpaceLabel rows")
+        key = (label.base_flip_id, label.horizon_bars)
+        if key in seen:
+            raise ValueError(f"{name} labels must be unique by flip and horizon")
+        seen.add(key)
+        if not label.right_censored:
+            expected = label.hold_old_unit_return - label.flip_unit_return
+            if not math.isclose(
+                label.hold_old_unit_return,
+                -label.flip_unit_return,
+                rel_tol=_RETURN_REL_TOLERANCE,
+                abs_tol=_RETURN_ABS_TOLERANCE,
+            ):
+                raise ValueError(f"{name} label violates fixed-1x symmetry")
+            if not math.isclose(
+                label.hold_minus_flip,
+                expected,
+                rel_tol=_RETURN_REL_TOLERANCE,
+                abs_tol=_RETURN_ABS_TOLERANCE,
+            ):
+                raise ValueError(f"{name} label counterfactual arithmetic is inconsistent")
+
+
+def _mature_primary_labels(
+    labels: Sequence[TimeSpaceLabel],
+    *,
+    flip_by_id: dict[str, TimeSpaceFlipObservation],
+    start_ns: int,
+    end_ns: int,
+) -> tuple[tuple[TimeSpaceFlipObservation, TimeSpaceLabel], ...]:
+    label_tuple = tuple(labels)
+    _validate_label_collection(label_tuple, name="acceptance")
+    selected: list[tuple[TimeSpaceFlipObservation, TimeSpaceLabel]] = []
+    for label in label_tuple:
+        flip = flip_by_id.get(label.base_flip_id)
+        if (
+            flip is not None
+            and label.horizon_bars == 6
+            and not label.right_censored
+            and label.label_available_at_ns is not None
+            and label.label_available_at_ns < flip.cutoff_time_ns + 6 * FOUR_HOURS_NS
+        ):
+            raise ValueError("horizon-six label cannot mature before six 4h bars")
+        if (
+            flip is None
+            or label.horizon_bars != 6
+            or label.right_censored
+            or label.label_available_at_ns is None
+            or label.label_available_at_ns < start_ns
+            or label.label_available_at_ns >= end_ns
+        ):
+            continue
+        selected.append((flip, label))
+    selected.sort(key=lambda item: (item[0].cutoff_time_ns, item[0].base_flip_id))
+    return tuple(selected)
+
+
+def _manifest_bootstrap_seed(manifest_id: str) -> int:
+    digest = hashlib.sha256(f"time-space-month-block:{manifest_id}".encode()).digest()
+    return int.from_bytes(digest[:8], byteorder="big", signed=False)
+
+
+def _one_sided_lower_rank_index(sample_count: int) -> int:
+    """Return the zero-based nearest-rank index for the frozen 5% lower tail."""
+
+    _require_exact_int(sample_count, "sample_count")
+    if sample_count <= 0:
+        raise ValueError("sample_count must be positive")
+    rank = (5 * sample_count + 100 - 1) // 100
+    return rank - 1
+
+
+def _month_block_lower_bound(
+    labels: tuple[tuple[TimeSpaceFlipObservation, TimeSpaceLabel], ...],
+    *,
+    flip_by_id: dict[str, TimeSpaceFlipObservation],
+    seed: int,
+) -> float | None:
+    if not labels:
+        return None
+    values_by_month: dict[str, list[float]] = {}
+    for flip, label in labels:
+        if flip_by_id.get(label.base_flip_id) != flip:
+            raise ValueError("bootstrap label is not bound to a primary flip")
+        month = datetime.fromtimestamp(flip.cutoff_time_ns // 1_000_000_000, tz=UTC).strftime("%Y-%m")
+        values_by_month.setdefault(month, []).append(float(label.hold_minus_flip))
+    blocks = tuple(tuple(values_by_month[month]) for month in sorted(values_by_month))
+    rng = random.Random(seed)
+    statistics: list[float] = []
+    for _ in range(_BOOTSTRAP_REPLICATIONS):
+        sample: list[float] = []
+        for _ in blocks:
+            sample.extend(blocks[rng.randrange(len(blocks))])
+        statistics.append(fmean(sample))
+    statistics.sort()
+    lower_index = _one_sided_lower_rank_index(len(statistics))
+    return float(statistics[lower_index])
+
+
+def _flip_logical_key(flip: TimeSpaceFlipObservation) -> tuple[FlipKind, str, int, str]:
+    return (flip.kind, flip.alpha_id, flip.cutoff_time_ns, flip.state_id)
+
+
+def _visible_population_prefix(
+    rows: Sequence[FlipPopulationInputRow],
+    visible_count: int,
+    kind: FlipKind,
+) -> tuple[FlipPopulationInputRow, ...]:
+    if len(rows) < visible_count:
+        raise ValueError(f"{kind.value} provenance must cover every visible close")
+    return tuple(rows[index] for index in range(visible_count))
+
+
+def _validate_as_of(as_of_ns: object) -> None:
+    _require_exact_int(as_of_ns, "as_of_ns")
+    if as_of_ns < 0 or as_of_ns % FOUR_HOURS_NS:
+        raise ValueError("as_of_ns must be a non-negative canonical UTC 4h cutoff")
+
+
+def _validate_label_close_rows(
+    closes: Sequence[TimeSpaceState],
+    *,
+    as_of_ns: int,
+) -> tuple[TimeSpaceState, ...]:
+    validated: list[TimeSpaceState] = []
+    previous_cutoff: int | None = None
+    future_boundary_seen = False
+    for state in closes:
+        if type(state) is not TimeSpaceState:
+            raise TypeError("closes must contain TimeSpaceState rows")
+        _require_exact_int(state.cutoff_time_ns, "close cutoff_time_ns")
+        if future_boundary_seen:
+            if state.cutoff_time_ns <= as_of_ns:
+                raise ValueError("close rows cannot contain an interleaved visible row")
+            continue
+        if state.cutoff_time_ns > as_of_ns:
+            future_boundary_seen = True
+            continue
+        prior_cutoff = previous_cutoff
+        if state.cutoff_time_ns % FOUR_HOURS_NS:
+            raise ValueError("close cutoff_time_ns must use the canonical UTC 4h grid")
+        if prior_cutoff is not None and state.cutoff_time_ns <= prior_cutoff:
+            raise ValueError("close cutoff_time_ns values must be strictly increasing")
+        previous_cutoff = state.cutoff_time_ns
+        _validate_label_state_descriptor(state)
+        expected_gap_bars = 0 if prior_cutoff is None else (state.cutoff_time_ns - prior_cutoff) // FOUR_HOURS_NS - 1
+        if state.source_gap_bars != expected_gap_bars:
+            raise ValueError("close source_gap_bars must match visible cutoff spacing")
+        validated.append(state)
+    return tuple(validated)
+
+
+def _validate_label_state_descriptor(state: TimeSpaceState) -> None:
+    _require_non_empty_str(state.alpha_id, "close alpha_id")
+    _require_exact_int(state.feature_available_at_ns, "close feature_available_at_ns")
+    if state.feature_available_at_ns != state.cutoff_time_ns:
+        raise ValueError("close feature availability must equal its cutoff")
+    if type(state.close) is not float:
+        raise TypeError("close must be an exact float")
+    _canonical_price(state.close, "close")
+    for name in ("formula_hash", "config_hash", "source_data_hash"):
+        _require_non_empty_str(getattr(state, name), f"close {name}")
+    if type(state.market_structure_side) is not int or state.market_structure_side not in (-1, 0, 1):
+        raise ValueError("close market_structure_side must be an exact sign")
+    for name in (
+        "visible_long_boundary",
+        "visible_short_boundary",
+        "long_invalidation_boundary",
+        "short_invalidation_boundary",
+    ):
+        value = getattr(state, name)
+        if value is not None:
+            if type(value) is not float:
+                raise TypeError(f"close {name} must be an exact float")
+            _canonical_price(value, f"close {name}")
+    for bars_name, ns_name in (
+        ("trend_age_bars", "trend_age_ns"),
+        ("long_breakout_age_bars", "long_breakout_age_ns"),
+        ("short_breakout_age_bars", "short_breakout_age_ns"),
+    ):
+        bars = getattr(state, bars_name)
+        elapsed_ns = getattr(state, ns_name)
+        if (bars is None) != (elapsed_ns is None):
+            raise ValueError(f"close {bars_name} and {ns_name} must share availability")
+        if bars is not None:
+            _require_exact_int(bars, f"close {bars_name}")
+            _require_exact_int(elapsed_ns, f"close {ns_name}")
+            if bars < 0 or elapsed_ns < 0 or elapsed_ns % FOUR_HOURS_NS:
+                raise ValueError(f"close {bars_name} and {ns_name} must be non-negative 4h ages")
+    _require_exact_int(state.utc_week_start_ns, "close utc_week_start_ns")
+    expected_week_start = _utc_week_start(state.cutoff_time_ns - FOUR_HOURS_NS)
+    if state.utc_week_start_ns != expected_week_start:
+        raise ValueError("close utc_week_start_ns is inconsistent with cutoff")
+    if type(state.weekly_completion_fraction) is not float or not math.isfinite(state.weekly_completion_fraction):
+        raise TypeError("close weekly_completion_fraction must be a finite float")
+    expected_completion = min(
+        1.0,
+        max(0.0, (state.cutoff_time_ns - expected_week_start) / _WEEK_NS),
+    )
+    if state.weekly_completion_fraction != expected_completion:
+        raise ValueError("close weekly_completion_fraction is inconsistent with cutoff")
+    if type(state.long_structure_integrity) is not StructureIntegrity:
+        raise TypeError("close long_structure_integrity must be a StructureIntegrity")
+    if type(state.short_structure_integrity) is not StructureIntegrity:
+        raise TypeError("close short_structure_integrity must be a StructureIntegrity")
+    _require_exact_int(state.source_gap_bars, "close source_gap_bars")
+    if state.source_gap_bars < 0:
+        raise ValueError("close source_gap_bars must be non-negative")
+    expected_flags = ("SOURCE_GAP",) if state.source_gap_bars else ()
+    if type(state.quality_flags) is not tuple or state.quality_flags != expected_flags:
+        raise ValueError("close quality_flags must match source_gap_bars")
+    if state.blocks_order is not False:
+        raise ValueError("time-space close state cannot block orders")
+    if type(state.decision_id_by_stage) is not tuple:
+        raise TypeError("close decision_id_by_stage must be an exact tuple")
+    for item in state.decision_id_by_stage:
+        if type(item) is not tuple or len(item) != 2:
+            raise TypeError("close decision stage entries must be exact pairs")
+        stage, decision_id = item
+        _require_non_empty_str(stage, "close decision stage")
+        _require_non_empty_str(decision_id, "close decision identity")
+    if state.decision_id_by_stage != tuple(sorted(state.decision_id_by_stage)):
+        raise ValueError("close decision stages must be canonically ordered")
+    if len({stage for stage, _ in state.decision_id_by_stage}) != len(state.decision_id_by_stage):
+        raise ValueError("close decision stages must be unique")
+
+    _require_non_empty_str(state.state_id, "close state_id")
+    expected_state_id = _canonical_id(
+        {
+            item.name: getattr(state, item.name)
+            for item in fields(TimeSpaceState)
+            if item.name not in {"state_id", "blocks_order"}
+        }
+    )
+    if state.state_id != expected_state_id:
+        raise ValueError("close state identity is not canonical")
+
+
+def _validate_flip_stage_identity(
+    *,
+    flip: TimeSpaceFlipObservation,
+    anchor_index: int,
+    closes: tuple[TimeSpaceState, ...],
+) -> None:
+    stage = {
+        FlipKind.ALPHA: "A1_SIGN",
+        FlipKind.APPROVED: "A5_SHADOW",
+        FlipKind.FILLED: FILLED_POSITION_STAGE,
+    }[flip.kind]
+    if anchor_index == 0:
+        raise ValueError(f"flip has no prior retained state for {stage}")
+    current_identity = dict(closes[anchor_index].decision_id_by_stage).get(stage)
+    prior_identity = dict(closes[anchor_index - 1].decision_id_by_stage).get(stage)
+    if current_identity is None or flip.source_identity != current_identity:
+        raise ValueError(f"flip source_identity must match anchor {stage} identity")
+    if prior_identity is None or flip.prior_source_identity != prior_identity:
+        raise ValueError(f"flip prior_source_identity must match prior {stage} identity")
+
+
+def _validate_label_flip(flip: object) -> None:
+    if type(flip) is not TimeSpaceFlipObservation:
+        raise TypeError("flips must contain TimeSpaceFlipObservation rows")
+    if type(flip.kind) is not FlipKind:
+        raise TypeError("flip kind must be a FlipKind")
+    _require_non_empty_str(flip.alpha_id, "flip alpha_id")
+    _require_exact_int(flip.cutoff_time_ns, "flip cutoff_time_ns")
+    if flip.cutoff_time_ns % FOUR_HOURS_NS:
+        raise ValueError("flip cutoff_time_ns must use the canonical UTC 4h grid")
+    if (
+        type(flip.old_side) is not int
+        or type(flip.new_side) is not int
+        or flip.old_side not in (-1, 1)
+        or flip.new_side != -flip.old_side
+    ):
+        raise ValueError("flip old_side and new_side must be opposite exact signs")
+    for name in ("state_id", "prior_source_identity", "source_identity"):
+        _require_non_empty_str(getattr(flip, name), f"flip {name}")
+    if type(flip.primary_population) is not bool:
+        raise TypeError("flip primary_population must be an exact bool")
+    expected_id = _canonical_id(
+        {
+            "kind": flip.kind.value,
+            "alpha_id": flip.alpha_id,
+            "cutoff_time_ns": flip.cutoff_time_ns,
+            "old_side": flip.old_side,
+            "new_side": flip.new_side,
+            "state_id": flip.state_id,
+            "prior_source_identity": flip.prior_source_identity,
+            "source_identity": flip.source_identity,
+        }
+    )
+    if flip.base_flip_id != expected_id:
+        raise ValueError("flip must bind its canonical base_flip_id")
+
+
+def _join_population_rows(
+    *,
+    states: Sequence[TimeSpaceState],
+    rows: Sequence[FlipPopulationInputRow],
+    kind: FlipKind,
+) -> tuple[tuple[FlipPopulationInputRow, int], ...]:
+    if len(rows) != len(states):
+        raise ValueError(f"{kind.value} rows must exactly join every state")
+
+    joined: list[tuple[FlipPopulationInputRow, int]] = []
+    seen_keys: set[tuple[str, int]] = set()
+    seen_identities: set[str] = set()
+    required_stage = {
+        FlipKind.ALPHA: "A1_SIGN",
+        FlipKind.APPROVED: "A5_SHADOW",
+        FlipKind.FILLED: FILLED_POSITION_STAGE,
+    }[kind]
+    for state, row in zip(states, rows, strict=True):
+        key = (row.alpha_id, row.cutoff_time_ns)
+        state_key = (state.alpha_id, state.cutoff_time_ns)
+        if row.kind is not kind or key != state_key or key in seen_keys:
+            raise ValueError(f"{kind.value} rows must exactly join state identity and order")
+        if row.source_identity in seen_identities:
+            raise ValueError(f"{kind.value} rows must exactly join unique source identities")
+        decision_by_stage = dict(state.decision_id_by_stage)
+        if decision_by_stage.get(required_stage) != row.source_identity:
+            raise ValueError(f"{kind.value} rows must exactly join {required_stage} identity")
+        joined.append((row, _population_side(row.value, kind)))
+        seen_keys.add(key)
+        seen_identities.add(row.source_identity)
+    return tuple(joined)
+
+
+def _population_side(value: object, kind: FlipKind) -> int:
+    if kind is FlipKind.ALPHA:
+        if type(value) is not int or value not in (-1, 0, 1):
+            raise ValueError("alpha_signs must contain exact ints in {-1, 0, 1}")
+        return value
+    if type(value) not in (int, float):
+        raise TypeError(f"{kind.value} values must be finite numbers")
+    try:
+        numeric = float(value)
+    except OverflowError as error:
+        raise ValueError(f"{kind.value} values must be finite numbers") from error
+    if not math.isfinite(numeric):
+        raise ValueError(f"{kind.value} values must be finite numbers")
+    return (numeric > 0) - (numeric < 0)
+
+
+def _is_primary_alpha_flip(
+    *,
+    state: TimeSpaceState,
+    old_side: int,
+    state_by_cutoff: dict[int, TimeSpaceState],
+) -> bool:
+    if state.source_gap_bars != 0:
+        return False
+    if old_side == 1:
+        breakout_age_ns = state.long_breakout_age_ns
+        integrity = state.long_structure_integrity
+    else:
+        breakout_age_ns = state.short_breakout_age_ns
+        integrity = state.short_structure_integrity
+    if breakout_age_ns is None or integrity is not StructureIntegrity.INTACT:
+        return False
+    breakout_state = state_by_cutoff.get(state.cutoff_time_ns - breakout_age_ns)
+    return breakout_state is not None and breakout_state.utc_week_start_ns == state.utc_week_start_ns
+
+
+def _require_exact_int(value: object, name: str) -> None:
+    if type(value) is not int:
+        raise TypeError(f"{name} must be an exact int")
+
+
+def _require_non_empty_str(value: object, name: str) -> None:
+    if type(value) is not str or not value:
+        raise TypeError(f"{name} must be a non-empty str")
+
+
+def _require_sha256(value: object, name: str) -> None:
+    if type(value) is not str or len(value) != 64 or any(character not in "0123456789abcdef" for character in value):
+        raise ValueError(f"{name} must be a lowercase 64-character SHA-256")
+
+
+def _canonical_price(value: object, name: str) -> float:
+    if type(value) not in (int, float):
+        raise TypeError(f"{name} must be a positive finite number")
+    try:
+        canonical = float(value)
+    except OverflowError as error:
+        raise ValueError(f"{name} must be a positive finite number") from error
+    if not math.isfinite(canonical) or canonical <= 0:
+        raise ValueError(f"{name} must be a positive finite number")
+    return canonical
+
+
+def _source_gap_bars(previous: TimeSpaceInputRow | None, current: TimeSpaceInputRow) -> int:
+    if previous is None:
+        return 0
+    delta = current.cutoff_time_ns - previous.cutoff_time_ns
+    if delta <= 0:
+        raise ValueError("cutoff_time_ns values must be strictly increasing")
+    if delta % FOUR_HOURS_NS:
+        raise ValueError("cutoff_time_ns values must remain on one 4h grid")
+    return delta // FOUR_HOURS_NS - 1
+
+
+def _crossed_long_boundary(
+    previous: TimeSpaceInputRow | None,
+    current: TimeSpaceInputRow,
+    boundary: float | None,
+    source_gap_bars: int,
+) -> bool:
+    return bool(
+        previous is not None
+        and not source_gap_bars
+        and boundary is not None
+        and previous.close <= boundary < current.close
+    )
+
+
+def _crossed_short_boundary(
+    previous: TimeSpaceInputRow | None,
+    current: TimeSpaceInputRow,
+    boundary: float | None,
+    source_gap_bars: int,
+) -> bool:
+    return bool(
+        previous is not None
+        and not source_gap_bars
+        and boundary is not None
+        and previous.close >= boundary > current.close
+    )
+
+
+def _crossed_long_invalidation(row: TimeSpaceInputRow) -> bool:
+    return row.prior_long_invalidation is not None and row.close <= row.prior_long_invalidation
+
+
+def _crossed_short_invalidation(row: TimeSpaceInputRow) -> bool:
+    return row.prior_short_invalidation is not None and row.close >= row.prior_short_invalidation
+
+
+def _age_bars(started_index: int | None, retained_index: int) -> int | None:
+    return None if started_index is None else retained_index - started_index
+
+
+def _age_ns(started_at_ns: int | None, cutoff_time_ns: int) -> int | None:
+    return None if started_at_ns is None else cutoff_time_ns - started_at_ns
+
+
+def _breakout_age_bars(breakout: _Breakout | None, retained_index: int) -> int | None:
+    return None if breakout is None else retained_index - breakout.retained_index
+
+
+def _breakout_age_ns(breakout: _Breakout | None, cutoff_time_ns: int) -> int | None:
+    return None if breakout is None else cutoff_time_ns - breakout.cutoff_time_ns
+
+
+def _integrity(
+    *,
+    breakout: _Breakout | None,
+    broken: bool,
+    structure_side: int,
+    expected_side: int,
+    invalidation: float | None,
+) -> StructureIntegrity:
+    if broken:
+        return StructureIntegrity.BROKEN
+    if breakout is None or structure_side == 0 or invalidation is None:
+        return StructureIntegrity.UNKNOWN
+    if structure_side == expected_side:
+        return StructureIntegrity.INTACT
+    return StructureIntegrity.BROKEN
+
+
+def _utc_week_start(interval_start_ns: int) -> int:
+    return _MONDAY_EPOCH_NS + ((interval_start_ns - _MONDAY_EPOCH_NS) // _WEEK_NS) * _WEEK_NS
+
+
+def _state_id(values: dict[str, object]) -> str:
+    return _canonical_id(values)
+
+
+def _canonical_id(values: dict[str, object]) -> str:
+    payload = {key: value.value if isinstance(value, StrEnum) else value for key, value in values.items()}
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode()
+    return hashlib.sha256(encoded).hexdigest()
+
+
+__all__ = [
+    "FILLED_POSITION_STAGE",
+    "FOUR_HOURS_NS",
+    "TIME_SPACE_HYPOTHESIS_SHA256",
+    "AcceptanceStatus",
+    "FlipKind",
+    "FlipPopulationInputRow",
+    "PerturbationPathEvidence",
+    "PerturbedFlipMapping",
+    "StructureIntegrity",
+    "TimeSpaceAcceptance",
+    "TimeSpaceAcceptanceManifest",
+    "TimeSpaceFlipObservation",
+    "TimeSpaceInputRow",
+    "TimeSpaceLabel",
+    "TimeSpaceState",
+    "build_flip_observations",
+    "build_time_space_states",
+    "evaluate_time_space_shadow",
+    "map_perturbed_flips",
+    "mature_flip_labels",
+]

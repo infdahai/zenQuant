@@ -1,0 +1,361 @@
+"""Frozen, adjacent-parameter diagnostics; never a parameter optimizer.
+
+Each search dimension changes by one declared numeric grid step. Evaluation
+uses every frozen neighbor and the real runner's immutable identity, preserving
+economic observations even when missing engineering evidence blocks admission.
+"""
+
+from __future__ import annotations
+
+import json
+import math
+from collections.abc import Mapping, Sequence
+from itertools import pairwise
+from typing import Any
+
+from zenquant.research.run_evidence import identity_hash
+
+VERSION = "research-parameter-neighborhood.v1"
+ENGINEERING = tuple(f"E{i}" for i in range(5))
+STATUSES = {"PASS", "FAIL", "INVALID", "STALE", "NOT_RUN", "NOT_EVALUABLE", "NOT_APPLICABLE"}
+COMPARISON_FIELDS = ("symbol", "window", "data_hash", "accounting_hash", "execution", "cost", "risk_budget")
+
+
+class _Issue(ValueError):
+    def __init__(self, status: str, path: str, reason: str) -> None:
+        super().__init__(f"{path}: {reason}")
+        self.status, self.path, self.reason = status, path, reason
+
+    def detail(self) -> dict[str, str]:
+        return {"status": self.status, "path": self.path, "reason": self.reason}
+
+
+def _result(status: str, **fields: Any) -> dict[str, Any]:
+    return {
+        "schema_version": VERSION,
+        "status": status,
+        "scope": "parameter_neighborhood_dimension_only",
+        "missing": [],
+        "blockers": [],
+        "promotion_ready": False,
+        "diagnostic_only": status != "PASS",
+        **fields,
+        "live_eligible": False,
+    }
+
+
+def _mapping(value: Any, path: str, *, nonempty: bool = False) -> dict[str, Any]:
+    if value is None or (nonempty and value == {}):
+        raise _Issue("NOT_EVALUABLE", path, "MISSING_EVIDENCE")
+    if not isinstance(value, Mapping):
+        raise _Issue("INVALID", path, "EXPECTED_OBJECT")
+    try:
+        identity_hash(value)
+        return json.loads(json.dumps(value, allow_nan=False))
+    except (ValueError, TypeError, OverflowError) as exc:
+        raise _Issue("INVALID", path, "NONFINITE_OR_NON_JSON_EVIDENCE") from exc
+
+
+def _sequence(value: Any, path: str) -> list[Any]:
+    if value is None:
+        raise _Issue("NOT_EVALUABLE", path, "MISSING_EVIDENCE")
+    if not isinstance(value, Sequence) or isinstance(value, (str, bytes)):
+        raise _Issue("INVALID", path, "EXPECTED_SEQUENCE")
+    return list(value)
+
+
+def _number(value: Any, path: str) -> float:
+    if value is None:
+        raise _Issue("NOT_EVALUABLE", path, "MISSING_METRIC_VALUE")
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise _Issue("INVALID", path, "EXPECTED_FINITE_NUMBER")
+    try:
+        number = float(value)
+    except OverflowError as exc:
+        raise _Issue("INVALID", path, "NONFINITE_NUMBER") from exc
+    if not math.isfinite(number):
+        raise _Issue("INVALID", path, "NONFINITE_NUMBER")
+    return number
+
+
+def build_neighbors(params: Mapping[str, Any], search_space: Mapping[str, Sequence[Any]]) -> dict[str, Any]:
+    """Freeze numeric one-step neighbors and explicit one/two-sided boundaries.
+
+    Numeric grids must be strictly increasing and contain the exact center.
+    Parameters outside the search space stay fixed. Invalid inputs raise
+    ValueError; no rounding, sorting, pruning, or parameter update occurs.
+    """
+    center = _mapping(params, "params", nonempty=True)
+    space = _mapping(search_space, "search_space")
+    neighbors, boundaries = [], []
+    for name in sorted(space):
+        if name not in center:
+            raise _Issue("INVALID", f"search_space.{name}", "PARAMETER_NOT_IN_CENTER")
+        choices = _sequence(space[name], f"search_space.{name}")
+        numeric = [_number(value, f"search_space.{name}") for value in choices]
+        if not numeric or any(right <= left for left, right in pairwise(numeric)):
+            raise _Issue("INVALID", f"search_space.{name}", "GRID_MUST_BE_NONEMPTY_STRICTLY_INCREASING")
+        value = _number(center[name], f"params.{name}")
+        if value not in numeric:
+            raise _Issue("INVALID", f"params.{name}", "CENTER_NOT_EXACT_GRID_MEMBER")
+        position = numeric.index(value)
+        absent = []
+        for direction, adjacent in (("lower", position - 1), ("upper", position + 1)):
+            if not 0 <= adjacent < len(choices):
+                absent.append(direction)
+                continue
+            changed = {**center, name: choices[adjacent]}
+            neighbors.append(
+                {"neighbor_id": f"{name}:{direction}", "parameter": name, "direction": direction, "params": changed}
+            )
+        if absent:
+            boundaries.append({"parameter": name, "missing_directions": absent})
+    design = {
+        "schema_version": VERSION,
+        "center_params": center,
+        "search_space": space,
+        "neighbors": neighbors,
+        "boundaries": boundaries,
+        "min_pass_fraction": 0.8,
+        "min_net_return": 0.0,
+        "max_drawdown": 0.15,
+        "policy_basis": "design_v1",
+    }
+    return {**design, "design_hash": identity_hash(design)}
+
+
+def _design(value: Any) -> dict[str, Any]:
+    design = _mapping(value, "design", nonempty=True)
+    rebuilt = build_neighbors(design.get("center_params"), design.get("search_space"))
+    for key, expected in rebuilt.items():
+        if identity_hash({"value": design.get(key)}) != identity_hash({"value": expected}):
+            raise _Issue("INVALID", f"design.{key}", "FROZEN_DESIGN_MISMATCH")
+    return design
+
+
+def _report_identity(report: Mapping[str, Any], path: str) -> tuple[dict[str, Any], dict[str, Any]]:
+    identity = _mapping(report.get("identity"), f"{path}.identity", nonempty=True)
+    identifier = identity.get("candidate_id")
+    if not isinstance(identifier, str) or not identifier:
+        raise _Issue("NOT_EVALUABLE", f"{path}.identity.candidate_id", "MISSING_CANDIDATE_ID")
+    candidate = _mapping(identity.get("candidate"), f"{path}.identity.candidate", nonempty=True)
+    params = _mapping(candidate.get("params"), f"{path}.identity.candidate.params", nonempty=True)
+    if identity_hash(candidate) != identifier:
+        raise _Issue("INVALID", f"{path}.identity.candidate_id", "CANDIDATE_HASH_MISMATCH")
+    if (
+        "run_id" in identity
+        and identity_hash({key: value for key, value in identity.items() if key != "run_id"}) != identity["run_id"]
+    ):
+        raise _Issue("INVALID", f"{path}.identity.run_id", "RUN_IDENTITY_HASH_MISMATCH")
+    return identity, params
+
+
+def _comparison(report: Mapping[str, Any], path: str) -> dict[str, Any]:
+    contract = _mapping(report.get("comparison_contract"), f"{path}.comparison_contract", nonempty=True)
+    for field in COMPARISON_FIELDS:
+        if contract.get(field) in (None, "", {}, []):
+            raise _Issue("NOT_EVALUABLE", f"{path}.comparison_contract.{field}", "MISSING_COMPARISON_CONDITION")
+    return contract
+
+
+def _status(value: Mapping[str, Any], path: str) -> str:
+    status = value.get("status", "NOT_EVALUABLE")
+    if not isinstance(status, str) or status not in STATUSES:
+        raise _Issue("INVALID", path, "INVALID_STATUS")
+    return status
+
+
+def _screen_failure(item: Mapping[str, Any]) -> bool:
+    return (
+        item.get("status") == "FAIL"
+        and "scope" not in item
+        and (
+            (item.get("gate") == "R0" and item.get("reason") == "FROZEN_NET_RETURN_SCREEN")
+            or (item.get("gate") == "R2" and item.get("reason") == "FROZEN_SAMPLED_DRAWDOWN_SCREEN")
+        )
+    )
+
+
+def _safety(report: Mapping[str, Any], path: str, *, center: bool) -> list[dict[str, Any]]:
+    problems = []
+    if "status" in report:
+        status = _status(report, f"{path}.status")
+        if status in {"FAIL", "INVALID", "STALE"}:
+            problems.append({"status": status, "path": f"{path}.status", "reason": "EXPLICIT_REPORT_BLOCKER"})
+    gates = _mapping(report.get("gates", {}), f"{path}.gates")
+    for name in sorted(set(gates) | set(ENGINEERING)):
+        gate = _mapping(gates.get(name, {}), f"{path}.gates.{name}")
+        status = _status(gate, f"{path}.gates.{name}")
+        item = {"gate": name, **gate, "status": status, "path": f"{path}.gates.{name}"}
+        if status in {"FAIL", "INVALID", "STALE"}:
+            if center or not _screen_failure(item):
+                problems.append(item)
+        elif name in ENGINEERING and status != "PASS":
+            problems.append({**item, "status": "NOT_EVALUABLE", "reason": "MISSING_ENGINEERING_EVIDENCE"})
+    for index, raw in enumerate(_sequence(report.get("blockers", []), f"{path}.blockers")):
+        blocker = _mapping(raw, f"{path}.blockers[{index}]")
+        status = _status(blocker, f"{path}.blockers[{index}]")
+        if status in {"FAIL", "INVALID", "STALE"} and (center or not _screen_failure(blocker)):
+            problems.append({"path": f"{path}.blockers[{index}]", **blocker})
+        elif status != "PASS" and (blocker.get("gate") in ENGINEERING or blocker.get("scope") == "global"):
+            problems.append({"path": f"{path}.blockers[{index}]", **blocker, "status": "NOT_EVALUABLE"})
+    ruin = _mapping(report.get("ruin", {}), f"{path}.ruin")
+    if not isinstance(ruin.get("occurred", False), bool):
+        raise _Issue("INVALID", f"{path}.ruin", "INVALID_RUIN_FLAG")
+    if ruin.get("occurred") is True:
+        problems.append({"status": "FAIL", "path": f"{path}.ruin", "reason": "RUIN"})
+    return problems
+
+
+def _measures(report: Mapping[str, Any], path: str) -> tuple[float, float]:
+    metrics = _mapping(report.get("metrics"), f"{path}.metrics")
+    values = []
+    for name in ("net_return", "max_drawdown"):
+        metric = _mapping(metrics.get(name), f"{path}.metrics.{name}")
+        status = _status(metric, f"{path}.metrics.{name}")
+        if status != "PASS":
+            raise _Issue(
+                status if status in {"INVALID", "STALE"} else "NOT_EVALUABLE",
+                f"{path}.metrics.{name}",
+                "METRIC_NOT_EVALUABLE",
+            )
+        values.append(_number(metric.get("value"), f"{path}.metrics.{name}.value"))
+    if values[1] < 0.0:
+        raise _Issue("INVALID", f"{path}.metrics.max_drawdown", "NEGATIVE_DRAWDOWN")
+    return values[0], values[1]
+
+
+def evaluate_neighbors(
+    center_report: Mapping[str, Any], neighbor_cases: Sequence[Mapping[str, Any]], design: Mapping[str, Any]
+) -> dict[str, Any]:
+    """Evaluate every frozen neighbor without selecting a favorable subset.
+
+    Cases carry neighbor_id and center_candidate_id separately from immutable
+    report identity. Reports use research_runner's identity.candidate.params;
+    candidate/run hashes are verified without modifying the original objects.
+    source_completed=True is required; explicit case status must be completed.
+    PASS/promotion_ready apply only to this dimension, never overall rankability.
+    """
+    try:
+        frozen = _design(design)
+        center = _mapping(center_report, "center_report")
+        identity, params = _report_identity(center, "center_report")
+        if identity_hash(params) != identity_hash(frozen["center_params"]):
+            raise _Issue("INVALID", "center_report.identity.candidate.params", "CENTER_PARAMS_MISMATCH")
+        if "center_candidate_id" in frozen and frozen["center_candidate_id"] != identity["candidate_id"]:
+            raise _Issue("INVALID", "design.center_candidate_id", "CENTER_IDENTITY_MISMATCH")
+        if "center_identity" in frozen and identity_hash(
+            _mapping(frozen["center_identity"], "design.center_identity")
+        ) != identity_hash(identity):
+            raise _Issue("INVALID", "design.center_identity", "CENTER_IDENTITY_MISMATCH")
+        contract = _comparison(center, "center_report")
+        center_context = {key: value for key, value in identity["candidate"].items() if key != "params"}
+        problems = _safety(center, "center_report", center=True)
+        if center.get("source_completed") is not True:
+            problems.append(
+                {"status": "NOT_EVALUABLE", "path": "center_report.source_completed", "reason": "CENTER_NOT_COMPLETED"}
+            )
+        center_net, center_dd = _measures(center, "center_report")
+        if center_net <= 0.0 or center_dd > 0.15:
+            problems.append(
+                {"status": "FAIL", "path": "center_report.metrics", "reason": "CENTER_ECONOMIC_SCREEN_FAILED"}
+            )
+        if center_net <= -1.0 or center_dd >= 1.0:
+            problems.append({"status": "FAIL", "path": "center_report.metrics", "reason": "RUIN"})
+        required = {item["neighbor_id"]: item for item in frozen["neighbors"]}
+        supplied = {}
+        for index, raw in enumerate(_sequence(neighbor_cases, "neighbor_cases")):
+            row = _mapping(raw, f"neighbor_cases[{index}]")
+            identifier = row.get("neighbor_id")
+            if not isinstance(identifier, str) or identifier not in required:
+                raise _Issue("INVALID", f"neighbor_cases[{index}].neighbor_id", "UNEXPECTED_NEIGHBOR")
+            if identifier in supplied:
+                raise _Issue("INVALID", f"neighbor_cases[{index}].neighbor_id", "DUPLICATE_NEIGHBOR")
+            supplied[identifier] = row
+        observations, completed, seen_candidates = [], 0, set()
+        for identifier, expected in required.items():
+            path = f"neighbor({identifier})"
+            item = {
+                "neighbor_id": identifier,
+                "parameter": expected["parameter"],
+                "direction": expected["direction"],
+                "net_return": None,
+                "max_drawdown": None,
+                "net_return_difference": None,
+                "economic_screen_passed": False,
+            }
+            try:
+                if identifier not in supplied:
+                    raise _Issue("NOT_EVALUABLE", path, "MISSING_REQUIRED_NEIGHBOR")
+                case = supplied[identifier]
+                if case.get("center_candidate_id") != identity["candidate_id"]:
+                    raise _Issue("INVALID", f"{path}.center_candidate_id", "MIXED_CENTER_CANDIDATES")
+                if "params" in case and identity_hash(_mapping(case["params"], f"{path}.params")) != identity_hash(
+                    expected["params"]
+                ):
+                    raise _Issue("INVALID", f"{path}.params", "CASE_PARAMS_MISMATCH")
+                if case.get("status", "completed") != "completed":
+                    raise _Issue("NOT_EVALUABLE", f"{path}.status", "NEIGHBOR_NOT_COMPLETED")
+                report = _mapping(case.get("report"), f"{path}.report")
+                actual, actual_params = _report_identity(report, path)
+                if actual["candidate_id"] in seen_candidates or actual["candidate_id"] == identity["candidate_id"]:
+                    raise _Issue("INVALID", f"{path}.identity.candidate_id", "DUPLICATE_OR_CENTER_CANDIDATE")
+                seen_candidates.add(actual["candidate_id"])
+                if identity_hash(actual_params) != identity_hash(expected["params"]):
+                    raise _Issue("INVALID", f"{path}.identity.candidate.params", "ACTUAL_PARAMS_MISMATCH")
+                actual_context = {key: value for key, value in actual["candidate"].items() if key != "params"}
+                if identity_hash(actual_context) != identity_hash(center_context):
+                    raise _Issue("INVALID", f"{path}.identity.candidate", "MIXED_CANDIDATE_CONTEXT")
+                if identity_hash(_comparison(report, path)) != identity_hash(contract):
+                    raise _Issue("INVALID", f"{path}.comparison_contract", "COMPARISON_CONTRACT_MISMATCH")
+                problems.extend(
+                    {"neighbor_id": identifier, **problem} for problem in _safety(report, path, center=False)
+                )
+                if report.get("source_completed") is not True:
+                    raise _Issue("NOT_EVALUABLE", f"{path}.source_completed", "NEIGHBOR_NOT_COMPLETED")
+                net, drawdown = _measures(report, path)
+                difference = net - center_net
+                if not math.isfinite(difference):
+                    raise _Issue("INVALID", path, "NONFINITE_RETURN_DIFFERENCE")
+                if net <= -1.0 or drawdown >= 1.0:
+                    problems.append({"neighbor_id": identifier, "status": "FAIL", "path": path, "reason": "RUIN"})
+                item.update(
+                    net_return=net,
+                    max_drawdown=drawdown,
+                    net_return_difference=difference,
+                    economic_screen_passed=net > 0.0 and drawdown <= 0.15,
+                )
+                completed += 1
+            except _Issue as issue:
+                problems.append({"neighbor_id": identifier, **issue.detail()})
+            observations.append(item)
+        if not required:
+            problems.append(
+                {"status": "NOT_EVALUABLE", "path": "design.neighbors", "reason": "NO_FEASIBLE_ADJACENT_NEIGHBORS"}
+            )
+        passed = sum(item["economic_screen_passed"] for item in observations)
+        fraction = passed / len(required) if required else None
+        statuses = {item["status"] for item in problems}
+        status = next((value for value in ("INVALID", "STALE", "FAIL") if value in statuses), None)
+        if status is None:
+            status = "NOT_EVALUABLE" if problems else "PASS" if fraction is not None and fraction >= 0.8 else "FAIL"
+        return _result(
+            status,
+            design_hash=frozen["design_hash"],
+            center_candidate_id=identity["candidate_id"],
+            required_neighbors=len(required),
+            completed_neighbors=completed,
+            economic_pass_count=passed,
+            economic_pass_fraction=fraction,
+            min_pass_fraction=0.8,
+            center_net_return=center_net,
+            return_differences=observations,
+            boundaries=frozen["boundaries"],
+            missing=[item for item in problems if item["status"] == "NOT_EVALUABLE"],
+            blockers=[item for item in problems if item["status"] != "NOT_EVALUABLE"],
+            promotion_ready=status == "PASS",
+            policy_basis="design_v1",
+        )
+    except _Issue as issue:
+        key = "missing" if issue.status == "NOT_EVALUABLE" else "blockers"
+        return _result(issue.status, **{key: [issue.detail()]})

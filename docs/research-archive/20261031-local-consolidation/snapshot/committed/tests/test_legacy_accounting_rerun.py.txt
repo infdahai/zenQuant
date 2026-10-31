@@ -1,0 +1,976 @@
+from __future__ import annotations
+
+import errno
+import hashlib
+import importlib.util
+import json
+import os
+import subprocess
+import sys
+from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
+
+from zenquant.research.accounting_kernel_identity import build_accounting_kernel_identity
+from zenquant.research.architecture_experiment import ArchitectureStage
+from zenquant.research.legacy_accounting_validity import ValidityState
+
+FORMULA_HASH = "sha256:82af23a08c68a94641e1d7769ecdf9619059dddbeb531dd3703cc4d2ff809f4a"
+ACCOUNTING_KERNEL_SHA256 = build_accounting_kernel_identity()["sha256"]
+
+
+def _load_cli_module():
+    path = Path(__file__).parent.parent / "scripts" / "rerun_legacy_accounting_baseline.py"
+    spec = importlib.util.spec_from_file_location("rerun_legacy_accounting_baseline", path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _minimal_report(manifest, entries: list[tuple[str, int]]) -> dict[str, object]:
+    return {
+        "schema_version": "architecture_attribution.v4",
+        "constraints": {"parameter_search": False},
+        "manifest": {
+            "sha256": manifest.sha256,
+            "candidate_params_sha256": manifest.candidate_params_sha256,
+            "profile_sha256": manifest.profile_sha256,
+            "windows": [
+                {
+                    "label": window.label,
+                    "start_ns": window.start_ns,
+                    "end_ns": window.end_ns,
+                    "role": window.role,
+                }
+                for window in manifest.windows
+            ],
+            "seeds": list(manifest.seeds),
+            "cost_stress_bps": list(manifest.cost_stress_bps),
+        },
+        "runs": [
+            {
+                "window": window,
+                "seed": seed,
+                "identities": {
+                    "formula_hashes": [FORMULA_HASH],
+                    "accounting_kernel_sha256": ACCOUNTING_KERNEL_SHA256,
+                },
+                "stages": {stage.value: {"stage": stage.value} for stage in ArchitectureStage},
+            }
+            for window, seed in entries
+        ],
+    }
+
+
+def _install_fast_frozen_runner(monkeypatch, module) -> None:
+    def fake_run_frozen_matrix_entry(*, root, manifest, window, seed):
+        del root, manifest
+        return window.label, seed
+
+    def fake_build_architecture_attribution_report(entries, *, manifest, fixed_notional):
+        assert fixed_notional == 100_000.0
+        return _minimal_report(manifest, entries)
+
+    monkeypatch.setattr(module, "run_frozen_matrix_entry", fake_run_frozen_matrix_entry)
+    monkeypatch.setattr(
+        module,
+        "build_architecture_attribution_report",
+        fake_build_architecture_attribution_report,
+    )
+    monkeypatch.setattr(module, "_load_frozen_rerun_contract", lambda: {})
+    monkeypatch.setattr(module, "_preflight_first_frozen_donor", lambda **kwargs: None)
+
+    def fake_input_identities(*, legacy_input, root):
+        del root
+        return {
+            "legacy_source": module._source_identity(legacy_input),
+            "legacy_envelope_sha256": "sha256:" + "e" * 64,
+            "replay_input_parquet_corpus": {
+                "schema_version": "replay-input-parquet-corpus.v1",
+                "sha256": "sha256:" + "f" * 64,
+                "file_count": 1,
+                "total_size_bytes": 1,
+            },
+        }
+
+    monkeypatch.setattr(module, "_frozen_input_identities", fake_input_identities)
+    monkeypatch.setattr(module, "_assert_frozen_input_contract", lambda *args, **kwargs: None)
+
+
+def test_parser_exposes_only_frozen_io_arguments():
+    module = _load_cli_module()
+    parser = module.build_parser()
+
+    args = parser.parse_args(
+        [
+            "--root",
+            "market-data",
+            "--legacy-input",
+            "legacy.json",
+            "--output-dir",
+            "rerun",
+        ]
+    )
+
+    assert args.root == Path("market-data")
+    assert args.legacy_input == Path("legacy.json")
+    assert args.output_dir == Path("rerun")
+    assert "must not already exist" in " ".join(parser.format_help().split())
+    option_dests = {action.dest for action in parser._actions if action.option_strings and action.dest != "help"}
+    assert option_dests == {"root", "legacy_input", "output_dir"}
+    for forbidden in ("--seed", "--window", "--params", "--trials", "--search-space"):
+        with pytest.raises(SystemExit):
+            parser.parse_args([forbidden, "override"])
+
+
+def test_rerun_validates_manifest_before_reading_legacy_input(tmp_path, monkeypatch):
+    module = _load_cli_module()
+    manifest = tmp_path / "architecture_experiment_v1.json"
+    manifest.write_text('{"tampered":true}', encoding="utf-8")
+    monkeypatch.setattr(module, "FROZEN_MANIFEST_PATH", manifest)
+
+    with pytest.raises(ValueError, match="manifest SHA-256 mismatch"):
+        module.main(
+            [
+                "--root",
+                str(tmp_path / "data"),
+                "--legacy-input",
+                str(tmp_path / "missing.json"),
+                "--output-dir",
+                str(tmp_path / "output"),
+            ]
+        )
+
+
+def test_rerun_preserves_legacy_and_publishes_frozen_identities(tmp_path, monkeypatch):
+    module = _load_cli_module()
+    _install_fast_frozen_runner(monkeypatch, module)
+    manifest = module.load_architecture_experiment_manifest(module.FROZEN_MANIFEST_PATH)
+    entries = list(manifest.expected_run_keys)
+    legacy_input = tmp_path / "legacy.json"
+    legacy_bytes = json.dumps(_minimal_report(manifest, entries), indent=2, sort_keys=True).encode()
+    legacy_input.write_bytes(legacy_bytes)
+    output_dir = tmp_path / "accounting"
+
+    exit_code = module.main(
+        [
+            "--root",
+            str(tmp_path / "data"),
+            "--legacy-input",
+            str(legacy_input),
+            "--output-dir",
+            str(output_dir),
+        ]
+    )
+
+    assert exit_code == 0
+    assert legacy_input.read_bytes() == legacy_bytes
+    assert {path.name for path in output_dir.iterdir()} == {
+        "fixed_event_attribution.json",
+        "full_system_attribution.json",
+        "stage_validity.json",
+        "summary.json",
+    }
+    full_system = json.loads((output_dir / "full_system_attribution.json").read_bytes())
+    fixed_event = json.loads((output_dir / "fixed_event_attribution.json").read_bytes())
+    stage_validity = json.loads((output_dir / "stage_validity.json").read_bytes())
+    summary = json.loads((output_dir / "summary.json").read_bytes())
+
+    assert len(full_system["runs"]) == 30
+    assert full_system["constraints"]["parameter_search"] is False
+    assert fixed_event["status"] == "INSUFFICIENT_EVIDENCE"
+    assert fixed_event["legacy_state"] == ValidityState.UNVERIFIED_LEGACY.value
+    assert stage_validity["counts"][ValidityState.UNVERIFIED_LEGACY.value] == 30 * len(ArchitectureStage)
+    assert summary["constraints"] == {"parameter_search": False}
+    assert summary["matrix"] == {"expected_runs": 30, "observed_runs": 30}
+    assert summary["identities"]["manifest_sha256"] == manifest.sha256
+    assert summary["identities"]["formula_hashes"] == [FORMULA_HASH]
+    assert summary["identities"]["accounting_kernel_sha256"] == ACCOUNTING_KERNEL_SHA256
+    assert stage_validity["accounting_kernel_sha256"] == ACCOUNTING_KERNEL_SHA256
+    assert fixed_event["accounting_kernel_sha256"] == ACCOUNTING_KERNEL_SHA256
+    assert full_system["accounting_rerun"]["accounting_kernel_sha256"] == ACCOUNTING_KERNEL_SHA256
+    assert summary["full_system_comparison"]["status"] == ValidityState.UNVERIFIED_LEGACY.value
+    assert summary["full_system_comparison"]["first_confirmed_divergence"] is None
+    assert summary["resource_behavior"]["legacy_full_json_load_count"] == 0
+    assert summary["resource_behavior"]["legacy_peak_loaded_scope"] == "single_run"
+    assert summary["resource_behavior"]["legacy_sha256_stream_passes"] == 2
+    assert summary["resource_behavior"]["publication"] == (
+        "temporary_sibling_directory_then_atomic_noreplace_directory_rename"
+    )
+
+
+def test_existing_output_dir_fails_before_compute_and_preserves_last_good_outputs(tmp_path, monkeypatch):
+    module = _load_cli_module()
+    manifest = module.load_architecture_experiment_manifest(module.FROZEN_MANIFEST_PATH)
+    legacy_input = tmp_path / "legacy.json"
+    legacy_input.write_text(
+        json.dumps(_minimal_report(manifest, list(manifest.expected_run_keys)), indent=2, sort_keys=True),
+        encoding="utf-8",
+    )
+    output_dir = tmp_path / "accounting"
+    output_dir.mkdir()
+    expected = {}
+    for name in module.OUTPUT_FILENAMES:
+        expected[name] = f"last-good:{name}".encode()
+        (output_dir / name).write_bytes(expected[name])
+
+    def forbidden_runner(*, root, manifest, window, seed):
+        del root, manifest, window, seed
+        raise AssertionError("existing output must fail before compute")
+
+    monkeypatch.setattr(module, "run_frozen_matrix_entry", forbidden_runner)
+
+    with pytest.raises(FileExistsError, match="new versioned output directory"):
+        module.main(
+            [
+                "--root",
+                str(tmp_path / "data"),
+                "--legacy-input",
+                str(legacy_input),
+                "--output-dir",
+                str(output_dir),
+            ]
+        )
+
+    assert {name: (output_dir / name).read_bytes() for name in module.OUTPUT_FILENAMES} == expected
+    assert not list(tmp_path.glob(".accounting.rerun-*"))
+
+
+def test_cli_reports_existing_output_as_clean_invalid_input(tmp_path):
+    legacy_input = tmp_path / "legacy.json"
+    legacy_input.write_text("{}", encoding="utf-8")
+    output_dir = tmp_path / "accounting-v1"
+    output_dir.mkdir()
+    script = Path(__file__).parent.parent / "scripts" / "rerun_legacy_accounting_baseline.py"
+
+    completed = subprocess.run(
+        [
+            sys.executable,
+            str(script),
+            "--root",
+            str(tmp_path / "data"),
+            "--legacy-input",
+            str(legacy_input),
+            "--output-dir",
+            str(output_dir),
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert completed.returncode == 2
+    assert "new versioned output directory" in completed.stderr
+    assert "Traceback" not in completed.stderr
+
+
+def test_publisher_refuses_an_existing_empty_output_directory(tmp_path):
+    module = _load_cli_module()
+    output_dir = tmp_path / "accounting"
+    staging_dir = tmp_path / ".accounting.rerun-ready"
+    output_dir.mkdir()
+    staging_dir.mkdir()
+    for name in module.OUTPUT_FILENAMES:
+        (staging_dir / name).write_bytes(f"new:{name}".encode())
+
+    with pytest.raises(FileExistsError, match="new versioned output directory"):
+        module._publish_staged_outputs(staging_dir=staging_dir, output_dir=output_dir)
+
+    assert not list(output_dir.iterdir())
+    assert {path.name for path in staging_dir.iterdir()} == set(module.OUTPUT_FILENAMES)
+
+
+@pytest.mark.parametrize("collision_errno", [errno.EEXIST, errno.ENOTEMPTY])
+def test_publisher_race_preserves_concurrently_created_destination(tmp_path, monkeypatch, collision_errno):
+    module = _load_cli_module()
+    output_dir = tmp_path / "accounting"
+    staging_dir = tmp_path / ".accounting.rerun-ready"
+    staging_dir.mkdir()
+    for name in module.OUTPUT_FILENAMES:
+        (staging_dir / name).write_bytes(f"new:{name}".encode())
+
+    def race_at_atomic_boundary(source, destination):
+        assert source == staging_dir
+        assert destination == output_dir
+        destination.mkdir()
+        (destination / "concurrent-last-good").write_bytes(b"preserve-me")
+        raise OSError(collision_errno, "destination exists", destination)
+
+    monkeypatch.setattr(module, "_atomic_rename_directory_noreplace", race_at_atomic_boundary)
+
+    with pytest.raises(FileExistsError, match="new versioned output directory") as exc_info:
+        module._publish_staged_outputs(staging_dir=staging_dir, output_dir=output_dir)
+
+    assert exc_info.value.errno == errno.EEXIST
+    assert (output_dir / "concurrent-last-good").read_bytes() == b"preserve-me"
+    assert {path.name for path in staging_dir.iterdir()} == set(module.OUTPUT_FILENAMES)
+
+
+def test_publisher_uses_controlled_atomic_noreplace_primitive(tmp_path, monkeypatch):
+    module = _load_cli_module()
+    output_dir = tmp_path / "accounting"
+    staging_dir = tmp_path / ".accounting.rerun-ready"
+    staging_dir.mkdir()
+    for name in module.OUTPUT_FILENAMES:
+        (staging_dir / name).write_bytes(f"new:{name}".encode())
+    calls = []
+
+    def controlled_atomic_noreplace(source, destination):
+        calls.append((source, destination))
+        os.rename(source, destination)
+
+    monkeypatch.setattr(module, "_atomic_rename_directory_noreplace", controlled_atomic_noreplace)
+
+    module._publish_staged_outputs(staging_dir=staging_dir, output_dir=output_dir)
+
+    assert calls == [(staging_dir, output_dir)]
+    assert not staging_dir.exists()
+    assert {path.name for path in output_dir.iterdir()} == set(module.OUTPUT_FILENAMES)
+
+
+def test_atomic_noreplace_fails_closed_on_unsupported_platform(tmp_path, monkeypatch):
+    module = _load_cli_module()
+    source = tmp_path / "source"
+    destination = tmp_path / "destination"
+    source.mkdir()
+    monkeypatch.setattr(module.sys, "platform", "unsupported")
+
+    def unsafe_fallback(*args, **kwargs):
+        raise AssertionError("must not fall back to unsafe os.rename")
+
+    monkeypatch.setattr(module.os, "rename", unsafe_fallback)
+
+    with pytest.raises(OSError) as exc_info:
+        module._atomic_rename_directory_noreplace(source, destination)
+
+    assert exc_info.value.errno == errno.ENOTSUP
+    assert source.is_dir()
+    assert not destination.exists()
+
+
+def test_alias_protection_uses_samefile_for_existing_paths(tmp_path):
+    module = _load_cli_module()
+    legacy_input = tmp_path / "legacy.json"
+    legacy_input.write_text("{}", encoding="utf-8")
+    output_alias = tmp_path / "legacy-alias"
+    output_alias.symlink_to(legacy_input)
+
+    with pytest.raises(ValueError, match="alias"):
+        module._assert_safe_paths(legacy_input, output_alias)
+
+
+def test_alias_protection_casefolds_generated_target_paths(tmp_path):
+    module = _load_cli_module()
+    output_dir = tmp_path / "accounting"
+    output_dir.mkdir()
+    legacy_input = output_dir / "SUMMARY.JSON"
+    legacy_input.write_text("{}", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="alias"):
+        module._assert_safe_paths(legacy_input, output_dir)
+
+
+def test_post_audit_legacy_mutation_aborts_before_publication(tmp_path, monkeypatch):
+    module = _load_cli_module()
+    _install_fast_frozen_runner(monkeypatch, module)
+    manifest = module.load_architecture_experiment_manifest(module.FROZEN_MANIFEST_PATH)
+    legacy_input = tmp_path / "legacy.json"
+    legacy_input.write_text(
+        json.dumps(_minimal_report(manifest, list(manifest.expected_run_keys)), indent=2, sort_keys=True),
+        encoding="utf-8",
+    )
+    output_dir = tmp_path / "accounting"
+    real_stream_stage_validity = module._stream_stage_validity
+
+    def mutate_after_audit(*, legacy_input, repaired_report, manifest):
+        result = real_stream_stage_validity(
+            legacy_input=legacy_input,
+            repaired_report=repaired_report,
+            manifest=manifest,
+        )
+        legacy_input.write_text("mutated-after-audit", encoding="utf-8")
+        return result
+
+    monkeypatch.setattr(module, "_stream_stage_validity", mutate_after_audit)
+
+    with pytest.raises(ValueError, match="legacy source changed during rerun"):
+        module.main(
+            [
+                "--root",
+                str(tmp_path / "data"),
+                "--legacy-input",
+                str(legacy_input),
+                "--output-dir",
+                str(output_dir),
+            ]
+        )
+
+    assert not output_dir.exists()
+    assert not list(tmp_path.glob(".accounting.rerun-*"))
+
+
+def test_legacy_run_streamer_accepts_nested_and_escaped_run_payloads(tmp_path):
+    module = _load_cli_module()
+    source = tmp_path / "legacy.json"
+    expected_runs = [
+        {
+            "window": "train_full",
+            "seed": 42,
+            "nested": {
+                "message": 'escaped quote: " and braces: {still text}',
+                "items": [{"value": 1}, {"value": 2}],
+            },
+        },
+        {"window": "2020", "seed": 123, "nested": {"message": "backslash: \\"}},
+    ]
+    source.write_text(
+        json.dumps(
+            {
+                "metadata": {"nested": {"runs": [{"not": "top-level"}]}},
+                "runs": expected_runs,
+                "tail": {"complete": True},
+            },
+            indent=2,
+            sort_keys=True,
+        ),
+        encoding="utf-8",
+    )
+
+    assert list(module._iter_legacy_runs(source)) == expected_runs
+
+
+@pytest.mark.parametrize(
+    "runs_body",
+    [
+        '    {"window": "x", "seed": 1}\n    {"window": "y", "seed": 2}',
+        '    {"window": "x", "seed": 1},',
+        '    {"window": "x", "seed": 1},,\n    {"window": "y", "seed": 2}',
+        '    ,\n    {"window": "x", "seed": 1}',
+        '    {"window": "x", "seed": 1},\n    ,\n    {"window": "y", "seed": 2}',
+    ],
+)
+def test_legacy_run_streamer_rejects_invalid_array_separators(tmp_path, runs_body):
+    module = _load_cli_module()
+    source = tmp_path / "legacy.json"
+    source.write_text('{\n  "runs": [\n' + runs_body + "\n  ]\n}\n", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="runs array"):
+        list(module._iter_legacy_runs(source))
+
+
+@pytest.mark.parametrize(
+    ("payload", "error"),
+    [
+        ({"outer": {"runs": [{"window": "nested", "seed": 1}]}}, "top-level runs array"),
+        ('{\n  "runs": [\n    {"window": "x", "seed": 1}\n  ]', "top-level JSON object is incomplete"),
+        ('{\n  "runs": [\n    {"window": "x", "seed": 1}\n  ]\n} trailing', "trailing content"),
+        ('{\n  "runs": [\n    {"window": "x", "seed": 1}', "runs array is incomplete"),
+        (
+            '{\n  "runs": [\n    {"window": "x", "seed": 1}\n  ],\n  "tail": invalid\n}',
+            "top-level JSON is malformed",
+        ),
+    ],
+)
+def test_legacy_run_streamer_rejects_incomplete_or_nested_only_documents(tmp_path, payload, error):
+    module = _load_cli_module()
+    source = tmp_path / "legacy.json"
+    if isinstance(payload, dict):
+        source.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
+    else:
+        source.write_text(payload, encoding="utf-8")
+
+    with pytest.raises(ValueError, match=error):
+        list(module._iter_legacy_runs(source))
+
+
+def test_repaired_report_rejects_boolean_seed_before_matrix_comparison():
+    module = _load_cli_module()
+    manifest = module.load_architecture_experiment_manifest(module.FROZEN_MANIFEST_PATH)
+    report = _minimal_report(manifest, list(manifest.expected_run_keys))
+    report["runs"][0]["seed"] = True
+
+    with pytest.raises(ValueError, match="integer seed"):
+        module._validate_repaired_report(report, manifest=manifest)
+
+
+def test_repaired_report_rejects_non_string_window_before_matrix_comparison():
+    module = _load_cli_module()
+    manifest = module.load_architecture_experiment_manifest(module.FROZEN_MANIFEST_PATH)
+    report = _minimal_report(manifest, list(manifest.expected_run_keys))
+    report["runs"][0]["window"] = 2020
+
+    with pytest.raises(ValueError, match="window string"):
+        module._validate_repaired_report(report, manifest=manifest)
+
+
+@pytest.mark.parametrize(
+    "formula_hash",
+    [
+        "sha256:" + "a" * 63,
+        "sha256:" + "A" * 64,
+        "sha256:" + "e" * 64,
+    ],
+)
+def test_repaired_report_requires_exact_frozen_formula_identity(formula_hash):
+    module = _load_cli_module()
+    manifest = module.load_architecture_experiment_manifest(module.FROZEN_MANIFEST_PATH)
+    report = _minimal_report(manifest, list(manifest.expected_run_keys))
+    report["runs"][0]["identities"]["formula_hashes"] = [formula_hash]
+
+    with pytest.raises(ValueError, match="frozen repaired formula hash"):
+        module._validate_repaired_report(report, manifest=manifest)
+
+
+def test_repaired_report_requires_accounting_kernel_identity():
+    module = _load_cli_module()
+    manifest = module.load_architecture_experiment_manifest(module.FROZEN_MANIFEST_PATH)
+    report = _minimal_report(manifest, list(manifest.expected_run_keys))
+    report["runs"][0]["identities"].pop("accounting_kernel_sha256")
+
+    with pytest.raises(ValueError, match="accounting kernel identity"):
+        module._validate_repaired_report(report, manifest=manifest)
+
+
+def test_first_confirmed_divergence_uses_frozen_matrix_and_stage_order():
+    module = _load_cli_module()
+    records = [
+        {
+            "window": "train_full",
+            "seed": 42,
+            "stage": ArchitectureStage.A3.value,
+            "state": ValidityState.CONFIRMED_AFFECTED.value,
+        },
+        {
+            "window": "train_full",
+            "seed": 42,
+            "stage": ArchitectureStage.A2.value,
+            "state": ValidityState.CONFIRMED_AFFECTED.value,
+        },
+    ]
+
+    comparison = module.build_full_system_comparison(records)
+
+    assert comparison["status"] == ValidityState.CONFIRMED_AFFECTED.value
+    assert comparison["first_confirmed_divergence"] == {
+        "window": "train_full",
+        "seed": 42,
+        "stage": ArchitectureStage.A2.value,
+    }
+
+
+def test_streamed_validity_materializes_missing_frozen_run_on_both_sides(tmp_path):
+    module = _load_cli_module()
+    manifest = module.load_architecture_experiment_manifest(module.FROZEN_MANIFEST_PATH)
+    missing_key = manifest.expected_run_keys[-1]
+    entries = list(manifest.expected_run_keys[:-1])
+    legacy_input = tmp_path / "legacy.json"
+    legacy_input.write_text(json.dumps(_minimal_report(manifest, entries), indent=2, sort_keys=True), encoding="utf-8")
+    repaired = _minimal_report(manifest, entries)
+
+    result = module._stream_stage_validity(
+        legacy_input=legacy_input,
+        repaired_report=repaired,
+        manifest=manifest,
+    )
+
+    assert len(result["records"]) == 30 * len(ArchitectureStage)
+    missing_records = [record for record in result["records"] if (record["window"], record["seed"]) == missing_key]
+    assert len(missing_records) == len(ArchitectureStage)
+    assert {record["state"] for record in missing_records} == {ValidityState.UNVERIFIED_LEGACY.value}
+
+
+@pytest.mark.parametrize(
+    ("legacy_error", "repaired_error", "expected_reason"),
+    [
+        ("missing legacy donor", None, "legacy_stage_provenance_incomplete"),
+        (None, "missing repaired donor", "repaired_stage_provenance_incomplete"),
+        (
+            "missing legacy payload",
+            "missing repaired payload",
+            "legacy_and_repaired_stage_provenance_incomplete",
+        ),
+        (None, None, "stage_comparison_unverified"),
+    ],
+)
+def test_unverified_reason_identifies_the_incomplete_side(legacy_error, repaired_error, expected_reason):
+    module = _load_cli_module()
+    comparison = module.build_full_system_comparison(
+        [
+            {
+                "window": "train_full",
+                "seed": 42,
+                "stage": ArchitectureStage.A0.value,
+                "state": ValidityState.UNVERIFIED_LEGACY.value,
+                "legacy_error": legacy_error,
+                "repaired_error": repaired_error,
+            }
+        ]
+    )
+
+    assert comparison["status"] == ValidityState.UNVERIFIED_LEGACY.value
+    assert comparison["reason"] == expected_reason
+
+
+def test_replay_input_parquet_corpus_binds_paths_sizes_and_bytes(tmp_path):
+    module = _load_cli_module()
+    root = tmp_path / "raw"
+    first = root / "klines/BTCUSDT/5m/2025-01.parquet"
+    second = root / "funding/BTCUSDT/2025-01.parquet"
+    first.parent.mkdir(parents=True)
+    second.parent.mkdir(parents=True)
+    first.write_bytes(b"first")
+    second.write_bytes(b"second")
+
+    baseline = module._parquet_corpus_identity(root)
+    second.write_bytes(b"changed")
+    changed = module._parquet_corpus_identity(root)
+
+    assert baseline["schema_version"] == "replay-input-parquet-corpus.v1"
+    assert baseline["file_count"] == 2
+    assert baseline["total_size_bytes"] == 11
+    assert baseline["sha256"] != changed["sha256"]
+
+
+def test_mutable_replay_input_corpus_is_rejected_before_rerun(tmp_path):
+    module = _load_cli_module()
+    raw_root = tmp_path / "data" / "raw"
+    parquet_path = raw_root / "binance" / "BTCUSDT" / "bars.parquet"
+    parquet_path.parent.mkdir(parents=True)
+    parquet_path.write_bytes(b"mutable")
+
+    with pytest.raises(ValueError, match="must be read-only"):
+        module._assert_read_only_parquet_corpus(raw_root)
+
+
+def test_read_only_replay_input_corpus_is_accepted(tmp_path):
+    module = _load_cli_module()
+    raw_root = tmp_path / "data" / "raw"
+    parquet_path = raw_root / "binance" / "BTCUSDT" / "bars.parquet"
+    parquet_path.parent.mkdir(parents=True)
+    parquet_path.write_bytes(b"frozen")
+    for path in (parquet_path, parquet_path.parent, parquet_path.parent.parent, raw_root):
+        path.chmod(path.stat().st_mode & ~0o222)
+
+    module._assert_read_only_parquet_corpus(raw_root)
+
+
+def _freeze_test_corpus(raw_root: Path) -> None:
+    for path in (*raw_root.rglob("*"), raw_root):
+        path.chmod(path.stat().st_mode & ~0o222)
+
+
+def test_absolute_binance_root_rejects_missing_cwd_replay_data_root(tmp_path, monkeypatch):
+    module = _load_cli_module()
+    binance_root = tmp_path / "main-repo" / "data" / "raw" / "binance"
+    binance_root.mkdir(parents=True)
+    worktree = tmp_path / "worktree"
+    worktree.mkdir()
+    monkeypatch.chdir(worktree)
+
+    with pytest.raises(ValueError, match="same replay data root"):
+        module._resolve_replay_data_root(binance_root)
+
+
+def test_replay_input_identity_binds_auxiliary_parquet_drift(tmp_path, monkeypatch):
+    module = _load_cli_module()
+    repo_root = tmp_path / "repo"
+    raw_root = repo_root / "data" / "raw"
+    binance = raw_root / "binance" / "klines" / "BTCUSDT" / "5m" / "data.parquet"
+    macro = raw_root / "macro" / "vix" / "data.parquet"
+    binance.parent.mkdir(parents=True)
+    macro.parent.mkdir(parents=True)
+    binance.write_bytes(b"binance")
+    macro.write_bytes(b"macro-v1")
+    monkeypatch.chdir(repo_root)
+
+    baseline = module._parquet_corpus_identity(module._resolve_replay_data_root(raw_root / "binance"))
+    macro.write_bytes(b"macro-v2")
+    changed = module._parquet_corpus_identity(module._resolve_replay_data_root(raw_root / "binance"))
+
+    assert baseline["file_count"] == 2
+    assert baseline["sha256"] != changed["sha256"]
+
+
+def test_symlinked_cwd_data_root_accepts_full_replay_input_surface(tmp_path, monkeypatch):
+    module = _load_cli_module()
+    shared_raw = tmp_path / "shared" / "raw"
+    binance = shared_raw / "binance" / "klines" / "BTCUSDT" / "5m" / "data.parquet"
+    options = shared_raw / "deribit_options" / "BTC" / "snapshot.parquet"
+    binance.parent.mkdir(parents=True)
+    options.parent.mkdir(parents=True)
+    binance.write_bytes(b"binance")
+    options.write_bytes(b"options")
+    worktree = tmp_path / "worktree"
+    (worktree / "data").mkdir(parents=True)
+    (worktree / "data" / "raw").symlink_to(shared_raw, target_is_directory=True)
+    monkeypatch.chdir(worktree)
+
+    replay_data_root = module._resolve_replay_data_root(shared_raw / "binance")
+    identity = module._parquet_corpus_identity(replay_data_root)
+
+    assert replay_data_root == shared_raw.resolve()
+    assert identity["file_count"] == 2
+
+
+@pytest.mark.parametrize(
+    ("formula_hash", "macro_loaded", "options_loaded", "error"),
+    [
+        ("sha256:" + "d" * 64, True, True, "indicator formula identity mismatch"),
+        (FORMULA_HASH, False, True, "replay store availability mismatch"),
+        (FORMULA_HASH, True, False, "replay store availability mismatch"),
+    ],
+)
+def test_first_frozen_donor_preflight_rejects_identity_before_run(
+    tmp_path,
+    monkeypatch,
+    formula_hash,
+    macro_loaded,
+    options_loaded,
+    error,
+):
+    module = _load_cli_module()
+    manifest = module.load_architecture_experiment_manifest(module.FROZEN_MANIFEST_PATH)
+    run_calls = []
+
+    class FakeHistoricalBacktest:
+        def __init__(self, config):
+            del config
+            self.indicator_engine = SimpleNamespace(_formula_hash=formula_hash)
+            self._macro_store = SimpleNamespace(loaded=macro_loaded)
+            self.options_store = SimpleNamespace(loaded=options_loaded)
+
+        def run(self):
+            run_calls.append(True)
+            raise AssertionError("preflight must not run the donor")
+
+    monkeypatch.setattr(module, "HistoricalBacktest", FakeHistoricalBacktest)
+    monkeypatch.setattr(
+        module,
+        "build_causal_donor_backtest_config",
+        lambda **kwargs: (SimpleNamespace(), "sha256:" + "c" * 64),
+    )
+    contract = {
+        "indicator_formula_hash": FORMULA_HASH,
+        "required_replay_store_availability": {"macro": True, "options": True},
+    }
+
+    with pytest.raises(ValueError, match=error):
+        module._preflight_first_frozen_donor(
+            root=tmp_path / "data" / "raw" / "binance",
+            manifest=manifest,
+            contract=contract,
+        )
+
+    assert not run_calls
+
+
+def test_formula_preflight_mismatch_fails_before_matrix_entry_one(tmp_path, monkeypatch):
+    module = _load_cli_module()
+    _install_fast_frozen_runner(monkeypatch, module)
+    manifest = module.load_architecture_experiment_manifest(module.FROZEN_MANIFEST_PATH)
+    legacy_input = tmp_path / "legacy.json"
+    legacy_input.write_text(
+        json.dumps(_minimal_report(manifest, list(manifest.expected_run_keys)), indent=2, sort_keys=True),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        module,
+        "_preflight_first_frozen_donor",
+        lambda **kwargs: (_ for _ in ()).throw(ValueError("first frozen donor indicator formula identity mismatch")),
+    )
+
+    def forbidden_matrix(*args, **kwargs):
+        raise AssertionError("formula mismatch must fail before matrix entry 1")
+
+    monkeypatch.setattr(module, "_run_frozen_matrix", forbidden_matrix)
+
+    with pytest.raises(ValueError, match="indicator formula identity mismatch"):
+        module.main(
+            [
+                "--root",
+                str(tmp_path / "data" / "raw" / "binance"),
+                "--legacy-input",
+                str(legacy_input),
+                "--output-dir",
+                str(tmp_path / "output"),
+            ]
+        )
+
+
+def test_legacy_envelope_identity_excludes_runs_but_binds_outer_contract(tmp_path):
+    module = _load_cli_module()
+    first = tmp_path / "first.json"
+    second = tmp_path / "second.json"
+    third = tmp_path / "third.json"
+    first.write_text(
+        json.dumps({"manifest": {"sha256": "frozen"}, "runs": [{"window": "2020", "seed": 42}]}, indent=2),
+        encoding="utf-8",
+    )
+    second.write_text(
+        json.dumps({"manifest": {"sha256": "frozen"}, "runs": [{"window": "2021", "seed": 123}]}, indent=2),
+        encoding="utf-8",
+    )
+    third.write_text(
+        json.dumps({"manifest": {"sha256": "changed"}, "runs": [{"window": "2020", "seed": 42}]}, indent=2),
+        encoding="utf-8",
+    )
+
+    assert module._legacy_envelope_identity(first) == module._legacy_envelope_identity(second)
+    assert module._legacy_envelope_identity(first) != module._legacy_envelope_identity(third)
+
+
+def test_frozen_input_contract_rejects_legacy_and_corpus_identity_drift(tmp_path, monkeypatch):
+    module = _load_cli_module()
+    manifest = module.load_architecture_experiment_manifest(module.FROZEN_MANIFEST_PATH)
+    legacy_input = tmp_path / "legacy.json"
+    legacy_input.write_text(
+        json.dumps(_minimal_report(manifest, list(manifest.expected_run_keys)), indent=2, sort_keys=True),
+        encoding="utf-8",
+    )
+    repo_root = tmp_path / "repo"
+    root = repo_root / "data" / "raw" / "binance"
+    parquet = root / "klines/BTCUSDT/5m/2025-01.parquet"
+    parquet.parent.mkdir(parents=True)
+    parquet.write_bytes(b"frozen")
+    _freeze_test_corpus(repo_root / "data" / "raw")
+    monkeypatch.chdir(repo_root)
+    observed = module._frozen_input_identities(legacy_input=legacy_input, root=root)
+    contract = {
+        "schema_version": "legacy-accounting-rerun-contract.v3",
+        "architecture_manifest_sha256": manifest.sha256,
+        "indicator_formula_hash": FORMULA_HASH,
+        "accounting_kernel_sha256": ACCOUNTING_KERNEL_SHA256,
+        "legacy_source": observed["legacy_source"],
+        "legacy_envelope_sha256": observed["legacy_envelope_sha256"],
+        "replay_input_parquet_corpus": observed["replay_input_parquet_corpus"],
+        "required_replay_store_availability": {"macro": True, "options": True},
+        "replay_input_mode": "read_only_snapshot",
+    }
+
+    module._assert_frozen_input_contract(contract, observed=observed, manifest=manifest)
+
+    changed_legacy = json.loads(json.dumps(contract))
+    changed_legacy["legacy_source"]["sha256"] = "a" * 64
+    with pytest.raises(ValueError, match="legacy source identity mismatch"):
+        module._assert_frozen_input_contract(changed_legacy, observed=observed, manifest=manifest)
+
+    changed_corpus = json.loads(json.dumps(contract))
+    changed_corpus["replay_input_parquet_corpus"]["sha256"] = "sha256:" + "b" * 64
+    with pytest.raises(ValueError, match="replay input Parquet corpus identity mismatch"):
+        module._assert_frozen_input_contract(changed_corpus, observed=observed, manifest=manifest)
+
+
+def _write_frozen_rerun_contract(module, tmp_path, payload, monkeypatch):
+    path = tmp_path / "rerun-contract.json"
+    encoded = json.dumps(payload, indent=2, sort_keys=True).encode("utf-8")
+    path.write_bytes(encoded)
+    monkeypatch.setattr(module, "FROZEN_RERUN_CONTRACT_PATH", path)
+    monkeypatch.setattr(module, "FROZEN_RERUN_CONTRACT_SHA256", hashlib.sha256(encoded).hexdigest())
+
+
+def test_rerun_rejects_non_frozen_legacy_before_compute(tmp_path, monkeypatch):
+    module = _load_cli_module()
+    manifest = module.load_architecture_experiment_manifest(module.FROZEN_MANIFEST_PATH)
+    legacy_input = tmp_path / "legacy.json"
+    legacy_input.write_text(
+        json.dumps(_minimal_report(manifest, list(manifest.expected_run_keys)), indent=2, sort_keys=True),
+        encoding="utf-8",
+    )
+    repo_root = tmp_path / "repo"
+    root = repo_root / "data" / "raw" / "binance"
+    parquet = root / "klines/BTCUSDT/5m/2025-01.parquet"
+    parquet.parent.mkdir(parents=True)
+    parquet.write_bytes(b"frozen")
+    _freeze_test_corpus(repo_root / "data" / "raw")
+    monkeypatch.chdir(repo_root)
+    observed = module._frozen_input_identities(legacy_input=legacy_input, root=root)
+    contract = {
+        "schema_version": "legacy-accounting-rerun-contract.v3",
+        "architecture_manifest_sha256": manifest.sha256,
+        "indicator_formula_hash": FORMULA_HASH,
+        "accounting_kernel_sha256": ACCOUNTING_KERNEL_SHA256,
+        "legacy_source": {**observed["legacy_source"], "sha256": "a" * 64},
+        "legacy_envelope_sha256": observed["legacy_envelope_sha256"],
+        "replay_input_parquet_corpus": observed["replay_input_parquet_corpus"],
+        "required_replay_store_availability": {"macro": True, "options": True},
+        "replay_input_mode": "read_only_snapshot",
+    }
+    _write_frozen_rerun_contract(module, tmp_path, contract, monkeypatch)
+
+    def forbidden_compute(*args, **kwargs):
+        raise AssertionError("identity mismatch must fail before compute")
+
+    monkeypatch.setattr(module, "_run_frozen_matrix", forbidden_compute)
+
+    with pytest.raises(ValueError, match="legacy source identity mismatch"):
+        module.main(
+            [
+                "--root",
+                str(root),
+                "--legacy-input",
+                str(legacy_input),
+                "--output-dir",
+                str(tmp_path / "output"),
+            ]
+        )
+
+
+def test_replay_input_corpus_mutation_during_rerun_aborts_publication(tmp_path, monkeypatch):
+    module = _load_cli_module()
+    manifest = module.load_architecture_experiment_manifest(module.FROZEN_MANIFEST_PATH)
+    entries = list(manifest.expected_run_keys)
+    legacy_input = tmp_path / "legacy.json"
+    legacy_input.write_text(json.dumps(_minimal_report(manifest, entries), indent=2, sort_keys=True), encoding="utf-8")
+    repo_root = tmp_path / "repo"
+    root = repo_root / "data" / "raw" / "binance"
+    parquet = root / "klines/BTCUSDT/5m/2025-01.parquet"
+    parquet.parent.mkdir(parents=True)
+    parquet.write_bytes(b"frozen")
+    _freeze_test_corpus(repo_root / "data" / "raw")
+    monkeypatch.chdir(repo_root)
+    observed = module._frozen_input_identities(legacy_input=legacy_input, root=root)
+    contract = {
+        "schema_version": "legacy-accounting-rerun-contract.v3",
+        "architecture_manifest_sha256": manifest.sha256,
+        "indicator_formula_hash": FORMULA_HASH,
+        "accounting_kernel_sha256": ACCOUNTING_KERNEL_SHA256,
+        "legacy_source": observed["legacy_source"],
+        "legacy_envelope_sha256": observed["legacy_envelope_sha256"],
+        "replay_input_parquet_corpus": observed["replay_input_parquet_corpus"],
+        "required_replay_store_availability": {"macro": True, "options": True},
+        "replay_input_mode": "read_only_snapshot",
+    }
+    _write_frozen_rerun_contract(module, tmp_path, contract, monkeypatch)
+    monkeypatch.setattr(module, "_preflight_first_frozen_donor", lambda **kwargs: None)
+    monkeypatch.setattr(module, "_run_frozen_matrix", lambda **kwargs: _minimal_report(manifest, entries))
+    real_stream = module._stream_stage_validity
+
+    def mutate_after_stream(*, legacy_input, repaired_report, manifest):
+        result = real_stream(
+            legacy_input=legacy_input,
+            repaired_report=repaired_report,
+            manifest=manifest,
+        )
+        parquet.chmod(parquet.stat().st_mode | 0o200)
+        parquet.write_bytes(b"changed-during-rerun")
+        parquet.chmod(parquet.stat().st_mode & ~0o222)
+        return result
+
+    monkeypatch.setattr(module, "_stream_stage_validity", mutate_after_stream)
+    output_dir = tmp_path / "output"
+
+    with pytest.raises(ValueError, match="replay input Parquet corpus changed during rerun"):
+        module.main(
+            [
+                "--root",
+                str(root),
+                "--legacy-input",
+                str(legacy_input),
+                "--output-dir",
+                str(output_dir),
+            ]
+        )
+
+    assert not output_dir.exists()

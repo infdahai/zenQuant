@@ -1,0 +1,54 @@
+name: Go mainline
+
+on:
+  push:
+    branches: [main, 'refactor/**', 'feat/**', 'fix/**']
+    paths: ['cmd/**', 'internal/**', 'go.mod', 'go.sum', 'rust/**', 'Makefile', 'options-ui/**', 'package*.json', 'playwright.*.config.js', '.github/workflows/go.yml']
+  pull_request:
+    paths: ['cmd/**', 'internal/**', 'go.mod', 'go.sum', 'rust/**', 'Makefile', 'options-ui/**', 'package*.json', 'playwright.*.config.js', '.github/workflows/go.yml']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  native:
+    strategy:
+      matrix:
+        # Playwright 1.58.2 in package-lock.json supports Ubuntu 24.04.
+        os: [ubuntu-24.04, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - run: npm ci --ignore-scripts
+      - run: npm ci --ignore-scripts --prefix options-ui
+      - name: Build Rust paper process helper
+        if: runner.os == 'Linux'
+        working-directory: rust
+        run: |
+          cargo test --locked -p options-workbench --lib --no-run --message-format=json > /tmp/zenquant-rust-build.jsonl
+          python3 -c 'import json; rows=[json.loads(s) for s in open("/tmp/zenquant-rust-build.jsonl")]; print(next(r["executable"] for r in rows if r.get("reason")=="compiler-artifact" and r.get("target",{}).get("name")=="options_workbench" and r.get("profile",{}).get("test") and r.get("executable")))' > /tmp/zenquant-rust-paper-test
+      - name: Test Go and Rust paper exclusion and replay
+        if: runner.os == 'Linux'
+        run: ZQ_RUST_PAPER_TEST_BINARY="$(</tmp/zenquant-rust-paper-test)" go test ./internal/paper -run 'TestCrossLanguage' -count=1
+      - run: make check
+      - run: make build
+      - name: Native binary without external executables
+        run: env PATH=/nonexistent ./bin/zenquant help
+      - run: npx playwright install --with-deps chromium
+      - run: npm run test:options
+      - run: npm run test:paper
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: go-browser-evidence-${{ matrix.os }}
+          path: |
+            .artifacts/payoff-ui
+            .artifacts/paper-ui

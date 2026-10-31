@@ -1,0 +1,105 @@
+commit 38a21cac3ead4d1b5d143fe744cf6e6c9a1e64f0
+Author:     Disaster <clusternlh@gmail.com>
+AuthorDate: Tue Aug 25 00:10:14 2026 +0800
+Commit:     Disaster <clusternlh@gmail.com>
+CommitDate: Tue Aug 25 00:10:14 2026 +0800
+
+    test(research): expose multi-commit registration rewrite
+
+diff --git a/tests/test_time_space_export_registration.py b/tests/test_time_space_export_registration.py
+index 9f60fbf..fe8ef0c 100644
+--- a/tests/test_time_space_export_registration.py
++++ b/tests/test_time_space_export_registration.py
+@@ -3,12 +3,14 @@ from __future__ import annotations
+ import hashlib
+ import importlib.util
+ import json
++import subprocess
+ import sys
+ from pathlib import Path
+ 
+ import pytest
+ 
+ SCRIPT = Path(__file__).parents[1] / "scripts/build_time_space_export_receipt.py"
++APPEND_ONLY_SCRIPT = Path(__file__).parents[1] / "scripts/validate_time_space_registration_push.py"
+ AS_OF_NS = 1787529600000000000
+ MANIFEST_PATH = (
+     f"config/research/registrations/time_space_exports/{AS_OF_NS}/time_space_shadow_export_checkpoint_v1.json"
+@@ -97,6 +99,31 @@ def _trust() -> dict[str, object]:
+     return {"checkpoint_workflow_id": WORKFLOW_ID}
+ 
+ 
++def _git(repository: Path, *args: str) -> str:
++    result = subprocess.run(
++        ["git", "-C", str(repository), *args],
++        check=True,
++        capture_output=True,
++        text=True,
++    )
++    return result.stdout.strip()
++
++
++def _commit(repository: Path, message: str) -> str:
++    _git(repository, "add", ".")
++    _git(
++        repository,
++        "-c",
++        "user.name=TimeSpace Test",
++        "-c",
++        "user.email=time-space@example.invalid",
++        "commit",
++        "-m",
++        message,
++    )
++    return _git(repository, "rev-parse", "HEAD")
++
++
+ def test_receipt_builder_binds_completed_push_workflow_and_uploaded_manifest() -> None:
+     module = _module()
+     manifest_bytes = (json.dumps(_manifest(), sort_keys=True, separators=(",", ":")) + "\n").encode()
+@@ -245,3 +272,45 @@ def test_checkpoint_workflows_use_exact_bootstrap_and_completed_receipt_trigger(
+     assert '$1 != "A"' in persist
+     assert "hashlib.sha256(canonical).hexdigest()" in persist
+     assert "canonical[:-1]" not in persist
++
++
++def test_checkpoint_push_rejects_prior_registration_mutation_hidden_in_multi_commit_push(tmp_path: Path) -> None:
++    repository = tmp_path / "repository"
++    repository.mkdir()
++    _git(repository, "init", "-q")
++    registration_root = repository / "config/research/registrations/time_space_exports"
++    existing = registration_root / "111/time_space_shadow_export_checkpoint_v1.json"
++    existing.parent.mkdir(parents=True)
++    existing.write_text("original\n")
++    before = _commit(repository, "initial registration")
++
++    existing.write_text("tampered\n")
++    first_new = registration_root / "222/time_space_shadow_export_checkpoint_v1.json"
++    first_new.parent.mkdir(parents=True)
++    first_new.write_text("first\n")
++    _commit(repository, "hide mutation in earlier push commit")
++    final_new = registration_root / "333/time_space_shadow_export_checkpoint_v1.json"
++    final_new.parent.mkdir(parents=True)
++    final_new.write_text("final\n")
++    after = _commit(repository, "add valid-looking head checkpoint")
++
++    result = subprocess.run(
++        [
++            sys.executable,
++            str(APPEND_ONLY_SCRIPT),
++            "--repository",
++            str(repository),
++            "--before",
++            before,
++            "--after",
++            after,
++            "--phase",
++            "checkpoint",
++        ],
++        check=False,
++        capture_output=True,
++        text=True,
++    )
++
++    assert result.returncode != 0
++    assert "append-only" in result.stderr

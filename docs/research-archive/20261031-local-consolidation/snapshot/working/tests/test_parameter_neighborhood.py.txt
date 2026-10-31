@@ -1,0 +1,307 @@
+"""Frozen one-step neighborhoods and real evaluator-shaped evidence tests."""
+
+from __future__ import annotations
+
+import copy
+import json
+
+import pytest
+
+from zenquant.research.evaluation import evaluate_evidence
+from zenquant.research.run_evidence import identity_hash
+
+DAY = 86_400_000_000_000
+
+
+def call(name, *args):
+    from zenquant.research import parameter_neighborhood
+
+    return getattr(parameter_neighborhood, name)(*args)
+
+
+def design():
+    return call("build_neighbors", {"a": 2, "b": 20, "c": 200}, {"a": [1, 2, 3], "b": [10, 20, 30], "c": [100, 200]})
+
+
+def report(params, values=(100.0, 110.0)):
+    # Same immutable identity structure used by research_runner.evaluate_candidate;
+    # no market replay, mutable run identity, or live attestation is involved.
+    candidate = {
+        "family": "fixture",
+        "params": dict(params),
+        "risk_budget": {"target_annual_vol": 0.1, "max_leverage": 1.5},
+        "code_hash": "code-v1",
+    }
+    identity = {
+        "candidate_id": identity_hash(candidate),
+        "candidate": candidate,
+        "window": "dev",
+        "code_hash": "code-v1",
+        "data_manifest": {"window_data_hash": "data-v1"},
+    }
+    identity["run_id"] = identity_hash(identity)
+    result = evaluate_evidence(
+        {
+            "identity": identity,
+            "initial_equity": 100.0,
+            "curve": [{"time_ns": index * DAY, "equity": value} for index, value in enumerate(values)],
+            "fills": [],
+            "funding": [],
+            "episodes": [],
+            "engineering": {f"E{i}": {"status": "PASS", "reason": "HAND_LEDGER_TEST_FIXTURE"} for i in range(5)},
+            "policy": {"min_net_return": 0.0, "max_drawdown": 0.15},
+            "source_completed": True,
+        }
+    )
+    result["comparison_contract"] = {
+        "symbol": "BTCUSDT_PERP",
+        "window": "dev",
+        "data_hash": "data-v1",
+        "accounting_hash": "code-v1",
+        "execution": "next_open",
+        "cost": {"fee_bps": 4},
+        "risk_budget": candidate["risk_budget"],
+    }
+    return result
+
+
+def fixture():
+    frozen = design()
+    center = report(frozen["center_params"])
+    matrix = [
+        {
+            "neighbor_id": item["neighbor_id"],
+            "center_candidate_id": center["identity"]["candidate_id"],
+            "params": dict(item["params"]),
+            "report": report(item["params"]),
+        }
+        for item in frozen["neighbors"]
+    ]
+    return center, matrix, frozen
+
+
+def test_neighbors_change_one_parameter_by_one_declared_step_and_report_boundaries():
+    frozen = design()
+    assert len(frozen["neighbors"]) == 5
+    assert frozen["boundaries"] == [{"parameter": "c", "missing_directions": ["upper"]}]
+    assert frozen["min_pass_fraction"] == 0.8
+    for item in frozen["neighbors"]:
+        changed = [key for key in item["params"] if item["params"][key] != frozen["center_params"][key]]
+        assert changed == [item["parameter"]]
+    a = [item for item in frozen["neighbors"] if item["parameter"] == "a"]
+    assert [item["params"]["a"] for item in a] == [1, 3]
+    assert [item["direction"] for item in a] == ["lower", "upper"]
+
+
+def test_design_is_deterministic_detached_and_keeps_non_search_parameters_fixed():
+    params, space = {"b": 2, "fixed": 9}, {"b": [1, 2, 3]}
+    original = copy.deepcopy((params, space))
+    first = call("build_neighbors", params, space)
+    assert first == call("build_neighbors", params, space)
+    assert (params, space) == original
+    params["fixed"] = 100
+    assert all(item["params"]["fixed"] == 9 for item in first["neighbors"])
+
+
+@pytest.mark.parametrize(
+    "space", [{"a": [1, 1, 2]}, {"a": [3, 2, 1]}, {"a": []}, {"a": [1, float("nan")]}, {"unknown": [1, 2]}]
+)
+def test_invalid_grid_is_rejected_instead_of_silently_deduplicated_or_sorted(space):
+    with pytest.raises(ValueError):
+        call("build_neighbors", {"a": 2}, space)
+
+
+def test_center_must_be_an_exact_member_of_declared_grid():
+    with pytest.raises(ValueError):
+        call("build_neighbors", {"a": 2.1}, {"a": [1, 2, 3]})
+
+
+def test_real_evaluator_reports_with_immutable_runner_identities_can_pass_scoped_neighborhood():
+    center, matrix, frozen = fixture()
+    original = copy.deepcopy((center, matrix, frozen))
+    result = call("evaluate_neighbors", center, matrix, frozen)
+    assert result["status"] == "PASS"
+    assert result["required_neighbors"] == 5
+    assert result["economic_pass_fraction"] == 1.0
+    assert len(result["return_differences"]) == 5
+    assert all(item["net_return_difference"] == pytest.approx(0.0) for item in result["return_differences"])
+    assert result["live_eligible"] is False
+    assert (center, matrix, frozen) == original
+    assert call("evaluate_neighbors", center, list(reversed(matrix)), frozen) == result
+
+
+def test_four_of_five_economic_passes_meet_80_percent_but_keep_every_loss_difference():
+    center, matrix, frozen = fixture()
+    matrix[-1]["report"] = report(matrix[-1]["params"], (100.0, 90.0))
+    result = call("evaluate_neighbors", center, matrix, frozen)
+    assert result["status"] == "PASS"
+    assert result["economic_pass_fraction"] == 0.8
+    assert len(result["return_differences"]) == 5
+    assert result["return_differences"][-1]["net_return_difference"] == pytest.approx(-0.2)
+
+
+def test_two_failing_economic_neighbors_fail_without_replacing_distribution_by_best_score():
+    center, matrix, frozen = fixture()
+    matrix[-1]["report"] = report(matrix[-1]["params"], (100.0, 80.0, 110.0))
+    matrix[-2]["report"] = report(matrix[-2]["params"], (100.0, 90.0))
+    matrix[0]["report"] = report(matrix[0]["params"], (100.0, 1000.0))
+    result = call("evaluate_neighbors", center, matrix, frozen)
+    assert result["status"] == "FAIL"
+    assert result["economic_pass_fraction"] == 0.6
+
+
+@pytest.mark.parametrize("damage", ["missing", "timeout", "interrupted", "incomplete_source"])
+def test_missing_or_unfinished_neighbors_never_shrink_denominator(damage):
+    center, matrix, frozen = fixture()
+    identifier = matrix[-1]["neighbor_id"]
+    if damage == "missing":
+        matrix.pop()
+    elif damage == "incomplete_source":
+        matrix[-1]["report"]["source_completed"] = False
+    else:
+        matrix[-1]["status"] = damage
+    result = call("evaluate_neighbors", center, matrix, frozen)
+    assert result["status"] == "NOT_EVALUABLE"
+    assert result["required_neighbors"] == 5
+    assert result["economic_pass_fraction"] == 0.8
+    assert result["promotion_ready"] is False
+    assert any(item.get("neighbor_id") == identifier for item in result["missing"])
+
+
+@pytest.mark.parametrize(
+    "damage",
+    ["duplicate", "extra", "mixed_center", "case_params", "actual_params", "identity_hash", "run_id", "cost_contract"],
+)
+def test_duplicate_extra_mixed_or_misbound_evidence_is_invalid(damage):
+    center, matrix, frozen = fixture()
+    if damage == "duplicate":
+        matrix.append(copy.deepcopy(matrix[0]))
+    elif damage == "extra":
+        extra = copy.deepcopy(matrix[0])
+        extra["neighbor_id"] = "unrequested"
+        matrix.append(extra)
+    elif damage == "mixed_center":
+        matrix[0]["center_candidate_id"] = "different-center"
+    elif damage == "case_params":
+        matrix[0]["params"]["b"] = 30
+    elif damage == "actual_params":
+        matrix[0]["report"] = report({"a": 1, "b": 30, "c": 200})
+    elif damage == "identity_hash":
+        matrix[0]["report"]["identity"]["candidate_id"] = "forged"
+    elif damage == "run_id":
+        matrix[0]["report"]["identity"]["run_id"] = "forged-run-hash"
+    else:
+        matrix[0]["report"]["comparison_contract"]["cost"]["fee_bps"] = 0
+    assert call("evaluate_neighbors", center, matrix, frozen)["status"] == "INVALID"
+
+
+@pytest.mark.parametrize("damage", ["neighbor_deleted", "threshold_lowered", "center_params", "center_identity"])
+def test_frozen_design_cannot_be_mutated_to_delete_bad_neighbors_or_change_center(damage):
+    center, matrix, frozen = fixture()
+    if damage == "neighbor_deleted":
+        frozen["neighbors"].pop()
+        matrix.pop()
+    elif damage == "threshold_lowered":
+        frozen["min_pass_fraction"] = 0.5
+    elif damage == "center_params":
+        frozen["center_params"]["a"] = 1
+    else:
+        frozen["center_identity"] = {"candidate_id": "other"}
+    assert call("evaluate_neighbors", center, matrix, frozen)["status"] == "INVALID"
+
+
+@pytest.mark.parametrize("damage", ["engineering_fail", "ruin", "unknown_risk_fail"])
+def test_any_hard_failure_is_not_waived_by_the_other_four_neighbors(damage):
+    center, matrix, frozen = fixture()
+    target = matrix[-1]["report"]
+    if damage == "engineering_fail":
+        target["gates"]["E2"] = {"status": "FAIL", "reason": "INVENTED_CASH"}
+    elif damage == "ruin":
+        matrix[-1]["report"] = report(matrix[-1]["params"], (100.0, 0.0))
+    else:
+        target["blockers"].append({"gate": "R2", "status": "FAIL", "reason": "LIQUIDATION_MODEL_FAILURE"})
+    assert call("evaluate_neighbors", center, matrix, frozen)["status"] == "FAIL"
+
+
+def test_missing_engineering_remains_diagnostic_while_economic_fraction_is_visible():
+    center, matrix, frozen = fixture()
+    del matrix[-1]["report"]["gates"]["E3"]
+    result = call("evaluate_neighbors", center, matrix, frozen)
+    assert result["status"] == "NOT_EVALUABLE"
+    assert result["diagnostic_only"] is True
+    assert result["economic_pass_fraction"] == 1.0
+    assert result["missing"]
+
+
+@pytest.mark.parametrize("damage", ["net_loss", "drawdown", "engineering", "other_gate_fail"])
+def test_center_failure_cannot_yield_promotion_ready(damage):
+    center, matrix, frozen = fixture()
+    if damage in ("net_loss", "drawdown"):
+        values = (100.0, 90.0) if damage == "net_loss" else (100.0, 80.0, 110.0)
+        center = report(frozen["center_params"], values)
+    elif damage == "engineering":
+        center["gates"]["E2"] = {"status": "FAIL", "reason": "CASH_MISMATCH"}
+    else:
+        center["gates"]["R3"] = {"status": "FAIL", "reason": "REGIME_FAILURE"}
+    result = call("evaluate_neighbors", center, matrix, frozen)
+    assert result["status"] == "FAIL"
+    assert result["promotion_ready"] is False
+
+
+def test_singleton_axes_report_two_missing_directions_and_no_vacuous_pass():
+    frozen = call("build_neighbors", {"a": 1}, {"a": [1]})
+    assert frozen["boundaries"] == [{"parameter": "a", "missing_directions": ["lower", "upper"]}]
+    result = call("evaluate_neighbors", report({"a": 1}), [], frozen)
+    assert result["status"] == "NOT_EVALUABLE"
+    assert result["economic_pass_fraction"] is None
+
+
+def test_nonfinite_metric_or_missing_report_identity_never_passes_and_is_json_safe():
+    center, matrix, frozen = fixture()
+    matrix[0]["report"]["metrics"]["net_return"]["value"] = float("nan")
+    result = call("evaluate_neighbors", center, matrix, frozen)
+    assert result["status"] == "INVALID"
+    json.dumps(result, allow_nan=False)
+    matrix[0]["report"]["identity"] = {}
+    matrix[0]["report"]["metrics"]["net_return"]["value"] = 0.1
+    assert call("evaluate_neighbors", center, matrix, frozen)["status"] == "NOT_EVALUABLE"
+
+
+def test_malformed_case_params_returns_invalid_instead_of_hash_type_error():
+    center, matrix, frozen = fixture()
+    matrix[0]["params"] = []
+    assert call("evaluate_neighbors", center, matrix, frozen)["status"] == "INVALID"
+
+
+def test_explicit_center_fail_cannot_be_overwritten_by_pass_gates():
+    center, matrix, frozen = fixture()
+    center["status"] = "FAIL"
+    result = call("evaluate_neighbors", center, matrix, frozen)
+    assert result["status"] == "FAIL"
+    assert result["promotion_ready"] is False
+
+
+def test_candidate_context_change_is_invalid_even_with_honest_recomputed_hashes():
+    center, matrix, frozen = fixture()
+    identity = matrix[0]["report"]["identity"]
+    identity["candidate"]["risk_budget"]["max_leverage"] = 5.0
+    identity["candidate_id"] = identity_hash(identity["candidate"])
+    del identity["run_id"]
+    identity["run_id"] = identity_hash(identity)
+    assert call("evaluate_neighbors", center, matrix, frozen)["status"] == "INVALID"
+
+
+def test_explicit_engineering_missing_blocker_is_preserved_even_if_gate_says_pass():
+    center, matrix, frozen = fixture()
+    matrix[0]["report"]["blockers"].append(
+        {"gate": "E3", "status": "NOT_EVALUABLE", "reason": "MISSING_PARITY_RECEIPT"}
+    )
+    result = call("evaluate_neighbors", center, matrix, frozen)
+    assert result["status"] == "NOT_EVALUABLE"
+    assert result["economic_pass_fraction"] == 1.0
+
+
+def test_malformed_optional_center_identity_is_invalid_instead_of_hash_type_error():
+    center, matrix, frozen = fixture()
+    frozen["center_identity"] = []
+    assert call("evaluate_neighbors", center, matrix, frozen)["status"] == "INVALID"

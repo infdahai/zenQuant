@@ -1,0 +1,217 @@
+"""Finite sequential optimizer proposals with replayable, complete trial evidence.
+
+Optimizer objectives are development proxies, never evaluation-gate decisions.
+The supplied evaluation callback must expose training data only. This module
+records that contract but cannot establish the callback's point-in-time safety.
+"""
+
+from __future__ import annotations
+
+import fcntl
+import hashlib
+import json
+import math
+import os
+import time
+from collections.abc import Callable, Mapping
+from functools import wraps
+from pathlib import Path
+from typing import Any
+
+import optuna
+
+from zenquant.research.run_evidence import TrialJournal, identity_hash
+
+
+def _single_writer(function):
+    @wraps(function)
+    def locked(root, *args, **kwargs):
+        root = Path(root)
+        root.mkdir(parents=True, exist_ok=True)
+        with (root / ".search.lock").open("a+b") as handle:
+            try:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError as exc:
+                raise ValueError("search already running in this output directory") from exc
+            try:
+                return function(root, *args, **kwargs)
+            finally:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+
+    return locked
+
+
+def _study(sampler: str, seed: int) -> optuna.Study:
+    algorithm = (
+        optuna.samplers.RandomSampler(seed=seed)
+        if sampler == "random"
+        else optuna.samplers.TPESampler(seed=seed, n_startup_trials=4)
+    )
+    return optuna.create_study(sampler=algorithm, directions=["maximize", "minimize", "minimize"])
+
+
+def _validate_artifact(root: Path, row: dict) -> None:
+    if row.get("artifact"):
+        path = root / row["artifact"]
+        try:
+            digest = hashlib.sha256(path.read_bytes()).hexdigest()
+        except OSError as exc:
+            raise ValueError("missing trial artifact") from exc
+        if digest != row["artifact_sha256"]:
+            raise ValueError("trial artifact hash mismatch")
+
+
+def _history(journal: TrialJournal, root: Path) -> list[dict]:
+    history, pending = [], None
+    for record in journal.records():
+        if record["event"] == "STARTED":
+            if pending is not None:
+                raise ValueError("journal contains overlapping sequential attempts")
+            pending = record
+        elif record["event"] == "FINISHED":
+            if pending is None or any(record[key] != pending[key] for key in ("trial_id", "params")):
+                raise ValueError("trial outcome does not match its started attempt")
+            _validate_artifact(root, record)
+            history.append(record)
+            pending = None
+        else:
+            raise ValueError("unknown journal event")
+    if pending is not None:
+        # A crash consumes the attempt. Preserve any orphan artifact for forensic
+        # inspection; never infer a result or silently re-run the same trial.
+        result = {
+            **pending,
+            "attempt_id": pending["trial_id"] + ":finished",
+            "event": "FINISHED",
+            "status": "INTERRUPTED",
+            "objectives": None,
+            "error": "uncommitted_attempt_at_resume",
+        }
+        journal.append(result)
+        history.append(result)
+    return history
+
+
+def _objectives(report: Mapping[str, Any]) -> list[float]:
+    values = report.get("objectives")
+    if not isinstance(values, list) or len(values) != 3:
+        raise ValueError("evaluation must return exactly three proxy objectives")
+    if any(
+        isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value) for value in values
+    ):
+        raise ValueError("proxy objectives must be finite numbers")
+    return [float(value) for value in values]
+
+
+@_single_writer
+def run_bounded_search(
+    root: Path,
+    identity: Mapping[str, Any],
+    search_space: Mapping[str, list],
+    evaluate: Callable[[dict, str], Mapping[str, Any]],
+    *,
+    sampler: str = "random",
+    seed: int = 42,
+    budget: int = 12,
+    max_new_attempts: int | None = None,
+) -> dict[str, Any]:
+    """Run/resume a fixed budget without consulting dev or enlarging on failure.
+
+    Resume reconstructs the seeded sampler by asking/telling every recorded
+    attempt in order. A parameter mismatch fails closed. Code/data/policy hashes
+    belong in ``identity``; Optuna version, sampler, budget and search space are
+    additionally bound here. Checkpoint size does not change the frozen budget.
+    Same-parameter attempts remain distinct; this module performs no caching.
+    """
+    if sampler not in ("random", "tpe"):
+        raise ValueError("sampler must be random or tpe")
+    for name, value in (("seed", seed), ("budget", budget)):
+        if type(value) is not int or value < (1 if name == "budget" else 0):
+            raise ValueError(f"invalid {name}")
+    if max_new_attempts is not None and (type(max_new_attempts) is not int or max_new_attempts < 0):
+        raise ValueError("max_new_attempts must be nonnegative")
+    if not identity or not search_space:
+        raise ValueError("explicit identity and nonempty search space are required")
+    if identity.get("window") != "train":
+        raise ValueError("optimizer callbacks must be bound to the train role")
+    if any(not identity.get(key) for key in ("data_hash", "code_hash", "policy_hash")):
+        raise ValueError("search identity requires data_hash, code_hash and policy_hash")
+    for name, choices in search_space.items():
+        if not isinstance(name, str) or not isinstance(choices, list) or not choices:
+            raise ValueError("each named search parameter requires a nonempty list")
+        if any(type(value) not in (str, int, float, bool) and value is not None for value in choices):
+            raise ValueError("search choices must be scalar JSON values")
+    bound_identity = {
+        "schema_version": "bounded-search.v1",
+        "experiment": dict(identity),
+        "search_space": dict(search_space),
+        "sampler": sampler,
+        "seed": seed,
+        "budget": budget,
+        "optuna_version": optuna.__version__,
+        "startup_trials": 4,
+        "directions": ["maximize", "minimize", "minimize"],
+        "mode": "diagnostic_training_proxy_only",
+    }
+    root = Path(root)
+    journal = TrialJournal(root / "journal", bound_identity)
+    history = _history(journal, root)
+    study = _study(sampler, seed)
+    added = 0
+    for index in range(budget):
+        if index >= len(history) and max_new_attempts is not None and added >= max_new_attempts:
+            break
+        trial = study.ask()
+        params = {name: trial.suggest_categorical(name, search_space[name]) for name in sorted(search_space)}
+        trial_id = f"trial-{index:05d}"
+        if index < len(history):
+            result = history[index]
+            if result["trial_id"] != trial_id or result["params"] != params:
+                raise ValueError("sampler replay diverged from recorded parameters")
+        else:
+            started = {"attempt_id": trial_id + ":started", "trial_id": trial_id, "event": "STARTED", "params": params}
+            journal.append(started)
+            began = time.perf_counter()
+            result = {**started, "attempt_id": trial_id + ":finished", "event": "FINISHED", "objectives": None}
+            interrupted = None
+            try:
+                report = dict(evaluate(dict(params), trial_id))
+                values = _objectives(report)
+                identity_hash(report)  # strict finite JSON, no silent conversion
+                payload = (json.dumps(report, sort_keys=True, allow_nan=False) + "\n").encode()
+                artifact = f"{trial_id}.json"
+                with (root / artifact).open("xb") as handle:
+                    handle.write(payload)
+                    handle.flush()
+                    os.fsync(handle.fileno())
+                result.update(
+                    status="COMPLETE",
+                    objectives=values,
+                    artifact=artifact,
+                    artifact_sha256=hashlib.sha256(payload).hexdigest(),
+                )
+            except (KeyboardInterrupt, SystemExit) as exc:
+                result.update(status="INTERRUPTED", error=type(exc).__name__)
+                interrupted = exc
+            except Exception as exc:
+                result.update(status="FAILED", error=f"{type(exc).__name__}: {exc}")
+            result["wall_seconds"] = time.perf_counter() - began
+            journal.append(result)
+            history.append(result)
+            added += 1
+            if interrupted is not None:
+                raise interrupted
+        if result["status"] == "COMPLETE":
+            study.tell(trial, result["objectives"])
+        else:
+            study.tell(trial, state=optuna.trial.TrialState.FAIL)
+    return {
+        "schema_version": "bounded-search.v1",
+        "identity_hash": identity_hash(bound_identity),
+        "complete": len(history) == budget,
+        "budget": budget,
+        "attempts": history,
+        "mode": "diagnostic_training_proxy_only",
+        "rankable": False,
+        "live_eligible": False,
+    }

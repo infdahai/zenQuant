@@ -1,0 +1,257 @@
+"""Wire causal family intents to shared-component replay and independent metrics."""
+
+from __future__ import annotations
+
+import math
+from collections.abc import Mapping
+from copy import deepcopy
+from typing import Any
+
+from zenquant.research.evaluation import DAY_NS, evaluate_evidence
+from zenquant.research.regime_diagnostics import VERSION as REGIME_VERSION
+from zenquant.research.regime_diagnostics import assign_daily_regimes, attribute_regimes
+from zenquant.research.risk_diagnostics import evaluate_risk_diagnostics
+from zenquant.research.run_evidence import identity_hash
+from zenquant.research.strategy_families import generate_targets
+from zenquant.research.suite_evaluation import project_candidate_status
+from zenquant.research.target_replay import run_target_replay
+
+EVALUATION_POLICY = {
+    "version": "btc-diagnostic-policy.v2",
+    "parent_version": "btc-diagnostic-policy.v1",
+    "ablation_required_for_complexity_acceptance": True,
+    "min_daily_returns": 180,
+    "min_closed_episodes": 30,
+    "min_net_return": 0.0,
+    "max_drawdown": 0.15,
+}
+RISK_BUDGET = {"target_annual_vol": 0.10, "max_leverage": 1.5}
+
+
+def _add_diagnostics(evidence: dict, report: dict, regime_bars, window: str, policy: dict) -> None:
+    risk = evaluate_risk_diagnostics(evidence, report)
+    overlap = report["metrics"].keys() & risk["metrics"].keys()
+    if overlap:
+        raise ValueError(f"risk diagnostic metric collision: {sorted(overlap)}")
+    report["risk_diagnostics"] = risk
+    report["metrics"].update(deepcopy(risk["metrics"]))
+    if risk["capital_risk_gate"]["status"] == "FAIL":
+        gate = deepcopy(risk["capital_risk_gate"])
+        report["gates"]["R2"] = gate
+        report["blockers"] = [row for row in report["blockers"] if row.get("gate") != "R2"]
+        report["blockers"].append({"gate": "R2", **gate})
+        times = [report["ruin"]["first_time_ns"], risk["exposure_sampling"]["first_nonpositive_account_time_ns"]]
+        report["ruin"] = {"occurred": True, "first_time_ns": min(time for time in times if time is not None)}
+        report.update(rankable=False, development_screen_passed=False, diagnostic_only=True, live_eligible=False)
+        report["development_screens"]["max_drawdown"] = deepcopy(gate)
+        report["daily_sampling"]["terminated_by_ruin"] = True
+        for name in ("net_return", "cagr", "daily_sharpe", "daily_sortino"):
+            report["metrics"][name].update(status="NOT_EVALUABLE", reason="RUIN")
+            if name != "net_return":
+                report["metrics"][name]["value"] = None
+    labels = assign_daily_regimes(regime_bars, [row["time_ns"] - DAY_NS for row in report["daily_returns"]])
+    report["regime_diagnostics"] = {"labels": labels, "attribution": attribute_regimes(report, labels)}
+    metric_window = {
+        "name": window,
+        "start_ns": evidence["curve"][0]["time_ns"],
+        "end_ns_exclusive": evidence["curve"][-1]["time_ns"],
+    }
+    thresholds = {
+        "net_return": {"operator": ">", "value": policy["min_net_return"]},
+        "max_drawdown": {"operator": "<=", "value": policy["max_drawdown"]},
+        "daily_sharpe": {"min_samples": policy["min_daily_returns"]},
+        "daily_sortino": {"min_samples": policy["min_daily_returns"]},
+        "episode_profit_factor": {"min_samples": policy["min_closed_episodes"]},
+        "daily_loss_var95": {"min_full_tail_observations": 20},
+        "daily_loss_es95": {"min_full_tail_observations": 20},
+    }
+    for metrics in (report["metrics"], risk["metrics"]):
+        for name, metric in metrics.items():
+            metric.update(
+                window=deepcopy(metric_window),
+                source_hash=report["identity"]["run_id"],
+                policy_threshold=deepcopy(thresholds.get(name)),
+            )
+    for month in risk["monthly_returns"]:
+        for name in ("net_return", "net_pnl"):
+            month[name].update(
+                window={
+                    "name": month["month"],
+                    "start_ns": month["start_time_ns"],
+                    "end_ns_exclusive": month["end_time_ns"],
+                },
+                source_hash=report["identity"]["run_id"],
+                policy_threshold=None,
+            )
+    report["candidate_status"] = project_candidate_status(report)
+
+
+def evaluate_candidate(
+    bundle: Mapping[str, Any],
+    family: str,
+    params: Mapping[str, Any],
+    *,
+    window: str,
+    code_hash: str,
+    inventory_policy: str = "shared_production_proxy_v1",
+    risk_budget: Mapping[str, Any] | None = None,
+    extra_cost_bps: float = 0.0,
+    initial_equity: float = 100_000.0,
+) -> tuple[dict, dict]:
+    """Evaluate one reset-flat window with historical feature warmup only.
+
+    The first evaluated close may use warmup features; its earliest fill is the
+    next open. No warmup positions/PnL carry into the evaluation account. Extra
+    bps are paid as taker fees on every actual fill, affecting subsequent NAV
+    and risk decisions. ``buy_hold_1x`` is a market reference, not risk-matched
+    alpha evidence. Engineering attestations remain conservative. Optional
+    risk_budget may only reduce intent-generation limits; shared risk settings
+    remain unchanged. Runner identity binds this source budget and engine
+    identity binds the resulting targets; resolved_config describes execution,
+    gateway and RiskOverlay, not the upstream intent-generation budget.
+    """
+    roles = {"train": "training_development", "dev": "development_selection", "observed_2026": "observed_historical"}
+    if window not in roles:
+        raise ValueError("unsupported window evidence role")
+    if not isinstance(code_hash, str) or not code_hash:
+        raise ValueError("explicit code_hash is required")
+    if (
+        isinstance(extra_cost_bps, bool)
+        or not isinstance(extra_cost_bps, (int, float))
+        or not math.isfinite(extra_cost_bps)
+        or extra_cost_bps < 0
+    ):
+        raise ValueError("extra_cost_bps must be finite and nonnegative")
+    if risk_budget is None:
+        risk_budget = deepcopy(RISK_BUDGET)
+    else:
+        if not isinstance(risk_budget, Mapping) or set(risk_budget) != set(RISK_BUDGET):
+            raise ValueError("risk_budget requires exactly target_annual_vol and max_leverage")
+        risk_budget = deepcopy(dict(risk_budget))
+        for key, maximum in RISK_BUDGET.items():
+            value = risk_budget[key]
+            if (
+                isinstance(value, bool)
+                or not isinstance(value, (int, float))
+                or not math.isfinite(value)
+                or not 0 < value <= maximum
+            ):
+                raise ValueError(f"risk_budget.{key} must be finite, positive and <= {maximum}")
+    policy = deepcopy(EVALUATION_POLICY)
+    manifest = deepcopy(bundle["manifest"])
+    symbol = bundle.get("symbol", "BTCUSDT")
+    if symbol not in {"BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT"}:
+        raise ValueError("unsupported research symbol")
+    manifest_symbol = manifest.get("symbol")
+    if manifest_symbol not in {symbol, f"{symbol}_PERP"}:
+        # Older BTC-only in-memory fixtures did not carry a symbol field.
+        if not (symbol == "BTCUSDT" and "symbol" not in bundle and manifest_symbol is None):
+            raise ValueError("bundle symbol must match explicit data manifest symbol")
+    account_scope = "independent_single_symbol_account"
+    params = deepcopy(dict(params))
+    bars = bundle["bars"]
+    regime_bars = bundle.get("regime_bars", bars)
+    warmup = bundle["warmup_count"]
+    if type(warmup) is not int or not 0 <= warmup < len(bars):
+        raise ValueError("invalid warmup/evaluation boundary")
+    if family == "buy_hold_1x":
+        if params:
+            raise ValueError("buy_hold_1x has no parameters")
+        targets = [min(1.0, risk_budget["max_leverage"])] * len(bars)
+    else:
+        targets = generate_targets(bars, family, params, **risk_budget)
+    evidence = run_target_replay(
+        bars[warmup:],
+        targets[warmup:],
+        bundle["funding"],
+        symbol=symbol,
+        inventory_policy=inventory_policy,
+        initial_equity=initial_equity,
+        max_leverage=RISK_BUDGET["max_leverage"],
+        taker_fee_bps=4.0 + extra_cost_bps,
+        slippage_bps=1.5,
+    )
+    if symbol != "BTCUSDT" and inventory_policy == "shared_production_proxy_v1":
+        reason = "KNOWN_NONBTC_PRODUCTION_PATH_UNSUPPORTED: research-only major-symbol snapshots; shared production snapshot builder remains BTC-only; production parity not established"
+        evidence["engineering"]["E3"] = {"status": "FAIL", "reason": reason}
+        evidence["limitations"].append(reason)
+    candidate = {
+        "family": family,
+        "params": params,
+        "risk_budget": deepcopy(risk_budget),
+        "code_hash": code_hash,
+        "symbol": symbol,
+        "inventory_policy": inventory_policy,
+        "account_scope": account_scope,
+    }
+    candidate_id = identity_hash(candidate)
+    costs = {"base_taker_fee_bps": 4.0, "extra_taker_fee_bps": float(extra_cost_bps), "slippage_bps": 1.5}
+    warmup_contract = {
+        "strategy_bars": manifest.get("requested_warmup_bars", 180),
+        "regime_bars": manifest.get("regime_history", {}).get("requested_warmup_bars", 720),
+        "actual_strategy_bars": warmup,
+        "actual_regime_bars": sum(row["open_time_ns"] < bars[warmup]["open_time_ns"] for row in regime_bars),
+        "regime_input_hash": identity_hash({"bars": regime_bars}),
+    }
+    identity = {
+        "symbol": symbol,
+        "inventory_policy": inventory_policy,
+        "account_scope": account_scope,
+        "research_intent_risk_budget": deepcopy(risk_budget),
+        "budget_authority": "runner binds causal intent generation budget; engine identity binds resulting targets; shared RiskOverlay config unchanged",
+        "candidate_id": candidate_id,
+        "candidate": candidate,
+        "window": window,
+        "code_hash": code_hash,
+        "data_manifest": manifest,
+        "policy_hash": identity_hash(policy),
+        "engine_identity": evidence["identity"],
+        "regime_label_source": {"version": REGIME_VERSION, "input_hash": identity_hash({"bars": regime_bars})},
+        "costs": costs,
+        "initial_equity": initial_equity,
+        "boundary_policy": "reset_flat_no_warmup_pnl_first_execution_after_first_evaluated_close",
+        "warmup_contract": deepcopy(warmup_contract),
+    }
+    identity["run_id"] = identity_hash(identity)
+    evidence.update(identity=identity, policy=policy, evidence_role=roles[window], source_completed=True)
+    report = evaluate_evidence(evidence)
+    report["comparison_contract"] = {
+        "symbol": symbol,
+        "inventory_policy": inventory_policy,
+        "account_scope": account_scope,
+        "engine": evidence["resolved_config"]["engine"],
+        "inventory_policy_metadata": deepcopy(evidence["resolved_config"]["inventory_policy_metadata"]),
+        "window": window,
+        "data_hash": manifest["window_data_hash"],
+        "accounting_hash": code_hash,
+        "execution": "confirmed_4h_close_then_next_open_proxy",
+        "cost": deepcopy(costs),
+        "risk_budget": deepcopy(risk_budget),
+        "exposure_policy": (
+            "constant_1x_market_reference" if risk_budget["max_leverage"] >= 1.0 else "intent_capped_market_reference"
+        )
+        if family == "buy_hold_1x"
+        else "realized_vol_target_30d",
+        "initial_equity": initial_equity,
+        "boundary_policy": identity["boundary_policy"],
+        "warmup_contract": deepcopy(warmup_contract),
+    }
+    report["execution_summary"] = {
+        "fills": len(evidence["fills"]),
+        "funding_events": len(evidence["funding"]),
+        "sampled_accounting_residuals": {
+            key: evidence["accounting"][key] for key in ("max_cash_error", "max_nav_error", "max_inventory_error")
+        },
+        "limitations": deepcopy(evidence["limitations"]),
+    }
+    _add_diagnostics(evidence, report, regime_bars, window, policy)
+    report["optimizer_feedback_eligible"] = (
+        not any(
+            row.get("status") in {"FAIL", "INVALID", "STALE"}
+            for gate, row in report["gates"].items()
+            if gate in {"E0", "E1", "E2", "E3", "E4"}
+        )
+        and not report["ruin"]["occurred"]
+    )
+    report.update(rankable=False, live_eligible=False, diagnostic_only=True)
+    return evidence, report

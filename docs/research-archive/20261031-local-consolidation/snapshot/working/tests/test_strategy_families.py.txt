@@ -1,0 +1,279 @@
+"""Causal behavior of economically distinct research-only target generators."""
+
+from __future__ import annotations
+
+import copy
+import json
+from math import sqrt
+from pathlib import Path
+
+import numpy as np
+import pytest
+
+BAR_NS = 4 * 3_600_000_000_000
+FAMILIES = ("trend", "breakout", "range_reversion", "cash", "vol_target")
+
+
+def generate(bars, family, params=None, **kwargs):
+    from zenquant.research.strategy_families import generate_targets
+
+    return generate_targets(bars, family, params or {}, **kwargs)
+
+
+def bars_from_closes(closes):
+    return [
+        {
+            "open_time_ns": index * BAR_NS,
+            "close_time_ns": (index + 1) * BAR_NS - 1_000_000,
+            "open": close,
+            "high": close + 1.0,
+            "low": close - 1.0,
+            "close": close,
+        }
+        for index, close in enumerate(closes)
+    ]
+
+
+def varying_bars(count=400):
+    return bars_from_closes([100.0 + (index % 13) * 0.5 + index * 0.02 for index in range(count)])
+
+
+def test_nonfinite_slow_trend_from_finite_prices_is_rejected():
+    prices = np.geomspace(1e-200, 1e150, 181)
+    bars = [
+        dict(
+            open_time_ns=i * BAR_NS,
+            close_time_ns=(i + 1) * BAR_NS - 1_000_000,
+            open=float(p),
+            high=float(p),
+            low=float(p),
+            close=float(p),
+        )
+        for i, p in enumerate(prices)
+    ]
+    with pytest.raises(ValueError, match="non-finite derived"):
+        generate(bars, "range_reversion", {"trend_filter_bars": 180})
+
+
+@pytest.mark.parametrize("family", FAMILIES)
+def test_future_price_mutation_cannot_change_prefix_targets(family):
+    original = varying_bars()
+    changed = copy.deepcopy(original)
+    for row in changed[260:]:
+        for field in ("open", "high", "low", "close"):
+            row[field] *= 100.0
+    full = generate(original, family)
+    assert full[:260] == generate(changed, family)[:260]
+    assert full[:260] == generate(original[:260], family)
+
+
+def test_breakout_entry_uses_previous_highs_not_current_bar_high():
+    data = bars_from_closes([100.0, 101.0] * 90 + [105.0])
+    data[-1]["high"] = 1_000.0
+    targets = generate(data, "breakout", {"entry_bars": 4, "exit_bars": 2, "confirmation_bars": 1})
+    assert targets[-1] > 0.0
+
+
+def test_breakout_exit_uses_previous_lows_not_current_bar_low():
+    data = bars_from_closes([100.0, 101.0] * 90 + [105.0, 90.0])
+    data[-1]["low"] = 1.0
+    targets = generate(data, "breakout", {"entry_bars": 4, "exit_bars": 2, "confirmation_bars": 1})
+    assert targets[-2] > 0.0
+    assert targets[-1] == 0.0
+
+
+def test_breakout_cannot_enter_before_its_exit_window_is_available():
+    data = bars_from_closes([100.0, 101.0] * 90 + [105.0])
+    targets = generate(data, "breakout", {"entry_bars": 4, "exit_bars": 200, "confirmation_bars": 1})
+    assert targets[-1] == 0.0
+
+
+def test_trend_requires_consecutive_confirmation_but_exits_on_invalidated_trend():
+    prices = [100.0, 101.0] * 85 + list(range(110, 100, -1)) + [110.0, 111.0, 112.0, 90.0]
+    data = bars_from_closes(prices)
+    targets = generate(data, "trend", {"fast_bars": 1, "slow_bars": 3, "confirmation_bars": 3})
+    assert targets[180:182] == [0.0, 0.0]
+    assert targets[182] > 0.0
+    assert targets[183] == 0.0
+
+
+def test_range_reversion_buys_deviation_then_exits_on_mean_recovery():
+    data = bars_from_closes([100.0, 101.0] * 90 + [95.0, 101.0])
+    params = {"mean_bars": 20, "entry_z": 2.0, "exit_z": 0.0, "trend_filter_bars": 30, "max_trend_drop": 0.1}
+    targets = generate(data, "range_reversion", params)
+    assert targets[-2] > 0.0
+    assert targets[-1] == 0.0
+    params["max_trend_drop"] = 0.02
+    assert generate(data, "range_reversion", params)[-2] == 0.0
+
+
+def test_fixed_30_day_volatility_budget_uses_180_sample_returns():
+    prices = [100.0]
+    for index in range(180):
+        prices.append(prices[-1] * (1.01 if index % 2 == 0 else 0.99))
+    targets = generate(bars_from_closes(prices), "vol_target")
+    assert targets[:180] == [0.0] * 180
+    expected = 0.10 / (0.01 * sqrt(180 / 179) * sqrt(365 * 6))
+    assert targets[-1] == pytest.approx(expected)
+
+
+@pytest.mark.parametrize("family", FAMILIES)
+def test_constant_or_insufficient_data_stays_flat(family):
+    assert generate(bars_from_closes([100.0] * 250), family) == [0.0] * 250
+    assert generate(varying_bars(180), family) == [0.0] * 180
+    assert generate([], family) == []
+
+
+@pytest.mark.parametrize("family", FAMILIES)
+def test_targets_remain_long_or_flat_under_shared_leverage_cap(family):
+    targets = generate(varying_bars(), family, target_annual_vol=0.4, max_leverage=0.37)
+    assert len(targets) == 400
+    assert all(0.0 <= target <= 0.37 for target in targets)
+
+
+def test_volatility_budget_reduction_is_never_held_by_signal_confirmation():
+    data = varying_bars()
+    large = generate(data, "vol_target", target_annual_vol=0.1)
+    small = generate(data, "vol_target", target_annual_vol=0.05)
+    assert small[-1] == pytest.approx(large[-1] / 2)
+    assert generate(data, "vol_target", target_annual_vol=0.0) == [0.0] * len(data)
+
+
+def test_missing_bar_resets_state_and_thirty_day_volatility_warmup():
+    data = varying_bars()
+    del data[200]
+    targets = generate(data, "vol_target")
+    assert targets[199] > 0.0
+    assert targets[200:380] == [0.0] * 180
+    assert targets[380] > 0.0
+
+
+@pytest.mark.parametrize("field", ["open", "high", "low", "close"])
+def test_nonfinite_bar_values_are_rejected(field):
+    data = varying_bars(2)
+    data[1][field] = float("nan")
+    with pytest.raises(ValueError, match="finite"):
+        generate(data, "trend")
+
+
+def test_duplicate_out_of_order_or_wrong_duration_bars_are_rejected():
+    data = varying_bars(3)
+    with pytest.raises(ValueError, match="increasing"):
+        generate([data[1], data[0]], "trend")
+    with pytest.raises(ValueError, match="increasing"):
+        generate([data[0], data[0]], "trend")
+    data[1]["close_time_ns"] += 3_600_000_000_000
+    with pytest.raises(ValueError, match="4h"):
+        generate(data, "trend")
+
+
+@pytest.mark.parametrize(
+    "family,params",
+    [
+        ("unknown", {}),
+        ("trend", {"fast_bars": 10, "slow_bars": 5}),
+        ("trend", {"confirmation_bars": 0}),
+        ("trend", {"fast_bars": 1.5}),
+        ("breakout", {"target_annual_vol": 0.5}),
+        ("range_reversion", {"entry_z": 0.5, "exit_z": 1.0}),
+    ],
+)
+def test_invalid_parameters_and_risk_axes_in_search_parameters_are_rejected(family, params):
+    with pytest.raises(ValueError):
+        generate(varying_bars(), family, params)
+
+
+@pytest.mark.parametrize("family", FAMILIES)
+def test_each_family_is_deterministic_and_does_not_mutate_bars_or_params(family):
+    data = varying_bars()
+    original = copy.deepcopy(data)
+    params = {}
+    assert generate(data, family, params) == generate(data, family, params)
+    assert data == original
+    assert params == {}
+
+
+def test_catalog_default_candidates_are_executable_under_fixed_shared_risk_contract():
+    path = Path(__file__).resolve().parents[1] / "config/research/btc_strategy_families_v1.json"
+    catalog = json.loads(path.read_text())
+    for family in catalog["families"]:
+        targets = generate(varying_bars(), family["family"], family["default_params"], **catalog["risk_budget"])
+        assert len(targets) == 400
+        assert 3 <= len(family["search_space"]) <= 6
+        for parameter, choices in family["search_space"].items():
+            for choice in choices:
+                params = {**family["default_params"], parameter: choice}
+                generate(varying_bars(), family["family"], params, **catalog["risk_budget"])
+
+
+def test_breakout_entry_ablation_enters_without_breakout_exits_then_reenters_next_bar():
+    bars = bars_from_closes([100.0 + (i % 2) for i in range(181)] + [90.0, 100.0])
+    nominal = generate(bars, "breakout")
+    removed = generate(bars, "breakout", {"entry_gate_enabled": False})
+    assert nominal[180] == 0.0
+    assert removed[180] > 0.0
+    assert removed[181] == 0.0
+    assert removed[182] > 0.0
+
+
+def test_breakout_exit_ablation_keeps_entry_and_holds_through_low_break():
+    bars = bars_from_closes([100.0 + (i % 2) for i in range(180)] + [110.0, 90.0, 100.0])
+    nominal = generate(bars, "breakout")
+    removed = generate(bars, "breakout", {"exit_gate_enabled": False})
+    assert nominal[180] > 0.0 and removed[180] == nominal[180]
+    assert nominal[181] == 0.0 and removed[181] > 0.0
+    assert nominal[182] == 0.0 and removed[182] > 0.0
+
+
+@pytest.mark.parametrize("switch", ["entry_gate_enabled", "exit_gate_enabled"])
+def test_breakout_ablation_prefix_and_gap_rewarm(switch):
+    rng = np.random.default_rng(7)
+    bars = bars_from_closes(np.exp(np.cumsum(rng.normal(0.0, 0.01, 550))) * 100.0)
+    params = {switch: False}
+    result = generate(bars, "breakout", params)
+    assert generate(bars[:300], "breakout", params) == result[:300]
+    gapped = bars[:250] + bars[251:]
+    after = generate(gapped, "breakout", params)
+    assert after[250:430] == [0.0] * 180
+    assert generate(bars_from_closes([100.0] * 300), "breakout", params) == [0.0] * 300
+
+
+@pytest.mark.parametrize("switch", ["entry_gate_enabled", "exit_gate_enabled"])
+@pytest.mark.parametrize("value", [0, 1, None, "false"])
+def test_breakout_ablation_requires_strict_booleans(switch, value):
+    with pytest.raises(ValueError, match="bool"):
+        generate(varying_bars(), "breakout", {switch: value})
+
+
+def test_breakout_ablation_rejects_two_removals_and_other_families():
+    with pytest.raises(ValueError, match="single"):
+        generate(varying_bars(), "breakout", {"entry_gate_enabled": False, "exit_gate_enabled": False})
+    for family in ("trend", "range_reversion", "vol_target", "cash"):
+        with pytest.raises(ValueError, match="unknown"):
+            generate(varying_bars(), family, {"entry_gate_enabled": False})
+
+
+def test_explicit_enabled_breakout_matches_default_outputs():
+    bars = varying_bars()
+    assert generate(bars, "breakout") == generate(
+        bars, "breakout", {"entry_gate_enabled": True, "exit_gate_enabled": True}
+    )
+
+
+def test_entry_ablation_preserves_confirmation_component():
+    bars = bars_from_closes([100.0 + (i % 2) for i in range(185)])
+    targets = generate(bars, "breakout", {"entry_gate_enabled": False, "confirmation_bars": 3})
+    assert targets[180:182] == [0.0, 0.0]
+    assert targets[182] > 0.0
+
+
+def test_exit_ablation_is_not_delayed_by_removed_exit_lookback():
+    bars = bars_from_closes([100.0 + (i % 2) for i in range(180)] + [110.0])
+    targets = generate(bars, "breakout", {"exit_gate_enabled": False, "exit_bars": 1000})
+    assert targets[180] > 0.0
+
+
+def test_entry_ablation_is_not_delayed_by_removed_entry_lookback():
+    bars = bars_from_closes([100.0 + (i % 2) for i in range(181)])
+    targets = generate(bars, "breakout", {"entry_gate_enabled": False, "entry_bars": 1000})
+    assert targets[180] > 0.0

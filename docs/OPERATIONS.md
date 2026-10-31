@@ -1,6 +1,9 @@
 # Operations Guide
 
-How to optimize, deploy, monitor, and iterate on the strategy.
+Historical Python research/collector operations, retained outside the default product.
+For the native Go workbench use [GO_OPERATIONS.md](GO_OPERATIONS.md).
+The commands below do not authorize new training, tuning, promotion or deployment;
+the current handoff freeze continues to apply.
 
 ---
 

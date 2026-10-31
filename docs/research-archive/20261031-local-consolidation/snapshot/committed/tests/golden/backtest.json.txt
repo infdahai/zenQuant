@@ -1,0 +1,15 @@
+{
+    "metrics": {
+        "sharpe": -9.7916,
+        "net_pnl": -2450.73,
+        "max_drawdown": 0.028809,
+        "profit_factor": 2.556359,
+        "trade_count": 252
+    },
+    "equity": {"final": 97549.27227977359},
+    "counts": {"indicator_packs": 630, "targets": 540, "reports": 252},
+    "diagnostics": {
+        "playbook_counts": {"RANGE_LIGHT": 484, "BEAR_DEFENSE": 8, "BULL_CONTINUATION": 138},
+        "actionable_exit_counts": {"TIME_DECAY": 1}
+    }
+}

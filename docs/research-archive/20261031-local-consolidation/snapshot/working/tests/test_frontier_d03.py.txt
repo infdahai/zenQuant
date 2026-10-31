@@ -1,0 +1,152 @@
+"""Inventory anchors, inverse units and close-time causality must stay explicit."""
+
+import importlib
+
+import numpy as np
+import pandas as pd
+import pytest
+
+
+def subject():
+    return importlib.import_module("zenquant.research.frontier_lab.experiments.d03_paulwei")
+
+
+def fills():
+    return pd.DataFrame(
+        {
+            "symbol": ["XBTUSD"] * 3,
+            "side": ["Buy", "Buy", "Sell"],
+            "orderID": ["buy", "buy", "sell"],
+            "execID": ["one", "two", "three"],
+            "lastQty": [2, 3, 6],
+            "lastPx": [10.0, 20.0, 20.0],
+            "foreignNotional": [-2, -3, 6],
+            "homeNotional": [0.2, 0.15, -0.3],
+            "action_ns": [10, 30, 20],
+        }
+    )
+
+
+def instruments():
+    return pd.DataFrame(
+        {
+            "symbol": ["XBTUSD"],
+            "underlying": ["XBT"],
+            "quoteCurrency": ["USD"],
+            "settlCurrency": ["XBt"],
+            "isInverse": [True],
+            "isQuanto": [False],
+            "multiplier": [-100000000],
+        }
+    )
+
+
+def test_fragments_aggregate_only_last_qty_and_do_not_duplicate():
+    frame = fills()
+    frame["cumQty"] = [2, 5, 6]
+    frame["orderQty"] = [5, 5, 6]
+    orders = subject().aggregate_orders(pd.concat([frame, frame.iloc[[0]]]))
+    buy = orders.set_index("orderID").loc["buy"]
+    assert buy.qty_contracts == 5
+    assert buy.fragments == 2
+    assert buy.first_ns == 10 and buy.last_ns == 30
+    assert buy.usd_face == 5  # inverse contracts are USD face, never qty * price
+
+
+def test_conflicting_duplicate_execution_fails_closed():
+    frame = fills()
+    changed = frame.iloc[[0]].copy()
+    changed["lastQty"] = 9
+    with pytest.raises(ValueError, match="conflicting"):
+        subject().aggregate_orders(pd.concat([frame, changed]))
+
+
+def test_opposite_sides_cannot_share_one_order():
+    frame = fills()
+    frame.loc[2, "orderID"] = "buy"
+    with pytest.raises(ValueError, match="side"):
+        subject().aggregate_orders(frame)
+
+
+def test_inverse_signed_contracts_are_not_btc_inventory():
+    result = subject().validated_inverse_fills(fills(), instruments())
+    assert result.delta_contracts.tolist() == [2, 3, -6]
+    assert result.btc_at_fill.tolist() == [0.2, 0.15, -0.3]
+    bad = fills()
+    bad.loc[0, "foreignNotional"] = 2
+    with pytest.raises(ValueError, match="notional"):
+        subject().validated_inverse_fills(bad, instruments())
+
+
+def test_invalid_side_or_nonpositive_quantity_fails_closed():
+    for column, value in [("side", "Long"), ("lastQty", -1), ("lastPx", 0)]:
+        bad = fills()
+        bad.loc[0, column] = value
+        with pytest.raises(ValueError):
+            subject().validated_inverse_fills(bad, instruments())
+
+
+def test_noninverse_spec_is_not_assumed_one_dollar():
+    spec = instruments()
+    spec.loc[0, "isInverse"] = False
+    with pytest.raises(ValueError, match="inverse"):
+        subject().validated_inverse_fills(fills(), spec)
+
+
+def test_fragment_inventory_uses_time_order_not_full_order_first_fill():
+    validated = subject().validated_inverse_fills(fills(), instruments())
+    result = subject().classify_inventory(validated, initial_contracts=0)
+    assert result.action_ns.tolist() == [10, 20, 30]
+    assert result.classification.tolist() == ["open", "reversal", "reduce"]
+    assert result.position_after.tolist() == [2, -4, -1]
+
+
+def test_missing_anchor_and_offset_sensitivity_are_explicit():
+    validated = subject().validated_inverse_fills(fills(), instruments())
+    assert set(subject().classify_inventory(validated, None).classification) == {"unanchored"}
+    shifted = subject().classify_inventory(validated, initial_contracts=-10)
+    assert shifted.classification.tolist() == ["reduce", "add", "reduce"]
+
+
+def test_simultaneous_opposite_fills_are_ambiguous_not_invented_reversals():
+    frame = subject().validated_inverse_fills(fills(), instruments())
+    frame["action_ns"] = 10
+    result = subject().classify_inventory(frame, initial_contracts=0)
+    assert len(result) == 1
+    assert result.classification.tolist() == ["ambiguous_same_time"]
+    assert result.position_after.tolist() == [-1]
+
+
+def test_prior_bar_rejects_future_close_and_keeps_fragment_time():
+    bars = pd.DataFrame({"close_time_ns": [10, 20, 30], "close": [10, 100, 1]})
+    frame = fills()
+    frame["action_ns"] = [9, 10, 29]
+    result = subject().assign_prior_bar(frame, bars)
+    assert result.bar_index.tolist() == [-1, 0, 1]
+    changed = bars.copy()
+    changed.loc[2, "close"] = 1e6
+    assert np.array_equal(result.bar_index, subject().assign_prior_bar(frame, changed).bar_index)
+
+
+def test_forced_fill_without_order_identity_preserves_inventory_not_order_count():
+    frame = fills()
+    frame.loc[2, "orderID"] = None
+    validated = subject().validated_inverse_fills(frame, instruments())
+    assert validated.delta_contracts.sum() == -1
+    assert len(subject().classify_inventory(validated, 0)) == 3
+    with pytest.raises(ValueError, match="order identity"):
+        subject().aggregate_orders(validated)
+    assert len(subject().aggregate_orders(validated[validated.orderID.notna()])) == 1
+
+
+def test_execution_clock_normalizes_pandas_microseconds_and_uses_later_timestamp():
+    frame = pd.DataFrame(
+        {
+            "timestamp": ["2025-12-31T23:59:59.999Z", "2025-12-31T23:59:59.999Z"],
+            "transactTime": ["2025-12-31T23:59:58.000Z", "2026-01-01T00:00:00.000Z"],
+        }
+    )
+    clocks = subject().execution_clock_ns(frame)
+    assert clocks[0] == pd.Timestamp("2025-12-31T23:59:59.999Z").value
+    assert clocks[1] == pd.Timestamp("2026-01-01T00:00:00Z").value
+    assert (clocks < pd.Timestamp("2026-01-01T00:00:00Z").value).tolist() == [True, False]

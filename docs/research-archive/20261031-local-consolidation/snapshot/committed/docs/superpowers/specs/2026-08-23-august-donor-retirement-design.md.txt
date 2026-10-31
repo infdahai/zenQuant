@@ -1,0 +1,83 @@
+# August Donor Retirement Design
+
+## Status
+
+Approved direction as of 2026-08-23. This design retires the August rank1
+donor from new training and promotion while preserving historical replay and
+audit evidence.
+
+## Decision
+
+The immutable retirement state is:
+
+```text
+donor_id               = august_rank1_20260821
+research_state         = RETIRED
+training_allowed       = false
+parameter_search       = false
+promotion_allowed      = false
+historical_replay      = true
+reason                 = late_dev_baseline_negative_5_of_5
+terminal_recommendation = stop_donor_training
+```
+
+Retirement is a governance decision, not deletion. The candidate parameters,
+manifest, generated artifact identities and committed analyzers remain
+available for reproducibility.
+
+## Authority
+
+A tracked machine-readable donor registry becomes the only authority for
+whether a named donor may enter a new campaign. It records donor lineage, source
+selector and parameter hash. Human-readable docs explain the decision but
+cannot unlock a donor.
+
+Campaign and promotion entrypoints must fail closed before loading parameters
+when a donor is retired. A generic research command without a declared donor
+identity must not silently default to August. A new donor ID with the same
+retired parameter hash or source selector is rejected as an alias.
+
+Retirement may be reversed only by a new product-owner decision that names a
+new donor identity. The original `august_rank1_20260821` identity itself remains
+retired permanently; any materially different hypothesis receives a new ID.
+
+## Allowed operations
+
+- reproduce the frozen A0-A5 experiment only with
+  `mode=reproduce_frozen`, the original manifest and exact parameter hash;
+- regenerate compact acceptance or attribution reports from the frozen raw artifact;
+- compare a new donor against August as a historical benchmark;
+- inspect parameters, decisions, episodes and execution diagnostics.
+
+## Forbidden operations
+
+- start Optuna, RL or manual parameter search from August parameters;
+- use August as the implicit default donor for a new campaign;
+- change its windows, seeds, costs or parameters and retain the same donor ID;
+- promote it to paper-live or capital deployment;
+- reinterpret a historical replay as new OOS evidence.
+
+## Compatibility
+
+The legacy production path remains unchanged. Existing frozen result hashes and
+golden files must remain byte-identical. The retirement gate applies only to
+research campaign and promotion authority; it must not prevent deterministic
+historical reproduction.
+
+The rejected historical contract
+`docs/NEXT_RESEARCH_HYPOTHESIS_EXECUTION_INVENTORY_RETHINK.json` remains a known
+runtime dependency until a separate migration moves it under `config/research/`
+and makes its closed state fail-closed.
+
+## Acceptance
+
+- every new campaign names a donor identity explicitly;
+- a retired donor exits before training, parameter loading or output mutation
+  in campaign and promotion modes;
+- `mode=reproduce_frozen` loads only the original manifest and parameter hash,
+  marks all outputs reproduction-only and cannot emit promotion evidence;
+- historical replay remains available under an explicit reproduction mode;
+- changing the registry changes its content hash and audit output;
+- August acceptance summary remains
+  `BLOCKED_PAUSE_PROMOTION_AND_TRAINING`;
+- full legacy/plugin parity and golden tests remain unchanged.

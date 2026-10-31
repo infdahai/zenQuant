@@ -1,0 +1,69 @@
+commit c3bdc04440bf6f7e44b48a3863c910c80a4ed511
+Author:     Disaster <clusternlh@gmail.com>
+AuthorDate: Mon Aug 24 18:41:42 2026 +0800
+Commit:     Disaster <clusternlh@gmail.com>
+CommitDate: Mon Aug 24 18:41:42 2026 +0800
+
+    docs(research): record Task6 registration blocker
+
+diff --git a/docs/superpowers/plans/2026-08-24-time-space-shadow.md b/docs/superpowers/plans/2026-08-24-time-space-shadow.md
+index 3c40de5..d40c1f4 100644
+--- a/docs/superpowers/plans/2026-08-24-time-space-shadow.md
++++ b/docs/superpowers/plans/2026-08-24-time-space-shadow.md
+@@ -320,6 +320,15 @@ git commit -m "feat(research): add time-space shadow runner"
+ 
+ ### Task 6: Mechanical Isolation and OFF/ON Identity
+ 
++**Implementation ledger (2026-08-24):** code-complete through the read-only
++baseline smoke (`1409` rows; exact stages `A1_SIGN`, `A5_SHADOW`, and
++`FILLED_POSITION`) and `189` focused isolation/parity tests. Registration stays
++`PENDING`: existing source receipts do not contain a recoverable corpus artifact,
++so Task 7 must first prove that a `self-hosted, zenquant-data` runner has the exact
++registered corpus mount. No forward gate can clear before the cutoff-specific
++checkpoint, downloaded generator artifact, receipt, and trust record are added to
++the append-only registration tree.
++
+ **Files:**
+ - Create: `zenquant/research/time_space_export.py`
+ - Create: `scripts/export_time_space_architecture.py`
+@@ -332,7 +341,7 @@ git commit -m "feat(research): add time-space shadow runner"
+ **Interfaces:**
+ - Produces: enforceable proof that research code cannot affect current trading paths.
+ 
+-- [ ] **Step 1: Add failing import and byte-parity tests**
++- [x] **Step 1: Add failing import and byte-parity tests**
+ 
+ ```python
+ def test_production_modules_do_not_import_time_space_shadow() -> None:
+@@ -344,13 +353,13 @@ def test_shadow_off_on_preserves_execution_bytes(tmp_path: Path) -> None:
+     assert off.execution_sha256 == on.execution_sha256
+ ```
+ 
+-- [ ] **Step 2: Run and confirm RED**
++- [x] **Step 2: Run and confirm RED**
+ 
+ Run: `uv run pytest tests/test_import_boundaries.py tests/test_architecture_experiment.py tests/test_time_space_shadow_cli.py -q`
+ 
+ Expected: new boundary/parity assertions fail until runner isolation is wired.
+ 
+-- [ ] **Step 3: Add the deterministic read-only architecture exporter and its trust contract**
++- [x] **Step 3: Add the deterministic read-only architecture exporter and its trust contract**
+ 
+ Implement a pure, read-only exporter over one frozen architecture replay and its exact execution manifest. Do not add a shadow flag to production config. OFF/ON in the test means “run the independent sidecar after the same frozen replay,” not “branch inside the strategy.” Hash snapshots, targets, reports, equity, and episodes separately.
+ 
+@@ -367,13 +376,13 @@ The exporter must replay and recompute the canonical rows from the registered so
+ 
+ Add one exact gate, `validate_registered_time_space_export(...) == VERIFIED`. This gate is the **only** condition allowed to clear `EXPORT_REGISTRATION_REQUIRED` for `FORWARD_CONFIRMATION`; there is no CLI flag, environment variable, copied identity, or local-envelope bypass. Until this step is implemented and its checkpoint is independently registered, Task 5 remains intentionally limited to `REUSED_DIAGNOSTIC_ONLY` and cannot accrue confirmation evidence.
+ 
+-- [ ] **Step 4: Run focused tests and confirm GREEN**
++- [x] **Step 4: Run focused tests and confirm GREEN**
+ 
+ Run: `uv run pytest tests/test_import_boundaries.py tests/test_architecture_experiment.py tests/test_time_space_shadow.py tests/test_time_space_shadow_cli.py -q`
+ 
+ Expected: all tests pass and every production-material hash matches.
+ 
+-- [ ] **Step 5: Commit isolation gates**
++- [x] **Step 5: Commit isolation gates**
+ 
+ ```bash
+ git add tests/test_import_boundaries.py tests/test_architecture_experiment.py tests/test_time_space_shadow_cli.py

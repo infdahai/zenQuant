@@ -1,0 +1,102 @@
+"""Search evidence survives failure, restart and repeated parameter attempts."""
+
+from __future__ import annotations
+
+import json
+
+import pytest
+
+from zenquant.research.bounded_search import run_bounded_search
+
+
+def _identity():
+    return {"data_hash": "train-v1", "code_hash": "code-v1", "policy_hash": "policy-v1", "window": "train"}
+
+
+def _evaluation(params, attempt):
+    value = float(params["x"])
+    return {"objectives": [value, abs(value - 2), value * 0.1], "diagnostic_only": True, "attempt": attempt}
+
+
+@pytest.mark.parametrize("sampler", ["random", "tpe"])
+def test_restart_reconstructs_same_search_sequence(tmp_path, sampler):
+    baseline = run_bounded_search(
+        tmp_path / "full", _identity(), {"x": [1, 2, 3]}, _evaluation, sampler=sampler, seed=7, budget=12
+    )
+    resumed = tmp_path / "resumed"
+    first = run_bounded_search(
+        resumed, _identity(), {"x": [1, 2, 3]}, _evaluation, sampler=sampler, seed=7, budget=12, max_new_attempts=5
+    )
+    assert first["complete"] is False
+    second = run_bounded_search(resumed, _identity(), {"x": [1, 2, 3]}, _evaluation, sampler=sampler, seed=7, budget=12)
+    assert second["complete"] is True
+    assert [(x["params"], x["objectives"]) for x in second["attempts"]] == [
+        (x["params"], x["objectives"]) for x in baseline["attempts"]
+    ]
+
+
+def test_identical_parameters_keep_every_attempt_and_budget(tmp_path):
+    result = run_bounded_search(tmp_path, _identity(), {"x": [1]}, _evaluation, budget=3)
+    assert len(result["attempts"]) == 3
+    assert len({row["trial_id"] for row in result["attempts"]}) == 3
+    assert result["live_eligible"] is False
+
+
+def test_failure_is_not_zero_profit_or_silently_retried(tmp_path):
+    def fail(params, attempt):
+        raise ValueError("bad-data")
+
+    result = run_bounded_search(tmp_path, _identity(), {"x": [1]}, fail, budget=2)
+    assert result["complete"] is True
+    assert [row["status"] for row in result["attempts"]] == ["FAILED", "FAILED"]
+    assert all(row["objectives"] is None for row in result["attempts"])
+
+
+def test_identity_or_budget_change_cannot_resume_old_results(tmp_path):
+    run_bounded_search(tmp_path, _identity(), {"x": [1]}, _evaluation, budget=2)
+    with pytest.raises(ValueError, match="identity mismatch"):
+        run_bounded_search(tmp_path, {**_identity(), "data_hash": "changed"}, {"x": [1]}, _evaluation, budget=2)
+    with pytest.raises(ValueError, match="identity mismatch"):
+        run_bounded_search(tmp_path, _identity(), {"x": [1]}, _evaluation, budget=3)
+
+
+def test_interrupt_consumes_attempt_and_resume_does_not_call_it_again(tmp_path):
+    def interrupted(params, attempt):
+        raise KeyboardInterrupt()
+
+    with pytest.raises(KeyboardInterrupt):
+        run_bounded_search(tmp_path, _identity(), {"x": [1]}, interrupted, budget=2)
+    seen = []
+
+    def evaluate(params, attempt):
+        seen.append(attempt)
+        return _evaluation(params, attempt)
+
+    result = run_bounded_search(tmp_path, _identity(), {"x": [1]}, evaluate, budget=2)
+    assert seen == ["trial-00001"]
+    assert result["attempts"][0]["status"] == "INTERRUPTED"
+
+
+def test_saved_report_tampering_blocks_resume(tmp_path):
+    run_bounded_search(tmp_path, _identity(), {"x": [1]}, _evaluation, budget=1)
+    report = tmp_path / "trial-00000.json"
+    report.write_text(json.dumps({"objectives": [999, 0, 0]}))
+    with pytest.raises(ValueError, match="artifact"):
+        run_bounded_search(tmp_path, _identity(), {"x": [1]}, _evaluation, budget=1)
+
+
+def test_search_refuses_dev_role_and_missing_provenance(tmp_path):
+    with pytest.raises(ValueError, match="train"):
+        run_bounded_search(tmp_path, {**_identity(), "window": "dev"}, {"x": [1]}, _evaluation)
+    with pytest.raises(ValueError, match="identity"):
+        run_bounded_search(tmp_path, {"window": "train"}, {"x": [1]}, _evaluation)
+
+
+def test_active_search_cannot_be_reclassified_as_interrupted_by_second_runner(tmp_path):
+    def evaluate(params, attempt):
+        with pytest.raises(ValueError, match="already running"):
+            run_bounded_search(tmp_path, _identity(), {"x": [1]}, _evaluation, budget=1)
+        return _evaluation(params, attempt)
+
+    result = run_bounded_search(tmp_path, _identity(), {"x": [1]}, evaluate, budget=1)
+    assert result["attempts"][0]["status"] == "COMPLETE"

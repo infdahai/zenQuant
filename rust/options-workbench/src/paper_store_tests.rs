@@ -157,7 +157,124 @@ fn missing_or_corrupt_journal_never_reinitializes_budget() {
         )
         .is_err()
     );
-    assert!(t.store.read().is_err());
+    assert!(t.store.read().is_ok());
+    t.commit(p);
+}
+#[test]
+fn unsafe_existing_permissions_are_rejected() {
+    use std::os::unix::fs::{MetadataExt, PermissionsExt};
+    for target in ["parent", "journal", "snapshot"] {
+        let t = Temp::new();
+        t.init();
+        assert_eq!(fs::metadata(&t.store.path).unwrap().mode() & 0o077, 0);
+        let path = match target {
+            "parent" => t.root.clone(),
+            "journal" => t.store.path.clone(),
+            _ => t.store.path.join("snapshot.json"),
+        };
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o777)).unwrap();
+        assert!(t.store.read().is_err(), "{target}");
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o700)).unwrap();
+    }
+}
+#[test]
+fn recovery_preserves_unrecognized_stages() {
+    use std::os::unix::fs::{PermissionsExt, symlink};
+    let t = Temp::new();
+    let external = t.root.join("external");
+    fs::write(&external, b"external").unwrap();
+    for kind in [
+        "unknown",
+        "symlink",
+        "hardlink",
+        "unmarked",
+        "other-target",
+        "journal-symlink",
+    ] {
+        let stage = t.root.join(format!(".paper-init-v1-{kind}"));
+        fs::create_dir(&stage).unwrap();
+        fs::set_permissions(&stage, fs::Permissions::from_mode(0o700)).unwrap();
+        if kind != "unmarked" {
+            let target = if kind == "other-target" {
+                t.root.join("other")
+            } else {
+                t.store.path.clone()
+            };
+            let marker = format!(
+                "zenquant-paper-stage-v1:{}",
+                options_core::canonical::bytes_sha256(
+                    target.file_name().unwrap().as_encoded_bytes()
+                )
+            );
+            fs::write(stage.join("owner"), marker).unwrap();
+            fs::set_permissions(stage.join("owner"), fs::Permissions::from_mode(0o600)).unwrap();
+        }
+        let journal = stage.join("journal");
+        if kind == "journal-symlink" {
+            symlink(&t.root, &journal).unwrap();
+        } else {
+            fs::create_dir(&journal).unwrap();
+            fs::set_permissions(&journal, fs::Permissions::from_mode(0o700)).unwrap();
+            let snapshot = journal.join("snapshot.json");
+            match kind {
+                "symlink" => symlink(&external, &snapshot).unwrap(),
+                "hardlink" => fs::hard_link(&external, &snapshot).unwrap(),
+                _ => {
+                    fs::write(&snapshot, b"data").unwrap();
+                    fs::set_permissions(&snapshot, fs::Permissions::from_mode(0o600)).unwrap();
+                }
+            }
+            if kind == "unknown" {
+                fs::write(stage.join("unexpected"), b"keep").unwrap();
+            }
+        }
+        disk::recover_stages(&t.store.path).unwrap();
+        assert!(fs::symlink_metadata(&journal).is_ok(), "{kind}");
+        if kind == "unknown" {
+            assert_eq!(fs::read(journal.join("snapshot.json")).unwrap(), b"data");
+            assert_eq!(fs::read(stage.join("unexpected")).unwrap(), b"keep");
+        }
+        assert_eq!(fs::read(&external).unwrap(), b"external");
+    }
+}
+
+#[test]
+fn first_initialization_failures_are_retryable() {
+    for point in [
+        "before_create",
+        "temp_created",
+        "before_file_sync",
+        "file_synced",
+        "renamed",
+        "directory_synced",
+        "before_publish",
+        "published",
+        "parent_synced",
+    ] {
+        let t = Temp::new();
+        let c = json!({"preview":t.preview(&config()),"acknowledged_record_only":true});
+        assert!(
+            t.call(
+                "/api/paper/confirm",
+                &c,
+                NOW,
+                Hooks {
+                    fail_at: Some(point),
+                    observe: None
+                }
+            )
+            .is_err()
+        );
+        let r = t
+            .call("/api/paper/confirm", &c, NOW, Hooks::default())
+            .unwrap();
+        assert_eq!(
+            r["replayed"],
+            matches!(point, "published" | "parent_synced"),
+            "{point}"
+        );
+        assert_eq!(r["view"]["revision"], 1);
+    }
 }
 #[test]
 fn two_concurrent_confirmations_cannot_allocate_twice() {
@@ -224,8 +341,14 @@ fn ambiguous_json_and_file_links_are_rejected() {
 fn crash_checkpoint(point: &str) {
     if std::env::var("ZQ_PAPER_CRASH_PHASE").ok().as_deref() == Some(point) {
         fs::write(std::env::var_os("ZQ_PAPER_CRASH_MARKER").unwrap(), point).unwrap();
-        loop {
-            std::thread::park();
+        if let Some(release) = std::env::var_os("ZQ_PAPER_RELEASE") {
+            while !Path::new(&release).exists() {
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+        } else {
+            loop {
+                std::thread::park();
+            }
         }
     }
 }
@@ -235,6 +358,10 @@ fn process_worker() {
         return;
     };
     let store = Store::engineering(path.into());
+    if std::env::var_os("ZQ_PAPER_RECOVER_ONLY").is_some() {
+        disk::recover_stages(&store.path).unwrap();
+        return;
+    }
     let bytes = fs::read(std::env::var_os("ZQ_PAPER_CRASH_INPUT").unwrap()).unwrap();
     let result = store.api_at(
         "/api/paper/confirm",
@@ -245,6 +372,9 @@ fn process_worker() {
             observe: Some(crash_checkpoint),
         },
     );
+    if let Some(output) = std::env::var_os("ZQ_PAPER_RESULT") {
+        fs::write(output, result.as_ref().unwrap()).unwrap();
+    }
     assert!(result.is_ok(), "{result:?}");
 }
 #[test]

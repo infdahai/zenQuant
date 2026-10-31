@@ -1,0 +1,606 @@
+"""Deterministic multi-run research checks, separate from trading permission.
+
+These functions consume evidence; they never execute a strategy or change an
+evaluation policy. PASS is scoped to the individual statistical or matrix
+check. Even a complete historical report only reaches human review, never live
+eligibility. Malformed evidence returns INVALID; missing evidence is explicit.
+"""
+
+from __future__ import annotations
+
+import json
+import math
+from collections.abc import Mapping, Sequence
+from itertools import pairwise, product
+from typing import Any
+
+import numpy as np
+
+VERSION = "research-suite-evaluation.v1"
+DAY_NS = 86_400_000_000_000
+ENGINEERING = tuple(f"E{i}" for i in range(5))
+RESEARCH = tuple(f"R{i}" for i in range(8))
+GATES = (*ENGINEERING, *RESEARCH, "O0", "O1")
+STATUSES = frozenset({"PASS", "FAIL", "INVALID", "STALE", "NOT_RUN", "NOT_EVALUABLE", "NOT_APPLICABLE"})
+COMPARISON_FIELDS = ("symbol", "window", "data_hash", "accounting_hash", "execution", "cost", "risk_budget")
+
+
+class _Issue(ValueError):
+    def __init__(self, status: str, path: str, reason: str) -> None:
+        super().__init__(reason)
+        self.status, self.path, self.reason = status, path, reason
+
+    def detail(self) -> dict[str, str]:
+        return {"status": self.status, "path": self.path, "reason": self.reason}
+
+
+def _result(status: str, reason: str, **values: Any) -> dict[str, Any]:
+    return {
+        "schema_version": VERSION,
+        "status": status,
+        "reason": reason,
+        "missing": [],
+        "blockers": [],
+        **values,
+        "live_eligible": False,
+    }
+
+
+def _failure(issue: _Issue, **values: Any) -> dict[str, Any]:
+    key = "missing" if issue.status == "NOT_EVALUABLE" else "blockers"
+    return _result(issue.status, issue.reason, **{key: [issue.detail()], **values})
+
+
+def _canonical(value: Any, path: str) -> str:
+    try:
+        return json.dumps(value, sort_keys=True, separators=(",", ":"), allow_nan=False)
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise _Issue("INVALID", path, "NONFINITE_OR_NON_JSON_EVIDENCE") from exc
+
+
+def _mapping(value: Any, path: str, *, nonempty: bool = False) -> Mapping[str, Any]:
+    if value is None or (nonempty and value == {}):
+        raise _Issue("NOT_EVALUABLE", path, "MISSING_EVIDENCE")
+    if not isinstance(value, Mapping):
+        raise _Issue("INVALID", path, "EXPECTED_OBJECT")
+    _canonical(dict(value), path)
+    return value
+
+
+def _sequence(value: Any, path: str) -> list[Any]:
+    if value is None:
+        raise _Issue("NOT_EVALUABLE", path, "MISSING_EVIDENCE")
+    if not isinstance(value, Sequence) or isinstance(value, (str, bytes)):
+        raise _Issue("INVALID", path, "EXPECTED_SEQUENCE")
+    return list(value)
+
+
+def _number(value: Any, path: str) -> float:
+    if value is None:
+        raise _Issue("NOT_EVALUABLE", path, "MISSING_VALUE")
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise _Issue("INVALID", path, "EXPECTED_FINITE_NUMBER")
+    try:
+        result = float(value)
+    except OverflowError as exc:
+        raise _Issue("INVALID", path, "NONFINITE_NUMBER") from exc
+    if not math.isfinite(result):
+        raise _Issue("INVALID", path, "NONFINITE_NUMBER")
+    return result
+
+
+def _integer(value: Any, path: str, minimum: int = 0) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or value < minimum:
+        raise _Issue("INVALID", path, "INVALID_INTEGER")
+    return value
+
+
+def _identity(report: Mapping[str, Any], path: str) -> Mapping[str, Any]:
+    return _mapping(report.get("identity"), f"{path}.identity", nonempty=True)
+
+
+def _gate_status(value: Any, path: str) -> str:
+    gate = _mapping(value, path)
+    status = gate.get("status", "NOT_EVALUABLE")
+    if not isinstance(status, str) or status not in STATUSES:
+        raise _Issue("INVALID", path, "UNKNOWN_GATE_STATUS")
+    return status
+
+
+def _has_ruin(report: Mapping[str, Any], path: str) -> bool:
+    ruin = _mapping(report.get("ruin", {}), f"{path}.ruin")
+    occurred = ruin.get("occurred", False)
+    if not isinstance(occurred, bool):
+        raise _Issue("INVALID", f"{path}.ruin.occurred", "EXPECTED_BOOLEAN")
+    return occurred
+
+
+def _hard_blockers(report: Mapping[str, Any], path: str) -> list[dict[str, Any]]:
+    result = []
+    for index, raw in enumerate(_sequence(report.get("blockers", []), f"{path}.blockers")):
+        blocker_path = f"{path}.blockers[{index}]"
+        blocker = _mapping(raw, blocker_path)
+        status = _gate_status(blocker, blocker_path)
+        if status in {"INVALID", "STALE", "FAIL"}:
+            result.append({"path": blocker_path, **blocker, "status": status})
+    return result
+
+
+def _daily(report: Mapping[str, Any], path: str) -> tuple[list[int], np.ndarray]:
+    dates, values = [], []
+    for index, row in enumerate(_sequence(report.get("daily_returns"), f"{path}.daily_returns")):
+        row_path = f"{path}.daily_returns[{index}]"
+        row = _mapping(row, row_path)
+        timestamp = _integer(row.get("time_ns"), f"{row_path}.time_ns")
+        if dates and timestamp <= dates[-1]:
+            raise _Issue("INVALID", row_path, "DUPLICATE_OR_UNORDERED_DAILY_TIMESTAMP")
+        if timestamp % DAY_NS:
+            raise _Issue("INVALID", row_path, "NOT_UTC_MIDNIGHT")
+        dates.append(timestamp)
+        value = _number(row.get("value"), f"{row_path}.value")
+        if value <= -1.0:
+            raise _Issue("FAIL", row_path, "RUIN")
+        values.append(value)
+    return dates, np.asarray(values, dtype=float)
+
+
+def paired_daily_excess(
+    candidate_report: Mapping[str, Any],
+    baseline_report: Mapping[str, Any],
+    *,
+    block_lengths: Sequence[int],
+    repetitions: int = 2000,
+    seed: int = 42,
+    min_samples: int = 180,
+) -> dict[str, Any]:
+    """Paired moving-block bootstrap of mean daily net excess, in fractions.
+
+    Exactly three distinct predeclared block lengths are required. Contiguous
+    non-circular blocks are sampled with replacement; concatenation is truncated
+    to the original sample length. Returns are differenced before resampling so
+    candidate/baseline pairing and within-block time dependence are preserved.
+    Percentile intervals use NumPy's explicit linear quantile convention.
+    """
+    try:
+        repetitions = _integer(repetitions, "repetitions", 1)
+        seed = _integer(seed, "seed")
+        min_samples = _integer(min_samples, "min_samples", 2)
+        lengths = [_integer(item, "block_lengths", 1) for item in _sequence(block_lengths, "block_lengths")]
+        if len(lengths) != 3 or len(set(lengths)) != 3:
+            raise _Issue("INVALID", "block_lengths", "THREE_DISTINCT_FROZEN_BLOCK_LENGTHS_REQUIRED")
+        reports = []
+        contracts = []
+        for label, value in (("candidate", candidate_report), ("baseline", baseline_report)):
+            report = _mapping(value, label)
+            _identity(report, label)
+            blockers = _hard_blockers(report, label)
+            if blockers:
+                blocker = min(blockers, key=lambda item: ("INVALID", "STALE", "FAIL").index(item["status"]))
+                raise _Issue(blocker["status"], blocker["path"], blocker.get("reason", "EXPLICIT_HARD_BLOCKER"))
+            contract = _mapping(report.get("comparison_contract"), f"{label}.comparison_contract", nonempty=True)
+            missing_fields = [key for key in COMPARISON_FIELDS if contract.get(key) in (None, "", {}, [])]
+            if missing_fields:
+                raise _Issue(
+                    "NOT_EVALUABLE",
+                    f"{label}.comparison_contract.{missing_fields[0]}",
+                    "INCOMPLETE_COMPARISON_CONTRACT",
+                )
+            if _has_ruin(report, label):
+                raise _Issue("FAIL", f"{label}.ruin", "RUIN")
+            gates = _mapping(report.get("gates", {}), f"{label}.gates")
+            for gate in ENGINEERING:
+                gate_status = _gate_status(gates.get(gate, {}), f"{label}.gates.{gate}")
+                if gate_status in {"FAIL", "INVALID", "STALE"}:
+                    raise _Issue(gate_status, f"{label}.gates.{gate}", "ENGINEERING_GATE_NOT_PASS")
+            reports.append(report)
+            contracts.append(_canonical(dict(contract), f"{label}.comparison_contract"))
+        if contracts[0] != contracts[1]:
+            raise _Issue("NOT_EVALUABLE", "comparison_contract", "CONTRACT_MISMATCH")
+        dates, candidate = _daily(reports[0], "candidate")
+        other_dates, baseline = _daily(reports[1], "baseline")
+        if dates != other_dates:
+            raise _Issue("NOT_EVALUABLE", "daily_returns.time_ns", "PAIRED_DATES_MISMATCH")
+        gaps = [left + DAY_NS for left, right in pairwise(dates) if right != left + DAY_NS]
+        if gaps:
+            return _result(
+                "NOT_EVALUABLE",
+                "MISSING_DAILY_OBSERVATIONS",
+                missing=[{"time_ns": time, "reason": "DAILY_GAP"} for time in gaps],
+            )
+        count = len(dates)
+        if count < min_samples:
+            return _result(
+                "NOT_EVALUABLE",
+                "INSUFFICIENT_PAIRED_SAMPLES",
+                sample_size=count,
+                missing=[{"path": "daily_returns", "observed": count, "required": min_samples}],
+            )
+        if max(lengths) > count:
+            raise _Issue("INVALID", "block_lengths", "BLOCK_EXCEEDS_SAMPLE")
+        difference = candidate - baseline
+        if not np.all(np.isfinite(difference)):
+            raise _Issue("INVALID", "daily_excess", "NONFINITE_DIFFERENCE")
+        blocks = []
+        for length in sorted(lengths):
+            # Seed each length independently: enumeration order cannot select a
+            # more favorable random stream for the same frozen length.
+            rng = np.random.default_rng(np.random.SeedSequence([seed, length]))
+            means = np.empty(repetitions)
+            for draw in range(repetitions):
+                starts = rng.integers(0, count - length + 1, size=math.ceil(count / length))
+                indices = (starts[:, None] + np.arange(length)).reshape(-1)[:count]
+                means[draw] = np.mean(difference[indices])
+            if not np.all(np.isfinite(means)):
+                raise _Issue("INVALID", "daily_excess", "NONFINITE_BOOTSTRAP_MEAN")
+            lower, upper = (float(item) for item in np.quantile(means, [0.025, 0.975], method="linear"))
+            if not math.isfinite(lower) or not math.isfinite(upper):
+                raise _Issue("INVALID", "daily_excess", "NONFINITE_CONFIDENCE_INTERVAL")
+            blocks.append(
+                {
+                    "block_length": length,
+                    "confidence_interval": [lower, upper],
+                    "status": "PASS" if lower > 0.0 else "FAIL",
+                }
+            )
+        passes = sum(block["status"] == "PASS" for block in blocks)
+        sensitive = 0 < passes < len(blocks)
+        status = "PASS" if passes == len(blocks) else "NOT_EVALUABLE" if sensitive else "FAIL"
+        return _result(
+            status,
+            "BLOCK_LENGTH_SENSITIVE"
+            if sensitive
+            else "POSITIVE_INCREMENT_ESTABLISHED"
+            if status == "PASS"
+            else "POSITIVE_INCREMENT_NOT_ESTABLISHED",
+            sample_size=count,
+            mean_daily_excess=float(np.mean(difference)),
+            unit="daily_return_fraction",
+            repetitions=repetitions,
+            seed=seed,
+            blocks=blocks,
+            sensitive=sensitive,
+            scope="historical_paired_comparison",
+            independent_oos=False,
+            missing=[{"path": "block_length_sensitivity", "reason": "CONCLUSIONS_DISAGREE"}] if sensitive else [],
+        )
+    except _Issue as issue:
+        return _failure(issue)
+
+
+def _protocol(value: Mapping[str, Any]) -> dict[str, Any]:
+    value = _mapping(value, "protocol")
+    seeds = [_integer(seed, "protocol.seeds") for seed in _sequence(value.get("seeds"), "protocol.seeds")]
+    windows = _sequence(value.get("windows"), "protocol.windows")
+    costs = [_number(cost, "protocol.costs") for cost in _sequence(value.get("costs"), "protocol.costs")]
+    positive = [
+        _number(cost, "protocol.required_positive_costs")
+        for cost in _sequence(value.get("required_positive_costs"), "protocol.required_positive_costs")
+    ]
+    if len(seeds) != 5 or len(set(seeds)) != 5:
+        raise _Issue("INVALID", "protocol.seeds", "EXACTLY_FIVE_DISTINCT_SEEDS_REQUIRED")
+    if (
+        not windows
+        or any(not isinstance(window, str) or not window for window in windows)
+        or len(set(windows)) != len(windows)
+    ):
+        raise _Issue("INVALID", "protocol.windows", "NONEMPTY_DISTINCT_WINDOWS_REQUIRED")
+    if len(costs) != 3 or set(costs) != {0, 5, 15} or len(positive) != 2 or set(positive) != {0, 5}:
+        raise _Issue("INVALID", "protocol.costs", "FROZEN_0_5_15_COST_MATRIX_REQUIRED")
+    aggregate = value.get("aggregate_window")
+    if aggregate not in windows:
+        raise _Issue("INVALID", "protocol.aggregate_window", "AGGREGATE_WINDOW_MUST_BE_IN_MATRIX")
+    drawdown = _number(value.get("max_drawdown"), "protocol.max_drawdown")
+    minimum = _integer(value.get("min_pass_seeds"), "protocol.min_pass_seeds", 4)
+    if not 0.0 < drawdown < 1.0 or minimum > 5:
+        raise _Issue("INVALID", "protocol", "INVALID_SAFETY_THRESHOLD")
+    return {
+        **value,
+        "seeds": sorted(seeds),
+        "windows": windows,
+        "costs": sorted(costs),
+        "required_positive_costs": positive,
+        "max_drawdown": drawdown,
+        "min_pass_seeds": minimum,
+    }
+
+
+def _measure(report: Mapping[str, Any], name: str, path: str) -> float:
+    metrics = _mapping(report.get("metrics", {}), f"{path}.metrics")
+    metric = _mapping(metrics.get(name), f"{path}.metrics.{name}")
+    status = _gate_status(metric, f"{path}.metrics.{name}")
+    if status in {"INVALID", "STALE"}:
+        raise _Issue(status, f"{path}.metrics.{name}", "UNUSABLE_METRIC")
+    if status != "PASS":
+        raise _Issue("NOT_EVALUABLE", f"{path}.metrics.{name}", "METRIC_NOT_EVALUATED")
+    return _number(metric.get("value"), f"{path}.metrics.{name}.value")
+
+
+def evaluate_robustness(cases: Sequence[Mapping[str, Any]], protocol: Mapping[str, Any]) -> dict[str, Any]:
+    """Check the complete five-seed/window/cost matrix without changing its denominator.
+
+    ``identity.candidate_id`` must be stable across every report. Optional
+    ``promotion_min_net_return_by_cost={"15": threshold}`` adds a separate
+    strictly-greater-than 15bp return criterion to the same passing seed set.
+    It never grants promotion or live permission outside this single dimension.
+    Only the evaluator's two named per-case economic screens enter seed voting.
+    All other explicit hard blockers, including globally scoped ones, survive.
+    """
+    try:
+        frozen = _protocol(protocol)
+        rows = _sequence(cases, "cases")
+        expected = list(product(frozen["seeds"], frozen["windows"], frozen["costs"]))
+        observed = {}
+        for index, raw in enumerate(rows):
+            row = _mapping(raw, f"cases[{index}]")
+            seed = _integer(row.get("seed"), f"cases[{index}].seed")
+            window = row.get("window")
+            if not isinstance(window, str):
+                raise _Issue("INVALID", f"cases[{index}].window", "INVALID_WINDOW")
+            cost = _number(row.get("extra_cost_bps"), f"cases[{index}].extra_cost_bps")
+            key = (seed, window, cost)
+            if key in observed:
+                raise _Issue("INVALID", f"cases[{index}]", "DUPLICATE_MATRIX_CELL")
+            if key not in expected:
+                raise _Issue("INVALID", f"cases[{index}]", "UNEXPECTED_MATRIX_CELL")
+            observed[key] = row.get("report")
+        missing_cases = [
+            dict(zip(("seed", "window", "extra_cost_bps"), key, strict=True)) for key in expected if key not in observed
+        ]
+        problems = []
+        economic_screen_evidence = []
+        measures = {}
+        candidate_id = frozen.get("candidate_id")
+        for key, raw in observed.items():
+            path = f"case(seed={key[0]},window={key[1]},cost={key[2]:g})"
+            try:
+                report = _mapping(raw, path)
+                for blocker in _hard_blockers(report, path):
+                    economic_screen = (
+                        blocker["status"] == "FAIL"
+                        and "scope" not in blocker
+                        and (
+                            (blocker.get("gate") == "R0" and blocker.get("reason") == "FROZEN_NET_RETURN_SCREEN")
+                            or (
+                                blocker.get("gate") == "R2"
+                                and blocker.get("reason") == "FROZEN_SAMPLED_DRAWDOWN_SCREEN"
+                            )
+                        )
+                    )
+                    if economic_screen:
+                        economic_screen_evidence.append(
+                            {"seed": key[0], "window": key[1], "extra_cost_bps": key[2], **blocker}
+                        )
+                    else:
+                        problems.append(blocker)
+                identity = _identity(report, path)
+                actual_id = identity.get("candidate_id")
+                if not isinstance(actual_id, str) or not actual_id:
+                    raise _Issue("NOT_EVALUABLE", f"{path}.identity.candidate_id", "MISSING_CANDIDATE_BINDING")
+                if candidate_id is None:
+                    candidate_id = actual_id
+                if actual_id != candidate_id:
+                    raise _Issue("INVALID", f"{path}.identity.candidate_id", "MIXED_CANDIDATES")
+                if "seed" in identity and identity["seed"] != key[0]:
+                    raise _Issue("INVALID", f"{path}.identity.seed", "CELL_IDENTITY_MISMATCH")
+                if isinstance(identity.get("window"), str) and identity["window"] != key[1]:
+                    raise _Issue("INVALID", f"{path}.identity.window", "CELL_IDENTITY_MISMATCH")
+                if (
+                    "extra_cost_bps" in identity
+                    and _number(identity["extra_cost_bps"], f"{path}.identity.extra_cost_bps") != key[2]
+                ):
+                    raise _Issue("INVALID", f"{path}.identity.extra_cost_bps", "CELL_IDENTITY_MISMATCH")
+                gates = _mapping(report.get("gates"), f"{path}.gates")
+                for gate in ENGINEERING:
+                    status = _gate_status(gates.get(gate, {}), f"{path}.gates.{gate}")
+                    if status != "PASS":
+                        severity = status if status in {"FAIL", "INVALID", "STALE"} else "NOT_EVALUABLE"
+                        problems.append(_Issue(severity, f"{path}.gates.{gate}", "ENGINEERING_GATE_NOT_PASS").detail())
+                if _has_ruin(report, path):
+                    problems.append(_Issue("FAIL", f"{path}.ruin", "RUIN").detail())
+                net = _measure(report, "net_return", path)
+                dd = _measure(report, "max_drawdown", path)
+                if dd < 0.0:
+                    raise _Issue("INVALID", f"{path}.max_drawdown", "NEGATIVE_DRAWDOWN")
+                if net <= -1.0 or dd >= 1.0:
+                    problems.append(_Issue("FAIL", f"{path}.metrics", "RUIN").detail())
+                measures[key] = (net, dd)
+            except _Issue as issue:
+                problems.append(issue.detail())
+        passing_seeds = []
+        seed_results = []
+        for seed in frozen["seeds"]:
+            failures = []
+            for key in (key for key in expected if key[0] == seed):
+                if key not in measures:
+                    failures.append({"window": key[1], "extra_cost_bps": key[2], "reason": "MISSING_METRICS"})
+                    continue
+                net, dd = measures[key]
+                if dd > frozen["max_drawdown"]:
+                    failures.append({"window": key[1], "extra_cost_bps": key[2], "reason": "DRAWDOWN_LIMIT"})
+                if key[1] == frozen["aggregate_window"] and key[2] in frozen["required_positive_costs"] and net <= 0.0:
+                    failures.append(
+                        {"window": key[1], "extra_cost_bps": key[2], "reason": "NONPOSITIVE_AGGREGATE_RETURN"}
+                    )
+            if not failures:
+                passing_seeds.append(seed)
+            seed_results.append({"seed": seed, "economic_screen_passed": not failures, "failures": failures})
+        statuses = {problem["status"] for problem in problems}
+        status = next((item for item in ("INVALID", "STALE", "FAIL") if item in statuses), None)
+        if status is None:
+            status = (
+                "NOT_EVALUABLE"
+                if missing_cases or problems
+                else "PASS"
+                if len(passing_seeds) >= frozen["min_pass_seeds"]
+                else "FAIL"
+            )
+        promotion = frozen.get("promotion_min_net_return_by_cost", {})
+        if not isinstance(promotion, Mapping):
+            raise _Issue("INVALID", "protocol.promotion_min_net_return_by_cost", "EXPECTED_OBJECT")
+        promotion_seeds = []
+        threshold_status = "NOT_EVALUABLE"
+        promotion_missing = []
+        if "15" not in promotion:
+            promotion_missing.append(
+                {"path": "protocol.promotion_min_net_return_by_cost.15", "reason": "MISSING_FROZEN_15BPS_THRESHOLD"}
+            )
+        else:
+            threshold = _number(promotion["15"], "protocol.promotion_min_net_return_by_cost.15")
+            promotion_seeds = [
+                seed for seed in passing_seeds if measures[(seed, frozen["aggregate_window"], 15)][0] > threshold
+            ]
+            threshold_status = "PASS" if len(promotion_seeds) >= frozen["min_pass_seeds"] else "FAIL"
+        return _result(
+            status,
+            "COMPLETE_MATRIX_AND_SHARED_SEED_RULE" if status == "PASS" else "MATRIX_BLOCKED_OR_SEED_RULE_FAILED",
+            candidate_id=candidate_id,
+            protocol=frozen,
+            expected_case_count=len(expected),
+            observed_case_count=len(observed),
+            missing_cases=missing_cases,
+            missing=[
+                *({"path": "cases", **cell, "reason": "MISSING_MATRIX_CELL"} for cell in missing_cases),
+                *(item for item in problems if item["status"] == "NOT_EVALUABLE"),
+            ],
+            blockers=problems,
+            economic_screen_evidence=economic_screen_evidence,
+            passing_seeds=passing_seeds,
+            seed_results=seed_results,
+            promotion_ready=status == "PASS" and threshold_status == "PASS",
+            promotion_threshold_status=threshold_status,
+            promotion_missing=promotion_missing,
+            promotion_passing_seeds=promotion_seeds,
+            scope="robustness_dimension_only",
+        )
+    except _Issue as issue:
+        return _failure(issue, promotion_ready=False, promotion_threshold_status="NOT_EVALUABLE")
+
+
+def pareto_candidates(items: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+    """Return a stable frontier only for explicitly rankable identified candidates."""
+    try:
+        rows = _sequence(items, "items")
+        accepted, excluded, ids = [], [], set()
+        for index, raw in enumerate(rows):
+            identifier = raw.get("candidate_id") if isinstance(raw, Mapping) else None
+            try:
+                item = _mapping(raw, f"items[{index}]")
+                if not isinstance(identifier, str) or not identifier:
+                    raise _Issue("NOT_EVALUABLE", f"items[{index}].candidate_id", "MISSING_CANDIDATE_ID")
+                if identifier in ids:
+                    return _result(
+                        "INVALID",
+                        "DUPLICATE_CANDIDATE_ID",
+                        frontier_ids=[],
+                        dominated_ids=[],
+                        excluded=excluded,
+                        blockers=[{"candidate_id": identifier, "reason": "DUPLICATE_CANDIDATE_ID"}],
+                    )
+                ids.add(identifier)
+                identity = _identity(item, f"items[{index}]")
+                if "candidate_id" in identity and identity["candidate_id"] != identifier:
+                    raise _Issue("INVALID", f"items[{index}].identity.candidate_id", "CANDIDATE_IDENTITY_MISMATCH")
+                if item.get("blockers"):
+                    raise _Issue("NOT_EVALUABLE", f"items[{index}].blockers", "UNRESOLVED_BLOCKERS")
+                if item.get("rankable") is not True:
+                    raise _Issue("NOT_EVALUABLE", f"items[{index}].rankable", "NOT_RANKABLE")
+                axes = _mapping(item.get("axes"), f"items[{index}].axes")
+                vector = tuple(
+                    _number(axes.get(name), f"items[{index}].axes.{name}")
+                    for name in ("net_excess", "max_drawdown", "cost")
+                )
+                if vector[1] < 0.0 or vector[2] < 0.0:
+                    raise _Issue("INVALID", f"items[{index}].axes", "NEGATIVE_RISK_OR_COST")
+                accepted.append((identifier, vector))
+            except _Issue as issue:
+                detail = issue.detail()
+                if isinstance(identifier, str):
+                    detail["path"] = detail["path"].replace(f"items[{index}]", f"candidate({identifier})")
+                excluded_row = {"candidate_id": identifier if isinstance(identifier, str) else None, **detail}
+                if isinstance(raw, Mapping) and raw.get("blockers"):
+                    try:
+                        excluded_row["blockers"] = json.loads(_canonical(raw["blockers"], "blockers"))
+                    except _Issue:
+                        pass
+                excluded.append(excluded_row)
+        accepted.sort()
+        dominated = []
+        for identifier, vector in accepted:
+            oriented = (-vector[0], vector[1], vector[2])
+            for other_id, other in accepted:
+                alternate = (-other[0], other[1], other[2])
+                if (
+                    other_id != identifier
+                    and all(a <= b for a, b in zip(alternate, oriented))
+                    and any(a < b for a, b in zip(alternate, oriented))
+                ):
+                    dominated.append(identifier)
+                    break
+        return _result(
+            "PASS" if accepted else "NOT_EVALUABLE",
+            "PARETO_FRONTIER" if accepted else "NO_RANKABLE_CANDIDATES",
+            frontier_ids=[identifier for identifier, _ in accepted if identifier not in dominated],
+            dominated_ids=dominated,
+            excluded=sorted(excluded, key=lambda item: item["candidate_id"] or ""),
+            axes={"net_excess": "max", "max_drawdown": "min", "cost": "min"},
+            missing=[] if accepted else [{"path": "items", "reason": "NO_RANKABLE_CANDIDATES"}],
+        )
+    except _Issue as issue:
+        return _failure(issue, frontier_ids=[], dominated_ids=[], excluded=[])
+
+
+def project_candidate_status(report: Mapping[str, Any]) -> dict[str, Any]:
+    """Conservatively project all 15 gates; a complete record still needs review."""
+    try:
+        report = _mapping(report, "report")
+        missing, blockers = [], []
+        try:
+            _identity(report, "report")
+        except _Issue as issue:
+            if issue.status == "INVALID":
+                return _failure(issue)
+            missing.append(issue.detail())
+        supplied = _mapping(report.get("gates", {}), "report.gates")
+        normalized = {}
+        for name in GATES:
+            value = supplied.get(name, {})
+            gate_status = _gate_status(value, f"gates.{name}")
+            normalized[name] = {
+                "status": gate_status,
+                "reason": value.get("reason", "MISSING_EVIDENCE" if gate_status != "PASS" else "SUPPLIED_EVIDENCE"),
+            }
+            if gate_status != "PASS":
+                item = {"gate": name, **normalized[name]}
+                (blockers if gate_status in {"INVALID", "STALE", "FAIL"} else missing).append(item)
+        for raw in _sequence(report.get("blockers", []), "report.blockers"):
+            blocker = _mapping(raw, "report.blockers[]")
+            blocker_status = _gate_status(blocker, "report.blockers[]")
+            if blocker_status in {"INVALID", "STALE", "FAIL"}:
+                blockers.append(dict(blocker))
+            elif blocker_status != "PASS":
+                missing.append(dict(blocker))
+        statuses = {gate["status"] for gate in normalized.values()} | {item["status"] for item in blockers}
+        if "INVALID" in statuses:
+            status = "INVALID"
+        elif "STALE" in statuses:
+            status = "STALE"
+        elif "FAIL" in statuses or _has_ruin(report, "report"):
+            status = "BLOCKED"
+        elif any(item.get("gate") not in {"O0", "O1"} for item in missing) or report.get("diagnostic_only") is True:
+            status = "DIAGNOSTIC"
+        elif missing:
+            status = "HISTORICAL_ONLY"
+        else:
+            status = "REVIEW_REQUIRED"
+        return _result(
+            status,
+            "SCOPED_GATE_PROJECTION_REQUIRES_HUMAN_ADMISSION",
+            gates=normalized,
+            missing=missing,
+            blockers=blockers,
+        )
+    except _Issue as issue:
+        result = _failure(issue)
+        if issue.status == "NOT_EVALUABLE":
+            result["status"] = "DIAGNOSTIC"
+        return result

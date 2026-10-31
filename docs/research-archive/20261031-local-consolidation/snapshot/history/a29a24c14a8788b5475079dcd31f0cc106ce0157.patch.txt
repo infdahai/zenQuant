@@ -1,0 +1,521 @@
+commit a29a24c14a8788b5475079dcd31f0cc106ce0157
+Author:     Disaster <clusternlh@gmail.com>
+AuthorDate: Sat Aug 22 21:39:41 2026 +0800
+Commit:     Disaster <clusternlh@gmail.com>
+CommitDate: Sat Aug 22 21:39:41 2026 +0800
+
+    feat(research): classify late-dev failure evidence
+
+diff --git a/tests/test_late_dev_cost_attribution.py b/tests/test_late_dev_cost_attribution.py
+index 5bf2f41..fad1d4d 100644
+--- a/tests/test_late_dev_cost_attribution.py
++++ b/tests/test_late_dev_cost_attribution.py
+@@ -12,7 +12,9 @@ from zenquant.research.architecture_experiment import (
+ )
+ from zenquant.research.late_dev_cost_attribution import (
+     LateDevAttributionValidationError,
++    _classify_evidence,
+     build_late_dev_cost_attribution,
++    build_regime_objective_hypothesis,
+     canonical_late_dev_attribution_bytes,
+ )
+ 
+@@ -169,7 +171,12 @@ def _cost_stage(stage: str, *, include_episodes: bool = False) -> dict[str, obje
+     return payload
+ 
+ 
+-def _complete_raw_report() -> dict[str, object]:
++def _complete_raw_report(
++    *,
++    direction_hit_rate: float = 0.6,
++    a1_sign_15bp: float = 105.0,
++    regime_localized_seed_count: int = 5,
++) -> dict[str, object]:
+     """Build a complete frozen matrix from the checked-in manifest.
+ 
+     The stage payloads are intentionally literal rather than borrowed from
+@@ -203,7 +210,7 @@ def _complete_raw_report() -> dict[str, object]:
+                     },
+                 }
+             )
+-    return {
++    report: dict[str, object] = {
+         "schema_version": "architecture_attribution.v4",
+         "stages": stage_order,
+         "manifest": {
+@@ -225,6 +232,16 @@ def _complete_raw_report() -> dict[str, object]:
+         },
+         "runs": runs,
+     }
++    late_dev_runs = [run for run in runs if run["window"] == "late_dev_2025"]
++    for index, run in enumerate(late_dev_runs):
++        a1_sign = run["stages"][ArchitectureStage.A1_SIGN.value]  # type: ignore[index]
++        a1_sign["direction_hit_rate"] = direction_hit_rate
++        a1_sign["cost_stress"]["15"]["net_pnl"] = a1_sign_15bp
++        a1_sign["turnover_notional"] = (120.0 - a1_sign_15bp) * 10_000.0 / 15.0
++        if index >= regime_localized_seed_count:
++            a5_rows = run["stages"][ArchitectureStage.A5_SHADOW.value]["attribution_rows"]  # type: ignore[index]
++            a5_rows[1]["gross_pnl"] = -20.0
++    return report
+ 
+ 
+ def _build(report: dict[str, object]) -> dict[str, object]:
+@@ -409,3 +426,146 @@ def test_not_observed_empty_episode_ledger_remains_distinct_from_observed_empty_
+ 
+     observed_summary = _build(observed_report)["episode_attribution"][0]  # type: ignore[index]
+     assert observed_summary["episode_ledger_status"] == "OBSERVED"
++
++
++def test_global_direction_failure_stops_donor_training():
++    result = _build(_complete_raw_report(direction_hit_rate=0.47, a1_sign_15bp=-10.0))
++
++    assert result["evidence"]["directional_edge"]["status"] == "CONSISTENT"  # type: ignore[index]
++    assert result["terminal_recommendation"] == "stop_donor_training"
++    assert build_regime_objective_hypothesis(result) is None
++
++
++def test_regime_localized_failure_prepares_redesign_at_four_of_five():
++    result = _build(_complete_raw_report(regime_localized_seed_count=4))
++
++    assert result["evidence"]["regime_localization"]["supporting_seed_count"] == 4  # type: ignore[index]
++    assert result["terminal_recommendation"] == "prepare_regime_objective_redesign"
++
++
++def test_three_of_five_is_mixed_and_cannot_open_redesign():
++    result = _build(_complete_raw_report(regime_localized_seed_count=3))
++
++    assert result["evidence"]["regime_localization"]["status"] == "MIXED"  # type: ignore[index]
++    assert result["terminal_recommendation"] == "insufficient_evidence_no_strategy_change"
++
++
++def test_episode_and_shortfall_sample_floors_are_family_local():
++    evidence = _classify_evidence(
++        [
++            {
++                "seed": seed,
++                "directional_edge_support": True,
++                "confidence_no_incremental_edge_support": False,
++                "cost_flip_support": False,
++                "regime_localization_support": False,
++                "closed_episode_count": 19,
++                "negative_tail_share": 1.0,
++                "implementation_shortfall_observation_count": 19,
++                "implementation_shortfall": 100.0,
++                "a5_baseline_net_pnl": -100.0,
++            }
++            for seed in (42, 1729, 2718, 3141, 9001)
++        ]
++    )
++
++    assert evidence["directional_edge"]["status"] == "CONSISTENT"
++    assert evidence["episode_tail"]["status"] == "INSUFFICIENT_SAMPLE"
++    assert evidence["execution_shortfall"]["status"] == "INSUFFICIENT_SAMPLE"
++
++
++def test_execution_shortfall_does_not_divide_a_non_loss_baseline():
++    evidence = _classify_evidence(
++        [
++            {
++                "seed": seed,
++                "directional_edge_support": False,
++                "confidence_no_incremental_edge_support": False,
++                "cost_flip_support": False,
++                "regime_localization_support": False,
++                "closed_episode_count": 20,
++                "negative_tail_share": 0.0,
++                "implementation_shortfall_observation_count": 20,
++                "implementation_shortfall": 100.0,
++                "a5_baseline_net_pnl": 50.0,
++            }
++            for seed in (42, 1729, 2718, 3141, 9001)
++        ]
++    )
++
++    assert evidence["execution_shortfall"]["status"] == "UNATTRIBUTABLE"
++
++
++def test_confidence_failure_requires_equal_direction_hit_rates_and_nonpositive_score_pnl():
++    report = _complete_raw_report()
++    for run in report["runs"]:  # type: ignore[index]
++        if run["window"] != "late_dev_2025":
++            continue
++        score = run["stages"][ArchitectureStage.A1_SCORE.value]  # type: ignore[index]
++        score["direction_hit_rate"] = 0.6
++        score["cost_stress"]["15"]["net_pnl"] = -10.0
++        score["turnover_notional"] = 130.0 * 10_000.0 / 15.0
++
++    result = _build(report)
++
++    assert result["evidence"]["confidence_no_incremental_edge"] == {  # type: ignore[index]
++        "status": "CONSISTENT",
++        "supporting_seed_count": 5,
++        "supporting_seeds": [42, 123, 456, 789, 1024],
++        "insufficient_sample_seeds": [],
++        "inapplicable_seeds": [],
++    }
++
++
++def test_cost_flip_requires_positive_baseline_and_nonpositive_15bp_pnl():
++    report = _complete_raw_report()
++    for run in report["runs"]:  # type: ignore[index]
++        if run["window"] != "late_dev_2025":
++            continue
++        a5 = run["stages"][ArchitectureStage.A5_SHADOW.value]  # type: ignore[index]
++        a5["cost_stress"]["15"]["net_pnl"] = 0.0
++        a5["turnover_notional"] = 80_000.0
++
++    result = _build(report)
++
++    assert result["evidence"]["cost_flip"]["status"] == "CONSISTENT"  # type: ignore[index]
++    assert result["evidence"]["cost_flip"]["supporting_seed_count"] == 5  # type: ignore[index]
++
++
++def test_missing_a5_episode_collection_is_insufficient_not_invalid():
++    report = _complete_raw_report(regime_localized_seed_count=4)
++    late_dev = next(run for run in report["runs"] if run["window"] == "late_dev_2025")  # type: ignore[index]
++    late_dev["stages"][ArchitectureStage.A5_SHADOW.value].pop("position_episodes")  # type: ignore[index]
++
++    result = _build(report)
++
++    assert result["evidence"]["required_inputs_incomplete"] is True  # type: ignore[index]
++    assert result["evidence"]["regime_localization"]["status"] == "INSUFFICIENT_SAMPLE"  # type: ignore[index]
++    assert result["terminal_recommendation"] == "insufficient_evidence_no_strategy_change"
++    assert result["promotion_state"] == "BLOCKED_PAUSE_PROMOTION_AND_TRAINING"
++
++
++def test_regime_hypothesis_is_single_family_research_only_record():
++    result = _build(_complete_raw_report(regime_localized_seed_count=4))
++
++    hypothesis = build_regime_objective_hypothesis(result)
++
++    assert hypothesis == {
++        "schema_version": "quant-v2-regime-objective-hypothesis.v1",
++        "research_only_non_promotable": True,
++        "promotion_state": "BLOCKED_PAUSE_PROMOTION_AND_TRAINING",
++        "failure_family": "regime_localization",
++        "market_behavior_hypothesis": (
++            "Late-development loss is concentrated in one observed regime while the other observed regimes "
++            "remain net positive after the fixed 15bp turnover cost allocation."
++        ),
++        "excluded_prior_exploration_families": [
++            "threshold sweeping",
++            "leverage expansion",
++            "donor continuation",
++        ],
++        "oos_only_falsification_gate": (
++            "A separately authorized out-of-sample-only evaluation falsifies this hypothesis unless the same "
++            "localized loss pattern recurs in at least four of five perturbation seeds."
++        ),
++    }
+diff --git a/zenquant/research/late_dev_cost_attribution.py b/zenquant/research/late_dev_cost_attribution.py
+index afd4528..dc31228 100644
+--- a/zenquant/research/late_dev_cost_attribution.py
++++ b/zenquant/research/late_dev_cost_attribution.py
+@@ -9,7 +9,7 @@ from __future__ import annotations
+ 
+ import json
+ import math
+-from collections.abc import Mapping
++from collections.abc import Mapping, Sequence
+ from enum import StrEnum
+ from typing import Any
+ 
+@@ -20,6 +20,7 @@ from .architecture_experiment import (
+ )
+ 
+ LATE_DEV_ATTRIBUTION_SCHEMA_VERSION = "quant-v2-late-dev-cost-attribution.v1"
++BLOCKED_PROMOTION_STATE = "BLOCKED_PAUSE_PROMOTION_AND_TRAINING"
+ 
+ 
+ class EvidenceStatus(StrEnum):
+@@ -50,20 +51,36 @@ def build_late_dev_cost_attribution(
+         _validate_source_identity(source_sha256=source_sha256, source_size_bytes=source_size_bytes)
+         runs = _validate_report_envelope(report, manifest=manifest)
+         late_dev_runs = [run for run in runs if run["window"] == "late_dev_2025"]
++        required_inputs_incomplete = any(_required_seed_inputs_incomplete(run) for run in late_dev_runs)
+         bridge_stages = (
+             ArchitectureStage.A1_SIGN.value,
+             ArchitectureStage.A1_SCORE.value,
+             ArchitectureStage.A5_SHADOW.value,
+         )
+         seed_stage_bridges = [
+-            _build_seed_stage_bridge(run, stage_name) for run in late_dev_runs for stage_name in bridge_stages
++            _build_seed_stage_bridge(run, stage_name)
++            for run in late_dev_runs
++            for stage_name in bridge_stages
++            if _has_cost_structure(run, stage_name)
+         ]
+         episode_attribution = []
+         for run in late_dev_runs:
++            if not _has_a5_episode_inputs(run):
++                continue
+             summary = _summarize_episodes(_stage(run, ArchitectureStage.A5_SHADOW.value))
+             summary["seed"] = int(run["seed"])
+             summary["stage"] = ArchitectureStage.A5_SHADOW.value
+             episode_attribution.append(summary)
++        seed_evidence = _build_seed_evidence(late_dev_runs, seed_stage_bridges, episode_attribution)
++        evidence = (
++            _insufficient_sample_evidence(seed_evidence)
++            if required_inputs_incomplete
++            else _classify_evidence(seed_evidence)
++        )
++        terminal_recommendation = _terminal_recommendation(
++            required_inputs_incomplete=required_inputs_incomplete,
++            evidence=evidence,
++        )
+     except LateDevAttributionValidationError:
+         raise
+     except (KeyError, OverflowError, TypeError, ValueError) as exc:
+@@ -80,8 +97,14 @@ def build_late_dev_cost_attribution(
+         "validated_run_count": len(runs),
+         "seed_stage_bridges": seed_stage_bridges,
+         "episode_attribution": episode_attribution,
+-        "evidence": {},
++        "seed_evidence": seed_evidence,
++        "evidence": {
++            "required_inputs_incomplete": required_inputs_incomplete,
++            **evidence,
++        },
++        "terminal_recommendation": terminal_recommendation,
+         "research_only_non_promotable": True,
++        "promotion_state": BLOCKED_PROMOTION_STATE,
+     }
+ 
+ 
+@@ -188,6 +211,236 @@ def _build_seed_stage_bridge(run: Mapping[str, Any], stage_name: str) -> dict[st
+     }
+ 
+ 
++def _required_seed_inputs_incomplete(run: Mapping[str, Any]) -> bool:
++    """Return whether a required diagnostic collection is structurally absent."""
++    required_cost_stages = (
++        ArchitectureStage.A1_SIGN.value,
++        ArchitectureStage.A1_SCORE.value,
++        ArchitectureStage.A5_SHADOW.value,
++    )
++    if any(not _has_cost_structure(run, stage_name) for stage_name in required_cost_stages):
++        return True
++    stage = _stage(run, ArchitectureStage.A5_SHADOW.value)
++    if not _has_a5_episode_inputs(run) or "attribution_rows" not in stage:
++        return True
++    rows = stage["attribution_rows"]
++    return isinstance(rows, list) and all(isinstance(row, Mapping) and row.get("execution") is None for row in rows)
++
++
++def _has_cost_structure(run: Mapping[str, Any], stage_name: str) -> bool:
++    stage = _stage(run, stage_name)
++    costs = stage.get("cost_stress")
++    return isinstance(costs, Mapping) and "0" in costs and "15" in costs
++
++
++def _has_a5_episode_inputs(run: Mapping[str, Any]) -> bool:
++    stage = _stage(run, ArchitectureStage.A5_SHADOW.value)
++    return "attribution_rows" in stage and "position_episodes" in stage and "episode_ledger" in stage
++
++
++def _build_seed_evidence(
++    runs: Sequence[Mapping[str, Any]],
++    bridges: Sequence[Mapping[str, Any]],
++    episode_attribution: Sequence[Mapping[str, Any]],
++) -> list[dict[str, Any]]:
++    """Serialize only factual inputs and frozen per-family predicates for each seed."""
++    bridge_by_seed_stage = {(bridge["seed"], bridge["stage"]): bridge for bridge in bridges}
++    episode_by_seed = {summary["seed"]: summary for summary in episode_attribution}
++    evidence: list[dict[str, Any]] = []
++    for run in runs:
++        seed = int(run["seed"])
++        sign_bridge = bridge_by_seed_stage.get((seed, ArchitectureStage.A1_SIGN.value))
++        score_bridge = bridge_by_seed_stage.get((seed, ArchitectureStage.A1_SCORE.value))
++        a5_bridge = bridge_by_seed_stage.get((seed, ArchitectureStage.A5_SHADOW.value))
++        summary = episode_by_seed.get(seed)
++        if sign_bridge is None or score_bridge is None or a5_bridge is None or summary is None:
++            evidence.append({"seed": seed, "required_inputs_complete": False})
++            continue
++        sign_hit_rate = _finite(
++            _stage(run, ArchitectureStage.A1_SIGN.value)["direction_hit_rate"], "A1_SIGN direction hit rate"
++        )
++        score_hit_rate = _finite(
++            _stage(run, ArchitectureStage.A1_SCORE.value)["direction_hit_rate"], "A1_SCORE direction hit rate"
++        )
++        regime_groups = _mapping(summary["regime_groups"], "regime groups")
++        closed_episode_count = _nonnegative_int(summary["closed_episode_count"], "closed episode count")
++        negative_tail_share = summary["negative_tail_share"]
++        if negative_tail_share is not None:
++            negative_tail_share = _finite(negative_tail_share, "negative tail share")
++        execution_actions = _mapping(summary["execution_actions"], "execution actions")
++        shortfall_count = _nonnegative_int(
++            execution_actions["implementation_shortfall_observation_count"],
++            "implementation shortfall observation count",
++        )
++        shortfall = _finite(execution_actions["implementation_shortfall"], "implementation shortfall")
++        sign_pnl = _finite(sign_bridge["extra_15bp_net_pnl"], "A1_SIGN 15bp net PnL")
++        score_pnl = _finite(score_bridge["extra_15bp_net_pnl"], "A1_SCORE 15bp net PnL")
++        baseline_pnl = _finite(a5_bridge["baseline_net_pnl"], "A5 baseline net PnL")
++        a5_15bp_pnl = _finite(a5_bridge["extra_15bp_net_pnl"], "A5 15bp net PnL")
++        evidence.append(
++            {
++                "seed": seed,
++                "required_inputs_complete": True,
++                "a1_sign_hit_rate": sign_hit_rate,
++                "a1_sign_15bp_net_pnl": sign_pnl,
++                "a1_score_hit_rate": score_hit_rate,
++                "a1_score_15bp_net_pnl": score_pnl,
++                "a5_baseline_net_pnl": baseline_pnl,
++                "a5_15bp_net_pnl": a5_15bp_pnl,
++                "regime_groups": regime_groups,
++                "closed_episode_count": closed_episode_count,
++                "negative_tail_share": negative_tail_share,
++                "implementation_shortfall_observation_count": shortfall_count,
++                "implementation_shortfall": shortfall,
++                "directional_edge_support": sign_pnl <= 0.0 and sign_hit_rate < 0.50,
++                "confidence_no_incremental_edge_support": (
++                    math.isclose(score_hit_rate, sign_hit_rate, rel_tol=0.0, abs_tol=1e-12) and score_pnl <= 0.0
++                ),
++                "cost_flip_support": baseline_pnl > 0.0 and a5_15bp_pnl <= 0.0,
++                "regime_localization_support": _regime_localization_support(regime_groups),
++                "episode_tail_support": (
++                    closed_episode_count >= 20 and negative_tail_share is not None and negative_tail_share >= 0.60
++                ),
++                "execution_shortfall_support": (
++                    shortfall_count >= 20 and baseline_pnl < 0.0 and shortfall >= 0.25 * abs(baseline_pnl)
++                ),
++            }
++        )
++    return evidence
++
++
++def _regime_localization_support(regime_groups: Mapping[str, Any]) -> bool:
++    """Apply the frozen single-regime loss concentration rule."""
++    net_pnls = {
++        regime: _finite(_mapping(values, "regime group")["net_pnl_15bp"], "regime net PnL")
++        for regime, values in regime_groups.items()
++    }
++    negative = {regime: -pnl for regime, pnl in net_pnls.items() if pnl < 0.0}
++    total_negative = sum(negative.values())
++    if total_negative == 0.0:
++        return False
++    return any(
++        contribution / total_negative >= 0.60
++        and all(other_pnl > 0.0 for other_regime, other_pnl in net_pnls.items() if other_regime != regime)
++        for regime, contribution in negative.items()
++    )
++
++
++def _classify_evidence(seed_evidence: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
++    """Apply fixed four-of-five evidence classification to serialized seed facts."""
++    families = (
++        ("directional_edge", "directional_edge_support"),
++        ("confidence_no_incremental_edge", "confidence_no_incremental_edge_support"),
++        ("cost_flip", "cost_flip_support"),
++        ("regime_localization", "regime_localization_support"),
++    )
++    classified = {name: _classify_family(seed_evidence, support_key=support_key) for name, support_key in families}
++    classified["episode_tail"] = _classify_family(
++        seed_evidence,
++        support_key="episode_tail_support",
++        sample_floor_key="closed_episode_count",
++        sample_floor=20,
++    )
++    classified["execution_shortfall"] = _classify_family(
++        seed_evidence,
++        support_key="execution_shortfall_support",
++        sample_floor_key="implementation_shortfall_observation_count",
++        sample_floor=20,
++        inapplicable=lambda row: float(row["a5_baseline_net_pnl"]) >= 0.0,
++    )
++    return classified
++
++
++def _classify_family(
++    seed_evidence: Sequence[Mapping[str, Any]],
++    *,
++    support_key: str,
++    sample_floor_key: str | None = None,
++    sample_floor: int | None = None,
++    inapplicable: Any = None,
++) -> dict[str, Any]:
++    supporting_seeds = [int(row["seed"]) for row in seed_evidence if row.get(support_key) is True]
++    insufficient_sample_seeds = (
++        [int(row["seed"]) for row in seed_evidence if int(row.get(sample_floor_key, 0)) < sample_floor]
++        if sample_floor_key is not None and sample_floor is not None
++        else []
++    )
++    inapplicable_seeds = [int(row["seed"]) for row in seed_evidence if inapplicable is not None and inapplicable(row)]
++    if insufficient_sample_seeds:
++        status = EvidenceStatus.INSUFFICIENT_SAMPLE.value
++    elif len(supporting_seeds) >= 4:
++        status = EvidenceStatus.CONSISTENT.value
++    elif supporting_seeds:
++        status = EvidenceStatus.MIXED.value
++    else:
++        status = EvidenceStatus.UNATTRIBUTABLE.value
++    return {
++        "status": status,
++        "supporting_seed_count": len(supporting_seeds),
++        "supporting_seeds": supporting_seeds,
++        "insufficient_sample_seeds": insufficient_sample_seeds,
++        "inapplicable_seeds": inapplicable_seeds,
++    }
++
++
++def _insufficient_sample_evidence(seed_evidence: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
++    """Fail closed when a required diagnostic collection is absent."""
++    families = (
++        "directional_edge",
++        "confidence_no_incremental_edge",
++        "cost_flip",
++        "regime_localization",
++        "episode_tail",
++        "execution_shortfall",
++    )
++    incomplete_seeds = [int(row["seed"]) for row in seed_evidence if not row.get("required_inputs_complete")]
++    return {
++        family: {
++            "status": EvidenceStatus.INSUFFICIENT_SAMPLE.value,
++            "supporting_seed_count": 0,
++            "supporting_seeds": [],
++            "insufficient_sample_seeds": incomplete_seeds,
++            "inapplicable_seeds": [],
++        }
++        for family in families
++    }
++
++
++def _terminal_recommendation(*, required_inputs_incomplete: bool, evidence: Mapping[str, Any]) -> str:
++    if required_inputs_incomplete:
++        return "insufficient_evidence_no_strategy_change"
++    if evidence["directional_edge"]["supporting_seed_count"] >= 4:
++        return "stop_donor_training"
++    if evidence["regime_localization"]["supporting_seed_count"] >= 4:
++        return "prepare_regime_objective_redesign"
++    return "insufficient_evidence_no_strategy_change"
++
++
++def build_regime_objective_hypothesis(attribution: Mapping[str, Any]) -> dict[str, Any] | None:
++    """Return a non-promotable regime hypothesis only for a localized failure."""
++    if attribution.get("terminal_recommendation") != "prepare_regime_objective_redesign":
++        return None
++    return {
++        "schema_version": "quant-v2-regime-objective-hypothesis.v1",
++        "research_only_non_promotable": True,
++        "promotion_state": BLOCKED_PROMOTION_STATE,
++        "failure_family": "regime_localization",
++        "market_behavior_hypothesis": (
++            "Late-development loss is concentrated in one observed regime while the other observed regimes "
++            "remain net positive after the fixed 15bp turnover cost allocation."
++        ),
++        "excluded_prior_exploration_families": [
++            "threshold sweeping",
++            "leverage expansion",
++            "donor continuation",
++        ],
++        "oos_only_falsification_gate": (
++            "A separately authorized out-of-sample-only evaluation falsifies this hypothesis unless the same "
++            "localized loss pattern recurs in at least four of five perturbation seeds."
++        ),
++    }
++
++
+ def _summarize_episodes(stage: Mapping[str, Any]) -> dict[str, Any]:
+     """Summarize serialized A5 episodes and explicit attribution rows only."""
+     episodes = stage.get("position_episodes")

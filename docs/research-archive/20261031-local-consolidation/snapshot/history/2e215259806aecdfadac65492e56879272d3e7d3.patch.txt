@@ -1,0 +1,209 @@
+commit 2e215259806aecdfadac65492e56879272d3e7d3
+Author:     Disaster <clusternlh@gmail.com>
+AuthorDate: Tue Aug 25 00:44:32 2026 +0800
+Commit:     Disaster <clusternlh@gmail.com>
+CommitDate: Tue Aug 25 00:44:32 2026 +0800
+
+    test(research): require durable export registration
+
+diff --git a/tests/test_time_space_export.py b/tests/test_time_space_export.py
+index 61a3830..cc8e578 100644
+--- a/tests/test_time_space_export.py
++++ b/tests/test_time_space_export.py
+@@ -642,22 +642,40 @@ def test_runtime_requires_exact_persisted_receipt_after_provider_artifact_expiry
+     registration_dir = tmp_path / str(AS_OF_NS)
+     registration_dir.mkdir()
+     persisted = {"schema_version": "time-space-export-registration-receipt.v1", "digest": "exact"}
++    durable_export = {"schema_version": "time-space-shadow-export.v1", "as_of_ns": AS_OF_NS}
++    durable_provenance = {"schema_version": "time-space-shadow-export-provenance.v1", "as_of_ns": AS_OF_NS}
+     (registration_dir / "time_space_export_registration_receipt_v1.json").write_text(json.dumps(persisted))
+     (registration_dir / "time_space_export_registration_trust_v1.json").write_text(
+         json.dumps({"registration_status": VERIFIED})
+     )
++    (registration_dir / "time_space_shadow_export.json").write_bytes(_canonical_bytes(durable_export))
++    (registration_dir / "time_space_shadow_export_provenance.json").write_bytes(_canonical_bytes(durable_provenance))
+ 
+-    trust, receipt = _load_persisted_registration(
++    trust, receipt, export, provenance = _load_persisted_registration(
+         AS_OF_NS,
+         persisted,
++        durable_export,
++        durable_provenance,
+         registration_root=tmp_path,
+     )
+     assert trust["registration_status"] == VERIFIED
+     assert receipt == persisted
++    assert export == durable_export
++    assert provenance == durable_provenance
+     with pytest.raises(ValueError, match="immutable checked-in receipt"):
+         _load_persisted_registration(
+             AS_OF_NS,
+             {**persisted, "digest": "forged"},
++            durable_export,
++            durable_provenance,
++            registration_root=tmp_path,
++        )
++    with pytest.raises(ValueError, match="immutable checked-in export"):
++        _load_persisted_registration(
++            AS_OF_NS,
++            persisted,
++            {**durable_export, "as_of_ns": AS_OF_NS + FOUR_HOURS_NS},
++            durable_provenance,
+             registration_root=tmp_path,
+         )
+ 
+diff --git a/tests/test_time_space_export_registration.py b/tests/test_time_space_export_registration.py
+index e32926c..885fc1b 100644
+--- a/tests/test_time_space_export_registration.py
++++ b/tests/test_time_space_export_registration.py
+@@ -11,6 +11,7 @@ import pytest
+ 
+ SCRIPT = Path(__file__).parents[1] / "scripts/build_time_space_export_receipt.py"
+ APPEND_ONLY_SCRIPT = Path(__file__).parents[1] / "scripts/validate_time_space_registration_push.py"
++PERSISTED_VALIDATOR = Path(__file__).parents[1] / "scripts/validate_time_space_persisted_registration.py"
+ AS_OF_NS = 1787529600000000000
+ MANIFEST_PATH = (
+     f"config/research/registrations/time_space_exports/{AS_OF_NS}/time_space_shadow_export_checkpoint_v1.json"
+@@ -47,6 +48,9 @@ def _manifest() -> dict[str, object]:
+ def _generator_payloads() -> tuple[dict[str, object], dict[str, object]]:
+     return {"as_of_ns": AS_OF_NS, "rows": []}, {
+         "as_of_ns": AS_OF_NS,
++        "repository_identity": "infdahai/zenQuant",
++        "commit_sha": "d" * 40,
++        "provider_run_id": "54321",
+         "source_files": [{"path": "frozen.parquet", "sha256": "a" * 64}],
+     }
+ 
+@@ -431,3 +435,132 @@ def test_checkpoint_push_rejects_same_push_enforcement_change(tmp_path: Path) ->
+ 
+     assert result.returncode != 0
+     assert "protected registration enforcement" in result.stderr
++
++
++def test_persist_push_requires_exact_durable_export_transaction(tmp_path: Path) -> None:
++    repository = tmp_path / "repository"
++    repository.mkdir()
++    _git(repository, "init", "-q")
++    checkpoint = repository / MANIFEST_PATH
++    checkpoint.parent.mkdir(parents=True)
++    checkpoint.write_text("pending\n")
++    before = _commit(repository, "registered checkpoint")
++    names = (
++        "time_space_export_registration_receipt_v1.json",
++        "time_space_export_registration_trust_v1.json",
++        "time_space_shadow_export.json",
++        "time_space_shadow_export_provenance.json",
++    )
++    for name in names:
++        (checkpoint.parent / name).write_text(f"{name}\n")
++    after = _commit(repository, "persist durable registration")
++    github_env = tmp_path / "github-env"
++
++    result = subprocess.run(
++        [
++            sys.executable,
++            str(APPEND_ONLY_SCRIPT),
++            "--repository",
++            str(repository),
++            "--before",
++            before,
++            "--after",
++            after,
++            "--phase",
++            "persist",
++            "--github-env",
++            str(github_env),
++        ],
++        check=False,
++        capture_output=True,
++        text=True,
++    )
++
++    assert result.returncode == 0, result.stderr
++    assert github_env.read_text().splitlines() == [
++        f"REGISTRATION_CHECKPOINT={MANIFEST_PATH}",
++        f"REGISTRATION_RECEIPT={checkpoint.parent.relative_to(repository)}/time_space_export_registration_receipt_v1.json",
++        f"REGISTRATION_TRUST={checkpoint.parent.relative_to(repository)}/time_space_export_registration_trust_v1.json",
++        f"REGISTRATION_EXPORT={checkpoint.parent.relative_to(repository)}/time_space_shadow_export.json",
++        f"REGISTRATION_PROVENANCE={checkpoint.parent.relative_to(repository)}/time_space_shadow_export_provenance.json",
++    ]
++
++
++def _durable_registration(tmp_path: Path) -> tuple[Path, Path, Path, Path, Path]:
++    module = _module()
++    checkpoint = tmp_path / "time_space_shadow_export_checkpoint_v1.json"
++    export_path = tmp_path / "time_space_shadow_export.json"
++    provenance_path = tmp_path / "time_space_shadow_export_provenance.json"
++    receipt_path = tmp_path / "time_space_export_registration_receipt_v1.json"
++    trust_path = tmp_path / "time_space_export_registration_trust_v1.json"
++    manifest_bytes = (json.dumps(_manifest(), sort_keys=True, separators=(",", ":")) + "\n").encode()
++    export, provenance = _generator_payloads()
++    receipt = module._build_receipt(
++        manifest_path=MANIFEST_PATH,
++        manifest_bytes=manifest_bytes,
++        provider=_provider(),
++        artifact=_artifact(),
++        trust=_trust(),
++        **_generator_args(),
++    )
++    trust = {
++        "schema_version": "time-space-export-registration-trust.v1",
++        "layer": "time_space_shadow",
++        "registration_status": "VERIFIED",
++        "remote_identity": "infdahai/zenQuant",
++        "checkpoint_workflow_id": WORKFLOW_ID,
++        "checkpoint_workflow_path": WORKFLOW_PATH,
++        "checkpoint_branch": BRANCH,
++        "provider_run_id": "12345",
++        "commit_sha": "c" * 40,
++        "checkpoint_manifest_sha256": hashlib.sha256(manifest_bytes).hexdigest(),
++        "provider_created_at_ns": 1787558400000000000,
++        "checkpoint_artifact_id": 777,
++        "checkpoint_artifact_name": f"time-space-export-checkpoint-{AS_OF_NS}-12345",
++        "receipt_artifact_sha256": hashlib.sha256(
++            (json.dumps(receipt, sort_keys=True, separators=(",", ":")) + "\n").encode()
++        ).hexdigest(),
++        "generator_commit_sha": "d" * 40,
++        "generator_provider_run_id": "54321",
++        "generator_workflow_id": 9002,
++        "generator_workflow_path": ".github/workflows/time-space-export-generate.yml",
++        "generator_event": "workflow_dispatch",
++        "generator_branch": "codex/late-dev-cost-attribution",
++        "generator_created_at_ns": 1787558400000000000,
++        "generator_artifact_id": 778,
++        "generator_artifact_name": f"time-space-export-{AS_OF_NS}-54321",
++    }
++    checkpoint.write_bytes(manifest_bytes)
++    export_path.write_bytes((json.dumps(export, sort_keys=True, separators=(",", ":")) + "\n").encode())
++    provenance_path.write_bytes((json.dumps(provenance, sort_keys=True, separators=(",", ":")) + "\n").encode())
++    receipt_path.write_bytes((json.dumps(receipt, sort_keys=True, separators=(",", ":")) + "\n").encode())
++    trust_path.write_bytes((json.dumps(trust, sort_keys=True, separators=(",", ":")) + "\n").encode())
++    return checkpoint, receipt_path, trust_path, export_path, provenance_path
++
++
++def test_persisted_registration_validator_rejects_malformed_irreversible_trust(tmp_path: Path) -> None:
++    paths = _durable_registration(tmp_path)
++    command = [
++        sys.executable,
++        str(PERSISTED_VALIDATOR),
++        "--checkpoint",
++        str(paths[0]),
++        "--receipt",
++        str(paths[1]),
++        "--trust",
++        str(paths[2]),
++        "--export",
++        str(paths[3]),
++        "--provenance",
++        str(paths[4]),
++    ]
++    valid = subprocess.run(command, check=False, capture_output=True, text=True)
++    assert valid.returncode == 0, valid.stderr
++
++    trust = json.loads(paths[2].read_text())
++    trust.pop("generator_workflow_id")
++    paths[2].write_text(json.dumps(trust, sort_keys=True, separators=(",", ":")) + "\n")
++    malformed = subprocess.run(command, check=False, capture_output=True, text=True)
++
++    assert malformed.returncode != 0
++    assert "trust" in malformed.stderr

@@ -1,0 +1,217 @@
+commit 20df58f3af3a0d7b33a0b6dae81cad0e43b64ac6
+Author:     Disaster <clusternlh@gmail.com>
+AuthorDate: Sun Aug 23 11:26:19 2026 +0800
+Commit:     Disaster <clusternlh@gmail.com>
+CommitDate: Sun Aug 23 11:26:19 2026 +0800
+
+    fix(research): bind full accounting runtime identity
+
+diff --git a/config/research/legacy_accounting_rerun_v1.json b/config/research/legacy_accounting_rerun_v1.json
+index 8d72763..80d26c7 100644
+--- a/config/research/legacy_accounting_rerun_v1.json
++++ b/config/research/legacy_accounting_rerun_v1.json
+@@ -1,5 +1,5 @@
+ {
+-  "accounting_kernel_sha256": "sha256:44fbafe8d88db40a618f2742f7a5cdd602310bf5869e1bac33c587d281c1b160",
++  "accounting_kernel_sha256": "sha256:a2e7a4039556aa427ec258a2f38d302c6edf5e37e8e81b9cedd4a36897b66c1a",
+   "architecture_manifest_sha256": "c982d074b24ec21235dfefbd972d936dc4f5a4ab0360964013576c90729bfbe0",
+   "indicator_formula_hash": "sha256:82af23a08c68a94641e1d7769ecdf9619059dddbeb531dd3703cc4d2ff809f4a",
+   "legacy_envelope_sha256": "sha256:0c66255a9020985ec5b3c2c10c2da4a38e96ed070c6c7c0801beced9b26f689c",
+diff --git a/scripts/rerun_legacy_accounting_baseline.py b/scripts/rerun_legacy_accounting_baseline.py
+index cc82577..59cba8d 100644
+--- a/scripts/rerun_legacy_accounting_baseline.py
++++ b/scripts/rerun_legacy_accounting_baseline.py
+@@ -40,7 +40,7 @@ from zenquant.research.legacy_accounting_validity import ValidityState
+ 
+ FROZEN_MANIFEST_PATH = DEFAULT_ARCHITECTURE_MANIFEST_PATH
+ FROZEN_RERUN_CONTRACT_PATH = Path("config/research/legacy_accounting_rerun_v1.json")
+-FROZEN_RERUN_CONTRACT_SHA256 = "610e3b51f18e6b527d1af2335cafa74f657513dacbc34469816a9ff20260276b"
++FROZEN_RERUN_CONTRACT_SHA256 = "8f4fb2d834500f5381c54b4288d841e7915dbf63d3bef94918560cf623490986"
+ OUTPUT_FILENAMES = (
+     "fixed_event_attribution.json",
+     "full_system_attribution.json",
+diff --git a/tests/test_accounting_kernel_identity.py b/tests/test_accounting_kernel_identity.py
+index a0d1d07..764a1b1 100644
+--- a/tests/test_accounting_kernel_identity.py
++++ b/tests/test_accounting_kernel_identity.py
+@@ -1,6 +1,7 @@
+ from __future__ import annotations
+ 
+ import importlib
++import json
+ from pathlib import Path
+ 
+ import pytest
+@@ -23,6 +24,10 @@ def _write_kernel_fixture(root: Path, *, fee_operator: str = "+") -> None:
+     )
+     (risk / "guard.py").write_text(
+         "class RiskOverlay:\n"
++        "    def __init__(self, bus, starting_equity):\n"
++        "        self._bus = bus\n"
++        "        self._cash = starting_equity\n"
++        "        self._bus.subscribe('exec.order.report', self._on_execution_report)\n\n"
+         "    def _on_mark_price(self, payload):\n"
+         "        self._last_price[payload.symbol] = payload.mark_price\n"
+         "        self._revalue_equity()\n\n"
+@@ -43,6 +48,9 @@ def _write_kernel_fixture(root: Path, *, fee_operator: str = "+") -> None:
+     )
+     (execution / "router.py").write_text(
+         "class ExecutionKernel:\n"
++        "    def __init__(self, bus):\n"
++        "        self._bus = bus\n"
++        "        self._bus.subscribe('intent.target_position.final.>', self._on_target)\n\n"
+         "    def _on_target(self, report):\n"
+         "        self._apply_report_accounting(report)\n\n"
+         "    def _apply_report_accounting(self, report):\n"
+@@ -61,9 +69,7 @@ def test_accounting_kernel_identity_changes_with_unified_transition_semantics(tm
+     assert baseline["schema_version"] == "accounting-kernel-identity.v1"
+     assert baseline["sha256"].startswith("sha256:")
+     assert baseline["sha256"] != changed["sha256"]
+-    assert "zenquant/risk/guard.py::RiskOverlay.apply_execution_report" in {
+-        component["identity"] for component in baseline["components"]
+-    }
++    assert "zenquant/risk/guard.py::<module>" in {component["identity"] for component in baseline["components"]}
+ 
+ 
+ def test_accounting_kernel_identity_fails_if_unified_transition_is_missing(tmp_path: Path) -> None:
+@@ -79,11 +85,82 @@ def test_accounting_kernel_identity_fails_if_unified_transition_is_missing(tmp_p
+         identity_module.build_accounting_kernel_identity(repository_root=tmp_path)
+ 
+ 
+-def test_current_accounting_kernel_identity_includes_runtime_transition() -> None:
++def test_accounting_kernel_identity_changes_with_risk_initialization_semantics(tmp_path: Path) -> None:
++    identity_module = importlib.import_module("zenquant.research.accounting_kernel_identity")
++    _write_kernel_fixture(tmp_path)
++    baseline = identity_module.build_accounting_kernel_identity(repository_root=tmp_path)
++    guard = tmp_path / "zenquant/risk/guard.py"
++    guard.write_text(
++        guard.read_text(encoding="utf-8").replace(
++            "self._cash = starting_equity",
++            "self._cash = starting_equity * 2",
++        ),
++        encoding="utf-8",
++    )
++
++    changed = identity_module.build_accounting_kernel_identity(repository_root=tmp_path)
++
++    assert baseline["sha256"] != changed["sha256"]
++
++
++def test_accounting_kernel_identity_changes_with_router_subscription_semantics(tmp_path: Path) -> None:
++    identity_module = importlib.import_module("zenquant.research.accounting_kernel_identity")
++    _write_kernel_fixture(tmp_path)
++    baseline = identity_module.build_accounting_kernel_identity(repository_root=tmp_path)
++    router = tmp_path / "zenquant/execution/router.py"
++    router.write_text(
++        router.read_text(encoding="utf-8").replace(
++            "intent.target_position.final.>",
++            "intent.target_position.shadow.>",
++        ),
++        encoding="utf-8",
++    )
++
++    changed = identity_module.build_accounting_kernel_identity(repository_root=tmp_path)
++
++    assert baseline["sha256"] != changed["sha256"]
++
++
++def test_accounting_kernel_identity_ignores_formatting_and_comments(tmp_path: Path) -> None:
++    identity_module = importlib.import_module("zenquant.research.accounting_kernel_identity")
++    _write_kernel_fixture(tmp_path)
++    baseline = identity_module.build_accounting_kernel_identity(repository_root=tmp_path)
++
++    for relative_path in (
++        Path("zenquant/domain/accounting.py"),
++        Path("zenquant/risk/guard.py"),
++        Path("zenquant/execution/router.py"),
++    ):
++        source_path = tmp_path / relative_path
++        source = source_path.read_text(encoding="utf-8")
++        source_path.write_text(
++            "# Formatting and comments are not runtime semantics.\n\n"
++            + source.replace("fee < 0", "fee<0").replace(
++                "self._cash = starting_equity",
++                "self._cash=starting_equity",
++            ),
++            encoding="utf-8",
++        )
++
++    formatted = identity_module.build_accounting_kernel_identity(repository_root=tmp_path)
++
++    assert baseline == formatted
++
++
++def test_current_accounting_kernel_identity_covers_complete_runtime_modules() -> None:
+     identity_module = importlib.import_module("zenquant.research.accounting_kernel_identity")
+ 
+     identity = identity_module.build_accounting_kernel_identity()
+ 
+-    assert "zenquant/risk/guard.py::RiskOverlay.apply_execution_report" in {
+-        component["identity"] for component in identity["components"]
++    assert {component["identity"] for component in identity["components"]} == {
++        "zenquant/domain/accounting.py::<module>",
++        "zenquant/risk/guard.py::<module>",
++        "zenquant/execution/router.py::<module>",
+     }
++
++
++def test_current_accounting_kernel_identity_matches_frozen_rerun_contract() -> None:
++    identity_module = importlib.import_module("zenquant.research.accounting_kernel_identity")
++    contract = json.loads(Path("config/research/legacy_accounting_rerun_v1.json").read_text(encoding="utf-8"))
++
++    assert contract["accounting_kernel_sha256"] == identity_module.build_accounting_kernel_identity()["sha256"]
+diff --git a/zenquant/research/accounting_kernel_identity.py b/zenquant/research/accounting_kernel_identity.py
+index 2ba65d8..4ccf89d 100644
+--- a/zenquant/research/accounting_kernel_identity.py
++++ b/zenquant/research/accounting_kernel_identity.py
+@@ -38,32 +38,13 @@ def build_accounting_kernel_identity(
+     risk_tree = _parse_module(root / _RISK_GUARD_PATH)
+     risk_class = _required_class(risk_tree, "RiskOverlay", path=_RISK_GUARD_PATH)
+     for method_name in _RISK_METHODS:
+-        method = _required_method(risk_class, method_name, path=_RISK_GUARD_PATH)
+-        components.append(_component(_RISK_GUARD_PATH, f"RiskOverlay.{method_name}", method))
++        _required_method(risk_class, method_name, path=_RISK_GUARD_PATH)
++    components.append(_component(_RISK_GUARD_PATH, "<module>", risk_tree))
+ 
+     execution_tree = _parse_module(root / _EXECUTION_ROUTER_PATH)
+     execution_class = _required_class(execution_tree, "ExecutionKernel", path=_EXECUTION_ROUTER_PATH)
+-    execution_methods = {
+-        node.name: node for node in execution_class.body if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef)
+-    }
+-    hook = execution_methods.get(_EXECUTION_ACCOUNTING_HOOK)
+-    if hook is None:
+-        raise ValueError(
+-            f"accounting kernel component missing:{_EXECUTION_ROUTER_PATH}::"
+-            f"ExecutionKernel.{_EXECUTION_ACCOUNTING_HOOK}"
+-        )
+-    selected_execution_methods = {
+-        _EXECUTION_ACCOUNTING_HOOK,
+-        *(name for name, node in execution_methods.items() if _calls_method(node, _EXECUTION_ACCOUNTING_HOOK)),
+-    }
+-    for method_name in sorted(selected_execution_methods):
+-        components.append(
+-            _component(
+-                _EXECUTION_ROUTER_PATH,
+-                f"ExecutionKernel.{method_name}",
+-                execution_methods[method_name],
+-            )
+-        )
++    _required_method(execution_class, _EXECUTION_ACCOUNTING_HOOK, path=_EXECUTION_ROUTER_PATH)
++    components.append(_component(_EXECUTION_ROUTER_PATH, "<module>", execution_tree))
+ 
+     components.sort(key=lambda item: item["identity"])
+     payload = {
+@@ -108,13 +89,6 @@ def _required_method(class_node: ast.ClassDef, name: str, *, path: Path) -> ast.
+     return node
+ 
+ 
+-def _calls_method(node: ast.AST, method_name: str) -> bool:
+-    return any(
+-        isinstance(item, ast.Call) and isinstance(item.func, ast.Attribute) and item.func.attr == method_name
+-        for item in ast.walk(node)
+-    )
+-
+-
+ def _component(path: Path, qualname: str, node: ast.AST) -> dict[str, str]:
+     semantic_ast = ast.dump(node, annotate_fields=True, include_attributes=False)
+     return {

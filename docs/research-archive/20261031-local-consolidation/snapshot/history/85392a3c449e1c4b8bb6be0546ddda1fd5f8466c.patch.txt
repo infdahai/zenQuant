@@ -1,0 +1,489 @@
+commit 85392a3c449e1c4b8bb6be0546ddda1fd5f8466c
+Author:     Disaster <clusternlh@gmail.com>
+AuthorDate: Mon Aug 24 17:46:08 2026 +0800
+Commit:     Disaster <clusternlh@gmail.com>
+CommitDate: Mon Aug 24 17:46:08 2026 +0800
+
+    ci(research): attest time-space export checkpoints
+
+diff --git a/.github/workflows/time-space-export-checkpoint.yml b/.github/workflows/time-space-export-checkpoint.yml
+new file mode 100644
+index 0000000..a540b9c
+--- /dev/null
++++ b/.github/workflows/time-space-export-checkpoint.yml
+@@ -0,0 +1,40 @@
++name: Register TimeSpace export checkpoint
++
++on:
++  push:
++    branches: [feature/trend-registration-time-space-export]
++
++permissions:
++  actions: read
++  contents: read
++
++jobs:
++  checkpoint:
++    runs-on: ubuntu-latest
++    steps:
++      - uses: actions/checkout@v4
++        with:
++          ref: ${{ github.sha }}
++          fetch-depth: 1
++          persist-credentials: false
++      - name: Validate immutable checkpoint manifest
++        shell: bash
++        run: |
++          set -euo pipefail
++          manifest=config/research/registrations/time_space_shadow_export_checkpoint_v1.json
++          test -f "$manifest"
++          git ls-files --error-unmatch -- "$manifest"
++          git cat-file -e "$GITHUB_SHA:$manifest"
++          git show "$GITHUB_SHA:$manifest" | cmp -s - "$manifest"
++          python - "$manifest" <<'PY'
++          import pathlib, sys
++          from scripts.build_time_space_export_receipt import _validate_manifest
++          path = pathlib.Path(sys.argv[1])
++          _validate_manifest(path.as_posix(), path.read_bytes())
++          PY
++      - uses: actions/upload-artifact@v4
++        with:
++          name: time-space-export-checkpoint-${{ github.run_id }}
++          path: config/research/registrations/time_space_shadow_export_checkpoint_v1.json
++          if-no-files-found: error
++          retention-days: 90
+diff --git a/.github/workflows/time-space-export-receipt.yml b/.github/workflows/time-space-export-receipt.yml
+new file mode 100644
+index 0000000..c14cf98
+--- /dev/null
++++ b/.github/workflows/time-space-export-receipt.yml
+@@ -0,0 +1,62 @@
++name: Attest TimeSpace export checkpoint
++
++on:
++  workflow_run:
++    workflows: [Register TimeSpace export checkpoint]
++    types: [completed]
++
++permissions:
++  actions: read
++  contents: read
++
++jobs:
++  receipt:
++    if: ${{ github.event.workflow_run.conclusion == 'success' }}
++    runs-on: ubuntu-latest
++    steps:
++      - uses: actions/checkout@v4
++        with:
++          ref: ${{ github.event.workflow_run.head_sha }}
++          fetch-depth: 1
++          persist-credentials: false
++      - name: Download independently uploaded checkpoint
++        shell: bash
++        env:
++          GH_TOKEN: ${{ github.token }}
++          RUN_ID: ${{ github.event.workflow_run.id }}
++        run: |
++          set -euo pipefail
++          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$RUN_ID" > provider-run.json
++          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$RUN_ID/artifacts" > artifacts.json
++          python - <<'PY'
++          import json, os, pathlib
++          payload = json.loads(pathlib.Path("artifacts.json").read_text())
++          name = f"time-space-export-checkpoint-{os.environ['RUN_ID']}"
++          matches = [item for item in payload["artifacts"] if item["name"] == name and not item["expired"]]
++          if len(matches) != 1:
++              raise SystemExit("exact checkpoint artifact not found")
++          pathlib.Path("artifact.json").write_text(json.dumps(matches[0]))
++          pathlib.Path("artifact-id").write_text(str(matches[0]["id"]))
++          PY
++          artifact_id=$(<artifact-id)
++          gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$artifact_id/zip" > checkpoint.zip
++          unzip -q checkpoint.zip -d checkpoint-artifact
++          manifest=$(find checkpoint-artifact -type f -name time_space_shadow_export_checkpoint_v1.json)
++          test "$(printf '%s\n' "$manifest" | wc -l | tr -d ' ')" = 1
++          printf 'ARTIFACT_MANIFEST=%s\n' "$manifest" >> "$GITHUB_ENV"
++      - name: Build receipt from provider and artifact evidence
++        shell: bash
++        run: |
++          set -euo pipefail
++          python scripts/build_time_space_export_receipt.py \
++            --manifest "$ARTIFACT_MANIFEST" \
++            --manifest-path config/research/registrations/time_space_shadow_export_checkpoint_v1.json \
++            --provider-run-json provider-run.json \
++            --artifact-json artifact.json \
++            --output time_space_export_registration_receipt.json
++      - uses: actions/upload-artifact@v4
++        with:
++          name: time-space-export-receipt-${{ github.event.workflow_run.id }}
++          path: time_space_export_registration_receipt.json
++          if-no-files-found: error
++          retention-days: 90
+diff --git a/config/research/time_space_export_registration_trust_v1.json b/config/research/time_space_export_registration_trust_v1.json
+index 68dc25e..7ab50fe 100644
+--- a/config/research/time_space_export_registration_trust_v1.json
++++ b/config/research/time_space_export_registration_trust_v1.json
+@@ -3,8 +3,14 @@
+   "layer": "time_space_shadow",
+   "registration_status": "PENDING",
+   "remote_identity": "infdahai/zenQuant",
++  "checkpoint_workflow_id": null,
++  "checkpoint_workflow_path": ".github/workflows/time-space-export-checkpoint.yml",
++  "checkpoint_branch": "feature/trend-registration-time-space-export",
+   "provider_run_id": null,
+   "commit_sha": null,
+   "checkpoint_manifest_sha256": null,
+-  "received_at_ns": null
++  "provider_created_at_ns": null,
++  "checkpoint_artifact_id": null,
++  "checkpoint_artifact_name": null,
++  "receipt_artifact_sha256": null
+ }
+diff --git a/scripts/build_time_space_export_receipt.py b/scripts/build_time_space_export_receipt.py
+new file mode 100644
+index 0000000..9f208f5
+--- /dev/null
++++ b/scripts/build_time_space_export_receipt.py
+@@ -0,0 +1,179 @@
++#!/usr/bin/env python3
++"""Build and verify the independent TimeSpace export checkpoint receipt."""
++
++from __future__ import annotations
++
++import argparse
++import hashlib
++import json
++from collections.abc import Mapping, Sequence
++from datetime import UTC, datetime
++from pathlib import Path
++from typing import Any
++
++ROOT = Path(__file__).resolve().parent.parent
++MANIFEST_PATH = "config/research/registrations/time_space_shadow_export_checkpoint_v1.json"
++TRUST_PATH = ROOT / "config/research/time_space_export_registration_trust_v1.json"
++WORKFLOW_PATH = ".github/workflows/time-space-export-checkpoint.yml"
++BRANCH = "feature/trend-registration-time-space-export"
++REPOSITORY = "infdahai/zenQuant"
++MANIFEST_KEYS = {
++    "schema_version",
++    "layer",
++    "registration_status",
++    "export_sha256",
++    "provenance_sha256",
++    "receipt",
++}
++
++
++def build_receipt(
++    *, manifest_path: str, manifest_bytes: bytes, provider: Mapping[str, Any], artifact: Mapping[str, Any]
++) -> dict[str, Any]:
++    """Build a receipt using only the checked-in trust root."""
++
++    return _build_receipt(
++        manifest_path=manifest_path,
++        manifest_bytes=manifest_bytes,
++        provider=provider,
++        artifact=artifact,
++        trust=_load_json(TRUST_PATH),
++    )
++
++
++def _build_receipt(
++    *,
++    manifest_path: str,
++    manifest_bytes: bytes,
++    provider: Mapping[str, Any],
++    artifact: Mapping[str, Any],
++    trust: Mapping[str, Any],
++) -> dict[str, Any]:
++    manifest = _validate_manifest(manifest_path, manifest_bytes)
++    expected_workflow_id = trust.get("checkpoint_workflow_id")
++    if isinstance(expected_workflow_id, bool) or not isinstance(expected_workflow_id, int) or expected_workflow_id <= 0:
++        raise ValueError("checkpoint workflow id is not independently pinned")
++    expected = {
++        "id": provider.get("id"),
++        "head_sha": provider.get("head_sha"),
++        "created_at": provider.get("created_at"),
++        "conclusion": provider.get("conclusion"),
++        "event": provider.get("event"),
++        "head_branch": provider.get("head_branch"),
++        "path": provider.get("path"),
++        "workflow_id": provider.get("workflow_id"),
++        "repository": provider.get("repository"),
++    }
++    if expected["conclusion"] != "success" or expected["event"] != "push":
++        raise ValueError("provider checkpoint did not complete a successful push")
++    if expected["head_branch"] != BRANCH or expected["path"] != WORKFLOW_PATH:
++        raise ValueError("provider checkpoint branch or workflow path changed")
++    if expected["workflow_id"] != expected_workflow_id:
++        raise ValueError("provider checkpoint workflow id changed")
++    repository = expected["repository"]
++    if not isinstance(repository, Mapping) or repository.get("full_name") != REPOSITORY:
++        raise ValueError("provider checkpoint repository changed")
++    run_id = expected["id"]
++    if isinstance(run_id, bool) or not isinstance(run_id, int) or run_id <= 0:
++        raise ValueError("provider run id is invalid")
++    head_sha = _sha(expected["head_sha"], 40, "provider head sha")
++    created_at_ns = _timestamp_ns(expected["created_at"])
++    expected_artifact_name = f"time-space-export-checkpoint-{run_id}"
++    workflow_run = artifact.get("workflow_run")
++    if (
++        artifact.get("expired") is not False
++        or artifact.get("name") != expected_artifact_name
++        or isinstance(artifact.get("id"), bool)
++        or not isinstance(artifact.get("id"), int)
++        or not isinstance(workflow_run, Mapping)
++        or workflow_run.get("id") != run_id
++        or workflow_run.get("head_sha") != head_sha
++    ):
++        raise ValueError("checkpoint artifact identity changed")
++    return {
++        "schema_version": "time-space-export-registration-receipt.v1",
++        "manifest_path": MANIFEST_PATH,
++        "manifest_sha256": hashlib.sha256(manifest_bytes).hexdigest(),
++        "export_sha256": manifest["export_sha256"],
++        "provenance_sha256": manifest["provenance_sha256"],
++        "provider_run_id": str(run_id),
++        "provider_created_at_ns": created_at_ns,
++        "commit_sha": head_sha,
++        "remote_identity": REPOSITORY,
++        "workflow": {"id": expected_workflow_id, "path": WORKFLOW_PATH},
++        "event": "push",
++        "ref": f"refs/heads/{BRANCH}",
++        "artifact": {"id": artifact["id"], "name": expected_artifact_name},
++    }
++
++
++def _validate_manifest(path: str, content: bytes) -> dict[str, Any]:
++    if path != MANIFEST_PATH:
++        raise ValueError("checkpoint manifest path changed")
++    try:
++        manifest = json.loads(content.decode("utf-8"))
++    except (UnicodeError, json.JSONDecodeError) as exc:
++        raise ValueError("checkpoint manifest is not JSON") from exc
++    if not isinstance(manifest, dict) or set(manifest) != MANIFEST_KEYS:
++        raise ValueError("checkpoint manifest schema changed")
++    canonical = (json.dumps(manifest, sort_keys=True, separators=(",", ":")) + "\n").encode()
++    if content != canonical:
++        raise ValueError("checkpoint manifest bytes are not canonical")
++    if (
++        manifest.get("schema_version") != "time-space-export-checkpoint.v1"
++        or manifest.get("layer") != "time_space_shadow"
++        or manifest.get("registration_status") != "PENDING"
++        or manifest.get("receipt") is not None
++    ):
++        raise ValueError("checkpoint manifest must remain the pending exporter output")
++    _sha(manifest.get("export_sha256"), 64, "export sha")
++    _sha(manifest.get("provenance_sha256"), 64, "provenance sha")
++    return manifest
++
++
++def _sha(value: Any, length: int, name: str) -> str:
++    if not isinstance(value, str) or len(value) != length or any(c not in "0123456789abcdef" for c in value):
++        raise ValueError(f"{name} is invalid")
++    return value
++
++
++def _timestamp_ns(value: Any) -> int:
++    if not isinstance(value, str):
++        raise ValueError("provider created_at is invalid")
++    try:
++        parsed = datetime.strptime(value, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=UTC)
++    except ValueError as exc:
++        raise ValueError("provider created_at is invalid") from exc
++    return int(parsed.timestamp()) * 1_000_000_000
++
++
++def _load_json(path: Path) -> dict[str, Any]:
++    try:
++        payload = json.loads(path.read_text(encoding="utf-8"))
++    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
++        raise ValueError(f"cannot load JSON: {path}") from exc
++    if not isinstance(payload, dict):
++        raise ValueError(f"JSON payload must be an object: {path}")
++    return payload
++
++
++def _main(argv: Sequence[str] | None = None) -> int:
++    parser = argparse.ArgumentParser(description=__doc__)
++    parser.add_argument("--manifest", type=Path, required=True)
++    parser.add_argument("--manifest-path", default=MANIFEST_PATH)
++    parser.add_argument("--provider-run-json", type=Path, required=True)
++    parser.add_argument("--artifact-json", type=Path, required=True)
++    parser.add_argument("--output", type=Path, required=True)
++    args = parser.parse_args(argv)
++    receipt = build_receipt(
++        manifest_path=args.manifest_path,
++        manifest_bytes=args.manifest.read_bytes(),
++        provider=_load_json(args.provider_run_json),
++        artifact=_load_json(args.artifact_json),
++    )
++    args.output.write_text(json.dumps(receipt, sort_keys=True, separators=(",", ":")) + "\n", encoding="utf-8")
++    return 0
++
++
++if __name__ == "__main__":
++    raise SystemExit(_main())
+diff --git a/tests/test_time_space_export_registration.py b/tests/test_time_space_export_registration.py
+new file mode 100644
+index 0000000..a8b55a2
+--- /dev/null
++++ b/tests/test_time_space_export_registration.py
+@@ -0,0 +1,156 @@
++from __future__ import annotations
++
++import hashlib
++import importlib.util
++import json
++import sys
++from pathlib import Path
++
++import pytest
++
++SCRIPT = Path(__file__).parents[1] / "scripts/build_time_space_export_receipt.py"
++MANIFEST_PATH = "config/research/registrations/time_space_shadow_export_checkpoint_v1.json"
++BRANCH = "feature/trend-registration-time-space-export"
++WORKFLOW_PATH = ".github/workflows/time-space-export-checkpoint.yml"
++WORKFLOW_ID = 9001
++
++
++def _module():
++    spec = importlib.util.spec_from_file_location("build_time_space_export_receipt", SCRIPT)
++    assert spec is not None and spec.loader is not None
++    module = importlib.util.module_from_spec(spec)
++    sys.modules[spec.name] = module
++    spec.loader.exec_module(module)
++    return module
++
++
++def _manifest() -> dict[str, object]:
++    return {
++        "schema_version": "time-space-export-checkpoint.v1",
++        "layer": "time_space_shadow",
++        "registration_status": "PENDING",
++        "export_sha256": "a" * 64,
++        "provenance_sha256": "b" * 64,
++        "receipt": None,
++    }
++
++
++def _provider(**changes):
++    payload = {
++        "id": 12345,
++        "head_sha": "c" * 40,
++        "created_at": "2026-08-24T08:00:00Z",
++        "conclusion": "success",
++        "event": "push",
++        "head_branch": BRANCH,
++        "path": WORKFLOW_PATH,
++        "workflow_id": WORKFLOW_ID,
++        "repository": {"full_name": "infdahai/zenQuant"},
++    }
++    payload.update(changes)
++    return payload
++
++
++def _artifact(**changes):
++    payload = {
++        "id": 777,
++        "name": "time-space-export-checkpoint-12345",
++        "expired": False,
++        "workflow_run": {"id": 12345, "head_sha": "c" * 40},
++    }
++    payload.update(changes)
++    return payload
++
++
++def _trust() -> dict[str, object]:
++    return {"checkpoint_workflow_id": WORKFLOW_ID}
++
++
++def test_receipt_builder_binds_completed_push_workflow_and_uploaded_manifest() -> None:
++    module = _module()
++    manifest_bytes = (json.dumps(_manifest(), sort_keys=True, separators=(",", ":")) + "\n").encode()
++
++    receipt = module._build_receipt(
++        manifest_path=MANIFEST_PATH,
++        manifest_bytes=manifest_bytes,
++        provider=_provider(),
++        artifact=_artifact(),
++        trust=_trust(),
++    )
++
++    assert receipt["schema_version"] == "time-space-export-registration-receipt.v1"
++    assert receipt["manifest_sha256"] == hashlib.sha256(manifest_bytes).hexdigest()
++    assert receipt["provider_run_id"] == "12345"
++    assert receipt["provider_created_at_ns"] == 1787558400000000000
++    assert receipt["workflow"] == {"id": WORKFLOW_ID, "path": WORKFLOW_PATH}
++    assert receipt["artifact"] == {"id": 777, "name": "time-space-export-checkpoint-12345"}
++
++
++@pytest.mark.parametrize(
++    "provider_change,artifact_change",
++    [
++        ({"conclusion": "failure"}, {}),
++        ({"event": "workflow_dispatch"}, {}),
++        ({"head_branch": "main"}, {}),
++        ({"path": ".github/workflows/evil.yml"}, {}),
++        ({"workflow_id": 9}, {}),
++        ({"repository": {"full_name": "evil/repo"}}, {}),
++        ({"head_sha": "d" * 40}, {"workflow_run": {"id": 12345, "head_sha": "c" * 40}}),
++        ({}, {"expired": True}),
++        ({}, {"name": "other"}),
++        ({}, {"workflow_run": {"id": 9, "head_sha": "c" * 40}}),
++    ],
++)
++def test_receipt_builder_rejects_provider_or_artifact_tampering(provider_change, artifact_change) -> None:
++    module = _module()
++    manifest_bytes = (json.dumps(_manifest(), sort_keys=True, separators=(",", ":")) + "\n").encode()
++    with pytest.raises(ValueError):
++        module._build_receipt(
++            manifest_path=MANIFEST_PATH,
++            manifest_bytes=manifest_bytes,
++            provider=_provider(**provider_change),
++            artifact=_artifact(**artifact_change),
++            trust=_trust(),
++        )
++
++
++def test_receipt_builder_rejects_wrong_manifest_path_schema_or_noncanonical_bytes() -> None:
++    module = _module()
++    canonical = (json.dumps(_manifest(), sort_keys=True, separators=(",", ":")) + "\n").encode()
++    with pytest.raises(ValueError, match="path"):
++        module._build_receipt(
++            manifest_path="checkpoint.json",
++            manifest_bytes=canonical,
++            provider=_provider(),
++            artifact=_artifact(),
++            trust=_trust(),
++        )
++    altered = _manifest()
++    altered["receipt"] = {}
++    with pytest.raises(ValueError, match="manifest"):
++        module._build_receipt(
++            manifest_path=MANIFEST_PATH,
++            manifest_bytes=(json.dumps(altered, sort_keys=True, separators=(",", ":")) + "\n").encode(),
++            provider=_provider(),
++            artifact=_artifact(),
++            trust=_trust(),
++        )
++    with pytest.raises(ValueError, match="canonical"):
++        module._build_receipt(
++            manifest_path=MANIFEST_PATH,
++            manifest_bytes=json.dumps(_manifest(), indent=2).encode(),
++            provider=_provider(),
++            artifact=_artifact(),
++            trust=_trust(),
++        )
++
++
++def test_checkpoint_workflows_use_exact_bootstrap_and_completed_receipt_trigger() -> None:
++    checkpoint = Path(".github/workflows/time-space-export-checkpoint.yml").read_text()
++    receipt = Path(".github/workflows/time-space-export-receipt.yml").read_text()
++    assert BRANCH in checkpoint
++    assert "workflow_dispatch" not in checkpoint
++    assert "workflow_run" in receipt
++    assert "types: [completed]" in receipt
++    assert "actions/upload-artifact@v4" in checkpoint
++    assert "actions/upload-artifact@v4" in receipt

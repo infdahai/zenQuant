@@ -1,0 +1,591 @@
+"""Diagnostic independent single-symbol target replay using the production accounting/risk components.
+
+Targets freeze at confirmed 4h close, pass through RiskOverlay, and can execute
+once at the following open. A local gateway adapter supplies execution time;
+pricing, fees and risk accounting remain shared code. The explicit research
+inventory policy retains actual dust and declares production parity failure.
+This is OHLC paper execution, without exchange margin or liquidity evidence.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import json
+import math
+from collections.abc import Mapping, Sequence
+from dataclasses import asdict
+from numbers import Integral, Real
+from typing import Any
+
+from zenquant.domain import (
+    DecisionSnapshot,
+    EventMeta,
+    ExecutionOrder,
+    ExecutionReport,
+    MarkPriceUpdate,
+    TargetPosition,
+    Timeframe,
+    target_position_hash,
+)
+from zenquant.execution import ExecutionKernel, ExecutionKernelConfig, SimulatedGateway, SimulatedGatewayConfig
+from zenquant.infra import InMemoryJetStream
+from zenquant.research.actual_inventory_kernel import ResearchActualInventoryKernel, inventory_policy_metadata
+from zenquant.risk import RiskOverlay, RiskOverlayConfig
+
+from .episode_ledger import FundingAllocation, PositionEpisodeLedger, PriceObservation
+from .run_evidence import identity_hash
+
+_FOUR_HOURS = 14_400_000_000_000
+_VERSION = "target-replay.v1"
+
+
+def _number(value: Any, name: str, *, positive: bool = False) -> float:
+    if isinstance(value, bool) or not isinstance(value, Real):
+        raise ValueError(f"{name} must be a finite number")
+    result = float(value)
+    if not math.isfinite(result) or (positive and result <= 0):
+        raise ValueError(f"{name} must be {'positive and ' if positive else ''}finite")
+    return result
+
+
+def _time(value: Any, name: str) -> int:
+    if isinstance(value, bool) or not isinstance(value, Integral) or value < 0:
+        raise ValueError(f"{name} must be a non-negative integer timestamp")
+    return int(value)
+
+
+def _payload(value: Any) -> dict[str, Any]:
+    return json.loads(json.dumps(asdict(value), allow_nan=False))
+
+
+def _bars_and_targets(bars: Sequence[Mapping], targets: Sequence[float]) -> tuple[list[dict], list[float]]:
+    if not bars or len(bars) != len(targets):
+        raise ValueError("one target is required for each non-empty bar sequence")
+    normalized = []
+    for row in bars:
+        opened = _time(row.get("open_time_ns"), "open_time_ns")
+        closed = _time(row.get("close_time_ns"), "close_time_ns")
+        if closed - opened not in {_FOUR_HOURS - 1, _FOUR_HOURS - 1_000_000}:
+            raise ValueError("4h close_time_ns must be an inclusive confirmed cutoff before the next open")
+        if normalized and opened - normalized[-1]["open_time_ns"] != _FOUR_HOURS:
+            raise ValueError("bars must be ordered, unique and contiguous 4h intervals")
+        prices = {key: _number(row.get(key), key, positive=True) for key in ("open", "high", "low", "close")}
+        if prices["low"] > min(prices["open"], prices["close"]) or prices["high"] < max(
+            prices["open"], prices["close"]
+        ):
+            raise ValueError("invalid bar OHLC bounds")
+        normalized.append({"open_time_ns": opened, "close_time_ns": closed, **prices})
+    return normalized, [_number(value, "target") for value in targets]
+
+
+class _ScheduledGateway(SimulatedGateway):
+    """Delegate execution economics while separating execution and decision time."""
+
+    execution_time_ns: int | None = None
+
+    def submit_order(
+        self,
+        order: ExecutionOrder,
+        mark_price: float,
+        best_bid: float | None = None,
+        best_ask: float | None = None,
+        now_ns: int | None = None,
+    ) -> ExecutionReport:
+        if self.execution_time_ns is None or now_ns is None or self.execution_time_ns <= now_ns:
+            raise ValueError("execution time must be strictly later than signal cutoff")
+        return super().submit_order(
+            order,
+            mark_price=mark_price,
+            best_bid=best_bid,
+            best_ask=best_ask,
+            now_ns=self.execution_time_ns,
+        )
+
+
+def _build_research_decision_snapshot(
+    *,
+    target: TargetPosition,
+    formula_hash: str,
+    config_hash: str,
+    indicator_version: str,
+    data_identity: str,
+    alpha_direction: float,
+    alpha_raw_score: float,
+    alpha_confidence: float,
+    directional_state: str,
+    volatility_state: str,
+    positioning_state: str,
+    quality_state: str,
+    regime_risk_multiplier: float,
+    annualized_volatility: float,
+    volatility_target: float,
+    exposure_cap: float,
+    quality_flags: Sequence[str],
+    options_state_id: str | None,
+) -> DecisionSnapshot:
+    """Freeze one approved four-hour target behind a content-addressed ID."""
+    if target.timeframe != Timeframe.TF_4H:
+        raise ValueError("DecisionSnapshot only supports 4h targets")
+    if target.symbol not in {"BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT"}:
+        raise ValueError("research DecisionSnapshot only supports declared major symbols")
+
+    reason_codes = tuple(target.reason_codes)
+    frozen_quality_flags = tuple(quality_flags)
+    canonical_inputs = {
+        "alpha_confidence": alpha_confidence,
+        "alpha_direction": alpha_direction,
+        "alpha_raw_score": alpha_raw_score,
+        "annualized_volatility": annualized_volatility,
+        "atr": target.atr,
+        "config_hash": config_hash,
+        "cutoff_time_ns": target.cutoff_time_ns,
+        "data_identity": data_identity,
+        "directional_state": directional_state,
+        "exposure_cap": exposure_cap,
+        "formula_hash": formula_hash,
+        "indicator_version": indicator_version,
+        "options_state_id": options_state_id,
+        "portfolio": target.portfolio,
+        "positioning_state": positioning_state,
+        "quality_flags": frozen_quality_flags,
+        "quality_state": quality_state,
+        "reason_codes": reason_codes,
+        "reduce_only": target.reduce_only,
+        "regime": target.regime,
+        "regime_confidence": target.regime_confidence,
+        "regime_risk_multiplier": regime_risk_multiplier,
+        "realized_vol": target.realized_vol,
+        "symbol": target.symbol,
+        "target_leverage": target.target_leverage,
+        "target_qty": target.target_qty,
+        "timeframe": target.timeframe.value,
+        "volatility_state": volatility_state,
+        "volatility_target": volatility_target,
+    }
+    decision_id = hashlib.sha256(
+        json.dumps(canonical_inputs, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+    return DecisionSnapshot(
+        decision_id=decision_id,
+        portfolio=target.portfolio,
+        symbol=target.symbol,
+        timeframe=target.timeframe,
+        cutoff_time_ns=target.cutoff_time_ns,
+        formula_hash=formula_hash,
+        config_hash=config_hash,
+        target_qty=target.target_qty,
+        target_leverage=target.target_leverage,
+        reduce_only=target.reduce_only,
+        regime=target.regime,
+        regime_confidence=target.regime_confidence,
+        reason_codes=reason_codes,
+        realized_vol=target.realized_vol,
+        atr=target.atr,
+        indicator_version=indicator_version,
+        data_identity=data_identity,
+        alpha_direction=alpha_direction,
+        alpha_raw_score=alpha_raw_score,
+        alpha_confidence=alpha_confidence,
+        directional_state=directional_state,
+        volatility_state=volatility_state,
+        positioning_state=positioning_state,
+        quality_state=quality_state,
+        regime_risk_multiplier=regime_risk_multiplier,
+        annualized_volatility=annualized_volatility,
+        volatility_target=volatility_target,
+        exposure_cap=exposure_cap,
+        quality_flags=frozen_quality_flags,
+        options_state_id=options_state_id,
+        approved_target_hash=target_position_hash(target),
+    )
+
+
+def run_target_replay(
+    bars: Sequence[Mapping],
+    targets: Sequence[float],
+    funding: Sequence[Mapping] = (),
+    *,
+    symbol: str = "BTCUSDT",
+    inventory_policy: str = "shared_production_proxy_v1",
+    initial_equity: float = 100_000.0,
+    max_leverage: float = 1.5,
+    taker_fee_bps: float = 4.0,
+    slippage_bps: float = 1.5,
+) -> dict:
+    """Return diagnostic evidence for caller-provided signed target exposures.
+
+    Input closes use inclusive nanosecond or Binance millisecond cutoffs.
+    Targets use close-time NAV/close to freeze quantity, then risk may reduce
+    it. Unfilled quantity is not assumed held; a new close supersedes the old
+    target. Funding at an open settles the old actual position before any fill.
+    Without a source mark, funding uses only a prior confirmed close and records
+    that proxy. Callers must separately prove causal target generation and data
+    provenance. No evidence produced here grants paper or live eligibility.
+    """
+    if symbol not in {"BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT"}:
+        raise ValueError("symbol must be one of BTCUSDT, ETHUSDT, SOLUSDT, BNBUSDT")
+    if inventory_policy not in {"shared_production_proxy_v1", "actual_filled_inventory_v1"}:
+        raise ValueError("unknown inventory_policy")
+    portfolio = "research-target-replay" if symbol == "BTCUSDT" else f"research-target-replay-{symbol}"
+    policy_metadata = (
+        inventory_policy_metadata()
+        if inventory_policy == "actual_filled_inventory_v1"
+        else {
+            "inventory_policy": inventory_policy,
+            "semantic_delta": "unmodified shared ExecutionKernel inventory semantics",
+        }
+    )
+    kernel_type = ResearchActualInventoryKernel if inventory_policy == "actual_filled_inventory_v1" else ExecutionKernel
+    normalized, exposures = _bars_and_targets(bars, targets)
+    initial_equity = _number(initial_equity, "initial_equity", positive=True)
+    max_leverage = _number(max_leverage, "max_leverage", positive=True)
+    taker_fee_bps = _number(taker_fee_bps, "taker_fee_bps")
+    slippage_bps = _number(slippage_bps, "slippage_bps")
+    if taker_fee_bps < 0 or not 0 <= slippage_bps < 10_000:
+        raise ValueError("fees must be non-negative and slippage must be in [0, 10000)")
+    settlements = []
+    for row in funding:
+        timestamp = _time(row.get("funding_time_ns"), "funding_time_ns")
+        if not normalized[0]["open_time_ns"] <= timestamp <= normalized[-1]["close_time_ns"]:
+            raise ValueError("funding must be inside the replay window")
+        if settlements and timestamp <= settlements[-1]["funding_time_ns"]:
+            raise ValueError("funding must be chronological with unique settlement timestamps")
+        mark = row.get("mark_price")
+        settlements.append(
+            {
+                "funding_time_ns": timestamp,
+                "funding_rate": _number(row.get("funding_rate"), "funding_rate"),
+                "mark_price": None if mark is None else _number(mark, "mark_price", positive=True),
+            }
+        )
+
+    risk_config = RiskOverlayConfig(portfolio=portfolio, starting_equity=initial_equity, max_leverage=max_leverage)
+    execution_config = ExecutionKernelConfig(execution_authority_mode="target_tracking_v2")
+    gateway_config = SimulatedGatewayConfig(taker_fee_rate=taker_fee_bps / 10_000, fallback_slippage_bps=slippage_bps)
+    tolerances = {"cash": 1e-6, "nav": 1e-6, "inventory": 1e-9}
+    config = {
+        "symbol": symbol,
+        "portfolio": portfolio,
+        "inventory_policy": inventory_policy,
+        "inventory_policy_metadata": policy_metadata,
+        "engine": f"{kernel_type.__module__}.{kernel_type.__name__}",
+        "snapshot_scope": "research-only major-symbol snapshot builder; shared production builder remains BTC-only",
+        "snapshot_builder": "target_replay._build_research_decision_snapshot.v1",
+        "account_scope": "independent single-symbol account; not a shared portfolio",
+        "quantity_contract": "research quantity proxy; not exchange lot/min-notional filters",
+        "risk": asdict(risk_config),
+        "execution": asdict(execution_config),
+        "gateway": asdict(gateway_config),
+        "accounting_tolerances": tolerances,
+    }
+    config_hash = identity_hash(config)
+    risk_bus, execution_bus = InMemoryJetStream(), InMemoryJetStream()
+    risk = RiskOverlay(risk_bus, risk_config)
+    gateway = _ScheduledGateway(gateway_config)
+    kernel = kernel_type(execution_bus, gateway, risk, execution_config)
+    ledger = PositionEpisodeLedger()
+    audit: dict[str, list] = {
+        key: []
+        for key in (
+            "intents",
+            "snapshots",
+            "risk_decisions",
+            "risk_snapshots",
+            "decisions",
+            "orders",
+            "order_audits",
+            "events",
+        )
+    }
+    fills: list[dict] = []
+    funding_rows: list[dict] = []
+    curve: list[dict] = []
+    account_rows: list[dict] = []
+    approved_targets: list[TargetPosition] = []
+    pending: tuple[TargetPosition, dict] | None = None
+    active_cutoff: int | None = None
+    prior_close: tuple[int, float] | None = None
+    prefix_identity = identity_hash(
+        {"version": _VERSION, "symbol": symbol, "portfolio": portfolio, "config_hash": config_hash}
+    )
+    cash_from_reports = initial_equity
+
+    def observe_risk(_subject: str, payload: Any) -> None:
+        audit["risk_decisions"].append(_payload(payload))
+
+    def observe_risk_snapshot(subject: str, payload: Any) -> None:
+        audit["risk_snapshots"].append(_payload(payload))
+        execution_bus.publish(subject, payload)
+
+    def on_fill(subject: str, report: ExecutionReport) -> None:
+        nonlocal cash_from_reports
+        risk_bus.publish(subject, report)
+        if report.filled_qty > 0:
+            cash_from_reports = math.fsum(
+                (cash_from_reports, -report.side * report.filled_qty * report.avg_price, -report.fee)
+            )
+            ledger.on_fill(report)
+            fills.append(
+                {
+                    "symbol": report.symbol,
+                    "time_ns": report.transaction_time_ns,
+                    "signal_cutoff_time_ns": active_cutoff,
+                    "signed_qty": report.side * report.filled_qty,
+                    "price": report.avg_price,
+                    "fee": report.fee,
+                    "status": report.status,
+                    "client_order_id": report.client_order_id,
+                }
+            )
+        audit["events"].append({"kind": "execution_report", **_payload(report)})
+
+    risk_bus.subscribe("risk.overlay.decision", observe_risk)
+    risk_bus.subscribe("risk.snapshot", observe_risk_snapshot)
+    risk_bus.subscribe("intent.target_position.final.>", lambda _subject, target: approved_targets.append(target))
+    execution_bus.subscribe("exec.order.report", on_fill)
+    execution_bus.subscribe(
+        "exec.order.submit",
+        lambda _subject, order: audit["orders"].append(
+            {**_payload(order), "signal_cutoff_time_ns": active_cutoff, "execution_time_ns": gateway.execution_time_ns}
+        ),
+    )
+    execution_bus.subscribe(
+        "exec.order.audit",
+        lambda _subject, row: audit["order_audits"].append(
+            {**_payload(row), "execution_time_ns": gateway.execution_time_ns}
+        ),
+    )
+
+    def mark(timestamp: int, price: float) -> None:
+        update = MarkPriceUpdate(EventMeta(timestamp, timestamp, "RESEARCH", symbol, timestamp), price, price)
+        risk_bus.publish(f"md.mark.RESEARCH.{symbol}", update)
+        execution_bus.publish(f"md.mark.RESEARCH.{symbol}", update)
+        ledger.observe_price(PriceObservation(symbol, timestamp, price, price, price))
+
+    def account(timestamp: int, kind: str) -> None:
+        position = kernel.positions.get(symbol, 0.0)
+        price = risk._last_price.get(symbol, 0.0)
+        account_rows.append(
+            {
+                "time_ns": timestamp,
+                "kind": kind,
+                "cash": risk._cash,
+                "equity": risk.equity,
+                "position_qty": position,
+                "mark_price": price,
+                "cash_error": abs(risk._cash - cash_from_reports),
+                "nav_error": abs(risk.equity - (cash_from_reports + position * price)),
+                "inventory_error": abs(position - ledger.position_qty(symbol)),
+            }
+        )
+        value = {"time_ns": timestamp, "equity": risk.equity}
+        if curve and curve[-1]["time_ns"] == timestamp:
+            curve[-1] = value
+        else:
+            curve.append(value)
+
+    events = [(bar["open_time_ns"], 2, index, "open") for index, bar in enumerate(normalized)]
+    events += [(bar["close_time_ns"], 1, index, "close") for index, bar in enumerate(normalized)]
+    events += [(row["funding_time_ns"], 0, index, "funding") for index, row in enumerate(settlements)]
+    for timestamp, _priority, index, kind in sorted(events):
+        if kind == "funding":
+            settlement = settlements[index]
+            position = kernel.positions.get(symbol, 0.0)
+            price = settlement["mark_price"]
+            price_time, source = timestamp, "source_mark"
+            if price is None:
+                if prior_close is not None:
+                    price_time, price = prior_close
+                    source = "confirmed_close_proxy"
+                elif position == 0:
+                    price_time, source = None, "zero_position_no_mark_required"
+                else:
+                    raise ValueError("funding proxy requires a prior confirmed close")
+            pnl = 0.0 if position == 0 else -position * price * settlement["funding_rate"]
+            if price is None:
+                risk.apply_funding(-pnl)
+            else:
+                risk.apply_funding(-pnl, symbol=symbol, mark_price=price, price_time_ns=price_time, price_source=source)
+            cash_from_reports = math.fsum((cash_from_reports, pnl))
+            ledger.allocate_funding(FundingAllocation(symbol, timestamp, pnl))
+            row = {
+                "time_ns": timestamp,
+                "pnl": pnl,
+                "position_qty": position,
+                "funding_rate": settlement["funding_rate"],
+                "mark_price": price,
+                "price_time_ns": price_time,
+                "price_source": source,
+            }
+            funding_rows.append(row)
+            audit["events"].append({"kind": "funding", **row})
+            account(timestamp, kind)
+            continue
+
+        bar = normalized[index]
+        price = bar["open" if kind == "open" else "close"]
+        mark(timestamp, price)
+        if kind == "open" and pending is not None:
+            target, decision = pending
+            position = kernel.positions.get(symbol, 0.0)
+            adds_risk = abs(target.target_qty) > abs(position) or target.target_qty * position < 0
+            blockers = []
+            if adds_risk:
+                if risk.equity <= 0:
+                    blockers.append("GAP_NONPOSITIVE_EQUITY")
+                if 1 - risk.equity / risk.high_water_mark >= risk_config.kill_switch_drawdown:
+                    blockers.append("GAP_KILL_SWITCH")
+                if abs(target.target_qty) * price > max(0.0, risk.equity) * max_leverage + 1e-9:
+                    blockers.append("GAP_LEVERAGE_CAP")
+            decision.update(execution_time_ns=timestamp, execution_blockers=blockers)
+            if blockers:
+                decision["execution_status"] = "blocked_new_risk"
+            else:
+                active_cutoff = target.cutoff_time_ns
+                gateway.execution_time_ns = timestamp
+                execution_bus.publish(f"intent.target_position.final.{symbol}", target)
+                decision["execution_status"] = "submitted_to_kernel"
+                ledger.observe_price(PriceObservation(symbol, timestamp, price, price, price))
+            pending = None
+        elif kind == "close":
+            prior_close = (timestamp, price)
+            equity = risk.equity
+            target = TargetPosition(
+                intent_id=f"{_VERSION}-{timestamp}",
+                portfolio=portfolio,
+                symbol=symbol,
+                timeframe=Timeframe.TF_4H,
+                cutoff_time_ns=timestamp,
+                target_qty=exposures[index] * max(0.0, equity) / price,
+                target_leverage=abs(exposures[index]),
+                reduce_only=False,
+                regime="RESEARCH",
+                regime_confidence=1.0,
+                reason_codes=["EXTERNAL_RESEARCH_TARGET"],
+            )
+            audit["intents"].append({**_payload(target), "decision_equity": equity, "reference_price": price})
+            risk_bus.publish(f"intent.target_position.research.{symbol}", target)
+            approved = approved_targets[-1]
+            prefix_identity = identity_hash({"prior": prefix_identity, "bar": bar})
+            snapshot = _build_research_decision_snapshot(
+                target=approved,
+                formula_hash=_VERSION,
+                config_hash=config_hash,
+                indicator_version="external-targets.not-verified",
+                data_identity=prefix_identity,
+                alpha_direction=math.copysign(1.0, exposures[index]) if exposures[index] else 0.0,
+                alpha_raw_score=exposures[index],
+                alpha_confidence=1.0,
+                directional_state="EXTERNAL",
+                volatility_state="NOT_EVALUATED",
+                positioning_state="NOT_EVALUATED",
+                quality_state="DIAGNOSTIC",
+                regime_risk_multiplier=1.0,
+                annualized_volatility=0.0,
+                volatility_target=0.0,
+                exposure_cap=max_leverage,
+                quality_flags=["OHLC_EXECUTION_PROXY", "EXTERNAL_TARGET_CAUSALITY_UNVERIFIED"],
+                options_state_id=None,
+            )
+            audit["snapshots"].append(_payload(snapshot))
+            execution_bus.publish(f"strategy.decision_snapshot.4h.{symbol}", snapshot)
+            decision = {
+                "signal_cutoff_time_ns": timestamp,
+                "decision_id": snapshot.decision_id,
+                "approved_target_qty": approved.target_qty,
+                "execution_status": "not_executed_terminal_target"
+                if index == len(normalized) - 1
+                else "pending_next_open",
+                "execution_blockers": [],
+            }
+            audit["decisions"].append(decision)
+            pending = (approved, decision)
+        audit["events"].append({"kind": kind, "time_ns": timestamp, "price": price})
+        account(timestamp, kind)
+
+    # The exclusive boundary is valued from the already observed final close.
+    # No boundary funding, next bar quote, terminal target or synthetic fill is
+    # introduced. This gives a midnight endpoint when the window ends at UTC 00.
+    terminal_time = normalized[-1]["open_time_ns"] + _FOUR_HOURS
+    account(terminal_time, "terminal_valuation")
+    curve[-1].update(
+        source_time_ns=normalized[-1]["close_time_ns"],
+        valuation_basis="known_close_before_boundary_events",
+    )
+    accounting = {
+        "cash": risk._cash,
+        "equity": risk.equity,
+        "position_qty": kernel.positions.get(symbol, 0.0),
+        "max_cash_error": max(row["cash_error"] for row in account_rows),
+        "max_nav_error": max(row["nav_error"] for row in account_rows),
+        "max_inventory_error": max(row["inventory_error"] for row in account_rows),
+        "tolerances": tolerances,
+        "rows": account_rows,
+        "authority": "RiskOverlay cash/NAV; ExecutionKernel actual positions; PositionEpisodeLedger episodes",
+    }
+    limitations = {
+        "E0": "caller code/data provenance and external target identity not independently verified",
+        "E1": "OHLC inputs and external target causality require independent validation",
+        "E2": "local component reconciliation only; independent exchange/account audit unavailable",
+        "E3": "local deterministic replay does not establish live/restart event parity",
+        "E4": "OHLC open proxy; no liquidity/partial-fill calibration or full execution-time risk/margin approval",
+    }
+    if inventory_policy == "actual_filled_inventory_v1":
+        limitations["E3"] = (
+            "KNOWN_PRODUCTION_INVENTORY_PARITY_DIFFERENCE: actual filled dust retained in research; shared production kernel snaps inventory; no production/restart parity qualification"
+        )
+    engineering = {gate: {"status": "NOT_EVALUABLE", "reason": reason} for gate, reason in limitations.items()}
+    if inventory_policy == "actual_filled_inventory_v1":
+        engineering["E3"] = {"status": "FAIL", "reason": limitations["E3"]}
+    accounting_failures = [
+        name
+        for name, tolerance in tolerances.items()
+        if not math.isfinite(accounting[f"max_{name}_error"]) or accounting[f"max_{name}_error"] > tolerance
+    ]
+    if accounting_failures:
+        engineering["E2"] = {
+            "status": "FAIL",
+            "reason": "observed reconciliation residual exceeds frozen tolerance: " + ", ".join(accounting_failures),
+        }
+    purity = kernel.purity_counters
+    execution_failures = [name for name, count in purity.items() if count > 0]
+    if any(row["signal_cutoff_time_ns"] is None or row["time_ns"] <= row["signal_cutoff_time_ns"] for row in fills):
+        execution_failures.append("execution_not_after_signal_cutoff")
+    if execution_failures:
+        engineering["E4"] = {
+            "status": "FAIL",
+            "reason": "observed execution violation: " + ", ".join(execution_failures),
+        }
+    return {
+        "schema_version": _VERSION,
+        "initial_equity": initial_equity,
+        "identity": {
+            "adapter_version": _VERSION,
+            "symbol": symbol,
+            "portfolio": portfolio,
+            "inventory_policy": inventory_policy,
+            "inventory_policy_metadata": policy_metadata,
+            "engine": config["engine"],
+            "data_hash": identity_hash({"bars": normalized, "funding": settlements}),
+            "targets_hash": identity_hash({"targets": exposures}),
+            "config_hash": config_hash,
+        },
+        "resolved_config": config,
+        "curve": curve,
+        "fills": fills,
+        "funding": funding_rows,
+        "episodes": [_payload(episode) for episode in ledger.episodes],
+        "audit": audit,
+        "accounting": accounting,
+        "execution_purity": purity,
+        "engineering": engineering,
+        "local_determinism": {
+            "status": "NOT_EVALUABLE",
+            "scope": "single-symbol research replay; requires paired identical-event evidence; does not establish production parity",
+        },
+        "rankable": False,
+        "live_eligible": False,
+        "diagnostic_only": True,
+        "eligible_for_paper": False,
+        "limitations": [*limitations.values(), "sampled marks only; no intrabar NAV or automatic gap liquidation"],
+    }

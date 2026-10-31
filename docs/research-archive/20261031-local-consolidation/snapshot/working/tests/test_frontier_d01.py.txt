@@ -1,0 +1,57 @@
+"""Counterexamples and causal boundaries for the cycle diagnostic."""
+
+import numpy as np
+import pandas as pd
+import pytest
+
+from zenquant.research.frontier_lab.experiments.d01_cycle import (
+    assign_states,
+    decompose,
+    fit_boundaries,
+    period_summary,
+    synthetic_counterexamples,
+)
+
+
+def test_known_counterexamples_distinguish_composition_shift_from_within_decay():
+    examples = synthetic_counterexamples()
+    value = examples["composition_only"]
+    assert value["change_bps"] == pytest.approx(-120)
+    assert value["composition_bps"] == pytest.approx(-120)
+    assert value["within_bps"] == pytest.approx(0)
+    value = examples["within_only"]
+    assert value["change_bps"] == pytest.approx(-100)
+    assert value["within_bps"] == pytest.approx(-100)
+    assert value["composition_bps"] == pytest.approx(0)
+
+
+def test_symmetric_decomposition_closes_and_reverses():
+    a = period_summary(np.array([0, 0, 1]), np.array([0.01, 0.03, -0.01]), 2)
+    b = period_summary(np.array([0, 1, 1]), np.array([0.01, -0.02, -0.04]), 2)
+    forward, backward = decompose(a, b), decompose(b, a)
+    assert forward["composition_bps"] + forward["within_bps"] == pytest.approx(forward["change_bps"])
+    for field in ("change_bps", "composition_bps", "within_bps"):
+        assert forward[field] == pytest.approx(-backward[field])
+    value = period_summary(np.array([0, 0]), np.array([0.001, -0.0002]), 1)
+    assert value["mean_bps"] == pytest.approx(4)
+    assert value["cost_sensitivity_bps"] == pytest.approx({"0": 4, "5": -1, "15": -11})
+    assert value["states"][0]["mean_bps"] == pytest.approx(4)
+
+
+def test_missing_state_support_is_not_invented_zero_payoff():
+    a = period_summary(np.array([0, 0]), np.array([0.01, 0.02]), 2)
+    b = period_summary(np.array([0, 1]), np.array([0.01, -0.02]), 2)
+    assert a["states"][1]["mean_bps"] is None
+    with pytest.raises(ValueError, match="support"):
+        decompose(a, b)
+
+
+def test_future_changes_cannot_refit_training_state_boundaries():
+    features = pd.DataFrame({"momentum_42": np.linspace(-0.2, 0.2, 12), "vol_42": np.linspace(0.01, 0.03, 12)})
+    train = np.arange(12) < 8
+    before = fit_boundaries(features, train)
+    assigned = assign_states(features, before)
+    features.loc[~train, "momentum_42"] = 100
+    features.loc[~train, "vol_42"] = 50
+    assert fit_boundaries(features, train) == before
+    np.testing.assert_array_equal(assign_states(features, before)[train], assigned[train])

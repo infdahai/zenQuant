@@ -1,0 +1,27 @@
+commit ee99e05288d97b8e4b2506bad0c8194e40409eda
+Author:     Disaster <clusternlh@gmail.com>
+AuthorDate: Tue Aug 25 01:20:06 2026 +0800
+Commit:     Disaster <clusternlh@gmail.com>
+CommitDate: Tue Aug 25 01:20:06 2026 +0800
+
+    style(research): format external protection tests
+
+diff --git a/tests/test_time_space_export_registration.py b/tests/test_time_space_export_registration.py
+index 24a043c..3f15541 100644
+--- a/tests/test_time_space_export_registration.py
++++ b/tests/test_time_space_export_registration.py
+@@ -13,12 +13,8 @@ import yaml
+ SCRIPT = Path(__file__).parents[1] / "scripts/build_time_space_export_receipt.py"
+ APPEND_ONLY_SCRIPT = Path(__file__).parents[1] / "scripts/validate_time_space_registration_push.py"
+ PERSISTED_VALIDATOR = Path(__file__).parents[1] / "scripts/validate_time_space_persisted_registration.py"
+-EXTERNAL_PROTECTION_VALIDATOR = (
+-    Path(__file__).parents[1] / "scripts/validate_time_space_external_protection.py"
+-)
+-EXTERNAL_PROTECTION_CONFIG = (
+-    Path(__file__).parents[1] / "config/research/time_space_export_external_protection_v1.json"
+-)
++EXTERNAL_PROTECTION_VALIDATOR = Path(__file__).parents[1] / "scripts/validate_time_space_external_protection.py"
++EXTERNAL_PROTECTION_CONFIG = Path(__file__).parents[1] / "config/research/time_space_export_external_protection_v1.json"
+ AS_OF_NS = 1787529600000000000
+ MANIFEST_PATH = (
+     f"config/research/registrations/time_space_exports/{AS_OF_NS}/time_space_shadow_export_checkpoint_v1.json"

@@ -1,0 +1,82 @@
+commit 7225fce116f15b3b8456cd983757bc639d10cd19
+Author:     Disaster <clusternlh@gmail.com>
+AuthorDate: Sat Aug 22 23:56:48 2026 +0800
+Commit:     Disaster <clusternlh@gmail.com>
+CommitDate: Sat Aug 22 23:56:48 2026 +0800
+
+    docs(research): refresh late-dev attribution handoff
+
+diff --git a/docs/QUANT_V2_ACCEPTANCE_HANDOFF.md b/docs/QUANT_V2_ACCEPTANCE_HANDOFF.md
+index d91b1b7..368f3f8 100644
+--- a/docs/QUANT_V2_ACCEPTANCE_HANDOFF.md
++++ b/docs/QUANT_V2_ACCEPTANCE_HANDOFF.md
+@@ -145,6 +145,9 @@ The frozen runner was executed exactly once against
+ training, parameter search, or manifest change. It emitted the complete 30/30
+ matrix. The canonical acceptance summary again exited `1` with
+ `BLOCKED_PAUSE_PROMOTION_AND_TRAINING`; promotion and training remain paused.
++The final attribution fix reused that exact 1 GB artifact and reran only
++`scripts/analyze_quant_v2_late_dev_cost.py`; the frozen experiment was not
++rerun.
+ 
+ Current artifact identity:
+ 
+@@ -152,23 +155,51 @@ Current artifact identity:
+ | --- | --- | ---: |
+ | `results/quant_v2_acceptance/architecture_attribution.json` | `1f327c7c786f511fbba6ac1dd2ca4df395891f1aeb1879714c0ed2af1a87bea2` | `1,003,639,954` bytes |
+ | `results/quant_v2_acceptance/acceptance_summary.json` | `7d21e514e18f27611f793e2c7f06071ddb121de4654d0bf57a31d23f2f7da637` | `5,822` bytes |
+-| `results/quant_v2_late_dev_cost_attribution/late_dev_cost_attribution.json` | `2118a0e22a7a802471b50c7024e5ca31c3b537c8b249b9f8e80a5cb7439a7b88` | `27,876` bytes |
+-| `results/quant_v2_late_dev_cost_attribution/late_dev_cost_attribution.md` | `2d19983f9da140a551979866d4281c23150eedd8afbd1bbdc79a666492a192ba` | `7,414` bytes |
+-
+-The attribution report validates all 30 runs and returns
+-`stop_donor_training`. Directional failure is the decision-leading strongest
+-supported family; confidence weighting and execution shortfall independently
+-corroborate the diagnosis at the same five-seed support count.
++| `results/quant_v2_late_dev_cost_attribution/late_dev_cost_attribution.json` | `b7cb1c84c70fab54b728f0cd6287fcde6fa4c107bf8f3de541a6cffd36de734e` | `92,571` bytes |
++| `results/quant_v2_late_dev_cost_attribution/late_dev_cost_attribution.md` | `3f551c6f94ab9c40d8ee5fc4bbf134284c4d2b21981120c5ce562cef166f68a4` | `28,173` bytes |
++
++The v2 attribution report validates all 30 runs and returns
++`stop_donor_training`. It now emits 30 frozen-order A1-A5 bridges, 20 A2-A5
++episode summaries, and 20 A2-A5 execution/cost/cadence summaries. Required
++inputs are complete. Directional failure remains the decision-leading family;
++execution shortfall independently corroborates the diagnosis at five-seed
++support. Confidence weighting improved extra-15bp PnL in every seed but rescued
++none above zero, so its truthful public family is `confidence_failed_to_rescue`
++rather than a claim of no incremental edge.
+ 
+ | Evidence family | Status | Supporting seeds |
+ | --- | --- | ---: |
+ | `directional_edge` | `CONSISTENT` | `5/5` |
+-| `confidence_no_incremental_edge` | `CONSISTENT` | `5/5` |
++| `confidence_failed_to_rescue` | `CONSISTENT` | `5/5` |
+ | `cost_flip` | `UNATTRIBUTABLE` | `0/5` |
+ | `regime_localization` | `UNATTRIBUTABLE` | `0/5` |
+ | `episode_tail` | `UNATTRIBUTABLE` | `0/5` |
+ | `execution_shortfall` | `CONSISTENT` | `5/5` |
+ 
++Confidence rescue diagnostics preserve the literal A1_SCORE minus A1_SIGN
++extra-15bp PnL delta; hit-rate equality remains diagnostic only:
++
++| Seed | A1_SIGN 15bp PnL | A1_SCORE 15bp PnL | Delta | Rescued above zero |
++| ---: | ---: | ---: | ---: | --- |
++| 42 | `-226,512.04` | `-72,673.40` | `+153,838.65` | no |
++| 123 | `-184,678.85` | `-62,604.80` | `+122,074.05` | no |
++| 456 | `-235,784.58` | `-77,817.96` | `+157,966.62` | no |
++| 789 | `-202,088.14` | `-65,273.33` | `+136,814.81` | no |
++| 1024 | `-156,132.90` | `-50,961.44` | `+105,171.46` | no |
++
++The A5 execution surface is observed and complete for every seed. Fills/day
++uses the exact positive finite run duration; action counts use only nested
++filled-position transitions. Actual and estimated costs below are serialized
++diagnostics, not recomputed strategy decisions:
++
++| Seed | Execution obs. | Positive fills | Fills/day | Switches/day | Actual fee | Actual slippage | Actual shortfall | Estimated round trip | Breakeven mean |
++| ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
++| 42 | `2,140` | `645` | `1.7671` | `0.4004` | `2,442.06` | `915.77` | `3,357.83` | `6,715.71` | `0.000365` |
++| 123 | `2,150` | `665` | `1.8219` | `0.4497` | `2,475.87` | `928.45` | `3,404.32` | `6,885.39` | `0.000383` |
++| 456 | `2,156` | `673` | `1.8438` | `0.4442` | `2,515.65` | `943.37` | `3,459.01` | `7,000.21` | `0.000382` |
++| 789 | `2,150` | `763` | `2.0904` | `0.5210` | `2,970.11` | `1,113.79` | `4,083.91` | `8,167.85` | `0.000430` |
++| 1024 | `2,150` | `725` | `1.9863` | `0.4497` | `2,755.49` | `1,033.31` | `3,788.80` | `7,577.69` | `0.000415` |
++
+ The per-seed A5 bridge reconciles baseline net PnL to the extra-15bp result:
+ 
+ | Seed | Baseline net PnL | Additional 15bp cost | Extra-15bp net PnL | Reconciliation error |

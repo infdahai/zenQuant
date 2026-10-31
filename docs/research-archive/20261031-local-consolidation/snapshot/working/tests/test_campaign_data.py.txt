@@ -1,0 +1,134 @@
+"""Dataset slicing excludes future observations and preserves content identity."""
+
+import pyarrow as pa
+import pyarrow.parquet as pq
+import pytest
+
+from zenquant.research.campaign_data import load_window
+
+STEP = 14_400_000_000_000
+
+
+@pytest.fixture
+def dataset(tmp_path):
+    bars = [
+        {
+            "open_time_ns": i * STEP,
+            "close_time_ns": (i + 1) * STEP - 1_000_000,
+            "open": 100.0 + i,
+            "high": 102.0 + i,
+            "low": 99.0 + i,
+            "close": 101.0 + i,
+        }
+        for i in range(12)
+    ]
+    price = tmp_path / "klines/BTCUSDT/4h/data.parquet"
+    funding = tmp_path / "funding/BTCUSDT/data.parquet"
+    price.parent.mkdir(parents=True)
+    funding.parent.mkdir(parents=True)
+    pq.write_table(pa.Table.from_pylist(bars), price)
+    pq.write_table(
+        pa.Table.from_pylist(
+            [{"funding_time_ns": i * STEP, "funding_rate": 0.0001, "mark_price": 0.0} for i in range(0, 12, 2)]
+        ),
+        funding,
+    )
+    return tmp_path
+
+
+def test_window_and_warmup_have_explicit_nonoverlapping_roles(dataset):
+    bundle = load_window(dataset, 4 * STEP, 8 * STEP, warmup_bars=2)
+    assert [row["open_time_ns"] for row in bundle["bars"]] == [i * STEP for i in range(2, 8)]
+    assert bundle["warmup_count"] == 2
+    assert [row["funding_time_ns"] for row in bundle["funding"]] == [4 * STEP, 6 * STEP]
+    assert all(row["mark_price"] is None for row in bundle["funding"])
+    assert bundle["manifest"]["funding_mark_policy"] == "zero_is_missing_not_a_free_settlement"
+
+
+def test_regime_history_does_not_expand_strategy_warmup(dataset):
+    result = load_window(dataset, 4 * STEP, 8 * STEP, warmup_bars=2)
+    assert result["warmup_count"] == 2
+    assert result["bars"][0]["open_time_ns"] == 2 * STEP
+    assert result["regime_bars"][0]["open_time_ns"] == 0
+    assert result["manifest"]["regime_history"]["requested_warmup_bars"] == 720
+
+
+def test_future_mutation_does_not_change_train_input_hash(dataset):
+    before = load_window(dataset, 4 * STEP, 8 * STEP, warmup_bars=2)
+    path = dataset / "klines/BTCUSDT/4h/data.parquet"
+    rows = pq.read_table(path).to_pylist()
+    rows[-1].update(open=900.0, high=902.0, low=899.0, close=901.0)
+    pq.write_table(pa.Table.from_pylist(rows), path)
+    after = load_window(dataset, 4 * STEP, 8 * STEP, warmup_bars=2)
+    assert before["manifest"]["window_data_hash"] == after["manifest"]["window_data_hash"]
+    assert before["manifest"]["file_sha256"] != after["manifest"]["file_sha256"]
+
+
+def test_missing_bar_and_uncovered_boundary_fail_closed(dataset):
+    with pytest.raises(ValueError, match="coverage"):
+        load_window(dataset, 4 * STEP, 13 * STEP)
+    path = dataset / "klines/BTCUSDT/4h/data.parquet"
+    rows = pq.read_table(path).to_pylist()
+    pq.write_table(pa.Table.from_pylist([row for row in rows if row["open_time_ns"] != 6 * STEP]), path)
+    with pytest.raises(ValueError, match="coverage"):
+        load_window(dataset, 4 * STEP, 8 * STEP)
+
+
+def test_missing_funding_is_not_interpreted_as_zero_funding(dataset):
+    path = dataset / "funding/BTCUSDT/data.parquet"
+    rows = pq.read_table(path).to_pylist()
+    pq.write_table(pa.Table.from_pylist([row for row in rows if row["funding_time_ns"] >= 8 * STEP]), path)
+    with pytest.raises(ValueError, match="funding coverage"):
+        load_window(dataset, 4 * STEP, 8 * STEP)
+
+
+@pytest.mark.parametrize("symbol", ["ETHUSDT", "SOLUSDT", "BNBUSDT"])
+def test_explicit_major_symbol_reads_only_its_paths(dataset, symbol):
+    import shutil
+
+    for source, target in [("klines/BTCUSDT", f"klines/{symbol}"), ("funding/BTCUSDT", f"funding/{symbol}")]:
+        shutil.copytree(dataset / source, dataset / target)
+    shutil.rmtree(dataset / "klines/BTCUSDT")
+    shutil.rmtree(dataset / "funding/BTCUSDT")
+    result = load_window(dataset, 4 * STEP, 8 * STEP, symbol=symbol)
+    assert result["symbol"] == symbol
+    assert result["manifest"]["symbol"] == f"{symbol}_PERP"
+    assert all(symbol in path for path in result["manifest"]["file_sha256"])
+    assert len(result["funding"]) == 2
+
+
+@pytest.mark.parametrize("symbol", ["../BTCUSDT", "DOGEUSDT", "", None])
+def test_unapproved_symbols_fail_before_data_access(dataset, symbol):
+    with pytest.raises(ValueError, match="symbol"):
+        load_window(dataset, 4 * STEP, 8 * STEP, symbol=symbol)
+
+
+def test_default_bundle_identifies_btc(dataset):
+    assert load_window(dataset, 4 * STEP, 8 * STEP)["symbol"] == "BTCUSDT"
+
+
+def test_eth_future_mutation_preserves_logical_hash(dataset):
+    import shutil
+
+    shutil.copytree(dataset / "klines/BTCUSDT", dataset / "klines/ETHUSDT")
+    shutil.copytree(dataset / "funding/BTCUSDT", dataset / "funding/ETHUSDT")
+    before = load_window(dataset, 4 * STEP, 8 * STEP, symbol="ETHUSDT")
+    path = dataset / "klines/ETHUSDT/4h/data.parquet"
+    rows = pq.read_table(path).to_pylist()
+    rows[-1].update(open=900.0, high=902.0, low=899.0, close=901.0)
+    pq.write_table(pa.Table.from_pylist(rows), path)
+    after = load_window(dataset, 4 * STEP, 8 * STEP, symbol="ETHUSDT")
+    assert before["manifest"]["window_data_hash"] == after["manifest"]["window_data_hash"]
+    assert before["manifest"]["file_sha256"] != after["manifest"]["file_sha256"]
+
+
+def test_eth_missing_funding_still_fails_closed(dataset):
+    import shutil
+
+    shutil.copytree(dataset / "klines/BTCUSDT", dataset / "klines/ETHUSDT")
+    shutil.copytree(dataset / "funding/BTCUSDT", dataset / "funding/ETHUSDT")
+    path = dataset / "funding/ETHUSDT/data.parquet"
+    rows = pq.read_table(path).to_pylist()
+    pq.write_table(pa.Table.from_pylist(rows[1:]), path)
+    with pytest.raises(ValueError, match="funding coverage"):
+        load_window(dataset, 0, 8 * STEP, symbol="ETHUSDT")

@@ -1,0 +1,287 @@
+commit 3efb23e878a29dde29c2a78ed3b50ca3ee8ce969
+Author:     Disaster <clusternlh@gmail.com>
+AuthorDate: Tue Aug 25 00:15:03 2026 +0800
+Commit:     Disaster <clusternlh@gmail.com>
+CommitDate: Tue Aug 25 00:15:03 2026 +0800
+
+    fix(research): enforce full registration history
+
+diff --git a/.github/workflows/time-space-export-checkpoint.yml b/.github/workflows/time-space-export-checkpoint.yml
+index 47b43fd..0973de9 100644
+--- a/.github/workflows/time-space-export-checkpoint.yml
++++ b/.github/workflows/time-space-export-checkpoint.yml
+@@ -15,22 +15,25 @@ jobs:
+       - uses: actions/checkout@v4
+         with:
+           ref: ${{ github.sha }}
+-          fetch-depth: 1
++          fetch-depth: 0
+           persist-credentials: false
++      - name: Enforce append-only registration history
++        shell: bash
++        env:
++          PUSH_BEFORE: ${{ github.event.before }}
++          PUSH_AFTER: ${{ github.sha }}
++        run: |
++          set -euo pipefail
++          python scripts/validate_time_space_registration_push.py \
++            --before "$PUSH_BEFORE" \
++            --after "$PUSH_AFTER" \
++            --phase checkpoint \
++            --github-env "$GITHUB_ENV"
+       - name: Validate immutable checkpoint manifest
+         shell: bash
+         run: |
+           set -euo pipefail
+-          changes=$(git diff-tree --no-commit-id --name-status -r "$GITHUB_SHA^" "$GITHUB_SHA" -- \
+-            config/research/registrations/time_space_exports)
+-          test -n "$changes"
+-          if printf '%s\n' "$changes" | awk '$1 != "A" { exit 1 }'; then :; else
+-            echo "registrations/time_space_exports is append-only; modification/deletion/rename rejected" >&2
+-            exit 1
+-          fi
+-          manifest=$(git diff-tree --no-commit-id --name-only --diff-filter=A -r "$GITHUB_SHA" -- \
+-            'config/research/registrations/time_space_exports/*/time_space_shadow_export_checkpoint_v1.json')
+-          test "$(printf '%s\n' "$manifest" | wc -l | tr -d ' ')" = 1
++          manifest=$CHECKPOINT_MANIFEST
+           test -f "$manifest"
+           git ls-files --error-unmatch -- "$manifest"
+           git cat-file -e "$GITHUB_SHA:$manifest"
+@@ -41,8 +44,6 @@ jobs:
+           path = pathlib.Path(sys.argv[1])
+           _validate_manifest(path.as_posix(), path.read_bytes())
+           PY
+-          cutoff=$(basename "$(dirname "$manifest")")
+-          printf 'CHECKPOINT_MANIFEST=%s\nCHECKPOINT_CUTOFF=%s\n' "$manifest" "$cutoff" >> "$GITHUB_ENV"
+       - uses: actions/upload-artifact@v4
+         with:
+           name: time-space-export-checkpoint-${{ env.CHECKPOINT_CUTOFF }}-${{ github.run_id }}
+diff --git a/.github/workflows/time-space-export-persist.yml b/.github/workflows/time-space-export-persist.yml
+index 69352d0..897d5c2 100644
+--- a/.github/workflows/time-space-export-persist.yml
++++ b/.github/workflows/time-space-export-persist.yml
+@@ -14,26 +14,27 @@ jobs:
+       - uses: actions/checkout@v4
+         with:
+           ref: ${{ github.sha }}
+-          fetch-depth: 2
++          fetch-depth: 0
+           persist-credentials: false
+-      - name: Enforce append-only registration evidence
++      - name: Enforce append-only registration history
+         shell: bash
++        env:
++          PUSH_BEFORE: ${{ github.event.before }}
++          PUSH_AFTER: ${{ github.sha }}
+         run: |
+           set -euo pipefail
+-          changes=$(git diff-tree --no-commit-id --name-status -r "$GITHUB_SHA^" "$GITHUB_SHA" -- \
+-            config/research/registrations/time_space_exports)
+-          test -n "$changes"
+-          if printf '%s\n' "$changes" | awk '$1 != "A" { exit 1 }'; then :; else
+-            echo "registrations/time_space_exports is append-only; modification/deletion/rename rejected" >&2
+-            exit 1
+-          fi
+-          added=$(git diff-tree --no-commit-id --name-only --diff-filter=A -r "$GITHUB_SHA^" "$GITHUB_SHA" -- \
+-            config/research/registrations/time_space_exports)
+-          test "$(printf '%s\n' "$added" | wc -l | tr -d ' ')" = 2
+-          receipt=$(printf '%s\n' "$added" | grep '/time_space_export_registration_receipt_v1.json$')
+-          trust=$(printf '%s\n' "$added" | grep '/time_space_export_registration_trust_v1.json$')
+-          test "$(dirname "$receipt")" = "$(dirname "$trust")"
+-          checkpoint="$(dirname "$receipt")/time_space_shadow_export_checkpoint_v1.json"
++          python scripts/validate_time_space_registration_push.py \
++            --before "$PUSH_BEFORE" \
++            --after "$PUSH_AFTER" \
++            --phase persist \
++            --github-env "$GITHUB_ENV"
++      - name: Validate durable registration evidence
++        shell: bash
++        run: |
++          set -euo pipefail
++          checkpoint=$REGISTRATION_CHECKPOINT
++          receipt=$REGISTRATION_RECEIPT
++          trust=$REGISTRATION_TRUST
+           test -f "$checkpoint"
+           python - "$checkpoint" "$receipt" "$trust" <<'PY'
+           import hashlib, json, pathlib, sys
+diff --git a/scripts/validate_time_space_registration_push.py b/scripts/validate_time_space_registration_push.py
+new file mode 100644
+index 0000000..b84e1d4
+--- /dev/null
++++ b/scripts/validate_time_space_registration_push.py
+@@ -0,0 +1,175 @@
++"""Validate append-only TimeSpace registration changes across one complete push."""
++
++from __future__ import annotations
++
++import argparse
++import re
++import subprocess
++import sys
++from collections.abc import Sequence
++from pathlib import Path
++from typing import Literal
++
++REGISTRATION_ROOT = "config/research/registrations/time_space_exports"
++CHECKPOINT_NAME = "time_space_shadow_export_checkpoint_v1.json"
++RECEIPT_NAME = "time_space_export_registration_receipt_v1.json"
++TRUST_NAME = "time_space_export_registration_trust_v1.json"
++FOUR_HOURS_NS = 4 * 60 * 60 * 1_000_000_000
++_SHA_PATTERN = re.compile(r"[0-9a-f]{40}")
++
++
++def validate_registration_push(
++    repository: Path,
++    *,
++    before: str,
++    after: str,
++    phase: Literal["checkpoint", "persist"],
++) -> dict[str, str]:
++    """Return exact new registration paths or reject the complete push range."""
++
++    root = Path(repository).resolve()
++    _validate_commit(root, before, "before")
++    _validate_commit(root, after, "after")
++    _validate_append_only_history(root, before, after)
++    changes = _registration_changes(root, before, after)
++    if not changes:
++        raise ValueError("append-only registration push contains no registration changes")
++    rewritten = [(status, path) for status, path in changes if status != "A"]
++    if rewritten:
++        status, path = rewritten[0]
++        raise ValueError(f"registration tree is append-only; observed {status} for {path}")
++    added = [path for _status, path in changes]
++    if phase == "checkpoint":
++        return _validate_checkpoint_addition(root, before, added)
++    return _validate_persist_additions(root, before, added)
++
++
++def _validate_commit(repository: Path, value: str, label: str) -> None:
++    if value == "0" * 40:
++        raise ValueError(f"append-only {label} baseline is unavailable")
++    if _SHA_PATTERN.fullmatch(value) is None:
++        raise ValueError(f"append-only {label} commit is invalid")
++    _git(repository, "cat-file", "-e", f"{value}^{{commit}}")
++
++
++def _registration_changes(repository: Path, before: str, after: str) -> list[tuple[str, str]]:
++    output = _git(
++        repository,
++        "diff",
++        "--name-status",
++        "--no-renames",
++        before,
++        after,
++        "--",
++        REGISTRATION_ROOT,
++    )
++    changes: list[tuple[str, str]] = []
++    for line in output.splitlines():
++        parts = line.split("\t")
++        if len(parts) != 2:
++            raise ValueError("append-only registration diff is malformed")
++        changes.append((parts[0], parts[1]))
++    return changes
++
++
++def _validate_append_only_history(repository: Path, before: str, after: str) -> None:
++    try:
++        _git(repository, "merge-base", "--is-ancestor", before, after)
++    except subprocess.CalledProcessError as exc:
++        raise ValueError("append-only registration push must extend its exact before commit") from exc
++    commits = _git(repository, "rev-list", "--reverse", f"{before}..{after}").splitlines()
++    if not commits:
++        raise ValueError("append-only registration push contains no new commits")
++    for commit in commits:
++        commit_and_parents = _git(repository, "rev-list", "--parents", "-n", "1", commit).split()
++        if len(commit_and_parents) != 2:
++            raise ValueError("append-only registration push history must be linear")
++        parent = commit_and_parents[1]
++        for status, path in _registration_changes(repository, parent, commit):
++            if status != "A":
++                raise ValueError(f"registration tree is append-only; observed {status} for {path}")
++
++
++def _validate_checkpoint_addition(repository: Path, before: str, added: list[str]) -> dict[str, str]:
++    if len(added) != 1:
++        raise ValueError("checkpoint push must add exactly one registration manifest")
++    path = added[0]
++    cutoff, directory = _registration_path(path, CHECKPOINT_NAME)
++    if _git(repository, "ls-tree", "-r", "--name-only", before, "--", directory):
++        raise ValueError("checkpoint push cannot add to an existing registration cutoff")
++    return {"CHECKPOINT_MANIFEST": path, "CHECKPOINT_CUTOFF": str(cutoff)}
++
++
++def _validate_persist_additions(repository: Path, before: str, added: list[str]) -> dict[str, str]:
++    if len(added) != 2:
++        raise ValueError("persist push must add exactly one receipt and one trust record")
++    receipt_paths = [path for path in added if path.endswith(f"/{RECEIPT_NAME}")]
++    trust_paths = [path for path in added if path.endswith(f"/{TRUST_NAME}")]
++    if len(receipt_paths) != 1 or len(trust_paths) != 1:
++        raise ValueError("persist push additions are not the exact receipt and trust pair")
++    receipt = receipt_paths[0]
++    trust = trust_paths[0]
++    cutoff, directory = _registration_path(receipt, RECEIPT_NAME)
++    trust_cutoff, trust_directory = _registration_path(trust, TRUST_NAME)
++    if (cutoff, directory) != (trust_cutoff, trust_directory):
++        raise ValueError("persisted receipt and trust do not share one cutoff")
++    checkpoint = f"{directory}/{CHECKPOINT_NAME}"
++    _git(repository, "cat-file", "-e", f"{before}:{checkpoint}")
++    prior_paths = _git(repository, "ls-tree", "-r", "--name-only", before, "--", directory).splitlines()
++    if prior_paths != [checkpoint]:
++        raise ValueError("persist push requires one previously registered immutable checkpoint")
++    return {
++        "REGISTRATION_CHECKPOINT": checkpoint,
++        "REGISTRATION_RECEIPT": receipt,
++        "REGISTRATION_TRUST": trust,
++    }
++
++
++def _registration_path(path: str, expected_name: str) -> tuple[int, str]:
++    pattern = re.compile(rf"{re.escape(REGISTRATION_ROOT)}/([1-9][0-9]*)/{re.escape(expected_name)}")
++    match = pattern.fullmatch(path)
++    if match is None:
++        raise ValueError(f"registration path is not canonical: {path}")
++    cutoff = int(match.group(1))
++    if cutoff % FOUR_HOURS_NS:
++        raise ValueError("registration cutoff is not on the confirmed 4h grid")
++    return cutoff, path.rsplit("/", 1)[0]
++
++
++def _git(repository: Path, *args: str) -> str:
++    result = subprocess.run(
++        ["git", "-C", str(repository), *args],
++        check=True,
++        capture_output=True,
++        text=True,
++    )
++    return result.stdout.strip()
++
++
++def _main(argv: Sequence[str] | None = None) -> int:
++    parser = argparse.ArgumentParser(description=__doc__)
++    parser.add_argument("--repository", type=Path, default=Path.cwd())
++    parser.add_argument("--before", required=True)
++    parser.add_argument("--after", required=True)
++    parser.add_argument("--phase", choices=("checkpoint", "persist"), required=True)
++    parser.add_argument("--github-env", type=Path)
++    args = parser.parse_args(argv)
++    try:
++        values = validate_registration_push(
++            args.repository,
++            before=args.before,
++            after=args.after,
++            phase=args.phase,
++        )
++        if args.github_env is not None:
++            with args.github_env.open("a", encoding="utf-8") as handle:
++                for name, value in values.items():
++                    handle.write(f"{name}={value}\n")
++    except (OSError, subprocess.CalledProcessError, ValueError) as exc:
++        print(f"append-only registration validation failed: {exc}", file=sys.stderr)
++        return 1
++    return 0
++
++
++if __name__ == "__main__":
++    raise SystemExit(_main())

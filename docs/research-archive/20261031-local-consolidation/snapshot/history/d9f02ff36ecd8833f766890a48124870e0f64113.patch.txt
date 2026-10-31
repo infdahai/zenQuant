@@ -1,0 +1,310 @@
+commit d9f02ff36ecd8833f766890a48124870e0f64113
+Author:     Disaster <clusternlh@gmail.com>
+AuthorDate: Mon Aug 24 18:23:08 2026 +0800
+Commit:     Disaster <clusternlh@gmail.com>
+CommitDate: Mon Aug 24 18:23:08 2026 +0800
+
+    test(research): reject forged forward export registrations
+
+diff --git a/tests/test_time_space_export.py b/tests/test_time_space_export.py
+index ed658b1..b4a10aa 100644
+--- a/tests/test_time_space_export.py
++++ b/tests/test_time_space_export.py
+@@ -15,6 +15,7 @@ from zenquant.research.registration import canonical_sha256, load_execution_mani
+ from zenquant.research.time_space_export import (
+     EXPORT_REGISTRATION_REQUIRED,
+     VERIFIED,
++    _checkpoint_manifest_path,
+     _generator_dependency_identity,
+     _validate_registered_time_space_export_payloads,
+     hash_execution_materials,
+@@ -26,9 +27,11 @@ from zenquant.research.time_space_replay import (
+     _aggregate_candles,
+     _append_forward_rows,
+     _build_replay_view,
++    _normalize_forward_funding,
+     _normalize_frozen_five_min,
+     _registered_source_files,
+     _run_path,
++    _validate_forward_grid,
+ )
+ 
+ ROOT = Path(__file__).parents[1]
+@@ -121,6 +124,54 @@ def test_forward_slice_is_append_only_and_excludes_rows_after_literal_cutoff() -
+     assert identity["path"].endswith(f"#through={AS_OF_NS + FOUR_HOURS_NS}")
+ 
+ 
++@pytest.mark.parametrize("timestamps", [[1, 3], [1, 2, 2, 3]])
++def test_forward_five_min_grid_rejects_gap_or_duplicate(timestamps: list[int]) -> None:
++    import pandas as pd
++
++    with pytest.raises(ValueError, match="exact, continuous, and duplicate-free"):
++        _validate_forward_grid(
++            pd.DataFrame({"close_time_ns": timestamps}),
++            time_column="close_time_ns",
++            first_ns=1,
++            last_ns=3,
++            step_ns=1,
++            label="5m",
++        )
++
++
++def test_forward_funding_rejects_missing_anchor_and_out_of_rule_jitter() -> None:
++    import pandas as pd
++
++    interval = 8 * 60 * 60 * 1_000_000_000
++    with pytest.raises(ValueError, match="coverage"):
++        _normalize_forward_funding(
++            pd.DataFrame({"funding_time_ns": [AS_OF_NS + interval]}),
++            reused_end_ns=AS_OF_NS,
++            as_of_ns=AS_OF_NS + 2 * interval,
++        )
++    with pytest.raises(ValueError, match="jitter"):
++        _normalize_forward_funding(
++            pd.DataFrame({"funding_time_ns": [AS_OF_NS + interval + 61 * 1_000_000_000]}),
++            reused_end_ns=AS_OF_NS,
++            as_of_ns=AS_OF_NS + interval + 4 * 60 * 60 * 1_000_000_000,
++        )
++
++
++def test_forward_daily_rejects_incomplete_or_stale_completed_close() -> None:
++    import pandas as pd
++
++    day = 24 * 60 * 60 * 1_000_000_000
++    with pytest.raises(ValueError, match="coverage"):
++        _validate_forward_grid(
++            pd.DataFrame({"close_time_ns": [AS_OF_NS + day - 1_000_000]}),
++            time_column="close_time_ns",
++            first_ns=AS_OF_NS + day - 1_000_000,
++            last_ns=AS_OF_NS + 2 * day - 1_000_000,
++            step_ns=day,
++            label="1d completed",
++        )
++
++
+ def _market_row(index: int, *, side: int = 1) -> dict[str, object]:
+     cutoff = AS_OF_NS - (3 - index) * FOUR_HOURS_NS
+     return {
+@@ -212,7 +263,7 @@ def _registered(bundle):
+     manifest_sha256 = hashlib.sha256(_canonical_bytes(checkpoint)).hexdigest()
+     receipt = {
+         "schema_version": "time-space-export-registration-receipt.v1",
+-        "manifest_path": "config/research/registrations/time_space_shadow_export_checkpoint_v1.json",
++        "manifest_path": _checkpoint_manifest_path(bundle.export["as_of_ns"]),
+         "manifest_sha256": manifest_sha256,
+         "export_sha256": checkpoint["export_sha256"],
+         "provenance_sha256": checkpoint["provenance_sha256"],
+@@ -223,7 +274,10 @@ def _registered(bundle):
+         "workflow": {"id": 9001, "path": ".github/workflows/time-space-export-checkpoint.yml"},
+         "event": "push",
+         "ref": "refs/heads/feature/trend-registration-time-space-export",
+-        "artifact": {"id": 777, "name": "time-space-export-checkpoint-12345"},
++        "artifact": {
++            "id": 777,
++            "name": f"time-space-export-checkpoint-{bundle.export['as_of_ns']}-12345",
++        },
+     }
+     trust = {
+         "schema_version": "time-space-export-registration-trust.v1",
+@@ -238,10 +292,17 @@ def _registered(bundle):
+         "checkpoint_manifest_sha256": manifest_sha256,
+         "provider_created_at_ns": 1787558400000000000,
+         "checkpoint_artifact_id": 777,
+-        "checkpoint_artifact_name": "time-space-export-checkpoint-12345",
++        "checkpoint_artifact_name": f"time-space-export-checkpoint-{bundle.export['as_of_ns']}-12345",
+         "receipt_artifact_sha256": hashlib.sha256(_canonical_bytes(receipt)).hexdigest(),
+         "generator_commit_sha": "a" * 40,
+         "generator_provider_run_id": "12345",
++        "generator_workflow_id": 9002,
++        "generator_workflow_path": ".github/workflows/time-space-export-generate.yml",
++        "generator_event": "workflow_dispatch",
++        "generator_branch": "codex/late-dev-cost-attribution",
++        "generator_created_at_ns": 1787558400000000000,
++        "generator_artifact_id": 778,
++        "generator_artifact_name": f"time-space-export-{bundle.export['as_of_ns']}-12345",
+     }
+     provider = {
+         "id": 12345,
+@@ -254,7 +315,21 @@ def _registered(bundle):
+         "workflow_id": 9001,
+         "repository": {"full_name": "infdahai/zenQuant"},
+     }
+-    return export, provenance, checkpoint, receipt, trust, provider
++    generator_provider = {
++        **provider,
++        "event": "workflow_dispatch",
++        "head_branch": "codex/late-dev-cost-attribution",
++        "path": ".github/workflows/time-space-export-generate.yml",
++        "workflow_id": 9002,
++        "artifacts": [
++            {
++                "id": 778,
++                "name": f"time-space-export-{bundle.export['as_of_ns']}-12345",
++                "expired": False,
++            }
++        ],
++    }
++    return export, provenance, checkpoint, receipt, trust, provider, generator_provider
+ 
+ 
+ def test_exporter_recomputes_exact_rows_transitions_and_material_hashes(tmp_path: Path) -> None:
+@@ -281,7 +356,7 @@ def test_exporter_recomputes_exact_rows_transitions_and_material_hashes(tmp_path
+ 
+ 
+ def test_exact_pinned_checkpoint_is_the_only_verified_path(tmp_path: Path) -> None:
+-    export, provenance, checkpoint, receipt, trust, provider = _registered(_build(tmp_path))
++    export, provenance, checkpoint, receipt, trust, provider, generator_provider = _registered(_build(tmp_path))
+ 
+     assert (
+         _validate_registered_time_space_export_payloads(
+@@ -291,7 +366,7 @@ def test_exact_pinned_checkpoint_is_the_only_verified_path(tmp_path: Path) -> No
+             receipt,
+             trust_payload=trust,
+             provider_payload=provider,
+-            generator_provider_payload=provider,
++            generator_provider_payload=generator_provider,
+             generator_path=ROOT / "zenquant/research/time_space_export.py",
+             recomputed_bundle=_build(tmp_path),
+         )
+@@ -299,11 +374,11 @@ def test_exact_pinned_checkpoint_is_the_only_verified_path(tmp_path: Path) -> No
+     )
+ 
+ 
+-def test_registered_baseline_checkpoint_validates_incremental_forward_cutoff_without_reregistration(
++def test_registered_baseline_checkpoint_cannot_authorize_incremental_forward_cutoff(
+     tmp_path: Path,
+ ) -> None:
+     baseline = _build(tmp_path)
+-    export, provenance, _unused, receipt, trust, provider = _registered(baseline)
++    export, provenance, _unused, receipt, trust, provider, generator_provider = _registered(baseline)
+     forward_as_of = 1_787_659_200_000_000_000
+     forward = _build_forward(tmp_path, forward_as_of)
+ 
+@@ -315,16 +390,70 @@ def test_registered_baseline_checkpoint_validates_incremental_forward_cutoff_wit
+             receipt,
+             trust_payload=trust,
+             provider_payload=provider,
+-            generator_provider_payload=provider,
++            generator_provider_payload=generator_provider,
+             generator_path=ROOT / "zenquant/research/time_space_export.py",
+             recomputed_bundle=forward,
+         )
+-        == VERIFIED
++        == EXPORT_REGISTRATION_REQUIRED
+     )
+     assert export["as_of_ns"] == AS_OF_NS
+     assert forward.export["as_of_ns"] == forward_as_of
+ 
+ 
++def test_forward_cutoff_requires_its_own_exact_checkpoint_and_receipt(tmp_path: Path) -> None:
++    forward = _build_forward(tmp_path, 1_787_659_200_000_000_000)
++    export, provenance, checkpoint, receipt, trust, provider, generator_provider = _registered(forward)
++
++    assert (
++        _validate_registered_time_space_export_payloads(
++            export,
++            provenance,
++            checkpoint,
++            receipt,
++            trust_payload=trust,
++            provider_payload=provider,
++            generator_provider_payload=generator_provider,
++            generator_path=ROOT / "zenquant/research/time_space_export.py",
++            recomputed_bundle=forward,
++        )
++        == VERIFIED
++    )
++
++
++@pytest.mark.parametrize(
++    "change",
++    [
++        {"workflow_id": 99},
++        {"path": ".github/workflows/other.yml"},
++        {"event": "push"},
++        {"head_branch": "main"},
++        {"created_at": "2026-08-24T09:00:00Z"},
++        {"artifacts": [{"id": 778, "name": "forged", "expired": False}]},
++    ],
++)
++def test_generator_provider_rejects_wrong_workflow_event_ref_time_or_artifact(
++    tmp_path: Path, change: dict[str, object]
++) -> None:
++    bundle = _build(tmp_path)
++    export, provenance, checkpoint, receipt, trust, provider, generator_provider = _registered(bundle)
++    generator_provider.update(change)
++
++    assert (
++        _validate_registered_time_space_export_payloads(
++            export,
++            provenance,
++            checkpoint,
++            receipt,
++            trust_payload=trust,
++            provider_payload=provider,
++            generator_provider_payload=generator_provider,
++            generator_path=ROOT / "zenquant/research/time_space_export.py",
++            recomputed_bundle=bundle,
++        )
++        == EXPORT_REGISTRATION_REQUIRED
++    )
++
++
+ @pytest.mark.parametrize(
+     "mutation",
+     [
+@@ -345,7 +474,7 @@ def test_registered_baseline_checkpoint_validates_incremental_forward_cutoff_wit
+ )
+ def test_registration_fails_closed_for_export_provenance_and_receipt_tampering(tmp_path: Path, mutation) -> None:
+     bundle = _build(tmp_path)
+-    export, provenance, checkpoint, receipt, trust, provider = _registered(bundle)
++    export, provenance, checkpoint, receipt, trust, provider, generator_provider = _registered(bundle)
+     mutation(export, provenance, checkpoint, receipt)
+ 
+     assert (
+@@ -356,7 +485,7 @@ def test_registration_fails_closed_for_export_provenance_and_receipt_tampering(t
+             receipt,
+             trust_payload=trust,
+             provider_payload=provider,
+-            generator_provider_payload=provider,
++            generator_provider_payload=generator_provider,
+             generator_path=ROOT / "zenquant/research/time_space_export.py",
+             recomputed_bundle=bundle,
+         )
+diff --git a/tests/test_time_space_export_registration.py b/tests/test_time_space_export_registration.py
+index a8b55a2..ac153f6 100644
+--- a/tests/test_time_space_export_registration.py
++++ b/tests/test_time_space_export_registration.py
+@@ -9,7 +9,10 @@ from pathlib import Path
+ import pytest
+ 
+ SCRIPT = Path(__file__).parents[1] / "scripts/build_time_space_export_receipt.py"
+-MANIFEST_PATH = "config/research/registrations/time_space_shadow_export_checkpoint_v1.json"
++AS_OF_NS = 1787529600000000000
++MANIFEST_PATH = (
++    f"config/research/registrations/time_space_exports/{AS_OF_NS}/time_space_shadow_export_checkpoint_v1.json"
++)
+ BRANCH = "feature/trend-registration-time-space-export"
+ WORKFLOW_PATH = ".github/workflows/time-space-export-checkpoint.yml"
+ WORKFLOW_ID = 9001
+@@ -54,7 +57,7 @@ def _provider(**changes):
+ def _artifact(**changes):
+     payload = {
+         "id": 777,
+-        "name": "time-space-export-checkpoint-12345",
++        "name": f"time-space-export-checkpoint-{AS_OF_NS}-12345",
+         "expired": False,
+         "workflow_run": {"id": 12345, "head_sha": "c" * 40},
+     }
+@@ -83,7 +86,10 @@ def test_receipt_builder_binds_completed_push_workflow_and_uploaded_manifest() -
+     assert receipt["provider_run_id"] == "12345"
+     assert receipt["provider_created_at_ns"] == 1787558400000000000
+     assert receipt["workflow"] == {"id": WORKFLOW_ID, "path": WORKFLOW_PATH}
+-    assert receipt["artifact"] == {"id": 777, "name": "time-space-export-checkpoint-12345"}
++    assert receipt["artifact"] == {
++        "id": 777,
++        "name": f"time-space-export-checkpoint-{AS_OF_NS}-12345",
++    }
+ 
+ 
+ @pytest.mark.parametrize(

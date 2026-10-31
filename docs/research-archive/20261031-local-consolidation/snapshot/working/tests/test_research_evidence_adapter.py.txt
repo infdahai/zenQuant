@@ -1,0 +1,212 @@
+"""Imported reports preserve provenance and cannot manufacture admission proof."""
+
+from __future__ import annotations
+
+import csv
+import json
+from datetime import UTC, datetime
+from pathlib import Path
+
+import pytest
+
+from zenquant.research.evidence_adapter import import_repaired_run
+
+START = int(datetime(2024, 1, 1, tzinfo=UTC).timestamp() * 1_000_000_000)
+STEP = 4 * 60 * 60 * 1_000_000_000
+
+
+def _write_csv(path, fields, rows):
+    with path.open("w", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=fields)
+        writer.writeheader()
+        writer.writerows(rows)
+
+
+@pytest.fixture
+def recorded_run(tmp_path):
+    root = tmp_path / "fixed_run"
+    root.mkdir()
+    (root / "config.json").write_text(
+        json.dumps(
+            {
+                "historical": {
+                    "starting_equity": 100.0,
+                    "start_ns": START,
+                    "end_ns": START + 6 * STEP - 1,
+                    "execution_timeframe": "4h",
+                    "profile_path": None,
+                }
+            }
+        )
+    )
+    (root / "metrics.json").write_text(
+        json.dumps({"case": "fixed_run", "window": "dev", "variant": "legacy", "seed": None})
+    )
+    (root / "canonical_result.json").write_text(json.dumps({"position_episodes": [], "terminated_early": False}))
+    curve = [
+        {
+            "time_ns": START + index * STEP - 1_000_000,
+            "close": 100.0,
+            "position_qty": 0.0,
+            "cash": 100.0,
+            "equity": 100.0,
+            "canonical_equity": 100.0,
+            "fees": 0.0,
+            "funding_cost": 0.0,
+            "turnover": 0.0,
+        }
+        for index in range(1, 7)
+    ]
+    _write_csv(root / "equity_4h.csv", list(curve[0]), curve)
+    _write_csv(
+        root / "fills.csv",
+        ["client_order_id", "side", "filled_qty", "avg_price", "fee", "transaction_time_ns"],
+        [],
+    )
+    _write_csv(root / "funding_independent.csv", ["source_time_ns", "available_at_ns", "cost"], [])
+    return root
+
+
+def test_import_preserves_observed_scope_and_causal_valuation_boundaries(recorded_run):
+    evidence = import_repaired_run(recorded_run)
+    assert evidence["curve"][0] == {"time_ns": START, "equity": 100.0}
+    assert evidence["curve"][-1]["time_ns"] == START + 6 * STEP
+    assert evidence["curve"][-1]["source_time_ns"] == START + 6 * STEP - 1_000_000
+    assert evidence["evidence_role"] == "observed_historical_diagnostic"
+    assert evidence["diagnostic_only"] is True
+    assert evidence["engineering"]["E4"]["status"] == "FAIL"
+    assert evidence["engineering"]["E3"]["status"] == "NOT_EVALUABLE"
+    assert evidence["identity"]["strategy_path"] == "legacy"
+    assert len(evidence["identity"]["source_sha256"]) == 6
+
+
+def test_import_records_missing_source_without_returning_a_zero_result(recorded_run):
+    (recorded_run / "fills.csv").unlink()
+    with pytest.raises(ValueError, match=r"fills\.csv"):
+        import_repaired_run(recorded_run)
+
+
+def test_import_rejects_wrong_timeframe_and_non_bar_close_grid(recorded_run):
+    config = json.loads((recorded_run / "config.json").read_text())
+    config["historical"]["execution_timeframe"] = "5m"
+    (recorded_run / "config.json").write_text(json.dumps(config))
+    with pytest.raises(ValueError, match="4h"):
+        import_repaired_run(recorded_run)
+
+
+def test_source_mutation_changes_identity_and_is_not_hidden_by_old_metrics(recorded_run):
+    before = import_repaired_run(recorded_run)
+    path = recorded_run / "metrics.json"
+    raw = json.loads(path.read_text())
+    raw["seconds"] = 17.0
+    path.write_text(json.dumps(raw))
+    after = import_repaired_run(recorded_run)
+    assert before["identity"]["source_sha256"] != after["identity"]["source_sha256"]
+
+
+def test_recorded_curve_inconsistency_fails_cash_gate(recorded_run):
+    path = recorded_run / "equity_4h.csv"
+    with path.open() as handle:
+        reader = csv.DictReader(handle)
+        fields = reader.fieldnames
+        rows = list(reader)
+    rows[-1]["equity"] = "110.0"
+    _write_csv(path, fields, rows)
+    evidence = import_repaired_run(recorded_run)
+    assert evidence["engineering"]["E2"]["status"] == "FAIL"
+    assert evidence["source_checks"]["max_nav_residual"] == 10.0
+
+
+def test_consistent_snapshots_do_not_prove_every_event_accounting(recorded_run):
+    evidence = import_repaired_run(recorded_run)
+    assert evidence["source_checks"]["max_nav_residual"] == 0.0
+    assert evidence["engineering"]["E2"]["status"] == "NOT_EVALUABLE"
+
+
+@pytest.mark.parametrize("raw", ['{"position_episodes": [', '{"position_episodes": [], "pnl": NaN}'])
+def test_truncated_source_and_json_nonfinite_are_rejected(recorded_run, raw):
+    (recorded_run / "canonical_result.json").write_text(raw)
+    with pytest.raises(ValueError, match=r"canonical_result\.json"):
+        import_repaired_run(recorded_run)
+
+
+def test_fills_and_funding_keep_units_and_signs(recorded_run):
+    _write_csv(
+        recorded_run / "fills.csv",
+        ["client_order_id", "side", "filled_qty", "avg_price", "fee", "transaction_time_ns"],
+        [
+            {
+                "client_order_id": "x",
+                "side": -1,
+                "filled_qty": 0.5,
+                "avg_price": 100,
+                "fee": 0.02,
+                "transaction_time_ns": START + STEP - 1_000_000,
+            }
+        ],
+    )
+    _write_csv(
+        recorded_run / "funding_independent.csv",
+        ["source_time_ns", "available_at_ns", "cost"],
+        [{"source_time_ns": START, "available_at_ns": START + STEP - 1_000_000, "cost": -0.25}],
+    )
+    evidence = import_repaired_run(recorded_run)
+    assert evidence["fills"][0]["signed_qty"] == -0.5
+    assert evidence["fills"][0]["fee"] == 0.02
+    assert evidence["funding"][0]["pnl"] == 0.25
+    assert evidence["engineering"]["E2"]["status"] == "FAIL"  # snapshots omit these cash flows
+
+
+def test_batch_report_keeps_failed_inputs_and_does_not_claim_admission(recorded_run, tmp_path):
+    from zenquant.research.reporting import write_recorded_reports
+
+    output = tmp_path / "report"
+    summary = write_recorded_reports([recorded_run, tmp_path / "missing"], output)
+    assert summary["complete"] is True
+    assert summary["counts"] == {"evaluated": 1, "invalid": 1, "rankable": 0}
+    assert summary["live_eligible"] is False
+    valid, invalid = summary["cases"]
+    assert valid["status"] == "EVALUATED_DIAGNOSTIC"
+    assert invalid["status"] == "INVALID"
+    report = json.loads((output / valid["report_path"]).read_text())
+    assert report["evidence_role"] == "observed_historical_diagnostic"
+    assert report["gates"]["E4"]["status"] == "FAIL"
+    assert len(report["gates"]) == 15
+    assert "E4" in (output / "REPORT.md").read_text()
+    assert (output / "completed.json").is_file()
+    assert len((output / "journal" / "trials.jsonl").read_text().splitlines()) == 2
+
+
+def test_reports_refuse_to_overwrite_existing_evidence(recorded_run, tmp_path):
+    from zenquant.research.reporting import write_recorded_reports
+
+    output = tmp_path / "report"
+    write_recorded_reports([recorded_run], output)
+    original = (output / "REPORT.md").read_bytes()
+    with pytest.raises(FileExistsError):
+        write_recorded_reports([recorded_run], output)
+    assert (output / "REPORT.md").read_bytes() == original
+
+
+def test_cli_marks_invalid_input_nonzero_and_leaves_a_report(tmp_path):
+    import subprocess
+    import sys
+
+    root = Path(__file__).resolve().parents[1]
+    output = tmp_path / "report"
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(root / "scripts/evaluate_research_evidence.py"),
+            "--input",
+            str(tmp_path / "missing"),
+            "--output",
+            str(output),
+        ],
+        cwd=root,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 2
+    assert json.loads((output / "completed.json").read_text())["counts"]["invalid"] == 1

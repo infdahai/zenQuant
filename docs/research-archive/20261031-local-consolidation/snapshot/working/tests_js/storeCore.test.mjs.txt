@@ -1,0 +1,108 @@
+import test from "node:test";
+import assert from "node:assert/strict";
+
+import { loadMarketStore } from "../web-src/tests/loadMarketStore.mjs";
+
+function deferred() {
+  let resolve;
+  const promise = new Promise((res) => {
+    resolve = res;
+  });
+  return { promise, resolve };
+}
+
+test("market store ignores stale responses after selection changes", { timeout: 5000 }, async () => {
+  const pending = new Map();
+  const sockets = [];
+  const selectedSocketsReady = deferred();
+  class FakeWebSocket {
+    static OPEN = 1;
+    static CLOSED = 3;
+    readyState = FakeWebSocket.OPEN;
+
+    constructor(url) {
+      this.url = new URL(url);
+      sockets.push(this);
+      if (sockets.length === 2) selectedSocketsReady.resolve();
+    }
+
+    close() {
+      this.readyState = FakeWebSocket.CLOSED;
+    }
+
+    send() {}
+  }
+
+  const replacements = {
+    fetch(url) {
+      const parsed = new URL(url, "http://localhost");
+      const kind = parsed.pathname === "/api/state" ? "state" : "history";
+      assert.ok(["/api/state", "/api/indicators/history"].includes(parsed.pathname));
+      const item = deferred();
+      pending.set(`${kind}:${parsed.searchParams.get("symbol")}:${parsed.searchParams.get("tf")}`, item);
+      return item.promise;
+    },
+    WebSocket: FakeWebSocket,
+    window: { location: { protocol: "http:", host: "localhost" } },
+  };
+  const originals = Object.fromEntries(
+    Object.keys(replacements).map((key) => [key, Object.getOwnPropertyDescriptor(globalThis, key)]),
+  );
+  let loaded;
+  try {
+    for (const [key, value] of Object.entries(replacements)) {
+      Object.defineProperty(globalThis, key, { configurable: true, writable: true, value });
+    }
+    loaded = await loadMarketStore();
+    const { store } = loaded;
+    const first = store.reload();
+    store.setSelection("ETHUSDT_PERP", "1d");
+
+    function respond(key, payload) {
+      assert.ok(pending.has(key), `Missing request: ${key}`);
+      pending.get(key).resolve({ ok: true, json: async () => payload });
+    }
+
+    respond("state:ETHUSDT_PERP:1d", {
+      symbol: "ETHUSDT_PERP",
+      tf: "1d",
+      latest_indicator: { symbol: "ETHUSDT_PERP", tf: "1d", cutoff_time_ns: 2 },
+    });
+    respond("history:ETHUSDT_PERP:1d", [
+      { symbol: "ETHUSDT_PERP", tf: "1d", cutoff_time_ns: 2, values: {} },
+    ]);
+    await selectedSocketsReady.promise;
+
+    respond("state:BTCUSDT_PERP:4h", {
+      symbol: "BTCUSDT_PERP",
+      tf: "4h",
+      latest_indicator: { symbol: "BTCUSDT_PERP", tf: "4h", cutoff_time_ns: 1 },
+    });
+    respond("history:BTCUSDT_PERP:4h", [
+      { symbol: "BTCUSDT_PERP", tf: "4h", cutoff_time_ns: 1, values: {} },
+    ]);
+    await first;
+
+    assert.equal(store.symbol, "ETHUSDT_PERP");
+    assert.equal(store.tf, "1d");
+    assert.equal(store.snapshot.symbol, "ETHUSDT_PERP");
+    assert.equal(store.latestIndicator.symbol, "ETHUSDT_PERP");
+    assert.equal(store.indicatorHistory.length, 1);
+    assert.equal(store.indicatorHistory[0].cutoff_time_ns, 2);
+    assert.equal(sockets.length, 2, "Stale reload must not reconnect sockets");
+    for (const socket of sockets) {
+      assert.equal(socket.url.searchParams.get("symbol"), "ETHUSDT_PERP");
+      assert.equal(socket.url.searchParams.get("tf"), "1d");
+    }
+  } finally {
+    try {
+      await loaded?.close();
+    } finally {
+      for (const [key, descriptor] of Object.entries(originals)) {
+        if (descriptor) Object.defineProperty(globalThis, key, descriptor);
+        else delete globalThis[key];
+      }
+    }
+  }
+  assert.ok(sockets.every((socket) => socket.readyState === FakeWebSocket.CLOSED));
+});

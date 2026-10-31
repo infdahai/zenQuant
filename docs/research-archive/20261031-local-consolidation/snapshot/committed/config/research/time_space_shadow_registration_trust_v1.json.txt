@@ -1,0 +1,15 @@
+{
+  "schema_version": "time-space-shadow-registration-trust.v1",
+  "layer": "time_space_shadow",
+  "remote_identity": "infdahai/zenQuant",
+  "hypothesis": {
+    "provider_run_id": "32686267806",
+    "commit_sha": "e7d0f3d8afaea0f457b47e75c2328acc9695a7b0",
+    "manifest_sha256": "a01f4a385adf36b9816ce07577bbeab32ec522dd6be19c53395dc94e25c19cb3"
+  },
+  "execution": {
+    "provider_run_id": "32697642994",
+    "commit_sha": "7d93cc1e53c8908ef26c753e83935877f5861853",
+    "manifest_sha256": "001c3ee8f3324dd55e8b9be0358436cce45af412ca84dcbe3a6e856940ec0808"
+  }
+}

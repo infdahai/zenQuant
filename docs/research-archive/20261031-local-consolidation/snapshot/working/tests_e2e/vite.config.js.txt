@@ -1,0 +1,19 @@
+import { fileURLToPath } from "node:url";
+import config from "../web-src/vite.config.ts";
+
+// Exercise the current Vue sources without rebuilding tracked zenquant/web assets.
+export default {
+  ...config,
+  root: fileURLToPath(new URL("../web-src", import.meta.url)),
+  server: {
+    ...config.server,
+    host: "127.0.0.1",
+    port: 8092,
+    strictPort: true,
+    proxy: {
+      "/api": "http://127.0.0.1:8091",
+      "/ws": { target: "ws://127.0.0.1:8091", ws: true },
+      "/healthz": "http://127.0.0.1:8091",
+    },
+  },
+};

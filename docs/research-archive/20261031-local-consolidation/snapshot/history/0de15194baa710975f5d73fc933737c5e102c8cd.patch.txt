@@ -1,0 +1,78 @@
+commit 0de15194baa710975f5d73fc933737c5e102c8cd
+Author:     Disaster <clusternlh@gmail.com>
+AuthorDate: Mon Aug 24 16:48:06 2026 +0800
+Commit:     Disaster <clusternlh@gmail.com>
+CommitDate: Mon Aug 24 16:48:06 2026 +0800
+
+    fix(research): authenticate registration provider fetch
+
+diff --git a/scripts/run_time_space_shadow.py b/scripts/run_time_space_shadow.py
+index 47e471b..6083d72 100644
+--- a/scripts/run_time_space_shadow.py
++++ b/scripts/run_time_space_shadow.py
+@@ -396,9 +396,13 @@ def _fetch_github_provider_run(remote_identity: str, provider_run_id: int) -> Ma
+     if remote_identity != _TRUSTED_REMOTE or str(provider_run_id) not in set(_TRUSTED_RUNS.values()):
+         raise ValueError("provider fetch is outside the pinned trust root")
+     url = f"https://api.github.com/repos/{remote_identity}/actions/runs/{provider_run_id}"
++    headers = {"Accept": "application/vnd.github+json", "User-Agent": "zenquant-time-space-shadow/1"}
++    token = os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_TOKEN")
++    if token:
++        headers["Authorization"] = f"Bearer {token}"
+     request = urllib.request.Request(
+         url,
+-        headers={"Accept": "application/vnd.github+json", "User-Agent": "zenquant-time-space-shadow/1"},
++        headers=headers,
+     )
+     with urllib.request.urlopen(request, timeout=30) as response:
+         payload = json.loads(response.read().decode("utf-8"))
+diff --git a/tests/test_time_space_shadow_cli.py b/tests/test_time_space_shadow_cli.py
+index c3252fc..7aa9ec6 100644
+--- a/tests/test_time_space_shadow_cli.py
++++ b/tests/test_time_space_shadow_cli.py
+@@ -4,6 +4,7 @@ import hashlib
+ import importlib.util
+ import json
+ import sys
++from io import BytesIO
+ from pathlib import Path
+ 
+ import pytest
+@@ -396,3 +397,38 @@ def test_transition_count_is_derived_only_from_events_inside_requested_window(tm
+     )
+     assert inside_count == 1
+     assert outside_count == 0
++
++
++def test_default_provider_fetcher_uses_github_token_without_changing_pinned_identity(
++    monkeypatch: pytest.MonkeyPatch,
++) -> None:
++    module = _load_runner()
++    observed = {}
++
++    class Response:
++        def __enter__(self):
++            return self
++
++        def __exit__(self, *_args):
++            return False
++
++        def read(self):
++            return BytesIO(
++                json.dumps(_provider(HYPOTHESIS_RUN_ID, HYPOTHESIS_COMMIT, "2026-08-24T03:23:18Z")).encode()
++            ).read()
++
++    def fake_urlopen(request, timeout):
++        observed["url"] = request.full_url
++        observed["authorization"] = request.get_header("Authorization")
++        observed["timeout"] = timeout
++        return Response()
++
++    monkeypatch.setenv("GITHUB_TOKEN", "secret-token")
++    monkeypatch.setattr(module.urllib.request, "urlopen", fake_urlopen)
++    payload = module._fetch_github_provider_run(TRUSTED_REPO, HYPOTHESIS_RUN_ID)
++    assert payload["id"] == HYPOTHESIS_RUN_ID
++    assert observed == {
++        "url": f"https://api.github.com/repos/{TRUSTED_REPO}/actions/runs/{HYPOTHESIS_RUN_ID}",
++        "authorization": "Bearer secret-token",
++        "timeout": 30,
++    }

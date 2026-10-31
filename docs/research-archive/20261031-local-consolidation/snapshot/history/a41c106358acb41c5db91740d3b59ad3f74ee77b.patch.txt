@@ -1,0 +1,61 @@
+commit a41c106358acb41c5db91740d3b59ad3f74ee77b
+Author:     Disaster <clusternlh@gmail.com>
+AuthorDate: Sun Aug 23 10:56:40 2026 +0800
+Commit:     Disaster <clusternlh@gmail.com>
+CommitDate: Sun Aug 23 10:56:40 2026 +0800
+
+    fix(accounting): preserve canonical mark authority
+
+diff --git a/tests/test_risk_guard.py b/tests/test_risk_guard.py
+index bc04b55..a17e4f6 100644
+--- a/tests/test_risk_guard.py
++++ b/tests/test_risk_guard.py
+@@ -116,6 +116,35 @@ def test_non_mark_payload_event_does_not_change_accounting_state() -> None:
+     assert (overlay.positions, overlay.cash, overlay.equity, overlay.high_water_mark) == before
+ 
+ 
++def test_canonical_mark_remains_authoritative_after_indicator_and_fill_fallbacks() -> None:
++    bus = InMemoryJetStream()
++    overlay = RiskOverlay(bus=bus, config=RiskOverlayConfig(starting_equity=100_000.0))
++    bus.publish("indicator.pack.v1.4h.BTCUSDT_PERP", _make_pack({"last_price": 90.0}))
++    bus.publish("exec.order.report", _fill(1.0, price=100.0))
++    bus.publish("md.mark.BINANCE.BTCUSDT_PERP", _mark(101.0))
++    equity_at_canonical_mark = overlay.equity
++
++    bus.publish("indicator.pack.v1.4h.BTCUSDT_PERP", _make_pack({"last_price": 1.0}))
++
++    assert overlay.equity == pytest.approx(equity_at_canonical_mark)
++
++    bus.publish(
++        "exec.order.report",
++        ExecutionReport(
++            client_order_id="later-fill",
++            symbol="BTCUSDT_PERP",
++            side=-1,
++            status="PARTIALLY_FILLED",
++            filled_qty=0.5,
++            avg_price=50.0,
++            fee=0.0,
++            transaction_time_ns=2,
++        ),
++    )
++
++    assert overlay.equity == pytest.approx(equity_at_canonical_mark - 25.5)
++
++
+ def test_positions_returns_immutable_snapshot() -> None:
+     bus = InMemoryJetStream()
+     overlay = RiskOverlay(bus=bus, config=RiskOverlayConfig(starting_equity=100_000.0))
+diff --git a/zenquant/risk/guard.py b/zenquant/risk/guard.py
+index 021edd3..d296b92 100644
+--- a/zenquant/risk/guard.py
++++ b/zenquant/risk/guard.py
+@@ -193,7 +193,7 @@ class RiskOverlay:
+         """Seed indicator and price context without requiring a bus publish."""
+         self._latest_indicator[(pack.symbol, pack.timeframe)] = pack
+         last_price = float(pack.values.get("last_price", 0.0) or 0.0)
+-        if last_price > 0:
++        if last_price > 0 and pack.symbol not in self._marked_symbols:
+             self._last_price[pack.symbol] = last_price
+             self._revalue_equity()
+ 

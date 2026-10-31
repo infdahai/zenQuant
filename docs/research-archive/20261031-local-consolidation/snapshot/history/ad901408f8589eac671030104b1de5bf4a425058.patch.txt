@@ -1,0 +1,71 @@
+commit ad901408f8589eac671030104b1de5bf4a425058
+Author:     Disaster <clusternlh@gmail.com>
+AuthorDate: Tue Aug 25 00:13:30 2026 +0800
+Commit:     Disaster <clusternlh@gmail.com>
+CommitDate: Tue Aug 25 00:13:30 2026 +0800
+
+    test(research): expose reverted registration rewrite
+
+diff --git a/tests/test_time_space_export_registration.py b/tests/test_time_space_export_registration.py
+index b5aa702..77d7409 100644
+--- a/tests/test_time_space_export_registration.py
++++ b/tests/test_time_space_export_registration.py
+@@ -265,11 +265,6 @@ def test_checkpoint_workflows_use_exact_bootstrap_and_completed_receipt_trigger(
+     assert "--generator-artifact-json" in receipt
+     assert "actions/upload-artifact@v4" in checkpoint
+     assert "actions/upload-artifact@v4" in receipt
+-    assert "time_space_export_registration_receipt_v1.json" in persist
+-    assert "registrations/time_space_exports is append-only" in checkpoint
+-    assert "registrations/time_space_exports is append-only" in persist
+-    assert '$1 != "A"' in checkpoint
+-    assert '$1 != "A"' in persist
+     assert checkpoint.count("scripts/validate_time_space_registration_push.py") == 1
+     assert persist.count("scripts/validate_time_space_registration_push.py") == 1
+     assert checkpoint.count("PUSH_BEFORE: ${{ github.event.before }}") == 1
+@@ -320,6 +315,46 @@ def test_checkpoint_push_rejects_prior_registration_mutation_hidden_in_multi_com
+     assert "append-only" in result.stderr
+ 
+ 
++def test_checkpoint_push_rejects_registration_mutation_reverted_before_head(tmp_path: Path) -> None:
++    repository = tmp_path / "repository"
++    repository.mkdir()
++    _git(repository, "init", "-q")
++    registration_root = repository / "config/research/registrations/time_space_exports"
++    existing = registration_root / "111/time_space_shadow_export_checkpoint_v1.json"
++    existing.parent.mkdir(parents=True)
++    existing.write_text("original\n")
++    before = _commit(repository, "initial registration")
++
++    existing.write_text("temporarily tampered\n")
++    _commit(repository, "rewrite registered evidence")
++    existing.write_text("original\n")
++    checkpoint = repository / MANIFEST_PATH
++    checkpoint.parent.mkdir(parents=True)
++    checkpoint.write_text("pending\n")
++    after = _commit(repository, "restore evidence and add checkpoint")
++
++    result = subprocess.run(
++        [
++            sys.executable,
++            str(APPEND_ONLY_SCRIPT),
++            "--repository",
++            str(repository),
++            "--before",
++            before,
++            "--after",
++            after,
++            "--phase",
++            "checkpoint",
++        ],
++        check=False,
++        capture_output=True,
++        text=True,
++    )
++
++    assert result.returncode != 0
++    assert "append-only" in result.stderr
++
++
+ def test_checkpoint_push_accepts_one_new_cutoff_and_exports_exact_path(tmp_path: Path) -> None:
+     repository = tmp_path / "repository"
+     repository.mkdir()

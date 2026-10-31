@@ -1,0 +1,371 @@
+commit 15ff2a93d449cf7e797f4e5f4c79b940c9202e8e
+Author:     Disaster <clusternlh@gmail.com>
+AuthorDate: Mon Aug 24 18:22:59 2026 +0800
+Commit:     Disaster <clusternlh@gmail.com>
+CommitDate: Mon Aug 24 18:22:59 2026 +0800
+
+    fix(research): require per-cutoff export registration
+
+diff --git a/.github/workflows/time-space-export-checkpoint.yml b/.github/workflows/time-space-export-checkpoint.yml
+index a540b9c..7399518 100644
+--- a/.github/workflows/time-space-export-checkpoint.yml
++++ b/.github/workflows/time-space-export-checkpoint.yml
+@@ -21,7 +21,9 @@ jobs:
+         shell: bash
+         run: |
+           set -euo pipefail
+-          manifest=config/research/registrations/time_space_shadow_export_checkpoint_v1.json
++          manifest=$(git diff-tree --no-commit-id --name-only --diff-filter=A -r "$GITHUB_SHA" -- \
++            'config/research/registrations/time_space_exports/*/time_space_shadow_export_checkpoint_v1.json')
++          test "$(printf '%s\n' "$manifest" | wc -l | tr -d ' ')" = 1
+           test -f "$manifest"
+           git ls-files --error-unmatch -- "$manifest"
+           git cat-file -e "$GITHUB_SHA:$manifest"
+@@ -32,9 +34,11 @@ jobs:
+           path = pathlib.Path(sys.argv[1])
+           _validate_manifest(path.as_posix(), path.read_bytes())
+           PY
++          cutoff=$(basename "$(dirname "$manifest")")
++          printf 'CHECKPOINT_MANIFEST=%s\nCHECKPOINT_CUTOFF=%s\n' "$manifest" "$cutoff" >> "$GITHUB_ENV"
+       - uses: actions/upload-artifact@v4
+         with:
+-          name: time-space-export-checkpoint-${{ github.run_id }}
+-          path: config/research/registrations/time_space_shadow_export_checkpoint_v1.json
++          name: time-space-export-checkpoint-${{ env.CHECKPOINT_CUTOFF }}-${{ github.run_id }}
++          path: ${{ env.CHECKPOINT_MANIFEST }}
+           if-no-files-found: error
+           retention-days: 90
+diff --git a/.github/workflows/time-space-export-generate.yml b/.github/workflows/time-space-export-generate.yml
+new file mode 100644
+index 0000000..208be70
+--- /dev/null
++++ b/.github/workflows/time-space-export-generate.yml
+@@ -0,0 +1,42 @@
++name: Generate canonical TimeSpace export
++
++on:
++  workflow_dispatch:
++    inputs:
++      as_of:
++        description: Literal confirmed 4h UTC cutoff
++        required: true
++        type: string
++
++permissions:
++  contents: read
++
++jobs:
++  export:
++    runs-on: ubuntu-latest
++    steps:
++      - uses: actions/checkout@v4
++        with:
++          ref: ${{ github.sha }}
++          fetch-depth: 1
++          persist-credentials: false
++      - uses: astral-sh/setup-uv@v6
++      - name: Generate from registered baseline and point-in-time slices
++        shell: bash
++        run: |
++          set -euo pipefail
++          uv sync --frozen
++          uv run python scripts/export_time_space_architecture.py \
++            --execution-manifest config/research/registrations/time_space_shadow_execution_v1.json \
++            --hypothesis-manifest config/research/time_space_shadow_hypothesis_v1.json \
++            --output-dir time-space-export \
++            --provider-run-id "$GITHUB_RUN_ID" \
++            --as-of "${{ inputs.as_of }}"
++          cutoff=$(python -c 'from scripts.export_time_space_architecture import _parse_as_of; print(_parse_as_of("${{ inputs.as_of }}"))')
++          printf 'EXPORT_CUTOFF=%s\n' "$cutoff" >> "$GITHUB_ENV"
++      - uses: actions/upload-artifact@v4
++        with:
++          name: time-space-export-${{ env.EXPORT_CUTOFF }}-${{ github.run_id }}
++          path: time-space-export
++          if-no-files-found: error
++          retention-days: 90
+diff --git a/.github/workflows/time-space-export-receipt.yml b/.github/workflows/time-space-export-receipt.yml
+index c14cf98..ef09ce5 100644
+--- a/.github/workflows/time-space-export-receipt.yml
++++ b/.github/workflows/time-space-export-receipt.yml
+@@ -31,12 +31,21 @@ jobs:
+           python - <<'PY'
+           import json, os, pathlib
+           payload = json.loads(pathlib.Path("artifacts.json").read_text())
+-          name = f"time-space-export-checkpoint-{os.environ['RUN_ID']}"
+-          matches = [item for item in payload["artifacts"] if item["name"] == name and not item["expired"]]
++          suffix = f"-{os.environ['RUN_ID']}"
++          matches = [
++              item for item in payload["artifacts"]
++              if item["name"].startswith("time-space-export-checkpoint-")
++              and item["name"].endswith(suffix) and not item["expired"]
++          ]
+           if len(matches) != 1:
+               raise SystemExit("exact checkpoint artifact not found")
+           pathlib.Path("artifact.json").write_text(json.dumps(matches[0]))
+           pathlib.Path("artifact-id").write_text(str(matches[0]["id"]))
++          cutoff = matches[0]["name"].removeprefix("time-space-export-checkpoint-").removesuffix(suffix)
++          pathlib.Path("checkpoint-path").write_text(
++              f"config/research/registrations/time_space_exports/{cutoff}/"
++              "time_space_shadow_export_checkpoint_v1.json"
++          )
+           PY
+           artifact_id=$(<artifact-id)
+           gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$artifact_id/zip" > checkpoint.zip
+@@ -44,13 +53,14 @@ jobs:
+           manifest=$(find checkpoint-artifact -type f -name time_space_shadow_export_checkpoint_v1.json)
+           test "$(printf '%s\n' "$manifest" | wc -l | tr -d ' ')" = 1
+           printf 'ARTIFACT_MANIFEST=%s\n' "$manifest" >> "$GITHUB_ENV"
++          printf 'CHECKPOINT_LOGICAL_PATH=%s\n' "$(<checkpoint-path)" >> "$GITHUB_ENV"
+       - name: Build receipt from provider and artifact evidence
+         shell: bash
+         run: |
+           set -euo pipefail
+           python scripts/build_time_space_export_receipt.py \
+             --manifest "$ARTIFACT_MANIFEST" \
+-            --manifest-path config/research/registrations/time_space_shadow_export_checkpoint_v1.json \
++            --manifest-path "$CHECKPOINT_LOGICAL_PATH" \
+             --provider-run-json provider-run.json \
+             --artifact-json artifact.json \
+             --output time_space_export_registration_receipt.json
+diff --git a/config/research/time_space_export_registration_trust_v1.json b/config/research/time_space_export_registration_trust_v1.json
+index 8e982ba..c225c52 100644
+--- a/config/research/time_space_export_registration_trust_v1.json
++++ b/config/research/time_space_export_registration_trust_v1.json
+@@ -14,5 +14,12 @@
+   "checkpoint_artifact_name": null,
+   "receipt_artifact_sha256": null,
+   "generator_commit_sha": null,
+-  "generator_provider_run_id": null
++  "generator_provider_run_id": null,
++  "generator_workflow_id": null,
++  "generator_workflow_path": ".github/workflows/time-space-export-generate.yml",
++  "generator_event": "workflow_dispatch",
++  "generator_branch": "codex/late-dev-cost-attribution",
++  "generator_created_at_ns": null,
++  "generator_artifact_id": null,
++  "generator_artifact_name": null
+ }
+diff --git a/scripts/build_time_space_export_receipt.py b/scripts/build_time_space_export_receipt.py
+index 9f208f5..fd1c2c5 100644
+--- a/scripts/build_time_space_export_receipt.py
++++ b/scripts/build_time_space_export_receipt.py
+@@ -12,7 +12,7 @@ from pathlib import Path
+ from typing import Any
+ 
+ ROOT = Path(__file__).resolve().parent.parent
+-MANIFEST_PATH = "config/research/registrations/time_space_shadow_export_checkpoint_v1.json"
++MANIFEST_ROOT = "config/research/registrations/time_space_exports"
+ TRUST_PATH = ROOT / "config/research/time_space_export_registration_trust_v1.json"
+ WORKFLOW_PATH = ".github/workflows/time-space-export-checkpoint.yml"
+ BRANCH = "feature/trend-registration-time-space-export"
+@@ -50,6 +50,7 @@ def _build_receipt(
+     trust: Mapping[str, Any],
+ ) -> dict[str, Any]:
+     manifest = _validate_manifest(manifest_path, manifest_bytes)
++    as_of_ns = _manifest_as_of(manifest_path)
+     expected_workflow_id = trust.get("checkpoint_workflow_id")
+     if isinstance(expected_workflow_id, bool) or not isinstance(expected_workflow_id, int) or expected_workflow_id <= 0:
+         raise ValueError("checkpoint workflow id is not independently pinned")
+@@ -78,7 +79,7 @@ def _build_receipt(
+         raise ValueError("provider run id is invalid")
+     head_sha = _sha(expected["head_sha"], 40, "provider head sha")
+     created_at_ns = _timestamp_ns(expected["created_at"])
+-    expected_artifact_name = f"time-space-export-checkpoint-{run_id}"
++    expected_artifact_name = f"time-space-export-checkpoint-{as_of_ns}-{run_id}"
+     workflow_run = artifact.get("workflow_run")
+     if (
+         artifact.get("expired") is not False
+@@ -92,7 +93,7 @@ def _build_receipt(
+         raise ValueError("checkpoint artifact identity changed")
+     return {
+         "schema_version": "time-space-export-registration-receipt.v1",
+-        "manifest_path": MANIFEST_PATH,
++        "manifest_path": manifest_path,
+         "manifest_sha256": hashlib.sha256(manifest_bytes).hexdigest(),
+         "export_sha256": manifest["export_sha256"],
+         "provenance_sha256": manifest["provenance_sha256"],
+@@ -108,8 +109,7 @@ def _build_receipt(
+ 
+ 
+ def _validate_manifest(path: str, content: bytes) -> dict[str, Any]:
+-    if path != MANIFEST_PATH:
+-        raise ValueError("checkpoint manifest path changed")
++    _manifest_as_of(path)
+     try:
+         manifest = json.loads(content.decode("utf-8"))
+     except (UnicodeError, json.JSONDecodeError) as exc:
+@@ -131,6 +131,20 @@ def _validate_manifest(path: str, content: bytes) -> dict[str, Any]:
+     return manifest
+ 
+ 
++def _manifest_as_of(path: str) -> int:
++    prefix = f"{MANIFEST_ROOT}/"
++    suffix = "/time_space_shadow_export_checkpoint_v1.json"
++    if not path.startswith(prefix) or not path.endswith(suffix):
++        raise ValueError("checkpoint manifest path changed")
++    value = path[len(prefix) : -len(suffix)]
++    if not value.isdigit() or value.startswith("0"):
++        raise ValueError("checkpoint manifest path cutoff is invalid")
++    as_of_ns = int(value)
++    if as_of_ns % (4 * 60 * 60 * 1_000_000_000):
++        raise ValueError("checkpoint manifest cutoff is not on the 4h grid")
++    return as_of_ns
++
++
+ def _sha(value: Any, length: int, name: str) -> str:
+     if not isinstance(value, str) or len(value) != length or any(c not in "0123456789abcdef" for c in value):
+         raise ValueError(f"{name} is invalid")
+@@ -160,7 +174,7 @@ def _load_json(path: Path) -> dict[str, Any]:
+ def _main(argv: Sequence[str] | None = None) -> int:
+     parser = argparse.ArgumentParser(description=__doc__)
+     parser.add_argument("--manifest", type=Path, required=True)
+-    parser.add_argument("--manifest-path", default=MANIFEST_PATH)
++    parser.add_argument("--manifest-path", required=True)
+     parser.add_argument("--provider-run-json", type=Path, required=True)
+     parser.add_argument("--artifact-json", type=Path, required=True)
+     parser.add_argument("--output", type=Path, required=True)
+diff --git a/zenquant/research/time_space_export.py b/zenquant/research/time_space_export.py
+index d77ddef..c635310 100644
+--- a/zenquant/research/time_space_export.py
++++ b/zenquant/research/time_space_export.py
+@@ -30,7 +30,7 @@ DECISION_STAGES = ("A1_SIGN", "A5_SHADOW", "FILLED_POSITION")
+ MATERIAL_NAMES = ("snapshots", "targets", "orders", "fills", "equity", "episodes")
+ FOUR_HOURS_NS = 4 * 60 * 60 * 1_000_000_000
+ _PROJECT_ROOT = Path(__file__).parents[2]
+-_TRUST_PATH = _PROJECT_ROOT / "config/research/time_space_export_registration_trust_v1.json"
++_REGISTRATION_ROOT = _PROJECT_ROOT / "config/research/registrations/time_space_exports"
+ _GENERATOR_PATH = Path(__file__)
+ _STATIC_DEPENDENCY_PATHS = (
+     "scripts/export_time_space_architecture.py",
+@@ -162,6 +162,13 @@ _TRUST_KEYS = frozenset(
+         "receipt_artifact_sha256",
+         "generator_commit_sha",
+         "generator_provider_run_id",
++        "generator_workflow_id",
++        "generator_workflow_path",
++        "generator_event",
++        "generator_branch",
++        "generator_created_at_ns",
++        "generator_artifact_id",
++        "generator_artifact_name",
+     }
+ )
+ _RECEIPT_KEYS = frozenset(
+@@ -303,7 +310,11 @@ def validate_registered_time_space_export(
+     """Return VERIFIED only through the checked-in independent trust root."""
+ 
+     try:
+-        trust = _load_json(_TRUST_PATH, "export registration trust root")
++        as_of_ns = int(export["as_of_ns"])
++        trust = _load_json(
++            _REGISTRATION_ROOT / str(as_of_ns) / "time_space_export_registration_trust_v1.json",
++            "export registration trust root",
++        )
+         if trust.get("registration_status") != VERIFIED or receipt is None:
+             return EXPORT_REGISTRATION_REQUIRED
+         fetcher = provider_fetcher or _fetch_provider
+@@ -313,7 +324,7 @@ def validate_registered_time_space_export(
+             ReplayRequest(
+                 execution_manifest=_PROJECT_ROOT / "config/research/registrations/time_space_shadow_execution_v1.json",
+                 hypothesis_manifest=_PROJECT_ROOT / "config/research/time_space_shadow_hypothesis_v1.json",
+-                as_of_ns=int(export["as_of_ns"]),
++                as_of_ns=as_of_ns,
+             ),
+             repository_identity=str(provenance["repository_identity"]),
+             commit_sha=str(provenance["commit_sha"]),
+@@ -370,14 +381,21 @@ def _validate_registered_time_space_export_payloads(
+ 
+ 
+ def _fetch_provider(remote_identity: str, provider_run_id: int) -> dict[str, Any]:
+-    request = urllib.request.Request(
+-        f"https://api.github.com/repos/{remote_identity}/actions/runs/{provider_run_id}",
+-        headers={"Accept": "application/vnd.github+json", "User-Agent": "zenquant-time-space-export/1"},
+-    )
+-    with urllib.request.urlopen(request, timeout=30) as response:
+-        payload = json.loads(response.read().decode("utf-8"))
++    def fetch(suffix: str) -> Any:
++        request = urllib.request.Request(
++            f"https://api.github.com/repos/{remote_identity}/actions/runs/{provider_run_id}{suffix}",
++            headers={"Accept": "application/vnd.github+json", "User-Agent": "zenquant-time-space-export/1"},
++        )
++        with urllib.request.urlopen(request, timeout=30) as response:
++            return json.loads(response.read().decode("utf-8"))
++
++    payload = fetch("")
+     if not isinstance(payload, dict):
+         raise ValueError("provider checkpoint response must be an object")
++    artifact_payload = fetch("/artifacts")
++    if not isinstance(artifact_payload, dict) or not isinstance(artifact_payload.get("artifacts"), list):
++        raise ValueError("provider artifacts response must be an object")
++    payload["artifacts"] = artifact_payload["artifacts"]
+     return payload
+ 
+ 
+@@ -470,18 +488,21 @@ def _validate_registered(
+     if provenance.get("ordered_transition_ids") != [item["transition_id"] for item in transitions]:
+         raise ValueError("transition identities changed")
+     export_sha256 = canonical_sha256(export)
+-    if provenance.get("export_sha256") != export_sha256:
++    if provenance.get("export_sha256") != export_sha256 or checkpoint.get("export_sha256") != export_sha256:
+         raise ValueError("export digest mismatch")
++    provenance_sha256 = canonical_sha256(provenance)
++    if checkpoint.get("provenance_sha256") != provenance_sha256:
++        raise ValueError("provenance digest mismatch")
+     if set(receipt) != _RECEIPT_KEYS:
+         raise ValueError("checkpoint receipt is invalid")
+     checkpoint_bytes = (json.dumps(checkpoint, sort_keys=True, separators=(",", ":")) + "\n").encode()
+     manifest_sha256 = hashlib.sha256(checkpoint_bytes).hexdigest()
+     if (
+         receipt.get("schema_version") != "time-space-export-registration-receipt.v1"
+-        or receipt.get("manifest_path") != "config/research/registrations/time_space_shadow_export_checkpoint_v1.json"
++        or receipt.get("manifest_path") != _checkpoint_manifest_path(int(export["as_of_ns"]))
+         or receipt.get("manifest_sha256") != manifest_sha256
+-        or receipt.get("export_sha256") != checkpoint.get("export_sha256")
+-        or receipt.get("provenance_sha256") != checkpoint.get("provenance_sha256")
++        or receipt.get("export_sha256") != export_sha256
++        or receipt.get("provenance_sha256") != provenance_sha256
+         or receipt.get("provider_run_id") != trust["provider_run_id"]
+         or receipt.get("commit_sha") != trust["commit_sha"]
+         or receipt.get("remote_identity") != trust["remote_identity"]
+@@ -517,10 +538,28 @@ def _validate_registered(
+         generator_provider.get("id") != int(provenance["provider_run_id"])
+         or generator_provider.get("head_sha") != provenance["commit_sha"]
+         or generator_provider.get("conclusion") != "success"
++        or generator_provider.get("workflow_id") != trust["generator_workflow_id"]
++        or generator_provider.get("path") != trust["generator_workflow_path"]
++        or generator_provider.get("event") != trust["generator_event"]
++        or generator_provider.get("head_branch") != trust["generator_branch"]
++        or _provider_created_at_ns(generator_provider.get("created_at")) != trust["generator_created_at_ns"]
+         or not isinstance(generator_provider.get("repository"), dict)
+         or generator_provider["repository"].get("full_name") != provenance["repository_identity"]
+     ):
+         raise ValueError("generator provider does not attest the pinned checkout")
++    artifacts = generator_provider.get("artifacts")
++    if not isinstance(artifacts, list) or [
++        {"id": item.get("id"), "name": item.get("name"), "expired": item.get("expired")}
++        for item in artifacts
++        if item.get("id") == trust["generator_artifact_id"]
++    ] != [
++        {
++            "id": trust["generator_artifact_id"],
++            "name": trust["generator_artifact_name"],
++            "expired": False,
++        }
++    ]:
++        raise ValueError("generator artifact is not independently pinned")
+ 
+ 
+ def _provider_created_at_ns(value: Any) -> int:
+@@ -533,6 +572,12 @@ def _provider_created_at_ns(value: Any) -> int:
+     return int(parsed.timestamp()) * 1_000_000_000
+ 
+ 
++def _checkpoint_manifest_path(as_of_ns: int) -> str:
++    if isinstance(as_of_ns, bool) or not isinstance(as_of_ns, int) or as_of_ns % FOUR_HOURS_NS:
++        raise ValueError("checkpoint as_of is not a confirmed 4h cutoff")
++    return f"config/research/registrations/time_space_exports/{as_of_ns}/time_space_shadow_export_checkpoint_v1.json"
++
++
+ def _validate_source(source: dict[str, Any]) -> None:
+     if set(source) != {
+         "schema_version",

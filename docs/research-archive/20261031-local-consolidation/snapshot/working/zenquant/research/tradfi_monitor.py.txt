@@ -1,0 +1,310 @@
+"""Deterministic observational monitor; no order/position/strategy dependencies."""
+
+from __future__ import annotations
+
+import math
+from collections import deque
+
+
+def positive(value):
+    result = float(value)
+    if not math.isfinite(result) or result <= 0:
+        raise ValueError("nonpositive/nonfinite market value")
+    return result
+
+
+class SymbolMonitor:
+    def __init__(self, symbol, config):
+        self.symbol = symbol
+        self.config = config
+        self.cooldown_until = 0
+        self.reset(0)
+
+    def reset(self, now):
+        self.books = deque()
+        self.trades = deque()
+        self.last_depth = None
+        self.last_trade = None
+        self.last_mark = None
+        self.mark = None
+        self.depth_id = None
+        self.trade_id = None
+        self.pending = None
+        self.warm_since = now
+
+    def alert(self, kind, now, **details):
+        return {
+            "kind": kind,
+            "symbol": self.symbol,
+            "observed_ms": now,
+            "promotion_eligible": False,
+            "research_only": True,
+            **details,
+        }
+
+    def gap(self, now, reason):
+        cancelled = self.pending["id"] if self.pending else None
+        self.reset(now)
+        return self.alert("DATA_GAP", now, reason=reason, cancelled_event=cancelled)
+
+    def metrics(self, now):
+        recent = [b for b in self.books if b[0] >= now - 60000]
+        baseline = next((b for b in reversed(self.books) if b[0] <= now - 60000), None)
+        trades = [t for t in self.trades if t[0] >= now - 60000]
+        quote = sum(t[1] for t in trades)
+        sell = sum(t[1] for t in trades if t[2])
+        result = {"quote_volume_60s": quote, "sell_share_60s": sell / quote if quote else None}
+        if recent:
+            latest = recent[-1]
+            result.update(
+                mid=latest[1],
+                bid=latest[2],
+                ask=latest[3],
+                bid_top20_notional=latest[4],
+                spread_bps=(latest[3] / latest[2] - 1) * 10000,
+                return_60s_pct=(latest[1] / baseline[1] - 1) * 100 if baseline else None,
+            )
+            if self.mark:
+                result["mid_index_pct"] = (latest[1] / self.mark[1] - 1) * 100
+        return result
+
+    def ingest(self, data, received_ms):
+        now = received_ms
+        if data.get("s", data.get("o", {}).get("s")) != self.symbol:
+            return []
+        try:
+            lag = now - int(data["E"])
+            if lag < -1000 or lag > self.config["max_event_delay_ms"]:
+                return [self.gap(now, "event_timestamp_stale_or_future")]
+            kind = data["e"]
+            alerts = []
+            if kind == "depthUpdate":
+                uid = int(data["u"])
+                if self.depth_id is not None:
+                    if uid <= self.depth_id:
+                        return []
+                    if int(data["pu"]) != self.depth_id:
+                        alerts.append(self.gap(now, "depth_sequence_gap"))
+                    elif now - self.last_depth > self.config["depth_stale_ms"]:
+                        alerts.append(self.gap(now, "depth_time_gap"))
+                bids = [(positive(p), positive(q)) for p, q in data["b"]]
+                asks = [(positive(p), positive(q)) for p, q in data["a"]]
+                if not bids or not asks or max(p for p, q in bids) >= min(p for p, q in asks):
+                    raise ValueError("empty/crossed book")
+                bid, ask = max(p for p, q in bids), min(p for p, q in asks)
+                book = (now, (bid + ask) / 2, bid, ask, sum(p * q for p, q in bids))
+                # Keep at most one sample per 100 ms; raw feed is recorded separately.
+                if self.books and self.books[-1][0] // 100 == now // 100:
+                    self.books[-1] = book
+                else:
+                    self.books.append(book)
+                self.depth_id, self.last_depth = uid, now
+            elif kind == "aggTrade":
+                uid = int(data["a"])
+                if self.trade_id is not None:
+                    if uid <= self.trade_id:
+                        return []
+                    if uid != self.trade_id + 1:
+                        alerts.append(self.gap(now, "aggregate_trade_sequence_gap"))
+                if not isinstance(data["m"], bool):
+                    raise ValueError("invalid taker side")
+                self.trades.append((now, positive(data["p"]) * positive(data["q"]), data["m"]))
+                self.trade_id, self.last_trade = uid, now
+            elif kind == "markPriceUpdate":
+                self.mark = (positive(data["p"]), positive(data["i"]))
+                self.last_mark = now
+            elif kind == "kline":
+                return self.closed_bar(data["k"], now)
+            elif kind == "forceOrder":
+                return [
+                    self.alert(
+                        "LIQUIDATION_OBSERVED",
+                        now,
+                        exchange_event=data,
+                        coverage="sampled_stream_not_complete_liquidation_volume",
+                    )
+                ]
+            for history in (self.books, self.trades):
+                while history and history[0][0] < now - 90000:
+                    history.popleft()
+            status = self.status(now)
+            metrics = status["metrics"]
+            if (
+                status["ready"]
+                and now >= self.cooldown_until
+                and self.pending is None
+                and metrics.get("return_60s_pct") is not None
+                and metrics["return_60s_pct"] <= self.config["drop_60s_pct"]
+                and metrics["quote_volume_60s"] >= self.config["min_quote_volume_60s"]
+            ):
+                event_id = f"{self.symbol}-{now}"
+                self.pending = {
+                    "id": event_id,
+                    "at": now,
+                    "mid": metrics["mid"],
+                    "closes": [],
+                    "last_low": metrics["mid"],
+                }
+                self.cooldown_until = now + self.config["cooldown_ms"]
+                alerts.append(
+                    self.alert(
+                        "SHOCK",
+                        now,
+                        event_id=event_id,
+                        metrics=metrics,
+                        interpretation="price_shock_only_not_entry_signal",
+                    )
+                )
+            return alerts
+        except (ValueError, TypeError, KeyError, OverflowError) as exc:
+            return [self.gap(now, f"invalid_payload:{exc}")]
+
+    def closed_bar(self, bar, now):
+        if bar.get("x") is not True or self.pending is None:
+            return []
+        end, start = int(bar["T"]), int(bar["t"])
+        if bar.get("i", "1m") != "1m" or end != start + 59999 or start % 60000:
+            raise ValueError("invalid closed minute")
+        if end < self.pending["at"] or end in self.pending["closes"]:
+            return []
+        if now < end or now - end > self.config["max_event_delay_ms"]:
+            return [self.gap(now, "late_closed_bar")]
+        expected = self.pending["at"] // 60000 * 60000 + 59999 + len(self.pending["closes"]) * 60000
+        if end != expected:
+            return [self.gap(now, "missing_followup_bar")]
+        if not self.status(now)["ready"]:
+            return [self.gap(now, "stale_inputs_at_bar_close")]
+        close, low, high, op = (positive(bar[k]) for k in ("c", "l", "h", "o"))
+        if not low <= min(close, op) <= max(close, op) <= high:
+            raise ValueError("invalid closed OHLC")
+        previous_low = self.pending["last_low"]
+        if close < self.pending["mid"] and low < previous_low:
+            label = "SELL_PRESSURE_CONTINUES"
+        elif close > self.pending["mid"]:
+            label = "REBOUND_OBSERVED_NOT_CONFIRMED_ABSORPTION"
+        else:
+            label = "MIXED"
+        self.pending["closes"].append(end)
+        self.pending["last_low"] = low
+        result = self.alert(
+            f"MINUTE_{len(self.pending['closes'])}",
+            now,
+            event_id=self.pending["id"],
+            bar_close_ms=end,
+            classification=label,
+            metrics=self.metrics(now),
+            bar=bar,
+            observation_delay_ms=now - self.pending["at"],
+            independent_fair_value="unavailable",
+            absorption_confirmed=False,
+        )
+        if len(self.pending["closes"]) == 2:
+            self.pending = None
+        return [result]
+
+    def status(self, now_ms):
+        fresh = (
+            self.last_depth is not None
+            and 0 <= now_ms - self.last_depth <= self.config["depth_stale_ms"]
+            and self.last_trade is not None
+            and 0 <= now_ms - self.last_trade <= self.config["trade_stale_ms"]
+            and self.last_mark is not None
+            and 0 <= now_ms - self.last_mark <= self.config["max_event_delay_ms"]
+        )
+        history = bool(self.books) and now_ms - self.books[0][0] >= self.config["warmup_ms"]
+        return {
+            "ready": bool(fresh and history and now_ms - self.warm_since >= self.config["warmup_ms"]),
+            "last_depth_ms": self.last_depth,
+            "last_trade_ms": self.last_trade,
+            "last_mark_ms": self.last_mark,
+            "active_event": self.pending["id"] if self.pending else None,
+            "metrics": self.metrics(now_ms),
+            "promotion_eligible": False,
+        }
+
+
+class SectorMonitor:
+    """Aggregate already-qualified shocks in receipt order, deduplicated by issuer."""
+
+    def __init__(self, sectors):
+        self.sectors = sectors
+        self.states = {name: {"recent": {}, "active": None} for name in sectors}
+        self.last_ms = -1
+
+    def ingest(self, event):
+        if event["kind"] not in ("SHOCK", "DATA_GAP"):
+            return []
+        now = event["observed_ms"]
+        if now < self.last_ms:
+            raise ValueError("sector input must follow receipt order")
+        self.last_ms = now
+        results = []
+        for name, config in self.sectors.items():
+            members = config["members"]
+            if event["symbol"] not in members:
+                continue
+            state = self.states[name]
+            if event["kind"] == "DATA_GAP":
+                if state["recent"] or state["active"]:
+                    results.append(
+                        {
+                            "kind": "SECTOR_DATA_GAP",
+                            "sector": name,
+                            "observed_ms": now,
+                            "symbol": event["symbol"],
+                            "promotion_eligible": False,
+                            "cancelled_event": state["active"]["id"] if state["active"] else None,
+                        }
+                    )
+                state.update(recent={}, active=None)
+                continue
+            active = state["active"]
+            if active and now - active["start"] > config["episode_ms"]:
+                state.update(recent={}, active=None)
+                active = None
+            issuer = members[event["symbol"]]
+            if active:
+                if issuer in active["events"]:
+                    continue
+                active["events"][issuer] = event
+                kind = "SECTOR_SPREAD"
+            else:
+                recent = {
+                    key: value
+                    for key, value in state["recent"].items()
+                    if now - value["observed_ms"] <= config["window_ms"]
+                }
+                recent.setdefault(issuer, event)
+                state["recent"] = recent
+                if len(recent) < config["min_issuers"]:
+                    continue
+                start = min(x["observed_ms"] for x in recent.values())
+                active = {"id": f"{name}-{start}", "start": start, "events": dict(recent)}
+                state["active"] = active
+                kind = "SECTOR_SHOCK"
+            ordered = sorted(active["events"].items(), key=lambda x: (x[1]["observed_ms"], x[0]))
+            results.append(
+                {
+                    "kind": kind,
+                    "sector": name,
+                    "sector_event_id": active["id"],
+                    "observed_ms": now,
+                    "first_shock_ms": active["start"],
+                    "affected_issuer_count": len(ordered),
+                    "configured_issuer_count": len(set(members.values())),
+                    "members": [
+                        {
+                            "issuer": issuer_id,
+                            "symbol": item["symbol"],
+                            "observed_ms": item["observed_ms"],
+                            "lag_ms": item["observed_ms"] - active["start"],
+                            "source_event_id": item["event_id"],
+                        }
+                        for issuer_id, item in ordered
+                    ],
+                    "scope": "configured_universe_only_not_all_market",
+                    "research_only": True,
+                    "promotion_eligible": False,
+                }
+            )
+        return results

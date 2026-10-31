@@ -1,0 +1,822 @@
+commit d1c6f18a1c33716445bfaf6a495f18c90ee3a4ca
+Author:     Disaster <clusternlh@gmail.com>
+AuthorDate: Mon Aug 24 16:30:00 2026 +0800
+Commit:     Disaster <clusternlh@gmail.com>
+CommitDate: Mon Aug 24 16:30:00 2026 +0800
+
+    feat(research): add time-space shadow runner
+
+diff --git a/scripts/run_time_space_shadow.py b/scripts/run_time_space_shadow.py
+new file mode 100644
+index 0000000..ce6a03d
+--- /dev/null
++++ b/scripts/run_time_space_shadow.py
+@@ -0,0 +1,568 @@
++#!/usr/bin/env python3
++"""Run the isolated, research-only TimeSpace shadow attribution."""
++
++from __future__ import annotations
++
++import argparse
++import dataclasses
++import hashlib
++import json
++import math
++import os
++import shutil
++import tempfile
++from dataclasses import dataclass
++from datetime import UTC, datetime
++from enum import Enum
++from pathlib import Path
++from typing import Any
++
++from zenquant.research.registration import (
++    EvidenceRole,
++    RegistrationError,
++    canonical_sha256,
++    derive_forward_start_ns,
++    load_execution_manifest,
++    load_hypothesis_manifest,
++    verify_github_receipt,
++)
++from zenquant.research.time_space_shadow import (
++    AcceptanceStatus,
++    FlipKind,
++    FlipPopulationInputRow,
++    PerturbationPathEvidence,
++    TimeSpaceAcceptanceManifest,
++    TimeSpaceInputRow,
++    build_flip_observations,
++    build_time_space_states,
++    evaluate_time_space_shadow,
++    mature_flip_labels,
++)
++
++_EXPECTED_EXPORT_KEYS = frozenset(
++    {
++        "schema_version",
++        "layer",
++        "hypothesis_sha256",
++        "execution_sha256",
++        "formula_sha256",
++        "config_sha256",
++        "source_set_sha256",
++        "as_of_ns",
++        "market_state_transition_count",
++        "rows",
++        "perturbation_paths",
++    }
++)
++_EXPECTED_ROW_KEYS = frozenset(
++    {
++        "alpha_id",
++        "cutoff_time_ns",
++        "interval_start_ns",
++        "close",
++        "structure_side",
++        "prior_long_boundary",
++        "prior_short_boundary",
++        "current_long_pivot",
++        "current_short_pivot",
++        "prior_long_invalidation",
++        "prior_short_invalidation",
++        "formula_hash",
++        "config_hash",
++        "source_data_hash",
++        "decision_id_by_stage",
++        "alpha_sign",
++        "approved_target",
++        "filled_position",
++    }
++)
++_EXPECTED_SEEDS = (42, 123, 456, 789, 1024)
++_FORBIDDEN_OUTPUT_KEYS = frozenset(
++    {"target_qty", "order", "risk_multiplier", "position_authority", "activation_recommendation"}
++)
++
++
++@dataclass(frozen=True, slots=True)
++class RunArgs:
++    hypothesis_manifest: Path
++    execution_manifest: Path
++    registration_envelope: Path
++    frozen_export: Path
++    as_of: str
++    output_dir: Path
++
++
++@dataclass(frozen=True, slots=True)
++class RunResult:
++    output_dir: Path
++    paths: tuple[Path, ...]
++    attribution_path: Path
++    attribution_sha256: str
++
++
++@dataclass(frozen=True, slots=True)
++class _LoadedPath:
++    states: tuple[Any, ...]
++    alpha_rows: tuple[FlipPopulationInputRow, ...]
++    approved_rows: tuple[FlipPopulationInputRow, ...]
++    filled_rows: tuple[FlipPopulationInputRow, ...]
++    flips: tuple[Any, ...]
++    labels: tuple[Any, ...]
++
++
++def run_time_space_shadow(args: RunArgs) -> RunResult:
++    """Validate, compute, re-hash, and atomically publish one shadow run."""
++
++    if type(args) is not RunArgs:
++        raise TypeError("args must be RunArgs")
++    output_dir = Path(args.output_dir)
++    if output_dir.exists() or output_dir.is_symlink():
++        raise FileExistsError("output directory already exists")
++
++    as_of_ns = _parse_literal_as_of(args.as_of)
++    hypothesis = load_hypothesis_manifest(Path(args.hypothesis_manifest))
++    execution = load_execution_manifest(Path(args.execution_manifest))
++    if hypothesis.layer != "time_space_shadow" or execution.layer != "time_space_shadow":
++        raise ValueError("runner accepts only the time_space_shadow layer")
++
++    registration_input = _load_json(Path(args.registration_envelope), "registration envelope")
++    receipt_payload, receipts, forward_start_ns = _verify_registration_pair(
++        registration_input,
++        hypothesis=hypothesis,
++        execution=execution,
++    )
++    role, observation_start_ns, observation_end_ns = _resolve_role_window(
++        as_of_ns=as_of_ns,
++        reused_start_ns=hypothesis.reused_start_ns,
++        reused_end_ns=hypothesis.reused_end_ns,
++        forward_start_ns=forward_start_ns,
++    )
++
++    before_source_sha256 = _hash_bound_sources(execution)
++    export_payload = _load_json(Path(args.frozen_export), "frozen export")
++    export_sha256 = canonical_sha256(export_payload)
++    canonical_path, perturbation_paths, market_state_transitions = _load_export(
++        export_payload,
++        as_of_ns=as_of_ns,
++        execution=execution,
++    )
++
++    primary_flips = tuple(
++        flip
++        for flip in canonical_path.flips
++        if flip.kind is FlipKind.ALPHA
++        and flip.primary_population
++        and observation_start_ns <= flip.cutoff_time_ns < observation_end_ns
++    )
++    manifest_id = canonical_sha256(
++        {
++            "hypothesis_sha256": hypothesis.sha256,
++            "execution_sha256": execution.sha256,
++            "frozen_export_sha256": export_sha256,
++            "evidence_role": role.value,
++            "observation_window": [observation_start_ns, observation_end_ns],
++            "as_of_ns": as_of_ns,
++        }
++    )
++    acceptance_manifest = TimeSpaceAcceptanceManifest(
++        manifest_id=manifest_id,
++        hypothesis_sha256=hypothesis.sha256,
++        observation_start_ns=observation_start_ns,
++        observation_end_ns=observation_end_ns,
++        market_state_transition_count=market_state_transitions,
++        primary_flips=primary_flips,
++        perturbation_paths=perturbation_paths,
++    )
++    acceptance = evaluate_time_space_shadow(canonical_path.labels, acceptance_manifest, role)
++    if (
++        role is not EvidenceRole.FORWARD_CONFIRMATION
++        and acceptance.status is AcceptanceStatus.ELIGIBLE_FOR_SEPARATE_ACTIVATION_REVIEW
++    ):
++        raise AssertionError("non-forward evidence cannot be eligible")
++
++    after_source_sha256 = _hash_bound_sources(execution)
++    if after_source_sha256 != before_source_sha256:
++        raise RuntimeError("source corpus changed during run")
++
++    hypothesis_payload = _plain_json(hypothesis.payload)
++    execution_payload = _plain_json(execution.payload)
++    normalized_registration = {
++        "schema_version": "time-space-shadow-registration-envelope.v1",
++        "layer": "time_space_shadow",
++        "hypothesis_sha256": hypothesis.sha256,
++        "execution_sha256": execution.sha256,
++        "receipts": receipt_payload,
++        "registration_received_at_ns": max(item.received_at_ns for item in receipts),
++        "forward_start_ns": forward_start_ns,
++    }
++    registration_sha256 = canonical_sha256(normalized_registration)
++    acceptance_payload = _plain_json(acceptance)
++    acceptance_payload.pop("blocks_order", None)
++    canonical_evidence = {
++        "states": [_without_shadow_authority_fields(item) for item in canonical_path.states],
++        "flips": [_plain_json(item) for item in canonical_path.flips],
++        "labels": [_plain_json(item) for item in canonical_path.labels],
++    }
++    perturbation_evidence = [
++        {
++            "seed": item.seed,
++            "flips": [_plain_json(flip) for flip in item.flips],
++            "labels": [_plain_json(label) for label in item.labels],
++        }
++        for item in perturbation_paths
++    ]
++    attribution = {
++        "schema_version": "time-space-shadow-attribution.v1",
++        "layer": "time_space_shadow",
++        "manifest_id": manifest_id,
++        "hypothesis_sha256": hypothesis.sha256,
++        "execution_sha256": execution.sha256,
++        "registration_envelope_sha256": registration_sha256,
++        "frozen_export_sha256": export_sha256,
++        "source_set_sha256_before": before_source_sha256,
++        "source_set_sha256_after": after_source_sha256,
++        "as_of_ns": as_of_ns,
++        "evidence_role": role.value,
++        "observation_window": [observation_start_ns, observation_end_ns],
++        "forward_start_ns": forward_start_ns,
++        "forward_eligible": role is EvidenceRole.FORWARD_CONFIRMATION,
++        "state_count": len(canonical_path.states),
++        "flip_count_by_kind": {
++            kind.value: sum(flip.kind is kind for flip in canonical_path.flips) for kind in FlipKind
++        },
++        "mature_label_count": sum(not label.right_censored for label in canonical_path.labels),
++        "canonical_evidence": canonical_evidence,
++        "perturbation_evidence": perturbation_evidence,
++        "acceptance": acceptance_payload,
++        "status": acceptance.status.value,
++    }
++    _reject_forbidden_output_keys(attribution)
++
++    payloads = {
++        "time_space_shadow_hypothesis_manifest.json": hypothesis_payload,
++        "time_space_shadow_execution_manifest.json": execution_payload,
++        "time_space_shadow_registration_envelope.json": normalized_registration,
++        "time_space_shadow_attribution.json": attribution,
++    }
++    paths = _write_artifacts_atomically(payloads, output_dir)
++    attribution_path = output_dir / "time_space_shadow_attribution.json"
++    return RunResult(
++        output_dir=output_dir,
++        paths=paths,
++        attribution_path=attribution_path,
++        attribution_sha256=_sha256_file(attribution_path),
++    )
++
++
++def _verify_registration_pair(registration: dict[str, Any], *, hypothesis, execution):
++    if set(registration) != {"schema_version", "layer", "hypothesis", "execution"}:
++        raise ValueError("registration envelope keys are invalid")
++    if registration["schema_version"] != "trend-registration-pair.v1" or registration["layer"] != "time_space_shadow":
++        raise ValueError("registration envelope identity is invalid")
++    verified = []
++    normalized = []
++    providers = []
++    for name in ("hypothesis", "execution"):
++        item = registration[name]
++        if not isinstance(item, dict) or set(item) != {"envelope", "provider"}:
++            raise ValueError(f"{name} registration descriptor is invalid")
++        try:
++            receipt = verify_github_receipt(item["envelope"], item["provider"])
++        except RegistrationError as exc:
++            raise ValueError(f"{name} receipt is unverified") from exc
++        verified.append(receipt)
++        providers.append(item["provider"])
++        normalized.append(
++            {
++                "kind": name,
++                "provider_run_id": receipt.provider_run_id,
++                "commit_sha": receipt.commit_sha,
++                "remote_identity": receipt.remote_identity,
++                "manifest_sha256": receipt.manifest_sha256,
++                "received_at_ns": receipt.received_at_ns,
++            }
++        )
++    remote = verified[0].remote_identity
++    try:
++        forward_start_ns = derive_forward_start_ns(
++            hypothesis,
++            execution,
++            verified,
++            expected_remote_identity=remote,
++            expected_hypothesis_provider_run_id=providers[0]["id"],
++            expected_hypothesis_commit_sha=providers[0]["head_sha"],
++            expected_execution_provider_run_id=providers[1]["id"],
++            expected_execution_commit_sha=providers[1]["head_sha"],
++        )
++    except (KeyError, RegistrationError) as exc:
++        raise ValueError("receipt pair is unverified or role-swapped") from exc
++    return normalized, tuple(verified), forward_start_ns
++
++
++def _resolve_role_window(*, as_of_ns: int, reused_start_ns: int, reused_end_ns: int, forward_start_ns: int):
++    if reused_end_ns > forward_start_ns:
++        raise ValueError("reused and forward evidence roles overlap")
++    if as_of_ns == reused_end_ns:
++        return EvidenceRole.TEST_REUSED_DIAGNOSTIC, reused_start_ns, reused_end_ns
++    if as_of_ns < forward_start_ns:
++        raise ValueError("as_of falls in excluded embargo and has no evidence role")
++    if as_of_ns <= forward_start_ns:
++        raise ValueError("forward evidence window is empty")
++    return EvidenceRole.FORWARD_CONFIRMATION, forward_start_ns, as_of_ns
++
++
++def _load_export(payload: dict[str, Any], *, as_of_ns: int, execution):
++    if set(payload) != _EXPECTED_EXPORT_KEYS:
++        raise ValueError("frozen export keys are invalid")
++    if payload["schema_version"] != "time-space-shadow-export.v1" or payload["layer"] != "time_space_shadow":
++        raise ValueError("frozen export identity is invalid")
++    expected_identities = {
++        "hypothesis_sha256": execution.hypothesis_sha256,
++        "execution_sha256": execution.sha256,
++        "formula_sha256": execution.payload["formula_sha256"],
++        "config_sha256": execution.payload["config_sha256"],
++        "source_set_sha256": execution.payload["source_set_sha256"],
++    }
++    for field, expected in expected_identities.items():
++        if payload[field] != expected:
++            raise ValueError(f"frozen export {field} does not bind registered execution")
++    if payload["as_of_ns"] != as_of_ns:
++        raise ValueError("frozen export as_of_ns does not match literal as_of")
++    transition_count = payload["market_state_transition_count"]
++    if isinstance(transition_count, bool) or not isinstance(transition_count, int) or transition_count < 0:
++        raise ValueError("market_state_transition_count must be a non-negative integer")
++    canonical = _build_path(payload["rows"], as_of_ns=as_of_ns, identities=expected_identities)
++    perturbations = payload["perturbation_paths"]
++    if not isinstance(perturbations, dict) or set(perturbations) != {str(seed) for seed in _EXPECTED_SEEDS}:
++        raise ValueError("perturbation paths must use the five frozen seeds in canonical order")
++    path_evidence = []
++    for seed in _EXPECTED_SEEDS:
++        path = _build_path(perturbations[str(seed)], as_of_ns=as_of_ns, identities=expected_identities)
++        path_evidence.append(PerturbationPathEvidence(seed=seed, flips=path.flips, labels=path.labels))
++    return canonical, tuple(path_evidence), transition_count
++
++
++def _build_path(raw_rows: Any, *, as_of_ns: int, identities: dict[str, str]) -> _LoadedPath:
++    if not isinstance(raw_rows, list) or not raw_rows:
++        raise ValueError("frozen export rows must be a non-empty list")
++    state_inputs = []
++    alpha_rows = []
++    approved_rows = []
++    filled_rows = []
++    for raw in raw_rows:
++        if not isinstance(raw, dict) or set(raw) != _EXPECTED_ROW_KEYS:
++            raise ValueError("frozen export row keys are invalid")
++        if (
++            raw["formula_hash"] != identities["formula_sha256"]
++            or raw["config_hash"] != identities["config_sha256"]
++            or raw["source_data_hash"] != identities["source_set_sha256"]
++        ):
++            raise ValueError("frozen export row identity does not bind registered execution")
++        decisions = raw["decision_id_by_stage"]
++        if not isinstance(decisions, dict):
++            raise ValueError("decision_id_by_stage must be an object")
++        state_input = TimeSpaceInputRow(
++            **{
++                key: raw[key]
++                for key in _EXPECTED_ROW_KEYS
++                - {"alpha_sign", "approved_target", "filled_position", "decision_id_by_stage"}
++            },
++            decision_id_by_stage=tuple(sorted(decisions.items())),
++        )
++        if state_input.cutoff_time_ns > as_of_ns:
++            raise ValueError("frozen export contains a row beyond as_of")
++        state_inputs.append(state_input)
++    states = build_time_space_states(tuple(state_inputs))
++    for raw, state in zip(raw_rows, states, strict=True):
++        decisions = dict(state.decision_id_by_stage)
++        for kind, value_key, stage, destination in (
++            (FlipKind.ALPHA, "alpha_sign", "A1_SIGN", alpha_rows),
++            (FlipKind.APPROVED, "approved_target", "A5_SHADOW", approved_rows),
++            (FlipKind.FILLED, "filled_position", "FILLED_POSITION", filled_rows),
++        ):
++            identity = decisions.get(stage)
++            if identity is None:
++                raise ValueError(f"frozen export is missing {stage} identity")
++            destination.append(
++                FlipPopulationInputRow(
++                    kind=kind,
++                    alpha_id=state.alpha_id,
++                    cutoff_time_ns=state.cutoff_time_ns,
++                    value=raw[value_key],
++                    source_identity=identity,
++                )
++            )
++    populations = (tuple(alpha_rows), tuple(approved_rows), tuple(filled_rows))
++    flips = build_flip_observations(
++        states=states,
++        alpha_rows=populations[0],
++        approved_rows=populations[1],
++        filled_rows=populations[2],
++    )
++    labels = mature_flip_labels(
++        flips,
++        states,
++        alpha_rows=populations[0],
++        approved_rows=populations[1],
++        filled_rows=populations[2],
++        as_of_ns=as_of_ns,
++    )
++    if any(label.right_censored for label in labels):
++        raise ValueError("unavailable label in selected frozen export")
++    return _LoadedPath(states, populations[0], populations[1], populations[2], flips, labels)
++
++
++def _parse_literal_as_of(value: str) -> int:
++    if not isinstance(value, str) or len(value) != 20 or not value.endswith("Z"):
++        raise ValueError("as_of must be a literal canonical UTC 4h cutoff")
++    try:
++        parsed = datetime.strptime(value, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=UTC)
++    except ValueError as exc:
++        raise ValueError("as_of must be a literal canonical UTC 4h cutoff") from exc
++    ns = int(parsed.timestamp()) * 1_000_000_000
++    if ns % (4 * 60 * 60 * 1_000_000_000):
++        raise ValueError("as_of must be a literal canonical UTC 4h cutoff")
++    return ns
++
++
++def _hash_bound_sources(execution) -> str:
++    bound_files: dict[str, str] = {}
++    for source_id, descriptor in sorted(execution.payload["sources"].items()):
++        path_value = descriptor.get("normalized_path", descriptor.get("path"))
++        expected = descriptor.get("normalized_sha256", descriptor.get("sha256"))
++        if not isinstance(path_value, str) or not isinstance(expected, str):
++            raise ValueError(f"source {source_id} lacks a bound path or digest")
++        _add_bound_file(bound_files, path_value, expected, source_id)
++        for raw in descriptor.get("raw_sha256", ()):
++            _add_bound_file(bound_files, raw["path"], raw["sha256"], source_id)
++        provenance = descriptor.get("market_tail_provenance")
++        if provenance is not None:
++            _add_bound_file(bound_files, provenance["path"], provenance["sha256"], source_id)
++    identities = []
++    for path_value, expected in sorted(bound_files.items()):
++        observed = _sha256_file(Path(path_value))
++        if observed != expected:
++            raise RuntimeError(f"bound source digest mismatch: {path_value}")
++        identities.append({"path": path_value, "sha256": observed})
++    return f"sha256:{canonical_sha256({'files': identities})}"
++
++
++def _add_bound_file(bound_files: dict[str, str], path: Any, sha256: Any, source_id: str) -> None:
++    if not isinstance(path, str) or not isinstance(sha256, str):
++        raise ValueError(f"source {source_id} contains an invalid file identity")
++    prior = bound_files.setdefault(path, sha256)
++    if prior != sha256:
++        raise ValueError(f"source {source_id} assigns conflicting digests to {path}")
++
++
++def _load_json(path: Path, label: str) -> dict[str, Any]:
++    def pairs(items):
++        result = {}
++        for key, value in items:
++            if key in result:
++                raise ValueError(f"{label} contains duplicate JSON keys")
++            result[key] = value
++        return result
++
++    try:
++        payload = json.loads(
++            path.read_text(encoding="utf-8"),
++            object_pairs_hook=pairs,
++            parse_constant=lambda value: (_ for _ in ()).throw(ValueError(f"non-finite JSON constant: {value}")),
++        )
++    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
++        raise ValueError(f"cannot load {label}") from exc
++    if not isinstance(payload, dict):
++        raise ValueError(f"{label} must be a JSON object")
++    return payload
++
++
++def _plain_json(value: Any) -> Any:
++    if dataclasses.is_dataclass(value) and not isinstance(value, type):
++        return {field.name: _plain_json(getattr(value, field.name)) for field in dataclasses.fields(value)}
++    if isinstance(value, dict) or hasattr(value, "items"):
++        return {str(key): _plain_json(item) for key, item in value.items()}
++    if isinstance(value, tuple | list):
++        return [_plain_json(item) for item in value]
++    if isinstance(value, Enum):
++        return value.value
++    if isinstance(value, float) and not math.isfinite(value):
++        raise ValueError("artifact cannot contain non-finite numbers")
++    return value
++
++
++def _without_shadow_authority_fields(value: Any) -> dict[str, Any]:
++    payload = _plain_json(value)
++    if not isinstance(payload, dict):
++        raise TypeError("shadow evidence row must serialize to an object")
++    payload.pop("blocks_order", None)
++    return payload
++
++
++def _reject_forbidden_output_keys(value: Any) -> None:
++    if isinstance(value, dict):
++        forbidden = _FORBIDDEN_OUTPUT_KEYS.intersection(value)
++        if forbidden:
++            raise ValueError(f"shadow artifact contains authority field: {sorted(forbidden)[0]}")
++        for item in value.values():
++            _reject_forbidden_output_keys(item)
++    elif isinstance(value, list | tuple):
++        for item in value:
++            _reject_forbidden_output_keys(item)
++
++
++def _canonical_bytes(payload: dict[str, Any]) -> bytes:
++    return (
++        json.dumps(payload, ensure_ascii=False, allow_nan=False, sort_keys=True, separators=(",", ":")) + "\n"
++    ).encode("utf-8")
++
++
++def _write_artifacts_atomically(payloads: dict[str, dict[str, Any]], output_dir: Path) -> tuple[Path, ...]:
++    output_dir.parent.mkdir(parents=True, exist_ok=True)
++    temporary = Path(tempfile.mkdtemp(prefix=f".{output_dir.name}.", dir=output_dir.parent))
++    try:
++        for name, payload in payloads.items():
++            path = temporary / name
++            with path.open("xb") as handle:
++                handle.write(_canonical_bytes(payload))
++                handle.flush()
++                os.fsync(handle.fileno())
++        os.replace(temporary, output_dir)
++    except BaseException:
++        shutil.rmtree(temporary, ignore_errors=True)
++        raise
++    return tuple(output_dir / name for name in payloads)
++
++
++def _sha256_file(path: Path) -> str:
++    digest = hashlib.sha256()
++    with path.open("rb") as handle:
++        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
++            digest.update(chunk)
++    return digest.hexdigest()
++
++
++def _parse_args() -> RunArgs:
++    parser = argparse.ArgumentParser(description=__doc__)
++    parser.add_argument(
++        "--hypothesis-manifest",
++        type=Path,
++        default=Path("config/research/time_space_shadow_hypothesis_v1.json"),
++    )
++    parser.add_argument("--execution-manifest", required=True, type=Path)
++    parser.add_argument("--registration-envelope", required=True, type=Path)
++    parser.add_argument("--frozen-export", required=True, type=Path)
++    parser.add_argument("--as-of", required=True)
++    parser.add_argument("--output-dir", required=True, type=Path)
++    return RunArgs(**vars(parser.parse_args()))
++
++
++def main() -> int:
++    result = run_time_space_shadow(_parse_args())
++    print(result.attribution_path)
++    print(f"sha256={result.attribution_sha256}")
++    return 0
++
++
++if __name__ == "__main__":
++    raise SystemExit(main())
+diff --git a/tests/test_time_space_shadow_cli.py b/tests/test_time_space_shadow_cli.py
+new file mode 100644
+index 0000000..e1e2492
+--- /dev/null
++++ b/tests/test_time_space_shadow_cli.py
+@@ -0,0 +1,234 @@
++from __future__ import annotations
++
++import hashlib
++import importlib.util
++import json
++import sys
++from pathlib import Path
++
++import pytest
++
++from zenquant.research.registration import REUSED_END_NS, canonical_sha256
++
++SCRIPT = Path(__file__).parents[1] / "scripts" / "run_time_space_shadow.py"
++HYPOTHESIS = Path(__file__).parents[1] / "config/research/time_space_shadow_hypothesis_v1.json"
++EXECUTION = Path(__file__).parents[1] / "config/research/registrations/time_space_shadow_execution_v1.json"
++FOUR_HOURS_NS = 14_400_000_000_000
++COMMIT_A = "a" * 40
++COMMIT_B = "b" * 40
++
++
++def _load_runner():
++    spec = importlib.util.spec_from_file_location("run_time_space_shadow", SCRIPT)
++    assert spec is not None and spec.loader is not None
++    module = importlib.util.module_from_spec(spec)
++    sys.modules[spec.name] = module
++    spec.loader.exec_module(module)
++    return module
++
++
++def _canonical_bytes(payload: object) -> bytes:
++    return (
++        json.dumps(payload, ensure_ascii=False, allow_nan=False, sort_keys=True, separators=(",", ":")) + "\n"
++    ).encode()
++
++
++def _provider(run_id: int, commit: str, created_at: str) -> dict[str, object]:
++    return {
++        "id": run_id,
++        "head_sha": commit,
++        "created_at": created_at,
++        "repository": {"full_name": "owner/zenQuant"},
++    }
++
++
++def _registration_envelope(tmp_path: Path) -> Path:
++    hypothesis_payload = json.loads(HYPOTHESIS.read_text())
++    execution_payload = json.loads(EXECUTION.read_text())
++    h_provider = _provider(101, COMMIT_A, "2026-08-24T03:23:18Z")
++    e_provider = _provider(102, COMMIT_B, "2026-08-24T06:30:49Z")
++    payload = {
++        "schema_version": "trend-registration-pair.v1",
++        "layer": "time_space_shadow",
++        "hypothesis": {
++            "envelope": {
++                "provider_run_id": "101",
++                "commit_sha": COMMIT_A,
++                "remote_identity": "owner/zenQuant",
++                "manifest_sha256": canonical_sha256(hypothesis_payload),
++                "received_at_ns": 0,
++            },
++            "provider": h_provider,
++        },
++        "execution": {
++            "envelope": {
++                "provider_run_id": "102",
++                "commit_sha": COMMIT_B,
++                "remote_identity": "owner/zenQuant",
++                "manifest_sha256": canonical_sha256(execution_payload),
++                "received_at_ns": 0,
++            },
++            "provider": e_provider,
++        },
++    }
++    path = tmp_path / "registration.json"
++    path.write_bytes(_canonical_bytes(payload))
++    return path
++
++
++def _export(tmp_path: Path, *, as_of_ns: int = REUSED_END_NS) -> Path:
++    execution = json.loads(EXECUTION.read_text())
++    rows: list[dict[str, object]] = []
++    for index in range(8):
++        cutoff = REUSED_END_NS - (8 - index) * FOUR_HOURS_NS
++        rows.append(
++            {
++                "alpha_id": f"alpha-{index}",
++                "cutoff_time_ns": cutoff,
++                "interval_start_ns": cutoff - FOUR_HOURS_NS,
++                "close": 100.0 + index,
++                "structure_side": 1,
++                "prior_long_boundary": 99.0,
++                "prior_short_boundary": None,
++                "current_long_pivot": None,
++                "current_short_pivot": None,
++                "prior_long_invalidation": 90.0,
++                "prior_short_invalidation": 110.0,
++                "formula_hash": execution["formula_sha256"],
++                "config_hash": execution["config_sha256"],
++                "source_data_hash": execution["source_set_sha256"],
++                "decision_id_by_stage": {
++                    "A1_SIGN": f"a1-{index}",
++                    "A5_SHADOW": f"a5-{index}",
++                    "FILLED_POSITION": f"fill-{index}",
++                },
++                "alpha_sign": 1,
++                "approved_target": 1.0,
++                "filled_position": 1.0,
++            }
++        )
++    payload = {
++        "schema_version": "time-space-shadow-export.v1",
++        "layer": "time_space_shadow",
++        "hypothesis_sha256": execution["hypothesis_sha256"],
++        "execution_sha256": canonical_sha256(execution),
++        "formula_sha256": execution["formula_sha256"],
++        "config_sha256": execution["config_sha256"],
++        "source_set_sha256": execution["source_set_sha256"],
++        "as_of_ns": as_of_ns,
++        "market_state_transition_count": 0,
++        "rows": rows,
++        "perturbation_paths": {str(seed): rows for seed in (42, 123, 456, 789, 1024)},
++    }
++    path = tmp_path / "export.json"
++    path.write_bytes(_canonical_bytes(payload))
++    return path
++
++
++def _args(module, tmp_path: Path, **changes):
++    values = {
++        "hypothesis_manifest": HYPOTHESIS,
++        "execution_manifest": EXECUTION,
++        "as_of": "2026-08-24T00:00:00Z",
++        "output_dir": tmp_path / "out",
++    }
++    values["registration_envelope"] = (
++        changes.pop("registration_envelope") if "registration_envelope" in changes else _registration_envelope(tmp_path)
++    )
++    values["frozen_export"] = changes.pop("frozen_export") if "frozen_export" in changes else _export(tmp_path)
++    values.update(changes)
++    return module.RunArgs(**values)
++
++
++def test_runner_writes_four_identity_bound_canonical_artifacts_without_authority_fields(
++    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
++) -> None:
++    module = _load_runner()
++    monkeypatch.setattr(module, "_hash_bound_sources", lambda execution: execution.payload["source_set_sha256"])
++
++    result = module.run_time_space_shadow(_args(module, tmp_path))
++
++    assert {path.name for path in result.paths} == {
++        "time_space_shadow_hypothesis_manifest.json",
++        "time_space_shadow_execution_manifest.json",
++        "time_space_shadow_registration_envelope.json",
++        "time_space_shadow_attribution.json",
++    }
++    attribution = json.loads(result.attribution_path.read_text())
++    assert attribution["hypothesis_sha256"] == canonical_sha256(json.loads(HYPOTHESIS.read_text()))
++    assert attribution["evidence_role"] == "TEST_REUSED_DIAGNOSTIC"
++    assert attribution["forward_eligible"] is False
++    assert attribution["status"] != "ELIGIBLE_FOR_SEPARATE_ACTIVATION_REVIEW"
++    forbidden = ("target_qty", "order", "risk_multiplier", "position_authority", "activation_recommendation")
++    serialized = json.dumps(attribution)
++    assert all(name not in serialized for name in forbidden)
++    for path in result.paths:
++        payload = json.loads(path.read_text())
++        assert path.read_bytes() == _canonical_bytes(payload)
++    assert hashlib.sha256(result.attribution_path.read_bytes()).hexdigest() == result.attribution_sha256
++
++
++@pytest.mark.parametrize("as_of", ["now", "2026-08-24", "2026-08-24T01:00:00Z", "2026-08-24T00:00:00+00:00"])
++def test_runner_rejects_dynamic_or_noncanonical_as_of(tmp_path: Path, as_of: str) -> None:
++    module = _load_runner()
++    with pytest.raises(ValueError, match="literal canonical UTC 4h cutoff"):
++        module.run_time_space_shadow(_args(module, tmp_path, as_of=as_of))
++    assert not (tmp_path / "out").exists()
++
++
++def test_forward_mode_rejects_role_swapped_receipts(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
++    module = _load_runner()
++    envelope_path = _registration_envelope(tmp_path)
++    envelope = json.loads(envelope_path.read_text())
++    envelope["hypothesis"], envelope["execution"] = envelope["execution"], envelope["hypothesis"]
++    envelope_path.write_bytes(_canonical_bytes(envelope))
++    forward_as_of = 1_788_163_200_000_000_000
++    export = _export(tmp_path, as_of_ns=forward_as_of)
++    monkeypatch.setattr(module, "_hash_bound_sources", lambda execution: execution.payload["source_set_sha256"])
++    with pytest.raises(ValueError, match=r"receipt|manifest hash"):
++        module.run_time_space_shadow(
++            _args(
++                module,
++                tmp_path,
++                registration_envelope=envelope_path,
++                frozen_export=export,
++                as_of="2026-09-08T00:00:00Z",
++            )
++        )
++
++
++def test_runner_rejects_source_drift_without_partial_publish(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
++    module = _load_runner()
++    hashes = iter(("sha256:" + "1" * 64, "sha256:" + "2" * 64))
++    monkeypatch.setattr(module, "_hash_bound_sources", lambda execution: next(hashes))
++    with pytest.raises(RuntimeError, match="source corpus changed during run"):
++        module.run_time_space_shadow(_args(module, tmp_path))
++    assert not (tmp_path / "out").exists()
++
++
++def test_runner_rejects_unavailable_labels_and_existing_output(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
++    module = _load_runner()
++    frozen_export = _export(tmp_path)
++    payload = json.loads(frozen_export.read_text())
++    payload["rows"][-1]["alpha_sign"] = -1
++    frozen_export.write_bytes(_canonical_bytes(payload))
++    monkeypatch.setattr(module, "_hash_bound_sources", lambda execution: execution.payload["source_set_sha256"])
++    args = _args(module, tmp_path, frozen_export=frozen_export)
++    with pytest.raises(ValueError, match="unavailable label"):
++        module.run_time_space_shadow(args)
++    args.output_dir.mkdir()
++    with pytest.raises(FileExistsError, match="output directory already exists"):
++        module.run_time_space_shadow(args)
++
++
++def test_runner_rejects_export_not_bound_to_registered_execution(
++    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
++) -> None:
++    module = _load_runner()
++    frozen_export = _export(tmp_path)
++    payload = json.loads(frozen_export.read_text())
++    payload["execution_sha256"] = "f" * 64
++    frozen_export.write_bytes(_canonical_bytes(payload))
++    monkeypatch.setattr(module, "_hash_bound_sources", lambda execution: execution.payload["source_set_sha256"])
++    with pytest.raises(ValueError, match=r"frozen export.*execution"):
++        module.run_time_space_shadow(_args(module, tmp_path, frozen_export=frozen_export))

@@ -1,0 +1,218 @@
+# ZenQuant 工程与自动研究框架
+
+证据梳理始于 2026-10-02，审阅完成于 2026-10-03。状态：**架构设计；独立诊断研究路径已分阶段实施**。
+
+用户目标：持续迭代搜索 BTC 策略及参数，并建立覆盖工程、研究和实际运行的综合评价体系。
+本文给出边界和交付顺序；具体实现、命令与验证见[研究框架指南](../../RESEARCH_FRAMEWORK_GUIDE.md)。
+实现研究工具不代表 paper-live 或真仓准入。
+产品规则以 [AGENTS.md](../../../AGENTS.md) 为准，操作资格仍以
+[交付规格](../../LIVE_VALIDATION_HANDOFF_SPEC.md) 为入口。
+
+## 1. 架构决定
+
+采用“共用确定性交易内核 + 有限预算的研究循环 + 独立证据评价”。
+先完成可信评价和少量参数搜索，再让小 RL 作为同条件对照。BTC 是首个资产；新增品种、
+逐 bar RL、5m 纯调度器各有独立验收，不同时塞入第一阶段。
+
+| 方案 | 收益 | 代价与判断 |
+| --- | --- | --- |
+| 直接续跑现有大 campaign | 启动快 | 参数路径、默认策略、指标和证据身份尚未统一；不选 |
+| 复用现有组件，补齐契约和评价边界 | 能保留成熟回放、插件和研究能力；改动可分阶段验证 | 推荐；复杂度中等 |
+| 重写完整研究平台及端到端 RL | 自由度高 | 同时引入新内核、数据与策略误差；推迟 |
+
+首轮验收目标是：同一个候选、同一数据和执行契约产生可复核的结果；自动搜索不能越过
+数据分区或改变评估规则；没有有效候选时明确输出失败。更高历史收益不是框架验收条件。
+
+## 2. 代码核对后的当前架构
+
+```mermaid
+flowchart LR
+    Hist[历史数据与 HistoricalBacktest] --> Shared[指标 / 状态 / 策略 / 风险]
+    Live[RealTimeIngestor 实时行情] --> Shared
+    Shared --> Intent[TargetPosition]
+    Intent --> Risk[RiskOverlay 改写目标]
+    Risk --> Execution[ExecutionKernel / Router]
+    Execution --> Sim[SimulatedGateway]
+    Sim --> Fill[ExecutionReport]
+    Fill --> Account[实际成交持仓与账户]
+    Account --> Shared
+    Fill --> Audit[事件审计 / episode / dashboard]
+```
+
+该图表示共享组件关系，不表示入口默认相同，也不表示交易所真仓链路已完成。
+
+| 部分 | 当前代码事实 | 后续处理 |
+| --- | --- | --- |
+| 历史入口 | `HistoricalBacktestConfig.profile_path` 默认插件 profile；显式 `None` 才是 legacy | 每个 run 必须写实际解析出的策略路径，禁止靠默认猜测 |
+| live 入口 | `ZenQuantWebRuntime._initialize_trading_chain()` 未传插件 registry；实时行情连接 `SimulatedGateway` | 标为 live-data/paper-execution；不等于真实下单 |
+| 时间周期 | 历史默认 4h；旧多周期路径会在低周期重新计算策略条件 | 在实验身份中分别记录决策、context、执行周期及执行时点 |
+| V2 目标跟踪 | `target_tracking_v2` 显式要求 4h execution；A2–A5 实验用 4h observation 驱动 | 已有目标跟踪约束；独立的 5m 纯调度器仍待实现 |
+| 风险与账本 | 已有按成交更新、资金费处理和本地会计修复 | 完整 live funding adapter 与全事件 parity 尚未证明 |
+| 指标 | `BacktestMetrics` 已有收益、回撤、成本、episode 和执行纯度指标 | 原始字段的单位、采样与统计定义不统一；增加版本化评价口径 |
+| AutoParam | `auto_research.Campaign` 有 train 搜索、dev 验证、robustness 分阶段能力 | 外层框架不可把所有行为笼统称为 train-only |
+| RL | `ParamTunerEnv` 单步选参数后跑完整历史窗口 | 作为旧参数搜索器；逐 bar 状态决策需要新环境契约 |
+| Agent 研究 | `research/swarm` 已有 hypothesis、data admission、temporal guard、experiment、verifier、report | 复用这些角色，评价规则由确定性代码执行 |
+| 工程检查 | `zenquant-check` 有 Gate 0/A–F；部分 parity、golden、账户测试已存在 | 工程通过、研究通过、运行资格分别输出 |
+
+代码入口：
+[runtime](../../../zenquant/app/server.py)、[历史组装](../../../zenquant/historical/replay.py)、
+[策略](../../../zenquant/strategy/engine.py)、[执行](../../../zenquant/execution/router.py)、
+[风险](../../../zenquant/risk/guard.py)、[swarm 契约](../../../zenquant/research/swarm/contracts.py)。
+
+### 本轮发现的边界缺口
+
+1. **入口不等价。** live legacy、历史默认插件、研究 V2 是不同路径。Gate D 的局部行为测试和
+   已有 leveraged-fill 账户测试不足以代替统一事件流的端到端 parity。
+2. **搜索与筛选边界模糊。** 低层 `run_search_stage()` 确实只在 train 搜索；外层
+   `framework_search.run_optuna_search()` 可用 dev screen 排除候选。五种 PaulWei profile
+   还启用包含 late-dev 的 temporal score adjustment；不是当前默认 profile，但 CLI 可达。
+   这些动作须标为 dev selection，不能反馈进声称 train-only 的优化目标或报告。
+3. **robust_score 不等于五种子复核。** 外层 framework 的 stage1 配置传入
+   `robustness_seeds=[]`；已有独立稳健性模块不能证明所有入口都调用了它。
+4. **身份和完整性不足。** `ExperimentTracker` 按参数 hash 去重，同参数 record 可覆盖；
+   不能表达不同数据、代码、窗口、种子和失败尝试。`run_search_stage()` 直接调用 sweep，未在
+   该 helper 内 flush tracker，返回的 results 也已筛选；不能把 top candidates 当完整 trial 日志。
+   旧 checkpoint 必须重新判定兼容性，已有阶段文件的存在不代表可安全 resume。
+5. **状态可能过度表述。** `paper_live_scorecard.py` 含静态“历史验证已通过”项，完成条件基于
+   健康时长、export 和 review，未充分绑定候选与研究证据。它是运行观察，不能独立决定准入。
+6. **指标需分版本。** 旧 `turnover_per_day` 是 USDT/day；旧 Sortino 使用负收益子样本标准差；
+   `fee_drag_pct` 在毛收益非正时返回零；原 risk snapshots 不能直接当规则间隔的日收益。
+   新定义见[综合评价规格](../../RESEARCH_EVALUATION_SPEC.md)，不静默改写旧值。
+
+以上是只读代码核查，未执行新搜索。原 snapshot cutoff、重复收盘和 legacy 部分成交问题仍为
+记录项；用户此前选择仅记录，不因本设计自动获得生产路径修改授权。
+
+## 3. 目标工程边界
+
+```mermaid
+flowchart TB
+    H[研究假设与冻结实验规格] --> D[数据清单与访问范围]
+    H --> C[候选生成：固定规则 / Random / TPE]
+    D --> R[共用回放内核]
+    C --> R
+    R --> B[不可变证据包]
+    B --> E[独立综合评价]
+    E --> Q[硬门槛结果 + 候选取舍]
+    Q --> F[冻结候选与未来观察]
+    F --> P[操作人准入流程]
+    E -->|仅允许的开发反馈| C
+    AI[AI 研究助手] --> H
+    AI --> C
+    RL[后续小型 RL 候选] -.-> C
+```
+
+### 六个职责边界
+
+| 边界 | 负责 | 不能拥有的权限 |
+| --- | --- | --- |
+| 数据与时间契约 | 原始来源、available-at、cutoff、清洗版本、缺失语义 | 补造真实历史、读取未授权测试窗口 |
+| 候选生成 | 研究假设、插件/config、模型及训练元数据 | 改 evaluator、风险上限、测试集和晋级状态 |
+| 交易内核 | 已确认 bar → intent → risk → execution → fill → NAV | 为研究模式创造不同会计或乐观成交 |
+| 实验调度 | 固定窗口、预算、种子、重试、缓存、资源限制 | 把超时/崩溃变成收益零、无限重试直到通过 |
+| 评价与裁决 | 读取证据、计算独立指标、硬门槛、Pareto、置信度 | 调整候选参数、选出最优后修改门槛 |
+| 运行与展示 | 读取同一裁决、采集健康状态、审计和候选漂移 | 静态宣布验收成功、通过 UI 修改模型或隐藏失败 |
+
+AI 可以生成研究代码和解释失败；代码进入受限插件/离线研究范围后验证。
+LLM 的文字判断不写 `PASS`，也不能绕过风险、自动扩训练范围或访问真仓凭证。
+
+## 4. 必须显式的数据契约
+
+以下为待实施逻辑对象，优先扩展已有 frozen dataclass 和 JSON artifact，不引入服务集群。
+
+| 对象 | 最少字段与规则 |
+| --- | --- |
+| `ExperimentSpec` | schema/id/parent-line、九要素 hypothesis、资产/合约/计价单位、执行模式、时间周期、基准、搜索空间、分区权限、预算、种子、评价 policy hash；缺项拒绝启动 |
+| `DataManifest` | 文件与内容 hash、来源/venue、event/available 时间定义、覆盖/缺失、转换版本、订正版本、warmup、被观察历史登记；spot/proxy/perp 不混标 |
+| `CandidateSpec` | legacy/plugin/model 类型、profile 完整内容及 overrides、模型和预处理 hash、formula 版本、固定风控、训练区间与 seed、策略来源 |
+| `RunIdentity` | candidate/data/code/dependency/evaluation-policy hash、窗口、所有 seed、resolved config、gateway/成本/成交语义；dirty tree 需内容 hash，只有 git SHA 不够 |
+| `RunEvidence` | 状态、起止/退出码、数据访问清单、事件/intent/risk/order/fill/funding/NAV、episode、原始配置、timing、hash 清单；不可只存汇总收益 |
+| `EvaluationReport` | 每项指标的值/单位/采样/样本数/置信区间/状态/原因/证据路径；逐 gate 结果、比较条件、候选范围、研究成熟度 |
+
+`candidate_id` 区分策略内容，`run_id` 区分完整条件，`attempt_id` 保留失败和重试。
+同条件成功结果可以缓存；数据、成本、会计代码、策略、种子、指标版本或分区变更必须失效。
+重试追加记录，不能覆盖失败。完成文件原子写入，单 writer 汇总并行 worker 的独立产物。
+
+`event_time <= cutoff` 不单独证明可得性；还需 `available_at <= decision_time`。
+同时间事件排序固定为明确序列键；confirmed bar、fill、funding 均需稳定唯一键和去重规则。
+warmup 仅构造因果状态，不计入评估收益；持仓 carry/reset、边界强平和手续费要在规格中冻结。
+
+## 5. 研究循环和状态
+
+1. 冻结假设、评价 policy、基准与预算；诊断实验可揭示缺陷，不自动成为可排名策略证据。
+2. 先检查数据、会计、执行与候选映射；比较基准必须使用同一个内核和执行时点。
+3. 只在 train 内部按时间划分学习/验证；TPE 与 Random 使用相同候选评估预算和公共窗口。
+4. 固定 shortlist 后统一 dev selection，记录所有被查看的数据。dev 反馈不得伪装成独立 OOS。
+5. 对 shortlist 完成全量成本复跑、五种子扰动、参数邻域与失败场景；不合格则关闭或修订研究线。
+6. 冻结代码/配置/模型/评价规则和时间点，收集未来数据；通过规定验收后进入操作人准入流程。
+
+2026 历史已经被观察。保留现有 split 标签兼容旧产物，同时新增 `evidence_role` 和
+`observed_at`；不能通过重命名 test 恢复独立性。新增未来封存数据的区间和访问规则须在首次读取前冻结。
+
+分离三类状态，禁止相互代替：
+
+- **作业状态**：planned/running/completed/failed/timed_out/pruned/cancelled。
+- **证据结果**：PASS/FAIL/NOT_EVALUABLE/NOT_RUN/INVALID/STALE/NOT_APPLICABLE。
+- **研究与资格**：diagnostic/research_candidate/frozen_candidate/forward_observation/eligible_for_paper。
+
+作业 completed 不意味着 PASS；历史 PASS 不意味着 eligible；eligible 不意味着已启动或部署。
+明确 FAIL 阻断该 gate；必需项不可评价或未运行同样阻断晋级，但不伪装成策略经济性失败。
+新一轮派生于失败研究线，保留 parent 和累计 trial，不能用新名字清空选择偏差。
+
+### 现有裁决如何接入
+
+统一 resolver 只做有范围的证据汇总，不能用“最新文件”覆盖一切：先匹配研究线、候选、数据、
+代码和 policy，再验证完整性。对同一 scope，仍有效的硬阻断优先；不适用的旧候选经济结论
+只作参考。共用会计、工程 gate、数据及执行适配器的未解决阻断，必须由使用这些组件的新研究线
+继承；不能通过更换 line 或 policy 绕过。若组件已修复，必须以该组件的对应新验证证据解除。
+
+本轮本地核查：
+
+- `framework_optimization.json` 的 `created_at=2026-04-11`，`test_evaluated=false`、
+  `promote_to_paper_live_candidate=false`；不能作为会计修复后的准入。
+- Quant V2 的 handoff 记录 `BLOCKED_PAUSE_PROMOTION_AND_TRAINING`。所指
+  `results/quant_v2_acceptance/architecture_attribution.json` 和 `acceptance_summary.json`
+  本地未找到；本轮没有重新核验其原始 30-run 证据。应展示历史阻断及证据不可用，不能默认放行。
+- 10 月 2 日固定复跑证明本地会计核对和当前筛选失败；不替代 Quant V2 验收，也不是 live 证据。
+
+## 6. 分阶段实施与验收
+
+| 阶段 | 复用/改动范围 | 必须交付的验收 |
+| --- | --- | --- |
+| P0 证据身份 | `experiment.py`、swarm contracts、campaign resolved config；迁移机器读取 hypothesis 到 `config/research/` | 同参不同 seed/代码不覆盖；旧会计结果拒绝 resume；缺失 profile 不静默切 legacy；访问日志可核对 |
+| P1 统一评价 | 研究层新增独立 `evaluation` 模块；复用 episode、现金/NAV 与现有 metrics 原始输出 | 独立手算账户/指标夹具；缺失不转零；日收益、PF、Sortino、turnover 单位明确；新旧口径并列 |
+| P2 确定性实验 | 复用 `run_framework_campaign.py` 和分阶段 API；分离 train search/dev selection/验证 | 改 dev/test 数据不能改变 train 候选序列；公共窗口和种子可复现；超时、恢复、缓存失效行为有测试 |
+| P3 小范围 AutoParam | 固定规则/Random/TPE；3–6 维搜索，显式 4h、有限预算 | 相同基准、账本和预算；所有 trial 留档；只对合格集合比较多目标；即使零候选也正常交付完整报告 |
+| P4 小 RL 对照 | 新的逐 bar 环境/推理 adapter；共用交易内核；独立批准的研究范围 | 动作仅生成目标意图；风险可覆盖；固定模型/归一化；训练 seed、更新次数和成本记录；与静态参数公平比较 |
+| P5 前瞻和运行 | resolver + paper scorecard + export/dashboard | 按候选版本累积未来证据；健康与绩效分开；原始事件复放可对账；满足交付规格再启动 paper |
+
+P0–P3 不要求重写 `ExecutionKernel` 或引入新的订单服务。P4、5m scheduler、真实交易所适配
+分别设计和验证。任何必要的 legacy 修复依原授权范围处理；不能把重构塞进研究任务。
+P3 的正式候选排序依赖 E0–E4：已知 cutoff、重复事件、部分成交或后续可用报价执行要求
+未满足时，仅可运行显式诊断。更完整的研究设计本身不授予这些生产路径的修改权。
+
+新研究层模块的建议职责为 `contracts`、`metrics`、`gates`、`report`，共享一个纯评价入口。
+具体文件拆分在实施计划中确定；不为每个指标新建服务。`BacktestMetrics` 的旧字段先保留，
+新增 schema 输出并列后再评估迁移，避免使既有 tests/artifacts 含义改变。
+
+### 验证与资源
+
+- 每阶段验证对应契约；涉及策略/风险需 golden、plugin parity、端到端事件 parity 及完整 harness。
+  当前 Gate C/E 未通过，不能直接更新 golden 或放宽收益测试掩盖差异。
+- 指标验收至少覆盖：空样本、无亏损、负毛利、外部资金流、资金费收入、部分成交、反转拆分、
+  重复/乱序事件、非正净值、缺失数据、不同时间采样和中断恢复。
+- CLI 只负责解析/调度，worker 不共享策略可变状态；昂贵数据校验在运行前，交易热路径无新增 I/O。
+- 沿用本地 Python 环境和现有历史数据；首轮无需新账户、密钥、GPU 或服务器。
+  4h 历史回放计时不能外推逐 bar RL 或 5m 路径。CPU/内存/墙钟/token 预算均进入规格并设上限。
+- 长任务写持久状态，结束时一次汇总；不依赖 Agent 反复轮询。UI 展示 blocker、证据时间、候选版本和
+  下一项缺失验证，不自行计算权威结论。
+
+## 7. 本轮交付及后续入口
+
+架构规格及[综合评价规格](../../RESEARCH_EVALUATION_SPEC.md)是规则入口；2026-10-03 新增
+`scripts/evaluate_research_evidence.py` 与 `scripts/run_btc_research.py`，分别重评已有底账、
+执行独立固定诊断/有限训练搜索。新模块不静默替换旧 campaign、live runtime 或交付规格。
+
+P0/P1 的基础能力、P2 的本地记录与恢复、P3 的参数提议已实现；完整候选跨窗口验收、
+小 RL 环境和 P5 前瞻运行仍须分别完成。阶段清单与实测证据以[实施计划](../plans/2026-10-03-research-search-implementation.md)
+及[操作指南](../../RESEARCH_FRAMEWORK_GUIDE.md)为准。工程检查仍是 `uv run zenquant-check`；
+执行检查不代表重新取得历史或运行准入。

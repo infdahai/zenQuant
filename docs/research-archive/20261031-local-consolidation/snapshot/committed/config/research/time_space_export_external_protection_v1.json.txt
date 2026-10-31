@@ -1,0 +1,1 @@
+{"authority_id":null,"authority_type":null,"default_branch":"main","evidence_sha256":null,"layer":"time_space_shadow","provider_observed_at_ns":null,"registration_status":"PENDING","remote_identity":"infdahai/zenQuant","required_check":null,"schema_version":"time-space-export-external-protection.v1"}

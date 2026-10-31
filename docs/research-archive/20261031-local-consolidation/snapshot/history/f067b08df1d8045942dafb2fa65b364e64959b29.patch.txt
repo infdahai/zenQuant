@@ -1,0 +1,97 @@
+commit f067b08df1d8045942dafb2fa65b364e64959b29
+Author:     Disaster <clusternlh@gmail.com>
+AuthorDate: Tue Aug 25 00:42:59 2026 +0800
+Commit:     Disaster <clusternlh@gmail.com>
+CommitDate: Tue Aug 25 00:42:59 2026 +0800
+
+    fix(research): protect registration enforcement authority
+
+diff --git a/.github/workflows/time-space-export-checkpoint.yml b/.github/workflows/time-space-export-checkpoint.yml
+index 0973de9..49cd9c8 100644
+--- a/.github/workflows/time-space-export-checkpoint.yml
++++ b/.github/workflows/time-space-export-checkpoint.yml
+@@ -24,7 +24,10 @@ jobs:
+           PUSH_AFTER: ${{ github.sha }}
+         run: |
+           set -euo pipefail
+-          python scripts/validate_time_space_registration_push.py \
++          base_validator="$RUNNER_TEMP/time-space-registration-push-validator.py"
++          git show "$PUSH_BEFORE:scripts/validate_time_space_registration_push.py" > "$base_validator"
++          python "$base_validator" \
++            --repository "$GITHUB_WORKSPACE" \
+             --before "$PUSH_BEFORE" \
+             --after "$PUSH_AFTER" \
+             --phase checkpoint \
+diff --git a/.github/workflows/time-space-export-persist.yml b/.github/workflows/time-space-export-persist.yml
+index 897d5c2..735c83c 100644
+--- a/.github/workflows/time-space-export-persist.yml
++++ b/.github/workflows/time-space-export-persist.yml
+@@ -23,7 +23,10 @@ jobs:
+           PUSH_AFTER: ${{ github.sha }}
+         run: |
+           set -euo pipefail
+-          python scripts/validate_time_space_registration_push.py \
++          base_validator="$RUNNER_TEMP/time-space-registration-push-validator.py"
++          git show "$PUSH_BEFORE:scripts/validate_time_space_registration_push.py" > "$base_validator"
++          python "$base_validator" \
++            --repository "$GITHUB_WORKSPACE" \
+             --before "$PUSH_BEFORE" \
+             --after "$PUSH_AFTER" \
+             --phase persist \
+diff --git a/scripts/validate_time_space_registration_push.py b/scripts/validate_time_space_registration_push.py
+index b84e1d4..ad2d987 100644
+--- a/scripts/validate_time_space_registration_push.py
++++ b/scripts/validate_time_space_registration_push.py
+@@ -16,6 +16,16 @@ RECEIPT_NAME = "time_space_export_registration_receipt_v1.json"
+ TRUST_NAME = "time_space_export_registration_trust_v1.json"
+ FOUR_HOURS_NS = 4 * 60 * 60 * 1_000_000_000
+ _SHA_PATTERN = re.compile(r"[0-9a-f]{40}")
++_PROTECTED_ENFORCEMENT_PATHS = (
++    ".github/workflows/time-space-export-checkpoint.yml",
++    ".github/workflows/time-space-export-generate.yml",
++    ".github/workflows/time-space-export-persist.yml",
++    ".github/workflows/time-space-export-receipt.yml",
++    "scripts/build_time_space_export_receipt.py",
++    "scripts/validate_time_space_persisted_registration.py",
++    "scripts/validate_time_space_registration_push.py",
++    "zenquant/research/time_space_export.py",
++)
+ 
+ 
+ def validate_registration_push(
+@@ -85,6 +95,17 @@ def _validate_append_only_history(repository: Path, before: str, after: str) ->
+         if len(commit_and_parents) != 2:
+             raise ValueError("append-only registration push history must be linear")
+         parent = commit_and_parents[1]
++        protected_changes = _git(
++            repository,
++            "diff",
++            "--name-only",
++            parent,
++            commit,
++            "--",
++            *_PROTECTED_ENFORCEMENT_PATHS,
++        )
++        if protected_changes:
++            raise ValueError(f"protected registration enforcement changed: {protected_changes.splitlines()[0]}")
+         for status, path in _registration_changes(repository, parent, commit):
+             if status != "A":
+                 raise ValueError(f"registration tree is append-only; observed {status} for {path}")
+diff --git a/zenquant/research/time_space_export.py b/zenquant/research/time_space_export.py
+index 05da26a..f0bc523 100644
+--- a/zenquant/research/time_space_export.py
++++ b/zenquant/research/time_space_export.py
+@@ -34,8 +34,13 @@ _REGISTRATION_ROOT = _PROJECT_ROOT / "config/research/registrations/time_space_e
+ _PERSISTED_RECEIPT_NAME = "time_space_export_registration_receipt_v1.json"
+ _GENERATOR_PATH = Path(__file__)
+ _STATIC_DEPENDENCY_PATHS = (
++    ".github/workflows/time-space-export-checkpoint.yml",
++    ".github/workflows/time-space-export-generate.yml",
++    ".github/workflows/time-space-export-persist.yml",
++    ".github/workflows/time-space-export-receipt.yml",
+     "scripts/export_time_space_architecture.py",
+     "scripts/build_time_space_export_receipt.py",
++    "scripts/validate_time_space_registration_push.py",
+     "scripts/run_architecture_experiment.py",
+     "scripts/run_time_space_shadow.py",
+     "zenquant/research/time_space_export.py",

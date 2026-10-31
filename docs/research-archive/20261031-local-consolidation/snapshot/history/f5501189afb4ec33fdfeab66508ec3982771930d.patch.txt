@@ -1,0 +1,292 @@
+commit f5501189afb4ec33fdfeab66508ec3982771930d
+Author:     Disaster <clusternlh@gmail.com>
+AuthorDate: Tue Aug 25 00:50:15 2026 +0800
+Commit:     Disaster <clusternlh@gmail.com>
+CommitDate: Tue Aug 25 00:50:15 2026 +0800
+
+    fix(research): persist canonical export evidence
+
+diff --git a/.github/workflows/time-space-export-persist.yml b/.github/workflows/time-space-export-persist.yml
+index 735c83c..1f82851 100644
+--- a/.github/workflows/time-space-export-persist.yml
++++ b/.github/workflows/time-space-export-persist.yml
+@@ -5,6 +5,7 @@ on:
+     branches: [feature/trend-registration-time-space-export-receipt]
+ 
+ permissions:
++  actions: read
+   contents: read
+ 
+ jobs:
+@@ -33,31 +34,27 @@ jobs:
+             --github-env "$GITHUB_ENV"
+       - name: Validate durable registration evidence
+         shell: bash
++        env:
++          GH_TOKEN: ${{ github.token }}
+         run: |
+           set -euo pipefail
+           checkpoint=$REGISTRATION_CHECKPOINT
+           receipt=$REGISTRATION_RECEIPT
+           trust=$REGISTRATION_TRUST
+-          test -f "$checkpoint"
+-          python - "$checkpoint" "$receipt" "$trust" <<'PY'
+-          import hashlib, json, pathlib, sys
+-
+-          checkpoint_path, receipt_path, trust_path = map(pathlib.Path, sys.argv[1:])
+-          checkpoint = json.loads(checkpoint_path.read_text())
+-          receipt_bytes = receipt_path.read_bytes()
+-          receipt = json.loads(receipt_bytes)
+-          trust = json.loads(trust_path.read_text())
+-          canonical = (json.dumps(receipt, sort_keys=True, separators=(",", ":")) + "\n").encode()
+-          if canonical != receipt_bytes:
+-              raise SystemExit("persisted receipt is not canonical")
+-          if receipt["manifest_sha256"] != hashlib.sha256(checkpoint_path.read_bytes()).hexdigest():
+-              raise SystemExit("persisted receipt does not bind checkpoint bytes")
+-          if receipt["export_sha256"] != checkpoint["export_sha256"]:
+-              raise SystemExit("persisted receipt does not bind export digest")
+-          if receipt["provenance_sha256"] != checkpoint["provenance_sha256"]:
+-              raise SystemExit("persisted receipt does not bind provenance digest")
+-          if trust.get("registration_status") != "VERIFIED":
+-              raise SystemExit("persisted trust is not verified")
+-          if trust.get("receipt_artifact_sha256") != hashlib.sha256(canonical).hexdigest():
+-              raise SystemExit("persisted trust does not bind receipt bytes")
+-          PY
++          export_file=$REGISTRATION_EXPORT
++          provenance=$REGISTRATION_PROVENANCE
++          remote=$(python -c 'import json,sys; print(json.load(open(sys.argv[1]))["remote_identity"])' "$trust")
++          checkpoint_run=$(python -c 'import json,sys; print(json.load(open(sys.argv[1]))["provider_run_id"])' "$trust")
++          generator_run=$(python -c 'import json,sys; print(json.load(open(sys.argv[1]))["generator_provider_run_id"])' "$trust")
++          gh api "repos/$remote/actions/runs/$checkpoint_run" > checkpoint-provider-run.json
++          gh api "repos/$remote/actions/runs/$generator_run" > generator-provider-run.json
++          base_validator="$RUNNER_TEMP/time-space-persisted-registration-validator.py"
++          git show "$PUSH_BEFORE:scripts/validate_time_space_persisted_registration.py" > "$base_validator"
++          python "$base_validator" \
++            --checkpoint "$checkpoint" \
++            --receipt "$receipt" \
++            --trust "$trust" \
++            --export "$export_file" \
++            --provenance "$provenance" \
++            --provider-run-json checkpoint-provider-run.json \
++            --generator-provider-run-json generator-provider-run.json
+diff --git a/.github/workflows/time-space-export-receipt.yml b/.github/workflows/time-space-export-receipt.yml
+index b14dfc5..1ea5515 100644
+--- a/.github/workflows/time-space-export-receipt.yml
++++ b/.github/workflows/time-space-export-receipt.yml
+@@ -90,9 +90,15 @@ jobs:
+             --generator-provenance "$GENERATOR_PROVENANCE" \
+             --generator-artifact-json generator-artifact.json \
+             --output time_space_export_registration_receipt.json
++          mkdir time-space-registration-bundle
++          cp time_space_export_registration_receipt.json \
++            time-space-registration-bundle/time_space_export_registration_receipt_v1.json
++          cp "$GENERATOR_EXPORT" time-space-registration-bundle/time_space_shadow_export.json
++          cp "$GENERATOR_PROVENANCE" \
++            time-space-registration-bundle/time_space_shadow_export_provenance.json
+       - uses: actions/upload-artifact@v4
+         with:
+           name: time-space-export-receipt-${{ github.event.workflow_run.id }}
+-          path: time_space_export_registration_receipt.json
++          path: time-space-registration-bundle
+           if-no-files-found: error
+           retention-days: 90
+diff --git a/scripts/validate_time_space_registration_push.py b/scripts/validate_time_space_registration_push.py
+index ad2d987..e963406 100644
+--- a/scripts/validate_time_space_registration_push.py
++++ b/scripts/validate_time_space_registration_push.py
+@@ -14,6 +14,8 @@ REGISTRATION_ROOT = "config/research/registrations/time_space_exports"
+ CHECKPOINT_NAME = "time_space_shadow_export_checkpoint_v1.json"
+ RECEIPT_NAME = "time_space_export_registration_receipt_v1.json"
+ TRUST_NAME = "time_space_export_registration_trust_v1.json"
++EXPORT_NAME = "time_space_shadow_export.json"
++PROVENANCE_NAME = "time_space_shadow_export_provenance.json"
+ FOUR_HOURS_NS = 4 * 60 * 60 * 1_000_000_000
+ _SHA_PATTERN = re.compile(r"[0-9a-f]{40}")
+ _PROTECTED_ENFORCEMENT_PATHS = (
+@@ -122,18 +124,34 @@ def _validate_checkpoint_addition(repository: Path, before: str, added: list[str
+ 
+ 
+ def _validate_persist_additions(repository: Path, before: str, added: list[str]) -> dict[str, str]:
+-    if len(added) != 2:
+-        raise ValueError("persist push must add exactly one receipt and one trust record")
++    if len(added) != 4:
++        raise ValueError("persist push must add exactly receipt, trust, export, and provenance")
+     receipt_paths = [path for path in added if path.endswith(f"/{RECEIPT_NAME}")]
+     trust_paths = [path for path in added if path.endswith(f"/{TRUST_NAME}")]
+-    if len(receipt_paths) != 1 or len(trust_paths) != 1:
+-        raise ValueError("persist push additions are not the exact receipt and trust pair")
++    export_paths = [path for path in added if path.endswith(f"/{EXPORT_NAME}")]
++    provenance_paths = [path for path in added if path.endswith(f"/{PROVENANCE_NAME}")]
++    if any(len(paths) != 1 for paths in (receipt_paths, trust_paths, export_paths, provenance_paths)):
++        raise ValueError("persist push additions are not the exact durable registration transaction")
+     receipt = receipt_paths[0]
+     trust = trust_paths[0]
++    export = export_paths[0]
++    provenance = provenance_paths[0]
+     cutoff, directory = _registration_path(receipt, RECEIPT_NAME)
+     trust_cutoff, trust_directory = _registration_path(trust, TRUST_NAME)
+-    if (cutoff, directory) != (trust_cutoff, trust_directory):
+-        raise ValueError("persisted receipt and trust do not share one cutoff")
++    export_cutoff, export_directory = _registration_path(export, EXPORT_NAME)
++    provenance_cutoff, provenance_directory = _registration_path(provenance, PROVENANCE_NAME)
++    if (
++        len(
++            {
++                (cutoff, directory),
++                (trust_cutoff, trust_directory),
++                (export_cutoff, export_directory),
++                (provenance_cutoff, provenance_directory),
++            }
++        )
++        != 1
++    ):
++        raise ValueError("persisted registration artifacts do not share one cutoff")
+     checkpoint = f"{directory}/{CHECKPOINT_NAME}"
+     _git(repository, "cat-file", "-e", f"{before}:{checkpoint}")
+     prior_paths = _git(repository, "ls-tree", "-r", "--name-only", before, "--", directory).splitlines()
+@@ -143,6 +161,8 @@ def _validate_persist_additions(repository: Path, before: str, added: list[str])
+         "REGISTRATION_CHECKPOINT": checkpoint,
+         "REGISTRATION_RECEIPT": receipt,
+         "REGISTRATION_TRUST": trust,
++        "REGISTRATION_EXPORT": export,
++        "REGISTRATION_PROVENANCE": provenance,
+     }
+ 
+ 
+diff --git a/tests/test_time_space_export.py b/tests/test_time_space_export.py
+index cc8e578..9855e76 100644
+--- a/tests/test_time_space_export.py
++++ b/tests/test_time_space_export.py
+@@ -644,9 +644,9 @@ def test_runtime_requires_exact_persisted_receipt_after_provider_artifact_expiry
+     persisted = {"schema_version": "time-space-export-registration-receipt.v1", "digest": "exact"}
+     durable_export = {"schema_version": "time-space-shadow-export.v1", "as_of_ns": AS_OF_NS}
+     durable_provenance = {"schema_version": "time-space-shadow-export-provenance.v1", "as_of_ns": AS_OF_NS}
+-    (registration_dir / "time_space_export_registration_receipt_v1.json").write_text(json.dumps(persisted))
+-    (registration_dir / "time_space_export_registration_trust_v1.json").write_text(
+-        json.dumps({"registration_status": VERIFIED})
++    (registration_dir / "time_space_export_registration_receipt_v1.json").write_bytes(_canonical_bytes(persisted))
++    (registration_dir / "time_space_export_registration_trust_v1.json").write_bytes(
++        _canonical_bytes({"registration_status": VERIFIED})
+     )
+     (registration_dir / "time_space_shadow_export.json").write_bytes(_canonical_bytes(durable_export))
+     (registration_dir / "time_space_shadow_export_provenance.json").write_bytes(_canonical_bytes(durable_provenance))
+diff --git a/zenquant/research/time_space_export.py b/zenquant/research/time_space_export.py
+index f0bc523..bd5ce35 100644
+--- a/zenquant/research/time_space_export.py
++++ b/zenquant/research/time_space_export.py
+@@ -32,6 +32,8 @@ FOUR_HOURS_NS = 4 * 60 * 60 * 1_000_000_000
+ _PROJECT_ROOT = Path(__file__).parents[2]
+ _REGISTRATION_ROOT = _PROJECT_ROOT / "config/research/registrations/time_space_exports"
+ _PERSISTED_RECEIPT_NAME = "time_space_export_registration_receipt_v1.json"
++_PERSISTED_EXPORT_NAME = "time_space_shadow_export.json"
++_PERSISTED_PROVENANCE_NAME = "time_space_shadow_export_provenance.json"
+ _GENERATOR_PATH = Path(__file__)
+ _STATIC_DEPENDENCY_PATHS = (
+     ".github/workflows/time-space-export-checkpoint.yml",
+@@ -41,6 +43,7 @@ _STATIC_DEPENDENCY_PATHS = (
+     "scripts/export_time_space_architecture.py",
+     "scripts/build_time_space_export_receipt.py",
+     "scripts/validate_time_space_registration_push.py",
++    "scripts/validate_time_space_persisted_registration.py",
+     "scripts/run_architecture_experiment.py",
+     "scripts/run_time_space_shadow.py",
+     "zenquant/research/time_space_export.py",
+@@ -324,7 +327,12 @@ def validate_registered_time_space_export(
+ 
+     try:
+         as_of_ns = int(export["as_of_ns"])
+-        trust, persisted_receipt = _load_persisted_registration(as_of_ns, receipt)
++        trust, persisted_receipt, persisted_export, persisted_provenance = _load_persisted_registration(
++            as_of_ns,
++            receipt,
++            export,
++            provenance,
++        )
+         fetcher = provider_fetcher or _fetch_provider
+         provider = fetcher(trust["remote_identity"], int(trust["provider_run_id"]))
+         generator_provider = fetcher(trust["remote_identity"], int(trust["generator_provider_run_id"]))
+@@ -341,10 +349,10 @@ def validate_registered_time_space_export(
+     except (KeyError, TypeError, ValueError, OSError):
+         return EXPORT_REGISTRATION_REQUIRED
+     return _validate_registered_time_space_export_payloads(
+-        export,
+-        provenance,
++        persisted_export,
++        persisted_provenance,
+         checkpoint,
+-        receipt,
++        persisted_receipt,
+         trust_payload=trust,
+         provider_payload=provider,
+         generator_provider_payload=generator_provider,
+@@ -356,25 +364,44 @@ def validate_registered_time_space_export(
+ def _load_persisted_registration(
+     as_of_ns: int,
+     supplied_receipt: Mapping[str, Any] | None,
++    supplied_export: Mapping[str, Any] | None,
++    supplied_provenance: Mapping[str, Any] | None,
+     *,
+     registration_root: Path = _REGISTRATION_ROOT,
+-) -> tuple[dict[str, Any], dict[str, Any]]:
++) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any], dict[str, Any]]:
+     """Load immutable in-repo evidence; expiring provider artifacts are not a runtime dependency."""
+ 
+     registration_dir = Path(registration_root) / str(as_of_ns)
+-    trust = _load_json(
++    trust = _load_canonical_json(
+         registration_dir / "time_space_export_registration_trust_v1.json",
+         "export registration trust root",
+     )
+-    persisted_receipt = _load_json(
++    persisted_receipt = _load_canonical_json(
+         registration_dir / _PERSISTED_RECEIPT_NAME,
+         "persisted export registration receipt",
+     )
+-    if trust.get("registration_status") != VERIFIED or supplied_receipt is None:
++    persisted_export = _load_canonical_json(
++        registration_dir / _PERSISTED_EXPORT_NAME,
++        "persisted canonical export",
++    )
++    persisted_provenance = _load_canonical_json(
++        registration_dir / _PERSISTED_PROVENANCE_NAME,
++        "persisted canonical provenance",
++    )
++    if (
++        trust.get("registration_status") != VERIFIED
++        or supplied_receipt is None
++        or supplied_export is None
++        or supplied_provenance is None
++    ):
+         raise ValueError("export registration is not verified")
+     if _plain_mapping(supplied_receipt, "receipt") != persisted_receipt:
+         raise ValueError("supplied receipt is not the immutable checked-in receipt")
+-    return trust, persisted_receipt
++    if _plain_mapping(supplied_export, "export") != persisted_export:
++        raise ValueError("supplied export is not the immutable checked-in export")
++    if _plain_mapping(supplied_provenance, "provenance") != persisted_provenance:
++        raise ValueError("supplied provenance is not the immutable checked-in provenance")
++    return trust, persisted_receipt, persisted_export, persisted_provenance
+ 
+ 
+ def _validate_registered_time_space_export_payloads(
+@@ -778,6 +805,20 @@ def _load_json(path: Path, name: str) -> dict[str, Any]:
+     return payload
+ 
+ 
++def _load_canonical_json(path: Path, name: str) -> dict[str, Any]:
++    try:
++        content = path.read_bytes()
++        payload = json.loads(content.decode("utf-8"))
++    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
++        raise ValueError(f"cannot load {name}") from exc
++    if not isinstance(payload, dict):
++        raise ValueError(f"{name} must be an object")
++    canonical = (json.dumps(payload, sort_keys=True, separators=(",", ":"), allow_nan=False) + "\n").encode()
++    if content != canonical:
++        raise ValueError(f"{name} bytes are not canonical")
++    return payload
++
++
+ def _required_string(value: Any, name: str) -> str:
+     if not isinstance(value, str) or not value or value.strip() != value:
+         raise ValueError(f"{name} must be a non-empty canonical string")

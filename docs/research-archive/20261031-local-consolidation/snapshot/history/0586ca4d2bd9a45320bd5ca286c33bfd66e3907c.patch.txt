@@ -1,0 +1,162 @@
+commit 0586ca4d2bd9a45320bd5ca286c33bfd66e3907c
+Author:     Disaster <clusternlh@gmail.com>
+AuthorDate: Sat Aug 22 21:46:34 2026 +0800
+Commit:     Disaster <clusternlh@gmail.com>
+CommitDate: Sat Aug 22 21:46:34 2026 +0800
+
+    fix(research): harden late-dev evidence classification
+
+diff --git a/tests/test_late_dev_cost_attribution.py b/tests/test_late_dev_cost_attribution.py
+index fad1d4d..4a66390 100644
+--- a/tests/test_late_dev_cost_attribution.py
++++ b/tests/test_late_dev_cost_attribution.py
+@@ -496,6 +496,88 @@ def test_execution_shortfall_does_not_divide_a_non_loss_baseline():
+     assert evidence["execution_shortfall"]["status"] == "UNATTRIBUTABLE"
+ 
+ 
++def test_non_loss_shortfall_below_floor_is_unattributable_not_insufficient_sample():
++    evidence = _classify_evidence(
++        [
++            {
++                "seed": seed,
++                "directional_edge_support": False,
++                "confidence_no_incremental_edge_support": False,
++                "cost_flip_support": False,
++                "regime_localization_support": False,
++                "closed_episode_count": 20,
++                "negative_tail_share": 0.0,
++                "implementation_shortfall_observation_count": 19,
++                "implementation_shortfall": 100.0,
++                "a5_baseline_net_pnl": 50.0,
++            }
++            for seed in (42, 1729, 2718, 3141, 9001)
++        ]
++    )
++
++    assert evidence["execution_shortfall"]["status"] == "UNATTRIBUTABLE"
++    assert evidence["execution_shortfall"]["insufficient_sample_seeds"] == []
++
++
++def test_four_loss_seed_shortfalls_remain_consistent_with_one_non_loss_seed_below_floor():
++    evidence = _classify_evidence(
++        [
++            {
++                "seed": seed,
++                "directional_edge_support": False,
++                "confidence_no_incremental_edge_support": False,
++                "cost_flip_support": False,
++                "regime_localization_support": False,
++                "closed_episode_count": 20,
++                "negative_tail_share": 0.0,
++                "implementation_shortfall_observation_count": 20,
++                "implementation_shortfall": 25.0,
++                "a5_baseline_net_pnl": -100.0,
++                "execution_shortfall_support": True,
++            }
++            for seed in (42, 1729, 2718, 3141)
++        ]
++        + [
++            {
++                "seed": 9001,
++                "directional_edge_support": False,
++                "confidence_no_incremental_edge_support": False,
++                "cost_flip_support": False,
++                "regime_localization_support": False,
++                "closed_episode_count": 20,
++                "negative_tail_share": 0.0,
++                "implementation_shortfall_observation_count": 0,
++                "implementation_shortfall": 0.0,
++                "a5_baseline_net_pnl": 50.0,
++                "execution_shortfall_support": False,
++            }
++        ]
++    )
++
++    assert evidence["execution_shortfall"]["status"] == "CONSISTENT"
++    assert evidence["execution_shortfall"]["supporting_seed_count"] == 4
++    assert evidence["execution_shortfall"]["inapplicable_seeds"] == [9001]
++
++
++def test_missing_episode_collection_does_not_mask_a_present_nonfinite_hit_rate():
++    report = _complete_raw_report()
++    late_dev = next(run for run in report["runs"] if run["window"] == "late_dev_2025")  # type: ignore[index]
++    late_dev["stages"][ArchitectureStage.A5_SHADOW.value].pop("position_episodes")  # type: ignore[index]
++    late_dev["stages"][ArchitectureStage.A1_SIGN.value]["direction_hit_rate"] = float("nan")  # type: ignore[index]
++
++    with pytest.raises(LateDevAttributionValidationError, match="A1_SIGN direction hit rate"):
++        _build(report)
++
++
++def test_present_non_mapping_cost_stress_is_invalid_not_structurally_incomplete():
++    report = _complete_raw_report()
++    late_dev = next(run for run in report["runs"] if run["window"] == "late_dev_2025")  # type: ignore[index]
++    late_dev["stages"][ArchitectureStage.A1_SIGN.value]["cost_stress"] = []  # type: ignore[index]
++
++    with pytest.raises(LateDevAttributionValidationError, match="A1_SIGN cost stress"):
++        _build(report)
++
++
+ def test_confidence_failure_requires_equal_direction_hit_rates_and_nonpositive_score_pnl():
+     report = _complete_raw_report()
+     for run in report["runs"]:  # type: ignore[index]
+diff --git a/zenquant/research/late_dev_cost_attribution.py b/zenquant/research/late_dev_cost_attribution.py
+index dc31228..50957a6 100644
+--- a/zenquant/research/late_dev_cost_attribution.py
++++ b/zenquant/research/late_dev_cost_attribution.py
+@@ -229,8 +229,10 @@ def _required_seed_inputs_incomplete(run: Mapping[str, Any]) -> bool:
+ 
+ def _has_cost_structure(run: Mapping[str, Any], stage_name: str) -> bool:
+     stage = _stage(run, stage_name)
+-    costs = stage.get("cost_stress")
+-    return isinstance(costs, Mapping) and "0" in costs and "15" in costs
++    if "cost_stress" not in stage:
++        return False
++    costs = _mapping(stage["cost_stress"], f"{stage_name} cost stress")
++    return "0" in costs and "15" in costs
+ 
+ 
+ def _has_a5_episode_inputs(run: Mapping[str, Any]) -> bool:
+@@ -249,6 +251,12 @@ def _build_seed_evidence(
+     evidence: list[dict[str, Any]] = []
+     for run in runs:
+         seed = int(run["seed"])
++        sign_hit_rate = _finite(
++            _stage(run, ArchitectureStage.A1_SIGN.value)["direction_hit_rate"], "A1_SIGN direction hit rate"
++        )
++        score_hit_rate = _finite(
++            _stage(run, ArchitectureStage.A1_SCORE.value)["direction_hit_rate"], "A1_SCORE direction hit rate"
++        )
+         sign_bridge = bridge_by_seed_stage.get((seed, ArchitectureStage.A1_SIGN.value))
+         score_bridge = bridge_by_seed_stage.get((seed, ArchitectureStage.A1_SCORE.value))
+         a5_bridge = bridge_by_seed_stage.get((seed, ArchitectureStage.A5_SHADOW.value))
+@@ -256,12 +264,6 @@ def _build_seed_evidence(
+         if sign_bridge is None or score_bridge is None or a5_bridge is None or summary is None:
+             evidence.append({"seed": seed, "required_inputs_complete": False})
+             continue
+-        sign_hit_rate = _finite(
+-            _stage(run, ArchitectureStage.A1_SIGN.value)["direction_hit_rate"], "A1_SIGN direction hit rate"
+-        )
+-        score_hit_rate = _finite(
+-            _stage(run, ArchitectureStage.A1_SCORE.value)["direction_hit_rate"], "A1_SCORE direction hit rate"
+-        )
+         regime_groups = _mapping(summary["regime_groups"], "regime groups")
+         closed_episode_count = _nonnegative_int(summary["closed_episode_count"], "closed episode count")
+         negative_tail_share = summary["negative_tail_share"]
+@@ -359,13 +361,14 @@ def _classify_family(
+     sample_floor: int | None = None,
+     inapplicable: Any = None,
+ ) -> dict[str, Any]:
+-    supporting_seeds = [int(row["seed"]) for row in seed_evidence if row.get(support_key) is True]
++    inapplicable_seeds = [int(row["seed"]) for row in seed_evidence if inapplicable is not None and inapplicable(row)]
++    applicable_evidence = [row for row in seed_evidence if int(row["seed"]) not in inapplicable_seeds]
++    supporting_seeds = [int(row["seed"]) for row in applicable_evidence if row.get(support_key) is True]
+     insufficient_sample_seeds = (
+-        [int(row["seed"]) for row in seed_evidence if int(row.get(sample_floor_key, 0)) < sample_floor]
++        [int(row["seed"]) for row in applicable_evidence if int(row.get(sample_floor_key, 0)) < sample_floor]
+         if sample_floor_key is not None and sample_floor is not None
+         else []
+     )
+-    inapplicable_seeds = [int(row["seed"]) for row in seed_evidence if inapplicable is not None and inapplicable(row)]
+     if insufficient_sample_seeds:
+         status = EvidenceStatus.INSUFFICIENT_SAMPLE.value
+     elif len(supporting_seeds) >= 4:

@@ -1,0 +1,281 @@
+commit bef9d879309aa0d5a7d46a5ed66c7f3286b546fa
+Author:     Disaster <clusternlh@gmail.com>
+AuthorDate: Sun Aug 23 02:48:14 2026 +0800
+Commit:     Disaster <clusternlh@gmail.com>
+CommitDate: Sun Aug 23 02:48:14 2026 +0800
+
+    feat(research): record Quant V2 risk donor provenance
+
+diff --git a/scripts/run_architecture_experiment.py b/scripts/run_architecture_experiment.py
+index a14ac45..24bc0a4 100644
+--- a/scripts/run_architecture_experiment.py
++++ b/scripts/run_architecture_experiment.py
+@@ -191,6 +191,13 @@ def run_frozen_stage_sidecars(
+         estimated_slippage_bps=FROZEN_FALLBACK_SLIPPAGE_BPS,
+     )
+     observations = tuple(observations_from_rows(batch["observations"]))
++    missing_provenance = [
++        observation.cutoff_time_ns
++        for observation in observations
++        if not observation.input_row_sha256 or not observation.risk_donor_sha256 or not observation.risk_donor
++    ]
++    if missing_provenance:
++        raise ValueError(f"architecture stage rows are missing risk donor provenance at cutoffs={missing_provenance!r}")
+     metrics_by_stage: dict[str, ArchitectureExecutionMetrics] = {}
+     rows_by_stage: dict[str, tuple[ArchitectureStageExecutionRow, ...]] = {}
+     episodes_by_stage: dict[str, tuple[PositionEpisode, ...]] = {}
+diff --git a/tests/test_architecture_experiment.py b/tests/test_architecture_experiment.py
+index 8812d71..f49bbea 100644
+--- a/tests/test_architecture_experiment.py
++++ b/tests/test_architecture_experiment.py
+@@ -865,7 +865,23 @@ def test_frozen_stage_sidecars_fail_closed_when_every_stage_is_flat():
+     class _FlatStageRunner:
+         @staticmethod
+         def build_architecture_stage_rows(**_kwargs):
+-            return {"observations": [asdict(flat_observation)]}
++            row = asdict(flat_observation)
++            row.update(
++                {
++                    "input_row_sha256": "sha256:flat-input",
++                    "risk_donor_sha256": "sha256:flat-donor",
++                    "risk_donor": {
++                        "ts_ns": None,
++                        "equity": None,
++                        "high_water_mark": None,
++                        "drawdown": None,
++                        "lev_cap": None,
++                        "reduce_only_mode": None,
++                        "flags": [],
++                    },
++                }
++            )
++            return {"observations": [row]}
+ 
+     with pytest.raises(ValueError, match="all-flat"):
+         module.run_frozen_stage_sidecars(
+@@ -875,6 +891,37 @@ def test_frozen_stage_sidecars_fail_closed_when_every_stage_is_flat():
+         )
+ 
+ 
++def test_frozen_stage_sidecars_reject_missing_risk_donor_provenance():
++    module = _load_cli_module()
++    manifest = load_architecture_experiment_manifest()
++    window = next(item for item in manifest.windows if item.label == "late_dev_2025")
++    config, _config_hash = module.build_frozen_backtest_config(
++        root=Path("/read-only-data"),
++        manifest=manifest,
++        window=window,
++        seed=42,
++    )
++    observation_without_provenance = replace(
++        _observation(raw_score=0.4),
++        annualized_volatility=0.20,
++        risk_regime="TRADABLE",
++        frozen_regime_multiplier=1.0,
++        reference_price=100.0,
++    )
++
++    class _MissingProvenanceRunner:
++        @staticmethod
++        def build_architecture_stage_rows(**_kwargs):
++            return {"observations": [asdict(observation_without_provenance)]}
++
++    with pytest.raises(ValueError, match="missing risk donor provenance"):
++        module.run_frozen_stage_sidecars(
++            _MissingProvenanceRunner(),
++            config=config,
++            manifest=manifest,
++        )
++
++
+ def test_a5_stage_replay_produces_actual_fill_cost_and_forward_labels():
+     observation = replace(
+         _observation(raw_score=0.4, frozen_confidence=0.6),
+@@ -1821,18 +1868,17 @@ def test_replay_bridge_builds_complete_pit_stage_inputs_and_true_4h_labels():
+         replace(pack, cutoff_time_ns=cutoff, ts_ns=cutoff) for cutoff in (100, 200, 300, 400, 500, 600)
+     ]
+     runner._market_states = [replace(state, cutoff_time_ns=cutoff) for cutoff in (100, 200, 300, 400, 500, 600)]
+-    runner._risk_snapshots = [
+-        RiskSnapshot(
+-            portfolio="arc",
+-            ts_ns=150,
+-            equity=1_000.0,
+-            high_water_mark=1_000.0,
+-            drawdown=0.0,
+-            lev_cap=1.0,
+-            reduce_only_mode=True,
+-            flags=["PORTFOLIO_KILL"],
+-        )
+-    ]
++    baseline_risk_snapshot = RiskSnapshot(
++        portfolio="arc",
++        ts_ns=150,
++        equity=1_000.0,
++        high_water_mark=1_000.0,
++        drawdown=0.0,
++        lev_cap=1.0,
++        reduce_only_mode=True,
++        flags=["PORTFOLIO_KILL", "ALPHA"],
++    )
++    runner._risk_snapshots = [baseline_risk_snapshot]
+     runner._funding_rows = [
+         {"funding_time_ns": 50, "funding_rate": 0.002},
+         {"funding_time_ns": 150, "funding_rate": 0.001},
+@@ -1868,6 +1914,17 @@ def test_replay_bridge_builds_complete_pit_stage_inputs_and_true_4h_labels():
+     assert second["risk_snapshot_ts_ns"] == 150
+     assert second["reduce_only"] is True
+     assert second["safety_reasons"] == ("KILL",)
++    assert second["risk_donor"] == {
++        "ts_ns": 150,
++        "equity": 1_000.0,
++        "high_water_mark": 1_000.0,
++        "drawdown": 0.0,
++        "lev_cap": 1.0,
++        "reduce_only_mode": True,
++        "flags": ["ALPHA", "PORTFOLIO_KILL"],
++    }
++    assert second["risk_donor_sha256"] == ("sha256:de9fbad3302632c0a9cfde77a680d142d8da38e7c9ac175bddcc1536b35cc543")
++    assert second["input_row_sha256"].startswith("sha256:")
+     assert batch["funding_settlements_by_cutoff"] == {
+         200: (
+             ArchitectureFundingSettlement(
+@@ -1880,18 +1937,24 @@ def test_replay_bridge_builds_complete_pit_stage_inputs_and_true_4h_labels():
+     }
+     assert batch["missing_stage_input_count"] == 0
+ 
+-    runner._risk_snapshots.append(
+-        RiskSnapshot(
+-            portfolio="arc",
+-            ts_ns=150,
+-            equity=900.0,
+-            high_water_mark=1_000.0,
++    runner._risk_snapshots = [
++        replace(
++            baseline_risk_snapshot,
+             drawdown=0.1,
+-            lev_cap=0.5,
+             reduce_only_mode=False,
+-            flags=[],
++            flags=["WATCH"],
+         )
++    ]
++    changed_batch = runner.build_architecture_stage_rows(
++        exchange_min_quantity=0.001,
++        estimated_fee_bps=4.0,
++        estimated_slippage_bps=1.5,
+     )
++    changed_second = changed_batch["observations"][1]
++    assert changed_second["risk_donor_sha256"] != second["risk_donor_sha256"]
++    assert changed_second["input_row_sha256"] != second["input_row_sha256"]
++
++    runner._risk_snapshots.append(baseline_risk_snapshot)
+     with pytest.raises(ValueError, match="conflicting risk snapshots"):
+         runner.build_architecture_stage_rows(
+             exchange_min_quantity=0.001,
+diff --git a/zenquant/historical/replay.py b/zenquant/historical/replay.py
+index 000ce3e..5fe39d3 100644
+--- a/zenquant/historical/replay.py
++++ b/zenquant/historical/replay.py
+@@ -7,6 +7,8 @@ risk, and execution behavior stays auditable across modes.
+ 
+ from __future__ import annotations
+ 
++import hashlib
++import json
+ import math
+ import time
+ from bisect import bisect_left, bisect_right
+@@ -1402,6 +1404,7 @@ class HistoricalBacktest:
+                 missing.append(cutoff)
+                 continue
+             risk_snapshot, risk_snapshot_status = risk_snapshots[cutoff]
++            risk_donor = _architecture_risk_donor_payload(risk_snapshot)
+             risk_regime = _architecture_risk_regime(state)
+             multiplier = {
+                 "TRADABLE": 1.0,
+@@ -1424,6 +1427,8 @@ class HistoricalBacktest:
+                 "safety_reasons": tuple(sorted(safety_reasons)),
+                 "risk_snapshot_status": risk_snapshot_status,
+                 "risk_snapshot_ts_ns": risk_snapshot.ts_ns if risk_snapshot is not None else None,
++                "risk_donor": risk_donor,
++                "risk_donor_sha256": _canonical_architecture_payload_sha256(risk_donor),
+                 "estimated_fee_bps": estimated_fee_bps,
+                 "estimated_slippage_bps": estimated_slippage_bps,
+                 "reference_price": float(confirmed_rows[index]["close"]),
+@@ -1436,6 +1441,7 @@ class HistoricalBacktest:
+                 "quality_state": state.quality_state,
+                 "quality_flags": tuple(indicator.quality_flags),
+             }
++            row["input_row_sha256"] = _canonical_architecture_payload_sha256(row)
+             rows.append(row)
+         if missing:
+             raise ValueError(f"missing point-in-time A2-A5 stage inputs at cutoffs={missing!r}")
+@@ -1854,6 +1860,34 @@ def _architecture_risk_donors(
+     return donors
+ 
+ 
++def _architecture_risk_donor_payload(snapshot: RiskSnapshot | None) -> dict[str, Any]:
++    """Return the complete legacy risk state visible to one V2 cutoff."""
++    if snapshot is None:
++        return {
++            "ts_ns": None,
++            "equity": None,
++            "high_water_mark": None,
++            "drawdown": None,
++            "lev_cap": None,
++            "reduce_only_mode": None,
++            "flags": [],
++        }
++    return {
++        "ts_ns": snapshot.ts_ns,
++        "equity": snapshot.equity,
++        "high_water_mark": snapshot.high_water_mark,
++        "drawdown": snapshot.drawdown,
++        "lev_cap": snapshot.lev_cap,
++        "reduce_only_mode": snapshot.reduce_only_mode,
++        "flags": sorted(snapshot.flags),
++    }
++
++
++def _canonical_architecture_payload_sha256(payload: dict[str, Any]) -> str:
++    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
++    return f"sha256:{hashlib.sha256(encoded).hexdigest()}"
++
++
+ def _architecture_risk_regime(state: MarketState) -> str:
+     quality = state.quality_state.upper()
+     volatility = state.volatility_state.upper()
+diff --git a/zenquant/research/architecture_experiment.py b/zenquant/research/architecture_experiment.py
+index 39de87e..661a7c8 100644
+--- a/zenquant/research/architecture_experiment.py
++++ b/zenquant/research/architecture_experiment.py
+@@ -212,6 +212,9 @@ class ArchitectureObservation:
+     safety_reasons: tuple[str, ...] = ()
+     risk_snapshot_status: str = "NO_PRIOR_SNAPSHOT_NEUTRAL"
+     risk_snapshot_ts_ns: int | None = None
++    risk_donor: Mapping[str, Any] = field(default_factory=dict)
++    risk_donor_sha256: str = ""
++    input_row_sha256: str = ""
+     estimated_fee_bps: float = 0.0
+     estimated_slippage_bps: float = 0.0
+     reference_price: float | None = None
+@@ -871,6 +874,19 @@ def _summarize_stage(
+             "risk_snapshot_status": observation.risk_snapshot_status,
+             "risk_snapshot_ts_ns": observation.risk_snapshot_ts_ns,
+         }
++        if (
++            stage
++            in {
++                ArchitectureStage.A2,
++                ArchitectureStage.A3,
++                ArchitectureStage.A4,
++                ArchitectureStage.A5_SHADOW,
++            }
++            and observation.risk_donor_sha256
++        ):
++            row["input_row_sha256"] = observation.input_row_sha256
++            row["risk_donor_sha256"] = observation.risk_donor_sha256
++            row["risk_donor"] = dict(observation.risk_donor)
+         realized_return = forward_return
+         row_turnover = (
+             execution_row.filled_qty * (execution_row.actual_fill_price or execution_row.reference_price)

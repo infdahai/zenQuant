@@ -1,0 +1,297 @@
+from copy import deepcopy
+from dataclasses import replace
+
+import pytest
+
+from zenquant.execution import SimulatedGateway
+from zenquant.research.target_replay import run_target_replay
+from zenquant.risk import RiskOverlay
+
+FOUR_HOURS = 4 * 60 * 60 * 1_000_000_000
+
+
+def _bars(prices: list[tuple[float, float]]) -> list[dict]:
+    return [
+        {
+            "open_time_ns": index * FOUR_HOURS,
+            "close_time_ns": (index + 1) * FOUR_HOURS - 1,
+            "open": opening,
+            "high": max(opening, closing),
+            "low": min(opening, closing),
+            "close": closing,
+        }
+        for index, (opening, closing) in enumerate(prices)
+    ]
+
+
+def test_target_uses_signal_nav_and_close_but_fills_only_at_next_open() -> None:
+    bars = _bars([(100, 100), (200, 220)])
+    result = run_target_replay(bars, [0.5, -1], initial_equity=100, taker_fee_bps=0, slippage_bps=0)
+    assert len(result["fills"]) == 1
+    fill = result["fills"][0]
+    assert fill["signed_qty"] == 0.5
+    assert fill["price"] == 200
+    assert fill["time_ns"] == bars[1]["open_time_ns"] > bars[0]["close_time_ns"]
+    assert fill["signal_cutoff_time_ns"] == bars[0]["close_time_ns"]
+    assert result["curve"][-1]["equity"] == 110
+    assert result["audit"]["intents"][0]["target_qty"] == 0.5
+    assert result["audit"]["decisions"][-1]["execution_status"] == "not_executed_terminal_target"
+
+
+def test_fees_and_slippage_change_account_and_subsequent_frozen_quantity() -> None:
+    bars = _bars([(100, 100)] * 3)
+    result = run_target_replay(bars, [0.5, 0.5, 0], initial_equity=100, taker_fee_bps=100, slippage_bps=100)
+    assert result["fills"][0]["price"] == 101
+    assert result["fills"][0]["fee"] == 0.505
+    assert result["audit"]["intents"][1]["decision_equity"] == pytest.approx(98.995)
+    assert result["audit"]["intents"][1]["target_qty"] == pytest.approx(0.494975)
+    assert result["accounting"]["max_cash_error"] < 1e-9
+    assert result["accounting"]["max_nav_error"] < 1e-9
+
+
+def test_actual_partial_fill_drives_positions_funding_and_next_intent(monkeypatch: pytest.MonkeyPatch) -> None:
+    original = SimulatedGateway.submit_order
+
+    def partial(self, order, **kwargs):
+        # Venue boundary fixture: the real gateway prices and charges only its filled half.
+        report = original(self, replace(order, quantity=order.quantity / 2), **kwargs)
+        return replace(report, status="PARTIALLY_FILLED")
+
+    monkeypatch.setattr(SimulatedGateway, "submit_order", partial)
+    bars = _bars([(100, 100)] * 3)
+    funding = [{"funding_time_ns": 2 * FOUR_HOURS, "funding_rate": 0.1, "mark_price": 100}]
+    result = run_target_replay(bars, [0.5, 0.5, 0], funding, initial_equity=100, taker_fee_bps=0, slippage_bps=0)
+    assert result["fills"][0]["signed_qty"] == 0.25
+    assert result["funding"][0]["position_qty"] == 0.25
+    assert result["funding"][0]["pnl"] == -2.5
+    assert result["fills"][1]["signed_qty"] == 0.125
+    assert result["accounting"]["position_qty"] == 0.375
+    assert result["episodes"][0]["remaining_qty"] == 0.375
+
+
+def test_funding_settles_old_position_before_same_time_open_or_close() -> None:
+    bars = _bars([(100, 100)] * 3)
+    funding = [
+        {"funding_time_ns": FOUR_HOURS, "funding_rate": 0.1, "mark_price": 100},
+        {"funding_time_ns": 2 * FOUR_HOURS, "funding_rate": 0.1, "mark_price": 100},
+    ]
+    result = run_target_replay(bars, [0.5, 0, 0], funding, initial_equity=100, taker_fee_bps=0, slippage_bps=0)
+    assert [row["pnl"] for row in result["funding"]] == [0, -5]
+    assert result["curve"][-1]["equity"] == 95
+    assert result["episodes"][0]["closed"] is True
+    assert result["episodes"][0]["funding_pnl"] == -5
+    assert result["episodes"][0]["net_pnl"] == -5
+
+
+def test_missing_funding_mark_uses_prior_confirmed_close_not_future_close() -> None:
+    bars = _bars([(100, 100), (120, 130)])
+    funding = [{"funding_time_ns": FOUR_HOURS + 100, "funding_rate": 0.1}]
+    result = run_target_replay(bars, [0.5, 0], funding, initial_equity=100, taker_fee_bps=0, slippage_bps=0)
+    allocation = result["funding"][0]
+    assert allocation["mark_price"] == 100
+    assert allocation["price_source"] == "confirmed_close_proxy"
+    assert allocation["price_time_ns"] == bars[0]["close_time_ns"]
+    assert allocation["pnl"] == -5
+    assert result["curve"][-1]["equity"] == 100
+
+
+def test_risk_caps_intent_before_frozen_snapshot() -> None:
+    result = run_target_replay(_bars([(100, 100)] * 2), [10, 0], initial_equity=100, max_leverage=0.5)
+    assert result["audit"]["intents"][0]["target_qty"] == 10
+    assert result["audit"]["snapshots"][0]["target_qty"] == 0.5
+    assert result["audit"]["risk_decisions"][0]["revised_target_qty"] == 0.5
+    assert result["fills"][0]["signed_qty"] == 0.5
+
+
+def test_gap_cap_blocks_new_risk_without_rewriting_frozen_target() -> None:
+    result = run_target_replay(_bars([(100, 100), (400, 400)]), [0.5, 0], initial_equity=100)
+    assert result["fills"] == []
+    assert result["audit"]["snapshots"][0]["target_qty"] == 0.5
+    assert "GAP_LEVERAGE_CAP" in result["audit"]["decisions"][0]["execution_blockers"]
+
+
+def test_gap_kill_does_not_add_to_the_old_position() -> None:
+    result = run_target_replay(
+        _bars([(100, 100), (100, 100), (20, 20)]),
+        [0.5, 1, 0],
+        initial_equity=100,
+        taker_fee_bps=0,
+        slippage_bps=0,
+    )
+    assert len(result["fills"]) == 1
+    assert result["accounting"]["position_qty"] == 0.5
+    assert "GAP_KILL_SWITCH" in result["audit"]["decisions"][1]["execution_blockers"]
+
+
+def test_future_prices_do_not_change_prior_frozen_targets_or_fills() -> None:
+    bars = _bars([(100, 100)] * 4)
+    changed = deepcopy(bars)
+    changed[3].update(open=120, high=130, low=120, close=130)
+    first = run_target_replay(bars, [0.5] * 4, initial_equity=100)
+    second = run_target_replay(changed, [0.5] * 4, initial_equity=100)
+    assert first["audit"]["snapshots"][:3] == second["audit"]["snapshots"][:3]
+    assert first["fills"][:2] == second["fills"][:2]
+
+
+def test_replay_is_deterministic_and_never_claims_live_eligibility() -> None:
+    arguments = (_bars([(100, 100), (100, 105), (105, 103)]), [0.5, -0.5, 0])
+    first = run_target_replay(*arguments, initial_equity=100)
+    assert first == run_target_replay(*arguments, initial_equity=100)
+    assert first["diagnostic_only"] is True
+    assert first["eligible_for_paper"] is False
+    assert first["engineering"]["E4"]["status"] == "NOT_EVALUABLE"
+    assert all(row["time_ns"] < following["time_ns"] for row, following in zip(first["curve"], first["curve"][1:]))
+
+
+def test_terminal_midnight_valuation_uses_only_prior_known_close() -> None:
+    bars = _bars([(100, 100)] * 6)
+    result = run_target_replay(bars, [0.5] * 6, initial_equity=100, taker_fee_bps=0, slippage_bps=0)
+    terminal = result["curve"][-1]
+    assert terminal["time_ns"] == 24 * 60 * 60 * 1_000_000_000
+    assert terminal["equity"] == 100
+    assert terminal["source_time_ns"] == bars[-1]["close_time_ns"]
+    assert terminal["valuation_basis"] == "known_close_before_boundary_events"
+    assert all(row["time_ns"] < terminal["time_ns"] for row in result["fills"])
+
+
+@pytest.mark.parametrize("case", ["unsorted", "gap", "same_time_close", "bad_ohlc", "nan", "bad_target_count"])
+def test_invalid_bar_or_target_contract_is_rejected(case: str) -> None:
+    bars = _bars([(100, 100)] * 2)
+    targets = [0.5, 0]
+    if case == "unsorted":
+        bars.reverse()
+    elif case == "gap":
+        bars[1]["open_time_ns"] += FOUR_HOURS
+        bars[1]["close_time_ns"] += FOUR_HOURS
+    elif case == "same_time_close":
+        bars[0]["close_time_ns"] = bars[1]["open_time_ns"]
+    elif case == "bad_ohlc":
+        bars[0]["high"] = 90
+    elif case == "nan":
+        targets[0] = float("nan")
+    else:
+        targets.pop()
+    with pytest.raises(ValueError):
+        run_target_replay(bars, targets)
+
+
+def test_duplicate_funding_is_rejected() -> None:
+    bars = _bars([(100, 100)] * 2)
+    event = {"funding_time_ns": FOUR_HOURS, "funding_rate": 0.1, "mark_price": 100}
+    with pytest.raises(ValueError):
+        run_target_replay(bars, [0.5, 0], [event, event])
+
+
+def test_flat_initial_funding_does_not_invent_an_unknown_mark() -> None:
+    result = run_target_replay(
+        _bars([(100, 100)] * 2),
+        [0, 0],
+        [{"funding_time_ns": 0, "funding_rate": 0.1, "mark_price": None}],
+        initial_equity=100,
+    )
+    settlement = result["funding"][0]
+    assert settlement["pnl"] == 0
+    assert settlement["position_qty"] == 0
+    assert settlement["mark_price"] is None
+    assert settlement["price_time_ns"] is None
+    assert settlement["price_source"] == "zero_position_no_mark_required"
+    assert result["curve"][-1]["equity"] == 100
+    assert result["episodes"] == []
+
+
+def test_observed_fee_accounting_failure_is_an_engineering_failure(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(RiskOverlay, "apply_fee", lambda self, fee: None)
+    result = run_target_replay(_bars([(100, 100)] * 2), [0.5, 0], initial_equity=100)
+    assert result["accounting"]["max_cash_error"] > result["accounting"]["tolerances"]["cash"]
+    assert result["engineering"]["E2"]["status"] == "FAIL"
+    assert result["engineering"]["E4"]["status"] == "NOT_EVALUABLE"
+
+
+def test_actual_venue_overfill_is_an_execution_purity_failure(monkeypatch: pytest.MonkeyPatch) -> None:
+    original = SimulatedGateway.submit_order
+
+    def overfill(self, order, **kwargs):
+        return original(self, replace(order, quantity=order.quantity * 2), **kwargs)
+
+    monkeypatch.setattr(SimulatedGateway, "submit_order", overfill)
+    result = run_target_replay(_bars([(100, 100)] * 2), [0.5, 0], initial_equity=100)
+    assert result["execution_purity"]["target_overshoot"] == 1
+    assert result["engineering"]["E4"]["status"] == "FAIL"
+    assert result["engineering"]["E2"]["status"] == "NOT_EVALUABLE"
+
+
+@pytest.mark.parametrize("symbol", ["BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT"])
+def test_major_symbol_flows_through_events_and_is_deterministic(symbol):
+    kwargs = dict(symbol=symbol, inventory_policy="actual_filled_inventory_v1", initial_equity=100)
+    first = run_target_replay(_bars([(100, 100)] * 3), [0.5, 0, 0], **kwargs)
+    assert first == run_target_replay(_bars([(100, 100)] * 3), [0.5, 0, 0], **kwargs)
+    assert first["identity"]["symbol"] == symbol
+    assert first["fills"][0]["symbol"] == symbol
+    for section in ("intents", "orders", "snapshots", "risk_decisions", "order_audits"):
+        assert first["audit"][section]
+        assert all(row["symbol"] == symbol for row in first["audit"][section])
+    expected_portfolio = "research-target-replay" if symbol == "BTCUSDT" else f"research-target-replay-{symbol}"
+    assert first["identity"]["portfolio"] == expected_portfolio
+    assert all(row["portfolio"] == expected_portfolio for row in first["audit"]["risk_snapshots"])
+    assert first["engineering"]["E3"]["status"] == "FAIL"
+    assert "KNOWN_PRODUCTION_INVENTORY_PARITY_DIFFERENCE" in first["engineering"]["E3"]["reason"]
+    assert first["rankable"] is False and first["live_eligible"] is False
+
+
+@pytest.mark.parametrize("kwargs", [{"symbol": "DOGEUSDT"}, {"inventory_policy": "unknown"}])
+def test_unknown_symbol_or_inventory_policy_rejected(kwargs):
+    with pytest.raises(ValueError):
+        run_target_replay(_bars([(100, 100)] * 2), [0.5, 0], **kwargs)
+
+
+def test_actual_inventory_policy_retains_dust_for_funding_nav_and_risk(monkeypatch):
+    original = SimulatedGateway.submit_order
+
+    def partial(self, order, **kwargs):
+        return original(self, replace(order, quantity=order.quantity - 5e-7), **kwargs)
+
+    monkeypatch.setattr(SimulatedGateway, "submit_order", partial)
+    bars = _bars([(100, 100)] * 4)
+    funding = [{"funding_time_ns": 3 * FOUR_HOURS, "funding_rate": 0.1, "mark_price": 100}]
+    shared = run_target_replay(bars, [0.5, 0, 0, 0], funding, initial_equity=100, taker_fee_bps=0, slippage_bps=0)
+    actual = run_target_replay(
+        bars,
+        [0.5, 0, 0, 0],
+        funding,
+        initial_equity=100,
+        taker_fee_bps=0,
+        slippage_bps=0,
+        inventory_policy="actual_filled_inventory_v1",
+    )
+    quantity = sum(fill["signed_qty"] for fill in actual["fills"])
+    assert 0 < abs(quantity) <= 1e-6
+    assert actual["funding"][0]["position_qty"] == quantity
+    assert actual["funding"][0]["pnl"] == -quantity * 100 * 0.1
+    assert actual["accounting"]["position_qty"] == quantity
+    assert actual["accounting"]["max_nav_error"] < 1e-9
+    assert actual["accounting"]["max_inventory_error"] < 1e-9
+    assert actual["accounting"]["tolerances"] == shared["accounting"]["tolerances"]
+    assert shared["engineering"]["E2"]["status"] == "FAIL"
+    assert shared["engineering"]["E3"]["status"] == "NOT_EVALUABLE"
+
+
+def test_research_snapshot_builder_only_changes_supported_symbol_validation():
+    import ast
+    import inspect
+
+    from zenquant.research.target_replay import _build_research_decision_snapshot
+    from zenquant.strategy.decision_snapshot import build_decision_snapshot
+
+    shared = inspect.getsource(build_decision_snapshot)
+    expected = (
+        shared.replace("def build_decision_snapshot(", "def _build_research_decision_snapshot(")
+        .replace(
+            'if not target.symbol.upper().startswith("BTC"):',
+            'if target.symbol not in {"BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT"}:',
+        )
+        .replace(
+            "DecisionSnapshot only supports BTC symbols",
+            "research DecisionSnapshot only supports declared major symbols",
+        )
+    )
+    assert ast.dump(ast.parse(inspect.getsource(_build_research_decision_snapshot))) == ast.dump(ast.parse(expected))

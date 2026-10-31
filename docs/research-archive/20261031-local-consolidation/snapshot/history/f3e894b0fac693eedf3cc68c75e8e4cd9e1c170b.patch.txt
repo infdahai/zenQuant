@@ -1,0 +1,610 @@
+commit f3e894b0fac693eedf3cc68c75e8e4cd9e1c170b
+Author:     Disaster <clusternlh@gmail.com>
+AuthorDate: Sat Aug 22 23:52:56 2026 +0800
+Commit:     Disaster <clusternlh@gmail.com>
+CommitDate: Sat Aug 22 23:52:56 2026 +0800
+
+    feat(research): complete late-dev attribution diagnostics
+
+diff --git a/zenquant/research/late_dev_cost_attribution.py b/zenquant/research/late_dev_cost_attribution.py
+index 3c3b695..f32c32c 100644
+--- a/zenquant/research/late_dev_cost_attribution.py
++++ b/zenquant/research/late_dev_cost_attribution.py
+@@ -19,9 +19,25 @@ from .architecture_experiment import (
+     load_architecture_experiment_manifest,
+ )
+ 
+-LATE_DEV_ATTRIBUTION_SCHEMA_VERSION = "quant-v2-late-dev-cost-attribution.v1"
++LATE_DEV_ATTRIBUTION_SCHEMA_VERSION = "quant-v2-late-dev-cost-attribution.v2"
+ BLOCKED_PROMOTION_STATE = "BLOCKED_PAUSE_PROMOTION_AND_TRAINING"
+ 
++_BRIDGE_STAGES = (
++    ArchitectureStage.A1_SIGN.value,
++    ArchitectureStage.A1_SCORE.value,
++    ArchitectureStage.A2.value,
++    ArchitectureStage.A3.value,
++    ArchitectureStage.A4.value,
++    ArchitectureStage.A5_SHADOW.value,
++)
++_EXECUTION_STAGES = (
++    ArchitectureStage.A2.value,
++    ArchitectureStage.A3.value,
++    ArchitectureStage.A4.value,
++    ArchitectureStage.A5_SHADOW.value,
++)
++_COST_STRESS_KEYS = {"0", "5", "15"}
++
+ 
+ class EvidenceStatus(StrEnum):
+     """Evidence completeness labels used by later attribution layers."""
+@@ -51,26 +67,30 @@ def build_late_dev_cost_attribution(
+         _validate_source_identity(source_sha256=source_sha256, source_size_bytes=source_size_bytes)
+         runs = _validate_report_envelope(report, manifest=manifest)
+         late_dev_runs = [run for run in runs if run["window"] == "late_dev_2025"]
++        for run in late_dev_runs:
++            _validate_required_stage_values(run)
+         required_inputs_incomplete = any(_required_seed_inputs_incomplete(run) for run in late_dev_runs)
+-        bridge_stages = (
+-            ArchitectureStage.A1_SIGN.value,
+-            ArchitectureStage.A1_SCORE.value,
+-            ArchitectureStage.A5_SHADOW.value,
+-        )
+         seed_stage_bridges = [
+             _build_seed_stage_bridge(run, stage_name)
+             for run in late_dev_runs
+-            for stage_name in bridge_stages
++            for stage_name in _BRIDGE_STAGES
+             if _has_cost_structure(run, stage_name)
+         ]
+         episode_attribution = []
+         for run in late_dev_runs:
+-            if not _has_a5_episode_inputs(run):
+-                continue
+-            summary = _summarize_episodes(_stage(run, ArchitectureStage.A5_SHADOW.value))
+-            summary["seed"] = int(run["seed"])
+-            summary["stage"] = ArchitectureStage.A5_SHADOW.value
+-            episode_attribution.append(summary)
++            for stage_name in _EXECUTION_STAGES:
++                if not _has_episode_inputs(run, stage_name):
++                    continue
++                summary = _summarize_episodes(_stage(run, stage_name))
++                summary["seed"] = run["seed"]
++                summary["stage"] = stage_name
++                episode_attribution.append(summary)
++        execution_attribution = [
++            _summarize_execution(run, stage_name)
++            for run in late_dev_runs
++            for stage_name in _EXECUTION_STAGES
++            if _has_execution_inputs(run, stage_name)
++        ]
+         seed_evidence = _build_seed_evidence(late_dev_runs, seed_stage_bridges, episode_attribution)
+         evidence = (
+             _insufficient_sample_evidence(seed_evidence)
+@@ -97,6 +117,7 @@ def build_late_dev_cost_attribution(
+         "validated_run_count": len(runs),
+         "seed_stage_bridges": seed_stage_bridges,
+         "episode_attribution": episode_attribution,
++        "execution_attribution": execution_attribution,
+         "seed_evidence": seed_evidence,
+         "evidence": {
+             "required_inputs_incomplete": required_inputs_incomplete,
+@@ -159,7 +180,7 @@ def build_late_dev_cost_attribution_markdown(report: Mapping[str, Any]) -> str:
+     )
+     for family in (
+         "directional_edge",
+-        "confidence_no_incremental_edge",
++        "confidence_failed_to_rescue",
+         "cost_flip",
+         "regime_localization",
+         "episode_tail",
+@@ -176,6 +197,64 @@ def build_late_dev_cost_attribution_markdown(report: Mapping[str, Any]) -> str:
+             )
+         )
+ 
++    confidence = _mapping(evidence["confidence_failed_to_rescue"], "confidence rescue evidence")
++    lines.extend(
++        [
++            "",
++            "## Confidence rescue diagnostics",
++            "",
++            f"- Improving seeds: `{confidence['improving_seed_count']}`; rescued seeds: `{confidence['rescued_seed_count']}`.",
++            "",
++            "| Seed | A1_SIGN 15bp PnL | A1_SCORE 15bp PnL | A1_SCORE - A1_SIGN 15bp PnL | Hit rates equal |",
++            "| --- | ---: | ---: | ---: | --- |",
++        ]
++    )
++    for row in report["seed_evidence"]:
++        item = _mapping(row, "seed evidence")
++        if not item.get("required_inputs_complete"):
++            continue
++        lines.append(
++            "| {seed} | {sign} | {score} | {delta} | {equal} |".format(
++                seed=item["seed"],
++                sign=item["a1_sign_15bp_net_pnl"],
++                score=item["a1_score_15bp_net_pnl"],
++                delta=item["confidence_pnl_delta_15bp"],
++                equal=item["confidence_hit_rate_equal"],
++            )
++        )
++
++    lines.extend(
++        [
++            "",
++            "## A2-A5 execution, cost, and cadence",
++            "",
++            "| Seed | Stage | Status | Rows | Execution observations | Positive fills | Fills/day | Position switches/day | Actual fee | Actual slippage | Actual shortfall |",
++            "| --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
++        ]
++    )
++    for row in report["execution_attribution"]:
++        item = _mapping(row, "execution attribution")
++        lines.append(
++            "| {seed} | {stage} | {status} | {rows} | {observations} | {fills} | {fills_per_day} | {switches} | {fee} | {slippage} | {shortfall} |".format(
++                seed=item["seed"],
++                stage=item["stage"],
++                status=item["execution_status"],
++                rows=item["attribution_row_count"],
++                observations=item["execution_observation_count"],
++                fills=item["positive_fill_count"],
++                fills_per_day=item["fills_per_day"],
++                switches=item["position_switches_per_day"],
++                fee=item["actual_fee_sum"],
++                slippage=item["actual_slippage_sum"],
++                shortfall=item["actual_implementation_shortfall_sum"],
++            )
++        )
++    lines.extend(["", "### A5 cost-shadow summaries", ""])
++    for row in report["execution_attribution"]:
++        item = _mapping(row, "execution attribution")
++        if item["cost_shadow"] is not None:
++            lines.append(f"- Seed {item['seed']}: `{json.dumps(item['cost_shadow'], sort_keys=True)}`.")
++
+     lines.extend(["", "## Regime, action, and episode summaries", ""])
+     for summary in report["episode_attribution"]:
+         item = _mapping(summary, "episode attribution")
+@@ -260,10 +339,22 @@ def _validate_report_envelope(report: Mapping[str, Any], *, manifest: Any) -> li
+     if not isinstance(raw_runs, list) or not all(isinstance(run, Mapping) for run in raw_runs):
+         raise LateDevAttributionValidationError("raw report runs must be a list of objects")
+     runs = list(raw_runs)
+-    try:
+-        observed = [(str(run.get("window")), int(run.get("seed", -1))) for run in runs]
+-    except (TypeError, ValueError, OverflowError) as exc:
+-        raise LateDevAttributionValidationError("raw report matrix mismatch") from exc
++    observed = []
++    expected_window_bounds = {
++        window["label"]: (window["start_ns"], window["end_ns"]) for window in expected_windows
++    }
++    for run in runs:
++        window = run.get("window")
++        seed = run.get("seed")
++        if not isinstance(window, str) or isinstance(seed, bool) or not isinstance(seed, int):
++            raise LateDevAttributionValidationError("raw report matrix mismatch")
++        start_ns = _exact_int(run.get("start_ns"), "run start_ns")
++        end_ns = _exact_int(run.get("end_ns"), "run end_ns")
++        if end_ns <= start_ns:
++            raise LateDevAttributionValidationError("run duration must be positive")
++        if expected_window_bounds.get(window) != (start_ns, end_ns):
++            raise LateDevAttributionValidationError("raw report run window bounds mismatch")
++        observed.append((window, seed))
+     expected = list(manifest.expected_run_keys)
+     if observed != expected or len(observed) != len(set(observed)):
+         raise LateDevAttributionValidationError("raw report matrix mismatch")
+@@ -280,6 +371,12 @@ def _validate_report_envelope(report: Mapping[str, Any], *, manifest: Any) -> li
+     return runs
+ 
+ 
++def _exact_int(value: Any, name: str) -> int:
++    if isinstance(value, bool) or not isinstance(value, int):
++        raise LateDevAttributionValidationError(f"{name} must be an exact integer")
++    return value
++
++
+ def _mapping(value: Any, name: str) -> Mapping[str, Any]:
+     if not isinstance(value, Mapping):
+         raise LateDevAttributionValidationError(f"raw report {name} must be a JSON object")
+@@ -291,13 +388,13 @@ def _build_seed_stage_bridge(run: Mapping[str, Any], stage_name: str) -> dict[st
+     stage = _stage(run, stage_name)
+     baseline = _finite(stage["cost_stress"]["0"]["net_pnl"], "baseline net PnL")
+     stressed = _finite(stage["cost_stress"]["15"]["net_pnl"], "15bp net PnL")
+-    turnover = _finite(stage["turnover_notional"], "turnover notional")
++    turnover = _nonnegative_finite(stage["turnover_notional"], "turnover notional")
+     additional_cost = turnover * 15.0 / 10_000.0
+     error = stressed - (baseline - additional_cost)
+     if not math.isclose(error, 0.0, rel_tol=0.0, abs_tol=1e-6):
+         raise LateDevAttributionValidationError("15bp bridge does not reconcile")
+     return {
+-        "seed": int(run["seed"]),
++        "seed": run["seed"],
+         "stage": stage_name,
+         "baseline_net_pnl": baseline,
+         "turnover_notional": turnover,
+@@ -309,18 +406,12 @@ def _build_seed_stage_bridge(run: Mapping[str, Any], stage_name: str) -> dict[st
+ 
+ def _required_seed_inputs_incomplete(run: Mapping[str, Any]) -> bool:
+     """Return whether a required diagnostic collection is structurally absent."""
+-    required_cost_stages = (
+-        ArchitectureStage.A1_SIGN.value,
+-        ArchitectureStage.A1_SCORE.value,
+-        ArchitectureStage.A5_SHADOW.value,
+-    )
+-    if any(not _has_cost_structure(run, stage_name) for stage_name in required_cost_stages):
++    if any(not _has_cost_structure(run, stage_name) for stage_name in _BRIDGE_STAGES):
+         return True
+-    stage = _stage(run, ArchitectureStage.A5_SHADOW.value)
+-    if not _has_a5_episode_inputs(run) or "attribution_rows" not in stage:
+-        return True
+-    rows = stage["attribution_rows"]
+-    return isinstance(rows, list) and all(isinstance(row, Mapping) and row.get("execution") is None for row in rows)
++    return any(
++        not _has_episode_inputs(run, stage_name) or not _has_execution_inputs(run, stage_name)
++        for stage_name in _EXECUTION_STAGES
++    )
+ 
+ 
+ def _has_cost_structure(run: Mapping[str, Any], stage_name: str) -> bool:
+@@ -328,11 +419,11 @@ def _has_cost_structure(run: Mapping[str, Any], stage_name: str) -> bool:
+     if "cost_stress" not in stage:
+         return False
+     costs = _mapping(stage["cost_stress"], f"{stage_name} cost stress")
+-    for stress_bps in ("0", "15"):
+-        if stress_bps not in costs:
+-            raise LateDevAttributionValidationError(
+-                f"{stage_name} cost stress must include {stress_bps!r} when present"
+-            )
++    if set(costs) != _COST_STRESS_KEYS:
++        raise LateDevAttributionValidationError(
++            f"{stage_name} cost stress must contain exactly {sorted(_COST_STRESS_KEYS)!r}"
++        )
++    for stress_bps in ("0", "5", "15"):
+         cost_row = _mapping(costs[stress_bps], f"{stage_name} cost stress {stress_bps}")
+         if "net_pnl" not in cost_row:
+             raise LateDevAttributionValidationError(
+@@ -342,11 +433,29 @@ def _has_cost_structure(run: Mapping[str, Any], stage_name: str) -> bool:
+     return True
+ 
+ 
+-def _has_a5_episode_inputs(run: Mapping[str, Any]) -> bool:
+-    stage = _stage(run, ArchitectureStage.A5_SHADOW.value)
++def _has_episode_inputs(run: Mapping[str, Any], stage_name: str) -> bool:
++    stage = _stage(run, stage_name)
+     return "attribution_rows" in stage and "position_episodes" in stage and "episode_ledger" in stage
+ 
+ 
++def _has_execution_inputs(run: Mapping[str, Any], stage_name: str) -> bool:
++    stage = _stage(run, stage_name)
++    required = {"attribution_rows", "execution_metrics"}
++    if stage_name == ArchitectureStage.A5_SHADOW.value:
++        required.add("cost_shadow")
++    return required.issubset(stage)
++
++
++def _validate_required_stage_values(run: Mapping[str, Any]) -> None:
++    for stage_name in _BRIDGE_STAGES:
++        stage = _stage(run, stage_name)
++        rate = _finite(stage.get("direction_hit_rate"), f"{stage_name} direction hit rate")
++        if not 0.0 <= rate <= 1.0:
++            raise LateDevAttributionValidationError(f"{stage_name} direction hit rate must be between zero and one")
++        _nonnegative_finite(stage.get("turnover_notional"), f"{stage_name} turnover notional")
++        _has_cost_structure(run, stage_name)
++
++
+ def _build_seed_evidence(
+     runs: Sequence[Mapping[str, Any]],
+     bridges: Sequence[Mapping[str, Any]],
+@@ -354,10 +463,10 @@ def _build_seed_evidence(
+ ) -> list[dict[str, Any]]:
+     """Serialize only factual inputs and frozen per-family predicates for each seed."""
+     bridge_by_seed_stage = {(bridge["seed"], bridge["stage"]): bridge for bridge in bridges}
+-    episode_by_seed = {summary["seed"]: summary for summary in episode_attribution}
++    episode_by_seed_stage = {(summary["seed"], summary["stage"]): summary for summary in episode_attribution}
+     evidence: list[dict[str, Any]] = []
+     for run in runs:
+-        seed = int(run["seed"])
++        seed = run["seed"]
+         sign_hit_rate = _finite(
+             _stage(run, ArchitectureStage.A1_SIGN.value)["direction_hit_rate"], "A1_SIGN direction hit rate"
+         )
+@@ -367,8 +476,14 @@ def _build_seed_evidence(
+         sign_bridge = bridge_by_seed_stage.get((seed, ArchitectureStage.A1_SIGN.value))
+         score_bridge = bridge_by_seed_stage.get((seed, ArchitectureStage.A1_SCORE.value))
+         a5_bridge = bridge_by_seed_stage.get((seed, ArchitectureStage.A5_SHADOW.value))
+-        summary = episode_by_seed.get(seed)
+-        if sign_bridge is None or score_bridge is None or a5_bridge is None or summary is None:
++        summary = episode_by_seed_stage.get((seed, ArchitectureStage.A5_SHADOW.value))
++        if (
++            _required_seed_inputs_incomplete(run)
++            or sign_bridge is None
++            or score_bridge is None
++            or a5_bridge is None
++            or summary is None
++        ):
+             evidence.append({"seed": seed, "required_inputs_complete": False})
+             continue
+         regime_groups = _mapping(summary["regime_groups"], "regime groups")
+@@ -394,6 +509,13 @@ def _build_seed_evidence(
+                 "a1_sign_15bp_net_pnl": sign_pnl,
+                 "a1_score_hit_rate": score_hit_rate,
+                 "a1_score_15bp_net_pnl": score_pnl,
++                "confidence_pnl_delta_15bp": score_pnl - sign_pnl,
++                "confidence_hit_rate_equal": math.isclose(
++                    score_hit_rate,
++                    sign_hit_rate,
++                    rel_tol=0.0,
++                    abs_tol=1e-12,
++                ),
+                 "a5_baseline_net_pnl": baseline_pnl,
+                 "a5_15bp_net_pnl": a5_15bp_pnl,
+                 "regime_groups": regime_groups,
+@@ -402,9 +524,7 @@ def _build_seed_evidence(
+                 "implementation_shortfall_observation_count": shortfall_count,
+                 "implementation_shortfall": shortfall,
+                 "directional_edge_support": sign_pnl <= 0.0 and sign_hit_rate < 0.50,
+-                "confidence_no_incremental_edge_support": (
+-                    math.isclose(score_hit_rate, sign_hit_rate, rel_tol=0.0, abs_tol=1e-12) and score_pnl <= 0.0
+-                ),
++                "confidence_failed_to_rescue_support": score_pnl <= 0.0,
+                 "cost_flip_support": baseline_pnl > 0.0 and a5_15bp_pnl <= 0.0,
+                 "regime_localization_support": _regime_localization_support(regime_groups),
+                 "episode_tail_support": (
+@@ -439,11 +559,12 @@ def _classify_evidence(seed_evidence: Sequence[Mapping[str, Any]]) -> dict[str,
+     """Apply fixed four-of-five evidence classification to serialized seed facts."""
+     families = (
+         ("directional_edge", "directional_edge_support"),
+-        ("confidence_no_incremental_edge", "confidence_no_incremental_edge_support"),
++        ("confidence_failed_to_rescue", "confidence_failed_to_rescue_support"),
+         ("cost_flip", "cost_flip_support"),
+         ("regime_localization", "regime_localization_support"),
+     )
+     classified = {name: _classify_family(seed_evidence, support_key=support_key) for name, support_key in families}
++    classified["confidence_failed_to_rescue"].update(_confidence_counts(seed_evidence))
+     classified["episode_tail"] = _classify_family(
+         seed_evidence,
+         support_key="episode_tail_support",
+@@ -476,10 +597,10 @@ def _classify_family(
+         if sample_floor_key is not None and sample_floor is not None
+         else []
+     )
+-    if insufficient_sample_seeds:
+-        status = EvidenceStatus.INSUFFICIENT_SAMPLE.value
+-    elif len(supporting_seeds) >= 4:
++    if len(supporting_seeds) >= 4:
+         status = EvidenceStatus.CONSISTENT.value
++    elif insufficient_sample_seeds:
++        status = EvidenceStatus.INSUFFICIENT_SAMPLE.value
+     elif supporting_seeds:
+         status = EvidenceStatus.MIXED.value
+     else:
+@@ -497,14 +618,14 @@ def _insufficient_sample_evidence(seed_evidence: Sequence[Mapping[str, Any]]) ->
+     """Fail closed when a required diagnostic collection is absent."""
+     families = (
+         "directional_edge",
+-        "confidence_no_incremental_edge",
++        "confidence_failed_to_rescue",
+         "cost_flip",
+         "regime_localization",
+         "episode_tail",
+         "execution_shortfall",
+     )
+     incomplete_seeds = [int(row["seed"]) for row in seed_evidence if not row.get("required_inputs_complete")]
+-    return {
++    evidence = {
+         family: {
+             "status": EvidenceStatus.INSUFFICIENT_SAMPLE.value,
+             "supporting_seed_count": 0,
+@@ -514,6 +635,26 @@ def _insufficient_sample_evidence(seed_evidence: Sequence[Mapping[str, Any]]) ->
+         }
+         for family in families
+     }
++    evidence["confidence_failed_to_rescue"].update(_confidence_counts(seed_evidence))
++    return evidence
++
++
++def _confidence_counts(seed_evidence: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
++    complete = [
++        row
++        for row in seed_evidence
++        if row.get("required_inputs_complete", True)
++        and "confidence_pnl_delta_15bp" in row
++        and "a1_score_15bp_net_pnl" in row
++    ]
++    improving_seeds = [int(row["seed"]) for row in complete if float(row["confidence_pnl_delta_15bp"]) > 0.0]
++    rescued_seeds = [int(row["seed"]) for row in complete if float(row["a1_score_15bp_net_pnl"]) > 0.0]
++    return {
++        "improving_seed_count": len(improving_seeds),
++        "improving_seeds": improving_seeds,
++        "rescued_seed_count": len(rescued_seeds),
++        "rescued_seeds": rescued_seeds,
++    }
+ 
+ 
+ def _terminal_recommendation(*, required_inputs_incomplete: bool, evidence: Mapping[str, Any]) -> str:
+@@ -551,8 +692,121 @@ def build_regime_objective_hypothesis(attribution: Mapping[str, Any]) -> dict[st
+     }
+ 
+ 
++def _summarize_execution(run: Mapping[str, Any], stage_name: str) -> dict[str, Any]:
++    """Aggregate only serialized execution and cost-shadow observations."""
++    stage = _stage(run, stage_name)
++    rows = stage.get("attribution_rows")
++    if not isinstance(rows, list) or not all(isinstance(row, Mapping) for row in rows):
++        raise LateDevAttributionValidationError("attribution rows must be a list of objects")
++    metrics = _mapping(stage.get("execution_metrics"), f"{stage_name} execution metrics")
++    status = metrics.get("status")
++    if status not in {"OBSERVED", "NOT_OBSERVED"}:
++        raise LateDevAttributionValidationError("execution metrics status must be OBSERVED or NOT_OBSERVED")
++    position_switches_per_day = None
++    if status == "OBSERVED":
++        position_switches_per_day = _nonnegative_finite(
++            metrics.get("position_switches_per_day"),
++            "position switches per day",
++        )
++
++    actions = {action: 0 for action in ("entry", "exit", "flip", "add", "reduce", "unchanged")}
++    execution_rows = []
++    for row in rows:
++        _nonnegative_finite(row.get("turnover_notional"), "attribution turnover notional")
++        _nonnegative_finite(row.get("baseline_execution_cost"), "attribution baseline execution cost")
++        execution = row.get("execution")
++        if execution is None:
++            continue
++        execution_row = _mapping(execution, "attribution execution")
++        filled_qty = _nonnegative_finite(execution_row.get("filled_qty"), "filled quantity")
++        fee = _nonnegative_finite(execution_row.get("fee"), "actual fee")
++        slippage = _nonnegative_finite(execution_row.get("actual_slippage"), "actual slippage")
++        shortfall = _nonnegative_finite(
++            execution_row.get("actual_implementation_shortfall"),
++            "actual implementation shortfall",
++        )
++        action = _derive_execution_action(execution_row)
++        actions[action] += 1
++        execution_rows.append(
++            {
++                "filled_qty": filled_qty,
++                "fee": fee,
++                "slippage": slippage,
++                "shortfall": shortfall,
++            }
++        )
++    if status == "OBSERVED" and len(execution_rows) != len(rows):
++        raise LateDevAttributionValidationError("observed execution rows must cover every attribution row")
++    if status == "NOT_OBSERVED" and execution_rows:
++        raise LateDevAttributionValidationError("not observed execution metrics cannot contain execution rows")
++
++    duration_days = (_exact_int(run.get("end_ns"), "run end_ns") - _exact_int(run.get("start_ns"), "run start_ns")) / (
++        86_400 * 1_000_000_000
++    )
++    if not math.isfinite(duration_days) or duration_days <= 0.0:
++        raise LateDevAttributionValidationError("run duration must be positive and finite")
++    positive_fill_count = sum(1 for row in execution_rows if row["filled_qty"] > 0.0)
++    summary: dict[str, Any] = {
++        "seed": run["seed"],
++        "stage": stage_name,
++        "execution_status": status,
++        "attribution_row_count": len(rows),
++        "execution_observation_count": len(execution_rows),
++        "positive_fill_count": positive_fill_count,
++        "fills_per_day": positive_fill_count / duration_days,
++        "position_switches_per_day": position_switches_per_day,
++        "action_counts": actions,
++        "actual_fee_observation_count": len(execution_rows),
++        "actual_fee_sum": sum(row["fee"] for row in execution_rows),
++        "actual_slippage_observation_count": len(execution_rows),
++        "actual_slippage_sum": sum(row["slippage"] for row in execution_rows),
++        "actual_implementation_shortfall_observation_count": len(execution_rows),
++        "actual_implementation_shortfall_sum": sum(row["shortfall"] for row in execution_rows),
++        "cost_shadow": None,
++    }
++    if stage_name == ArchitectureStage.A5_SHADOW.value:
++        summary["cost_shadow"] = _summarize_cost_shadow(stage, rows)
++    return summary
++
++
++def _summarize_cost_shadow(stage: Mapping[str, Any], rows: list[Mapping[str, Any]]) -> dict[str, Any]:
++    _mapping(stage.get("cost_shadow"), "A5 cost shadow")
++    observations = []
++    for row in rows:
++        shadow = _mapping(row.get("cost_shadow"), "A5 attribution cost shadow")
++        estimated_fee = _nonnegative_finite(shadow.get("estimated_fee"), "estimated fee")
++        estimated_slippage = _nonnegative_finite(shadow.get("estimated_slippage"), "estimated slippage")
++        round_trip_cost = _nonnegative_finite(shadow.get("round_trip_cost"), "estimated round-trip cost")
++        breakeven = _nonnegative_finite(shadow.get("breakeven_move"), "breakeven move")
++        for horizon in (1, 3, 6):
++            _optional_finite(shadow.get(f"forward_return_{horizon}"), f"forward return {horizon}")
++        observations.append(
++            {
++                "estimated_fee": estimated_fee,
++                "estimated_slippage": estimated_slippage,
++                "round_trip_cost": round_trip_cost,
++                "breakeven": breakeven,
++                "forward_labels": {
++                    str(horizon): shadow.get(f"forward_return_{horizon}") is not None for horizon in (1, 3, 6)
++                },
++            }
++        )
++    return {
++        "observation_count": len(observations),
++        "estimated_fee_sum": sum(row["estimated_fee"] for row in observations),
++        "estimated_slippage_sum": sum(row["estimated_slippage"] for row in observations),
++        "estimated_round_trip_cost_sum": sum(row["round_trip_cost"] for row in observations),
++        "breakeven_observation_count": len(observations),
++        "breakeven_mean": sum(row["breakeven"] for row in observations) / len(observations) if observations else None,
++        "forward_label_counts": {
++            str(horizon): sum(1 for row in observations if row["forward_labels"][str(horizon)])
++            for horizon in (1, 3, 6)
++        },
++    }
++
++
+ def _summarize_episodes(stage: Mapping[str, Any]) -> dict[str, Any]:
+-    """Summarize serialized A5 episodes and explicit attribution rows only."""
++    """Summarize serialized later-stage episodes and explicit attribution rows only."""
+     episodes = stage.get("position_episodes")
+     if not isinstance(episodes, list) or not all(isinstance(episode, Mapping) for episode in episodes):
+         raise LateDevAttributionValidationError("position episodes must be a list of objects")
+@@ -624,17 +878,25 @@ def _stage(run: Mapping[str, Any], stage_name: str) -> Mapping[str, Any]:
+ 
+ 
+ def _finite(value: Any, name: str) -> float:
+-    if isinstance(value, bool):
++    if isinstance(value, bool) or not isinstance(value, (int, float)):
+         raise LateDevAttributionValidationError(f"{name} must be finite")
+-    try:
+-        numeric = float(value)
+-    except (TypeError, ValueError, OverflowError) as exc:
+-        raise LateDevAttributionValidationError(f"{name} must be finite") from exc
++    numeric = float(value)
+     if not math.isfinite(numeric):
+         raise LateDevAttributionValidationError(f"{name} must be finite")
+     return numeric
+ 
+ 
++def _nonnegative_finite(value: Any, name: str) -> float:
++    numeric = _finite(value, name)
++    if numeric < 0.0:
++        raise LateDevAttributionValidationError(f"{name} must be non-negative")
++    return numeric
++
++
++def _optional_finite(value: Any, name: str) -> float | None:
++    return None if value is None else _finite(value, name)
++
++
+ def _closed(episode: Mapping[str, Any]) -> bool:
+     closed = episode.get("closed")
+     if not isinstance(closed, bool):
+@@ -650,17 +912,17 @@ def _side(episode: Mapping[str, Any]) -> str:
+ 
+ 
+ def _episode_totals(episodes: list[Mapping[str, Any]]) -> dict[str, float | int]:
+-    fields = (
++    signed_fields = (
+         "gross_realized_pnl",
+-        "fees",
+         "funding_pnl",
+         "net_pnl",
+         "mfe_pnl",
+         "mae_pnl",
+     )
+     totals: dict[str, float | int] = {
+-        field: sum(_finite(episode[field], f"episode {field}") for episode in episodes) for field in fields
++        field: sum(_finite(episode[field], f"episode {field}") for episode in episodes) for field in signed_fields
+     }
++    totals["fees"] = sum(_nonnegative_finite(episode["fees"], "episode fees") for episode in episodes)
+     for field in ("holding_duration_ns", "fill_count", "add_count", "reduce_count"):
+         totals[field] = sum(_nonnegative_int(episode[field], f"episode {field}") for episode in episodes)
+     return totals
+@@ -700,8 +962,12 @@ def _attribution_groups(rows: list[Mapping[str, Any]], *, field: str) -> dict[st
+ 
+ def _attribution_totals(rows: list[Mapping[str, Any]]) -> dict[str, float | int]:
+     gross_pnl = sum(_finite(row["gross_pnl"], "attribution gross PnL") for row in rows)
+-    turnover = sum(_finite(row["turnover_notional"], "attribution turnover notional") for row in rows)
+-    baseline_cost = sum(_finite(row["baseline_execution_cost"], "attribution baseline execution cost") for row in rows)
++    turnover = sum(
++        _nonnegative_finite(row["turnover_notional"], "attribution turnover notional") for row in rows
++    )
++    baseline_cost = sum(
++        _nonnegative_finite(row["baseline_execution_cost"], "attribution baseline execution cost") for row in rows
++    )
+     funding_pnl = sum(_finite(row["funding_pnl"], "attribution funding PnL") for row in rows)
+     additional_cost = turnover * 15.0 / 10_000.0
+     return {

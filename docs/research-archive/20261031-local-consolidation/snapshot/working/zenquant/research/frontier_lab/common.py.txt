@@ -1,0 +1,130 @@
+"""Small causal data and evidence helpers; never used by the live decision path."""
+
+from __future__ import annotations
+
+import hashlib
+import json
+from pathlib import Path
+from typing import Any
+
+import numpy as np
+import pandas as pd
+
+TRAIN_END = pd.Timestamp("2024-01-01", tz="UTC")
+DEV_END = pd.Timestamp("2026-01-01", tz="UTC")
+SEEDS = [17, 29, 43, 71, 101]
+RESULT_FIELDS = {
+    "direction_id",
+    "hypothesis",
+    "evidence_type",
+    "method",
+    "metrics",
+    "verdict",
+    "limitations",
+    "falsification",
+    "next_experiment",
+}
+EVIDENCE_TYPES = {"historical_diagnostic", "synthetic_mechanism", "data_audit", "mixed"}
+
+
+def file_hash(path: Path) -> str:
+    digest = hashlib.sha256()
+    with Path(path).open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def write_json(path: Path, value: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(value, ensure_ascii=False, indent=2, sort_keys=True, allow_nan=False) + "\n")
+
+
+def load_bars(context: dict[str, Any]) -> pd.DataFrame:
+    frame = pd.read_parquet(context["bars_path"])
+    validate_bars(frame)
+    return frame
+
+
+def validate_bars(frame: pd.DataFrame) -> None:
+    needed = {"open_time_ns", "close_time_ns", "open", "high", "low", "close", "volume"}
+    if not needed.issubset(frame.columns) or frame.empty:
+        raise ValueError("missing or empty bar data")
+    if frame["open_time_ns"].duplicated().any() or not frame["open_time_ns"].is_monotonic_increasing:
+        raise ValueError("duplicate or unordered bars")
+    if (frame["open_time_ns"].diff().dropna() != 4 * 3600 * 10**9).any():
+        raise ValueError("four-hour bars have gaps")
+    if (frame["close_time_ns"] <= frame["open_time_ns"]).any():
+        raise ValueError("invalid bar-close ordering")
+    if int(frame["close_time_ns"].max()) >= DEV_END.value:
+        raise ValueError("2026 acceptance data is prohibited")
+    prices = frame[["open", "high", "low", "close"]].to_numpy(dtype=float)
+    if not np.isfinite(prices).all() or (prices <= 0).any():
+        raise ValueError("invalid prices")
+
+
+def causal_features(frame: pd.DataFrame) -> pd.DataFrame:
+    close = frame["close"].astype(float)
+    returns = np.log(close).diff()
+    volume = frame["volume"].astype(float)
+    out = pd.DataFrame(index=frame.index)
+    out["return_1"] = returns
+    out["momentum_6"] = np.log(close / close.shift(6))
+    out["momentum_42"] = np.log(close / close.shift(42))
+    out["vol_42"] = returns.rolling(42, min_periods=42).std()
+    out["range"] = (frame["high"] - frame["low"]) / close
+    out["volume_z"] = (volume - volume.rolling(42).mean()) / volume.rolling(42).std().replace(0, np.nan)
+    if "taker_buy_base" in frame:
+        out["imbalance"] = 2 * frame["taker_buy_base"].astype(float) / volume.replace(0, np.nan) - 1
+    else:
+        out["imbalance"] = np.nan
+    return out
+
+
+def next_open_labels(frame: pd.DataFrame) -> pd.DataFrame:
+    """Close i decision, open i+1 entry, open i+2 exit; no same-close fill."""
+    return pd.DataFrame(
+        {
+            "return": frame["open"].shift(-2) / frame["open"].shift(-1) - 1,
+            "label_end_ns": frame["open_time_ns"].shift(-2),
+        }
+    )
+
+
+def split_masks(frame: pd.DataFrame, label_end_ns: pd.Series) -> tuple[np.ndarray, np.ndarray]:
+    cutoff = frame["close_time_ns"]
+    train = (cutoff < TRAIN_END.value) & (label_end_ns < TRAIN_END.value)
+    dev = (cutoff >= TRAIN_END.value) & (label_end_ns < DEV_END.value)
+    return train.to_numpy(), dev.to_numpy()
+
+
+def ridge_predict(train_x: np.ndarray, train_y: np.ndarray, test_x: np.ndarray, alpha: float = 1.0) -> np.ndarray:
+    """Train-only standardization and a fixed regularization parameter."""
+    train_x, train_y, test_x = np.asarray(train_x, float), np.asarray(train_y, float), np.asarray(test_x, float)
+    if not all(np.isfinite(v).all() for v in (train_x, train_y, test_x)) or len(train_y) < 3:
+        raise ValueError("ridge requires finite training data")
+    mean, scale = train_x.mean(axis=0), train_x.std(axis=0)
+    scale = np.where(scale < 1e-12, 1.0, scale)
+    x = np.column_stack([np.ones(len(train_x)), (train_x - mean) / scale])
+    z = np.column_stack([np.ones(len(test_x)), (test_x - mean) / scale])
+    penalty = np.eye(x.shape[1]) * alpha
+    penalty[0, 0] = 0
+    return z @ np.linalg.solve(x.T @ x + penalty, x.T @ train_y)
+
+
+def prediction_metrics(actual: np.ndarray, predicted: np.ndarray) -> dict[str, Any]:
+    actual, predicted = np.asarray(actual, float), np.asarray(predicted, float)
+    if len(actual) == 0 or actual.shape != predicted.shape or not np.isfinite([actual, predicted]).all():
+        raise ValueError("invalid prediction pair")
+    corr = float(np.corrcoef(actual, predicted)[0, 1]) if min(actual.std(), predicted.std()) > 1e-12 else None
+    return {"n": len(actual), "rmse": float(np.sqrt(np.mean((actual - predicted) ** 2))), "correlation": corr}
+
+
+def validate_result(result: dict[str, Any], direction_id: str) -> None:
+    if not RESULT_FIELDS.issubset(result) or result["direction_id"] != direction_id:
+        raise ValueError("incomplete or mismatched direction result")
+    if result["evidence_type"] not in EVIDENCE_TYPES or not result["limitations"]:
+        raise ValueError("invalid evidence type or missing limitations")
+    if any(result.get(field, False) is not False for field in ("rankable", "live_eligible", "promotion_eligible")):
+        raise ValueError("exploration cannot grant trading eligibility")
+    json.dumps(result, allow_nan=False)

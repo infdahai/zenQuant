@@ -1,0 +1,37 @@
+# Market Exploration Implementation Plan
+
+> **For agentic workers:** Use independent direction agents as explicitly requested by the user. Root owns shared integration; no overlapping edits.
+
+**Goal:** 执行12个可复现、有限预算的长期交易方向实验并交付统一证据。
+
+**Architecture:** 公共因果输入与证据runner；每方向独立 `run(context)`；根agent审核、复跑、汇总。
+
+**Tech Stack:** 已有Python、NumPy、Pandas、PyArrow、Torch；不安装服务或新依赖。
+
+**Spec:** `docs/superpowers/specs/2026-10-05-market-exploration-design.md`
+
+## Global Constraints
+
+2026不用于模型选择；最多3 worker、每个1线程；所有结果研究专用且不晋级；保留全部既有改动。
+
+## Review Focus
+
+1. future label跨训练边界时必须剔除。
+2. 合成数据不得被描述为真实历史盈利。
+3. 盘口样本不足、historical available-at未知必须显式保留。
+4. 模块或公共文件变化后runner应拒收旧身份。
+5. 方向失败不得从汇总分母消失。
+
+## 执行步骤
+
+- [ ] 公共合同与输入快照：新增common、12方向注册表、runner；冻结数据与source hash；测试坏数据及因果窗口。
+- [ ] 第一批：d01周期、d02年龄、d03公开账本。每agent完成自身模块、反例测试及真实运行。
+- [ ] 第二批：d04小型JEPA、d05 RL、d06高频基础设施。训练只用train；合成环境须明确标注。
+- [ ] 第三批：d07冲击恢复、d08期权、d09跨场所。缺历史或队列证据必须给数据审计而不是补造历史。
+- [ ] 第四批：d10事件逻辑、d11黄金迁移、d12信息获取。使用独立实验，评估增量与失败场景。
+- [ ] 根agent审查12结果、运行框架与方向测试、顺序统一复跑、生成研究优先级报告与复现命令。
+- [ ] 运行完整gate；区分新增失败与既有失败；完成交付说明。
+
+公共接口：`run(context: dict[str, Any]) -> dict[str, Any]`，context含repo_root/output_dir/bars_path/seeds。
+执行命令：`.venv/bin/python scripts/run_market_exploration.py --direction d01 --output results/market_exploration/20261005`。
+结果合同由common.RESULT_FIELDS和validate_result机械验证；模块必须用普通有限JSON数值。

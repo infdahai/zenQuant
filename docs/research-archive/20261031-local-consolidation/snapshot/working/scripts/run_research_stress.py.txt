@@ -1,0 +1,260 @@
+#!/usr/bin/env python3
+"""Execute a frozen synthetic-price matrix; no optimization or promotion."""
+
+from __future__ import annotations
+
+import argparse
+import gzip
+import hashlib
+import importlib.metadata
+import json
+import os
+import platform
+import re
+import time
+from pathlib import Path
+
+from zenquant.research.campaign_data import load_window
+from zenquant.research.perturbations import SEEDS, perturb_bundle
+from zenquant.research.research_runner import evaluate_candidate
+from zenquant.research.run_evidence import TrialJournal, identity_hash
+
+ROOT = Path(__file__).resolve().parents[1]
+START_NS = 1704067200000000000
+END_NS = 1767225600000000000
+INVENTORY_POLICY = "actual_filled_inventory_v1"
+DATA_FILES = {
+    "klines/BTCUSDT/4h/data.parquet",
+    "klines/ETHUSDT/4h/data.parquet",
+    "funding/BTCUSDT/data.parquet",
+    "funding/ETHUSDT/data.parquet",
+    "snapshot_manifest.json",
+}
+
+
+def build_cases() -> list[dict]:
+    """Exact ex-ante matrix: two assets/rules/budgets, six inputs, three costs."""
+    cases = []
+    for symbol in ("BTCUSDT", "ETHUSDT"):
+        for vol in (0.05, 0.10):
+            for family in ("breakout", "vol_target"):
+                for scenario, seed in [("identity", None), *[("price_noise", seed) for seed in SEEDS]]:
+                    for cost in (0, 5, 15):
+                        cases.append(
+                            {
+                                "case_id": f"{symbol}-{family}-vol{int(vol * 100)}-{scenario}-{seed}-cost{cost}",
+                                "symbol": symbol,
+                                "family": family,
+                                "params": {"entry_bars": 48, "exit_bars": 12, "confirmation_bars": 1}
+                                if family == "breakout"
+                                else {},
+                                "risk_budget": {"target_annual_vol": vol, "max_leverage": 1.5},
+                                "scenario": scenario,
+                                "seed": seed,
+                                "extra_cost_bps": cost,
+                            }
+                        )
+    return cases
+
+
+def code_identity() -> dict:
+    paths = [*sorted((ROOT / "zenquant").rglob("*.py")), *sorted((ROOT / "scripts").glob("run_research_*.py"))]
+    paths += [ROOT / name for name in ("config/research/btc_strategy_families_v1.json", "pyproject.toml", "uv.lock")]
+    return {
+        "files": {str(p.relative_to(ROOT)): hashlib.sha256(p.read_bytes()).hexdigest() for p in paths if p.exists()},
+        "python": platform.python_version(),
+        "dependencies": {dist.metadata["Name"]: dist.version for dist in importlib.metadata.distributions()},
+    }
+
+
+def validate_plan(plan: dict) -> None:
+    files = plan.get("data_files_sha256")
+    if (
+        not isinstance(files, dict)
+        or set(files) != DATA_FILES
+        or any(
+            not isinstance(digest, str) or re.fullmatch(r"[0-9a-f]{64}", digest) is None for digest in files.values()
+        )
+    ):
+        raise ValueError("incomplete or invalid frozen data set")
+    if (
+        plan.get("schema_version") != "fixed-price-stress.v1"
+        or plan.get("cases") != build_cases()
+        or plan.get("inventory_policy") != INVENTORY_POLICY
+        or plan.get("initial_equity") != 100_000.0
+        or plan.get("start_ns") != START_NS
+        or plan.get("end_ns_exclusive") != END_NS
+        or plan.get("search_trials") != 0
+    ):
+        raise ValueError("plan does not match the full frozen matrix")
+
+
+def verify_sources(plan: dict) -> None:
+    if identity_hash(code_identity()) != plan["code_hash"]:
+        raise ValueError("frozen code/environment source mismatch")
+    root = Path(plan["data_root"])
+    for relative, expected in plan["data_files_sha256"].items():
+        if hashlib.sha256((root / relative).read_bytes()).hexdigest() != expected:
+            raise ValueError(f"frozen data source mismatch: {relative}")
+    if set(plan.get("source_bundle_files", {})) != {"BTCUSDT", "ETHUSDT"}:
+        raise ValueError("complete canonical source bundles are required")
+    for metadata in plan["source_bundle_files"].values():
+        raw = Path(metadata["path"]).read_bytes()
+        if (
+            hashlib.sha256(raw).hexdigest() != metadata["sha256"]
+            or identity_hash(json.loads(raw)) != metadata["content_hash"]
+        ):
+            raise ValueError("canonical source bundle mismatch")
+
+
+def write_artifact(path: Path, value: dict, *, compressed: bool = False) -> str:
+    raw = (json.dumps(value, sort_keys=True, allow_nan=False) + "\n").encode()
+    payload = gzip.compress(raw, mtime=0) if compressed else raw
+    with path.open("xb") as handle:
+        handle.write(payload)
+        handle.flush()
+        os.fsync(handle.fileno())
+    return hashlib.sha256(payload).hexdigest()
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--plan", required=True, type=Path)
+    parser.add_argument("--symbol", required=True, choices=("BTCUSDT", "ETHUSDT"))
+    parser.add_argument("--target-vol", required=True, type=float, choices=(0.05, 0.10))
+    parser.add_argument("--output", required=True, type=Path)
+    args = parser.parse_args(argv)
+    plan = json.loads(args.plan.read_text())
+    validate_plan(plan)
+    selected = [
+        case
+        for case in plan["cases"]
+        if case["symbol"] == args.symbol and case["risk_budget"]["target_annual_vol"] == args.target_vol
+    ]
+    assert len(selected) == 36
+    return execute_partition(
+        plan, symbol=args.symbol, target_vol=args.target_vol, output=args.output, selected=selected
+    )
+
+
+def execute_partition(plan: dict, *, symbol: str, target_vol: float, output: Path, selected: list[dict]) -> int:
+    """Execute exactly the supplied frozen partition, retaining every failure."""
+    verify_sources(plan)
+    if not selected or len({case["case_id"] for case in selected}) != len(selected):
+        raise ValueError("empty or duplicate partition")
+    if selected != [
+        case
+        for case in plan["cases"]
+        if case["symbol"] == symbol and case["risk_budget"]["target_annual_vol"] == target_vol
+    ]:
+        raise ValueError("partition differs from frozen symbol/risk selection")
+    output.mkdir(parents=True, exist_ok=False)
+    began, cpu_began = time.perf_counter(), time.process_time()
+    run = {
+        "plan": plan,
+        "plan_hash": identity_hash(plan),
+        "symbol": symbol,
+        "target_annual_vol": target_vol,
+        "cases": selected,
+        "diagnostic_only": True,
+        "rankable": False,
+        "live_eligible": False,
+    }
+    write_artifact(output / "run_manifest.json", run)
+    journal = TrialJournal(output / "journal", run)
+    cases, prepared, error, status, started = [], {}, None, "COMPLETE", 0
+    try:
+        bundle = load_window(Path(plan["data_root"]), START_NS, END_NS, symbol=symbol, warmup_bars=180)
+        if (
+            "source_bundle_files" in plan
+            and identity_hash(bundle) != plan["source_bundle_files"][symbol]["content_hash"]
+        ):
+            raise ValueError("loaded bundle differs from canonical source sidecar")
+        for recipe in selected:
+            case = dict(recipe)
+            attempt = recipe["case_id"]
+            journal.append({"attempt_id": attempt + ":started", "event": "STARTED", "case": recipe})
+            started += 1
+            case_began, case_cpu = time.perf_counter(), time.process_time()
+            try:
+                key = (recipe["scenario"], recipe["seed"])
+                if key not in prepared:
+                    prepared[key] = perturb_bundle(bundle, scenario=key[0], seed=key[1])
+                evidence, report = evaluate_candidate(
+                    prepared[key],
+                    recipe["family"],
+                    recipe["params"],
+                    window="dev",
+                    code_hash=plan["code_hash"],
+                    inventory_policy=INVENTORY_POLICY,
+                    risk_budget=recipe["risk_budget"],
+                    extra_cost_bps=recipe["extra_cost_bps"],
+                    initial_equity=100_000.0,
+                )
+                if report["gates"]["E3"]["status"] != "FAIL" or any(
+                    report[field] is not False for field in ("optimizer_feedback_eligible", "rankable", "live_eligible")
+                ):
+                    raise ValueError("known production parity difference/qualification flags were lost")
+                case["evidence_path"] = f"{attempt}.evidence.json.gz"
+                case["evidence_sha256"] = write_artifact(output / case["evidence_path"], evidence, compressed=True)
+                case.update(status="COMPLETE", gates=report["gates"], metrics=report["metrics"])
+            except (Exception, KeyboardInterrupt) as exc:
+                case.update(
+                    status="INTERRUPTED" if isinstance(exc, KeyboardInterrupt) else "FAILED",
+                    error=f"{type(exc).__name__}: {exc}",
+                )
+                report = {
+                    "status": "FAILED",
+                    "error": case["error"],
+                    "diagnostic_only": True,
+                    "rankable": False,
+                    "live_eligible": False,
+                    "optimizer_feedback_eligible": False,
+                }
+            case["report_path"] = f"{attempt}.report.json"
+            case["report_sha256"] = write_artifact(output / case["report_path"], report)
+            case.update(wall_seconds=time.perf_counter() - case_began, cpu_seconds=time.process_time() - case_cpu)
+            cases.append(case)
+            journal.append({"attempt_id": attempt + ":finished", "event": "FINISHED", "case": case})
+            if case["status"] == "INTERRUPTED":
+                error, status = case["error"], "INCOMPLETE"
+                break
+    except (Exception, KeyboardInterrupt) as exc:
+        error, status = f"{type(exc).__name__}: {exc}", "INCOMPLETE"
+    try:
+        verify_sources(plan)
+    except Exception as exc:
+        error, status = f"{type(exc).__name__}: {exc}", "STALE"
+    failed = sum(case["status"] != "COMPLETE" for case in cases)
+    if status == "COMPLETE" and failed:
+        status = "COMPLETE_WITH_FAILURES"
+    summary = {
+        "schema_version": plan["schema_version"].removesuffix(".v1") + "-result.v1",
+        "manifest_hash": identity_hash(run),
+        "plan_hash": identity_hash(plan),
+        "code_hash": plan.get("code_hash"),
+        "symbol": symbol,
+        "target_annual_vol": target_vol,
+        "status": status,
+        "error": error,
+        "cases": cases,
+        "expected_attempts": len(selected),
+        "started_attempts": started,
+        "unstarted_attempts": len(selected) - started,
+        "unfinished_started_attempts": started - len(cases),
+        "failed_attempts": failed,
+        "compute": {"wall_seconds": time.perf_counter() - began, "cpu_seconds": time.process_time() - cpu_began},
+        "scope": "synthetic price stress only, not full robustness, matched realized risk or multi-asset portfolio",
+        "search_trials": 0,
+        "rankable": False,
+        "live_eligible": False,
+    }
+    digest = write_artifact(output / "summary.json", summary)
+    if status in ("COMPLETE", "COMPLETE_WITH_FAILURES") and len(cases) == len(selected):
+        write_artifact(output / "completed.json", {"summary_sha256": digest, "status": status})
+    print(json.dumps({"symbol": symbol, "target_vol": target_vol, "attempts": len(cases), "status": status}))
+    return 0 if status == "COMPLETE" else 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
