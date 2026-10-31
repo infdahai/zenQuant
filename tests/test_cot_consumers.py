@@ -1,5 +1,6 @@
 """Synthetic coverage of COT availability checks across research consumers."""
 
+from dataclasses import replace
 from pathlib import Path
 
 import pandas as pd
@@ -166,6 +167,55 @@ def test_swarm_checks_legacy_report_date_and_ignores_unrelated_marker(tmp_path: 
     unrelated = tmp_path / "other.parquet"
     pq.write_table(pa.table({"position_as_of_date_ns": [1_600_000_000_000_000_000], "value": [1]}), unrelated)
     assert DataAdmissionAgent().review([_candidate(unrelated.name)], repo_root=tmp_path)[0].status == "admitted"
+
+
+@pytest.mark.parametrize("date_field", ["report_date_ns", "position_as_of_date_ns"])
+@pytest.mark.parametrize("trader", ["asset_mgr", "leveraged", "dealer"])
+@pytest.mark.parametrize("position", ["long", "short", "net"])
+@pytest.mark.parametrize("suffix", [".parquet", ".pq", ".data", ""])
+def test_swarm_blocks_cot_position_projections(
+    tmp_path: Path, date_field: str, trader: str, position: str, suffix: str
+) -> None:
+    path = tmp_path / f"projection{suffix}"
+    pq.write_table(pa.table({date_field: [1_600_000_000_000_000_000], f"{trader}_{position}": [42]}), path)
+    assert DataAdmissionAgent().review([_candidate(path.name)], repo_root=tmp_path)[0].blocked_by == (
+        "cot_publication_time_unavailable"
+    )
+
+
+@pytest.mark.parametrize("provenance", ["provider", "source_type", "path"])
+def test_swarm_blocks_cot_oi_projection_with_provenance(tmp_path: Path, provenance: str) -> None:
+    path = tmp_path / ("cftc_go/oi.pq" if provenance == "path" else "oi.pq")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    pq.write_table(pa.table({"report_date_ns": [1_600_000_000_000_000_000], "total_oi": [42]}), path)
+    candidate = _candidate(str(path.relative_to(tmp_path)))
+    if provenance == "provider":
+        candidate = replace(candidate, provider="cftc")
+    elif provenance == "source_type":
+        candidate = replace(candidate, source_type="cot")
+    assert DataAdmissionAgent().review([candidate], repo_root=tmp_path)[0].blocked_by == (
+        "cot_publication_time_unavailable"
+    )
+
+
+@pytest.mark.parametrize("field", ["asset_mgr_long", "leveraged_short", "dealer_net", "total_oi"])
+def test_swarm_blocks_cot_projection_without_date_when_provenance_is_known(tmp_path: Path, field: str) -> None:
+    path = tmp_path / "projection.pq"
+    pq.write_table(pa.table({field: [42]}), path)
+    candidate = replace(_candidate(path.name), provider="cftc")
+    assert DataAdmissionAgent().review([candidate], repo_root=tmp_path)[0].blocked_by == (
+        "cot_publication_time_unavailable"
+    )
+
+
+def test_swarm_admits_generic_oi_and_non_parquet_files(tmp_path: Path) -> None:
+    path = tmp_path / "oi.pq"
+    pq.write_table(pa.table({"report_date_ns": [1_600_000_000_000_000_000], "total_oi": [42]}), path)
+    candidate = replace(_candidate(path.name), provider="exchange", source_type="open_interest")
+    assert DataAdmissionAgent().review([candidate], repo_root=tmp_path)[0].status == "admitted"
+    other = tmp_path / "source.json"
+    other.write_text('{"value": 1}', encoding="utf-8")
+    assert DataAdmissionAgent().review([_candidate(other.name)], repo_root=tmp_path)[0].status == "admitted"
 
 
 @pytest.mark.parametrize("date_field", ["report_date_ns", "position_as_of_date_ns"])

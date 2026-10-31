@@ -237,7 +237,7 @@ class DataAdmissionAgent:
             cache_path = repo_root / candidate.local_cache_path
             lineage_complete = candidate.local_cache_path.startswith("builtin:") or cache_path.exists()
             status_blocker = _source_status_blocker(cache_path) if lineage_complete else None
-            cache_blocker = _source_cache_blocker(cache_path) if lineage_complete else None
+            cache_blocker = _source_cache_blocker(cache_path, candidate=candidate) if lineage_complete else None
             blocked_by = None
             if not candidate.free_tier:
                 blocked_by = "non_free_source_scope"
@@ -1101,16 +1101,29 @@ def _source_status_blocker(path: Path) -> str | None:
     return None
 
 
-def _source_cache_blocker(path: Path) -> str | None:
-    if path.suffix != ".parquet" and not path.is_dir():
-        return None
+def _source_cache_blocker(path: Path, *, candidate: SourceCandidate) -> str | None:
     try:
+        if not path.is_dir() and path.suffix != ".parquet":
+            if not path.is_file():
+                return None
+            with path.open("rb") as source:
+                if source.read(4) not in (b"PAR1", b"PARE"):
+                    return None
         dataset = pq.ParquetDataset(path)
-        cot_fields = {"asset_mgr_net", "leveraged_net", "dealer_net", "total_oi"}
+        cot_fields = {
+            f"{trader}_{position}"
+            for trader in ("asset_mgr", "leveraged", "dealer")
+            for position in ("long", "short", "net")
+        }
+        cot_source = (
+            candidate.provider.lower() == "cftc"
+            or candidate.source_type.lower() in {"cot", "cftc_cot"}
+            or any(part.lower() in {"cftc", "cftc_go"} for part in Path(candidate.local_cache_path).parts)
+        )
         date_fields = {"report_date_ns", "position_as_of_date_ns"}
         for fragment in dataset.fragments:
             fields = set(fragment.physical_schema.names) | set(ds.get_partition_keys(fragment.partition_expression))
-            if date_fields & fields and cot_fields & fields:
+            if (date_fields & fields or cot_source) and (cot_fields & fields or (cot_source and "total_oi" in fields)):
                 return "cot_publication_time_unavailable"
         frame = dataset.read().to_pandas()
     except Exception:
