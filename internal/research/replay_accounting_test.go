@@ -12,6 +12,37 @@ func replayNear(t *testing.T, got, want float64) {
 	}
 }
 
+func TestReplayAccountingRollsBackFundingWhenPriceOverflows(t *testing.T) {
+	var ledger PositionEpisodeLedger
+	a, err := NewReplayAccounting("BTC", &ledger, []ReplayFundingRow{{2, .1}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = a.CollectReport(ExecutionReport{Symbol: "BTC", Side: 1, FilledQty: 2, AvgPrice: 1, TransactionTimeNS: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	before := ledger.OpenEpisodes()[0]
+	if err := a.OnExecutionBar(ReplayExecutionBar{2, math.MaxFloat64, 1, 1}); err == nil {
+		t.Fatal("expected excursion overflow")
+	}
+	if got := ledger.OpenEpisodes()[0]; got != before {
+		t.Fatalf("ledger changed: before=%+v after=%+v", before, got)
+	}
+	if a.hasCutoff || a.fundingIndex != -1 || a.lastFundingTime != 0 {
+		t.Fatalf("mutated adapter: %+v", a)
+	}
+	// A timestamp between the original fill and rejected bar proves the ledger clock was restored.
+	_, err = a.CollectReport(ExecutionReport{Symbol: "BTC", Side: 1, FilledQty: 1, AvgPrice: 1, TransactionTimeNS: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := a.OnExecutionBar(ReplayExecutionBar{2, 2, 1, 1}); err != nil {
+		t.Fatal(err)
+	}
+	replayNear(t, ledger.OpenEpisodes()[0].FundingPnL, -.3)
+}
+
 func TestReplayAccountingRejectsOverflowingFundingWithoutMutation(t *testing.T) {
 	var ledger PositionEpisodeLedger
 	a, err := NewReplayAccounting("BTC", &ledger, []ReplayFundingRow{{2, 2}})

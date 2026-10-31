@@ -94,7 +94,7 @@ func (s *episodeState) snapshot(closedAt *int64) PositionEpisode {
 // Events that would make an open episode's duration exceed int64 nanoseconds
 // are rejected without changing the ledger. Unlike Python, non-finite numeric
 // inputs are rejected, including those on otherwise ignored execution reports.
-// Finite inputs can still overflow floating-point arithmetic.
+// Events producing non-finite accounting results are also rejected atomically.
 type PositionEpisodeLedger struct {
 	*positionEpisodeLedgerState
 }
@@ -187,7 +187,7 @@ func (l *PositionEpisodeLedger) Episodes() []PositionEpisode {
 	})
 	return result
 }
-func observeEpisode(s *episodeState, high, low, close float64) {
+func observeEpisode(s *episodeState, high, low, close float64) error {
 	e := &s.episode
 	var favorable, adverse float64
 	if e.Side > 0 {
@@ -197,6 +197,9 @@ func observeEpisode(s *episodeState, high, low, close float64) {
 		favorable = e.GrossRealizedPnL + (e.EntryPrice-low)*e.RemainingQty
 		adverse = e.GrossRealizedPnL + (e.EntryPrice-high)*e.RemainingQty
 	}
+	if !finite(favorable) || !finite(adverse) {
+		return fmt.Errorf("episode accounting produced non-finite excursion")
+	}
 	if favorable > e.MFEPnL {
 		e.MFEPnL = favorable
 	}
@@ -204,9 +207,111 @@ func observeEpisode(s *episodeState, high, low, close float64) {
 		e.MAEPnL = adverse
 	}
 	e.UnrealizedPnL = (close - e.EntryPrice) * e.RemainingQty * float64(e.Side)
+	if !finite(e.UnrealizedPnL) {
+		return fmt.Errorf("episode accounting produced non-finite unrealized pnl")
+	}
+	return nil
 }
 
 func finite(value float64) bool { return !math.IsNaN(value) && !math.IsInf(value, 0) }
+
+func finiteEpisode(e PositionEpisode) bool {
+	values := []float64{e.EntryPrice, e.MaxAbsQty, e.RemainingQty, e.GrossRealizedPnL, e.Fees, e.FundingPnL, e.NetPnL, e.MFEPnL, e.MAEPnL, e.UnrealizedPnL}
+	if e.ExitPrice != nil {
+		values = append(values, *e.ExitPrice)
+	}
+	for _, v := range values {
+		if !finite(v) {
+			return false
+		}
+	}
+	return true
+}
+
+// applyAtomic groups multiple ledger operations into one transaction.
+func (l *PositionEpisodeLedger) applyAtomic(apply func(*PositionEpisodeLedger) error) error {
+	staged := NewPositionEpisodeLedger()
+	if l.positionEpisodeLedgerState != nil {
+		for k, v := range l.open {
+			state := *v
+			staged.open[k] = &state
+		}
+		for k, v := range l.last {
+			staged.last[k] = v
+		}
+		for k, v := range l.sequences {
+			staged.sequences[k] = v
+		}
+		for k, v := range l.previous {
+			staged.previous[k] = v
+		}
+		// Cap the shared, immutable prefix so appends cannot mutate its backing array.
+		staged.closed = l.closed[:len(l.closed):len(l.closed)]
+		staged.switches = l.switches
+	}
+	if err := apply(staged); err != nil {
+		return err
+	}
+	if l.positionEpisodeLedgerState == nil {
+		l.positionEpisodeLedgerState = staged.positionEpisodeLedgerState
+	} else {
+		*l.positionEpisodeLedgerState = *staged.positionEpisodeLedgerState
+	}
+	return nil
+}
+
+// applyEvent stages only the affected symbol so failed arithmetic cannot change
+// positions, clocks, sequences, closed episodes, or shared ledger copies.
+func (l *PositionEpisodeLedger) applyEvent(symbol string, apply func(*PositionEpisodeLedger) error) error {
+	staged := NewPositionEpisodeLedger()
+	if l.positionEpisodeLedgerState != nil {
+		if s := l.open[symbol]; s != nil {
+			copy := *s
+			staged.open[symbol] = &copy
+		}
+		if value, ok := l.last[symbol]; ok {
+			staged.last[symbol] = value
+		}
+		if value, ok := l.sequences[symbol]; ok {
+			staged.sequences[symbol] = value
+		}
+		if value, ok := l.previous[symbol]; ok {
+			staged.previous[symbol] = value
+		}
+		staged.switches = l.switches
+	}
+	if err := apply(staged); err != nil {
+		return err
+	}
+	if s := staged.open[symbol]; s != nil {
+		if !finite(s.exitQty) || !finite(s.exitNotional) || !finiteEpisode(s.snapshot(nil)) {
+			return fmt.Errorf("episode accounting produced non-finite result")
+		}
+	}
+	for _, e := range staged.closed {
+		if !finiteEpisode(e) {
+			return fmt.Errorf("episode accounting produced non-finite result")
+		}
+	}
+	l.init()
+	if s := staged.open[symbol]; s != nil {
+		l.open[symbol] = s
+	} else {
+		delete(l.open, symbol)
+	}
+	if value, ok := staged.last[symbol]; ok {
+		l.last[symbol] = value
+	}
+	if value, ok := staged.sequences[symbol]; ok {
+		l.sequences[symbol] = value
+	}
+	if value, ok := staged.previous[symbol]; ok {
+		l.previous[symbol] = value
+	}
+	l.switches = staged.switches
+	l.closed = append(l.closed, staged.closed...)
+	return nil
+}
 
 // OnFill processes any report with positive quantity and price, regardless of status.
 func (l *PositionEpisodeLedger) OnFill(r ExecutionReport) error {
@@ -216,6 +321,16 @@ func (l *PositionEpisodeLedger) OnFill(r ExecutionReport) error {
 	if r.FilledQty <= 0 || r.AvgPrice <= 0 {
 		return nil
 	}
+	return l.applyEvent(r.Symbol, func(staged *PositionEpisodeLedger) error { return staged.onFill(r) })
+}
+func (l *PositionEpisodeLedger) AllocateFunding(a FundingAllocation) error {
+	return l.applyEvent(a.Symbol, func(staged *PositionEpisodeLedger) error { return staged.allocateFunding(a) })
+}
+func (l *PositionEpisodeLedger) ObservePrice(o PriceObservation) error {
+	return l.applyEvent(o.Symbol, func(staged *PositionEpisodeLedger) error { return staged.observePrice(o) })
+}
+
+func (l *PositionEpisodeLedger) onFill(r ExecutionReport) error {
 	if r.Side != -1 && r.Side != 1 {
 		return fmt.Errorf("filled execution report side must be -1 or 1")
 	}
@@ -228,7 +343,9 @@ func (l *PositionEpisodeLedger) OnFill(r ExecutionReport) error {
 		return nil
 	}
 	e := &s.episode
-	observeEpisode(s, r.AvgPrice, r.AvgPrice, r.AvgPrice)
+	if err := observeEpisode(s, r.AvgPrice, r.AvgPrice, r.AvgPrice); err != nil {
+		return err
+	}
 	s.lastEventNS = r.TransactionTimeNS
 	if e.Side == r.Side {
 		next := e.RemainingQty + r.FilledQty
@@ -257,6 +374,9 @@ func (l *PositionEpisodeLedger) OnFill(r ExecutionReport) error {
 	e.Fees += closeFee
 	s.exitQty += closeQty
 	s.exitNotional += closeQty * r.AvgPrice
+	if !finite(s.exitNotional) || !finite(s.exitQty) {
+		return fmt.Errorf("episode accounting produced non-finite exit notional")
+	}
 	e.RemainingQty -= closeQty
 	if e.RemainingQty <= 1e-12 {
 		e.RemainingQty = 0
@@ -277,7 +397,7 @@ func (l *PositionEpisodeLedger) OnFill(r ExecutionReport) error {
 	}
 	return nil
 }
-func (l *PositionEpisodeLedger) AllocateFunding(a FundingAllocation) error {
+func (l *PositionEpisodeLedger) allocateFunding(a FundingAllocation) error {
 	if !finite(a.PnL) {
 		return fmt.Errorf("funding pnl must be finite")
 	}
@@ -291,7 +411,7 @@ func (l *PositionEpisodeLedger) AllocateFunding(a FundingAllocation) error {
 	return nil
 }
 func (l *PositionEpisodeLedger) OnFunding(a FundingAllocation) error { return l.AllocateFunding(a) }
-func (l *PositionEpisodeLedger) ObservePrice(o PriceObservation) error {
+func (l *PositionEpisodeLedger) observePrice(o PriceObservation) error {
 	if !finite(o.High) || !finite(o.Low) || !finite(o.Close) {
 		return fmt.Errorf("price observation high, low and close must be finite")
 	}
@@ -305,7 +425,9 @@ func (l *PositionEpisodeLedger) ObservePrice(o PriceObservation) error {
 		return err
 	}
 	if s := l.open[o.Symbol]; s != nil {
-		observeEpisode(s, o.High, o.Low, o.Close)
+		if err := observeEpisode(s, o.High, o.Low, o.Close); err != nil {
+			return err
+		}
 		s.lastEventNS = o.TimestampNS
 	}
 	return nil
