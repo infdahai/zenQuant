@@ -216,6 +216,100 @@ class MacroDataStoreTests(unittest.TestCase):
             self.assertAlmostEqual(snap.cme_lev_money_net, 900.0)
             self.assertAlmostEqual(snap.cme_total_oi, 14_000.0)
 
+    def test_cot_rejects_research_fragment_in_mixed_dataset(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            cot_path = Path(tmpdir) / "cftc" / "cot_btc.parquet"
+            _write_parquet(cot_path / "a.parquet", [{"report_date_ns": DAY_NS, "asset_mgr_net": 100.0}])
+            _write_parquet(
+                cot_path / "b.parquet",
+                [{"report_date_ns": 2 * DAY_NS, "position_as_of_date_ns": DAY_NS, "asset_mgr_net": 200.0}],
+            )
+            store = self._make_store(tmpdir)
+            self.assertIsNone(store.lookup(2 * DAY_NS).cme_asset_mgr_net)
+
+    def test_cot_requires_physical_report_date_in_each_hive_fragment(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            cot_path = Path(tmpdir) / "cftc" / "cot_btc.parquet"
+            _write_parquet(cot_path / f"report_date_ns={DAY_NS}" / "part.parquet", [{"asset_mgr_net": 100.0}])
+            store = self._make_store(tmpdir)
+            self.assertIsNone(store.lookup(DAY_NS).cme_asset_mgr_net)
+
+    def test_cot_rejects_hive_research_marker(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            cot_path = Path(tmpdir) / "cftc" / "cot_btc.parquet"
+            _write_parquet(
+                cot_path / "position_as_of_date_ns=1" / "part.parquet",
+                [{"report_date_ns": DAY_NS, "asset_mgr_net": 100.0}],
+            )
+            store = self._make_store(tmpdir)
+            self.assertIsNone(store.lookup(DAY_NS).cme_asset_mgr_net)
+
+    def test_cot_mixed_fields_preserve_observations_without_fabricating_zero(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            cot_path = Path(tmpdir) / "cftc" / "cot_btc.parquet"
+            _write_parquet(cot_path / "a.parquet", [{"report_date_ns": DAY_NS, "asset_mgr_net": 100.0}])
+            _write_parquet(cot_path / "b.parquet", [{"report_date_ns": 2 * DAY_NS, "leveraged_net": -200.0}])
+            _write_parquet(
+                cot_path / "c.parquet", [{"report_date_ns": 3 * DAY_NS, "asset_mgr_net": None, "leveraged_net": 0.0}]
+            )
+            store = self._make_store(tmpdir)
+            self.assertIsNone(store.lookup(DAY_NS).cme_lev_money_net)
+            snap = store.lookup(2 * DAY_NS)
+            self.assertEqual(snap.cme_asset_mgr_net, 100.0)
+            self.assertEqual(snap.cme_lev_money_net, -200.0)
+            snap = store.lookup(3 * DAY_NS)
+            self.assertEqual(snap.cme_asset_mgr_net, 100.0)
+            self.assertEqual(snap.cme_lev_money_net, 0.0)
+
+    def test_cot_accepts_safe_hive_fragments(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            cot_path = Path(tmpdir) / "cftc" / "cot_btc.parquet"
+            _write_parquet(
+                cot_path / "year=2024" / "part.parquet", [{"report_date_ns": DAY_NS, "asset_mgr_net": 100.0}]
+            )
+            _write_parquet(
+                cot_path / "year=2025" / "part.parquet", [{"report_date_ns": 2 * DAY_NS, "asset_mgr_net": 200.0}]
+            )
+            store = self._make_store(tmpdir)
+            self.assertEqual(store.lookup(DAY_NS).cme_asset_mgr_net, 100.0)
+            self.assertEqual(store.lookup(2 * DAY_NS).cme_asset_mgr_net, 200.0)
+
+    def test_reload_clears_cached_and_removed_or_rejected_series(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            cot_path = Path(tmpdir) / "cftc" / "cot_btc.parquet"
+            store = self._make_store(
+                tmpdir, vix=[(DAY_NS, 20.0)], cme_cot=[{"report_date_ns": DAY_NS, "asset_mgr_net": 100.0}]
+            )
+            self.assertEqual(store.lookup(DAY_NS).cme_asset_mgr_net, 100.0)
+            _write_parquet(cot_path, [{"report_date_ns": DAY_NS, "position_as_of_date_ns": DAY_NS}])
+            store.load()
+            snap = store.lookup(DAY_NS)
+            self.assertEqual(snap.vix, 20.0)
+            self.assertIsNone(snap.cme_asset_mgr_net)
+
+            _write_parquet(cot_path, [{"report_date_ns": DAY_NS, "asset_mgr_net": 300.0}])
+            store.load()
+            self.assertEqual(store.lookup(DAY_NS).cme_asset_mgr_net, 300.0)
+            cot_path.unlink()
+            store.load()
+            snap = store.lookup(DAY_NS)
+            self.assertEqual(snap.vix, 20.0)
+            self.assertIsNone(snap.cme_asset_mgr_net)
+            (Path(tmpdir) / "vix" / "data.parquet").unlink()
+            store.load()
+            self.assertFalse(store.loaded)
+            self.assertIsNone(store.lookup(DAY_NS).vix)
+
+    def test_failed_cot_reload_does_not_leave_partial_series(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            cot_path = Path(tmpdir) / "cftc" / "cot_btc.parquet"
+            store = self._make_store(tmpdir, cme_cot=[{"report_date_ns": DAY_NS, "asset_mgr_net": 100.0}])
+            store.lookup(DAY_NS)
+            _write_parquet(cot_path, [{"report_date_ns": DAY_NS, "asset_mgr_net": 200.0, "leveraged_net": "invalid"}])
+            store.load()
+            self.assertIsNone(store.lookup(DAY_NS).cme_asset_mgr_net)
+            self.assertIsNone(store.lookup(DAY_NS).cme_lev_money_net)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -19,6 +19,38 @@ from pathlib import Path
 from zenquant.data._z_utils import robust_z as _robust_z
 
 
+def has_raw_cot_fragments(dataset: object) -> bool:
+    """Identify Go COT in any physical fragment, even in mixed-schema datasets."""
+    return "position_as_of_date_ns" in dataset.schema.names or any(
+        "position_as_of_date_ns" in fragment.physical_schema.names for fragment in dataset.fragments
+    )
+
+
+def cot_data_available(path: Path) -> bool:
+    """Check legacy compatibility and presence of usable positioning data."""
+    store = CotDataStore(CotStoreConfig(cot_path=path))
+    store.load()
+    if not store.loaded:
+        return False
+    import pyarrow.parquet as pq
+
+    dataset = pq.ParquetDataset(path)
+    fields = {"asset_mgr_net", "leveraged_net", "dealer_net", "total_oi"} & set(dataset.schema.names)
+    table = dataset.read(columns=sorted(fields))
+    return any(table.column(name).null_count < table.num_rows for name in fields)
+
+
+def macro_cot_available(path: Path) -> bool:
+    """Use the macro store's COT loader without loading other macro series."""
+    from zenquant.data.macro_store import MacroDataStore
+
+    if not path.exists():
+        return False
+    store = MacroDataStore()
+    store._load_cme_cot(path)
+    return store.loaded
+
+
 @dataclass(slots=True)
 class CotStoreConfig:
     """Configuration for COT data store."""
@@ -81,7 +113,10 @@ class CotDataStore:
 
         try:
             dataset = pq.ParquetDataset(self._config.cot_path)
-            if any("position_as_of_date_ns" in fragment.physical_schema.names for fragment in dataset.fragments):
+            schemas = [set(fragment.physical_schema.names) for fragment in dataset.fragments]
+            if has_raw_cot_fragments(dataset) or any(
+                "report_date_ns" not in columns or columns != schemas[0] for columns in schemas
+            ):
                 return
             df = dataset.read().to_pandas()
 
