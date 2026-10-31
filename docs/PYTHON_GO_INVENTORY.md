@@ -34,6 +34,8 @@ The offline risk target clamp ports the final exposure and reduce-only quantity 
 
 The offline trade proxy slice normalizes synthetic Hyperliquid recent trades and aggregates large-trade proxy buckets in memory. It does not collect, deduplicate, persist or verify liquidations. Event time is not receipt time; a bucket cannot be treated as point-in-time available without evidence of completion and collection availability. Go rejects malformed values and mixed sources more strictly than Python. Its fixture generator postdates the baseline manifest.
 
+The offline basis slice joins in-memory spot and perpetual rows and provides cutoff-based basis and robust z-score snapshots, compared against synthetic Python fixtures. Input timestamps must share a unit and represent data already available at that time, including any duplicate corrections; the slice does not establish publication or receipt timing. Go rejects non-finite values, nonpositive perpetual prices and invalid window parameters. It does not replace Python storage or ingestion. Its fixture generator postdates the baseline manifest.
+
 The current product UI and newly revised documentation use English. Historical evidence and archived records retain their original language and content; existing authoritative operational documents remain in force and are not translated by changing archived evidence.
 
 A proposed sequence, with a separately reviewed scope and explicit evidence at each stage:

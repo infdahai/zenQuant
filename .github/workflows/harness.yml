@@ -52,6 +52,9 @@ jobs:
       - name: Check trade proxy Python reference fixture
         run: uv run python scripts/generate_trade_proxy_golden.py --check
 
+      - name: Check basis Python reference fixture
+        run: uv run python scripts/generate_basis_golden.py --check
+
       - name: "Gate B: import boundaries"
         run: uv run pytest tests/test_import_boundaries.py -v --tb=short
 
