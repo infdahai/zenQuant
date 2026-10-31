@@ -3,6 +3,7 @@ package research
 import (
 	"fmt"
 	"math"
+	"math/big"
 	"sort"
 	"strconv"
 	"strings"
@@ -52,6 +53,16 @@ func ClampRiskTarget(in RiskTargetInput) (RiskTargetResult, error) {
 	limit := notional / in.Price
 	if !sizingFinite(limit) {
 		return RiskTargetResult{}, fmt.Errorf("risk target quantity limit overflow")
+	}
+	// Derive the cap from exact binary64 inputs and round downward. The
+	// ordinary product and quotient above retain their existing overflow guards.
+	exactNotional := new(big.Rat).Mul(new(big.Rat).SetFloat64(in.Equity), new(big.Rat).SetFloat64(in.LeverageCap))
+	exactLimit := new(big.Rat).Quo(exactNotional, new(big.Rat).SetFloat64(in.Price))
+	limit, exact := exactLimit.Float64()
+	if math.IsInf(limit, 1) {
+		limit = math.MaxFloat64
+	} else if !exact && new(big.Rat).SetFloat64(limit).Cmp(exactLimit) > 0 {
+		limit = math.Nextafter(limit, 0)
 	}
 	qty := math.Max(-limit, math.Min(limit, in.TargetQty))
 	flags := append([]string{}, in.Flags...)

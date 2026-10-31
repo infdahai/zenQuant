@@ -3,6 +3,8 @@ package research
 import (
 	"encoding/json"
 	"math"
+	"math/big"
+	"math/rand"
 	"os"
 	"reflect"
 	"testing"
@@ -107,6 +109,84 @@ func TestRiskTargetQuantizationStable(t *testing.T) {
 		got := riskQuantizeTowardZero(value, 1e6)
 		if math.Abs(got) > math.Abs(value) || riskQuantizeTowardZero(got, 1e6) != got {
 			t.Fatalf("unstable quantization %.17g -> %.17g -> %.17g", value, got, riskQuantizeTowardZero(got, 1e6))
+		}
+	}
+}
+
+func TestRiskTargetExactCapRegression(t *testing.T) {
+	for _, sign := range []float64{-1, 1} {
+		in := RiskTargetInput{TargetQty: sign * 0.810112, TargetLeverage: 1, Equity: 140.13194190094825, LeverageCap: 0.310065231335874, Price: 53.634612230238254}
+		got, err := ClampRiskTarget(in)
+		if err != nil {
+			t.Fatal(err)
+		}
+		assertExactRiskCap(t, in, got)
+		if got.TargetQty != sign*0.810111 {
+			t.Fatalf("unexpected conservative target: %+v", got)
+		}
+	}
+}
+
+func assertExactRiskCap(t *testing.T, in RiskTargetInput, got RiskTargetResult) {
+	t.Helper()
+	rat := func(v float64) *big.Rat { return new(big.Rat).SetFloat64(v) }
+	actual := new(big.Rat).Mul(rat(math.Abs(got.TargetQty)), rat(in.Price))
+	cap := new(big.Rat).Mul(rat(in.Equity), rat(in.LeverageCap))
+	if actual.Cmp(cap) > 0 || math.Abs(got.TargetQty) > math.Abs(in.TargetQty) || got.TargetLeverage > in.LeverageCap || got.TargetLeverage > in.TargetLeverage || !sizingFinite(got.TargetQty) || !sizingFinite(got.TargetLeverage) {
+		t.Fatalf("risk cap violated: input %+v result %+v exact excess %s", in, got, new(big.Rat).Sub(actual, cap).RatString())
+	}
+	if in.ReduceOnly && (math.Abs(got.TargetQty) > math.Abs(in.CurrentPosition) || (got.TargetQty != 0 && math.Signbit(got.TargetQty) != math.Signbit(in.CurrentPosition))) {
+		t.Fatalf("reduce-only violation: %+v %+v", in, got)
+	}
+}
+
+func TestRiskTargetExactCapOracle(t *testing.T) {
+	rng := rand.New(rand.NewSource(1234))
+	for i := 0; i < 3000; i++ {
+		equity := math.Ldexp(0.5+rng.Float64()/2, rng.Intn(1300)-650)
+		cap := math.Ldexp(0.5+rng.Float64()/2, rng.Intn(800)-400)
+		price := math.Ldexp(0.5+rng.Float64()/2, rng.Intn(650)-29)
+		notional := equity * cap
+		if price < 1e-9 || math.IsInf(notional, 0) || math.IsInf(notional/price, 0) {
+			continue
+		}
+		limit := notional / price
+		for _, sign := range []float64{-1, 1} {
+			in := RiskTargetInput{TargetQty: sign * limit, TargetLeverage: cap, Equity: equity, LeverageCap: cap, Price: price, ReduceOnly: i%2 == 0, CurrentPosition: sign * limit}
+			got, err := ClampRiskTarget(in)
+			if err != nil {
+				t.Fatalf("case %d: %v", i, err)
+			}
+			assertExactRiskCap(t, in, got)
+		}
+	}
+}
+
+func TestRiskTargetExactCapDecimalBoundary(t *testing.T) {
+	for _, sign := range []float64{-1, 1} {
+		for _, tc := range []RiskTargetInput{
+			{TargetQty: sign, TargetLeverage: 1, Equity: 1, LeverageCap: 1, Price: 10},
+			{TargetQty: sign * math.MaxFloat64, TargetLeverage: 1, Equity: math.MaxFloat64, LeverageCap: 1, Price: 1},
+			{TargetQty: sign * math.SmallestNonzeroFloat64, TargetLeverage: math.SmallestNonzeroFloat64, Equity: math.SmallestNonzeroFloat64, LeverageCap: math.SmallestNonzeroFloat64, Price: 1},
+			{TargetQty: sign, TargetLeverage: 1, Equity: 0, LeverageCap: 1, Price: 1},
+			{TargetQty: sign, TargetLeverage: 1, Equity: math.SmallestNonzeroFloat64, LeverageCap: 0.5, Price: 1e-9},
+			{TargetQty: sign * math.Nextafter(0.1, 0), TargetLeverage: 1, Equity: 1, LeverageCap: 1, Price: 10},
+			{TargetQty: sign * math.Nextafter(0.1, 1), TargetLeverage: 1, Equity: 1, LeverageCap: 1, Price: 10},
+		} {
+			got, err := ClampRiskTarget(tc)
+			if err != nil {
+				t.Fatal(err)
+			}
+			assertExactRiskCap(t, tc, got)
+		}
+	}
+}
+
+func BenchmarkClampRiskTarget(b *testing.B) {
+	in := RiskTargetInput{TargetQty: 0.810112, TargetLeverage: 1, Equity: 140.13194190094825, LeverageCap: 0.310065231335874, Price: 53.634612230238254}
+	for i := 0; i < b.N; i++ {
+		if _, err := ClampRiskTarget(in); err != nil {
+			b.Fatal(err)
 		}
 	}
 }
