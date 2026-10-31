@@ -1,0 +1,1183 @@
+{
+  "version": 1,
+  "cases": [
+    {
+      "name": "no_exit_ratchet_long",
+      "position": {
+        "symbol": "BTC",
+        "timeframe": "4h",
+        "direction": 1.0,
+        "entry_price": 100.0,
+        "current_qty": 1.0,
+        "trailing_stop": 95.0,
+        "bars_held": 5
+      },
+      "state": {
+        "cutoff_time_ns": 100,
+        "directional_state": "UPTREND",
+        "volatility_state": "NORMAL",
+        "quality_state": "TRADABLE",
+        "transition_risk": 0.0
+      },
+      "playbook": {
+        "playbook_id": "BULL_CONTINUATION",
+        "trailing_stop_atr_mult": 2.0,
+        "time_decay_bars": null
+      },
+      "indicators": {
+        "price": 105.0,
+        "atr": 2.0
+      },
+      "config": {
+        "time_decay_enabled": true,
+        "regime_change_enabled": true,
+        "min_bars_before_trail": 1,
+        "transition_risk_exit_threshold": 0.8
+      },
+      "expected": {
+        "symbol": "BTC",
+        "timeframe": "4h",
+        "cutoff_time_ns": 100,
+        "exit_type": "NONE",
+        "exit_urgency": "NONE",
+        "target_reduction_pct": 0.0,
+        "stop_price": null,
+        "reason_code": "NO_EXIT",
+        "reason_detail": "No exit condition met",
+        "reason_codes": []
+      },
+      "trailing_stop": 101.0
+    },
+    {
+      "name": "bull_invalidation_priority",
+      "position": {
+        "symbol": "BTC",
+        "timeframe": "4h",
+        "direction": 1.0,
+        "entry_price": 100.0,
+        "current_qty": 1.0,
+        "trailing_stop": 95.0,
+        "bars_held": 5
+      },
+      "state": {
+        "cutoff_time_ns": 100,
+        "directional_state": "DOWNTREND",
+        "volatility_state": "NORMAL",
+        "quality_state": "UNSAFE",
+        "transition_risk": 0.0
+      },
+      "playbook": {
+        "playbook_id": "BULL_CONTINUATION",
+        "trailing_stop_atr_mult": 2.0,
+        "time_decay_bars": null
+      },
+      "indicators": {
+        "price": 90.0,
+        "atr": 2.0
+      },
+      "config": {
+        "time_decay_enabled": true,
+        "regime_change_enabled": true,
+        "min_bars_before_trail": 1,
+        "transition_risk_exit_threshold": 0.8
+      },
+      "expected": {
+        "symbol": "BTC",
+        "timeframe": "4h",
+        "cutoff_time_ns": 100,
+        "exit_type": "INVALIDATION",
+        "exit_urgency": "IMMEDIATE",
+        "target_reduction_pct": 1.0,
+        "stop_price": null,
+        "reason_code": "BULL_INVALIDATED_BY_DOWNTREND",
+        "reason_detail": "Bull playbook invalidated by downtrend state",
+        "reason_codes": [
+          "EXIT_INVALIDATION",
+          "DIRECTIONAL_FLIP"
+        ]
+      },
+      "trailing_stop": 95.0
+    },
+    {
+      "name": "bear_invalidation",
+      "position": {
+        "symbol": "BTC",
+        "timeframe": "4h",
+        "direction": -1.0,
+        "entry_price": 100.0,
+        "current_qty": 1.0,
+        "trailing_stop": 105.0,
+        "bars_held": 5
+      },
+      "state": {
+        "cutoff_time_ns": 100,
+        "directional_state": "UPTREND",
+        "volatility_state": "NORMAL",
+        "quality_state": "TRADABLE",
+        "transition_risk": 0.0
+      },
+      "playbook": {
+        "playbook_id": "BEAR_DEFENSE",
+        "trailing_stop_atr_mult": 2.0,
+        "time_decay_bars": null
+      },
+      "indicators": {
+        "price": 100.0,
+        "atr": 2.0
+      },
+      "config": {
+        "time_decay_enabled": true,
+        "regime_change_enabled": true,
+        "min_bars_before_trail": 1,
+        "transition_risk_exit_threshold": 0.8
+      },
+      "expected": {
+        "symbol": "BTC",
+        "timeframe": "4h",
+        "cutoff_time_ns": 100,
+        "exit_type": "INVALIDATION",
+        "exit_urgency": "IMMEDIATE",
+        "target_reduction_pct": 1.0,
+        "stop_price": null,
+        "reason_code": "BEAR_INVALIDATED_BY_UPTREND",
+        "reason_detail": "Bear playbook invalidated by uptrend state",
+        "reason_codes": [
+          "EXIT_INVALIDATION",
+          "DIRECTIONAL_FLIP"
+        ]
+      },
+      "trailing_stop": 105.0
+    },
+    {
+      "name": "initial_long_no_breach",
+      "position": {
+        "symbol": "BTC",
+        "timeframe": "4h",
+        "direction": 1.0,
+        "entry_price": 100.0,
+        "current_qty": 1.0,
+        "trailing_stop": 0.0,
+        "bars_held": 5
+      },
+      "state": {
+        "cutoff_time_ns": 100,
+        "directional_state": "UPTREND",
+        "volatility_state": "NORMAL",
+        "quality_state": "TRADABLE",
+        "transition_risk": 0.0
+      },
+      "playbook": {
+        "playbook_id": "BULL_CONTINUATION",
+        "trailing_stop_atr_mult": 2.0,
+        "time_decay_bars": null
+      },
+      "indicators": {
+        "price": 90.0,
+        "atr": 2.0
+      },
+      "config": {
+        "time_decay_enabled": true,
+        "regime_change_enabled": true,
+        "min_bars_before_trail": 1,
+        "transition_risk_exit_threshold": 0.8
+      },
+      "expected": {
+        "symbol": "BTC",
+        "timeframe": "4h",
+        "cutoff_time_ns": 100,
+        "exit_type": "NONE",
+        "exit_urgency": "NONE",
+        "target_reduction_pct": 0.0,
+        "stop_price": null,
+        "reason_code": "NO_EXIT",
+        "reason_detail": "No exit condition met",
+        "reason_codes": []
+      },
+      "trailing_stop": 96.0
+    },
+    {
+      "name": "initial_short_no_breach",
+      "position": {
+        "symbol": "BTC",
+        "timeframe": "4h",
+        "direction": -1.0,
+        "entry_price": 100.0,
+        "current_qty": 1.0,
+        "trailing_stop": 0.0,
+        "bars_held": 5
+      },
+      "state": {
+        "cutoff_time_ns": 100,
+        "directional_state": "DOWNTREND",
+        "volatility_state": "NORMAL",
+        "quality_state": "TRADABLE",
+        "transition_risk": 0.0
+      },
+      "playbook": {
+        "playbook_id": "BEAR_DEFENSE",
+        "trailing_stop_atr_mult": 2.0,
+        "time_decay_bars": null
+      },
+      "indicators": {
+        "price": 110.0,
+        "atr": 2.0
+      },
+      "config": {
+        "time_decay_enabled": true,
+        "regime_change_enabled": true,
+        "min_bars_before_trail": 1,
+        "transition_risk_exit_threshold": 0.8
+      },
+      "expected": {
+        "symbol": "BTC",
+        "timeframe": "4h",
+        "cutoff_time_ns": 100,
+        "exit_type": "NONE",
+        "exit_urgency": "NONE",
+        "target_reduction_pct": 0.0,
+        "stop_price": null,
+        "reason_code": "NO_EXIT",
+        "reason_detail": "No exit condition met",
+        "reason_codes": []
+      },
+      "trailing_stop": 104.0
+    },
+    {
+      "name": "trailing_long_equal",
+      "position": {
+        "symbol": "BTC",
+        "timeframe": "4h",
+        "direction": 1.0,
+        "entry_price": 100.0,
+        "current_qty": 1.0,
+        "trailing_stop": 95.0,
+        "bars_held": 5
+      },
+      "state": {
+        "cutoff_time_ns": 100,
+        "directional_state": "UPTREND",
+        "volatility_state": "NORMAL",
+        "quality_state": "TRADABLE",
+        "transition_risk": 0.0
+      },
+      "playbook": {
+        "playbook_id": "BULL_CONTINUATION",
+        "trailing_stop_atr_mult": 2.0,
+        "time_decay_bars": null
+      },
+      "indicators": {
+        "price": 95.0,
+        "atr": 2.0
+      },
+      "config": {
+        "time_decay_enabled": true,
+        "regime_change_enabled": true,
+        "min_bars_before_trail": 1,
+        "transition_risk_exit_threshold": 0.8
+      },
+      "expected": {
+        "symbol": "BTC",
+        "timeframe": "4h",
+        "cutoff_time_ns": 100,
+        "exit_type": "TRAILING",
+        "exit_urgency": "IMMEDIATE",
+        "target_reduction_pct": 1.0,
+        "stop_price": 95.0,
+        "reason_code": "TRAILING_STOP_BREACH",
+        "reason_detail": "Price 95.00 breached trailing stop 95.00",
+        "reason_codes": [
+          "EXIT_TRAILING_STOP"
+        ]
+      },
+      "trailing_stop": 95.0
+    },
+    {
+      "name": "trailing_short_equal",
+      "position": {
+        "symbol": "BTC",
+        "timeframe": "4h",
+        "direction": -1.0,
+        "entry_price": 100.0,
+        "current_qty": 1.0,
+        "trailing_stop": 105.0,
+        "bars_held": 5
+      },
+      "state": {
+        "cutoff_time_ns": 100,
+        "directional_state": "DOWNTREND",
+        "volatility_state": "NORMAL",
+        "quality_state": "TRADABLE",
+        "transition_risk": 0.0
+      },
+      "playbook": {
+        "playbook_id": "BEAR_DEFENSE",
+        "trailing_stop_atr_mult": 2.0,
+        "time_decay_bars": null
+      },
+      "indicators": {
+        "price": 105.0,
+        "atr": 2.0
+      },
+      "config": {
+        "time_decay_enabled": true,
+        "regime_change_enabled": true,
+        "min_bars_before_trail": 1,
+        "transition_risk_exit_threshold": 0.8
+      },
+      "expected": {
+        "symbol": "BTC",
+        "timeframe": "4h",
+        "cutoff_time_ns": 100,
+        "exit_type": "TRAILING",
+        "exit_urgency": "IMMEDIATE",
+        "target_reduction_pct": 1.0,
+        "stop_price": 105.0,
+        "reason_code": "TRAILING_STOP_BREACH",
+        "reason_detail": "Price 105.00 breached trailing stop 105.00",
+        "reason_codes": [
+          "EXIT_TRAILING_STOP"
+        ]
+      },
+      "trailing_stop": 105.0
+    },
+    {
+      "name": "short_ratchet",
+      "position": {
+        "symbol": "BTC",
+        "timeframe": "4h",
+        "direction": -1.0,
+        "entry_price": 100.0,
+        "current_qty": 1.0,
+        "trailing_stop": 105.0,
+        "bars_held": 5
+      },
+      "state": {
+        "cutoff_time_ns": 100,
+        "directional_state": "DOWNTREND",
+        "volatility_state": "NORMAL",
+        "quality_state": "TRADABLE",
+        "transition_risk": 0.0
+      },
+      "playbook": {
+        "playbook_id": "BEAR_DEFENSE",
+        "trailing_stop_atr_mult": 2.0,
+        "time_decay_bars": null
+      },
+      "indicators": {
+        "price": 90.0,
+        "atr": 2.0
+      },
+      "config": {
+        "time_decay_enabled": true,
+        "regime_change_enabled": true,
+        "min_bars_before_trail": 1,
+        "transition_risk_exit_threshold": 0.8
+      },
+      "expected": {
+        "symbol": "BTC",
+        "timeframe": "4h",
+        "cutoff_time_ns": 100,
+        "exit_type": "NONE",
+        "exit_urgency": "NONE",
+        "target_reduction_pct": 0.0,
+        "stop_price": null,
+        "reason_code": "NO_EXIT",
+        "reason_detail": "No exit condition met",
+        "reason_codes": []
+      },
+      "trailing_stop": 94.0
+    },
+    {
+      "name": "initial_then_decay",
+      "position": {
+        "symbol": "BTC",
+        "timeframe": "4h",
+        "direction": 1.0,
+        "entry_price": 100.0,
+        "current_qty": 1.0,
+        "trailing_stop": 0.0,
+        "bars_held": 25
+      },
+      "state": {
+        "cutoff_time_ns": 100,
+        "directional_state": "UPTREND",
+        "volatility_state": "NORMAL",
+        "quality_state": "TRADABLE",
+        "transition_risk": 0.0
+      },
+      "playbook": {
+        "playbook_id": "BULL_CONTINUATION",
+        "trailing_stop_atr_mult": 2.0,
+        "time_decay_bars": 20
+      },
+      "indicators": {
+        "price": 90.0,
+        "atr": 2.0
+      },
+      "config": {
+        "time_decay_enabled": true,
+        "regime_change_enabled": true,
+        "min_bars_before_trail": 1,
+        "transition_risk_exit_threshold": 0.8
+      },
+      "expected": {
+        "symbol": "BTC",
+        "timeframe": "4h",
+        "cutoff_time_ns": 100,
+        "exit_type": "TIME_DECAY",
+        "exit_urgency": "GRADUAL",
+        "target_reduction_pct": 0.5,
+        "stop_price": null,
+        "reason_code": "TIME_DECAY_UNPROFITABLE",
+        "reason_detail": "Held 25 bars without profit",
+        "reason_codes": [
+          "EXIT_TIME_DECAY",
+          "UNPROFITABLE"
+        ]
+      },
+      "trailing_stop": 96.0
+    },
+    {
+      "name": "decay_before_regime",
+      "position": {
+        "symbol": "BTC",
+        "timeframe": "4h",
+        "direction": 1.0,
+        "entry_price": 100.0,
+        "current_qty": 1.0,
+        "trailing_stop": 95.0,
+        "bars_held": 25
+      },
+      "state": {
+        "cutoff_time_ns": 100,
+        "directional_state": "UPTREND",
+        "volatility_state": "NORMAL",
+        "quality_state": "UNSAFE",
+        "transition_risk": 0.0
+      },
+      "playbook": {
+        "playbook_id": "BULL_CONTINUATION",
+        "trailing_stop_atr_mult": 2.0,
+        "time_decay_bars": 20
+      },
+      "indicators": {
+        "price": 99.0,
+        "atr": 2.0
+      },
+      "config": {
+        "time_decay_enabled": true,
+        "regime_change_enabled": true,
+        "min_bars_before_trail": 1,
+        "transition_risk_exit_threshold": 0.8
+      },
+      "expected": {
+        "symbol": "BTC",
+        "timeframe": "4h",
+        "cutoff_time_ns": 100,
+        "exit_type": "TIME_DECAY",
+        "exit_urgency": "GRADUAL",
+        "target_reduction_pct": 0.5,
+        "stop_price": null,
+        "reason_code": "TIME_DECAY_UNPROFITABLE",
+        "reason_detail": "Held 25 bars without profit",
+        "reason_codes": [
+          "EXIT_TIME_DECAY",
+          "UNPROFITABLE"
+        ]
+      },
+      "trailing_stop": 95.0
+    },
+    {
+      "name": "decay_boundary",
+      "position": {
+        "symbol": "BTC",
+        "timeframe": "4h",
+        "direction": 1.0,
+        "entry_price": 100.0,
+        "current_qty": 1.0,
+        "trailing_stop": 95.0,
+        "bars_held": 20
+      },
+      "state": {
+        "cutoff_time_ns": 100,
+        "directional_state": "UPTREND",
+        "volatility_state": "NORMAL",
+        "quality_state": "TRADABLE",
+        "transition_risk": 0.0
+      },
+      "playbook": {
+        "playbook_id": "BULL_CONTINUATION",
+        "trailing_stop_atr_mult": 2.0,
+        "time_decay_bars": 20
+      },
+      "indicators": {
+        "price": 99.0,
+        "atr": 2.0
+      },
+      "config": {
+        "time_decay_enabled": true,
+        "regime_change_enabled": true,
+        "min_bars_before_trail": 1,
+        "transition_risk_exit_threshold": 0.8
+      },
+      "expected": {
+        "symbol": "BTC",
+        "timeframe": "4h",
+        "cutoff_time_ns": 100,
+        "exit_type": "NONE",
+        "exit_urgency": "NONE",
+        "target_reduction_pct": 0.0,
+        "stop_price": null,
+        "reason_code": "NO_EXIT",
+        "reason_detail": "No exit condition met",
+        "reason_codes": []
+      },
+      "trailing_stop": 95.0
+    },
+    {
+      "name": "decay_short_loss",
+      "position": {
+        "symbol": "BTC",
+        "timeframe": "4h",
+        "direction": -1.0,
+        "entry_price": 100.0,
+        "current_qty": 1.0,
+        "trailing_stop": 110.0,
+        "bars_held": 25
+      },
+      "state": {
+        "cutoff_time_ns": 100,
+        "directional_state": "DOWNTREND",
+        "volatility_state": "NORMAL",
+        "quality_state": "TRADABLE",
+        "transition_risk": 0.0
+      },
+      "playbook": {
+        "playbook_id": "BEAR_DEFENSE",
+        "trailing_stop_atr_mult": 2.0,
+        "time_decay_bars": 20
+      },
+      "indicators": {
+        "price": 101.0,
+        "atr": 2.0
+      },
+      "config": {
+        "time_decay_enabled": true,
+        "regime_change_enabled": true,
+        "min_bars_before_trail": 1,
+        "transition_risk_exit_threshold": 0.8
+      },
+      "expected": {
+        "symbol": "BTC",
+        "timeframe": "4h",
+        "cutoff_time_ns": 100,
+        "exit_type": "TIME_DECAY",
+        "exit_urgency": "GRADUAL",
+        "target_reduction_pct": 0.5,
+        "stop_price": null,
+        "reason_code": "TIME_DECAY_UNPROFITABLE",
+        "reason_detail": "Held 25 bars without profit",
+        "reason_codes": [
+          "EXIT_TIME_DECAY",
+          "UNPROFITABLE"
+        ]
+      },
+      "trailing_stop": 105.0
+    },
+    {
+      "name": "quality_priority",
+      "position": {
+        "symbol": "BTC",
+        "timeframe": "4h",
+        "direction": 1.0,
+        "entry_price": 100.0,
+        "current_qty": 1.0,
+        "trailing_stop": 95.0,
+        "bars_held": 5
+      },
+      "state": {
+        "cutoff_time_ns": 100,
+        "directional_state": "UPTREND",
+        "volatility_state": "DISTORTED",
+        "quality_state": "UNSAFE",
+        "transition_risk": 1.0
+      },
+      "playbook": {
+        "playbook_id": "BULL_CONTINUATION",
+        "trailing_stop_atr_mult": 2.0,
+        "time_decay_bars": null
+      },
+      "indicators": {
+        "price": 100.0,
+        "atr": 2.0
+      },
+      "config": {
+        "time_decay_enabled": true,
+        "regime_change_enabled": true,
+        "min_bars_before_trail": 1,
+        "transition_risk_exit_threshold": 0.8
+      },
+      "expected": {
+        "symbol": "BTC",
+        "timeframe": "4h",
+        "cutoff_time_ns": 100,
+        "exit_type": "REGIME_CHANGE",
+        "exit_urgency": "IMMEDIATE",
+        "target_reduction_pct": 1.0,
+        "stop_price": null,
+        "reason_code": "QUALITY_UNSAFE",
+        "reason_detail": "Data quality unsafe; flatten position",
+        "reason_codes": [
+          "EXIT_REGIME_CHANGE",
+          "QUALITY_UNSAFE"
+        ]
+      },
+      "trailing_stop": 96.0
+    },
+    {
+      "name": "volatility_priority",
+      "position": {
+        "symbol": "BTC",
+        "timeframe": "4h",
+        "direction": 1.0,
+        "entry_price": 100.0,
+        "current_qty": 1.0,
+        "trailing_stop": 95.0,
+        "bars_held": 5
+      },
+      "state": {
+        "cutoff_time_ns": 100,
+        "directional_state": "UPTREND",
+        "volatility_state": "DISTORTED",
+        "quality_state": "TRADABLE",
+        "transition_risk": 1.0
+      },
+      "playbook": {
+        "playbook_id": "BULL_CONTINUATION",
+        "trailing_stop_atr_mult": 2.0,
+        "time_decay_bars": null
+      },
+      "indicators": {
+        "price": 100.0,
+        "atr": 2.0
+      },
+      "config": {
+        "time_decay_enabled": true,
+        "regime_change_enabled": true,
+        "min_bars_before_trail": 1,
+        "transition_risk_exit_threshold": 0.8
+      },
+      "expected": {
+        "symbol": "BTC",
+        "timeframe": "4h",
+        "cutoff_time_ns": 100,
+        "exit_type": "REGIME_CHANGE",
+        "exit_urgency": "GRADUAL",
+        "target_reduction_pct": 0.5,
+        "stop_price": null,
+        "reason_code": "VOLATILITY_DISTORTED",
+        "reason_detail": "Volatility regime distorted; de-risk position",
+        "reason_codes": [
+          "EXIT_REGIME_CHANGE",
+          "VOLATILITY_STRESS"
+        ]
+      },
+      "trailing_stop": 96.0
+    },
+    {
+      "name": "transition_equal",
+      "position": {
+        "symbol": "BTC",
+        "timeframe": "4h",
+        "direction": 1.0,
+        "entry_price": 100.0,
+        "current_qty": 1.0,
+        "trailing_stop": 95.0,
+        "bars_held": 5
+      },
+      "state": {
+        "cutoff_time_ns": 100,
+        "directional_state": "UPTREND",
+        "volatility_state": "NORMAL",
+        "quality_state": "TRADABLE",
+        "transition_risk": 0.8
+      },
+      "playbook": {
+        "playbook_id": "BULL_CONTINUATION",
+        "trailing_stop_atr_mult": 2.0,
+        "time_decay_bars": null
+      },
+      "indicators": {
+        "price": 100.0,
+        "atr": 2.0
+      },
+      "config": {
+        "time_decay_enabled": true,
+        "regime_change_enabled": true,
+        "min_bars_before_trail": 1,
+        "transition_risk_exit_threshold": 0.8
+      },
+      "expected": {
+        "symbol": "BTC",
+        "timeframe": "4h",
+        "cutoff_time_ns": 100,
+        "exit_type": "REGIME_CHANGE",
+        "exit_urgency": "GRADUAL",
+        "target_reduction_pct": 0.5,
+        "stop_price": null,
+        "reason_code": "STATE_TRANSITION_RISK",
+        "reason_detail": "State transition risk is elevated; de-risk position",
+        "reason_codes": [
+          "EXIT_REGIME_CHANGE",
+          "TRANSITION_RISK"
+        ]
+      },
+      "trailing_stop": 96.0
+    },
+    {
+      "name": "capital_preservation",
+      "position": {
+        "symbol": "BTC",
+        "timeframe": "4h",
+        "direction": 1.0,
+        "entry_price": 100.0,
+        "current_qty": 1.0,
+        "trailing_stop": 95.0,
+        "bars_held": 5
+      },
+      "state": {
+        "cutoff_time_ns": 100,
+        "directional_state": "UPTREND",
+        "volatility_state": "NORMAL",
+        "quality_state": "TRADABLE",
+        "transition_risk": 1.0
+      },
+      "playbook": {
+        "playbook_id": "CAPITAL_PRESERVATION",
+        "trailing_stop_atr_mult": 2.0,
+        "time_decay_bars": null
+      },
+      "indicators": {
+        "price": 100.0,
+        "atr": 2.0
+      },
+      "config": {
+        "time_decay_enabled": true,
+        "regime_change_enabled": true,
+        "min_bars_before_trail": 1,
+        "transition_risk_exit_threshold": 0.8
+      },
+      "expected": {
+        "symbol": "BTC",
+        "timeframe": "4h",
+        "cutoff_time_ns": 100,
+        "exit_type": "NONE",
+        "exit_urgency": "NONE",
+        "target_reduction_pct": 0.0,
+        "stop_price": null,
+        "reason_code": "NO_EXIT",
+        "reason_detail": "No exit condition met",
+        "reason_codes": []
+      },
+      "trailing_stop": 96.0
+    },
+    {
+      "name": "disabled_checks",
+      "position": {
+        "symbol": "BTC",
+        "timeframe": "4h",
+        "direction": 1.0,
+        "entry_price": 100.0,
+        "current_qty": 1.0,
+        "trailing_stop": 95.0,
+        "bars_held": 25
+      },
+      "state": {
+        "cutoff_time_ns": 100,
+        "directional_state": "UPTREND",
+        "volatility_state": "NORMAL",
+        "quality_state": "UNSAFE",
+        "transition_risk": 0.0
+      },
+      "playbook": {
+        "playbook_id": "BULL_CONTINUATION",
+        "trailing_stop_atr_mult": 2.0,
+        "time_decay_bars": 20
+      },
+      "indicators": {
+        "price": 99.0,
+        "atr": 2.0
+      },
+      "config": {
+        "time_decay_enabled": false,
+        "regime_change_enabled": false,
+        "min_bars_before_trail": 1,
+        "transition_risk_exit_threshold": 0.8
+      },
+      "expected": {
+        "symbol": "BTC",
+        "timeframe": "4h",
+        "cutoff_time_ns": 100,
+        "exit_type": "NONE",
+        "exit_urgency": "NONE",
+        "target_reduction_pct": 0.0,
+        "stop_price": null,
+        "reason_code": "NO_EXIT",
+        "reason_detail": "No exit condition met",
+        "reason_codes": []
+      },
+      "trailing_stop": 95.0
+    },
+    {
+      "name": "missing_price",
+      "position": {
+        "symbol": "BTC",
+        "timeframe": "4h",
+        "direction": 1.0,
+        "entry_price": 100.0,
+        "current_qty": 1.0,
+        "trailing_stop": 95.0,
+        "bars_held": 5
+      },
+      "state": {
+        "cutoff_time_ns": 100,
+        "directional_state": "UPTREND",
+        "volatility_state": "NORMAL",
+        "quality_state": "TRADABLE",
+        "transition_risk": 0.0
+      },
+      "playbook": {
+        "playbook_id": "BULL_CONTINUATION",
+        "trailing_stop_atr_mult": 2.0,
+        "time_decay_bars": null
+      },
+      "indicators": {
+        "price": 0.0,
+        "atr": 2.0
+      },
+      "config": {
+        "time_decay_enabled": true,
+        "regime_change_enabled": true,
+        "min_bars_before_trail": 1,
+        "transition_risk_exit_threshold": 0.8
+      },
+      "expected": {
+        "symbol": "BTC",
+        "timeframe": "4h",
+        "cutoff_time_ns": 100,
+        "exit_type": "NONE",
+        "exit_urgency": "NONE",
+        "target_reduction_pct": 0.0,
+        "stop_price": null,
+        "reason_code": "NO_EXIT",
+        "reason_detail": "No exit condition met",
+        "reason_codes": []
+      },
+      "trailing_stop": 95.0
+    },
+    {
+      "name": "missing_atr",
+      "position": {
+        "symbol": "BTC",
+        "timeframe": "4h",
+        "direction": 1.0,
+        "entry_price": 100.0,
+        "current_qty": 1.0,
+        "trailing_stop": 95.0,
+        "bars_held": 5
+      },
+      "state": {
+        "cutoff_time_ns": 100,
+        "directional_state": "UPTREND",
+        "volatility_state": "NORMAL",
+        "quality_state": "TRADABLE",
+        "transition_risk": 0.0
+      },
+      "playbook": {
+        "playbook_id": "BULL_CONTINUATION",
+        "trailing_stop_atr_mult": 2.0,
+        "time_decay_bars": null
+      },
+      "indicators": {
+        "price": 100.0,
+        "atr": 0.0
+      },
+      "config": {
+        "time_decay_enabled": true,
+        "regime_change_enabled": true,
+        "min_bars_before_trail": 1,
+        "transition_risk_exit_threshold": 0.8
+      },
+      "expected": {
+        "symbol": "BTC",
+        "timeframe": "4h",
+        "cutoff_time_ns": 100,
+        "exit_type": "NONE",
+        "exit_urgency": "NONE",
+        "target_reduction_pct": 0.0,
+        "stop_price": null,
+        "reason_code": "NO_EXIT",
+        "reason_detail": "No exit condition met",
+        "reason_codes": []
+      },
+      "trailing_stop": 95.0
+    },
+    {
+      "name": "minimum_bars",
+      "position": {
+        "symbol": "BTC",
+        "timeframe": "4h",
+        "direction": 1.0,
+        "entry_price": 100.0,
+        "current_qty": 1.0,
+        "trailing_stop": 95.0,
+        "bars_held": 0
+      },
+      "state": {
+        "cutoff_time_ns": 100,
+        "directional_state": "UPTREND",
+        "volatility_state": "NORMAL",
+        "quality_state": "TRADABLE",
+        "transition_risk": 0.0
+      },
+      "playbook": {
+        "playbook_id": "BULL_CONTINUATION",
+        "trailing_stop_atr_mult": 2.0,
+        "time_decay_bars": null
+      },
+      "indicators": {
+        "price": 90.0,
+        "atr": 2.0
+      },
+      "config": {
+        "time_decay_enabled": true,
+        "regime_change_enabled": true,
+        "min_bars_before_trail": 1,
+        "transition_risk_exit_threshold": 0.8
+      },
+      "expected": {
+        "symbol": "BTC",
+        "timeframe": "4h",
+        "cutoff_time_ns": 100,
+        "exit_type": "NONE",
+        "exit_urgency": "NONE",
+        "target_reduction_pct": 0.0,
+        "stop_price": null,
+        "reason_code": "NO_EXIT",
+        "reason_detail": "No exit condition met",
+        "reason_codes": []
+      },
+      "trailing_stop": 95.0
+    },
+    {
+      "name": "zero_multiplier_breach",
+      "position": {
+        "symbol": "BTC",
+        "timeframe": "4h",
+        "direction": 1.0,
+        "entry_price": 100.0,
+        "current_qty": 1.0,
+        "trailing_stop": 95.0,
+        "bars_held": 5
+      },
+      "state": {
+        "cutoff_time_ns": 100,
+        "directional_state": "UPTREND",
+        "volatility_state": "NORMAL",
+        "quality_state": "TRADABLE",
+        "transition_risk": 0.0
+      },
+      "playbook": {
+        "playbook_id": "BULL_CONTINUATION",
+        "trailing_stop_atr_mult": 0.0,
+        "time_decay_bars": null
+      },
+      "indicators": {
+        "price": 101.0,
+        "atr": 2.0
+      },
+      "config": {
+        "time_decay_enabled": true,
+        "regime_change_enabled": true,
+        "min_bars_before_trail": 1,
+        "transition_risk_exit_threshold": 0.8
+      },
+      "expected": {
+        "symbol": "BTC",
+        "timeframe": "4h",
+        "cutoff_time_ns": 100,
+        "exit_type": "TRAILING",
+        "exit_urgency": "IMMEDIATE",
+        "target_reduction_pct": 1.0,
+        "stop_price": 101.0,
+        "reason_code": "TRAILING_STOP_BREACH",
+        "reason_detail": "Price 101.00 breached trailing stop 101.00",
+        "reason_codes": [
+          "EXIT_TRAILING_STOP"
+        ]
+      },
+      "trailing_stop": 101.0
+    },
+    {
+      "name": "price_format",
+      "position": {
+        "symbol": "BTC",
+        "timeframe": "4h",
+        "direction": 1.0,
+        "entry_price": 100.0,
+        "current_qty": 1.0,
+        "trailing_stop": 95.0,
+        "bars_held": 5
+      },
+      "state": {
+        "cutoff_time_ns": 100,
+        "directional_state": "UPTREND",
+        "volatility_state": "NORMAL",
+        "quality_state": "TRADABLE",
+        "transition_risk": 0.0
+      },
+      "playbook": {
+        "playbook_id": "BULL_CONTINUATION",
+        "trailing_stop_atr_mult": 2.0,
+        "time_decay_bars": null
+      },
+      "indicators": {
+        "price": 94.125,
+        "atr": 2.0
+      },
+      "config": {
+        "time_decay_enabled": true,
+        "regime_change_enabled": true,
+        "min_bars_before_trail": 1,
+        "transition_risk_exit_threshold": 0.8
+      },
+      "expected": {
+        "symbol": "BTC",
+        "timeframe": "4h",
+        "cutoff_time_ns": 100,
+        "exit_type": "TRAILING",
+        "exit_urgency": "IMMEDIATE",
+        "target_reduction_pct": 1.0,
+        "stop_price": 95.0,
+        "reason_code": "TRAILING_STOP_BREACH",
+        "reason_detail": "Price 94.12 breached trailing stop 95.00",
+        "reason_codes": [
+          "EXIT_TRAILING_STOP"
+        ]
+      },
+      "trailing_stop": 95.0
+    }
+  ],
+  "sequences": [
+    {
+      "name": "negative_stop_across_bars",
+      "position": {
+        "symbol": "BTC",
+        "timeframe": "4h",
+        "direction": 1.0,
+        "entry_price": 100.0,
+        "current_qty": 1.0,
+        "trailing_stop": 0.0,
+        "bars_held": 5
+      },
+      "state": {
+        "cutoff_time_ns": 100,
+        "directional_state": "UPTREND",
+        "volatility_state": "NORMAL",
+        "quality_state": "TRADABLE",
+        "transition_risk": 0.0
+      },
+      "playbook": {
+        "playbook_id": "BULL_CONTINUATION",
+        "trailing_stop_atr_mult": 2.0,
+        "time_decay_bars": null
+      },
+      "config": {
+        "time_decay_enabled": true,
+        "regime_change_enabled": true,
+        "min_bars_before_trail": 1,
+        "transition_risk_exit_threshold": 0.8
+      },
+      "steps": [
+        {
+          "indicators": {
+            "price": 100.0,
+            "atr": 60.0
+          },
+          "expected": {
+            "symbol": "BTC",
+            "timeframe": "4h",
+            "cutoff_time_ns": 100,
+            "exit_type": "NONE",
+            "exit_urgency": "NONE",
+            "target_reduction_pct": 0.0,
+            "stop_price": null,
+            "reason_code": "NO_EXIT",
+            "reason_detail": "No exit condition met",
+            "reason_codes": []
+          },
+          "trailing_stop": -20.0
+        },
+        {
+          "indicators": {
+            "price": 105.0,
+            "atr": 60.0
+          },
+          "expected": {
+            "symbol": "BTC",
+            "timeframe": "4h",
+            "cutoff_time_ns": 100,
+            "exit_type": "NONE",
+            "exit_urgency": "NONE",
+            "target_reduction_pct": 0.0,
+            "stop_price": null,
+            "reason_code": "NO_EXIT",
+            "reason_detail": "No exit condition met",
+            "reason_codes": []
+          },
+          "trailing_stop": -15.0
+        },
+        {
+          "indicators": {
+            "price": 110.0,
+            "atr": 50.0
+          },
+          "expected": {
+            "symbol": "BTC",
+            "timeframe": "4h",
+            "cutoff_time_ns": 100,
+            "exit_type": "NONE",
+            "exit_urgency": "NONE",
+            "target_reduction_pct": 0.0,
+            "stop_price": null,
+            "reason_code": "NO_EXIT",
+            "reason_detail": "No exit condition met",
+            "reason_codes": []
+          },
+          "trailing_stop": 10.0
+        },
+        {
+          "indicators": {
+            "price": 9.0,
+            "atr": 50.0
+          },
+          "expected": {
+            "symbol": "BTC",
+            "timeframe": "4h",
+            "cutoff_time_ns": 100,
+            "exit_type": "TRAILING",
+            "exit_urgency": "IMMEDIATE",
+            "target_reduction_pct": 1.0,
+            "stop_price": 10.0,
+            "reason_code": "TRAILING_STOP_BREACH",
+            "reason_detail": "Price 9.00 breached trailing stop 10.00",
+            "reason_codes": [
+              "EXIT_TRAILING_STOP"
+            ]
+          },
+          "trailing_stop": 10.0
+        }
+      ]
+    }
+  ]
+}
