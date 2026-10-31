@@ -32,6 +32,8 @@ The offline mark-price execution slice produces synthetic full-fill or rejected 
 
 The offline risk target clamp ports the final exposure and reduce-only quantity calculation using an already computed cap and position. Python-generated synthetic cases cover both position directions, caps and rounding. Python-compatible rounding can move the returned quantity or leverage slightly beyond the unrounded cap or reduce-only position without adding a flag, so this component alone does not guarantee a strict post-rounding exposure bound. It does not calculate risk state, approve orders or replace the Python overlay. Its fixture generator postdates the baseline manifest.
 
+The offline trade proxy slice normalizes synthetic Hyperliquid recent trades and aggregates large-trade proxy buckets in memory. It does not collect, deduplicate, persist or verify liquidations. Event time is not receipt time; a bucket cannot be treated as point-in-time available without evidence of completion and collection availability. Go rejects malformed values and mixed sources more strictly than Python. Its fixture generator postdates the baseline manifest.
+
 The current product UI and newly revised documentation use English. Historical evidence and archived records retain their original language and content; existing authoritative operational documents remain in force and are not translated by changing archived evidence.
 
 A proposed sequence, with a separately reviewed scope and explicit evidence at each stage:
