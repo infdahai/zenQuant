@@ -72,6 +72,21 @@ func TestRiskTargetRoundingCanExceedLimitsWithoutFlag(t *testing.T) {
 	}
 }
 
+func TestRiskTargetStrictBounds(t *testing.T) {
+	for _, position := range []float64{-0.0000006, 0, 0.0000006, -1.2345678, 1.2345678} {
+		for _, target := range []float64{-2, -0.0000006, 0, 0.0000006, 2} {
+			in := RiskTargetInput{TargetQty: target, TargetLeverage: 1, CurrentPosition: position, Equity: 1, LeverageCap: 0.99996, Price: 1, ReduceOnly: true}
+			got, err := ClampRiskTargetStrict(in)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if math.Abs(got.TargetQty) > math.Abs(position) || math.Abs(got.TargetQty) > in.LeverageCap || got.TargetLeverage > in.LeverageCap || (position >= 0 && got.TargetQty < 0) || (position <= 0 && got.TargetQty > 0) {
+				t.Fatalf("position %g target %g: %+v", position, target, got)
+			}
+		}
+	}
+}
+
 func TestRiskTargetRejectsUnsupportedNumbers(t *testing.T) {
 	tests := []struct {
 		name   string
