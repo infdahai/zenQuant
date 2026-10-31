@@ -1102,7 +1102,12 @@ def _source_status_blocker(path: Path) -> str | None:
 
 
 def _source_cache_blocker(path: Path, *, candidate: SourceCandidate) -> str | None:
-    if candidate.provider.lower() == "cftc" or candidate.source_type.lower() in {"cot", "cftc_cot"}:
+    # Conservatively block all CFTC-provider sources until publication-time evidence is supported.
+    if (
+        candidate.provider.lower() == "cftc"
+        or candidate.source_type.lower() in {"cot", "cftc_cot"}
+        or any(part.lower() in {"cftc", "cftc_go"} for part in Path(candidate.local_cache_path).parts)
+    ):
         return "cot_publication_time_unavailable"
     try:
         if not path.is_dir() and path.suffix != ".parquet":
@@ -1117,13 +1122,10 @@ def _source_cache_blocker(path: Path, *, candidate: SourceCandidate) -> str | No
             for trader in ("asset_mgr", "leveraged", "dealer")
             for position in ("long", "short", "net")
         }
-        cot_source = any(part.lower() in {"cftc", "cftc_go"} for part in Path(candidate.local_cache_path).parts)
         date_fields = {"report_date_ns", "position_as_of_date_ns"}
         for fragment in dataset.fragments:
             fields = set(fragment.physical_schema.names) | set(ds.get_partition_keys(fragment.partition_expression))
-            if (
-                (date_fields & fields or cot_source) and (cot_fields & fields or (cot_source and "total_oi" in fields))
-            ) or {"position_as_of_date_ns", "total_oi"} <= fields:
+            if (date_fields & fields and cot_fields & fields) or {"position_as_of_date_ns", "total_oi"} <= fields:
                 return "cot_publication_time_unavailable"
         frame = dataset.read().to_pandas()
     except Exception:

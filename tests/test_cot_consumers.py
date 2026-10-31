@@ -247,6 +247,23 @@ def test_swarm_blocks_declared_cot_non_parquet(tmp_path: Path) -> None:
     )
 
 
+@pytest.mark.parametrize("directory", ["cftc", "cftc_go"])
+@pytest.mark.parametrize("file_format", ["parquet", "json"])
+def test_swarm_blocks_known_cftc_paths_before_format_or_schema_checks(
+    tmp_path: Path, directory: str, file_format: str
+) -> None:
+    path = tmp_path / "data" / "raw" / directory / f"projection.{file_format}"
+    path.parent.mkdir(parents=True)
+    if file_format == "parquet":
+        pq.write_table(pa.table({"renamed_position": [42]}), path)
+    else:
+        path.write_text('{"renamed_position": 42}', encoding="utf-8")
+    candidate = _candidate(str(path.relative_to(tmp_path)))
+    assert DataAdmissionAgent().review([candidate], repo_root=tmp_path)[0].blocked_by == (
+        "cot_publication_time_unavailable"
+    )
+
+
 def test_swarm_admits_generic_oi_and_non_parquet_files(tmp_path: Path) -> None:
     path = tmp_path / "oi.pq"
     pq.write_table(pa.table({"report_date_ns": [1_600_000_000_000_000_000], "total_oi": [42]}), path)
