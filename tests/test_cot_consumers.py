@@ -1,5 +1,6 @@
 """Synthetic coverage of COT availability checks across research consumers."""
 
+from dataclasses import replace
 from pathlib import Path
 
 import pandas as pd
@@ -65,7 +66,7 @@ def test_cot_consumers_use_compatible_files(tmp_path: Path, monkeypatch: pytest.
     evaluator = FrameworkEvaluator(HistoricalBacktestConfig(root_dir=tmp_path / "empty"))
     assert evaluator.training_input_contract["state_feature_sources"]["cme_positioning_in_state_features"] is (not raw)
     review = DataAdmissionAgent().review([_candidate(str(path))], repo_root=tmp_path)[0]
-    assert review.blocked_by == ("cot_publication_time_unavailable" if raw else None)
+    assert review.blocked_by == "cot_publication_time_unavailable"
 
 
 def test_mixed_physical_fragments_are_not_admitted(tmp_path: Path) -> None:
@@ -161,11 +162,151 @@ def test_swarm_checks_legacy_report_date_and_ignores_unrelated_marker(tmp_path: 
     pq.write_table(pa.table({"report_date_ns": [1_770_000_000_000_000_000], "asset_mgr_net": [42]}), recent)
     assert (
         DataAdmissionAgent().review([_candidate(recent.name)], repo_root=tmp_path)[0].blocked_by
-        == "source_cache_outside_train_dev"
+        == "cot_publication_time_unavailable"
     )
     unrelated = tmp_path / "other.parquet"
     pq.write_table(pa.table({"position_as_of_date_ns": [1_600_000_000_000_000_000], "value": [1]}), unrelated)
     assert DataAdmissionAgent().review([_candidate(unrelated.name)], repo_root=tmp_path)[0].status == "admitted"
+
+
+@pytest.mark.parametrize("date_field", ["report_date_ns", "position_as_of_date_ns"])
+@pytest.mark.parametrize("trader", ["asset_mgr", "leveraged", "dealer"])
+@pytest.mark.parametrize("position", ["long", "short", "net"])
+@pytest.mark.parametrize("suffix", [".parquet", ".pq", ".data", ""])
+def test_swarm_blocks_cot_position_projections(
+    tmp_path: Path, date_field: str, trader: str, position: str, suffix: str
+) -> None:
+    path = tmp_path / f"projection{suffix}"
+    pq.write_table(pa.table({date_field: [1_600_000_000_000_000_000], f"{trader}_{position}": [42]}), path)
+    assert DataAdmissionAgent().review([_candidate(path.name)], repo_root=tmp_path)[0].blocked_by == (
+        "cot_publication_time_unavailable"
+    )
+
+
+@pytest.mark.parametrize("provenance", ["provider", "source_type", "path"])
+def test_swarm_blocks_cot_oi_projection_with_provenance(tmp_path: Path, provenance: str) -> None:
+    path = tmp_path / ("cftc_go/oi.pq" if provenance == "path" else "oi.pq")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    pq.write_table(pa.table({"report_date_ns": [1_600_000_000_000_000_000], "total_oi": [42]}), path)
+    candidate = _candidate(str(path.relative_to(tmp_path)))
+    if provenance == "provider":
+        candidate = replace(candidate, provider="cftc")
+    elif provenance == "source_type":
+        candidate = replace(candidate, source_type="cot")
+    assert DataAdmissionAgent().review([candidate], repo_root=tmp_path)[0].blocked_by == (
+        "cot_publication_time_unavailable"
+    )
+
+
+@pytest.mark.parametrize("field", ["asset_mgr_long", "leveraged_short", "dealer_net", "total_oi"])
+def test_swarm_blocks_cot_projection_without_date_when_provenance_is_known(tmp_path: Path, field: str) -> None:
+    path = tmp_path / "projection.pq"
+    pq.write_table(pa.table({field: [42]}), path)
+    candidate = replace(_candidate(path.name), provider="cftc")
+    assert DataAdmissionAgent().review([candidate], repo_root=tmp_path)[0].blocked_by == (
+        "cot_publication_time_unavailable"
+    )
+
+
+@pytest.mark.parametrize("partitioned", [False, True])
+def test_swarm_blocks_raw_cot_oi_without_declared_provenance(tmp_path: Path, partitioned: bool) -> None:
+    date = 1_600_000_000_000_000_000
+    path = tmp_path / "dataset" if partitioned else tmp_path / "projection.pq"
+    if partitioned:
+        partition = path / f"position_as_of_date_ns={date}"
+        partition.mkdir(parents=True)
+        pq.write_table(pa.table({"total_oi": [42]}), partition / "part.parquet")
+    else:
+        pq.write_table(pa.table({"position_as_of_date_ns": [date], "total_oi": [42]}), path)
+    assert DataAdmissionAgent().review([_candidate(path.name)], repo_root=tmp_path)[0].blocked_by == (
+        "cot_publication_time_unavailable"
+    )
+
+
+@pytest.mark.parametrize("provenance", ["provider", "source_type", "cftc_cot"])
+@pytest.mark.parametrize("field", ["renamed_position", "ts_ns", "report_date_ns"])
+def test_swarm_blocks_declared_cot_regardless_of_projection(tmp_path: Path, provenance: str, field: str) -> None:
+    path = tmp_path / "projection.pq"
+    pq.write_table(pa.table({field: [1_600_000_000_000_000_000]}), path)
+    candidate = _candidate(path.name)
+    if provenance == "provider":
+        candidate = replace(candidate, provider="cftc")
+    else:
+        candidate = replace(candidate, source_type="cot" if provenance == "source_type" else "cftc_cot")
+    assert DataAdmissionAgent().review([candidate], repo_root=tmp_path)[0].blocked_by == (
+        "cot_publication_time_unavailable"
+    )
+
+
+def test_swarm_blocks_declared_cot_non_parquet(tmp_path: Path) -> None:
+    path = tmp_path / "cot.json"
+    path.write_text('{"value": 1}', encoding="utf-8")
+    candidate = replace(_candidate(path.name), provider="cftc")
+    assert DataAdmissionAgent().review([candidate], repo_root=tmp_path)[0].blocked_by == (
+        "cot_publication_time_unavailable"
+    )
+
+
+@pytest.mark.parametrize("directory", ["cftc", "cftc_go"])
+@pytest.mark.parametrize("file_format", ["parquet", "json"])
+def test_swarm_blocks_known_cftc_paths_before_format_or_schema_checks(
+    tmp_path: Path, directory: str, file_format: str
+) -> None:
+    path = tmp_path / "data" / "raw" / directory / f"projection.{file_format}"
+    path.parent.mkdir(parents=True)
+    if file_format == "parquet":
+        pq.write_table(pa.table({"renamed_position": [42]}), path)
+    else:
+        path.write_text('{"renamed_position": 42}', encoding="utf-8")
+    candidate = _candidate(str(path.relative_to(tmp_path)))
+    assert DataAdmissionAgent().review([candidate], repo_root=tmp_path)[0].blocked_by == (
+        "cot_publication_time_unavailable"
+    )
+
+
+def test_swarm_admits_generic_oi_and_non_parquet_files(tmp_path: Path) -> None:
+    path = tmp_path / "oi.pq"
+    pq.write_table(pa.table({"report_date_ns": [1_600_000_000_000_000_000], "total_oi": [42]}), path)
+    candidate = replace(_candidate(path.name), provider="exchange", source_type="open_interest")
+    assert DataAdmissionAgent().review([candidate], repo_root=tmp_path)[0].status == "admitted"
+    other = tmp_path / "source.json"
+    other.write_text('{"value": 1}', encoding="utf-8")
+    assert DataAdmissionAgent().review([_candidate(other.name)], repo_root=tmp_path)[0].status == "admitted"
+
+
+@pytest.mark.parametrize("date_field", ["report_date_ns", "position_as_of_date_ns"])
+@pytest.mark.parametrize("partition_field", ["date", "position"])
+def test_swarm_blocks_cot_hive_dataset(tmp_path: Path, date_field: str, partition_field: str) -> None:
+    dataset = tmp_path / "cot_dataset"
+    date = 1_600_000_000_000_000_000
+    if partition_field == "date":
+        partition = dataset / f"{date_field}={date}"
+        columns = {"asset_mgr_net": [42]}
+    else:
+        partition = dataset / "asset_mgr_net=42"
+        columns = {date_field: [date]}
+    partition.mkdir(parents=True)
+    pq.write_table(pa.table(columns), partition / "part.parquet")
+    assert DataAdmissionAgent().review([_candidate(dataset.name)], repo_root=tmp_path)[0].blocked_by == (
+        "cot_publication_time_unavailable"
+    )
+
+
+def test_swarm_checks_each_fragment_without_combining_unrelated_schemas(tmp_path: Path) -> None:
+    dataset = tmp_path / "mixed"
+    dataset.mkdir()
+    pq.write_table(
+        pa.table({"value": [1], "position_as_of_date_ns": [1_600_000_000_000_000_000]}), dataset / "a.parquet"
+    )
+    pq.write_table(pa.table({"value": [2], "asset_mgr_net": [42]}), dataset / "b.parquet")
+    assert DataAdmissionAgent().review([_candidate(dataset.name)], repo_root=tmp_path)[0].status == "admitted"
+    pq.write_table(
+        pa.table({"position_as_of_date_ns": [1_600_000_000_000_000_000], "asset_mgr_net": [42]}),
+        dataset / "b.parquet",
+    )
+    assert DataAdmissionAgent().review([_candidate(dataset.name)], repo_root=tmp_path)[0].blocked_by == (
+        "cot_publication_time_unavailable"
+    )
 
 
 def test_other_parquet_source_is_unchanged(tmp_path: Path) -> None:
