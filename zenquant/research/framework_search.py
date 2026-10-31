@@ -16,6 +16,7 @@ from hashlib import sha1
 from pathlib import Path
 from typing import Any
 
+from zenquant.data.cot_store import macro_cot_available
 from zenquant.data.deribit_status import collect_deribit_status
 from zenquant.data.liquidation_pipeline import liquidation_readiness
 from zenquant.domain import Timeframe
@@ -2052,7 +2053,7 @@ class FrameworkEvaluator:
                     "max_abs_correlation"
                 ],
                 "deribit_large_option_flow_blocked_by": deribit_large_option_admission["blocked_by"],
-                "cme_positioning_in_state_features": (Path("data/raw/cftc") / "cot_btc.parquet").exists(),
+                "cme_positioning_in_state_features": macro_cot_available(Path("data/raw/cftc/cot_btc.parquet")),
                 "liquidation_in_search": bool(self._readiness["promotion_ready"]),
             },
             "signal_stack_contract": {

@@ -8,6 +8,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from zenquant.data.cot_store import macro_cot_available
 from zenquant.domain import Timeframe
 from zenquant.historical import HistoricalBacktest, HistoricalBacktestConfig
 from zenquant.plugins.profile import build_from_profile
@@ -143,9 +144,7 @@ def _signal_data_dependency(
         exists = (macro_root / "btc_etf_netflow" / "data.parquet").exists()
         return True, "ready" if exists else "missing", None if exists else "btc_etf_netflow_missing", "btc_etf_netflow"
     if signal_name == "cme_positioning_state_signal":
-        exists = (data_root / "cftc" / "cot_btc.parquet").exists() or (
-            Path("data/raw/cftc") / "cot_btc.parquet"
-        ).exists()
+        exists = macro_cot_available(Path("data/raw/cftc/cot_btc.parquet"))
         return True, "ready" if exists else "missing", None if exists else "cme_positioning_missing", "cme_cot"
     if signal_name == "options_vol_signal":
         exists = (data_root / "deribit_options" / "_collector_status.json").exists() or (
