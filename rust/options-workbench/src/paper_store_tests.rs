@@ -178,6 +178,67 @@ fn unsafe_existing_permissions_are_rejected() {
     }
 }
 #[test]
+fn recovery_preserves_unrecognized_stages() {
+    use std::os::unix::fs::{PermissionsExt, symlink};
+    let t = Temp::new();
+    let external = t.root.join("external");
+    fs::write(&external, b"external").unwrap();
+    for kind in [
+        "unknown",
+        "symlink",
+        "hardlink",
+        "unmarked",
+        "other-target",
+        "journal-symlink",
+    ] {
+        let stage = t.root.join(format!(".paper-init-v1-{kind}"));
+        fs::create_dir(&stage).unwrap();
+        fs::set_permissions(&stage, fs::Permissions::from_mode(0o700)).unwrap();
+        if kind != "unmarked" {
+            let target = if kind == "other-target" {
+                t.root.join("other")
+            } else {
+                t.store.path.clone()
+            };
+            let marker = format!(
+                "zenquant-paper-stage-v1:{}",
+                options_core::canonical::bytes_sha256(
+                    target.file_name().unwrap().as_encoded_bytes()
+                )
+            );
+            fs::write(stage.join("owner"), marker).unwrap();
+            fs::set_permissions(stage.join("owner"), fs::Permissions::from_mode(0o600)).unwrap();
+        }
+        let journal = stage.join("journal");
+        if kind == "journal-symlink" {
+            symlink(&t.root, &journal).unwrap();
+        } else {
+            fs::create_dir(&journal).unwrap();
+            fs::set_permissions(&journal, fs::Permissions::from_mode(0o700)).unwrap();
+            let snapshot = journal.join("snapshot.json");
+            match kind {
+                "symlink" => symlink(&external, &snapshot).unwrap(),
+                "hardlink" => fs::hard_link(&external, &snapshot).unwrap(),
+                _ => {
+                    fs::write(&snapshot, b"data").unwrap();
+                    fs::set_permissions(&snapshot, fs::Permissions::from_mode(0o600)).unwrap();
+                }
+            }
+            if kind == "unknown" {
+                fs::write(stage.join("unexpected"), b"keep").unwrap();
+            }
+        }
+        disk::recover_stages(&t.store.path).unwrap();
+        assert!(fs::symlink_metadata(&journal).is_ok(), "{kind}");
+        if kind == "unknown" {
+            assert_eq!(fs::read(journal.join("snapshot.json")).unwrap(), b"data");
+            assert_eq!(fs::read(stage.join("unexpected")).unwrap(), b"keep");
+        }
+        assert_eq!(fs::read(&external).unwrap(), b"external");
+    }
+}
+
+#[test]
 fn first_initialization_failures_are_retryable() {
     for point in [
         "before_create",
@@ -297,6 +358,10 @@ fn process_worker() {
         return;
     };
     let store = Store::engineering(path.into());
+    if std::env::var_os("ZQ_PAPER_RECOVER_ONLY").is_some() {
+        disk::recover_stages(&store.path).unwrap();
+        return;
+    }
     let bytes = fs::read(std::env::var_os("ZQ_PAPER_CRASH_INPUT").unwrap()).unwrap();
     let result = store.api_at(
         "/api/paper/confirm",

@@ -414,6 +414,110 @@ func TestCrashWorker(t *testing.T) {
 		t.Fatal(e)
 	}
 }
+func TestStageRecoveryPreservesUnknown(t *testing.T) {
+	root := tempRoot(t)
+	path := filepath.Join(root, "journal")
+	external := filepath.Join(root, "external")
+	if err := os.WriteFile(external, []byte("external"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	for _, kind := range []string{"unknown", "symlink", "hardlink", "unmarked", "other-target", "journal-symlink"} {
+		t.Run(kind, func(t *testing.T) {
+			stage := filepath.Join(root, ".paper-init-v1-"+kind)
+			if err := os.Mkdir(stage, 0700); err != nil {
+				t.Fatal(err)
+			}
+			if kind != "unmarked" {
+				marker := stageMarker(path)
+				if kind == "other-target" {
+					marker = stageMarker(filepath.Join(root, "another"))
+				}
+				if err := os.WriteFile(filepath.Join(stage, "owner"), marker, 0600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			journal := filepath.Join(stage, "journal")
+			if kind == "journal-symlink" {
+				if err := os.Symlink(root, journal); err != nil {
+					t.Fatal(err)
+				}
+			} else {
+				if err := os.Mkdir(journal, 0700); err != nil {
+					t.Fatal(err)
+				}
+				file := filepath.Join(journal, "snapshot.json")
+				var err error
+				switch kind {
+				case "symlink":
+					err = os.Symlink(external, file)
+				case "hardlink":
+					err = os.Link(external, file)
+				default:
+					err = os.WriteFile(file, []byte("data"), 0600)
+				}
+				if err != nil {
+					t.Fatal(err)
+				}
+				if kind == "unknown" {
+					if err = os.WriteFile(filepath.Join(stage, "unexpected"), []byte("keep"), 0600); err != nil {
+						t.Fatal(err)
+					}
+				}
+			}
+			for i := 0; i < 20; i++ {
+				if err := recoverStages(path, hooks{}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if _, err := os.Lstat(journal); err != nil {
+				t.Fatal(err)
+			}
+			if kind == "unknown" {
+				if b, err := os.ReadFile(filepath.Join(journal, "snapshot.json")); err != nil || string(b) != "data" {
+					t.Fatal("snapshot changed", err)
+				}
+				if b, err := os.ReadFile(filepath.Join(stage, "unexpected")); err != nil || string(b) != "keep" {
+					t.Fatal("unknown changed", err)
+				}
+			}
+			if b, err := os.ReadFile(external); err != nil || string(b) != "external" {
+				t.Fatal("external changed", err)
+			}
+		})
+	}
+}
+
+func TestStageRecoveryInterruptedCleanup(t *testing.T) {
+	for _, phase := range []string{"cleanup_files", "cleanup_journal"} {
+		t.Run(phase, func(t *testing.T) {
+			root := tempRoot(t)
+			path := filepath.Join(root, "journal")
+			stage := filepath.Join(root, ".paper-init-v1-interrupted")
+			if err := os.MkdirAll(filepath.Join(stage, "journal"), 0700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(stage, "owner"), stageMarker(path), 0600); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(stage, "journal", "snapshot.json"), []byte("data"), 0600); err != nil {
+				t.Fatal(err)
+			}
+			if err := recoverStages(path, hooks{failAt: phase}); err == nil {
+				t.Fatal("missing injected failure")
+			}
+			if _, err := os.Stat(filepath.Join(stage, "owner")); err != nil {
+				t.Fatal("marker removed early", err)
+			}
+			if err := recoverStages(path, hooks{}); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := os.Lstat(stage); !os.IsNotExist(err) {
+				t.Fatal("stage remains", err)
+			}
+		})
+	}
+}
+
 func TestCrossLanguageFirstConfirmation(t *testing.T) {
 	rust := os.Getenv("ZQ_RUST_PAPER_TEST_BINARY")
 	if rust == "" {
@@ -477,6 +581,107 @@ func TestCrossLanguageFirstConfirmation(t *testing.T) {
 				t.Fatal(r)
 			}
 		})
+	}
+}
+
+func TestCrossLanguageStageRecovery(t *testing.T) {
+	rust := os.Getenv("ZQ_RUST_PAPER_TEST_BINARY")
+	if rust == "" {
+		t.Skip("Linux cross-language helper not configured")
+	}
+	for _, writer := range []string{"go", "rust"} {
+		for _, phase := range []string{"temp_created", "before_publish", "published"} {
+			t.Run(writer+"/"+phase, func(t *testing.T) {
+				root := tempRoot(t)
+				s := NewStore(filepath.Join(root, "journal"))
+				p := call(t, s, "preview", fixture(t, "settings"), testNow, hooks{})["preview"]
+				c := object{"preview": p, "acknowledged_record_only": true}
+				input, ready, output := filepath.Join(root, "input"), filepath.Join(root, "ready"), filepath.Join(root, "output")
+				if err := os.WriteFile(input, canonical(c), 0600); err != nil {
+					t.Fatal(err)
+				}
+				var cmd *exec.Cmd
+				if writer == "go" {
+					exe, err := os.Executable()
+					if err != nil {
+						t.Fatal(err)
+					}
+					cmd = exec.Command(exe, "-test.run=^TestCrashWorker$")
+					cmd.Env = append(os.Environ(), "ZQ_GO_PAPER_CRASH_STORE="+s.path, "ZQ_GO_PAPER_CRASH_INPUT="+input, "ZQ_GO_PAPER_CRASH_MARKER="+ready, "ZQ_GO_PAPER_CRASH_PHASE="+phase)
+				} else {
+					cmd = exec.Command(rust, "--exact", "paper_store::tests::process_worker")
+					cmd.Env = append(os.Environ(), "ZQ_PAPER_CRASH_STORE="+s.path, "ZQ_PAPER_CRASH_INPUT="+input, "ZQ_PAPER_CRASH_MARKER="+ready, "ZQ_PAPER_CRASH_PHASE="+phase)
+				}
+				if err := cmd.Start(); err != nil {
+					t.Fatal(err)
+				}
+				defer func() {
+					if cmd.ProcessState == nil {
+						cmd.Process.Kill()
+						cmd.Wait()
+					}
+				}()
+				deadline := time.Now().Add(10 * time.Second)
+				for {
+					if _, err := os.Stat(ready); err == nil {
+						break
+					}
+					if time.Now().After(deadline) {
+						t.Fatal("worker checkpoint timeout")
+					}
+					time.Sleep(5 * time.Millisecond)
+				}
+				stages, _ := filepath.Glob(filepath.Join(root, ".paper-init-v1-*"))
+				if len(stages) != 1 {
+					t.Fatalf("expected active stage: %v", stages)
+				}
+				if writer == "go" {
+					helper := exec.Command(rust, "--exact", "paper_store::tests::process_worker")
+					helper.Env = append(os.Environ(), "ZQ_PAPER_CRASH_STORE="+s.path, "ZQ_PAPER_RECOVER_ONLY=1")
+					if b, err := helper.CombinedOutput(); err != nil {
+						t.Fatalf("Rust active recovery: %s %v", b, err)
+					}
+				} else if err := recoverStages(s.path, hooks{}); err != nil {
+					t.Fatal(err)
+				}
+				if _, err := os.Stat(stages[0]); err != nil {
+					t.Fatal("active stage removed", err)
+				}
+				if err := cmd.Process.Kill(); err != nil {
+					t.Fatal(err)
+				}
+				cmd.Wait()
+				var snapshot []byte
+				if phase == "published" {
+					var err error
+					snapshot, err = os.ReadFile(filepath.Join(s.path, "snapshot.json"))
+					if err != nil {
+						t.Fatal(err)
+					}
+				}
+				if writer == "rust" {
+					r := call(t, s, "confirm", c, testNow, hooks{})
+					if r["replayed"] != (phase == "published") {
+						t.Fatal(r)
+					}
+				} else {
+					helper := exec.Command(rust, "--exact", "paper_store::tests::process_worker")
+					helper.Env = append(os.Environ(), "ZQ_PAPER_CRASH_STORE="+s.path, "ZQ_PAPER_CRASH_INPUT="+input, "ZQ_PAPER_RESULT="+output)
+					if b, err := helper.CombinedOutput(); err != nil {
+						t.Fatalf("Rust retry: %s %v", b, err)
+					}
+				}
+				if _, err := os.Lstat(stages[0]); !os.IsNotExist(err) {
+					t.Fatal("abandoned stage remains", err)
+				}
+				if snapshot != nil {
+					b, err := os.ReadFile(filepath.Join(s.path, "snapshot.json"))
+					if err != nil || !bytes.Equal(snapshot, b) {
+						t.Fatal("published snapshot changed", err)
+					}
+				}
+			})
+		}
 	}
 }
 
@@ -756,6 +961,10 @@ func TestFirstInitializationProcessCrash(t *testing.T) {
 			r := call(t, s, "confirm", c, testNow, hooks{})
 			if r["replayed"] != (phase == "published" || phase == "parent_synced") {
 				t.Fatal(r)
+			}
+			stages, err := filepath.Glob(filepath.Join(root, ".paper-init-v1-*"))
+			if err != nil || len(stages) != 0 {
+				t.Fatalf("stages after retry: %v %v", stages, err)
 			}
 		})
 	}

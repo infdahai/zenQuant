@@ -37,7 +37,7 @@ jobs:
           python3 -c 'import json; rows=[json.loads(s) for s in open("/tmp/zenquant-rust-build.jsonl")]; print(next(r["executable"] for r in rows if r.get("reason")=="compiler-artifact" and r.get("target",{}).get("name")=="options_workbench" and r.get("profile",{}).get("test") and r.get("executable")))' > /tmp/zenquant-rust-paper-test
       - name: Test Go and Rust paper exclusion and replay
         if: runner.os == 'Linux'
-        run: ZQ_RUST_PAPER_TEST_BINARY="$(</tmp/zenquant-rust-paper-test)" go test ./internal/paper -run 'TestCrossLanguage(FirstConfirmation|GoLockExcludesRust)' -count=1
+        run: ZQ_RUST_PAPER_TEST_BINARY="$(</tmp/zenquant-rust-paper-test)" go test ./internal/paper -run 'TestCrossLanguage' -count=1
       - run: make check
       - run: make build
       - name: Native binary without external executables
