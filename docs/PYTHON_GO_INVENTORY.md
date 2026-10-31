@@ -40,6 +40,8 @@ The offline indicator slice implements ATR, annualized realized volatility and r
 
 The synthetic offline replay integration combines prepared candle events, indicators, caller-supplied policy, mark-price simulated fills and episode accounting. Funding and price observations precede bar-triggered fills. It is an in-memory testable workflow, not the Python strategy or full historical replay; same-close fills are synthetic, the adapter uses only the latest newly visible funding row, and no risk or order authorization is implied.
 
+The offline exit engine ports bounded position exit decisions and trailing-stop state transitions using synthetic Python reference cases. It requires finite inputs and rejects arithmetic overflow; it does not own position lifecycle, approve orders or replace the strategy engine. Its fixture generator postdates the baseline manifest.
+
 The current product UI and newly revised documentation use English. Historical evidence and archived records retain their original language and content; existing authoritative operational documents remain in force and are not translated by changing archived evidence.
 
 A proposed sequence, with a separately reviewed scope and explicit evidence at each stage:
