@@ -3,9 +3,11 @@ package workbench
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"math"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/infdahai/zenQuant/internal/research"
@@ -20,6 +22,72 @@ func fixture(t *testing.T) []byte {
 	}
 	return b
 }
+func TestExistingPublicationRetriesDirectorySync(t *testing.T) {
+	s, _ := Open(t.TempDir())
+	calls := 0
+	s.publishHook = func(string) error { calls++; return errors.New("injected sync failure") }
+	if _, err := s.Import(fixture(t)); err == nil {
+		t.Fatal("first sync accepted")
+	}
+	if _, err := s.Import(fixture(t)); err == nil {
+		t.Fatal("existing link acknowledged without sync")
+	}
+	if calls != 2 {
+		t.Fatalf("sync attempts: %d", calls)
+	}
+	s.publishHook = nil
+	snap, err := s.Import(fixture(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	reopened, _ := Open(s.root)
+	if _, err = reopened.Snapshot(snap.ID); err != nil {
+		t.Fatal(err)
+	}
+}
+func TestMetadataExpansionRejectedBeforePublish(t *testing.T) {
+	s, _ := Open(t.TempDir())
+	var d Dataset
+	_ = json.Unmarshal(fixture(t), &d)
+	d.Provider = strings.Repeat("<", 800000)
+	raw, _ := json.Marshal(d)
+	if _, err := s.Import(raw); err == nil {
+		t.Fatal("oversized metadata accepted")
+	}
+	ids, err := s.List("snapshot")
+	if err != nil || len(ids) != 0 {
+		t.Fatalf("published: %v %v", ids, err)
+	}
+	d.Provider = strings.Repeat("<", 256)
+	raw, _ = json.Marshal(d)
+	snap, err := s.Import(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = s.Snapshot(snap.ID); err != nil {
+		t.Fatal(err)
+	}
+}
+func TestTimestampResponsePreservesNanoseconds(t *testing.T) {
+	s, _ := Open(t.TempDir())
+	var d Dataset
+	_ = json.Unmarshal(fixture(t), &d)
+	const start int64 = 1700000100000000000
+	for i := range d.Candles {
+		d.Candles[i].OpenTimeNS = start + int64(i)*300e9
+		d.Candles[i].CloseTimeNS = d.Candles[i].OpenTimeNS + 300e9 - 1
+	}
+	d.Funding = nil
+	raw, _ := json.Marshal(d)
+	b, err := s.API("/api/research/import", raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(b), `"close_time_ns":"1700000399999999999"`) {
+		t.Fatalf("timestamp lost: %s", b)
+	}
+}
+
 func TestImportRunReopenCompare(t *testing.T) {
 	dir := t.TempDir()
 	s, err := Open(dir)
@@ -44,6 +112,11 @@ func TestImportRunReopenCompare(t *testing.T) {
 	e := r.Episodes[0] // Independent cash reconciliation: -100 - .1 + 110 - .11 - 1.1 = 8.69.
 	if math.Abs(e.NetPnL-8.69) > 1e-9 || math.Abs(e.FundingPnL+1.1) > 1e-9 || math.Abs(e.Fees-.21) > 1e-9 {
 		t.Fatalf("accounting: %+v", e)
+	}
+	b, _ := encode(r)
+	r.ID = digest(b)
+	if err := s.publish("result", r.ID, b); err != nil {
+		t.Fatal(err)
 	}
 	reopened, err := Open(dir)
 	if err != nil {

@@ -77,7 +77,7 @@ func TestTerminalWriteFailureDoesNotBlockCancellation(t *testing.T) {
 	if e != nil {
 		t.Fatal(e)
 	}
-	if len(jobs) != 1 || (jobs[0].Status != "cancelled" && jobs[0].Status != "interrupted") {
+	if len(jobs) != 1 || (jobs[0].Status != "cancelled" && jobs[0].Status != "interrupted" && jobs[0].Status != "succeeded") {
 		t.Fatalf("unexpected recovered state: %+v", jobs)
 	}
 }
@@ -163,6 +163,90 @@ func TestShutdownWithCompetingMetadataLock(t *testing.T) {
 	unlock(l)
 }
 
+func TestResultPublicationMustSyncBeforeSuccess(t *testing.T) {
+	s, _ := Open(t.TempDir())
+	snap, _ := s.Import(fixture(t))
+	job, _ := s.Submit(snap.ID, 0)
+	var fail atomic.Bool
+	fail.Store(true)
+	entered := make(chan struct{}, 1)
+	s.publishHook = func(kind string) error {
+		if kind == "result" && fail.Load() {
+			select {
+			case entered <- struct{}{}:
+			default:
+			}
+			return errors.New("injected result sync failure")
+		}
+		return nil
+	}
+	w, e := StartJobs(s)
+	if e != nil {
+		t.Fatal(e)
+	}
+	defer w.Close()
+	select {
+	case <-entered:
+	case <-time.After(3 * time.Second):
+		t.Fatal("publish not reached")
+	}
+	time.Sleep(250 * time.Millisecond)
+	jobs, e := s.JobsList()
+	if e != nil {
+		t.Fatal(e)
+	}
+	if jobs[0].Status != "committing" {
+		t.Fatalf("premature state: %+v", jobs)
+	}
+	if _, err := s.API("/api/research/result", []byte(`{"id":"`+jobs[0].ResultID+`"}`)); err == nil {
+		t.Fatal("committing result visible")
+	}
+	fail.Store(false)
+	waitJob(t, s, job.ID, "succeeded")
+}
+func TestCancellationCommitCutoffAndRecovery(t *testing.T) {
+	s, _ := Open(t.TempDir())
+	snap, _ := s.Import(fixture(t))
+	job, _ := s.Submit(snap.ID, 0)
+	ready := make(chan struct{}, 1)
+	release := make(chan struct{})
+	s.publishHook = func(kind string) error {
+		if kind == "result" {
+			select {
+			case ready <- struct{}{}:
+			default:
+			}
+			<-release
+		}
+		return nil
+	}
+	w, e := StartJobs(s)
+	if e != nil {
+		t.Fatal(e)
+	}
+	select {
+	case <-ready:
+	case <-time.After(3 * time.Second):
+		t.Fatal("publication not reached")
+	}
+	done := make(chan error, 1)
+	go func() { _, e := s.CancelJob(job.ID); done <- e }()
+	close(release)
+	if err := <-done; err == nil {
+		t.Fatal("cancellation accepted after committing")
+	}
+	finished := waitJob(t, s, job.ID, "succeeded")
+	w.Close()
+	reopened, _ := Open(s.root)
+	worker, e := StartJobs(reopened)
+	if e != nil {
+		t.Fatal(e)
+	}
+	defer worker.Close()
+	if _, e = reopened.Result(finished.ResultID); e != nil {
+		t.Fatal(e)
+	}
+}
 func TestJobsRecoverAndComplete(t *testing.T) {
 	s, _ := Open(t.TempDir())
 	snap, e := s.Import(fixture(t))

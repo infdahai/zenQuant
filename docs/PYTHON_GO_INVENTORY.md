@@ -14,6 +14,21 @@ Python requires >=3.11. The project declares DuckDB, FastAPI, PyArrow, psycopg, 
 
 [Harness CI](../.github/workflows/harness.yml) uses Python 3.12, `uv sync --group dev`, Ruff and pytest gates A–E on main-targeting PRs and specified pushes. `make legacy-python` explicitly runs A–E; it excludes the data-dependent research Gate F. [Go CI](../.github/workflows/go.yml) covers the Go/UI product, not Python-to-Go research parity. Scheduled/manual [data sync](../.github/workflows/data_sync.yml) and [options collection](../.github/workflows/collect_options.yml) invoke Python and may access external data and storage; they are operational callers, not migration tests. Inspect current workflow and branch protections before making CI changes.
 
+## Entrypoint and caller disposition (2026-11-02)
+
+All ten console commands in [pyproject.toml](../pyproject.toml) remain Python-owned and require a verified replacement before retirement:
+
+| Entrypoint | Actual responsibility and disposition |
+| --- | --- |
+| `zenquant-backtest`, `zenquant-demo` | Historical strategy replay and pipeline demo; port and validate the full workflow. The Go diagnostic replay is narrower. |
+| `zenquant-history-sync`, `zenquant-forward-collect` | Historical downloads and forward collection/health; port collectors, storage, scheduler and recovery. |
+| `zenquant-live-export`, `zenquant-live-scorecard`, `zenquant-live-validate` | Export, paper-live scorecard and validation; retain pending audited Go replacements and admission. |
+| `zenquant-web` | Python demo/live web runtime; Go manual paper UI is not equivalent. |
+| `zenquant-check` | Python harness gates including data-dependent research gate; retain until all callers and gates are replaced. |
+| `zenquant-rl-tune` | RL tuning; retained research capability, training remains paused. |
+
+Direct operational callers also remain: [data sync](../.github/workflows/data_sync.yml) schedules historical, macro and options scripts; [options collection](../.github/workflows/collect_options.yml) schedules Deribit collection and storage; [harness CI](../.github/workflows/harness.yml) calls Python tests and fixture checks. These callers are not replaced by the Go workspace. External timers, dynamic imports, fixtures and the remaining scripts still require individual ownership review; this table is not a complete retirement authorization.
+
 ## Migration status and staged acceptance
 
 The Go diagnostic workspace adds an isolated JSON snapshot and synthetic replay workflow; it does not replace Python data collection, strategy, risk, realistic execution, scheduled jobs, fixture generation or the Python validation gates. The manifest remains an inventory, not a complete disposition map: callers, schedules and ownership still require review before any Python retirement. See [GO_RESEARCH_WORKSPACE.md](GO_RESEARCH_WORKSPACE.md).

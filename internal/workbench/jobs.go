@@ -97,11 +97,11 @@ func (s *Store) readJob(id string) (Job, error) {
 	if j.ID != id {
 		return j, errors.New("job id mismatch")
 	}
-	if j.Engine != "fixed-buy-first-sell-last-v2" {
-		return j, errors.New("unsupported job engine")
+	if j.Engine == "" {
+		return j, errors.New("missing job engine")
 	}
 	switch j.Status {
-	case "queued", "running", "succeeded", "failed", "cancelled", "interrupted":
+	case "queued", "running", "committing", "succeeded", "failed", "cancelled", "interrupted":
 	default:
 		return j, errors.New("invalid job status")
 	}
@@ -172,6 +172,15 @@ func (s *Store) JobsList() ([]Job, error) {
 		return nil, e
 	}
 	defer unlock(l)
+	dir, err := os.Open(s.root)
+	if err != nil {
+		return nil, err
+	}
+	err = dir.Sync()
+	_ = dir.Close()
+	if err != nil {
+		return nil, err
+	}
 	ids, e := s.jobIDs()
 	if e != nil {
 		return nil, e
@@ -223,7 +232,11 @@ func (s *Store) Submit(id string, fee float64) (Job, error) {
 	if _, e = rand.Read(b[:]); e != nil {
 		return j, e
 	}
-	j = Job{ID: hex.EncodeToString(b[:]), SnapshotID: id, FeeRate: fee, Engine: "fixed-buy-first-sell-last-v2", Status: "queued"}
+	engine, e := EngineIdentity()
+	if e != nil {
+		return j, e
+	}
+	j = Job{ID: hex.EncodeToString(b[:]), SnapshotID: id, FeeRate: fee, Engine: engine, Status: "queued"}
 	if e = s.saveJob(j); e != nil {
 		return j, fmt.Errorf("job %s submission durability unconfirmed: %w", j.ID, e)
 	}
@@ -273,6 +286,22 @@ func StartJobs(s *Store) (*Jobs, error) {
 			}
 			if j.Status == "succeeded" {
 				if _, e = s.Result(j.ResultID); e != nil {
+					break
+				}
+			}
+			if j.Status == "committing" {
+				if _, resultErr := s.Result(j.ResultID); resultErr == nil {
+					j.Status = "succeeded"
+				} else if os.IsNotExist(resultErr) {
+					j.Status = "interrupted"
+					j.ResultID = ""
+					j.Error = "result publication interrupted"
+				} else {
+					e = resultErr
+					break
+				}
+				e = s.saveJob(j)
+				if e != nil {
 					break
 				}
 			}
@@ -361,6 +390,18 @@ func (w *Jobs) take() (Job, error) {
 			return Job{}, e
 		}
 		if j.Status == "queued" {
+			engine, err := EngineIdentity()
+			if err != nil {
+				return Job{}, err
+			}
+			if j.Engine != engine {
+				j.Status = "interrupted"
+				j.Error = "engine identity changed; resubmit explicitly"
+				if err = s.saveJob(j); err != nil {
+					return j, err
+				}
+				continue
+			}
 			j.Status = "running"
 			if e = s.saveJob(j); e != nil {
 				return j, e
@@ -412,7 +453,7 @@ func (w *Jobs) execute(ctx context.Context, j Job) {
 		w.recoverInterrupted(ctx, j.ID)
 		return
 	}
-	w.finish(ctx, j.ID, result.ID, err)
+	w.finish(ctx, j.ID, result, err)
 }
 
 // recoverRunning is called only by the exclusive owner between executions.
@@ -437,25 +478,82 @@ func (w *Jobs) recoverInterrupted(ctx context.Context, id string) {
 		}
 	})
 }
-func (w *Jobs) finish(ctx context.Context, id, result string, runErr error) {
-	w.transition(ctx, id, func(j *Job) {
-		if j.Status != "running" {
+func (w *Jobs) finish(ctx context.Context, id string, result Result, runErr error) {
+	for {
+		lock, err := w.store.metadataLock()
+		if err == nil {
+			var j Job
+			j, err = w.store.readJob(id)
+			if err == nil && j.Status == "committing" {
+				b, encodeErr := encode(result)
+				err = encodeErr
+				if err == nil && digest(b) != j.ResultID {
+					err = errors.New("result identity changed")
+				}
+				if err == nil {
+					err = w.store.publish("result", j.ResultID, b)
+				}
+				if err == nil {
+					j.Status = "succeeded"
+					err = w.store.saveJob(j)
+				}
+			}
+			if err == nil && j.Status == "running" {
+				switch {
+				case j.CancelRequested:
+					j.Status = "cancelled"
+				case ctx.Err() != nil:
+					j.Status = "interrupted"
+					j.Error = "worker stopped before completion"
+				case runErr != nil:
+					j.Status = "failed"
+					j.Error = runErr.Error()
+				default:
+					var b []byte
+					b, err = encode(result)
+					if err != nil || len(b) > MaxInput*4 {
+						j.Status = "failed"
+						j.Error = "result encoding failed or exceeds artifact limit"
+						err = nil
+					} else {
+						resultID := digest(b)
+						j.Status = "committing"
+						j.ResultID = resultID
+						err = w.store.saveJob(j)
+						if err == nil {
+							err = w.store.publish("result", resultID, b)
+						}
+						if err == nil {
+							j.Status = "succeeded"
+						}
+					}
+				}
+				if err == nil {
+					err = w.store.saveJob(j)
+				}
+			}
+			if err == nil {
+				dir, e := os.Open(w.store.root)
+				if e != nil {
+					err = e
+				} else {
+					err = dir.Sync()
+					_ = dir.Close()
+				}
+			}
+			unlock(lock)
+		}
+		if err == nil || ctx.Err() != nil {
 			return
 		}
-		switch {
-		case j.CancelRequested:
-			j.Status = "cancelled"
-		case ctx.Err() != nil:
-			j.Status = "interrupted"
-			j.Error = "worker stopped before completion"
-		case runErr != nil:
-			j.Status = "failed"
-			j.Error = runErr.Error()
-		default:
-			j.Status = "succeeded"
-			j.ResultID = result
+		timer := time.NewTimer(100 * time.Millisecond)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return
+		case <-timer.C:
 		}
-	})
+	}
 }
 
 // Each attempt releases the metadata lock before waiting. Once shutdown begins,

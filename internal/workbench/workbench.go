@@ -63,10 +63,11 @@ type Result struct {
 	Metrics     *Metrics                   `json:"metrics,omitempty"`
 }
 type Store struct {
-	root      string
-	worker    chan struct{}
-	mu        sync.Mutex
-	jobIOHook func(string, Job) error
+	root        string
+	worker      chan struct{}
+	mu          sync.Mutex
+	jobIOHook   func(string, Job) error
+	publishHook func(string) error
 }
 
 func Open(root string) (*Store, error) {
@@ -138,7 +139,13 @@ func (s *Store) publish(kind, id string, b []byte) error {
 		if !bytes.Equal(existing, b) {
 			return errors.New("existing artifact differs")
 		}
-		return nil
+		// An earlier link may have succeeded before its directory sync failed.
+		// The retry must establish durability before acknowledging it.
+	}
+	if s.publishHook != nil {
+		if err := s.publishHook(kind); err != nil {
+			return err
+		}
 	}
 	dir, err := os.Open(s.root)
 	if err != nil {
@@ -173,7 +180,7 @@ func (s *Store) Import(raw []byte) (Snapshot, error) {
 	if err := strictDecode(raw, &d); err != nil {
 		return out, err
 	}
-	if d.Version != "dataset-v1" || d.Provider == "" || d.Venue == "" || d.Instrument != "BTC" || len(d.Candles) == 0 || len(d.Candles) > maxCandles {
+	if d.Version != "dataset-v1" || d.Provider == "" || len(d.Provider) > 256 || d.Venue == "" || len(d.Venue) > 256 || d.Instrument != "BTC" || len(d.Candles) == 0 || len(d.Candles) > maxCandles {
 		return out, errors.New("invalid dataset metadata or candle count")
 	}
 	duration := map[string]int64{"5m": 300e9, "1h": 3600e9, "4h": 14400e9, "1d": 86400e9}[d.Timeframe]
@@ -210,6 +217,9 @@ func (s *Store) Import(raw []byte) (Snapshot, error) {
 	b, err := encode(out)
 	if err != nil {
 		return out, err
+	}
+	if len(b) > MaxInput*4 {
+		return Snapshot{}, errors.New("serialized snapshot exceeds artifact limit")
 	}
 	id := digest(b)
 	if err = s.publish("snapshot", id, b); err != nil {
@@ -313,18 +323,11 @@ func (s *Store) run(ctx context.Context, id string, fee float64) (Result, error)
 	if err != nil {
 		return out, err
 	}
-	out = Result{SnapshotID: id, Engine: "fixed-buy-first-sell-last-v2", Assumptions: "Synthetic same-close full fills, no slippage; only the latest visible funding row is charged per bar. Historical availability unknown. Diagnostic only; no live parity or profit claim.", FeeRate: fee, Reports: replay.Reports, Episodes: replay.Episodes, PositionQty: replay.PositionQty, Metrics: &metrics}
-	b, err := encode(out)
+	engine, err := EngineIdentity()
 	if err != nil {
-		return Result{}, err
+		return out, err
 	}
-	rid := digest(b)
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if err = s.publish("result", rid, b); err != nil {
-		return Result{}, err
-	}
-	out.ID = rid
+	out = Result{SnapshotID: id, Engine: engine, Assumptions: "Synthetic same-close full fills, no slippage; only the latest visible funding row is charged per bar. Historical availability unknown. Diagnostic only; no live parity or profit claim.", FeeRate: fee, Reports: replay.Reports, Episodes: replay.Episodes, PositionQty: replay.PositionQty, Metrics: &metrics}
 	return out, nil
 }
 func Compare(a, b Result) (string, error) {
