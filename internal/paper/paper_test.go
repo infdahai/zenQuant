@@ -397,7 +397,11 @@ func TestCrashWorker(t *testing.T) {
 					time.Sleep(5 * time.Millisecond)
 				}
 			} else {
-				select {}
+				// Keep a timer pending so a non-race child does not exit with
+				// the runtime's all-goroutines-asleep deadlock diagnostic.
+				for {
+					time.Sleep(time.Second)
+				}
 			}
 		}
 	}})
