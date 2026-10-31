@@ -76,8 +76,12 @@ jobs:
         run: npx playwright install --with-deps chromium
       - name: Verify running UI without Python
         run: npx playwright test --config playwright.options.config.js
+        env:
+          ZQ_OPTIONS_SERVER: ./rust/target/release/options-ui --port 8092
       - name: Verify isolated manual paper workflow without Python
         run: npx playwright test --config playwright.paper.config.js
+        env:
+          ZQ_PAPER_SERVER: ./rust/target/release/examples/paper_browser_fixture
       - uses: actions/upload-artifact@v4
         if: always()
         with:

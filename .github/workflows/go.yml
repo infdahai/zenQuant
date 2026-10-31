@@ -1,0 +1,44 @@
+name: Go mainline
+
+on:
+  push:
+    branches: [main, 'refactor/**', 'feat/**', 'fix/**']
+    paths: ['cmd/**', 'internal/**', 'go.mod', 'go.sum', 'Makefile', 'options-ui/**', 'package*.json', 'playwright.*.config.js', '.github/workflows/go.yml']
+  pull_request:
+    paths: ['cmd/**', 'internal/**', 'go.mod', 'go.sum', 'Makefile', 'options-ui/**', 'package*.json', 'playwright.*.config.js', '.github/workflows/go.yml']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  native:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - run: npm ci --ignore-scripts
+      - run: npm ci --ignore-scripts --prefix options-ui
+      - run: make check
+      - run: make build
+      - name: Native binary without external executables
+        run: env PATH=/nonexistent ./bin/zenquant help
+      - run: npx playwright install --with-deps chromium
+      - run: npm run test:options
+      - run: npm run test:paper
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: go-browser-evidence-${{ matrix.os }}
+          path: |
+            .artifacts/payoff-ui
+            .artifacts/paper-ui

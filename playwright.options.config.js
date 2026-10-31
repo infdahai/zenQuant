@@ -5,5 +5,5 @@ export default defineConfig({
     launchOptions: process.env.ZQ_BROWSER ? { executablePath: process.env.ZQ_BROWSER } : {},
     viewport: { width: 1440, height: 1100 },
   },
-  webServer: { command: './rust/target/release/options-ui --port 8092', url: 'http://127.0.0.1:8092', reuseExistingServer: !process.env.CI, timeout: 15000 },
+  webServer: { command: process.env.ZQ_OPTIONS_SERVER || './bin/zenquant serve --engineering --port 8092', url: 'http://127.0.0.1:8092', reuseExistingServer: false, timeout: 15000 },
 });
