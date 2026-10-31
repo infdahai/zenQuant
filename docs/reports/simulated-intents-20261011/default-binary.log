@@ -1,5 +1,0 @@
-    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.01s
-     Running `target/debug/options-workbench --help`
-options-workbench --request-file PATH --output-dir PATH [--panel-file PATH]
-options-workbench --quote-request-file PATH --output-dir PATH
-options-workbench --terminal-request-file PATH --output-dir PATH

@@ -29,8 +29,8 @@ Priority order:
 
 1. `AGENTS.md`
 2. `CLAUDE.md`
-3. `docs/LIVE_VALIDATION_HANDOFF_SPEC.md`
-4. other docs under `docs/`
+3. `LIVE_VALIDATION_HANDOFF_SPEC.md`
+4. `README.md`
 
 If `CLAUDE.md` conflicts with `AGENTS.md`, `AGENTS.md` wins.
 
