@@ -37,6 +37,9 @@ jobs:
       - name: Check episode ledger Python reference fixture
         run: uv run python scripts/generate_episode_ledger_golden.py --check
 
+      - name: Check sizing Python reference fixture
+        run: uv run python scripts/generate_sizing_golden.py --check
+
       - name: "Gate B: import boundaries"
         run: uv run pytest tests/test_import_boundaries.py -v --tb=short
 
