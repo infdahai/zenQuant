@@ -23,7 +23,7 @@
 | --- | --- | --- |
 | [P1 期权核心](../../../zenquant/options/contracts.py)及 costs/payoffs/ledger/risk | 复用 Decimal、不可变对象、长期权成本、核算与预算行为 | 支持已登记的全额付清 linear European long 模板；不是订单执行器 |
 | [P1 实施计划](../plans/2026-10-09-options-kernel-p1.md) | 作为已实施范围的依据 | 卖腿、perp、inverse 执行及真实账户资格未完成 |
-| [P2 数据设计](2026-10-09-options-data-p2-design.md) | 行情证据子系统：公开有界采样、封存、连续性与知识时间回放 | 尚未实施；首批八合约不覆盖所有套利结构或尾部期限 |
+| [P2 数据设计（历史归档）](../../research-archive/20261031-local-consolidation/snapshot/working/docs/superpowers/specs/2026-10-09-options-data-p2-design.md.txt) | 行情证据子系统：公开有界采样、封存、连续性与知识时间回放 | 尚未实施；首批八合约不覆盖所有套利结构或尾部期限 |
 | [原平台设计](2026-10-09-options-platform-design.md) | 保留 intent-before-orders、风险重写、四时钟与消融原则 | 本文细化产品入口和责任边界，不改旧规格的冻结内容 |
 | legacy 策略、风险与插件 | 保持原生产路径和固定组合规则 | 新工作台通过独立契约接入，不将研究代码接入旧 hot path |
 

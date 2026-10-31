@@ -8,7 +8,7 @@
 
 **Tech Stack:** Python >=3.11、stdlib frozen dataclasses/Decimal/JSON/hashlib、现有 P1；沿用 uv/pytest/ruff，不增加依赖。
 
-**Spec:** [已批准的工作台规格](../specs/2026-10-09-options-trading-workbench-design.md)，实施范围为 D2；[P2 数据规格](../specs/2026-10-09-options-data-p2-design.md)是未来输入子系统，不在本包实现。
+**Spec:** [已批准的工作台规格](../specs/2026-10-09-options-trading-workbench-design.md)，实施范围为 D2；[P2 数据规格（历史归档）](../../research-archive/20261031-local-consolidation/snapshot/working/docs/superpowers/specs/2026-10-09-options-data-p2-design.md.txt)是未来输入子系统，不在本包实现。
 
 起草：2026-10-09；审查交付：2026-10-10。规划基线：`87b7bc184894dc6919d0f3b97856a2bb3919ec7f`。状态：完整计划待审阅，尚未实施。用户已选择 subagent 执行方式；此轮使用 subagents 拆解合同、扩展与验收，不提前写产品代码。
 
