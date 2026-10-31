@@ -1,5 +1,11 @@
 # Go workbench operations
 
+## Updating existing checkouts
+
+Before updating an existing checkout to a revision that stops tracking `.claude/settings.local.json`, back up that file outside the checkout. Git may delete an unchanged tracked copy during the update, and local modifications may block the update. If modifications block it, first verify the backup, then restore the tracked version in the checkout and retry the update. After updating, restore the backup to `.claude/settings.local.json`; the file is ignored at the new revision. Repeat this for each checkout that has settings to keep.
+
+## Running the workbench
+
 The default runtime is `bin/zenquant`, built with `make build`. It requires only the binary and `options-ui/dist` at runtime; no Python, Rust or network service is called to evaluate requests. Run from the repository checkout or any of its subdirectories; the default static bundle comes from that checkout, including linked worktrees. An explicit `--assets` path remains relative to the current directory unless absolute. Supported hosts for this first migration are macOS and Linux.
 
 ```sh
