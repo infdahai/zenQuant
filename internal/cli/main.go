@@ -19,11 +19,12 @@ import (
 	"github.com/infdahai/zenQuant/internal/paper"
 	"github.com/infdahai/zenQuant/internal/research"
 	"github.com/infdahai/zenQuant/internal/server"
+	"github.com/infdahai/zenQuant/internal/workbench"
 )
 
 func Run(args []string, out, stderr io.Writer) error {
 	if len(args) == 0 || args[0] == "help" || args[0] == "--help" {
-		fmt.Fprintln(out, "zenquant serve [--port 8092] [--assets options-ui/dist] [--engineering]\nzenquant evaluate --route /api/curve < request.json\nzenquant research-splits\nzenquant gate-v3 < request.json\nNative Go local diagnostics and manual record-only paper workbench.")
+		fmt.Fprintln(out, "zenquant serve [--port 8092] [--assets options-ui/dist] [--engineering] [--research-store DIR]\nzenquant workbench --store DIR import|list|snapshot|run|result|compare < request.json\nzenquant evaluate --route /api/curve < request.json\nzenquant research-splits\nzenquant gate-v3 < request.json\nNative Go local diagnostics and manual record-only paper workbench.")
 		return nil
 	}
 	switch args[0] {
@@ -60,6 +61,8 @@ func Run(args []string, out, stderr io.Writer) error {
 		}
 		_, err = fmt.Fprintln(out, string(b))
 		return err
+	case "workbench":
+		return runWorkbench(args[1:], out, stderr)
 	case "serve":
 		return serve(args[1:], out, stderr)
 	default:
@@ -72,6 +75,7 @@ func serve(args []string, out, stderr io.Writer) error {
 	port := flags.Int("port", 8092, "loopback port")
 	assetsPath := flags.String("assets", "options-ui/dist", "built static bundle")
 	engineering := flags.Bool("engineering", false, "isolated temporary paper journal; ENGINEERING_TEST_ONLY")
+	researchPath := flags.String("research-store", "", "local research store directory")
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
@@ -122,6 +126,17 @@ func serve(args []string, out, stderr io.Writer) error {
 		}
 		store = paper.NewStore(filepath.Join(root, ".manual-paper"))
 	}
+	var researchAPI server.Evaluate
+	if *researchPath != "" {
+		researchStore, err := workbench.Open(*researchPath)
+		if err != nil {
+			return err
+		}
+		researchAPI = researchStore.API
+		for path, asset := range server.ResearchAssets() {
+			assets[path] = asset
+		}
+	}
 	listener, err := net.Listen("tcp4", "127.0.0.1:"+strconv.Itoa(*port))
 	if err != nil {
 		return err
@@ -139,6 +154,9 @@ func serve(args []string, out, stderr io.Writer) error {
 		}
 	}()
 	fmt.Fprintf(out, "ZenQuant Go local workbench: http://%s/ (record only; no trading)\n", listener.Addr())
-	s := server.Server{Assets: assets, Options: options.Evaluate, Paper: store.API}
+	if researchAPI != nil {
+		fmt.Fprintf(out, "Research workspace: http://%s/research\n", listener.Addr())
+	}
+	s := server.Server{Assets: assets, Options: options.Evaluate, Paper: store.API, Research: researchAPI}
 	return s.Serve(listener)
 }

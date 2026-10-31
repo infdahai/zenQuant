@@ -28,8 +28,8 @@ type Asset struct {
 	Body []byte
 }
 type Server struct {
-	Assets         map[string]Asset
-	Options, Paper Evaluate
+	Assets                   map[string]Asset
+	Options, Paper, Research Evaluate
 }
 
 // LoadAssets admits only a bounded, explicitly built static bundle; never follows symlinks.
@@ -172,6 +172,8 @@ func (s *Server) handle(conn net.Conn, host string) {
 		evaluate = s.Options
 	case "/api/paper/state", "/api/paper/preview", "/api/paper/confirm":
 		evaluate = s.Paper
+	case "/api/research/import", "/api/research/list", "/api/research/snapshot", "/api/research/result", "/api/research/run", "/api/research/compare":
+		evaluate = s.Research
 	}
 	if evaluate == nil {
 		respond(conn, 404, "application/json", []byte(`{"error":"NOT_FOUND"}`))
