@@ -20,6 +20,10 @@ Python requires >=3.11. The project declares DuckDB, FastAPI, PyArrow, psycopg, 
 
 The first Go slice implements the default BTC split summary and containment comparisons in `internal/research/splits.go`, exposed as `zenquant research-splits`. A golden summary was compared with the Python reference and Go tests cover boundary and reversed-period behavior. Go nanoseconds are `int64`, whereas Python integers are unbounded; containment itself preserves the Python behavior and does not validate period ordering. This is a contract port, not a research pipeline or promotion gate. The Python module and callers remain active.
 
+The second slice ports the pure Gate v3 evaluator to `internal/research/gate_v3.go`, using synthetic Python-generated golden cases for parity and a Python fixture freshness check in the harness. It does not build episodes from fills, replace Python callers, or authorize promotion. The JSON fixture generator added in this stage is not part of the baseline manifest; regenerate the inventory at a later committed revision to include it. The Python 3.12+ reference uses compensated floating-point summation; Python 3.11 uses a different summation algorithm. The Python in-process evaluator accepts non-finite floats, whereas the CLI accepts finite, representable JSON numbers only.
+
+The current product UI and newly revised documentation use English. Historical evidence and archived records retain their original language and content; existing authoritative operational documents remain in force and are not translated by changing archived evidence.
+
 A proposed sequence, with a separately reviewed scope and explicit evidence at each stage:
 
 1. **Baseline and ownership.** Regenerate the manifest on the target revision, compare path coverage and hashes, map console commands, scheduled jobs, configs and dynamic/plugin callers to owners, and classify every file as retained, candidate port or pending investigation. Acceptance: no unowned entrypoint or unexplained tracked file; validate against Git and review dynamic gaps.
