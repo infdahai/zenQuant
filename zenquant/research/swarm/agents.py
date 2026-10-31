@@ -9,9 +9,8 @@ from pathlib import Path
 from typing import Any, Protocol
 
 import pandas as pd
+import pyarrow.dataset as ds
 import pyarrow.parquet as pq
-
-from zenquant.data.cot_store import has_raw_cot_fragments
 
 from .contracts import (
     DEFAULT_SPLIT_CONTRACT_VERSION,
@@ -1103,14 +1102,16 @@ def _source_status_blocker(path: Path) -> str | None:
 
 
 def _source_cache_blocker(path: Path) -> str | None:
-    if path.suffix != ".parquet":
+    if path.suffix != ".parquet" and not path.is_dir():
         return None
     try:
         dataset = pq.ParquetDataset(path)
         cot_fields = {"asset_mgr_net", "leveraged_net", "dealer_net", "total_oi"}
-        physical_fields = set().union(*(set(fragment.physical_schema.names) for fragment in dataset.fragments))
-        if has_raw_cot_fragments(dataset) and cot_fields.intersection(physical_fields):
-            return "cot_publication_time_unavailable"
+        date_fields = {"report_date_ns", "position_as_of_date_ns"}
+        for fragment in dataset.fragments:
+            fields = set(fragment.physical_schema.names) | set(ds.get_partition_keys(fragment.partition_expression))
+            if date_fields & fields and cot_fields & fields:
+                return "cot_publication_time_unavailable"
         frame = dataset.read().to_pandas()
     except Exception:
         return "source_cache_unreadable"

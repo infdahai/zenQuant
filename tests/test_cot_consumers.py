@@ -65,7 +65,7 @@ def test_cot_consumers_use_compatible_files(tmp_path: Path, monkeypatch: pytest.
     evaluator = FrameworkEvaluator(HistoricalBacktestConfig(root_dir=tmp_path / "empty"))
     assert evaluator.training_input_contract["state_feature_sources"]["cme_positioning_in_state_features"] is (not raw)
     review = DataAdmissionAgent().review([_candidate(str(path))], repo_root=tmp_path)[0]
-    assert review.blocked_by == ("cot_publication_time_unavailable" if raw else None)
+    assert review.blocked_by == "cot_publication_time_unavailable"
 
 
 def test_mixed_physical_fragments_are_not_admitted(tmp_path: Path) -> None:
@@ -161,11 +161,46 @@ def test_swarm_checks_legacy_report_date_and_ignores_unrelated_marker(tmp_path: 
     pq.write_table(pa.table({"report_date_ns": [1_770_000_000_000_000_000], "asset_mgr_net": [42]}), recent)
     assert (
         DataAdmissionAgent().review([_candidate(recent.name)], repo_root=tmp_path)[0].blocked_by
-        == "source_cache_outside_train_dev"
+        == "cot_publication_time_unavailable"
     )
     unrelated = tmp_path / "other.parquet"
     pq.write_table(pa.table({"position_as_of_date_ns": [1_600_000_000_000_000_000], "value": [1]}), unrelated)
     assert DataAdmissionAgent().review([_candidate(unrelated.name)], repo_root=tmp_path)[0].status == "admitted"
+
+
+@pytest.mark.parametrize("date_field", ["report_date_ns", "position_as_of_date_ns"])
+@pytest.mark.parametrize("partition_field", ["date", "position"])
+def test_swarm_blocks_cot_hive_dataset(tmp_path: Path, date_field: str, partition_field: str) -> None:
+    dataset = tmp_path / "cot_dataset"
+    date = 1_600_000_000_000_000_000
+    if partition_field == "date":
+        partition = dataset / f"{date_field}={date}"
+        columns = {"asset_mgr_net": [42]}
+    else:
+        partition = dataset / "asset_mgr_net=42"
+        columns = {date_field: [date]}
+    partition.mkdir(parents=True)
+    pq.write_table(pa.table(columns), partition / "part.parquet")
+    assert DataAdmissionAgent().review([_candidate(dataset.name)], repo_root=tmp_path)[0].blocked_by == (
+        "cot_publication_time_unavailable"
+    )
+
+
+def test_swarm_checks_each_fragment_without_combining_unrelated_schemas(tmp_path: Path) -> None:
+    dataset = tmp_path / "mixed"
+    dataset.mkdir()
+    pq.write_table(
+        pa.table({"value": [1], "position_as_of_date_ns": [1_600_000_000_000_000_000]}), dataset / "a.parquet"
+    )
+    pq.write_table(pa.table({"value": [2], "asset_mgr_net": [42]}), dataset / "b.parquet")
+    assert DataAdmissionAgent().review([_candidate(dataset.name)], repo_root=tmp_path)[0].status == "admitted"
+    pq.write_table(
+        pa.table({"position_as_of_date_ns": [1_600_000_000_000_000_000], "asset_mgr_net": [42]}),
+        dataset / "b.parquet",
+    )
+    assert DataAdmissionAgent().review([_candidate(dataset.name)], repo_root=tmp_path)[0].blocked_by == (
+        "cot_publication_time_unavailable"
+    )
 
 
 def test_other_parquet_source_is_unchanged(tmp_path: Path) -> None:
