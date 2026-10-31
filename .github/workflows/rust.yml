@@ -54,7 +54,8 @@ jobs:
           cd "$RUNNER_TEMP"
           env PATH=/nonexistent "$GITHUB_WORKSPACE/rust/target/debug/simulated-reservations" replay
   options-ui:
-    runs-on: ubuntu-latest
+    # Keep the browser runner compatible with the locked Playwright release.
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4

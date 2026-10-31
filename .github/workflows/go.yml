@@ -15,7 +15,8 @@ jobs:
   native:
     strategy:
       matrix:
-        os: [ubuntu-latest, macos-latest]
+        # Playwright 1.58.2 in package-lock.json supports Ubuntu 24.04.
+        os: [ubuntu-24.04, macos-latest]
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
