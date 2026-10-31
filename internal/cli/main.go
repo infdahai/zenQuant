@@ -53,10 +53,13 @@ func Run(args []string, out, stderr io.Writer) error {
 		}
 		enc := json.NewEncoder(out)
 		enc.SetIndent("", "  ")
-		return enc.Encode(struct {
+		if err := enc.Encode(struct {
 			Review    map[string]string `json:"review"`
 			LoopCount int               `json:"loop_count"`
-		}{written, review.LoopCount})
+		}{written, review.LoopCount}); err != nil {
+			return fmt.Errorf("report published at %s; stdout failed: %w", filepath.Dir(written["json_path"]), err)
+		}
+		return nil
 	case "gate-v3":
 		if len(args) != 1 {
 			return errors.New("unexpected argument")

@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -36,6 +37,26 @@ func TestReviewLoopStabilityCommand(t *testing.T) {
 	}
 	if len(result.Review) != 2 {
 		t.Fatalf("unexpected paths: %v", result.Review)
+	}
+}
+
+type failingOutput struct{}
+
+func (failingOutput) Write([]byte) (int, error) { return 0, fmt.Errorf("output failed") }
+
+func TestReviewLoopStabilityOutputFailureReportsPath(t *testing.T) {
+	root := t.TempDir()
+	err := Run([]string{"review-loop-stability", "--results-root", filepath.Join(root, "missing"), "--output-dir", root}, failingOutput{}, io.Discard)
+	entries, readErr := os.ReadDir(root)
+	if readErr != nil || len(entries) != 1 {
+		t.Fatalf("unexpected output directory: %v %v", entries, readErr)
+	}
+	path := filepath.Join(root, entries[0].Name(), "report-v2")
+	if err == nil || !strings.Contains(err.Error(), path) {
+		t.Fatalf("missing published path: %v", err)
+	}
+	if _, statErr := os.Stat(path); statErr != nil {
+		t.Fatal(statErr)
 	}
 }
 

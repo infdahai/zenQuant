@@ -1,6 +1,7 @@
 package research
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -51,6 +52,87 @@ func TestLoopReviewArtifacts(t *testing.T) {
 	write(filepath.Join(stale, "loop_status.json"), `{broken`)
 	if _, err := ReviewLoopStability(root, time.Now()); err == nil {
 		t.Fatal("malformed status accepted")
+	}
+}
+
+func TestLoopReviewPublication(t *testing.T) {
+	root := t.TempDir()
+	target := filepath.Join(root, "unrelated")
+	if err := os.WriteFile(target, []byte("preserve"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	output := filepath.Join(root, "output")
+	if err := os.Mkdir(output, 0700); err != nil {
+		t.Fatal(err)
+	}
+	for _, ext := range []string{"json", "md"} {
+		if err := os.Symlink(target, filepath.Join(output, "framework_optimization_loop_stability_review."+ext)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	review := LoopReview{GeneratedAt: "test", Loops: []LoopReviewItem{}}
+	paths, err := WriteLoopReview(review, output)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if filepath.Dir(paths["json_path"]) != filepath.Dir(paths["md_path"]) || filepath.Base(filepath.Dir(paths["json_path"])) != "report-v2" {
+		t.Fatalf("incoherent paths: %v", paths)
+	}
+	if data, err := os.ReadFile(target); err != nil || string(data) != "preserve" {
+		t.Fatalf("target changed: %q, %v", data, err)
+	}
+	second, err := WriteLoopReview(review, output)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second["json_path"] == paths["json_path"] {
+		t.Fatal("report replaced")
+	}
+	for _, p := range []string{paths["json_path"], paths["md_path"], second["json_path"], second["md_path"]} {
+		if _, err := os.Stat(p); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+func TestLoopReviewPublicationFailure(t *testing.T) {
+	output := t.TempDir()
+	calls := 0
+	_, err := writeLoopReview(LoopReview{}, output, func(path string, data []byte) error {
+		calls++
+		if calls == 2 {
+			return errors.New("injected write failure")
+		}
+		return writeLoopReportFile(path, data)
+	})
+	if err == nil {
+		t.Fatal("expected failure")
+	}
+	entries, err := os.ReadDir(output)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("partial report remains: %v", entries)
+	}
+}
+
+func TestLoopReportFileDoesNotFollowSymlink(t *testing.T) {
+	root := t.TempDir()
+	target := filepath.Join(root, "target")
+	if err := os.WriteFile(target, []byte("preserve"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(root, "link")
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeLoopReportFile(link, []byte("overwrite")); err == nil {
+		t.Fatal("symlink accepted")
+	}
+	data, err := os.ReadFile(target)
+	if err != nil || string(data) != "preserve" {
+		t.Fatalf("target changed: %q, %v", data, err)
 	}
 }
 

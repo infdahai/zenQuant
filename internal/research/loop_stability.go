@@ -146,16 +146,27 @@ func ReviewLoopStability(root string, now time.Time) (LoopReview, error) {
 }
 
 func WriteLoopReview(review LoopReview, output string) (map[string]string, error) {
-	if err := os.MkdirAll(output, 0755); err != nil {
-		return nil, err
+	return writeLoopReview(review, output, writeLoopReportFile)
+}
+
+func writeLoopReportFile(path string, data []byte) error {
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
+	if err != nil {
+		return err
 	}
-	jsonPath := filepath.Join(output, "framework_optimization_loop_stability_review.json")
-	mdPath := filepath.Join(output, "framework_optimization_loop_stability_review.md")
+	_, err = f.Write(data)
+	if err == nil {
+		err = f.Sync()
+	}
+	if closeErr := f.Close(); err == nil {
+		err = closeErr
+	}
+	return err
+}
+
+func writeLoopReview(review LoopReview, output string, writeFile func(string, []byte) error) (map[string]string, error) {
 	b, err := json.MarshalIndent(review, "", "  ")
 	if err != nil {
-		return nil, err
-	}
-	if err = os.WriteFile(jsonPath, b, 0644); err != nil {
 		return nil, err
 	}
 	var md strings.Builder
@@ -169,8 +180,68 @@ func WriteLoopReview(review LoopReview, output string) (map[string]string, error
 	for _, item := range review.Loops {
 		fmt.Fprintf(&md, "| `%s` | %d | `%s` | `%s` | `%s` | `%s` | `%s` | `%s` |\n", item.LoopID, item.LastCompletedRound, item.TerminalClassification, item.FailureCluster, pyBool(item.StaleStateDetected), pyBool(item.BootstrapStatusPresent), pyBool(item.Stage1RLProgressSeen), pyBool(item.Stage2TerminalStateWritten))
 	}
-	if err = os.WriteFile(mdPath, []byte(md.String()), 0644); err != nil {
+	if err := os.MkdirAll(output, 0755); err != nil {
 		return nil, err
 	}
-	return map[string]string{"json_path": jsonPath, "md_path": mdPath}, nil
+	run, err := os.MkdirTemp(output, "loop-stability-v2-")
+	if err != nil {
+		return nil, err
+	}
+	published := false
+	defer func() {
+		if !published {
+			_ = os.RemoveAll(run)
+		}
+	}()
+	stage := filepath.Join(run, ".staging")
+	if err := os.Mkdir(stage, 0700); err != nil {
+		return nil, err
+	}
+	const jsonName = "framework_optimization_loop_stability_review.json"
+	const mdName = "framework_optimization_loop_stability_review.md"
+	if err := writeFile(filepath.Join(stage, jsonName), b); err != nil {
+		return nil, err
+	}
+	if err := writeFile(filepath.Join(stage, mdName), []byte(md.String())); err != nil {
+		return nil, err
+	}
+	stageDir, err := os.Open(stage)
+	if err != nil {
+		return nil, err
+	}
+	err = stageDir.Sync()
+	if closeErr := stageDir.Close(); err == nil {
+		err = closeErr
+	}
+	if err != nil {
+		return nil, err
+	}
+	final := filepath.Join(run, "report-v2")
+	if err := os.Rename(stage, final); err != nil {
+		return nil, err
+	}
+	published = true
+	runDir, err := os.Open(run)
+	if err != nil {
+		return nil, fmt.Errorf("report published at %s; durability unconfirmed: %w", final, err)
+	}
+	err = runDir.Sync()
+	if closeErr := runDir.Close(); err == nil {
+		err = closeErr
+	}
+	if err != nil {
+		return nil, fmt.Errorf("report published at %s; durability unconfirmed: %w", final, err)
+	}
+	parent, err := os.Open(output)
+	if err != nil {
+		return nil, fmt.Errorf("report published at %s; durability unconfirmed: %w", final, err)
+	}
+	err = parent.Sync()
+	if closeErr := parent.Close(); err == nil {
+		err = closeErr
+	}
+	if err != nil {
+		return nil, fmt.Errorf("report published at %s; durability unconfirmed: %w", final, err)
+	}
+	return map[string]string{"json_path": filepath.Join(final, jsonName), "md_path": filepath.Join(final, mdName)}, nil
 }
