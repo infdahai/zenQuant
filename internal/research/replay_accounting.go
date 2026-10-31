@@ -1,9 +1,6 @@
 package research
 
-import (
-	"fmt"
-	"math"
-)
+import "fmt"
 
 // ReplayFundingRow is an auxiliary funding observation, ordered by source time.
 type ReplayFundingRow struct {
@@ -57,44 +54,28 @@ func (a *ReplayAccounting) SetCutoff(cutoffNS int64) {
 // Call this before collecting reports triggered by this bar. Unlike the Python
 // replay, invalid bars are rejected before funding or cutoff state is changed.
 func (a *ReplayAccounting) OnExecutionBar(bar ReplayExecutionBar) error {
-	// Check both ledger operations' failure conditions before consuming funding.
-	if !finite(bar.High) || !finite(bar.Low) || !finite(bar.Close) {
-		return fmt.Errorf("price observation high, low and close must be finite")
-	}
-	if bar.High < bar.Low {
-		return fmt.Errorf("price observation high must be at least low")
-	}
-	if bar.Close <= 0 || bar.Low <= 0 {
-		return fmt.Errorf("price observations must be positive")
-	}
-	if state := a.ledger.positionEpisodeLedgerState; state != nil {
-		if last, ok := state.last[a.symbol]; ok && bar.CloseTimeNS < last {
-			return fmt.Errorf("events for %s must be chronological: timestamp_ns=%d last_timestamp_ns=%d", a.symbol, bar.CloseTimeNS, last)
-		}
-		if episode := state.open[a.symbol]; episode != nil && episode.episode.OpenedAtNS < 0 && bar.CloseTimeNS > math.MaxInt64+episode.episode.OpenedAtNS {
-			return fmt.Errorf("episode holding duration for %s exceeds int64 nanoseconds", a.symbol)
-		}
-	}
 	index := a.fundingIndex
 	for index+1 < len(a.funding) && a.funding[index+1].FundingTimeNS <= bar.CloseTimeNS {
 		index++
 	}
-	if index >= 0 {
-		row := a.funding[index]
-		if row.FundingTimeNS > a.lastFundingTime {
-			pnl := -a.ledger.PositionQty(a.symbol) * bar.Close * row.FundingRate
-			if !finite(pnl) {
-				return fmt.Errorf("funding pnl must be finite")
+	lastFundingTime := a.lastFundingTime
+	err := a.ledger.applyAtomic(func(ledger *PositionEpisodeLedger) error {
+		if index >= 0 {
+			row := a.funding[index]
+			if row.FundingTimeNS > lastFundingTime {
+				pnl := -ledger.PositionQty(a.symbol) * bar.Close * row.FundingRate
+				if err := ledger.AllocateFunding(FundingAllocation{Symbol: a.symbol, TimestampNS: bar.CloseTimeNS, PnL: pnl}); err != nil {
+					return err
+				}
+				lastFundingTime = row.FundingTimeNS
 			}
-			if err := a.ledger.AllocateFunding(FundingAllocation{Symbol: a.symbol, TimestampNS: bar.CloseTimeNS, PnL: pnl}); err != nil {
-				return err
-			}
-			a.lastFundingTime = row.FundingTimeNS
 		}
-	}
-	if err := a.ledger.ObservePrice(PriceObservation{Symbol: a.symbol, TimestampNS: bar.CloseTimeNS, High: bar.High, Low: bar.Low, Close: bar.Close}); err != nil {
+		return ledger.ObservePrice(PriceObservation{Symbol: a.symbol, TimestampNS: bar.CloseTimeNS, High: bar.High, Low: bar.Low, Close: bar.Close})
+	})
+	if err != nil {
 		return err
 	}
+	a.lastFundingTime = lastFundingTime
 	a.fundingIndex = index
 	a.SetCutoff(bar.CloseTimeNS)
 	return nil

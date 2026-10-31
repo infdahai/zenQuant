@@ -1,0 +1,228 @@
+{
+  "cases": [
+    {
+      "name": "buy",
+      "order": {
+        "client_order_id": "buy",
+        "symbol": "BTC",
+        "side": 1,
+        "quantity": 2.5,
+        "reduce_only": false,
+        "max_slippage_bps": 1.0,
+        "order_type": "MARKET",
+        "limit_price": null
+      },
+      "unsupported": false,
+      "mark_price": 100.0,
+      "taker_fee_rate": 0.0004,
+      "timestamp_ns": 123,
+      "report": {
+        "client_order_id": "buy",
+        "symbol": "BTC",
+        "side": 1,
+        "status": "FILLED",
+        "filled_qty": 2.5,
+        "avg_price": 100.0,
+        "fee": 0.1,
+        "transaction_time_ns": 123,
+        "reject_reason": ""
+      }
+    },
+    {
+      "name": "sell_custom_fee",
+      "order": {
+        "client_order_id": "sell_custom_fee",
+        "symbol": "BTC",
+        "side": -1,
+        "quantity": 0.25,
+        "reduce_only": false,
+        "max_slippage_bps": 1.0,
+        "order_type": "MARKET",
+        "limit_price": null
+      },
+      "unsupported": false,
+      "mark_price": 123.5,
+      "taker_fee_rate": 0.001,
+      "timestamp_ns": 124,
+      "report": {
+        "client_order_id": "sell_custom_fee",
+        "symbol": "BTC",
+        "side": -1,
+        "status": "FILLED",
+        "filled_qty": 0.25,
+        "avg_price": 123.5,
+        "fee": 0.030875,
+        "transaction_time_ns": 124,
+        "reject_reason": ""
+      }
+    },
+    {
+      "name": "limit_and_reduce_ignored",
+      "order": {
+        "client_order_id": "limit_and_reduce_ignored",
+        "symbol": "BTC",
+        "side": -1,
+        "quantity": 1.0,
+        "reduce_only": true,
+        "max_slippage_bps": 1.0,
+        "order_type": "LIMIT",
+        "limit_price": 50.0
+      },
+      "unsupported": true,
+      "mark_price": 200.0,
+      "taker_fee_rate": 0.0004,
+      "timestamp_ns": 125,
+      "report": {
+        "client_order_id": "limit_and_reduce_ignored",
+        "symbol": "BTC",
+        "side": -1,
+        "status": "FILLED",
+        "filled_qty": 1.0,
+        "avg_price": 200.0,
+        "fee": 0.08,
+        "transaction_time_ns": 125,
+        "reject_reason": ""
+      }
+    },
+    {
+      "name": "zero_fee",
+      "order": {
+        "client_order_id": "zero_fee",
+        "symbol": "BTC",
+        "side": 1,
+        "quantity": 1.0,
+        "reduce_only": false,
+        "max_slippage_bps": 1.0,
+        "order_type": "MARKET",
+        "limit_price": null
+      },
+      "unsupported": false,
+      "mark_price": 90.0,
+      "taker_fee_rate": 0.0,
+      "timestamp_ns": 126,
+      "report": {
+        "client_order_id": "zero_fee",
+        "symbol": "BTC",
+        "side": 1,
+        "status": "FILLED",
+        "filled_qty": 1.0,
+        "avg_price": 90.0,
+        "fee": 0.0,
+        "transaction_time_ns": 126,
+        "reject_reason": ""
+      }
+    },
+    {
+      "name": "zero_quantity",
+      "order": {
+        "client_order_id": "zero_quantity",
+        "symbol": "BTC",
+        "side": 1,
+        "quantity": 0.0,
+        "reduce_only": false,
+        "max_slippage_bps": 1.0,
+        "order_type": "MARKET",
+        "limit_price": null
+      },
+      "unsupported": false,
+      "mark_price": 100.0,
+      "taker_fee_rate": 0.0004,
+      "timestamp_ns": 127,
+      "report": {
+        "client_order_id": "zero_quantity",
+        "symbol": "BTC",
+        "side": 1,
+        "status": "REJECTED",
+        "filled_qty": 0.0,
+        "avg_price": 0.0,
+        "fee": 0.0,
+        "transaction_time_ns": 127,
+        "reject_reason": "invalid_order"
+      }
+    },
+    {
+      "name": "negative_quantity",
+      "order": {
+        "client_order_id": "negative_quantity",
+        "symbol": "BTC",
+        "side": -1,
+        "quantity": -1.0,
+        "reduce_only": false,
+        "max_slippage_bps": 1.0,
+        "order_type": "MARKET",
+        "limit_price": null
+      },
+      "unsupported": false,
+      "mark_price": 100.0,
+      "taker_fee_rate": 0.0004,
+      "timestamp_ns": 128,
+      "report": {
+        "client_order_id": "negative_quantity",
+        "symbol": "BTC",
+        "side": -1,
+        "status": "REJECTED",
+        "filled_qty": 0.0,
+        "avg_price": 0.0,
+        "fee": 0.0,
+        "transaction_time_ns": 128,
+        "reject_reason": "invalid_order"
+      }
+    },
+    {
+      "name": "zero_mark",
+      "order": {
+        "client_order_id": "zero_mark",
+        "symbol": "BTC",
+        "side": 1,
+        "quantity": 1.0,
+        "reduce_only": false,
+        "max_slippage_bps": 1.0,
+        "order_type": "MARKET",
+        "limit_price": null
+      },
+      "unsupported": false,
+      "mark_price": 0.0,
+      "taker_fee_rate": 0.0004,
+      "timestamp_ns": 129,
+      "report": {
+        "client_order_id": "zero_mark",
+        "symbol": "BTC",
+        "side": 1,
+        "status": "REJECTED",
+        "filled_qty": 0.0,
+        "avg_price": 0.0,
+        "fee": 0.0,
+        "transaction_time_ns": 129,
+        "reject_reason": "invalid_order"
+      }
+    },
+    {
+      "name": "negative_mark",
+      "order": {
+        "client_order_id": "negative_mark",
+        "symbol": "BTC",
+        "side": -1,
+        "quantity": 1.0,
+        "reduce_only": false,
+        "max_slippage_bps": 1.0,
+        "order_type": "MARKET",
+        "limit_price": null
+      },
+      "unsupported": false,
+      "mark_price": -10.0,
+      "taker_fee_rate": 0.0004,
+      "timestamp_ns": 130,
+      "report": {
+        "client_order_id": "negative_mark",
+        "symbol": "BTC",
+        "side": -1,
+        "status": "REJECTED",
+        "filled_qty": 0.0,
+        "avg_price": 0.0,
+        "fee": 0.0,
+        "transaction_time_ns": 130,
+        "reject_reason": "invalid_order"
+      }
+    }
+  ]
+}
