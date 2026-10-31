@@ -3,6 +3,7 @@ package cli
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -16,15 +17,21 @@ import (
 
 	"github.com/infdahai/zenQuant/internal/options"
 	"github.com/infdahai/zenQuant/internal/paper"
+	"github.com/infdahai/zenQuant/internal/research"
 	"github.com/infdahai/zenQuant/internal/server"
 )
 
 func Run(args []string, out, stderr io.Writer) error {
 	if len(args) == 0 || args[0] == "help" || args[0] == "--help" {
-		fmt.Fprintln(out, "zenquant serve [--port 8092] [--assets options-ui/dist] [--engineering]\nzenquant evaluate --route /api/curve < request.json\nNative Go local diagnostics and manual record-only paper workbench.")
+		fmt.Fprintln(out, "zenquant serve [--port 8092] [--assets options-ui/dist] [--engineering]\nzenquant evaluate --route /api/curve < request.json\nzenquant research-splits\nNative Go local diagnostics and manual record-only paper workbench.")
 		return nil
 	}
 	switch args[0] {
+	case "research-splits":
+		if len(args) != 1 {
+			return errors.New("unexpected argument")
+		}
+		return json.NewEncoder(out).Encode(research.SplitSummaryJSON(research.DefaultBTCSplitSpec()))
 	case "evaluate":
 		flags := flag.NewFlagSet("evaluate", flag.ContinueOnError)
 		flags.SetOutput(stderr)
