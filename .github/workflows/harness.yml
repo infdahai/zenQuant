@@ -43,6 +43,9 @@ jobs:
       - name: Check replay event Python reference fixture
         run: uv run python scripts/generate_replay_events_golden.py --check
 
+      - name: Check offline execution Python reference fixture
+        run: uv run python scripts/generate_offline_execution_golden.py --check
+
       - name: "Gate B: import boundaries"
         run: uv run pytest tests/test_import_boundaries.py -v --tb=short
 
