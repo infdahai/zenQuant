@@ -61,7 +61,7 @@ func runBenchmarkReview(args []string, out, stderr io.Writer) error {
 			return err
 		}
 	}
-	review, err := research.BuildBenchmarkReview(f, b, r, *report != "", time.Now())
+	review, err := research.BuildBenchmarkReview(f, b, r, *report != "", research.BenchmarkSources{Failed: *failed, Baseline: *baseline, Rerun: *rerun, RerunReport: *report}, time.Now())
 	if err != nil {
 		return err
 	}

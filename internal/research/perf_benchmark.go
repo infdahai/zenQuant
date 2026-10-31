@@ -23,8 +23,10 @@ type BenchmarkReview struct {
 	BenchmarkScope     string                         `json:"benchmark_scope"`
 	FailedRootCause    string                         `json:"failed_benchmark_root_cause"`
 	FailedEvidence     map[string]any                 `json:"failed_benchmark_evidence"`
+	FailedSource       string                         `json:"failed_source"`
 	BaselineSource     string                         `json:"baseline_source"`
 	RerunSource        string                         `json:"rerun_source"`
+	RerunReportSource  string                         `json:"rerun_report_source,omitempty"`
 	RerunTerminalState map[string]any                 `json:"rerun_terminal_state"`
 	MetricComparison   map[string]BenchmarkComparison `json:"metric_comparison"`
 	Classification     string                         `json:"classification"`
@@ -42,15 +44,23 @@ var benchmarkMetrics = []struct {
 	{"stage2_prepare_variant_cache_hits", 0}, {"stage2_prepare_variant_replay_reused", 0},
 }
 
+// BenchmarkSources identifies the supplied artifacts. Empty fields mean no path was supplied.
+type BenchmarkSources struct {
+	Failed, Baseline, Rerun, RerunReport string
+}
+
 // BuildBenchmarkReview compares offline status objects; it does not run a benchmark.
-func BuildBenchmarkReview(failed, baseline, rerun map[string]any, reportPresent bool, now time.Time) (BenchmarkReview, error) {
+// Numeric metrics accept Go integer and floating-point types and json.Number; calculations use float64.
+func BuildBenchmarkReview(failed, baseline, rerun map[string]any, reportPresent bool, sources BenchmarkSources, now time.Time) (BenchmarkReview, error) {
 	r := BenchmarkReview{
 		GeneratedAt:        now.UTC().Format("2006-01-02T15:04:05.000000+00:00"),
 		BenchmarkScope:     "cpu_hot_path_stage2_reuse",
 		FailedRootCause:    "stage1 benchmark run ended without authoritative terminal state",
 		FailedEvidence:     map[string]any{"phase": failed["phase"], "status": failed["status"], "optuna_trials_completed": failed["optuna_trials_completed"], "optuna_trials_requested": failed["optuna_trials_requested"], "stage2_progress_completed": failed["stage2_progress_completed"], "framework_report_present": false},
-		BaselineSource:     "results/framework_optimization_loop_v27/runs/round_003/campaign_status.json",
-		RerunSource:        "results/perf_stage2_benchmark_fast_rerun/campaign_status.json",
+		FailedSource:       sources.Failed,
+		BaselineSource:     sources.Baseline,
+		RerunSource:        sources.Rerun,
+		RerunReportSource:  sources.RerunReport,
 		RerunTerminalState: map[string]any{"status": rerun["status"], "phase": rerun["phase"], "best_variant": rerun["best_variant"], "framework_report_present": reportPresent},
 		MetricComparison:   make(map[string]BenchmarkComparison),
 	}
@@ -120,9 +130,43 @@ func benchmarkNumber(v any) (*float64, error) {
 	if v == nil {
 		return nil, nil
 	}
-	n, ok := v.(float64)
-	if !ok || math.IsNaN(n) || math.IsInf(n, 0) {
-		return nil, fmt.Errorf("expected finite JSON number or null")
+	var n float64
+	switch value := v.(type) {
+	case float64:
+		n = value
+	case float32:
+		n = float64(value)
+	case int:
+		n = float64(value)
+	case int8:
+		n = float64(value)
+	case int16:
+		n = float64(value)
+	case int32:
+		n = float64(value)
+	case int64:
+		n = float64(value)
+	case uint:
+		n = float64(value)
+	case uint8:
+		n = float64(value)
+	case uint16:
+		n = float64(value)
+	case uint32:
+		n = float64(value)
+	case uint64:
+		n = float64(value)
+	case json.Number:
+		var err error
+		n, err = value.Float64()
+		if err != nil {
+			return nil, fmt.Errorf("expected finite number or null")
+		}
+	default:
+		return nil, fmt.Errorf("expected finite number or null")
+	}
+	if math.IsNaN(n) || math.IsInf(n, 0) {
+		return nil, fmt.Errorf("expected finite number or null")
 	}
 	return &n, nil
 }
