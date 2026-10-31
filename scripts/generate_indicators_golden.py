@@ -6,7 +6,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from zenquant.domain.models import Timeframe
-from zenquant.indicator.engine import _atr, _rate_of_change, _realized_vol
+from zenquant.indicator.engine import _atr, _ou_kappa, _rate_of_change, _realized_vol
 
 OUTPUT = Path(__file__).resolve().parents[1] / "internal/research/testdata/indicators_golden.json"
 
@@ -34,6 +34,7 @@ def build_fixture():
                         "atr": _atr(candles, window),
                         "vol": _realized_vol(candles, window, tf),
                         "roc": _rate_of_change(candles, window),
+                        "kappa": _ou_kappa(candles, window),
                     }
                 )
     return cases

@@ -17,6 +17,25 @@ func replayTestConfig() OfflineReplayConfig {
 	return OfflineReplayConfig{Symbol: "BTC", Candles: map[string][]ReplayCandle{"5m": {replayTestBar("5m", 0, 5*replayMinute, 100), replayTestBar("5m", 5*replayMinute, 5*replayMinute, 110)}}, Timeframes: []string{"5m"}, ExecutionTimeframe: "5m", HistoryLimit: 3, IndicatorWindow: 2, TakerFeeRate: .001}
 }
 
+func TestOfflineReplayOUUsesVisibleHistory(t *testing.T) {
+	cfg := replayTestConfig()
+	cfg.Candles["5m"] = append(cfg.Candles["5m"], replayTestBar("5m", 10*replayMinute, 5*replayMinute, 100))
+	var estimates []float64
+	_, err := RunOfflineReplay(cfg, func(s OfflineReplaySnapshot) ([]OfflineExecutionOrder, error) {
+		estimates = append(estimates, s.Indicators["5m"].OUKappa)
+		return nil, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(estimates) != 3 {
+		t.Fatalf("unexpected estimates: %v", estimates)
+	}
+	replayNear(t, estimates[0], 0)
+	replayNear(t, estimates[1], 0)
+	replayNear(t, estimates[2], 2)
+}
+
 func TestOfflineReplayRoundTripAndDeterminism(t *testing.T) {
 	cfg := replayTestConfig()
 	cfg.Funding = []ReplayFundingRow{{5 * replayMinute, .5}, {6 * replayMinute, .01}, {7 * replayMinute, .02}, {7 * replayMinute, .03}}

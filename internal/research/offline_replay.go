@@ -4,7 +4,7 @@ import "fmt"
 
 // OfflineReplayConfig supplies all inputs to a single-symbol synthetic replay.
 // HistoryLimit bounds candles retained per timeframe and IndicatorWindow sets
-// the trailing ATR, realized-volatility, and rate-of-change lookback.
+// the trailing ATR, realized-volatility, rate-of-change and OU lookback.
 type OfflineReplayConfig struct {
 	Symbol                        string
 	Candles                       map[string][]ReplayCandle
@@ -17,7 +17,7 @@ type OfflineReplayConfig struct {
 }
 
 // OfflineReplayIndicators are calculated from the visible bounded history.
-type OfflineReplayIndicators struct{ ATR, RealizedVol, RateOfChange float64 }
+type OfflineReplayIndicators struct{ ATR, RealizedVol, RateOfChange, OUKappa float64 }
 
 // OfflineReplaySnapshot is an independent point-in-time view supplied to a policy.
 type OfflineReplaySnapshot struct {
@@ -119,7 +119,11 @@ func RunOfflineReplay(config OfflineReplayConfig, policy OfflineReplayPolicy) (*
 			if err != nil {
 				return nil, fmt.Errorf("%s rate of change: %w", timeframe, err)
 			}
-			snapshot.Indicators[timeframe] = OfflineReplayIndicators{ATR: atr, RealizedVol: vol, RateOfChange: roc}
+			kappa, err := OfflineOUKappa(candles, config.IndicatorWindow)
+			if err != nil {
+				return nil, fmt.Errorf("%s OU kappa: %w", timeframe, err)
+			}
+			snapshot.Indicators[timeframe] = OfflineReplayIndicators{ATR: atr, RealizedVol: vol, RateOfChange: roc, OUKappa: kappa}
 		}
 		orders, err := policy(snapshot)
 		if err != nil {

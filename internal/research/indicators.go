@@ -107,6 +107,40 @@ func OfflineRealizedVol(candles []IndicatorCandle, window int, timeframe string)
 	return result, nil
 }
 
+// OfflineOUKappa estimates nonnegative mean-reversion speed from log closes.
+// It uses only the last window+1 observations, and requires a full window.
+func OfflineOUKappa(candles []IndicatorCandle, window int) (float64, error) {
+	cs, err := indicatorSubset(candles, window)
+	if err != nil || len(cs) < window+1 || len(cs) < 3 {
+		return 0, err
+	}
+	logs := make([]float64, len(cs))
+	for i, c := range cs {
+		logs[i] = math.Log(math.Max(c.Close, 1e-9))
+	}
+	n := len(logs) - 1
+	var xsum, ysum float64
+	for i := 0; i < n; i++ {
+		xsum += logs[i]
+		ysum += logs[i+1] - logs[i]
+	}
+	xmean, ymean := xsum/float64(n), ysum/float64(n)
+	var variance, covariance float64
+	for i := 0; i < n; i++ {
+		dx := logs[i] - xmean
+		variance += dx * dx
+		covariance += dx * (logs[i+1] - logs[i] - ymean)
+	}
+	if variance < 1e-15 {
+		return 0, nil
+	}
+	result := -covariance / variance
+	if !finite(result) {
+		return 0, fmt.Errorf("mean-reversion estimate overflow")
+	}
+	return math.Max(0, result), nil
+}
+
 // OfflineRateOfChange returns the close ratio over lookback minus one.
 func OfflineRateOfChange(candles []IndicatorCandle, lookback int) (float64, error) {
 	cs, err := indicatorSubset(candles, lookback)

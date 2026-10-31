@@ -13,11 +13,11 @@ func TestIndicatorsPythonGolden(t *testing.T) {
 		t.Fatal(err)
 	}
 	var cases []struct {
-		Name          string            `json:"name"`
-		Candles       []IndicatorCandle `json:"candles"`
-		Window        int               `json:"window"`
-		Timeframe     string            `json:"timeframe"`
-		ATR, Vol, ROC float64
+		Name                 string            `json:"name"`
+		Candles              []IndicatorCandle `json:"candles"`
+		Window               int               `json:"window"`
+		Timeframe            string            `json:"timeframe"`
+		ATR, Vol, ROC, Kappa float64
 	}
 	if err := json.Unmarshal(data, &cases); err != nil {
 		t.Fatal(err)
@@ -34,6 +34,7 @@ func TestIndicatorsPythonGolden(t *testing.T) {
 			{"atr", tc.ATR, func() (float64, error) { return OfflineATR(tc.Candles, tc.Window) }},
 			{"vol", tc.Vol, func() (float64, error) { return OfflineRealizedVol(tc.Candles, tc.Window, tc.Timeframe) }},
 			{"roc", tc.ROC, func() (float64, error) { return OfflineRateOfChange(tc.Candles, tc.Window) }},
+			{"kappa", tc.Kappa, func() (float64, error) { return OfflineOUKappa(tc.Candles, tc.Window) }},
 		}
 		for _, v := range values {
 			got, err := v.calc()
@@ -61,6 +62,14 @@ func TestIndicatorsRejectInvalidInputAndOverflow(t *testing.T) {
 		if _, err := fn(make([]IndicatorCandle, MaxIndicatorWindow+2), 1); err == nil {
 			t.Error("accepted oversized input")
 		}
+	}
+	for _, w := range []int{0, -1, MaxIndicatorWindow + 1} {
+		if _, err := OfflineOUKappa(nil, w); err == nil {
+			t.Errorf("kappa accepted window %d", w)
+		}
+	}
+	if _, err := OfflineOUKappa([]IndicatorCandle{{Close: math.NaN()}}, 2); err == nil {
+		t.Error("kappa accepted nonfinite input")
 	}
 	m := math.MaxFloat64
 	if _, err := OfflineATR([]IndicatorCandle{{Close: -m}, {High: m}}, 1); err == nil {
