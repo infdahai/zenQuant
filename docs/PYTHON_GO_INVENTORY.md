@@ -38,6 +38,8 @@ The offline basis slice joins in-memory spot and perpetual rows and provides cut
 
 The offline indicator slice implements ATR, annualized realized volatility and rate of change for synthetic ordered candles. Python reference fixtures cover windows, short histories and timeframe fallback with floating-point tolerance. Go requires finite inputs, positive bounded windows and bounded input size; it rejects detected overflow and volatility ratio underflow. It does not implement the complete indicator engine, event processing or strategy. Its fixture generator postdates the baseline manifest.
 
+The synthetic offline replay integration combines prepared candle events, indicators, caller-supplied policy, mark-price simulated fills and episode accounting. Funding and price observations precede bar-triggered fills. It is an in-memory testable workflow, not the Python strategy or full historical replay; same-close fills are synthetic, the adapter uses only the latest newly visible funding row, and no risk or order authorization is implied.
+
 The current product UI and newly revised documentation use English. Historical evidence and archived records retain their original language and content; existing authoritative operational documents remain in force and are not translated by changing archived evidence.
 
 A proposed sequence, with a separately reviewed scope and explicit evidence at each stage:
