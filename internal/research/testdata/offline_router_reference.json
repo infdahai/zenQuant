@@ -1,0 +1,261 @@
+{
+  "cap": 1.0,
+  "rows": [
+    {
+      "cutoff": 1,
+      "order": {
+        "client_order_id": "0",
+        "symbol": "BTC",
+        "side": 1,
+        "quantity": 0.8,
+        "reduce_only": false,
+        "max_slippage_bps": 8.0,
+        "order_type": "MARKET",
+        "limit_price": null
+      },
+      "report": {
+        "client_order_id": "0",
+        "symbol": "BTC",
+        "side": 1,
+        "status": "FILLED",
+        "filled_qty": 0.8,
+        "avg_price": 100.0,
+        "fee": 0.08,
+        "transaction_time_ns": 1,
+        "reject_reason": ""
+      },
+      "position": 0.8,
+      "risk_position": 0.8
+    },
+    {
+      "cutoff": 1,
+      "order": {
+        "client_order_id": "1",
+        "symbol": "BTC",
+        "side": 1,
+        "quantity": 0.8,
+        "reduce_only": false,
+        "max_slippage_bps": 8.0,
+        "order_type": "MARKET",
+        "limit_price": null
+      },
+      "report": {
+        "client_order_id": "1",
+        "symbol": "BTC",
+        "side": 1,
+        "status": "FILLED",
+        "filled_qty": 0.2,
+        "avg_price": 100.0,
+        "fee": 0.02,
+        "transaction_time_ns": 1,
+        "reject_reason": ""
+      },
+      "position": 1.0,
+      "risk_position": 1.0
+    },
+    {
+      "cutoff": 1,
+      "order": {
+        "client_order_id": "2",
+        "symbol": "BTC",
+        "side": -1,
+        "quantity": 1.0,
+        "reduce_only": true,
+        "max_slippage_bps": 8.0,
+        "order_type": "MARKET",
+        "limit_price": null
+      },
+      "report": null,
+      "position": 1.0,
+      "risk_position": 1.0
+    },
+    {
+      "cutoff": 1,
+      "order": {
+        "client_order_id": "3",
+        "symbol": "ETH",
+        "side": 1,
+        "quantity": 0.4,
+        "reduce_only": false,
+        "max_slippage_bps": 8.0,
+        "order_type": "MARKET",
+        "limit_price": null
+      },
+      "report": {
+        "client_order_id": "3",
+        "symbol": "ETH",
+        "side": 1,
+        "status": "FILLED",
+        "filled_qty": 0.4,
+        "avg_price": 100.0,
+        "fee": 0.04,
+        "transaction_time_ns": 1,
+        "reject_reason": ""
+      },
+      "position": 0.4,
+      "risk_position": 0.4
+    },
+    {
+      "cutoff": 2,
+      "order": {
+        "client_order_id": "4",
+        "symbol": "BTC",
+        "side": -1,
+        "quantity": 0.35,
+        "reduce_only": true,
+        "max_slippage_bps": 8.0,
+        "order_type": "MARKET",
+        "limit_price": null
+      },
+      "report": {
+        "client_order_id": "4",
+        "symbol": "BTC",
+        "side": -1,
+        "status": "FILLED",
+        "filled_qty": 0.35,
+        "avg_price": 100.0,
+        "fee": 0.035,
+        "transaction_time_ns": 2,
+        "reject_reason": ""
+      },
+      "position": 0.65,
+      "risk_position": 0.65
+    },
+    {
+      "cutoff": 2,
+      "order": {
+        "client_order_id": "5",
+        "symbol": "BTC",
+        "side": 1,
+        "quantity": 0.5,
+        "reduce_only": true,
+        "max_slippage_bps": 8.0,
+        "order_type": "MARKET",
+        "limit_price": null
+      },
+      "report": null,
+      "position": 0.65,
+      "risk_position": 0.65
+    },
+    {
+      "cutoff": 3,
+      "order": {
+        "client_order_id": "6",
+        "symbol": "BTC",
+        "side": -1,
+        "quantity": 2.0,
+        "reduce_only": true,
+        "max_slippage_bps": 8.0,
+        "order_type": "MARKET",
+        "limit_price": null
+      },
+      "report": {
+        "client_order_id": "6",
+        "symbol": "BTC",
+        "side": -1,
+        "status": "FILLED",
+        "filled_qty": 0.65,
+        "avg_price": 100.0,
+        "fee": 0.065,
+        "transaction_time_ns": 3,
+        "reject_reason": ""
+      },
+      "position": 0.0,
+      "risk_position": 0.0
+    },
+    {
+      "cutoff": 3,
+      "order": {
+        "client_order_id": "7",
+        "symbol": "BTC",
+        "side": -1,
+        "quantity": 1.0,
+        "reduce_only": false,
+        "max_slippage_bps": 8.0,
+        "order_type": "MARKET",
+        "limit_price": null
+      },
+      "report": {
+        "client_order_id": "7",
+        "symbol": "BTC",
+        "side": -1,
+        "status": "FILLED",
+        "filled_qty": 0.35,
+        "avg_price": 100.0,
+        "fee": 0.035,
+        "transaction_time_ns": 3,
+        "reject_reason": ""
+      },
+      "position": -0.35,
+      "risk_position": -0.35
+    },
+    {
+      "cutoff": 4,
+      "order": {
+        "client_order_id": "8",
+        "symbol": "BTC",
+        "side": 1,
+        "quantity": 0.6,
+        "reduce_only": false,
+        "max_slippage_bps": 8.0,
+        "order_type": "MARKET",
+        "limit_price": null
+      },
+      "report": {
+        "client_order_id": "8",
+        "symbol": "BTC",
+        "side": 1,
+        "status": "FILLED",
+        "filled_qty": 0.6,
+        "avg_price": 100.0,
+        "fee": 0.06,
+        "transaction_time_ns": 4,
+        "reject_reason": ""
+      },
+      "position": 0.25,
+      "risk_position": 0.25
+    },
+    {
+      "cutoff": 5,
+      "order": {
+        "client_order_id": "9",
+        "symbol": "BTC",
+        "side": -1,
+        "quantity": 9.99e-05,
+        "reduce_only": false,
+        "max_slippage_bps": 8.0,
+        "order_type": "MARKET",
+        "limit_price": null
+      },
+      "report": null,
+      "position": 0.25,
+      "risk_position": 0.25
+    },
+    {
+      "cutoff": 5,
+      "order": {
+        "client_order_id": "10",
+        "symbol": "BTC",
+        "side": -1,
+        "quantity": 0.1234569,
+        "reduce_only": false,
+        "max_slippage_bps": 8.0,
+        "order_type": "MARKET",
+        "limit_price": null
+      },
+      "report": {
+        "client_order_id": "10",
+        "symbol": "BTC",
+        "side": -1,
+        "status": "FILLED",
+        "filled_qty": 0.123456,
+        "avg_price": 100.0,
+        "fee": 0.0123456,
+        "transaction_time_ns": 5,
+        "reject_reason": ""
+      },
+      "position": 0.126544,
+      "risk_position": 0.126544
+    }
+  ]
+}

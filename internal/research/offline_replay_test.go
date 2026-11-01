@@ -18,6 +18,69 @@ func replayTestConfig() OfflineReplayConfig {
 	return OfflineReplayConfig{Symbol: "BTC", Candles: map[string][]ReplayCandle{"5m": {replayTestBar("5m", 0, 5*replayMinute, 100), replayTestBar("5m", 5*replayMinute, 5*replayMinute, 110)}}, Timeframes: []string{"5m"}, ExecutionTimeframe: "5m", HistoryLimit: 3, IndicatorWindow: 2, TakerFeeRate: .001}
 }
 
+func TestOfflineReplayFlipExecution(t *testing.T) {
+	for _, tc := range []struct {
+		name                      string
+		entrySide                 int
+		cap                       float64
+		closeStatus               string
+		closeFill                 float64
+		wantReports               int
+		wantPosition              float64
+		wantCloseFee, wantOpenFee float64
+	}{
+		{"long to short", 1, 1, "FILLED", .4, 3, -.6, .044, .066},
+		{"short to long", -1, 1, "FILLED", .4, 3, .6, .044, .066},
+		{"budget exhausted", 1, .4, "FILLED", .4, 2, 0, .044, 0},
+		{"partial close", 1, 1, "PARTIALLY_FILLED", .2, 2, .2, .022, 0},
+		{"partial status with flat inventory", 1, 1, "PARTIALLY_FILLED", .4, 3, -.6, .044, .066},
+		{"rejected close", 1, 1, "REJECTED", 0, 2, .4, 0, 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := replayTestConfig()
+			cfg.MaxTradeQtyPerCutoff = tc.cap
+			var submitted []OfflineExecutionOrder
+			simulate := func(order OfflineExecutionOrder, mark, rate float64, ts int64) (ExecutionReport, error) {
+				submitted = append(submitted, order)
+				if order.ClientOrderID == "close" {
+					return ExecutionReport{ClientOrderID: order.ClientOrderID, Symbol: order.Symbol, Side: order.Side, Status: tc.closeStatus, FilledQty: tc.closeFill, AvgPrice: mark, Fee: tc.closeFill * mark * rate, TransactionTimeNS: ts}, nil
+				}
+				order.ReduceOnly = false
+				return SimulateOfflineExecution(order, mark, rate, ts)
+			}
+			result, err := runOfflineReplayIntents(cfg, func(s OfflineReplaySnapshot) ([]OfflineReplayIntent, error) {
+				if s.PositionQty == 0 {
+					return []OfflineReplayIntent{{Order: &OfflineExecutionOrder{ClientOrderID: "entry", Symbol: "BTC", Side: tc.entrySide, Quantity: .4}}}, nil
+				}
+				return []OfflineReplayIntent{{Flip: &OfflineReplayFlip{Symbol: "BTC", TargetQty: float64(-tc.entrySide), CloseClientOrderID: "close", OpenClientOrderID: "open"}}}, nil
+			}, simulate)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(result.Reports) != tc.wantReports || len(submitted) != tc.wantReports {
+				t.Fatalf("result=%+v submitted=%+v", result, submitted)
+			}
+			if !submitted[1].ReduceOnly || submitted[1].Side != -tc.entrySide {
+				t.Fatalf("close: %+v", submitted[1])
+			}
+			replayNear(t, result.PositionQty, tc.wantPosition)
+			replayNear(t, result.Reports[1].Fee, tc.wantCloseFee)
+			if tc.wantReports == 3 {
+				if submitted[2].ReduceOnly {
+					t.Fatal("opening leg is reduce-only")
+				}
+				replayNear(t, result.Reports[2].Fee, tc.wantOpenFee)
+				replayNear(t, result.Reports[2].FilledQty, .6)
+				if len(result.Episodes) != 2 || !result.Episodes[0].Closed {
+					t.Fatalf("episodes: %+v", result.Episodes)
+				}
+				replayNear(t, result.Episodes[0].Fees, .084)
+				replayNear(t, result.Episodes[1].Fees, .066)
+			}
+		})
+	}
+}
+
 func TestOfflineReplayOUUsesVisibleHistory(t *testing.T) {
 	cfg := replayTestConfig()
 	cfg.Candles["5m"] = append(cfg.Candles["5m"], replayTestBar("5m", 10*replayMinute, 5*replayMinute, 100))
@@ -181,8 +244,8 @@ func TestOfflineReplayRejectionsAndErrors(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(r.Reports) != 2 || r.Reports[0].Status != "REJECTED" || len(r.Episodes) != 0 {
-		t.Fatalf("unexpected rejected orders: %+v", r)
+	if len(r.Reports) != 0 || len(r.Episodes) != 0 {
+		t.Fatalf("unexpected submitted orders: %+v", r)
 	}
 	fail := errors.New("policy failed")
 	calls := 0
@@ -211,7 +274,7 @@ func TestOfflineReplayRejectionsAndErrors(t *testing.T) {
 			return []OfflineExecutionOrder{{Symbol: "ETH", Side: 1, Quantity: 1}}, nil
 		}},
 		{"invalid order", func(c *OfflineReplayConfig) {}, func(OfflineReplaySnapshot) ([]OfflineExecutionOrder, error) {
-			return []OfflineExecutionOrder{{ClientOrderID: "invalid", Symbol: "BTC", Side: 1, Quantity: 1, ReduceOnly: true}}, nil
+			return []OfflineExecutionOrder{{ClientOrderID: "invalid", Symbol: "BTC", Side: 1, Quantity: 1, OrderType: "LIMIT"}}, nil
 		}},
 	}
 	for _, tt := range tests {
