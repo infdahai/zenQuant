@@ -161,23 +161,7 @@ func TestHeldCommitCountsAgainstCapacity(t *testing.T) {
 		t.Fatal("queue exceeded during commit")
 	}
 	fail.Store(false)
-	deadline := time.Now().Add(5 * time.Second)
-	for {
-		jobs, e := s.JobsList()
-		if e == nil {
-			for _, item := range jobs {
-				if item.ID == j.ID && item.Status == "succeeded" {
-					goto completed
-				}
-			}
-		}
-		if time.Now().After(deadline) {
-			closeWorker()
-			t.Fatalf("job did not succeed: %v", e)
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-completed:
+	waitJob(t, s, j.ID, "succeeded")
 	closed := make(chan struct{})
 	go func() { closeWorker(); close(closed) }()
 	select {
