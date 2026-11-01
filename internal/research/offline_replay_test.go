@@ -111,6 +111,94 @@ func TestOfflineReplayCausalityPriorityAndBoundedSnapshots(t *testing.T) {
 	}
 }
 
+func TestOfflineReplayMixedCloseBoundaryVisibility(t *testing.T) {
+	day := 24 * 60 * replayMinute
+	for _, dailyOffset := range []int64{0, -1, -1_000_000} {
+		for _, executionOffset := range []int64{0, -1, -1_000_000} {
+			t.Run(fmt.Sprintf("daily_%d_execution_%d", dailyOffset, executionOffset), func(t *testing.T) {
+				cfg := replayTestConfig()
+				cfg.Timeframes = []string{"4h", "1d"}
+				cfg.ExecutionTimeframe = "4h"
+				daily := replayTestBar("1d", 0, day, 100)
+				daily.CloseTimeNS += dailyOffset
+				execution := replayTestBar("4h", day-4*60*replayMinute, 4*60*replayMinute, 100)
+				execution.CloseTimeNS += executionOffset
+				cfg.Candles = map[string][]ReplayCandle{"1d": {daily}, "4h": {execution, replayTestBar("4h", day, 4*60*replayMinute, 110)}}
+				cfg.EndNS = &day
+				calls := 0
+				_, err := RunOfflineReplay(cfg, func(s OfflineReplaySnapshot) ([]OfflineExecutionOrder, error) {
+					calls++
+					if s.Event.CloseTimeNS != day || len(s.Histories["1d"]) != 1 || s.Histories["1d"][0].CloseTimeNS != day || len(s.Histories["4h"]) != 1 {
+						t.Fatalf("unexpected snapshot: %+v", s)
+					}
+					return nil, nil
+				})
+				if err != nil || calls != 1 {
+					t.Fatalf("calls=%d err=%v", calls, err)
+				}
+			})
+		}
+	}
+}
+
+func TestOfflineReplayStartBoundarySyntheticMatchesNative(t *testing.T) {
+	const hour int64 = 60 * replayMinute
+	const step int64 = 5 * replayMinute
+	cfg := replayTestConfig()
+	cfg.Timeframes = []string{"5m", "1h"}
+	cfg.StartNS, cfg.EndNS = new(int64), new(int64)
+	*cfg.StartNS, *cfg.EndNS = hour, hour
+	cfg.Candles = map[string][]ReplayCandle{}
+	for i := int64(0); i < 12; i++ {
+		bar := replayTestBar("5m", i*step, step, 100)
+		bar.CloseTimeNS -= 1_000_000
+		cfg.Candles["5m"] = append(cfg.Candles["5m"], bar)
+	}
+	var snapshots []OfflineReplaySnapshot
+	run := func() {
+		_, err := RunOfflineReplay(cfg, func(s OfflineReplaySnapshot) ([]OfflineExecutionOrder, error) {
+			snapshots = append(snapshots, s)
+			return nil, nil
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	run()
+	native := replayTestBar("1h", 0, hour, 100)
+	native.Volume = 12
+	cfg.Candles["1h"] = []ReplayCandle{native}
+	run()
+	if len(snapshots) != 2 || !reflect.DeepEqual(snapshots[0], snapshots[1]) || len(snapshots[0].Histories["1h"]) != 1 || len(snapshots[0].Histories["5m"]) != 1 {
+		t.Fatalf("snapshots=%+v", snapshots)
+	}
+}
+
+func TestOfflineReplayFundingAtNormalizedClose(t *testing.T) {
+	boundary := int64(10 * replayMinute)
+	for _, offset := range []int64{-1, 0, 1} {
+		cfg := replayTestConfig()
+		cfg.Candles["5m"][1].CloseTimeNS -= 1_000_000
+		cfg.Funding = []ReplayFundingRow{{FundingTimeNS: boundary + offset, FundingRate: .01}}
+		calls := 0
+		result, err := RunOfflineReplay(cfg, func(OfflineReplaySnapshot) ([]OfflineExecutionOrder, error) {
+			calls++
+			if calls == 1 {
+				return []OfflineExecutionOrder{{ClientOrderID: "entry", Symbol: "BTC", Side: 1, Quantity: 1}}, nil
+			}
+			return nil, nil
+		})
+		if err != nil || len(result.Episodes) != 1 {
+			t.Fatalf("offset=%d result=%+v err=%v", offset, result, err)
+		}
+		want := 0.0
+		if offset <= 0 {
+			want = -1.1
+		}
+		replayNear(t, result.Episodes[0].FundingPnL, want)
+	}
+}
+
 func TestOfflineReplaySameCloseEntryAfterAccounting(t *testing.T) {
 	cfg := replayTestConfig()
 	cfg.Timeframes = []string{"1h", "5m"}

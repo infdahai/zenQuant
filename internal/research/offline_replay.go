@@ -43,6 +43,8 @@ type OfflineReplayResult struct {
 }
 
 // RunOfflineReplay processes prepared events in their cutoff and priority order.
+// Events use interval-end observation timestamps, including for funding, reports,
+// and policy snapshots. Inclusive replay bounds apply to those interval ends.
 // Events update their timeframe histories in priority order. Only execution
 // events invoke policy, after funding and bar prices are applied to the existing
 // position. Same-close higher-priority histories are visible to the policy.
