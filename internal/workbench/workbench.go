@@ -327,7 +327,7 @@ func (s *Store) run(ctx context.Context, id string, fee float64) (Result, error)
 	if err != nil {
 		return out, err
 	}
-	out = Result{SnapshotID: id, Engine: engine, Assumptions: "Synthetic same-close full fills, no slippage; only the latest visible funding row is charged per bar. Historical availability unknown. Diagnostic only; no live parity or profit claim.", FeeRate: fee, Reports: replay.Reports, Episodes: replay.Episodes, PositionQty: replay.PositionQty, Metrics: &metrics}
+	out = Result{SnapshotID: id, Engine: engine, Assumptions: "Synthetic same-close full fills, no slippage; each funding settlement uses the latest execution close at or before its timestamp. Historical availability unknown. Diagnostic only; no live parity or profit claim.", FeeRate: fee, Reports: replay.Reports, Episodes: replay.Episodes, PositionQty: replay.PositionQty, Metrics: &metrics}
 	return out, nil
 }
 func Compare(a, b Result) (string, error) {

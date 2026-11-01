@@ -28,10 +28,16 @@ type ReplayEvent struct {
 	EventTimeframe string `json:"event_timeframe"`
 }
 
-// PrepareReplayEvents filters selected series on inclusive close-time bounds,
-// then sorts by close time and Python's timeframe priority. When 1h is selected,
+// PrepareReplayEvents filters on inclusive interval-end bounds and validates selected
+// intervals, then sorts by interval end and Python's timeframe priority. Adjacent
+// half-open research splits [start,end) must pass end-1ns as the inclusive end;
+// otherwise a boundary bar belongs to both replays. Event close times are
+// normalized to the interval end, so observations never precede bar completion.
+// Python filters and sorts raw close timestamps, so inclusive close conventions
+// intentionally differ. When 1h is selected,
 // its filtered series is empty, and execution is 5m, complete 5m hours are
-// aggregated. Input order breaks ties within a timeframe, as in Python's stable
+// aggregated, including constituents before the start bound when their hour
+// closes inside the window. Input order breaks ties within a timeframe, as in Python's stable
 // sort; callers should supply each series in stable close-time source order.
 // This is an in-memory, single-symbol subset: no stores, auxiliary joins, cache,
 // execution, or arbitrary candle fields are reproduced. Inputs are validated
@@ -61,14 +67,44 @@ func PrepareReplayEvents(rows map[string][]ReplayCandle, timeframes []string, ex
 	}
 	durations := map[string]int64{"5m": 300 * 1e9, "1h": 3600 * 1e9, "4h": 4 * 3600 * 1e9, "1d": 24 * 3600 * 1e9}
 	filtered := make(map[string][]ReplayCandle)
+	var hourlyInputs []ReplayCandle
 	var symbol string
-	for _, tf := range timeframes {
+	// Check native hours first so unused fallback constituents are not validated.
+	validationOrder := append([]string(nil), timeframes...)
+	sort.SliceStable(validationOrder, func(i, j int) bool { return priority[validationOrder[i]] < priority[validationOrder[j]] })
+	for _, tf := range validationOrder {
 		for _, row := range rows[tf] {
-			if startNS != nil && row.CloseTimeNS < *startNS || endNS != nil && row.CloseTimeNS > *endNS {
+			duration := durations[tf]
+			// An overflowing interval cannot be assigned a representable end.
+			// Filter it by its source timestamp before reporting invalid input.
+			if row.OpenTimeNS > math.MaxInt64-duration {
+				if startNS != nil && row.CloseTimeNS < *startNS || endNS != nil && row.CloseTimeNS > *endNS {
+					continue
+				}
+				return nil, fmt.Errorf("invalid %s candle interval", tf)
+			}
+			closeTime := row.OpenTimeNS + duration
+			inWindow := (startNS == nil || closeTime >= *startNS) && (endNS == nil || closeTime <= *endNS)
+			// Only retain earlier constituents of the hour containing the start;
+			// the resulting aggregate is still filtered on its own close time.
+			forHour := false
+			if tf == "5m" && selected["1h"] && len(filtered["1h"]) == 0 && execution == "5m" {
+				rem := row.OpenTimeNS % durations["1h"]
+				if rem < 0 {
+					rem += durations["1h"]
+				}
+				if row.OpenTimeNS >= math.MinInt64+rem {
+					hourStart := row.OpenTimeNS - rem
+					if hourStart <= math.MaxInt64-durations["1h"] {
+						hourEnd := hourStart + durations["1h"]
+						forHour = (startNS == nil || hourEnd >= *startNS) && (endNS == nil || hourEnd <= *endNS)
+					}
+				}
+			}
+			if !inWindow && !forHour {
 				continue
 			}
-			duration := durations[tf]
-			if row.OpenTimeNS%duration != 0 || row.OpenTimeNS > math.MaxInt64-duration || (row.CloseTimeNS != row.OpenTimeNS+duration && row.CloseTimeNS != row.OpenTimeNS+duration-1 && row.CloseTimeNS != row.OpenTimeNS+duration-1_000_000) {
+			if row.OpenTimeNS%duration != 0 || (row.CloseTimeNS != closeTime && row.CloseTimeNS != closeTime-1 && row.CloseTimeNS != closeTime-1_000_000) {
 				return nil, fmt.Errorf("invalid %s candle interval", tf)
 			}
 			if row.Timeframe != tf || row.Symbol == "" || !finite(row.Open) || !finite(row.High) || !finite(row.Low) || !finite(row.Close) || !finite(row.Volume) || row.Low <= 0 || row.Open < row.Low || row.Open > row.High || row.Close < row.Low || row.Close > row.High || row.Volume < 0 || row.TradeCount < 0 {
@@ -78,11 +114,16 @@ func PrepareReplayEvents(rows map[string][]ReplayCandle, timeframes []string, ex
 				return nil, fmt.Errorf("candles must have one symbol")
 			}
 			symbol = row.Symbol
-			filtered[tf] = append(filtered[tf], row)
+			if inWindow {
+				filtered[tf] = append(filtered[tf], row)
+			}
+			if forHour {
+				hourlyInputs = append(hourlyInputs, row)
+			}
 		}
 	}
 	if selected["1h"] && len(filtered["1h"]) == 0 && execution == "5m" {
-		hours, err := aggregateReplayHours(filtered["5m"])
+		hours, err := aggregateReplayHours(hourlyInputs)
 		if err != nil {
 			return nil, err
 		}
@@ -91,6 +132,7 @@ func PrepareReplayEvents(rows map[string][]ReplayCandle, timeframes []string, ex
 	events := make([]ReplayEvent, 0)
 	for _, tf := range timeframes {
 		for _, row := range filtered[tf] {
+			row.CloseTimeNS = row.OpenTimeNS + durations[tf]
 			events = append(events, ReplayEvent{ReplayCandle: row, EventTimeframe: tf})
 		}
 	}

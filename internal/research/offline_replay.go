@@ -83,6 +83,8 @@ type OfflineReplayResult struct {
 }
 
 // RunOfflineReplay processes prepared events in their cutoff and priority order.
+// Events use interval-end observation timestamps, including for funding, reports,
+// and policy snapshots. Inclusive replay bounds apply to those interval ends.
 // Events update their timeframe histories in priority order. Only execution
 // events invoke policy, after funding and bar prices are applied to the existing
 // position. Same-close higher-priority histories are visible to the policy.
@@ -92,10 +94,9 @@ type OfflineReplayResult struct {
 // the filled-quantity cap, rounding down to six places with a 0.0001 minimum.
 // Opposite-side non-reduce orders may flip in one fill; no Python target sizing,
 // flip orchestration in this API, or risk overlay is implemented. Explicit
-// two-leg flips are available through RunOfflineReplayIntents. Accounting
-// uses only the latest visible funding row per execution bar, not every skipped
-// row; equal timestamps select the last row, and timestamps <= 0 are not newly
-// charged by the underlying accounting adapter. This is not live execution,
+// two-leg flips are available through RunOfflineReplayIntents. Each funding
+// settlement uses the latest execution close at or before its source time;
+// timestamps <= 0 are not charged. This is not live execution,
 // risk control, a strategy, or full Python replay parity. On error no result is
 // returned; external side effects of a policy cannot be rolled back.
 func RunOfflineReplay(config OfflineReplayConfig, policy OfflineReplayPolicy) (*OfflineReplayResult, error) {

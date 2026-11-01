@@ -134,7 +134,7 @@ func TestReplayAccountingRejectedBarDoesNotConsumeFunding(t *testing.T) {
 
 func TestReplayAccountingFundingAndFillTiming(t *testing.T) {
 	var ledger PositionEpisodeLedger
-	rows := []ReplayFundingRow{{2, .01}, {4, .02}, {4, .03}, {20, .5}}
+	rows := []ReplayFundingRow{{2, .01}, {4, .02}, {5, .03}, {20, .5}}
 	a, err := NewReplayAccounting("BTC", &ledger, rows)
 	if err != nil {
 		t.Fatal(err)
@@ -147,7 +147,7 @@ func TestReplayAccountingFundingAndFillTiming(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Only the latest visible row (the second source-time 4 row) is used.
+	// Earlier settlements use the previous close; the boundary uses this close.
 	if err := a.OnExecutionBar(ReplayExecutionBar{5, 120, 80, 110}); err != nil {
 		t.Fatal(err)
 	}
@@ -162,11 +162,32 @@ func TestReplayAccountingFundingAndFillTiming(t *testing.T) {
 		t.Fatalf("normalized report: %+v", report)
 	}
 	e := ledger.ClosedEpisodes()[0]
-	replayNear(t, e.FundingPnL, -6.6)
+	replayNear(t, e.FundingPnL, -12.6)
 	replayNear(t, e.MFEPnL, 40)
 	replayNear(t, e.MAEPnL, -40)
 	if e.OpenedAtNS != 1 || *e.ClosedAtNS != 6 {
 		t.Fatalf("episode times: %+v", e)
+	}
+}
+
+func TestReplayAccountingRollsBackMultipleSettlements(t *testing.T) {
+	var ledger PositionEpisodeLedger
+	a, err := NewReplayAccounting("BTC", &ledger, []ReplayFundingRow{{2, .1}, {3, math.MaxFloat64}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := a.OnExecutionBar(ReplayExecutionBar{1, 2, 1, 1}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.CollectReport(ExecutionReport{Symbol: "BTC", Side: 1, FilledQty: 2, AvgPrice: 1, TransactionTimeNS: 1}); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.OnExecutionBar(ReplayExecutionBar{3, 2, 1, 1}); err == nil {
+		t.Fatal("expected second settlement to overflow")
+	}
+	replayNear(t, ledger.OpenEpisodes()[0].FundingPnL, 0)
+	if a.fundingIndex != -1 || a.cutoff != 1 || a.lastFundingTime != 0 {
+		t.Fatalf("settlement cursor changed: %+v", a)
 	}
 }
 
@@ -204,8 +225,10 @@ func TestReplayAccountingReportCutoffsAndErrors(t *testing.T) {
 	if _, err := NewReplayAccounting("BTC", nil, nil); err == nil {
 		t.Fatal("expected nil ledger error")
 	}
-	if _, err := NewReplayAccounting("BTC", &ledger, []ReplayFundingRow{{2, 0}, {1, 0}}); err == nil {
-		t.Fatal("expected unordered funding error")
+	for _, rows := range [][]ReplayFundingRow{{{2, 0}, {1, 0}}, {{2, 0}, {2, 0}}} {
+		if _, err := NewReplayAccounting("BTC", &ledger, rows); err == nil {
+			t.Fatal("expected unordered or duplicate funding error")
+		}
 	}
 	a, err := NewReplayAccounting("BTC", &ledger, nil)
 	if err != nil {
@@ -216,13 +239,64 @@ func TestReplayAccountingReportCutoffsAndErrors(t *testing.T) {
 	if err != nil || r.TransactionTimeNS != 3 {
 		t.Fatalf("report=%+v err=%v", r, err)
 	}
-	a.SetCutoff(5) // A non-execution event can also make reports visible.
-	r, err = a.CollectReport(ExecutionReport{Symbol: "BTC", Side: 1, FilledQty: 1, AvgPrice: 100, TransactionTimeNS: 7})
-	if err != nil || r.TransactionTimeNS != 7 {
-		t.Fatalf("future report=%+v err=%v", r, err)
+	if err := a.SetCutoff(5); err != nil {
+		t.Fatal(err)
 	}
-	if err := a.OnExecutionBar(ReplayExecutionBar{6, 110, 90, 100}); err == nil {
-		t.Fatal("expected ledger chronological error")
+	r, err = a.CollectReport(ExecutionReport{Symbol: "BTC", Side: 1, FilledQty: 1, AvgPrice: 100, TransactionTimeNS: 7})
+	if err == nil {
+		t.Fatalf("accepted future report=%+v", r)
+	}
+	if err := a.SetCutoff(4); err == nil {
+		t.Fatal("accepted backwards cutoff")
+	}
+	if err := a.OnExecutionBar(ReplayExecutionBar{4, 110, 90, 100}); err == nil {
+		t.Fatal("accepted bar before cutoff")
+	}
+	if err := a.OnExecutionBar(ReplayExecutionBar{6, 110, 90, 100}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestReplayAccountingRejectsReportsAheadOfSettlements(t *testing.T) {
+	for _, initiallyOpen := range []bool{false, true} {
+		var ledger PositionEpisodeLedger
+		a, err := NewReplayAccounting("BTC", &ledger, []ReplayFundingRow{{2, .1}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := a.OnExecutionBar(ReplayExecutionBar{1, 100, 100, 100}); err != nil {
+			t.Fatal(err)
+		}
+		if initiallyOpen {
+			if _, err := a.CollectReport(ExecutionReport{Symbol: "BTC", Side: 1, FilledQty: 1, AvgPrice: 100, TransactionTimeNS: 1}); err != nil {
+				t.Fatal(err)
+			}
+		}
+		side := 1
+		if initiallyOpen {
+			side = -1
+		}
+		future := ExecutionReport{Symbol: "BTC", Side: side, FilledQty: 1, AvgPrice: 100, TransactionTimeNS: 4}
+		if _, err := a.CollectReport(future); err == nil {
+			t.Fatal("accepted report beyond cutoff")
+		}
+		if err := a.SetCutoff(4); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := a.CollectReport(future); err == nil {
+			t.Fatal("accepted report before pending settlement")
+		}
+		if err := a.OnExecutionBar(ReplayExecutionBar{5, 110, 100, 110}); err != nil {
+			t.Fatal(err)
+		}
+		if initiallyOpen {
+			replayNear(t, ledger.OpenEpisodes()[0].FundingPnL, -10)
+		} else if len(ledger.Episodes()) != 0 {
+			t.Fatal("future fill changed the position")
+		}
+		if _, err := a.CollectReport(future); err != nil {
+			t.Fatal(err)
+		}
 	}
 }
 
