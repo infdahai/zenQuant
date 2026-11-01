@@ -19,6 +19,7 @@ import (
 
 	"github.com/infdahai/zenQuant/internal/cot"
 	"github.com/infdahai/zenQuant/internal/deribit"
+	"github.com/infdahai/zenQuant/internal/localfile"
 	"github.com/infdahai/zenQuant/internal/options"
 	"github.com/infdahai/zenQuant/internal/paper"
 	"github.com/infdahai/zenQuant/internal/research"
@@ -167,23 +168,11 @@ func Run(args []string, out, stderr io.Writer) error {
 		if flags.NArg() != 0 || *request == "" || *manifest == "" || *evidence == "" {
 			return errors.New("request, manifest and evidence are required")
 		}
-		read := func(path string) ([]byte, error) {
-			f, e := os.Open(path)
-			if e != nil {
-				return nil, e
-			}
-			defer f.Close()
-			b, e := io.ReadAll(io.LimitReader(f, server.BodyLimit+1))
-			if e == nil && len(b) > server.BodyLimit {
-				return nil, errors.New("input exceeds limit")
-			}
-			return b, e
-		}
-		r, e := read(*request)
+		r, e := localfile.Read(*request, server.BodyLimit)
 		if e != nil {
 			return e
 		}
-		m, e := read(*manifest)
+		m, e := localfile.Read(*manifest, server.BodyLimit)
 		if e != nil {
 			return e
 		}
