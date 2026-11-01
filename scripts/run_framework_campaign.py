@@ -246,7 +246,7 @@ def _repo_root() -> Path:
 
 
 def _default_research_hypothesis_spec_path() -> Path:
-    return _repo_root() / "docs" / "NEXT_RESEARCH_HYPOTHESIS_EXECUTION_INVENTORY_RETHINK.json"
+    return _repo_root() / "config" / "NEXT_RESEARCH_HYPOTHESIS_EXECUTION_INVENTORY_RETHINK.json"
 
 
 def _load_research_hypothesis_spec(path: Path | None = None) -> dict[str, Any]:
