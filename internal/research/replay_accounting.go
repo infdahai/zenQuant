@@ -24,12 +24,13 @@ type ReplayAccounting struct {
 	funding         []ReplayFundingRow
 	fundingIndex    int
 	lastFundingTime int64
+	lastClose       float64
 	cutoff          int64
 	hasCutoff       bool
 }
 
 // NewReplayAccounting copies funding rows, which must be in source-time order.
-// Equal timestamps retain input order; the last visible row is authoritative.
+// Each source timestamp identifies a unique settlement.
 func NewReplayAccounting(symbol string, ledger *PositionEpisodeLedger, funding []ReplayFundingRow) (*ReplayAccounting, error) {
 	if ledger == nil {
 		return nil, fmt.Errorf("replay accounting requires a ledger")
@@ -38,37 +39,51 @@ func NewReplayAccounting(symbol string, ledger *PositionEpisodeLedger, funding [
 		if !finite(funding[i].FundingRate) {
 			return nil, fmt.Errorf("funding rate must be finite")
 		}
-		if i > 0 && funding[i].FundingTimeNS < funding[i-1].FundingTimeNS {
-			return nil, fmt.Errorf("funding rows must be ordered by source time")
+		if i > 0 && funding[i].FundingTimeNS <= funding[i-1].FundingTimeNS {
+			return nil, fmt.Errorf("funding rows must have strictly increasing source times")
 		}
 	}
 	return &ReplayAccounting{symbol: symbol, ledger: ledger, funding: append([]ReplayFundingRow(nil), funding...), fundingIndex: -1}, nil
 }
 
-// SetCutoff sets the visibility time for reports emitted by any replay event.
-func (a *ReplayAccounting) SetCutoff(cutoffNS int64) {
+// SetCutoff advances the visibility time for reports emitted by a replay event.
+// Reports cannot pass an unprocessed settlement; an execution bar must process it.
+func (a *ReplayAccounting) SetCutoff(cutoffNS int64) error {
+	if a.hasCutoff && cutoffNS < a.cutoff {
+		return fmt.Errorf("replay cutoff cannot move backwards")
+	}
 	a.cutoff, a.hasCutoff = cutoffNS, true
+	return nil
 }
 
-// OnExecutionBar applies the latest visible funding and then the bar price.
-// Call this before collecting reports triggered by this bar. Unlike the Python
-// replay, invalid bars are rejected before funding or cutoff state is changed.
+// OnExecutionBar applies each visible settlement before the bar's fills. A
+// settlement uses the latest execution close at or before its source time.
+// Invalid events leave the ledger and replay cursor unchanged.
 func (a *ReplayAccounting) OnExecutionBar(bar ReplayExecutionBar) error {
-	index := a.fundingIndex
-	for index+1 < len(a.funding) && a.funding[index+1].FundingTimeNS <= bar.CloseTimeNS {
-		index++
+	if a.hasCutoff && bar.CloseTimeNS < a.cutoff {
+		return fmt.Errorf("execution bar precedes replay cutoff")
 	}
+	index := a.fundingIndex
 	lastFundingTime := a.lastFundingTime
 	err := a.ledger.applyAtomic(func(ledger *PositionEpisodeLedger) error {
-		if index >= 0 {
+		for index+1 < len(a.funding) && a.funding[index+1].FundingTimeNS <= bar.CloseTimeNS {
+			index++
 			row := a.funding[index]
-			if row.FundingTimeNS > lastFundingTime {
-				pnl := -ledger.PositionQty(a.symbol) * bar.Close * row.FundingRate
-				if err := ledger.AllocateFunding(FundingAllocation{Symbol: a.symbol, TimestampNS: bar.CloseTimeNS, PnL: pnl}); err != nil {
-					return err
-				}
-				lastFundingTime = row.FundingTimeNS
+			if row.FundingTimeNS <= lastFundingTime {
+				continue
 			}
+			price := a.lastClose
+			if row.FundingTimeNS == bar.CloseTimeNS {
+				price = bar.Close
+			}
+			qty := ledger.PositionQty(a.symbol)
+			if price == 0 && qty != 0 {
+				return fmt.Errorf("funding settlement at %d has no point-in-time execution price", row.FundingTimeNS)
+			}
+			if err := ledger.AllocateFunding(FundingAllocation{Symbol: a.symbol, TimestampNS: bar.CloseTimeNS, PnL: -qty * price * row.FundingRate}); err != nil {
+				return err
+			}
+			lastFundingTime = row.FundingTimeNS
 		}
 		return ledger.ObservePrice(PriceObservation{Symbol: a.symbol, TimestampNS: bar.CloseTimeNS, High: bar.High, Low: bar.Low, Close: bar.Close})
 	})
@@ -77,19 +92,31 @@ func (a *ReplayAccounting) OnExecutionBar(bar ReplayExecutionBar) error {
 	}
 	a.lastFundingTime = lastFundingTime
 	a.fundingIndex = index
-	a.SetCutoff(bar.CloseTimeNS)
+	a.lastClose = bar.Close
+	a.cutoff, a.hasCutoff = bar.CloseTimeNS, true
 	return nil
 }
 
 // CollectReport normalizes stale transaction times to the current visible
 // cutoff and forwards the actual report, including non-fills, to the ledger.
+// Future reports and reports crossing an unprocessed settlement are rejected.
 // The returned copy is the report as observed by replay.
 func (a *ReplayAccounting) CollectReport(report ExecutionReport) (ExecutionReport, error) {
 	if report.Symbol != a.symbol {
 		return report, fmt.Errorf("report symbol %q does not match replay symbol %q", report.Symbol, a.symbol)
 	}
-	if a.hasCutoff && report.TransactionTimeNS < a.cutoff {
-		report.TransactionTimeNS = a.cutoff
+	if a.hasCutoff {
+		if report.TransactionTimeNS > a.cutoff {
+			return report, fmt.Errorf("report time exceeds replay cutoff")
+		}
+		if report.TransactionTimeNS < a.cutoff {
+			report.TransactionTimeNS = a.cutoff
+		}
+	}
+	for i := a.fundingIndex + 1; i < len(a.funding) && a.funding[i].FundingTimeNS <= report.TransactionTimeNS; i++ {
+		if a.funding[i].FundingTimeNS > 0 {
+			return report, fmt.Errorf("report precedes processing of visible funding settlement")
+		}
 	}
 	return report, a.ledger.OnFill(report)
 }

@@ -27,23 +27,21 @@ func calculateMetrics(d Dataset, replay *research.OfflineReplayResult) (Metrics,
 	qty := 0.0
 	peak := m.InitialCash
 	fi := 0
-	lastFunding := int64(0)
+	lastClose := 0.0
 	ri := 0
 	for _, bar := range d.Candles {
-		index := fi
-		for index < len(d.Funding) && d.Funding[index].TimeNS <= bar.CloseTimeNS {
-			index++
-		}
-		if index > 0 {
-			row := d.Funding[index-1]
-			if row.TimeNS > lastFunding {
-				pnl := -qty * bar.Close * row.Rate
-				m.Cash += pnl
-				m.FundingPnL += pnl
-				lastFunding = row.TimeNS
+		for fi < len(d.Funding) && d.Funding[fi].TimeNS <= bar.CloseTimeNS {
+			row := d.Funding[fi]
+			price := lastClose
+			if row.TimeNS == bar.CloseTimeNS {
+				price = bar.Close
 			}
+			pnl := -qty * price * row.Rate
+			m.Cash += pnl
+			m.FundingPnL += pnl
+			fi++
 		}
-		fi = index
+		lastClose = bar.Close
 		for ri < len(replay.Reports) && replay.Reports[ri].TransactionTimeNS == bar.CloseTimeNS {
 			r := replay.Reports[ri]
 			if r.Status == "FILLED" {

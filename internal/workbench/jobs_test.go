@@ -279,7 +279,7 @@ func TestJobsRecoverAndComplete(t *testing.T) {
 	if e != nil {
 		t.Fatal(e)
 	}
-	if r.Metrics.NAV < 100008.689 || r.Metrics.NAV > 100008.691 {
+	if r.Metrics.NAV < 100008.789 || r.Metrics.NAV > 100008.791 {
 		t.Fatalf("metrics: %+v", r.Metrics)
 	}
 }

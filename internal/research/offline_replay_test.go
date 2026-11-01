@@ -39,7 +39,7 @@ func TestOfflineReplayOUUsesVisibleHistory(t *testing.T) {
 
 func TestOfflineReplayRoundTripAndDeterminism(t *testing.T) {
 	cfg := replayTestConfig()
-	cfg.Funding = []ReplayFundingRow{{5 * replayMinute, .5}, {6 * replayMinute, .01}, {7 * replayMinute, .02}, {7 * replayMinute, .03}}
+	cfg.Funding = []ReplayFundingRow{{5 * replayMinute, .5}, {6 * replayMinute, .01}, {7 * replayMinute, .02}, {10 * replayMinute, .03}}
 	policy := func(s OfflineReplaySnapshot) ([]OfflineExecutionOrder, error) {
 		side := 1
 		if s.PositionQty > 0 {
@@ -63,9 +63,9 @@ func TestOfflineReplayRoundTripAndDeterminism(t *testing.T) {
 	}
 	e := a.Episodes[0]
 	replayNear(t, e.GrossRealizedPnL, 10)
-	replayNear(t, e.FundingPnL, -3.3)
+	replayNear(t, e.FundingPnL, -6.3)
 	replayNear(t, e.Fees, .21)
-	replayNear(t, e.NetPnL, 6.49)
+	replayNear(t, e.NetPnL, 3.49)
 	replayNear(t, e.MFEPnL, 20)
 	replayNear(t, e.MAEPnL, 0)
 }
