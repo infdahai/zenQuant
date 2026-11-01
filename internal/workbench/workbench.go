@@ -311,7 +311,7 @@ func (s *Store) run(ctx context.Context, id string, fee float64) (Result, error)
 		if side == 0 {
 			return nil, nil
 		}
-		return []research.OfflineExecutionOrder{{Symbol: d.Instrument, Side: side, Quantity: 1}}, nil
+		return []research.OfflineExecutionOrder{{ClientOrderID: fmt.Sprintf("diagnostic-%d", count), Symbol: d.Instrument, Side: side, Quantity: 1}}, nil
 	})
 	if err != nil {
 		return out, err
