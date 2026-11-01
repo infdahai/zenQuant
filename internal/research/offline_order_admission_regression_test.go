@@ -1,6 +1,7 @@
 package research
 
 import (
+	"fmt"
 	"math"
 	"reflect"
 	"testing"
@@ -55,6 +56,39 @@ func TestFilledQuantityPythonCancellation(t *testing.T) {
 	a.record(ExecutionReport{Symbol: "BTC", Side: -1, FilledQty: .000165}, 1)
 	if a.positions["BTC"] != 0 {
 		t.Fatalf("cancellation left inventory %g", a.positions["BTC"])
+	}
+}
+
+func TestOfflineReplayDecimalPositionClosesEpisode(t *testing.T) {
+	for _, side := range []int{1, -1} {
+		t.Run(fmt.Sprint(side), func(t *testing.T) {
+			cfg := replayTestConfig()
+			cfg.MaxTradeQtyPerCutoff = 20000
+			cfg.Candles["5m"] = append(cfg.Candles["5m"], replayTestBar("5m", 10*replayMinute, 5*replayMinute, 120))
+			var seen []float64
+			result, err := RunOfflineReplay(cfg, func(s OfflineReplaySnapshot) ([]OfflineExecutionOrder, error) {
+				seen = append(seen, s.PositionQty)
+				switch len(seen) {
+				case 1:
+					return []OfflineExecutionOrder{
+						{ClientOrderID: "open", Symbol: "BTC", Side: side, Quantity: 10000.1},
+						{ClientOrderID: "add", Symbol: "BTC", Side: side, Quantity: .2},
+					}, nil
+				case 2:
+					return []OfflineExecutionOrder{{ClientOrderID: "close", Symbol: "BTC", Side: -side, Quantity: 10000.3, ReduceOnly: true}}, nil
+				}
+				return nil, nil
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(result.Reports) != 3 || result.Reports[2].FilledQty != 10000.3 {
+				t.Fatalf("reports: %+v", result.Reports)
+			}
+			if !reflect.DeepEqual(seen, []float64{0, float64(side) * 10000.3, 0}) || result.PositionQty != 0 || len(result.Episodes) != 1 || !result.Episodes[0].Closed || result.Episodes[0].RemainingQty != 0 {
+				t.Fatalf("snapshots=%v result=%+v", seen, result)
+			}
+		})
 	}
 }
 

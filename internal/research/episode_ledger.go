@@ -348,7 +348,7 @@ func (l *PositionEpisodeLedger) onFill(r ExecutionReport) error {
 	}
 	s.lastEventNS = r.TransactionTimeNS
 	if e.Side == r.Side {
-		next := e.RemainingQty + r.FilledQty
+		next := decimalAdd(e.RemainingQty, r.FilledQty)
 		e.EntryPrice = (e.EntryPrice*e.RemainingQty + r.AvgPrice*r.FilledQty) / next
 		e.RemainingQty = next
 		if next > e.MaxAbsQty {
@@ -363,7 +363,7 @@ func (l *PositionEpisodeLedger) onFill(r ExecutionReport) error {
 	if r.FilledQty < closeQty {
 		closeQty = r.FilledQty
 	}
-	remainder := r.FilledQty - closeQty
+	remainder := decimalAdd(r.FilledQty, -closeQty)
 	closeFee := r.Fee
 	if remainder <= 1e-12 {
 		remainder = 0
@@ -377,7 +377,7 @@ func (l *PositionEpisodeLedger) onFill(r ExecutionReport) error {
 	if !finite(s.exitNotional) || !finite(s.exitQty) {
 		return fmt.Errorf("episode accounting produced non-finite exit notional")
 	}
-	e.RemainingQty -= closeQty
+	e.RemainingQty = decimalAdd(e.RemainingQty, -closeQty)
 	if e.RemainingQty <= 1e-12 {
 		e.RemainingQty = 0
 		e.UnrealizedPnL = 0
