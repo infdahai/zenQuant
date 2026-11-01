@@ -48,6 +48,7 @@ func TestOfflineReportAdapterSimulatedExecution(t *testing.T) {
 	checkRejected(second, "USD", 20)
 	second.TransactionTimeNS = 11
 	second.Status = "PARTIALLY_FILLED"
+	second.FilledQty = 0
 	checkRejected(second, "USD", 20)
 	second.Status = "REJECTED"
 	second.FilledQty = 0
@@ -68,6 +69,40 @@ func TestOfflineReportAdapterSimulatedExecution(t *testing.T) {
 	}
 	if risk.State().Positions[report.Symbol] != 1.5 || flow.positions[report.Symbol].CurrentQty != 1.5 || risk.State().Equity != 99997 {
 		t.Fatal("second incremental fill or fee incorrect")
+	}
+}
+
+func TestOfflineReportAdapterPartialFillAndRetry(t *testing.T) {
+	flow, _ := NewStrategyFlow(DefaultStrategyFlowConfig())
+	risk, _ := NewStatefulRiskOverlay(DefaultStatefulRiskConfig())
+	adapter, _ := NewOfflineReportAdapter(flow, risk)
+	partial := ExecutionReport{ClientOrderID: "attempt-1", Symbol: "BTC", Side: 1, Status: "PARTIALLY_FILLED", FilledQty: 0.4, AvgPrice: 100, Fee: 0.4, TransactionTimeNS: 10}
+	if err := adapter.Dispatch(partial, "USD", 20); err != nil {
+		t.Fatal(err)
+	}
+	before := risk.State()
+	position := *flow.positions["BTC"]
+	if before.Positions["BTC"] != 0.4 || before.Cash != 99959.6 || before.Equity != 99999.6 || position.CurrentQty != 0.4 {
+		t.Fatalf("partial fill incorrect: %+v %+v", before, position)
+	}
+	if err := adapter.Dispatch(partial, "USD", 20); err == nil {
+		t.Fatal("duplicate partial fill accepted")
+	}
+	if !reflect.DeepEqual(before, risk.State()) || position != *flow.positions["BTC"] {
+		t.Fatal("duplicate changed state")
+	}
+	retry := partial
+	retry.ClientOrderID = "attempt-2"
+	retry.Status = "FILLED"
+	retry.FilledQty = 0.6
+	retry.Fee = 0.6
+	retry.TransactionTimeNS = 11
+	if err := adapter.Dispatch(retry, "USD", 20); err != nil {
+		t.Fatal(err)
+	}
+	state := risk.State()
+	if state.Positions["BTC"] != 1 || flow.positions["BTC"].CurrentQty != 1 || state.Cash != 99899 || state.Equity != 99999 {
+		t.Fatalf("retry was not incremental: %+v %+v", state, flow.positions["BTC"])
 	}
 }
 
