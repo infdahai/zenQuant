@@ -1,10 +1,13 @@
 package history
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"math"
 	"os"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -29,7 +32,12 @@ func TestImportedFundingClosedLoopAccounting(t *testing.T) {
 		{"symbol":"BTCUSDT","fundingTime":%d,"fundingRate":"0.03"},
 		{"symbol":"BTCUSDT","fundingTime":%d,"fundingRate":"0.5"}
 	]`, startMS-1, startMS, startMS+1, startMS+2, endMS, endMS+1))
-	raw, err := NormalizeWithFunding(f, "4h", time.Date(2024, 1, 2, 0, 0, 0, 0, time.UTC), funding)
+	csv, err := io.ReadAll(f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := bytes.SplitAfter(csv, []byte("\n"))
+	raw, err := NormalizePartsWithFunding([]io.Reader{bytes.NewReader(lines[0]), bytes.NewReader(bytes.Join(lines[1:], nil))}, "4h", time.Date(2024, 1, 2, 0, 0, 0, 0, time.UTC), funding)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -60,7 +68,7 @@ func TestImportedFundingClosedLoopAccounting(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.Provenance.FundingSourceSHA256 == "" || !strings.Contains(result.FundingAssumption, "coverage is unknown") || result.Source.Availability != source.Availability {
+	if len(result.Provenance.SourcePartsSHA256) != 2 || !reflect.DeepEqual(result.Provenance.SourcePartsSHA256, snap.Dataset.Provenance.SourcePartsSHA256) || result.Provenance.FundingSourceSHA256 == "" || !strings.Contains(result.FundingAssumption, "coverage is unknown") || result.Source.Availability != source.Availability {
 		t.Fatalf("missing provenance or limitations: %+v", result)
 	}
 	r := result.Result

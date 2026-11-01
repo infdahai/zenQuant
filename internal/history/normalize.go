@@ -73,6 +73,15 @@ func Normalize(input io.Reader, timeframe string, asOf time.Time) ([]byte, error
 // NormalizeWithFunding also accepts a supplied Binance fundingRate JSON array.
 // A nil funding input preserves the original no-funding dataset.
 func NormalizeWithFunding(input io.Reader, timeframe string, asOf time.Time, fundingJSON []byte) ([]byte, error) {
+	return NormalizePartsWithFunding([]io.Reader{input}, timeframe, asOf, fundingJSON)
+}
+
+// NormalizePartsWithFunding consumes CSV parts in the supplied order. Multi-part
+// imports require consecutive candles throughout and record ordered part hashes.
+func NormalizePartsWithFunding(inputs []io.Reader, timeframe string, asOf time.Time, fundingJSON []byte) ([]byte, error) {
+	if len(inputs) == 0 {
+		return nil, fmt.Errorf("at least one CSV is required")
+	}
 	duration := map[string]int64{"5m": 300000, "1h": 3600000, "4h": 14400000, "1d": 86400000}[timeframe]
 	if duration == 0 || asOf.IsZero() {
 		return nil, fmt.Errorf("supported timeframe and as-of required")
@@ -81,71 +90,93 @@ func NormalizeWithFunding(input io.Reader, timeframe string, asOf time.Time, fun
 	if _, err := asOf.MarshalText(); err != nil {
 		return nil, fmt.Errorf("as-of cannot be represented in UTC RFC3339: %w", err)
 	}
-	raw, err := io.ReadAll(io.LimitReader(input, MaxCSV+1))
-	if err != nil {
-		return nil, err
-	}
-	if len(raw) > MaxCSV {
-		return nil, fmt.Errorf("CSV exceeds 4 MiB")
-	}
-	sum := sha256.Sum256(raw)
-	r := csv.NewReader(bytes.NewReader(raw))
-	r.FieldsPerRecord = 12
-	d := workbench.Dataset{Version: "dataset-v1", Provider: "Binance supplied CSV", Venue: "BINANCE", Instrument: "BTC", Timeframe: timeframe, Candles: []research.ReplayCandle{}, Funding: []workbench.Funding{}, Provenance: &workbench.DatasetProvenance{SourceSymbol: "BTCUSDT", SourceSHA256: fmt.Sprintf("%x", sum), AsOf: asOf.UTC().Format(time.RFC3339Nano)}}
+	d := workbench.Dataset{Version: "dataset-v1", Provider: "Binance supplied CSV", Venue: "BINANCE", Instrument: "BTC", Timeframe: timeframe, Candles: []research.ReplayCandle{}, Funding: []workbench.Funding{}, Provenance: &workbench.DatasetProvenance{SourceSymbol: "BTCUSDT", AsOf: asOf.Format(time.RFC3339Nano)}}
 	var previous int64 = -1
-	for line := 1; ; line++ {
-		fields, e := r.Read()
-		if e == io.EOF {
-			break
+	total := 0
+	identity := sha256.New()
+	identity.Write([]byte("zenquant-ordered-csv-parts-v1\x00"))
+	for part, input := range inputs {
+		raw, err := io.ReadAll(io.LimitReader(input, MaxCSV+1))
+		if err != nil {
+			return nil, fmt.Errorf("input %d: %w", part+1, err)
 		}
-		if e != nil {
-			return nil, fmt.Errorf("row %d: %w", line, e)
+		if len(raw) > MaxCSV {
+			return nil, fmt.Errorf("input %d: CSV exceeds 4 MiB", part+1)
 		}
-		integer := func(i int) (int64, error) { return strconv.ParseInt(fields[i], 10, 64) }
-		open, e := integer(0)
-		if e != nil || open < 0 || open > math.MaxInt64/1000000-duration || open%duration != 0 {
-			return nil, fmt.Errorf("row %d: invalid open time", line)
+		total += len(raw)
+		if total > MaxCSV {
+			return nil, fmt.Errorf("total CSV exceeds 4 MiB")
 		}
-		closeMS, e := integer(6)
-		if e != nil || closeMS != open+duration-1 {
-			return nil, fmt.Errorf("row %d: invalid close time", line)
+		sum := sha256.Sum256(raw)
+		if len(inputs) == 1 {
+			d.Provenance.SourceSHA256 = fmt.Sprintf("%x", sum)
+		} else {
+			d.Provenance.SourcePartsSHA256 = append(d.Provenance.SourcePartsSHA256, fmt.Sprintf("%x", sum))
+			identity.Write(sum[:])
 		}
-		if open <= previous {
-			return nil, fmt.Errorf("row %d: duplicate or unordered candle", line)
-		}
-		previous = open
-		endNS := (closeMS + 1) * 1e6
-		if time.Unix(0, endNS).After(asOf) {
-			return nil, fmt.Errorf("row %d: candle closes after as-of", line)
-		}
-		vals := make([]float64, 7)
-		for j, i := range []int{1, 2, 3, 4, 5, 7, 9} {
-			v, e := strconv.ParseFloat(fields[i], 64)
-			if e != nil || math.IsNaN(v) || math.IsInf(v, 0) || v < 0 {
-				return nil, fmt.Errorf("row %d: invalid numeric field %d", line, i)
+		r := csv.NewReader(bytes.NewReader(raw))
+		r.FieldsPerRecord = 12
+		start := len(d.Candles)
+		for line := 1; ; line++ {
+			fields, e := r.Read()
+			if e == io.EOF {
+				break
 			}
-			vals[j] = v
-		}
-		for _, i := range []int{10, 11} {
-			v, e := strconv.ParseFloat(fields[i], 64)
-			if e != nil || math.IsNaN(v) || math.IsInf(v, 0) || v < 0 {
-				return nil, fmt.Errorf("row %d: invalid numeric field %d", line, i)
+			if e != nil {
+				return nil, fmt.Errorf("row %d: %w", line, e)
+			}
+			integer := func(i int) (int64, error) { return strconv.ParseInt(fields[i], 10, 64) }
+			open, e := integer(0)
+			if e != nil || open < 0 || open > math.MaxInt64/1000000-duration || open%duration != 0 {
+				return nil, fmt.Errorf("row %d: invalid open time", line)
+			}
+			closeMS, e := integer(6)
+			if e != nil || closeMS != open+duration-1 {
+				return nil, fmt.Errorf("row %d: invalid close time", line)
+			}
+			if open <= previous {
+				return nil, fmt.Errorf("row %d: duplicate or unordered candle", line)
+			}
+			if len(inputs) > 1 && previous >= 0 && open != previous+duration {
+				return nil, fmt.Errorf("input %d row %d: candle gap", part+1, line)
+			}
+			previous = open
+			endNS := (closeMS + 1) * 1e6
+			if time.Unix(0, endNS).After(asOf) {
+				return nil, fmt.Errorf("row %d: candle closes after as-of", line)
+			}
+			vals := make([]float64, 7)
+			for j, i := range []int{1, 2, 3, 4, 5, 7, 9} {
+				v, e := strconv.ParseFloat(fields[i], 64)
+				if e != nil || math.IsNaN(v) || math.IsInf(v, 0) || v < 0 {
+					return nil, fmt.Errorf("row %d: invalid numeric field %d", line, i)
+				}
+				vals[j] = v
+			}
+			for _, i := range []int{10, 11} {
+				v, e := strconv.ParseFloat(fields[i], 64)
+				if e != nil || math.IsNaN(v) || math.IsInf(v, 0) || v < 0 {
+					return nil, fmt.Errorf("row %d: invalid numeric field %d", line, i)
+				}
+			}
+			trades, e := integer(8)
+			if e != nil || trades < 0 {
+				return nil, fmt.Errorf("row %d: invalid trade count", line)
+			}
+			if vals[2] <= 0 || vals[1] < vals[2] || vals[0] < vals[2] || vals[0] > vals[1] || vals[3] < vals[2] || vals[3] > vals[1] {
+				return nil, fmt.Errorf("row %d: invalid OHLC", line)
+			}
+			d.Candles = append(d.Candles, research.ReplayCandle{Symbol: "BTC", Timeframe: timeframe, OpenTimeNS: open * 1e6, CloseTimeNS: endNS, Open: vals[0], High: vals[1], Low: vals[2], Close: vals[3], Volume: vals[4], TradeCount: trades})
+			if len(d.Candles) > 20000 {
+				return nil, fmt.Errorf("too many candles")
 			}
 		}
-		trades, e := integer(8)
-		if e != nil || trades < 0 {
-			return nil, fmt.Errorf("row %d: invalid trade count", line)
-		}
-		if vals[2] <= 0 || vals[1] < vals[2] || vals[0] < vals[2] || vals[0] > vals[1] || vals[3] < vals[2] || vals[3] > vals[1] {
-			return nil, fmt.Errorf("row %d: invalid OHLC", line)
-		}
-		d.Candles = append(d.Candles, research.ReplayCandle{Symbol: "BTC", Timeframe: timeframe, OpenTimeNS: open * 1e6, CloseTimeNS: endNS, Open: vals[0], High: vals[1], Low: vals[2], Close: vals[3], Volume: vals[4], TradeCount: trades})
-		if len(d.Candles) > 20000 {
-			return nil, fmt.Errorf("too many candles")
+		if len(d.Candles) == start {
+			return nil, fmt.Errorf("input %d: empty CSV", part+1)
 		}
 	}
-	if len(d.Candles) == 0 {
-		return nil, fmt.Errorf("empty CSV")
+	if len(inputs) > 1 {
+		d.Provenance.SourceSHA256 = fmt.Sprintf("%x", identity.Sum(nil))
 	}
 	if fundingJSON != nil {
 		if len(fundingJSON) > MaxCSV {
@@ -178,7 +209,7 @@ func NormalizeWithFunding(input io.Reader, timeframe string, asOf time.Time, fun
 		return nil, err
 	}
 	if len(b)+1 > workbench.MaxInput {
-		return nil, fmt.Errorf("dataset exceeds workbench input limit")
+		return nil, fmt.Errorf("dataset exceeds workbench 1 MiB input limit")
 	}
 	return append(b, '\n'), nil
 }

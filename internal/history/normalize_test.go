@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"hash/crc32"
+	"io"
 	"os"
 	"reflect"
 	"strings"
@@ -16,6 +17,65 @@ import (
 	"github.com/infdahai/zenQuant/internal/research"
 	"github.com/infdahai/zenQuant/internal/workbench"
 )
+
+func TestOrderedMultipart(t *testing.T) {
+	row := func(at time.Time) string {
+		ms := at.UnixMilli()
+		return fmt.Sprintf("%d,100,110,90,105,1,%d,105,1,1,1,0\n", ms, ms+14400000-1)
+	}
+	start := time.Date(2024, 1, 31, 20, 0, 0, 0, time.UTC)
+	a, b := row(start), row(start.Add(4*time.Hour))
+	cutoff := start.Add(24 * time.Hour)
+	normalize := func(parts ...string) ([]byte, error) {
+		readers := make([]io.Reader, len(parts))
+		for i, p := range parts {
+			readers[i] = strings.NewReader(p)
+		}
+		return NormalizePartsWithFunding(readers, "4h", cutoff, []byte("[]"))
+	}
+	raw, err := normalize(a, b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var d workbench.Dataset
+	if err := json.Unmarshal(raw, &d); err != nil {
+		t.Fatal(err)
+	}
+	first, second := sha256.Sum256([]byte(a)), sha256.Sum256([]byte(b))
+	if !reflect.DeepEqual(d.Provenance.SourcePartsSHA256, []string{fmt.Sprintf("%x", first), fmt.Sprintf("%x", second)}) || len(d.Candles) != 2 {
+		t.Fatal("ordered input identity missing")
+	}
+	store, err := workbench.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Import(raw); err != nil {
+		t.Fatal(err)
+	}
+	d.Provenance.SourcePartsSHA256[0], d.Provenance.SourcePartsSHA256[1] = d.Provenance.SourcePartsSHA256[1], d.Provenance.SourcePartsSHA256[0]
+	tampered, _ := json.Marshal(d)
+	if _, err := store.Import(tampered); err == nil {
+		t.Fatal("accepted tampered part order")
+	}
+	for name, parts := range map[string][]string{"duplicate": {a, a}, "unordered": {b, a}, "gap": {a, row(start.Add(8 * time.Hour))}, "empty": {a, ""}, "internal gap": {a + row(start.Add(8*time.Hour)), row(start.Add(12 * time.Hour))}} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := normalize(parts...); err == nil {
+				t.Fatal("accepted invalid parts")
+			}
+		})
+	}
+	// Blank lines are valid CSV and allow an exact aggregate-byte boundary check.
+	if _, err := normalize(a, b+strings.Repeat("\n", MaxCSV-len(a)-len(b))); err != nil {
+		t.Fatalf("exact aggregate limit: %v", err)
+	}
+	// The aggregate limit is checked before parsing the second part.
+	if _, err := normalize(a, strings.Repeat(" ", MaxCSV)); err == nil || !strings.Contains(err.Error(), "total CSV exceeds") {
+		t.Fatalf("aggregate limit: %v", err)
+	}
+	if _, err := normalize(strings.Repeat(" ", MaxCSV+1)); err == nil || !strings.Contains(err.Error(), "CSV exceeds") {
+		t.Fatalf("per-file limit: %v", err)
+	}
+}
 
 func TestZIPCSV(t *testing.T) {
 	makeZIP := func(headers []zip.FileHeader, content []byte) []byte {

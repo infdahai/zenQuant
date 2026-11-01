@@ -38,10 +38,11 @@ type Dataset struct {
 
 // DatasetProvenance records supplied input identity, not its authenticity or arrival time.
 type DatasetProvenance struct {
-	SourceSymbol        string `json:"source_symbol"`
-	SourceSHA256        string `json:"source_sha256"`
-	FundingSourceSHA256 string `json:"funding_source_sha256,omitempty"`
-	AsOf                string `json:"as_of"`
+	SourceSymbol        string   `json:"source_symbol"`
+	SourceSHA256        string   `json:"source_sha256"`
+	SourcePartsSHA256   []string `json:"source_parts_sha256,omitempty"`
+	FundingSourceSHA256 string   `json:"funding_source_sha256,omitempty"`
+	AsOf                string   `json:"as_of"`
 }
 type Funding struct {
 	TimeNS int64   `json:"time_ns"`
@@ -208,6 +209,23 @@ func (s *Store) Import(raw []byte) (Snapshot, error) {
 		cutoff, err = time.Parse(time.RFC3339Nano, p.AsOf)
 		if err != nil || cutoff.IsZero() || p.AsOf != cutoff.UTC().Format(time.RFC3339Nano) || p.SourceSymbol != "BTCUSDT" || !idPattern.MatchString(p.SourceSHA256) || (p.FundingSourceSHA256 != "" && !idPattern.MatchString(p.FundingSourceSHA256)) {
 			return out, errors.New("invalid dataset provenance")
+		}
+		if len(p.SourcePartsSHA256) == 1 {
+			return out, errors.New("invalid dataset provenance parts")
+		}
+		if len(p.SourcePartsSHA256) > 0 {
+			h := sha256.New()
+			h.Write([]byte("zenquant-ordered-csv-parts-v1\x00"))
+			for _, part := range p.SourcePartsSHA256 {
+				if !idPattern.MatchString(part) {
+					return out, errors.New("invalid dataset provenance parts")
+				}
+				decoded, _ := hex.DecodeString(part)
+				h.Write(decoded)
+			}
+			if fmt.Sprintf("%x", h.Sum(nil)) != p.SourceSHA256 {
+				return out, errors.New("inconsistent dataset provenance parts")
+			}
 		}
 	}
 	q := Quality{Count: len(d.Candles), FirstCloseNS: d.Candles[0].CloseTimeNS, LastCloseNS: d.Candles[len(d.Candles)-1].CloseTimeNS, FundingStatus: "coverage unknown; missing rows are not inferred", Availability: "unknown historical arrival time", CandleCoverage: "unknown; no requested coverage verified"}
