@@ -1,6 +1,7 @@
 {
   "provenance": {
     "reference": "PR23 synthetic differential audit",
+    "capture_metadata": "capture.json (passive wrappers, actual scratch dependency lock and compiler identity; not the original locked PR23 workspace)",
     "rust_commit": "c9c35a708b0286effc530fdc0919823d8caa9d8f",
     "go_commit": "e449310",
     "synthetic_only": true,
@@ -45,7 +46,7 @@
     },
     "go_identity_allowances": {
       "implementation": "vix-observation-native.go.v1",
-      "code_sha256": "SHA-256 of embedded current Go options sources; not Rust source identity.",
+      "code_sha256": "SHA-256 of embedded current Go options sources plus internal/localfile admission helpers; not Rust source identity.",
       "cargo_lock_sha256": null,
       "transport_sha256": "SHA-256 of exact incoming bytes, including whitespace; demo transport hashes scenario bytes.",
       "request_json": "Go pretty-printed typed request; canonical report/input_sha256 must survive roundtrip.",

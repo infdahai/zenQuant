@@ -8,6 +8,45 @@ import (
 	"testing"
 )
 
+// The harness metadata is passive JSON; this check never executes its contents.
+func TestVixAuditCaptureMetadata(t *testing.T) {
+	data, err := os.ReadFile("testdata/vix/capture.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var capture struct {
+		Schema       string                                   `json:"schema_version"`
+		Files        []struct{ Path, SHA256, Content string } `json:"files"`
+		HarnessLock  string                                   `json:"harness_lock_sha256"`
+		OriginalLock string                                   `json:"original_workspace_lock_sha256"`
+		Compiler     struct {
+			Cached   string `json:"identity_from_cargo_build_cache"`
+			Observed string `json:"capture_time_rustc_verbose"`
+		} `json:"compiler"`
+	}
+	if err := json.Unmarshal(data, &capture); err != nil {
+		t.Fatal(err)
+	}
+	if capture.Schema != "vix-audit-capture.v1" || capture.HarnessLock == capture.OriginalLock || !validHash(capture.OriginalLock) || capture.Compiler.Cached == "" || capture.Compiler.Cached != capture.Compiler.Observed {
+		t.Fatal("missing standalone-harness provenance")
+	}
+	seen := map[string]bool{}
+	for _, file := range capture.Files {
+		if seen[file.Path] || sha([]byte(file.Content)) != file.SHA256 {
+			t.Fatalf("capture content/hash mismatch: %s", file.Path)
+		}
+		seen[file.Path] = true
+		if file.Path == "rust/Cargo.lock" && file.SHA256 != capture.HarnessLock {
+			t.Fatal("dependency lock is not the declared harness lock")
+		}
+	}
+	for _, required := range []string{"rust/src/main.rs", "rust/src/lib.rs", "rust/Cargo.toml", "rust/Cargo.lock", "probe.py"} {
+		if !seen[required] {
+			t.Fatalf("missing capture: %s", required)
+		}
+	}
+}
+
 // Frozen synthetic PR23 audit expectations. No Rust executable, downloaded
 // market data, clock, or network is used by this regression suite.
 func TestVixArchivedAuditCorpus(t *testing.T) {
