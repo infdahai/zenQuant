@@ -9,8 +9,8 @@
 - 先读 `AGENTS.md`、本文件，以及当前任务直接相关的 1-3 个文件。
 - 优先使用已有权威状态文件，不要凭聊天记忆判断项目状态。
 - 长任务、后台任务、持续采集与 campaign 状态，以仓库中的状态文件为准，不以终端输出为准。
-- 当前实现、Gate v2 证据与 Quant System v2 目标边界统一见 `docs/ARCHITECTURE.md`。
-- tester / operator 的唯一交付入口始终是 `docs/LIVE_VALIDATION_HANDOFF_SPEC.md`。
+- 当前系统边界与 Go 迁移方向见 `README.md`。
+- tester / operator 的交付入口是 `LIVE_VALIDATION_HANDOFF_SPEC.md`。
 
 ## Current Product Defaults
 
@@ -29,15 +29,14 @@
 ## Current Research Truth
 
 - 统一架构入口：
-  - `docs/ARCHITECTURE.md`
+  - `README.md`
 - 最新 Gate v2：
   - `results/remediation_20260821/gate_v2_rescore/gate_v2_rescore.json`
   - `results/remediation_20260821/gate_v2_rescore/gate_v2_rescore.md`
 - 权威交付规格：
-  - `docs/LIVE_VALIDATION_HANDOFF_SPEC.md`
+  - `LIVE_VALIDATION_HANDOFF_SPEC.md`
 - Quant V2：
-  - 架构审查：`docs/QUANT_V2_ARCHITECTURE_EXPERT_REVIEW.md`
-  - 冻结实验与复跑：`docs/QUANT_V2_ACCEPTANCE_HANDOFF.md`
+  - 历史架构审查与冻结实验记录保留在 Git 历史中。
   - compact verdict 唯一生成入口：`scripts/build_quant_v2_acceptance_summary.py`
   - 当前 verdict：`BLOCKED_PAUSE_PROMOTION_AND_TRAINING`
   - 原因：late-dev 额外 15bp 下 5/5 为负，strict robustness `0/5`

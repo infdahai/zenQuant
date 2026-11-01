@@ -10,7 +10,7 @@ def test_agents_references_claude_as_supplemental_context() -> None:
 
 def test_claude_points_to_authoritative_runtime_artifacts() -> None:
     content = Path("CLAUDE.md").read_text(encoding="utf-8")
-    assert "docs/LIVE_VALIDATION_HANDOFF_SPEC.md" in content
+    assert "LIVE_VALIDATION_HANDOFF_SPEC.md" in content
     assert "results/data_readiness/data_readiness.json" in content
     assert "results/framework_optimization/campaign_status.json" in content
     assert "results/framework_optimization/framework_optimization.json" in content
@@ -26,7 +26,7 @@ def test_claude_keeps_product_philosophy_in_agents() -> None:
 
 
 def test_handoff_spec_mentions_hyperliquid_as_supplemental() -> None:
-    content = Path("docs/LIVE_VALIDATION_HANDOFF_SPEC.md").read_text(encoding="utf-8")
+    content = Path("LIVE_VALIDATION_HANDOFF_SPEC.md").read_text(encoding="utf-8")
     assert "Hyperliquid public proxy = Tier 2 supplemental" in content
     assert "Binance liquidation = Tier 1 primary truth" in content
     assert "hyperliquid_admission_review.json" in content

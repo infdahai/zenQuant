@@ -3,9 +3,9 @@ name: Go mainline
 on:
   push:
     branches: [main, 'refactor/**', 'feat/**', 'fix/**']
-    paths: ['cmd/**', 'internal/**', 'go.mod', 'go.sum', 'testdata/**', 'docs/reports/**', 'Makefile', 'options-ui/**', 'package*.json', 'playwright.*.config.js', '.github/workflows/go.yml']
+    paths: ['cmd/**', 'internal/**', 'go.mod', 'go.sum', 'testdata/**', 'Makefile', 'options-ui/**', 'package*.json', 'playwright.*.config.js', '.github/workflows/go.yml']
   pull_request:
-    paths: ['cmd/**', 'internal/**', 'go.mod', 'go.sum', 'testdata/**', 'docs/reports/**', 'Makefile', 'options-ui/**', 'package*.json', 'playwright.*.config.js', '.github/workflows/go.yml']
+    paths: ['cmd/**', 'internal/**', 'go.mod', 'go.sum', 'testdata/**', 'Makefile', 'options-ui/**', 'package*.json', 'playwright.*.config.js', '.github/workflows/go.yml']
   workflow_dispatch:
 
 permissions:
@@ -29,11 +29,6 @@ jobs:
           node-version: '24'
       - run: npm ci --ignore-scripts
       - run: npm ci --ignore-scripts --prefix options-ui
-      - name: Verify archived validation evidence
-        run: |
-          for manifest in docs/reports/manual-paper-*/SHA256SUMS docs/reports/options-payoff-mvp-*/SHA256SUMS docs/reports/options-*-diagnostics-*/SHA256SUMS docs/reports/simulated-intents-*/SHA256SUMS docs/reports/simulated-reservations-*/SHA256SUMS; do
-            (cd "$(dirname "$manifest")" && shasum -a 256 --check SHA256SUMS) || exit 1
-          done
       - run: make check
       - run: make build
       - name: Native binary without external executables
