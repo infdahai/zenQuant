@@ -2,8 +2,10 @@ package research
 
 import (
 	"encoding/json"
+	"math"
 	"os"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -85,6 +87,11 @@ func TestStrategyFlowCutoffsAndBias(t *testing.T) {
 	if got.Target == nil || got.Target.TargetQty >= 0 {
 		t.Fatalf("future bias affected decision: %+v", got.Target)
 	}
+	for _, reason := range got.Target.ReasonCodes {
+		if strings.HasPrefix(reason, "BIAS_") {
+			t.Fatalf("future bias affected reasons: %v", got.Target.ReasonCodes)
+		}
+	}
 	if _, err = flow.State(s); err == nil {
 		t.Fatal("duplicate state accepted")
 	}
@@ -92,6 +99,131 @@ func TestStrategyFlowCutoffsAndBias(t *testing.T) {
 		t.Fatal("duplicate indicator accepted")
 	}
 }
+func TestStrategyFlowPointInTimeBias(t *testing.T) {
+	makeFlow := func(future bool) *StrategyEvidence {
+		f, _ := NewStrategyFlow(DefaultStrategyFlowConfig())
+		s := StrategyState{PlaybookState: PlaybookState{Symbol: "BTCUSDT_PERP", Timeframe: "1d", CutoffTimeNS: 10, DirectionalState: "UPTREND", DirectionalConfidence: .8, VolatilityState: "NORMAL", VolatilityConfidence: .8, PositioningState: "HEALTHY", PositioningConfidence: .8, QualityState: "TRADABLE", QualityConfidence: .8, DirectionSignal: 1}, Regime: "TREND", RegimeConfidence: .8, QualityFlags: []string{"OK"}}
+		if _, err := f.State(s); err != nil {
+			t.Fatal(err)
+		}
+		if future {
+			s.CutoffTimeNS = 30
+			s.DirectionSignal = -1
+			s.QualityFlags = []string{"DATA_STALE"}
+			if _, err := f.State(s); err != nil {
+				t.Fatal(err)
+			}
+		}
+		s.Timeframe = "4h"
+		s.CutoffTimeNS = 20
+		if err := f.Indicator(StrategyIndicator{Symbol: s.Symbol, Timeframe: "4h", CutoffTimeNS: 20, Price: 100, RealizedVol: .8, CVDSlope: -.1}); err != nil {
+			t.Fatal(err)
+		}
+		out, err := f.State(s)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return out
+	}
+	want, got := makeFlow(false), makeFlow(true)
+	if !reflect.DeepEqual(got, want) || got.Target.TargetQty != 0 {
+		t.Fatalf("future bias changed historical decision: got %+v want %+v", got.Target, want.Target)
+	}
+}
+
+func TestStrategyFlowRejectsUnknownRegime(t *testing.T) {
+	for _, regime := range []string{"", "range", "UNKNOWN"} {
+		f, _ := NewStrategyFlow(DefaultStrategyFlowConfig())
+		s := StrategyState{PlaybookState: PlaybookState{Symbol: "BTC", Timeframe: "1d", CutoffTimeNS: 1}, Regime: regime}
+		if _, err := f.State(s); err == nil {
+			t.Fatalf("accepted regime %q", regime)
+		}
+		if len(f.bias) != 0 || len(f.stateCutoff) != 0 {
+			t.Fatal("rejected state mutated flow")
+		}
+	}
+}
+
+func TestStrategyFlowRejectsNumericOverflowAtomically(t *testing.T) {
+	t.Run("fill quantity", func(t *testing.T) {
+		f, _ := NewStrategyFlow(DefaultStrategyFlowConfig())
+		fill := StrategyFill{"BTC", 1, math.MaxFloat64, 1}
+		if err := f.Fill(fill); err != nil {
+			t.Fatal(err)
+		}
+		before := *f.positions["BTC"]
+		if err := f.Fill(fill); err == nil {
+			t.Fatal("accepted overflowing quantity")
+		}
+		if *f.positions["BTC"] != before {
+			t.Fatal("fill mutated position")
+		}
+	})
+	t.Run("fill weighted entry", func(t *testing.T) {
+		for _, tc := range []struct{ first, second, want float64 }{
+			{math.MaxFloat64, math.MaxFloat64, math.MaxFloat64},
+			{math.MaxFloat64, math.MaxFloat64 / 2, math.MaxFloat64 * .75},
+		} {
+			f, _ := NewStrategyFlow(DefaultStrategyFlowConfig())
+			if err := f.Fill(StrategyFill{"BTC", 1, 2, tc.first}); err != nil {
+				t.Fatal(err)
+			}
+			if err := f.Fill(StrategyFill{"BTC", 1, 2, tc.second}); err != nil {
+				t.Fatal(err)
+			}
+			if got := f.positions["BTC"]; got.EntryPrice != tc.want || got.CurrentQty != 4 {
+				t.Fatalf("weighted fill: got %+v, want price %g and quantity 4", got, tc.want)
+			}
+		}
+	})
+	t.Run("exit target", func(t *testing.T) {
+		f, _ := NewStrategyFlow(DefaultStrategyFlowConfig())
+		if err := f.Fill(StrategyFill{"BTC", 1, math.MaxFloat64, 1}); err != nil {
+			t.Fatal(err)
+		}
+		before := *f.positions["BTC"]
+		s := StrategyState{PlaybookState: PlaybookState{Symbol: "BTC", Timeframe: "4h", CutoffTimeNS: 1, DirectionalState: "UPTREND", DirectionalConfidence: .8, VolatilityState: "DISTORTED", VolatilityConfidence: .8, PositioningState: "HEALTHY", PositioningConfidence: .8, QualityState: "TRADABLE", QualityConfidence: .8}, Regime: "TREND", RegimeConfidence: .8}
+		if err := f.Indicator(StrategyIndicator{Symbol: "BTC", Timeframe: "4h", CutoffTimeNS: 1, Price: 10, RealizedVol: .8}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := f.State(s); err == nil {
+			t.Fatal("accepted overflowing exit target")
+		}
+		if *f.positions["BTC"] != before || len(f.stateCutoff) != 0 {
+			t.Fatal("rejected exit mutated flow")
+		}
+	})
+	t.Run("target", func(t *testing.T) {
+		f, _ := NewStrategyFlow(DefaultStrategyFlowConfig())
+		s := StrategyState{PlaybookState: PlaybookState{Symbol: "BTC", Timeframe: "4h", CutoffTimeNS: 1, DirectionalState: "UPTREND", DirectionalConfidence: .8, VolatilityState: "NORMAL", VolatilityConfidence: .8, PositioningState: "HEALTHY", PositioningConfidence: .8, QualityState: "TRADABLE", QualityConfidence: .8}, Regime: "TREND", RegimeConfidence: .8}
+		p := StrategyIndicator{Symbol: "BTC", Timeframe: "4h", CutoffTimeNS: 1, Price: math.SmallestNonzeroFloat64, RealizedVol: .8, CVDSlope: .1}
+		if err := f.Indicator(p); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := f.State(s); err == nil {
+			t.Fatal("accepted overflowing target")
+		}
+		if f.stateCutoff[strategyKey("BTC", "4h")] != 0 || len(f.confirmations) != 0 {
+			t.Fatal("rejected decision mutated flow")
+		}
+		if _, err := f.State(s); err == nil {
+			t.Fatal("unchanged overflowing decision should still fail")
+		}
+		p.Price = 100
+		if err := f.Indicator(p); err == nil {
+			t.Fatal("same-cutoff indicator replacement should be rejected")
+		}
+		p.CutoffTimeNS++
+		s.CutoffTimeNS++
+		if err := f.Indicator(p); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := f.State(s); err != nil {
+			t.Fatalf("next bar failed: %v", err)
+		}
+	})
+}
+
 func TestStrategyFlowActualResidualFill(t *testing.T) {
 	flow, _ := NewStrategyFlow(DefaultStrategyFlowConfig())
 	for _, v := range []StrategyFill{{"BTCUSDT_PERP", 1, .00005, 100}, {"BTCUSDT_PERP", 1, .00012, 100}, {"BTCUSDT_PERP", -1, .000165, 100}} {

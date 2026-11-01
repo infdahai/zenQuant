@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"math"
 	"math/big"
+	"sort"
 	"strconv"
 	"strings"
 )
@@ -17,7 +18,7 @@ type StrategyFlow struct {
 	config        StrategyFlowConfig
 	packs         map[string]StrategyIndicator
 	stateCutoff   map[string]int64
-	bias          map[string]StrategyState
+	bias          map[string][]StrategyState
 	positions     map[string]*ExitPosition
 	confirmations map[string]strategyConfirmation
 }
@@ -102,7 +103,7 @@ func NewStrategyFlow(c StrategyFlowConfig) (*StrategyFlow, error) {
 	if c.Portfolio == "" || !sizingFinite(c.Equity) || c.Equity <= 0 || !sizingFinite(c.MinTradeQty) || c.MinTradeQty <= 0 || c.BiasMaxAgeBars < 0 || c.EntryConfirmationBars < 1 || c.FlipConfirmationBars < 1 {
 		return nil, fmt.Errorf("invalid strategy configuration")
 	}
-	return &StrategyFlow{c, map[string]StrategyIndicator{}, map[string]int64{}, map[string]StrategyState{}, map[string]*ExitPosition{}, map[string]strategyConfirmation{}}, nil
+	return &StrategyFlow{c, map[string]StrategyIndicator{}, map[string]int64{}, map[string][]StrategyState{}, map[string]*ExitPosition{}, map[string]strategyConfirmation{}}, nil
 }
 func strategyKey(symbol, timeframe string) string { return symbol + "\x00" + timeframe }
 func strategySymbol(symbol string) bool           { return strings.HasPrefix(strings.ToUpper(symbol), "BTC") }
@@ -146,20 +147,30 @@ func (f *StrategyFlow) Fill(fill StrategyFill) error {
 	a, _ := new(big.Rat).SetString(strconv.FormatFloat(current, 'f', -1, 64))
 	b, _ := new(big.Rat).SetString(strconv.FormatFloat(delta, 'f', -1, 64))
 	next, _ := new(big.Rat).Add(a, b).Float64()
-	ulp := func(x float64) float64 { return math.Abs(math.Nextafter(x, math.Inf(1)) - x) }
-	if current*delta < 0 && math.Abs(next) <= 4*math.Max(ulp(current), ulp(delta)) {
+	if !sizingFinite(next) {
+		return fmt.Errorf("fill quantity overflow")
+	}
+	ulp := func(x float64) float64 { return math.Abs(x - math.Nextafter(x, 0)) }
+	if math.Signbit(current) != math.Signbit(delta) && math.Abs(next) <= 4*math.Max(ulp(current), ulp(delta)) {
 		next = 0
 	}
 	if next == 0 {
 		delete(f.positions, fill.Symbol)
 		return nil
 	}
-	if current*next < 0 {
+	if math.Signbit(current) != math.Signbit(next) {
 		f.positions[fill.Symbol] = &ExitPosition{Symbol: fill.Symbol, Timeframe: "4h", Direction: math.Copysign(1, next), EntryPrice: fill.Price, CurrentQty: math.Abs(next)}
 		return nil
 	}
 	if math.Abs(next) > math.Abs(current) {
-		p.EntryPrice = (p.EntryPrice*math.Abs(current) + fill.Price*math.Abs(delta)) / (math.Abs(current) + math.Abs(delta))
+		entry := (p.EntryPrice*math.Abs(current) + fill.Price*math.Abs(delta)) / (math.Abs(current) + math.Abs(delta))
+		if !sizingFinite(entry) || entry <= 0 {
+			entry = p.EntryPrice + (fill.Price-p.EntryPrice)*(math.Abs(delta)/math.Abs(next))
+		}
+		if !sizingFinite(entry) || entry <= 0 {
+			return fmt.Errorf("fill entry price overflow")
+		}
+		p.EntryPrice = entry
 	}
 	p.CurrentQty = math.Abs(next)
 	return nil
@@ -167,7 +178,7 @@ func (f *StrategyFlow) Fill(fill StrategyFill) error {
 
 // State processes 1d bias or a 4h close and returns pre-risk evidence.
 func (f *StrategyFlow) State(s StrategyState) (*StrategyEvidence, error) {
-	if !strategySymbol(s.Symbol) || (s.Timeframe != "1d" && s.Timeframe != "4h") || s.CutoffTimeNS <= 0 || !sizingFinite(s.RegimeConfidence) {
+	if !strategySymbol(s.Symbol) || (s.Timeframe != "1d" && s.Timeframe != "4h") || (s.Regime != "TREND" && s.Regime != "RANGE" && s.Regime != "STRESS") || s.CutoffTimeNS <= 0 || !sizingFinite(s.RegimeConfidence) {
 		return nil, fmt.Errorf("unsupported state")
 	}
 	k := strategyKey(s.Symbol, s.Timeframe)
@@ -180,7 +191,7 @@ func (f *StrategyFlow) State(s StrategyState) (*StrategyEvidence, error) {
 	}
 	if s.Timeframe == "1d" {
 		s.QualityFlags = append([]string(nil), s.QualityFlags...)
-		f.bias[s.Symbol] = s
+		f.bias[s.Symbol] = append(f.bias[s.Symbol], s)
 		f.stateCutoff[k] = s.CutoffTimeNS
 		return &StrategyEvidence{Playbook: pb}, nil
 	}
@@ -211,6 +222,9 @@ func (f *StrategyFlow) State(s StrategyState) (*StrategyEvidence, error) {
 			if qty != 0 {
 				leverage = math.Abs(qty*p.Price) / f.config.Equity
 			}
+			if !sizingFinite(qty) || !sizingFinite(leverage) {
+				return nil, fmt.Errorf("exit target overflow")
+			}
 			out.Target = f.target(p, s, qty, leverage, true, append([]string{"REGIME_" + s.Regime}, exit.ReasonCodes...))
 			out.Reason = strategyReason(out.Target)
 			delete(f.confirmations, s.Symbol)
@@ -221,7 +235,10 @@ func (f *StrategyFlow) State(s StrategyState) (*StrategyEvidence, error) {
 	}
 	direction := legacyStrategyDirection(s.Regime, p)
 	reasons := append([]string{"REGIME_" + s.Regime}, pb.ReasonCodes...)
-	if bias, ok := f.bias[s.Symbol]; ok {
+	history := f.bias[s.Symbol]
+	biasIndex := sort.Search(len(history), func(i int) bool { return history[i].CutoffTimeNS > p.CutoffTimeNS }) - 1
+	if biasIndex >= 0 {
+		bias := history[biasIndex]
 		reason := ""
 		for _, flag := range bias.QualityFlags {
 			if flag != "OK" {
@@ -229,10 +246,9 @@ func (f *StrategyFlow) State(s StrategyState) (*StrategyEvidence, error) {
 				break
 			}
 		}
-		if reason == "" && p.CutoffTimeNS < bias.CutoffTimeNS {
-			reason = "BIAS_FUTURE"
-		}
-		if reason == "" && p.CutoffTimeNS-bias.CutoffTimeNS > int64(f.config.BiasMaxAgeBars)*4*3600*1e9 {
+		age := p.CutoffTimeNS - bias.CutoffTimeNS
+		const barNS = int64(4 * 3600 * 1e9)
+		if reason == "" && (age/barNS > int64(f.config.BiasMaxAgeBars) || age/barNS == int64(f.config.BiasMaxAgeBars) && age%barNS != 0) {
 			reason = "BIAS_STALE"
 		}
 		if reason != "" {
@@ -261,6 +277,9 @@ func (f *StrategyFlow) State(s StrategyState) (*StrategyEvidence, error) {
 		reduce = true
 	}
 	qty := f.config.Equity * sizing.FinalLeverage * direction / p.Price
+	if !sizingFinite(qty) {
+		return nil, fmt.Errorf("strategy target overflow")
+	}
 	if math.Abs(qty) < f.config.MinTradeQty {
 		qty = 0
 	}
