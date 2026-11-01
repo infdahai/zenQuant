@@ -36,7 +36,7 @@ type ImportedClosedLoopResult struct {
 // every indicator and state field must be present, including explicit zeros.
 // Neither the supplied as-of nor the availability declaration proves arrival.
 // Missing funding is not evidence of zero funding; supplied funding is passed to
-// the closed loop, which currently rejects nonzero rates.
+// the closed loop for settlement.
 func RunImportedClosedLoop(store *workbench.Store, snapshotID string, startNS, endNS int64, decisions []byte, source DecisionSource, config research.OfflineClosedLoopConfig) (*ImportedClosedLoopResult, error) {
 	const bar = int64(4 * 60 * 60 * 1e9)
 	if store == nil || startNS <= 0 || endNS < startNS || startNS%bar != 0 || endNS%bar != 0 {
@@ -108,7 +108,7 @@ func RunImportedClosedLoop(store *workbench.Store, snapshotID string, startNS, e
 	if err != nil {
 		return nil, err
 	}
-	return &ImportedClosedLoopResult{SnapshotID: snapshotID, Provenance: *d.Provenance, Source: source, FundingAssumption: "Funding coverage is unknown; absent settlements are not modeled, and only supplied zero rates are supported.", Result: result}, nil
+	return &ImportedClosedLoopResult{SnapshotID: snapshotID, Provenance: *d.Provenance, Source: source, FundingAssumption: "Funding coverage is unknown; absent settlements are not modeled.", Result: result}, nil
 }
 
 // requireFields checks presence separately from decoding so zero remains valid.

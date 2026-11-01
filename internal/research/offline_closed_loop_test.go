@@ -1,6 +1,7 @@
 package research
 
 import (
+	"fmt"
 	"math"
 	"reflect"
 	"strings"
@@ -204,14 +205,89 @@ func TestClosedLoopPriceMoveAccounting(t *testing.T) {
 	}
 }
 
+func TestClosedLoopFundingSettlesBeforeDecisionAndFill(t *testing.T) {
+	const bar int64 = 4 * 60 * 60 * 1e9
+	for _, direction := range []float64{1, -1} {
+		t.Run(fmt.Sprintf("direction_%g", direction), func(t *testing.T) {
+			c := closedLoopFixture()
+			c.Replay.TakerFeeRate = 0
+			for i := range c.Inputs {
+				c.Inputs[i].Indicator.CVDSlope *= direction
+			}
+			c.Replay.Candles["4h"][1] = replayTestBar("4h", bar, bar, 110)
+			c.Inputs[1].Indicator.Price = 110
+			c.Replay.Candles["4h"][2] = replayTestBar("4h", 2*bar, bar, 110)
+			c.Inputs[2].Indicator.Price = 110
+			c.Inputs[1].State.Regime = "STRESS" // Close after the settlements.
+			c.Inputs[2].State.Regime = "STRESS"
+			c.Replay.Funding = []ReplayFundingRow{{bar, .5}, {bar + 1, -.02}, {bar + 2, .01}, {2 * bar, -.03}, {3*bar + 1, .9}}
+			a, err := RunOfflineClosedLoop(c)
+			if err != nil {
+				t.Fatal(err)
+			}
+			b, err := RunOfflineClosedLoop(c)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !reflect.DeepEqual(a, b) {
+				t.Fatal("funding replay is not deterministic")
+			}
+			if len(a.Replay.Episodes) != 1 || !a.Replay.Episodes[0].Closed {
+				t.Fatalf("episodes: %+v", a.Replay.Episodes)
+			}
+			qty := float64(a.Replay.Reports[0].Side) * a.Replay.Reports[0].FilledQty
+			if qty*direction <= 0 {
+				t.Fatalf("unexpected position %g", qty)
+			}
+			funding := -qty*100*(-.02) - qty*100*.01 - qty*110*(-.03)
+			e := a.Replay.Episodes[0]
+			if math.Abs(e.FundingPnL-funding) > 1e-8 || math.Abs(a.RiskState.Equity-(c.RiskConfig.StartingEquity+e.NetPnL)) > 1e-7 {
+				t.Fatalf("funding=%g episode=%+v risk=%+v", funding, e, a.RiskState)
+			}
+			wantEquity := c.RiskConfig.StartingEquity + qty*10 + funding
+			if math.Abs(a.RiskState.EquityHistory[1]-wantEquity) > 1e-7 {
+				t.Fatalf("risk decision missed funding: %+v want %g", a.RiskState.EquityHistory, wantEquity)
+			}
+			// Profitable intermediate settlements establish a high water mark even
+			// if later settlements reverse them before the next decision.
+			hwm := c.RiskConfig.StartingEquity
+			cash := c.RiskConfig.StartingEquity
+			for _, pnl := range []float64{-qty * 100 * (-.02), -qty * 100 * .01} {
+				cash += pnl
+				hwm = math.Max(hwm, cash)
+			}
+			cash += qty*10 - qty*110*(-.03)
+			hwm = math.Max(hwm, cash)
+			if math.Abs(a.RiskState.HighWaterMark-hwm) > 1e-7 {
+				t.Fatalf("high water %g want %g", a.RiskState.HighWaterMark, hwm)
+			}
+		})
+	}
+}
+
+func TestReplayFundingRiskFailureIsAtomic(t *testing.T) {
+	c := DefaultStatefulRiskConfig()
+	c.StartingEquity = math.MaxFloat64
+	r, err := NewStatefulRiskOverlay(c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	before := r.State()
+	for _, settlement := range []replayFundingSettlement{{quantity: 1, price: 100, pnl: 1}, {pnl: math.MaxFloat64}} {
+		if err := r.applyReplayFunding("BTC", settlement, 1); err == nil {
+			t.Fatal("expected funding error")
+		}
+		if !reflect.DeepEqual(before, r.State()) {
+			t.Fatal("funding failure mutated risk state")
+		}
+	}
+}
+
 func TestClosedLoopRejectsInvalidInputs(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
 		mutate func(*OfflineClosedLoopConfig)
 	}{
-		{"funding", func(c *OfflineClosedLoopConfig) {
-			c.Replay.Funding = []ReplayFundingRow{{FundingTimeNS: 1, FundingRate: .01}}
-		}},
 		{"future", func(c *OfflineClosedLoopConfig) { c.Inputs[0].Indicator.CutoffTimeNS++ }},
 		{"early availability", func(c *OfflineClosedLoopConfig) { c.Inputs[0].AvailableTimeNS-- }},
 		{"late availability", func(c *OfflineClosedLoopConfig) { c.Inputs[0].AvailableTimeNS++ }},

@@ -249,6 +249,32 @@ func (r *StatefulRiskOverlay) ApplyFee(fee float64, currency string, tsNS int64)
 	return nil
 }
 
+// applyReplayFunding applies one normalized offline settlement at its actual
+// settlement mark. Cash and mark change together before updating the high-water mark.
+func (r *StatefulRiskOverlay) applyReplayFunding(symbol string, settlement replayFundingSettlement, tsNS int64) error {
+	c := r.clone()
+	if !finite(settlement.pnl) || math.Abs(c.state.Positions[symbol]-settlement.quantity) > 1e-10 {
+		return fmt.Errorf("invalid funding amount or position mismatch")
+	}
+	if err := c.advance(tsNS); err != nil {
+		return err
+	}
+	c.state.Cash += settlement.pnl
+	if settlement.quantity != 0 {
+		if !finite(settlement.price) || settlement.price <= 0 {
+			return fmt.Errorf("invalid funding settlement price")
+		}
+		c.state.Prices[symbol] = settlement.price
+		c.markTime[symbol] = tsNS
+		c.markExpiry[symbol] = tsNS
+	}
+	if err := c.revalue(); err != nil {
+		return err
+	}
+	*r = *c
+	return nil
+}
+
 // State returns a detached view. Equity is the last complete valuation when
 // EquityValid is false; it must not be used to authorize risk.
 func (r *StatefulRiskOverlay) State() StatefulRiskState {

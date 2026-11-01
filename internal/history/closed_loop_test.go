@@ -112,9 +112,9 @@ func TestImportedClosedLoop(t *testing.T) {
 		reject bool
 	}{
 		{"outside", []workbench.Funding{{TimeNS: start - 1, Rate: .01}, {TimeNS: end + 1, Rate: .01}}, false},
-		{"first close", []workbench.Funding{{TimeNS: start, Rate: .01}}, true},
-		{"inside", []workbench.Funding{{TimeNS: start + 1, Rate: .01}}, true},
-		{"last close", []workbench.Funding{{TimeNS: end, Rate: .01}}, true},
+		{"first close", []workbench.Funding{{TimeNS: start, Rate: .01}}, false},
+		{"inside", []workbench.Funding{{TimeNS: start + 1, Rate: .01}}, false},
+		{"last close", []workbench.Funding{{TimeNS: end, Rate: .01}}, false},
 		{"zero inside", []workbench.Funding{{TimeNS: start, Rate: 0}}, false},
 	} {
 		t.Run("funding "+tc.name, func(t *testing.T) {
