@@ -66,19 +66,25 @@ func TestStatefulRiskPythonTrace(t *testing.T) {
 		t.Fatal(err)
 	}
 	const base int64 = 1704067200000000000
+	const expiry int64 = base + 10*86400000000000
+	clock := base
 	for n, step := range steps {
 		e := step.Event
+		clock++
+		if e.Type == "target" && clock < base+e.Day*86400000000000 {
+			clock = base + e.Day*86400000000000
+		}
 		switch e.Type {
 		case "indicator":
-			err = r.OnIndicator(StatefulRiskIndicator{Symbol: "BTC", Timeframe: "4h", Price: e.Price, RealizedVol: e.Vol, FundingOIZ: e.Crowd, QualityFlags: e.Quality})
+			err = r.OnIndicator(StatefulRiskIndicator{Symbol: "BTC", Timeframe: "4h", Price: e.Price, RealizedVol: e.Vol, FundingOIZ: e.Crowd, QualityFlags: e.Quality, CutoffTimeNS: clock, AvailableTimeNS: clock, ValidUntilNS: expiry})
 		case "fill":
-			err = r.OnFill("BTC", e.Side, e.Qty, e.Price)
+			err = r.OnFill("BTC", e.Side, e.Qty, e.Price, "USD", clock, expiry)
 		case "fee":
-			err = r.ApplyFee(e.Amount)
+			err = r.ApplyFee(e.Amount, "USD", clock)
 		case "target":
 			var d StatefulRiskDecision
 			var s StatefulRiskSnapshot
-			d, s, err = r.Apply(StatefulRiskTarget{IntentID: "a", Portfolio: "arc", Symbol: "BTC", Timeframe: "4h", CutoffTimeNS: base + e.Day*86400000000000, Quantity: e.Qty, Leverage: 2, ReduceOnly: e.Reduce, ReasonCodes: []string{"TEST"}})
+			d, s, err = r.Apply(StatefulRiskTarget{IntentID: "a", Portfolio: "arc", Symbol: "BTC", Timeframe: "4h", CutoffTimeNS: clock, ProcessTimeNS: clock, Quantity: e.Qty, Leverage: 2, ReduceOnly: e.Reduce, ReasonCodes: []string{"TEST"}})
 			if err == nil {
 				o := step.Output
 				if d.Revised.Quantity != o.Qty || d.Revised.Leverage != o.Leverage || d.Revised.ReduceOnly != o.Reduce || !reflect.DeepEqual(d.Revised.ReasonCodes, o.Reasons) || !reflect.DeepEqual(d.Flags, o.Flags) || d.LeverageCap != o.Cap || s.Equity != o.Equity || s.HighWaterMark != o.HighWaterMark || s.Drawdown != o.Drawdown {
