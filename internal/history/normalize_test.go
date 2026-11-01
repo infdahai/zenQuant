@@ -1,10 +1,12 @@
 package history
 
 import (
+	"archive/zip"
 	"bytes"
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
+	"hash/crc32"
 	"os"
 	"reflect"
 	"strings"
@@ -14,6 +16,97 @@ import (
 	"github.com/infdahai/zenQuant/internal/research"
 	"github.com/infdahai/zenQuant/internal/workbench"
 )
+
+func TestZIPCSV(t *testing.T) {
+	makeZIP := func(headers []zip.FileHeader, content []byte) []byte {
+		t.Helper()
+		var buf bytes.Buffer
+		w := zip.NewWriter(&buf)
+		for _, h := range headers {
+			f, err := w.CreateHeader(&h)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := f.Write(content); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if err := w.Close(); err != nil {
+			t.Fatal(err)
+		}
+		return buf.Bytes()
+	}
+	csv, err := os.ReadFile("testdata/klines.csv")
+	if err != nil {
+		t.Fatal(err)
+	}
+	header := zip.FileHeader{Name: "klines.csv", Method: zip.Store}
+	valid := makeZIP([]zip.FileHeader{header}, csv)
+	got, err := ZIPCSV(valid)
+	if err != nil || !bytes.Equal(got, csv) {
+		t.Fatalf("valid ZIP: %v", err)
+	}
+	corrupt := bytes.Clone(valid)
+	index := bytes.Index(corrupt, csv)
+	if index < 0 {
+		t.Fatal("missing stored bytes")
+	}
+	corrupt[index] ^= 1
+	symlink := zip.FileHeader{Name: "link.csv"}
+	symlink.SetMode(os.ModeSymlink | 0777)
+	directory := zip.FileHeader{Name: "dir.csv"}
+	directory.SetMode(os.ModeDir | 0755)
+	cases := map[string][]byte{
+		"corrupt": corrupt, "truncated": valid[:len(valid)-10], "empty": makeZIP(nil, nil),
+		"multiple":        makeZIP([]zip.FileHeader{header, header}, csv),
+		"traversal":       makeZIP([]zip.FileHeader{{Name: "../file.csv"}}, csv),
+		"nested":          makeZIP([]zip.FileHeader{{Name: "dir/file.csv"}}, csv),
+		"backslash":       makeZIP([]zip.FileHeader{{Name: `dir\file.csv`}}, csv),
+		"wrong extension": makeZIP([]zip.FileHeader{{Name: "file.txt"}}, csv),
+		"symlink":         makeZIP([]zip.FileHeader{symlink}, csv), "directory": makeZIP([]zip.FileHeader{directory}, csv),
+		"oversize archive":   make([]byte, MaxCSV+1),
+		"oversize extracted": makeZIP([]zip.FileHeader{{Name: "file.csv", Method: zip.Deflate}}, bytes.Repeat([]byte("a"), MaxCSV+1)),
+	}
+	for name, data := range cases {
+		t.Run(name, func(t *testing.T) {
+			if _, err := ZIPCSV(data); err == nil {
+				t.Fatal("accepted invalid ZIP")
+			}
+		})
+	}
+}
+
+func TestZIPCSVRejectsZeroCRCWithoutDescriptor(t *testing.T) {
+	content := []byte("corrupted CSV payload")
+	var buf bytes.Buffer
+	w := zip.NewWriter(&buf)
+	member, err := w.CreateRaw(&zip.FileHeader{
+		Name: "klines.csv", Method: zip.Store,
+		CRC32: 0, CompressedSize64: uint64(len(content)), UncompressedSize64: uint64(len(content)),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = member.Write(content); err != nil {
+		t.Fatal(err)
+	}
+	if err = w.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if crc32.ChecksumIEEE(content) == 0 {
+		t.Fatal("fixture must have nonzero CRC")
+	}
+	archive, err := zip.NewReader(bytes.NewReader(buf.Bytes()), int64(buf.Len()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if archive.File[0].Flags&8 != 0 || archive.File[0].CRC32 != 0 {
+		t.Fatal("fixture requires no descriptor and zero CRC")
+	}
+	if _, err = ZIPCSV(buf.Bytes()); err == nil {
+		t.Fatal("accepted mismatched zero CRC")
+	}
+}
 
 func TestSyntheticPythonCandleNormalizationAndCloseVisibility(t *testing.T) {
 	csv, err := os.ReadFile("testdata/klines.csv")

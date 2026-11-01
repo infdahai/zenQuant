@@ -6,6 +6,8 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/infdahai/zenQuant/internal/history"
@@ -15,7 +17,7 @@ import (
 func runHistoryImport(args []string, out, stderr io.Writer) error {
 	flags := flag.NewFlagSet("history-import", flag.ContinueOnError)
 	flags.SetOutput(stderr)
-	input := flags.String("input", "", "headerless Binance futures kline CSV")
+	input := flags.String("input", "", "headerless Binance futures kline CSV or single-member ZIP")
 	fundingInput := flags.String("funding-input", "", "optional local Binance fundingRate JSON array")
 	symbol := flags.String("symbol", "", "source exchange symbol (BTCUSDT)")
 	timeframe := flags.String("timeframe", "", "5m, 1h, 4h or 1d")
@@ -45,6 +47,12 @@ func runHistoryImport(args []string, out, stderr io.Writer) error {
 	raw, err := localfile.Read(*input, history.MaxCSV)
 	if err != nil {
 		return err
+	}
+	if strings.EqualFold(filepath.Ext(*input), ".zip") {
+		raw, err = history.ZIPCSV(raw)
+		if err != nil {
+			return err
+		}
 	}
 	var funding []byte
 	if *fundingInput != "" {

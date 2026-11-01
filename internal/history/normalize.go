@@ -2,14 +2,18 @@
 package history
 
 import (
+	"archive/zip"
 	"bytes"
 	"crypto/sha256"
 	"encoding/csv"
 	"encoding/json"
 	"fmt"
+	"hash/crc32"
 	"io"
 	"math"
+	"path"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/infdahai/zenQuant/internal/research"
@@ -17,6 +21,48 @@ import (
 )
 
 const MaxCSV = 4 << 20
+
+// ZIPCSV returns the exact CSV member bytes, which are the source identity.
+// The ZIP container itself is not recorded as provenance.
+func ZIPCSV(raw []byte) ([]byte, error) {
+	if len(raw) > MaxCSV {
+		return nil, fmt.Errorf("ZIP exceeds 4 MiB")
+	}
+	archive, err := zip.NewReader(bytes.NewReader(raw), int64(len(raw)))
+	if err != nil {
+		return nil, fmt.Errorf("invalid ZIP: %w", err)
+	}
+	if len(archive.File) != 1 {
+		return nil, fmt.Errorf("ZIP must contain exactly one CSV file")
+	}
+	file := archive.File[0]
+	name := file.Name
+	if name == "" || name == "." || name == ".." || strings.ContainsAny(name, "/\\\x00") || path.Ext(name) != ".csv" || !file.Mode().IsRegular() {
+		return nil, fmt.Errorf("ZIP member must be a regular CSV file with a plain name")
+	}
+	if file.UncompressedSize64 > MaxCSV || file.CompressedSize64 > MaxCSV {
+		return nil, fmt.Errorf("ZIP member exceeds 4 MiB")
+	}
+	r, err := file.Open()
+	if err != nil {
+		return nil, fmt.Errorf("open ZIP member: %w", err)
+	}
+	data, readErr := io.ReadAll(io.LimitReader(r, MaxCSV+1))
+	closeErr := r.Close()
+	if readErr != nil {
+		return nil, fmt.Errorf("read ZIP member: %w", readErr)
+	}
+	if closeErr != nil {
+		return nil, fmt.Errorf("close ZIP member: %w", closeErr)
+	}
+	if len(data) > MaxCSV {
+		return nil, fmt.Errorf("ZIP member exceeds 4 MiB")
+	}
+	if crc32.ChecksumIEEE(data) != file.CRC32 {
+		return nil, fmt.Errorf("ZIP member checksum: %w", zip.ErrChecksum)
+	}
+	return data, nil
+}
 
 // Normalize converts headerless Binance futures millisecond klines. asOf is an
 // explicit observation cutoff, not evidence of the exchange's arrival time.
