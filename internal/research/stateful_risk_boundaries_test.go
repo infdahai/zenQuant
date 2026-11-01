@@ -110,6 +110,32 @@ func TestStatefulRiskRejectedEventsAreTransactional(t *testing.T) {
 	}
 }
 
+func TestStatefulRiskFeeNegativeEquityFailsClosed(t *testing.T) {
+	r, err := NewStatefulRiskOverlay(DefaultStatefulRiskConfig())
+	must(t, err)
+	must(t, r.OnIndicator(StatefulRiskIndicator{Symbol: "BTC", Timeframe: "4h", Price: 100, CutoffTimeNS: 1, AvailableTimeNS: 1, ValidUntilNS: 20}))
+	must(t, r.OnFill("BTC", 1, 1000, 100, "USD", 2, 20))
+	must(t, r.ApplyFee(100001, "USD", 3))
+	if state := r.State(); state.Cash != -100001 || state.Equity != -1 || !state.EquityValid {
+		t.Fatalf("fee or negative equity incorrect: %+v", state)
+	}
+	before := r.clone()
+	_, _, err = r.Apply(StatefulRiskTarget{Portfolio: "arc", Symbol: "BTC", Timeframe: "4h", CutoffTimeNS: 4, ProcessTimeNS: 4, Quantity: 1, Leverage: 1})
+	if err == nil || !reflect.DeepEqual(r, before) {
+		t.Fatal("negative equity target accepted or mutated state")
+	}
+}
+
+func TestStatefulRiskStandaloneFillRecordsHighWater(t *testing.T) {
+	r, _ := NewStatefulRiskOverlay(DefaultStatefulRiskConfig())
+	must(t, r.OnFill("BTC", 1, 1000, 100, "USD", 1, 20))
+	must(t, r.OnFill("BTC", 1, 1, 110, "USD", 2, 20))
+	must(t, r.ApplyFee(10001, "USD", 2))
+	if s := r.State(); s.Equity != 99999 || s.HighWaterMark != 110000 {
+		t.Fatalf("standalone events lost their separate valuations: %+v", s)
+	}
+}
+
 func TestStatefulRiskDelayedIndicatorAndProcessingTime(t *testing.T) {
 	r, _ := NewStatefulRiskOverlay(DefaultStatefulRiskConfig())
 	must(t, r.OnFill("BTC", 1, 1, 120, "USD", 11, 30))
