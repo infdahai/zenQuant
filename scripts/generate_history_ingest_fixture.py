@@ -2,13 +2,13 @@
 """Generate the synthetic downloader reference without third-party dependencies."""
 
 import dataclasses
-from datetime import UTC, datetime
 import importlib.util
 import io
 import json
 import sys
 import types
 import zipfile
+from datetime import UTC, datetime
 from pathlib import Path
 
 root = Path(__file__).resolve().parents[1]
