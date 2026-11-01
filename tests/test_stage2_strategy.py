@@ -144,6 +144,7 @@ class Stage2StrategyTests(unittest.TestCase):
 
     def test_trailing_stop_emits_reduce_only_exit(self) -> None:
         bus = InMemoryJetStream()
+        publish_report = bus.claim_publisher("exec.order.report")
         ARCStrategyEngine(bus)
         StateEngine(bus)
 
@@ -158,8 +159,7 @@ class Stage2StrategyTests(unittest.TestCase):
             lambda _subject, payload: exits.append(payload) if isinstance(payload, ExitDecision) else None,
         )
 
-        bus.publish(
-            "exec.order.report",
+        publish_report(
             ExecutionReport(
                 client_order_id="oid-1",
                 symbol="BTCUSDT_PERP",
@@ -207,11 +207,11 @@ class Stage2StrategyTests(unittest.TestCase):
 
     def test_short_position_tracking_handles_add_and_cover(self) -> None:
         bus = InMemoryJetStream()
+        publish_report = bus.claim_publisher("exec.order.report")
         engine = ARCStrategyEngine(bus)
         StateEngine(bus)
 
-        bus.publish(
-            "exec.order.report",
+        publish_report(
             ExecutionReport(
                 client_order_id="oid-1",
                 symbol="BTCUSDT_PERP",
@@ -227,8 +227,7 @@ class Stage2StrategyTests(unittest.TestCase):
         self.assertEqual(position.direction, -1.0)
         self.assertAlmostEqual(position.current_qty, 1.0)
 
-        bus.publish(
-            "exec.order.report",
+        publish_report(
             ExecutionReport(
                 client_order_id="oid-2",
                 symbol="BTCUSDT_PERP",
@@ -245,8 +244,7 @@ class Stage2StrategyTests(unittest.TestCase):
         self.assertAlmostEqual(position.current_qty, 1.5)
         self.assertEqual(position.pyramid_count, 1)
 
-        bus.publish(
-            "exec.order.report",
+        publish_report(
             ExecutionReport(
                 client_order_id="oid-3",
                 symbol="BTCUSDT_PERP",
@@ -338,6 +336,7 @@ class Stage2StrategyTests(unittest.TestCase):
 
     def test_invalid_atr_does_not_arm_trailing_stop(self) -> None:
         bus = InMemoryJetStream()
+        publish_report = bus.claim_publisher("exec.order.report")
         ARCStrategyEngine(bus)
         StateEngine(bus)
 
@@ -346,8 +345,7 @@ class Stage2StrategyTests(unittest.TestCase):
             "intent.target_position.arc.BTCUSDT_PERP",
             lambda _subject, payload: targets.append(payload),
         )
-        bus.publish(
-            "exec.order.report",
+        publish_report(
             ExecutionReport(
                 client_order_id="oid-atr",
                 symbol="BTCUSDT_PERP",
@@ -377,11 +375,11 @@ class Stage2StrategyTests(unittest.TestCase):
 
     def test_position_flip_resets_bars_held(self) -> None:
         bus = InMemoryJetStream()
+        publish_report = bus.claim_publisher("exec.order.report")
         engine = ARCStrategyEngine(bus)
         StateEngine(bus)
 
-        bus.publish(
-            "exec.order.report",
+        publish_report(
             ExecutionReport(
                 client_order_id="oid-long",
                 symbol="BTCUSDT_PERP",
@@ -396,8 +394,7 @@ class Stage2StrategyTests(unittest.TestCase):
         position = engine._positions[("BTCUSDT_PERP", Timeframe.TF_4H)]
         position.bars_held = 5
 
-        bus.publish(
-            "exec.order.report",
+        publish_report(
             ExecutionReport(
                 client_order_id="oid-flip",
                 symbol="BTCUSDT_PERP",

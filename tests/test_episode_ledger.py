@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from dataclasses import asdict
+from dataclasses import asdict, replace
 
 import pytest
 
@@ -134,11 +134,13 @@ def test_open_episode_diagnostics_include_realized_and_unrealized_state() -> Non
 
 def test_ledger_ignores_unfilled_reports_and_rejects_per_symbol_time_reversal() -> None:
     ledger = PositionEpisodeLedger()
-    rejected = _fill(side=1, qty=1.0, price=100.0, fee=1.0, ts_ns=2)
-    rejected.status = "REJECTED"
-    rejected.filled_qty = 0.0
-    rejected.avg_price = 0.0
-    rejected.fee = 0.0
+    rejected = replace(
+        _fill(side=1, qty=1.0, price=100.0, fee=1.0, ts_ns=2),
+        status="REJECTED",
+        filled_qty=0.0,
+        avg_price=0.0,
+        fee=0.0,
+    )
     ledger.on_fill(rejected)
     assert ledger.episodes == ()
 
@@ -165,8 +167,7 @@ def test_partial_fill_updates_trade_and_episode_ledgers() -> None:
     replay._reports = []
     replay._trade_ledger = _TradeLedger()
     replay._episode_ledger = PositionEpisodeLedger()
-    report = _fill(side=1, qty=0.4, price=100.0, fee=0.4, ts_ns=1)
-    report.status = "PARTIALLY_FILLED"
+    report = replace(_fill(side=1, qty=0.4, price=100.0, fee=0.4, ts_ns=1), status="PARTIALLY_FILLED")
 
     replay._collect_report("exec.order.report", report)
 

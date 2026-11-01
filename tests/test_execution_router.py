@@ -344,7 +344,8 @@ class TargetTrackingV2Tests(unittest.TestCase):
         bus = InMemoryJetStream()
         risk = RiskOverlay(bus)
         strategy = ARCStrategyEngine(bus)
-        gateway = PartialThenFillGateway()
+        gateway = ExecutionGateway()
+        gateway.submit_order = PartialThenFillGateway().submit_order
         kernel = ExecutionKernel(
             bus,
             gateway,
@@ -380,7 +381,7 @@ class TargetTrackingV2Tests(unittest.TestCase):
         bus.publish(f"intent.target_position.final.{target.symbol}", target)
         self.assertEqual(len(orders), 2)
 
-    def test_v2_partial_reversal_overfill_and_zero_rejection_are_accounted(self) -> None:
+    def test_v2_partial_reversal_accounts_fills_and_rejects_simulator_overfill(self) -> None:
         class FractionGateway(ExecutionGateway):
             def __init__(self, fills: list[tuple[str, float]]) -> None:
                 super().__init__()
@@ -402,7 +403,7 @@ class TargetTrackingV2Tests(unittest.TestCase):
 
         bus = InMemoryJetStream()
         risk = RiskOverlay(bus)
-        gateway = FractionGateway(
+        scripted = FractionGateway(
             [
                 ("FILLED", 0.6),
                 ("PARTIALLY_FILLED", 0.7),
@@ -411,6 +412,8 @@ class TargetTrackingV2Tests(unittest.TestCase):
                 ("REJECTED", 0.0),
             ]
         )
+        gateway = ExecutionGateway()
+        gateway.submit_order = scripted.submit_order
         kernel = ExecutionKernel(
             bus,
             gateway,
@@ -433,16 +436,50 @@ class TargetTrackingV2Tests(unittest.TestCase):
 
         overfill_target = self._target(qty=0.0, cutoff_ns=4)
         bus.publish(f"strategy.decision_snapshot.4h.{overfill_target.symbol}", self._snapshot(overfill_target))
-        bus.publish(f"intent.target_position.final.{overfill_target.symbol}", overfill_target)
-        self.assertAlmostEqual(kernel.positions[overfill_target.symbol], 0.2)
-        self.assertEqual(kernel.purity_counters["target_overshoot"], 1)
+        with self.assertRaisesRegex(ValueError, "invalid or mismatched"):
+            bus.publish(f"intent.target_position.final.{overfill_target.symbol}", overfill_target)
+        self.assertAlmostEqual(kernel.positions[overfill_target.symbol], -0.4)
+        self.assertAlmostEqual(risk._actual_positions[overfill_target.symbol], -0.4)
+        self.assertEqual(kernel.purity_counters["target_overshoot"], 0)
+        self.assertTrue(kernel._session.blocked)
 
+        audit_count = len(audits)
         flat_target = self._target(qty=0.0, cutoff_ns=5)
-        bus.publish(f"strategy.decision_snapshot.4h.{flat_target.symbol}", self._snapshot(flat_target))
-        bus.publish(f"intent.target_position.final.{flat_target.symbol}", flat_target)
+        self._publish_approved(bus, flat_target)
+        self.assertEqual(len(audits), audit_count)
+        self.assertAlmostEqual(kernel.positions[flat_target.symbol], -0.4)
+
+    def test_v2_zero_rejection_preserves_filled_inventory(self) -> None:
+        bus, kernel, _orders, _reports, audits = self._setup()
+        self._publish_approved(bus, self._target(qty=0.2, cutoff_ns=2))
+
+        def reject(order, **pricing):
+            return ExecutionReport(
+                order.client_order_id,
+                order.symbol,
+                order.side,
+                "REJECTED",
+                0.0,
+                0.0,
+                0.0,
+                pricing["now_ns"],
+                "rejected",
+            )
+
+        kernel._gateway.submit_order = reject
+        flat_target = self._target(qty=0.0, cutoff_ns=3)
+        self._publish_approved(bus, flat_target)
         self.assertEqual(audits[-1].status, "REJECTED")
         self.assertEqual(audits[-1].order_delta_qty, 0.0)
         self.assertAlmostEqual(kernel.positions[flat_target.symbol], 0.2)
+        self.assertFalse(kernel._session.blocked)
+
+    def test_purity_observation_detects_overfill(self) -> None:
+        _bus, kernel, _orders, _reports, _audits = self._setup()
+        kernel._record_purity_observation(
+            approved_target=0.0, position_before=-0.4, position_after=0.2, order_delta=0.6
+        )
+        self.assertEqual(kernel.purity_counters["target_overshoot"], 1)
 
     def test_v2_slices_and_floors_to_quantity_precision_without_overshoot(self) -> None:
         bus, kernel, orders, _reports, _audits = self._setup(
@@ -1850,7 +1887,7 @@ class ChurnControlExecutionTests(unittest.TestCase):
         self.assertAlmostEqual(kernel.positions["BTCUSDT_PERP"], 0.0)
 
     def test_flip_reverse_open_scale_reduces_opposite_open_size(self) -> None:
-        bus, kernel, orders, reports = self._setup(flip_reverse_open_scale=0.5)
+        bus, kernel, orders, reports = self._setup(flip_reverse_open_scale=0.5, max_trade_qty_per_bar=2.0)
 
         bus.publish("intent.target_position.final.BTCUSDT_PERP", self._target(1.0, intent_id="entry", cutoff_ns=2))
         bus.publish(
@@ -1886,7 +1923,9 @@ class ChurnControlExecutionTests(unittest.TestCase):
         self.assertAlmostEqual(kernel.positions["BTCUSDT_PERP"], 0.0)
 
     def test_loss_flip_confidence_floor_allows_profitable_position_flip(self) -> None:
-        bus, kernel, orders, reports = self._setup(loss_flip_reverse_open_confidence_floor=0.95)
+        bus, kernel, orders, reports = self._setup(
+            loss_flip_reverse_open_confidence_floor=0.95, max_trade_qty_per_bar=2.0
+        )
 
         bus.publish("intent.target_position.final.BTCUSDT_PERP", self._target(1.0, intent_id="entry", cutoff_ns=2))
         bus.publish(
