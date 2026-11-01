@@ -6,13 +6,15 @@ import "fmt"
 // HistoryLimit bounds candles retained per timeframe and IndicatorWindow sets
 // the trailing ATR, realized-volatility, rate-of-change and OU lookback.
 type OfflineReplayConfig struct {
-	Symbol                        string
-	Candles                       map[string][]ReplayCandle
-	Timeframes                    []string
-	ExecutionTimeframe            string
-	StartNS, EndNS                *int64
-	Funding                       []ReplayFundingRow
-	TakerFeeRate                  float64
+	Symbol             string
+	Candles            map[string][]ReplayCandle
+	Timeframes         []string
+	ExecutionTimeframe string
+	StartNS, EndNS     *int64
+	Funding            []ReplayFundingRow
+	TakerFeeRate       float64
+	// MaxTradeQtyPerCutoff caps filled quantity after policy sizing. Zero disables the cap.
+	MaxTradeQtyPerCutoff          float64
 	HistoryLimit, IndicatorWindow int
 	// SessionPath optionally marks a fresh, non-resumable simulated account.
 	// Empty means ephemeral replay. The parent directory must already exist.
@@ -31,7 +33,8 @@ type OfflineReplaySnapshot struct {
 }
 
 // OfflineReplayPolicy returns synthetic orders in execution order, each with a
-// nonempty client order ID unique across the entire replay. The policy is
+// nonempty client order ID unique across all submitted orders. Orders skipped
+// by admission produce no report and do not reserve an ID. The policy is
 // responsible for its own determinism and must not rely on future input data.
 type OfflineReplayPolicy func(OfflineReplaySnapshot) ([]OfflineExecutionOrder, error)
 
@@ -47,7 +50,11 @@ type OfflineReplayResult struct {
 // events invoke policy, after funding and bar prices are applied to the existing
 // position. Same-close higher-priority histories are visible to the policy.
 // Duplicate execution intervals within the cutoff are rejected before policy runs.
-// Orders fill synthetically at the execution bar's same close, with no slippage. Accounting
+// Orders fill synthetically at the execution bar's same close, with no slippage.
+// Policy orders are sized by the caller; final admission enforces reduce-only and
+// the optional filled-quantity cap, rounding down to six places with a 0.0001 minimum.
+// Opposite-side non-reduce orders may flip in one fill; no Python target sizing,
+// two-leg flip orchestration, or risk overlay is implemented. Accounting
 // uses only the latest visible funding row per execution bar, not every skipped
 // row; equal timestamps select the last row, and timestamps <= 0 are not newly
 // charged by the underlying accounting adapter. This is not live execution,
@@ -62,6 +69,9 @@ func RunOfflineReplay(config OfflineReplayConfig, policy OfflineReplayPolicy) (*
 	}
 	if !finite(config.TakerFeeRate) || config.TakerFeeRate < 0 {
 		return nil, fmt.Errorf("taker fee rate must be finite and nonnegative")
+	}
+	if !finite(config.MaxTradeQtyPerCutoff) || config.MaxTradeQtyPerCutoff < 0 {
+		return nil, fmt.Errorf("quantity cap must be finite and nonnegative")
 	}
 	events, err := PrepareReplayEvents(config.Candles, config.Timeframes, config.ExecutionTimeframe, config.StartNS, config.EndNS)
 	if err != nil {
@@ -89,6 +99,7 @@ func RunOfflineReplay(config OfflineReplayConfig, policy OfflineReplayPolicy) (*
 	}
 	histories := make(map[string][]ReplayCandle, len(config.Timeframes))
 	result := &OfflineReplayResult{}
+	admission := &offlineOrderAdmission{maxQty: config.MaxTradeQtyPerCutoff, positions: make(map[string]float64), filled: make(map[admissionKey]float64)}
 	session, err := newSimulationSession(config.SessionPath, func(report ExecutionReport) error {
 		report, err := accounting.CollectReport(report)
 		if err != nil {
@@ -99,6 +110,11 @@ func RunOfflineReplay(config OfflineReplayConfig, policy OfflineReplayPolicy) (*
 	})
 	if err != nil {
 		return nil, err
+	}
+	// Reduce-only is enforced against actual inventory before this stateless simulator.
+	session.simulate = func(order OfflineExecutionOrder, mark, rate float64, timestamp int64) (ExecutionReport, error) {
+		order.ReduceOnly = false
+		return SimulateOfflineExecution(order, mark, rate, timestamp)
 	}
 	for _, event := range events {
 		tf := event.EventTimeframe
@@ -114,7 +130,7 @@ func RunOfflineReplay(config OfflineReplayConfig, policy OfflineReplayPolicy) (*
 		if err := accounting.OnExecutionBar(ReplayExecutionBar{CloseTimeNS: event.CloseTimeNS, High: event.High, Low: event.Low, Close: event.Close}); err != nil {
 			return nil, fmt.Errorf("execution bar: %w", err)
 		}
-		snapshot := OfflineReplaySnapshot{Event: event, Histories: make(map[string][]ReplayCandle, len(config.Timeframes)), Indicators: make(map[string]OfflineReplayIndicators, len(config.Timeframes)), PositionQty: ledger.PositionQty(config.Symbol)}
+		snapshot := OfflineReplaySnapshot{Event: event, Histories: make(map[string][]ReplayCandle, len(config.Timeframes)), Indicators: make(map[string]OfflineReplayIndicators, len(config.Timeframes)), PositionQty: admission.positions[config.Symbol]}
 		for _, timeframe := range config.Timeframes {
 			rows := histories[timeframe]
 			snapshot.Histories[timeframe] = append([]ReplayCandle(nil), rows...)
@@ -148,12 +164,21 @@ func RunOfflineReplay(config OfflineReplayConfig, policy OfflineReplayPolicy) (*
 			if order.Symbol != config.Symbol {
 				return nil, fmt.Errorf("order symbol %q does not match replay symbol %q", order.Symbol, config.Symbol)
 			}
-			if _, err := session.submit(order, event.Close, config.TakerFeeRate, event.CloseTimeNS); err != nil {
+			admitted, ok, err := admission.admit(order, event.CloseTimeNS)
+			if err != nil {
+				return nil, fmt.Errorf("order admission: %w", err)
+			}
+			if !ok {
+				continue
+			}
+			report, err := session.submit(admitted, event.Close, config.TakerFeeRate, event.CloseTimeNS)
+			if err != nil {
 				return nil, fmt.Errorf("execution session: %w", err)
 			}
+			admission.record(report, event.CloseTimeNS)
 		}
 	}
 	result.Episodes = ledger.Episodes()
-	result.PositionQty = ledger.PositionQty(config.Symbol)
+	result.PositionQty = admission.positions[config.Symbol]
 	return result, nil
 }

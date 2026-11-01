@@ -79,7 +79,7 @@ func TestOfflineReplaySessionErrorsRefuseRestart(t *testing.T) {
 				calls++
 				a, b := sessionOrder("first"), sessionOrder("second")
 				if phase == "simulator" {
-					a.ReduceOnly = true
+					a.Quantity = 1e308
 				} else {
 					a.Quantity = 1e306
 					b.Quantity = 1e306

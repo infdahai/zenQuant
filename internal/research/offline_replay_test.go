@@ -211,7 +211,7 @@ func TestOfflineReplayRejectionsAndErrors(t *testing.T) {
 			return []OfflineExecutionOrder{{Symbol: "ETH", Side: 1, Quantity: 1}}, nil
 		}},
 		{"invalid order", func(c *OfflineReplayConfig) {}, func(OfflineReplaySnapshot) ([]OfflineExecutionOrder, error) {
-			return []OfflineExecutionOrder{{ClientOrderID: "invalid", Symbol: "BTC", Side: 1, Quantity: 1, ReduceOnly: true}}, nil
+			return []OfflineExecutionOrder{{ClientOrderID: "invalid", Symbol: "BTC", Side: 1, Quantity: 1, OrderType: "LIMIT"}}, nil
 		}},
 	}
 	for _, tt := range tests {
