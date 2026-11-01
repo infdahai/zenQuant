@@ -27,11 +27,15 @@ func runWorkbench(args []string, out, stderr io.Writer) error {
 	default:
 		return errors.New("unknown workbench action")
 	}
-	b, err := io.ReadAll(io.LimitReader(os.Stdin, workbench.MaxInput+1))
+	limit := workbench.MaxInput
+	if action == "import" {
+		limit = workbench.MaxDatasetInput
+	}
+	b, err := io.ReadAll(io.LimitReader(os.Stdin, int64(limit)+1))
 	if err != nil {
 		return err
 	}
-	if len(b) > workbench.MaxInput {
+	if len(b) > limit {
 		return errors.New("request too large")
 	}
 	store, err := workbench.Open(*storePath)

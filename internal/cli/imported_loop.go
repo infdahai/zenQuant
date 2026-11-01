@@ -18,6 +18,9 @@ import (
 	"github.com/infdahai/zenQuant/internal/workbench"
 )
 
+// Decision arrays carry complete indicator and state objects for each close.
+const maxDecisionInput = 16 << 20
+
 type importedLoopBuild struct {
 	Identity  string `json:"identity"`
 	Revision  string `json:"vcs_revision"`
@@ -83,7 +86,7 @@ func runImportedLoop(args []string, out, stderr io.Writer) error {
 	if !info.IsDir() {
 		return errors.New("store must be an existing directory")
 	}
-	decisions, err := localfile.Read(*decisionsPath, history.MaxCSV)
+	decisions, err := localfile.Read(*decisionsPath, maxDecisionInput)
 	if err != nil {
 		return fmt.Errorf("decisions: %w", err)
 	}

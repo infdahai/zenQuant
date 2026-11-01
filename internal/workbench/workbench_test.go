@@ -24,6 +24,72 @@ func fixture(t *testing.T) []byte {
 	}
 	return b
 }
+func TestLocalCapacityBoundaries(t *testing.T) {
+	s, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw := fixture(t)
+	for _, size := range []int{MaxInput, MaxInput + 1, MaxDatasetInput} {
+		padded := append(append([]byte(nil), raw...), []byte(strings.Repeat(" ", size-len(raw)))...)
+		if _, err := s.Import(padded); err != nil {
+			t.Fatalf("dataset size %d: %v", size, err)
+		}
+	}
+	if _, err := s.Import(make([]byte, MaxDatasetInput+1)); err == nil || !strings.Contains(err.Error(), "exceeds") {
+		t.Fatalf("dataset over limit: %v", err)
+	}
+	for _, tc := range []struct {
+		kind  string
+		limit int
+	}{{"snapshot", MaxSnapshot}, {"result", MaxInput * 4}} {
+		p := filepath.Join(s.root, tc.kind+"-"+strings.Repeat("a", 64)+".json")
+		for _, size := range []int{tc.limit, tc.limit + 1} {
+			if err := os.WriteFile(p, make([]byte, size), 0600); err != nil {
+				t.Fatal(err)
+			}
+			_, err := readBounded(p, artifactLimit(tc.kind))
+			if (err != nil) != (size > tc.limit) {
+				t.Fatalf("%s size %d: %v", tc.kind, size, err)
+			}
+		}
+	}
+}
+
+func TestCandleCountLimit(t *testing.T) {
+	var d Dataset
+	if err := json.Unmarshal(fixture(t), &d); err != nil {
+		t.Fatal(err)
+	}
+	d.Funding = nil
+	bar := d.Candles[0]
+	d.Candles = make([]research.ReplayCandle, maxCandles+1)
+	for i := range d.Candles {
+		bar.OpenTimeNS = int64(i) * 300e9
+		bar.CloseTimeNS = bar.OpenTimeNS + 300e9
+		d.Candles[i] = bar
+	}
+	s, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, count := range []int{maxCandles, maxCandles + 1} {
+		part := d
+		part.Candles = d.Candles[:count]
+		raw, err := json.Marshal(part)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(raw) > MaxDatasetInput {
+			t.Fatalf("fixture too large: %d", len(raw))
+		}
+		_, err = s.Import(raw)
+		if (err != nil) != (count > maxCandles) {
+			t.Fatalf("%d candles: %v", count, err)
+		}
+	}
+}
+
 func TestImportProvenanceUsesNormalizedClose(t *testing.T) {
 	s, err := Open(t.TempDir())
 	if err != nil {
