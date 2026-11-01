@@ -19,25 +19,11 @@ from pathlib import Path
 from zenquant.data._z_utils import robust_z as _robust_z
 
 
-def has_raw_cot_fragments(dataset: object) -> bool:
-    """Identify Go COT in any physical fragment, even in mixed-schema datasets."""
-    return "position_as_of_date_ns" in dataset.schema.names or any(
-        "position_as_of_date_ns" in fragment.physical_schema.names for fragment in dataset.fragments
-    )
-
-
 def cot_data_available(path: Path) -> bool:
-    """Check legacy compatibility and presence of usable positioning data."""
+    """Check availability under the store's point-in-time admission policy."""
     store = CotDataStore(CotStoreConfig(cot_path=path))
     store.load()
-    if not store.loaded:
-        return False
-    import pyarrow.parquet as pq
-
-    dataset = pq.ParquetDataset(path)
-    fields = {"asset_mgr_net", "leveraged_net", "dealer_net", "total_oi"} & set(dataset.schema.names)
-    table = dataset.read(columns=sorted(fields))
-    return any(table.column(name).null_count < table.num_rows for name in fields)
+    return store.loaded
 
 
 def macro_cot_available(path: Path) -> bool:
@@ -99,46 +85,17 @@ class CotDataStore:
         return len(self._timestamps) > 0
 
     def load(self) -> None:
-        """Load COT parquet file."""
+        """Clear cached data; date-only COT files are not usable point in time."""
         self._lookup_cache.clear()
         self._timestamps.clear()
         self._asset_mgr_net.clear()
         self._leveraged_net.clear()
         self._dealer_net.clear()
         self._total_oi.clear()
-        if not self._config.cot_path.exists():
-            return
-
-        import pyarrow.parquet as pq
-
-        try:
-            dataset = pq.ParquetDataset(self._config.cot_path)
-            schemas = [set(fragment.physical_schema.names) for fragment in dataset.fragments]
-            if has_raw_cot_fragments(dataset) or any(
-                "report_date_ns" not in columns or columns != schemas[0] for columns in schemas
-            ):
-                return
-            df = dataset.read().to_pandas()
-
-            rows = [
-                (
-                    int(row["report_date_ns"]),
-                    int(row.get("asset_mgr_net", 0)),
-                    int(row.get("leveraged_net", 0)),
-                    int(row.get("dealer_net", 0)),
-                    int(row.get("total_oi", 0)),
-                )
-                for _, row in df.sort_values("report_date_ns").iterrows()
-            ]
-        except Exception:
-            return
-
-        for timestamp, asset_mgr, leveraged, dealer, total_oi in rows:
-            self._timestamps.append(timestamp)
-            self._asset_mgr_net.append(asset_mgr)
-            self._leveraged_net.append(leveraged)
-            self._dealer_net.append(dealer)
-            self._total_oi.append(total_oi)
+        # Position/report dates are not evidenced publication times. There is
+        # no supported PIT COT ingestion contract yet, so all existing files
+        # remain unavailable. Do not infer a release lag or accept a filename
+        # or newly named column as proof of historical availability.
 
     def lookup(self, cutoff_time_ns: int) -> CotSnapshot:
         """Return latest COT data before cutoff (point-in-time correct)."""
@@ -149,7 +106,7 @@ class CotDataStore:
             total_oi=0,
             asset_mgr_z=0.0,
             leveraged_z=0.0,
-            quality_flags=[],
+            quality_flags=["COT_UNAVAILABLE"],
         )
 
         if not self._timestamps:

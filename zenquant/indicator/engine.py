@@ -551,10 +551,14 @@ class IndicatorEngine:
             macro_values["rv_hf"] = hf.realized_vol_hf
             macro_values["intra_bar_max_dd"] = hf.intra_bar_max_dd
 
+        macro_values["cot_available"] = False
         if self._cot_store is not None and hasattr(self._cot_store, "lookup"):
             cot = self._cot_store.lookup(candle.bar_end_ns)
-            macro_values["cot_asset_mgr_z"] = cot.asset_mgr_z
-            macro_values["cot_leveraged_z"] = cot.leveraged_z
+            available = not {"COT_UNAVAILABLE", "COT_STALE"}.intersection(cot.quality_flags)
+            macro_values["cot_available"] = available
+            if available:
+                macro_values["cot_asset_mgr_z"] = cot.asset_mgr_z
+                macro_values["cot_leveraged_z"] = cot.leveraged_z
 
         if self._basis_store is not None and hasattr(self._basis_store, "lookup"):
             basis = self._basis_store.lookup(candle.bar_end_ns)

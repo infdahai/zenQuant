@@ -5,6 +5,7 @@ from __future__ import annotations
 import ast
 import asyncio
 import inspect
+import os
 import textwrap
 import threading
 import time
@@ -621,6 +622,7 @@ def _live_runtime(*, shadow_enabled: bool) -> ZenQuantWebRuntime:
             runtime_mode="live",
             execution_config=ExecutionKernelConfig(execution_authority_mode="target_tracking_v2"),
             options_state_shadow_enabled=shadow_enabled,
+            paper_session_path=Path(os.environ["ZENQUANT_PAPER_SESSION_PATH"]).with_suffix(f".{shadow_enabled}.lock"),
         )
         runtime._initialize_trading_chain()
     return runtime

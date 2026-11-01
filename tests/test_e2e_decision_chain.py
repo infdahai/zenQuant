@@ -178,7 +178,24 @@ class DecisionChainEndToEndTests(unittest.TestCase):
         self.assertEqual(len(actionable_exits), 1)
         self.assertEqual(actionable_exits[0].cutoff_time_ns, 7)
         self.assertTrue(collected["target"][-1].reduce_only)
+        # The exit respects the same one-BTC bar budget as entry. Retain the
+        # remaining actual BTC until the next confirmed bar can finish it.
+        self.assertAlmostEqual(execution.positions.get("BTCUSDT_PERP", 0.0), 1.0)
+        self.assertAlmostEqual(risk._actual_positions["BTCUSDT_PERP"], 1.0)
+        bus.publish(
+            "indicator.pack.v1.4h.BTCUSDT_PERP",
+            _pack(
+                timeframe=Timeframe.TF_4H,
+                cutoff_time_ns=9,
+                last_price=94.0,
+                cvd_slope=0.2,
+                structure_state="UPTREND",
+                momentum_roc_z=0.4,
+            ),
+        )
+        self.assertTrue(collected["target"][-1].reduce_only)
         self.assertAlmostEqual(execution.positions.get("BTCUSDT_PERP", 0.0), 0.0)
+        self.assertAlmostEqual(risk._actual_positions["BTCUSDT_PERP"], 0.0)
 
     def test_bar_close_chain_keeps_cutoff_consistent(self) -> None:
         bus = InMemoryJetStream()

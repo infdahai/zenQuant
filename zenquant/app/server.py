@@ -125,8 +125,12 @@ class ZenQuantWebRuntime:
         options_state_resolver: OptionsStateResolver | None = None,
         options_state_shadow_config: OptionsStateShadowRuntimeConfig | None = None,
         options_state_store_factory: OptionsStoreFactory = OptionsDataStore,
+        paper_session_path: Path | None = None,
     ) -> None:
         self._runtime_mode = runtime_mode
+        self._paper_session_path = paper_session_path or Path(
+            os.getenv("ZENQUANT_PAPER_SESSION_PATH", "python-paper-session.lock")
+        )
         self._tick_interval_s = tick_interval_s
         self._warmup_steps = max(0, warmup_steps)
         self._execution_config = execution_config
@@ -454,6 +458,8 @@ class ZenQuantWebRuntime:
     def _initialize_trading_chain(self) -> None:
         """Attach risk, strategy, execution, and persistence subscribers once."""
         if self.risk_overlay is not None:
+            if self.execution_kernel is None:
+                raise RuntimeError("trading chain initialization failed; cannot resume")
             return
         self.risk_overlay = RiskOverlay(bus=self.bus)
         self.strategy_engine = ARCStrategyEngine(bus=self.bus, config=self._strategy_config)
@@ -463,6 +469,7 @@ class ZenQuantWebRuntime:
             gateway=self.execution_gateway,
             risk_overlay=self.risk_overlay,
             config=self._execution_config,
+            session_path=self._paper_session_path if self._runtime_mode == "live" else None,
         )
         self.online_state = OnlineStateStore(
             bus=self.bus,

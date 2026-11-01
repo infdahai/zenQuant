@@ -29,6 +29,8 @@ import unittest
 from datetime import UTC, datetime
 from pathlib import Path
 
+from zenquant.domain import Timeframe
+from zenquant.domain.quantity import add_filled_quantity
 from zenquant.historical import (
     HistoricalBacktest,
     HistoricalBacktestConfig,
@@ -56,7 +58,7 @@ class TestBacktestInvariants(unittest.TestCase):
                 _open_interest_rows(),
             )
 
-            self.result = HistoricalBacktest(
+            self.runner = HistoricalBacktest(
                 HistoricalBacktestConfig(
                     root_dir=root,
                     symbol="BTCUSDT",
@@ -66,7 +68,40 @@ class TestBacktestInvariants(unittest.TestCase):
                     liquidation_dir=root / "liquidations" / "aggregated",
                     profile_path=None,
                 )
-            ).run()
+            )
+            self.orders = {}
+            self.position_disagreements = []
+            self.runner.bus.subscribe(
+                "exec.order.submit", lambda _, order: self.orders.__setitem__(order.client_order_id, order)
+            )
+
+            def compare_positions(_, target):
+                actual = self.runner.execution_kernel.positions.get(target.symbol, 0.0)
+                risk_qty = self.runner.risk_overlay._actual_positions.get(target.symbol, 0.0)
+                tracked = self.runner.strategy_engine._positions.get((target.symbol, Timeframe.TF_4H))
+                strategy_qty = tracked.direction * tracked.current_qty if tracked else 0.0
+                if actual != risk_qty or actual != strategy_qty:
+                    self.position_disagreements.append((target.cutoff_time_ns, actual, risk_qty, strategy_qty))
+
+            self.runner.bus.subscribe("intent.target_position.final.>", compare_positions)
+            self.result = self.runner.run()
+
+    def test_actual_positions_and_cumulative_bar_budget(self) -> None:
+        self.assertEqual(self.position_disagreements, [])
+        filled_by_bar = {}
+        positions = {}
+        for report in self.runner._reports:
+            order = self.orders[report.client_order_id]
+            self.assertLessEqual(report.filled_qty, order.quantity)
+            key = (report.symbol, report.transaction_time_ns)
+            filled_by_bar[key] = add_filled_quantity(filled_by_bar.get(key, 0.0), report.filled_qty)
+            self.assertLessEqual(filled_by_bar[key], self.runner.execution_kernel._config.max_trade_qty_per_bar)
+            before = positions.get(report.symbol, 0.0)
+            after = add_filled_quantity(before, report.side * report.filled_qty)
+            if order.reduce_only:
+                self.assertLessEqual(abs(after), abs(before))
+                self.assertGreaterEqual(before * after, 0.0)
+            positions[report.symbol] = after
 
     def test_sharpe_is_positive(self) -> None:
         """Sharpe must be positive (strategy should be profitable on synthetic uptrend)."""

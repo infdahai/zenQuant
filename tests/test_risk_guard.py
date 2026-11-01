@@ -182,7 +182,7 @@ class KillSwitchTests(unittest.TestCase):
         final_targets = []
         bus.subscribe("intent.target_position.final.>", lambda _, p: final_targets.append(p))
 
-        bus.publish("exec.order.report", _fill(1.0))
+        bus.claim_publisher("exec.order.report")(_fill(1.0))
         bus.publish("indicator.pack.v1.4h.BTCUSDT_PERP", _make_pack())
         bus.publish("intent.target_position.arc.BTCUSDT_PERP", _make_target(qty=-1.0, reduce_only=True))
 

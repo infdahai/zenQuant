@@ -19,6 +19,7 @@ from unittest.mock import patch
 from zenquant.app.server import ZenQuantWebRuntime
 from zenquant.domain import (
     EventMeta,
+    ExecutionReport,
     IndicatorCoverage,
     IndicatorPack,
     MarketState,
@@ -348,6 +349,15 @@ class TestTargetTrackingRuntimeParity(unittest.TestCase):
             )
             strategy._publish_decision_snapshot_if_enabled(pack, state, playbook, target)
             bus.publish(f"intent.target_position.{target.portfolio}.{target.symbol}", target)
+            self.assertEqual(len(reports), 1)
+            position_before = dict(risk._actual_positions)
+            cash_before = risk._cash
+            for report in (ExecutionReport(**reports[0]), ExecutionReport(**(reports[0] | {"filled_qty": 0.2}))):
+                with self.assertRaisesRegex(ValueError, "external execution reports"):
+                    bus.publish("exec.order.report", report)
+            self.assertEqual(len(reports), 1)
+            self.assertEqual(risk._actual_positions, position_before)
+            self.assertEqual(risk._cash, cash_before)
             return snapshots, orders, reports, audits, kernel.positions
 
         historical_trace = run_trace(

@@ -110,7 +110,12 @@ async def run_paper_trading(symbol: str = "BTCUSDT", duration_hours: float = 24.
         _, plugin_registry = build_from_profile(profile_path, plugin_root=_Path("zenquant/plugins"))
     ARCStrategyEngine(bus=bus, plugin_registry=plugin_registry)
     StateEngine(bus=bus)
-    ExecutionKernel(bus=bus, gateway=SimulatedGateway(), risk_overlay=risk_overlay)
+    ExecutionKernel(
+        bus=bus,
+        gateway=SimulatedGateway(),
+        risk_overlay=risk_overlay,
+        session_path=Path(os.getenv("ZENQUANT_PAPER_SESSION_PATH", "python-paper-session.lock")),
+    )
 
     # Decision log
     log_dir = Path("logs/paper_trading")

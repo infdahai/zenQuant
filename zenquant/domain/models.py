@@ -316,7 +316,7 @@ class RiskSnapshot:
     flags: list[str]
 
 
-@dataclass(slots=True)
+@dataclass(slots=True, frozen=True)
 class ExecutionOrder:
     client_order_id: str
     symbol: str
@@ -345,8 +345,15 @@ class ExecutionOrderAudit:
     remaining_target_delta_qty: float = 0.0
 
 
-@dataclass(slots=True)
+@dataclass(slots=True, frozen=True)
 class ExecutionReport:
+    """Incremental result of one synchronous simulated order attempt.
+
+    Within a simulation session, client_order_id is the unique result identity.
+    filled_qty and fee are per-attempt increments, not cumulative totals. This
+    model is not an exchange event contract; external reports are not admitted.
+    """
+
     client_order_id: str
     symbol: str
     side: int

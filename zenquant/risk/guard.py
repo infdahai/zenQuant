@@ -15,6 +15,7 @@ from zenquant.domain import (
     Timeframe,
     target_position_hash,
 )
+from zenquant.domain.quantity import add_filled_quantity
 from zenquant.infra import EventBus
 
 
@@ -175,7 +176,7 @@ class RiskOverlay:
             return
 
         current = self._actual_positions.get(payload.symbol, 0.0)
-        self._actual_positions[payload.symbol] = current + (payload.side * payload.filled_qty)
+        self._actual_positions[payload.symbol] = add_filled_quantity(current, payload.side * payload.filled_qty)
         if payload.avg_price > 0:
             self._last_price[payload.symbol] = payload.avg_price
 

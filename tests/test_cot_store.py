@@ -47,6 +47,18 @@ def _make_cot_row(
     }
 
 
+def _seed_synthetic_available(store, records):
+    """Exercise lookup math with explicitly synthetic availability boundaries.
+
+    This bypass is test-only; loading the same legacy date-only file must fail.
+    """
+    store._timestamps = [row["report_date_ns"] for row in records]
+    store._asset_mgr_net = [row["asset_mgr_net"] for row in records]
+    store._leveraged_net = [row["leveraged_net"] for row in records]
+    store._dealer_net = [row["dealer_net"] for row in records]
+    store._total_oi = [row["total_oi"] for row in records]
+
+
 class CotStoreTests(unittest.TestCase):
     def test_empty_store(self) -> None:
         from zenquant.data import CotDataStore, CotStoreConfig
@@ -71,6 +83,9 @@ class CotStoreTests(unittest.TestCase):
 
             store = CotDataStore(CotStoreConfig(cot_path=path))
             store.load()
+            self.assertFalse(store.loaded)
+            self.assertIn("COT_UNAVAILABLE", store.lookup(4 * WEEK_NS).quality_flags)
+            _seed_synthetic_available(store, records)
             self.assertTrue(store.loaded)
 
             # Before any data
@@ -95,6 +110,8 @@ class CotStoreTests(unittest.TestCase):
 
             store = CotDataStore(CotStoreConfig(cot_path=path))
             store.load()
+            self.assertFalse(store.loaded)
+            _seed_synthetic_available(store, [_make_cot_row(1)])
 
             # Within staleness
             snap = store.lookup(int(1.5 * WEEK_NS))
@@ -125,6 +142,8 @@ class CotStoreTests(unittest.TestCase):
 
             store = CotDataStore(CotStoreConfig(cot_path=path))
             store.load()
+            self.assertFalse(store.loaded)
+            _seed_synthetic_available(store, records)
 
             snap = store.lookup(22 * WEEK_NS)
             self.assertGreater(snap.asset_mgr_z, 2.0)
@@ -179,6 +198,8 @@ def test_failed_conversion_does_not_leave_partial_state(tmp_path: Path) -> None:
     _write_cot_parquet(path, [_make_cot_row(1, asset_mgr_net=123)])
     store = CotDataStore(CotStoreConfig(cot_path=path))
     store.load()
+    assert not store.loaded
+    _seed_synthetic_available(store, [_make_cot_row(1, asset_mgr_net=123)])
     assert store.lookup(WEEK_NS).asset_mgr_net == 123
 
     first = _make_cot_row(1)
@@ -189,12 +210,12 @@ def test_failed_conversion_does_not_leave_partial_state(tmp_path: Path) -> None:
     store.load()
     assert not store.loaded
     assert store.lookup(2 * WEEK_NS).asset_mgr_net == 0
-    assert store.lookup(10 * WEEK_NS).quality_flags == []
+    assert store.lookup(10 * WEEK_NS).quality_flags == ["COT_UNAVAILABLE"]
 
     _write_cot_parquet(path, [_make_cot_row(2, asset_mgr_net=456)])
     store.load()
-    assert store.loaded
-    assert store.lookup(2 * WEEK_NS).asset_mgr_net == 456
+    assert not store.loaded
+    assert store.lookup(2 * WEEK_NS).asset_mgr_net == 0
 
 
 @pytest.mark.skipif(shutil.which("go") is None, reason="Go toolchain is unavailable")
@@ -279,7 +300,7 @@ def test_go_cot_parquet_is_not_available_to_python_store(tmp_path: Path) -> None
     config = CotStoreConfig(cot_path=legacy_path)
     store = CotDataStore(config)
     store.load()
-    assert store.loaded and store.lookup(report_ns).asset_mgr_net == 1000
+    assert not store.loaded and store.lookup(report_ns).asset_mgr_net == 0
     for candidate in (path, path.parent):
         config.cot_path = candidate
         store.load()
