@@ -15,6 +15,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"sync"
+	"time"
 
 	"github.com/infdahai/zenQuant/internal/research"
 )
@@ -32,18 +33,27 @@ type Dataset struct {
 	Timeframe  string                  `json:"timeframe"`
 	Candles    []research.ReplayCandle `json:"candles"`
 	Funding    []Funding               `json:"funding"`
+	Provenance *DatasetProvenance      `json:"provenance,omitempty"`
+}
+
+// DatasetProvenance records supplied input identity, not its authenticity or arrival time.
+type DatasetProvenance struct {
+	SourceSymbol string `json:"source_symbol"`
+	SourceSHA256 string `json:"source_sha256"`
+	AsOf         string `json:"as_of"`
 }
 type Funding struct {
 	TimeNS int64   `json:"time_ns"`
 	Rate   float64 `json:"rate"`
 }
 type Quality struct {
-	Count         int    `json:"count"`
-	Gaps          int    `json:"gaps"`
-	FirstCloseNS  int64  `json:"first_close_ns"`
-	LastCloseNS   int64  `json:"last_close_ns"`
-	FundingStatus string `json:"funding_status"`
-	Availability  string `json:"availability"`
+	Count          int    `json:"count"`
+	Gaps           int    `json:"gaps"`
+	FirstCloseNS   int64  `json:"first_close_ns"`
+	LastCloseNS    int64  `json:"last_close_ns"`
+	FundingStatus  string `json:"funding_status"`
+	Availability   string `json:"availability"`
+	CandleCoverage string `json:"candle_coverage,omitempty"`
 }
 type Snapshot struct {
 	ID           string  `json:"id"`
@@ -190,11 +200,23 @@ func (s *Store) Import(raw []byte) (Snapshot, error) {
 	if _, err := research.PrepareReplayEvents(map[string][]research.ReplayCandle{d.Timeframe: d.Candles}, []string{d.Timeframe}, d.Timeframe, nil, nil); err != nil {
 		return out, err
 	}
-	q := Quality{Count: len(d.Candles), FirstCloseNS: d.Candles[0].CloseTimeNS, LastCloseNS: d.Candles[len(d.Candles)-1].CloseTimeNS, FundingStatus: "coverage unknown; missing rows are not inferred", Availability: "unknown historical arrival time"}
+	var cutoff time.Time
+	if d.Provenance != nil {
+		p := d.Provenance
+		var err error
+		cutoff, err = time.Parse(time.RFC3339Nano, p.AsOf)
+		if err != nil || cutoff.IsZero() || p.AsOf != cutoff.UTC().Format(time.RFC3339Nano) || p.SourceSymbol != "BTCUSDT" || !idPattern.MatchString(p.SourceSHA256) {
+			return out, errors.New("invalid dataset provenance")
+		}
+	}
+	q := Quality{Count: len(d.Candles), FirstCloseNS: d.Candles[0].CloseTimeNS, LastCloseNS: d.Candles[len(d.Candles)-1].CloseTimeNS, FundingStatus: "coverage unknown; missing rows are not inferred", Availability: "unknown historical arrival time", CandleCoverage: "unknown; no requested coverage verified"}
 	if len(d.Funding) == 0 {
 		q.FundingStatus = "no funding observations supplied"
 	}
 	for i, c := range d.Candles {
+		if d.Provenance != nil && time.Unix(0, c.CloseTimeNS).After(cutoff) {
+			return out, errors.New("candle closes after provenance cutoff")
+		}
 		if c.Symbol != d.Instrument {
 			return out, errors.New("instrument mismatch")
 		}

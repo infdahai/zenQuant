@@ -13,7 +13,7 @@ import (
 	"github.com/infdahai/zenQuant/internal/workbench"
 )
 
-func TestPythonParityAndReplay(t *testing.T) {
+func TestSyntheticPythonCandleNormalizationAndCloseVisibility(t *testing.T) {
 	csv, err := os.ReadFile("testdata/klines.csv")
 	if err != nil {
 		t.Fatal(err)
@@ -56,7 +56,7 @@ func TestPythonParityAndReplay(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if snap.Quality.Count != 2 || snap.Quality.Gaps != 0 {
+	if snap.Quality.Count != 2 || snap.Quality.Gaps != 0 || snap.Quality.CandleCoverage != "unknown; no requested coverage verified" {
 		t.Fatalf("quality: %+v", snap.Quality)
 	}
 	before := d.Candles[0].CloseTimeNS - 1
@@ -70,6 +70,59 @@ func TestPythonParityAndReplay(t *testing.T) {
 		t.Fatalf("close visibility: %v %v", events, err)
 	}
 }
+func TestTruncatedCoverageAndProvenanceValidation(t *testing.T) {
+	row := "1704067200000,100.5,105,99,103,12.25,1704081599999,1250,17,5,510,0\n"
+	b, err := Normalize(strings.NewReader(row), "4h", time.Date(2024, 1, 2, 0, 0, 0, 0, time.UTC))
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, err := workbench.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	snap, err := store.Import(b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snap.Quality.Gaps != 0 || snap.Quality.CandleCoverage != "unknown; no requested coverage verified" {
+		t.Fatalf("truncated coverage: %+v", snap.Quality)
+	}
+	var d workbench.Dataset
+	if err = json.Unmarshal(b, &d); err != nil {
+		t.Fatal(err)
+	}
+	for _, mutate := range []func(*workbench.Dataset){
+		func(d *workbench.Dataset) { d.Provenance.AsOf = "2024-01-01T03:59:59Z" },
+		func(d *workbench.Dataset) { d.Provenance.SourceSHA256 = "invalid" },
+		func(d *workbench.Dataset) { d.Provenance.SourceSymbol = "ETHUSDT" },
+	} {
+		var copy workbench.Dataset
+		if err = json.Unmarshal(b, &copy); err != nil {
+			t.Fatal(err)
+		}
+		mutate(&copy)
+		bad, err := json.Marshal(copy)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err = store.Import(bad); err == nil {
+			t.Fatal("invalid provenance accepted")
+		}
+	}
+}
+
+func TestRejectUnrepresentableUTCCutoff(t *testing.T) {
+	for _, input := range []string{"9999-12-31T23:00:00-02:00", "0000-01-01T00:00:00+01:00"} {
+		cutoff, err := time.Parse(time.RFC3339, input)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := Normalize(strings.NewReader(""), "4h", cutoff); err == nil || !strings.Contains(err.Error(), "UTC RFC3339") {
+			t.Fatalf("cutoff %s: expected UTC representation error, got %v", input, err)
+		}
+	}
+}
+
 func TestRejectInvalid(t *testing.T) {
 	row := "1704067200000,100.5,105,99,103,12.25,1704081599999,1250,17,5,510,0\n"
 	cases := map[string]string{"empty": "", "header": "open,high\n", "columns": strings.TrimSpace(row) + ",1\n", "duplicate": row + row, "unordered": strings.Replace(row, "1704067200000", "1704081600000", 1) + row, "close": strings.Replace(row, "1704081599999", "1704081599998", 1), "misaligned": strings.Replace(row, "1704067200000", "1704067200001", 1), "nan": strings.Replace(row, "100.5", "NaN", 1), "ohlc": strings.Replace(row, "105", "98", 1), "trades": strings.Replace(row, ",17,", ",-1,", 1), "oversize": strings.Repeat("x", MaxCSV+1)}

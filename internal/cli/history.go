@@ -1,15 +1,15 @@
 package cli
 
 import (
+	"bytes"
 	"errors"
 	"flag"
 	"fmt"
 	"io"
-	"os"
 	"time"
 
 	"github.com/infdahai/zenQuant/internal/history"
-	"golang.org/x/sys/unix"
+	"github.com/infdahai/zenQuant/internal/localfile"
 )
 
 func runHistoryImport(args []string, out, stderr io.Writer) error {
@@ -32,20 +32,11 @@ func runHistoryImport(args []string, out, stderr io.Writer) error {
 	if err != nil {
 		return fmt.Errorf("invalid as-of: %w", err)
 	}
-	fd, err := unix.Open(*input, unix.O_RDONLY|unix.O_NONBLOCK|unix.O_NOFOLLOW, 0)
+	raw, err := localfile.Read(*input, history.MaxCSV)
 	if err != nil {
 		return err
 	}
-	f := os.NewFile(uintptr(fd), *input)
-	defer f.Close()
-	info, err := f.Stat()
-	if err != nil {
-		return err
-	}
-	if !info.Mode().IsRegular() {
-		return errors.New("input must be a regular file (not a symlink)")
-	}
-	b, err := history.Normalize(f, *timeframe, asOf)
+	b, err := history.Normalize(bytes.NewReader(raw), *timeframe, asOf)
 	if err != nil {
 		return err
 	}

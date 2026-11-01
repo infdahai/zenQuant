@@ -3,6 +3,7 @@ package history
 
 import (
 	"bytes"
+	"crypto/sha256"
 	"encoding/csv"
 	"encoding/json"
 	"fmt"
@@ -24,6 +25,10 @@ func Normalize(input io.Reader, timeframe string, asOf time.Time) ([]byte, error
 	if duration == 0 || asOf.IsZero() {
 		return nil, fmt.Errorf("supported timeframe and as-of required")
 	}
+	asOf = asOf.UTC()
+	if _, err := asOf.MarshalText(); err != nil {
+		return nil, fmt.Errorf("as-of cannot be represented in UTC RFC3339: %w", err)
+	}
 	raw, err := io.ReadAll(io.LimitReader(input, MaxCSV+1))
 	if err != nil {
 		return nil, err
@@ -31,9 +36,10 @@ func Normalize(input io.Reader, timeframe string, asOf time.Time) ([]byte, error
 	if len(raw) > MaxCSV {
 		return nil, fmt.Errorf("CSV exceeds 4 MiB")
 	}
+	sum := sha256.Sum256(raw)
 	r := csv.NewReader(bytes.NewReader(raw))
 	r.FieldsPerRecord = 12
-	d := workbench.Dataset{Version: "dataset-v1", Provider: "Binance supplied CSV", Venue: "BINANCE", Instrument: "BTC", Timeframe: timeframe, Candles: []research.ReplayCandle{}, Funding: []workbench.Funding{}}
+	d := workbench.Dataset{Version: "dataset-v1", Provider: "Binance supplied CSV", Venue: "BINANCE", Instrument: "BTC", Timeframe: timeframe, Candles: []research.ReplayCandle{}, Funding: []workbench.Funding{}, Provenance: &workbench.DatasetProvenance{SourceSymbol: "BTCUSDT", SourceSHA256: fmt.Sprintf("%x", sum), AsOf: asOf.UTC().Format(time.RFC3339Nano)}}
 	var previous int64 = -1
 	for line := 1; ; line++ {
 		fields, e := r.Read()
