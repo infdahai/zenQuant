@@ -5,9 +5,8 @@ import (
 	"testing"
 )
 
-// This manually driven component contract supplies ordering, target mapping,
-// USD currency and mark validity. It does not integrate an execution adapter
-// or test fill deduplication, out-of-order delivery, or live parity.
+// This offline contract supplies target mapping, USD currency and mark validity.
+// It does not establish live parity.
 func TestManuallyDrivenStrategyRiskPartialFillContract(t *testing.T) {
 	const symbol = "BTCUSDT_PERP"
 	const first int64 = 1704067200000000000
@@ -61,11 +60,15 @@ func TestManuallyDrivenStrategyRiskPartialFillContract(t *testing.T) {
 		t.Fatalf("risk did not reduce long target: strategy=%+v risk=%+v", initial.Target, approved.Revised)
 	}
 	// Only half the approved target fills; the rest remains unfilled.
-	fill := ExecutionReport{Symbol: symbol, Side: 1, Status: "PARTIALLY_FILLED", FilledQty: approved.Revised.Quantity / 2, AvgPrice: 100, TransactionTimeNS: first + 1}
-	if err := flow.Fill(StrategyFill{Symbol: fill.Symbol, Side: float64(fill.Side), Quantity: fill.FilledQty, Price: fill.AvgPrice}); err != nil {
+	fill, err := SimulateOfflineExecution(OfflineExecutionOrder{ClientOrderID: "partial-target", Symbol: symbol, Side: 1, Quantity: approved.Revised.Quantity / 2}, 100, 0.001, first+1)
+	if err != nil {
 		t.Fatal(err)
 	}
-	if err := risk.OnFill(fill.Symbol, fill.Side, fill.FilledQty, fill.AvgPrice, "USD", fill.TransactionTimeNS, first+bar); err != nil {
+	adapter, err := NewOfflineReportAdapter(flow, risk)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := adapter.Dispatch(fill, "USD", first+bar); err != nil {
 		t.Fatal(err)
 	}
 	if got := risk.State().Positions[symbol]; got != fill.FilledQty {
