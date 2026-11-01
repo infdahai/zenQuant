@@ -64,6 +64,72 @@ func TestOfflineReplayFeedbackOnlyChangesFuturePolicyCalls(t *testing.T) {
 	}
 }
 
+func TestOfflineReplayFundingNormalizedFlipFeedback(t *testing.T) {
+	cfg := replayTestConfig()
+	cfg.MaxTradeQtyPerCutoff = 1
+	cfg.Candles["5m"][1].CloseTimeNS -= 1_000_000
+	cfg.Candles["5m"] = append(cfg.Candles["5m"], replayTestBar("5m", 10*replayMinute, 5*replayMinute, 120))
+	cfg.Funding = []ReplayFundingRow{{6 * replayMinute, .01}, {7 * replayMinute, .02}, {10 * replayMinute, .03}, {11 * replayMinute, .01}}
+	var trace []string
+	var callbackPositions []float64
+	cfg.OnReport = func(report ExecutionReport, position float64) error {
+		trace = append(trace, report.ClientOrderID)
+		callbackPositions = append(callbackPositions, position)
+		return nil
+	}
+	calls := 0
+	result, err := RunOfflineReplayIntents(cfg, func(s OfflineReplaySnapshot) ([]OfflineReplayIntent, error) {
+		calls++
+		switch calls {
+		case 1:
+			trace = append(trace, "policy-entry")
+			return []OfflineReplayIntent{{Order: &OfflineExecutionOrder{ClientOrderID: "entry", Symbol: "BTC", Side: 1, Quantity: .4}}}, nil
+		case 2:
+			trace = append(trace, "policy-flip")
+			if s.Event.CloseTimeNS != 10*replayMinute || s.PositionQty != .4 {
+				t.Fatalf("normalized flip snapshot: %+v", s)
+			}
+			return []OfflineReplayIntent{{Flip: &OfflineReplayFlip{Symbol: "BTC", TargetQty: -1, CloseClientOrderID: "close", OpenClientOrderID: "open"}}}, nil
+		case 3:
+			trace = append(trace, "policy-after")
+			if s.PositionQty != -.6 || len(callbackPositions) != 3 || callbackPositions[2] != s.PositionQty {
+				t.Fatalf("post-flip snapshot=%+v callbacks=%v", s, callbackPositions)
+			}
+		}
+		return nil, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(trace, []string{"policy-entry", "entry", "policy-flip", "close", "open", "policy-after"}) || !reflect.DeepEqual(callbackPositions, []float64{.4, 0, -.6}) {
+		t.Fatalf("trace=%v positions=%v", trace, callbackPositions)
+	}
+	if calls != 3 || len(result.Reports) != 3 || len(result.Episodes) != 2 || !result.Episodes[0].Closed || result.Episodes[1].Closed {
+		t.Fatalf("result=%+v calls=%d", result, calls)
+	}
+	for i, want := range []struct {
+		qty, price, fee float64
+		timestamp       int64
+	}{
+		{.4, 100, .04, 5 * replayMinute}, {.4, 110, .044, 10 * replayMinute}, {.6, 110, .066, 10 * replayMinute},
+	} {
+		r := result.Reports[i]
+		replayNear(t, r.FilledQty, want.qty)
+		replayNear(t, r.AvgPrice, want.price)
+		replayNear(t, r.Fee, want.fee)
+		if r.TransactionTimeNS != want.timestamp {
+			t.Fatalf("report timestamp: %+v", r)
+		}
+	}
+	// The two intermediate settlements use 100; the boundary settlement uses 110.
+	// All three precede the flip, while the next settlement belongs to the short.
+	replayNear(t, result.Episodes[0].FundingPnL, -(.4*100*.01 + .4*100*.02 + .4*110*.03))
+	replayNear(t, result.Episodes[1].FundingPnL, .6*110*.01)
+	replayNear(t, result.Episodes[0].Fees, .084)
+	replayNear(t, result.Episodes[1].Fees, .066)
+	replayNear(t, result.PositionQty, -.6)
+}
+
 func TestOfflineReplayFlipFeedbackIntegration(t *testing.T) {
 	for _, tc := range []struct {
 		name                string
