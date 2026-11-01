@@ -26,6 +26,7 @@ from zenquant.domain import (
     Timeframe,
     target_position_hash,
 )
+from zenquant.domain.quantity import add_filled_quantity
 from zenquant.domain.serde import to_jsonable
 from zenquant.infra import EventBus
 from zenquant.plugins.orchestrator import compose_exits, compose_filters, compose_signals, compose_sizers
@@ -303,8 +304,8 @@ class ARCStrategyEngine:
         pos_key = (payload.symbol, self._config.execution_timeframe)
         current_pos = self._positions.get(pos_key)
         filled_delta = payload.side * payload.filled_qty
-        if abs(filled_delta) < self._config.min_trade_qty:
-            return
+        # Order sizing thresholds do not erase actual fills or residual inventory.
+        # Several sub-minimum fills can accumulate into an actionable position.
 
         if current_pos is None:
             self._positions[pos_key] = self._new_position_state(
@@ -318,8 +319,8 @@ class ARCStrategyEngine:
             return
 
         current_signed_qty = current_pos.direction * current_pos.current_qty
-        new_signed_qty = current_signed_qty + filled_delta
-        if abs(new_signed_qty) < self._config.min_trade_qty:
+        new_signed_qty = add_filled_quantity(current_signed_qty, filled_delta)
+        if new_signed_qty == 0.0:
             del self._positions[pos_key]
             self._publish_position_state(payload.symbol, self._config.execution_timeframe)
             return
@@ -2772,6 +2773,8 @@ class ARCStrategyEngine:
 
         pos_key = (pack.symbol, pack.timeframe)
         position = self._positions.get(pos_key)
+        if position is not None and position.current_qty < self._config.min_trade_qty:
+            position = None
 
         # ── Exit check ──
         if position is not None:
