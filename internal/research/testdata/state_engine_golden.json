@@ -1,0 +1,912 @@
+[
+  {
+    "overlay": true,
+    "input": {
+      "symbol": "BTC",
+      "timeframe": "4h",
+      "cutoff_time_ns": 100,
+      "available_time_ns": 99,
+      "values": {
+        "realized_vol": 1.0,
+        "vix_z": 0.0,
+        "funding_oi_z": 0.0,
+        "cvd_slope": 0.03,
+        "zen_pulse": 60.0,
+        "momentum_roc_z": 0.6,
+        "liq_intensity_z": 0.0,
+        "liq_imbalance": 0.0,
+        "yield_10y_z": 0.0,
+        "cycle_position": 1.0
+      },
+      "structure_state": "UPTREND",
+      "liq_stale": false,
+      "quality_flags": []
+    },
+    "expected": {
+      "symbol": "BTC",
+      "timeframe": "4h",
+      "cutoff_time_ns": 100,
+      "directional_state": "UPTREND",
+      "directional_confidence": 0.7,
+      "volatility_state": "NORMAL",
+      "volatility_confidence": 0.8,
+      "positioning_state": "HEALTHY",
+      "positioning_confidence": 0.8,
+      "quality_state": "TRADABLE",
+      "quality_confidence": 0.9,
+      "regime": "TREND",
+      "regime_confidence": 0.6,
+      "direction_signal": 1.0,
+      "transition_risk": 0.3
+    }
+  },
+  {
+    "overlay": true,
+    "input": {
+      "symbol": "ETH",
+      "timeframe": "4h",
+      "cutoff_time_ns": 200,
+      "available_time_ns": 199,
+      "values": {
+        "realized_vol": 1.0,
+        "vix_z": 0.0,
+        "funding_oi_z": 0.0,
+        "cvd_slope": 0.015,
+        "zen_pulse": 50,
+        "momentum_roc_z": 0.3,
+        "liq_intensity_z": 0.0,
+        "liq_imbalance": 0.0,
+        "yield_10y_z": 0.0,
+        "cycle_position": 1.0
+      },
+      "structure_state": "UPTREND",
+      "liq_stale": false,
+      "quality_flags": []
+    },
+    "expected": {
+      "symbol": "ETH",
+      "timeframe": "4h",
+      "cutoff_time_ns": 200,
+      "directional_state": "TRANSITION",
+      "directional_confidence": 0.45,
+      "volatility_state": "NORMAL",
+      "volatility_confidence": 0.8,
+      "positioning_state": "HEALTHY",
+      "positioning_confidence": 0.8,
+      "quality_state": "TRADABLE",
+      "quality_confidence": 0.9,
+      "regime": "RANGE",
+      "regime_confidence": 0.925,
+      "direction_signal": 0.0,
+      "transition_risk": 0.55
+    }
+  },
+  {
+    "overlay": true,
+    "input": {
+      "symbol": "BTC",
+      "timeframe": "1h",
+      "cutoff_time_ns": 300,
+      "available_time_ns": 299,
+      "values": {
+        "realized_vol": 1.0,
+        "vix_z": 0.0,
+        "funding_oi_z": 0.0,
+        "cvd_slope": 0.015,
+        "zen_pulse": 50,
+        "momentum_roc_z": 0.3,
+        "liq_intensity_z": 0.0,
+        "liq_imbalance": 0.0,
+        "yield_10y_z": 0.0,
+        "cycle_position": 1.0
+      },
+      "structure_state": "UPTREND",
+      "liq_stale": false,
+      "quality_flags": []
+    },
+    "expected": {
+      "symbol": "BTC",
+      "timeframe": "1h",
+      "cutoff_time_ns": 300,
+      "directional_state": "TRANSITION",
+      "directional_confidence": 0.45,
+      "volatility_state": "NORMAL",
+      "volatility_confidence": 0.8,
+      "positioning_state": "HEALTHY",
+      "positioning_confidence": 0.8,
+      "quality_state": "TRADABLE",
+      "quality_confidence": 0.9,
+      "regime": "RANGE",
+      "regime_confidence": 0.925,
+      "direction_signal": 0.0,
+      "transition_risk": 0.55
+    }
+  },
+  {
+    "overlay": true,
+    "input": {
+      "symbol": "BTC",
+      "timeframe": "4h",
+      "cutoff_time_ns": 400,
+      "available_time_ns": 399,
+      "values": {
+        "realized_vol": 1.0,
+        "vix_z": 0.0,
+        "funding_oi_z": 0.0,
+        "cvd_slope": 0.015,
+        "zen_pulse": 50,
+        "momentum_roc_z": 0.3,
+        "liq_intensity_z": 0.0,
+        "liq_imbalance": 0.0,
+        "yield_10y_z": 0.0,
+        "cycle_position": 1.0
+      },
+      "structure_state": "UPTREND",
+      "liq_stale": false,
+      "quality_flags": []
+    },
+    "expected": {
+      "symbol": "BTC",
+      "timeframe": "4h",
+      "cutoff_time_ns": 400,
+      "directional_state": "UPTREND",
+      "directional_confidence": 0.5,
+      "volatility_state": "NORMAL",
+      "volatility_confidence": 0.8,
+      "positioning_state": "HEALTHY",
+      "positioning_confidence": 0.8,
+      "quality_state": "TRADABLE",
+      "quality_confidence": 0.9,
+      "regime": "TREND",
+      "regime_confidence": 0.51,
+      "direction_signal": 1.0,
+      "transition_risk": 0.5
+    }
+  },
+  {
+    "overlay": true,
+    "input": {
+      "symbol": "BTC",
+      "timeframe": "4h",
+      "cutoff_time_ns": 500,
+      "available_time_ns": 499,
+      "values": {
+        "realized_vol": 1.0,
+        "vix_z": 0.0,
+        "funding_oi_z": 0.0,
+        "cvd_slope": 0.012,
+        "zen_pulse": 50,
+        "momentum_roc_z": 0.2,
+        "liq_intensity_z": 0.0,
+        "liq_imbalance": 0.0,
+        "yield_10y_z": 0.0,
+        "cycle_position": 1.0
+      },
+      "structure_state": "UPTREND",
+      "liq_stale": false,
+      "quality_flags": []
+    },
+    "expected": {
+      "symbol": "BTC",
+      "timeframe": "4h",
+      "cutoff_time_ns": 500,
+      "directional_state": "TRANSITION",
+      "directional_confidence": 0.45,
+      "volatility_state": "NORMAL",
+      "volatility_confidence": 0.8,
+      "positioning_state": "HEALTHY",
+      "positioning_confidence": 0.8,
+      "quality_state": "TRADABLE",
+      "quality_confidence": 0.9,
+      "regime": "RANGE",
+      "regime_confidence": 0.94,
+      "direction_signal": 0.0,
+      "transition_risk": 0.55
+    }
+  },
+  {
+    "overlay": true,
+    "input": {
+      "symbol": "BTC",
+      "timeframe": "4h",
+      "cutoff_time_ns": 600,
+      "available_time_ns": 599,
+      "values": {
+        "realized_vol": 1.0,
+        "vix_z": 0.0,
+        "funding_oi_z": 0.0,
+        "cvd_slope": -0.025,
+        "zen_pulse": 49,
+        "momentum_roc_z": -0.18,
+        "liq_intensity_z": 0.0,
+        "liq_imbalance": 0.0,
+        "yield_10y_z": 0.0,
+        "cycle_position": 1.0
+      },
+      "structure_state": "DOWNTREND",
+      "liq_stale": false,
+      "quality_flags": []
+    },
+    "expected": {
+      "symbol": "BTC",
+      "timeframe": "4h",
+      "cutoff_time_ns": 600,
+      "directional_state": "DOWNTREND",
+      "directional_confidence": 0.616,
+      "volatility_state": "NORMAL",
+      "volatility_confidence": 0.8,
+      "positioning_state": "HEALTHY",
+      "positioning_confidence": 0.8,
+      "quality_state": "TRADABLE",
+      "quality_confidence": 0.9,
+      "regime": "RANGE",
+      "regime_confidence": 0.875,
+      "direction_signal": -0.9,
+      "transition_risk": 0.384
+    }
+  },
+  {
+    "overlay": true,
+    "input": {
+      "symbol": "BTC",
+      "timeframe": "4h",
+      "cutoff_time_ns": 700,
+      "available_time_ns": 699,
+      "values": {
+        "realized_vol": 1.0,
+        "vix_z": 0.0,
+        "funding_oi_z": 0.0,
+        "cvd_slope": -0.015,
+        "zen_pulse": 50,
+        "momentum_roc_z": -0.1,
+        "liq_intensity_z": 0.0,
+        "liq_imbalance": 0.0,
+        "yield_10y_z": 0.0,
+        "cycle_position": 1.0
+      },
+      "structure_state": "NEUTRAL",
+      "liq_stale": false,
+      "quality_flags": []
+    },
+    "expected": {
+      "symbol": "BTC",
+      "timeframe": "4h",
+      "cutoff_time_ns": 700,
+      "directional_state": "DOWNTREND",
+      "directional_confidence": 0.52,
+      "volatility_state": "NORMAL",
+      "volatility_confidence": 0.8,
+      "positioning_state": "HEALTHY",
+      "positioning_confidence": 0.8,
+      "quality_state": "TRADABLE",
+      "quality_confidence": 0.9,
+      "regime": "RANGE",
+      "regime_confidence": 0.925,
+      "direction_signal": -0.8,
+      "transition_risk": 0.48
+    }
+  },
+  {
+    "overlay": true,
+    "input": {
+      "symbol": "BTC",
+      "timeframe": "4h",
+      "cutoff_time_ns": 800,
+      "available_time_ns": 799,
+      "values": {
+        "realized_vol": 1.0,
+        "vix_z": 0.0,
+        "funding_oi_z": 0.0,
+        "cvd_slope": -0.015,
+        "zen_pulse": 50,
+        "momentum_roc_z": -0.1,
+        "liq_intensity_z": 2.4,
+        "liq_imbalance": 0.2,
+        "yield_10y_z": 0.0,
+        "cycle_position": 1.0
+      },
+      "structure_state": "NEUTRAL",
+      "liq_stale": false,
+      "quality_flags": []
+    },
+    "expected": {
+      "symbol": "BTC",
+      "timeframe": "4h",
+      "cutoff_time_ns": 800,
+      "directional_state": "DOWNTREND",
+      "directional_confidence": 0.75,
+      "volatility_state": "NORMAL",
+      "volatility_confidence": 0.8,
+      "positioning_state": "HEALTHY",
+      "positioning_confidence": 0.8,
+      "quality_state": "TRADABLE",
+      "quality_confidence": 0.9,
+      "regime": "STRESS",
+      "regime_confidence": 0.9,
+      "direction_signal": -0.9,
+      "transition_risk": 0.25
+    }
+  },
+  {
+    "overlay": true,
+    "input": {
+      "symbol": "BTC",
+      "timeframe": "4h",
+      "cutoff_time_ns": 900,
+      "available_time_ns": 899,
+      "values": {
+        "realized_vol": 2.8,
+        "vix_z": 3.0,
+        "funding_oi_z": 1.8,
+        "cvd_slope": 0.03,
+        "zen_pulse": 60.0,
+        "momentum_roc_z": 0,
+        "liq_intensity_z": 0.0,
+        "liq_imbalance": 0.0,
+        "yield_10y_z": 0.0,
+        "cycle_position": 1.0
+      },
+      "structure_state": "NEUTRAL",
+      "liq_stale": true,
+      "quality_flags": []
+    },
+    "expected": {
+      "symbol": "BTC",
+      "timeframe": "4h",
+      "cutoff_time_ns": 900,
+      "directional_state": "NEUTRAL",
+      "directional_confidence": 0.75,
+      "volatility_state": "HIGH",
+      "volatility_confidence": 0.75,
+      "positioning_state": "CROWDED_LONG",
+      "positioning_confidence": 0.875,
+      "quality_state": "TRADABLE",
+      "quality_confidence": 0.9,
+      "regime": "TREND",
+      "regime_confidence": 0.6,
+      "direction_signal": 0.0,
+      "transition_risk": 0.25
+    }
+  },
+  {
+    "overlay": true,
+    "input": {
+      "symbol": "BTC",
+      "timeframe": "4h",
+      "cutoff_time_ns": 1000,
+      "available_time_ns": 999,
+      "values": {
+        "realized_vol": 2.80001,
+        "vix_z": 0.0,
+        "funding_oi_z": 0.0,
+        "cvd_slope": 0.03,
+        "zen_pulse": 60.0,
+        "momentum_roc_z": 0,
+        "liq_intensity_z": 0.0,
+        "liq_imbalance": 0.0,
+        "yield_10y_z": 0.0,
+        "cycle_position": 1.0
+      },
+      "structure_state": "NEUTRAL",
+      "liq_stale": false,
+      "quality_flags": [
+        "DATA_STALE"
+      ]
+    },
+    "expected": {
+      "symbol": "BTC",
+      "timeframe": "4h",
+      "cutoff_time_ns": 1000,
+      "directional_state": "NEUTRAL",
+      "directional_confidence": 0.75,
+      "volatility_state": "DISTORTED",
+      "volatility_confidence": 0.9,
+      "positioning_state": "HEALTHY",
+      "positioning_confidence": 0.8,
+      "quality_state": "DEGRADED",
+      "quality_confidence": 0.85,
+      "regime": "STRESS",
+      "regime_confidence": 0.9,
+      "direction_signal": 0.0,
+      "transition_risk": 0.25
+    }
+  },
+  {
+    "overlay": true,
+    "input": {
+      "symbol": "BTC",
+      "timeframe": "4h",
+      "cutoff_time_ns": 1100,
+      "available_time_ns": 1099,
+      "values": {
+        "realized_vol": 1.0,
+        "vix_z": 0.0,
+        "funding_oi_z": 0.0,
+        "cvd_slope": 0.03,
+        "zen_pulse": 0,
+        "momentum_roc_z": 0,
+        "liq_intensity_z": 0.0,
+        "liq_imbalance": 0.0,
+        "yield_10y_z": 2.1,
+        "cycle_position": 0
+      },
+      "structure_state": "NEUTRAL",
+      "liq_stale": false,
+      "quality_flags": [
+        "MACRO_STALE"
+      ]
+    },
+    "expected": {
+      "symbol": "BTC",
+      "timeframe": "4h",
+      "cutoff_time_ns": 1100,
+      "directional_state": "NEUTRAL",
+      "directional_confidence": 0.75,
+      "volatility_state": "NORMAL",
+      "volatility_confidence": 0.8,
+      "positioning_state": "HEALTHY",
+      "positioning_confidence": 0.8,
+      "quality_state": "NOISY",
+      "quality_confidence": 0.7,
+      "regime": "RANGE",
+      "regime_confidence": 0.85,
+      "direction_signal": 0.0,
+      "transition_risk": 0.3
+    }
+  },
+  {
+    "overlay": false,
+    "input": {
+      "symbol": "BTC",
+      "timeframe": "4h",
+      "cutoff_time_ns": 100,
+      "available_time_ns": 99,
+      "values": {
+        "realized_vol": 1.0,
+        "vix_z": 0.0,
+        "funding_oi_z": 0.0,
+        "cvd_slope": 0.03,
+        "zen_pulse": 60.0,
+        "momentum_roc_z": 0.6,
+        "liq_intensity_z": 0.0,
+        "liq_imbalance": 0.0,
+        "yield_10y_z": 0.0,
+        "cycle_position": 1.0
+      },
+      "structure_state": "UPTREND",
+      "liq_stale": false,
+      "quality_flags": []
+    },
+    "expected": {
+      "symbol": "BTC",
+      "timeframe": "4h",
+      "cutoff_time_ns": 100,
+      "directional_state": "UPTREND",
+      "directional_confidence": 0.7,
+      "volatility_state": "NORMAL",
+      "volatility_confidence": 0.8,
+      "positioning_state": "HEALTHY",
+      "positioning_confidence": 0.8,
+      "quality_state": "TRADABLE",
+      "quality_confidence": 0.9,
+      "regime": "TREND",
+      "regime_confidence": 0.6,
+      "direction_signal": 1.0,
+      "transition_risk": 0.3
+    }
+  },
+  {
+    "overlay": false,
+    "input": {
+      "symbol": "ETH",
+      "timeframe": "4h",
+      "cutoff_time_ns": 200,
+      "available_time_ns": 199,
+      "values": {
+        "realized_vol": 1.0,
+        "vix_z": 0.0,
+        "funding_oi_z": 0.0,
+        "cvd_slope": 0.015,
+        "zen_pulse": 50,
+        "momentum_roc_z": 0.3,
+        "liq_intensity_z": 0.0,
+        "liq_imbalance": 0.0,
+        "yield_10y_z": 0.0,
+        "cycle_position": 1.0
+      },
+      "structure_state": "UPTREND",
+      "liq_stale": false,
+      "quality_flags": []
+    },
+    "expected": {
+      "symbol": "ETH",
+      "timeframe": "4h",
+      "cutoff_time_ns": 200,
+      "directional_state": "TRANSITION",
+      "directional_confidence": 0.45,
+      "volatility_state": "NORMAL",
+      "volatility_confidence": 0.8,
+      "positioning_state": "HEALTHY",
+      "positioning_confidence": 0.8,
+      "quality_state": "TRADABLE",
+      "quality_confidence": 0.9,
+      "regime": "RANGE",
+      "regime_confidence": 0.925,
+      "direction_signal": 0.0,
+      "transition_risk": 0.55
+    }
+  },
+  {
+    "overlay": false,
+    "input": {
+      "symbol": "BTC",
+      "timeframe": "1h",
+      "cutoff_time_ns": 300,
+      "available_time_ns": 299,
+      "values": {
+        "realized_vol": 1.0,
+        "vix_z": 0.0,
+        "funding_oi_z": 0.0,
+        "cvd_slope": 0.015,
+        "zen_pulse": 50,
+        "momentum_roc_z": 0.3,
+        "liq_intensity_z": 0.0,
+        "liq_imbalance": 0.0,
+        "yield_10y_z": 0.0,
+        "cycle_position": 1.0
+      },
+      "structure_state": "UPTREND",
+      "liq_stale": false,
+      "quality_flags": []
+    },
+    "expected": {
+      "symbol": "BTC",
+      "timeframe": "1h",
+      "cutoff_time_ns": 300,
+      "directional_state": "TRANSITION",
+      "directional_confidence": 0.45,
+      "volatility_state": "NORMAL",
+      "volatility_confidence": 0.8,
+      "positioning_state": "HEALTHY",
+      "positioning_confidence": 0.8,
+      "quality_state": "TRADABLE",
+      "quality_confidence": 0.9,
+      "regime": "RANGE",
+      "regime_confidence": 0.925,
+      "direction_signal": 0.0,
+      "transition_risk": 0.55
+    }
+  },
+  {
+    "overlay": false,
+    "input": {
+      "symbol": "BTC",
+      "timeframe": "4h",
+      "cutoff_time_ns": 400,
+      "available_time_ns": 399,
+      "values": {
+        "realized_vol": 1.0,
+        "vix_z": 0.0,
+        "funding_oi_z": 0.0,
+        "cvd_slope": 0.015,
+        "zen_pulse": 50,
+        "momentum_roc_z": 0.3,
+        "liq_intensity_z": 0.0,
+        "liq_imbalance": 0.0,
+        "yield_10y_z": 0.0,
+        "cycle_position": 1.0
+      },
+      "structure_state": "UPTREND",
+      "liq_stale": false,
+      "quality_flags": []
+    },
+    "expected": {
+      "symbol": "BTC",
+      "timeframe": "4h",
+      "cutoff_time_ns": 400,
+      "directional_state": "UPTREND",
+      "directional_confidence": 0.5,
+      "volatility_state": "NORMAL",
+      "volatility_confidence": 0.8,
+      "positioning_state": "HEALTHY",
+      "positioning_confidence": 0.8,
+      "quality_state": "TRADABLE",
+      "quality_confidence": 0.9,
+      "regime": "TREND",
+      "regime_confidence": 0.51,
+      "direction_signal": 1.0,
+      "transition_risk": 0.5
+    }
+  },
+  {
+    "overlay": false,
+    "input": {
+      "symbol": "BTC",
+      "timeframe": "4h",
+      "cutoff_time_ns": 500,
+      "available_time_ns": 499,
+      "values": {
+        "realized_vol": 1.0,
+        "vix_z": 0.0,
+        "funding_oi_z": 0.0,
+        "cvd_slope": 0.012,
+        "zen_pulse": 50,
+        "momentum_roc_z": 0.2,
+        "liq_intensity_z": 0.0,
+        "liq_imbalance": 0.0,
+        "yield_10y_z": 0.0,
+        "cycle_position": 1.0
+      },
+      "structure_state": "UPTREND",
+      "liq_stale": false,
+      "quality_flags": []
+    },
+    "expected": {
+      "symbol": "BTC",
+      "timeframe": "4h",
+      "cutoff_time_ns": 500,
+      "directional_state": "TRANSITION",
+      "directional_confidence": 0.45,
+      "volatility_state": "NORMAL",
+      "volatility_confidence": 0.8,
+      "positioning_state": "HEALTHY",
+      "positioning_confidence": 0.8,
+      "quality_state": "TRADABLE",
+      "quality_confidence": 0.9,
+      "regime": "RANGE",
+      "regime_confidence": 0.94,
+      "direction_signal": 0.0,
+      "transition_risk": 0.55
+    }
+  },
+  {
+    "overlay": false,
+    "input": {
+      "symbol": "BTC",
+      "timeframe": "4h",
+      "cutoff_time_ns": 600,
+      "available_time_ns": 599,
+      "values": {
+        "realized_vol": 1.0,
+        "vix_z": 0.0,
+        "funding_oi_z": 0.0,
+        "cvd_slope": -0.025,
+        "zen_pulse": 49,
+        "momentum_roc_z": -0.18,
+        "liq_intensity_z": 0.0,
+        "liq_imbalance": 0.0,
+        "yield_10y_z": 0.0,
+        "cycle_position": 1.0
+      },
+      "structure_state": "DOWNTREND",
+      "liq_stale": false,
+      "quality_flags": []
+    },
+    "expected": {
+      "symbol": "BTC",
+      "timeframe": "4h",
+      "cutoff_time_ns": 600,
+      "directional_state": "DOWNTREND",
+      "directional_confidence": 0.616,
+      "volatility_state": "NORMAL",
+      "volatility_confidence": 0.8,
+      "positioning_state": "HEALTHY",
+      "positioning_confidence": 0.8,
+      "quality_state": "TRADABLE",
+      "quality_confidence": 0.9,
+      "regime": "RANGE",
+      "regime_confidence": 0.875,
+      "direction_signal": -0.9,
+      "transition_risk": 0.384
+    }
+  },
+  {
+    "overlay": false,
+    "input": {
+      "symbol": "BTC",
+      "timeframe": "4h",
+      "cutoff_time_ns": 700,
+      "available_time_ns": 699,
+      "values": {
+        "realized_vol": 1.0,
+        "vix_z": 0.0,
+        "funding_oi_z": 0.0,
+        "cvd_slope": -0.015,
+        "zen_pulse": 50,
+        "momentum_roc_z": -0.1,
+        "liq_intensity_z": 0.0,
+        "liq_imbalance": 0.0,
+        "yield_10y_z": 0.0,
+        "cycle_position": 1.0
+      },
+      "structure_state": "NEUTRAL",
+      "liq_stale": false,
+      "quality_flags": []
+    },
+    "expected": {
+      "symbol": "BTC",
+      "timeframe": "4h",
+      "cutoff_time_ns": 700,
+      "directional_state": "DOWNTREND",
+      "directional_confidence": 0.52,
+      "volatility_state": "NORMAL",
+      "volatility_confidence": 0.8,
+      "positioning_state": "HEALTHY",
+      "positioning_confidence": 0.8,
+      "quality_state": "TRADABLE",
+      "quality_confidence": 0.9,
+      "regime": "RANGE",
+      "regime_confidence": 0.925,
+      "direction_signal": -0.8,
+      "transition_risk": 0.48
+    }
+  },
+  {
+    "overlay": false,
+    "input": {
+      "symbol": "BTC",
+      "timeframe": "4h",
+      "cutoff_time_ns": 800,
+      "available_time_ns": 799,
+      "values": {
+        "realized_vol": 1.0,
+        "vix_z": 0.0,
+        "funding_oi_z": 0.0,
+        "cvd_slope": -0.015,
+        "zen_pulse": 50,
+        "momentum_roc_z": -0.1,
+        "liq_intensity_z": 2.4,
+        "liq_imbalance": 0.2,
+        "yield_10y_z": 0.0,
+        "cycle_position": 1.0
+      },
+      "structure_state": "NEUTRAL",
+      "liq_stale": false,
+      "quality_flags": []
+    },
+    "expected": {
+      "symbol": "BTC",
+      "timeframe": "4h",
+      "cutoff_time_ns": 800,
+      "directional_state": "DOWNTREND",
+      "directional_confidence": 0.52,
+      "volatility_state": "NORMAL",
+      "volatility_confidence": 0.8,
+      "positioning_state": "HEALTHY",
+      "positioning_confidence": 0.8,
+      "quality_state": "TRADABLE",
+      "quality_confidence": 0.9,
+      "regime": "RANGE",
+      "regime_confidence": 0.925,
+      "direction_signal": -0.8,
+      "transition_risk": 0.48
+    }
+  },
+  {
+    "overlay": false,
+    "input": {
+      "symbol": "BTC",
+      "timeframe": "4h",
+      "cutoff_time_ns": 900,
+      "available_time_ns": 899,
+      "values": {
+        "realized_vol": 2.8,
+        "vix_z": 3.0,
+        "funding_oi_z": 1.8,
+        "cvd_slope": 0.03,
+        "zen_pulse": 60.0,
+        "momentum_roc_z": 0,
+        "liq_intensity_z": 0.0,
+        "liq_imbalance": 0.0,
+        "yield_10y_z": 0.0,
+        "cycle_position": 1.0
+      },
+      "structure_state": "NEUTRAL",
+      "liq_stale": true,
+      "quality_flags": []
+    },
+    "expected": {
+      "symbol": "BTC",
+      "timeframe": "4h",
+      "cutoff_time_ns": 900,
+      "directional_state": "NEUTRAL",
+      "directional_confidence": 0.75,
+      "volatility_state": "HIGH",
+      "volatility_confidence": 0.75,
+      "positioning_state": "CROWDED_LONG",
+      "positioning_confidence": 0.875,
+      "quality_state": "TRADABLE",
+      "quality_confidence": 0.9,
+      "regime": "TREND",
+      "regime_confidence": 0.6,
+      "direction_signal": 0.0,
+      "transition_risk": 0.25
+    }
+  },
+  {
+    "overlay": false,
+    "input": {
+      "symbol": "BTC",
+      "timeframe": "4h",
+      "cutoff_time_ns": 1000,
+      "available_time_ns": 999,
+      "values": {
+        "realized_vol": 2.80001,
+        "vix_z": 0.0,
+        "funding_oi_z": 0.0,
+        "cvd_slope": 0.03,
+        "zen_pulse": 60.0,
+        "momentum_roc_z": 0,
+        "liq_intensity_z": 0.0,
+        "liq_imbalance": 0.0,
+        "yield_10y_z": 0.0,
+        "cycle_position": 1.0
+      },
+      "structure_state": "NEUTRAL",
+      "liq_stale": false,
+      "quality_flags": [
+        "DATA_STALE"
+      ]
+    },
+    "expected": {
+      "symbol": "BTC",
+      "timeframe": "4h",
+      "cutoff_time_ns": 1000,
+      "directional_state": "NEUTRAL",
+      "directional_confidence": 0.75,
+      "volatility_state": "DISTORTED",
+      "volatility_confidence": 0.9,
+      "positioning_state": "HEALTHY",
+      "positioning_confidence": 0.8,
+      "quality_state": "DEGRADED",
+      "quality_confidence": 0.85,
+      "regime": "STRESS",
+      "regime_confidence": 0.9,
+      "direction_signal": 0.0,
+      "transition_risk": 0.25
+    }
+  },
+  {
+    "overlay": false,
+    "input": {
+      "symbol": "BTC",
+      "timeframe": "4h",
+      "cutoff_time_ns": 1100,
+      "available_time_ns": 1099,
+      "values": {
+        "realized_vol": 1.0,
+        "vix_z": 0.0,
+        "funding_oi_z": 0.0,
+        "cvd_slope": 0.03,
+        "zen_pulse": 0,
+        "momentum_roc_z": 0,
+        "liq_intensity_z": 0.0,
+        "liq_imbalance": 0.0,
+        "yield_10y_z": 2.1,
+        "cycle_position": 0
+      },
+      "structure_state": "NEUTRAL",
+      "liq_stale": false,
+      "quality_flags": [
+        "MACRO_STALE"
+      ]
+    },
+    "expected": {
+      "symbol": "BTC",
+      "timeframe": "4h",
+      "cutoff_time_ns": 1100,
+      "directional_state": "NEUTRAL",
+      "directional_confidence": 0.75,
+      "volatility_state": "NORMAL",
+      "volatility_confidence": 0.8,
+      "positioning_state": "HEALTHY",
+      "positioning_confidence": 0.8,
+      "quality_state": "NOISY",
+      "quality_confidence": 0.7,
+      "regime": "RANGE",
+      "regime_confidence": 0.85,
+      "direction_signal": 0.0,
+      "transition_risk": 0.3
+    }
+  }
+]
