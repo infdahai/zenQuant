@@ -89,6 +89,35 @@ func TestTimestampResponsePreservesNanoseconds(t *testing.T) {
 	}
 }
 
+func TestMultipleFundingSettlementsReconcile(t *testing.T) {
+	var d Dataset
+	if err := json.Unmarshal(fixture(t), &d); err != nil {
+		t.Fatal(err)
+	}
+	d.Funding = []Funding{{TimeNS: 300e9, Rate: .5}, {TimeNS: 400e9, Rate: .01}, {TimeNS: 500e9, Rate: -.02}, {TimeNS: 600e9, Rate: .03}, {TimeNS: 700e9, Rate: .5}}
+	raw, err := json.Marshal(d)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	snap, err := s.Import(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r, err := s.run(context.Background(), snap.ID, .001)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The opening settlement is flat; the two interior rows use 100 and
+	// the closing settlement uses 110, before the closing fill.
+	if math.Abs(r.Metrics.FundingPnL-(-2.3)) > 1e-9 || math.Abs(r.Episodes[0].FundingPnL-(-2.3)) > 1e-9 || math.Abs(r.Metrics.NetPnL-7.49) > 1e-8 {
+		t.Fatalf("metrics=%+v episodes=%+v", r.Metrics, r.Episodes)
+	}
+}
+
 func TestImportRunReopenCompare(t *testing.T) {
 	dir := t.TempDir()
 	s, err := Open(dir)
@@ -117,8 +146,8 @@ func TestImportRunReopenCompare(t *testing.T) {
 	if err != nil || !reflect.DeepEqual(r, repeated) {
 		t.Fatalf("ephemeral replay differs: %+v %v", repeated, err)
 	}
-	e := r.Episodes[0] // Independent cash reconciliation: -100 - .1 + 110 - .11 - 1.1 = 8.69.
-	if math.Abs(e.NetPnL-8.69) > 1e-9 || math.Abs(e.FundingPnL+1.1) > 1e-9 || math.Abs(e.Fees-.21) > 1e-9 {
+	e := r.Episodes[0] // Settlement uses the previous close of 100.
+	if math.Abs(e.NetPnL-8.79) > 1e-9 || math.Abs(e.FundingPnL+1) > 1e-9 || math.Abs(e.Fees-.21) > 1e-9 {
 		t.Fatalf("accounting: %+v", e)
 	}
 	b, _ := encode(r)
