@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"archive/zip"
 	"bytes"
 	"crypto/sha256"
 	"encoding/json"
@@ -143,8 +144,30 @@ func TestHistoryCommandEndToEnd(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	var archive bytes.Buffer
+	zw := zip.NewWriter(&archive)
+	member, err := zw.Create("klines.csv")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = member.Write(csv); err != nil {
+		t.Fatal(err)
+	}
+	if err = zw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	zipPath := filepath.Join(temp, "klines.zip")
+	if err = os.WriteFile(zipPath, archive.Bytes(), 0600); err != nil {
+		t.Fatal(err)
+	}
+	zipArgs := append([]string{}, fundedArgs...)
+	zipArgs[2] = zipPath
+	zipOutput, err := exec.Command(binary, zipArgs...).Output()
+	if err != nil || !bytes.Equal(zipOutput, funded) {
+		t.Fatalf("ZIP dataset differs from CSV: %v", err)
+	}
 	cmd = exec.Command(binary, "workbench", "--store", storePath, "import")
-	cmd.Stdin = bytes.NewReader(funded)
+	cmd.Stdin = bytes.NewReader(zipOutput)
 	fundedSnapshot, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("funded import: %s %v", fundedSnapshot, err)
