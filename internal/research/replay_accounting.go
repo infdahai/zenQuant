@@ -60,9 +60,19 @@ func (a *ReplayAccounting) SetCutoff(cutoffNS int64) error {
 // settlement uses the latest execution close at or before its source time.
 // Invalid events leave the ledger and replay cursor unchanged.
 func (a *ReplayAccounting) OnExecutionBar(bar ReplayExecutionBar) error {
+	_, err := a.onExecutionBar(bar)
+	return err
+}
+
+type replayFundingSettlement struct {
+	quantity, price, pnl float64
+}
+
+func (a *ReplayAccounting) onExecutionBar(bar ReplayExecutionBar) ([]replayFundingSettlement, error) {
 	if a.hasCutoff && bar.CloseTimeNS < a.cutoff {
-		return fmt.Errorf("execution bar precedes replay cutoff")
+		return nil, fmt.Errorf("execution bar precedes replay cutoff")
 	}
+	var settlements []replayFundingSettlement
 	index := a.fundingIndex
 	lastFundingTime := a.lastFundingTime
 	err := a.ledger.applyAtomic(func(ledger *PositionEpisodeLedger) error {
@@ -80,21 +90,23 @@ func (a *ReplayAccounting) OnExecutionBar(bar ReplayExecutionBar) error {
 			if price == 0 && qty != 0 {
 				return fmt.Errorf("funding settlement at %d has no point-in-time execution price", row.FundingTimeNS)
 			}
-			if err := ledger.AllocateFunding(FundingAllocation{Symbol: a.symbol, TimestampNS: bar.CloseTimeNS, PnL: -qty * price * row.FundingRate}); err != nil {
+			pnl := -qty * price * row.FundingRate
+			if err := ledger.AllocateFunding(FundingAllocation{Symbol: a.symbol, TimestampNS: bar.CloseTimeNS, PnL: pnl}); err != nil {
 				return err
 			}
+			settlements = append(settlements, replayFundingSettlement{qty, price, pnl})
 			lastFundingTime = row.FundingTimeNS
 		}
 		return ledger.ObservePrice(PriceObservation{Symbol: a.symbol, TimestampNS: bar.CloseTimeNS, High: bar.High, Low: bar.Low, Close: bar.Close})
 	})
 	if err != nil {
-		return err
+		return nil, err
 	}
 	a.lastFundingTime = lastFundingTime
 	a.fundingIndex = index
 	a.lastClose = bar.Close
 	a.cutoff, a.hasCutoff = bar.CloseTimeNS, true
-	return nil
+	return settlements, nil
 }
 
 // CollectReport normalizes stale transaction times to the current visible

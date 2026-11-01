@@ -41,6 +41,7 @@ type OfflineReplaySnapshot struct {
 	Histories   map[string][]ReplayCandle
 	Indicators  map[string]OfflineReplayIndicators
 	PositionQty float64
+	settlements []replayFundingSettlement
 }
 
 // OfflineReplayPolicy returns synthetic orders in execution order, each with a
@@ -202,10 +203,11 @@ func runOfflineReplayIntents(config OfflineReplayConfig, policy OfflineReplayInt
 		if tf != config.ExecutionTimeframe {
 			continue
 		}
-		if err := accounting.OnExecutionBar(ReplayExecutionBar{CloseTimeNS: event.CloseTimeNS, High: event.High, Low: event.Low, Close: event.Close}); err != nil {
+		settlements, err := accounting.onExecutionBar(ReplayExecutionBar{CloseTimeNS: event.CloseTimeNS, High: event.High, Low: event.Low, Close: event.Close})
+		if err != nil {
 			return nil, fmt.Errorf("execution bar: %w", err)
 		}
-		snapshot := OfflineReplaySnapshot{Event: event, Histories: make(map[string][]ReplayCandle, len(config.Timeframes)), Indicators: make(map[string]OfflineReplayIndicators, len(config.Timeframes)), PositionQty: admission.positions[config.Symbol]}
+		snapshot := OfflineReplaySnapshot{Event: event, Histories: make(map[string][]ReplayCandle, len(config.Timeframes)), Indicators: make(map[string]OfflineReplayIndicators, len(config.Timeframes)), PositionQty: admission.positions[config.Symbol], settlements: settlements}
 		for _, timeframe := range config.Timeframes {
 			rows := histories[timeframe]
 			snapshot.Histories[timeframe] = append([]ReplayCandle(nil), rows...)
