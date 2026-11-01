@@ -1,0 +1,752 @@
+[
+  {
+    "kind": "bar",
+    "indicator": {
+      "symbol": "BTCUSDT_PERP",
+      "timeframe": "4h",
+      "cutoff_time_ns": 1,
+      "indicator_version": "v1",
+      "formula_hash": "f1",
+      "price": 100.0,
+      "atr": 2.0,
+      "realized_vol": 0.8,
+      "funding_oi_z": 0.0,
+      "cvd_slope": 0.1,
+      "ob_liq_z": 0.0,
+      "structure_state": "UPTREND",
+      "momentum_roc_z": 0.5
+    },
+    "state": {
+      "symbol": "BTCUSDT_PERP",
+      "timeframe": "4h",
+      "cutoff_time_ns": 1,
+      "directional_state": "UPTREND",
+      "directional_confidence": 0.8,
+      "volatility_state": "NORMAL",
+      "volatility_confidence": 0.8,
+      "positioning_state": "HEALTHY",
+      "positioning_confidence": 0.8,
+      "quality_state": "TRADABLE",
+      "quality_confidence": 0.8,
+      "regime": "TREND",
+      "regime_confidence": 0.8,
+      "direction_signal": 1,
+      "transition_risk": 0.0,
+      "quality_flags": [
+        "OK"
+      ]
+    },
+    "expected": {
+      "playbook": {
+        "symbol": "BTCUSDT_PERP",
+        "timeframe": "4h",
+        "cutoff_time_ns": 1,
+        "playbook_id": "BULL_CONTINUATION",
+        "playbook_confidence": 0.8,
+        "allowed_directions": [
+          1.0,
+          0.0
+        ],
+        "max_leverage": 2.5,
+        "trailing_stop_atr_mult": 2.5,
+        "allow_pyramid": true,
+        "max_pyramid_count": 2,
+        "time_decay_bars": null,
+        "selection_reason": "Uptrend state with acceptable volatility and crowding",
+        "reason_codes": [
+          "PLAYBOOK_BULL_CONTINUATION",
+          "PLAYBOOK_ALLOW_LONG"
+        ]
+      },
+      "sizing": {
+        "symbol": "BTCUSDT_PERP",
+        "timeframe": "4h",
+        "cutoff_time_ns": 1,
+        "base_size": 1.375,
+        "confidence_multiplier": 0.8,
+        "stress_discount": 1.0,
+        "execution_haircut": 1.0,
+        "final_leverage": 1.1,
+        "reason_codes": [
+          "SIZE_BASE_VOL_TARGET",
+          "SIZE_CONFIDENCE_BLEND"
+        ]
+      },
+      "confirmation": "INTENT_CONFIRMATION_PENDING"
+    }
+  },
+  {
+    "kind": "bar",
+    "indicator": {
+      "symbol": "BTCUSDT_PERP",
+      "timeframe": "4h",
+      "cutoff_time_ns": 2,
+      "indicator_version": "v1",
+      "formula_hash": "f1",
+      "price": 100.0,
+      "atr": 2.0,
+      "realized_vol": 0.8,
+      "funding_oi_z": 0.0,
+      "cvd_slope": 0.1,
+      "ob_liq_z": 0.0,
+      "structure_state": "UPTREND",
+      "momentum_roc_z": 0.5
+    },
+    "state": {
+      "symbol": "BTCUSDT_PERP",
+      "timeframe": "4h",
+      "cutoff_time_ns": 2,
+      "directional_state": "UPTREND",
+      "directional_confidence": 0.8,
+      "volatility_state": "NORMAL",
+      "volatility_confidence": 0.8,
+      "positioning_state": "HEALTHY",
+      "positioning_confidence": 0.8,
+      "quality_state": "TRADABLE",
+      "quality_confidence": 0.8,
+      "regime": "TREND",
+      "regime_confidence": 0.8,
+      "direction_signal": 1,
+      "transition_risk": 0.0,
+      "quality_flags": [
+        "OK"
+      ]
+    },
+    "expected": {
+      "playbook": {
+        "symbol": "BTCUSDT_PERP",
+        "timeframe": "4h",
+        "cutoff_time_ns": 2,
+        "playbook_id": "BULL_CONTINUATION",
+        "playbook_confidence": 0.8,
+        "allowed_directions": [
+          1.0,
+          0.0
+        ],
+        "max_leverage": 2.5,
+        "trailing_stop_atr_mult": 2.5,
+        "allow_pyramid": true,
+        "max_pyramid_count": 2,
+        "time_decay_bars": null,
+        "selection_reason": "Uptrend state with acceptable volatility and crowding",
+        "reason_codes": [
+          "PLAYBOOK_BULL_CONTINUATION",
+          "PLAYBOOK_ALLOW_LONG"
+        ]
+      },
+      "sizing": {
+        "symbol": "BTCUSDT_PERP",
+        "timeframe": "4h",
+        "cutoff_time_ns": 2,
+        "base_size": 1.375,
+        "confidence_multiplier": 0.8,
+        "stress_discount": 1.0,
+        "execution_haircut": 1.0,
+        "final_leverage": 1.1,
+        "reason_codes": [
+          "SIZE_BASE_VOL_TARGET",
+          "SIZE_CONFIDENCE_BLEND"
+        ]
+      },
+      "confirmation": "INTENT_CONFIRMED",
+      "target": {
+        "intent_id": "f2c14c36-bba5-5ee3-ae36-82586fb751f7",
+        "portfolio": "arc",
+        "symbol": "BTCUSDT_PERP",
+        "timeframe": "4h",
+        "cutoff_time_ns": 2,
+        "target_qty": 1100.0,
+        "target_leverage": 1.1,
+        "reduce_only": false,
+        "regime": "TREND",
+        "regime_confidence": 0.8,
+        "reason_codes": [
+          "REGIME_TREND",
+          "PLAYBOOK_BULL_CONTINUATION",
+          "PLAYBOOK_ALLOW_LONG",
+          "TREND_LONG",
+          "SIZE_BASE_VOL_TARGET",
+          "SIZE_CONFIDENCE_BLEND",
+          "INTENT_CONFIRMED_2_BARS"
+        ],
+        "realized_vol": 0.8,
+        "atr": 2.0
+      },
+      "reason": {
+        "portfolio": "arc",
+        "symbol": "BTCUSDT_PERP",
+        "cutoff_time_ns": 2,
+        "summary": "intent=f2c14c36 regime=TREND conf=0.80 lev=1.10 qty=1100.000000",
+        "reason_codes": [
+          "REGIME_TREND",
+          "PLAYBOOK_BULL_CONTINUATION",
+          "PLAYBOOK_ALLOW_LONG",
+          "TREND_LONG",
+          "SIZE_BASE_VOL_TARGET",
+          "SIZE_CONFIDENCE_BLEND",
+          "INTENT_CONFIRMED_2_BARS"
+        ]
+      }
+    }
+  },
+  {
+    "kind": "fill",
+    "side": 1,
+    "quantity": 1,
+    "price": 100
+  },
+  {
+    "kind": "fill",
+    "side": 1,
+    "quantity": 0.5,
+    "price": 102
+  },
+  {
+    "kind": "bar",
+    "indicator": {
+      "symbol": "BTCUSDT_PERP",
+      "timeframe": "4h",
+      "cutoff_time_ns": 3,
+      "indicator_version": "v1",
+      "formula_hash": "f1",
+      "price": 104,
+      "atr": 2.0,
+      "realized_vol": 0.8,
+      "funding_oi_z": 0.0,
+      "cvd_slope": 0.1,
+      "ob_liq_z": 0.0,
+      "structure_state": "UPTREND",
+      "momentum_roc_z": 0.5
+    },
+    "state": {
+      "symbol": "BTCUSDT_PERP",
+      "timeframe": "4h",
+      "cutoff_time_ns": 3,
+      "directional_state": "UPTREND",
+      "directional_confidence": 0.8,
+      "volatility_state": "NORMAL",
+      "volatility_confidence": 0.8,
+      "positioning_state": "HEALTHY",
+      "positioning_confidence": 0.8,
+      "quality_state": "TRADABLE",
+      "quality_confidence": 0.8,
+      "regime": "TREND",
+      "regime_confidence": 0.8,
+      "direction_signal": 1,
+      "transition_risk": 0.0,
+      "quality_flags": [
+        "OK"
+      ]
+    },
+    "expected": {
+      "playbook": {
+        "symbol": "BTCUSDT_PERP",
+        "timeframe": "4h",
+        "cutoff_time_ns": 3,
+        "playbook_id": "BULL_CONTINUATION",
+        "playbook_confidence": 0.8,
+        "allowed_directions": [
+          1.0,
+          0.0
+        ],
+        "max_leverage": 2.5,
+        "trailing_stop_atr_mult": 2.5,
+        "allow_pyramid": true,
+        "max_pyramid_count": 2,
+        "time_decay_bars": null,
+        "selection_reason": "Uptrend state with acceptable volatility and crowding",
+        "reason_codes": [
+          "PLAYBOOK_BULL_CONTINUATION",
+          "PLAYBOOK_ALLOW_LONG"
+        ]
+      },
+      "exit": {
+        "symbol": "BTCUSDT_PERP",
+        "timeframe": "4h",
+        "cutoff_time_ns": 3,
+        "exit_type": "NONE",
+        "exit_urgency": "NONE",
+        "target_reduction_pct": 0.0,
+        "stop_price": null,
+        "reason_code": "NO_EXIT",
+        "reason_detail": "No exit condition met",
+        "reason_codes": []
+      },
+      "sizing": {
+        "symbol": "BTCUSDT_PERP",
+        "timeframe": "4h",
+        "cutoff_time_ns": 3,
+        "base_size": 1.375,
+        "confidence_multiplier": 0.8,
+        "stress_discount": 1.0,
+        "execution_haircut": 1.0,
+        "final_leverage": 1.1,
+        "reason_codes": [
+          "SIZE_BASE_VOL_TARGET",
+          "SIZE_CONFIDENCE_BLEND"
+        ]
+      },
+      "target": {
+        "intent_id": "7c2d2a70-dc38-536d-99c2-e0498d01e41a",
+        "portfolio": "arc",
+        "symbol": "BTCUSDT_PERP",
+        "timeframe": "4h",
+        "cutoff_time_ns": 3,
+        "target_qty": 1057.692308,
+        "target_leverage": 1.1,
+        "reduce_only": false,
+        "regime": "TREND",
+        "regime_confidence": 0.8,
+        "reason_codes": [
+          "REGIME_TREND",
+          "PLAYBOOK_BULL_CONTINUATION",
+          "PLAYBOOK_ALLOW_LONG",
+          "TREND_LONG",
+          "SIZE_BASE_VOL_TARGET",
+          "SIZE_CONFIDENCE_BLEND"
+        ],
+        "realized_vol": 0.8,
+        "atr": 2.0
+      },
+      "reason": {
+        "portfolio": "arc",
+        "symbol": "BTCUSDT_PERP",
+        "cutoff_time_ns": 3,
+        "summary": "intent=7c2d2a70 regime=TREND conf=0.80 lev=1.10 qty=1057.692308",
+        "reason_codes": [
+          "REGIME_TREND",
+          "PLAYBOOK_BULL_CONTINUATION",
+          "PLAYBOOK_ALLOW_LONG",
+          "TREND_LONG",
+          "SIZE_BASE_VOL_TARGET",
+          "SIZE_CONFIDENCE_BLEND"
+        ]
+      }
+    }
+  },
+  {
+    "kind": "fill",
+    "side": -1,
+    "quantity": 0.25,
+    "price": 104
+  },
+  {
+    "kind": "bar",
+    "indicator": {
+      "symbol": "BTCUSDT_PERP",
+      "timeframe": "4h",
+      "cutoff_time_ns": 4,
+      "indicator_version": "v1",
+      "formula_hash": "f1",
+      "price": 102,
+      "atr": 2.0,
+      "realized_vol": 0.8,
+      "funding_oi_z": 0.0,
+      "cvd_slope": -0.1,
+      "ob_liq_z": 0.0,
+      "structure_state": "DOWNTREND",
+      "momentum_roc_z": -0.5
+    },
+    "state": {
+      "symbol": "BTCUSDT_PERP",
+      "timeframe": "4h",
+      "cutoff_time_ns": 4,
+      "directional_state": "DOWNTREND",
+      "directional_confidence": 0.8,
+      "volatility_state": "NORMAL",
+      "volatility_confidence": 0.8,
+      "positioning_state": "HEALTHY",
+      "positioning_confidence": 0.8,
+      "quality_state": "TRADABLE",
+      "quality_confidence": 0.8,
+      "regime": "TREND",
+      "regime_confidence": 0.8,
+      "direction_signal": -1,
+      "transition_risk": 0.0,
+      "quality_flags": [
+        "OK"
+      ]
+    },
+    "expected": {
+      "playbook": {
+        "symbol": "BTCUSDT_PERP",
+        "timeframe": "4h",
+        "cutoff_time_ns": 4,
+        "playbook_id": "BEAR_DEFENSE",
+        "playbook_confidence": 0.8,
+        "allowed_directions": [
+          -1.0,
+          0.0
+        ],
+        "max_leverage": 2.25,
+        "trailing_stop_atr_mult": 2.5,
+        "allow_pyramid": false,
+        "max_pyramid_count": 0,
+        "time_decay_bars": null,
+        "selection_reason": "Downtrend state with tactical short bias",
+        "reason_codes": [
+          "PLAYBOOK_BEAR_DEFENSE",
+          "PLAYBOOK_ALLOW_SHORT"
+        ]
+      },
+      "exit": {
+        "symbol": "BTCUSDT_PERP",
+        "timeframe": "4h",
+        "cutoff_time_ns": 4,
+        "exit_type": "NONE",
+        "exit_urgency": "NONE",
+        "target_reduction_pct": 0.0,
+        "stop_price": null,
+        "reason_code": "NO_EXIT",
+        "reason_detail": "No exit condition met",
+        "reason_codes": []
+      },
+      "sizing": {
+        "symbol": "BTCUSDT_PERP",
+        "timeframe": "4h",
+        "cutoff_time_ns": 4,
+        "base_size": 1.375,
+        "confidence_multiplier": 0.8,
+        "stress_discount": 1.0,
+        "execution_haircut": 1.0,
+        "final_leverage": 1.1,
+        "reason_codes": [
+          "SIZE_BASE_VOL_TARGET",
+          "SIZE_CONFIDENCE_BLEND"
+        ]
+      },
+      "confirmation": "INTENT_CONFIRMATION_PENDING"
+    }
+  },
+  {
+    "kind": "bar",
+    "indicator": {
+      "symbol": "BTCUSDT_PERP",
+      "timeframe": "4h",
+      "cutoff_time_ns": 5,
+      "indicator_version": "v1",
+      "formula_hash": "f1",
+      "price": 102,
+      "atr": 2.0,
+      "realized_vol": 0.8,
+      "funding_oi_z": 0.0,
+      "cvd_slope": -0.1,
+      "ob_liq_z": 0.0,
+      "structure_state": "DOWNTREND",
+      "momentum_roc_z": -0.5
+    },
+    "state": {
+      "symbol": "BTCUSDT_PERP",
+      "timeframe": "4h",
+      "cutoff_time_ns": 5,
+      "directional_state": "DOWNTREND",
+      "directional_confidence": 0.8,
+      "volatility_state": "NORMAL",
+      "volatility_confidence": 0.8,
+      "positioning_state": "HEALTHY",
+      "positioning_confidence": 0.8,
+      "quality_state": "TRADABLE",
+      "quality_confidence": 0.8,
+      "regime": "TREND",
+      "regime_confidence": 0.8,
+      "direction_signal": -1,
+      "transition_risk": 0.0,
+      "quality_flags": [
+        "OK"
+      ]
+    },
+    "expected": {
+      "playbook": {
+        "symbol": "BTCUSDT_PERP",
+        "timeframe": "4h",
+        "cutoff_time_ns": 5,
+        "playbook_id": "BEAR_DEFENSE",
+        "playbook_confidence": 0.8,
+        "allowed_directions": [
+          -1.0,
+          0.0
+        ],
+        "max_leverage": 2.25,
+        "trailing_stop_atr_mult": 2.5,
+        "allow_pyramid": false,
+        "max_pyramid_count": 0,
+        "time_decay_bars": null,
+        "selection_reason": "Downtrend state with tactical short bias",
+        "reason_codes": [
+          "PLAYBOOK_BEAR_DEFENSE",
+          "PLAYBOOK_ALLOW_SHORT"
+        ]
+      },
+      "exit": {
+        "symbol": "BTCUSDT_PERP",
+        "timeframe": "4h",
+        "cutoff_time_ns": 5,
+        "exit_type": "NONE",
+        "exit_urgency": "NONE",
+        "target_reduction_pct": 0.0,
+        "stop_price": null,
+        "reason_code": "NO_EXIT",
+        "reason_detail": "No exit condition met",
+        "reason_codes": []
+      },
+      "sizing": {
+        "symbol": "BTCUSDT_PERP",
+        "timeframe": "4h",
+        "cutoff_time_ns": 5,
+        "base_size": 1.375,
+        "confidence_multiplier": 0.8,
+        "stress_discount": 1.0,
+        "execution_haircut": 1.0,
+        "final_leverage": 1.1,
+        "reason_codes": [
+          "SIZE_BASE_VOL_TARGET",
+          "SIZE_CONFIDENCE_BLEND"
+        ]
+      },
+      "confirmation": "INTENT_CONFIRMED",
+      "target": {
+        "intent_id": "6983ccae-ce4b-51e8-8d8d-9da4015295f9",
+        "portfolio": "arc",
+        "symbol": "BTCUSDT_PERP",
+        "timeframe": "4h",
+        "cutoff_time_ns": 5,
+        "target_qty": -1078.431373,
+        "target_leverage": 1.1,
+        "reduce_only": false,
+        "regime": "TREND",
+        "regime_confidence": 0.8,
+        "reason_codes": [
+          "REGIME_TREND",
+          "PLAYBOOK_BEAR_DEFENSE",
+          "PLAYBOOK_ALLOW_SHORT",
+          "TREND_SHORT",
+          "SIZE_BASE_VOL_TARGET",
+          "SIZE_CONFIDENCE_BLEND",
+          "INTENT_CONFIRMED_2_BARS"
+        ],
+        "realized_vol": 0.8,
+        "atr": 2.0
+      },
+      "reason": {
+        "portfolio": "arc",
+        "symbol": "BTCUSDT_PERP",
+        "cutoff_time_ns": 5,
+        "summary": "intent=6983ccae regime=TREND conf=0.80 lev=1.10 qty=-1078.431373",
+        "reason_codes": [
+          "REGIME_TREND",
+          "PLAYBOOK_BEAR_DEFENSE",
+          "PLAYBOOK_ALLOW_SHORT",
+          "TREND_SHORT",
+          "SIZE_BASE_VOL_TARGET",
+          "SIZE_CONFIDENCE_BLEND",
+          "INTENT_CONFIRMED_2_BARS"
+        ]
+      }
+    }
+  },
+  {
+    "kind": "fill",
+    "side": -1,
+    "quantity": 2.25,
+    "price": 102
+  },
+  {
+    "kind": "bar",
+    "indicator": {
+      "symbol": "BTCUSDT_PERP",
+      "timeframe": "4h",
+      "cutoff_time_ns": 6,
+      "indicator_version": "v1",
+      "formula_hash": "f1",
+      "price": 101,
+      "atr": 2.0,
+      "realized_vol": 0.8,
+      "funding_oi_z": 0.0,
+      "cvd_slope": -0.1,
+      "ob_liq_z": 0.0,
+      "structure_state": "DOWNTREND",
+      "momentum_roc_z": -0.5
+    },
+    "state": {
+      "symbol": "BTCUSDT_PERP",
+      "timeframe": "4h",
+      "cutoff_time_ns": 6,
+      "directional_state": "DOWNTREND",
+      "directional_confidence": 0.8,
+      "volatility_state": "NORMAL",
+      "volatility_confidence": 0.8,
+      "positioning_state": "HEALTHY",
+      "positioning_confidence": 0.8,
+      "quality_state": "UNSAFE",
+      "quality_confidence": 0.8,
+      "regime": "TREND",
+      "regime_confidence": 0.8,
+      "direction_signal": -1,
+      "transition_risk": 0.0,
+      "quality_flags": [
+        "OK"
+      ]
+    },
+    "expected": {
+      "playbook": {
+        "symbol": "BTCUSDT_PERP",
+        "timeframe": "4h",
+        "cutoff_time_ns": 6,
+        "playbook_id": "CAPITAL_PRESERVATION",
+        "playbook_confidence": 0.9,
+        "allowed_directions": [
+          0.0
+        ],
+        "max_leverage": 0.35,
+        "trailing_stop_atr_mult": 1.5,
+        "allow_pyramid": false,
+        "max_pyramid_count": 0,
+        "time_decay_bars": 1,
+        "selection_reason": "Capital preservation because quality=UNSAFE, volatility=NORMAL, transition_risk=0.00",
+        "reason_codes": [
+          "PLAYBOOK_CAPITAL_PRESERVATION",
+          "PLAYBOOK_REDUCE_ONLY"
+        ]
+      },
+      "exit": {
+        "symbol": "BTCUSDT_PERP",
+        "timeframe": "4h",
+        "cutoff_time_ns": 6,
+        "exit_type": "REGIME_CHANGE",
+        "exit_urgency": "IMMEDIATE",
+        "target_reduction_pct": 1.0,
+        "stop_price": null,
+        "reason_code": "QUALITY_UNSAFE",
+        "reason_detail": "Data quality unsafe; flatten position",
+        "reason_codes": [
+          "EXIT_REGIME_CHANGE",
+          "QUALITY_UNSAFE"
+        ]
+      },
+      "target": {
+        "intent_id": "27c17cdf-f6c0-53b0-ba13-33d42b928682",
+        "portfolio": "arc",
+        "symbol": "BTCUSDT_PERP",
+        "timeframe": "4h",
+        "cutoff_time_ns": 6,
+        "target_qty": 0.0,
+        "target_leverage": 0.0,
+        "reduce_only": true,
+        "regime": "TREND",
+        "regime_confidence": 0.8,
+        "reason_codes": [
+          "REGIME_TREND",
+          "EXIT_REGIME_CHANGE",
+          "QUALITY_UNSAFE"
+        ],
+        "realized_vol": 0.8,
+        "atr": 2.0
+      },
+      "reason": {
+        "portfolio": "arc",
+        "symbol": "BTCUSDT_PERP",
+        "cutoff_time_ns": 6,
+        "summary": "intent=27c17cdf regime=TREND conf=0.80 lev=0.00 qty=0.000000",
+        "reason_codes": [
+          "REGIME_TREND",
+          "EXIT_REGIME_CHANGE",
+          "QUALITY_UNSAFE"
+        ]
+      }
+    }
+  },
+  {
+    "kind": "fill",
+    "side": 1,
+    "quantity": 1,
+    "price": 101
+  },
+  {
+    "kind": "fill",
+    "side": 1,
+    "quantity": 5e-05,
+    "price": 100
+  },
+  {
+    "kind": "fill",
+    "side": -1,
+    "quantity": 5e-05,
+    "price": 100
+  },
+  {
+    "kind": "bar",
+    "indicator": {
+      "symbol": "BTCUSDT_PERP",
+      "timeframe": "4h",
+      "cutoff_time_ns": 7,
+      "indicator_version": "v1",
+      "formula_hash": "f1",
+      "price": 100.0,
+      "atr": 2.0,
+      "realized_vol": 0.8,
+      "funding_oi_z": 0.0,
+      "cvd_slope": 0.1,
+      "ob_liq_z": 0.0,
+      "structure_state": "UPTREND",
+      "momentum_roc_z": 0.5
+    },
+    "state": {
+      "symbol": "BTCUSDT_PERP",
+      "timeframe": "4h",
+      "cutoff_time_ns": 7,
+      "directional_state": "UPTREND",
+      "directional_confidence": 0.8,
+      "volatility_state": "NORMAL",
+      "volatility_confidence": 0.8,
+      "positioning_state": "HEALTHY",
+      "positioning_confidence": 0.8,
+      "quality_state": "TRADABLE",
+      "quality_confidence": 0.8,
+      "regime": "TREND",
+      "regime_confidence": 0.8,
+      "direction_signal": 1,
+      "transition_risk": 0.0,
+      "quality_flags": [
+        "OK"
+      ]
+    },
+    "expected": {
+      "playbook": {
+        "symbol": "BTCUSDT_PERP",
+        "timeframe": "4h",
+        "cutoff_time_ns": 7,
+        "playbook_id": "BULL_CONTINUATION",
+        "playbook_confidence": 0.8,
+        "allowed_directions": [
+          1.0,
+          0.0
+        ],
+        "max_leverage": 2.5,
+        "trailing_stop_atr_mult": 2.5,
+        "allow_pyramid": true,
+        "max_pyramid_count": 2,
+        "time_decay_bars": null,
+        "selection_reason": "Uptrend state with acceptable volatility and crowding",
+        "reason_codes": [
+          "PLAYBOOK_BULL_CONTINUATION",
+          "PLAYBOOK_ALLOW_LONG"
+        ]
+      },
+      "sizing": {
+        "symbol": "BTCUSDT_PERP",
+        "timeframe": "4h",
+        "cutoff_time_ns": 7,
+        "base_size": 1.375,
+        "confidence_multiplier": 0.8,
+        "stress_discount": 1.0,
+        "execution_haircut": 1.0,
+        "final_leverage": 1.1,
+        "reason_codes": [
+          "SIZE_BASE_VOL_TARGET",
+          "SIZE_CONFIDENCE_BLEND"
+        ]
+      },
+      "confirmation": "INTENT_CONFIRMATION_PENDING"
+    }
+  }
+]
