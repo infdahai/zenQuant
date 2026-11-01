@@ -17,6 +17,108 @@ import (
 	"github.com/infdahai/zenQuant/internal/workbench"
 )
 
+func TestSyntheticLongHistoryCLI(t *testing.T) {
+	const count = 14976
+	const startMS int64 = 1577836800000
+	const barMS int64 = 14400000
+	dir, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	binary := filepath.Join(dir, "zenquant")
+	if b, err := exec.Command("go", "build", "-o", binary, "../../cmd/zenquant").CombinedOutput(); err != nil {
+		t.Fatalf("build: %v %s", err, b)
+	}
+	var csv, funding bytes.Buffer
+	funding.WriteByte('[')
+	for i := 0; i < count; i++ {
+		open := startMS + int64(i)*barMS
+		fmt.Fprintf(&csv, "%d,40000.1234,41000.1234,39000.1234,40500.1234,123.4567,%d,5000000,12345,50,2000000,0\n", open, open+barMS-1)
+		if i%2 == 1 {
+			if i > 1 {
+				funding.WriteByte(',')
+			}
+			fmt.Fprintf(&funding, `{"symbol":"BTCUSDT","fundingTime":%d,"fundingRate":"0.00010000"}`, open+barMS)
+		}
+	}
+	funding.WriteByte(']')
+	csvPath, fundingPath := filepath.Join(dir, "bars.csv"), filepath.Join(dir, "funding.json")
+	for p, data := range map[string][]byte{csvPath: csv.Bytes(), fundingPath: funding.Bytes()} {
+		if err := os.WriteFile(p, data, 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	asOf := time.UnixMilli(startMS + count*barMS).UTC().Format(time.RFC3339)
+	cmd := exec.Command(binary, "history-import", "--input", csvPath, "--funding-input", fundingPath, "--symbol", "BTCUSDT", "--timeframe", "4h", "--as-of", asOf)
+	raw, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("history import: %v %s", err, err.(*exec.ExitError).Stderr)
+	}
+	storePath := filepath.Join(dir, "store")
+	cmd = exec.Command(binary, "workbench", "--store", storePath, "import")
+	cmd.Stdin = bytes.NewReader(raw)
+	output, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("workbench import: %v", err)
+	}
+	var imported struct {
+		ID string `json:"ID"`
+	}
+	if err := json.Unmarshal(output, &imported); err != nil || imported.ID == "" {
+		t.Fatalf("import response: %v", err)
+	}
+	store, err := workbench.Open(storePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	snap, err := store.Snapshot(imported.ID)
+	if err != nil || len(snap.Dataset.Candles) != count || len(snap.Dataset.Funding) != count/2 {
+		t.Fatalf("snapshot: %v", err)
+	}
+	cmd = exec.Command(binary, "workbench", "--store", storePath, "list")
+	cmd.Stdin = bytes.NewReader(raw)
+	if _, err := cmd.Output(); err == nil {
+		t.Fatal("oversized list request accepted")
+	}
+	var inputs []research.OfflineDecisionInput
+	for _, c := range snap.Dataset.Candles {
+		inputs = append(inputs, research.OfflineDecisionInput{Indicator: research.StrategyIndicator{Symbol: "BTC", Timeframe: "4h", CutoffTimeNS: c.CloseTimeNS, Price: c.Close, ATR: 1, RealizedVol: .8, CVDSlope: .1}, State: research.StrategyState{PlaybookState: research.PlaybookState{Symbol: "BTC", Timeframe: "4h", CutoffTimeNS: c.CloseTimeNS, DirectionalState: "UPTREND", DirectionalConfidence: .8, VolatilityState: "NORMAL", VolatilityConfidence: .8, PositioningState: "HEALTHY", PositioningConfidence: .8, QualityState: "TRADABLE", QualityConfidence: .8, DirectionSignal: 1}, Regime: "TREND", RegimeConfidence: .8, QualityFlags: []string{"OK"}}, AvailableTimeNS: c.CloseTimeNS, ValidUntilNS: c.CloseTimeNS})
+	}
+	decisions, err := json.Marshal(inputs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	config, err := json.Marshal(importedLoopConfig{TakerFeeRate: .001, MaxTradeQtyPerCutoff: 1000, HistoryLimit: 2, IndicatorWindow: 1, StrategyConfig: research.DefaultStrategyFlowConfig(), RiskConfig: research.DefaultStatefulRiskConfig()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	decisionPath, configPath := filepath.Join(dir, "decisions.json"), filepath.Join(dir, "config.json")
+	for p, data := range map[string][]byte{decisionPath: decisions, configPath: config} {
+		if err := os.WriteFile(p, data, 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	snapshotInfo, err := os.Stat(filepath.Join(storePath, "snapshot-"+imported.ID+".json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Logf("synthetic sizes: CSV=%d funding=%d dataset=%d snapshot=%d decisions=%d", csv.Len(), funding.Len(), len(raw), snapshotInfo.Size(), len(decisions))
+	cmd = exec.Command(binary, "history-closed-loop", "--store", storePath, "--snapshot", imported.ID, "--start-ns", fmt.Sprint(inputs[0].AvailableTimeNS), "--end-ns", fmt.Sprint(inputs[count-1].AvailableTimeNS), "--decisions", decisionPath, "--config", configPath, "--source", "synthetic", "--availability", "synthetic at close", "--quote-assumption", history.USDQuoteAssumption)
+	output, err = cmd.Output()
+	if err != nil {
+		if e, ok := err.(*exec.ExitError); ok {
+			t.Fatalf("closed loop: %v %s", err, e.Stderr)
+		}
+		t.Fatal(err)
+	}
+	var result struct {
+		Result history.ImportedClosedLoopResult `json:"result"`
+	}
+	if err := json.Unmarshal(output, &result); err != nil || result.Result.Result == nil || len(result.Result.Result.Decisions) != count {
+		t.Fatalf("closed-loop result: %v", err)
+	}
+}
+
 func TestImportedLoopCLI(t *testing.T) {
 	dir, err := filepath.EvalSymlinks(t.TempDir())
 	if err != nil {
@@ -126,7 +228,7 @@ func TestImportedLoopCLI(t *testing.T) {
 		t.Fatal(err)
 	}
 	oversize := filepath.Join(dir, "oversize.json")
-	if err := os.WriteFile(oversize, bytes.Repeat([]byte(" "), history.MaxCSV+1), 0600); err != nil {
+	if err := os.WriteFile(oversize, bytes.Repeat([]byte(" "), maxDecisionInput+1), 0600); err != nil {
 		t.Fatal(err)
 	}
 	for _, tc := range []struct {

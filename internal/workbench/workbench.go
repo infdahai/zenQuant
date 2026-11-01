@@ -21,6 +21,12 @@ import (
 )
 
 const MaxInput = 1 << 20
+
+// MaxDatasetInput bounds local dataset imports independently of HTTP requests.
+const MaxDatasetInput = 4 << 20
+
+// MaxSnapshot includes the dataset plus its serialized quality and identity metadata.
+const MaxSnapshot = MaxDatasetInput + (1 << 20)
 const maxCandles = 20000
 
 // Dataset is an imported historical dataset. Availability is unknown; event
@@ -144,7 +150,7 @@ func (s *Store) publish(kind, id string, b []byte) error {
 		if !os.IsExist(err) {
 			return err
 		}
-		existing, e := os.ReadFile(p)
+		existing, e := readBounded(p, artifactLimit(kind))
 		if e != nil {
 			return e
 		}
@@ -166,17 +172,37 @@ func (s *Store) publish(kind, id string, b []byte) error {
 	defer dir.Close()
 	return dir.Sync()
 }
+func artifactLimit(kind string) int {
+	if kind == "snapshot" {
+		return MaxSnapshot
+	}
+	return MaxInput * 4
+}
+
+func readBounded(path string, limit int) ([]byte, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	b, err := io.ReadAll(io.LimitReader(f, int64(limit)+1))
+	if err != nil {
+		return nil, err
+	}
+	if len(b) > limit {
+		return nil, errors.New("artifact too large")
+	}
+	return b, nil
+}
+
 func (s *Store) read(kind, id string, v any) error {
 	p, err := s.path(kind, id)
 	if err != nil {
 		return err
 	}
-	b, err := os.ReadFile(p)
+	b, err := readBounded(p, artifactLimit(kind))
 	if err != nil {
 		return err
-	}
-	if len(b) > MaxInput*4 {
-		return errors.New("artifact too large")
 	}
 	if digest(b) != id {
 		return errors.New("artifact integrity check failed")
@@ -185,8 +211,8 @@ func (s *Store) read(kind, id string, v any) error {
 }
 func (s *Store) Import(raw []byte) (Snapshot, error) {
 	var out Snapshot
-	if len(raw) > MaxInput {
-		return out, errors.New("input exceeds 1 MiB")
+	if len(raw) > MaxDatasetInput {
+		return out, errors.New("dataset input exceeds 4 MiB")
 	}
 	var d Dataset
 	if err := strictDecode(raw, &d); err != nil {
@@ -259,7 +285,7 @@ func (s *Store) Import(raw []byte) (Snapshot, error) {
 	if err != nil {
 		return out, err
 	}
-	if len(b) > MaxInput*4 {
+	if len(b) > MaxSnapshot {
 		return Snapshot{}, errors.New("serialized snapshot exceeds artifact limit")
 	}
 	id := digest(b)

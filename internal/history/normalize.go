@@ -208,8 +208,8 @@ func NormalizePartsWithFunding(inputs []io.Reader, timeframe string, asOf time.T
 	if err != nil {
 		return nil, err
 	}
-	if len(b)+1 > workbench.MaxInput {
-		return nil, fmt.Errorf("dataset exceeds workbench 1 MiB input limit")
+	if len(b)+1 > workbench.MaxDatasetInput {
+		return nil, fmt.Errorf("dataset exceeds workbench 4 MiB input limit")
 	}
 	return append(b, '\n'), nil
 }
