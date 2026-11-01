@@ -16,6 +16,7 @@ func runHistoryImport(args []string, out, stderr io.Writer) error {
 	flags := flag.NewFlagSet("history-import", flag.ContinueOnError)
 	flags.SetOutput(stderr)
 	input := flags.String("input", "", "headerless Binance futures kline CSV")
+	fundingInput := flags.String("funding-input", "", "optional local Binance fundingRate JSON array")
 	symbol := flags.String("symbol", "", "source exchange symbol (BTCUSDT)")
 	timeframe := flags.String("timeframe", "", "5m, 1h, 4h or 1d")
 	cutoff := flags.String("as-of", "", "explicit RFC3339 observation cutoff")
@@ -24,6 +25,15 @@ func runHistoryImport(args []string, out, stderr io.Writer) error {
 			return nil
 		}
 		return err
+	}
+	fundingProvided := false
+	flags.Visit(func(f *flag.Flag) {
+		if f.Name == "funding-input" {
+			fundingProvided = true
+		}
+	})
+	if fundingProvided && *fundingInput == "" {
+		return errors.New("funding input path must not be empty")
 	}
 	if flags.NArg() != 0 || *input == "" || *symbol != "BTCUSDT" || *cutoff == "" {
 		return errors.New("input, symbol BTCUSDT, timeframe and as-of are required")
@@ -36,7 +46,17 @@ func runHistoryImport(args []string, out, stderr io.Writer) error {
 	if err != nil {
 		return err
 	}
-	b, err := history.Normalize(bytes.NewReader(raw), *timeframe, asOf)
+	var funding []byte
+	if *fundingInput != "" {
+		funding, err = localfile.Read(*fundingInput, history.MaxCSV)
+		if err != nil {
+			return fmt.Errorf("funding input: %w", err)
+		}
+		if funding == nil {
+			funding = []byte{}
+		}
+	}
+	b, err := history.NormalizeWithFunding(bytes.NewReader(raw), *timeframe, asOf, funding)
 	if err != nil {
 		return err
 	}

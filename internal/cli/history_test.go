@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"reflect"
+	"strings"
 	"time"
 
 	"github.com/infdahai/zenQuant/internal/workbench"
@@ -122,6 +123,42 @@ func TestHistoryCommandEndToEnd(t *testing.T) {
 		t.Fatal("source bytes did not change snapshot identity")
 	}
 
+	for _, flagArgs := range [][]string{{"--funding-input="}, {"--funding-input", ""}} {
+		invalidArgs := append(append([]string{}, args...), flagArgs...)
+		cmd := exec.Command(binary, invalidArgs...)
+		var stderr bytes.Buffer
+		cmd.Stderr = &stderr
+		out, err := cmd.Output()
+		if err == nil || len(out) != 0 || !strings.Contains(stderr.String(), "funding input path must not be empty") {
+			t.Fatalf("empty funding input: output %q stderr %q error %v", out, stderr.String(), err)
+		}
+	}
+	fundingPath, err := filepath.Abs("../history/testdata/funding.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	fundedArgs := append(append([]string{}, args...), "--funding-input", fundingPath)
+	funded, err := exec.Command(binary, fundedArgs...).Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cmd = exec.Command(binary, "workbench", "--store", storePath, "import")
+	cmd.Stdin = bytes.NewReader(funded)
+	fundedSnapshot, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("funded import: %s %v", fundedSnapshot, err)
+	}
+	var fundedSnap struct {
+		ID      string `json:"id"`
+		Dataset struct {
+			Funding []json.RawMessage `json:"funding"`
+		} `json:"dataset"`
+	}
+	if err := json.Unmarshal(fundedSnapshot, &fundedSnap); err != nil || fundedSnap.ID == snap.ID || len(fundedSnap.Dataset.Funding) != 2 {
+		t.Fatalf("funded snapshot: %s %v", fundedSnapshot, err)
+	}
+	snap.ID = fundedSnap.ID
+
 	cmd = exec.Command(binary, "workbench", "--store", storePath, "submit")
 	cmd.Stdin = bytes.NewBufferString(fmt.Sprintf(`{"snapshot_id":%q,"fee_rate":0}`, snap.ID))
 	jobJSON, err := cmd.CombinedOutput()
@@ -170,6 +207,45 @@ func TestHistoryCommandEndToEnd(t *testing.T) {
 	}
 	if err = json.Unmarshal(result, &replay); err != nil || replay.SnapshotID != snap.ID || len(replay.Reports) != 2 {
 		t.Fatalf("replay result: %s %v", result, err)
+	}
+
+	// A finite rate remains valid input even when the resulting funding PnL
+	// overflows. The asynchronous replay must fail without publishing a result.
+	hugePath := filepath.Join(temp, "huge-funding.json")
+	if err := os.WriteFile(hugePath, []byte(`[{"symbol":"BTCUSDT","fundingTime":1704096000000,"fundingRate":"1.7976931348623157e308"}]`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	hugeArgs := append(append([]string{}, args...), "--funding-input", hugePath)
+	hugeDataset, err := exec.Command(binary, hugeArgs...).Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	hugeSnap, err := store.Import(hugeDataset)
+	if err != nil {
+		t.Fatalf("finite rate import: %v", err)
+	}
+	hugeJob, err := store.Submit(hugeSnap.ID, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	deadline = time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		jobs, err := store.JobsList()
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, j := range jobs {
+			if j.ID == hugeJob.ID {
+				hugeJob = j
+			}
+		}
+		if hugeJob.Status == "failed" || hugeJob.Status == "succeeded" {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if hugeJob.Status != "failed" || hugeJob.ResultID != "" || !strings.Contains(hugeJob.Error, "funding pnl must be finite") {
+		t.Fatalf("overflow job: %+v", hugeJob)
 	}
 
 	for _, kind := range []string{"symlink", "parent-symlink", "parent-component", "fifo", "directory"} {

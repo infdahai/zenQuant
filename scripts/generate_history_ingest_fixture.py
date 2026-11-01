@@ -2,6 +2,7 @@
 """Generate the synthetic downloader reference without third-party dependencies."""
 
 import dataclasses
+from datetime import UTC, datetime
 import importlib.util
 import io
 import json
@@ -33,8 +34,16 @@ class HistoricalKlineRow:
     trade_count: int
 
 
+@dataclasses.dataclass
+class HistoricalFundingRow:
+    symbol: str
+    funding_time_ns: int
+    funding_rate: float
+
+
 storage.HistoricalKlineRow = HistoricalKlineRow
-for name in ("HistoricalDatasetLayout", "HistoricalFundingRow", "HistoricalOpenInterestRow", "write_parquet_rows"):
+storage.HistoricalFundingRow = HistoricalFundingRow
+for name in ("HistoricalDatasetLayout", "HistoricalOpenInterestRow", "write_parquet_rows"):
     setattr(storage, name, object)
 sys.modules[storage.__name__] = storage
 spec = importlib.util.spec_from_file_location("zenquant.historical.binance", root / "zenquant/historical/binance.py")
@@ -49,3 +58,10 @@ downloader = object.__new__(module.BinanceHistoricalDownloader)
 downloader._config = module.BinanceHistoricalSyncConfig()
 rows = downloader._download_kline_month(symbol="BTCUSDT", timeframe="4h", year=2024, month=1)
 (fixture / "python_klines.json").write_text(json.dumps([dataclasses.asdict(row) for row in rows], indent=2) + "\n")
+# Stub the transport: this exercises the downloader conversion without network access.
+payload = json.loads((fixture / "funding.json").read_text())
+module._fetch_json = lambda *args, **kwargs: payload
+rows = downloader._download_funding(
+    symbol="BTCUSDT", start_dt=datetime(2024, 1, 1, tzinfo=UTC), end_dt=datetime(2024, 1, 2, tzinfo=UTC)
+)
+(fixture / "python_funding.json").write_text(json.dumps([dataclasses.asdict(row) for row in rows], indent=2) + "\n")

@@ -2,7 +2,9 @@ package history
 
 import (
 	"bytes"
+	"crypto/sha256"
 	"encoding/json"
+	"fmt"
 	"os"
 	"reflect"
 	"strings"
@@ -120,6 +122,95 @@ func TestRejectUnrepresentableUTCCutoff(t *testing.T) {
 		if _, err := Normalize(strings.NewReader(""), "4h", cutoff); err == nil || !strings.Contains(err.Error(), "UTC RFC3339") {
 			t.Fatalf("cutoff %s: expected UTC representation error, got %v", input, err)
 		}
+	}
+}
+
+func TestFundingNormalization(t *testing.T) {
+	csv, err := os.ReadFile("testdata/klines.csv")
+	if err != nil {
+		t.Fatal(err)
+	}
+	funding, err := os.ReadFile("testdata/funding.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cutoff := time.Date(2024, 1, 1, 8, 0, 0, 0, time.UTC)
+	normalize := func(raw []byte) ([]byte, error) { return NormalizeWithFunding(bytes.NewReader(csv), "4h", cutoff, raw) }
+	b, err := normalize(funding)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var d workbench.Dataset
+	if err := json.Unmarshal(b, &d); err != nil {
+		t.Fatal(err)
+	}
+	reference, err := os.ReadFile("testdata/python_funding.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var python []struct {
+		Symbol string  `json:"symbol"`
+		Time   int64   `json:"funding_time_ns"`
+		Rate   float64 `json:"funding_rate"`
+	}
+	if err := json.Unmarshal(reference, &python); err != nil {
+		t.Fatal(err)
+	}
+	if len(python) != len(d.Funding) {
+		t.Fatal("funding count mismatch")
+	}
+	for i, row := range python {
+		if row.Symbol != "BTCUSDT" || d.Funding[i] != (workbench.Funding{TimeNS: row.Time, Rate: row.Rate}) {
+			t.Fatalf("Python mismatch: %+v %+v", row, d.Funding[i])
+		}
+	}
+	sum := sha256.Sum256(funding)
+	if d.Provenance.FundingSourceSHA256 != fmt.Sprintf("%x", sum) {
+		t.Fatal("incorrect funding digest")
+	}
+	store, err := workbench.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	snap, err := store.Import(b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	variant, err := normalize(append(append([]byte{}, funding...), '\n'))
+	if err != nil {
+		t.Fatal(err)
+	}
+	other, err := store.Import(variant)
+	if err != nil || other.ID == snap.ID {
+		t.Fatalf("funding identity: %v", err)
+	}
+	bad := d
+	bad.Provenance = &workbench.DatasetProvenance{}
+	*bad.Provenance = *d.Provenance
+	bad.Provenance.FundingSourceSHA256 = "bad"
+	invalid, _ := json.Marshal(bad)
+	if _, err := store.Import(invalid); err == nil {
+		t.Fatal("accepted invalid funding digest")
+	}
+	bad.Provenance.FundingSourceSHA256 = d.Provenance.FundingSourceSHA256
+	bad.Funding = append([]workbench.Funding{}, d.Funding...)
+	bad.Funding[1].TimeNS++
+	invalid, _ = json.Marshal(bad)
+	if _, err := store.Import(invalid); err == nil {
+		t.Fatal("accepted future funding")
+	}
+	for name, input := range map[string]string{
+		"empty": "", "null": "null", "object": `{}`, "symbol": `[{"symbol":"ETHUSDT","fundingTime":1,"fundingRate":"0"}]`,
+		"zero": `[{"symbol":"BTCUSDT","fundingTime":0,"fundingRate":"0"}]`, "overflow": `[{"symbol":"BTCUSDT","fundingTime":9223372036855,"fundingRate":"0"}]`,
+		"future": `[{"symbol":"BTCUSDT","fundingTime":1704096000001,"fundingRate":"0"}]`, "nan": `[{"symbol":"BTCUSDT","fundingTime":1,"fundingRate":"NaN"}]`,
+		"missing": `[{"symbol":"BTCUSDT","fundingTime":1}]`, "duplicate": `[{"symbol":"BTCUSDT","fundingTime":1,"fundingRate":"0"},{"symbol":"BTCUSDT","fundingTime":1,"fundingRate":"0"}]`,
+		"unordered": `[{"symbol":"BTCUSDT","fundingTime":2,"fundingRate":"0"},{"symbol":"BTCUSDT","fundingTime":1,"fundingRate":"0"}]`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := normalize([]byte(input)); err == nil {
+				t.Fatal("accepted invalid funding")
+			}
+		})
 	}
 }
 

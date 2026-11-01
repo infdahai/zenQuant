@@ -21,6 +21,12 @@ const MaxCSV = 4 << 20
 // Normalize converts headerless Binance futures millisecond klines. asOf is an
 // explicit observation cutoff, not evidence of the exchange's arrival time.
 func Normalize(input io.Reader, timeframe string, asOf time.Time) ([]byte, error) {
+	return NormalizeWithFunding(input, timeframe, asOf, nil)
+}
+
+// NormalizeWithFunding also accepts a supplied Binance fundingRate JSON array.
+// A nil funding input preserves the original no-funding dataset.
+func NormalizeWithFunding(input io.Reader, timeframe string, asOf time.Time, fundingJSON []byte) ([]byte, error) {
 	duration := map[string]int64{"5m": 300000, "1h": 3600000, "4h": 14400000, "1d": 86400000}[timeframe]
 	if duration == 0 || asOf.IsZero() {
 		return nil, fmt.Errorf("supported timeframe and as-of required")
@@ -94,6 +100,32 @@ func Normalize(input io.Reader, timeframe string, asOf time.Time) ([]byte, error
 	}
 	if len(d.Candles) == 0 {
 		return nil, fmt.Errorf("empty CSV")
+	}
+	if fundingJSON != nil {
+		if len(fundingJSON) > MaxCSV {
+			return nil, fmt.Errorf("funding JSON exceeds 4 MiB")
+		}
+		var rows []struct {
+			Symbol string  `json:"symbol"`
+			Time   *int64  `json:"fundingTime"`
+			Rate   *string `json:"fundingRate"`
+		}
+		if err := json.Unmarshal(fundingJSON, &rows); err != nil || rows == nil {
+			return nil, fmt.Errorf("invalid funding JSON array")
+		}
+		for i, row := range rows {
+			if row.Symbol != "BTCUSDT" || row.Time == nil || *row.Time <= 0 || *row.Time > math.MaxInt64/1000000 || row.Rate == nil {
+				return nil, fmt.Errorf("funding row %d: invalid symbol, time or rate", i+1)
+			}
+			ns := *row.Time * 1e6
+			rate, err := strconv.ParseFloat(*row.Rate, 64)
+			if err != nil || math.IsNaN(rate) || math.IsInf(rate, 0) || time.Unix(0, ns).After(asOf) || (i > 0 && ns <= d.Funding[i-1].TimeNS) {
+				return nil, fmt.Errorf("funding row %d: invalid rate, cutoff or order", i+1)
+			}
+			d.Funding = append(d.Funding, workbench.Funding{TimeNS: ns, Rate: rate})
+		}
+		sum := sha256.Sum256(fundingJSON)
+		d.Provenance.FundingSourceSHA256 = fmt.Sprintf("%x", sum)
 	}
 	b, err := json.Marshal(d)
 	if err != nil {

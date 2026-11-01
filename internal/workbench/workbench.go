@@ -38,9 +38,10 @@ type Dataset struct {
 
 // DatasetProvenance records supplied input identity, not its authenticity or arrival time.
 type DatasetProvenance struct {
-	SourceSymbol string `json:"source_symbol"`
-	SourceSHA256 string `json:"source_sha256"`
-	AsOf         string `json:"as_of"`
+	SourceSymbol        string `json:"source_symbol"`
+	SourceSHA256        string `json:"source_sha256"`
+	FundingSourceSHA256 string `json:"funding_source_sha256,omitempty"`
+	AsOf                string `json:"as_of"`
 }
 type Funding struct {
 	TimeNS int64   `json:"time_ns"`
@@ -205,7 +206,7 @@ func (s *Store) Import(raw []byte) (Snapshot, error) {
 		p := d.Provenance
 		var err error
 		cutoff, err = time.Parse(time.RFC3339Nano, p.AsOf)
-		if err != nil || cutoff.IsZero() || p.AsOf != cutoff.UTC().Format(time.RFC3339Nano) || p.SourceSymbol != "BTCUSDT" || !idPattern.MatchString(p.SourceSHA256) {
+		if err != nil || cutoff.IsZero() || p.AsOf != cutoff.UTC().Format(time.RFC3339Nano) || p.SourceSymbol != "BTCUSDT" || !idPattern.MatchString(p.SourceSHA256) || (p.FundingSourceSHA256 != "" && !idPattern.MatchString(p.FundingSourceSHA256)) {
 			return out, errors.New("invalid dataset provenance")
 		}
 	}
@@ -231,7 +232,7 @@ func (s *Store) Import(raw []byte) (Snapshot, error) {
 		}
 	}
 	for i, f := range d.Funding {
-		if math.IsNaN(f.Rate) || math.IsInf(f.Rate, 0) || f.TimeNS <= 0 || (i > 0 && f.TimeNS <= d.Funding[i-1].TimeNS) {
+		if math.IsNaN(f.Rate) || math.IsInf(f.Rate, 0) || f.TimeNS <= 0 || (i > 0 && f.TimeNS <= d.Funding[i-1].TimeNS) || (d.Provenance != nil && time.Unix(0, f.TimeNS).After(cutoff)) {
 			return out, errors.New("invalid or unordered funding")
 		}
 	}
