@@ -17,6 +17,14 @@ type OfflineReplayConfig struct {
 	// SessionPath optionally marks a fresh, non-resumable simulated account.
 	// Empty means ephemeral replay. The parent directory must already exist.
 	SessionPath string
+	// OnReport observes each simulated report after accounting has applied it.
+	// The quantity is the ledger position, also used in later policy snapshots;
+	// it is not necessarily the exact net of fills: on reductions and reversals,
+	// the ledger discards remaining quantities at or below 1e-12.
+	// Callback state can affect future policy calls, not the already returned
+	// batch of orders. An error aborts replay; callback side effects and the
+	// applied fill are not rolled back.
+	OnReport func(ExecutionReport, float64) error
 }
 
 // OfflineReplayIndicators are calculated from the visible bounded history.
@@ -95,6 +103,11 @@ func RunOfflineReplay(config OfflineReplayConfig, policy OfflineReplayPolicy) (*
 			return err
 		}
 		result.Reports = append(result.Reports, report)
+		if config.OnReport != nil {
+			if err := config.OnReport(report, ledger.PositionQty(config.Symbol)); err != nil {
+				return fmt.Errorf("report callback: %w", err)
+			}
+		}
 		return nil
 	})
 	if err != nil {
