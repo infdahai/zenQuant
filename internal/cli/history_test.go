@@ -241,8 +241,14 @@ func TestHistoryCommandEndToEnd(t *testing.T) {
 	}
 	defer worker.Close()
 	deadline := time.Now().Add(5 * time.Second)
+	var lastPollErr error
 	for time.Now().Before(deadline) {
 		jobs, e := store.JobsList()
+		lastPollErr = e
+		if errors.Is(e, unix.EWOULDBLOCK) {
+			time.Sleep(10 * time.Millisecond)
+			continue
+		}
 		if e != nil {
 			if !errors.Is(e, syscall.EWOULDBLOCK) {
 				t.Fatal(e)
@@ -259,7 +265,7 @@ func TestHistoryCommandEndToEnd(t *testing.T) {
 		time.Sleep(10 * time.Millisecond)
 	}
 	if job.Status != "succeeded" || job.ResultID == "" {
-		t.Fatalf("replay job: %+v", job)
+		t.Fatalf("replay job: %+v; last polling error: %v", job, lastPollErr)
 	}
 	cmd = exec.Command(binary, "workbench", "--store", storePath, "result")
 	cmd.Stdin = bytes.NewBufferString(fmt.Sprintf(`{"id":%q}`, job.ResultID))
@@ -295,8 +301,14 @@ func TestHistoryCommandEndToEnd(t *testing.T) {
 		t.Fatal(err)
 	}
 	deadline = time.Now().Add(5 * time.Second)
+	lastPollErr = nil
 	for time.Now().Before(deadline) {
 		jobs, err := store.JobsList()
+		lastPollErr = err
+		if errors.Is(err, unix.EWOULDBLOCK) {
+			time.Sleep(10 * time.Millisecond)
+			continue
+		}
 		if err != nil {
 			if !errors.Is(err, syscall.EWOULDBLOCK) {
 				t.Fatal(err)
@@ -315,7 +327,7 @@ func TestHistoryCommandEndToEnd(t *testing.T) {
 		time.Sleep(10 * time.Millisecond)
 	}
 	if hugeJob.Status != "failed" || hugeJob.ResultID != "" || !strings.Contains(hugeJob.Error, "funding pnl must be finite") {
-		t.Fatalf("overflow job: %+v", hugeJob)
+		t.Fatalf("overflow job: %+v; last polling error: %v", hugeJob, lastPollErr)
 	}
 
 	for _, kind := range []string{"symlink", "parent-symlink", "parent-component", "fifo", "directory"} {
