@@ -1,0 +1,1412 @@
+{
+  "reference": "Python SimulationSession at e449310 (PR55); synthetic inputs only",
+  "cases": [
+    {
+      "name": "full_round_trip",
+      "steps": [
+        {
+          "order": {
+            "client_order_id": "attempt-0",
+            "symbol": "BTC",
+            "side": 1,
+            "quantity": 1.0,
+            "reduce_only": false,
+            "max_slippage_bps": 8.0,
+            "order_type": "MARKET",
+            "limit_price": null
+          },
+          "simulator_report": {
+            "client_order_id": "attempt-0",
+            "symbol": "BTC",
+            "side": 1,
+            "status": "FILLED",
+            "filled_qty": 1.0,
+            "avg_price": 100.0,
+            "fee": 0.04,
+            "transaction_time_ns": 1,
+            "reject_reason": ""
+          },
+          "failed": false,
+          "blocked": false
+        },
+        {
+          "order": {
+            "client_order_id": "attempt-1",
+            "symbol": "BTC",
+            "side": -1,
+            "quantity": 1.0,
+            "reduce_only": false,
+            "max_slippage_bps": 8.0,
+            "order_type": "MARKET",
+            "limit_price": null
+          },
+          "simulator_report": {
+            "client_order_id": "attempt-1",
+            "symbol": "BTC",
+            "side": -1,
+            "status": "FILLED",
+            "filled_qty": 1.0,
+            "avg_price": 100.0,
+            "fee": 0.04,
+            "transaction_time_ns": 2,
+            "reject_reason": ""
+          },
+          "failed": false,
+          "blocked": false
+        }
+      ],
+      "submitted": [
+        {
+          "client_order_id": "attempt-0",
+          "symbol": "BTC",
+          "side": 1,
+          "quantity": 1.0,
+          "reduce_only": false,
+          "max_slippage_bps": 8.0,
+          "order_type": "MARKET",
+          "limit_price": null
+        },
+        {
+          "client_order_id": "attempt-1",
+          "symbol": "BTC",
+          "side": -1,
+          "quantity": 1.0,
+          "reduce_only": false,
+          "max_slippage_bps": 8.0,
+          "order_type": "MARKET",
+          "limit_price": null
+        }
+      ],
+      "published": [
+        {
+          "client_order_id": "attempt-0",
+          "symbol": "BTC",
+          "side": 1,
+          "status": "FILLED",
+          "filled_qty": 1.0,
+          "avg_price": 100.0,
+          "fee": 0.04,
+          "transaction_time_ns": 1,
+          "reject_reason": ""
+        },
+        {
+          "client_order_id": "attempt-1",
+          "symbol": "BTC",
+          "side": -1,
+          "status": "FILLED",
+          "filled_qty": 1.0,
+          "avg_price": 100.0,
+          "fee": 0.04,
+          "transaction_time_ns": 2,
+          "reject_reason": ""
+        }
+      ]
+    },
+    {
+      "name": "partial_then_remaining_new_id",
+      "steps": [
+        {
+          "order": {
+            "client_order_id": "attempt-0",
+            "symbol": "BTC",
+            "side": 1,
+            "quantity": 1.0,
+            "reduce_only": false,
+            "max_slippage_bps": 8.0,
+            "order_type": "MARKET",
+            "limit_price": null
+          },
+          "simulator_report": {
+            "client_order_id": "attempt-0",
+            "symbol": "BTC",
+            "side": 1,
+            "status": "PARTIALLY_FILLED",
+            "filled_qty": 0.4,
+            "avg_price": 100.0,
+            "fee": 0.016,
+            "transaction_time_ns": 1,
+            "reject_reason": ""
+          },
+          "failed": false,
+          "blocked": false
+        },
+        {
+          "order": {
+            "client_order_id": "attempt-1",
+            "symbol": "BTC",
+            "side": 1,
+            "quantity": 0.6,
+            "reduce_only": false,
+            "max_slippage_bps": 8.0,
+            "order_type": "MARKET",
+            "limit_price": null
+          },
+          "simulator_report": {
+            "client_order_id": "attempt-1",
+            "symbol": "BTC",
+            "side": 1,
+            "status": "FILLED",
+            "filled_qty": 0.6,
+            "avg_price": 100.0,
+            "fee": 0.024,
+            "transaction_time_ns": 2,
+            "reject_reason": ""
+          },
+          "failed": false,
+          "blocked": false
+        }
+      ],
+      "submitted": [
+        {
+          "client_order_id": "attempt-0",
+          "symbol": "BTC",
+          "side": 1,
+          "quantity": 1.0,
+          "reduce_only": false,
+          "max_slippage_bps": 8.0,
+          "order_type": "MARKET",
+          "limit_price": null
+        },
+        {
+          "client_order_id": "attempt-1",
+          "symbol": "BTC",
+          "side": 1,
+          "quantity": 0.6,
+          "reduce_only": false,
+          "max_slippage_bps": 8.0,
+          "order_type": "MARKET",
+          "limit_price": null
+        }
+      ],
+      "published": [
+        {
+          "client_order_id": "attempt-0",
+          "symbol": "BTC",
+          "side": 1,
+          "status": "PARTIALLY_FILLED",
+          "filled_qty": 0.4,
+          "avg_price": 100.0,
+          "fee": 0.016,
+          "transaction_time_ns": 1,
+          "reject_reason": ""
+        },
+        {
+          "client_order_id": "attempt-1",
+          "symbol": "BTC",
+          "side": 1,
+          "status": "FILLED",
+          "filled_qty": 0.6,
+          "avg_price": 100.0,
+          "fee": 0.024,
+          "transaction_time_ns": 2,
+          "reject_reason": ""
+        }
+      ]
+    },
+    {
+      "name": "partial_duplicate_is_terminal",
+      "steps": [
+        {
+          "order": {
+            "client_order_id": "same",
+            "symbol": "BTC",
+            "side": 1,
+            "quantity": 1.0,
+            "reduce_only": false,
+            "max_slippage_bps": 8.0,
+            "order_type": "MARKET",
+            "limit_price": null
+          },
+          "simulator_report": {
+            "client_order_id": "same",
+            "symbol": "BTC",
+            "side": 1,
+            "status": "PARTIALLY_FILLED",
+            "filled_qty": 0.4,
+            "avg_price": 100.0,
+            "fee": 0.04,
+            "transaction_time_ns": 1,
+            "reject_reason": ""
+          },
+          "failed": false,
+          "blocked": false
+        },
+        {
+          "order": {
+            "client_order_id": "same",
+            "symbol": "BTC",
+            "side": 1,
+            "quantity": 0.6,
+            "reduce_only": false,
+            "max_slippage_bps": 8.0,
+            "order_type": "MARKET",
+            "limit_price": null
+          },
+          "simulator_report": {
+            "client_order_id": "same",
+            "symbol": "BTC",
+            "side": 1,
+            "status": "FILLED",
+            "filled_qty": 0.6,
+            "avg_price": 100.0,
+            "fee": 0.024,
+            "transaction_time_ns": 2,
+            "reject_reason": ""
+          },
+          "failed": true,
+          "blocked": true
+        },
+        {
+          "order": {
+            "client_order_id": "attempt-2",
+            "symbol": "BTC",
+            "side": 1,
+            "quantity": 1.0,
+            "reduce_only": false,
+            "max_slippage_bps": 8.0,
+            "order_type": "MARKET",
+            "limit_price": null
+          },
+          "simulator_report": {
+            "client_order_id": "attempt-2",
+            "symbol": "BTC",
+            "side": 1,
+            "status": "FILLED",
+            "filled_qty": 1.0,
+            "avg_price": 100.0,
+            "fee": 0.04,
+            "transaction_time_ns": 3,
+            "reject_reason": ""
+          },
+          "failed": true,
+          "blocked": true
+        }
+      ],
+      "submitted": [
+        {
+          "client_order_id": "same",
+          "symbol": "BTC",
+          "side": 1,
+          "quantity": 1.0,
+          "reduce_only": false,
+          "max_slippage_bps": 8.0,
+          "order_type": "MARKET",
+          "limit_price": null
+        }
+      ],
+      "published": [
+        {
+          "client_order_id": "same",
+          "symbol": "BTC",
+          "side": 1,
+          "status": "PARTIALLY_FILLED",
+          "filled_qty": 0.4,
+          "avg_price": 100.0,
+          "fee": 0.04,
+          "transaction_time_ns": 1,
+          "reject_reason": ""
+        }
+      ]
+    },
+    {
+      "name": "rejected_and_pending_end_attempt",
+      "steps": [
+        {
+          "order": {
+            "client_order_id": "attempt-0",
+            "symbol": "BTC",
+            "side": 1,
+            "quantity": 0.0,
+            "reduce_only": false,
+            "max_slippage_bps": 8.0,
+            "order_type": "MARKET",
+            "limit_price": null
+          },
+          "simulator_report": {
+            "client_order_id": "attempt-0",
+            "symbol": "BTC",
+            "side": 1,
+            "status": "REJECTED",
+            "filled_qty": 0.0,
+            "avg_price": 0.0,
+            "fee": 0.0,
+            "transaction_time_ns": 1,
+            "reject_reason": "invalid_order"
+          },
+          "failed": false,
+          "blocked": false
+        },
+        {
+          "order": {
+            "client_order_id": "attempt-1",
+            "symbol": "BTC",
+            "side": 1,
+            "quantity": 1.0,
+            "reduce_only": false,
+            "max_slippage_bps": 8.0,
+            "order_type": "MARKET",
+            "limit_price": null
+          },
+          "simulator_report": {
+            "client_order_id": "attempt-1",
+            "symbol": "BTC",
+            "side": 1,
+            "status": "PENDING",
+            "filled_qty": 0.0,
+            "avg_price": 100.0,
+            "fee": 0.0,
+            "transaction_time_ns": 2,
+            "reject_reason": ""
+          },
+          "failed": false,
+          "blocked": false
+        },
+        {
+          "order": {
+            "client_order_id": "attempt-2",
+            "symbol": "BTC",
+            "side": 1,
+            "quantity": 1.0,
+            "reduce_only": false,
+            "max_slippage_bps": 8.0,
+            "order_type": "MARKET",
+            "limit_price": null
+          },
+          "simulator_report": {
+            "client_order_id": "attempt-2",
+            "symbol": "BTC",
+            "side": 1,
+            "status": "FILLED",
+            "filled_qty": 1.0,
+            "avg_price": 100.0,
+            "fee": 0.04,
+            "transaction_time_ns": 3,
+            "reject_reason": ""
+          },
+          "failed": false,
+          "blocked": false
+        }
+      ],
+      "submitted": [
+        {
+          "client_order_id": "attempt-0",
+          "symbol": "BTC",
+          "side": 1,
+          "quantity": 0.0,
+          "reduce_only": false,
+          "max_slippage_bps": 8.0,
+          "order_type": "MARKET",
+          "limit_price": null
+        },
+        {
+          "client_order_id": "attempt-1",
+          "symbol": "BTC",
+          "side": 1,
+          "quantity": 1.0,
+          "reduce_only": false,
+          "max_slippage_bps": 8.0,
+          "order_type": "MARKET",
+          "limit_price": null
+        },
+        {
+          "client_order_id": "attempt-2",
+          "symbol": "BTC",
+          "side": 1,
+          "quantity": 1.0,
+          "reduce_only": false,
+          "max_slippage_bps": 8.0,
+          "order_type": "MARKET",
+          "limit_price": null
+        }
+      ],
+      "published": [
+        {
+          "client_order_id": "attempt-0",
+          "symbol": "BTC",
+          "side": 1,
+          "status": "REJECTED",
+          "filled_qty": 0.0,
+          "avg_price": 0.0,
+          "fee": 0.0,
+          "transaction_time_ns": 1,
+          "reject_reason": "invalid_order"
+        },
+        {
+          "client_order_id": "attempt-1",
+          "symbol": "BTC",
+          "side": 1,
+          "status": "PENDING",
+          "filled_qty": 0.0,
+          "avg_price": 100.0,
+          "fee": 0.0,
+          "transaction_time_ns": 2,
+          "reject_reason": ""
+        },
+        {
+          "client_order_id": "attempt-2",
+          "symbol": "BTC",
+          "side": 1,
+          "status": "FILLED",
+          "filled_qty": 1.0,
+          "avg_price": 100.0,
+          "fee": 0.04,
+          "transaction_time_ns": 3,
+          "reject_reason": ""
+        }
+      ]
+    },
+    {
+      "name": "rejected_identity_cannot_retry",
+      "steps": [
+        {
+          "order": {
+            "client_order_id": "same",
+            "symbol": "BTC",
+            "side": 1,
+            "quantity": 0.0,
+            "reduce_only": false,
+            "max_slippage_bps": 8.0,
+            "order_type": "MARKET",
+            "limit_price": null
+          },
+          "simulator_report": {
+            "client_order_id": "same",
+            "symbol": "BTC",
+            "side": 1,
+            "status": "REJECTED",
+            "filled_qty": 0.0,
+            "avg_price": 0.0,
+            "fee": 0.0,
+            "transaction_time_ns": 1,
+            "reject_reason": "invalid_order"
+          },
+          "failed": false,
+          "blocked": false
+        },
+        {
+          "order": {
+            "client_order_id": "same",
+            "symbol": "BTC",
+            "side": 1,
+            "quantity": 1.0,
+            "reduce_only": false,
+            "max_slippage_bps": 8.0,
+            "order_type": "MARKET",
+            "limit_price": null
+          },
+          "simulator_report": {
+            "client_order_id": "same",
+            "symbol": "BTC",
+            "side": 1,
+            "status": "FILLED",
+            "filled_qty": 1.0,
+            "avg_price": 100.0,
+            "fee": 0.04,
+            "transaction_time_ns": 2,
+            "reject_reason": ""
+          },
+          "failed": true,
+          "blocked": true
+        }
+      ],
+      "submitted": [
+        {
+          "client_order_id": "same",
+          "symbol": "BTC",
+          "side": 1,
+          "quantity": 0.0,
+          "reduce_only": false,
+          "max_slippage_bps": 8.0,
+          "order_type": "MARKET",
+          "limit_price": null
+        }
+      ],
+      "published": [
+        {
+          "client_order_id": "same",
+          "symbol": "BTC",
+          "side": 1,
+          "status": "REJECTED",
+          "filled_qty": 0.0,
+          "avg_price": 0.0,
+          "fee": 0.0,
+          "transaction_time_ns": 1,
+          "reject_reason": "invalid_order"
+        }
+      ]
+    },
+    {
+      "name": "empty_identity",
+      "steps": [
+        {
+          "order": {
+            "client_order_id": "",
+            "symbol": "BTC",
+            "side": 1,
+            "quantity": 1.0,
+            "reduce_only": false,
+            "max_slippage_bps": 8.0,
+            "order_type": "MARKET",
+            "limit_price": null
+          },
+          "simulator_report": {
+            "client_order_id": "",
+            "symbol": "BTC",
+            "side": 1,
+            "status": "FILLED",
+            "filled_qty": 1.0,
+            "avg_price": 100.0,
+            "fee": 0.04,
+            "transaction_time_ns": 1,
+            "reject_reason": ""
+          },
+          "failed": true,
+          "blocked": true
+        },
+        {
+          "order": {
+            "client_order_id": "attempt-1",
+            "symbol": "BTC",
+            "side": 1,
+            "quantity": 1.0,
+            "reduce_only": false,
+            "max_slippage_bps": 8.0,
+            "order_type": "MARKET",
+            "limit_price": null
+          },
+          "simulator_report": {
+            "client_order_id": "attempt-1",
+            "symbol": "BTC",
+            "side": 1,
+            "status": "FILLED",
+            "filled_qty": 1.0,
+            "avg_price": 100.0,
+            "fee": 0.04,
+            "transaction_time_ns": 2,
+            "reject_reason": ""
+          },
+          "failed": true,
+          "blocked": true
+        }
+      ],
+      "submitted": [],
+      "published": []
+    },
+    {
+      "name": "negative_quantity_report_rejected",
+      "steps": [
+        {
+          "order": {
+            "client_order_id": "attempt-0",
+            "symbol": "BTC",
+            "side": 1,
+            "quantity": -1.0,
+            "reduce_only": false,
+            "max_slippage_bps": 8.0,
+            "order_type": "MARKET",
+            "limit_price": null
+          },
+          "simulator_report": {
+            "client_order_id": "attempt-0",
+            "symbol": "BTC",
+            "side": 1,
+            "status": "REJECTED",
+            "filled_qty": 0.0,
+            "avg_price": 0.0,
+            "fee": 0.0,
+            "transaction_time_ns": 1,
+            "reject_reason": "invalid_order"
+          },
+          "failed": true,
+          "blocked": true
+        },
+        {
+          "order": {
+            "client_order_id": "attempt-1",
+            "symbol": "BTC",
+            "side": 1,
+            "quantity": 1.0,
+            "reduce_only": false,
+            "max_slippage_bps": 8.0,
+            "order_type": "MARKET",
+            "limit_price": null
+          },
+          "simulator_report": {
+            "client_order_id": "attempt-1",
+            "symbol": "BTC",
+            "side": 1,
+            "status": "FILLED",
+            "filled_qty": 1.0,
+            "avg_price": 100.0,
+            "fee": 0.04,
+            "transaction_time_ns": 2,
+            "reject_reason": ""
+          },
+          "failed": true,
+          "blocked": true
+        }
+      ],
+      "submitted": [
+        {
+          "client_order_id": "attempt-0",
+          "symbol": "BTC",
+          "side": 1,
+          "quantity": -1.0,
+          "reduce_only": false,
+          "max_slippage_bps": 8.0,
+          "order_type": "MARKET",
+          "limit_price": null
+        }
+      ],
+      "published": []
+    },
+    {
+      "name": "invalid_client_order_id_wrong",
+      "steps": [
+        {
+          "order": {
+            "client_order_id": "attempt-0",
+            "symbol": "BTC",
+            "side": 1,
+            "quantity": 1.0,
+            "reduce_only": false,
+            "max_slippage_bps": 8.0,
+            "order_type": "MARKET",
+            "limit_price": null
+          },
+          "simulator_report": {
+            "client_order_id": "wrong",
+            "symbol": "BTC",
+            "side": 1,
+            "status": "FILLED",
+            "filled_qty": 1.0,
+            "avg_price": 100.0,
+            "fee": 0.04,
+            "transaction_time_ns": 1,
+            "reject_reason": ""
+          },
+          "failed": true,
+          "blocked": true
+        },
+        {
+          "order": {
+            "client_order_id": "attempt-1",
+            "symbol": "BTC",
+            "side": 1,
+            "quantity": 1.0,
+            "reduce_only": false,
+            "max_slippage_bps": 8.0,
+            "order_type": "MARKET",
+            "limit_price": null
+          },
+          "simulator_report": {
+            "client_order_id": "attempt-1",
+            "symbol": "BTC",
+            "side": 1,
+            "status": "FILLED",
+            "filled_qty": 1.0,
+            "avg_price": 100.0,
+            "fee": 0.04,
+            "transaction_time_ns": 2,
+            "reject_reason": ""
+          },
+          "failed": true,
+          "blocked": true
+        }
+      ],
+      "submitted": [
+        {
+          "client_order_id": "attempt-0",
+          "symbol": "BTC",
+          "side": 1,
+          "quantity": 1.0,
+          "reduce_only": false,
+          "max_slippage_bps": 8.0,
+          "order_type": "MARKET",
+          "limit_price": null
+        }
+      ],
+      "published": []
+    },
+    {
+      "name": "invalid_symbol_OTHER",
+      "steps": [
+        {
+          "order": {
+            "client_order_id": "attempt-0",
+            "symbol": "BTC",
+            "side": 1,
+            "quantity": 1.0,
+            "reduce_only": false,
+            "max_slippage_bps": 8.0,
+            "order_type": "MARKET",
+            "limit_price": null
+          },
+          "simulator_report": {
+            "client_order_id": "attempt-0",
+            "symbol": "OTHER",
+            "side": 1,
+            "status": "FILLED",
+            "filled_qty": 1.0,
+            "avg_price": 100.0,
+            "fee": 0.04,
+            "transaction_time_ns": 1,
+            "reject_reason": ""
+          },
+          "failed": true,
+          "blocked": true
+        },
+        {
+          "order": {
+            "client_order_id": "attempt-1",
+            "symbol": "BTC",
+            "side": 1,
+            "quantity": 1.0,
+            "reduce_only": false,
+            "max_slippage_bps": 8.0,
+            "order_type": "MARKET",
+            "limit_price": null
+          },
+          "simulator_report": {
+            "client_order_id": "attempt-1",
+            "symbol": "BTC",
+            "side": 1,
+            "status": "FILLED",
+            "filled_qty": 1.0,
+            "avg_price": 100.0,
+            "fee": 0.04,
+            "transaction_time_ns": 2,
+            "reject_reason": ""
+          },
+          "failed": true,
+          "blocked": true
+        }
+      ],
+      "submitted": [
+        {
+          "client_order_id": "attempt-0",
+          "symbol": "BTC",
+          "side": 1,
+          "quantity": 1.0,
+          "reduce_only": false,
+          "max_slippage_bps": 8.0,
+          "order_type": "MARKET",
+          "limit_price": null
+        }
+      ],
+      "published": []
+    },
+    {
+      "name": "invalid_side_-1",
+      "steps": [
+        {
+          "order": {
+            "client_order_id": "attempt-0",
+            "symbol": "BTC",
+            "side": 1,
+            "quantity": 1.0,
+            "reduce_only": false,
+            "max_slippage_bps": 8.0,
+            "order_type": "MARKET",
+            "limit_price": null
+          },
+          "simulator_report": {
+            "client_order_id": "attempt-0",
+            "symbol": "BTC",
+            "side": -1,
+            "status": "FILLED",
+            "filled_qty": 1.0,
+            "avg_price": 100.0,
+            "fee": 0.04,
+            "transaction_time_ns": 1,
+            "reject_reason": ""
+          },
+          "failed": true,
+          "blocked": true
+        },
+        {
+          "order": {
+            "client_order_id": "attempt-1",
+            "symbol": "BTC",
+            "side": 1,
+            "quantity": 1.0,
+            "reduce_only": false,
+            "max_slippage_bps": 8.0,
+            "order_type": "MARKET",
+            "limit_price": null
+          },
+          "simulator_report": {
+            "client_order_id": "attempt-1",
+            "symbol": "BTC",
+            "side": 1,
+            "status": "FILLED",
+            "filled_qty": 1.0,
+            "avg_price": 100.0,
+            "fee": 0.04,
+            "transaction_time_ns": 2,
+            "reject_reason": ""
+          },
+          "failed": true,
+          "blocked": true
+        }
+      ],
+      "submitted": [
+        {
+          "client_order_id": "attempt-0",
+          "symbol": "BTC",
+          "side": 1,
+          "quantity": 1.0,
+          "reduce_only": false,
+          "max_slippage_bps": 8.0,
+          "order_type": "MARKET",
+          "limit_price": null
+        }
+      ],
+      "published": []
+    },
+    {
+      "name": "invalid_status_UNKNOWN",
+      "steps": [
+        {
+          "order": {
+            "client_order_id": "attempt-0",
+            "symbol": "BTC",
+            "side": 1,
+            "quantity": 1.0,
+            "reduce_only": false,
+            "max_slippage_bps": 8.0,
+            "order_type": "MARKET",
+            "limit_price": null
+          },
+          "simulator_report": {
+            "client_order_id": "attempt-0",
+            "symbol": "BTC",
+            "side": 1,
+            "status": "UNKNOWN",
+            "filled_qty": 1.0,
+            "avg_price": 100.0,
+            "fee": 0.04,
+            "transaction_time_ns": 1,
+            "reject_reason": ""
+          },
+          "failed": true,
+          "blocked": true
+        },
+        {
+          "order": {
+            "client_order_id": "attempt-1",
+            "symbol": "BTC",
+            "side": 1,
+            "quantity": 1.0,
+            "reduce_only": false,
+            "max_slippage_bps": 8.0,
+            "order_type": "MARKET",
+            "limit_price": null
+          },
+          "simulator_report": {
+            "client_order_id": "attempt-1",
+            "symbol": "BTC",
+            "side": 1,
+            "status": "FILLED",
+            "filled_qty": 1.0,
+            "avg_price": 100.0,
+            "fee": 0.04,
+            "transaction_time_ns": 2,
+            "reject_reason": ""
+          },
+          "failed": true,
+          "blocked": true
+        }
+      ],
+      "submitted": [
+        {
+          "client_order_id": "attempt-0",
+          "symbol": "BTC",
+          "side": 1,
+          "quantity": 1.0,
+          "reduce_only": false,
+          "max_slippage_bps": 8.0,
+          "order_type": "MARKET",
+          "limit_price": null
+        }
+      ],
+      "published": []
+    },
+    {
+      "name": "invalid_filled_qty_-1.0",
+      "steps": [
+        {
+          "order": {
+            "client_order_id": "attempt-0",
+            "symbol": "BTC",
+            "side": 1,
+            "quantity": 1.0,
+            "reduce_only": false,
+            "max_slippage_bps": 8.0,
+            "order_type": "MARKET",
+            "limit_price": null
+          },
+          "simulator_report": {
+            "client_order_id": "attempt-0",
+            "symbol": "BTC",
+            "side": 1,
+            "status": "FILLED",
+            "filled_qty": -1.0,
+            "avg_price": 100.0,
+            "fee": 0.04,
+            "transaction_time_ns": 1,
+            "reject_reason": ""
+          },
+          "failed": true,
+          "blocked": true
+        },
+        {
+          "order": {
+            "client_order_id": "attempt-1",
+            "symbol": "BTC",
+            "side": 1,
+            "quantity": 1.0,
+            "reduce_only": false,
+            "max_slippage_bps": 8.0,
+            "order_type": "MARKET",
+            "limit_price": null
+          },
+          "simulator_report": {
+            "client_order_id": "attempt-1",
+            "symbol": "BTC",
+            "side": 1,
+            "status": "FILLED",
+            "filled_qty": 1.0,
+            "avg_price": 100.0,
+            "fee": 0.04,
+            "transaction_time_ns": 2,
+            "reject_reason": ""
+          },
+          "failed": true,
+          "blocked": true
+        }
+      ],
+      "submitted": [
+        {
+          "client_order_id": "attempt-0",
+          "symbol": "BTC",
+          "side": 1,
+          "quantity": 1.0,
+          "reduce_only": false,
+          "max_slippage_bps": 8.0,
+          "order_type": "MARKET",
+          "limit_price": null
+        }
+      ],
+      "published": []
+    },
+    {
+      "name": "invalid_filled_qty_2.0",
+      "steps": [
+        {
+          "order": {
+            "client_order_id": "attempt-0",
+            "symbol": "BTC",
+            "side": 1,
+            "quantity": 1.0,
+            "reduce_only": false,
+            "max_slippage_bps": 8.0,
+            "order_type": "MARKET",
+            "limit_price": null
+          },
+          "simulator_report": {
+            "client_order_id": "attempt-0",
+            "symbol": "BTC",
+            "side": 1,
+            "status": "FILLED",
+            "filled_qty": 2.0,
+            "avg_price": 100.0,
+            "fee": 0.04,
+            "transaction_time_ns": 1,
+            "reject_reason": ""
+          },
+          "failed": true,
+          "blocked": true
+        },
+        {
+          "order": {
+            "client_order_id": "attempt-1",
+            "symbol": "BTC",
+            "side": 1,
+            "quantity": 1.0,
+            "reduce_only": false,
+            "max_slippage_bps": 8.0,
+            "order_type": "MARKET",
+            "limit_price": null
+          },
+          "simulator_report": {
+            "client_order_id": "attempt-1",
+            "symbol": "BTC",
+            "side": 1,
+            "status": "FILLED",
+            "filled_qty": 1.0,
+            "avg_price": 100.0,
+            "fee": 0.04,
+            "transaction_time_ns": 2,
+            "reject_reason": ""
+          },
+          "failed": true,
+          "blocked": true
+        }
+      ],
+      "submitted": [
+        {
+          "client_order_id": "attempt-0",
+          "symbol": "BTC",
+          "side": 1,
+          "quantity": 1.0,
+          "reduce_only": false,
+          "max_slippage_bps": 8.0,
+          "order_type": "MARKET",
+          "limit_price": null
+        }
+      ],
+      "published": []
+    },
+    {
+      "name": "invalid_avg_price_0.0",
+      "steps": [
+        {
+          "order": {
+            "client_order_id": "attempt-0",
+            "symbol": "BTC",
+            "side": 1,
+            "quantity": 1.0,
+            "reduce_only": false,
+            "max_slippage_bps": 8.0,
+            "order_type": "MARKET",
+            "limit_price": null
+          },
+          "simulator_report": {
+            "client_order_id": "attempt-0",
+            "symbol": "BTC",
+            "side": 1,
+            "status": "FILLED",
+            "filled_qty": 1.0,
+            "avg_price": 0.0,
+            "fee": 0.04,
+            "transaction_time_ns": 1,
+            "reject_reason": ""
+          },
+          "failed": true,
+          "blocked": true
+        },
+        {
+          "order": {
+            "client_order_id": "attempt-1",
+            "symbol": "BTC",
+            "side": 1,
+            "quantity": 1.0,
+            "reduce_only": false,
+            "max_slippage_bps": 8.0,
+            "order_type": "MARKET",
+            "limit_price": null
+          },
+          "simulator_report": {
+            "client_order_id": "attempt-1",
+            "symbol": "BTC",
+            "side": 1,
+            "status": "FILLED",
+            "filled_qty": 1.0,
+            "avg_price": 100.0,
+            "fee": 0.04,
+            "transaction_time_ns": 2,
+            "reject_reason": ""
+          },
+          "failed": true,
+          "blocked": true
+        }
+      ],
+      "submitted": [
+        {
+          "client_order_id": "attempt-0",
+          "symbol": "BTC",
+          "side": 1,
+          "quantity": 1.0,
+          "reduce_only": false,
+          "max_slippage_bps": 8.0,
+          "order_type": "MARKET",
+          "limit_price": null
+        }
+      ],
+      "published": []
+    },
+    {
+      "name": "invalid_avg_price_-1.0",
+      "steps": [
+        {
+          "order": {
+            "client_order_id": "attempt-0",
+            "symbol": "BTC",
+            "side": 1,
+            "quantity": 1.0,
+            "reduce_only": false,
+            "max_slippage_bps": 8.0,
+            "order_type": "MARKET",
+            "limit_price": null
+          },
+          "simulator_report": {
+            "client_order_id": "attempt-0",
+            "symbol": "BTC",
+            "side": 1,
+            "status": "FILLED",
+            "filled_qty": 1.0,
+            "avg_price": -1.0,
+            "fee": 0.04,
+            "transaction_time_ns": 1,
+            "reject_reason": ""
+          },
+          "failed": true,
+          "blocked": true
+        },
+        {
+          "order": {
+            "client_order_id": "attempt-1",
+            "symbol": "BTC",
+            "side": 1,
+            "quantity": 1.0,
+            "reduce_only": false,
+            "max_slippage_bps": 8.0,
+            "order_type": "MARKET",
+            "limit_price": null
+          },
+          "simulator_report": {
+            "client_order_id": "attempt-1",
+            "symbol": "BTC",
+            "side": 1,
+            "status": "FILLED",
+            "filled_qty": 1.0,
+            "avg_price": 100.0,
+            "fee": 0.04,
+            "transaction_time_ns": 2,
+            "reject_reason": ""
+          },
+          "failed": true,
+          "blocked": true
+        }
+      ],
+      "submitted": [
+        {
+          "client_order_id": "attempt-0",
+          "symbol": "BTC",
+          "side": 1,
+          "quantity": 1.0,
+          "reduce_only": false,
+          "max_slippage_bps": 8.0,
+          "order_type": "MARKET",
+          "limit_price": null
+        }
+      ],
+      "published": []
+    },
+    {
+      "name": "invalid_fee_-1.0",
+      "steps": [
+        {
+          "order": {
+            "client_order_id": "attempt-0",
+            "symbol": "BTC",
+            "side": 1,
+            "quantity": 1.0,
+            "reduce_only": false,
+            "max_slippage_bps": 8.0,
+            "order_type": "MARKET",
+            "limit_price": null
+          },
+          "simulator_report": {
+            "client_order_id": "attempt-0",
+            "symbol": "BTC",
+            "side": 1,
+            "status": "FILLED",
+            "filled_qty": 1.0,
+            "avg_price": 100.0,
+            "fee": -1.0,
+            "transaction_time_ns": 1,
+            "reject_reason": ""
+          },
+          "failed": true,
+          "blocked": true
+        },
+        {
+          "order": {
+            "client_order_id": "attempt-1",
+            "symbol": "BTC",
+            "side": 1,
+            "quantity": 1.0,
+            "reduce_only": false,
+            "max_slippage_bps": 8.0,
+            "order_type": "MARKET",
+            "limit_price": null
+          },
+          "simulator_report": {
+            "client_order_id": "attempt-1",
+            "symbol": "BTC",
+            "side": 1,
+            "status": "FILLED",
+            "filled_qty": 1.0,
+            "avg_price": 100.0,
+            "fee": 0.04,
+            "transaction_time_ns": 2,
+            "reject_reason": ""
+          },
+          "failed": true,
+          "blocked": true
+        }
+      ],
+      "submitted": [
+        {
+          "client_order_id": "attempt-0",
+          "symbol": "BTC",
+          "side": 1,
+          "quantity": 1.0,
+          "reduce_only": false,
+          "max_slippage_bps": 8.0,
+          "order_type": "MARKET",
+          "limit_price": null
+        }
+      ],
+      "published": []
+    },
+    {
+      "name": "invalid_status_REJECTED",
+      "steps": [
+        {
+          "order": {
+            "client_order_id": "attempt-0",
+            "symbol": "BTC",
+            "side": 1,
+            "quantity": 1.0,
+            "reduce_only": false,
+            "max_slippage_bps": 8.0,
+            "order_type": "MARKET",
+            "limit_price": null
+          },
+          "simulator_report": {
+            "client_order_id": "attempt-0",
+            "symbol": "BTC",
+            "side": 1,
+            "status": "REJECTED",
+            "filled_qty": 1.0,
+            "avg_price": 100.0,
+            "fee": 0.04,
+            "transaction_time_ns": 1,
+            "reject_reason": ""
+          },
+          "failed": true,
+          "blocked": true
+        },
+        {
+          "order": {
+            "client_order_id": "attempt-1",
+            "symbol": "BTC",
+            "side": 1,
+            "quantity": 1.0,
+            "reduce_only": false,
+            "max_slippage_bps": 8.0,
+            "order_type": "MARKET",
+            "limit_price": null
+          },
+          "simulator_report": {
+            "client_order_id": "attempt-1",
+            "symbol": "BTC",
+            "side": 1,
+            "status": "FILLED",
+            "filled_qty": 1.0,
+            "avg_price": 100.0,
+            "fee": 0.04,
+            "transaction_time_ns": 2,
+            "reject_reason": ""
+          },
+          "failed": true,
+          "blocked": true
+        }
+      ],
+      "submitted": [
+        {
+          "client_order_id": "attempt-0",
+          "symbol": "BTC",
+          "side": 1,
+          "quantity": 1.0,
+          "reduce_only": false,
+          "max_slippage_bps": 8.0,
+          "order_type": "MARKET",
+          "limit_price": null
+        }
+      ],
+      "published": []
+    },
+    {
+      "name": "invalid_status_PENDING",
+      "steps": [
+        {
+          "order": {
+            "client_order_id": "attempt-0",
+            "symbol": "BTC",
+            "side": 1,
+            "quantity": 1.0,
+            "reduce_only": false,
+            "max_slippage_bps": 8.0,
+            "order_type": "MARKET",
+            "limit_price": null
+          },
+          "simulator_report": {
+            "client_order_id": "attempt-0",
+            "symbol": "BTC",
+            "side": 1,
+            "status": "PENDING",
+            "filled_qty": 1.0,
+            "avg_price": 100.0,
+            "fee": 0.04,
+            "transaction_time_ns": 1,
+            "reject_reason": ""
+          },
+          "failed": true,
+          "blocked": true
+        },
+        {
+          "order": {
+            "client_order_id": "attempt-1",
+            "symbol": "BTC",
+            "side": 1,
+            "quantity": 1.0,
+            "reduce_only": false,
+            "max_slippage_bps": 8.0,
+            "order_type": "MARKET",
+            "limit_price": null
+          },
+          "simulator_report": {
+            "client_order_id": "attempt-1",
+            "symbol": "BTC",
+            "side": 1,
+            "status": "FILLED",
+            "filled_qty": 1.0,
+            "avg_price": 100.0,
+            "fee": 0.04,
+            "transaction_time_ns": 2,
+            "reject_reason": ""
+          },
+          "failed": true,
+          "blocked": true
+        }
+      ],
+      "submitted": [
+        {
+          "client_order_id": "attempt-0",
+          "symbol": "BTC",
+          "side": 1,
+          "quantity": 1.0,
+          "reduce_only": false,
+          "max_slippage_bps": 8.0,
+          "order_type": "MARKET",
+          "limit_price": null
+        }
+      ],
+      "published": []
+    }
+  ]
+}
