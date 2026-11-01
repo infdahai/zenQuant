@@ -138,6 +138,43 @@ func TestHistoryCommandEndToEnd(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	lines := bytes.SplitAfter(csv, []byte("\n"))
+	partPath := filepath.Join(temp, "part.csv")
+	if err := os.WriteFile(partPath, lines[0], 0600); err != nil {
+		t.Fatal(err)
+	}
+	var partZIP bytes.Buffer
+	partWriter := zip.NewWriter(&partZIP)
+	partMember, err := partWriter.Create("part.csv")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := partMember.Write(bytes.Join(lines[1:], nil)); err != nil {
+		t.Fatal(err)
+	}
+	if err := partWriter.Close(); err != nil {
+		t.Fatal(err)
+	}
+	partZIPPath := filepath.Join(temp, "part.zip")
+	if err := os.WriteFile(partZIPPath, partZIP.Bytes(), 0600); err != nil {
+		t.Fatal(err)
+	}
+	multipartArgs := []string{"history-import", "--input", partPath, "--input", partZIPPath, "--symbol", "BTCUSDT", "--timeframe", "4h", "--as-of", "2024-01-01T08:00:00Z", "--funding-input", fundingPath}
+	multipart, err := exec.Command(binary, multipartArgs...).Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var multi workbench.Dataset
+	if err := json.Unmarshal(multipart, &multi); err != nil || len(multi.Candles) != 2 || len(multi.Provenance.SourcePartsSHA256) != 2 || len(multi.Funding) != 2 {
+		t.Fatalf("multipart: %v", err)
+	}
+	if _, err := boundaryStore.Import(multipart); err != nil {
+		t.Fatal(err)
+	}
+	multipartArgs[2], multipartArgs[4] = multipartArgs[4], multipartArgs[2]
+	if b, err := exec.Command(binary, multipartArgs...).Output(); err == nil || len(b) != 0 {
+		t.Fatal("accepted reversed files")
+	}
 	fundedArgs := append(append([]string{}, args...), "--funding-input", fundingPath)
 	funded, err := exec.Command(binary, fundedArgs...).Output()
 	if err != nil {

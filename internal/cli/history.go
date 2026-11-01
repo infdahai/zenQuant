@@ -14,10 +14,22 @@ import (
 	"github.com/infdahai/zenQuant/internal/localfile"
 )
 
+type historyInputs []string
+
+func (v *historyInputs) String() string { return strings.Join(*v, ", ") }
+func (v *historyInputs) Set(s string) error {
+	if s == "" {
+		return errors.New("input path must not be empty")
+	}
+	*v = append(*v, s)
+	return nil
+}
+
 func runHistoryImport(args []string, out, stderr io.Writer) error {
 	flags := flag.NewFlagSet("history-import", flag.ContinueOnError)
 	flags.SetOutput(stderr)
-	input := flags.String("input", "", "headerless Binance futures kline CSV or single-member ZIP")
+	var inputs historyInputs
+	flags.Var(&inputs, "input", "ordered headerless Binance futures kline CSV or single-member ZIP; repeat for multiple files")
 	fundingInput := flags.String("funding-input", "", "optional local Binance fundingRate JSON array")
 	symbol := flags.String("symbol", "", "source exchange symbol (BTCUSDT)")
 	timeframe := flags.String("timeframe", "", "5m, 1h, 4h or 1d")
@@ -37,22 +49,31 @@ func runHistoryImport(args []string, out, stderr io.Writer) error {
 	if fundingProvided && *fundingInput == "" {
 		return errors.New("funding input path must not be empty")
 	}
-	if flags.NArg() != 0 || *input == "" || *symbol != "BTCUSDT" || *cutoff == "" {
+	if flags.NArg() != 0 || len(inputs) == 0 || *symbol != "BTCUSDT" || *cutoff == "" {
 		return errors.New("input, symbol BTCUSDT, timeframe and as-of are required")
 	}
 	asOf, err := time.Parse(time.RFC3339Nano, *cutoff)
 	if err != nil {
 		return fmt.Errorf("invalid as-of: %w", err)
 	}
-	raw, err := localfile.Read(*input, history.MaxCSV)
-	if err != nil {
-		return err
-	}
-	if strings.EqualFold(filepath.Ext(*input), ".zip") {
-		raw, err = history.ZIPCSV(raw)
+	var parts []io.Reader
+	total := 0
+	for i, input := range inputs {
+		raw, err := localfile.Read(input, history.MaxCSV)
 		if err != nil {
-			return err
+			return fmt.Errorf("input %d: %w", i+1, err)
 		}
+		if strings.EqualFold(filepath.Ext(input), ".zip") {
+			raw, err = history.ZIPCSV(raw)
+			if err != nil {
+				return fmt.Errorf("input %d: %w", i+1, err)
+			}
+		}
+		total += len(raw)
+		if total > history.MaxCSV {
+			return errors.New("total CSV exceeds 4 MiB")
+		}
+		parts = append(parts, bytes.NewReader(raw))
 	}
 	var funding []byte
 	if *fundingInput != "" {
@@ -64,7 +85,7 @@ func runHistoryImport(args []string, out, stderr io.Writer) error {
 			funding = []byte{}
 		}
 	}
-	b, err := history.NormalizeWithFunding(bytes.NewReader(raw), *timeframe, asOf, funding)
+	b, err := history.NormalizePartsWithFunding(parts, *timeframe, asOf, funding)
 	if err != nil {
 		return err
 	}
