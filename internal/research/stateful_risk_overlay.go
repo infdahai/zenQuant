@@ -225,7 +225,8 @@ func (r *StatefulRiskOverlay) OnFill(symbol string, side int, qty, price float64
 	return nil
 }
 
-// ApplyFee accepts a positive fee in the configured USD cash currency.
+// ApplyFee deducts positive fees in the configured USD cash currency, including
+// below zero. Unlike Python legacy's cash floor, this preserves the full cost.
 func (r *StatefulRiskOverlay) ApplyFee(fee float64, currency string, tsNS int64) error {
 	c := r.clone()
 	if !sizingFinite(fee) || currency != c.cfg.CashCurrency {
@@ -239,7 +240,7 @@ func (r *StatefulRiskOverlay) ApplyFee(fee float64, currency string, tsNS int64)
 		if !sizingFinite(cash) {
 			return fmt.Errorf("fee overflow")
 		}
-		c.state.Cash = math.Max(0, cash)
+		c.state.Cash = cash
 		if err := c.revalue(); err != nil {
 			return err
 		}

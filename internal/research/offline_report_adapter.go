@@ -1,6 +1,9 @@
 package research
 
-import "fmt"
+import (
+	"fmt"
+	"math"
+)
 
 // OfflineReportAdapter dispatches one incremental simulated fill per client
 // order ID. A retry must use a new ID. Multiple events for one external order
@@ -9,8 +12,6 @@ import "fmt"
 // Callers must use it for all reports in the session and stop on any error.
 // USD quote and fee units are a caller assertion; validUntilNS is the inclusive
 // expiry of the execution-price mark. External component changes are not atomic.
-// Positive fees that exceed post-fill cash are rejected: risk ApplyFee clamps
-// cash to zero, matching Python but losing fees or increasing negative cash.
 type OfflineReportAdapter struct {
 	strategy *StrategyFlow
 	risk     *StatefulRiskOverlay
@@ -40,11 +41,14 @@ func (a *OfflineReportAdapter) Dispatch(report ExecutionReport, currency string,
 	if err := staged.OnFill(report.Symbol, report.Side, report.FilledQty, report.AvgPrice, currency, report.TransactionTimeNS, validUntilNS); err != nil {
 		return fmt.Errorf("risk fill: %w", err)
 	}
-	if report.Fee > 0 && report.Fee > staged.state.Cash {
-		return fmt.Errorf("risk fee exceeds post-fill cash; clamped fee accounting is unsupported")
-	}
 	if err := staged.ApplyFee(report.Fee, currency, report.TransactionTimeNS); err != nil {
 		return fmt.Errorf("risk fee: %w", err)
+	}
+	// The fill and fee are one report: the temporary pre-fee valuation is not
+	// an observable equity peak. Invalid valuations must not advance the peak.
+	staged.state.HighWaterMark = a.risk.state.HighWaterMark
+	if staged.state.EquityValid {
+		staged.state.HighWaterMark = math.Max(staged.state.HighWaterMark, staged.state.Equity)
 	}
 	if err := a.strategy.Fill(StrategyFill{Symbol: report.Symbol, Side: float64(report.Side), Quantity: report.FilledQty, Price: report.AvgPrice}); err != nil {
 		return fmt.Errorf("strategy fill: %w", err)

@@ -106,7 +106,7 @@ func TestOfflineReportAdapterPartialFillAndRetry(t *testing.T) {
 	}
 }
 
-func TestOfflineReportAdapterRejectsClampedFees(t *testing.T) {
+func TestOfflineReportAdapterFeesWithNegativeCash(t *testing.T) {
 	for _, tc := range []struct {
 		name     string
 		quantity float64
@@ -122,20 +122,43 @@ func TestOfflineReportAdapterRejectsClampedFees(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			before := risk.State()
-			if err := adapter.Dispatch(report, "USD", 10); err == nil {
-				t.Fatal("accepted fee that would be clamped")
-			}
-			if !reflect.DeepEqual(before, risk.State()) || len(flow.positions) != 0 {
-				t.Fatal("rejected fill changed state")
-			}
-			// Rejection does not consume the ID; a corrected report can be sent.
-			report.Fee = 0
 			if err := adapter.Dispatch(report, "USD", 10); err != nil {
 				t.Fatal(err)
 			}
-			if risk.State().Cash != 100000-tc.quantity*100 || risk.State().Equity != 100000 {
-				t.Fatalf("incorrect zero-fee accounting: %+v", risk.State())
+			state := risk.State()
+			if state.Cash != 100000-tc.quantity*100-report.Fee || state.Equity != 100000-report.Fee || state.Positions["BTC"] != tc.quantity || flow.positions["BTC"].CurrentQty != tc.quantity {
+				t.Fatalf("incorrect fee accounting: %+v", state)
+			}
+		})
+	}
+}
+
+func TestOfflineReportAdapterHighWaterUsesNetFillEquity(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		fee, peak float64
+	}{
+		{"fee exceeds gain", 10001, 100000},
+		{"fee below gain", 1000, 109000},
+		{"zero fee", 0, 110000},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			flow, _ := NewStrategyFlow(DefaultStrategyFlowConfig())
+			risk, _ := NewStatefulRiskOverlay(DefaultStatefulRiskConfig())
+			a, _ := NewOfflineReportAdapter(flow, risk)
+			must(t, a.Dispatch(ExecutionReport{ClientOrderID: "one", Symbol: "BTC", Side: 1, Status: "FILLED", FilledQty: 1000, AvgPrice: 100, TransactionTimeNS: 1}, "USD", 20))
+			must(t, risk.OnIndicator(StatefulRiskIndicator{Symbol: "BTC", Timeframe: "4h", Price: 100, CutoffTimeNS: 2, AvailableTimeNS: 2, ValidUntilNS: 20}))
+			_, _, err := risk.Apply(StatefulRiskTarget{Portfolio: "arc", Symbol: "BTC", Timeframe: "4h", CutoffTimeNS: 2, ProcessTimeNS: 2, Quantity: 1, Leverage: 1})
+			must(t, err)
+			must(t, a.Dispatch(ExecutionReport{ClientOrderID: "two", Symbol: "BTC", Side: 1, Status: "FILLED", FilledQty: 1, AvgPrice: 110, Fee: tc.fee, TransactionTimeNS: 3}, "USD", 20))
+			s := risk.State()
+			if s.Equity != 110000-tc.fee || s.HighWaterMark != tc.peak || !reflect.DeepEqual(s.EquityHistory, []float64{100000}) {
+				t.Fatalf("incorrect post-report state: %+v", s)
+			}
+			_, snap, err := risk.Apply(StatefulRiskTarget{Portfolio: "arc", Symbol: "BTC", Timeframe: "4h", CutoffTimeNS: 4, ProcessTimeNS: 4, Quantity: 1, Leverage: 1})
+			must(t, err)
+			if snap.HighWaterMark != tc.peak || !reflect.DeepEqual(risk.State().EquityHistory, []float64{100000, 110000 - tc.fee}) {
+				t.Fatalf("incorrect history or snapshot: %+v %+v", snap, risk.State())
 			}
 		})
 	}
