@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"syscall"
@@ -13,8 +14,10 @@ import (
 )
 
 func pollJob(list func() ([]Job, error), id, status string, deadline time.Time) (Job, error) {
+	var lastErr error
 	for time.Now().Before(deadline) {
 		jobs, err := list()
+		lastErr = err
 		if err != nil && !errors.Is(err, syscall.EWOULDBLOCK) {
 			return Job{}, err
 		}
@@ -24,6 +27,9 @@ func pollJob(list func() ([]Job, error), id, status string, deadline time.Time) 
 			}
 		}
 		time.Sleep(10 * time.Millisecond)
+	}
+	if lastErr != nil {
+		return Job{}, fmt.Errorf("job did not reach %s before deadline: %w", status, lastErr)
 	}
 	return Job{}, fmt.Errorf("job did not reach %s before deadline", status)
 }
@@ -59,8 +65,8 @@ func TestPollJobErrors(t *testing.T) {
 	}
 
 	_, err = pollJob(func() ([]Job, error) { return nil, syscall.EWOULDBLOCK }, want.ID, want.Status, time.Now().Add(20*time.Millisecond))
-	if err == nil {
-		t.Fatal("persistent contention did not time out")
+	if !errors.Is(err, syscall.EWOULDBLOCK) {
+		t.Fatalf("persistent contention did not time out with lock error: %v", err)
 	}
 }
 func TestTerminalWriteFailureDoesNotBlockCancellation(t *testing.T) {
@@ -233,15 +239,18 @@ func TestResultPublicationMustSyncBeforeSuccess(t *testing.T) {
 		t.Fatal("publish not reached")
 	}
 	time.Sleep(250 * time.Millisecond)
-	jobs, e := s.JobsList()
-	if e != nil {
-		t.Fatal(e)
-	}
-	if jobs[0].Status != "committing" {
-		t.Fatalf("premature state: %+v", jobs)
-	}
-	if _, err := s.API("/api/research/result", []byte(`{"id":"`+jobs[0].ResultID+`"}`)); err == nil {
-		t.Fatal("committing result visible")
+	committing := waitJob(t, s, job.ID, "committing")
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		_, err := s.API("/api/research/result", []byte(`{"id":"`+committing.ResultID+`"}`))
+		if errors.Is(err, syscall.EWOULDBLOCK) && time.Now().Before(deadline) {
+			time.Sleep(10 * time.Millisecond)
+			continue
+		}
+		if err == nil || !strings.Contains(err.Error(), "result is not linked to a succeeded job") {
+			t.Fatalf("unexpected committing result visibility: %v", err)
+		}
+		break
 	}
 	fail.Store(false)
 	waitJob(t, s, job.ID, "succeeded")
