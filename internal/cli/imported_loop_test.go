@@ -17,6 +17,16 @@ import (
 	"github.com/infdahai/zenQuant/internal/workbench"
 )
 
+func generatedRows(candles []research.ReplayCandle) []history.GeneratedDecisionInput {
+	stale := false
+	rows := make([]history.GeneratedDecisionInput, 0, len(candles))
+	for _, c := range candles {
+		values := map[string]float64{"realized_vol": .8, "vix_z": 0, "funding_oi_z": 0, "cvd_slope": .1, "zen_pulse": 60, "momentum_roc_z": 1, "liq_intensity_z": 0, "liq_imbalance": 0, "yield_10y_z": 0, "cycle_position": 1}
+		rows = append(rows, history.GeneratedDecisionInput{StateInput: research.StateEngineInput{Symbol: "BTC", Timeframe: "4h", CutoffTimeNS: c.CloseTimeNS, AvailableTimeNS: c.CloseTimeNS, Values: values, StructureState: "UPTREND", LiquidationStale: &stale, QualityFlags: []string{"OK"}}, Indicator: research.StrategyIndicator{Symbol: "BTC", Timeframe: "4h", CutoffTimeNS: c.CloseTimeNS, Price: c.Close, ATR: 1, RealizedVol: .8, CVDSlope: .1, StructureState: "UPTREND", MomentumROCZ: 1}, AvailableTimeNS: c.CloseTimeNS, ValidUntilNS: c.CloseTimeNS})
+	}
+	return rows
+}
+
 func TestSyntheticLongHistoryCLI(t *testing.T) {
 	const count = 14976
 	const startMS int64 = 1577836800000
@@ -117,6 +127,26 @@ func TestSyntheticLongHistoryCLI(t *testing.T) {
 	if err := json.Unmarshal(output, &result); err != nil || result.Result.Result == nil || len(result.Result.Result.Decisions) != count {
 		t.Fatalf("closed-loop result: %v", err)
 	}
+	observations, err := json.Marshal(generatedRows(snap.Dataset.Candles))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Logf("synthetic observations=%d bytes, limit=%d", len(observations), maxDecisionInput)
+	observationPath := filepath.Join(dir, "observations.json")
+	if err := os.WriteFile(observationPath, observations, 0600); err != nil {
+		t.Fatal(err)
+	}
+	cmd = exec.Command(binary, "history-closed-loop", "--store", storePath, "--snapshot", imported.ID, "--start-ns", fmt.Sprint(inputs[0].AvailableTimeNS), "--end-ns", fmt.Sprint(inputs[count-1].AvailableTimeNS), "--mode", "generated", "--observations", observationPath, "--overlay", "off", "--config", configPath, "--source", "synthetic", "--availability", "synthetic at close", "--quote-assumption", history.USDQuoteAssumption)
+	output, err = cmd.Output()
+	if err != nil {
+		t.Fatalf("generated closed loop: %v", err)
+	}
+	var generated struct {
+		Result history.GeneratedClosedLoopResult `json:"result"`
+	}
+	if err := json.Unmarshal(output, &generated); err != nil || generated.Result.Result == nil || len(generated.Result.Result.Decisions) != count {
+		t.Fatalf("generated result: %v", err)
+	}
 }
 
 func TestImportedLoopCLI(t *testing.T) {
@@ -193,6 +223,65 @@ func TestImportedLoopCLI(t *testing.T) {
 	}
 	if result.Build.Identity == "" || result.Build.Revision == "" || result.Build.Modified == "" || result.Build.GoVersion == "" {
 		t.Fatalf("incomplete build identity: %+v", result.Build)
+	}
+	explicitExternal := append(append([]string(nil), args...), "--mode", "external")
+	if b, stderr, err := run(explicitExternal); err != nil || !bytes.Equal(first, b) {
+		t.Fatalf("external compatibility: %v %s", err, stderr)
+	}
+	observations, err := json.Marshal(generatedRows(snap.Dataset.Candles))
+	if err != nil {
+		t.Fatal(err)
+	}
+	observationPath := filepath.Join(dir, "observations.json")
+	if err := os.WriteFile(observationPath, observations, 0600); err != nil {
+		t.Fatal(err)
+	}
+	generatedArgs := append([]string(nil), args...)
+	generatedArgs[9], generatedArgs[10] = "--observations", observationPath
+	generatedArgs = append(generatedArgs, "--mode", "generated", "--overlay", "off")
+	for _, value := range []string{"off", "on"} {
+		a := append([]string(nil), generatedArgs...)
+		a[len(a)-1] = value
+		b, stderr, err := run(a)
+		if err != nil {
+			t.Fatalf("generated %s: %v %s", value, err, stderr)
+		}
+		again, _, err := run(a)
+		if err != nil || !bytes.Equal(b, again) {
+			t.Fatalf("generated %s nondeterministic: %v", value, err)
+		}
+		var got struct {
+			Mode   string                            `json:"mode"`
+			Build  importedLoopBuild                 `json:"build"`
+			Config importedLoopConfig                `json:"config"`
+			Result history.GeneratedClosedLoopResult `json:"result"`
+		}
+		sum := sha256.Sum256(observations)
+		if err := json.Unmarshal(b, &got); err != nil || got.Mode != "generated" || got.Build.GoVersion == "" || got.Config.MaxTradeQtyPerCutoff != 1000 || got.Result.InputSHA256 != fmt.Sprintf("%x", sum) || got.Result.LiquidationOverlay != (value == "on") || !strings.Contains(got.Result.Limitations, "cold") || got.Result.Source.Description != "fixture" || got.Result.Result == nil || len(got.Result.Result.Decisions) != 2 {
+			t.Fatalf("generated result: %s %v", b, err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(dir, "oversize-generated.json"), bytes.Repeat([]byte(" "), maxDecisionInput+1), 0600); err != nil {
+		t.Fatal(err)
+	}
+	for name, a := range map[string][]string{
+		"missing overlay":           generatedArgs[:len(generatedArgs)-2],
+		"invalid overlay":           append(append([]string(nil), generatedArgs[:len(generatedArgs)-1]...), "invalid"),
+		"both inputs":               append(append([]string(nil), generatedArgs...), "--decisions", decisionsPath),
+		"external overlay":          append(append([]string(nil), args...), "--overlay", "off"),
+		"external empty overlay":    append(append([]string(nil), args...), "--overlay", ""),
+		"generated empty decisions": append(append([]string(nil), generatedArgs...), "--decisions", ""),
+		"oversize observations":     append(append(append([]string(nil), generatedArgs[:10]...), filepath.Join(dir, "oversize-generated.json")), generatedArgs[11:]...),
+		"external observations":     append(append([]string(nil), args...), "--observations", observationPath),
+		"invalid mode":              append(append([]string(nil), args...), "--mode", "other"),
+		"bad observation":           append(append([]string(nil), generatedArgs[:10]...), append([]string{decisionsPath}, generatedArgs[11:]...)...),
+	} {
+		t.Run(name, func(t *testing.T) {
+			b, _, err := run(a)
+			if err == nil || len(b) != 0 {
+				t.Fatalf("expected failure without output: %q %v", b, err)
+			}
+		})
 	}
 	// Reconstruct a content-addressed legacy snapshot that predates normalized
 	// cutoff validation, then exercise the actual CLI against it.

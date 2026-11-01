@@ -65,7 +65,10 @@ func runImportedLoop(args []string, out, stderr io.Writer) error {
 	snapshot := flags.String("snapshot", "", "imported snapshot ID")
 	start := flags.Int64("start-ns", 0, "inclusive 4h close in Unix nanoseconds")
 	end := flags.Int64("end-ns", 0, "inclusive 4h close in Unix nanoseconds")
+	mode := flags.String("mode", "external", "decision mode: external or generated")
 	decisionsPath := flags.String("decisions", "", "complete external decision JSON array")
+	observationsPath := flags.String("observations", "", "complete generated-state observation JSON array")
+	overlay := flags.String("overlay", "", "generated liquidation overlay: on or off (required in generated mode)")
 	configPath := flags.String("config", "", "complete configuration JSON")
 	source := flags.String("source", "", "decision source declaration")
 	availability := flags.String("availability", "", "decision availability declaration")
@@ -76,8 +79,22 @@ func runImportedLoop(args []string, out, stderr io.Writer) error {
 		}
 		return err
 	}
-	if flags.NArg() != 0 || *storePath == "" || *snapshot == "" || *decisionsPath == "" || *configPath == "" {
-		return errors.New("store, snapshot, decisions and config are required")
+	if flags.NArg() != 0 || *storePath == "" || *snapshot == "" || *configPath == "" {
+		return errors.New("store, snapshot and config are required; positional arguments are not accepted")
+	}
+	provided := make(map[string]bool)
+	flags.Visit(func(f *flag.Flag) { provided[f.Name] = true })
+	switch *mode {
+	case "external":
+		if *decisionsPath == "" || provided["observations"] || provided["overlay"] {
+			return errors.New("external mode requires decisions and forbids observations and overlay")
+		}
+	case "generated":
+		if *observationsPath == "" || provided["decisions"] || (*overlay != "on" && *overlay != "off") {
+			return errors.New("generated mode requires observations and overlay on or off, and forbids decisions")
+		}
+	default:
+		return errors.New("mode must be external or generated")
 	}
 	info, err := os.Stat(*storePath)
 	if err != nil {
@@ -86,9 +103,13 @@ func runImportedLoop(args []string, out, stderr io.Writer) error {
 	if !info.IsDir() {
 		return errors.New("store must be an existing directory")
 	}
-	decisions, err := localfile.Read(*decisionsPath, maxDecisionInput)
+	inputPath, inputName := *decisionsPath, "decisions"
+	if *mode == "generated" {
+		inputPath, inputName = *observationsPath, "observations"
+	}
+	decisions, err := localfile.Read(inputPath, maxDecisionInput)
 	if err != nil {
-		return fmt.Errorf("decisions: %w", err)
+		return fmt.Errorf("%s: %w", inputName, err)
 	}
 	rawConfig, err := localfile.Read(*configPath, history.MaxCSV)
 	if err != nil {
@@ -110,10 +131,32 @@ func runImportedLoop(args []string, out, stderr io.Writer) error {
 	if err != nil {
 		return err
 	}
-	result, err := history.RunImportedClosedLoop(store, *snapshot, *start, *end, decisions, history.DecisionSource{Description: *source, Availability: *availability, QuoteAssumption: *quote}, research.OfflineClosedLoopConfig{
+	sourceInfo := history.DecisionSource{Description: *source, Availability: *availability, QuoteAssumption: *quote}
+	loopConfig := research.OfflineClosedLoopConfig{
 		Replay:         research.OfflineReplayConfig{TakerFeeRate: config.TakerFeeRate, MaxTradeQtyPerCutoff: config.MaxTradeQtyPerCutoff, HistoryLimit: config.HistoryLimit, IndicatorWindow: config.IndicatorWindow},
 		StrategyConfig: config.StrategyConfig, RiskConfig: config.RiskConfig,
-	})
+	}
+	if *mode == "generated" {
+		result, err := history.RunGeneratedImportedClosedLoop(store, *snapshot, *start, *end, decisions, sourceInfo, loopConfig, *overlay == "on")
+		if err != nil {
+			return err
+		}
+		payload, err := json.Marshal(struct {
+			Scope   string                             `json:"scope"`
+			Mode    string                             `json:"mode"`
+			Build   importedLoopBuild                  `json:"build"`
+			StartNS int64                              `json:"start_ns"`
+			EndNS   int64                              `json:"end_ns"`
+			Config  importedLoopConfig                 `json:"config"`
+			Result  *history.GeneratedClosedLoopResult `json:"result"`
+		}{"research-only", "generated", importedLoopBuildInfo(), *start, *end, config, result})
+		if err != nil {
+			return err
+		}
+		_, err = out.Write(append(payload, '\n'))
+		return err
+	}
+	result, err := history.RunImportedClosedLoop(store, *snapshot, *start, *end, decisions, sourceInfo, loopConfig)
 	if err != nil {
 		return err
 	}
