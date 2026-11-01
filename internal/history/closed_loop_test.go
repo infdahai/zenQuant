@@ -237,3 +237,98 @@ func TestImportedClosedLoop(t *testing.T) {
 		})
 	}
 }
+
+func TestGeneratedImportedClosedLoop(t *testing.T) {
+	f, err := os.Open("testdata/klines.csv")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	raw, err := Normalize(f, "4h", time.Date(2024, 1, 2, 0, 0, 0, 0, time.UTC))
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, err := workbench.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	snap, err := store.Import(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stale := false
+	var rows []GeneratedDecisionInput
+	for _, c := range snap.Dataset.Candles {
+		v := map[string]float64{"realized_vol": .8, "vix_z": 0, "funding_oi_z": 0, "cvd_slope": .1, "zen_pulse": 60, "momentum_roc_z": 1, "liq_intensity_z": 0, "liq_imbalance": 0, "yield_10y_z": 0, "cycle_position": 1}
+		rows = append(rows, GeneratedDecisionInput{StateInput: research.StateEngineInput{Symbol: "BTC", Timeframe: "4h", CutoffTimeNS: c.CloseTimeNS, AvailableTimeNS: c.CloseTimeNS, Values: v, StructureState: "UPTREND", LiquidationStale: &stale, QualityFlags: []string{"OK"}}, Indicator: research.StrategyIndicator{Symbol: "BTC", Timeframe: "4h", CutoffTimeNS: c.CloseTimeNS, Price: c.Close, ATR: 1, RealizedVol: .8, CVDSlope: .1, StructureState: "UPTREND", MomentumROCZ: 1}, AvailableTimeNS: c.CloseTimeNS, ValidUntilNS: c.CloseTimeNS})
+	}
+	source := DecisionSource{Description: "fixture", Availability: "at close", QuoteAssumption: USDQuoteAssumption}
+	config := research.OfflineClosedLoopConfig{Replay: research.OfflineReplayConfig{HistoryLimit: 2, IndicatorWindow: 1}, StrategyConfig: research.DefaultStrategyFlowConfig(), RiskConfig: research.DefaultStatefulRiskConfig()}
+	start, end := rows[0].AvailableTimeNS, rows[len(rows)-1].AvailableTimeNS
+	run := func(r []GeneratedDecisionInput, overlay bool) (*GeneratedClosedLoopResult, error) {
+		b, e := json.Marshal(r)
+		if e != nil {
+			t.Fatal(e)
+		}
+		return RunGeneratedImportedClosedLoop(store, snap.ID, start, end, b, source, config, overlay)
+	}
+	first, err := run(rows, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := run(rows, false)
+	if err != nil || !reflect.DeepEqual(first, second) {
+		t.Fatalf("nondeterministic: %v", err)
+	}
+	if len(first.Result.Decisions) != len(rows) || first.InputSHA256 == "" || !strings.Contains(first.Limitations, "cold") {
+		t.Fatal("missing result or provenance")
+	}
+	alternate, err := run(rows, true)
+	if err != nil || !alternate.LiquidationOverlay {
+		t.Fatalf("overlay: %v", err)
+	}
+	cases := map[string]func([]GeneratedDecisionInput){
+		"identity":        func(r []GeneratedDecisionInput) { r[0].StateInput.Symbol = "ETH" },
+		"timeframe":       func(r []GeneratedDecisionInput) { r[0].StateInput.Timeframe = "1h" },
+		"cutoff":          func(r []GeneratedDecisionInput) { r[0].StateInput.CutoffTimeNS++ },
+		"vol":             func(r []GeneratedDecisionInput) { r[0].Indicator.RealizedVol++ },
+		"funding":         func(r []GeneratedDecisionInput) { r[0].Indicator.FundingOIZ++ },
+		"cvd":             func(r []GeneratedDecisionInput) { r[0].Indicator.CVDSlope++ },
+		"momentum":        func(r []GeneratedDecisionInput) { r[0].Indicator.MomentumROCZ++ },
+		"structure":       func(r []GeneratedDecisionInput) { r[0].Indicator.StructureState = "NEUTRAL" },
+		"price":           func(r []GeneratedDecisionInput) { r[0].Indicator.Price++ },
+		"future":          func(r []GeneratedDecisionInput) { r[0].StateInput.AvailableTimeNS++ },
+		"strategy future": func(r []GeneratedDecisionInput) { r[0].AvailableTimeNS++ },
+		"order":           func(r []GeneratedDecisionInput) { r[0], r[1] = r[1], r[0] },
+		"missing value":   func(r []GeneratedDecisionInput) { delete(r[0].StateInput.Values, "vix_z") },
+	}
+	for name, mutate := range cases {
+		t.Run(name, func(t *testing.T) {
+			b, _ := json.Marshal(rows)
+			var copyRows []GeneratedDecisionInput
+			if err := json.Unmarshal(b, &copyRows); err != nil {
+				t.Fatal(err)
+			}
+			mutate(copyRows)
+			if _, err := run(copyRows, false); err == nil {
+				t.Fatal("accepted invalid input")
+			}
+		})
+	}
+	for _, flag := range []string{"null", `""`, `"  \t"`} {
+		payload, err := json.Marshal(rows)
+		if err != nil {
+			t.Fatal(err)
+		}
+		payload = bytes.Replace(payload, []byte(`"quality_flags":["OK"]`), []byte(`"quality_flags":[`+flag+`]`), 1)
+		if _, err := RunGeneratedImportedClosedLoop(store, snap.ID, start, end, payload, source, config, false); err == nil {
+			t.Fatalf("accepted invalid quality flag %s", flag)
+		}
+	}
+	changed := append([]GeneratedDecisionInput(nil), rows...)
+	changed[0].Indicator.IndicatorVersion = "different"
+	third, err := run(changed, false)
+	if err != nil || third.InputSHA256 == first.InputSHA256 {
+		t.Fatalf("input identity unchanged: %v", err)
+	}
+}

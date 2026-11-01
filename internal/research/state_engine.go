@@ -3,6 +3,7 @@ package research
 import (
 	"fmt"
 	"math"
+	"strings"
 )
 
 // StateEngineInput is one complete, point-in-time indicator snapshot. Values must
@@ -54,6 +55,11 @@ func (e *StateEngine) Classify(in StateEngineInput) (ResearchMarketState, error)
 	}
 	if in.Symbol == "" || (in.Timeframe != "5m" && in.Timeframe != "1h" && in.Timeframe != "4h" && in.Timeframe != "1d") || in.CutoffTimeNS <= 0 || in.AvailableTimeNS <= 0 || in.AvailableTimeNS > in.CutoffTimeNS || in.LiquidationStale == nil || in.QualityFlags == nil {
 		return ResearchMarketState{}, fmt.Errorf("invalid identity, time, or missing quality inputs")
+	}
+	for _, flag := range in.QualityFlags {
+		if strings.TrimSpace(flag) == "" {
+			return ResearchMarketState{}, fmt.Errorf("quality flags must not be empty or blank")
+		}
 	}
 	if in.StructureState != "UPTREND" && in.StructureState != "DOWNTREND" && in.StructureState != "NEUTRAL" {
 		return ResearchMarketState{}, fmt.Errorf("invalid structure state")
