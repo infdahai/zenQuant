@@ -19,7 +19,7 @@ type OfflineDecisionInput struct {
 
 // OfflineClosedLoopConfig is an offline research-only BTC/USD 4h experiment.
 // Strategy equity is fixed by StrategyConfig and may differ from the risk
-// starting equity; risk equity tracks fills and fees.
+// starting equity; risk equity tracks fills, fees, and funding settlements.
 // The leverage cap does not check margin or available funds. Fills occur at the
 // same close with no slippage. Reversals close first; opening requires a new
 // decision on a later bar. Fees can exceed the pre-fill leverage cap. This is
@@ -49,11 +49,6 @@ func RunOfflineClosedLoop(c OfflineClosedLoopConfig) (*OfflineClosedLoopResult, 
 func runOfflineClosedLoop(c OfflineClosedLoopConfig, simulate func(OfflineExecutionOrder, float64, float64, int64) (ExecutionReport, error)) (*OfflineClosedLoopResult, error) {
 	if c.Replay.Symbol != "BTC" || c.Replay.ExecutionTimeframe != "4h" || len(c.Replay.Timeframes) != 1 || c.Replay.Timeframes[0] != "4h" || c.Replay.OnReport != nil {
 		return nil, fmt.Errorf("closed loop requires BTC, 4h only and its own report callback")
-	}
-	for _, f := range c.Replay.Funding {
-		if f.FundingRate != 0 {
-			return nil, fmt.Errorf("nonzero funding is unsupported")
-		}
 	}
 	strategy, err := NewStrategyFlow(c.StrategyConfig)
 	if err != nil {
@@ -107,6 +102,11 @@ func runOfflineClosedLoop(c OfflineClosedLoopConfig, simulate func(OfflineExecut
 			return nil, err
 		}
 		ts := s.Event.CloseTimeNS
+		for _, settlement := range s.settlements {
+			if err := risk.applyReplayFunding("BTC", settlement, ts); err != nil {
+				return nil, fmt.Errorf("risk funding: %w", err)
+			}
+		}
 		in, ok := inputs[ts]
 		if !ok {
 			return nil, fmt.Errorf("missing input at %d", ts)
