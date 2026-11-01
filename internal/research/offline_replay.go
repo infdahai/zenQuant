@@ -13,7 +13,8 @@ type OfflineReplayConfig struct {
 	StartNS, EndNS     *int64
 	Funding            []ReplayFundingRow
 	TakerFeeRate       float64
-	// MaxTradeQtyPerCutoff caps filled quantity after policy sizing. Zero disables the cap.
+	// MaxTradeQtyPerCutoff caps filled quantity after policy sizing. Zero selects
+	// the Python default of 1; an explicit cap must be finite and positive.
 	MaxTradeQtyPerCutoff          float64
 	HistoryLimit, IndicatorWindow int
 	// SessionPath optionally marks a fresh, non-resumable simulated account.
@@ -52,7 +53,7 @@ type OfflineReplayResult struct {
 // Duplicate execution intervals within the cutoff are rejected before policy runs.
 // Orders fill synthetically at the execution bar's same close, with no slippage.
 // Policy orders are sized by the caller; final admission enforces reduce-only and
-// the optional filled-quantity cap, rounding down to six places with a 0.0001 minimum.
+// the filled-quantity cap, rounding down to six places with a 0.0001 minimum.
 // Opposite-side non-reduce orders may flip in one fill; no Python target sizing,
 // two-leg flip orchestration, or risk overlay is implemented. Accounting
 // uses only the latest visible funding row per execution bar, not every skipped
@@ -61,6 +62,11 @@ type OfflineReplayResult struct {
 // risk control, a strategy, or full Python replay parity. On error no result is
 // returned; external side effects of a policy cannot be rolled back.
 func RunOfflineReplay(config OfflineReplayConfig, policy OfflineReplayPolicy) (*OfflineReplayResult, error) {
+	return runOfflineReplay(config, policy, nil)
+}
+
+// The private simulator seam exercises partial and rejected attempts in tests.
+func runOfflineReplay(config OfflineReplayConfig, policy OfflineReplayPolicy, simulate func(OfflineExecutionOrder, float64, float64, int64) (ExecutionReport, error)) (*OfflineReplayResult, error) {
 	if config.Symbol == "" || policy == nil {
 		return nil, fmt.Errorf("symbol and policy are required")
 	}
@@ -72,6 +78,10 @@ func RunOfflineReplay(config OfflineReplayConfig, policy OfflineReplayPolicy) (*
 	}
 	if !finite(config.MaxTradeQtyPerCutoff) || config.MaxTradeQtyPerCutoff < 0 {
 		return nil, fmt.Errorf("quantity cap must be finite and nonnegative")
+	}
+	capQty := config.MaxTradeQtyPerCutoff
+	if capQty == 0 {
+		capQty = 1
 	}
 	events, err := PrepareReplayEvents(config.Candles, config.Timeframes, config.ExecutionTimeframe, config.StartNS, config.EndNS)
 	if err != nil {
@@ -99,7 +109,7 @@ func RunOfflineReplay(config OfflineReplayConfig, policy OfflineReplayPolicy) (*
 	}
 	histories := make(map[string][]ReplayCandle, len(config.Timeframes))
 	result := &OfflineReplayResult{}
-	admission := &offlineOrderAdmission{maxQty: config.MaxTradeQtyPerCutoff, positions: make(map[string]float64), filled: make(map[admissionKey]float64)}
+	admission := &offlineOrderAdmission{maxQty: capQty, positions: make(map[string]float64), filled: make(map[admissionKey]float64)}
 	session, err := newSimulationSession(config.SessionPath, func(report ExecutionReport) error {
 		report, err := accounting.CollectReport(report)
 		if err != nil {
@@ -115,6 +125,9 @@ func RunOfflineReplay(config OfflineReplayConfig, policy OfflineReplayPolicy) (*
 	session.simulate = func(order OfflineExecutionOrder, mark, rate float64, timestamp int64) (ExecutionReport, error) {
 		order.ReduceOnly = false
 		return SimulateOfflineExecution(order, mark, rate, timestamp)
+	}
+	if simulate != nil {
+		session.simulate = simulate
 	}
 	for _, event := range events {
 		tf := event.EventTimeframe

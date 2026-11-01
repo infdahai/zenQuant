@@ -26,7 +26,16 @@ func decimalRat(v float64) *big.Rat {
 func decimalAdd(a, b float64) float64 {
 	r := new(big.Rat).Add(decimalRat(a), decimalRat(b))
 	v, _ := r.Float64()
+	if (a > 0 && b < 0 || a < 0 && b > 0) && math.Abs(v) <= 4*math.Max(quantityULP(a), quantityULP(b)) {
+		return 0
+	}
 	return v
+}
+
+// quantityULP matches math.ulp for finite Python floats, including subnormals.
+func quantityULP(v float64) float64 {
+	_, exponent := math.Frexp(math.Abs(v))
+	return math.Max(math.SmallestNonzeroFloat64, math.Ldexp(1, exponent-53))
 }
 
 func (a *offlineOrderAdmission) admit(order OfflineExecutionOrder, cutoff int64) (OfflineExecutionOrder, bool, error) {
@@ -36,15 +45,12 @@ func (a *offlineOrderAdmission) admit(order OfflineExecutionOrder, cutoff int64)
 	if (order.OrderType != "" && order.OrderType != "MARKET") || order.LimitPrice != nil {
 		return order, false, fmt.Errorf("limit order semantics are unsupported")
 	}
-	// Preserve the gateway's invalid-order report for nonpositive ordinary orders.
-	if order.Quantity <= 0 && !order.ReduceOnly {
-		return order, true, nil
+	if order.Quantity <= 0 {
+		return order, false, nil
 	}
 	requested := order.Quantity
-	if a.maxQty > 0 {
-		remaining := math.Max(0, decimalAdd(a.maxQty, -a.filled[admissionKey{order.Symbol, cutoff}]))
-		requested = math.Min(requested, remaining)
-	}
+	remaining := math.Max(0, decimalAdd(a.maxQty, -a.filled[admissionKey{order.Symbol, cutoff}]))
+	requested = math.Min(requested, remaining)
 	if order.ReduceOnly {
 		position := a.positions[order.Symbol]
 		if position*float64(order.Side) >= 0 {

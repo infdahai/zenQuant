@@ -10,7 +10,7 @@ import (
 )
 
 func TestOfflineReplaySessionRejectsIdentityReuse(t *testing.T) {
-	for _, mode := range []string{"empty", "same bar", "later bar", "rejected attempt"} {
+	for _, mode := range []string{"empty", "same bar", "later bar"} {
 		t.Run(mode, func(t *testing.T) {
 			calls := 0
 			result, err := RunOfflineReplay(replayTestConfig(), func(OfflineReplaySnapshot) ([]OfflineExecutionOrder, error) {
@@ -19,10 +19,8 @@ func TestOfflineReplaySessionRejectsIdentityReuse(t *testing.T) {
 				if mode == "empty" {
 					order.ClientOrderID = ""
 				}
-				if mode == "rejected attempt" && calls == 1 {
-					order.Quantity = 0
-				}
 				if mode == "same bar" {
+					order.Quantity = .4
 					return []OfflineExecutionOrder{order, order}, nil
 				}
 				return []OfflineExecutionOrder{order}, nil
@@ -73,6 +71,7 @@ func TestOfflineReplaySessionErrorsRefuseRestart(t *testing.T) {
 	for _, phase := range []string{"simulator", "accounting"} {
 		t.Run(phase, func(t *testing.T) {
 			cfg := replayTestConfig()
+			cfg.MaxTradeQtyPerCutoff = 1e308
 			cfg.SessionPath = filepath.Join(t.TempDir(), "failed.lock")
 			calls := 0
 			policy := func(OfflineReplaySnapshot) ([]OfflineExecutionOrder, error) {

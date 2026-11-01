@@ -181,8 +181,8 @@ func TestOfflineReplayRejectionsAndErrors(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(r.Reports) != 2 || r.Reports[0].Status != "REJECTED" || len(r.Episodes) != 0 {
-		t.Fatalf("unexpected rejected orders: %+v", r)
+	if len(r.Reports) != 0 || len(r.Episodes) != 0 {
+		t.Fatalf("unexpected submitted orders: %+v", r)
 	}
 	fail := errors.New("policy failed")
 	calls := 0
