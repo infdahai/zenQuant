@@ -143,12 +143,63 @@ func TestVixCLIFileAdmission(t *testing.T) {
 			}
 		})
 	}
+	for _, kind := range []string{"fifo", "directory", "oversized"} {
+		t.Run("evidence file/"+kind, func(t *testing.T) {
+			root, _, _ := vixCLIInputs(t)
+			path := filepath.Join(root, "raw.txt")
+			must(os.Remove(path))
+			switch kind {
+			case "fifo":
+				must(unix.Mkfifo(path, 0600))
+			case "directory":
+				must(os.Mkdir(path, 0700))
+			case "oversized":
+				f, err := os.Create(path)
+				must(err)
+				must(f.Truncate(16*1024*1024 + 1))
+				must(f.Close())
+			}
+			out, stderr, err := runVixCLI(t, "", "vix-snapshot", "--request", root+"/request.json", "--manifest", root+"/manifest.json", "--evidence", root)
+			if err == nil || len(out) != 0 || !strings.Contains(stderr, "MISSING_EVIDENCE") {
+				t.Fatalf("want evidence rejection and empty stdout, got %q, %q, %v", out, stderr, err)
+			}
+		})
+	}
 	t.Run("inclusive input limits", func(t *testing.T) {
 		out, stderr, err := runVixCLI(t, "", "vix-snapshot", "--request", dir+"/request-limit", "--manifest", dir+"/manifest-limit", "--evidence", dir)
 		if err != nil || !json.Valid(out) {
 			t.Fatalf("limit-sized inputs rejected: %s %v", stderr, err)
 		}
 	})
+}
+
+func TestVixCLIEvaluateCanonicalIdentity(t *testing.T) {
+	fixture, err := os.ReadFile("../options/vix_demo.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := " \n\t" + string(fixture)
+	out, stderr, err := runVixCLI(t, body, "evaluate", "--route", "/api/vix/evaluate")
+	if err != nil {
+		t.Fatalf("%s %v", stderr, err)
+	}
+	var result struct {
+		Transport string `json:"transport_sha256"`
+		Request   string `json:"request_json"`
+		Report    struct {
+			Hash string `json:"input_sha256"`
+		} `json:"report"`
+	}
+	if err := json.Unmarshal(out, &result); err != nil {
+		t.Fatal(err)
+	}
+	if result.Transport != vixDigest([]byte(body)) || result.Report.Hash != "372edb85ecadf97d4b2b0b8bd64e0ac86414890687dcb3a5e8b1f61b05dd73d3" {
+		t.Fatalf("incorrect transport/canonical hash: %s", out)
+	}
+	out, stderr, err = runVixCLI(t, `{"bad":true}`, "evaluate", "--route", "/api/vix/evaluate")
+	if err == nil || len(out) != 0 || !strings.Contains(stderr, "INVALID_INPUT") {
+		t.Fatalf("invalid evaluate leaked output: %s %s %v", out, stderr, err)
+	}
 }
 
 func TestVixCLISnapshotRoundtrip(t *testing.T) {
