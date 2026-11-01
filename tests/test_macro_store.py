@@ -212,9 +212,9 @@ class MacroDataStoreTests(unittest.TestCase):
             store = self._make_store(tmpdir, cme_cot=cot_rows)
 
             snap = store.lookup(15 * DAY_NS)
-            self.assertAlmostEqual(snap.cme_asset_mgr_net, 1800.0)
-            self.assertAlmostEqual(snap.cme_lev_money_net, 900.0)
-            self.assertAlmostEqual(snap.cme_total_oi, 14_000.0)
+            self.assertIsNone(snap.cme_asset_mgr_net)
+            self.assertIsNone(snap.cme_lev_money_net)
+            self.assertIsNone(snap.cme_total_oi)
 
     def test_cot_rejects_research_fragment_in_mixed_dataset(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -244,7 +244,7 @@ class MacroDataStoreTests(unittest.TestCase):
             store = self._make_store(tmpdir)
             self.assertIsNone(store.lookup(DAY_NS).cme_asset_mgr_net)
 
-    def test_cot_mixed_fields_preserve_observations_without_fabricating_zero(self) -> None:
+    def test_cot_mixed_fields_remain_unavailable_without_publication_evidence(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             cot_path = Path(tmpdir) / "cftc" / "cot_btc.parquet"
             _write_parquet(cot_path / "a.parquet", [{"report_date_ns": DAY_NS, "asset_mgr_net": 100.0}])
@@ -255,13 +255,13 @@ class MacroDataStoreTests(unittest.TestCase):
             store = self._make_store(tmpdir)
             self.assertIsNone(store.lookup(DAY_NS).cme_lev_money_net)
             snap = store.lookup(2 * DAY_NS)
-            self.assertEqual(snap.cme_asset_mgr_net, 100.0)
-            self.assertEqual(snap.cme_lev_money_net, -200.0)
+            self.assertIsNone(snap.cme_asset_mgr_net)
+            self.assertIsNone(snap.cme_lev_money_net)
             snap = store.lookup(3 * DAY_NS)
-            self.assertEqual(snap.cme_asset_mgr_net, 100.0)
-            self.assertEqual(snap.cme_lev_money_net, 0.0)
+            self.assertIsNone(snap.cme_asset_mgr_net)
+            self.assertIsNone(snap.cme_lev_money_net)
 
-    def test_cot_accepts_safe_hive_fragments(self) -> None:
+    def test_cot_hive_fragments_need_publication_evidence(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             cot_path = Path(tmpdir) / "cftc" / "cot_btc.parquet"
             _write_parquet(
@@ -271,8 +271,8 @@ class MacroDataStoreTests(unittest.TestCase):
                 cot_path / "year=2025" / "part.parquet", [{"report_date_ns": 2 * DAY_NS, "asset_mgr_net": 200.0}]
             )
             store = self._make_store(tmpdir)
-            self.assertEqual(store.lookup(DAY_NS).cme_asset_mgr_net, 100.0)
-            self.assertEqual(store.lookup(2 * DAY_NS).cme_asset_mgr_net, 200.0)
+            self.assertIsNone(store.lookup(DAY_NS).cme_asset_mgr_net)
+            self.assertIsNone(store.lookup(2 * DAY_NS).cme_asset_mgr_net)
 
     def test_reload_clears_cached_and_removed_or_rejected_series(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -280,6 +280,10 @@ class MacroDataStoreTests(unittest.TestCase):
             store = self._make_store(
                 tmpdir, vix=[(DAY_NS, 20.0)], cme_cot=[{"report_date_ns": DAY_NS, "asset_mgr_net": 100.0}]
             )
+            self.assertIsNone(store.lookup(DAY_NS).cme_asset_mgr_net)
+            # Simulate cached legacy state and prove reload removes it.
+            store._series["cme_asset_mgr_net"] = ([DAY_NS], [100.0])
+            store._lookup_cache.clear()
             self.assertEqual(store.lookup(DAY_NS).cme_asset_mgr_net, 100.0)
             _write_parquet(cot_path, [{"report_date_ns": DAY_NS, "position_as_of_date_ns": DAY_NS}])
             store.load()
@@ -289,7 +293,7 @@ class MacroDataStoreTests(unittest.TestCase):
 
             _write_parquet(cot_path, [{"report_date_ns": DAY_NS, "asset_mgr_net": 300.0}])
             store.load()
-            self.assertEqual(store.lookup(DAY_NS).cme_asset_mgr_net, 300.0)
+            self.assertIsNone(store.lookup(DAY_NS).cme_asset_mgr_net)
             cot_path.unlink()
             store.load()
             snap = store.lookup(DAY_NS)

@@ -48,23 +48,17 @@ def test_cot_consumers_use_compatible_files(tmp_path: Path, monkeypatch: pytest.
     monkeypatch.chdir(tmp_path)
     path = Path("data/raw/cftc/cot_btc.parquet")
     _write(path, raw=raw)
-    assert cot_data_available(path) is (not raw)
+    assert not cot_data_available(path)
     dependency = _signal_data_dependency(
         "cme_positioning_state_signal", macro_root=Path("macro"), data_root=Path("data/raw")
     )
-    assert dependency[1] == ("missing" if raw else "ready")
+    assert dependency[1] == "missing"
     audit = build_data_coverage_audit(data_root=Path("data/raw"))
     source = next(item for item in audit["sources"] if item["source_id"] == "cme_cot_btc")
-    assert source["training_integration"]["integration_status"] == (
-        "missing" if raw else "research_or_context_available"
-    )
-    assert (
-        source["combined_coverage"]["start_at"] is None
-        if raw
-        else source["parquet"][0]["timestamp_column"] == "report_date_ns"
-    )
+    assert source["training_integration"]["integration_status"] == "missing"
+    assert source["combined_coverage"]["start_at"] is None
     evaluator = FrameworkEvaluator(HistoricalBacktestConfig(root_dir=tmp_path / "empty"))
-    assert evaluator.training_input_contract["state_feature_sources"]["cme_positioning_in_state_features"] is (not raw)
+    assert not evaluator.training_input_contract["state_feature_sources"]["cme_positioning_in_state_features"]
     review = DataAdmissionAgent().review([_candidate(str(path))], repo_root=tmp_path)[0]
     assert review.blocked_by == "cot_publication_time_unavailable"
 
@@ -101,10 +95,10 @@ def test_timestamp_only_and_configured_roots(tmp_path: Path, monkeypatch: pytest
     assert not cot_data_available(custom)
     assert (
         _signal_data_dependency("cme_positioning_state_signal", macro_root=Path("macro"), data_root=Path("custom"))[1]
-        == "ready"
+        == "missing"
     )
     evaluator = FrameworkEvaluator(HistoricalBacktestConfig(root_dir=tmp_path / "empty", cot_path=custom))
-    assert evaluator.training_input_contract["state_feature_sources"]["cme_positioning_in_state_features"]
+    assert not evaluator.training_input_contract["state_feature_sources"]["cme_positioning_in_state_features"]
     _write(default, raw=True)
     _write(custom, raw=False)
     assert (
@@ -123,10 +117,10 @@ def test_macro_state_reports_mixed_legacy_fragments(tmp_path: Path, monkeypatch:
     assert not cot_data_available(path)
     assert (
         _signal_data_dependency("cme_positioning_state_signal", macro_root=Path("macro"), data_root=Path("custom"))[1]
-        == "ready"
+        == "missing"
     )
     evaluator = FrameworkEvaluator(HistoricalBacktestConfig(root_dir=tmp_path / "empty"))
-    assert evaluator.training_input_contract["state_feature_sources"]["cme_positioning_in_state_features"]
+    assert not evaluator.training_input_contract["state_feature_sources"]["cme_positioning_in_state_features"]
 
 
 def test_coverage_glob_rejects_any_incompatible_file(tmp_path: Path) -> None:
@@ -150,8 +144,8 @@ def test_coverage_glob_rejects_any_incompatible_file(tmp_path: Path) -> None:
     pq.write_table(
         pa.table({"report_date_ns": [1_600_000_000_000_000_000], "dealer_net": [7]}), tmp_path / "different.parquet"
     )
-    assert cot_data_available(tmp_path / "legacy.parquet")
-    assert cot_data_available(tmp_path / "different.parquet")
+    assert not cot_data_available(tmp_path / "legacy.parquet")
+    assert not cot_data_available(tmp_path / "different.parquet")
     result = audit_source(spec, split_spec=default_btc_split_spec())
     assert result["parquet"][0]["error"] == "cot_unavailable_or_incompatible"
     assert result["combined_coverage"]["start_at"] is None
