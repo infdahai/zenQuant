@@ -64,7 +64,9 @@ func TestStateEngineFailureAtomicAndFutureIsolation(t *testing.T) {
 		badNonfinite.Values[k] = v
 	}
 	badNonfinite.Values["momentum_roc_z"] = math.NaN()
-	for _, in := range []StateEngineInput{bad, badFuture, badDuplicate, badNonfinite} {
+	badFlag := next
+	badFlag.QualityFlags = []string{" \t"}
+	for _, in := range []StateEngineInput{bad, badFuture, badDuplicate, badNonfinite, badFlag} {
 		if _, err := subject.Classify(in); err == nil {
 			t.Fatal("invalid snapshot accepted")
 		}
