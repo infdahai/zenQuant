@@ -14,6 +14,9 @@ type OfflineReplayConfig struct {
 	Funding                       []ReplayFundingRow
 	TakerFeeRate                  float64
 	HistoryLimit, IndicatorWindow int
+	// SessionPath optionally marks a fresh, non-resumable simulated account.
+	// Empty means ephemeral replay. The parent directory must already exist.
+	SessionPath string
 }
 
 // OfflineReplayIndicators are calculated from the visible bounded history.
@@ -27,7 +30,8 @@ type OfflineReplaySnapshot struct {
 	PositionQty float64
 }
 
-// OfflineReplayPolicy returns synthetic orders in execution order. The policy is
+// OfflineReplayPolicy returns synthetic orders in execution order, each with a
+// nonempty client order ID unique across the entire replay. The policy is
 // responsible for its own determinism and must not rely on future input data.
 type OfflineReplayPolicy func(OfflineReplaySnapshot) ([]OfflineExecutionOrder, error)
 
@@ -85,6 +89,17 @@ func RunOfflineReplay(config OfflineReplayConfig, policy OfflineReplayPolicy) (*
 	}
 	histories := make(map[string][]ReplayCandle, len(config.Timeframes))
 	result := &OfflineReplayResult{}
+	session, err := newSimulationSession(config.SessionPath, func(report ExecutionReport) error {
+		report, err := accounting.CollectReport(report)
+		if err != nil {
+			return err
+		}
+		result.Reports = append(result.Reports, report)
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
 	for _, event := range events {
 		tf := event.EventTimeframe
 		history := histories[tf]
@@ -133,15 +148,9 @@ func RunOfflineReplay(config OfflineReplayConfig, policy OfflineReplayPolicy) (*
 			if order.Symbol != config.Symbol {
 				return nil, fmt.Errorf("order symbol %q does not match replay symbol %q", order.Symbol, config.Symbol)
 			}
-			report, err := SimulateOfflineExecution(order, event.Close, config.TakerFeeRate, event.CloseTimeNS)
-			if err != nil {
-				return nil, fmt.Errorf("simulate order: %w", err)
+			if _, err := session.submit(order, event.Close, config.TakerFeeRate, event.CloseTimeNS); err != nil {
+				return nil, fmt.Errorf("execution session: %w", err)
 			}
-			report, err = accounting.CollectReport(report)
-			if err != nil {
-				return nil, fmt.Errorf("collect report: %w", err)
-			}
-			result.Reports = append(result.Reports, report)
 		}
 	}
 	result.Episodes = ledger.Episodes()

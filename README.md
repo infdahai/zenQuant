@@ -22,6 +22,18 @@ make browser
 
 `make check` runs Go formatting, vet, race tests and frontend checks. `make browser` builds and runs browser tests. The Go backend owns domain validation and paper-state authority; the UI collects input and presents results. `serve --engineering` uses an isolated temporary paper journal; the normal entrypoint shares the repository's manual paper authority across worktrees.
 
+## Go offline replay admission
+
+`RunOfflineReplay` now routes its built-in synchronous mark-price simulator through session admission before accounting or result collection. Policies must supply a nonempty `ClientOrderID` unique across the run, including rejected attempts. The workbench's buy-first/sell-last diagnostic supplies deterministic IDs. Submitted order material is copied, including the optional price pointer; consumers receive report values. Each attempt admits exactly one validated incremental result. Partial results end the attempt; any remaining quantity requires a new ID. The built-in Go simulator currently returns only full fills or rejections. Partial and malformed results are exercised through private test seams.
+
+The session exposes no exchange adapter or external/late report ingestion API. Reentrancy and concurrent submissions are refused. A simulator, validation or consumer failure blocks further submissions; already delivered consumer effects cannot be rolled back. Replay returns no result on failure. `ReplayAccounting` and the ledger remain standalone calculation APIs, not report admission authorities.
+
+Replay is ephemeral by default. Go callers may set `OfflineReplayConfig.SessionPath` to a marker in an existing directory. Before the first submission, the session creates it exclusively, writes and syncs it, then syncs its parent directory. Existing markers, including empty files left by failed writes or crashes, refuse reopening before policy runs. Keep used markers for audit. An explicitly new path starts a fresh simulated account; no positions, cash, orders or decision authority are recovered. The workbench stays ephemeral and does not expose persistent-account controls.
+
+This slice ports Python PR55 session admission, not the strategy/router, bar quantity budgets, live risk chain or complete replay semantics. Existing Go restrictions remain: no reduce-only or limit orders, no slippage enforcement, finite inputs and nonnegative fees, explicit timestamps (including zero). Python legacy behavior and COT policy are unchanged. No Python subprocess is used at runtime.
+
+Focused verification: `go test ./internal/research ./internal/workbench`; full local checks: `make check`. Synthetic reference traces come from Python `SimulationSession` at `e449310`; with Python development dependencies installed, run `python scripts/generate_simulation_session_golden.py --check` to verify or `--write` to regenerate them. Go tests consume the checked-in fixture without Python and cover partials, duplicate identities, malformed reports, consumer failures, reentrancy, marker sync failures and process-crash restart refusal. These fixtures establish the tested admission contract only, not full trading parity or operational recovery.
+
 ## Retained Python system
 
 Python requires 3.11 or later. `uv sync --group dev` installs its development dependencies; `make legacy-python` runs harness gates A–E. The full `zenquant-check` also includes data-dependent research checks. Training, tuning, promotion and paper-live remain subject to the [handoff](LIVE_VALIDATION_HANDOFF_SPEC.md), not to the existence of commands or passing unit tests.

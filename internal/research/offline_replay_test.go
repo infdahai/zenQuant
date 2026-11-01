@@ -2,6 +2,7 @@ package research
 
 import (
 	"errors"
+	"fmt"
 	"math"
 	"reflect"
 	"testing"
@@ -44,7 +45,7 @@ func TestOfflineReplayRoundTripAndDeterminism(t *testing.T) {
 		if s.PositionQty > 0 {
 			side = -1
 		}
-		return []OfflineExecutionOrder{{Symbol: "BTC", Side: side, Quantity: 1}}, nil
+		return []OfflineExecutionOrder{{ClientOrderID: fmt.Sprint(s.Event.CloseTimeNS), Symbol: "BTC", Side: side, Quantity: 1}}, nil
 	}
 	a, err := RunOfflineReplay(cfg, policy)
 	if err != nil {
@@ -122,7 +123,7 @@ func TestOfflineReplaySameCloseEntryAfterAccounting(t *testing.T) {
 		if s.Event.EventTimeframe != "5m" || len(s.Histories["1h"]) != 1 || s.PositionQty != 0 {
 			t.Fatalf("unexpected policy snapshot: %+v", s)
 		}
-		return []OfflineExecutionOrder{{Symbol: "BTC", Side: 1, Quantity: 1}}, nil
+		return []OfflineExecutionOrder{{ClientOrderID: "entry", Symbol: "BTC", Side: 1, Quantity: 1}}, nil
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -164,7 +165,7 @@ func TestOfflineReplayRejectsDuplicateExecutionIntervalsBeforePolicy(t *testing.
 		calls := 0
 		result, err := RunOfflineReplay(cfg, func(OfflineReplaySnapshot) ([]OfflineExecutionOrder, error) {
 			calls++
-			return []OfflineExecutionOrder{{Symbol: "BTC", Side: 1, Quantity: 1}}, nil
+			return []OfflineExecutionOrder{{ClientOrderID: "entry", Symbol: "BTC", Side: 1, Quantity: 1}}, nil
 		})
 		if err == nil || result != nil || calls != 0 {
 			t.Fatalf("close offset=%d result=%+v err=%v calls=%d", closeOffset, result, err, calls)
@@ -175,7 +176,7 @@ func TestOfflineReplayRejectsDuplicateExecutionIntervalsBeforePolicy(t *testing.
 func TestOfflineReplayRejectionsAndErrors(t *testing.T) {
 	cfg := replayTestConfig()
 	r, err := RunOfflineReplay(cfg, func(s OfflineReplaySnapshot) ([]OfflineExecutionOrder, error) {
-		return []OfflineExecutionOrder{{Symbol: "BTC", Side: 1, Quantity: 0}}, nil
+		return []OfflineExecutionOrder{{ClientOrderID: fmt.Sprint(s.Event.CloseTimeNS), Symbol: "BTC", Side: 1, Quantity: 0}}, nil
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -190,7 +191,7 @@ func TestOfflineReplayRejectionsAndErrors(t *testing.T) {
 		if calls == 2 {
 			return nil, fail
 		}
-		return []OfflineExecutionOrder{{Symbol: "BTC", Side: 1, Quantity: 1}}, nil
+		return []OfflineExecutionOrder{{ClientOrderID: "entry", Symbol: "BTC", Side: 1, Quantity: 1}}, nil
 	})
 	if r != nil || !errors.Is(err, fail) {
 		t.Fatalf("partial result or wrong error: %+v %v", r, err)
@@ -210,7 +211,7 @@ func TestOfflineReplayRejectionsAndErrors(t *testing.T) {
 			return []OfflineExecutionOrder{{Symbol: "ETH", Side: 1, Quantity: 1}}, nil
 		}},
 		{"invalid order", func(c *OfflineReplayConfig) {}, func(OfflineReplaySnapshot) ([]OfflineExecutionOrder, error) {
-			return []OfflineExecutionOrder{{Symbol: "BTC", Side: 1, Quantity: 1, ReduceOnly: true}}, nil
+			return []OfflineExecutionOrder{{ClientOrderID: "invalid", Symbol: "BTC", Side: 1, Quantity: 1, ReduceOnly: true}}, nil
 		}},
 	}
 	for _, tt := range tests {
