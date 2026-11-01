@@ -7,6 +7,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -108,6 +109,13 @@ func TestImportRunReopenCompare(t *testing.T) {
 	}
 	if len(r.Episodes) != 1 {
 		t.Fatalf("episodes: %+v", r)
+	}
+	if len(r.Reports) != 2 || r.Reports[0].ClientOrderID != "diagnostic-1" || r.Reports[1].ClientOrderID != "diagnostic-2" {
+		t.Fatalf("attempt identities: %+v", r.Reports)
+	}
+	repeated, err := s.run(context.Background(), snap.ID, .001)
+	if err != nil || !reflect.DeepEqual(r, repeated) {
+		t.Fatalf("ephemeral replay differs: %+v %v", repeated, err)
 	}
 	e := r.Episodes[0] // Independent cash reconciliation: -100 - .1 + 110 - .11 - 1.1 = 8.69.
 	if math.Abs(e.NetPnL-8.69) > 1e-9 || math.Abs(e.FundingPnL+1.1) > 1e-9 || math.Abs(e.Fees-.21) > 1e-9 {
