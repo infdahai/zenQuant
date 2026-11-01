@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Generate the synthetic downloader reference without third-party dependencies."""
+
 import dataclasses
 import importlib.util
 import io
@@ -16,6 +17,8 @@ package = types.ModuleType("zenquant.historical")
 package.__path__ = [str(root / "zenquant/historical")]
 sys.modules["zenquant.historical"] = package
 storage = types.ModuleType("zenquant.historical.storage")
+
+
 @dataclasses.dataclass
 class HistoricalKlineRow:
     symbol: str
@@ -28,6 +31,8 @@ class HistoricalKlineRow:
     close: float
     volume: float
     trade_count: int
+
+
 storage.HistoricalKlineRow = HistoricalKlineRow
 for name in ("HistoricalDatasetLayout", "HistoricalFundingRow", "HistoricalOpenInterestRow", "write_parquet_rows"):
     setattr(storage, name, object)
