@@ -2,30 +2,66 @@ package workbench
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
+	"sync"
 	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 )
 
-func waitJob(t *testing.T, s *Store, id string, status string) Job {
-	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
+func pollJob(list func() ([]Job, error), id, status string, deadline time.Time) (Job, error) {
 	for time.Now().Before(deadline) {
-		jobs, e := s.JobsList()
-		if e != nil {
-			t.Fatal(e)
+		jobs, err := list()
+		if err != nil && !errors.Is(err, syscall.EWOULDBLOCK) {
+			return Job{}, err
 		}
 		for _, j := range jobs {
 			if j.ID == id && j.Status == status {
-				return j
+				return j, nil
 			}
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	t.Fatalf("job did not reach %s", status)
-	return Job{}
+	return Job{}, fmt.Errorf("job did not reach %s before deadline", status)
+}
+
+func waitJob(t *testing.T, s *Store, id string, status string) Job {
+	t.Helper()
+	job, err := pollJob(s.JobsList, id, status, time.Now().Add(5*time.Second))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return job
+}
+
+func TestPollJobErrors(t *testing.T) {
+	want := Job{ID: "job", Status: "succeeded"}
+	calls := 0
+	job, err := pollJob(func() ([]Job, error) {
+		calls++
+		if calls == 1 {
+			return nil, fmt.Errorf("metadata lock: %w", syscall.EWOULDBLOCK)
+		}
+		return []Job{want}, nil
+	}, want.ID, want.Status, time.Now().Add(time.Second))
+	if err != nil || job != want || calls != 2 {
+		t.Fatalf("contention retry: job=%+v calls=%d err=%v", job, calls, err)
+	}
+
+	other := errors.New("read failure")
+	calls = 0
+	_, err = pollJob(func() ([]Job, error) { calls++; return nil, other }, want.ID, want.Status, time.Now().Add(time.Second))
+	if !errors.Is(err, other) || calls != 1 {
+		t.Fatalf("unexpected error handling: calls=%d err=%v", calls, err)
+	}
+
+	_, err = pollJob(func() ([]Job, error) { return nil, syscall.EWOULDBLOCK }, want.ID, want.Status, time.Now().Add(20*time.Millisecond))
+	if err == nil {
+		t.Fatal("persistent contention did not time out")
+	}
 }
 func TestTerminalWriteFailureDoesNotBlockCancellation(t *testing.T) {
 	s, _ := Open(t.TempDir())
@@ -46,6 +82,9 @@ func TestTerminalWriteFailureDoesNotBlockCancellation(t *testing.T) {
 	if e != nil {
 		t.Fatal(e)
 	}
+	var closeOnce sync.Once
+	closeWorker := func() { closeOnce.Do(w.Close) }
+	t.Cleanup(closeWorker)
 	select {
 	case <-failing:
 	case <-time.After(3 * time.Second):
@@ -60,7 +99,7 @@ func TestTerminalWriteFailureDoesNotBlockCancellation(t *testing.T) {
 		t.Fatal("cancellation blocked behind retry")
 	}
 	closed := make(chan struct{})
-	go func() { w.Close(); close(closed) }()
+	go func() { closeWorker(); close(closed) }()
 	select {
 	case <-closed:
 	case <-time.After(time.Second):
@@ -119,16 +158,19 @@ func TestReadFailureRecoversAndShutdownRestarts(t *testing.T) {
 	if e != nil {
 		t.Fatal(e)
 	}
+	var closeOnce sync.Once
+	firstWorker := w
+	closeWorker := func() { closeOnce.Do(firstWorker.Close) }
+	t.Cleanup(closeWorker)
 	deadline := time.Now().Add(5 * time.Second)
 	for !failed.Load() && time.Now().Before(deadline) {
 		time.Sleep(10 * time.Millisecond)
 	}
 	if !failed.Load() {
-		w.Close()
 		t.Fatal("read failure not reached")
 	}
 	waitJob(t, s, job.ID, "succeeded")
-	w.Close()
+	closeWorker()
 	reopened, e := Open(s.root)
 	if e != nil {
 		t.Fatal(e)
@@ -224,6 +266,10 @@ func TestCancellationCommitCutoffAndRecovery(t *testing.T) {
 	if e != nil {
 		t.Fatal(e)
 	}
+	var releaseOnce, closeOnce sync.Once
+	releasePublish := func() { releaseOnce.Do(func() { close(release) }) }
+	closeWorker := func() { closeOnce.Do(w.Close) }
+	t.Cleanup(func() { releasePublish(); closeWorker() })
 	select {
 	case <-ready:
 	case <-time.After(3 * time.Second):
@@ -231,12 +277,12 @@ func TestCancellationCommitCutoffAndRecovery(t *testing.T) {
 	}
 	done := make(chan error, 1)
 	go func() { _, e := s.CancelJob(job.ID); done <- e }()
-	close(release)
+	releasePublish()
 	if err := <-done; err == nil {
 		t.Fatal("cancellation accepted after committing")
 	}
 	finished := waitJob(t, s, job.ID, "succeeded")
-	w.Close()
+	closeWorker()
 	reopened, _ := Open(s.root)
 	worker, e := StartJobs(reopened)
 	if e != nil {
