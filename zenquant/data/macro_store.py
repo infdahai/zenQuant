@@ -131,42 +131,12 @@ class MacroDataStore:
         self._series[name] = (timestamps, vals)
 
     def _load_cme_cot(self, path: Path) -> None:
-        import pyarrow as pa
-        import pyarrow.parquet as pq
-
-        field_map = {
-            "cme_asset_mgr_net": "asset_mgr_net",
-            "cme_lev_money_net": "leveraged_net",
-            "cme_dealer_net": "dealer_net",
-            "cme_total_oi": "total_oi",
-        }
-        try:
-            dataset = pq.ParquetDataset(path)
-            if "position_as_of_date_ns" in dataset.schema.names:
-                return
-            fragments = dataset.fragments
-            fragment_columns = [set(fragment.physical_schema.names) for fragment in fragments]
-            if any("position_as_of_date_ns" in cols or "report_date_ns" not in cols for cols in fragment_columns):
-                return
-            rows: dict[str, list[tuple[int, float]]] = {name: [] for name in field_map}
-            for fragment, columns in zip(fragments, fragment_columns):
-                sources = [source for source in field_map.values() if source in columns]
-                table = fragment.to_table(columns=["report_date_ns", *sources])
-                timestamps = [int(ts) for ts in table.column("report_date_ns").to_pylist()]
-                for target_name, source_name in field_map.items():
-                    if source_name in columns:
-                        values = table.column(source_name).to_pylist()
-                        rows[target_name].extend(
-                            (ts, float(value)) for ts, value in zip(timestamps, values) if value is not None
-                        )
-            series = {}
-            for name, values in rows.items():
-                if values:
-                    paired = sorted(values, key=lambda x: x[0])
-                    series[name] = ([t for t, _ in paired], [v for _, v in paired])
-        except (pa.ArrowException, OSError, ValueError, TypeError, OverflowError):
-            return
-        self._series.update(series)
+        # No evidenced publication-time contract exists for the current COT
+        # files. Preserve missing values instead of exposing positioning as if
+        # it had been known on the position/report date.
+        for name in ("cme_asset_mgr_net", "cme_lev_money_net", "cme_dealer_net", "cme_total_oi"):
+            self._series.pop(name, None)
+        self._lookup_cache.clear()
 
     def lookup(self, cutoff_time_ns: int) -> MacroSnapshot:
         """Return the latest macro values at or before cutoff_time_ns.
