@@ -10,6 +10,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/infdahai/zenQuant/internal/research"
 )
@@ -23,6 +24,44 @@ func fixture(t *testing.T) []byte {
 	}
 	return b
 }
+func TestImportProvenanceUsesNormalizedClose(t *testing.T) {
+	s, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var d Dataset
+	if err := json.Unmarshal(fixture(t), &d); err != nil {
+		t.Fatal(err)
+	}
+	d.Funding = nil
+	for i := range d.Candles {
+		d.Candles[i].CloseTimeNS -= 1_000_000
+	}
+	end := int64(600e9)
+	d.Provenance = &DatasetProvenance{SourceSymbol: "BTCUSDT", SourceSHA256: strings.Repeat("a", 64)}
+	for _, tc := range []struct {
+		name    string
+		cutoff  int64
+		wantErr bool
+	}{
+		{"inclusive millisecond before close", end - 1_000_000, true},
+		{"exclusive close", end, false},
+		{"after close", end + 1, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			d.Provenance.AsOf = time.Unix(0, tc.cutoff).UTC().Format(time.RFC3339Nano)
+			raw, err := json.Marshal(d)
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, err = s.Import(raw)
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("import error: %v", err)
+			}
+		})
+	}
+}
+
 func TestExistingPublicationRetriesDirectorySync(t *testing.T) {
 	s, _ := Open(t.TempDir())
 	calls := 0

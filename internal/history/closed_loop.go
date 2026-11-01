@@ -7,6 +7,7 @@ import (
 	"io"
 	"reflect"
 	"strings"
+	"time"
 
 	"github.com/infdahai/zenQuant/internal/research"
 	"github.com/infdahai/zenQuant/internal/workbench"
@@ -81,7 +82,14 @@ func RunImportedClosedLoop(store *workbench.Store, snapshotID string, startNS, e
 	if len(candles) == 0 || candles[0].CloseTimeNS != startNS || candles[len(candles)-1].CloseTimeNS != endNS || len(candles) != len(inputs) {
 		return nil, fmt.Errorf("candle coverage or decision count mismatch")
 	}
+	cutoff, err := time.Parse(time.RFC3339Nano, d.Provenance.AsOf)
+	if err != nil {
+		return nil, fmt.Errorf("invalid provenance cutoff: %w", err)
+	}
 	for i, candle := range candles {
+		if time.Unix(0, candle.CloseTimeNS).After(cutoff) {
+			return nil, fmt.Errorf("candle closes after provenance cutoff")
+		}
 		if i > 0 && candle.CloseTimeNS-candles[i-1].CloseTimeNS != bar {
 			return nil, fmt.Errorf("candle gap")
 		}
@@ -109,6 +117,11 @@ func RunImportedClosedLoop(store *workbench.Store, snapshotID string, startNS, e
 		return nil, err
 	}
 	return &ImportedClosedLoopResult{SnapshotID: snapshotID, Provenance: *d.Provenance, Source: source, FundingAssumption: "Funding coverage is unknown; absent settlements are not modeled.", Result: result}, nil
+}
+
+// RequireCompleteObject checks that every struct field is present, including explicit zeros.
+func RequireCompleteObject(raw json.RawMessage, typ reflect.Type) error {
+	return requireFields(raw, typ)
 }
 
 // requireFields checks presence separately from decoding so zero remains valid.

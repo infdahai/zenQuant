@@ -215,7 +215,7 @@ func (s *Store) Import(raw []byte) (Snapshot, error) {
 		q.FundingStatus = "no funding observations supplied"
 	}
 	for i, c := range d.Candles {
-		if d.Provenance != nil && time.Unix(0, c.CloseTimeNS).After(cutoff) {
+		if d.Provenance != nil && time.Unix(0, c.OpenTimeNS+duration).After(cutoff) {
 			return out, errors.New("candle closes after provenance cutoff")
 		}
 		if c.Symbol != d.Instrument {
