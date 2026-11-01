@@ -23,6 +23,13 @@ type OfflineReplayConfig struct {
 	// SessionPath optionally marks a fresh, non-resumable simulated account.
 	// Empty means ephemeral replay. The parent directory must already exist.
 	SessionPath string
+	// OnReport observes each simulated report after accounting has applied it.
+	// The quantity is the filled position used by admission and later policy
+	// snapshots. Episode accounting may normalize tiny residuals to zero.
+	// Callback state can affect future policy calls, not the already returned
+	// batch of orders. An error aborts replay; callback side effects and the
+	// applied fill are not rolled back.
+	OnReport func(ExecutionReport, float64) error
 }
 
 // OfflineReplayIndicators are calculated from the visible bounded history.
@@ -157,12 +164,19 @@ func runOfflineReplayIntents(config OfflineReplayConfig, policy OfflineReplayInt
 	histories := make(map[string][]ReplayCandle, len(config.Timeframes))
 	result := &OfflineReplayResult{}
 	admission := &offlineOrderAdmission{maxQty: capQty, positions: make(map[string]float64), filled: make(map[admissionKey]float64)}
+	var cutoff int64
 	session, err := newSimulationSession(config.SessionPath, func(report ExecutionReport) error {
 		report, err := accounting.CollectReport(report)
 		if err != nil {
 			return err
 		}
 		result.Reports = append(result.Reports, report)
+		admission.record(report, cutoff)
+		if config.OnReport != nil {
+			if err := config.OnReport(report, admission.positions[config.Symbol]); err != nil {
+				return fmt.Errorf("report callback: %w", err)
+			}
+		}
 		return nil
 	})
 	if err != nil {
@@ -231,11 +245,11 @@ func runOfflineReplayIntents(config OfflineReplayConfig, policy OfflineReplayInt
 			if !ok {
 				return ExecutionReport{}, nil
 			}
+			cutoff = event.CloseTimeNS
 			report, err := session.submit(admitted, event.Close, config.TakerFeeRate, event.CloseTimeNS)
 			if err != nil {
 				return ExecutionReport{}, fmt.Errorf("execution session: %w", err)
 			}
-			admission.record(report, event.CloseTimeNS)
 			return report, nil
 		}
 		for _, intent := range intents {
