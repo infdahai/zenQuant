@@ -1,0 +1,26 @@
+[
+  {
+    "symbol": "BTCUSDT",
+    "timeframe": "4h",
+    "open_time_ns": 1704067200000000000,
+    "close_time_ns": 1704081600000000000,
+    "open": 100.5,
+    "high": 105.0,
+    "low": 99.0,
+    "close": 103.0,
+    "volume": 12.25,
+    "trade_count": 17
+  },
+  {
+    "symbol": "BTCUSDT",
+    "timeframe": "4h",
+    "open_time_ns": 1704081600000000000,
+    "close_time_ns": 1704096000000000000,
+    "open": 103.0,
+    "high": 108.0,
+    "low": 102.0,
+    "close": 107.5,
+    "volume": 8.5,
+    "trade_count": 9
+  }
+]
