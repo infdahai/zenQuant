@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"reflect"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/infdahai/zenQuant/internal/workbench"
@@ -249,7 +250,11 @@ func TestHistoryCommandEndToEnd(t *testing.T) {
 			continue
 		}
 		if e != nil {
-			t.Fatal(e)
+			if !errors.Is(e, syscall.EWOULDBLOCK) {
+				t.Fatal(e)
+			}
+			time.Sleep(10 * time.Millisecond)
+			continue
 		}
 		if len(jobs) == 1 {
 			job = jobs[0]
@@ -305,7 +310,11 @@ func TestHistoryCommandEndToEnd(t *testing.T) {
 			continue
 		}
 		if err != nil {
-			t.Fatal(err)
+			if !errors.Is(err, syscall.EWOULDBLOCK) {
+				t.Fatal(err)
+			}
+			time.Sleep(10 * time.Millisecond)
+			continue
 		}
 		for _, j := range jobs {
 			if j.ID == hugeJob.ID {
