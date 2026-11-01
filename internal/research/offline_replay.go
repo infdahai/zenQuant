@@ -1,6 +1,9 @@
 package research
 
-import "fmt"
+import (
+	"fmt"
+	"math"
+)
 
 // OfflineReplayConfig supplies all inputs to a single-symbol synthetic replay.
 // HistoryLimit bounds candles retained per timeframe and IndicatorWindow sets
@@ -39,6 +42,32 @@ type OfflineReplaySnapshot struct {
 // responsible for its own determinism and must not rely on future input data.
 type OfflineReplayPolicy func(OfflineReplaySnapshot) ([]OfflineExecutionOrder, error)
 
+// OfflineReplayFlip specifies a caller-sized reverse opening after flattening.
+// Both IDs must be unique among submitted orders; an unsubmitted leg reserves no ID.
+// TargetQty must be finite, nonzero, and opposite the current filled position.
+// The intent is attempted only at its current cutoff and is not carried forward.
+type OfflineReplayFlip struct {
+	Symbol             string
+	TargetQty          float64
+	CloseClientOrderID string
+	OpenClientOrderID  string
+}
+
+// OfflineReplayIntent contains exactly one order or flip.
+type OfflineReplayIntent struct {
+	Order *OfflineExecutionOrder
+	Flip  *OfflineReplayFlip
+}
+
+type OfflineReplayIntentPolicy func(OfflineReplaySnapshot) ([]OfflineReplayIntent, error)
+
+// RunOfflineReplayIntents runs explicit, caller-sized orders and flip intents.
+// A flip closes reduce-only first and opens only after the actual close leaves
+// exactly zero inventory; both attempts share the cutoff's filled quantity cap.
+func RunOfflineReplayIntents(config OfflineReplayConfig, policy OfflineReplayIntentPolicy) (*OfflineReplayResult, error) {
+	return runOfflineReplayIntents(config, policy, nil)
+}
+
 // OfflineReplayResult contains actual simulated reports and episode accounting.
 type OfflineReplayResult struct {
 	Reports     []ExecutionReport
@@ -55,7 +84,8 @@ type OfflineReplayResult struct {
 // Policy orders are sized by the caller; final admission enforces reduce-only and
 // the filled-quantity cap, rounding down to six places with a 0.0001 minimum.
 // Opposite-side non-reduce orders may flip in one fill; no Python target sizing,
-// two-leg flip orchestration, or risk overlay is implemented. Accounting
+// flip orchestration in this API, or risk overlay is implemented. Explicit
+// two-leg flips are available through RunOfflineReplayIntents. Accounting
 // uses only the latest visible funding row per execution bar, not every skipped
 // row; equal timestamps select the last row, and timestamps <= 0 are not newly
 // charged by the underlying accounting adapter. This is not live execution,
@@ -67,6 +97,23 @@ func RunOfflineReplay(config OfflineReplayConfig, policy OfflineReplayPolicy) (*
 
 // The private simulator seam exercises partial and rejected attempts in tests.
 func runOfflineReplay(config OfflineReplayConfig, policy OfflineReplayPolicy, simulate func(OfflineExecutionOrder, float64, float64, int64) (ExecutionReport, error)) (*OfflineReplayResult, error) {
+	if policy == nil {
+		return nil, fmt.Errorf("symbol and policy are required")
+	}
+	return runOfflineReplayIntents(config, func(snapshot OfflineReplaySnapshot) ([]OfflineReplayIntent, error) {
+		orders, err := policy(snapshot)
+		if err != nil {
+			return nil, err
+		}
+		intents := make([]OfflineReplayIntent, len(orders))
+		for i := range orders {
+			intents[i].Order = &orders[i]
+		}
+		return intents, nil
+	}, simulate)
+}
+
+func runOfflineReplayIntents(config OfflineReplayConfig, policy OfflineReplayIntentPolicy, simulate func(OfflineExecutionOrder, float64, float64, int64) (ExecutionReport, error)) (*OfflineReplayResult, error) {
 	if config.Symbol == "" || policy == nil {
 		return nil, fmt.Errorf("symbol and policy are required")
 	}
@@ -169,26 +216,57 @@ func runOfflineReplay(config OfflineReplayConfig, policy OfflineReplayPolicy, si
 			}
 			snapshot.Indicators[timeframe] = OfflineReplayIndicators{ATR: atr, RealizedVol: vol, RateOfChange: roc, OUKappa: kappa}
 		}
-		orders, err := policy(snapshot)
+		intents, err := policy(snapshot)
 		if err != nil {
 			return nil, fmt.Errorf("policy at %d: %w", event.CloseTimeNS, err)
 		}
-		for _, order := range orders {
+		submit := func(order OfflineExecutionOrder) (ExecutionReport, error) {
 			if order.Symbol != config.Symbol {
-				return nil, fmt.Errorf("order symbol %q does not match replay symbol %q", order.Symbol, config.Symbol)
+				return ExecutionReport{}, fmt.Errorf("order symbol %q does not match replay symbol %q", order.Symbol, config.Symbol)
 			}
 			admitted, ok, err := admission.admit(order, event.CloseTimeNS)
 			if err != nil {
-				return nil, fmt.Errorf("order admission: %w", err)
+				return ExecutionReport{}, fmt.Errorf("order admission: %w", err)
 			}
 			if !ok {
-				continue
+				return ExecutionReport{}, nil
 			}
 			report, err := session.submit(admitted, event.Close, config.TakerFeeRate, event.CloseTimeNS)
 			if err != nil {
-				return nil, fmt.Errorf("execution session: %w", err)
+				return ExecutionReport{}, fmt.Errorf("execution session: %w", err)
 			}
 			admission.record(report, event.CloseTimeNS)
+			return report, nil
+		}
+		for _, intent := range intents {
+			if (intent.Order == nil) == (intent.Flip == nil) {
+				return nil, fmt.Errorf("intent must contain exactly one order or flip")
+			}
+			if intent.Order != nil {
+				if _, err := submit(*intent.Order); err != nil {
+					return nil, err
+				}
+				continue
+			}
+			flip := intent.Flip
+			position := admission.positions[config.Symbol]
+			if flip.Symbol != config.Symbol || !finite(flip.TargetQty) || flip.TargetQty == 0 || position == 0 || math.Signbit(position) == math.Signbit(flip.TargetQty) {
+				return nil, fmt.Errorf("flip requires matching symbol and a target opposite the filled position")
+			}
+			side := 1
+			if position > 0 {
+				side = -1
+			}
+			closed, err := submit(OfflineExecutionOrder{ClientOrderID: flip.CloseClientOrderID, Symbol: flip.Symbol, Side: side, Quantity: math.Abs(position), ReduceOnly: true})
+			if err != nil {
+				return nil, err
+			}
+			if closed.FilledQty <= 0 || admission.positions[config.Symbol] != 0 {
+				continue
+			}
+			if _, err := submit(OfflineExecutionOrder{ClientOrderID: flip.OpenClientOrderID, Symbol: flip.Symbol, Side: side, Quantity: math.Abs(flip.TargetQty)}); err != nil {
+				return nil, err
+			}
 		}
 	}
 	result.Episodes = ledger.Episodes()
