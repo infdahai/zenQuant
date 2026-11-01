@@ -3,9 +3,9 @@ package options
 import (
 	"io"
 	"os"
-	"path/filepath"
 	"strings"
 
+	"github.com/infdahai/zenQuant/internal/localfile"
 	"golang.org/x/sys/unix"
 )
 
@@ -44,7 +44,7 @@ func AdmitVixSnapshot(request, manifest []byte, dir string) (out []byte, err err
 	names := map[string]bool{}
 	hashes := map[string]bool{}
 	total := 0
-	root, e := openVixEvidenceDir(dir)
+	root, e := localfile.OpenDir(dir)
 	require(e == nil, "MISSING_EVIDENCE")
 	defer unix.Close(root)
 	for _, p := range m.Files {
@@ -101,29 +101,6 @@ func AdmitVixSnapshot(request, manifest []byte, dir string) (out []byte, err err
 		Observation    jsonRaw     `json:"observation"`
 	}{"vix-snapshot-admission.rust.v1", "LOCAL_PINNED_BYTES_MATCH", "SUPPLIED_PROJECTION_UNVERIFIED", "SUPPLIER_DECLARATION_NOT_INDEPENDENTLY_VERIFIED", "NONE_GRANTED_BY_ADAPTER", sha(manifest), m, jsonRaw(response)})
 	return
-}
-
-func openVixEvidenceDir(path string) (int, error) {
-	abs, err := filepath.Abs(path)
-	if err != nil {
-		return -1, err
-	}
-	fd, err := unix.Open(string(filepath.Separator), unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC, 0)
-	if err != nil {
-		return -1, err
-	}
-	for _, part := range strings.Split(strings.TrimPrefix(abs, string(filepath.Separator)), string(filepath.Separator)) {
-		if part == "" {
-			continue
-		}
-		next, e := unix.Openat(fd, part, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
-		unix.Close(fd)
-		if e != nil {
-			return -1, e
-		}
-		fd = next
-	}
-	return fd, nil
 }
 
 type jsonRaw []byte

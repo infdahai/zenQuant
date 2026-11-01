@@ -8,6 +8,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/infdahai/zenQuant/internal/localfile"
 )
 
 // Embed native implementation bytes so provenance follows the binary, never the checkout.
@@ -29,6 +31,9 @@ func sourceHash() string {
 		b, _ := sources.ReadFile(name)
 		pairs = append(pairs, [2]string{name, sha(b)})
 	}
+	// Snapshot admission uses these helpers outside the options package.
+	// Keep their bytes in the same code identity as the admission/evaluation code.
+	pairs = append(pairs, localfile.SourceHashes()...)
 	return hash(pairs)
 }
 

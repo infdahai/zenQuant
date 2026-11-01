@@ -140,6 +140,21 @@ func TestVixSnapshotRegressionPaths(t *testing.T) {
 			b.expectError(t, "INVALID_INPUT")
 		})
 	}
+	for _, component := range []string{"unused", "alias"} {
+		t.Run("lexical parent after "+component, func(t *testing.T) {
+			b := newSnapshotRegressionBundle(t)
+			if component == "alias" {
+				if err := os.Symlink(b.dir, filepath.Join(b.dir, component)); err != nil {
+					t.Fatal(err)
+				}
+			} else if err := os.Mkdir(filepath.Join(b.dir, component), 0700); err != nil {
+				t.Fatal(err)
+			}
+			// Do not use Join: the unnormalized spelling is the attack.
+			b.dir += "/" + component + "/.."
+			b.expectError(t, "MISSING_EVIDENCE")
+		})
+	}
 	t.Run("file symlink", func(t *testing.T) {
 		b := newSnapshotRegressionBundle(t)
 		path := filepath.Join(b.dir, "raw.txt")
