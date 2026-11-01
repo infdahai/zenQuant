@@ -23,6 +23,8 @@ class EventBus(Protocol):
 
     def publish(self, subject: str, payload: Any) -> None: ...
 
+    def claim_publisher(self, subject: str) -> Callable[[Any], None]: ...
+
 
 @dataclass(slots=True)
 class MessageEnvelope:
@@ -55,6 +57,7 @@ class InMemoryJetStream:
     def __init__(self) -> None:
         self._subscriptions: list[tuple[str, SubjectHandler]] = []
         self._streams: dict[str, tuple[StreamConfig, deque[MessageEnvelope]]] = {}
+        self._claimed_publishers: set[str] = set()
 
     def add_stream(self, config: StreamConfig) -> None:
         """Register a retained subject group before publishing to it."""
@@ -66,7 +69,27 @@ class InMemoryJetStream:
         """Attach a handler to a wildcard subject pattern."""
         self._subscriptions.append((subject_pattern, handler))
 
+    def claim_publisher(self, subject: str) -> Callable[[Any], None]:
+        """Give one trusted in-process producer access to a protected subject.
+
+        Execution reports are closed by default, including before a kernel is
+        attached. External/replayed reports must never bypass admission merely
+        because risk or persistence subscribed before execution did.
+        """
+        if subject != "exec.order.report":
+            raise ValueError(f"not a protected subject: {subject}")
+        if subject in self._claimed_publishers:
+            raise RuntimeError(f"publisher already claimed: {subject}")
+        self._claimed_publishers.add(subject)
+        return lambda payload: self._deliver(subject, payload)
+
     def publish(self, subject: str, payload: Any) -> None:
+        """Publish public events; execution reports require the producer capability."""
+        if subject == "exec.order.report":
+            raise ValueError("external execution reports are not supported; simulator admission is required")
+        self._deliver(subject, payload)
+
+    def _deliver(self, subject: str, payload: Any) -> None:
         """Append to matching streams, then fan out to subscribers synchronously."""
         envelope = MessageEnvelope(subject=subject, payload=payload, timestamp_ns=time.time_ns())
         for config, buffer in self._streams.values():
