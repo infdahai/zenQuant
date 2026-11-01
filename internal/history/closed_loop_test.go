@@ -2,6 +2,8 @@ package history
 
 import (
 	"encoding/json"
+	"fmt"
+	"math"
 	"os"
 	"strings"
 	"testing"
@@ -10,6 +12,84 @@ import (
 	"github.com/infdahai/zenQuant/internal/research"
 	"github.com/infdahai/zenQuant/internal/workbench"
 )
+
+func TestImportedFundingClosedLoopAccounting(t *testing.T) {
+	f, err := os.Open("testdata/klines.csv")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	const startMS int64 = 1704081600000
+	const endMS int64 = 1704096000000
+	funding := []byte(fmt.Sprintf(`[
+		{"symbol":"BTCUSDT","fundingTime":%d,"fundingRate":"0.5"},
+		{"symbol":"BTCUSDT","fundingTime":%d,"fundingRate":"0.5"},
+		{"symbol":"BTCUSDT","fundingTime":%d,"fundingRate":"0.01"},
+		{"symbol":"BTCUSDT","fundingTime":%d,"fundingRate":"-0.02"},
+		{"symbol":"BTCUSDT","fundingTime":%d,"fundingRate":"0.03"},
+		{"symbol":"BTCUSDT","fundingTime":%d,"fundingRate":"0.5"}
+	]`, startMS-1, startMS, startMS+1, startMS+2, endMS, endMS+1))
+	raw, err := NormalizeWithFunding(f, "4h", time.Date(2024, 1, 2, 0, 0, 0, 0, time.UTC), funding)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, err := workbench.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	snap, err := store.Import(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	inputs := make([]research.OfflineDecisionInput, 0, 2)
+	for i, c := range snap.Dataset.Candles {
+		state := research.StrategyState{PlaybookState: research.PlaybookState{Symbol: "BTC", Timeframe: "4h", CutoffTimeNS: c.CloseTimeNS, DirectionalState: "UPTREND", DirectionalConfidence: .8, VolatilityState: "NORMAL", VolatilityConfidence: .8, PositioningState: "HEALTHY", PositioningConfidence: .8, QualityState: "TRADABLE", QualityConfidence: .8, DirectionSignal: 1}, Regime: "TREND", RegimeConfidence: .8, QualityFlags: []string{"OK"}}
+		if i == 1 {
+			state.Regime = "STRESS"
+		}
+		inputs = append(inputs, research.OfflineDecisionInput{Indicator: research.StrategyIndicator{Symbol: "BTC", Timeframe: "4h", CutoffTimeNS: c.CloseTimeNS, Price: c.Close, ATR: 1, RealizedVol: .8, CVDSlope: .1}, State: state, AvailableTimeNS: c.CloseTimeNS, ValidUntilNS: c.CloseTimeNS})
+	}
+	payload, err := json.Marshal(inputs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	config := research.OfflineClosedLoopConfig{Replay: research.OfflineReplayConfig{HistoryLimit: 2, IndicatorWindow: 1, TakerFeeRate: .001, MaxTradeQtyPerCutoff: 1000}, StrategyConfig: research.DefaultStrategyFlowConfig(), RiskConfig: research.DefaultStatefulRiskConfig()}
+	config.RiskConfig.MaxLeverage = .1
+	source := DecisionSource{Description: "caller indicator fixture", Availability: "caller asserts availability at each close", QuoteAssumption: USDQuoteAssumption}
+	result, err := RunImportedClosedLoop(store, snap.ID, startMS*1e6, endMS*1e6, payload, source, config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Provenance.FundingSourceSHA256 == "" || !strings.Contains(result.FundingAssumption, "coverage is unknown") || result.Source.Availability != source.Availability {
+		t.Fatalf("missing provenance or limitations: %+v", result)
+	}
+	r := result.Result
+	if len(r.Replay.Reports) != 2 || len(r.Replay.Episodes) != 1 || !r.Replay.Episodes[0].Closed {
+		t.Fatalf("expected opening and closing fills: %+v", r.Replay)
+	}
+	open, close := r.Replay.Reports[0], r.Replay.Reports[1]
+	qty := float64(open.Side) * open.FilledQty
+	if qty <= 0 || math.Abs(close.FilledQty-open.FilledQty) > 1e-8 || r.RiskState.Positions["BTC"] != 0 {
+		t.Fatalf("unexpected actual position: open=%+v close=%+v risk=%+v", open, close, r.RiskState)
+	}
+	firstPrice, lastPrice := snap.Dataset.Candles[0].Close, snap.Dataset.Candles[1].Close
+	wantFunding := -qty*firstPrice*.01 + qty*firstPrice*.02 - qty*lastPrice*.03
+	wantFees := open.FilledQty*firstPrice*.001 + close.FilledQty*lastPrice*.001
+	wantGross := qty * (lastPrice - firstPrice)
+	episode := r.Replay.Episodes[0]
+	near := func(name string, got, want float64) {
+		t.Helper()
+		if math.Abs(got-want) > 1e-7 {
+			t.Errorf("%s: got %.12g want %.12g", name, got, want)
+		}
+	}
+	near("funding", episode.FundingPnL, wantFunding)
+	near("fees", episode.Fees, wantFees)
+	near("gross", episode.GrossRealizedPnL, wantGross)
+	near("net", episode.NetPnL, wantGross+wantFunding-wantFees)
+	near("decision equity", r.RiskState.EquityHistory[1], config.RiskConfig.StartingEquity-open.Fee+wantGross+wantFunding)
+	near("final equity", r.RiskState.Equity, config.RiskConfig.StartingEquity+episode.NetPnL)
+}
 
 func TestImportedClosedLoop(t *testing.T) {
 	f, err := os.Open("testdata/klines.csv")

@@ -35,8 +35,8 @@ type ImportedClosedLoopResult struct {
 // import. decisions is a JSON array of complete OfflineDecisionInput objects;
 // every indicator and state field must be present, including explicit zeros.
 // Neither the supplied as-of nor the availability declaration proves arrival.
-// Missing funding is not evidence of zero funding; supplied funding is passed to
-// the closed loop for settlement.
+// Missing funding is not evidence of zero funding; supplied settlements within
+// the window are passed to the closed loop.
 func RunImportedClosedLoop(store *workbench.Store, snapshotID string, startNS, endNS int64, decisions []byte, source DecisionSource, config research.OfflineClosedLoopConfig) (*ImportedClosedLoopResult, error) {
 	const bar = int64(4 * 60 * 60 * 1e9)
 	if store == nil || startNS <= 0 || endNS < startNS || startNS%bar != 0 || endNS%bar != 0 {
