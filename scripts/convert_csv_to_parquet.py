@@ -1,9 +1,48 @@
 #!/usr/bin/env python3
 """Convert Binance CSV files to Parquet format for efficient replay."""
 
+import csv
+import math
 from pathlib import Path
 
 import pandas as pd
+
+
+def _read_positional_csv(csv_file: Path, columns: list[str]) -> pd.DataFrame:
+    """Recognize known headers; preserve and validate every headerless row."""
+    aliases = {
+        "count": "trade_count",
+        "taker_buy_volume": "taker_buy_base",
+        "taker_buy_quote_volume": "taker_buy_quote",
+    }
+    with csv_file.open(newline="", encoding="utf-8") as handle:
+        rows = list(csv.reader(handle))
+    if not rows:
+        raise ValueError(f"empty CSV: {csv_file}")
+    header = [aliases.get(value.strip().lower(), value.strip().lower()) for value in rows[0]]
+    if header == columns:
+        rows = rows[1:]
+    if not rows:
+        raise ValueError(f"CSV has no observations: {csv_file}")
+    for row in rows:
+        if len(row) != len(columns):
+            raise ValueError(f"invalid column count: {csv_file}")
+        for column, value in zip(columns, row, strict=True):
+            if column == "symbol":
+                if not value.strip():
+                    raise ValueError(f"missing symbol: {csv_file}")
+            else:
+                try:
+                    valid = math.isfinite(float(value))
+                except ValueError:
+                    valid = False
+                if not valid:
+                    raise ValueError(f"invalid numeric {column}: {csv_file}")
+    frame = pd.DataFrame(rows, columns=columns)
+    for column in columns:
+        if column != "symbol":
+            frame[column] = pd.to_numeric(frame[column], errors="raise")
+    return frame
 
 
 def _normalize_exchange_timestamp(value: int | float) -> int:
@@ -49,14 +88,11 @@ def csv_to_parquet(csv_dir: Path, output_dir: Path, data_type: str):
 
     all_data = []
     for csv_file in csv_files:
-        try:
-            if data_type == "funding":
-                df = _read_funding_csv(csv_file)
-            else:
-                df = pd.read_csv(csv_file, names=columns, skiprows=1)  # Skip header row
-            all_data.append(df)
-        except Exception as e:
-            print(f"Error reading {csv_file.name}: {e}")
+        if data_type == "funding":
+            df = _read_funding_csv(csv_file)
+        else:
+            df = _read_positional_csv(csv_file, columns)
+        all_data.append(df)
 
     if not all_data:
         return 0
@@ -114,14 +150,14 @@ def _read_funding_csv(csv_file: Path) -> pd.DataFrame:
     if time_col is None or rate_col is None:
         # Fall back to the old 4-column archive shape:
         # symbol,funding_time,funding_rate,mark_price
-        frame = pd.read_csv(
-            csv_file,
-            names=["symbol", "funding_time", "funding_rate", "mark_price"],
-            skiprows=1,
-        )
-        return frame
+        return _read_positional_csv(csv_file, ["symbol", "funding_time", "funding_rate", "mark_price"])
     mark_col = normalized.get("mark_price") or normalized.get("markprice")
     symbol_col = normalized.get("symbol")
+    for column in (time_col, rate_col, mark_col):
+        if column is not None:
+            frame[column] = pd.to_numeric(frame[column], errors="raise")
+            if not frame[column].map(math.isfinite).all():
+                raise ValueError(f"invalid funding {column}: {csv_file}")
     return pd.DataFrame(
         {
             "symbol": frame[symbol_col] if symbol_col is not None else csv_file.parent.name,
