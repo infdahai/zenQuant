@@ -242,4 +242,11 @@ func TestVixCLISnapshotRoundtrip(t *testing.T) {
 	if !bytes.Equal(first.Report, second.Report) || second.Transport != vixDigest([]byte(first.Request)) || first.Transport == second.Transport {
 		t.Fatalf("canonical report must survive changed transport: %s", out)
 	}
+	if err := os.WriteFile(filepath.Join(dir, "raw.txt"), []byte("tampered synthetic evidence"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	out, stderr, err = runVixCLI(t, "", "vix-snapshot", "--request", dir+"/request.json", "--manifest", dir+"/manifest.json", "--evidence", dir)
+	if err == nil || len(out) != 0 || strings.TrimSpace(stderr) != "CONFLICTING_EVIDENCE" {
+		t.Fatalf("pinned-byte tamper must fail without stdout: %q %q %v", out, stderr, err)
+	}
 }
